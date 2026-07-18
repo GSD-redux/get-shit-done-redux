@@ -446,6 +446,78 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
   });
 });
 
+// ─── #2272: Cursor and Qwen reviewer flags reachable from convergence ────────
+
+describe('plan-review-convergence: --cursor/--qwen reviewer whitelist (#2272)', () => {
+  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  const SKILL_PATH = path.join(__dirname, '..', 'skills', 'gsd-plan-review-convergence', 'SKILL.md');
+  const command = fs.readFileSync(COMMAND_PATH, 'utf8');
+
+  test('workflow REVIEWER_FLAGS extraction whitelists --cursor and --qwen', () => {
+    // The runtime contract is the grep-accumulation block: each recognized flag
+    // has its own `grep -q '\\-\\-<flag>'` line. Absence = the flag is silently
+    // dropped to the --codex default (the silent-fallback footgun in #2272).
+    assert.ok(/grep -q '\\-\\-cursor'/.test(workflow), 'workflow must whitelist --cursor');
+    assert.ok(/grep -q '\\-\\-qwen'/.test(workflow), 'workflow must whitelist --qwen');
+  });
+
+  test('command documents the --cursor and --qwen reviewer flags (#2272)', () => {
+    assert.ok(command.includes('--cursor'), 'command must document --cursor flag (Cursor agent reviewer)');
+    assert.ok(command.includes('--qwen'), 'command must document --qwen flag (Qwen Code reviewer)');
+  });
+
+  test('argument-hint advertises --cursor and --qwen (#2272)', () => {
+    const hint = command.match(/^argument-hint:\s*"(.*)"\s*$/m);
+    assert.ok(hint, 'command must declare an argument-hint');
+    assert.ok(hint[1].includes('--cursor'), `argument-hint must list --cursor, got: ${hint[1]}`);
+    assert.ok(hint[1].includes('--qwen'), `argument-hint must list --qwen, got: ${hint[1]}`);
+  });
+
+  test('generated SKILL.md mirrors the --cursor and --qwen flags (argument-hint parity)', () => {
+    const skill = fs.readFileSync(SKILL_PATH, 'utf8');
+    assert.ok(skill.includes('--cursor'), 'generated SKILL.md must document --cursor (regenerate via gen:plugin-skills)');
+    assert.ok(skill.includes('--qwen'), 'generated SKILL.md must document --qwen (regenerate via gen:plugin-skills)');
+  });
+
+  // Behavioral: execute the ACTUAL deployed REVIEWER_FLAGS accumulation block and
+  // assert --cursor/--qwen pass through instead of being dropped to the --codex
+  // default. POSIX-only — the block is /bin/sh-style grep pipework; skip on Windows
+  // where a bash shim is not guaranteed on PATH.
+  test('[behavioral] the deployed extraction passes --cursor/--qwen through (not the --codex fallback)', (t) => {
+    if (process.platform === 'win32') { t.skip('POSIX shell extraction; not run on Windows'); return; }
+    const { execFileSync } = require('node:child_process');
+    const startIdx = workflow.indexOf('REVIEWER_FLAGS=""');
+    const endMarker = "echo \"$ARGUMENTS\" | grep -q '\\-\\-all' && REVIEWER_FLAGS=\"$REVIEWER_FLAGS --all\"";
+    const endIdx = workflow.indexOf(endMarker);
+    assert.ok(startIdx !== -1 && endIdx !== -1, 'the REVIEWER_FLAGS parse block must exist in the workflow');
+    const block = workflow.slice(startIdx, endIdx + endMarker.length) + '\nprintf "%s" "$REVIEWER_FLAGS"';
+    const run = (args) => execFileSync('bash', ['-c', block], {
+      env: { ...process.env, ARGUMENTS: args },
+      encoding: 'utf8',
+      timeout: 5000,
+    }).trim();
+
+    const cursor = run('5 --cursor');
+    assert.ok(cursor.split(/\s+/).includes('--cursor'), `--cursor must pass through, got: "${cursor}"`);
+    assert.notStrictEqual(cursor, '--codex', 'must NOT collapse to the --codex-only fallback when --cursor is given');
+
+    const qwen = run('5 --qwen');
+    assert.ok(qwen.split(/\s+/).includes('--qwen'), `--qwen must pass through, got: "${qwen}"`);
+    assert.notStrictEqual(qwen, '--codex', 'must NOT collapse to the --codex-only fallback when --qwen is given');
+
+    // #2315 regression: the parse block no longer applies a default, so a bare
+    // invocation and an unknown reviewer both yield empty here. The default is
+    // resolved later in step 1.5 against review.default_reviewers.
+    assert.strictEqual(run('5'), '', 'no reviewer flag → empty from parse (default applied in step 1.5 per #2315)');
+    assert.strictEqual(run('5 --bogus-reviewer'), '', 'unknown reviewer flag → empty from parse (no silent --codex injection)');
+    const mixed = run('5 --cursor --qwen');
+    assert.ok(mixed.includes('--cursor') && mixed.includes('--qwen'), 'both new flags accumulate together');
+    // The new flags must not be spuriously matched by an unrelated flag (independence).
+    assert.ok(!run('5 --gemini').includes('--cursor'), '--gemini must not trip the --cursor whitelist');
+    assert.ok(!run('5 --gemini').includes('--qwen'), '--gemini must not trip the --qwen whitelist');
+  });
+});
+
 // ─── Workflow: initialization ──────────────────────────────────────────────
 
 describe('plan-review-convergence workflow: initialization (#2306)', () => {

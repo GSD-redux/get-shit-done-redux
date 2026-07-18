@@ -18,7 +18,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 ## 1. Parse and Normalize Arguments
 
-Extract from $ARGUMENTS: phase number, reviewer flags (`--codex`, `--gemini`, `--agy`/`--antigravity`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`), `--max-cycles N`, `--text`, `--ws`.
+Extract from $ARGUMENTS: phase number, reviewer flags (`--codex`, `--gemini`, `--agy`/`--antigravity`, `--claude`, `--opencode`, `--cursor`, `--qwen`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`), `--max-cycles N`, `--text`, `--ws`.
 
 ```bash
 PHASE=$(echo "$ARGUMENTS" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
@@ -30,6 +30,8 @@ echo "$ARGUMENTS" | grep -q '\-\-agy' && REVIEWER_FLAGS="$REVIEWER_FLAGS --agy"
 echo "$ARGUMENTS" | grep -q '\-\-antigravity' && REVIEWER_FLAGS="$REVIEWER_FLAGS --antigravity"
 echo "$ARGUMENTS" | grep -q '\-\-claude' && REVIEWER_FLAGS="$REVIEWER_FLAGS --claude"
 echo "$ARGUMENTS" | grep -q '\-\-opencode' && REVIEWER_FLAGS="$REVIEWER_FLAGS --opencode"
+echo "$ARGUMENTS" | grep -q '\-\-cursor' && REVIEWER_FLAGS="$REVIEWER_FLAGS --cursor"
+echo "$ARGUMENTS" | grep -q '\-\-qwen' && REVIEWER_FLAGS="$REVIEWER_FLAGS --qwen"
 echo "$ARGUMENTS" | grep -q '\-\-ollama' && REVIEWER_FLAGS="$REVIEWER_FLAGS --ollama"
 echo "$ARGUMENTS" | grep -q '\-\-lm-studio' && REVIEWER_FLAGS="$REVIEWER_FLAGS --lm-studio"
 echo "$ARGUMENTS" | grep -q '\-\-llama-cpp' && REVIEWER_FLAGS="$REVIEWER_FLAGS --llama-cpp"

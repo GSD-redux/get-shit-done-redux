@@ -1,7 +1,7 @@
 ---
 name: gsd-plan-review-convergence
 description: "Cross-AI plan convergence - replan until review concerns are resolved."
-argument-hint: "<phase> [--codex] [--gemini] [--claude] [--opencode] [--ollama] [--lm-studio] [--llama-cpp] [--agy] [--text] [--ws <name>] [--all] [--max-cycles N]"
+argument-hint: "<phase> [--codex] [--gemini] [--claude] [--opencode] [--cursor] [--qwen] [--ollama] [--lm-studio] [--llama-cpp] [--agy] [--text] [--ws <name>] [--all] [--max-cycles N]"
 allowed-tools:
   - Read
   - Write
@@ -45,6 +45,8 @@ Phase number: extracted from $ARGUMENTS (required)
 - `--agy` / `--antigravity` — Use Antigravity CLI as reviewer (successor to the discontinued Gemini CLI)
 - `--claude` — Use Claude CLI as reviewer (separate session)
 - `--opencode` — Use OpenCode as reviewer
+- `--cursor` — Use Cursor agent CLI as reviewer
+- `--qwen` — Use Qwen Code CLI as reviewer (Alibaba Qwen models)
 - `--ollama` — Use local Ollama server as reviewer (OpenAI-compatible, default host `http://localhost:11434`; configure model via `review.models.ollama`)
 - `--lm-studio` — Use local LM Studio server as reviewer (OpenAI-compatible, default host `http://localhost:1234`; configure model via `review.models.lm_studio`)
 - `--llama-cpp` — Use local llama.cpp server as reviewer (OpenAI-compatible, default host `http://localhost:8080`; configure model via `review.models.llama_cpp`)
