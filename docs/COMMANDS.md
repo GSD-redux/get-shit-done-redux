@@ -260,7 +260,7 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 | Argument / Flag | Required | Description |
 |-----------------|----------|-------------|
 | `N` | **Yes** | Phase number to plan and review |
-| `--codex` / `--gemini` / `--claude` / `--opencode` | No | Single-reviewer selection |
+| `--codex` / `--gemini` / `--claude` / `--opencode` / `--cursor` / `--qwen` / `--agy` (`--antigravity`) | No | Single-reviewer selection — same reviewer flags `/gsd-review` accepts, each forwarded to the inner review call |
 | `--all` | No | Run every configured reviewer in parallel |
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
@@ -269,6 +269,8 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 ```bash
 /gsd-plan-review-convergence 3                    # Default reviewers, 3 cycles
 /gsd-plan-review-convergence 3 --codex            # Codex-only review
+/gsd-plan-review-convergence 3 --cursor           # Converge against Cursor alone
+/gsd-plan-review-convergence 3 --qwen             # Converge against Qwen Code alone
 /gsd-plan-review-convergence 3 --all --max-cycles 5
 ```
 
