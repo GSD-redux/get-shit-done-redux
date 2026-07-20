@@ -46,7 +46,7 @@ if echo "$ARGUMENTS" | grep -qE '(^|[[:space:]])\-\-(converge|cross-ai)([[:space
 fi
 
 CONVERGENCE_ARGS=""
-for REVIEW_FLAG in --codex --gemini --claude --opencode --ollama --lm-studio --llama-cpp --all --text; do
+for REVIEW_FLAG in --codex --gemini --agy --antigravity --claude --opencode --cursor --qwen --ollama --lm-studio --llama-cpp --all --text; do
   if echo "$ARGUMENTS" | grep -qE "(^|[[:space:]])${REVIEW_FLAG}([[:space:]]|$)"; then
     CONVERGENCE_ARGS="${CONVERGENCE_ARGS} ${REVIEW_FLAG}"
   fi
