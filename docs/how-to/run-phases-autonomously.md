@@ -70,7 +70,7 @@ gsd config-set workflow.plan_review_convergence true
 /gsd-progress --next --auto --converge --codex --max-cycles 4
 ```
 
-`--cross-ai` is accepted as an alias for `--converge`. Reviewer flags supported by `/gsd-plan-review-convergence` pass through unchanged, including `--codex`, `--gemini`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N`.
+`--cross-ai` is accepted as an alias for `--converge`. Reviewer flags supported by `/gsd-plan-review-convergence` pass through unchanged, including `--codex`, `--gemini`, `--agy` (`--antigravity`), `--claude`, `--opencode`, `--cursor`, `--qwen`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N`.
 
 If `workflow.plan_review_convergence` is not enabled, the command stops before planning and prints the enable command instead of silently falling back to regular planning.
 

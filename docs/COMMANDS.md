@@ -627,7 +627,7 @@ Show status, next steps, and automatically advance to the next logical workflow 
 | `--next --auto` | Like `--next`, but chains steps automatically until milestone completion or a blocking decision |
 | `--next --converge` | When the next action is planning, route it through `/gsd-plan-review-convergence`; requires `workflow.plan_review_convergence=true` |
 | `--cross-ai` | Alias for `--converge` |
-| Reviewer flags | With `--converge`, pass through `--codex`, `--gemini`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N` |
+| Reviewer flags | With `--converge`, pass through `--codex`, `--gemini`, `--agy` (`--antigravity`), `--claude`, `--opencode`, `--cursor`, `--qwen`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N` |
 | `--do "task description"` | Analyze freeform intent and dispatch to the most appropriate GSD command |
 | `--forensic` | Append a 6-check integrity audit after the standard report (STATE consistency, orphaned handoffs, deferred scope drift, memory-flagged pending work, blocking todos, uncommitted code) |
 
@@ -857,7 +857,7 @@ Run all remaining phases autonomously.
 | `--interactive` | Lean context with user input |
 | `--converge` | Route each planning step through `/gsd-plan-review-convergence`; requires `workflow.plan_review_convergence=true` |
 | `--cross-ai` | Alias for `--converge` |
-| Reviewer flags | With `--converge`, pass through `--codex`, `--gemini`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N` |
+| Reviewer flags | With `--converge`, pass through `--codex`, `--gemini`, `--agy` (`--antigravity`), `--claude`, `--opencode`, `--cursor`, `--qwen`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N` |
 | `--text` | Replace `AskUserQuestion` prompts with plain numbered lists |
 
 ```bash

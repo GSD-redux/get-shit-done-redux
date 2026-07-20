@@ -40,7 +40,7 @@ Optional flags:
 - `--converge` — run each phase's planning step through `gsd-plan-review-convergence` instead of plain `gsd-plan-phase`. Requires `workflow.plan_review_convergence=true`.
 - `--cross-ai` — compatibility alias for `--converge`.
 
-When `--converge` or `--cross-ai` is set, reviewer selector flags supported by `gsd-plan-review-convergence` may be passed through: `--codex`, `--gemini`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N`.
+When `--converge` or `--cross-ai` is set, reviewer selector flags supported by `gsd-plan-review-convergence` may be passed through: `--codex`, `--gemini`, `--agy` (`--antigravity`), `--claude`, `--opencode`, `--cursor`, `--qwen`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N`.
 
 Project context, phase list, and state are resolved inside the workflow using init commands (`gsd-tools query init.milestone-op`, `gsd-tools query roadmap.analyze`). No upfront context loading needed.
 </context>
