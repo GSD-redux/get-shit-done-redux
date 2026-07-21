@@ -84,8 +84,12 @@ describe('autonomous --converge flag (#711)', () => {
     const reviewerFlags = [
       '--codex',
       '--gemini',
+      '--agy',
+      '--antigravity',
       '--claude',
       '--opencode',
+      '--cursor',
+      '--qwen',
       '--ollama',
       '--lm-studio',
       '--llama-cpp',
