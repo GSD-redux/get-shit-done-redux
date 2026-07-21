@@ -97,8 +97,12 @@ describe('ADR-15: /gsd:progress --next --auto --converge (#1190)', () => {
     const reviewerFlags = [
       '--codex',
       '--gemini',
+      '--agy',
+      '--antigravity',
       '--claude',
       '--opencode',
+      '--cursor',
+      '--qwen',
       '--ollama',
       '--lm-studio',
       '--llama-cpp',
