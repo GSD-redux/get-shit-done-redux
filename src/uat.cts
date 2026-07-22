@@ -400,6 +400,42 @@ const CHECKPOINT_FRAMES: Record<string, CheckpointFrame> = {
     banner: 'PUNTO DI CONTROLLO: Verifica richiesta',
     instruction: 'Digita `pass` o descrivi cosa non va.',
   },
+  dutch: {
+    banner: 'CONTROLEPUNT: Verificatie vereist',
+    instruction: 'Typ `pass` of beschrijf wat er mis is.',
+  },
+  polish: {
+    banner: 'PUNKT KONTROLNY: Wymagana weryfikacja',
+    instruction: 'Wpisz `pass` lub opisz, co jest nie tak.',
+  },
+  russian: {
+    banner: 'КОНТРОЛЬНАЯ ТОЧКА: требуется проверка',
+    instruction: 'Введите `pass` или опишите, что не так.',
+  },
+  ukrainian: {
+    banner: 'КОНТРОЛЬНА ТОЧКА: потрібна перевірка',
+    instruction: 'Введіть `pass` або опишіть, що не так.',
+  },
+  turkish: {
+    banner: 'KONTROL NOKTASI: Doğrulama gerekli',
+    instruction: '`pass` yazın veya sorunu açıklayın.',
+  },
+  hindi: {
+    banner: 'चेकपॉइंट: सत्यापन आवश्यक',
+    instruction: '`pass` लिखें या बताएं कि क्या गलत है।',
+  },
+  arabic: {
+    banner: 'نقطة تحقق: المراجعة مطلوبة',
+    instruction: 'اكتب `pass` أو صف المشكلة.',
+  },
+  vietnamese: {
+    banner: 'ĐIỂM KIỂM TRA: Cần xác minh',
+    instruction: 'Nhập `pass` hoặc mô tả vấn đề.',
+  },
+  indonesian: {
+    banner: 'TITIK PEMERIKSAAN: Verifikasi diperlukan',
+    instruction: 'Ketik `pass` atau jelaskan apa yang salah.',
+  },
 };
 
 // Free-form response_language aliases → canonical CHECKPOINT_FRAMES key.
@@ -413,6 +449,15 @@ const CHECKPOINT_LANGUAGE_ALIASES: Record<string, string> = {
   chinese: 'chinese', zh: 'chinese', 'zh-cn': 'chinese', 'zh-tw': 'chinese', mandarin: 'chinese', 'simplified chinese': 'chinese', 'traditional chinese': 'chinese', '中文': 'chinese',
   korean: 'korean', ko: 'korean', '한국어': 'korean',
   italian: 'italian', it: 'italian', italiano: 'italian',
+  dutch: 'dutch', nl: 'dutch', nederlands: 'dutch', flemish: 'dutch', vlaams: 'dutch',
+  polish: 'polish', pl: 'polish', polski: 'polish',
+  russian: 'russian', ru: 'russian', 'ru-ru': 'russian', 'русский': 'russian',
+  ukrainian: 'ukrainian', uk: 'ukrainian', ua: 'ukrainian', 'українська': 'ukrainian',
+  turkish: 'turkish', tr: 'turkish', 'türkçe': 'turkish', turkce: 'turkish',
+  hindi: 'hindi', hi: 'hindi', 'हिन्दी': 'hindi', 'हिंदी': 'hindi',
+  arabic: 'arabic', ar: 'arabic', 'العربية': 'arabic',
+  vietnamese: 'vietnamese', vi: 'vietnamese', 'tiếng việt': 'vietnamese', 'tieng viet': 'vietnamese',
+  indonesian: 'indonesian', id: 'indonesian', 'bahasa indonesia': 'indonesian',
 };
 
 function resolveCheckpointFrame(responseLanguage: string | undefined): CheckpointFrame {

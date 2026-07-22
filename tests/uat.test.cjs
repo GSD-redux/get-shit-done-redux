@@ -861,6 +861,32 @@ describe('uat render-checkpoint', () => {
     assert.notStrictEqual(japanese, english);
   });
 
+  test('buildCheckpoint: extended language pack resolves localized frames, not the English fallback', () => {
+    const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+    const english = buildCheckpoint(currentTest);
+    // One spot-check string per added language: the banner must appear and the
+    // output must differ from the English frame (i.e. the alias resolved, the
+    // language did not silently fall back to English).
+    const cases = [
+      ['Dutch', 'CONTROLEPUNT'],
+      ['Polish', 'PUNKT KONTROLNY'],
+      ['Russian', 'КОНТРОЛЬНАЯ ТОЧКА'],
+      ['Ukrainian', 'КОНТРОЛЬНА ТОЧКА'],
+      ['Turkish', 'KONTROL NOKTASI'],
+      ['Hindi', 'चेकपॉइंट'],
+      ['Arabic', 'نقطة تحقق'],
+      ['Vietnamese', 'ĐIỂM KIỂM TRA'],
+      ['Indonesian', 'TITIK PEMERIKSAAN'],
+    ];
+    for (const [language, bannerFragment] of cases) {
+      const localized = buildCheckpoint(currentTest, language);
+      assert.ok(localized.includes(bannerFragment), `${language} banner missing`);
+      assert.ok(localized.includes('`pass`'), `${language} instruction lost the \`pass\` literal`);
+      assert.ok(localized.includes('**Test 1: Sample**'), `${language} structural heading changed`);
+      assert.notStrictEqual(localized, english, `${language} fell back to the English frame`);
+    }
+  });
+
   // Regression: #2402 review medium finding — checkpointBoxLine() padded using
   // JS string `.length` (UTF-16 code units), not display width. Japanese/
   // Chinese/Korean use full-width characters that render at 2 terminal
