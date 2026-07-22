@@ -754,6 +754,8 @@ Socratic ideation session — guide an idea through probing questions, optionall
 /gsd-explore authentication strategy  # Explore a specific topic
 ```
 
+When the optional research pass runs, each surfaced claim is dispositioned three ways — **admit** (survives a prompted-to-refute pass and is grounded in a source, shown with the source), **refute** (a source contradicts it, dropped or corrected), or **abstain** (unverifiable, or a source conflicts with a strong prior). Abstained claims are listed in a separate **Unresolved** ledger rather than smoothed into the narrative, so you can see what the research could *not* stand behind instead of trusting confident prose. (Claims-side analogue of the honest verifier, #1154.)
+
 ---
 
 ### `/gsd-undo`

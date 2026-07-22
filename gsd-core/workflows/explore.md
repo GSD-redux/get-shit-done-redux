@@ -67,14 +67,36 @@ If yes, spawn a research agent:
 Print: `◆ Spawning explorer... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)`
 ```
 Agent(
-  prompt="Quick research: {specific_question}. Return 3-5 key findings, no more than 200 words.",
+  prompt="Quick research: {specific_question}. Return 3-5 key findings, no more than 200 words. For EACH finding, first try to REFUTE it against a primary source, then label it [admit: <source>] (survives refute AND grounded), [refute: <source>] (a source contradicts it), or [abstain: <why>] (unverifiable, or a source conflicts with a strong prior).",
   subagent_type="gsd-phase-researcher"
 )
 ```
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
-Share findings and continue the conversation.
+### Disposition the findings before sharing (three-way: admit / refute / abstain)
+
+**Do not fold the findings into the narrative as flat assertions.** A research pass surfaces exactly the claims the model is measurably overconfident on (recent / version-drift facts). Route each surfaced claim (prior-knowledge or web) through a prompted-to-refute pass, then dispose it:
+
+- **Admit** — the claim survives the refute pass **and** is grounded in a primary source → state it, **with the source**.
+- **Refute** — a primary source contradicts it → drop or correct it, **with the source**.
+- **Abstain** — unverifiable / no primary support, **or** a source conflicts with a strong prior (a **source-vs-prior** conflict) → put it in the **Unresolved ledger**, **never smoothed into the narrative**.
+
+Two guards ride with it:
+- **Conflict-abstention** — a source-vs-prior conflict routes to the ledger, never a silent pick-a-side.
+- **Tier floor** — the grounded (admit) pass must not run on the lowest model tier (for `gsd-phase-researcher` the budget tier is `haiku`, which over-defers to wrong sources); on the lowest tier, present a would-be admit as an **abstain** rather than a confident assertion.
+
+Share the admitted claims **and** the Unresolved ledger side by side, then continue the conversation:
+
+```
+**Research (admitted — with sources):**
+- {claim} — {source}
+
+**Unresolved (could not stand behind):**
+- {claim} — {unverifiable | source-vs-prior conflict}
+```
+
+This is the claims-side analogue of the **#1154** honest verifier (abstain-and-flag on the non-inferable; ADR-550 D4 — *never a silent pass*). Here it is a **prompt-level** judgment on this ideation surface, reusing the #1154 *pattern* — it does **not** call the verify-time `probe-core` disposition, which sits on the verifier↔predicate rail (ADR-857) and is out of altitude for an ideation flow.
 
 If the topic doesn't warrant research, skip this step entirely. **Don't force it.**
 
