@@ -81,6 +81,18 @@ Parse JSON output:
 - `info[]`: Informational notes
 - `repairable_count`: Number of auto-fixable issues
 - `repairs_performed[]`: Actions taken if --repair was used
+
+**Runtime/worktrees compatibility check (#2486):** the SDK is runtime-neutral, so this check runs here, using the same reads the execution-workflow guards use. It catches a config that carries an explicit `workflow.use_worktrees: true` on a runtime that cannot honor worktree isolation (e.g. inherited from a Claude Code install sharing the repo) — a value `/gsd:execute-phase` and `/gsd:quick` fail closed on:
+
+```bash
+RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
+USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
+if [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]; then
+  echo "W020: config.json sets workflow.use_worktrees to a non-false value, but runtime '$RUNTIME' cannot honor worktree isolation (Claude Code-only isolation=\"worktree\" primitive) — /gsd:execute-phase and /gsd:quick will fail closed. Fix: set workflow.use_worktrees=false (via /gsd:settings or gsd-tools query config-set), or remove the key so the runtime default (false) applies."
+fi
+```
+
+If the check prints, append it to the Warnings section of the report as `[W020]` with the printed fix, include it in the displayed warning count, and report `Status: DEGRADED` if `validate.health` returned `healthy` (a config the execution workflows fail closed on is not a healthy planning state). It is not auto-repairable: an explicit `true` may be intentional for a Claude Code install sharing the same `.planning/config.json`, so the remedy is the user's call (#2486).
 </step>
 
 <step name="format_output">
@@ -186,6 +198,7 @@ Report final status.
 | W009 | warning | Phase has Validation Architecture in RESEARCH.md but no VALIDATION.md | No |
 | W018 | warning | MILESTONES.md missing entry for archived milestone snapshot | Yes (`--backfill`) |
 | W019 | warning | Unrecognized .planning/ root file — not a canonical GSD artifact | No |
+| W020 | warning | config.json: workflow.use_worktrees enabled on a runtime without worktree isolation support (#2486) | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
 
 </error_codes>

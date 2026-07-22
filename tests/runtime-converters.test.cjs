@@ -1287,6 +1287,117 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
 }
 
 // ────────────────────────────────────────────────────────────────────────
+// #2486: settings.md must not recommend or persist worktree isolation on
+// non-Claude runtimes, and health.md must surface an inherited explicit
+// use_worktrees=true before execution fails closed on it. Both rely on the
+// #1521 stamping machinery, so the canonical runtime/use_worktrees reads in
+// those two files are part of the runtime contract surface.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const conversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+  const { NON_CLAUDE_RUNTIMES } = conversion;
+
+  const RUNTIME_BRANCH_WORKFLOWS = ['settings.md', 'health.md'];
+  const CLAUDE_RUNTIME_LINE = 'config-get runtime --default claude --raw 2>/dev/null || echo "claude"';
+  const TRUE_WT_LINE = 'config-get workflow.use_worktrees --raw 2>/dev/null || echo "true"';
+  const FALSE_WT_LINE = 'config-get workflow.use_worktrees --default false --raw 2>/dev/null || echo "false"';
+  const readWorkflow = (wf) =>
+    fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', wf), 'utf8');
+
+  describe('#2486 regression: settings/health worktrees runtime branch', () => {
+    test('every non-Claude emit of settings.md and health.md stamps its own runtime and use_worktrees=false defaults', () => {
+      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
+      for (const rt of NON_CLAUDE_RUNTIMES) {
+        for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
+          const out = conversion._applyRuntimeRewrites(readWorkflow(wf), rt, `$HOME/.${rt}/`, true, undefined);
+          assert.ok(
+            !out.includes(CLAUDE_RUNTIME_LINE),
+            `${rt}/${wf}: residual un-stamped claude runtime read — the worktrees branch would resolve RUNTIME=claude and re-offer isolation`,
+          );
+          assert.ok(
+            out.includes(`config-get runtime --default ${rt} --raw 2>/dev/null || echo "${rt}"`),
+            `${rt}/${wf}: runtime read not stamped to --default ${rt}`,
+          );
+          assert.ok(
+            !out.includes(TRUE_WT_LINE),
+            `${rt}/${wf}: residual un-stamped use_worktrees read — an absent key would read as explicit true`,
+          );
+          assert.ok(
+            out.includes(FALSE_WT_LINE),
+            `${rt}/${wf}: use_worktrees read not defaulted to false — only an explicit true may read as true`,
+          );
+        }
+      }
+    });
+
+    test('claude emit of settings.md and health.md keeps canonical reads and the recommended Yes option unchanged', () => {
+      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
+      for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
+        const out = conversion._applyRuntimeRewrites(readWorkflow(wf), 'claude', '$HOME/.claude/', true, undefined);
+        assert.ok(out.includes(CLAUDE_RUNTIME_LINE), `claude/${wf}: canonical runtime read must survive unchanged`);
+        assert.ok(out.includes(TRUE_WT_LINE), `claude/${wf}: canonical use_worktrees read must survive unchanged`);
+        assert.ok(!out.includes(FALSE_WT_LINE), `claude/${wf}: use_worktrees must NOT be stamped false for claude`);
+      }
+      const settingsOut = conversion._applyRuntimeRewrites(readWorkflow('settings.md'), 'claude', '$HOME/.claude/', true, undefined);
+      assert.ok(
+        settingsOut.includes('{ label: "Yes (Recommended)", description: "Each parallel executor runs in its own worktree branch — no conflicts between agents." }'),
+        'claude/settings.md: the Claude-shaped Worktrees question must keep Yes (Recommended) unchanged',
+      );
+    });
+
+    test('settings.md source carries the non-Claude worktrees branch: no enabling option, never persist true', () => {
+      const src = readWorkflow('settings.md');
+      assert.ok(
+        src.includes('**Conditional options — Worktrees (#2486):**'),
+        'settings.md: missing the non-Claude conditional-options block for the Worktrees question',
+      );
+      assert.ok(
+        src.includes(`RUNTIME=$(gsd_run query ${CLAUDE_RUNTIME_LINE})`),
+        'settings.md: runtime must be resolved with the canonical read the #1521 stamp rewrites',
+      );
+      assert.ok(
+        src.includes(`USE_WORKTREES_CURRENT=$(gsd_run query ${TRUE_WT_LINE})`),
+        'settings.md: current worktrees value must be read with the canonical stamped line',
+      );
+      assert.ok(
+        src.includes('NEVER write `workflow.use_worktrees: true` from this workflow on a non-Claude runtime'),
+        'settings.md: missing the never-persist-true instruction for non-Claude runtimes',
+      );
+      assert.ok(
+        src.includes('{ label: "No (Recommended)", description: "Write use_worktrees: false.'),
+        'settings.md: non-Claude branch must recommend No',
+      );
+      assert.ok(
+        src.includes('{ label: "Leave unchanged", description: "Do not write the key.'),
+        'settings.md: non-Claude branch must offer leaving the key untouched for shared configs',
+      );
+    });
+
+    test('health.md source carries the W020 runtime/worktrees compatibility check', () => {
+      const src = readWorkflow('health.md');
+      assert.ok(
+        src.includes('[ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]'),
+        'health.md: W020 must use the same predicate as the execution-workflow guards',
+      );
+      assert.ok(
+        src.includes(`RUNTIME=$(gsd_run query ${CLAUDE_RUNTIME_LINE})`),
+        'health.md: runtime must be resolved with the canonical read the #1521 stamp rewrites',
+      );
+      assert.ok(
+        src.includes(`USE_WORKTREES=$(gsd_run query ${TRUE_WT_LINE})`),
+        'health.md: use_worktrees must be read with the canonical stamped line',
+      );
+      assert.ok(
+        /\|\s*W020\s*\|\s*warning\s*\|/.test(src),
+        'health.md: W020 must be documented in the error_codes table as a warning',
+      );
+    });
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2876-skill-frontmatter-quote.test.cjs — consolidation epic #1969 (B8 #1977)
 // ────────────────────────────────────────────────────────────────────────
 {

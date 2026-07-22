@@ -59,7 +59,7 @@ Parse current values (default to `true` if not present):
 - `graphify.auto_update` — opt-in: auto-rebuild graph after main HEAD advances (#3347) (default: `false`)
 - `model_profile` — which model each agent uses (default: `balanced`)
 - `git.branching_strategy` — branching approach (default: `"none"`)
-- `workflow.use_worktrees` — whether parallel executor agents run in worktree isolation (default: `true`)
+- `workflow.use_worktrees` — whether parallel executor agents run in worktree isolation (default: `true` on Claude Code; non-Claude installs default it to `false` and fail closed on an explicit `true` — #1521, #2486)
 - `model_policy.provider` — provider slug for model policy (default: `null`; known values: anthropic, openai, google, qwen; set via /gsd:config --advanced)
 - `model_policy.budget` — budget level for model policy (default: `null`; known values: high, medium, low; set via /gsd:config --advanced)
 - `model_policy.high` — model ID for high-cost tier (default: `null`; set via /gsd:config --advanced)
@@ -87,6 +87,13 @@ configure `model_overrides` manually in .planning/config.json to target specific
 models per agent.
 ```
 
+**Runtime resolution for the Worktrees question (#2486):** resolve the runtime and the current worktrees value with the same reads the execution workflows use, before presenting the questions:
+
+```bash
+RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
+USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
+```
+
 Use AskUserQuestion with current values pre-selected. Questions are grouped into six visual sections; the first question in each section carries the section-denoting `header` field (AskUserQuestion renders abbreviated section tags for grouping, max 12 chars).
 
 Section layout:
@@ -112,6 +119,38 @@ Context Warnings, Research Qs
 **Conditional visibility — code_review_depth:** This question is shown only when the user's chosen `code_review` value (after they answer that question, or the pre-selected value if unchanged) is on. If `code_review` is off, omit the `code_review_depth` question from the AskUserQuestion block and preserve the existing `workflow.code_review_depth` value in config (do not overwrite). Implementation: ask the Model + Planning + Execution-up-to-Code-Review questions first; if `code_review=on`, include `code_review_depth` in the same batch; otherwise skip it. Conceptually this is a one-branch split on the `code_review` answer.
 
 **Conditional visibility — graphify.auto_update:** This question is shown only when the user's chosen `graphify.enabled` value is on. If `graphify.enabled` is off, omit the `graphify.auto_update` question and preserve the existing `graphify.auto_update` value in config (do not overwrite). Implementation: ask Graphify first; only ask Graph auto-update when Graphify is enabled.
+
+**Conditional options — Worktrees (#2486):** GSD's worktree isolation uses Claude Code's `isolation="worktree"` agent primitive, which no other runtime honors — the execution workflows fail closed on an explicit `workflow.use_worktrees: true` when `RUNTIME != claude`. This question deliberately branches on the same `config-get runtime` read those guards use (an explicit `runtime` key in config overrides the emitted default in both places), so this flow and the execution guards always reach the same verdict — never persist a value the guards would fail closed on, never withhold one they accept. Branch the Worktrees question on `$RUNTIME`:
+
+- **If `RUNTIME` = `claude`:** present the Worktrees question exactly as written in the block below (unchanged behavior).
+- **If `RUNTIME` ≠ `claude`:** replace the Worktrees question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow on a non-Claude runtime, regardless of the user's answer:
+
+```
+{
+  question: "Use git worktrees for parallel agent isolation?",
+  header: "Worktrees",
+  multiSelect: false,
+  options: [
+    { label: "No (Recommended)", description: "Write use_worktrees: false. Worktree isolation requires Claude Code's isolation=\"worktree\" agent primitive — this runtime cannot honor it, and execution fails closed on an explicit true." },
+    { label: "Leave unchanged", description: "Do not write the key. Absent, it already resolves to false on this runtime; an existing explicit value is kept intact (e.g. for a Claude Code install sharing this config)." }
+  ]
+}
+```
+
+  Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
+
+  Pre-selection: the generic "current values pre-selected" rule does not apply to this question on a non-Claude runtime (an explicit `true` has no matching option by design). Pre-select "No (Recommended)" when `$USE_WORKTREES_CURRENT` is `false`; otherwise (key absent, or an explicit non-false value) pre-select "Leave unchanged". In TEXT_MODE, mark that option as the default choice in the numbered list.
+
+  Additionally, if `$USE_WORKTREES_CURRENT` is not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a Claude Code install sharing the repo), prepend this notice before the question:
+
+```
+Note: .planning/config.json currently sets workflow.use_worktrees: true. This
+runtime cannot honor worktree isolation (a Claude Code-only agent primitive), so
+/gsd:execute-phase and /gsd:quick fail closed on this value. Choose "No" to
+repair it for this runtime, or "Leave unchanged" to keep it for a Claude Code
+install that shares this config (this runtime's commands will keep failing until
+it is set to false here).
+```
 
 ```
 // Model profile is selected via a two-question split because AskUserQuestion enforces a
@@ -411,7 +450,7 @@ Merge new settings into existing config.json:
     "research_before_questions": true/false,
     "discuss_mode": "discuss" | "assumptions",
     "skip_discuss": true/false,
-    "use_worktrees": true/false
+    "use_worktrees": true/false   // never written as true on a non-Claude runtime; omitted entirely when the user chose "Leave unchanged" (#2486)
   },
   "plan_review": {
     "source_grounding": true/false
