@@ -255,17 +255,19 @@ AGY_MODEL=$(gsd_run query config-get review.models.agy 2>/dev/null | jq -r '.' 2
 CLAUDE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host claude 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
 CODEX_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host codex 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
 OPENCODE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host opencode 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
-
-# #1115: `--dangerously-bypass-hook-trust` only exists on codex-cli >= 0.137.0.
-# Capability-probe it so older installs don't fail with "unexpected argument"
-# (which, with stderr suppressed, produced a silent empty review). The codex
-# invocation works fine without the flag on older versions.
-if codex exec --help 2>/dev/null | grep -q -- '--dangerously-bypass-hook-trust'; then
-  CODEX_BYPASS_FLAG="--dangerously-bypass-hook-trust"
-else
-  CODEX_BYPASS_FLAG=""
-fi
 ```
+
+**No hook-trust bypass (#2479):** the codex invocations below deliberately pass no
+hook-trust bypass flag and run no capability probe for one (#1115's former gate).
+That flag only bypasses *persisted* hook trust (a first-run condition) and flagless
+invocations work in steady state, while host-harness safety classifiers deny
+commands carrying it — and cited the probe itself as intent (#2479). An environment
+that genuinely hits an untrusted-hook prompt surfaces through the `.err` capture +
+empty-output guard below as a dropped lane with diagnosable stderr, not silent
+attrition. Do not reintroduce the flag (even spelled out in prose here — a
+regression test bans the literal file-wide) or the probe; the #1115 "unexpected
+argument" failure mode existed only because the flag was emitted, so with no flag
+there is nothing to version-gate.
 
 **Reviewer instances (#1517, optional):** when instances are configured, each selected
 instance invokes its base `cli` with its own `model`/`agent` (opaque argv, never
@@ -315,18 +317,18 @@ fi
 
 **Codex:**
 ```bash
-# $CODEX_BYPASS_FLAG is capability-gated above (#1115). Capture stderr to a .err
-# file (not /dev/null) so a non-zero exit — e.g. a flag the installed codex-cli
-# does not support — is diagnosable instead of a silent empty review.
+# No hook-trust bypass flag — see the #2479 note above. Capture stderr to a .err
+# file (not /dev/null) so a non-zero exit — e.g. an untrusted-hook prompt on a
+# first run — is diagnosable instead of a silent empty review (#1115).
 # Capture the review via codex's own `-o/--output-last-message <FILE>` (only the
 # final agent message) and discard stdout (#1698): on some platforms (Windows)
 # codex writes process-teardown output to stdout *after* the final message, and a
 # stdout redirect would append that noise to a non-empty file — slipping past the
 # `[ ! -s … ]` empty-output guard as a silently polluted review.
 if [ -n "$CODEX_MODEL" ] && [ "$CODEX_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_BYPASS_FLAG --model "$CODEX_MODEL" $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
+  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral --model "$CODEX_MODEL" $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
 else
-  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_BYPASS_FLAG $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
+  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
 fi
 if [ ! -s {run_dir}/gsd-review-codex.md ]; then
   echo "Codex review failed or returned empty output. stderr:" > {run_dir}/gsd-review-codex.md
@@ -504,9 +506,9 @@ fi
 # #2176: grant the reviewer the repo under review. Without --add-dir, agy's
 # permission context never receives the cwd repo — the agent anchors on its own
 # ~/.gemini/antigravity-cli/scratch dir and reviews the plan text in isolation
-# (the exact failure the Review Instructions forbid). Capability-probed like the
-# Codex bypass flag so an older agy without --add-dir still runs; the prompt
-# anchor below keeps absolute-path reads possible on that fallback.
+# (the exact failure the Review Instructions forbid). Capability-probed so an
+# older agy without --add-dir still runs; the prompt anchor below keeps
+# absolute-path reads possible on that fallback.
 if agy --help 2>/dev/null | grep -q -- '--add-dir'; then
   set -- "$@" --add-dir "$_AGY_WS"
 fi

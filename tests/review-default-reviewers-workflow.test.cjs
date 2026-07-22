@@ -259,15 +259,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-describe('enh-773: automated codex exec invocations include --ephemeral and --dangerously-bypass-hook-trust', () => {
+describe('enh-773: automated codex exec invocations include --ephemeral (hook-trust bypass dropped by #2479)', () => {
   const workflow = fs.readFileSync(
     path.join(process.cwd(), 'gsd-core', 'workflows', 'review.md'),
     'utf8'
   );
 
-  // Extract codex exec INVOCATION lines from code fences. The #1115 capability
-  // probe (`codex exec --help | grep …`) is not an automation invocation, so it
-  // is excluded from the per-invocation flag assertions below.
+  // Extract codex exec INVOCATION lines from code fences. A `codex exec --help`
+  // capability probe would not be an automation invocation, so keep it excluded
+  // from the per-invocation flag assertions below (#2479 asserts no such probe
+  // exists at all).
   const codexExecLines = workflow
     .split(/\r?\n/)
     .filter((line) => line.includes('codex exec') && !line.includes('codex exec --help'));
@@ -288,29 +289,29 @@ describe('enh-773: automated codex exec invocations include --ephemeral and --da
     }
   });
 
-  test('#1115: the hook-trust bypass is capability-gated, not passed unconditionally', () => {
-    // --dangerously-bypass-hook-trust only exists on codex-cli >= 0.137.0. It must
-    // be probed (`codex exec --help | grep`) and applied via $CODEX_BYPASS_FLAG so
-    // older installs do not fail with "unexpected argument" (a silent empty review).
+  test('#2479: no hook-trust bypass — flag and capability probe are both absent', () => {
+    // The flag only bypasses *persisted* hook trust (a first-run condition) and
+    // flagless invocations work in steady state, while host-harness safety
+    // classifiers deny commands carrying it — and cited the probe itself as
+    // intent. Inverts the former #1115 gating contract: instead of probe + gated
+    // $CODEX_BYPASS_FLAG, the workflow must be free of the literal flag string
+    // ANYWHERE in the file — not just on invocation lines — so a line
+    // continuation, a renamed carrier variable, or a probe grepping for it are
+    // all caught by the same assertion. (The #2479 prose note deliberately
+    // describes the flag without spelling it out, keeping the file-wide ban
+    // clean.)
     assert.ok(
-      /codex exec --help[^\r\n]*grep[^\r\n]*--dangerously-bypass-hook-trust/.test(workflow),
-      'review.md must capability-probe --dangerously-bypass-hook-trust via `codex exec --help | grep`'
+      !workflow.includes('--dangerously-bypass-hook-trust'),
+      'review.md must not contain --dangerously-bypass-hook-trust anywhere (#2479 — file-wide ban covers invocations, continuations, carrier variables, and probes)'
     );
     assert.ok(
-      workflow.includes('CODEX_BYPASS_FLAG="--dangerously-bypass-hook-trust"'),
-      'the probe must set CODEX_BYPASS_FLAG to the flag when the CLI supports it'
+      !workflow.includes('CODEX_BYPASS_FLAG'),
+      'review.md must not interpolate a $CODEX_BYPASS_FLAG variable (#2479)'
     );
-    for (const line of codexExecLines) {
-      assert.ok(
-        line.includes('$CODEX_BYPASS_FLAG'),
-        `codex exec invocation must apply the capability-gated $CODEX_BYPASS_FLAG, not an unconditional flag:\n  ${line.trim()}`
-      );
-      // …and must NOT also pass the literal flag (that would reintroduce #1115).
-      assert.ok(
-        !line.includes('--dangerously-bypass-hook-trust'),
-        `codex exec invocation must not pass the literal --dangerously-bypass-hook-trust (use the gated $CODEX_BYPASS_FLAG):\n  ${line.trim()}`
-      );
-    }
+    assert.ok(
+      !/codex[^\r\n]*--help[^\r\n]*grep/.test(workflow),
+      'review.md must not capability-probe codex flags via `codex --help | grep` (#2479 — the probe itself feeds harness safety classifiers)'
+    );
   });
 
   test('#1115: codex review failures are surfaced, not silently swallowed', () => {
