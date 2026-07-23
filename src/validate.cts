@@ -37,6 +37,7 @@ const {
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
   PHASE_CONTINUATION_SEGMENT_SOURCE,
+  SINGLE_DIGIT_RUN_SEGMENT_SOURCE,
 } = phaseIdMod;
 
 // ── Issue #26: regex constants (W005, W006-archived) ────────────────────────
@@ -53,13 +54,17 @@ export const phaseDirNameRe = new RegExp(
 // NOT absorbed — it captures "46", not "46-6". #2232: the continuation width is
 // exactly 2 (PHASE_CONTINUATION_SEGMENT_SOURCE), so a ≥3-digit slug word (a year:
 // "14-2026-photos-…") is not absorbed either — it captures "14", not "14-2026".
+// #2528: a two-digit segment immediately followed by a single-digit-run slug
+// segment is also left out of the token ("10-24-7-autonomy" captures "10").
+// The negative lookahead is built from the same owner source used by
+// extractPhaseToken's rewind rule so the regex and imperative surfaces agree.
 // The first component stays "\d+"
 // (with the "[A-Z]?" suffix) so single-digit letter-suffixed phase ids ("1A") and
 // milestone-prefixed single-digit sub-phases ("M1-2" → prefix "M1-" stripped, then
 // "2") still match. The trailing boundary "(?:-|$)" (was "(?:-[a-z]|$)") lets a slug
 // that starts with a digit terminate the token.
 export const PHASE_TOKEN_FROM_DIR_RE = new RegExp(
-  `^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}(\\d+(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE})*[A-Z]?(?:\\.\\d+)*)(?:-|$)`,
+  `^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}(\\d+(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*[A-Z]?(?:\\.\\d+)*)(?:-|$)`,
   'i',
 );
 export const MILESTONE_ARCHIVE_DIR_RE = /^v\d+.*-phases$/i;

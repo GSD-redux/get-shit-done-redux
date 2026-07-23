@@ -128,6 +128,22 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
       );
     });
   }
+
+  test('#2528: regex token extraction agrees with cross-segment rewind boundaries', () => {
+    const cases = [
+      ['10-24-7-autonomy', '10'],
+      ['05-80-20-25abc', '05-80-20'],
+      ['14-06-2026-photos-and-performance', '14-06'],
+    ];
+    for (const [dir, expected] of cases) {
+      assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
+      assert.strictEqual(
+        validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+        expected,
+        `PHASE_TOKEN_FROM_DIR_RE diverged from extractPhaseToken for ${dir}`,
+      );
+    }
+  });
 });
 
 // Surface 5 needs a real ROADMAP/STATE on disk, so it gets its own block.

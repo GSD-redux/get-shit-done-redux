@@ -31,6 +31,14 @@
       ],
       "issue": "TBD"
     },
+    "phase": {
+      "files": [
+        "phase-dependency-levels.test.cjs",
+        "phase-resolution-parity.test.cjs",
+        "phase.test.cjs"
+      ],
+      "issue": "2528"
+    },
     "roadmap": {
       "files": [
         "roadmap-mode-field.test.cjs",

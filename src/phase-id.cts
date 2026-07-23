@@ -153,7 +153,8 @@ const PHASE_CONTINUATION_SEGMENT_EXACT_RE = new RegExp(`^${PHASE_CONTINUATION_SE
 // width exactly 1) used as a RETROACTIVE signal: when it immediately follows
 // absorbed continuation segments, the run was a digit-leading slug (the
 // "24/7" / "80/20" / "30-Day" family — see extractPhaseToken).
-const SINGLE_DIGIT_RUN_SEGMENT_RE = /^\d(?!\d)/;
+const SINGLE_DIGIT_RUN_SEGMENT_SOURCE = '\\d(?!\\d)';
+const SINGLE_DIGIT_RUN_SEGMENT_RE = new RegExp(`^${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
 
 function stripProjectCodePrefix(value: unknown, caseInsensitive = true): string {
   const input = String(value);
@@ -759,6 +760,7 @@ export = {
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
   PHASE_CONTINUATION_SEGMENT_SOURCE,
+  SINGLE_DIGIT_RUN_SEGMENT_SOURCE,
   isPhaseContinuationSegment,
   BRACKET_PHASE_TOKEN_SOURCE,
   PHASE_HEADING_PREFIX_SRC,

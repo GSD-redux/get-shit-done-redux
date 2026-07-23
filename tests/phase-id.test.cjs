@@ -768,6 +768,7 @@ describe('#2528 two-digit numeric slug words', () => {
     // A ≥2-digit-run terminator does NOT rewind: the year-after-sub-phase
     // shape is locked by the #2232 metamorphic round-trip.
     assert.strictEqual(phaseId.extractPhaseToken('14-06-2026-photos-and-performance'), '14-06');
+    assert.strictEqual(phaseId.extractPhaseToken('05-80-20-25abc'), '05-80-20');
     // The letter-prefixed family keeps its single-digit continuations.
     assert.strictEqual(phaseId.extractPhaseToken('M1-2-brain'), 'M1-2');
     assert.strictEqual(phaseId.extractPhaseToken('P0.3-tenant-primitives'), 'P0.3');

@@ -1336,6 +1336,13 @@ describe('Drift item I001 — canonicalPlanStem: long PLAN stem matches short SU
     assert.strictEqual(re.exec('46-6-rs')?.[1], '46'); // 1-digit: slug (#2043)
   });
 
+  test('PHASE_TOKEN_FROM_DIR_RE rewinds a 2-digit slug before a 1-digit word (#2528)', () => {
+    const gen = require('../gsd-core/bin/lib/validate.cjs');
+    const re = gen.PHASE_TOKEN_FROM_DIR_RE;
+    assert.strictEqual(re.exec('10-24-7-autonomy')?.[1], '10');
+    assert.strictEqual(re.exec('05-80-20-25abc')?.[1], '05-80-20');
+  });
+
   test('canonicalPlanStem does not pair a ≥3-digit slug word (#2232)', () => {
     const gen = require('../gsd-core/bin/lib/validate.cjs');
     // A year-leading slug is not a plan component: the stem is returned
