@@ -466,14 +466,11 @@ function resolveCheckpointFrame(responseLanguage: string | undefined): Checkpoin
   return (key && CHECKPOINT_FRAMES[key]) || CHECKPOINT_FRAMES.english;
 }
 
-// Approximate East Asian Width ranges (Unicode property values W and F) — the
-// CJK scripts CHECKPOINT_FRAMES ships (Japanese/Chinese/Korean) render each
-// matching code point at 2 terminal/display columns, not 1. Padding computed
-// from `.length` (UTF-16 code units) undercounts these by one column per
-// wide character, visually misaligning the box's right border (#2402 review
-// medium finding). Latin-script frames (English/Spanish/French/German/
-// Portuguese/Italian) contain no wide code points, so displayWidth === length
-// for them — no behavior change there.
+// Approximate terminal-cell width. East Asian Width W/F code points occupy two
+// cells, while Unicode combining marks occupy no additional cell beyond their
+// base character. Counting only W/F ranges is insufficient for scripts such as
+// Devanagari: Hindi vowel signs and viramas are combining marks, and treating
+// each as a full cell visibly shifts the checkpoint box's right border.
 function isWideCodePoint(codePoint: number): boolean {
   return (
     (codePoint >= 0x1100 && codePoint <= 0x115f) || // Hangul Jamo
@@ -492,11 +489,14 @@ function isWideCodePoint(codePoint: number): boolean {
   );
 }
 
+const COMBINING_MARK_RE = /\p{Mark}/u;
+
 // Iterates by Unicode code point (not UTF-16 code unit) so astral characters
 // are measured once, not as two surrogate units.
 function displayWidth(text: string): number {
   let width = 0;
   for (const ch of text) {
+    if (COMBINING_MARK_RE.test(ch)) continue;
     width += isWideCodePoint(ch.codePointAt(0) as number) ? 2 : 1;
   }
   return width;

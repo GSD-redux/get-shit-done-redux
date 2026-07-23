@@ -861,29 +861,31 @@ describe('uat render-checkpoint', () => {
     assert.notStrictEqual(japanese, english);
   });
 
-  test('buildCheckpoint: extended language pack resolves localized frames, not the English fallback', () => {
+  test('buildCheckpoint: every extended-pack alias resolves its localized frame', () => {
     const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
     const english = buildCheckpoint(currentTest);
-    // One spot-check string per added language: the banner must appear and the
-    // output must differ from the English frame (i.e. the alias resolved, the
-    // language did not silently fall back to English).
+    // Exercise canonical names, ISO codes, endonyms, and transliterations so a
+    // typo or duplicate alias cannot silently route a supported language back
+    // to the English fallback.
     const cases = [
-      ['Dutch', 'CONTROLEPUNT'],
-      ['Polish', 'PUNKT KONTROLNY'],
-      ['Russian', 'КОНТРОЛЬНАЯ ТОЧКА'],
-      ['Ukrainian', 'КОНТРОЛЬНА ТОЧКА'],
-      ['Turkish', 'KONTROL NOKTASI'],
-      ['Hindi', 'चेकपॉइंट'],
-      ['Arabic', 'نقطة تحقق'],
-      ['Vietnamese', 'ĐIỂM KIỂM TRA'],
-      ['Indonesian', 'TITIK PEMERIKSAAN'],
+      [['Dutch', 'nl', 'nederlands', 'flemish', 'vlaams'], 'CONTROLEPUNT'],
+      [['Polish', 'pl', 'polski'], 'PUNKT KONTROLNY'],
+      [['Russian', 'ru', 'ru-ru', 'русский'], 'КОНТРОЛЬНАЯ ТОЧКА'],
+      [['Ukrainian', 'uk', 'ua', 'українська'], 'КОНТРОЛЬНА ТОЧКА'],
+      [['Turkish', 'tr', 'türkçe', 'turkce'], 'KONTROL NOKTASI'],
+      [['Hindi', 'hi', 'हिन्दी', 'हिंदी'], 'चेकपॉइंट'],
+      [['Arabic', 'ar', 'العربية'], 'نقطة تحقق'],
+      [['Vietnamese', 'vi', 'tiếng việt', 'tieng viet'], 'ĐIỂM KIỂM TRA'],
+      [['Indonesian', 'id', 'bahasa indonesia'], 'TITIK PEMERIKSAAN'],
     ];
-    for (const [language, bannerFragment] of cases) {
-      const localized = buildCheckpoint(currentTest, language);
-      assert.ok(localized.includes(bannerFragment), `${language} banner missing`);
-      assert.ok(localized.includes('`pass`'), `${language} instruction lost the \`pass\` literal`);
-      assert.ok(localized.includes('**Test 1: Sample**'), `${language} structural heading changed`);
-      assert.notStrictEqual(localized, english, `${language} fell back to the English frame`);
+    for (const [aliases, bannerFragment] of cases) {
+      for (const alias of aliases) {
+        const localized = buildCheckpoint(currentTest, alias);
+        assert.ok(localized.includes(bannerFragment), `${alias} banner missing`);
+        assert.ok(localized.includes('`pass`'), `${alias} instruction lost the \`pass\` literal`);
+        assert.ok(localized.includes('**Test 1: Sample**'), `${alias} structural heading changed`);
+        assert.notStrictEqual(localized, english, `${alias} fell back to the English frame`);
+      }
     }
   });
 
@@ -895,7 +897,7 @@ describe('uat render-checkpoint', () => {
   // box's single-width border lines. Independently recomputes display width
   // (East Asian Width W/F ranges) rather than reading source, so this test
   // fails if the fix regresses even if the banner copy itself later changes.
-  describe('CJK checkpoint banner padding uses display width, not UTF-16 length (#2402)', () => {
+  describe('checkpoint banner padding uses terminal display width (#2402, #2530)', () => {
     function isWideCodePoint(codePoint) {
       return (
         (codePoint >= 0x1100 && codePoint <= 0x115f) ||
@@ -915,11 +917,14 @@ describe('uat render-checkpoint', () => {
     }
     function displayWidth(text) {
       let width = 0;
-      for (const ch of text) width += isWideCodePoint(ch.codePointAt(0)) ? 2 : 1;
+      for (const ch of text) {
+        if (/\p{Mark}/u.test(ch)) continue;
+        width += isWideCodePoint(ch.codePointAt(0)) ? 2 : 1;
+      }
       return width;
     }
 
-    for (const lang of ['Japanese', 'Chinese', 'Korean']) {
+    for (const lang of ['Japanese', 'Chinese', 'Korean', 'Hindi']) {
       test(`${lang} checkpoint banner line renders at display-width 64, aligning the right border`, () => {
         const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
         const output = buildCheckpoint(currentTest, lang);
@@ -949,6 +954,14 @@ describe('uat render-checkpoint', () => {
       assert.strictEqual(
         buildCheckpoint(currentTest, 'Korean').split('\n')[1],
         '║  체크포인트: 검증 필요                                       ║',
+      );
+    });
+
+    test('exact rendered Hindi banner line ignores combining-mark cell width (regression pin)', () => {
+      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+      assert.strictEqual(
+        buildCheckpoint(currentTest, 'Hindi').split('\n')[1],
+        `║  चेकपॉइंट: सत्यापन आवश्यक${' '.repeat(42)}║`,
       );
     });
   });
