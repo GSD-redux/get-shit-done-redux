@@ -1375,11 +1375,11 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       );
     });
 
-    test('health.md source carries the W020 runtime/worktrees compatibility check', () => {
+    test('health.md source carries the W024 runtime/worktrees compatibility check', () => {
       const src = readWorkflow('health.md');
       assert.ok(
         src.includes('[ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]'),
-        'health.md: W020 must use the same predicate as the execution-workflow guards',
+        'health.md: W024 must use the same predicate as the execution-workflow guards',
       );
       assert.ok(
         src.includes(`RUNTIME=$(gsd_run query ${CLAUDE_RUNTIME_LINE})`),
@@ -1390,8 +1390,22 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         'health.md: use_worktrees must be read with the canonical stamped line',
       );
       assert.ok(
-        /\|\s*W020\s*\|\s*warning\s*\|/.test(src),
-        'health.md: W020 must be documented in the error_codes table as a warning',
+        /\|\s*W024\s*\|\s*warning\s*\|/.test(src),
+        'health.md: W024 must be documented in the error_codes table as a warning',
+      );
+    });
+
+    test('W024 does not collide with the W-code namespace owned by src/verify.cts', () => {
+      // The W0NN namespace is emitted by cmdValidateHealth in src/verify.cts;
+      // health.md's error_codes table under-represents it (it never listed
+      // W010-W017 or W020-W023), which is exactly how this check's original
+      // W020 assignment collided with the live git-worktree-list-health
+      // warning. Pin the chosen code against the real owner so a future
+      // reassignment cannot silently collide again.
+      const verify = fs.readFileSync(path.join(__dirname, '..', 'src', 'verify.cts'), 'utf8');
+      assert.ok(
+        !/['"]W024['"]/.test(verify),
+        'src/verify.cts now emits W024 — the health.md workflow check collides with it; move the workflow check to the next free W-code',
       );
     });
   });
