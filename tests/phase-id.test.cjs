@@ -737,3 +737,108 @@ describe('#2232 continuation cap — properties', () => {
     );
   });
 });
+
+// ─── #2528 two-digit slug words + canonical dir-match selection ──────────────
+
+describe('#2528 two-digit numeric slug words', () => {
+  test('a 2-digit slug word followed by a 1-digit word rewinds to the bare phase number', () => {
+    // Phase 10 named "24/7 Autonomy" → dir "10-24-7[-autonomy]". "24" is
+    // exactly 2 digits (the gap between #2043's 1-digit and #2232's ≥3-digit
+    // guards), but the 1-digit "7" that follows marks the run as a slug.
+    assert.strictEqual(phaseId.extractPhaseToken('10-24-7'), '10');
+    assert.strictEqual(phaseId.extractPhaseToken('10-24-7-autonomy'), '10');
+    assert.ok(phaseId.phaseTokenMatches('10-24-7', phaseId.normalizePhaseName('10')));
+    // Milestone-prefixed variant rewinds the same way.
+    assert.strictEqual(phaseId.extractPhaseToken('M1-10-24-7'), 'M1-10');
+  });
+
+  test('a digit+letter slug word is not absorbed as a continuation', () => {
+    // Phase 14 named "10x Growth" → dir "14-10x-growth". The write side only
+    // emits PURE 2-digit continuation segments, so "10x" is a slug word.
+    assert.strictEqual(phaseId.extractPhaseToken('14-10x-growth'), '14');
+    assert.ok(phaseId.phaseTokenMatches('14-10x-growth', phaseId.normalizePhaseName('14')));
+  });
+
+  test('locked boundaries are unchanged (#2043 / #2232 / genuine sub-phases)', () => {
+    assert.strictEqual(phaseId.extractPhaseToken('10-24'), '10-24'); // terminal sub-phase
+    assert.strictEqual(phaseId.extractPhaseToken('10-24-setup'), '10-24'); // sub-phase + slug
+    assert.strictEqual(phaseId.extractPhaseToken('02-03-04-deep'), '02-03-04'); // deep decomposition
+    assert.strictEqual(phaseId.extractPhaseToken('46-6-rs'), '46'); // 1-digit slug word (#2043)
+    assert.strictEqual(phaseId.extractPhaseToken('14-2026-photos'), '14'); // year slug word (#2232)
+    // A ≥2-digit-run terminator does NOT rewind: the year-after-sub-phase
+    // shape is locked by the #2232 metamorphic round-trip.
+    assert.strictEqual(phaseId.extractPhaseToken('14-06-2026-photos-and-performance'), '14-06');
+    // The letter-prefixed family keeps its single-digit continuations.
+    assert.strictEqual(phaseId.extractPhaseToken('M1-2-brain'), 'M1-2');
+    assert.strictEqual(phaseId.extractPhaseToken('P0.3-tenant-primitives'), 'P0.3');
+  });
+
+  // Metamorphic: any phase name of the "NN/D …" family (24/7, 80/20 with a
+  // 1-digit second word) slugifies to "NN-D-…", and the resulting plain phase
+  // dir must round-trip to the bare phase number.
+  test('metamorphic: a 2-digit/1-digit name family round-trips to the bare phase number', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 99 }),
+        fc.integer({ min: 10, max: 99 }),
+        fc.integer({ min: 0, max: 9 }),
+        (phase, w2, w1) => {
+          const lead = String(phase).padStart(2, '0');
+          const dir = `${lead}-${w2}-${w1}-autonomy`;
+          return (
+            phaseId.extractPhaseToken(dir) === lead &&
+            phaseId.phaseTokenMatches(dir, phaseId.normalizePhaseName(String(phase)))
+          );
+        },
+      ),
+    );
+  });
+});
+
+describe('#2528 matchPhaseDirs — canonical dir-match selection', () => {
+  const M = (dirs, q) => phaseId.matchPhaseDirs(dirs, phaseId.normalizePhaseName(q));
+
+  test('primary token matches win and never engage the fallback', () => {
+    assert.deepStrictEqual(M(['10-24-7', '11-other'], '10'), {
+      matches: ['10-24-7'],
+      usedBareFallback: false,
+    });
+    assert.deepStrictEqual(M(['46-06-rs'], '46-6'), {
+      matches: ['46-06-rs'],
+      usedBareFallback: false,
+    });
+  });
+
+  test('bare-integer fallback resolves tokenizer-invisible digit-slug dirs', () => {
+    // "80/20 Cleanup" → dir "05-80-20-cleanup" → token "05-80-20" (byte-
+    // identical in shape to a genuine deep-decomposition dir, so the
+    // tokenizer must not rewind it); the leading-digit-run fallback is the
+    // resolution-level recovery.
+    assert.deepStrictEqual(M(['05-80-20-cleanup', '11-other'], '5'), {
+      matches: ['05-80-20-cleanup'],
+      usedBareFallback: true,
+    });
+    assert.deepStrictEqual(M(['30-12-factor-refactor'], '30'), {
+      matches: ['30-12-factor-refactor'],
+      usedBareFallback: true,
+    });
+  });
+
+  test('fallback collisions surface every candidate for the #2237 ambiguity guard', () => {
+    assert.deepStrictEqual(M(['05-80-20-a', '05-90-x'], '5'), {
+      matches: ['05-80-20-a', '05-90-x'],
+      usedBareFallback: true,
+    });
+  });
+
+  test('non-bare queries never enter the fallback', () => {
+    // Deep-decomposition and letter-suffix lookups are untouched (#2528 scope).
+    assert.deepStrictEqual(M(['46-6-rs'], '46-6'), { matches: [], usedBareFallback: false });
+    assert.deepStrictEqual(M(['12-x'], '12A'), { matches: [], usedBareFallback: false });
+  });
+
+  test('phaseNumberForMatch uses the leading digit run only for fallback matches', () => {
+    assert.strictEqual(phaseId.phaseNumberForMatch('05-80-20-cleanup', true), '05');
+    assert.strictEqual(phaseId.phaseNumberForMatch('10-24-setup', false), '10-24');
+  });
+});

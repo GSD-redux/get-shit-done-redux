@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdModule = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, extractPhaseToken } = phaseIdModule;
+const { normalizePhaseName, matchPhaseDirs, phaseNumberForMatch } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsModule = require('./core-utils.cjs');
 const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath } = coreUtilsModule;
@@ -59,7 +59,10 @@ interface ArchivedPhaseDir {
 function searchPhaseInDir(baseDir: string, relBase: string, normalized: string): PhaseSearchResult | null {
   try {
     const dirs = readSubdirectories(baseDir, true);
-    const matches = dirs.filter(d => phaseTokenMatches(d, normalized));
+    // #2528: canonical two-pass selection (exact token match, then the
+    // bare-integer leading-digit-run fallback) shared with the find-phase and
+    // phase-plan-index scans — see phase-id.cts::matchPhaseDirs.
+    const { matches, usedBareFallback } = matchPhaseDirs(dirs, normalized);
     if (matches.length === 0) return null;
 
     // #2237: fail loud when multiple directories match the same bare phase
@@ -85,7 +88,7 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
 
     const match = matches[0];
 
-    const phaseToken = extractPhaseToken(match);
+    const phaseToken = phaseNumberForMatch(match, usedBareFallback);
     const phaseNumber = phaseToken || normalized;
     const afterToken = match.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
     const phaseName = afterToken || null;

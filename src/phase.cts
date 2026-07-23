@@ -35,6 +35,7 @@ const {
   phaseMarkdownRegexSource,
   comparePhaseNum,
   phaseTokenMatches,
+  matchPhaseDirs,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
@@ -446,7 +447,10 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
       // #2237: fail loud when multiple directories match the same bare phase
       // number — prevents cross-project file writes when unrelated projects
       // share a .planning/phases/ tree.
-      const matches = dirs.filter((d) => phaseTokenMatches(d, normalized));
+      // #2528: selection delegates to the canonical two-pass matcher (exact
+      // token match, then the bare-integer leading-digit-run fallback) shared
+      // with the locator and the phase-plan-index scan.
+      const { matches } = matchPhaseDirs(dirs, normalized);
       if (matches.length === 0) continue;
       if (matches.length > 1) {
         output({
@@ -587,10 +591,26 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       .filter((e) => e.isDirectory())
       .map((e) => e.name)
       .sort((a, b) => comparePhaseNum(a, b));
-    const match = dirs.find((d) => phaseTokenMatches(d, normalized));
-    if (match) {
-      phaseDir = path.join(phasesDir, match);
-      phaseDirName = match;
+    // #2528: selection delegates to the canonical two-pass matcher shared with
+    // the locator and the find-phase scan (this site previously first-matched
+    // with `.find()` and had no multi-match guard — the #2237 fail-loud rule
+    // now applies here too, so the three resolution paths cannot disagree).
+    const { matches } = matchPhaseDirs(dirs, normalized);
+    if (matches.length > 1) {
+      output(
+        {
+          phase: normalized,
+          error: `Phase ${normalized} is ambiguous: ${matches.length} directories match (${matches.map((m) => `"${m}"`).join(', ')}).`,
+          ambiguous_matches: matches,
+          plans: [], waves: {}, incomplete: [], has_checkpoints: false,
+        },
+        raw,
+      );
+      return;
+    }
+    if (matches.length === 1) {
+      phaseDir = path.join(phasesDir, matches[0]);
+      phaseDirName = matches[0];
     }
   } catch {
     // phases dir doesn't exist

@@ -140,6 +140,21 @@ const BRACKET_PHASE_TOKEN_SOURCE =
 // roadmap-parser heading regexes (ReDoS-safe: a header is one short line).
 const PHASE_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*(?:Phase\\s+)?|Phase\\s+)';
 
+// #2528: extractPhaseToken absorbs a continuation segment only when the WHOLE
+// segment is the 2-digit zero-padded form the write side emits
+// (getPhaseDirFromPhaseId pads genuine sub-phase/plan numbers to exactly 2
+// digits and never appends letters) — so a slug word like "10x" (phase named
+// "10x Growth" → dir "14-10x-growth") is a slug word, not a continuation.
+// Derived from the owner SOURCE with both ends anchored; the prefix form above
+// stays as-is for call sites that append their own trailing grammar.
+const PHASE_CONTINUATION_SEGMENT_EXACT_RE = new RegExp(`^${PHASE_CONTINUATION_SEGMENT_SOURCE}$`);
+
+// #2528: the #2043 slug-word class (a segment whose leading digit run has
+// width exactly 1) used as a RETROACTIVE signal: when it immediately follows
+// absorbed continuation segments, the run was a digit-leading slug (the
+// "24/7" / "80/20" / "30-Day" family — see extractPhaseToken).
+const SINGLE_DIGIT_RUN_SEGMENT_RE = /^\d(?!\d)/;
+
 function stripProjectCodePrefix(value: unknown, caseInsensitive = true): string {
   const input = String(value);
   const re = caseInsensitive ? PROJECT_CODE_PREFIX_STRIP_RE_I : PROJECT_CODE_PREFIX_STRIP_RE;
@@ -529,6 +544,7 @@ function extractPhaseToken(dirName: string, convention?: string): string {
   // because of punctuation (e.g. "P0.3-2"), whose single-digit continuation is
   // intentionally preserved (unchanged from prior behaviour).
   let firstLetterPrefixed = false;
+  let scanStoppedAt = -1;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (i === 0) {
@@ -540,15 +556,41 @@ function extractPhaseToken(dirName: string, convention?: string): string {
       } else {
         break;
       }
-    } else if (isPhaseContinuationSegment(seg) || (firstLetterPrefixed && /^\d/.test(seg))) {
+    } else if (
+      (firstLetterPrefixed && /^\d/.test(seg)) ||
+      (!firstLetterPrefixed && PHASE_CONTINUATION_SEGMENT_EXACT_RE.test(seg))
+    ) {
       tokenSegments.push(seg);
     } else {
+      scanStoppedAt = i;
       break;
     }
   }
 
   if (tokenSegments.length === 0) {
     return dirName;
+  }
+
+  // #2528: a 2-digit slug word is indistinguishable from a genuine zero-padded
+  // continuation by width alone (both are exactly 2 digits — the gap between
+  // #2043's 1-digit and #2232's ≥3-digit guards). The tie-breaker is what
+  // FOLLOWS the absorbed run: a slug is contiguous, so when the segment that
+  // terminated the scan is a 1-digit word (#2043's slug-word class — the
+  // "24/7"/"80/20"/"30-Day" naming family: phase 10 named "24/7 Autonomy" →
+  // dir "10-24-7[-autonomy]"), the absorbed run re-opens as slug and the token
+  // rewinds to the bare leading phase number, keeping the phase resolvable by
+  // bare-number lookup. A ≥2-digit-run terminator does NOT rewind: the
+  // year-leading-slug shape after a genuine sub-phase ("14-06-2026-photos" →
+  // "14-06") is locked by the #2232 metamorphic round-trip tests. The
+  // firstLetterPrefixed family keeps its intentionally-preserved single-digit
+  // continuations (e.g. "P0.3-2") and is exempt.
+  if (
+    !firstLetterPrefixed &&
+    tokenSegments.length > 1 &&
+    scanStoppedAt !== -1 &&
+    SINGLE_DIGIT_RUN_SEGMENT_RE.test(segments[scanStoppedAt])
+  ) {
+    tokenSegments.length = 1;
   }
 
   return prefix + tokenSegments.join('-');
@@ -566,6 +608,58 @@ function phaseTokenMatches(dirName: string, normalized: string): boolean {
     if (strippedToken.toUpperCase() === normalized.toUpperCase()) return true;
   }
   return false;
+}
+
+/**
+ * #2528: the CANONICAL phase-directory match selection — the one rule every
+ * directory-resolution path (the shared locator plus the `find-phase` and
+ * `phase-plan-index` command scans) applies to a candidate dir list. Extracted
+ * here because the surrounding scan/ambiguity/shaping code exists per site and
+ * had already diverged; the selection itself must not.
+ *
+ * Two passes:
+ *   1. PRIMARY — exact token match (`phaseTokenMatches`), unchanged behavior.
+ *   2. BARE-INTEGER FALLBACK — only when the primary pass matched NOTHING and
+ *      the query is a bare integer, re-filter by each directory's own LEADING
+ *      digit run (zero-padded compare). This catches digit-leading slug shapes
+ *      the tokenizer cannot disambiguate from genuine sub-phase segments
+ *      (e.g. "05-80-20-cleanup", phase 5 named "80/20 Cleanup", whose token
+ *      "05-80-20" is byte-identical in shape to a real deep-decomposition dir).
+ *      The fallback can only turn a silent not-found into a resolution or into
+ *      a surfaced ambiguity (callers keep their #2237 multi-match guards) —
+ *      never override a primary match. Non-bare queries ("46-6", "12A",
+ *      "PROJ-42") never enter the fallback, so deep-decomposition and
+ *      letter-suffix lookups are untouched.
+ *
+ * `usedBareFallback` tells callers to derive the displayed phase number from
+ * the directory's leading digit run instead of `extractPhaseToken` (whose
+ * token for these dirs is the mis-absorbed multi-segment form).
+ */
+function matchPhaseDirs(dirs: string[], normalized: string): { matches: string[]; usedBareFallback: boolean } {
+  const primary = dirs.filter(d => phaseTokenMatches(d, normalized));
+  if (primary.length > 0) return { matches: primary, usedBareFallback: false };
+
+  const bare = String(normalized).match(/^0*(\d+)$/);
+  if (!bare) return { matches: primary, usedBareFallback: false };
+  const want = bare[1];
+
+  const fallback = dirs.filter(d => {
+    const m = stripProjectCodePrefix(d).match(/^0*(\d+)(?:-|$)/);
+    return m !== null && m[1] === want;
+  });
+  return { matches: fallback, usedBareFallback: fallback.length > 0 };
+}
+
+/**
+ * #2528: the display phase number for a directory selected by matchPhaseDirs.
+ * Primary matches keep the extracted token; bare-fallback matches use the
+ * directory's leading digit run (the whole point of the fallback is that the
+ * extracted token is wrong for these dirs).
+ */
+function phaseNumberForMatch(dirName: string, usedBareFallback: boolean): string {
+  if (!usedBareFallback) return extractPhaseToken(dirName);
+  const m = stripProjectCodePrefix(dirName).match(/^\d+/);
+  return m ? m[0] : extractPhaseToken(dirName);
 }
 
 // ─── #2121 canonical surface (ADR-2121) ──────────────────────────────────────
@@ -682,6 +776,8 @@ export = {
   comparePhaseNum,
   extractPhaseToken,
   phaseTokenMatches,
+  matchPhaseDirs,
+  phaseNumberForMatch,
   parsePhaseFromProse,
   stripConfiguredProjectCodePrefix,
   isForeignPrefixedPhaseQuery,
