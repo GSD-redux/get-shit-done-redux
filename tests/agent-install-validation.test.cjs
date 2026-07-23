@@ -692,3 +692,52 @@ describe('bug #1058: validate agents detects manifest-backed .md/.toml pair drif
     );
   });
 });
+
+// ─── #2540 regression: validate agents surfaces sandbox violations ───────────
+
+describe('#2540 regression: validate agents --raw exposes sandbox_violations', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('a Write-tool role with a read-only TOML is reported with detail, not just a bare false', () => {
+    const agentsDir = path.join(tmpDir, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    for (const name of EXPECTED_AGENTS) {
+      fs.writeFileSync(
+        path.join(agentsDir, `${name}.md`),
+        `---\nname: ${name}\ndescription: Test agent\ntools: Read, Bash\n---\nAgent content.\n`
+      );
+    }
+    const target = EXPECTED_AGENTS[0];
+    // Codex-shaped pair: converted .md with the contract in the role header,
+    // and a generated TOML whose sandbox is weaker than the contract requires.
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.md`),
+      `---\nname: "${target}"\ndescription: "Test agent"\n---\n\n<codex_agent_role>\nrole: ${target}\ntools: Read, Write, Edit\npurpose: Test agent\n</codex_agent_role>\n\nAgent content.\n`
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.toml`),
+      `name = "${target}"\ndescription = "Test agent"\nsandbox_mode = "read-only"\n`
+    );
+
+    const result = runGsdTools('validate agents --raw', tmpDir, { GSD_AGENTS_DIR: agentsDir });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.agents_found, false,
+      'agents_found must be false on a sandbox/contract violation');
+    assert.deepStrictEqual(output.missing, [], 'violation is not a missing agent');
+    assert.ok(Array.isArray(output.sandbox_violations),
+      'sandbox_violations must be present in the JSON so a false agents_found is explainable');
+    assert.strictEqual(output.sandbox_violations.length, 1);
+    assert.strictEqual(output.sandbox_violations[0].agent, target);
+    assert.strictEqual(output.sandbox_violations[0].sandbox_mode, 'read-only');
+  });
+});

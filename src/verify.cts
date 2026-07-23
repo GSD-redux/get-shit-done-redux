@@ -1878,6 +1878,15 @@ function cmdValidateHealth(
           `Missing ${(agentStatus.missing_agents).length} GSD agents: ${(agentStatus.missing_agents).join(', ')}; incomplete agent installs (missing generated file): ${(agentStatus.incomplete_agents).join(', ')} — affected workflows will fall back to general-purpose`,
           `Run the GSD installer: npx ${PACKAGE_NAME}@latest`,
         );
+      } else if ((agentStatus.sandbox_violations).length > 0 && (agentStatus.missing_agents).length === 0) {
+        // #2540 — every file present but a generated sandbox contradicts the
+        // role's declared tool contract: the agent cannot write its outputs.
+        addIssue(
+          'warning',
+          'W010',
+          `Agent sandbox weaker than declared tool contract: ${(agentStatus.sandbox_violations).map((v) => v.agent).join(', ')} — these agents cannot write their declared outputs`,
+          `Re-run the GSD installer to regenerate agent configs: npx ${PACKAGE_NAME}@latest`,
+        );
       } else {
         addIssue(
           'warning',
@@ -2406,6 +2415,10 @@ function cmdValidateAgents(cwd: string, raw: boolean): void {
       installed: agentStatus.installed_agents,
       missing: agentStatus.missing_agents,
       incomplete: agentStatus.incomplete_agents,
+      // #2540 — a false `agents_found` may come solely from a sandbox/tool-
+      // contract mismatch; without this field the JSON showed missing:[] and
+      // incomplete:[] with no explanation for the failure.
+      sandbox_violations: agentStatus.sandbox_violations,
       expected,
     },
     raw,

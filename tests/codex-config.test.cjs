@@ -463,9 +463,28 @@ tools: Read, Grep, Glob
     assert.ok(result.includes('description = "GSD agent gsd-unknown"'), 'falls back to synthetic description');
   });
 
-  test('defaults unknown agents to read-only', () => {
-    const result = generateCodexAgentToml('gsd-unknown', sampleAgent);
-    assert.ok(result.includes('sandbox_mode = "read-only"'), 'defaults to read-only');
+  test('unmapped agents derive sandbox from the tool contract (#2540)', () => {
+    // Pre-#2540 behavior blanket-defaulted every unmapped agent to read-only,
+    // silently downgrading write-capable roles added after the map's 11 entries.
+    // sampleAgent declares Write/Edit, so an unmapped name must now get
+    // workspace-write; a contract without file-mutating tools stays read-only.
+    const writeResult = generateCodexAgentToml('gsd-unknown', sampleAgent);
+    assert.ok(
+      writeResult.includes('sandbox_mode = "workspace-write"'),
+      'unmapped agent with Write/Edit tools derives workspace-write'
+    );
+    const readOnlyAgent = `---\nname: gsd-lookup\ndescription: Reads things\ntools: Read, Grep, Glob\n---\n\n<role>You look things up.</role>`;
+    const readResult = generateCodexAgentToml('gsd-lookup', readOnlyAgent);
+    assert.ok(
+      readResult.includes('sandbox_mode = "read-only"'),
+      'unmapped agent without file-mutating tools stays read-only'
+    );
+    const emptyToolsAgent = `---\nname: gsd-empty\ndescription: No tools declared\n---\n\n<role>Contract gap.</role>`;
+    const emptyResult = generateCodexAgentToml('gsd-empty', emptyToolsAgent);
+    assert.ok(
+      emptyResult.includes('sandbox_mode = "read-only"'),
+      'absent tools contract stays read-only (empty-contract gap is out of #2540 scope)'
+    );
   });
 
   // ─── #2256: model_overrides support ───────────────────────────────────────
@@ -792,26 +811,48 @@ describe('installCodexConfig sandboxTier threading seam', () => {
 // ─── CODEX_AGENT_SANDBOX mapping ────────────────────────────────────────────────
 
 describe('CODEX_AGENT_SANDBOX', () => {
-  test('has all 11 agents mapped', () => {
-    const agentNames = Object.keys(CODEX_AGENT_SANDBOX);
-    assert.strictEqual(agentNames.length, 11, 'has 11 agents');
-  });
+  // #2540: the former "has all 11 agents mapped" count assertion codified the
+  // bug — the map is a subset by design (ADR-1016), and unmapped roles now
+  // derive their sandbox from the tool contract. What must hold instead is a
+  // contract-derived invariant over EVERY repo agent, mapped or not.
+  const agentsDir = path.join(__dirname, '..', 'agents');
+  const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith('.md'));
+  const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+  const declaredTools = (content) => {
+    const fm = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content)?.[1] ?? '';
+    const m = /^tools:\s*(.+)$/m.exec(fm);
+    return m ? m[1].trim() : '';
+  };
+  const requiresWrite = (content) =>
+    declaredTools(content).split(',').some((t) => WRITE_TOOLS.has(t.trim()));
 
-  test('workspace-write agents have write tools', () => {
-    const writeAgents = [
-      'gsd-executor', 'gsd-planner', 'gsd-phase-researcher',
-      'gsd-project-researcher', 'gsd-research-synthesizer', 'gsd-verifier',
-      'gsd-codebase-mapper', 'gsd-roadmapper', 'gsd-debugger',
-    ];
-    for (const name of writeAgents) {
-      assert.strictEqual(CODEX_AGENT_SANDBOX[name], 'workspace-write', `${name} is workspace-write`);
+  test('#2540: every repo agent whose contract declares Write/Edit gets a workspace-write TOML', () => {
+    assert.ok(agentFiles.length > 0, 'repo agents/ directory must not be empty');
+    for (const file of agentFiles) {
+      const name = file.replace(/\.md$/, '');
+      const content = fs.readFileSync(path.join(agentsDir, file), 'utf8');
+      const toml = generateCodexAgentToml(name, content);
+      const expected = requiresWrite(content) ? 'workspace-write' : 'read-only';
+      assert.ok(
+        toml.includes(`sandbox_mode = "${expected}"`),
+        `${name}: contract tools "${declaredTools(content)}" require sandbox_mode "${expected}"`
+      );
     }
   });
 
-  test('read-only agents have no write tools', () => {
-    const readOnlyAgents = ['gsd-plan-checker', 'gsd-integration-checker'];
-    for (const name of readOnlyAgents) {
-      assert.strictEqual(CODEX_AGENT_SANDBOX[name], 'read-only', `${name} is read-only`);
+  test('#2540: explicit map entries never contradict the agent tool contract', () => {
+    // The map keeps precedence over the contract-derived fallback, so a stale
+    // entry could silently reintroduce the downgrade. Pin map/contract parity.
+    for (const [name, mode] of Object.entries(CODEX_AGENT_SANDBOX)) {
+      const file = path.join(agentsDir, `${name}.md`);
+      if (!fs.existsSync(file)) continue; // map may reference retired agents
+      const content = fs.readFileSync(file, 'utf8');
+      const required = requiresWrite(content) ? 'workspace-write' : mode;
+      assert.strictEqual(
+        mode,
+        required,
+        `${name}: map says "${mode}" but contract tools "${declaredTools(content)}" require "${required}"`
+      );
     }
   });
 });

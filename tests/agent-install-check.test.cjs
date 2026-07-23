@@ -434,3 +434,107 @@ describe('checkAgentsInstalled', () => {
     assert.strictEqual(result.agent_runtime, 'cursor');
   });
 });
+
+// ─── 3. #2540 regression: sandbox_mode vs tool contract ───────────────────────
+
+describe('#2540 regression: sandbox_mode weaker than declared tool contract is reported', () => {
+  let tmpDir;
+  let agentsDir;
+  const target = EXPECTED_AGENTS[0];
+
+  const writeAllAgents = () => {
+    for (const agent of EXPECTED_AGENTS) {
+      fs.writeFileSync(path.join(agentsDir, `${agent}.md`), `---\nname: ${agent}\n---\nbody`);
+    }
+  };
+  const codexMd = (tools) =>
+    `---\nname: "${target}"\ndescription: "d"\n---\n\n<codex_agent_role>\nrole: ${target}\ntools: ${tools}\npurpose: d\n</codex_agent_role>\n\nbody`;
+  const toml = (sandbox) =>
+    `name = "${target}"\ndescription = "d"\nsandbox_mode = "${sandbox}"\n`;
+
+  beforeEach(() => {
+    tmpDir = createTempDir();
+    agentsDir = path.join(tmpDir, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    process.env['GSD_AGENTS_DIR'] = agentsDir;
+    writeAllAgents();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('read-only TOML for a Write-tool role is a violation and fails the check', () => {
+    // The pre-#2540 false pass: every file present, contract requires Write,
+    // generated sandbox is read-only — the agent cannot write its output.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit, Bash'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.strictEqual(result.sandbox_violations.length, 1, 'one violation reported');
+    assert.strictEqual(result.sandbox_violations[0].agent, target);
+    assert.strictEqual(result.sandbox_violations[0].sandbox_mode, 'read-only');
+    assert.strictEqual(result.agents_installed, false, 'semantic violation fails the install check');
+  });
+
+  test('workspace-write TOML for a Write-tool role is clean', () => {
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit, Bash'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('workspace-write'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.deepStrictEqual(result.sandbox_violations, []);
+    assert.strictEqual(result.agents_installed, true);
+  });
+
+  test('read-only TOML for a read-only contract is clean', () => {
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Bash, Grep, Glob'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.deepStrictEqual(result.sandbox_violations, []);
+    assert.strictEqual(result.agents_installed, true);
+  });
+
+  test('frontmatter tools contract is honored when no codex_agent_role header exists', () => {
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.md`),
+      `---\nname: ${target}\ntools: Read, Edit\n---\nbody`
+    );
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.strictEqual(result.sandbox_violations.length, 1, 'frontmatter Edit contract flags read-only TOML');
+  });
+
+  test('codex TOML with a missing sibling .md is incomplete, not silently skipped (no manifest)', () => {
+    // Without this, the semantic check goes vacuous exactly where it matters:
+    // a .toml whose contract source is gone would pass unverified. There is no
+    // gsd-file-manifest.json in this fixture, so the older manifest-based
+    // completeness path cannot be what catches it.
+    fs.unlinkSync(path.join(agentsDir, `${target}.md`));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.ok(result.incomplete_agents.includes(target), 'md-less codex toml reported incomplete');
+    assert.deepStrictEqual(result.sandbox_violations, [], 'no violation claim without a readable contract');
+    assert.strictEqual(result.agents_installed, false);
+  });
+
+  test('non-codex TOML with a missing sibling .md keeps the skip (toml-only layouts are legitimate)', () => {
+    fs.unlinkSync(path.join(agentsDir, `${target}.md`));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('cursor');
+    assert.deepStrictEqual(result.incomplete_agents, []);
+    assert.deepStrictEqual(result.sandbox_violations, []);
+  });
+
+  test('TOML without a sandbox_mode key is skipped (sandboxTier "none" layouts)', () => {
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), `name = "${target}"\ndescription = "d"\n`);
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.deepStrictEqual(result.sandbox_violations, []);
+    assert.strictEqual(result.agents_installed, true);
+  });
+});

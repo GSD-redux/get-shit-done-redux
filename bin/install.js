@@ -347,6 +347,35 @@ const CODEX_AGENT_SANDBOX = {
   'gsd-integration-checker': 'read-only',
 };
 
+// #2540 — file-mutating Claude tools whose presence in an agent's `tools:`
+// contract requires a write-capable Codex sandbox.
+const CODEX_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+
+// #2540 — derive the sandbox for roles absent from CODEX_AGENT_SANDBOX from the
+// agent's declared tool contract instead of silently defaulting to read-only:
+// every write-capable role added after the map's original 11 entries (e.g.
+// gsd-code-reviewer, gsd-code-fixer, gsd-doc-writer) shipped a read-only TOML
+// that could not produce its declared outputs, while `validate agents` passed.
+// The map keeps precedence where it has an entry (ADR-1016 retains it as GSD
+// agent policy; descriptor-driven retirement is #1138). An empty/absent tools
+// contract stays read-only — gsd-nyquist-auditor's empty contract is a
+// separate gap tracked outside #2540.
+function _codexSandboxFromToolContract(frontmatterText, body = '') {
+  let toolsField = extractFrontmatterField(frontmatterText, 'tools') || '';
+  if (!toolsField) {
+    // Already-converted agent content (convertClaudeAgentToCodexAgent) strips
+    // frontmatter tools but embeds the contract in the <codex_agent_role>
+    // header — read it there so derivation is not order-sensitive (#2540).
+    const roleBlock = /<codex_agent_role>([\s\S]*?)<\/codex_agent_role>/.exec(body);
+    if (roleBlock) {
+      const m = /^tools:\s*(.+)$/m.exec(roleBlock[1]);
+      if (m) toolsField = m[1].trim();
+    }
+  }
+  const declared = toolsField.split(',').map((t) => t.trim());
+  return declared.some((t) => CODEX_WRITE_TOOLS.has(t)) ? 'workspace-write' : 'read-only';
+}
+
 // Copilot tool name mapping — Claude Code tools to GitHub Copilot tools
 // Tool mapping applies ONLY to agents, NOT to skills (per CONTEXT.md decision)
 const claudeToCopilotTools = {
@@ -4148,9 +4177,10 @@ function _warnCodexModelOverrideDropped(agentName, value) {
  * @param {object|null} effortCfg        — #443: merged effort config from readGsdEffectiveEffortConfig
  */
 function generateCodexAgentToml(agentName, agentContent, modelOverrides = null, runtimeResolver = null, effortCfg = null, sandboxTier = 'codex-agent-sandbox') {
-  const sandboxMode = CODEX_AGENT_SANDBOX[agentName] || 'read-only';
   const { frontmatter, body } = extractFrontmatterAndBody(agentContent);
   const frontmatterText = frontmatter || '';
+  // #2540 — map entry wins; unmapped roles derive from the tool contract.
+  const sandboxMode = CODEX_AGENT_SANDBOX[agentName] || _codexSandboxFromToolContract(frontmatterText, body);
   const resolvedName = extractFrontmatterField(frontmatterText, 'name') || agentName;
   const resolvedDescription = toSingleLine(
     extractFrontmatterField(frontmatterText, 'description') || `GSD agent ${resolvedName}`

@@ -65,11 +65,21 @@ AGENT_SKILLS_SYNTHESIZER=$(gsd_run query agent-skills gsd-research-synthesizer)
 AGENT_SKILLS_ROADMAPPER=$(gsd_run query agent-skills gsd-roadmapper)
 ```
 
-Parse JSON for: `researcher_model`, `synthesizer_model`, `roadmapper_model`, `commit_docs`, `project_exists`, `has_codebase_map`, `planning_exists`, `has_existing_code`, `has_package_file`, `is_brownfield`, `needs_codebase_map`, `has_git`, `git_worktree_root`, `in_nested_subdir`, `project_path`, `agents_installed`, `missing_agents`, `agent_runtime`, `agents_dir`, `required_agents`, `required_agents_installed`, `missing_required_agents`, `agent_skill_payloads_available`, `agent_skill_payload_agents`, `requirements_path`, `roadmap_path`, `config_path`, `research_dir`, `response_language`.
+Parse JSON for: `researcher_model`, `synthesizer_model`, `roadmapper_model`, `commit_docs`, `project_exists`, `has_codebase_map`, `planning_exists`, `has_existing_code`, `has_package_file`, `is_brownfield`, `needs_codebase_map`, `has_git`, `git_worktree_root`, `in_nested_subdir`, `project_path`, `agents_installed`, `missing_agents`, `sandbox_violations`, `agent_runtime`, `agents_dir`, `required_agents`, `required_agents_installed`, `missing_required_agents`, `agent_skill_payloads_available`, `agent_skill_payload_agents`, `requirements_path`, `roadmap_path`, `config_path`, `research_dir`, `response_language`.
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-**If `agents_installed` is false:** Display a warning before proceeding:
+**If `agents_installed` is false but `missing_agents` is empty and `sandbox_violations` (from init JSON) is non-empty (#2540):** the install is complete but some generated agents carry a sandbox weaker than their declared tool contract. Display this warning and — as long as none of the required agents (gsd-project-researcher, gsd-research-synthesizer, gsd-roadmapper) appear in `sandbox_violations` — proceed WITH research subagents as normal (do NOT skip Steps 6–7; the violations affect unrelated agents, not this workflow's spawns):
+```text
+⚠ Some GSD agents have a sandbox weaker than their declared tool contract:
+  {sandbox_violations agents joined with newline}
+
+These agents cannot write their declared outputs until regenerated. Re-run the
+installer to fix: npx @opengsd/gsd-core@latest --global
+```
+If a required agent IS listed in `sandbox_violations`, fall through to the missing-agents handling below instead.
+
+**If `agents_installed` is false (missing or incomplete agents):** Display a warning before proceeding:
 ```text
 ⚠ GSD agents not installed. The following agents are missing from your agents directory:
   {missing_agents joined with newline}

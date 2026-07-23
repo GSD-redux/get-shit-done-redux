@@ -229,6 +229,7 @@ function withProjectRoot(cwd: string, result: Record<string, unknown>): Record<s
   const agentStatus = checkAgentsInstalled(activeRuntime, cwd);
   result['agents_installed'] = agentStatus.agents_installed;
   result['missing_agents'] = agentStatus.missing_agents;
+  result['sandbox_violations'] = agentStatus.sandbox_violations; // #2540
   result['agents_dir'] = agentStatus.agents_dir;
   result['agent_runtime'] = agentStatus.agent_runtime;
   const config = loadConfig(cwd);

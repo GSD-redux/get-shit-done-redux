@@ -17,13 +17,43 @@ const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
 import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
 
+interface SandboxViolation {
+  agent: string;
+  sandbox_mode: string;
+  declared_tools: string;
+}
+
 interface AgentsInstalledResult {
   agents_installed: boolean;
   missing_agents: string[];
   installed_agents: string[];
   incomplete_agents: string[];
+  sandbox_violations: SandboxViolation[];
   agents_dir: string;
   agent_runtime: string;
+}
+
+// #2540 — file-mutating tools whose presence in an agent's declared contract
+// requires a write-capable sandbox. Mirrors CODEX_WRITE_TOOLS in bin/install.js.
+const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
+
+/**
+ * Extract the declared tool contract from an installed agent .md.
+ * Codex installs embed it in the <codex_agent_role> header (frontmatter tools
+ * are stripped by the converter); other layouts keep it in YAML frontmatter.
+ * Returns '' when no contract is found.
+ */
+function _extractDeclaredTools(md: string): string {
+  const roleBlock = /<codex_agent_role>([\s\S]*?)<\/codex_agent_role>/.exec(md);
+  const scope = roleBlock
+    ? roleBlock[1]
+    : (/^---\r?\n([\s\S]*?)\r?\n---/.exec(md)?.[1] ?? '');
+  const m = /^tools:\s*(.+)$/m.exec(scope ?? '');
+  return m ? (m[1] ?? '').trim() : '';
+}
+
+function _toolsRequireWrite(toolsField: string): boolean {
+  return toolsField.split(',').some((t) => WRITE_TOOLS.has(t.trim()));
 }
 
 /**
@@ -99,6 +129,7 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
       missing_agents: expectedAgents,
       installed_agents: [],
       incomplete_agents: [],
+      sandbox_violations: [],
       agents_dir: agentsDir,
       agent_runtime: resolvedRuntime,
     };
@@ -176,11 +207,60 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
     }
   }
 
+  // ── Sandbox/tool-contract semantic check (#2540) ────────────────────────────
+  // A generated agent .toml whose sandbox_mode is weaker than the role's
+  // declared tool contract (Write/Edit/NotebookEdit → workspace-write) means
+  // the agent cannot produce its declared outputs even though every file is
+  // present — exactly the false-pass this check closes. The contract is read
+  // from the sibling installed .md (<codex_agent_role> header or frontmatter).
+  // Agents without a .toml, without a sandbox_mode key (sandboxTier "none"),
+  // or without a readable contract are skipped, keeping the check a no-op for
+  // runtimes that do not emit TOML sandboxes.
+  const sandboxViolations: SandboxViolation[] = [];
+  for (const agent of expectedAgents) {
+    const tomlPath = path.join(agentsDir, `${agent}.toml`);
+    if (!fs.existsSync(tomlPath)) continue;
+    let toml: string;
+    let md: string;
+    try {
+      toml = fs.readFileSync(tomlPath, 'utf8');
+    } catch {
+      continue; // unreadable toml — presence/completeness checks own this case
+    }
+    try {
+      md = fs.readFileSync(path.join(agentsDir, `${agent}.md`), 'utf8');
+    } catch {
+      // A Codex install always writes the .md beside the .toml, so a missing
+      // contract source there is an incomplete install, not a silent skip —
+      // otherwise this semantic check goes vacuous exactly where it matters
+      // (#2540). Other runtimes may legitimately ship .toml-only layouts.
+      if (resolvedRuntime === 'codex' && !incomplete.includes(agent)) {
+        incomplete.push(agent);
+      }
+      continue;
+    }
+    const sandboxMatch = /^sandbox_mode\s*=\s*"([^"]+)"/m.exec(toml);
+    if (!sandboxMatch) continue;
+    const declaredTools = _extractDeclaredTools(md);
+    if (_toolsRequireWrite(declaredTools) && sandboxMatch[1] === 'read-only') {
+      sandboxViolations.push({
+        agent,
+        sandbox_mode: sandboxMatch[1],
+        declared_tools: declaredTools,
+      });
+    }
+  }
+
   return {
-    agents_installed: installed.length > 0 && missing.length === 0 && incomplete.length === 0,
+    agents_installed:
+      installed.length > 0 &&
+      missing.length === 0 &&
+      incomplete.length === 0 &&
+      sandboxViolations.length === 0,
     missing_agents: missing,
     installed_agents: installed,
     incomplete_agents: incomplete,
+    sandbox_violations: sandboxViolations,
     agents_dir: agentsDir,
     agent_runtime: resolvedRuntime,
   };

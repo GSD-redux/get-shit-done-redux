@@ -280,9 +280,18 @@ AGENT_SKILLS_SYNTHESIZER=$(gsd_run query agent-skills gsd-research-synthesizer)
 AGENT_SKILLS_ROADMAPPER=$(gsd_run query agent-skills gsd-roadmapper)
 ```
 
-Extract from init JSON: `researcher_model`, `synthesizer_model`, `roadmapper_model`, `commit_docs`, `research_enabled`, `current_milestone`, `project_exists`, `roadmap_exists`, `latest_completed_milestone`, `phase_dir_count`, `phase_archive_path`, `agents_installed`, `missing_agents`, `project_path`, `roadmap_path`, `requirements_path`, `config_path`, `research_dir`, `milestones_path`.
+Extract from init JSON: `researcher_model`, `synthesizer_model`, `roadmapper_model`, `commit_docs`, `research_enabled`, `current_milestone`, `project_exists`, `roadmap_exists`, `latest_completed_milestone`, `phase_dir_count`, `phase_archive_path`, `agents_installed`, `missing_agents`, `sandbox_violations`, `project_path`, `roadmap_path`, `requirements_path`, `config_path`, `research_dir`, `milestones_path`.
 
-**If `agents_installed` is false:** Display a warning before proceeding:
+**If `agents_installed` is false but `missing_agents` is empty and `sandbox_violations` is non-empty (#2540):** the install is complete but some generated agents carry a sandbox weaker than their declared tool contract. As long as none of gsd-project-researcher / gsd-research-synthesizer / gsd-roadmapper appear in `sandbox_violations`, display the warning below and proceed WITH the research subagent spawns as normal (the violations affect unrelated agents); if a required agent IS listed, fall through to the missing-agents handling instead:
+```
+⚠ Some GSD agents have a sandbox weaker than their declared tool contract:
+  {sandbox_violations agents joined with newline}
+
+These agents cannot write their declared outputs until regenerated. Re-run the
+installer to fix: npx @opengsd/gsd-core@latest --global
+```
+
+**If `agents_installed` is false (missing or incomplete agents):** Display a warning before proceeding:
 ```
 ⚠ GSD agents not installed. The following agents are missing from your agents directory:
   {missing_agents joined with newline}
