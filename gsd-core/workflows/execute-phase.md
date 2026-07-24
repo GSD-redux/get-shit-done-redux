@@ -1515,7 +1515,7 @@ Copy failure must NOT block phase completion.
 <step name="close_phase_todos">
 **Auto-close pending todos tagged for this phase (#2433).**
 
-This step runs AFTER `update_roadmap` marks the phase complete. It moves any pending todos that carry `resolves_phase: <current-phase-number>` to the completed directory.
+After `update_roadmap`, moves todos whose `resolves_phase` matches to `completed/`.
 
 ```bash
 PHASE_NUM="${PHASE_NUMBER}"
@@ -1523,12 +1523,19 @@ PENDING_DIR=".planning/todos/pending"
 COMPLETED_DIR=".planning/todos/completed"
 mkdir -p "$COMPLETED_DIR"
 
+# "05"=="5" (#2576).
+normalize_phase_num() {
+  local p="${1//\"/}"; printf '%s' "$p" | sed 's/^0*\([0-9]\)/\1/'
+}
+PHASE_NUM_NORM=$(normalize_phase_num "$PHASE_NUM")
+
 CLOSED=()
 for TODO_FILE in "$PENDING_DIR"/*.md; do
   [ -f "$TODO_FILE" ] || continue
-  # Extract resolves_phase from YAML frontmatter (first --- block only)
+  # resolves_phase from first frontmatter block
   RP=$(awk '/^---/{c++;next} c==1 && /^resolves_phase:/{print $2;exit} c==2{exit}' "$TODO_FILE" 2>/dev/null || true)
-  if [ "$RP" = "$PHASE_NUM" ] || [ "$RP" = "\"$PHASE_NUM\"" ]; then
+  RP_NORM=$(normalize_phase_num "$RP")
+  if [ -n "$RP_NORM" ] && [ "$RP_NORM" = "$PHASE_NUM_NORM" ]; then
     mv "$TODO_FILE" "$COMPLETED_DIR/"
     CLOSED+=("$(basename "$TODO_FILE")")
   fi
@@ -1541,7 +1548,7 @@ if [ ${#CLOSED[@]} -gt 0 ]; then
 fi
 ```
 
-**If no todos have `resolves_phase: <this-phase>`:** Skip silently — this step is always additive and never blocks phase completion.
+**No matches:** skip silently (always additive, non-blocking).
 </step>
 
 <step name="update_project_md">
