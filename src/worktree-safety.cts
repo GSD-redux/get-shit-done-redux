@@ -594,27 +594,36 @@ function rescueSummaryArtifacts(
     const relPath = posixNormalize(absPath.slice(worktreePath.length).replace(/^[/\\]/, ''));
 
     // #706: skip rescue when the SUMMARY is already committed on the branch.
-    // Use `git cat-file -e HEAD:<relPath>` (not `ls-files --error-unmatch`) so
-    // the check is against the committed tree, not the index.  ls-files also
-    // matches staged-but-uncommitted files, which would skip rescue when the
-    // file is staged but not yet committed — the merge wouldn't carry it, and
-    // the executor's content could be lost.  cat-file -e HEAD:<path> returns
-    // exit 0 only when the object exists in the committed HEAD tree.
+    // Use `git ls-tree --name-only HEAD -- <relPath>` (not `ls-files
+    // --error-unmatch`) so the check is against the committed tree, not the
+    // index.  ls-files also matches staged-but-uncommitted files, which would
+    // skip rescue when the file is staged but not yet committed — the merge
+    // wouldn't carry it, and the executor's content could be lost.
+    //
+    // NOT `git cat-file -e HEAD:<relPath>` (#2609): a `HEAD:<path>` revspec
+    // that fails to resolve makes git die fatally with exit 128 BEFORE any
+    // object-existence check — cat-file never exits 1 for a missing path, so
+    // an exit-1 "definitively absent" branch is unreachable and every
+    // uncommitted SUMMARY falls through to the fail-closed skip.  ls-tree
+    // exits 0 whether or not the path is in the tree (stdout empty when
+    // absent), so a non-zero exit genuinely means git itself failed.
     //
     // Fail-closed on timeout/fatal git errors: if we cannot determine whether
     // the file is committed, do NOT rescue it (rescuing an actually-committed
     // file would re-create the untracked collision; the merge will surface the
     // issue).  The cleanup will be blocked by merge_failed in the worst case,
     // which is the observable behaviour before this fix and is recoverable.
-    const catFileResult = execGit(['-C', worktreePath, 'cat-file', '-e', `HEAD:${relPath}`], { cwd: repoRoot });
-    if (catFileResult.exitCode !== 1) {
-      // Rescue only when cat-file definitively reports the object is absent (exit 1).
-      //   exit 0  → object exists (committed on HEAD) — merge will carry it, skip.
-      //   exit 128 → fatal git error (corrupt store, unborn HEAD, etc.) — uncertain,
-      //              fail-closed: do NOT rescue to avoid recreating the #706 collision.
-      //   timedOut / null / other → unreliable result — same fail-closed policy.
-      // In all non-1 cases the merge will either succeed naturally (0) or surface
-      // the problem safely (128/timeout), which is the recoverable pre-fix behaviour.
+    const lsTreeResult = execGit(['-C', worktreePath, 'ls-tree', '--name-only', 'HEAD', '--', relPath], { cwd: repoRoot });
+    if (lsTreeResult.timedOut || lsTreeResult.exitCode !== 0) {
+      // Fatal git error (corrupt store, unborn HEAD, etc.) or timeout —
+      // uncertain, fail-closed: do NOT rescue to avoid recreating the #706
+      // collision.  The merge will surface the problem safely.
+      continue;
+    }
+    if ((lsTreeResult.stdout || '').trim() !== '') {
+      // Non-empty listing → the path exists in the committed HEAD tree — the
+      // merge will carry it naturally; copying it as an untracked file would
+      // cause a "untracked working tree files would be overwritten" collision.
       continue;
     }
 
