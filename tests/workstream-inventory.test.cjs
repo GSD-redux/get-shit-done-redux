@@ -279,6 +279,28 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
     assert.equal(inv.progress_percent, 0);
   });
 
+  // A sub-phase inserted mid-milestone (`3.1-…`) has no Progress-table row. It
+  // inherits its parent's milestone and must land on BOTH sides of the rollup:
+  // numerator-only would let completed_phases exceed the denominator and cap
+  // back to 100%, reintroducing the very defect this issue is about.
+  test('inspectWorkstream: a dir-only sub-phase counts in BOTH numerator and denominator', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-subphase' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), MS_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), MS_ROADMAP);
+    // v2.0 declares 3,4,5. All three complete, PLUS a dir-only 3.1 still in progress.
+    writeWsPhase(wsDir, '3-new-a', { plans: 1, summaries: 1, verification: 'passed' });
+    writeWsPhase(wsDir, '3.1-inserted', { plans: 2, summaries: 0 });
+    writeWsPhase(wsDir, '4-new-b', { plans: 1, summaries: 1, verification: 'passed' });
+    writeWsPhase(wsDir, '5-new-c', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-subphase', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 4, 'denominator = declared {3,4,5} + inherited 3.1');
+    assert.equal(inv.completed_phases, 3);
+    assert.equal(inv.progress_percent, 75, 'the in-progress sub-phase must hold this below 100');
+    assert.equal(inv.total_plans, 5, 'the sub-phase contributes its plans too');
+  });
+
   test('inspectWorkstream: a PRIOR-version snapshot does not mark the current milestone complete', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-prior-snap' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), MS_STATE); // current milestone = v2.0

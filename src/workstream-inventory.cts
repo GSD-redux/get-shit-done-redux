@@ -158,6 +158,16 @@ function phaseDirNum(dir: string): string | null {
   return m ? m[1] : null;
 }
 
+/**
+ * #2562: the parent phase number of a sub-phase (`30.1` → `30`), or null for a
+ * top-level phase. A sub-phase inserted mid-milestone frequently has no
+ * Progress-table row of its own, so it inherits its parent's milestone.
+ */
+function phaseParentNum(num: string): string | null {
+  const dot = num.indexOf('.');
+  return dot === -1 ? null : num.slice(0, dot);
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -290,7 +300,22 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       if (version === currentVersion) currentMilestoneNums.add(num);
     }
   }
-  const scoped = currentMilestoneNums.size > 0;
+  // #2562: a sub-phase directory inserted mid-milestone (e.g. `30.1-…` under a
+  // table-declared phase 30) usually has no Progress-table row of its own. It
+  // inherits its parent's milestone and joins BOTH sides of the rollup —
+  // numerator-only would let completed_phases exceed a denominator that never
+  // counted it, capping back to 100% and reintroducing this very bug.
+  const currentMilestoneSubPhaseNums = new Set<string>();
+  if (currentMilestoneNums.size > 0) {
+    for (const dir of phaseDirNames) {
+      const num = phaseDirNum(dir);
+      if (num === null || currentMilestoneNums.has(num)) continue;
+      const parent = phaseParentNum(num);
+      if (parent !== null && currentMilestoneNums.has(parent)) currentMilestoneSubPhaseNums.add(num);
+    }
+  }
+  const currentMilestonePhaseCount = currentMilestoneNums.size + currentMilestoneSubPhaseNums.size;
+  const scoped = currentMilestonePhaseCount > 0;
 
   // #2562: when milestone scoping cannot engage (greenfield/flat Progress table,
   // or an undeterminable current version), the denominator must STILL count
@@ -316,7 +341,9 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       directory: dir,
       planCount: counts.planCount,
       summaryCount: counts.summaryCount,
-      inMilestone: scoped ? (num !== null && currentMilestoneNums.has(num)) : true,
+      inMilestone: scoped
+        ? num !== null && (currentMilestoneNums.has(num) || currentMilestoneSubPhaseNums.has(num))
+        : true,
       verificationStatus: readVerificationStatus(phaseDir).status,
     };
   });
@@ -329,7 +356,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
     activeWorkstreamName: activeWorkstreamName ?? '',
     phaseFilesCounts,
     roadmapPhaseCount: fallbackPhaseCount,
-    currentMilestonePhaseCount: currentMilestoneNums.size,
+    currentMilestonePhaseCount,
     stateProjection: readStateProjection(p.state),
     filesExist: {
       roadmap: fs.existsSync(p.roadmap),
