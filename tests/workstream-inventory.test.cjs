@@ -253,6 +253,32 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
     assert.equal(inv.status, 'executing');
   });
 
+  // Reporter's minimal fixture (issue #2562): a FLAT Progress table (no Milestone
+  // column, so milestone scoping cannot engage) where phase 2 is declared as a
+  // table row only — no `### Phase 2` heading, no directory. The heading-only
+  // count sees just phase 1 and silently drops phase 2 from the denominator.
+  test('inspectWorkstream: flat Progress table — a table-only phase still counts in the denominator', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-flat' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), 'status: executing\n');
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      '# Roadmap', '', '## Phases', '', '### Phase 1: Foo', '**Goal:** foo', '',
+      '## Progress', '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- |',
+      '| 1. Foo | 1/1 | Complete | - |',
+      '| 2. Bar | 0/1 | Not started | - |',
+      '',
+    ].join('\n'));
+    writeWsPhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-flat', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 2, 'table-only phase 2 must not vanish from the denominator');
+    assert.equal(inv.phases[0].status, 'in_progress', 'gaps_found verdict is not complete');
+    assert.equal(inv.completed_phases, 0);
+    assert.equal(inv.progress_percent, 0);
+  });
+
   test('inspectWorkstream: a PRIOR-version snapshot does not mark the current milestone complete', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-prior-snap' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), MS_STATE); // current milestone = v2.0

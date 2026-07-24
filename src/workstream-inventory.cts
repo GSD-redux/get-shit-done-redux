@@ -99,6 +99,33 @@ function parseRoadmapMilestoneTable(roadmapPath: string): Map<string, string> {
 }
 
 /**
+ * #2562: every phase number declared in the ROADMAP `## Progress` table,
+ * regardless of milestone variant. Used for the UNSCOPED denominator: the
+ * heading-only `countRoadmapPhases` misses a phase that has a table row but no
+ * `### Phase N` heading — even when other headings exist — so a declared phase
+ * silently vanished from the denominator on single-milestone/greenfield
+ * roadmaps, where milestone scoping cannot engage.
+ */
+function parseRoadmapPhaseNums(roadmapPath: string): Set<string> {
+  const nums = new Set<string>();
+  let content: string;
+  try {
+    content = fs.readFileSync(roadmapPath, 'utf-8');
+  } catch {
+    return nums; /* no roadmap */
+  }
+  // 'Plans Complete' is present in BOTH RoadmapProgress variants (flat and
+  // milestone-grouped), so this matches either shape.
+  const table = findTableWithColumns(content, ['Phase', 'Plans Complete']);
+  if (!table) return nums;
+  for (const row of table.rows) {
+    const m = (row['Phase'] ?? '').match(/^\s*(\d+(?:\.\d+)?)\b/);
+    if (m) nums.add(m[1]);
+  }
+  return nums;
+}
+
+/**
  * #2562: the workstream's CURRENT milestone version, read from the STATE.md
  * `milestone:` frontmatter field (the reliable per-workstream signal — the
  * ROADMAP's own in-progress markers can be stale, e.g. a lingering 🚧 on an
@@ -265,6 +292,21 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   }
   const scoped = currentMilestoneNums.size > 0;
 
+  // #2562: when milestone scoping cannot engage (greenfield/flat Progress table,
+  // or an undeterminable current version), the denominator must STILL count
+  // phases the ROADMAP declares in its Progress table but never scaffolded —
+  // the heading-only count drops them. Union the declared rows with the phase
+  // directories so neither source can silently shrink the denominator.
+  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length);
+  if (!scoped) {
+    const declaredNums = parseRoadmapPhaseNums(p.roadmap);
+    if (declaredNums.size > 0) {
+      const union = new Set<string>(declaredNums);
+      for (const dir of phaseDirNames) union.add(phaseDirNum(dir) ?? dir);
+      fallbackPhaseCount = union.size;
+    }
+  }
+
   // Collect per-phase file counts (+ milestone membership + verification verdict)
   const phaseFilesCounts = phaseDirNames.map(dir => {
     const phaseDir = path.join(p.phases, dir);
@@ -286,7 +328,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
     phaseDirNames,
     activeWorkstreamName: activeWorkstreamName ?? '',
     phaseFilesCounts,
-    roadmapPhaseCount: countRoadmapPhases(p.roadmap, phaseDirNames.length),
+    roadmapPhaseCount: fallbackPhaseCount,
     currentMilestonePhaseCount: currentMilestoneNums.size,
     stateProjection: readStateProjection(p.state),
     filesExist: {
