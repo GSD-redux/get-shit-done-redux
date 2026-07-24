@@ -14,7 +14,7 @@ const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const EXPECTED_FLAGS = [
   'isOpencode', 'isKilo', 'isCodex', 'isCopilot', 'isAntigravity',
   'isCursor', 'isWindsurf', 'isAugment', 'isTrae', 'isQwen', 'isHermes',
-  'isCodebuddy', 'isCline', 'isKimi', 'isKimiCode', 'isZcode', 'isPi',
+  'isCodebuddy', 'isCline', 'isKimi', 'isKimiCode', 'isZcode', 'isPi', 'isQoder',
 ];
 
 // #2103: registry runtimes that are NEVER CLI-installed via bin/install.js

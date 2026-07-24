@@ -849,3 +849,40 @@ engine enforces natively — there is no separate extension-side "subagent contr
 registration API beyond the chat participant + Language Model Tools already registered; VS Code's
 chat engine surfaces them to `#runSubagent` on its own.
 
+---
+
+## qoder
+
+| Axis | Value | Source | Evidence |
+|---|---|---|---|
+| embeddingMode | declarative | https://docs.qoder.com/en/cli/skills | Skills are `SKILL.md` files discovered from `~/.qoder/skills/<name>/SKILL.md` (user-level) or `.qoder/skills/<name>/SKILL.md` (project-level) — file-based configuration; no in-process programmatic plugin API documented for the CLI host. |
+| commandSurface | slash-file | https://docs.qoder.com/en/cli/skills | Skills are authored as `SKILL.md` markdown files with YAML frontmatter (`name`, `description`) and invoked as slash commands (`/<skill-name>`); custom commands likewise are markdown files. |
+| modelMode | passive | https://docs.qoder.com/en/cli/model | "switch between them at any time via the `/model` interface" — model selection via UI / `--model` / settings only; no in-host programmatic model-request API. |
+| hookBus | host | https://docs.qoder.com/en/cli/hooks | "Hooks let you intercept the Agent's main execution flow at key points in Qoder CLI" — host-fired events UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop; configured in `~/.qoder/settings.json`; Claude-compatible stdin/exit-code protocol. |
+| stateIO | filesystem | https://docs.qoder.com/en/cli/hooks | Hooks run as local shell commands; the CLI agent reads/edits files in the project working directory with configurable `additionalDirectories` (`.qoder/settings.json` config). |
+| transport | mcp | https://docs.qoder.com/en/cli/mcp-servers | MCP is built-in (`qodercli mcp add`); transport types `stdio` / `sse` / `http` / `ws`; user-level server config stored in `~/.qoder/settings.json`. |
+| runtime | node | https://www.npmjs.com/package/@qoder-ai/qodercli | The CLI ships as the npm package `@qoder-ai/qodercli` — a Node.js bundle (`qodercli.js`); the `qodercli` host executes on the Node runtime. |
+| dispatch.namedDispatch | true | https://docs.qoder.com/en/cli/subagent | "A Subagent is a specialized agent ... configured via `options.agents` keyed by name"; the `Agent` tool invokes a named subagent. |
+| dispatch.nested | true | https://docs.qoder.com/en/cli/subagent | FAQ: "Can a Subagent call another Subagent? Yes, if the `Agent` tool remains available." The `Agent` tool is available by default when `tools` is omitted (GSD's installed agents omit `tools`, inheriting the full available toolset). Note: `/cli/sdk/agents` states "Subagents cannot spawn their own subagents" — that restriction applies to the SDK's programmatic agent API, not the CLI subagent system GSD installs to. |
+| dispatch.maxDepth | undocumented | https://docs.qoder.com/en/cli/subagent | CLI subagents support nesting (see `dispatch.nested` above), but no numeric depth limit is documented; recorded `undocumented` (see Documentation gaps below). |
+| dispatch.background | true | https://docs.qoder.com/en/cli/subagent | Subagent sessions can run in the background with completion notifications; "`/tasks`" lists running background tasks. |
+| dispatch.subagentToolkit | full | https://docs.qoder.com/en/cli/subagent | `tools` is a tool allowlist: "Omitted means use the current available tool set; `*` means all tools." GSD's installed agents omit `tools`, so subagents inherit the full available toolset; restriction is opt-in via `tools`/`disallowedTools` (FAQ: `Agent(name)` allows only specific subagents, `disallowedTools: [Agent]` prevents further dispatch). |
+| dispatch.backgroundDispatch | true | https://docs.qoder.com/en/cli/subagent | CLI subagents support nesting (FAQ: "Can a Subagent call another Subagent? Yes"); the `background` frontmatter field is documented and the background-subagent completion-notification flow is described. Background-dispatched subagents inherit the same nesting capability. |
+| dispatch.isolation | none | https://docs.qoder.com/en/cli/subagent | Qoder CLI *does* document a worktree isolation capability — agent definition files (`~/.qoder/agents/*.md`) accept an `isolation: worktree` frontmatter field: "`worktree` runs the Subagent in a separate git worktree. Omitted means the default workspace," and the docs recommend "Use Markdown configuration when you need ... `isolation`." However, this is a **declaration-time frontmatter model**, not a dispatch-time parameter: unlike Claude's `Agent(isolation="worktree")` call argument (harness) or Codex's `codex exec --cd <dir>` cwd flag (orchestrator), Qoder's isolation is set once in the agent definition and cannot be passed per-invocation. GSD's current `convertClaudeAgentToQoderAgent` emits only `name`+`description` frontmatter (does not inject `isolation`), and the dispatch scheduler's `{harnessFlag}` placeholder has no Qoder equivalent. Classified `none` until GSD grows a frontmatter-injection isolation path; `none` fails closed to sequential execution (#2584, #860). |
+| effortSurface | argv | https://docs.qoder.com/en/cli/model | "Use the `--model`, `--reasoning-effort`, and `--context-window` flags to specify model settings at startup" (example: `qodercli --reasoning-effort high`); levels `low` / `medium` / `high` / `xhigh` / `max`; "These apply to the current session only and are not persisted". TUI mirror: `/effort auto --session-only`. Matches how Claude / Codex / OpenCode record this axis. |
+
+Sources consulted:
+- https://docs.qoder.com/en/cli/quick-start
+- https://docs.qoder.com/en/cli/using-cli
+- https://docs.qoder.com/en/cli/command
+- https://docs.qoder.com/en/cli/skills
+- https://docs.qoder.com/en/cli/model
+- https://docs.qoder.com/en/cli/hooks
+- https://docs.qoder.com/en/cli/subagent
+- https://docs.qoder.com/en/cli/mcp-servers
+- https://www.npmjs.com/package/@qoder-ai/qodercli
+- /websites/qoder (Context7)
+
+Documentation gaps:
+- dispatch.maxDepth — CLI subagents support nesting but no numeric depth ceiling is documented; classified `undocumented`.
+- dispatch.isolation (frontmatter model) — Qoder documents a real worktree capability (`isolation: worktree` frontmatter on agent definition files), but it is a declaration-time, per-agent-definition property, not a dispatch-time parameter. The two negotiation models GSD supports — `harness-worktree` (host accepts a call-time flag like Claude's `Agent(isolation="worktree")`) and `orchestrator-worktree` (GSD process-spawns with a cwd flag like `codex exec --cd`) — both assume a per-dispatch injection point Qoder does not expose. Activating Qoder worktree isolation needs a third path: the converter injects `isolation: worktree` into the executor agent's frontmatter at install time. Tracked as follow-up to #860; until then the descriptor records `none` (sequential, fail-closed).

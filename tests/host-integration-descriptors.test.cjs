@@ -39,7 +39,7 @@ const RUNTIME_IDS = Object.keys(registry.runtimes);
 
 // Contract-pinned profile split (derived from .host-cli-final.json):
 // programmatic-cli: claude, cline, cursor, hermes, kilo, kimi, opencode, pi, qwen, trae (10)
-// declarative-cli:  antigravity, augment, codebuddy, codex, copilot, kimi-code, windsurf, zcode (8)
+// declarative-cli:  antigravity, augment, codebuddy, codex, copilot, kimi-code, windsurf, zcode, qoder (9)
 // kimi-code moved programmatic-cli → declarative-cli in #2603: its plugin surface is a
 // `kimi.plugin.json` manifest plus markdown Skills with no in-process programmatic API
 // (docs/en/customization/plugins.md), the same shape as codex. The value had been inherited
@@ -62,6 +62,7 @@ const EXPECTED_PROFILES = {
   codex:       'declarative-cli',
   copilot:     'declarative-cli',
   'kimi-code': 'declarative-cli',
+  qoder:       'declarative-cli',
   windsurf:    'declarative-cli',
   zcode:       'declarative-cli',
   vscode:      'ide',
@@ -280,6 +281,10 @@ describe('ADR-1239 Phase A: hostIntegration descriptors', () => {
     claude:      true,
     cline:       true,
     codebuddy:   true,
+    // #860: Qoder CLI subagent system supports background dispatch
+    // (docs.qoder.com/en/cli/subagent) → dispatch.background/backgroundDispatch
+    // both true → NOT force-flattened (mirrors #2087 OpenCode / #2095 Kimi).
+    qoder:       false,
     codex:       false,
     copilot:     true,
     cursor:      false,

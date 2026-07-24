@@ -61,6 +61,7 @@ const RUNTIME_INSTALL_CONTRACTS = {
   // hooksSurface:'none' + a native plugin that spawns the staged hooks — NOT
   // like ZCode (no plugin surface, where the same hooks are dead weight).
   pi: { surface: 'plugin-only', settings: false, packageJson: true },
+  qoder: { surface: 'flat-skills', settings: true, packageJson: true },
   qwen: { surface: 'flat-skills', settings: true, packageJson: true },
   trae: { surface: 'flat-skills', settings: false, packageJson: false },
   windsurf: { surface: 'global-artifacts-noop', settings: false, packageJson: false },

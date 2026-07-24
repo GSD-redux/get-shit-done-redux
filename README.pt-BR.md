@@ -6,7 +6,7 @@
 
 [English](README.md) · **Português** · [简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [한국어](README.ko-KR.md)
 
-**Um sistema leve de meta-prompting, engenharia de contexto e desenvolvimento orientado a especificações para Claude Code, OpenCode, Gemini CLI, Kilo, Codex, Copilot, Cursor, Windsurf e muito mais.**
+**Um sistema leve de meta-prompting, engenharia de contexto e desenvolvimento orientado a especificações para Claude Code, OpenCode, Gemini CLI, Kilo, Codex, Copilot, Cursor, Windsurf, Qoder e muito mais.**
 
 [![npm version](https://img.shields.io/npm/v/%40opengsd%2Fgsd-core?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@opengsd/gsd-core)
 [![npm downloads](https://img.shields.io/npm/dm/%40opengsd%2Fgsd-core?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@opengsd/gsd-core)
@@ -43,7 +43,7 @@ Cada marco repete o mesmo ciclo de cinco etapas, uma fase por vez:
 npx @opengsd/gsd-core@latest
 ```
 
-O instalador solicita seu ambiente de execução (Claude Code, OpenCode, Gemini CLI, Kilo, Codex, Copilot, Cursor, Windsurf e mais) e se deseja instalar globalmente ou localmente. O instalador é necessário para compatibilidade entre runtimes — não copie arquivos diretamente de `agents/` ou `commands/`.
+O instalador solicita seu ambiente de execução (Claude Code, OpenCode, Gemini CLI, Kilo, Codex, Copilot, Cursor, Windsurf, Qoder e mais) e se deseja instalar globalmente ou localmente. O instalador é necessário para compatibilidade entre runtimes — não copie arquivos diretamente de `agents/` ou `commands/`.
 
 Em outro runtime ou sem Node.js? Consulte [Instalar no seu runtime](docs/pt-BR/how-to/install-on-your-runtime.md).
 

@@ -673,6 +673,7 @@ const VALID_CONVERTER_NAMES = new Set([
   // commands / skills converters (pre-existing)
   'convertClaudeCommandToAntigravitySkill',
   'convertClaudeCommandToAugmentSkill',
+  'convertClaudeCommandToQoderSkill',
   'convertClaudeCommandToClineSkill',
   'convertClaudeCommandToClaudeSkill',
   'convertClaudeCommandToCodebuddyCommand',
@@ -696,6 +697,7 @@ const VALID_CONVERTER_NAMES = new Set([
   'convertClaudeAgentToAugmentAgent',
   'convertClaudeAgentToTraeAgent',
   'convertClaudeAgentToCodebuddyAgent',
+  'convertClaudeAgentToQoderAgent',
   'convertClaudeAgentToClineAgent',
   'convertClaudeAgentToCodexAgent',
   // ADR-1239 / #2092 Phase B Upgrade 1 — native .qwen/agents/*.md subagent projection.

@@ -1204,6 +1204,110 @@ function convertClaudeCommandToAugmentSkill(content, skillName) {
   return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
 }
 
+// ── Qoder converters ────────────────────────────────────────────────────────
+
+/**
+ * Convert Claude Code markdown to Qoder markdown.
+ *
+ * Qoder (Alibaba @qoder-ai/qodercli) is a file-based CLI: skills live at
+ * ~/.qoder/skills/<name>/SKILL.md, project instructions at AGENTS.md. This
+ * converter applies the path/brand rewrites for Qoder output. Slash-form
+ * `.claude/` references are rewritten before bare forms (no trailing slash)
+ * to avoid double-rewrite; bare forms use a negative lookahead `(?![\w-])` so
+ * hyphenated compound tokens like `.claude-plugin` and `.claudeignore` are
+ * preserved (mirrors the Trae/Windsurf/Cursor defensive pattern).
+ *
+ * The env-var name CLAUDE_CONFIG_DIR is rewritten to QODER_CONFIG_DIR to match
+ * the descriptor's declared `env: ["QODER_CONFIG_DIR"]` (same convention as
+ * Trae/Windsurf/Cline).
+ *
+ * @param content - raw Claude markdown
+ * @returns Qoder-branded markdown
+ */
+function convertClaudeToQoderMarkdown(content: string): string {
+  let converted = content;
+  // Hyphen-normalise /gsd:<commandName> → /gsd-<commandName> command references
+  converted = converted.replace(/\/gsd:([a-z0-9-]+)/gi, (_, commandName) => `/gsd-${commandName}`);
+  // Slash forms first (most specific — superset of bare forms)
+  converted = converted.replace(/\.claude\/skills\//g, '.qoder/skills/');
+  converted = converted.replace(/\.\/\.claude\//g, './.qoder/');
+  converted = converted.replace(/\.claude\//g, '.qoder/');
+  // Bare forms (no trailing slash) — after slash forms to avoid double-rewrite.
+  // Negative lookahead (?![\w-]) preserves compound tokens (.claudeignore,
+  // .claude-plugin) the way Trae/Windsurf/Cursor do.
+  converted = converted.replace(/\.\/\.claude(?![\w-])/g, './.qoder');
+  converted = converted.replace(/~\/\.claude(?![\w-])/g, '~/.qoder');
+  converted = converted.replace(/\$HOME\/\.claude(?![\w-])/g, '$HOME/.qoder');
+  // Environment variable name rewrite (descriptor declares QODER_CONFIG_DIR)
+  converted = converted.replace(/\bCLAUDE_CONFIG_DIR\b/g, 'QODER_CONFIG_DIR');
+  // CLAUDE.md → AGENTS.md (Qoder's project-level instructions file)
+  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`AGENTS.md`');
+  converted = converted.replace(/\.\/CLAUDE\.md/g, 'AGENTS.md');
+  converted = converted.replace(/`CLAUDE\.md`/g, '`AGENTS.md`');
+  converted = converted.replace(/\bCLAUDE\.md\b/g, 'AGENTS.md');
+  // Branding: "Claude Code" → "Qoder"
+  converted = converted.replace(/\bClaude Code\b/g, 'Qoder');
+  return converted;
+}
+
+/**
+ * Convert a Claude agent (.md) to a Qoder agent.
+ *
+ * Sanitises frontmatter to the 2-field `name` + `description` contract
+ * (ADR-3660 addendum): Claude-specific `tools:` / `color:` / commented hook
+ * blocks MUST NOT pass through. Applies Qoder markdown rewrites to the body.
+ * Content without frontmatter passes through unchanged.
+ *
+ * @param content - raw Claude agent markdown
+ * @returns Qoder agent markdown with sanitised frontmatter
+ */
+function convertClaudeAgentToQoderAgent(content: string): string {
+  const converted = convertClaudeToQoderMarkdown(content);
+  const { frontmatter, body } = extractFrontmatterAndBody(converted);
+  if (!frontmatter) return converted;
+  const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
+  const description = extractFrontmatterField(frontmatter, 'description') || '';
+  const cleanFrontmatter = `---\nname: ${yamlIdentifier(name)}\ndescription: ${yamlQuote(toSingleLine(description))}\n---`;
+  return `${cleanFrontmatter}\n${body}`;
+}
+
+/**
+ * Convert a Claude command (.md) to a Qoder skill (SKILL.md).
+ *
+ * Hyphen-normalises /gsd:<cmd> → gsd-<cmd>, applies Qoder markdown rewrites,
+ * and emits the `name` + `description` frontmatter per the Qoder skills spec.
+ * Targets ~/.qoder/skills/<name>/SKILL.md.
+ *
+ * @param content    - raw Claude command markdown
+ * @param skillName  - installed skill name (e.g. 'gsd-help')
+ * @param _runtime   - unused runtime hint (descriptor-driven dispatch)
+ * @param cmdNames   - optional pre-computed command list (perf); falls back to readGsdCommandNames
+ * @returns Qoder SKILL.md content
+ */
+function convertClaudeCommandToQoderSkill(content: string, skillName: string, _runtime: string | null = null, cmdNames: string[] | null = null): string {
+  const { frontmatter, body } = extractFrontmatterAndBody(content);
+  if (!frontmatter) return convertClaudeToQoderMarkdown(content);
+
+  // Hyphen-normalise /gsd:<cmd> → gsd-<cmd> references, then
+  // apply Qoder-specific markdown rewrites (.claude/→.qoder/, etc.).
+  const names = cmdNames || readGsdCommandNames();
+  const normalizedBody = transformContentToHyphen(body, names);
+  const qoderBody = convertClaudeToQoderMarkdown(normalizedBody);
+
+  // Extract description; fall back to a generic string if absent.
+  // Run through the converter so references like "Claude Code's ultraplan cloud"
+  // are rewritten to "Qoder's ultraplan cloud" in the frontmatter.
+  let description = extractFrontmatterField(frontmatter, 'description');
+  if (!description) description = `Run GSD workflow ${skillName}.`;
+  description = toSingleLine(convertClaudeToQoderMarkdown(description));
+  const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
+
+  const fm = `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---`;
+  return `${fm}\n${qoderBody}`;
+}
+
+// ── End Qoder converters ────────────────────────────────────────────────────
+
 function convertSlashCommandsToTraeSkillMentions(content) {
   return content.replace(/\/gsd:([a-z0-9-]+)/g, (_, commandName) => {
     return `/gsd-${commandName}`;
@@ -2624,6 +2728,20 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       content = processAttribution(content, attribution);
       break;
 
+    case 'qoder':
+      content = content.replace(/~\/\.claude\//g, pathPrefix);
+      content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
+      content = content.replace(/\.\/\.claude\//g, `./${dirName}/`);
+      content = content.replace(/~\/\.claude(?![\w-])/g, normalizedPathPrefix);
+      content = content.replace(/\$HOME\/\.claude(?![\w-])/g, normalizedPathPrefix);
+      content = content.replace(/\.\/\.claude(?![\w-])/g, `./${dirName}`);
+      content = content.replace(/~\/\.qoder\//g, pathPrefix);
+      content = content.replace(/\$HOME\/\.qoder\//g, pathPrefix);
+      content = content.replace(/~\/\.qoder(?![\w-])/g, normalizedPathPrefix);
+      content = content.replace(/\$HOME\/\.qoder(?![\w-])/g, normalizedPathPrefix);
+      content = processAttribution(content, attribution);
+      break;
+
     default:
       // Unknown runtime — no rewrites (OpenCode/Kilo handled by their own install path).
       break;
@@ -2891,6 +3009,8 @@ export = {
   convertClaudeCommandToWindsurfWorkflow,
   convertClaudeToAugmentMarkdown,
   convertClaudeCommandToAugmentSkill,
+  convertClaudeToQoderMarkdown,
+  convertClaudeCommandToQoderSkill,
   convertClaudeToTraeMarkdown,
   convertClaudeCommandToTraeSkill,
   convertClaudeToCodebuddyMarkdown,
@@ -2925,6 +3045,7 @@ export = {
   convertClaudeAgentToCursorAgent,
   convertClaudeAgentToWindsurfAgent,
   convertClaudeAgentToAugmentAgent,
+  convertClaudeAgentToQoderAgent,
   convertClaudeAgentToTraeAgent,
   convertClaudeAgentToCodebuddyAgent,
   convertClaudeAgentToClineAgent,

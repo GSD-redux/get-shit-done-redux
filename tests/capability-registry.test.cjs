@@ -4021,9 +4021,9 @@ describe('ADR-1016 phase 5a: closed-vocab set exports', () => {
 // ─── 25. ADR-857 phase 5e: closed ConverterName enum (Part B) ─────────────────
 
 describe('ADR-857 phase 5e: VALID_CONVERTER_NAMES closed enum', () => {
-  test('VALID_CONVERTER_NAMES has exactly 27 entries (17 command/skill/workflow + 10 agent converters)', () => {
+  test('VALID_CONVERTER_NAMES has exactly 29 entries (18 command/skill/workflow + 11 agent converters)', () => {
     assert.ok(VALID_CONVERTER_NAMES instanceof Set, 'VALID_CONVERTER_NAMES must be a Set');
-    assert.strictEqual(VALID_CONVERTER_NAMES.size, 27, 'VALID_CONVERTER_NAMES must have exactly 27 entries, got: ' + VALID_CONVERTER_NAMES.size);
+    assert.strictEqual(VALID_CONVERTER_NAMES.size, 29, 'VALID_CONVERTER_NAMES must have exactly 29 entries, got: ' + VALID_CONVERTER_NAMES.size);
   });
 
   test('VALID_CONVERTER_NAMES contains all expected converter names', () => {
@@ -4042,6 +4042,7 @@ describe('ADR-857 phase 5e: VALID_CONVERTER_NAMES closed enum', () => {
       'convertClaudeCommandToKiloSkill',
       'convertClaudeCommandToKimiSkill',
       'convertClaudeCommandToOpencodeSkill',
+      'convertClaudeCommandToQoderSkill',
       'convertClaudeCommandToTraeSkill',
       'convertClaudeCommandToWindsurfSkill',
       'convertClaudeCommandToWindsurfWorkflow',
@@ -4054,6 +4055,7 @@ describe('ADR-857 phase 5e: VALID_CONVERTER_NAMES closed enum', () => {
       'convertClaudeAgentToTraeAgent',
       'convertClaudeAgentToCodebuddyAgent',
       'convertClaudeAgentToClineAgent',
+      'convertClaudeAgentToQoderAgent',
       'convertClaudeAgentToCodexAgent',
       // ADR-1239 / #2092 Phase B Upgrade 1 — native .qwen/agents/*.md subagent projection.
       'convertClaudeAgentToQwenAgent',

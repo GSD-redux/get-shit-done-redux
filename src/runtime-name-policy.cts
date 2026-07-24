@@ -235,6 +235,7 @@ const RUNTIME_LABELS: Readonly<Record<string, string>> = {
   augment: 'Augment',
   trae: 'Trae',
   qwen: 'Qwen Code',
+  qoder: 'Qoder',
   hermes: 'Hermes Agent',
   kimi: 'Kimi CLI',
   'kimi-code': 'Kimi Code',
@@ -290,6 +291,7 @@ const GLOBAL_CONFIG_HOME_FRAGMENTS: Readonly<Record<string, string>> = {
   augment:   "'.augment'",
   trae:      "'.trae'",
   qwen:      "'.qwen'",
+  qoder:     "'.qoder'",
   hermes:    "'.hermes'",
   codebuddy: "'.codebuddy'",
   cline:     "'.cline'",
@@ -330,7 +332,7 @@ export function getGlobalConfigHomeFragment(runtime: string): string {
 // folds the shared-hooks-install skip).
 const RUNTIME_FLAG_IDS = Object.freeze([
   'opencode', 'kilo', 'codex', 'copilot', 'antigravity', 'cursor',
-  'windsurf', 'augment', 'trae', 'qwen', 'hermes', 'codebuddy', 'cline', 'kimi', 'kimi-code', 'zcode', 'pi',
+  'windsurf', 'augment', 'trae', 'qwen', 'hermes', 'codebuddy', 'cline', 'kimi', 'kimi-code', 'zcode', 'pi', 'qoder',
 ] as const);
 
 /**

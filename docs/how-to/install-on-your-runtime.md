@@ -477,6 +477,43 @@ The extension registers a `/gsd` command and a `gsd_invoke` tool that dispatch G
 
 ---
 
+### Qoder
+
+[Qoder](https://docs.qoder.com/en/cli/) (Alibaba `@qoder-ai/qodercli`) is a file-based CLI with a Claude-compatible hooks system.
+
+```bash
+npx @opengsd/gsd-core@latest --qoder --global
+```
+
+GSD installs three surfaces. Skills land in `~/.qoder/skills/gsd-*/SKILL.md` and are invoked as `/gsd-<cmd>` slash commands. Subagents land in `~/.qoder/agents/gsd-*.md` — emitted with sanitized `name`+`description` frontmatter only (Claude-specific `tools:`/`color:`/hook blocks are stripped). Qoder hooks are written to `~/.qoder/settings.json` (Claude dialect). No `mcp.json` is written: GSD ships no MCP server.
+
+**Override the install directory** (e.g. for Qoder-CN, which uses `~/.qoder-cn/`):
+
+```bash
+QODER_CONFIG_DIR=~/.qoder-cn npx @opengsd/gsd-core@latest --qoder --global
+# or
+npx @opengsd/gsd-core@latest --qoder --global --config-dir ~/.qoder-cn
+```
+
+**Hook coverage**
+
+Qoder supports the full Claude-family hook event surface ([docs.qoder.com/en/cli/hooks](https://docs.qoder.com/en/cli/hooks)). GSD's descriptor declares `hookEvents: "claude"` (the full shared dialect) with `extendedHookEvents` `[SubagentStart, SubagentStop, Stop, PreCompact, FileChanged]`. GSD registers the following events automatically on install:
+
+| Event | Hook | Purpose |
+|---|---|---|
+| `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
+| `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, commit validation |
+| `SubagentStart` | `gsd-context-monitor.js` | Context headroom tracking at subagent start |
+| `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
+| `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |
+| `PreCompact` | `gsd-context-monitor.js` | Context awareness before conversation compaction |
+| `FileChanged` (matcher: `config.json`) | `gsd-config-reload.js` | Hot-reloads `.planning/config.json` context mid-session when you edit your GSD config — no session restart required |
+
+All registered hooks are managed by GSD. Note: `--uninstall` does not currently remove every GSD artifact — some `settings.json` hook entries and the installed `skills/`/`agents/` directories remain (same pre-existing behavior as CodeBuddy).
+
+---
+
 ## Local vs global install
 
 All examples above use `--global`, which installs GSD once for your user account. To scope an install to a single project, replace `--global` with `--local`:

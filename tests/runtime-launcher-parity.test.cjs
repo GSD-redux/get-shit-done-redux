@@ -1034,6 +1034,7 @@ const EXPECTED_RUNTIME_PROBES = {
   antigravity: '.gemini/antigravity}/gsd-core/bin/',
   opencode:    'opencode}/gsd-core/bin/',
   kilo:        'kilo}/gsd-core/bin/',
+  qoder:       '.qoder}/gsd-core/bin/',
 };
 
 /**
@@ -1405,6 +1406,52 @@ describe('bug-891: non-Claude runtime home fallback arms', () => {
       [],
       `These workflow files use gsd_run but are missing the hermes runtime home probe ("${HERMES_PROBE}"). ` +
         `Run \`node scripts/sync-runtime-launcher.cjs\` to propagate:\n` +
+        missing.join('\n'),
+    );
+  });
+
+  // ── (K) allRuntimes ↔ snippet parity: every registry runtime is covered ──
+  //
+  // The per-runtime CONFIG_DIR fallback chain is hand-maintained. When a new
+  // runtime is registered in capability-registry.cjs, its probe MUST be added to
+  // EXPECTED_RUNTIME_PROBES (and a matching elif arm to the snippet) — otherwise
+  // a global install where gsd-tools is not on PATH falls through to the
+  // hard-error else (the exact drift that hit qoder in the #860 review). This
+  // guard derives coverage from allRuntimes so a newly registered runtime fails
+  // loudly until its arm lands, instead of shipping a silent PATH-less fatal.
+  test('(K) allRuntimes parity: every registry runtime has a launcher probe or an explicit exemption', () => {
+    const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const allRuntimes = Object.keys(registry.runtimes).sort();
+
+    // Runtimes legitimately absent from the per-runtime CONFIG_DIR chain:
+    // - claude: covered by the dedicated ${CLAUDE_CONFIG_DIR:-$HOME/.claude} arm (test G)
+    // - vscode: #2103 — Marketplace/VSIX-distributed, never CLI-installed, no gsd_run launcher
+    // - kimi-code: profile-marker-only (Agent Skills auto-discovery) — no gsd_run launcher
+    // - pi / zcode / kimi: pre-existing systemic gap — their configHome descriptors
+    //   do not map to a simple ${ENV:-$HOME/.x} arm (pi: dot-home-nested with no env
+    //   var; kimi: probe-based generic-agents-root; zcode: profile-marker install).
+    //   Tracked separately. This set is the ONLY place they may be excused — adding
+    //   a runtime here requires deliberate review, never a silent omission.
+    const EXEMPT_RUNTIMES = new Set(['claude', 'vscode', 'kimi-code', 'pi', 'zcode', 'kimi']);
+
+    const snippetContent = fs.readFileSync(SNIPPET_FILE, 'utf8');
+
+    const missing = [];
+    for (const runtime of allRuntimes) {
+      if (EXEMPT_RUNTIMES.has(runtime)) continue;
+      const probe = EXPECTED_RUNTIME_PROBES[runtime];
+      if (!probe) {
+        missing.push(`${runtime}: no entry in EXPECTED_RUNTIME_PROBES — add its config-home probe here AND a matching elif arm to _runtime-launcher.snippet.sh`);
+      } else if (!snippetContent.includes(probe)) {
+        missing.push(`${runtime}: EXPECTED_RUNTIME_PROBES has "${probe}" but the snippet lacks it — add the elif arm and run \`node scripts/sync-runtime-launcher.cjs\``);
+      }
+    }
+
+    assert.deepStrictEqual(
+      missing,
+      [],
+      'allRuntimes ↔ launcher-snippet parity violated (a registered runtime has no ' +
+        'CONFIG_DIR fallback arm, so a PATH-less global install hits the hard error):\n' +
         missing.join('\n'),
     );
   });

@@ -42,6 +42,7 @@ const GOLDEN_FRAGMENT_MAP = {
   augment:   "'.augment'",
   trae:      "'.trae'",
   qwen:      "'.qwen'",
+  qoder:     "'.qoder'",
   hermes:    "'.hermes'",
   codebuddy: "'.codebuddy'",
   cline:     "'.cline'",
