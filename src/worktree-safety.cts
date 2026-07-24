@@ -601,20 +601,18 @@ function rescueSummaryArtifacts(
     // the executor's content could be lost.  cat-file -e HEAD:<path> returns
     // exit 0 only when the object exists in the committed HEAD tree.
     //
-    // Fail-closed on timeout/fatal git errors: if we cannot determine whether
-    // the file is committed, do NOT rescue it (rescuing an actually-committed
-    // file would re-create the untracked collision; the merge will surface the
-    // issue).  The cleanup will be blocked by merge_failed in the worst case,
-    // which is the observable behaviour before this fix and is recoverable.
+    // #2556: rescue whenever the object is NOT confirmed committed (any non-zero
+    // exit). `git cat-file -e` returns 128 — NOT 1 — for an absent path (the
+    // normal uncommitted-SUMMARY state), so the previous `!== 1` check never
+    // rescued and the untracked file was silently discarded by `worktree remove
+    // --force`. Data safety wins: an un-rescued untracked SUMMARY is lost, while
+    // a spurious rescue is usually a no-op — the destination check below skips the
+    // copy when the main tree already holds identical content (which is also what
+    // guards the #706 merge collision). A divergent dest is overwritten, but only
+    // uncommitted main-tree content could be lost (committed content is git-recoverable).
     const catFileResult = execGit(['-C', worktreePath, 'cat-file', '-e', `HEAD:${relPath}`], { cwd: repoRoot });
-    if (catFileResult.exitCode !== 1) {
-      // Rescue only when cat-file definitively reports the object is absent (exit 1).
-      //   exit 0  → object exists (committed on HEAD) — merge will carry it, skip.
-      //   exit 128 → fatal git error (corrupt store, unborn HEAD, etc.) — uncertain,
-      //              fail-closed: do NOT rescue to avoid recreating the #706 collision.
-      //   timedOut / null / other → unreliable result — same fail-closed policy.
-      // In all non-1 cases the merge will either succeed naturally (0) or surface
-      // the problem safely (128/timeout), which is the recoverable pre-fix behaviour.
+    if (catFileResult.exitCode === 0) {
+      // exit 0 → the SUMMARY is committed on HEAD; the merge will carry it, so skip rescue.
       continue;
     }
 
