@@ -2268,7 +2268,7 @@ function cmdAgentSkills(
   if (!block) {
     const runtime = (config && (config['runtime'] as string)) || process.env['GSD_RUNTIME'] || 'claude';
     if (runtime !== 'claude') {
-      const agentCheck = checkAgentsInstalled(runtime) as unknown as { agents_dir?: string } | null;
+      const agentCheck = checkAgentsInstalled(runtime, projectRoot) as unknown as { agents_dir?: string } | null;
       const agentsDir = agentCheck?.agents_dir;
       if (typeof agentsDir === 'string' && agentsDir.length > 0) {
         const agentFile = path.join(agentsDir, `${agentType}.md`);

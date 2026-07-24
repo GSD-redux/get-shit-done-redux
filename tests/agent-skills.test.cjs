@@ -128,6 +128,36 @@ describe('agent-skills command', () => {
     assert.strictEqual(r.ir.block, '');
   });
 
+  test('unconfigured Codex reads its local companion agent from a descendant cwd', () => {
+    const agentsDir = path.join(tmpDir, '.codex', 'agents');
+    const descendant = path.join(tmpDir, 'src', 'feature');
+    const localPersona = '# Local Codex executor\nUse the project-local agent.\n';
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.mkdirSync(descendant, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), localPersona);
+    writeConfig(tmpDir, { runtime: 'codex' });
+
+    const r = runAgentSkillsJson(['agent-skills', 'gsd-executor'], descendant, {
+      HOME: tmpDir,
+      USERPROFILE: tmpDir,
+      CODEX_HOME: path.join(tmpDir, 'global-codex'),
+      GSD_RUNTIME: '',
+    });
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assert.strictEqual(r.ir.block, localPersona);
+  });
+
+  test('unconfigured Claude remains empty when a local Codex companion exists', () => {
+    const agentsDir = path.join(tmpDir, '.codex', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), '# Local Codex executor\n');
+    writeConfig(tmpDir, { runtime: 'claude' });
+
+    const r = runAgentSkillsJson(['agent-skills', 'gsd-executor'], tmpDir, { GSD_RUNTIME: 'claude' });
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assert.strictEqual(r.ir.block, '');
+  });
+
   test('returns block containing agent_skills XML for configured agent', () => {
     const skillDir = path.join(tmpDir, 'skills', 'test-skill');
     fs.mkdirSync(skillDir, { recursive: true });
