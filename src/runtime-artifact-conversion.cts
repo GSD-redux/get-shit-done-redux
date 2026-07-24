@@ -25,6 +25,7 @@ import runtimeNamePolicy = require('./runtime-name-policy.cjs');
 const { getDirName } = runtimeNamePolicy;
 import capabilityRegistry = require('./capability-registry.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
+import toolsContract = require('./agent-tools-contract.cjs');
 
 // #1383: resolve GSD's version WITHOUT a top-level
 // `require('../../../package.json')`. That require ran at module load on every
@@ -886,6 +887,11 @@ function yamlIdentifier(value) {
 }
 
 function extractFrontmatterAndBody(content) {
+  // #2540 review — a UTF-8 BOM before the opening `---` made the envelope
+  // undetectable, so a BOM'd agent silently skipped conversion AND derived a
+  // read-only sandbox with no contract, defeating the semantic validator the
+  // same way. Strip it: a BOM is never meaningful content in these files.
+  content = content.replace(/^\uFEFF/, '');
   if (!content.startsWith('---')) {
     return { frontmatter: null, body: content };
   }
@@ -2283,7 +2289,11 @@ function convertClaudeAgentToCodexAgent(content) {
 
   const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
   const description = extractFrontmatterField(frontmatter, 'description') || '';
-  const tools = extractFrontmatterField(frontmatter, 'tools') || '';
+  // #2540 review — parse through the shared tools-contract seam so block-list
+  // `tools:` frontmatter embeds the FULL contract (the single-line field
+  // extractor reduced it to "- <first item>", permanently corrupting the
+  // contract that the sandbox validator later reads from this header).
+  const tools = toolsContract.parseToolsContract(frontmatter).join(', ');
 
   const roleHeader = `<codex_agent_role>
 role: ${name}

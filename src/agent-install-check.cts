@@ -16,6 +16,9 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
 import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import toolsContract = require('./agent-tools-contract.cjs');
+const { parseToolsContract, toolsRequireWrite } = toolsContract;
 
 interface SandboxViolation {
   agent: string;
@@ -33,27 +36,20 @@ interface AgentsInstalledResult {
   agent_runtime: string;
 }
 
-// #2540 — file-mutating tools whose presence in an agent's declared contract
-// requires a write-capable sandbox. Mirrors CODEX_WRITE_TOOLS in bin/install.js.
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
-
 /**
  * Extract the declared tool contract from an installed agent .md.
  * Codex installs embed it in the <codex_agent_role> header (frontmatter tools
- * are stripped by the converter); other layouts keep it in YAML frontmatter.
- * Returns '' when no contract is found.
+ * are stripped by the converter); other layouts keep it in YAML frontmatter,
+ * where both the inline and block-list `tools:` shapes occur — parsing goes
+ * through the shared agent-tools-contract seam (#2540 review). Returns []
+ * when no contract is found.
  */
-function _extractDeclaredTools(md: string): string {
+function _extractDeclaredTools(md: string): string[] {
   const roleBlock = /<codex_agent_role>([\s\S]*?)<\/codex_agent_role>/.exec(md);
   const scope = roleBlock
     ? roleBlock[1]
-    : (/^---\r?\n([\s\S]*?)\r?\n---/.exec(md)?.[1] ?? '');
-  const m = /^tools:\s*(.+)$/m.exec(scope ?? '');
-  return m ? (m[1] ?? '').trim() : '';
-}
-
-function _toolsRequireWrite(toolsField: string): boolean {
-  return toolsField.split(',').some((t) => WRITE_TOOLS.has(t.trim()));
+    : (/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/.exec(md)?.[1] ?? '');
+  return parseToolsContract(scope ?? '');
 }
 
 /**
@@ -242,11 +238,11 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
     const sandboxMatch = /^sandbox_mode\s*=\s*"([^"]+)"/m.exec(toml);
     if (!sandboxMatch) continue;
     const declaredTools = _extractDeclaredTools(md);
-    if (_toolsRequireWrite(declaredTools) && sandboxMatch[1] === 'read-only') {
+    if (toolsRequireWrite(declaredTools) && sandboxMatch[1] === 'read-only') {
       sandboxViolations.push({
         agent,
         sandbox_mode: sandboxMatch[1],
-        declared_tools: declaredTools,
+        declared_tools: declaredTools.join(', '),
       });
     }
   }

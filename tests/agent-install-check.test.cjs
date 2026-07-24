@@ -506,6 +506,34 @@ describe('#2540 regression: sandbox_mode weaker than declared tool contract is r
     assert.strictEqual(result.sandbox_violations.length, 1, 'frontmatter Edit contract flags read-only TOML');
   });
 
+  test('#2540 review: block-list frontmatter tools contract flags a read-only TOML', () => {
+    // gsd-nyquist-auditor's shape: `tools:` declared as a multi-line YAML
+    // block list. The single-line regex read it as "- Read" (write tools
+    // lost), so the validator false-passed the exact downgrade it exists to
+    // catch. The full declared contract must also surface in the violation.
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.md`),
+      `---\nname: ${target}\ntools:\n  - Read\n  - Write\n  - Edit\n  - Bash\n---\nbody`
+    );
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.strictEqual(result.sandbox_violations.length, 1, 'block-list Write/Edit contract flags read-only TOML');
+    assert.strictEqual(result.sandbox_violations[0].declared_tools, 'Read, Write, Edit, Bash');
+    assert.strictEqual(result.agents_installed, false);
+  });
+
+  test('#2540 review: a UTF-8 BOM before the frontmatter does not hide the contract from the validator', () => {
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.md`),
+      `\uFEFF---\nname: ${target}\ntools: Read, Edit\n---\nbody`
+    );
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.strictEqual(result.sandbox_violations.length, 1, 'BOM must not make the semantic check vacuous');
+  });
+
   test('codex TOML with a missing sibling .md is incomplete, not silently skipped (no manifest)', () => {
     // Without this, the semantic check goes vacuous exactly where it matters:
     // a .toml whose contract source is gone would pass unverified. There is no

@@ -347,33 +347,28 @@ const CODEX_AGENT_SANDBOX = {
   'gsd-integration-checker': 'read-only',
 };
 
-// #2540 — file-mutating Claude tools whose presence in an agent's `tools:`
-// contract requires a write-capable Codex sandbox.
-const CODEX_WRITE_TOOLS = new Set(['Write', 'Edit', 'NotebookEdit']);
-
 // #2540 — derive the sandbox for roles absent from CODEX_AGENT_SANDBOX from the
 // agent's declared tool contract instead of silently defaulting to read-only:
 // every write-capable role added after the map's original 11 entries (e.g.
 // gsd-code-reviewer, gsd-code-fixer, gsd-doc-writer) shipped a read-only TOML
 // that could not produce its declared outputs, while `validate agents` passed.
 // The map keeps precedence where it has an entry (ADR-1016 retains it as GSD
-// agent policy; descriptor-driven retirement is #1138). An empty/absent tools
-// contract stays read-only — gsd-nyquist-auditor's empty contract is a
-// separate gap tracked outside #2540.
+// agent policy; descriptor-driven retirement is #1138). Parsing goes through
+// the shared agent-tools-contract seam so both `tools:` frontmatter shapes
+// (inline and block list — gsd-nyquist-auditor declares Write/Edit as a block
+// list) derive correctly; an empty/absent contract stays read-only.
 function _codexSandboxFromToolContract(frontmatterText, body = '') {
-  let toolsField = extractFrontmatterField(frontmatterText, 'tools') || '';
-  if (!toolsField) {
+  let declared = gsdParseToolsContract(frontmatterText || '');
+  if (declared.length === 0) {
     // Already-converted agent content (convertClaudeAgentToCodexAgent) strips
     // frontmatter tools but embeds the contract in the <codex_agent_role>
     // header — read it there so derivation is not order-sensitive (#2540).
     const roleBlock = /<codex_agent_role>([\s\S]*?)<\/codex_agent_role>/.exec(body);
     if (roleBlock) {
-      const m = /^tools:\s*(.+)$/m.exec(roleBlock[1]);
-      if (m) toolsField = m[1].trim();
+      declared = gsdParseToolsContract(roleBlock[1]);
     }
   }
-  const declared = toolsField.split(',').map((t) => t.trim());
-  return declared.some((t) => CODEX_WRITE_TOOLS.has(t)) ? 'workspace-write' : 'read-only';
+  return gsdToolsRequireWrite(declared) ? 'workspace-write' : 'read-only';
 }
 
 // Copilot tool name mapping — Claude Code tools to GitHub Copilot tools
@@ -412,6 +407,15 @@ const {
   resolveTierEntry: gsdResolveTierEntry,
   CLAUDE_AGENT_ALIASES,
 } = require(path.join(_gsdLibDir, 'model-resolver.cjs'));
+
+// #2540 review — the single tools-contract parsing seam, shared with the
+// Codex agent converter (runtime-artifact-conversion.cts) and the semantic
+// sandbox validator (agent-install-check.cts) so the inline and block-list
+// `tools:` frontmatter shapes can never parse differently across consumers.
+const {
+  parseToolsContract: gsdParseToolsContract,
+  toolsRequireWrite: gsdToolsRequireWrite,
+} = require(path.join(_gsdLibDir, 'agent-tools-contract.cjs'));
 
 // #2071 — install-time effort resolution (readGsdEffectiveEffortConfig /
 // resolveInstallTimeEffort, plus their _getGsdEffortCatalog + _readGsdConfigFile
@@ -2508,6 +2512,11 @@ function yamlIdentifier(value) {
 }
 
 function extractFrontmatterAndBody(content) {
+  // #2540 review — a UTF-8 BOM before the opening `---` made the envelope
+  // undetectable, so a BOM'd agent silently skipped conversion AND derived a
+  // read-only sandbox with no contract, defeating the semantic validator the
+  // same way. Strip it: a BOM is never meaningful content in these files.
+  content = content.replace(/^\uFEFF/, '');
   if (!content.startsWith('---')) {
     return { frontmatter: null, body: content };
   }
@@ -4122,7 +4131,11 @@ function convertClaudeAgentToCodexAgent(content) {
 
   const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
   const description = extractFrontmatterField(frontmatter, 'description') || '';
-  const tools = extractFrontmatterField(frontmatter, 'tools') || '';
+  // #2540 review — parse through the shared tools-contract seam so block-list
+  // `tools:` frontmatter embeds the FULL contract (the single-line field
+  // extractor reduced it to "- <first item>", permanently corrupting the
+  // contract that the sandbox validator later reads from this header).
+  const tools = gsdParseToolsContract(frontmatter).join(', ');
 
   const roleHeader = `<codex_agent_role>
 role: ${name}
