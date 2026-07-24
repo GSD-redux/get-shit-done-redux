@@ -224,7 +224,8 @@ describe('Codex project-local validation status', () => {
   });
 
   test('validate agents and health use a complete project-local Codex installation', () => {
-    const localAgentsDir = createCompleteCodexAgents(tmpDir);
+    createCompleteCodexAgents(tmpDir);
+    const localAgentsDir = path.join(fs.realpathSync(tmpDir), '.codex', AGENTS_DIR_NAME);
     const env = { CODEX_HOME: globalHome };
 
     const validateResult = runGsdTools('validate agents --raw', tmpDir, env);
@@ -242,8 +243,8 @@ describe('Codex project-local validation status', () => {
   });
 
   test('an empty project-local Codex directory remains authoritative for validate agents and health', () => {
-    const localAgentsDir = path.join(tmpDir, '.codex', AGENTS_DIR_NAME);
-    fs.mkdirSync(localAgentsDir, { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.codex', AGENTS_DIR_NAME), { recursive: true });
+    const localAgentsDir = path.join(fs.realpathSync(tmpDir), '.codex', AGENTS_DIR_NAME);
     const env = { CODEX_HOME: globalHome };
 
     const validateResult = runGsdTools('validate agents --raw', tmpDir, env);
