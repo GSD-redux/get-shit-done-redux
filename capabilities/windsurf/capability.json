@@ -67,7 +67,8 @@
         "maxDepth": "undocumented",
         "background": "undocumented",
         "subagentToolkit": "undocumented",
-        "backgroundDispatch": "undocumented"
+        "backgroundDispatch": "undocumented",
+        "isolation": "none"
       },
       "modelMode": "passive",
       "hookBus": "host",

@@ -72,7 +72,8 @@
         "maxDepth": 5,
         "background": true,
         "subagentToolkit": "full",
-        "backgroundDispatch": false
+        "backgroundDispatch": false,
+        "isolation": "harness-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",

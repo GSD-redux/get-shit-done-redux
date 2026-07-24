@@ -64,7 +64,8 @@
           "coder",
           "explore",
           "plan"
-        ]
+        ],
+        "isolation": "orchestrator-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",

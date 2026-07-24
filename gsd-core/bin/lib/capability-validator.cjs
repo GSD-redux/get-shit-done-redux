@@ -739,6 +739,9 @@ const VALID_HOST_RUNTIMES     = new Set(['node', 'bun', 'sandboxed-web', 'python
 const VALID_SUBAGENT_TOOLKITS = new Set(['full', 'read-only', 'built-in-only']);
 // ADR-1239 amendment (#2481): how reasoning effort reaches the host.
 const VALID_EFFORT_SURFACES   = new Set(['argv', 'none']);
+// ADR-1239 Codex-binding amendment (#2584): how a host isolates concurrent
+// same-wave executors — a dispatch sub-field, not a top-level axis.
+const VALID_DISPATCH_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
 
 // GATE A: installSurface → allowed hooksSurface values (DEFECT.GENERATIVE-FIX: parity invariant)
 // Derived from the actual pairings in the 16 real runtime descriptors.
@@ -1289,6 +1292,25 @@ function validateRuntimeBody(cap) {
       } else if (typeof d.backgroundDispatch !== 'boolean' && d.backgroundDispatch !== 'undocumented') {
         errors.push(
           'runtime.hostIntegration.dispatch.backgroundDispatch must be a boolean or "undocumented" (got: ' + JSON.stringify(d.backgroundDispatch) + ')',
+        );
+      }
+
+      // isolation — ADR-1239 Codex-binding amendment (#2584).
+      // OPTIONAL, like effortSurface: added after descriptors already existed,
+      // so requiring it would invalidate every descriptor authored before it —
+      // including third-party ones, breaking the "purely additive" property
+      // ADR-1239 promises for external descriptors. An omitted isolation is
+      // legitimate: negotiation degrades it to 'none' (the safe floor) and
+      // warns, exactly as for any other undeclared dispatch sub-field. Only a
+      // PRESENT value is checked against the closed vocabulary.
+      if (d.isolation === undefined) {
+        // absent — nothing to validate; negotiateHostCapabilities fails it closed.
+      } else if (d.isolation === '__proto__' || d.isolation === 'constructor' || d.isolation === 'prototype') {
+        errors.push('runtime.hostIntegration.dispatch.isolation "' + d.isolation + '" is a reserved name');
+      } else if (d.isolation !== 'undocumented' && !VALID_DISPATCH_ISOLATION.has(d.isolation)) {
+        errors.push(
+          'runtime.hostIntegration.dispatch.isolation must be one of: ' + [...VALID_DISPATCH_ISOLATION].join(', ') +
+          ' (or "undocumented") (got: ' + JSON.stringify(d.isolation) + ')',
         );
       }
     }
@@ -2321,6 +2343,7 @@ module.exports = {
   VALID_TRANSPORTS,
   VALID_HOST_RUNTIMES,
   VALID_SUBAGENT_TOOLKITS,
+  VALID_DISPATCH_ISOLATION,
   _HOST_INTEGRATION_VOCAB: {
     embeddingMode:   [...VALID_EMBEDDING_MODES],
     commandSurface:  [...VALID_COMMAND_SURFACES],
@@ -2331,6 +2354,7 @@ module.exports = {
     runtime:         [...VALID_HOST_RUNTIMES],
     subagentToolkit: [...VALID_SUBAGENT_TOOLKITS],
     effortSurface:   [...VALID_EFFORT_SURFACES],
+    isolation:       [...VALID_DISPATCH_ISOLATION],
   },
   INSTALL_SURFACE_TO_ALLOWED_HOOKS_SURFACES,
   GEMINI_AGENT_EVENTS,

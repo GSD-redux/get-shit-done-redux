@@ -9,6 +9,9 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const fc = require('fast-check');
 
 const hi = require('../gsd-core/bin/lib/host-integration.cjs');
 const {
@@ -26,6 +29,27 @@ const {
   extensionEventSurfaceFor,
   EXTENSION_EVENT_SURFACES,
 } = hi;
+
+const {
+  _HOST_INTEGRATION_VOCAB,
+  validateCapability,
+} = require('../gsd-core/bin/lib/capability-validator.cjs');
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+/**
+ * A real shipped runtime descriptor with its `dispatch.isolation` value
+ * stripped, so validator behavioral tests exercise the actual dispatch shape
+ * shipped for a host rather than a hand-modeled fixture (fixture-provenance,
+ * #2371 — mirrors `shippedDescriptorWithout` in tests/effort-surface-axis.test.cjs).
+ */
+function shippedClaudeCapabilityWithoutIsolation() {
+  const cap = JSON.parse(
+    fs.readFileSync(path.join(REPO_ROOT, 'capabilities', 'claude', 'capability.json'), 'utf8'),
+  );
+  delete cap.runtime.hostIntegration.dispatch.isolation;
+  return cap;
+}
 
 describe('hookEventSurfaceFor (MANAGED-hook dialect consumer — claude/gemini only)', () => {
   test('returns the full Claude managed-hook surface for "claude"', () => {
@@ -163,6 +187,17 @@ describe('CONTRACT-PIN', () => {
       [...HOST_INTEGRATION_AXES.subagentToolkit].sort(),
       ['built-in-only', 'full', 'read-only'],
     );
+  });
+
+  test('isolation values (sorted) — #2584 ADR-1239 Codex-binding amendment', () => {
+    assert.deepStrictEqual(
+      [...HOST_INTEGRATION_AXES.isolation].sort(),
+      ['harness-worktree', 'none', 'orchestrator-worktree'],
+    );
+  });
+
+  test('isolation: "undocumented" is NOT a vocabulary member — it is the corpus sentinel', () => {
+    assert.ok(!HOST_INTEGRATION_AXES.isolation.includes('undocumented'));
   });
 
   test('INTERFACE_POINTS frozen and contains expected values', () => {
@@ -1096,5 +1131,189 @@ describe('Fix 2: negotiate — host omits dispatch → subagentToolkit read-only
     const result = negotiateHostCapabilities(hostWithoutDispatch);
     assert.strictEqual(result.effective.dispatch.subagentToolkit, 'read-only',
       'Host missing dispatch must produce subagentToolkit "read-only"; got "' + result.effective.dispatch.subagentToolkit + '"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2584 — ADR-1239 Codex-binding amendment: dispatch.isolation sub-field
+// (Phase 1 — declared and negotiated, but NOT consumed by any scheduler yet).
+// ---------------------------------------------------------------------------
+
+describe('#2584 dispatch.isolation — negotiation', () => {
+  const BASE_DISPATCH = {
+    namedDispatch: true, nested: false, maxDepth: 1, background: false,
+    subagentToolkit: 'full', backgroundDispatch: false,
+  };
+
+  for (const value of HOST_INTEGRATION_AXES.isolation) {
+    test(`host declares isolation:"${value}" → effective.dispatch.isolation === "${value}"`, () => {
+      const result = negotiateHostCapabilities({
+        dispatch: { ...BASE_DISPATCH, isolation: value },
+      });
+      assert.strictEqual(result.effective.dispatch.isolation, value);
+    });
+  }
+
+  test('isolation:"undocumented" → effective "none" + a warning naming dispatch.isolation', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, isolation: 'undocumented' },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('dispatch.isolation') && warnText.includes('undocumented'),
+      `Expected a warning naming dispatch.isolation as undocumented; got: ${warnText}`);
+  });
+
+  test('isolation: unknown/garbage value (not the sentinel) → effective "none", no throw', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, isolation: 'quantum-worktree' },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('isolation: non-string value (number/object/array/null) → effective "none", no throw', () => {
+    for (const bogus of [42, {}, [], null, true]) {
+      const result = negotiateHostCapabilities({
+        dispatch: { ...BASE_DISPATCH, isolation: bogus },
+      });
+      assert.strictEqual(result.effective.dispatch.isolation, 'none',
+        `isolation=${JSON.stringify(bogus)} must degrade to "none"`);
+    }
+  });
+
+  test('host declares dispatch but omits isolation entirely → effective "none"', () => {
+    const result = negotiateHostCapabilities({ dispatch: { ...BASE_DISPATCH } });
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('host omits dispatch entirely → effective.dispatch.isolation === "none"', () => {
+    const result = negotiateHostCapabilities({});
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('negotiateHostCapabilities({}) → SAFE_DEFAULTS floor carries isolation "none"', () => {
+    // FAIL_CLOSED_FLOOR.dispatch.isolation (src/host-integration.cts SAFE_DEFAULTS)
+    const result = negotiateHostCapabilities({});
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('isolation is NOT gated by namedDispatch:false — unlike nested/background/backgroundDispatch, it is not capped', () => {
+    // orchestrator-worktree fan-out is OS-level (process-spawn), independent of
+    // the host's native named-subagent dispatch (ADR-1239 §2584: "does not use
+    // the host's native subagent tool"). A host may plausibly declare
+    // namedDispatch:false yet still have isolation info; either way it must not
+    // silently flip to a DIFFERENT valid value or throw.
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, namedDispatch: false, isolation: 'orchestrator-worktree' },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'orchestrator-worktree');
+  });
+
+  // ─── Boundary: exact valid-set membership ──────────────────────────────────
+
+  describe('boundary — a value one character off a valid member fails closed to "none"', () => {
+    const NEAR_MISSES = [
+      'harness-worktre',       // missing trailing 'e' (limit-1)
+      'harness-worktreee',     // extra trailing 'e' (limit+1)
+      'Harness-Worktree',      // case mismatch
+      'orchestrator-worktre',  // missing trailing 'e'
+      'orchestrator-worktrees', // extra trailing 's'
+      'non',                   // missing trailing 'e' of "none"
+      'nonee',                 // extra trailing 'e'
+      ' none',                 // leading space
+      'none ',                 // trailing space
+    ];
+    for (const nearMiss of NEAR_MISSES) {
+      test(`isolation:${JSON.stringify(nearMiss)} → "none"`, () => {
+        const result = negotiateHostCapabilities({
+          dispatch: { ...BASE_DISPATCH, isolation: nearMiss },
+        });
+        assert.strictEqual(result.effective.dispatch.isolation, 'none');
+      });
+    }
+  });
+
+  // ─── Property: valid-set-passthrough-else-none contract ─────────────────────
+
+  test('property: effective.dispatch.isolation equals the declared value iff it is a known vocabulary member, else "none"', () => {
+    const declaredArb = fc.oneof(
+      fc.constantFrom(...HOST_INTEGRATION_AXES.isolation, 'undocumented'),
+      fc.string(),
+    );
+    fc.assert(
+      fc.property(declaredArb, (declared) => {
+        const result = negotiateHostCapabilities({
+          dispatch: { ...BASE_DISPATCH, isolation: declared },
+        });
+        const eff = result.effective.dispatch.isolation;
+        assert.ok(HOST_INTEGRATION_AXES.isolation.includes(eff),
+          `effective.dispatch.isolation '${eff}' must always be a known vocabulary member`);
+        if (HOST_INTEGRATION_AXES.isolation.includes(declared)) {
+          assert.strictEqual(eff, declared, `a valid declared value ('${declared}') must pass through unchanged`);
+        } else {
+          assert.strictEqual(eff, 'none', `an invalid/sentinel declared value ('${declared}') must degrade to "none"`);
+        }
+      }),
+      { numRuns: 200, seed: 2584 },
+    );
+  });
+});
+
+describe('#2584 dispatch.isolation — validator', () => {
+  test('_HOST_INTEGRATION_VOCAB.isolation matches HOST_INTEGRATION_AXES.isolation (parity guard)', () => {
+    assert.deepEqual(
+      [..._HOST_INTEGRATION_VOCAB.isolation].sort(),
+      [...HOST_INTEGRATION_AXES.isolation].sort(),
+    );
+  });
+
+  test('a descriptor that omits dispatch.isolation entirely still validates clean (added after existing descriptors)', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    const errors = validateCapability(cap, 'claude');
+    assert.deepEqual(errors, [], `omitted isolation must validate clean, got: ${JSON.stringify(errors)}`);
+  });
+
+  for (const value of ['harness-worktree', 'orchestrator-worktree', 'none', 'undocumented']) {
+    test(`dispatch.isolation:"${value}" → ZERO validator errors`, () => {
+      const cap = shippedClaudeCapabilityWithoutIsolation();
+      cap.runtime.hostIntegration.dispatch.isolation = value;
+      const errors = validateCapability(cap, 'claude');
+      const isoErrors = errors.filter((e) => e.includes('dispatch.isolation'));
+      assert.strictEqual(isoErrors.length, 0,
+        `"${value}" must produce no validator errors; got: ${JSON.stringify(isoErrors)}`);
+    });
+  }
+
+  test('a present invalid dispatch.isolation value is rejected', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    cap.runtime.hostIntegration.dispatch.isolation = 'quantum-worktree';
+    const errors = validateCapability(cap, 'claude');
+    assert.ok(
+      errors.some((e) => e.includes('dispatch.isolation')),
+      `an invalid dispatch.isolation must produce a validator error; got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('a reserved-name dispatch.isolation value ("__proto__") is rejected', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    cap.runtime.hostIntegration.dispatch.isolation = '__proto__';
+    const errors = validateCapability(cap, 'claude');
+    assert.ok(
+      errors.some((e) => e.includes('dispatch.isolation') && e.includes('reserved name')),
+      `"__proto__" must produce a reserved-name validator error; got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('every shipped runtime descriptor with an isolation value passes validateCapability', () => {
+    const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+    for (const [id, cap] of Object.entries(registry.runtimes)) {
+      const iso = cap && cap.runtime && cap.runtime.hostIntegration && cap.runtime.hostIntegration.dispatch
+        && cap.runtime.hostIntegration.dispatch.isolation;
+      if (iso === undefined) continue;
+      const errors = validateCapability(cap, id);
+      const isoErrors = errors.filter((e) => e.includes('dispatch.isolation'));
+      assert.strictEqual(isoErrors.length, 0,
+        `${id}: shipped dispatch.isolation:"${iso}" must validate clean; got: ${JSON.stringify(isoErrors)}`);
+    }
   });
 });

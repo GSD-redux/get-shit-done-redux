@@ -66,6 +66,7 @@ consumed verbatim by `gen:capability-registry` and validated by `capability-vali
 | dispatch.background | true | https://code.claude.com/docs/en/sub-agents | "Subagents can run in the foreground, blocking the main conversation and passing permission prompts to you, or in the bac" |
 | dispatch.subagentToolkit | full | https://code.claude.com/docs/en/sub-agents | "If all tools remain selected, the subagent inherits all tools available to the main conversation." |
 | dispatch.backgroundDispatch | false | https://code.claude.com/docs/en/sub-agents | "Background subagents are limited to a depth of five and cannot spawn further, " |
+| dispatch.isolation | harness-worktree | https://code.claude.com/docs/en/sub-agents ; Claude Code Agent tool (`Agent(isolation="worktree")`) | The Claude Code Agent tool accepts an `isolation="worktree"` harness primitive — the host's own harness creates + binds a git worktree per executor; GSD passes the flag and calls no git itself (#2584) |
 
 Sources consulted:
 - https://code.claude.com/docs/en/sub-agents
@@ -144,6 +145,7 @@ Documentation gaps:
 | dispatch.background | true | https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/task.ts (v1.15.0, commit 22de34c4d) + src/effect/runtime-flags.ts (v1.17, commit 81f6e0668) | "New in v1.15.0: experimental background subagents — the Task tool gains a `background` parameter (`Schema.optional(Schema.Boolean)`) that launches subagents asynchronously with completion notifications. v1.17: `BACKGROUND_SUBAGENTS_ENABLED = true` (\"feat: enable background subagents by default\") — default-on, concurrent execution in all modes. (#2087, superseding the stale sst/opencode#5887 snapshot)" |
 | dispatch.subagentToolkit | full | https://opencode.ai/docs/agents | "The 'general' subagent \"Has full tool access (except todo), so it can make file changes when needed.\"" |
 | dispatch.backgroundDispatch | true | https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/effect/runtime-flags.ts (v1.17, commit 81f6e0668) + src/server/routes/instance/httpapi/handlers/experimental.ts | "v1.17 `BACKGROUND_SUBAGENTS_ENABLED = true` enables background subagent execution by default in all modes; the experimental capabilities endpoint exposes `{ backgroundSubagents: true }`. Background-spawned subagents run concurrently without blocking the main interaction flow. (#2087)" |
+| dispatch.isolation | orchestrator-worktree | https://opencode.ai/docs/cli ; opencode.ai/docs/plugins ; opencode issues #14195/#29638/#5887 | "`opencode run --dir <path>` sets an explicit working root at the process level" — native subagent dispatch is synchronous-only, so GSD creates + manages the worktree and process-spawns the executor into it via `--dir` (#2584) |
 
 Sources consulted:
 - https://opencode.ai/docs/plugins
@@ -177,6 +179,7 @@ Documentation gaps:
 | dispatch.background | true | https://cursor.com/docs/subagents | "Background, which returns immediately while the subagent works independently, best for long-running tasks or parallel wo" |
 | dispatch.subagentToolkit | full | https://cursor.com/docs/subagents | "Subagents can utilize MCP tools, inheriting all tools available to their parent agent, including those from configured s" |
 | dispatch.backgroundDispatch | true | https://cursor.com/docs/subagents (FAQ: Can subagents launch other subagents?) and https://cursor.com/docs/sdk/typescript (Subagents > Nested subagents) | FAQ: "As of Cursor 2.5, subagents have the capability to launch child subagents, enabling the creation of a hierarchical structure for coordinated tasks. This nested launching functionality requires T |
+| dispatch.isolation | harness-worktree | https://cursor.com/docs/cli/reference/parameters ; cursor.com/docs/cli/using ; cursor.com/docs/cli/changelog | "`-w, --worktree [name]` — cursor-agent creates/binds a git worktree per agent (`~/.cursor/worktrees/…`); native parallel-agent dispatch" (#2584) |
 
 Sources consulted:
 - https://cursor.com/docs/subagents
@@ -212,6 +215,7 @@ Sources consulted:
 | dispatch.background | true | /cline/cline (Context7) — https://github.com/cline/cline/blob/main/docs/features/subagents.mdx | "Commands executed by subagents run in the background and are strictly limited to read-only operations" |
 | dispatch.subagentToolkit | read-only | /cline/cline (Context7) — https://github.com/cline/cline/blob/main/docs/features/subagents.mdx | "Subagents are equipped with tools for read-only operations, including reading file contents (read_file), listing directo" |
 | dispatch.backgroundDispatch | false | https://docs.cline.bot/features/subagents (mirrored at https://github.com/cline/cline/blob/main/docs/features/subagents.mdx) | "They cannot edit files, use the browser, or spawn nested subagents" — and from the GitHub source: "subagents are restricted from editing files, using the browser, accessing MCP servers, or creating n |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://github.com/cline/cline/blob/main/docs/sdk/plugins.mdx
@@ -248,6 +252,7 @@ Sources consulted:
 | dispatch.background | true | https://github.com/NousResearch/hermes-agent/releases/tag/v2026.6.19 | "delegate_task(background=true) dispatches a subagent that runs in the background and returns a handle immediately" |
 | dispatch.subagentToolkit | read-only | https://hermes-agent.nousresearch.com/docs/guides/delegation-patterns | "Nested delegation is opt-in; by default, leaf subagents cannot call delegate_task, clarify, memory, send_message, or exe" |
 | dispatch.backgroundDispatch | false | https://github.com/nousresearch/hermes-agent/blob/main/website/docs/user-guide/features/delegation.md (via Context7 query of /nousresearch/hermes-agent) | "Nested delegation is an opt-in feature, requiring role=\"orchestrator\" for children and an increased max_spawn_depth from its default of 1. It can also be globally disabled with orchestrator_enabled |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://hermes-agent.nousresearch.com/docs/user-guide/features/delegation
@@ -284,6 +289,7 @@ Documentation gaps:
 | dispatch.background | true | https://developers.googleblog.com/an-important-update-transitioning-gemini-cli-to-antigravity-cli/ | "Antigravity CLI orchestrates multiple agents for complex tasks in the background" |
 | dispatch.subagentToolkit | full | https://antigravity.google/docs/cli/features | "Capabilities: Subagents have full access to tools such as code search, file editing, terminal commands, and web searches to complete their assigned tasks." (#2096 EoS migration — the page is JS-rendered/blank on a static fetch; confirmed via headless-browser render) |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — Multiple sources consulted: antigravity.google/docs/cli-subagents (returned blank/JS-rendered), antigravity.google/docs/agent (blank), github.com/google-antigravity/antigravity-cli README, Context7 /google-antigravity/antigravity-cli | All documentation consulted describes a two-level orchestrator→subagent architecture. Background subagents run asynchronously while the main agent continues accepting prompts. The DataCamp tutorial st |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://github.com/alphaperseii3000/google-antigravity-docs/blob/master/google-antigravity-docs.md
@@ -321,6 +327,7 @@ Documentation gaps:
 | dispatch.background | true | https://docs.augmentcode.com/cli/subagents | "Subagents run in parallel with other subagents... will show a summary of their current progress in the main thread." |
 | dispatch.subagentToolkit | full | https://docs.augmentcode.com/cli/subagents | "If neither [tools nor disabled_tools] is specified, the subagent has access to all tools (default behavior)." |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — https://docs.augmentcode.com/cosmos/automations | The Augment Code (Cosmos) docs describe workers as 'sub-agents launched mid-session by a manager Expert using the worker-launch command. Each worker is its own session with its own messages and permis |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://docs.augmentcode.com/cli/plugins
@@ -383,6 +390,7 @@ upgrade coverage is in `tests/augment-upgrades.test.cjs`.
 | dispatch.background | true | https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/ | "Runs in background, parent continues immediately... Forks run parallel to the parent; the main conversation continues im" |
 | dispatch.subagentToolkit | full | https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/ | "When omitted, the subagent inherits all available tools from the parent session." |
 | dispatch.backgroundDispatch | false | https://qwenlm.github.io/qwen-code-docs/en/users/features/sub-agents/ (official Qwen Code documentation, 'Subagents' user guide page) and https://qwenlm.github.io/qwen-code-docs/en/design/fork-subagent/fork-subagent-design (Qwen Code fork-subagent design document, section '4. Recursive Fork Prevention') | The official user-facing Qwen Code docs state verbatim: "Fork children cannot create further forks. If a fork attempts spawning another fork, it receives an error instructing direct task execution ins |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://qwenlm.github.io/qwen-code-docs/en/developers/channel-plugins
@@ -418,6 +426,7 @@ Documentation gaps:
 | dispatch.background | true | https://www.codebuddy.ai/docs/cli/sub-agents | "Launch a background agent using the run_in_background: true parameter ... Tasks return immediately with an ID" |
 | dispatch.subagentToolkit | full | https://www.codebuddy.ai/docs/cli/sub-agents | "By default, sub-agents inherit all tools when the tools field is omitted ... Sub-agents can access MCP tools from config" |
 | dispatch.backgroundDispatch | false | https://www.codebuddy.ai/docs/cli/sub-agents | "This prevents infinite nesting of agents (sub-agents cannot spawn other sub-agents)" — the restriction is stated as universal in the Sub-Agents documentation page. The daemon/background docs (https:/ |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://www.codebuddy.ai/docs/cli/plugins
@@ -449,6 +458,7 @@ Sources consulted:
 | dispatch.background | true | https://docs.github.com/en/copilot/how-tos/copilot-cli/speed-up-task-completion | "Allow Copilot to use subagents and work autonomously to implement the plan without any further input." |
 | dispatch.subagentToolkit | full | https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/create-custom-agents-for-cli | "By default, custom agents have access to all tools. If you restrict an agent's access, a tools specification is added" |
 | dispatch.backgroundDispatch | false | https://code.visualstudio.com/docs/copilot/agents/subagents | "By default, subagents cannot spawn further subagents. This prevents infinite recursion when agents accidentally call themselves in a loop." The setting `chat.subagents.allowInvocationsFromSubagents` |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://github.com/github/copilot-cli/blob/main/README.md (via Context7 /github/copilot-cli)
@@ -483,6 +493,7 @@ Documentation gaps:
 | dispatch.background | true | https://kilo.ai/docs/code-with-ai/agents/orchestrator-mode | "Agents are also capable of launching multiple subagent sessions concurrently to facilitate parallel processing." |
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://kilo.ai/docs/customize/custom-subagents | — |
 | dispatch.backgroundDispatch | false | https://kilo.ai/docs/automate/tools/new-task | "Importantly, subagents cannot spawn further subagents; only primary agents can use the `new_task` tool." |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://kilo.ai/docs/automate/extending/plugins
@@ -519,6 +530,7 @@ Documentation gaps:
 | dispatch.background | undocumented | no authoritative doc — searched: https://docs.devin.ai/desktop/acp.md, https://docs.devin.ai/cli/subagents.md | — |
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://docs.devin.ai/cli/subagents.md | — |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — https://docs.devin.ai/desktop/cascade/cascade and https://docs.devin.ai/desktop/devin-local (official Windsurf/Devin docs, via docs.windsurf.com redirects) | The Windsurf/Cascade docs describe a background planning agent only in these terms: "In the background, a specialized planning agent continuously refines the long-term plan while your selected model f |
+| dispatch.isolation | none | shipped descriptor (`dispatch.backgroundDispatch: undocumented`) | no documented background/concurrent-dispatch primitive — isolation is moot; same-wave plans run inline (#2584) |
 
 Sources consulted:
 - https://docs.devin.ai/desktop/cascade/workflows
@@ -559,6 +571,7 @@ Documentation gaps:
 | dispatch.background | true | https://news.aibase.com/news/22829 | "SOLO 'supports multi-tasking, allowing you to work on multiple development tasks simultaneously'; 'run multiple agents i" |
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://docs.trae.ai/ide/agent | — |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc — https://docs.trae.ai/ide/agent; https://github.com/bytedance/trae-agent/blob/main/docs/roadmap.md | Trae's official documentation (docs.trae.ai) and the trae-agent GitHub roadmap do not document background/async agent dispatch or whether a background-spawned agent can itself spawn further sub-agents |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://docs.trae.ai/ide/model-context-protocol
@@ -599,6 +612,7 @@ Documentation gaps:
 | dispatch.background | true | https://moonshotai.github.io/kimi-cli/en/customization/agents.html | "Subagents support foreground and background modes. The `run_in_background` parameter allows tasks to execute asynchronou" |
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://moonshotai.github.io/kimi-cli/en/customization/agents.html | — |
 | dispatch.backgroundDispatch | true (#2095 Upgrade 2; was `false`) | https://moonshotai.github.io/kimi-cli/en/customization/agents.html | "Subagents support foreground and background modes. The `run_in_background` parameter allows tasks to execute asynchronously" (same evidence as dispatch.background above — the root agent's `Agent` tool call itself takes the `run_in_background` param) |
+| dispatch.isolation | orchestrator-worktree | https://github.com/moonshotai/kimi-cli/blob/main/docs/en/faq.md ; /docs/en/customization/agents.md | "`--work-dir` flag sets an explicit working directory"; concurrent "explore" subagents documented — GSD creates + manages the worktree and points the executor at it via `--work-dir` (#2584) |
 
 Sources consulted:
 - https://moonshotai.github.io/kimi-cli/en/customization/hooks.html
@@ -635,6 +649,7 @@ Documentation gaps:
 | dispatch.background | false | https://zcode.z.ai/en/docs/subagents | "**Foreground execution.** Subagents run in the foreground ... Background execution is not enabled yet." |
 | dispatch.subagentToolkit | full | https://zcode.z.ai/en/docs/subagents | "**general-purpose** is the default built-in subagent ... It has access to all tools"; custom subagents default to "All permissions by default" (inherits every tool). |
 | dispatch.backgroundDispatch | false | https://zcode.z.ai/en/docs/subagents | "Background execution is not enabled yet" — background dispatch is therefore impossible. |
+| dispatch.isolation | none | https://zcode.z.ai/en/docs/subagents (shipped descriptor: `dispatch.backgroundDispatch: false`) | "Background execution is not enabled yet" — no concurrent fan-out primitive, so same-wave plans run inline/sequentially (#2584) |
 
 Sources consulted:
 - https://zcode.z.ai/en/docs/skill
@@ -675,6 +690,7 @@ EoS migration status (#2101, ADR-1239): ZCode's install is fully dogfooded throu
 | dispatch.background | false | no authoritative doc — searched: https://pi.dev/docs/latest/extensions | No documented background/async subagent-execution primitive. |
 | dispatch.subagentToolkit | undocumented | no authoritative doc — searched: https://pi.dev/docs/latest/extensions | pi has no named-dispatch primitive (see `dispatch.namedDispatch`), so there is no subagent tool-surface to classify as `full`/`read-only`. |
 | dispatch.backgroundDispatch | false | no authoritative doc — searched: https://pi.dev/docs/latest/extensions | Same gap as `dispatch.background` — no background-dispatch primitive is documented, so a background-dispatched agent spawning further named sub-agents is not possible. |
+| dispatch.isolation | none | shipped descriptor (`dispatch.background: false`, `dispatch.backgroundDispatch: false`) | pi has no named-dispatch/background-dispatch primitive documented — cannot fan out concurrently, so isolation is moot (#2584) |
 
 Sources consulted:
 - https://pi.dev
@@ -721,6 +737,7 @@ EoS migration status (#2102 Stage 2, ADR-1239): Stage 1's "in-process `gsd-core`
 | dispatch.background | true | https://code.visualstudio.com/api/extension-guides/ai/tools | Language Model Tools can be invoked as part of an asynchronous agent turn (the primary agent does not block synchronously on a single extension call). |
 | dispatch.subagentToolkit | undocumented | no authoritative doc found at authoring time | VS Code's subagent documentation does not state whether a subagent's tool surface is restricted to read-only tools or the full set an extension registers; recorded `undocumented` (fails closed to `read-only` in negotiation) rather than guessed. |
 | dispatch.backgroundDispatch | undocumented | no authoritative doc found at authoring time | Whether a background-dispatched subagent can itself spawn further NAMED subagents (the #853 discriminator) is not stated in the sources reviewed; recorded `undocumented` (fails closed to `false`) rather than guessed. |
+| dispatch.isolation | undocumented | not researched / no concurrent fan-out documented for this axis | no authoritative source consulted for concurrent-executor isolation on this host — fails closed to `none` (sequential) in negotiation (#2584) |
 
 Sources consulted:
 - https://code.visualstudio.com/api/references/vscode-api

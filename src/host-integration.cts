@@ -54,6 +54,22 @@ const HOST_INTEGRATION_AXES = Object.freeze({
   // runtime in #1928/#1996, and neither its successor Antigravity CLI nor ZCode
   // documents a reasoning setting. Adding a member with no host would be a guess.
   effortSurface:   Object.freeze(['argv', 'none'] as const),
+  // ADR-1239 Codex-binding amendment (#2584): a `dispatch` sub-field — not a new
+  // axis — declaring how a host isolates concurrent same-wave executors.
+  // `harness-worktree` — the host's own harness creates + binds a git worktree
+  // per executor; GSD passes the host's own isolation flag and calls no git
+  // itself (host-driven fan-out).
+  // `orchestrator-worktree` — GSD itself process-spawns each executor with an
+  // explicit working directory into a worktree GSD created, validated, and
+  // merges (GSD-driven fan-out; concurrency is OS-level, not the host's).
+  // `none` — no isolation primitive; same-wave plans run inline/sequentially
+  // (the #853 flatten rule).
+  // `undocumented` is NOT a member here; it is the corpus-wide sentinel above.
+  // Mechanism-specific ("worktree"), not abstract — same "name only what a
+  // host actually has" rule that kept effortSurface from guessing a
+  // config-file member above. A future non-worktree isolation mechanism adds a
+  // `*-container` member then, evidence-backed.
+  isolation:       Object.freeze(['harness-worktree', 'orchestrator-worktree', 'none'] as const),
 });
 
 const INTERFACE_POINTS = Object.freeze(['command', 'dispatch', 'model', 'hooks', 'state', 'artifact'] as const);
@@ -71,6 +87,7 @@ type Transport        = 'mcp' | 'native-extension';
 type HostRuntime      = 'node' | 'bun' | 'sandboxed-web' | 'python' | 'go' | 'rust' | 'electron' | 'other';
 type SubagentToolkit  = 'full' | 'read-only';
 type EffortSurface    = 'argv' | 'none';
+type DispatchIsolation = 'harness-worktree' | 'orchestrator-worktree' | 'none';
 type DegradationLevel = 'full' | 'degraded' | 'absent';
 type InterfacePoint   = 'command' | 'dispatch' | 'model' | 'hooks' | 'state' | 'artifact';
 
@@ -81,6 +98,7 @@ interface DispatchCapability {
   background: boolean;
   subagentToolkit: SubagentToolkit;
   backgroundDispatch: boolean;
+  isolation: DispatchIsolation;
 }
 
 interface HostIntegrationAxes {
@@ -109,7 +127,7 @@ interface DegradationResult {
 const SAFE_DEFAULTS: HostIntegrationAxes = {
   embeddingMode:  'declarative',
   commandSurface: 'prose-only',
-  dispatch: { namedDispatch: false, nested: false, maxDepth: 0, background: false, subagentToolkit: 'read-only', backgroundDispatch: false },
+  dispatch: { namedDispatch: false, nested: false, maxDepth: 0, background: false, subagentToolkit: 'read-only', backgroundDispatch: false, isolation: 'none' },
   modelMode:      'passive',
   hookBus:        'none',
   stateIO:        'session-log-append',
@@ -123,7 +141,7 @@ const PROFILE_BASELINES: Readonly<Record<'programmatic-cli' | 'declarative-cli' 
     'programmatic-cli': Object.freeze({
       embeddingMode:  'imperative',
       commandSurface: 'slash-file',
-      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true }),
+      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none' }),
       modelMode:      'passive',
       hookBus:        'host',
       stateIO:        'filesystem',
@@ -134,7 +152,7 @@ const PROFILE_BASELINES: Readonly<Record<'programmatic-cli' | 'declarative-cli' 
     'declarative-cli': Object.freeze({
       embeddingMode:  'declarative',
       commandSurface: 'slash-file',
-      dispatch: Object.freeze({ namedDispatch: true, nested: false, maxDepth: 1, background: false, subagentToolkit: 'full', backgroundDispatch: false }),
+      dispatch: Object.freeze({ namedDispatch: true, nested: false, maxDepth: 1, background: false, subagentToolkit: 'full', backgroundDispatch: false, isolation: 'none' }),
       modelMode:      'passive',
       hookBus:        'host',
       stateIO:        'filesystem',
@@ -145,7 +163,7 @@ const PROFILE_BASELINES: Readonly<Record<'programmatic-cli' | 'declarative-cli' 
     'ide': Object.freeze({
       embeddingMode:  'imperative',
       commandSurface: 'palette',
-      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: 5, background: true, subagentToolkit: 'full', backgroundDispatch: true }),
+      dispatch: Object.freeze({ namedDispatch: true, nested: true, maxDepth: 5, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none' }),
       modelMode:      'active',
       hookBus:        'engine',
       stateIO:        'sandboxed-storage',
@@ -278,7 +296,7 @@ const DEFAULT_ENGINE: EngineCapabilities = {
   axes: {
     embeddingMode:  'imperative',
     commandSurface: 'slash-file',
-    dispatch: { namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true },
+    dispatch: { namedDispatch: true, nested: true, maxDepth: -1, background: true, subagentToolkit: 'full', backgroundDispatch: true, isolation: 'none' },
     modelMode:      'active',
     hookBus:        'host',
     stateIO:        'filesystem',
@@ -404,6 +422,7 @@ function negotiateHostCapabilities(
   let effectiveBackgroundDispatch: boolean;
   let effectiveSubagentToolkit: SubagentToolkit;
   let effectiveMaxDepth: number;
+  let effectiveIsolation: DispatchIsolation;
 
   if (hostDispatch === null) {
     // Host didn't declare dispatch at all — fail-closed to most-restrictive values
@@ -414,6 +433,7 @@ function negotiateHostCapabilities(
     effectiveBackgroundDispatch = false;
     effectiveSubagentToolkit    = 'read-only';
     effectiveMaxDepth           = 0;
+    effectiveIsolation          = 'none';
   } else {
     // N1: observability warnings for 'undocumented' sentinel on dispatch fields
     if (hostDispatch.namedDispatch === 'undocumented') {
@@ -431,6 +451,9 @@ function negotiateHostCapabilities(
     if (hostDispatch.backgroundDispatch === 'undocumented') {
       warnings.push(`dispatch.backgroundDispatch is undocumented — degraded closed`);
     }
+    if (hostDispatch.isolation === 'undocumented') {
+      warnings.push(`dispatch.isolation is undocumented — degraded closed (none)`);
+    }
 
     effectiveNamedDispatch      = (hostDispatch.namedDispatch === true) && engineDispatch.namedDispatch;
     effectiveNested             = (hostDispatch.nested === true) && engineDispatch.nested;
@@ -442,6 +465,15 @@ function negotiateHostCapabilities(
     const hostToolkit   = hostDispatch.subagentToolkit === 'full' ? 'full' : 'read-only';
     const engineToolkit = engineDispatch.subagentToolkit === 'read-only' ? 'read-only' : 'full';
     effectiveSubagentToolkit = (hostToolkit === 'read-only' || engineToolkit === 'read-only') ? 'read-only' : 'full';
+
+    // isolation: effective = the host's declared value only if it is a known
+    // valid vocabulary member; otherwise 'none'. NOT host && engine gated —
+    // GSD owns the vocabulary, so "engine-known" == "in the valid set" (this
+    // still satisfies effective ⊆ host-declared ∩ engine-known).
+    const hostIso = hostDispatch.isolation;
+    effectiveIsolation = (typeof hostIso === 'string' && (HOST_INTEGRATION_AXES.isolation as readonly string[]).includes(hostIso))
+      ? hostIso as DispatchIsolation
+      : 'none';
 
     // maxDepth: missing/non-number/non-finite → 0 + warning
     let hostMaxDepth: number;
@@ -474,6 +506,7 @@ function negotiateHostCapabilities(
     background:         effectiveBackground,
     subagentToolkit:    effectiveSubagentToolkit,
     backgroundDispatch: effectiveBackgroundDispatch,
+    isolation:          effectiveIsolation,
   };
 
   // ---------------------------------------------------------------------------

@@ -68,7 +68,8 @@
         "maxDepth": 1,
         "background": true,
         "subagentToolkit": "undocumented",
-        "backgroundDispatch": true
+        "backgroundDispatch": true,
+        "isolation": "orchestrator-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",
