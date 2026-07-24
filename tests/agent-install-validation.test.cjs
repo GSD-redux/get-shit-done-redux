@@ -203,6 +203,65 @@ describe('validate health: agent installation check W010 (#1371)', () => {
   });
 });
 
+// ─── Codex project-local validation status ──────────────────────────────────
+
+describe('Codex project-local validation status', () => {
+  let tmpDir;
+  let globalHome;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    globalHome = path.join(tmpDir, 'global-codex');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ runtime: 'codex' }),
+    );
+    _createAgentsDir(globalHome, EXPECTED_AGENTS);
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('validate agents and health use a complete project-local Codex installation', () => {
+    const localAgentsDir = createCompleteCodexAgents(tmpDir);
+    const env = { CODEX_HOME: globalHome };
+
+    const validateResult = runGsdTools('validate agents --raw', tmpDir, env);
+    assert.ok(validateResult.success, `validate agents failed: ${validateResult.error}`);
+    const validateOutput = JSON.parse(validateResult.output);
+    assert.strictEqual(validateOutput.agents_dir, localAgentsDir);
+    assert.strictEqual(validateOutput.agents_found, true);
+    assert.deepStrictEqual(validateOutput.missing, []);
+    assert.deepStrictEqual(validateOutput.incomplete, []);
+
+    const healthResult = runGsdTools('validate health --raw', tmpDir, env);
+    assert.ok(healthResult.success, `validate health failed: ${healthResult.error}`);
+    const healthOutput = JSON.parse(healthResult.output);
+    assert.ok(!(healthOutput.warnings || []).some(warning => warning.code === 'W010'));
+  });
+
+  test('an empty project-local Codex directory remains authoritative for validate agents and health', () => {
+    const localAgentsDir = path.join(tmpDir, '.codex', AGENTS_DIR_NAME);
+    fs.mkdirSync(localAgentsDir, { recursive: true });
+    const env = { CODEX_HOME: globalHome };
+
+    const validateResult = runGsdTools('validate agents --raw', tmpDir, env);
+    assert.ok(validateResult.success, `validate agents failed: ${validateResult.error}`);
+    const validateOutput = JSON.parse(validateResult.output);
+    assert.strictEqual(validateOutput.agents_dir, localAgentsDir);
+    assert.strictEqual(validateOutput.agents_found, false);
+    assert.deepStrictEqual(validateOutput.installed, []);
+    assert.deepStrictEqual(validateOutput.incomplete, []);
+    assert.deepStrictEqual(validateOutput.missing, EXPECTED_AGENTS);
+
+    const healthResult = runGsdTools('validate health --raw', tmpDir, env);
+    assert.ok(healthResult.success, `validate health failed: ${healthResult.error}`);
+    const healthOutput = JSON.parse(healthResult.output);
+    assert.ok((healthOutput.warnings || []).some(warning => warning.code === 'W010'));
+  });
+});
+
 // ─── Copilot .agent.md detection (#1512) ────────────────────────────────────
 
 describe('checkAgentsInstalled: Copilot .agent.md format (#1512)', () => {
