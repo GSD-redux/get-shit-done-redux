@@ -308,6 +308,7 @@
       "adr-parser.cjs",
       "agent-command-router.cjs",
       "agent-install-check.cjs",
+      "agent-tools-contract.cjs",
       "api-coverage.cjs",
       "artifacts.cjs",
       "assumption-delta.cjs",

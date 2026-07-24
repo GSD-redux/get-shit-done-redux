@@ -180,6 +180,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/onboard-projection.cjs',
       'gsd-core/bin/lib/agent-command-router.cjs',
       'gsd-core/bin/lib/agent-install-check.cjs',
+      'gsd-core/bin/lib/agent-tools-contract.cjs',
       'gsd-core/bin/lib/task-command-router.cjs',
       'gsd-core/bin/lib/validate-command-router.cjs',
       'gsd-core/bin/lib/workstream-inventory.cjs',
