@@ -1251,9 +1251,11 @@ describe('executeWorktreeWaveCleanupPlan', () => {
         if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
-        // SUMMARY is NOT committed on the branch — cat-file -e HEAD:<path> returns non-zero
+        // SUMMARY is NOT committed on the branch. `git cat-file -e HEAD:<path>` returns
+        // exit 128 (NOT 1) for an absent path (#2556): "fatal: path '...' does not exist
+        // in 'HEAD'". Rescue must fire on this real exit code.
         if (key === '-C /repo/.claude/worktrees/agent-a1 cat-file -e HEAD:.planning/q1-SUMMARY.md') {
-          return { exitCode: 1, stdout: '', stderr: 'error: pathspec \'.planning/q1-SUMMARY.md\' did not match any file(s) known to git' };
+          return { exitCode: 128, stdout: '', stderr: "fatal: path '.planning/q1-SUMMARY.md' does not exist in 'HEAD'" };
         }
         if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
           // Only the SUMMARY is dirty — no other modified files
@@ -1324,9 +1326,10 @@ describe('executeWorktreeWaveCleanupPlan', () => {
         if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
-        // SUMMARY is NOT committed on the branch (uncommitted, per quick.md contract)
+        // SUMMARY is NOT committed on the branch (uncommitted, per quick.md contract).
+        // cat-file -e returns 128 for an absent path (#2556).
         if (key === '-C /repo/.claude/worktrees/agent-a1 cat-file -e HEAD:.planning/q1-SUMMARY.md') {
-          return { exitCode: 1, stdout: '', stderr: 'error: pathspec \'.planning/q1-SUMMARY.md\' did not match any file(s) known to git' };
+          return { exitCode: 128, stdout: '', stderr: "fatal: path '.planning/q1-SUMMARY.md' does not exist in 'HEAD'" };
         }
         if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
           // SUMMARY plus another dirty file
@@ -1380,9 +1383,10 @@ describe('executeWorktreeWaveCleanupPlan', () => {
         if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
-        // SUMMARY is NOT committed on the branch — rescue should proceed (and fail with ENOSPC)
+        // SUMMARY is NOT committed — cat-file -e returns exit 128 for an absent path (#2556);
+        // rescue proceeds and copyFileSync throws (ENOSPC).
         if (key === '-C /repo/.claude/worktrees/agent-a1 cat-file -e HEAD:.planning/q1-SUMMARY.md') {
-          return { exitCode: 1, stdout: '', stderr: 'error: pathspec \'.planning/q1-SUMMARY.md\' did not match any file(s) known to git' };
+          return { exitCode: 128, stdout: '', stderr: "fatal: path '.planning/q1-SUMMARY.md' does not exist in 'HEAD'" };
         }
         if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
           // Only the SUMMARY is dirty
@@ -1581,9 +1585,9 @@ describe('executeWorktreeWaveCleanupPlan', () => {
         if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
-        // SUMMARY is staged but NOT committed — cat-file -e HEAD:<path> returns non-zero
+        // SUMMARY is staged but NOT committed — absent from HEAD, cat-file returns 128 (#2556)
         if (key === '-C /repo/.claude/worktrees/agent-a1 cat-file -e HEAD:.planning/q1-SUMMARY.md') {
-          return { exitCode: 1, stdout: '', stderr: 'fatal: Not a valid object name HEAD:.planning/q1-SUMMARY.md' };
+          return { exitCode: 128, stdout: '', stderr: "fatal: path '.planning/q1-SUMMARY.md' does not exist in 'HEAD'" };
         }
         if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
           // File is staged ('A  .planning/q1-SUMMARY.md')
@@ -1620,15 +1624,18 @@ describe('executeWorktreeWaveCleanupPlan', () => {
     assert.equal(result.entries[0].status, 'merged_removed');
   });
 
-  test('#706: cat-file fatal exit 128 causes rescue to be skipped (fail-closed on uncertain git)', () => {
-    // Finding #1 (code-review): exit code 128 means a fatal git error (e.g. corrupt
-    // object store, unborn HEAD, missing repo).  The guard must treat it as
-    // "uncertain — cannot determine committed status" and skip rescue, NOT proceed.
-    // Rescuing when status is uncertain would re-create the #706 merge collision if
-    // the file is actually already committed.
+  test('#2556: cat-file exit 128 RESCUES the SUMMARY (fail-open — 128 is the normal absent code)', () => {
+    // #2556 reversal of the prior #706 "fail-closed on 128" policy. That policy
+    // assumed exit 128 = fatal git error. It does not — `git cat-file -e` returns
+    // 128 for an ABSENT path, which is the NORMAL uncommitted-SUMMARY state; a
+    // genuine fatal (corrupt store, unborn HEAD) is rare. Fail-closed on 128
+    // therefore skipped rescue in the common case and the untracked SUMMARY was
+    // silently discarded by `worktree remove --force`. Data safety wins: rescue on
+    // 128. The rare genuinely-fatal-128-with-actually-committed-file case may now
+    // produce a recoverable merge collision (caught by the merge) — far less
+    // severe than the silent, unrecoverable data loss fail-closed caused.
     //
-    // Fixture: cat-file returns exitCode:128, timedOut:false.
-    // The cleanup must NOT rescue the SUMMARY (no copy into main tree).
+    // Fixture: cat-file returns exitCode:128.  Rescue MUST fire (copy into main tree).
     const rescued = [];
     const plan = {
       ok: true,
@@ -1654,9 +1661,10 @@ describe('executeWorktreeWaveCleanupPlan', () => {
         if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
-        // cat-file returns 128 — fatal git error (e.g. corrupt object store)
+        // cat-file returns 128 — the SUMMARY is absent from HEAD (#2556: the normal
+        // uncommitted state, NOT a fatal error)
         if (key === '-C /repo/.claude/worktrees/agent-a1 cat-file -e HEAD:.planning/q1-SUMMARY.md') {
-          return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', timedOut: false };
+          return { exitCode: 128, stdout: '', stderr: "fatal: path '.planning/q1-SUMMARY.md' does not exist in 'HEAD'", timedOut: false };
         }
         if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
           // Worktree appears clean (SUMMARY is committed on branch)
@@ -1685,23 +1693,23 @@ describe('executeWorktreeWaveCleanupPlan', () => {
       copyFileSync: (src, dest) => { rescued.push({ src, dest }); },
     });
 
-    // On fatal exit 128, rescue must be skipped (fail-closed) — no copy into main tree
-    assert.equal(rescued.length, 0,
-      'cat-file exit 128 must NOT rescue the SUMMARY — uncertain git state, skip to avoid recreating #706 collision');
+    // #2556: on exit 128 rescue MUST fire — 128 is the normal absent-path code and
+    // skipping loses the uncommitted SUMMARY (silent data loss via worktree remove --force).
+    assert.equal(rescued.length, 1,
+      'cat-file exit 128 must RESCUE the SUMMARY — 128 is the normal absent-path code, not a fatal error (#2556)');
     // The rest of cleanup proceeds normally (merge/remove/delete succeed in this fixture)
-    assert.equal(result.ok, true, 'cleanup can still succeed when cat-file returns 128 and worktree is clean');
+    assert.equal(result.ok, true, 'cleanup can still succeed after rescuing on cat-file exit 128');
   });
 
-  test('#706: cat-file timeout causes rescue to be skipped (fail-closed on unreliable git)', () => {
-    // Codex adversarial finding: on cat-file timeout, rescuing an actually-committed
-    // file would re-create the untracked collision.  The fix treats timeout as
-    // "cannot determine status — skip rescue" (fail-closed).  This means the merge
-    // will fail with merge_failed, which is the observable pre-fix behaviour and
-    // is recoverable, rather than silently corrupting the main tree.
+  test('#2556: cat-file timeout RESCUES the SUMMARY (fail-open — data safety over uncertain status)', () => {
+    // #2556 reversal: on cat-file timeout we cannot determine committed status, but
+    // data safety wins — rescue anyway. Skipping rescue on timeout (the prior
+    // fail-closed policy) risks losing an uncommitted SUMMARY to `worktree remove
+    // --force`. If the file turns out to be committed, the rescue copy is a no-op
+    // when the main tree already holds identical content (the destination check),
+    // and any real collision is caught by the merge as a recoverable merge_failed.
     //
-    // Fixture: cat-file returns timedOut:true.  The cleanup must NOT rescue the
-    // SUMMARY (no copy).  The merge will then succeed normally (SUMMARY is on the
-    // branch) or fail safely if the worktree status check catches something.
+    // Fixture: cat-file returns timedOut:true.  Rescue MUST fire (copy into main tree).
     const rescued = [];
     const plan = {
       ok: true,
@@ -1765,11 +1773,13 @@ describe('executeWorktreeWaveCleanupPlan', () => {
       copyFileSync: (src, dest) => { rescued.push({ src, dest }); },
     });
 
-    // On timeout, rescue must be skipped (fail-closed) — no copy into main tree
-    assert.equal(rescued.length, 0,
-      'cat-file timeout must NOT rescue the SUMMARY — copying a committed file as untracked would recreate the #706 merge collision');
+    // #2556: on timeout rescue MUST fire — skipping risks silent data loss; a copy
+    // of an actually-committed file is a no-op (destination check) or a recoverable
+    // merge collision, neither of which is as bad as losing the uncommitted SUMMARY.
+    assert.equal(rescued.length, 1,
+      'cat-file timeout must RESCUE the SUMMARY — data safety wins over uncertain status (#2556)');
     // The rest of cleanup proceeds normally (merge/remove/delete succeed in this fixture)
-    assert.equal(result.ok, true, 'cleanup can still succeed when cat-file times out and worktree is clean');
+    assert.equal(result.ok, true, 'cleanup can still succeed after rescuing on cat-file timeout');
   });
 
   test('blocks dirty worktrees before merge/remove/delete', () => {
