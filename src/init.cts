@@ -226,7 +226,7 @@ function getLatestCompletedMilestone(cwd: string): { version: string; name: stri
 function withProjectRoot(cwd: string, result: Record<string, unknown>): Record<string, unknown> {
   result['project_root'] = cwd;
   const activeRuntime = resolveRuntime(cwd);
-  const agentStatus = checkAgentsInstalled(activeRuntime);
+  const agentStatus = checkAgentsInstalled(activeRuntime, cwd);
   result['agents_installed'] = agentStatus.agents_installed;
   result['missing_agents'] = agentStatus.missing_agents;
   result['agents_dir'] = agentStatus.agents_dir;

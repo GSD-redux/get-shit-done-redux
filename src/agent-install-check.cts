@@ -33,17 +33,23 @@ interface AgentsInstalledResult {
  *   2. For claude runtime: __dirname-relative path (agents/ sibling of gsd-core/)
  *      This is correct for both repo runs and real installs (the runtime config dir's
  *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
- *   3. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
+ *   3. For codex with an existing project-local install: <projectRoot>/.codex/agents
+ *   4. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for Codex local-install discovery
  */
-function getAgentsDir(runtime?: string): string {
+function getAgentsDir(runtime?: string, projectRoot?: string): string {
   if (process.env['GSD_AGENTS_DIR']) {
     return process.env['GSD_AGENTS_DIR'];
   }
   const resolved = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
   if (resolved === 'claude') {
     return path.join(__dirname, '..', '..', '..', 'agents');
+  }
+  if (resolved === 'codex' && projectRoot) {
+    const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
+    if (fs.existsSync(localAgentsDir)) return localAgentsDir;
   }
   return path.join(getGlobalConfigDir(resolved), 'agents');
 }
@@ -52,10 +58,11 @@ function getAgentsDir(runtime?: string): string {
  * Check which GSD agents are installed on disk.
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for Codex local-install discovery
  */
-function checkAgentsInstalled(runtime?: string): AgentsInstalledResult {
+function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsInstalledResult {
   const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
-  const agentsDir = getAgentsDir(resolvedRuntime);
+  const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
   const expectedAgents = Object.keys(MODEL_PROFILES);
   const installed: string[] = [];
   const missing: string[] = [];

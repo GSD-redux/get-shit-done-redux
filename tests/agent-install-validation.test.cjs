@@ -42,6 +42,23 @@ function _createAgentsDir(configDir, agentNames = []) {
   return agentsDir;
 }
 
+function createCompleteCodexAgents(configDir) {
+  const agentsDir = path.join(configDir, '.codex', AGENTS_DIR_NAME);
+  fs.mkdirSync(agentsDir, { recursive: true });
+  const files = {};
+  for (const name of EXPECTED_AGENTS) {
+    fs.writeFileSync(path.join(agentsDir, `${name}.md`), `# ${name}\n`);
+    fs.writeFileSync(path.join(agentsDir, `${name}.toml`), `name = "${name}"\n`);
+    files[`agents/${name}.md`] = {};
+    files[`agents/${name}.toml`] = {};
+  }
+  fs.writeFileSync(
+    path.join(configDir, '.codex', 'gsd-file-manifest.json'),
+    JSON.stringify({ files }),
+  );
+  return agentsDir;
+}
+
 // ─── Init command agent validation ──────────────────────────────────────────
 
 describe('init commands: agents_installed field (#1371)', () => {
@@ -90,6 +107,30 @@ describe('init commands: agents_installed field (#1371)', () => {
     assert.strictEqual(typeof output.agents_installed, 'boolean',
       'init plan-phase must include agents_installed field');
     assert.strictEqual(output.agents_installed, true);
+  });
+
+  test('init plan-phase reports the complete project-local Codex installation', () => {
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-setup');
+    const globalHome = path.join(tmpDir, 'global-codex');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify({ runtime: 'codex' }),
+    );
+    createCompleteCodexAgents(tmpDir);
+    const canonicalRoot = fs.realpathSync(tmpDir);
+    const localAgentsDir = path.join(canonicalRoot, '.codex', AGENTS_DIR_NAME);
+    createCompleteCodexAgents(globalHome);
+
+    const result = runGsdTools('init plan-phase 1 --raw', tmpDir, { CODEX_HOME: globalHome });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.project_root, canonicalRoot);
+    assert.strictEqual(output.agent_runtime, 'codex');
+    assert.strictEqual(output.agents_dir, localAgentsDir);
+    assert.strictEqual(output.agents_installed, true);
+    assert.deepStrictEqual(output.missing_agents, []);
   });
 
   test('init execute-phase includes missing_agents list when agents are missing', () => {
