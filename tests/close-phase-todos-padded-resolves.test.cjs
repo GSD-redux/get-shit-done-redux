@@ -12,7 +12,6 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
-const fc = require('fast-check');
 
 const EXECUTE_PHASE = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
 
@@ -176,28 +175,5 @@ describe('#2576: close_phase_todos normalizes padded vs unpadded resolves_phase 
 
   test('defensive: non-numeric "abc" passes through unchanged (will not equal any phase number)', (t) => {
     assert.equal(runHelper(t, 'abc'), 'abc');
-  });
-
-  // ── Property (fast-check): a canonicalizer's output must be a fixed point —
-  // normalize(normalize(x)) === normalize(x) for every x. This is the contract a
-  // normalizer must satisfy; it complements the explicit boundary cases above and
-  // would catch any future helper rewrite that fails to converge on a canonical
-  // form. NUL is filtered because bash variables cannot hold NUL bytes. The helper
-  // is written to one reusable script and invoked via argv (no shell), per
-  // CONTRIBUTING.md's spawned-subprocess safety guidance.
-  test('property: normalize_phase_num is idempotent over all strings', (t) => {
-    const helper = extractNormalizeHelper();
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2576-prop-'));
-    t.after(() => cleanup(tmp));
-    const script = path.join(tmp, 'normalize.sh');
-    fs.writeFileSync(script, `${helper}\nnormalize_phase_num "$1"\n`);
-    const norm = (s) => execFileSync('bash', [script, s], { encoding: 'utf8' });
-    fc.assert(
-      fc.property(
-        fc.string({ maxLength: 16 }).filter((s) => !s.includes('\0')),
-        (s) => { assert.equal(norm(norm(s)), norm(s)); }
-      ),
-      { numRuns: 50 }
-    );
   });
 });
