@@ -953,6 +953,17 @@ v1.40.0, [#2792](https://github.com/open-gsd/gsd-core/issues/2792)).
 /gsd-health --context               # Context-utilization triage
 ```
 
+**Phase SUMMARY artifacts (`W025`).** Each phase `SUMMARY.md` claims a set of files
+it created or modified. Health now runs the same artifact check the `verify-summary`
+verb has always applied to research summaries against every phase SUMMARY, and warns
+when a referenced file is not on disk — the case where a summary reports work that
+never landed.
+
+Advisory only: it appends to `warnings[]`, never blocks phase completion, and covers
+all summaries in a phase (`NN-NN-SUMMARY.md` plus a legacy bare `SUMMARY.md`). Commit
+references are deliberately *not* reported — the hash pattern is loose enough to match
+any hex-shaped token in prose, which is too noisy to surface.
+
 ### `/gsd-cleanup`
 
 Archive accumulated phase directories from completed milestones and prune local branches whose upstream has been deleted.

@@ -63,21 +63,42 @@ const { MODEL_PROFILES } = modelProfilesMod;
 void stripShippedMilestones;
 void detectSchemaFiles;
 
-function cmdVerifySummary(
+interface SummaryVerification {
+  passed: boolean;
+  checks: {
+    summary_exists: boolean;
+    files_created: { checked: number; found: number; missing: string[] };
+    commits_exist: boolean;
+    self_check: string;
+  };
+  errors: string[];
+}
+
+/**
+ * Pure core of `verify-summary` (#2572).
+ *
+ * Same artifact↔git checks the CLI verb has always run, lifted out of the
+ * `output()` wrapper so other verbs can consume the structured
+ * `{ passed, checks, errors }` contract directly instead of shelling out and
+ * re-parsing JSON. `cmdVerifySummary` is now a thin adapter over this.
+ *
+ * Never throws and never writes to stdout: a missing SUMMARY, a non-repo, or an
+ * unresolvable commit all come back as structured `false`/`missing` values.
+ *
+ * Caveat for callers surfacing `commits_exist`: the hash pattern is a loose
+ * `\b[0-9a-f]{7,40}\b`, so any hex-shaped token in the prose counts as a
+ * candidate. That is cheap as an advisory signal and unacceptable as a gate.
+ */
+function verifySummaryCore(
   cwd: string,
   summaryPath: string,
-  checkFileCount: number | undefined,
-  raw: boolean,
-): void {
-  if (!summaryPath) {
-    error('summary-path required');
-  }
-
+  checkFileCount?: number,
+): SummaryVerification {
   const fullPath = path.join(cwd, summaryPath);
   const checkCount = checkFileCount || 2;
 
   if (!fs.existsSync(fullPath)) {
-    const result = {
+    return {
       passed: false,
       checks: {
         summary_exists: false,
@@ -87,8 +108,6 @@ function cmdVerifySummary(
       },
       errors: ['SUMMARY.md not found'],
     };
-    output(result, raw, 'failed');
-    return;
   }
 
   const content = fs.readFileSync(fullPath, 'utf-8');
@@ -157,8 +176,21 @@ function cmdVerifySummary(
   };
 
   const passed = missing.length === 0 && selfCheck !== 'failed';
-  const result = { passed, checks, errors };
-  output(result, raw, passed ? 'passed' : 'failed');
+  return { passed, checks, errors };
+}
+
+/** CLI adapter over verifySummaryCore — arg guard + output shaping only. */
+function cmdVerifySummary(
+  cwd: string,
+  summaryPath: string,
+  checkFileCount: number | undefined,
+  raw: boolean,
+): void {
+  if (!summaryPath) {
+    error('summary-path required');
+  }
+  const result = verifySummaryCore(cwd, summaryPath, checkFileCount);
+  output(result, raw, result.passed ? 'passed' : 'failed');
 }
 
 /**
@@ -1683,6 +1715,42 @@ function cmdValidateHealth(
     }
   }
 
+  // W025 (#2572): run the existing verify-summary artifact check against every
+  // phase SUMMARY. The check has always existed but was only ever pointed at
+  // `.planning/research/SUMMARY.md` (new-project.md / new-milestone.md) — phase
+  // summaries, the ones that actually claim "I created these files at this
+  // commit", were never checked.
+  //
+  // Advisory ONLY: appends to warnings[], never touches `status`, the repair
+  // set, or the hard completion gate (readVerificationStatus). Only the
+  // file-existence half is surfaced — `commits_exist` is deliberately NOT
+  // reported, because its `\b[0-9a-f]{7,40}\b` pattern matches any hex-shaped
+  // token in prose, which is too loose to put in front of a user even as a
+  // warning (open question (a) from triage, resolved).
+  {
+    const summaryFilter = (f: string) => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md';
+    for (const e of phaseDirEntries) {
+      const summaries = (phaseDirFiles.get(e.name) || []).filter(summaryFilter).sort();
+      for (const s of summaries) {
+        try {
+          const rel = posixNormalize(path.relative(cwd, path.join(phasesDir, e.name, s)));
+          const v = verifySummaryCore(cwd, rel);
+          const missing = v.checks.files_created.missing;
+          if (missing.length > 0) {
+            addIssue(
+              'warning',
+              'W025',
+              `${e.name}/${s} references ${missing.length} file(s) not on disk: ${missing.join(', ')}`,
+              'Confirm the work actually landed, or correct the file list in the SUMMARY',
+            );
+          }
+        } catch { /* best-effort, mirroring this scan's existing degrade posture:
+           * an unreadable summary or a path that escapes the project root means
+           * this one file is skipped, never that health crashes. */ }
+      }
+    }
+  }
+
   for (const e of phaseDirEntries) {
     const phaseFiles = phaseDirFiles.get(e.name) || [];
     const plans = phaseFiles.filter((f) => f.endsWith('-PLAN.md') || f === 'PLAN.md');
@@ -2526,6 +2594,7 @@ export = {
   scanNegativeGrepCommentEcho,
   scanFileWideNegativeGateConflict,
   cmdVerifySummary,
+  verifySummaryCore,
   cmdVerifyPlanStructure,
   cmdVerifyPhaseCompleteness,
   cmdVerifyReferences,

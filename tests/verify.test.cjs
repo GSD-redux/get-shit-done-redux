@@ -2664,3 +2664,66 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
 });
   });
 }
+
+// ─── #2572: verify-summary pure core, callable without the CLI wrapper ───────
+
+describe('verifySummaryCore — reusable structured contract (#2572)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { after } = require('node:test');
+  const { execSync } = require('node:child_process');
+  const { cleanup } = require('./helpers.cjs');
+  const { verifySummaryCore } = require('../gsd-core/bin/lib/verify.cjs');
+
+  const dirs = [];
+  after(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  function repo(summaryBody, extraFiles = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2572-'));
+    dirs.push(dir);
+    execSync('git init -q', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.email "t@t.com"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.name "T"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config commit.gpgsign false', { cwd: dir, stdio: 'pipe' });
+    for (const [rel, body] of Object.entries(extraFiles)) {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), body);
+    }
+    fs.writeFileSync(path.join(dir, 'SUMMARY.md'), summaryBody);
+    execSync('git add -A && git commit -q -m seed', { cwd: dir, stdio: 'pipe' });
+    return dir;
+  }
+
+  test('returns the structured contract without writing to stdout', () => {
+    const dir = repo('# Summary\n\nCreated: `src/a.ts`\n', { 'src/a.ts': 'x\n' });
+    const r = verifySummaryCore(dir, 'SUMMARY.md', 2);
+    assert.strictEqual(typeof r, 'object');
+    assert.deepStrictEqual(Object.keys(r).sort(), ['checks', 'errors', 'passed']);
+    assert.strictEqual(r.checks.summary_exists, true);
+    assert.strictEqual(r.passed, true);
+  });
+
+  test('reports a missing referenced file as a structured check, not a throw', () => {
+    const dir = repo('# Summary\n\nCreated: `src/gone.ts`\n');
+    const r = verifySummaryCore(dir, 'SUMMARY.md', 2);
+    assert.strictEqual(r.passed, false);
+    assert.ok(r.checks.files_created.missing.includes('src/gone.ts'),
+      `expected src/gone.ts in missing, got ${JSON.stringify(r.checks.files_created)}`);
+  });
+
+  test('absent SUMMARY yields summary_exists false — never throws', () => {
+    const dir = repo('# Summary\n');
+    let r;
+    assert.doesNotThrow(() => { r = verifySummaryCore(dir, 'nope/SUMMARY.md', 2); });
+    assert.strictEqual(r.checks.summary_exists, false);
+    assert.strictEqual(r.passed, false);
+  });
+
+  test('unresolvable commit hash is reported via commits_exist', () => {
+    const dir = repo('# Summary\n\nCommit: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n');
+    const r = verifySummaryCore(dir, 'SUMMARY.md', 2);
+    assert.strictEqual(r.checks.commits_exist, false);
+    assert.ok(r.errors.some((e) => /commit/i.test(e)), `expected a commit error, got ${JSON.stringify(r.errors)}`);
+  });
+});
