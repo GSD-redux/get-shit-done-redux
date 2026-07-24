@@ -110,7 +110,7 @@
   "gsd-core/VERSION": "ef0deccd81a6723c",
   "gsd-core/bin/check-latest-version.cjs": "e4a224058c8f4d74",
   "gsd-core/bin/ensure-runtime-build.cjs": "2525f1ae8b086828",
-  "gsd-core/bin/gsd-tools.cjs": "8edb842f617d5774",
+  "gsd-core/bin/gsd-tools.cjs": "3ac4c0a9f3a509f9",
   "gsd-core/bin/gsd_run": "62d9b647ede212e6",
   "gsd-core/bin/shared/config-defaults.manifest.json": "517e6a7c1e9f4f16",
   "gsd-core/bin/shared/config-schema.manifest.json": "2f60b9eaa6cf6bc1",

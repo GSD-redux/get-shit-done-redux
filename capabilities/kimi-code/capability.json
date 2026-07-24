@@ -73,6 +73,11 @@
       "transport": "mcp",
       "runtime": "node"
     },
+    "orchestratorExec": {
+      "command": "kimi-code",
+      "args": [],
+      "cwdFlag": null
+    },
     "hostBehaviors": {
       "reapplyCommand": "/skill:gsd-update --reapply",
       "localInstallDeferred": true,

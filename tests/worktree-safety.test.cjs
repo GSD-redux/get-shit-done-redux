@@ -40,6 +40,9 @@ const {
   executeWorktreeWaveCleanupPlan,
   planWorktreeRecordAgent,
   cmdWorktreeRecordAgent,
+  planWorktreeCreate,
+  executeWorktreeCreatePlan,
+  cmdWorktreeCreate,
 } = require(WORKTREE_SAFETY_PATH);
 
 const isWindows = process.platform === 'win32';
@@ -1043,6 +1046,539 @@ describe('worktree record-agent — real CLI dispatch (#1298)', () => {
       path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'), 'utf8',
     );
     assert.match(wf, /worktree\.record-agent/, 'execute-phase.md must wire the record-agent verb');
+  });
+});
+
+// ─── worktree create (#2584 ADR-1239 Codex-binding amendment — Phase 2) ───────
+// UNCONSUMED in Phase 2: no scheduler calls this yet (Phase 3 wires it). These
+// tests pin the git-worktree-creation primitive itself.
+
+describe('planWorktreeCreate', () => {
+  const okFields = {
+    agentId: 'a1',
+    worktreePath: '/repo/.claude/worktrees/agent-a1',
+    branch: 'worktree-agent-a1',
+    base: 'abc123',
+  };
+
+  test('happy path returns ok:true with the normalized entry', () => {
+    const plan = planWorktreeCreate(okFields);
+    assert.equal(plan.ok, true);
+    assert.equal(plan.reason, 'ok');
+    assert.equal(plan.entry.agent_id, 'a1');
+    assert.equal(plan.entry.worktree_path, okFields.worktreePath);
+    assert.equal(plan.entry.branch, 'worktree-agent-a1');
+    assert.equal(plan.entry.expected_base, 'abc123');
+  });
+
+  test('missing --agent-id reports the missing flag', () => {
+    const plan = planWorktreeCreate({ ...okFields, agentId: '' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'missing_field');
+    assert.match(plan.hint, /--agent-id/);
+    assert.equal(plan.entry, null);
+  });
+
+  test('whitespace-only field is treated as missing', () => {
+    const plan = planWorktreeCreate({ ...okFields, base: '   ' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'missing_field');
+    assert.match(plan.hint, /--base/);
+  });
+
+  test('branch-regex fail-closed: a branch outside the worktree-agent-* namespace is rejected', () => {
+    const plan = planWorktreeCreate({ ...okFields, branch: 'not-worktree-agent-x' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'invalid_entry');
+    assert.equal(plan.entry, null);
+  });
+
+  test('accepts the current agent-<id> namespace (#1995)', () => {
+    const plan = planWorktreeCreate({ ...okFields, branch: 'agent-a1' });
+    assert.equal(plan.ok, true);
+    assert.equal(plan.entry.branch, 'agent-a1');
+  });
+
+  // ─── #2584 FIX 4: git argument-injection + path-traversal guards ──────────
+
+  test('FIX4: a leading-dash branch is rejected (fail-closed via the pre-existing branch-namespace regex)', () => {
+    // The leading-dash guard runs AFTER normalizeCleanupManifestEntry (per the
+    // fix ordering), and WORKTREE_AGENT_BRANCH_RE anchors on `^(worktree-)?agent-`
+    // — no string starting with '-' can ever match it. So a dash-prefixed branch
+    // is already fully fail-closed by the EARLIER regex gate (reason
+    // 'invalid_entry') and never reaches the leading-dash check at all; the
+    // net security property (a branch value can never reach git as a bare
+    // flag) holds either way.
+    const plan = planWorktreeCreate({ ...okFields, branch: '-x' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'invalid_entry');
+    assert.equal(plan.entry, null);
+  });
+
+  test('FIX4: a leading-dash base is rejected', () => {
+    const plan = planWorktreeCreate({ ...okFields, base: '-f' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'unsafe_leading_dash');
+  });
+
+  test('FIX4: a leading-dash path is rejected', () => {
+    const plan = planWorktreeCreate({ ...okFields, worktreePath: '-f' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'unsafe_leading_dash');
+  });
+
+  test('FIX4: a ".." path-traversal segment is rejected (POSIX separator)', () => {
+    const plan = planWorktreeCreate({ ...okFields, worktreePath: 'a/../../etc/x' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'unsafe_path_traversal');
+  });
+
+  test('FIX4: a ".." path-traversal segment is rejected (Windows separator)', () => {
+    const plan = planWorktreeCreate({ ...okFields, worktreePath: 'a\\..\\..\\etc\\x' });
+    assert.equal(plan.ok, false);
+    assert.equal(plan.reason, 'unsafe_path_traversal');
+  });
+
+  test('FIX4: a normal path with a hyphen in a segment name still passes', () => {
+    const plan = planWorktreeCreate({ ...okFields, worktreePath: '/tmp/wt-1' });
+    assert.equal(plan.ok, true);
+  });
+
+  test('FIX4: an absolute path is NOT rejected (the orchestrator legitimately uses absolute paths)', () => {
+    const plan = planWorktreeCreate({ ...okFields, worktreePath: '/repo/.claude/worktrees/agent-a1' });
+    assert.equal(plan.ok, true);
+    assert.equal(plan.entry.worktree_path, '/repo/.claude/worktrees/agent-a1');
+  });
+});
+
+describe('executeWorktreeCreatePlan', () => {
+  const okFields = {
+    agentId: 'a1',
+    worktreePath: '/repo/.claude/worktrees/agent-a1',
+    branch: 'worktree-agent-a1',
+    base: 'abc123',
+  };
+
+  test('base_unresolved: a non-zero rev-parse --verify blocks BEFORE any worktree add is attempted', () => {
+    const plan = planWorktreeCreate(okFields);
+    const calls = [];
+    const execGit = (args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') return { exitCode: 1, stdout: '', stderr: 'fatal: bad revision', timedOut: false };
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+    };
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'base_unresolved');
+    assert.ok(!calls.some((c) => c[0] === 'worktree'), 'must NOT attempt `git worktree add` when the base is unresolved');
+  });
+
+  test('successful create: ok:true, cwd is the posix-normalized worktree path', () => {
+    const plan = planWorktreeCreate(okFields);
+    const calls = [];
+    const execGit = (args) => {
+      calls.push(args);
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+    };
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit });
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, 'created');
+    assert.equal(result.cwd, okFields.worktreePath);
+    assert.equal(result.worktree_path, okFields.worktreePath);
+    assert.equal(result.branch, 'worktree-agent-a1');
+    assert.equal(result.base, 'abc123');
+    assert.ok(calls.some((c) => c[0] === 'worktree' && c[1] === 'add'), 'must call `git worktree add`');
+  });
+
+  test('timeout on the base check degrades to git_timeout — does not throw, and no rollback is attempted (nothing was created)', () => {
+    const plan = planWorktreeCreate(okFields);
+    const calls = [];
+    const timeoutStub = makeTimeoutStub();
+    const execGit = (args, opts) => { calls.push(args); return timeoutStub(args, opts); };
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'git_timeout');
+    assert.ok(!calls.some((c) => c[0] === 'worktree'), 'must NOT attempt any `git worktree` call (nothing was ever created)');
+  });
+
+  test('FIX3: timeout on `git worktree add` degrades to git_timeout AND best-effort rolls back the partial worktree', () => {
+    const plan = planWorktreeCreate(okFields);
+    const timeoutStub = makeTimeoutStub();
+    const calls = [];
+    const execGit = (args, opts) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+      return timeoutStub(args, opts);
+    };
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'git_timeout');
+    const rollbackCall = calls.find((c) => c[0] === 'worktree' && c[1] === 'remove');
+    assert.ok(rollbackCall, 'a best-effort `git worktree remove --force` rollback must be attempted');
+    assert.ok(rollbackCall.includes('--force'));
+    assert.equal(rollbackCall[rollbackCall.length - 1], okFields.worktreePath);
+  });
+
+  test('FIX5 [data-loss guard]: worktree_add_failed (clean collision exit) does NOT roll back — leaves a pre-existing peer worktree untouched', () => {
+    // The most common non-zero `add` exit is a COLLISION: the target
+    // path/branch is already a registered worktree. git fails FAST there and
+    // creates nothing. The branch namespace this verb writes into
+    // (worktree-agent-*/agent-*) IS the concurrent-executor namespace, so a
+    // colliding path is very plausibly a LIVE PEER executor — rolling it back
+    // would destroy real, uncommitted work. This must NEVER call
+    // `git worktree remove`.
+    const plan = planWorktreeCreate(okFields);
+    const calls = [];
+    const execGit = (args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+      return { exitCode: 128, stdout: '', stderr: `fatal: '${okFields.worktreePath}' already exists`, timedOut: false };
+    };
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'worktree_add_failed');
+    assert.match(result.stderr, /already exists/);
+    assert.ok(
+      !calls.some((c) => c[0] === 'worktree' && c[1] === 'remove'),
+      'a clean non-zero `add` exit must NEVER trigger a rollback — the colliding path may be a live peer executor',
+    );
+  });
+
+  test('the timeout-path rollback never masks the original failure even if the rollback execGit itself throws', () => {
+    // The throwing-rollback contract is only exercised on the SURVIVING
+    // rollback call site (the timeout path) after FIX 5 removed the
+    // clean-exit rollback.
+    const plan = planWorktreeCreate(okFields);
+    const execGit = (args) => {
+      if (args[0] === 'rev-parse') return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        return { exitCode: null, stdout: '', stderr: '', timedOut: true, signal: 'SIGTERM' };
+      }
+      throw new Error('rollback execGit exploded');
+    };
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'git_timeout');
+  });
+
+  test('a skip plan (invalid_entry) is echoed back without any git call', () => {
+    const plan = planWorktreeCreate({ ...okFields, branch: 'not-worktree-agent-x' });
+    const calls = [];
+    const result = executeWorktreeCreatePlan(plan, '/repo/main', { execGit: (args) => { calls.push(args); return { exitCode: 0, stdout: '', stderr: '', timedOut: false }; } });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_entry');
+    assert.equal(calls.length, 0);
+  });
+
+  test('Windows path: a worktreePath with backslashes is posix-normalized in the result (worktree_path and cwd)',
+    () => {
+      const winFields = { ...okFields, worktreePath: 'C:\\repo\\.claude\\worktrees\\agent-a1' };
+      const plan = planWorktreeCreate(winFields);
+      const execGit = () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false });
+      const result = executeWorktreeCreatePlan(plan, 'C:\\repo\\main', { execGit });
+      assert.equal(result.ok, true);
+      assert.equal(result.cwd, 'C:/repo/.claude/worktrees/agent-a1');
+      assert.equal(result.worktree_path, 'C:/repo/.claude/worktrees/agent-a1');
+      assert.ok(!result.cwd.includes('\\'), 'cwd must contain no backslashes');
+    });
+});
+
+describe('cmdWorktreeCreate', () => {
+  function withExitCode(fn) {
+    const saved = process.exitCode;
+    try { return fn(); } finally { process.exitCode = saved; }
+  }
+
+  const okArgs = [
+    '--manifest', 'manifest.json',
+    '--agent-id', 'a1',
+    '--path', '/repo/.claude/worktrees/agent-a1',
+    '--branch', 'worktree-agent-a1',
+    '--base', 'abc123',
+  ];
+
+  function okExecGit() {
+    return () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false });
+  }
+
+  test('creates the worktree and appends the entry to an empty manifest', () => {
+    let writtenPath = null;
+    let writtenContent = null;
+    const out = [];
+    const result = cmdWorktreeCreate('/repo/main', okArgs, {
+      readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+      writeFile: (p, c) => { writtenPath = p; writtenContent = c; },
+      write: (s) => out.push(s),
+      writeErr: () => {},
+      execGit: okExecGit(),
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, 'created');
+    assert.equal(result.cwd, '/repo/.claude/worktrees/agent-a1');
+    assert.equal(writtenPath, path.resolve('/repo/main', 'manifest.json'));
+    const written = JSON.parse(writtenContent);
+    assert.equal(written.worktrees.length, 1);
+    assert.equal(written.worktrees[0].agent_id, 'a1');
+    assert.equal(written.worktrees[0].worktree_path, '/repo/.claude/worktrees/agent-a1');
+    assert.equal(written.worktrees[0].branch, 'worktree-agent-a1');
+    assert.equal(written.worktrees[0].expected_base, 'abc123');
+    assert.deepEqual(
+      Object.keys(written.worktrees[0]).sort(),
+      ['agent_id', 'branch', 'expected_base', 'worktree_path'],
+      'FIX2: the on-disk entry must be the minimal 4-field shape — no derived allowed_bases',
+    );
+    assert.match(out.join(''), /"ok": true/);
+  });
+
+  test('boundary: appending to a manifest with 1 existing entry yields 2', () => {
+    let writtenContent = null;
+    const result = cmdWorktreeCreate('/repo/main', okArgs, {
+      readFile: () => JSON.stringify({
+        orchestrator_root: '/repo/main',
+        worktrees: [{ agent_id: 'other', worktree_path: '/repo/.claude/worktrees/agent-other', branch: 'worktree-agent-other', expected_base: 'def456' }],
+      }),
+      writeFile: (_p, c) => { writtenContent = c; },
+      write: () => {},
+      writeErr: () => {},
+      execGit: okExecGit(),
+    });
+    assert.equal(result.ok, true);
+    const written = JSON.parse(writtenContent);
+    assert.equal(written.worktrees.length, 2);
+  });
+
+  test('boundary: appending to a manifest with 2 existing entries yields 3', () => {
+    let writtenContent = null;
+    const result = cmdWorktreeCreate('/repo/main', okArgs, {
+      readFile: () => JSON.stringify({
+        orchestrator_root: '/repo/main',
+        worktrees: [
+          { agent_id: 'x1', worktree_path: '/repo/.claude/worktrees/agent-x1', branch: 'worktree-agent-x1', expected_base: 'def456' },
+          { agent_id: 'x2', worktree_path: '/repo/.claude/worktrees/agent-x2', branch: 'worktree-agent-x2', expected_base: 'def456' },
+        ],
+      }),
+      writeFile: (_p, c) => { writtenContent = c; },
+      write: () => {},
+      writeErr: () => {},
+      execGit: okExecGit(),
+    });
+    assert.equal(result.ok, true);
+    const written = JSON.parse(writtenContent);
+    assert.equal(written.worktrees.length, 3);
+  });
+
+  test('dedupe: re-recording an identical (worktree_path, branch) entry does NOT grow the manifest', () => {
+    let writtenContent = null;
+    const result = cmdWorktreeCreate('/repo/main', okArgs, {
+      readFile: () => JSON.stringify({
+        orchestrator_root: '/repo/main',
+        worktrees: [
+          { agent_id: 'a1', worktree_path: '/repo/.claude/worktrees/agent-a1', branch: 'worktree-agent-a1', expected_base: 'abc123' },
+        ],
+      }),
+      writeFile: (_p, c) => { writtenContent = c; },
+      write: () => {},
+      writeErr: () => {},
+      execGit: okExecGit(),
+    });
+    assert.equal(result.ok, true);
+    const written = JSON.parse(writtenContent);
+    assert.equal(written.worktrees.length, 1, 'dedupe must not append a second identical entry');
+  });
+
+  test('exits 2 with usage when --manifest is missing', () => {
+    withExitCode(() => {
+      const errs = [];
+      const result = cmdWorktreeCreate('/repo/main', ['--agent-id', 'a1'], {
+        writeErr: (s) => errs.push(s),
+        write: () => {},
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'usage');
+      assert.equal(process.exitCode, 2);
+      assert.match(errs.join(''), /Usage: worktree create/);
+    });
+  });
+
+  test('exits 1 loudly when the manifest cannot be read', () => {
+    withExitCode(() => {
+      const errs = [];
+      const result = cmdWorktreeCreate('/repo/main', okArgs, {
+        readFile: () => { throw new Error('ENOENT'); },
+        writeErr: (s) => errs.push(s),
+        write: () => {},
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'manifest_read_failed');
+      assert.equal(process.exitCode, 1);
+      assert.match(errs.join(''), /manifest_read_failed/);
+    });
+  });
+
+  test('does not write the manifest and does not call git when the entry is invalid', () => {
+    withExitCode(() => {
+      let wrote = false;
+      let gitCalled = false;
+      const result = cmdWorktreeCreate('/repo/main',
+        ['--manifest', 'm.json', '--agent-id', 'a1', '--path', '/p', '--branch', 'feature/x', '--base', 'abc123'], {
+          readFile: () => '{"worktrees":[]}',
+          writeFile: () => { wrote = true; },
+          write: () => {},
+          writeErr: () => {},
+          execGit: () => { gitCalled = true; return { exitCode: 0, stdout: '', stderr: '', timedOut: false }; },
+        });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'invalid_entry');
+      assert.equal(wrote, false);
+      assert.equal(gitCalled, false, 'must not call git before the entry validates');
+      assert.equal(process.exitCode, 1);
+    });
+  });
+
+  test('does not write the manifest when the base is unresolved', () => {
+    withExitCode(() => {
+      let wrote = false;
+      const result = cmdWorktreeCreate('/repo/main', okArgs, {
+        readFile: () => '{"worktrees":[]}',
+        writeFile: () => { wrote = true; },
+        write: () => {},
+        writeErr: () => {},
+        execGit: (args) => (args[0] === 'rev-parse'
+          ? { exitCode: 1, stdout: '', stderr: 'fatal: bad revision', timedOut: false }
+          : { exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'base_unresolved');
+      assert.equal(wrote, false, 'must not write the manifest when the worktree was never created');
+      assert.equal(process.exitCode, 1);
+    });
+  });
+
+  // ─── #2584 FIX 1: manifest work must ALL run before the git side effect ───
+
+  test('FIX1: a malformed (truncated JSON) manifest fails with the parse reason BEFORE any git command runs', () => {
+    withExitCode(() => {
+      let addCalled = false;
+      let wrote = false;
+      const result = cmdWorktreeCreate('/repo/main', okArgs, {
+        readFile: () => '{"worktrees": [', // truncated JSON — a git stub here WOULD succeed if ever called
+        writeFile: () => { wrote = true; },
+        write: () => {},
+        writeErr: () => {},
+        execGit: (args) => {
+          if (args[0] === 'worktree' && args[1] === 'add') addCalled = true;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'invalid_manifest_json');
+      assert.equal(addCalled, false, 'git worktree add must never be invoked when the manifest fails to parse (no orphan possible)');
+      assert.equal(wrote, false);
+      assert.equal(process.exitCode, 1);
+    });
+  });
+
+  test('FIX1: a manifest whose "worktrees" is not an array fails with manifest_shape_invalid BEFORE any git command runs', () => {
+    withExitCode(() => {
+      let addCalled = false;
+      const result = cmdWorktreeCreate('/repo/main', okArgs, {
+        readFile: () => JSON.stringify({ orchestrator_root: '/repo/main', worktrees: 'not-an-array' }),
+        writeFile: () => {},
+        write: () => {},
+        writeErr: () => {},
+        execGit: (args) => {
+          if (args[0] === 'worktree' && args[1] === 'add') addCalled = true;
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'manifest_shape_invalid');
+      assert.equal(addCalled, false, 'git worktree add must never be invoked when the manifest shape is invalid');
+      assert.equal(process.exitCode, 1);
+    });
+  });
+
+  test('FIX1: a writeFile failure AFTER a successful git create rolls back the worktree and reports manifest_write_failed', () => {
+    withExitCode(() => {
+      const gitCalls = [];
+      const result = cmdWorktreeCreate('/repo/main', okArgs, {
+        readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+        writeFile: () => { throw new Error('EACCES: permission denied'); },
+        write: () => {},
+        writeErr: () => {},
+        execGit: (args) => { gitCalls.push(args); return { exitCode: 0, stdout: '', stderr: '', timedOut: false }; },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'manifest_write_failed');
+      assert.equal(process.exitCode, 1);
+      assert.ok(gitCalls.some((c) => c[0] === 'worktree' && c[1] === 'add'), 'the worktree must actually have been created before the write failed');
+      const rollbackCall = gitCalls.find((c) => c[0] === 'worktree' && c[1] === 'remove');
+      assert.ok(rollbackCall, 'a git worktree remove --force rollback call must be made after a manifest write failure');
+      assert.ok(rollbackCall.includes('--force'));
+      assert.equal(rollbackCall[rollbackCall.length - 1], '/repo/.claude/worktrees/agent-a1');
+    });
+  });
+
+  test('FIX1: a writeFile failure does not throw past cmdWorktreeCreate even when the rollback execGit itself throws', () => {
+    withExitCode(() => {
+      const result = cmdWorktreeCreate('/repo/main', okArgs, {
+        readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+        writeFile: () => { throw new Error('ENOSPC: no space left on device'); },
+        write: () => {},
+        writeErr: () => {},
+        execGit: (args) => {
+          if (args[0] === 'worktree' && args[1] === 'remove') throw new Error('rollback execGit exploded');
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'manifest_write_failed');
+      assert.equal(process.exitCode, 1);
+    });
+  });
+});
+
+// ─── #2584 FIX 2: on-disk entry-shape parity between create and record-agent ──
+// Generative-fix-divergence guard: both verbs write into the SAME manifest, so
+// they must persist the identical field-set for equivalent inputs.
+
+describe('cmdWorktreeCreate / cmdWorktreeRecordAgent — on-disk entry parity (#2584 FIX 2)', () => {
+  test('both verbs persist the identical 4-field entry for equivalent inputs', () => {
+    const argsFor = (manifestFlag) => [
+      manifestFlag, 'manifest.json',
+      '--agent-id', 'a1',
+      '--path', '/repo/.claude/worktrees/agent-a1',
+      '--branch', 'worktree-agent-a1',
+      '--base', 'abc123',
+    ];
+
+    let createdContent = null;
+    cmdWorktreeCreate('/repo/main', argsFor('--manifest'), {
+      readFile: () => '{"worktrees":[]}',
+      writeFile: (_p, c) => { createdContent = c; },
+      write: () => {},
+      writeErr: () => {},
+      execGit: () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    });
+
+    let recordedContent = null;
+    cmdWorktreeRecordAgent('/repo/main', argsFor('--manifest'), {
+      readFile: () => '{"worktrees":[]}',
+      writeFile: (_p, c) => { recordedContent = c; },
+      write: () => {},
+      writeErr: () => {},
+    });
+
+    assert.ok(createdContent, 'cmdWorktreeCreate must have written a manifest');
+    assert.ok(recordedContent, 'cmdWorktreeRecordAgent must have written a manifest');
+    const createdEntry = JSON.parse(createdContent).worktrees[0];
+    const recordedEntry = JSON.parse(recordedContent).worktrees[0];
+    assert.deepEqual(
+      Object.keys(createdEntry).sort(),
+      Object.keys(recordedEntry).sort(),
+      'both verbs must persist the SAME field-set (no derived allowed_bases from create)',
+    );
+    assert.deepEqual(createdEntry, recordedEntry, 'identical inputs must produce byte-identical on-disk entries');
   });
 });
 

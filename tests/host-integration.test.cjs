@@ -28,6 +28,7 @@ const {
   HOOK_EVENT_SURFACES,
   extensionEventSurfaceFor,
   EXTENSION_EVENT_SURFACES,
+  resolveOrchestratorExec,
 } = hi;
 
 const {
@@ -1314,6 +1315,303 @@ describe('#2584 dispatch.isolation — validator', () => {
       const isoErrors = errors.filter((e) => e.includes('dispatch.isolation'));
       assert.strictEqual(isoErrors.length, 0,
         `${id}: shipped dispatch.isolation:"${iso}" must validate clean; got: ${JSON.stringify(isoErrors)}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2584 — ADR-1239 Codex-binding amendment, Phase 2: resolveOrchestratorExec
+// + the `runtime.orchestratorExec` descriptor field (sibling of hostBehaviors).
+// UNCONSUMED in Phase 2 — no scheduler calls this yet (Phase 3 wires it).
+// ---------------------------------------------------------------------------
+
+describe('resolveOrchestratorExec — the 4 shipped orchestrator-worktree descriptors', () => {
+  const CWD = '/repo/.claude/worktrees/agent-a1';
+
+  test('codex: exec --cd <cwd>', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec'], cwdFlag: '--cd' }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'codex');
+    assert.deepEqual(result.args, ['exec', '--cd', CWD]);
+    assert.equal(result.cwd, CWD);
+  });
+
+  test('opencode: run --dir <cwd>', () => {
+    const result = resolveOrchestratorExec({ command: 'opencode', args: ['run'], cwdFlag: '--dir' }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'opencode');
+    assert.deepEqual(result.args, ['run', '--dir', CWD]);
+    assert.equal(result.cwd, CWD);
+  });
+
+  test('kimi: --work-dir <cwd> (no leading verb)', () => {
+    const result = resolveOrchestratorExec({ command: 'kimi', args: [], cwdFlag: '--work-dir' }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'kimi');
+    assert.deepEqual(result.args, ['--work-dir', CWD]);
+    assert.equal(result.cwd, CWD);
+  });
+
+  test('kimi-code: cwdFlag:null — NO flag appended, cwd still returned (process-cwd case)', () => {
+    const result = resolveOrchestratorExec({ command: 'kimi-code', args: [], cwdFlag: null }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'kimi-code');
+    assert.deepEqual(result.args, []);
+    assert.equal(result.cwd, CWD);
+  });
+});
+
+describe('resolveOrchestratorExec — fail-closed', () => {
+  test('undefined descriptor → missing_command', () => {
+    const result = resolveOrchestratorExec(undefined, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing_command');
+  });
+
+  test('{} (no command) → missing_command', () => {
+    const result = resolveOrchestratorExec({}, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing_command');
+  });
+
+  test('command: "" (empty string) → missing_command', () => {
+    const result = resolveOrchestratorExec({ command: '' }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing_command');
+  });
+
+  test('command: non-string → missing_command', () => {
+    for (const bogus of [42, null, {}, []]) {
+      const result = resolveOrchestratorExec({ command: bogus }, '/repo/wt');
+      assert.equal(result.ok, false, `command=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'missing_command');
+    }
+  });
+
+  test('empty cwd → invalid_cwd', () => {
+    const result = resolveOrchestratorExec({ command: 'codex' }, '');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_cwd');
+  });
+
+  test('non-string cwd → invalid_cwd', () => {
+    for (const bogus of [undefined, null, 42, {}]) {
+      const result = resolveOrchestratorExec({ command: 'codex' }, bogus);
+      assert.equal(result.ok, false, `cwd=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'invalid_cwd');
+    }
+  });
+
+  test('args not an array → invalid_args', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: 'exec' }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_args');
+  });
+
+  test('args array with a non-string element → invalid_args', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec', 42] }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_args');
+  });
+
+  test('cwdFlag a number → invalid_cwd_flag', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', cwdFlag: 42 }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_cwd_flag');
+  });
+
+  test('cwdFlag an object/array → invalid_cwd_flag', () => {
+    for (const bogus of [{}, []]) {
+      const result = resolveOrchestratorExec({ command: 'codex', cwdFlag: bogus }, '/repo/wt');
+      assert.equal(result.ok, false, `cwdFlag=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'invalid_cwd_flag');
+    }
+  });
+
+  test('a reserved-name command string ("__proto__") still resolves at the resolver layer', () => {
+    // The resolver only checks "is it a non-empty string" — it never does a
+    // property lookup keyed by `command`, so there is no prototype-pollution
+    // surface here. The VALIDATOR (capability-validator.cjs) is what rejects
+    // "__proto__" at descriptor-load time — see the validator describe block below.
+    const result = resolveOrchestratorExec({ command: '__proto__' }, '/repo/wt');
+    assert.equal(result.ok, true);
+    assert.equal(result.command, '__proto__');
+  });
+});
+
+describe('resolveOrchestratorExec — fast-check property test', () => {
+  const commandArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0);
+  const argsArb = fc.array(fc.string());
+  const cwdFlagArb = fc.oneof(
+    fc.constant(null),
+    fc.constant(undefined),
+    fc.string({ minLength: 1 }).filter((s) => s.length > 0),
+  );
+  const cwdArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0);
+
+  test('property: ok:true, command preserved, cwdFlag appended exactly once (or never for null/absent)', () => {
+    fc.assert(
+      fc.property(commandArb, argsArb, cwdFlagArb, cwdArb, (command, args, cwdFlag, cwd) => {
+        // Guard against the astronomically-rare but non-zero case where the
+        // arbitrary `args` already happens to contain the exact `cwd` string —
+        // that would make "cwd appears exactly once, at the tail" a false
+        // assertion about pre-existing data rather than the resolver's own
+        // behavior. Deterministic given the seed; not a flakiness workaround.
+        fc.pre(!args.includes(cwd));
+        const descriptor = cwdFlag === undefined ? { command, args } : { command, args, cwdFlag };
+        const result = resolveOrchestratorExec(descriptor, cwd);
+        assert.equal(result.ok, true);
+        assert.equal(result.command, command);
+        assert.equal(result.cwd, cwd);
+        if (typeof cwdFlag === 'string' && cwdFlag.length > 0) {
+          assert.deepEqual(result.args.slice(-2), [cwdFlag, cwd]);
+          // exactly once: cwdFlag/cwd do not appear anywhere earlier in args
+          const earlier = result.args.slice(0, -2);
+          assert.ok(!earlier.includes(cwd), 'cwd must not appear before the trailing pair');
+        } else {
+          assert.ok(!result.args.includes(cwd), 'cwd must not appear in args when cwdFlag is null/absent');
+        }
+      }),
+      { numRuns: 200, seed: 2584 },
+    );
+  });
+});
+
+describe('#2584 orchestratorExec — parity / divergence guard', () => {
+  const CAPABILITIES_DIR = path.join(REPO_ROOT, 'capabilities');
+
+  function loadCapability(id) {
+    return JSON.parse(fs.readFileSync(path.join(CAPABILITIES_DIR, id, 'capability.json'), 'utf8'));
+  }
+
+  test('every capability whose dispatch.isolation is "orchestrator-worktree" declares a resolvable orchestratorExec', () => {
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => {
+      const capPath = path.join(CAPABILITIES_DIR, entry, 'capability.json');
+      return fs.existsSync(capPath);
+    });
+    const orchestratorWorktreeHosts = [];
+    for (const id of capIds) {
+      const cap = loadCapability(id);
+      const iso = cap && cap.runtime && cap.runtime.hostIntegration && cap.runtime.hostIntegration.dispatch
+        && cap.runtime.hostIntegration.dispatch.isolation;
+      if (iso !== 'orchestrator-worktree') continue;
+      orchestratorWorktreeHosts.push(id);
+
+      const orchestratorExec = cap.runtime.orchestratorExec;
+      assert.ok(
+        orchestratorExec,
+        `${id}: dispatch.isolation:"orchestrator-worktree" but no runtime.orchestratorExec declared — ` +
+        `a future orchestrator-worktree host MUST declare orchestratorExec (Phase 3 has nothing to spawn otherwise)`,
+      );
+      const result = resolveOrchestratorExec(orchestratorExec, '/tmp/wt');
+      assert.equal(result.ok, true,
+        `${id}: runtime.orchestratorExec must resolve cleanly; got reason="${result.ok ? '' : result.reason}"`);
+    }
+    // Sanity: the sweep actually found the 4 known hosts (guards a broken sweep
+    // silently matching zero capabilities and passing vacuously).
+    assert.deepEqual(orchestratorWorktreeHosts.sort(), ['codex', 'kimi', 'kimi-code', 'opencode']);
+  });
+});
+
+describe('#2584 orchestratorExec — validator', () => {
+  function shippedCodexCapabilityWithoutOrchestratorExec() {
+    const cap = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, 'capabilities', 'codex', 'capability.json'), 'utf8'),
+    );
+    delete cap.runtime.orchestratorExec;
+    return cap;
+  }
+
+  test('a descriptor that omits orchestratorExec entirely still validates clean (optional field)', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    const errors = validateCapability(cap, 'codex');
+    assert.deepEqual(errors, [], `omitted orchestratorExec must validate clean, got: ${JSON.stringify(errors)}`);
+  });
+
+  test('a well-formed orchestratorExec passes with zero orchestratorExec errors', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', args: ['exec'], cwdFlag: '--cd' };
+    const errors = validateCapability(cap, 'codex');
+    const oeErrors = errors.filter((e) => e.includes('orchestratorExec'));
+    assert.deepEqual(oeErrors, []);
+  });
+
+  test('orchestratorExec: not an object (array/null/string) → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    for (const bogus of [[], null, 'codex', 42]) {
+      cap.runtime.orchestratorExec = bogus;
+      const errors = validateCapability(cap, 'codex');
+      assert.ok(
+        errors.some((e) => e.includes('runtime.orchestratorExec must be an object')),
+        `orchestratorExec=${JSON.stringify(bogus)} must be rejected; got: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
+  test('command missing → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { args: [], cwdFlag: null };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.command')));
+  });
+
+  test('command: "" (empty string) → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: '' };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.command')));
+  });
+
+  test('command: "__proto__" (reserved name) → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: '__proto__' };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(
+      errors.some((e) => e.includes('runtime.orchestratorExec.command') && e.includes('reserved name')),
+      `"__proto__" must produce a reserved-name validator error; got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('args: non-array → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', args: 'exec' };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.args')));
+  });
+
+  test('args: array with a non-string element → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', args: ['exec', 42] };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.args')));
+  });
+
+  test('cwdFlag: a number → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', cwdFlag: 42 };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.cwdFlag')));
+  });
+
+  test('cwdFlag: null is valid (no error)', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'kimi-code', args: [], cwdFlag: null };
+    const errors = validateCapability(cap, 'codex');
+    const oeErrors = errors.filter((e) => e.includes('orchestratorExec'));
+    assert.deepEqual(oeErrors, []);
+  });
+
+  test('full descriptor sweep: every shipped capability.json still validates clean after the orchestratorExec addition', () => {
+    const CAPABILITIES_DIR = path.join(REPO_ROOT, 'capabilities');
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => {
+      const capPath = path.join(CAPABILITIES_DIR, entry, 'capability.json');
+      return fs.existsSync(capPath);
+    });
+    for (const id of capIds) {
+      const cap = JSON.parse(fs.readFileSync(path.join(CAPABILITIES_DIR, id, 'capability.json'), 'utf8'));
+      if (cap.role !== 'runtime') continue;
+      const errors = validateCapability(cap, id);
+      assert.deepEqual(errors, [], `${id}: capability.json must still validate clean; got: ${JSON.stringify(errors)}`);
     }
   });
 });

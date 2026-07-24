@@ -950,6 +950,13 @@ const capabilities = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "orchestratorExec": {
+        "command": "codex",
+        "args": [
+          "exec"
+        ],
+        "cwdFlag": "--cd"
+      },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
         "tomlConfigInstall": true,
@@ -1753,6 +1760,11 @@ const capabilities = {
         "runtime": "python",
         "effortSurface": "undocumented"
       },
+      "orchestratorExec": {
+        "command": "kimi",
+        "args": [],
+        "cwdFlag": "--work-dir"
+      },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
         "localInstallDeferred": true,
@@ -1837,6 +1849,11 @@ const capabilities = {
         "stateIO": "filesystem",
         "transport": "mcp",
         "runtime": "node"
+      },
+      "orchestratorExec": {
+        "command": "kimi-code",
+        "args": [],
+        "cwdFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -2161,6 +2178,13 @@ const capabilities = {
         "transport": "mcp",
         "runtime": "bun",
         "effortSurface": "argv"
+      },
+      "orchestratorExec": {
+        "command": "opencode",
+        "args": [
+          "run"
+        ],
+        "cwdFlag": "--dir"
       },
       "hostBehaviors": {
         "reapplyCommand": "/gsd-update --reapply",
@@ -4674,6 +4698,13 @@ const runtimes = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "orchestratorExec": {
+        "command": "codex",
+        "args": [
+          "exec"
+        ],
+        "cwdFlag": "--cd"
+      },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
         "tomlConfigInstall": true,
@@ -5182,6 +5213,11 @@ const runtimes = {
         "runtime": "python",
         "effortSurface": "undocumented"
       },
+      "orchestratorExec": {
+        "command": "kimi",
+        "args": [],
+        "cwdFlag": "--work-dir"
+      },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
         "localInstallDeferred": true,
@@ -5266,6 +5302,11 @@ const runtimes = {
         "stateIO": "filesystem",
         "transport": "mcp",
         "runtime": "node"
+      },
+      "orchestratorExec": {
+        "command": "kimi-code",
+        "args": [],
+        "cwdFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -5366,6 +5407,13 @@ const runtimes = {
         "transport": "mcp",
         "runtime": "bun",
         "effortSurface": "argv"
+      },
+      "orchestratorExec": {
+        "command": "opencode",
+        "args": [
+          "run"
+        ],
+        "cwdFlag": "--dir"
       },
       "hostBehaviors": {
         "reapplyCommand": "/gsd-update --reapply",
