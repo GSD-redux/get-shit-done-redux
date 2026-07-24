@@ -49,7 +49,11 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
   }
   if (resolved === 'codex' && projectRoot) {
     const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
-    if (fs.existsSync(localAgentsDir)) return localAgentsDir;
+    try {
+      if (fs.statSync(localAgentsDir).isDirectory()) return localAgentsDir;
+    } catch {
+      // Missing or unreadable local candidate: use the global fallback.
+    }
   }
   return path.join(getGlobalConfigDir(resolved), 'agents');
 }

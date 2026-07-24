@@ -180,6 +180,25 @@ describe('getAgentsDir', () => {
     }
   });
 
+  test('Codex falls back to global agents when the local candidate is a regular file', () => {
+    const projectRoot = createTempDir('gsd-local-codex-');
+    const globalHome = createTempDir('gsd-global-codex-');
+    const localCandidate = path.join(projectRoot, '.codex', 'agents');
+    try {
+      fs.mkdirSync(path.dirname(localCandidate), { recursive: true });
+      fs.writeFileSync(localCandidate, 'not an agents directory\n');
+      createCompleteAgents(path.join(globalHome, 'agents'));
+      process.env['CODEX_HOME'] = globalHome;
+
+      const result = agentInstallCheck.checkAgentsInstalled('codex', projectRoot);
+      assert.strictEqual(result.agents_dir, path.join(globalHome, 'agents'));
+      assert.strictEqual(result.agents_installed, true);
+    } finally {
+      cleanup(projectRoot);
+      cleanup(globalHome);
+    }
+  });
+
   test('Claude and other runtimes ignore a supplied Codex-local candidate', () => {
     const projectRoot = createTempDir('gsd-local-codex-');
     try {
