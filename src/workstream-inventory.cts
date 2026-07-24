@@ -24,6 +24,9 @@ import planScan = require('./plan-scan.cjs');
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, planningRoot, getActiveWorkstream } = planningWorkspace;
 import { stateExtractField } from './state-document.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
+import verificationMod = require('./verification.cjs');
+const { readVerificationStatus } = verificationMod;
 import { buildWorkstreamInventory, isCompletedInventory } from './workstream-inventory-builder.cjs';
 import type { WorkstreamInventory, StateProjection } from './workstream-inventory-builder.cjs';
 
@@ -62,6 +65,113 @@ function countRoadmapPhases(roadmapPath: string, fallbackCount: number): number 
   }
 }
 
+/**
+ * #2562: parse the ROADMAP `## Progress` milestone table into a
+ * phase-number → milestone-version map, e.g. `| 30. Name | v10.0 | 1/3 | … |`
+ * → `{ "30" => "v10.0" }`. This is the authoritative per-phase milestone
+ * attribution and — crucially — lists phases declared but never scaffolded
+ * (no directory), which a directory-only scan misses. Only milestone-grouped
+ * tables (with a version column) yield entries; greenfield tables
+ * (`| Phase | Plans | Status | … |`, no version column) yield an empty map,
+ * and callers fall back to legacy whole-roadmap counting. Mirrors the
+ * reference implementation in the issue (scripts/gsd-truth.mjs).
+ */
+function parseRoadmapMilestoneTable(roadmapPath: string): Map<string, string> {
+  const map = new Map<string, string>();
+  try {
+    const content = fs.readFileSync(roadmapPath, 'utf-8');
+    for (const line of content.split('\n')) {
+      const m = line.match(/^\|\s*(\d+(?:\.\d+)?)\.\s[^|]*\|\s*(v\d+(?:\.\d+)+)\s*\|/);
+      if (m) map.set(m[1], m[2]);
+    }
+  } catch {
+    /* no roadmap */
+  }
+  return map;
+}
+
+/**
+ * #2562: the workstream's CURRENT milestone version, read from the STATE.md
+ * `milestone:` frontmatter field (the reliable per-workstream signal — the
+ * ROADMAP's own in-progress markers can be stale, e.g. a lingering 🚧 on an
+ * already-shipped milestone). Falls back to the ROADMAP in-progress heading
+ * marker only when STATE has no field.
+ */
+function readCurrentMilestoneVersion(statePath: string, roadmapPath: string): string | null {
+  try {
+    const m = fs.readFileSync(statePath, 'utf-8').match(/^milestone:\s*["']?(v\d+(?:\.\d+)+)["']?/m);
+    if (m) return m[1];
+  } catch {
+    /* no state */
+  }
+  try {
+    const rm = fs.readFileSync(roadmapPath, 'utf-8').match(/(?:🚧|🔄)\s*\*\*(v\d+(?:\.\d+)+)\b/);
+    if (rm) return rm[1];
+  } catch {
+    /* no roadmap */
+  }
+  return null;
+}
+
+/**
+ * #2562: normalize a phase directory name to its ROADMAP-table number key,
+ * e.g. `30-schedule-8` → `30`, `05.1-follow-up` → `5.1`. Leading zeros on the
+ * integer segment are stripped so padded directories match unpadded table keys.
+ */
+function phaseDirNum(dir: string): string | null {
+  const m = dir.match(/^0*(\d+(?:\.\d+)?)/);
+  return m ? m[1] : null;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * #2562: does the CURRENT milestone's own ROADMAP heading / milestone-list line
+ * carry a shipped marker (✅ / SHIPPED) without an in-progress marker? Scoped to
+ * the current version so a prior milestone's collapsed `<details><summary>✅ …
+ * SHIPPED</summary>` block can never mark the current milestone complete.
+ */
+function currentMilestoneHeadingShipped(roadmapPath: string, version: string): boolean {
+  try {
+    const content = fs.readFileSync(roadmapPath, 'utf-8');
+    const esc = escapeRegExp(version);
+    const lineRe = new RegExp(`^(?:#{1,3}\\s|[-*]\\s).*\\b${esc}\\b.*$`, 'gmi');
+    for (const line of content.match(lineRe) ?? []) {
+      if (/🚧|🔄|in\s+progress/i.test(line)) continue;
+      if (/✅|\bSHIPPED\b/i.test(line)) return true;
+    }
+  } catch {
+    /* no roadmap */
+  }
+  return false;
+}
+
+/**
+ * Legacy pre-#2562 shipped detection: ANY archived milestone snapshot OR a
+ * SHIPPED marker anywhere in the ROADMAP. Over-broad (project-lifetime, not
+ * milestone-scoped) — retained ONLY as the fallback when the current milestone
+ * version cannot be determined (malformed/legacy STATE.md with no `milestone:`
+ * field), so those projects keep #1913's stale-field protection.
+ */
+function legacyMilestoneShipped(roadmapPath: string, planningBase: string): boolean {
+  try {
+    const milestonesDir = path.join(planningBase, 'milestones');
+    for (const entry of fs.readdirSync(milestonesDir, { withFileTypes: true })) {
+      if (entry.isFile() && /-ROADMAP\.md$/i.test(entry.name)) return true;
+    }
+  } catch {
+    /* no milestones archive dir */
+  }
+  try {
+    if (/SHIPPED/i.test(fs.readFileSync(roadmapPath, 'utf-8'))) return true;
+  } catch {
+    /* no roadmap */
+  }
+  return false;
+}
+
 function countPhaseFiles(phaseDir: string): PhaseFileCounts {
   const scan = planScan(phaseDir);
   return { planCount: scan.planCount, summaryCount: scan.summaryCount };
@@ -85,27 +195,33 @@ function readStateProjection(statePath: string): StateProjection {
 }
 
 /**
- * #1913: detect an authoritative shipped signal for a workstream so the
- * inventory status is never trusted from the mutable STATE.md `Status` field
- * alone. Returns true when EITHER an archived milestone snapshot is present
- * under `<planningBase>/milestones/` OR the workstream ROADMAP carries a
- * SHIPPED marker — both are hard to desync, unlike the hand-maintained field.
+ * #1913 + #2562: detect an authoritative shipped signal for a workstream's
+ * CURRENT milestone, so the inventory status is never trusted from the mutable
+ * STATE.md `Status` field alone (#1913) yet is never pinned to "milestone
+ * complete" by a PRIOR milestone's shipped marker (#2562).
+ *
+ * When the current milestone version is known, the signal is scoped to it:
+ * an archived snapshot `milestones/<version>-ROADMAP.md` (the canonical
+ * "milestone shipped" artifact) OR the current milestone's own ROADMAP line
+ * marked shipped. When the version cannot be determined, we fall back to the
+ * over-broad legacy detection to preserve #1913's protection for those
+ * (malformed/legacy) projects.
  */
-function workstreamMilestoneShipped(roadmapPath: string, planningBase: string): boolean {
-  try {
-    const milestonesDir = path.join(planningBase, 'milestones');
-    for (const entry of fs.readdirSync(milestonesDir, { withFileTypes: true })) {
-      if (entry.isFile() && /-ROADMAP\.md$/i.test(entry.name)) return true;
-    }
-  } catch {
-    /* no milestones archive dir */
+function workstreamMilestoneShipped(
+  roadmapPath: string,
+  planningBase: string,
+  currentVersion: string | null,
+): boolean {
+  if (!currentVersion) {
+    return legacyMilestoneShipped(roadmapPath, planningBase);
   }
-  try {
-    if (/SHIPPED/i.test(fs.readFileSync(roadmapPath, 'utf-8'))) return true;
-  } catch {
-    /* no roadmap */
-  }
-  return false;
+  // Canonical shipped artifact: the archived ROADMAP snapshot of the CURRENT
+  // milestone (`vX.Y-ROADMAP.md`), written at milestone close. REQUIREMENTS
+  // snapshots are intentionally NOT accepted — they can be written at milestone
+  // START (requirements-locked), so they do not imply shipped.
+  const snapshot = path.join(planningBase, 'milestones', `${currentVersion}-ROADMAP.md`);
+  if (fs.existsSync(snapshot)) return true;
+  return currentMilestoneHeadingShipped(roadmapPath, currentVersion);
 }
 
 function sortWorkstreamInventories(inventories: WorkstreamInventory[], activeWorkstreamName: string | null): WorkstreamInventory[] {
@@ -127,10 +243,32 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   const p = planningPaths(cwd, name);
   const phaseDirNames = readSubdirectories(p.phases);
 
-  // Collect per-phase file counts
+  // #2562: scope progress to the CURRENT milestone. The Progress-table map
+  // gives per-phase milestone attribution (incl. dirless phases); the set of
+  // phase numbers belonging to the current version is both the completion
+  // denominator and the directory-membership filter for the numerator.
+  const currentVersion = readCurrentMilestoneVersion(p.state, p.roadmap);
+  const milestoneTable = parseRoadmapMilestoneTable(p.roadmap);
+  const currentMilestoneNums = new Set<string>();
+  if (currentVersion) {
+    for (const [num, version] of milestoneTable) {
+      if (version === currentVersion) currentMilestoneNums.add(num);
+    }
+  }
+  const scoped = currentMilestoneNums.size > 0;
+
+  // Collect per-phase file counts (+ milestone membership + verification verdict)
   const phaseFilesCounts = phaseDirNames.map(dir => {
-    const counts = countPhaseFiles(path.join(p.phases, dir));
-    return { directory: dir, planCount: counts.planCount, summaryCount: counts.summaryCount };
+    const phaseDir = path.join(p.phases, dir);
+    const counts = countPhaseFiles(phaseDir);
+    const num = phaseDirNum(dir);
+    return {
+      directory: dir,
+      planCount: counts.planCount,
+      summaryCount: counts.summaryCount,
+      inMilestone: scoped ? (num !== null && currentMilestoneNums.has(num)) : true,
+      verificationStatus: readVerificationStatus(phaseDir).status,
+    };
   });
 
   return buildWorkstreamInventory({
@@ -141,13 +279,14 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
     activeWorkstreamName: activeWorkstreamName ?? '',
     phaseFilesCounts,
     roadmapPhaseCount: countRoadmapPhases(p.roadmap, phaseDirNames.length),
+    currentMilestonePhaseCount: currentMilestoneNums.size,
     stateProjection: readStateProjection(p.state),
     filesExist: {
       roadmap: fs.existsSync(p.roadmap),
       state: fs.existsSync(p.state),
       requirements: fs.existsSync(p.requirements),
     },
-    milestoneShipped: workstreamMilestoneShipped(p.roadmap, p.planning),
+    milestoneShipped: workstreamMilestoneShipped(p.roadmap, p.planning, currentVersion),
   });
 }
 

@@ -124,3 +124,159 @@ describe('isCompletedInventory — ADR-2207 status lifecycle', () => {
     assert.ok(!isCompletedInventory('Executing'));
   });
 });
+
+// #2562: progress/status must be DERIVED from on-disk artifacts scoped to the
+// CURRENT milestone — never a project-lifetime "ever shipped anything" signal,
+// never a denominator that silently drops declared-but-unscaffolded phases, and
+// never counting a phase with a failing VERIFICATION verdict as complete.
+describe('#2562 — progress/status scoped to the current milestone (derived from artifacts)', () => {
+  let tmpDir;
+  before(() => { tmpDir = createFixture(); });
+  after(() => cleanup(tmpDir));
+
+  const BUILDER_BASE = {
+    projectDir: '/tmp/ws-proj',
+    workstreamDir: '/tmp/ws-proj/.planning/workstreams/ws',
+    activeWorkstreamName: '',
+    stateProjection: { status: 'executing', current_phase: null, last_activity: null },
+    filesExist: { roadmap: true, state: true, requirements: true },
+    milestoneShipped: false,
+  };
+
+  // ── Defect 3: verification-gated completeness (builder unit) ─────────────────
+  test('builder: SUMMARY≥PLAN but a human_needed verdict is NOT complete', () => {
+    const inv = buildWorkstreamInventory({
+      ...BUILDER_BASE,
+      name: 'ws',
+      phaseDirNames: ['1-a', '2-b'],
+      phaseFilesCounts: [
+        { directory: '1-a', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+        { directory: '2-b', planCount: 4, summaryCount: 4, inMilestone: true, verificationStatus: 'human_needed' },
+      ],
+      roadmapPhaseCount: 2,
+      currentMilestonePhaseCount: 2,
+    });
+    assert.equal(inv.phases.find(p => p.directory === '2-b').status, 'in_progress');
+    assert.equal(inv.completed_phases, 1);
+    assert.equal(inv.progress_percent, 50);
+  });
+
+  test('builder: missing/unknown verdict still counts complete (no verifier-off regression)', () => {
+    const inv = buildWorkstreamInventory({
+      ...BUILDER_BASE,
+      name: 'ws',
+      phaseDirNames: ['1-a'],
+      phaseFilesCounts: [
+        { directory: '1-a', planCount: 2, summaryCount: 2, inMilestone: true, verificationStatus: 'missing' },
+      ],
+      roadmapPhaseCount: 1,
+      currentMilestonePhaseCount: 1,
+    });
+    assert.equal(inv.phases[0].status, 'complete');
+    assert.equal(inv.progress_percent, 100);
+  });
+
+  // ── Defect 2: denominator includes declared-but-unscaffolded phases (builder) ─
+  test('builder: current-milestone denominator counts a phase with no directory', () => {
+    const inv = buildWorkstreamInventory({
+      ...BUILDER_BASE,
+      name: 'ws',
+      phaseDirNames: ['1-a', '2-b'], // phase 3 declared for the milestone but never scaffolded
+      phaseFilesCounts: [
+        { directory: '1-a', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+        { directory: '2-b', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+      ],
+      roadmapPhaseCount: 2,
+      currentMilestonePhaseCount: 3,
+    });
+    assert.equal(inv.roadmap_phase_count, 3);
+    assert.equal(inv.completed_phases, 2);
+    assert.equal(inv.progress_percent, 67, 'the dirless third phase keeps this below 100');
+  });
+
+  // ── Defect 1: prior-milestone phases must not inflate the numerator (builder) ─
+  test('builder: completed prior-milestone dirs are excluded from the current rollup', () => {
+    const inv = buildWorkstreamInventory({
+      ...BUILDER_BASE,
+      name: 'ws',
+      phaseDirNames: ['1-old', '2-cur'],
+      phaseFilesCounts: [
+        { directory: '1-old', planCount: 3, summaryCount: 3, inMilestone: false, verificationStatus: 'passed' },
+        { directory: '2-cur', planCount: 2, summaryCount: 0, inMilestone: true, verificationStatus: 'missing' },
+      ],
+      roadmapPhaseCount: 2,
+      currentMilestonePhaseCount: 1,
+    });
+    assert.equal(inv.completed_phases, 0);
+    assert.equal(inv.total_plans, 2, 'only the current-milestone directory contributes plans');
+    assert.equal(inv.progress_percent, 0);
+  });
+
+  // ── inspectWorkstream integration (all three defects, end-to-end) ────────────
+  function writeWsPhase(wsDir, slug, { plans = 0, summaries = 0, verification } = {}) {
+    const dir = path.join(wsDir, 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
+    for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
+    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+  }
+
+  const MS_STATE = 'milestone: v2.0\nstatus: executing\n';
+  // Milestone-grouped Progress table: v2.0 declares phases 3,4,5; 1,2 are shipped v1.0.
+  const MS_ROADMAP = [
+    '# Roadmap', '', '## Progress', '',
+    '| Phase | Milestone | Plans | Status | Done |',
+    '| --- | --- | --- | --- | --- |',
+    '| 1. Old A | v1.0 | 2/2 | Complete | - |',
+    '| 2. Old B | v1.0 | 2/2 | Complete | - |',
+    '| 3. New A | v2.0 | 1/1 | Complete | - |',
+    '| 4. New B | v2.0 | 0/1 | In Progress | - |',
+    '| 5. New C | v2.0 | 0/1 | Not started | - |',
+    '',
+  ].join('\n');
+
+  test('inspectWorkstream: prior-milestone dirs + a dirless current phase → not complete, not 100%', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-scope' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), MS_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), MS_ROADMAP);
+    writeWsPhase(wsDir, '1-old-a', { plans: 2, summaries: 2, verification: 'passed' });
+    writeWsPhase(wsDir, '2-old-b', { plans: 2, summaries: 2, verification: 'passed' });
+    writeWsPhase(wsDir, '3-new-a', { plans: 1, summaries: 1, verification: 'passed' });
+    writeWsPhase(wsDir, '4-new-b', { plans: 1, summaries: 0 }); // in progress; phase 5 has NO dir
+
+    const inv = inspectWorkstream(tmpDir, 'ws-scope', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 3, 'denominator = v2.0 phases {3,4,5}, incl. dirless 5');
+    assert.equal(inv.completed_phases, 1, 'only phase 3; shipped v1.0 phases 1,2 excluded');
+    assert.equal(inv.progress_percent, 33);
+    assert.notEqual(inv.status, 'milestone complete');
+    assert.equal(inv.status, 'executing');
+  });
+
+  test('inspectWorkstream: a PRIOR-version snapshot does not mark the current milestone complete', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-prior-snap' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), MS_STATE); // current milestone = v2.0
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), MS_ROADMAP);
+    fs.mkdirSync(path.join(wsDir, 'milestones'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'milestones', 'v1.0-ROADMAP.md'), '# v1.0 archived\n');
+    writeWsPhase(wsDir, '3-new-a', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-prior-snap', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'executing', 'v1.0 snapshot must not mark v2.0 complete');
+    assert.equal(inv.status_source, 'field');
+  });
+
+  test('inspectWorkstream: the CURRENT-version snapshot marks the milestone complete', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-cur-snap' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), MS_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), MS_ROADMAP);
+    fs.mkdirSync(path.join(wsDir, 'milestones'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'milestones', 'v2.0-ROADMAP.md'), '# v2.0 archived\n');
+
+    const inv = inspectWorkstream(tmpDir, 'ws-cur-snap', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'milestone complete');
+    assert.equal(inv.status_source, 'derived');
+  });
+});

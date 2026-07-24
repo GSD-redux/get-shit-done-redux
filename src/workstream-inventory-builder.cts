@@ -15,6 +15,15 @@ function toPosixPath(p: string): string {
   return p.split('\\').join('/');
 }
 
+/**
+ * #2562: verification verdicts that DISQUALIFY a phase from `complete`, even
+ * when its SUMMARY count meets its PLAN count. Deliberately scoped to the two
+ * EXPLICIT failing verdicts the verifier emits — `missing`/`unknown` (verifier
+ * off / not yet run) and `stale` (mtime-derived, #2348) are intentionally left
+ * untouched so verifier-disabled projects do not regress to never-complete.
+ */
+const FAILING_VERIFICATION_STATUSES = new Set<string>(['gaps_found', 'human_needed']);
+
 export function isCompletedInventory(status: unknown): boolean {
   const s = (typeof status === 'string'
     ? status
@@ -29,6 +38,18 @@ export interface PhaseFilesCount {
   directory: string;
   planCount: number;
   summaryCount: number;
+  /**
+   * #2562: whether this phase directory belongs to the CURRENT milestone.
+   * Only meaningful when milestone scoping is active (see
+   * `currentMilestonePhaseCount`); undefined/true otherwise.
+   */
+  inMilestone?: boolean;
+  /**
+   * #2562: the phase's `*-VERIFICATION.md` verdict (`readVerificationStatus`).
+   * A phase with SUMMARY count ≥ PLAN count but a failing verdict
+   * (`gaps_found`/`human_needed`) must NOT count as complete.
+   */
+  verificationStatus?: string;
 }
 
 export interface PhaseStatus {
@@ -68,6 +89,16 @@ export interface BuildWorkstreamInventoryInputs {
    * so a stale field can never report a shipped workstream as executing (#1913).
    */
   milestoneShipped: boolean;
+  /**
+   * #2562: number of phases the CURRENT milestone declares in the ROADMAP
+   * `## Progress` table (including phases declared but never scaffolded). When
+   * > 0, milestone scoping is active: only phases whose directory belongs to
+   * the current milestone (`PhaseFilesCount.inMilestone`) feed the completion
+   * rollup, and this value — not `roadmapPhaseCount` — is the denominator, so
+   * completed prior-milestone phases can never inflate the percentage to 100.
+   * 0 disables scoping and preserves the legacy `roadmapPhaseCount` behavior.
+   */
+  currentMilestonePhaseCount?: number;
 }
 
 export interface WorkstreamInventory {
@@ -103,12 +134,18 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     stateProjection,
     filesExist,
     milestoneShipped,
+    currentMilestonePhaseCount = 0,
   } = inputs;
 
+  // #2562: milestone scoping is active when the current milestone declares a
+  // known phase count. When active, prior-milestone phase directories are
+  // excluded from the completion rollup and the denominator.
+  const scoped = currentMilestonePhaseCount > 0;
+
   // Index counts by directory for O(1) lookup during sort/iteration
-  const countsMap = new Map<string, { planCount: number; summaryCount: number }>();
+  const countsMap = new Map<string, PhaseFilesCount>();
   for (const entry of phaseFilesCounts) {
-    countsMap.set(entry.directory, { planCount: entry.planCount, summaryCount: entry.summaryCount });
+    countsMap.set(entry.directory, entry);
   }
 
   const phases: PhaseStatus[] = [];
@@ -117,23 +154,38 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   let completedPlans = 0;
 
   for (const dir of [...phaseDirNames].sort()) {
-    const counts = countsMap.get(dir) ?? { planCount: 0, summaryCount: 0 };
+    const counts = countsMap.get(dir);
+    const planCount = counts?.planCount ?? 0;
+    const summaryCount = counts?.summaryCount ?? 0;
+    // #2562: SUMMARY≥PLAN parity is necessary but not sufficient — a phase whose
+    // verification verdict is an explicit failing one is still in progress.
+    const verificationStatus = counts?.verificationStatus ?? 'missing';
+    const summariesMeetPlans = summaryCount >= planCount && planCount > 0;
     const status: 'complete' | 'in_progress' | 'pending' =
-      counts.summaryCount >= counts.planCount && counts.planCount > 0
+      summariesMeetPlans && !FAILING_VERIFICATION_STATUSES.has(verificationStatus)
         ? 'complete'
-        : counts.planCount > 0
+        : planCount > 0
           ? 'in_progress'
           : 'pending';
-    totalPlans += counts.planCount;
-    completedPlans += Math.min(counts.summaryCount, counts.planCount);
-    if (status === 'complete') completedPhases++;
+    // #2562: only current-milestone phases feed the rollup when scoping is on.
+    const countsTowardMilestone = !scoped || counts?.inMilestone !== false;
+    if (countsTowardMilestone) {
+      totalPlans += planCount;
+      completedPlans += Math.min(summaryCount, planCount);
+      if (status === 'complete') completedPhases++;
+    }
     phases.push({
       directory: dir,
       status,
-      plan_count: counts.planCount,
-      summary_count: counts.summaryCount,
+      plan_count: planCount,
+      summary_count: summaryCount,
     });
   }
+
+  // #2562: the denominator is the current milestone's declared phase count when
+  // scoping is active (catches phases declared but never scaffolded), else the
+  // legacy whole-roadmap heading count.
+  const effectivePhaseCount = scoped ? currentMilestonePhaseCount : roadmapPhaseCount;
 
   // #1913: derive status from authoritative shipped signals rather than trusting
   // the mutable STATE.md `Status` field. When a shipped signal is present, the
@@ -161,12 +213,12 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     phases,
     phase_count: phases.length,
     completed_phases: completedPhases,
-    roadmap_phase_count: roadmapPhaseCount,
+    roadmap_phase_count: effectivePhaseCount,
     total_plans: totalPlans,
     completed_plans: completedPlans,
     progress_percent:
-      roadmapPhaseCount > 0
-        ? Math.min(100, Math.round((completedPhases / roadmapPhaseCount) * 100))
+      effectivePhaseCount > 0
+        ? Math.min(100, Math.round((completedPhases / effectivePhaseCount) * 100))
         : 0,
   };
 }
