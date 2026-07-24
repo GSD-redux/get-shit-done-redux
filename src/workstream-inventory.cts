@@ -24,6 +24,7 @@ import planScan = require('./plan-scan.cjs');
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, planningRoot, getActiveWorkstream } = planningWorkspace;
 import { stateExtractField } from './state-document.cjs';
+import { findTableWithColumns } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
 const { readVerificationStatus } = verificationMod;
@@ -78,14 +79,21 @@ function countRoadmapPhases(roadmapPath: string, fallbackCount: number): number 
  */
 function parseRoadmapMilestoneTable(roadmapPath: string): Map<string, string> {
   const map = new Map<string, string>();
+  let content: string;
   try {
-    const content = fs.readFileSync(roadmapPath, 'utf-8');
-    for (const line of content.split('\n')) {
-      const m = line.match(/^\|\s*(\d+(?:\.\d+)?)\.\s[^|]*\|\s*(v\d+(?:\.\d+)+)\s*\|/);
-      if (m) map.set(m[1], m[2]);
-    }
+    content = fs.readFileSync(roadmapPath, 'utf-8');
   } catch {
-    /* no roadmap */
+    return map; /* no roadmap */
+  }
+  // Only the `milestone-grouped` RoadmapProgress variant carries per-phase
+  // milestone attribution; the `flat` variant has no Milestone column and
+  // yields an empty map (callers then fall back to legacy counting).
+  const table = findTableWithColumns(content, ['Phase', 'Milestone']);
+  if (!table) return map;
+  for (const row of table.rows) {
+    const num = (row['Phase'] ?? '').match(/^\s*(\d+(?:\.\d+)?)\b/);
+    const version = (row['Milestone'] ?? '').trim();
+    if (num && /^v\d+(?:\.\d+)+$/.test(version)) map.set(num[1], version);
   }
   return map;
 }
