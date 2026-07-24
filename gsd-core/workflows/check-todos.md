@@ -156,7 +156,7 @@ Re-run `init todos` to get updated count, then update STATE.md "### Pending Todo
 </step>
 
 <step name="git_commit">
-If todo was moved to done/, commit the change:
+If todo was moved to completed/, commit the change:
 
 ```bash
 git rm --cached .planning/todos/pending/[filename] 2>/dev/null || true
@@ -178,5 +178,5 @@ Confirm: "Committed: docs: start work on todo - [title]"
 - [ ] Appropriate actions offered
 - [ ] Selected action executed
 - [ ] STATE.md updated if todo count changed
-- [ ] Changes committed to git (if todo moved to done/)
+- [ ] Changes committed to git (if todo moved to completed/)
 </success_criteria>
