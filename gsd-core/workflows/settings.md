@@ -139,7 +139,7 @@ Context Warnings, Research Qs
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 
-  Pre-selection: the generic "current values pre-selected" rule does not apply to this question on a non-Claude runtime (an explicit `true` has no matching option by design). Pre-select "No (Recommended)" when `$USE_WORKTREES_CURRENT` is `false`; otherwise (key absent, or an explicit non-false value) pre-select "Leave unchanged". In TEXT_MODE, mark that option as the default choice in the numbered list.
+  Pre-selection: the generic "current values pre-selected" rule does not apply to this question on a non-Claude runtime (an explicit `true` has no matching option by design). Pre-select "Leave unchanged" only when the key is absent (nothing to repair — absence already resolves to `false` on this runtime). Otherwise pre-select "No (Recommended)": both when `$USE_WORKTREES_CURRENT` is `false` (matches the current value) and when it is an explicit non-false value — the broken-inheritance case the notice below describes. The pre-selected default must be the repair that the "(Recommended)" label and the notice point to, so a user who accepts the default never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default choice in the numbered list.
 
   Additionally, if `$USE_WORKTREES_CURRENT` is not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a Claude Code install sharing the repo), prepend this notice before the question:
 

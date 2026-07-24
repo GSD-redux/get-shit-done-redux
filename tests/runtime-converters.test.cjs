@@ -1373,6 +1373,18 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         src.includes('{ label: "Leave unchanged", description: "Do not write the key.'),
         'settings.md: non-Claude branch must offer leaving the key untouched for shared configs',
       );
+      // Review round 2: in the broken-inheritance case (explicit non-false
+      // value) the pre-selected default must be the repair, not "Leave
+      // unchanged" — otherwise accepting the default keeps a config that
+      // fails closed at execution time.
+      assert.ok(
+        src.includes('Pre-select "Leave unchanged" only when the key is absent'),
+        'settings.md: "Leave unchanged" may be the default only when there is nothing to repair',
+      );
+      assert.ok(
+        src.includes('when it is an explicit non-false value — the broken-inheritance case'),
+        'settings.md: the broken-inheritance case must pre-select the recommended repair',
+      );
     });
 
     test('health.md source carries the W024 runtime/worktrees compatibility check', () => {
