@@ -128,16 +128,6 @@ node gsd-tools.cjs config-set workflow.tdd_mode true
 
 ---
 
-## 기획 시작 전 프로젝트 상태 검증
-
-```bash
-/gsd-plan-phase 2 --validate
-```
-
-리서처를 실행하기 전에 상태 검증을 실행합니다. ROADMAP.md 또는 STATE.md가 최신 상태와 맞지 않다고 의심되는 경우 사용하세요.
-
----
-
 ## 기획 후 외부 바운스 검증 실행
 
 **`workflow.plan_bounce_script`가 설정되어 있고 완성된 계획의 외부 검증을 원하는 경우:**

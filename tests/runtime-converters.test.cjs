@@ -1182,7 +1182,12 @@ test('property: _stampNonClaudeRuntimeDefaults is idempotent (#1521)', () => {
 
 test('execute-phase.md, quick.md, and diagnose-issues.md guards are generalized to != "claude" (not Codex-specific) (#1521)', () => {
   // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521)
-  const GUARD_WORKFLOWS = ['execute-phase.md', 'quick.md', 'diagnose-issues.md'];
+  // #2584 Phase 3 (#2627): execute-phase.md graduated PAST the `!= "claude"`
+  // guard — worktree isolation there is now keyed on the negotiated
+  // `dispatch.isolation` capability, so no runtime name appears in its guard at
+  // all. quick.md and diagnose-issues.md still use the #1521 generalized form
+  // (they do not negotiate isolation), so they keep asserting it.
+  const GUARD_WORKFLOWS = ['quick.md', 'diagnose-issues.md'];
   for (const wf of GUARD_WORKFLOWS) {
     const src = fs.readFileSync(
       path.join(__dirname, '..', 'gsd-core', 'workflows', wf),
@@ -1197,6 +1202,20 @@ test('execute-phase.md, quick.md, and diagnose-issues.md guards are generalized 
       `${wf}: found Codex-specific guard — should have been generalized to != "claude"`,
     );
   }
+
+  // execute-phase.md: the guard must be capability-keyed, with NO runtime name.
+  const executePhase = fs.readFileSync(
+    path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md'),
+    'utf8',
+  );
+  assert.ok(
+    !/\[\s*"\$RUNTIME"\s*(?:!=|=)\s*"[a-z-]+"\s*\]\s*&&\s*\[\s*"\$USE_WORKTREES"/.test(executePhase),
+    'execute-phase.md: worktree isolation must branch on dispatch.isolation, not on a runtime name (#2584)',
+  );
+  assert.ok(
+    executePhase.includes('Resolve ISOLATION'),
+    'execute-phase.md: must resolve the negotiated ISOLATION capability',
+  );
 });
 
 // ---------------------------------------------------------------------------

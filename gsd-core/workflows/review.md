@@ -277,19 +277,39 @@ For each selected CLI, invoke in sequence (not parallel — avoid rate limits):
 
 **Gemini:**
 ```bash
+# #2494: capture stderr to a .err sidecar (not /dev/null) and stub an empty
+# result, mirroring the Codex and Cursor blocks. Without the guard a failed
+# lane — CLI missing, unauthenticated, rate-limited, crashed, or any exit that
+# writes no stdout — leaves a zero-byte file that write_reviews renders as a
+# reviewer that ran cleanly with nothing to report, silently dropping a lane
+# from the cross-AI consensus while present_results reports success.
+# Scope limit: the guard only runs if this block completes. A host Bash-tool
+# timeout that kills the whole block skips it, the same hard bound the
+# OpenCode block documents below — per the timeout guidance above, treat an
+# empty result on a slow lane as a dropped lane rather than a crash.
 if [ -n "$GEMINI_MODEL" ] && [ "$GEMINI_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | gemini -m "$GEMINI_MODEL" -p - 2>/dev/null > {run_dir}/gsd-review-gemini.md
+  cat {run_dir}/gsd-review-prompt.md | gemini -m "$GEMINI_MODEL" -p - 2>{run_dir}/gsd-review-gemini.err > {run_dir}/gsd-review-gemini.md
 else
-  cat {run_dir}/gsd-review-prompt.md | gemini -p - 2>/dev/null > {run_dir}/gsd-review-gemini.md
+  cat {run_dir}/gsd-review-prompt.md | gemini -p - 2>{run_dir}/gsd-review-gemini.err > {run_dir}/gsd-review-gemini.md
+fi
+if [ ! -s {run_dir}/gsd-review-gemini.md ]; then
+  echo "Gemini review failed or returned empty output. stderr:" > {run_dir}/gsd-review-gemini.md
+  cat {run_dir}/gsd-review-gemini.err >> {run_dir}/gsd-review-gemini.md
 fi
 ```
 
 **Claude (separate session):**
 ```bash
+# #2494: same guard as the Gemini block above — stderr to a .err sidecar
+# instead of /dev/null, and a diagnostic stub when the lane produces nothing.
 if [ -n "$CLAUDE_MODEL" ] && [ "$CLAUDE_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | claude --model "$CLAUDE_MODEL" $CLAUDE_EFFORT_ARGS -p - 2>/dev/null > {run_dir}/gsd-review-claude.md
+  cat {run_dir}/gsd-review-prompt.md | claude --model "$CLAUDE_MODEL" $CLAUDE_EFFORT_ARGS -p - 2>{run_dir}/gsd-review-claude.err > {run_dir}/gsd-review-claude.md
 else
-  cat {run_dir}/gsd-review-prompt.md | claude $CLAUDE_EFFORT_ARGS -p - 2>/dev/null > {run_dir}/gsd-review-claude.md
+  cat {run_dir}/gsd-review-prompt.md | claude $CLAUDE_EFFORT_ARGS -p - 2>{run_dir}/gsd-review-claude.err > {run_dir}/gsd-review-claude.md
+fi
+if [ ! -s {run_dir}/gsd-review-claude.md ]; then
+  echo "Claude review failed or returned empty output. stderr:" > {run_dir}/gsd-review-claude.md
+  cat {run_dir}/gsd-review-claude.err >> {run_dir}/gsd-review-claude.md
 fi
 ```
 

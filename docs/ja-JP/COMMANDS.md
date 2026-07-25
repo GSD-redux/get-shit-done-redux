@@ -171,7 +171,6 @@ GSD ワークスペースを管理 — リポジトリコピーと独立した `
 | `--ingest <path-or-glob>` | コンテキスト統合に discuss-phase の代わりに ADR ファイルを使用 |
 | `--ingest-format <auto\|nygard\|madr\|narrative>` | `--ingest` のオプション ADR パーサーフォーマットの上書き |
 | `--reviews` | REVIEWS.md のクロス AI レビューフィードバックで再計画 |
-| `--validate` | 計画開始前に状態検証を実行 |
 | `--bounce` | 計画後に外部プランバウンス検証を実行（`workflow.plan_bounce_script` を使用） |
 | `--skip-bounce` | 設定で有効になっている場合でもプランバウンスをスキップ |
 | `--mvp` | 垂直 MVP モード — プランナーはタスクを水平レイヤーではなく機能スライス（UI→API→DB）として整理します。以前のフェーズサマリーがない新規プロジェクトのフェーズ1では、`SKELETON.md`（Walking Skeleton）も生成します。ROADMAP.md の `**Mode:** mvp` でフェーズごとに永続化でき、フラグなしで `--mvp` が自動適用されます。 |
@@ -200,7 +199,6 @@ WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` では
 /gsd-plan-phase 1                              # フェーズ1のリサーチ + 計画 + 検証
 /gsd-plan-phase 3 --skip-research              # リサーチなしの計画（既知のドメイン）
 /gsd-plan-phase --auto                         # 非インタラクティブな計画
-/gsd-plan-phase 2 --validate                   # 計画前に状態を検証
 /gsd-plan-phase 1 --bounce                     # 計画 + 外部バウンス検証
 /gsd-plan-phase 2 --ingest docs/adr/0010.md   # コンテキスト統合のための ADR エクスプレスパス
 /gsd-plan-phase 2 --ingest 'docs/adr/00*.md' --ingest-format auto
@@ -258,7 +256,6 @@ WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` では
 |----------|----------|-------------|
 | `N` | **Yes** | 実行するフェーズ番号 |
 | `--wave N` | No | フェーズ内の波 `N` のみを実行 |
-| `--validate` | No | 実行開始前に状態検証を実行 |
 | `--cross-ai` | No | 外部 AI CLI に実行を委任（`workflow.cross_ai_command` を使用） |
 | `--no-cross-ai` | No | 設定でクロス AI が有効な場合でもローカル実行を強制 |
 
@@ -270,7 +267,6 @@ WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` では
 ```bash
 /gsd-execute-phase 1                # フェーズ1を実行
 /gsd-execute-phase 1 --wave 2       # 波2のみを実行
-/gsd-execute-phase 1 --validate     # 実行前に状態を検証
 /gsd-execute-phase 2 --cross-ai     # フェーズ2を外部 AI CLI に委任
 ```
 
@@ -588,7 +584,7 @@ Nyquist 検証ギャップを事後的に監査して埋めます。
     "flags": {
       "discuss": "--auto",
       "plan": "--skip-research",
-      "execute": "--validate"
+      "execute": "--cross-ai"
     }
   }
 }

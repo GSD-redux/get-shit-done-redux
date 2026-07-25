@@ -173,4 +173,66 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
       'extra.txt should remain staged, not absorbed into a commit',
     );
   });
+
+  test('#2523: absolute --files path inside the repo is committed, not silently dropped', () => {
+    // init phase-op emits phase_dir as an ABSOLUTE path (#2428); cmdCommit must
+    // accept it. The bug was path.join(cwd, absPath) → cwd+absPath (non-existent)
+    // → silently skipped as nothing_to_commit (#2523).
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'A.md'), 'a\n');
+    const absPath = path.join(tmpDir, '.planning', 'A.md');
+    const res = runGsdTools(['commit', 'docs: abs path', '--files', absPath], tmpDir);
+    const parsed = JSON.parse(res.output);
+    assert.strictEqual(parsed.committed, true, `absolute path must commit, not nothing_to_commit: ${res.output}`);
+
+    // The absolute path must land in the commit, normalized to repo-relative.
+    const diff = execSync('git diff HEAD~1 HEAD --name-only', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    assert.strictEqual(diff, '.planning/A.md', `absolute --files path must be committed (normalized to relative); got: ${diff}`);
+  });
+
+  test('#2523: mixed relative+absolute --files list commits BOTH (no silent partial commit)', () => {
+    // The sharpest symptom: a mixed list committed the relative entry, dropped the
+    // absolute one, and reported committed:true (#2523). Both must land.
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'REL.md'), 'r\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ABS.md'), 'a\n');
+    const absPath = path.join(tmpDir, '.planning', 'ABS.md');
+    const res = runGsdTools(
+      ['commit', 'docs: mixed', '--files', '.planning/REL.md', absPath],
+      tmpDir,
+    );
+    const parsed = JSON.parse(res.output);
+    assert.strictEqual(parsed.committed, true, `mixed list must commit: ${res.output}`);
+
+    const diff = execSync('git diff HEAD~1 HEAD --name-only', { cwd: tmpDir, encoding: 'utf-8' })
+      .trim().split('\n').sort();
+    assert.deepStrictEqual(
+      diff,
+      ['.planning/ABS.md', '.planning/REL.md'],
+      `mixed relative+absolute list must commit BOTH entries (the bug dropped the absolute one); got: ${diff.join(',')}`,
+    );
+  });
+
+  test('#2523: out-of-repo --files path is rejected loudly (path_outside_repo), no index pollution', (t) => {
+    // An absolute path resolving OUTSIDE the project root must fail loudly, not
+    // silently skip and not pollute the index via a failed git add (#2523).
+    const outsideDir = path.join(tmpDir, '..', `gsd-2523-outside-${process.pid}-${Date.now()}`);
+    fs.mkdirSync(outsideDir, { recursive: true });
+    t.after(() => cleanup(outsideDir));
+    const outsideFile = path.join(outsideDir, 'secret.md');
+    fs.writeFileSync(outsideFile, 's\n');
+
+    const res = runGsdTools(
+      ['commit', 'docs: outside', '--files', path.resolve(outsideFile)],
+      tmpDir,
+    );
+    const parsed = JSON.parse(res.output);
+    assert.strictEqual(parsed.committed, false, 'out-of-repo path must not commit');
+    assert.strictEqual(parsed.reason, 'path_outside_repo', `out-of-repo path must fail loudly: ${res.output}`);
+
+    // No new commit created (still at the single initial commit).
+    const logCount = execSync('git rev-list --count HEAD', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    assert.strictEqual(logCount, '1', 'no new commit must be created for an out-of-repo path');
+    // Index stays clean (no pollution from a failed git add).
+    const status = execSync('git status --porcelain', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    assert.strictEqual(status, '', `index must be clean (no pollution): ${status}`);
+  });
 });

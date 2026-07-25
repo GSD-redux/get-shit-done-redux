@@ -621,6 +621,73 @@ describe('roadmap get-phase success criteria', () => {
     assert.ok(output.success_criteria[2].includes('Third criterion'), 'third criterion matches');
   });
 
+  test('#2522: wrapped success-criteria lines fold into their criterion (not dropped/truncated)', () => {
+    // A criterion that wraps onto an indented continuation line must fold INTO its
+    // criterion (retaining its trailing [REQ-ID]), and every criterion below the wrap
+    // must still be parsed. The old regex broke the run at the wrap, truncating
+    // criterion 2 mid-sentence (losing [A-02]) and silently dropping criterion 3.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 9: T',
+        '**Goal**: g',
+        '**Success Criteria** (what must be TRUE):',
+        '  1. alpha. [A-01]',
+        '  2. beta which is long and',
+        '     wraps onto a second line. [A-02]',
+        '  3. gamma. [A-03]',
+        '**Plans**: TBD',
+        '',
+      ].join('\n')
+    );
+
+    const result = runGsdTools('roadmap get-phase 9', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.found, true, 'phase should be found');
+    assert.strictEqual(output.success_criteria.length, 3, 'all 3 criteria must parse — wrapped continuations must not drop/truncate (#2522)');
+    assert.ok(output.success_criteria[1].includes('wraps onto a second line'), 'the wrapped continuation must fold into criterion 2');
+    assert.ok(output.success_criteria[1].includes('[A-02]'), 'the wrapped criterion must retain its trailing [REQ-ID] tag (#2522)');
+    assert.ok(output.success_criteria[2].includes('[A-03]'), 'criterion 3 (below the wrap) must not be dropped (#2522)');
+    // Boundary: the parse must not bleed past the Success Criteria block.
+    assert.ok(!output.success_criteria.some(c => c.includes('TBD')), 'parse must not consume the **Plans** line');
+  });
+
+  test('#2522: blank-line-separated success criteria still parse (the continuation fix must not regress blank lines)', () => {
+    // Guard against the naive-form trap the issue flags: narrowing the leading
+    // whitespace to [ \t]* and splitting on \n would trade wrapped-line truncation
+    // for blank-line truncation. Blank lines between criteria must keep working.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '### Phase 1: T',
+        '**Goal**: g',
+        '**Success Criteria** (what must be TRUE):',
+        '  1. alpha. [A-01]',
+        '',
+        '  2. beta. [A-02]',
+        '',
+        '  3. gamma. [A-03]',
+        '**Plans**: TBD',
+        '',
+      ].join('\n')
+    );
+
+    const result = runGsdTools('roadmap get-phase 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.success_criteria.length, 3, 'blank-line-separated criteria must all parse (#2522 guard)');
+    assert.ok(output.success_criteria[0].includes('[A-01]'));
+    assert.ok(output.success_criteria[1].includes('[A-02]'));
+    assert.ok(output.success_criteria[2].includes('[A-03]'));
+  });
+
   test('returns empty array when no success criteria present', () => {
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'ROADMAP.md'),

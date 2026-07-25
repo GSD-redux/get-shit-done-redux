@@ -500,7 +500,7 @@ UI-SPEC.md (per phase) ───────────────────
 │       └── SUMMARY.md
 ├── todos/
 │   ├── pending/            # キャプチャされたアイデア
-│   └── done/               # 完了済みtodo
+│   └── completed/          # 完了済みtodo
 ├── threads/               # 永続コンテキストスレッド（/gsd-thread から）
 ├── seeds/                 # 将来に向けたアイデア（/gsd-capture --seed から）
 ├── debug/                  # アクティブなデバッグセッション

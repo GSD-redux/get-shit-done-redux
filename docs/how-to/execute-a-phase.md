@@ -45,18 +45,6 @@ GSD executes only Wave 2 plans. It first checks that all earlier waves are compl
 
 ---
 
-## Validate state before execution
-
-If you suspect the `.planning/` directory is out of sync with the filesystem — for example after a crash or an interrupted previous run — pass `--validate`:
-
-```bash
-/gsd-execute-phase 1 --validate
-```
-
-GSD runs a state consistency check before spawning any executors. Detected drift is reported and you can accept or correct it before proceeding.
-
----
-
 ## Resume a stalled execution
 
 If execution stops partway through — a quota error, a network drop, or a crashed session — the wave-level progress is preserved. GSD checks for a `SUMMARY.md` file for each plan; plans that have one are skipped automatically when you re-run:

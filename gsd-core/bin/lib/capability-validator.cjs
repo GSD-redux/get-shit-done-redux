@@ -739,6 +739,9 @@ const VALID_HOST_RUNTIMES     = new Set(['node', 'bun', 'sandboxed-web', 'python
 const VALID_SUBAGENT_TOOLKITS = new Set(['full', 'read-only', 'built-in-only']);
 // ADR-1239 amendment (#2481): how reasoning effort reaches the host.
 const VALID_EFFORT_SURFACES   = new Set(['argv', 'none']);
+// ADR-1239 Codex-binding amendment (#2584): how a host isolates concurrent
+// same-wave executors — a dispatch sub-field, not a top-level axis.
+const VALID_DISPATCH_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
 
 // GATE A: installSurface → allowed hooksSurface values (DEFECT.GENERATIVE-FIX: parity invariant)
 // Derived from the actual pairings in the 16 real runtime descriptors.
@@ -1291,7 +1294,101 @@ function validateRuntimeBody(cap) {
           'runtime.hostIntegration.dispatch.backgroundDispatch must be a boolean or "undocumented" (got: ' + JSON.stringify(d.backgroundDispatch) + ')',
         );
       }
+
+      // isolation — ADR-1239 Codex-binding amendment (#2584).
+      // OPTIONAL, like effortSurface: added after descriptors already existed,
+      // so requiring it would invalidate every descriptor authored before it —
+      // including third-party ones, breaking the "purely additive" property
+      // ADR-1239 promises for external descriptors. An omitted isolation is
+      // legitimate: negotiation degrades it to 'none' (the safe floor) and
+      // warns, exactly as for any other undeclared dispatch sub-field. Only a
+      // PRESENT value is checked against the closed vocabulary.
+      if (d.isolation === undefined) {
+        // absent — nothing to validate; negotiateHostCapabilities fails it closed.
+      } else if (d.isolation === '__proto__' || d.isolation === 'constructor' || d.isolation === 'prototype') {
+        errors.push('runtime.hostIntegration.dispatch.isolation "' + d.isolation + '" is a reserved name');
+      } else if (d.isolation !== 'undocumented' && !VALID_DISPATCH_ISOLATION.has(d.isolation)) {
+        errors.push(
+          'runtime.hostIntegration.dispatch.isolation must be one of: ' + [...VALID_DISPATCH_ISOLATION].join(', ') +
+          ' (or "undocumented") (got: ' + JSON.stringify(d.isolation) + ')',
+        );
+      }
     }
+  }
+
+  // orchestratorExec — ADR-1239 Codex-binding amendment (#2584), Phase 2.
+  // OPTIONAL top-level field (sibling of hostBehaviors), like hookEvents:
+  // only hosts whose hostIntegration.dispatch.isolation is
+  // 'orchestrator-worktree' need it, so it is not required on every runtime
+  // descriptor. When present it must be a well-formed exec descriptor for
+  // src/host-integration.cts's resolveOrchestratorExec.
+  if (r.orchestratorExec !== undefined) {
+    if (typeof r.orchestratorExec !== 'object' || r.orchestratorExec === null || Array.isArray(r.orchestratorExec)) {
+      errors.push(
+        'runtime.orchestratorExec must be an object (got: ' +
+        (r.orchestratorExec === null ? 'null' : (Array.isArray(r.orchestratorExec) ? 'array' : typeof r.orchestratorExec)) + ')',
+      );
+    } else {
+      const oe = r.orchestratorExec;
+
+      // S2b: reserved-OWN-KEY guard (CodeQL barrier — inline literal comparisons)
+      if (Object.prototype.hasOwnProperty.call(oe, '__proto__')) {
+        errors.push('runtime.orchestratorExec must not contain reserved key "__proto__"');
+      }
+      if (Object.prototype.hasOwnProperty.call(oe, 'constructor')) {
+        errors.push('runtime.orchestratorExec must not contain reserved key "constructor"');
+      }
+      if (Object.prototype.hasOwnProperty.call(oe, 'prototype')) {
+        errors.push('runtime.orchestratorExec must not contain reserved key "prototype"');
+      }
+
+      // command — required non-empty string; reserved-name guard (CodeQL barrier)
+      if (oe.command === '__proto__' || oe.command === 'constructor' || oe.command === 'prototype') {
+        errors.push('runtime.orchestratorExec.command "' + oe.command + '" is a reserved name');
+      } else if (typeof oe.command !== 'string' || oe.command.length === 0) {
+        errors.push(
+          'runtime.orchestratorExec.command must be a non-empty string (got: ' + JSON.stringify(oe.command) + ')',
+        );
+      }
+
+      // args — optional array of strings
+      if (oe.args !== undefined) {
+        if (!Array.isArray(oe.args) || !oe.args.every((a) => typeof a === 'string')) {
+          errors.push(
+            'runtime.orchestratorExec.args must be an array of strings (got: ' + JSON.stringify(oe.args) + ')',
+          );
+        }
+      }
+
+      // cwdFlag — optional; string or null
+      if (oe.cwdFlag !== undefined && oe.cwdFlag !== null && typeof oe.cwdFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.cwdFlag must be a string or null (got: ' + JSON.stringify(oe.cwdFlag) + ')',
+        );
+      }
+
+      // promptFlag — optional; string or null (#2627, Phase 3). `null`/absent
+      // means the host takes the executor prompt positionally (codex, opencode);
+      // a string names the flag that carries it (kimi/kimi-code: --prompt).
+      if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.promptFlag must be a string or null (got: ' + JSON.stringify(oe.promptFlag) + ')',
+        );
+      }
+    }
+  }
+
+  // harnessIsolationFlag — ADR-1239 Codex-binding amendment (#2584), Phase 3
+  // (#2627). OPTIONAL top-level field: the counterpart of orchestratorExec for
+  // `dispatch.isolation: 'harness-worktree'` hosts, naming the host's OWN
+  // isolation flag that GSD passes on dispatch (claude: isolation="worktree";
+  // cursor: --worktree). Descriptor data so the scheduler passes a declared
+  // token instead of branching on a runtime id (ADR-1239: "the per-host
+  // dispatch invocation ... is descriptor data, not a scheduler branch").
+  if (r.harnessIsolationFlag !== undefined && (typeof r.harnessIsolationFlag !== 'string' || r.harnessIsolationFlag.length === 0)) {
+    errors.push(
+      'runtime.harnessIsolationFlag must be a non-empty string (got: ' + JSON.stringify(r.harnessIsolationFlag) + ')',
+    );
   }
 
   // GATE A: installSurface ↔ hooksSurface consistency (DEFECT.GENERATIVE-FIX)
@@ -2321,6 +2418,7 @@ module.exports = {
   VALID_TRANSPORTS,
   VALID_HOST_RUNTIMES,
   VALID_SUBAGENT_TOOLKITS,
+  VALID_DISPATCH_ISOLATION,
   _HOST_INTEGRATION_VOCAB: {
     embeddingMode:   [...VALID_EMBEDDING_MODES],
     commandSurface:  [...VALID_COMMAND_SURFACES],
@@ -2331,6 +2429,7 @@ module.exports = {
     runtime:         [...VALID_HOST_RUNTIMES],
     subagentToolkit: [...VALID_SUBAGENT_TOOLKITS],
     effortSurface:   [...VALID_EFFORT_SURFACES],
+    isolation:       [...VALID_DISPATCH_ISOLATION],
   },
   INSTALL_SURFACE_TO_ALLOWED_HOOKS_SURFACES,
   GEMINI_AGENT_EVENTS,

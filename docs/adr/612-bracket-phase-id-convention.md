@@ -177,7 +177,7 @@ Each phase is an independently-green PR. Tolerant reads (PR-2) ship before emit 
 ## Consequences
 
 - **Positive:** every token is uniquely parseable; one pure round-trippable model under the single-owner regime; milestone-detection correct under READING-B; legacy (`null` / M-NN) repos byte-untouched; migration is opt-in and reversible; the convention count drops from a transient three to a terminal two.
-- **Negative:** a migration window in which reads must tolerate three forms; a second milestone authority under bracket (bracket integer vs STATE.md `milestone:`) whose coherence-check teeth are advisory (W021, message-disambiguated per the folded W021 disposition below); the `getMilestoneFromPhaseId` return-form coupling to archive-dir naming is unresolved (ratify below).
+- **Negative:** a migration window in which reads must tolerate three forms; a second milestone authority under bracket (bracket integer vs STATE.md `milestone:`) whose coherence-check teeth are advisory (W021, message-disambiguated per the folded W021 disposition below); the `getMilestoneFromPhaseId` return-form under bracket is ratified as `vN.0` (Decision 3 below), with the archive-dir glob coupled to that form.
 
 ## Decisions to ratify
 
@@ -185,7 +185,7 @@ Resolved items are folded into the body above. These remain open and gate their 
 
 1. **Bare `02-04` resolution** (gates PR-1 `normalizePhaseName` / PR-2 resolvers). Options: (i) throw a disambiguation error; (ii) keep the current M-NN reading and let only the bracket path reject it; (iii) a `surface: 'phase' | 'plan'` context hint. The throw is a *new* behavior — `normalizePhaseName('02-04')` returns `'02-04'` today, it does not truncate — so it is not merely a fix. Not committed here.
 2. **`phase_naming` vs `phase_id_convention` axis relationship** (gates PR-4 build-default). Confirm these are two independent axes before wiring the new-project `'bracket'` default; the build-default object sets `phase_naming` but omits `phase_id_convention`.
-3. **`getMilestoneFromPhaseId` return-form under bracket + archive-dir naming** (gates PR-1/PR-2). `vN.0` (STATE.md parity, lowest churn) vs a bare integer — value-coupled to the archive-dir glob; the archive-dir naming convention under bracket is otherwise undefined. Ratify both together. This intersects the separate milestone-identity normalization arc and is out of PR-0 scope.
+3. **`getMilestoneFromPhaseId` return-form under bracket + archive-dir naming** (gated PR-1/PR-2) — **RATIFIED 2026-07-24: `vN.0`** (STATE.md parity, lowest churn), chosen over a bare integer; the archive-dir glob is value-coupled to this form and follows `vN.0`. PR-1 (#2258) ships this return-form. The separate milestone-identity normalization arc is unaffected.
 4. **Convention-card single-source location** (gates PR-5/PR-6). Pin the single module/path so the ASCII grammar card renders identically at installer completion, migrator start (dry-run and apply), and in docs.
 
 **Folded (resolved):** M-NN deprecation stance → terminal by consolidation (Decision 5). W021 renumber → **void**: W021 is pinned by `tests/milestone-prefixed-convention.test.cjs` and is kept, message-disambiguated (the earlier plan to renumber it is dropped). READING-B milestone source → Decision 6.

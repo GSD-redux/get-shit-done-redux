@@ -72,6 +72,74 @@ function isPhaseContinuationSegment(seg: string): boolean {
   return PHASE_CONTINUATION_SEGMENT_PREFIX_RE.test(seg);
 }
 
+// #612 (PR-1): bracket-convention token/heading sources, kept next to the M-NN
+// PHASE_NUMBER_TOKEN_SOURCE so this owner file stays the single origin of every
+// phase-token grammar. `src/phase-id.cts` is exempt from the #2128 drift guard
+// (scripts/lint-phase-id-drift.cjs) by construction, and that guard fails any
+// literal re-derivation of the token grammar elsewhere — so the downstream
+// bracket readers (PR-2: roadmap/validate/verify) must build their regexes by
+// interpolating these exports, never by copying the literal.
+//
+// The canonical numeric WIDTH of a bracket identity field, mirroring pad2()'s
+// output: exactly 2 digits, or 3+ with no leading zero. Owned here as a SOURCE
+// so the read side (BRACKET_PHASE_TOKEN_SOURCE, below) and the emit-side
+// validator (CANONICAL_NUMERIC_RE, which toDir enforces) are one rule rather
+// than two literals that agree today and drift tomorrow.
+const BRACKET_CANONICAL_NUMERIC_SOURCE = '(?:[1-9]\\d{2,}|\\d{2})';
+
+// BRACKET_PHASE_TOKEN_SOURCE differs from PHASE_NUMBER_TOKEN_SOURCE by a
+// dot-OR-dash sub-separator: a bracket dir/heading numeric run is `MM-PP[.SS]`
+// (a hyphen joins milestone↔phase, a dot joins phase↔sub-phase), whereas M-NN
+// sub-phases are dot-only.
+//
+// The run is POSITIONAL, not a free repetition — `MM-PP[.SS][-LL]` — and each
+// position gets the width its DELIMITER can actually afford:
+//
+//   MM   leading   unbounded  — delimited by the `{CODE}.` prefix
+//   -PP  dash-1    canonical  — the grammar REQUIRES this dash, so it is a field
+//                              separator, not a continuation heuristic
+//   .SS  dot       canonical  — a slug carries no dot (toDir sanitizes them
+//                              away), so this position cannot collide
+//   -LL  dash-2    #2232 cap  — the ONLY slug-adjacent position, and therefore
+//                              the only one a slug word can collide with
+//
+// #2232 reconciliation: the slug-adjacent position interpolates the single-owner
+// PHASE_CONTINUATION_SEGMENT_SOURCE, so the #2232 bug class cannot reopen on the
+// bracket path — dir `PROJ.01-14-2026-photos-…` (a slug leading with a year)
+// yields `01-14`, never `01-14-2026`.
+//
+// DELIBERATE DIVERGENCE from the M-NN dir-token path (pinned by the parity gate
+// in tests/continuation-grammar-parity.test.cjs, which fails if these two rules
+// drift for a reason nobody intended): the non-slug-adjacent positions stay
+// WIDER than #2232's cap. Bracket admits 3+-digit milestone/phase/sub-phase
+// (CANONICAL_NUMERIC_RE — `[GSD.100] 05` is a pinned regression), and unlike the
+// M-NN continuations those positions are delimiter-disambiguated rather than
+// heuristically recognized, so there is no year collision to defend against.
+// Interpolating the cap verbatim at every position would only under-collect ids
+// that toDir itself emits: `PROJ.02-105-slug` (3-digit phase) would read as
+// `02`, and `[GSD.02] 05.100` (3-digit sub-phase) as `05`. Upstream draws this
+// same line for the same reason — core-utils/phase cap the paired PLAN component
+// while the leading phase component stays unbounded (phase numbers ≥100 are
+// legitimate). The trade-off this accepts is #2232's policy verbatim: a PLAN
+// ≥100 is out of the token grammar.
+//
+// Still deliberately MORE PERMISSIVE than parsePhaseId's strict grammar (it
+// admits a letter-suffixed and unpadded leading token that the parser rejects):
+// this is a READ-TOLERANCE source for the PR-2 readers, which must recognize a
+// bracket-shaped token before deciding what to do with it — it is not the
+// emit/identity grammar. parsePhaseId stays the arbiter of well-formedness.
+const BRACKET_PHASE_TOKEN_SOURCE =
+  `\\d+[A-Z]?` +
+  `(?:-${BRACKET_CANONICAL_NUMERIC_SOURCE}(?!\\d))?` +
+  `(?:\\.${BRACKET_CANONICAL_NUMERIC_SOURCE}(?!\\d))?` +
+  `(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE})?`;
+
+// A phase HEADING intro under bracket is either a `[...]` bracket (optionally
+// followed by a `Phase ` label) or a bare `Phase ` label; a bare number is NOT
+// a phase-heading intro. The `[^\]]{1,200}` bound mirrors the existing
+// roadmap-parser heading regexes (ReDoS-safe: a header is one short line).
+const PHASE_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*(?:Phase\\s+)?|Phase\\s+)';
+
 function stripProjectCodePrefix(value: unknown, caseInsensitive = true): string {
   const input = String(value);
   const re = caseInsensitive ? PROJECT_CODE_PREFIX_STRIP_RE_I : PROJECT_CODE_PREFIX_STRIP_RE;
@@ -107,7 +175,21 @@ function normalizePhaseName(phase: unknown): string {
   return str;
 }
 
-function getMilestoneFromPhaseId(phaseId: unknown): string | null {
+function getMilestoneFromPhaseId(phaseId: unknown, convention?: string): string | null {
+  // READING-B (#612): under the bracket convention the milestone comes from the
+  // `[PROJECT.MM]` / `{CODE}.{MM}-` prefix, never the phase-token leading
+  // integer (ADR-612 Decision 6). Gated on 'bracket' so the `null` and
+  // 'milestone-prefixed' (M-NN) paths keep the legacy leading-int rule
+  // (READING-A) below, byte-untouched. The optional parameter keeps this helper
+  // pure (no config read) and backward-compatible: every existing single-arg
+  // caller resolves to the unchanged READING-A body.
+  if (convention === 'bracket') {
+    const b = String(phaseId).match(/^([A-Z][A-Z0-9_]*)\.(\d+)/);
+    if (!b) return null;
+    const mm = parseInt(b[2], 10);
+    if (SENTINEL_RANGES.includes(mm)) return null; // sentinel milestones have no real milestone
+    return `v${mm}.0`;
+  }
   const stripped = stripProjectCodePrefix(phaseId);
   const m = stripped.match(/^0*(\d+)-\d/);
   if (!m) return null;
@@ -129,6 +211,186 @@ function getPhaseDirFromPhaseId(phaseId: unknown, phaseName: string | null | und
   const parts = [milestone, sub, slug].filter(Boolean);
   const base = parts.join('-');
   return projectCode ? `${projectCode}-${base}` : base;
+}
+
+// ─── Bracket phase-ID grammar (#612, PR-1) ──────────────────────────────────
+// One pure round-trippable model (ADR-612 §3 / Decision 4). parsePhaseId
+// accepts the display form `[PROJECT.MM] PP[.SS][-LL]` or the on-disk/token form
+// `{PROJECT}.{MM}-{PP}[.{SS}][-{LL|slug}]`; renderPhaseId / toDir are its two
+// emitters. READING-B: the milestone lives in the `[PROJECT.MM]` prefix, so no
+// token dimension is ever overloaded (the M-NN collapse pinned in
+// tests/adr-612-collision-characterization.test.cjs cannot occur on this path).
+// `plan` is a filename-surface dimension only — renderPhaseId emits it; toDir
+// drops it (directories carry a slug, not a plan). The project code follows the
+// repo's established `[A-Z][A-Z0-9_]*` grammar (the config-validated
+// project_code shape shared with OPTIONAL_PROJECT_CODE_PREFIX_SOURCE), not the
+// ADR §1 illustration's `[A-Z]{1,6}`, so that every project_code the config
+// permits (digits / underscore / >6 chars) parses.
+//
+// Strict-reject posture (ADR-612 Decision 4's `render(parse(x)) === x`
+// contract, held exactly): parsePhaseId accepts ONLY the canonical form of
+// each branch — unpadded numbers, over-padded numbers, and multi-space or
+// stray leading/trailing whitespace are all rejected rather than silently
+// normalized, so two distinct input strings can never parse to the same
+// tuple while one of them fails to round-trip. toDir mirrors this on the
+// write side: every interpolated PhaseId field is validated (PhaseId is a
+// structural type — nothing forces callers through parsePhaseId, so a hand-
+// built id must not be able to smuggle a path-traversal segment onto disk),
+// and the slug must sanitize to a non-empty, non-all-digit token (an empty
+// slug would leave a dangling trailing hyphen; an all-digit slug is
+// string-indistinguishable from the plan grammar's trailing tail and would
+// silently break the disk↔identity bijection on read-back).
+type PhaseId = {
+  project: string;     // 'GSD'
+  milestone: string;   // '02'  (zero-padded, from the bracket/dir prefix)
+  phase: string;       // '05'  (zero-padded)
+  subphase?: string;   // '03'  (optional)
+  plan?: string;       // '01'  (filename surface only)
+};
+
+const pad2 = (n: string): string => String(parseInt(n, 10)).padStart(2, '0');
+
+function parsePhaseId(input: string): PhaseId {
+  // No .trim(): the match anchors (`^`...`$`) then reject leading/trailing
+  // whitespace outright, folding that case into the same "not a bracket
+  // phase id" rejection below rather than needing its own check.
+  const str = String(input);
+
+  // Display form: [PROJECT.MM] PP[.SS][-LL]. The match itself stays
+  // permissive on purpose (it will happily match an unpadded number or a
+  // multi-space run) — canonicality is enforced UNIFORMLY below via the
+  // render round-trip (ADR-612 Decision 4) rather than by hand-tuning every
+  // numeric / whitespace sub-pattern, so a field added later inherits the
+  // check for free instead of needing its own regex micro-surgery.
+  const disp = str.match(/^\[([A-Z][A-Z0-9_]*)\.(\d+)\]\s+(\d+)(?:\.(\d+))?(?:-(\d+))?$/);
+  if (disp) {
+    const id: PhaseId = { project: disp[1], milestone: pad2(disp[2]), phase: pad2(disp[3]) };
+    if (disp[4] !== undefined) id.subphase = pad2(disp[4]);
+    if (disp[5] !== undefined) id.plan = pad2(disp[5]);
+    // Canonicality by construction: re-render the parsed id and require
+    // byte-equality with the input. This rejects unpadded ('[GSD.5] 5'),
+    // over-padded ('[GSD.005] 05'), and multi-space-separated ('[GSD.02]  05')
+    // variants uniformly, without special-casing any one of them — the emit
+    // path (renderPhaseId) is the single source of truth for "canonical".
+    if (renderPhaseId(id) !== str) {
+      throw new Error(`parsePhaseId: not canonical: ${JSON.stringify(input)}`);
+    }
+    return id;
+  }
+
+  // Dir / token form: {PROJECT}.{MM}-{PP}[.{SS}][-{plan|slug}]
+  const dir = str.match(/^([A-Z][A-Z0-9_]*)\.(\d+)-(\d+)(?:\.(\d+))?(?:-(.+))?$/);
+  if (dir) {
+    const id: PhaseId = { project: dir[1], milestone: pad2(dir[2]), phase: pad2(dir[3]) };
+    if (dir[4] !== undefined) id.subphase = pad2(dir[4]);
+    // Trailing segment: a pure-integer tail is the plan; anything else is a
+    // slug (dropped from the tuple — it is not an identity dimension). The
+    // plan tail participates in the canonicality check below; the slug tail
+    // is read-tolerant pass-through (a slug is not an identity dimension) and
+    // is exempt from it.
+    const tail = dir[5];
+    const tailIsPlan = tail !== undefined && /^\d+$/.test(tail);
+    if (tailIsPlan) id.plan = pad2(tail);
+
+    // Canonicality by construction, mirroring the display branch: rebuild the
+    // exact dir/token string this id would emit and require it match the
+    // input verbatim. Rejects unpadded milestone/phase ('GSD.2-5') and
+    // unpadded plan tails ('GSD.02-05-1') without special-casing either.
+    const sub = id.subphase ? `.${id.subphase}` : '';
+    const tailOut = tail === undefined ? '' : tailIsPlan ? `-${pad2(tail)}` : `-${tail}`;
+    const canonical = `${id.project}.${id.milestone}-${id.phase}${sub}${tailOut}`;
+    if (canonical !== str) {
+      throw new Error(`parsePhaseId: not canonical: ${JSON.stringify(input)}`);
+    }
+    return id;
+  }
+
+  // Ambiguous / bare tokens (e.g. `02-04`, `05`, `2-01`) match neither branch,
+  // as does a display/dir form carrying leading/trailing whitespace (the
+  // anchors never match it): reject rather than guess a tuple (ADR-612
+  // conservative default). The rejection lives ONLY in this new parser —
+  // normalizePhaseName and every other legacy reader keep accepting those
+  // tokens unchanged.
+  throw new Error(`parsePhaseId: not a bracket phase id: ${JSON.stringify(input)}`);
+}
+
+function renderPhaseId(id: PhaseId): string {
+  const sub = id.subphase ? `.${id.subphase}` : '';
+  const plan = id.plan ? `-${id.plan}` : '';
+  return `[${id.project}.${id.milestone}] ${id.phase}${sub}${plan}`;
+}
+
+// PhaseId is a structural type: nothing forces a caller through parsePhaseId,
+// so toDir cannot trust project/milestone/phase/subphase are already
+// canonical — each is validated below against the exact shape parsePhaseId
+// itself would ever produce, closing off a hand-built id as a path-traversal
+// vector. PROJECT_ID_RE mirrors the parser's `[A-Z][A-Z0-9_]*` grammar;
+// CANONICAL_NUMERIC_RE mirrors pad2()'s output shape — exactly 2 digits, or
+// 3+ digits with no leading zero. It is BUILT from
+// BRACKET_CANONICAL_NUMERIC_SOURCE rather than re-spelled as a literal, so this
+// emit-side gate and the read-side token source cannot disagree about what
+// "canonical width" means (the anchors here make the source's trailing `(?!\d)`
+// guard, which the unanchored read side needs, redundant).
+const PROJECT_ID_RE = /^[A-Z][A-Z0-9_]*$/;
+const CANONICAL_NUMERIC_RE = new RegExp(`^${BRACKET_CANONICAL_NUMERIC_SOURCE}$`);
+
+function toDir(id: PhaseId, slug: string): string {
+  if (!PROJECT_ID_RE.test(id.project)) {
+    throw new Error(`toDir: invalid project: ${JSON.stringify(id.project)}`);
+  }
+  if (!CANONICAL_NUMERIC_RE.test(id.milestone)) {
+    throw new Error(`toDir: invalid milestone: ${JSON.stringify(id.milestone)}`);
+  }
+  if (!CANONICAL_NUMERIC_RE.test(id.phase)) {
+    throw new Error(`toDir: invalid phase: ${JSON.stringify(id.phase)}`);
+  }
+  if (id.subphase !== undefined && !CANONICAL_NUMERIC_RE.test(id.subphase)) {
+    throw new Error(`toDir: invalid subphase: ${JSON.stringify(id.subphase)}`);
+  }
+  // A non-string slug (e.g. an omitted second argument) must not be silently
+  // coerced by String(...) into the literal token 'undefined'/'null' on disk.
+  if (typeof slug !== 'string') {
+    throw new Error(`toDir: slug must be a string: ${JSON.stringify(slug)}`);
+  }
+
+  const sub = id.subphase ? `.${id.subphase}` : '';
+  // Slug guard: the slug becomes an on-disk path segment, so collapse it to a
+  // safe lowercase token — never a path separator or `..` traversal.
+  const safeSlug = slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // A slug that sanitizes to nothing (e.g. '!!!') would otherwise emit a
+  // dangling trailing hyphen.
+  if (!safeSlug) {
+    throw new Error(`toDir: slug sanitizes to empty: ${JSON.stringify(slug)}`);
+  }
+  // An all-digit slug (e.g. '2026') is string-indistinguishable from the
+  // parsePhaseId dir branch's plan tail, so it would re-parse as a plan, not
+  // a slug — silently breaking the disk↔identity bijection on read-back.
+  if (/^\d+$/.test(safeSlug)) {
+    throw new Error(`toDir: slug must not be all-digit: ${JSON.stringify(slug)}`);
+  }
+  return `${id.project}.${id.milestone}-${id.phase}${sub}-${safeSlug}`;
+}
+
+// Milestone integers reserved as non-milestone sentinels (0.x backlog / 999.x
+// icebox); a phase id in these ranges has no real milestone.
+const SENTINEL_RANGES: readonly number[] = Object.freeze([0, 999]);
+
+function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
+  const s = String(phaseId);
+  // Bracket milestone lives in the `{CODE}.{MM}` prefix. GATED on
+  // convention === 'bracket' for the same reason as extractPhaseToken below and
+  // getMilestoneFromPhaseId above: that prefix is string-indistinguishable from
+  // the legacy #1324 letter-prefixed-decimal family (`P0.0-foundation` is a real
+  // phase, NOT sentinel milestone 0) whenever the code ends in a digit. A
+  // convention-less caller uses the legacy/bare leading-int rule below, so no
+  // existing reader gains a false positive; the bracket reading is opt-in.
+  if (convention === 'bracket') {
+    const bracket = s.match(/^[A-Z][A-Z0-9_]*\.(\d+)/); // bracket: milestone in the prefix
+    if (bracket) return SENTINEL_RANGES.includes(parseInt(bracket[1], 10));
+  }
+  const legacy = stripProjectCodePrefix(s).match(/^0*(\d+)/); // legacy/bare: leading int
+  if (!legacy) return false;
+  return SENTINEL_RANGES.includes(parseInt(legacy[1], 10));
 }
 
 /**
@@ -225,7 +487,25 @@ function comparePhaseNum(a: unknown, b: unknown): number {
 /**
  * Extract the phase token from a directory name.
  */
-function extractPhaseToken(dirName: string): string {
+function extractPhaseToken(dirName: string, convention?: string): string {
+  // #612 bracket dir form `{CODE}.{MM}-{PP}[.{SS}]-slug` → phase token `PP[.SS]`.
+  // GATED on convention === 'bracket' (mirrors getMilestoneFromPhaseId's READING-B
+  // decision above). A bracket dir `{CODE}.{MM}-{PP}` is string-INDISTINGUISHABLE
+  // from the legacy #2043/#1324 letter-prefixed-decimal family (`P0.3-2`,
+  // `P0.12-34`) whenever the project code ends in a digit, so NO string-only
+  // discriminator can separate the two conventions — auto-detecting here silently
+  // reinterpreted `P0.3-2` → `2` (was `P0.3-2`), a byte-identical-read regression
+  // on this CRITICAL 6-caller helper (ADR-2121). Requiring an explicit convention
+  // signal keeps every existing (convention-less) call site byte-identical to
+  // prior behaviour — see the #2043 numeric-tail characterization in
+  // tests/phase-id.test.cjs — while keeping the helper pure (optional param, no
+  // config read). The captured token is dot-only (`PP[.SS]`); the milestone↔phase
+  // hyphen and any trailing plan/slug are excluded.
+  if (convention === 'bracket') {
+    const bracketDir = dirName.match(/^[A-Z][A-Z0-9_]*\.\d+-(\d+(?:\.\d+)?)/);
+    if (bracketDir) return bracketDir[1];
+  }
+
   const codePrefixMatch = dirName.match(PROJECT_CODE_PREFIX_CAPTURE_RE_I);
   let prefix = '';
   let rest = dirName;
@@ -386,10 +666,17 @@ export = {
   PHASE_NUMBER_TOKEN_SOURCE,
   PHASE_CONTINUATION_SEGMENT_SOURCE,
   isPhaseContinuationSegment,
+  BRACKET_PHASE_TOKEN_SOURCE,
+  PHASE_HEADING_PREFIX_SRC,
   stripProjectCodePrefix,
   normalizePhaseName,
   getMilestoneFromPhaseId,
   getPhaseDirFromPhaseId,
+  parsePhaseId,
+  renderPhaseId,
+  toDir,
+  SENTINEL_RANGES,
+  isSentinelPhaseId,
   phaseMarkdownRegexSource,
   phaseMarkdownRegexSourceExact,
   comparePhaseNum,

@@ -64,13 +64,20 @@
           "coder",
           "explore",
           "plan"
-        ]
+        ],
+        "isolation": "orchestrator-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",
       "stateIO": "filesystem",
       "transport": "mcp",
       "runtime": "node"
+    },
+    "orchestratorExec": {
+      "command": "kimi",
+      "args": [],
+      "cwdFlag": null,
+      "promptFlag": "--prompt"
     },
     "hostBehaviors": {
       "reapplyCommand": "/skill:gsd-update --reapply",

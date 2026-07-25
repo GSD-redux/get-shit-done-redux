@@ -128,16 +128,6 @@ node gsd-tools.cjs config-set workflow.tdd_mode true
 
 ---
 
-## プランニング開始前にプロジェクト状態を検証する
-
-```bash
-/gsd-plan-phase 2 --validate
-```
-
-リサーチャーを起動する前に状態検証を実行します。ROADMAP.md や STATE.md がずれている可能性がある場合に使用してください。
-
----
-
 ## プランニング後に外部バウンス検証を実行する
 
 **`workflow.plan_bounce_script` が設定されており、完成したプランに対して外部検証を行いたい場合:**

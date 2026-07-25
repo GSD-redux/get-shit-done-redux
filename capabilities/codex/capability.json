@@ -65,7 +65,8 @@
         "maxDepth": 1,
         "background": true,
         "subagentToolkit": "full",
-        "backgroundDispatch": true
+        "backgroundDispatch": true,
+        "isolation": "orchestrator-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",
@@ -73,6 +74,12 @@
       "transport": "mcp",
       "runtime": "node",
       "effortSurface": "argv"
+    },
+    "orchestratorExec": {
+      "command": "codex",
+      "args": ["exec"],
+      "cwdFlag": "--cd",
+      "promptFlag": null
     },
     "hostBehaviors": {
       "reapplyCommand": "$gsd-update --reapply",

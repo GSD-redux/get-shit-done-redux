@@ -40,7 +40,8 @@
         "maxDepth": 0,
         "background": false,
         "backgroundDispatch": false,
-        "subagentToolkit": "undocumented"
+        "subagentToolkit": "undocumented",
+        "isolation": "none"
       },
       "modelMode": "active",
       "hookBus": "host",

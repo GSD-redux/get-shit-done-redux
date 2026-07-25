@@ -236,7 +236,11 @@ else
   # On success HEAD is exactly at origin/$DEFAULT_BRANCH, so a post-creation
   # merge-base / "ahead-of" guard would be unreachable — the explicit base
   # argument here is the single source of correctness for #2916.
-  git checkout -b "$branch_name" "origin/$DEFAULT_BRANCH" \
+  # --no-track: with the default branch.autoSetupMerge=true, checkout -b from a
+  # remote-tracking ref wires branch.<name>.merge to refs/heads/$DEFAULT_BRANCH
+  # (origin/master), so a GUI sync pushes quick-task commits straight onto
+  # origin/$DEFAULT_BRANCH, bypassing PR review (#2498).
+  git checkout -b "$branch_name" "origin/$DEFAULT_BRANCH" --no-track \
     || { echo "ERROR: Could not create '$branch_name' from origin/$DEFAULT_BRANCH (#2916)." >&2; exit 1; }
 fi
 ```

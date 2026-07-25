@@ -114,12 +114,6 @@ If you need to re-execute only a specific wave:
 /gsd-execute-phase 1 --wave 2
 ```
 
-If you want to validate `.planning/` integrity before dispatching:
-
-```bash
-/gsd-execute-phase 1 --validate
-```
-
 ---
 
 ## Roll back with `/gsd-undo`
