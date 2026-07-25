@@ -1028,20 +1028,52 @@ function cmdGenerateClaudeProfile(cwd: string, options: CmdGenerateClaudeProfile
 
   const sectionContent = sectionLines.join('\n');
 
+  // #2565: resolve target through effective runtime policy instead of
+  // hardcoded .claude/CLAUDE.md. Mirrors the #3163 fix applied to
+  // cmdGenerateClaudeMd above; that fix diverged when it didn't propagate
+  // here, leaving /gsd-profile-user writing Claude files on Codex installs.
+  // - Project scope: getProjectInstructionFile(runtime) is the single source
+  //   of truth (AGENTS.md for codex/opencode/kilo/kimi/unknown; GEMINI.md for
+  //   antigravity; .github/copilot-instructions.md for copilot).
+  // - Global scope: ~/.<config-home>/<instruction-basename>, derived from
+  //   getGlobalConfigDir + basename(getProjectInstructionFile), so codex lands
+  //   at ~/.codex/AGENTS.md. Claude global is preserved byte-for-byte (no
+  //   env-var drift beyond the prior hardcoded path).
+  // - GSD_RUNTIME env var takes precedence over config.runtime (mirrors the
+  //   #3163 env-precedence contract). Non-claude always wins over a stale
+  //   claude_md_path (#3163 rationale: an AGENTS-native project must never
+  //   write to CLAUDE.md even if a prior Claude setup left claude_md_path).
+  let config: Record<string, unknown> = {};
+  try {
+    config = loadConfig(cwd);
+  } catch { /* use defaults */ }
+  const effectiveRuntime = resolveRuntimeNameFromCandidates(
+    process.env['GSD_RUNTIME'],
+    config['runtime'],
+  );
+  const isClaudeRuntime = !effectiveRuntime || effectiveRuntime === 'claude';
+
   let targetPath: string;
   if (options.global) {
-    targetPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+    if (isClaudeRuntime) {
+      targetPath = path.join(os.homedir(), '.claude', 'CLAUDE.md');
+    } else {
+      targetPath = path.join(
+        getGlobalConfigDir(effectiveRuntime),
+        path.basename(getProjectInstructionFile(effectiveRuntime)),
+      );
+    }
   } else if (options.output) {
     targetPath = path.isAbsolute(options.output) ? options.output : path.join(cwd, options.output);
   } else {
-    // Read claude_md_path from config; #1098 default is ./.claude/CLAUDE.md
+    // Read claude_md_path from config; #1098 default is .claude/CLAUDE.md
     // (kept consistent with cmdGenerateClaudeMd so the profile section and the
     // managed sections land in the same file on a config-less project).
-    let configClaudeMdPath = './.claude/CLAUDE.md';
-    try {
-      const config = loadConfig(cwd);
-      if (config['claude_md_path']) configClaudeMdPath = config['claude_md_path'] as string;
-    } catch { /* use default */ }
+    let configClaudeMdPath = '.claude/CLAUDE.md';
+    if (config['claude_md_path']) configClaudeMdPath = config['claude_md_path'] as string;
+    if (!isClaudeRuntime) {
+      configClaudeMdPath = getProjectInstructionFile(effectiveRuntime);
+    }
     targetPath = path.isAbsolute(configClaudeMdPath) ? configClaudeMdPath : path.join(cwd, configClaudeMdPath);
   }
 
