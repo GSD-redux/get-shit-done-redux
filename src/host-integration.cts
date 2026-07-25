@@ -813,6 +813,20 @@ function resolveOrchestratorExec(
   if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length === 0)) {
     return { ok: false, reason: 'invalid_prompt' };
   }
+  // Leading-dash guard, mirroring worktree-safety.cts's `unsafe_leading_dash`
+  // check on git arguments. A positional prompt (or a cwd) beginning with '-'
+  // is parsed by the spawned CLI as a FLAG, not a value — the same failure the
+  // git path already rejects, and for the same reason: `--` end-of-options
+  // support is inconsistent across these CLIs, so rejecting outright is the
+  // portable fix rather than relying on a separator. Applied to the resolver
+  // (not just its current caller) because this is a general descriptor->argv
+  // seam: a future caller must not have to rediscover the hazard.
+  if (typeof prompt === 'string' && prompt.startsWith('-')) {
+    return { ok: false, reason: 'unsafe_leading_dash_prompt' };
+  }
+  if (cwd.startsWith('-')) {
+    return { ok: false, reason: 'unsafe_leading_dash_cwd' };
+  }
 
   const baseArgs = Array.isArray(oe.args) ? [...oe.args] : [];
   const args = typeof oe.cwdFlag === 'string' && oe.cwdFlag.length > 0
