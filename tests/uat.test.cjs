@@ -924,7 +924,20 @@ describe('uat render-checkpoint', () => {
       return width;
     }
 
-    for (const lang of ['Japanese', 'Chinese', 'Korean', 'Hindi']) {
+    for (const lang of [
+      'Japanese',
+      'Chinese',
+      'Korean',
+      'Dutch',
+      'Polish',
+      'Russian',
+      'Ukrainian',
+      'Turkish',
+      'Hindi',
+      'Arabic',
+      'Vietnamese',
+      'Indonesian',
+    ]) {
       test(`${lang} checkpoint banner line renders at display-width 64, aligning the right border`, () => {
         const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
         const output = buildCheckpoint(currentTest, lang);
