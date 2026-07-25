@@ -311,10 +311,8 @@ else
   else
     git switch --quiet "$DEFAULT_BRANCH" 2>/dev/null && git merge --ff-only --quiet "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   fi
-  # Pinned base + fail-fast: on success HEAD is exactly at origin/$DEFAULT_BRANCH,
-  # so a post-creation merge-base or "ahead-of" guard would be unreachable. The
-  # explicit base argument here is the single source of correctness for #2916.
-  git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" \
+  # Pinned base (#2916); --no-track (#2498) so default autoSetupMerge doesn't wire upstream to origin/$DEFAULT_BRANCH.
+  git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" --no-track \
     || { echo "ERROR: Could not create '$BRANCH_NAME' from origin/$DEFAULT_BRANCH (#2916)." >&2; exit 1; }
 fi
 ```
