@@ -1,6 +1,6 @@
 # Phase effort is estimated against a calibrated smart-zone budget, not a static heuristic
 
-- **Status:** Accepted
+- **Status:** Accepted (Phase 0 — ADR only; locks the contract Phases 1–3 execute against. No production code lands in this PR.)
 - **Date:** 2026-07-24
 - **Issue:** #2629
 - **Epic:** #1952 (Phase 0 design lock; epic stays open until Phase 3 merges)
@@ -100,5 +100,5 @@ Recorded because the reasoning is invisible from the code: a future contributor 
 - `gsd-core/references/context-budget.md` — existing context-degradation tiers and the `context_window` / `workflow.context_guard_mode` keys this sits beside.
 - `src/prompt-budget.cts:87` — `estimateTokens`, the shared measurement primitive.
 - `tests/agent-size-budget.test.cjs` — the tier caps that force Decision 6.
-- ADR-2164 — prior art for a scope-boundary policy ADR.
+- [ADR-2164](2164-statusline-scope-boundary.md) — prior art for a scope-boundary policy ADR.
 - Issues: #1952 (epic), #1945 (tracer-first), #2630 / #2631 / #2632 (implementation phases).
