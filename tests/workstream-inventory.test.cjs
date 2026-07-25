@@ -14,6 +14,8 @@ const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
 const { buildWorkstreamInventory, isCompletedInventory } = require('../gsd-core/bin/lib/workstream-inventory-builder.cjs');
 const { inspectWorkstream } = require('../gsd-core/bin/lib/workstream-inventory.cjs');
 const { VERIFIER_STATUSES } = require('../gsd-core/bin/lib/verification.cjs');
+const { phaseKeyFromDir, phaseKeyFromProse } = require('../gsd-core/bin/lib/phase-id.cjs');
+const fc = require('fast-check');
 
 const STALE_STATE = 'status: executing\n';
 const IN_PROGRESS_ROADMAP =
@@ -409,17 +411,51 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-projcode' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| PROJ-01. Shipped | v1.0 | 1/1 | Complete | - |',
       '| PROJ-05. Alpha | v2.0 | 1/1 | Complete | - |',
       '| PROJ-06. Beta | v2.0 | 0/1 | In Progress | - |',
     ]));
+    // The prior-milestone directory is the discriminator: a phase key that never
+    // resolves collapses scoping to the whole roadmap, and PROJ-01 sneaks into
+    // the current rollup as a third completed phase.
+    writePhase(wsDir, 'PROJ-01-shipped', { plans: 1, summaries: 1, verification: 'passed' });
     writePhase(wsDir, 'PROJ-05-alpha', { plans: 1, summaries: 1, verification: 'passed' });
     writePhase(wsDir, 'PROJ-06-beta', { plans: 1, summaries: 0 });
 
     const inv = inspectWorkstream(tmpDir, 'ws-projcode', { active: null });
     assert.ok(inv);
-    assert.equal(inv.roadmap_phase_count, 2);
-    assert.equal(inv.completed_phases, 1, 'prefixed dirs must count, not be excluded outright');
+    assert.equal(inv.roadmap_phase_count, 2, 'denominator = v2.0 phases only');
+    assert.equal(inv.completed_phases, 1, 'prefixed dirs must scope, not be excluded outright');
     assert.equal(inv.progress_percent, 50);
+  });
+
+  // The load-bearing invariant of the whole fix, stated directly: however a
+  // roadmap decorates a phase reference (padding, project code, markdown
+  // emphasis, a `Phase ` label, trailing prose), the key it yields must equal
+  // the key its own directory yields. Every blocker above is an instance of
+  // this property failing.
+  test('property: a table cell and its directory always yield the same phase key', () => {
+    // Padding and project code are decoration and vary INDEPENDENTLY on the two
+    // sides — that independence is the point. Comparing an identically-decorated
+    // token against itself would pass vacuously.
+    fc.assert(fc.property(
+      fc.integer({ min: 1, max: 400 }),
+      fc.option(fc.integer({ min: 1, max: 99 }), { nil: null }),
+      fc.constantFrom('', '0', '00'),
+      fc.constantFrom('', '0', '00'),
+      fc.constantFrom('', 'PROJ-', 'CK-', 'MEM-'),
+      fc.constantFrom('', 'PROJ-', 'CK-', 'MEM-'),
+      fc.constantFrom('', '**', '`'),
+      fc.constantFrom('', 'Phase '),
+      fc.stringMatching(/^[a-z][a-z-]{0,20}$/),
+      (num, sub, cellPad, dirPad, cellCode, dirCode, emphasis, label, slug) => {
+        const suffix = sub === null ? '' : `.${sub}`;
+        const cell = `${emphasis}${label}${cellCode}${cellPad}${num}${suffix}. Some Name${emphasis}`;
+        const dir = `${dirCode}${dirPad}${num}${suffix}-${slug}`;
+        assert.equal(phaseKeyFromProse(cell), phaseKeyFromDir(dir),
+          `cell ${JSON.stringify(cell)} and dir ${JSON.stringify(dir)} must share a key`);
+      },
+    ), { numRuns: 1000 });
   });
 
   // A blank Milestone cell must not silently delete the phase from BOTH sides of

@@ -75,12 +75,18 @@ function stripShippedMilestones(content: string): string {
  *   match inside `v2.0.1` — `\b` alone would, since `.` is a non-word char.
  * - Shipped/active classification reuses the same marker patterns the milestone
  *   sectioniser uses, so an in-progress marker on the line always wins.
+ *
+ * Both patterns are anchored and use only complementary character classes
+ * (`[^\n]`, `[^<]`, `[^>]`) with no overlapping alternation, so matching stays
+ * linear in the ROADMAP's length — an untrusted ROADMAP cannot drive backtracking.
  */
 function isMilestoneShippedInRoadmap(content: string, version: string): boolean {
   const boundedVersion = `${escapeRegex(version)}(?![\\w.-])`;
   const candidates = [
-    new RegExp(`^#{1,3}\\s+(?!Phase\\s+\\S).*${boundedVersion}[^\\n]*$`, 'gmi'),
-    new RegExp(`^[^\\n]*<summary[^>]*>[^<]*${boundedVersion}[^<]*<\\/summary>[^\\n]*$`, 'gmi'),
+    // A milestone heading: `## v2.0 Launch — ✅ SHIPPED`.
+    new RegExp(`^#{1,3}[^\\S\\n]+(?!Phase\\s+\\S)[^\\n]*${boundedVersion}[^\\n]*$`, 'gmi'),
+    // A collapsed shipped block's own summary: `<summary>✅ v2.0 … SHIPPED</summary>`.
+    new RegExp(`<summary[^>]*>[^<]*${boundedVersion}[^<]*<\\/summary>`, 'gi'),
   ];
   for (const pattern of candidates) {
     for (const match of content.matchAll(pattern)) {

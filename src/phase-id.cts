@@ -579,12 +579,25 @@ function phaseTokenMatches(dirName: string, normalized: string): boolean {
 // never matching a `1-slug` directory, silently zeroing a rollup).
 
 /**
- * Canonical key for an already-extracted phase TOKEN (`"5"`, `"05"`, `"12A"`,
- * `"30.1"`, `"PROJ-05"`). Padding- and case-insensitive: `5` and `05` collapse
- * to the same key.
+ * Canonical key for an already-extracted phase TOKEN (`"5"`, `"05"`, `"005"`,
+ * `"12A"`, `"30.1"`, `"PROJ-05"`). Padding- and case-insensitive: every
+ * spelling of a number collapses to one key.
+ *
+ * Leading zeros are stripped per hyphen-separated segment BEFORE
+ * `normalizePhaseName` pads to the 2-digit convention. Padding alone is not a
+ * normalisation — `padStart(2)` is a no-op once the input is already ≥2
+ * characters, so `5` yielded `05` while `005` stayed `005` and the two never
+ * compared equal. The strip is deliberately confined to this key surface:
+ * `normalizePhaseName` itself is a RENDERING function whose verbatim treatment
+ * of wide IDs (`001.10`) is relied on by plan-ID capture and wave assignment.
+ * Arithmetic is avoided (`parseInt` would lose precision on a long digit run).
  */
 function phaseKeyFromToken(token: unknown): string {
-  return normalizePhaseName(token).toUpperCase();
+  const stripped = String(token)
+    .split('-')
+    .map(segment => segment.replace(/^0+(?=\d)/, ''))
+    .join('-');
+  return normalizePhaseName(stripped).toUpperCase();
 }
 
 /**
