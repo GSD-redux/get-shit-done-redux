@@ -1,9 +1,3 @@
-<!--
-  Optional hero image (ships alongside this file as
-  docs/tutorials/assets/your-first-project-hero.png):
-  <p align="center"><img src="assets/your-first-project-hero.png" alt="GSD Core — Git. Ship. Done." width="100%"></p>
--->
-
 <div align="center">
 
 # 🚀 Your first project
@@ -123,7 +117,7 @@ below are identical everywhere** — only two things differ per runtime:
 | Runtime | Installer flag | How you invoke GSD |
 |---------|----------------|--------------------|
 | **Claude Code** | `--claude` | `/gsd-*` slash commands |
-| **Cursor** | `--cursor` | `/gsd-*` (pair with the `gsd-cursor` EoS for model profiles) |
+| **Cursor** | `--cursor` | `/gsd-*` |
 | **OpenCode** | `--opencode` | `/gsd-*` |
 | **Codex** | `--codex` (CLI ≥ 0.130.0) | `/gsd-*` |
 | **Gemini CLI** | `--gemini` | `/gsd:*` — **colon** form (`/gsd:new-project`) |
