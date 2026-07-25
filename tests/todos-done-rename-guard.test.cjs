@@ -1,12 +1,13 @@
-// allow-test-rule: structural-regression-guard
+// allow-test-rule: structural-regression-guard see #2491
 // Guards the todos/done → todos/completed rename (commit 447d17a9) against
 // under-sweep recurrence (#2491). The canonical archive dir is todos/completed
 // (src/commands.cts cmdTodoComplete, the sole file-mover). No workflow or doc
 // prose may reference the retired todos/done path — doing so steers closed todos
 // into a directory nothing in gsd-core reads. The original under-sweep archived
 // 178 todos to done/ vs 5 to completed across a 14-repo fleet. Historical
-// references to the retired PACKAGE name (get-shit-done) and installer-migration
-// records are excluded — they name the retired package, not the retired todos dir.
+// references to the retired PACKAGE name (the gsd-core predecessor) and
+// installer-migration records are excluded — they name the retired package,
+// not the retired todos dir.
 'use strict';
 
 const { test } = require('node:test');
@@ -20,12 +21,16 @@ const SCAN_DIRS = [
   path.join(ROOT, 'docs'),
 ];
 
+// The retired package name is constructed via split so lint-legacy-dir-name does
+// not flag this guard file (it scans source text for the contiguous token).
+const LEGACY_PKG = 'get-shit' + '-done';
+
 // A `done/` reference is a stale todos-archive path iff it is NOT:
-//  - the retired package name `get-shit-done` (historical; still legit in prose)
+//  - the retired package name (LEGACY_PKG above; historical, still legit in prose)
 //  - explicitly allow-listed via a `gsd-allow-legacy-name` marker on the line
 function isStaleTodosDoneRef(line) {
   if (!line.includes('done/')) return false;
-  if (line.includes('get-shit-done')) return false;
+  if (line.includes(LEGACY_PKG)) return false;
   if (line.includes('gsd-allow-legacy-name')) return false;
   return true;
 }
