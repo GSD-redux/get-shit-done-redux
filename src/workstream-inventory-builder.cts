@@ -39,6 +39,16 @@ export interface PhaseFilesCount {
   planCount: number;
   summaryCount: number;
   /**
+   * #2562: the directory's canonical phase key (`phaseKeyFromDir`). Two stale
+   * same-numbered directories (`05-x` alongside `5-x-old` — Bug #2445's
+   * scenario) share a key and must count ONCE in the rollup, or the numerator
+   * outgrows a denominator that counts distinct phases. Absent → the directory
+   * name is its own key (no de-duplication).
+   */
+  phaseKey?: string;
+  /** #2562: directory mtime, the Bug #2445 tie-break when two directories share a phase key. */
+  mtimeMs?: number;
+  /**
    * #2562: whether this phase directory belongs to the CURRENT milestone.
    * Only meaningful when milestone scoping is active (see
    * `currentMilestonePhaseCount`); undefined/true otherwise.
@@ -148,6 +158,27 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     countsMap.set(entry.directory, entry);
   }
 
+  // #2562 / Bug #2445: pick ONE directory per phase key for the rollup. Stale
+  // same-numbered directories left over from a prior milestone would otherwise
+  // each add to the numerator while the denominator counts distinct phases —
+  // pushing completed_phases past it, where the old `Math.min` cap silently
+  // rounded the result up to 100% and hid an unstarted phase. Newest-on-disk
+  // wins, mirroring state.cts's #2445 de-duplication.
+  const rollupDirByKey = new Map<string, string>();
+  for (const dir of [...phaseDirNames].sort()) {
+    const entry = countsMap.get(dir);
+    if (scoped && entry?.inMilestone === false) continue;
+    const key = entry?.phaseKey ?? dir;
+    const incumbent = rollupDirByKey.get(key);
+    if (incumbent === undefined) {
+      rollupDirByKey.set(key, dir);
+      continue;
+    }
+    const incumbentMtime = countsMap.get(incumbent)?.mtimeMs ?? 0;
+    if ((entry?.mtimeMs ?? 0) > incumbentMtime) rollupDirByKey.set(key, dir);
+  }
+  const rollupDirs = new Set(rollupDirByKey.values());
+
   const phases: PhaseStatus[] = [];
   let completedPhases = 0;
   let totalPlans = 0;
@@ -167,8 +198,9 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
         : planCount > 0
           ? 'in_progress'
           : 'pending';
-    // #2562: only current-milestone phases feed the rollup when scoping is on.
-    const countsTowardMilestone = !scoped || counts?.inMilestone !== false;
+    // #2562: only current-milestone phases feed the rollup when scoping is on,
+    // and only one directory per phase key (see rollupDirs above).
+    const countsTowardMilestone = (!scoped || counts?.inMilestone !== false) && rollupDirs.has(dir);
     if (countsTowardMilestone) {
       totalPlans += planCount;
       completedPlans += Math.min(summaryCount, planCount);
@@ -186,6 +218,20 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   // scoping is active (catches phases declared but never scaffolded), else the
   // legacy whole-roadmap heading count.
   const effectivePhaseCount = scoped ? currentMilestonePhaseCount : roadmapPhaseCount;
+
+  // #2562 invariant: the numerator counts de-duplicated in-milestone phase keys
+  // and the denominator counts the union of those keys with the roadmap's own
+  // declarations, so the numerator can never exceed it. Raising the numerator
+  // above the denominator means the two sides were derived in different key
+  // spaces — the defect class this issue is about. The old `Math.min(100, …)`
+  // capped that away and reported 100%; this makes it fail loudly instead.
+  if (scoped && completedPhases > effectivePhaseCount) {
+    throw new Error(
+      `workstream inventory invariant violated for "${name}": completed_phases (${completedPhases}) ` +
+      `exceeds the current-milestone denominator (${effectivePhaseCount}). The completion numerator and ` +
+      `denominator were derived in different phase-key spaces.`
+    );
+  }
 
   // #1913: derive status from authoritative shipped signals rather than trusting
   // the mutable STATE.md `Status` field. When a shipped signal is present, the
@@ -216,6 +262,10 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     roadmap_phase_count: effectivePhaseCount,
     total_plans: totalPlans,
     completed_plans: completedPlans,
+    // The `Math.min` cap is unreachable under milestone scoping (the invariant
+    // above throws first) and survives only for the legacy unscoped path, where
+    // the denominator is a roadmap heading count that a caller cannot guarantee
+    // bounds the numerator.
     progress_percent:
       effectivePhaseCount > 0
         ? Math.min(100, Math.round((completedPhases / effectivePhaseCount) * 100))

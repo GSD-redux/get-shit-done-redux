@@ -28,6 +28,12 @@ import { findTableWithColumns } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
 const { readVerificationStatus } = verificationMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
+import phaseIdMod = require('./phase-id.cjs');
+const { phaseKeyFromDir, phaseKeyFromProse, parentPhaseKey } = phaseIdMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
+import roadmapParserMod = require('./roadmap-parser.cjs');
+const { getMilestonePhaseFilter, isMilestoneShippedInRoadmap } = roadmapParserMod;
 import { buildWorkstreamInventory, isCompletedInventory } from './workstream-inventory-builder.cjs';
 import type { WorkstreamInventory, StateProjection } from './workstream-inventory-builder.cjs';
 
@@ -66,63 +72,45 @@ function countRoadmapPhases(roadmapPath: string, fallbackCount: number): number 
   }
 }
 
-/**
- * #2562: parse the ROADMAP `## Progress` milestone table into a
- * phase-number → milestone-version map, e.g. `| 30. Name | v10.0 | 1/3 | … |`
- * → `{ "30" => "v10.0" }`. This is the authoritative per-phase milestone
- * attribution and — crucially — lists phases declared but never scaffolded
- * (no directory), which a directory-only scan misses. Only milestone-grouped
- * tables (with a version column) yield entries; greenfield tables
- * (`| Phase | Plans | Status | … |`, no version column) yield an empty map,
- * and callers fall back to legacy whole-roadmap counting. Mirrors the
- * reference implementation in the issue (scripts/gsd-truth.mjs).
- */
-function parseRoadmapMilestoneTable(roadmapPath: string): Map<string, string> {
-  const map = new Map<string, string>();
-  let content: string;
-  try {
-    content = fs.readFileSync(roadmapPath, 'utf-8');
-  } catch {
-    return map; /* no roadmap */
-  }
-  // Only the `milestone-grouped` RoadmapProgress variant carries per-phase
-  // milestone attribution; the `flat` variant has no Milestone column and
-  // yields an empty map (callers then fall back to legacy counting).
-  const table = findTableWithColumns(content, ['Phase', 'Milestone']);
-  if (!table) return map;
-  for (const row of table.rows) {
-    const num = (row['Phase'] ?? '').match(/^\s*(\d+(?:\.\d+)?)\b/);
-    const version = (row['Milestone'] ?? '').trim();
-    if (num && /^v\d+(?:\.\d+)+$/.test(version)) map.set(num[1], version);
-  }
-  return map;
+interface RoadmapProgressRow {
+  /** Canonical phase key (`phaseKeyFromProse`) — the SAME key space as `phaseKeyFromDir`. */
+  key: string;
+  /** `vX.Y` when the row attributes the phase to a milestone; null when the cell is absent, blank or malformed. */
+  version: string | null;
 }
 
 /**
- * #2562: every phase number declared in the ROADMAP `## Progress` table,
- * regardless of milestone variant. Used for the UNSCOPED denominator: the
- * heading-only `countRoadmapPhases` misses a phase that has a table row but no
- * `### Phase N` heading — even when other headings exist — so a declared phase
- * silently vanished from the denominator on single-milestone/greenfield
- * roadmaps, where milestone scoping cannot engage.
+ * #2562: parse the ROADMAP `## Progress` table into canonical phase keys with
+ * their milestone attribution, e.g. `| 30. Name | v10.0 | 1/3 | … |` →
+ * `{ key: '30', version: 'v10.0' }`. The table is the authoritative per-phase
+ * milestone attribution and — crucially — lists phases declared but never
+ * scaffolded (no directory), which a directory-only scan misses. `Plans
+ * Complete` is present in BOTH RoadmapProgress variants, so this matches the
+ * flat (no Milestone column → every `version` null) and milestone-grouped
+ * shapes alike.
+ *
+ * Row keys come from `phaseKeyFromProse`, the same owner-module derivation
+ * `phaseKeyFromDir` uses for directories, so a `| 01. … |` row and a `1-slug`
+ * directory cannot land in different key spaces (the padding-asymmetry defect).
  */
-function parseRoadmapPhaseNums(roadmapPath: string): Set<string> {
-  const nums = new Set<string>();
+function parseRoadmapProgressRows(roadmapPath: string): RoadmapProgressRow[] {
   let content: string;
   try {
     content = fs.readFileSync(roadmapPath, 'utf-8');
   } catch {
-    return nums; /* no roadmap */
+    return []; /* no roadmap */
   }
-  // 'Plans Complete' is present in BOTH RoadmapProgress variants (flat and
-  // milestone-grouped), so this matches either shape.
-  const table = findTableWithColumns(content, ['Phase', 'Plans Complete']);
-  if (!table) return nums;
+  const table = findTableWithColumns(content, ['Phase', 'Plans Complete'])
+    ?? findTableWithColumns(content, ['Phase', 'Milestone']);
+  if (!table) return [];
+  const rows: RoadmapProgressRow[] = [];
   for (const row of table.rows) {
-    const m = (row['Phase'] ?? '').match(/^\s*(\d+(?:\.\d+)?)\b/);
-    if (m) nums.add(m[1]);
+    const key = phaseKeyFromProse(row['Phase']);
+    if (key === null) continue;
+    const cell = (row['Milestone'] ?? '').trim();
+    rows.push({ key, version: /^v\d+(?:\.\d+)+$/.test(cell) ? cell : null });
   }
-  return nums;
+  return rows;
 }
 
 /**
@@ -149,48 +137,20 @@ function readCurrentMilestoneVersion(statePath: string, roadmapPath: string): st
 }
 
 /**
- * #2562: normalize a phase directory name to its ROADMAP-table number key,
- * e.g. `30-schedule-8` → `30`, `05.1-follow-up` → `5.1`. Leading zeros on the
- * integer segment are stripped so padded directories match unpadded table keys.
- */
-function phaseDirNum(dir: string): string | null {
-  const m = dir.match(/^0*(\d+(?:\.\d+)?)/);
-  return m ? m[1] : null;
-}
-
-/**
- * #2562: the parent phase number of a sub-phase (`30.1` → `30`), or null for a
- * top-level phase. A sub-phase inserted mid-milestone frequently has no
- * Progress-table row of its own, so it inherits its parent's milestone.
- */
-function phaseParentNum(num: string): string | null {
-  const dot = num.indexOf('.');
-  return dot === -1 ? null : num.slice(0, dot);
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * #2562: does the CURRENT milestone's own ROADMAP heading / milestone-list line
- * carry a shipped marker (✅ / SHIPPED) without an in-progress marker? Scoped to
- * the current version so a prior milestone's collapsed `<details><summary>✅ …
- * SHIPPED</summary>` block can never mark the current milestone complete.
+ * #2562: does the CURRENT milestone's own ROADMAP heading carry a shipped
+ * marker? Delegated to `roadmap-parser`, the module that owns milestone-heading
+ * classification: heading/`<summary>` lines only (never a bullet that merely
+ * names the version), version-token boundary-matched so `v2.0` does not match
+ * inside `v2.0.1`, and in-progress markers win. Scoped to the current version,
+ * so a prior milestone's collapsed `<details><summary>✅ … SHIPPED</summary>`
+ * block can never mark the current milestone complete.
  */
 function currentMilestoneHeadingShipped(roadmapPath: string, version: string): boolean {
   try {
-    const content = fs.readFileSync(roadmapPath, 'utf-8');
-    const esc = escapeRegExp(version);
-    const lineRe = new RegExp(`^(?:#{1,3}\\s|[-*]\\s).*\\b${esc}\\b.*$`, 'gmi');
-    for (const line of content.match(lineRe) ?? []) {
-      if (/🚧|🔄|in\s+progress/i.test(line)) continue;
-      if (/✅|\bSHIPPED\b/i.test(line)) return true;
-    }
+    return isMilestoneShippedInRoadmap(fs.readFileSync(roadmapPath, 'utf-8'), version);
   } catch {
-    /* no roadmap */
+    return false; /* no roadmap */
   }
-  return false;
 }
 
 /**
@@ -215,6 +175,19 @@ function legacyMilestoneShipped(roadmapPath: string, planningBase: string): bool
     /* no roadmap */
   }
   return false;
+}
+
+/**
+ * #2562: directory mtime, used only to break a duplicate-phase-key tie in the
+ * rollup (keep the more recently touched directory — the Bug #2445 rule). 0 on
+ * a stat failure, which loses the tie rather than throwing.
+ */
+function phaseDirMtime(phaseDir: string): number {
+  try {
+    return fs.statSync(phaseDir).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 function countPhaseFiles(phaseDir: string): PhaseFileCounts {
@@ -288,65 +261,89 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   const p = planningPaths(cwd, name);
   const phaseDirNames = readSubdirectories(p.phases);
 
-  // #2562: scope progress to the CURRENT milestone. The Progress-table map
-  // gives per-phase milestone attribution (incl. dirless phases); the set of
-  // phase numbers belonging to the current version is both the completion
-  // denominator and the directory-membership filter for the numerator.
+  // #2562: scope progress to the CURRENT milestone. Membership and the
+  // denominator are derived in ONE key space (`phaseKeyFromDir` /
+  // `phaseKeyFromProse`, both from the phase-id owner module) so the two sides
+  // of the rollup cannot disagree.
   const currentVersion = readCurrentMilestoneVersion(p.state, p.roadmap);
-  const milestoneTable = parseRoadmapMilestoneTable(p.roadmap);
-  const currentMilestoneNums = new Set<string>();
+  const progressRows = parseRoadmapProgressRows(p.roadmap);
+
+  // Phase keys the ROADMAP attributes to the current milestone. A row whose
+  // Milestone cell is blank or malformed is INCLUDED rather than dropped: a
+  // phase we cannot attribute must still be visible to the rollup. Dropping it
+  // from both sides was the silent-deletion defect — it let an unstarted phase
+  // vanish and the percentage round to 100. Over-inclusive-never-under is the
+  // degrade direction this codebase already commits to for unparseable roadmap
+  // input (see the getMilestonePhaseFilter catch in roadmap-parser.cts).
+  const currentMilestoneKeys = new Set<string>();
   if (currentVersion) {
-    for (const [num, version] of milestoneTable) {
-      if (version === currentVersion) currentMilestoneNums.add(num);
-    }
-  }
-  // #2562: a sub-phase directory inserted mid-milestone (e.g. `30.1-…` under a
-  // table-declared phase 30) usually has no Progress-table row of its own. It
-  // inherits its parent's milestone and joins BOTH sides of the rollup —
-  // numerator-only would let completed_phases exceed a denominator that never
-  // counted it, capping back to 100% and reintroducing this very bug.
-  const currentMilestoneSubPhaseNums = new Set<string>();
-  if (currentMilestoneNums.size > 0) {
-    for (const dir of phaseDirNames) {
-      const num = phaseDirNum(dir);
-      if (num === null || currentMilestoneNums.has(num)) continue;
-      const parent = phaseParentNum(num);
-      if (parent !== null && currentMilestoneNums.has(parent)) currentMilestoneSubPhaseNums.add(num);
-    }
-  }
-  const currentMilestonePhaseCount = currentMilestoneNums.size + currentMilestoneSubPhaseNums.size;
-  const scoped = currentMilestonePhaseCount > 0;
-
-  // #2562: when milestone scoping cannot engage (greenfield/flat Progress table,
-  // or an undeterminable current version), the denominator must STILL count
-  // phases the ROADMAP declares in its Progress table but never scaffolded —
-  // the heading-only count drops them. Union the declared rows with the phase
-  // directories so neither source can silently shrink the denominator.
-  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length);
-  if (!scoped) {
-    const declaredNums = parseRoadmapPhaseNums(p.roadmap);
-    if (declaredNums.size > 0) {
-      const union = new Set<string>(declaredNums);
-      for (const dir of phaseDirNames) union.add(phaseDirNum(dir) ?? dir);
-      fallbackPhaseCount = union.size;
+    for (const row of progressRows) {
+      if (row.version === null || row.version === currentVersion) currentMilestoneKeys.add(row.key);
     }
   }
 
-  // Collect per-phase file counts (+ milestone membership + verification verdict)
+  // Roadmap-heading membership, from the module that OWNS milestone-phase
+  // filtering. Consulted only when it is genuinely scoped to a single milestone
+  // (`versionScoped`); the unversioned whole-roadmap shape spans the project's
+  // lifetime and would re-admit prior-milestone phases — the very defect here.
+  const headingFilter = getMilestonePhaseFilter(cwd, currentVersion, null, name);
+  const headingScoped = headingFilter.versionScoped && headingFilter.phaseCount > 0;
+
+  // A dir-only phase joins the current milestone when the roadmap names it, or
+  // when it is a sub-phase (`30.1-…`) of a phase the roadmap names — sub-phases
+  // inserted mid-milestone rarely get a row of their own. Membership feeds BOTH
+  // the numerator and (via `milestoneKeys` below) the denominator, so a member
+  // can never exceed the denominator that counts it.
+  const scoped = currentMilestoneKeys.size > 0 || headingScoped;
+  const isDirInCurrentMilestone = (dir: string): boolean => {
+    if (!scoped) return true;
+    const key = phaseKeyFromDir(dir);
+    if (currentMilestoneKeys.has(key)) return true;
+    const parent = parentPhaseKey(key);
+    if (parent !== null && currentMilestoneKeys.has(parent)) return true;
+    return headingScoped && headingFilter(dir);
+  };
+
+  // Collect per-phase file counts (+ canonical key, milestone membership,
+  // verification verdict). `phaseKey` lets the builder de-duplicate stale
+  // same-numbered directories (Bug #2445's scenario) in the rollup.
   const phaseFilesCounts = phaseDirNames.map(dir => {
     const phaseDir = path.join(p.phases, dir);
     const counts = countPhaseFiles(phaseDir);
-    const num = phaseDirNum(dir);
     return {
       directory: dir,
+      phaseKey: phaseKeyFromDir(dir),
+      mtimeMs: phaseDirMtime(phaseDir),
       planCount: counts.planCount,
       summaryCount: counts.summaryCount,
-      inMilestone: scoped
-        ? num !== null && (currentMilestoneNums.has(num) || currentMilestoneSubPhaseNums.has(num))
-        : true,
+      inMilestone: isDirInCurrentMilestone(dir),
       verificationStatus: readVerificationStatus(phaseDir).status,
     };
   });
+
+  // The denominator is the union of what the roadmap DECLARES for the current
+  // milestone (including never-scaffolded phases) and the keys of the member
+  // directories (including dir-only sub-phases). One key space, so
+  // `completed_phases <= denominator` holds by construction rather than by a
+  // `Math.min` cap that hid the inconsistency.
+  const milestoneKeys = new Set(currentMilestoneKeys);
+  for (const entry of phaseFilesCounts) {
+    if (entry.inMilestone) milestoneKeys.add(entry.phaseKey);
+  }
+  const currentMilestonePhaseCount = scoped
+    ? Math.max(milestoneKeys.size, headingScoped ? headingFilter.phaseCount : 0)
+    : 0;
+
+  // Unscoped fallback: the denominator must STILL count phases the ROADMAP
+  // declares in its Progress table but never scaffolded — the heading-only
+  // count drops them, even when other headings exist. Union the declared rows
+  // with the phase directories so neither source can silently shrink it.
+  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length);
+  if (!scoped && progressRows.length > 0) {
+    const union = new Set(progressRows.map(row => row.key));
+    for (const entry of phaseFilesCounts) union.add(entry.phaseKey);
+    fallbackPhaseCount = union.size;
+  }
 
   return buildWorkstreamInventory({
     name,
