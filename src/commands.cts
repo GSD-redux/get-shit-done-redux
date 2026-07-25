@@ -769,28 +769,6 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     return;
   }
 
-  // Normalize --files to repo-relative paths (#2523). path.join(cwd, absPath)
-  // concatenates instead of resetting (path.resolve does), so absolute phase_dir
-  // paths emitted by init phase-op (#2428) were joined to cwd+absPath (non-existent)
-  // and silently dropped by the existence check — and a mixed relative/absolute list
-  // then committed the relative entries while reporting committed:true. Relative-izing
-  // also keeps the phase-branch detection below from matching digit-hyphen runs in the
-  // absolute prefix (e.g. /proj-7-decoy2/ → wrong phase branch).
-  const filesRel = files && files.length > 0
-    ? files.map(f => toPosixPath(path.relative(cwd, path.resolve(cwd, f))))
-    : [];
-  // Reject --files entries resolving OUTSIDE the project root: fail loudly rather
-  // than silently skip or reach `git add` (which rejects them and would pollute the
-  // index via an unconditional stagedPaths.push) (#2523). `toPosixPath` only flips
-  // backslashes, so a `..` escape is still detectable.
-  for (const rel of filesRel) {
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      const result = { committed: false, hash: null, reason: 'path_outside_repo', path: rel };
-      output(result, raw, 'failed');
-      return;
-    }
-  }
-
   // Ensure branching strategy branch exists before first commit (#1278).
   // Pre-execution workflows (discuss, plan, research) commit artifacts but the branch
   // was previously only created during execute-phase — too late.
@@ -799,7 +777,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     let branchName: string | null = null;
     if (branchingStrategy === 'phase') {
       // Determine which phase we're committing for from the file paths
-      const phaseMatch = (filesRel || []).join(' ').match(/(\d+(?:\.\d+)*)-/);
+      const phaseMatch = (files || []).join(' ').match(/(\d+(?:\.\d+)*)-/);
       if (phaseMatch) {
         const phaseNum = phaseMatch[1];
         const phaseInfo = findPhaseInternal(cwd, phaseNum) as Record<string, unknown> | null;
@@ -831,10 +809,10 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
 
   // Stage files
   const explicitFiles = files && files.length > 0;
-  const filesToStage = explicitFiles ? filesRel : ['.planning/'];
+  const filesToStage = explicitFiles ? files : ['.planning/'];
   const stagedPaths: string[] = [];
   for (const file of filesToStage) {
-    const fullPath = path.join(cwd, file);
+    const fullPath = path.resolve(cwd, file);
     if (!fs.existsSync(fullPath)) {
       if (explicitFiles) {
         // Caller passed an explicit --files list: missing files are skipped.

@@ -357,17 +357,25 @@ const workflowPath = path.resolve(
 );
 
 describe('bug #2002: offer_next checks CONTEXT.md before suggesting next step', () => {
+  // offer_next body extracted to references/offer-next.md (#2537); content tests
+  // read the reference file. The <step name="offer_next"> tag + @-reference remain
+  // in execute-phase.md.
+  const offerNextRefPath = path.join(__dirname, '..', 'gsd-core', 'references', 'offer-next.md');
   let content;
 
-  // Read once — all tests share the same file content
-  test('setup: workflow file is readable', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
-    assert.ok(content.length > 0, 'execute-phase.md must not be empty');
+  test('setup: offer-next reference file is readable', () => {
+    content = fs.readFileSync(offerNextRefPath, 'utf-8');
+    assert.ok(content.length > 0, 'offer-next.md must not be empty');
+  });
+
+  test('execute-phase.md still carries the offer_next step + @-reference', () => {
+    const wf = fs.readFileSync(workflowPath, 'utf-8');
+    assert.ok(wf.includes('<step name="offer_next">'), 'offer_next step tag must remain in execute-phase.md');
+    assert.ok(wf.includes('references/offer-next.md'), 'execute-phase.md must @-reference the extracted offer-next.md');
   });
 
   test('offer_next section checks for CONTEXT.md existence', () => {
-    content = content || fs.readFileSync(workflowPath, 'utf-8');
-    // The workflow must check for CONTEXT.md in the next phase directory
+    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
     assert.ok(
       content.includes('CONTEXT.md'),
       'offer_next must reference CONTEXT.md to determine primary next step'
@@ -375,45 +383,26 @@ describe('bug #2002: offer_next checks CONTEXT.md before suggesting next step', 
   });
 
   test('offer_next presents /gsd-discuss-phase when CONTEXT.md does not exist', () => {
-    content = content || fs.readFileSync(workflowPath, 'utf-8');
-    // Must have a conditional path where discuss-phase is the primary step
-    // when CONTEXT.md is missing — look for proximity of "not exist"/"missing"/
-    // "does not exist" and "gsd-discuss-phase" in the offer_next step
-    const offerNextIdx = content.indexOf('offer_next');
-    assert.ok(offerNextIdx !== -1, 'offer_next step must exist');
-
-    // Use 5000-char window — the step is ~60 lines of prose before the conditionals
-    const offerNextSection = content.slice(offerNextIdx, offerNextIdx + 5000);
+    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
     assert.ok(
-      /CONTEXT\.md.*does not exist|CONTEXT\.md.*not.*exist|If CONTEXT\.md does/i.test(offerNextSection) ||
-      /gsd-discuss-phase.*recommended|recommended.*gsd-discuss-phase/i.test(offerNextSection),
+      /CONTEXT\.md.*does not exist|CONTEXT\.md.*not.*exist|If CONTEXT\.md does/i.test(content) ||
+      /gsd-discuss-phase.*recommended|recommended.*gsd-discuss-phase/i.test(content),
       'offer_next must present /gsd-discuss-phase as primary when CONTEXT.md does not exist'
     );
   });
 
   test('offer_next presents /gsd-plan-phase when CONTEXT.md exists', () => {
-    content = content || fs.readFileSync(workflowPath, 'utf-8');
-    const offerNextIdx = content.indexOf('offer_next');
-    assert.ok(offerNextIdx !== -1, 'offer_next step must exist');
-
-    const offerNextSection = content.slice(offerNextIdx, offerNextIdx + 5000);
+    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
     assert.ok(
-      /CONTEXT\.md.*exists|exists.*CONTEXT\.md|If CONTEXT\.md/i.test(offerNextSection),
+      /CONTEXT\.md.*exists|exists.*CONTEXT\.md|If CONTEXT\.md/i.test(content),
       'offer_next must present /gsd-plan-phase as primary when CONTEXT.md exists'
     );
   });
 
   test('offer_next section contains at least one conditional guard before listing commands', () => {
-    content = content || fs.readFileSync(workflowPath, 'utf-8');
-    const offerNextIdx = content.indexOf('offer_next');
-    assert.ok(offerNextIdx !== -1, 'offer_next step must exist');
-
-    const offerNextSection = content.slice(offerNextIdx, offerNextIdx + 5000);
-
-    // The fixed version must contain at least one "If CONTEXT.md" conditional
-    // guard before presenting command options. The old flat list had no guard.
+    content = content || fs.readFileSync(offerNextRefPath, 'utf-8');
     assert.ok(
-      /If CONTEXT\.md/i.test(offerNextSection),
+      /If CONTEXT\.md/i.test(content),
       'offer_next must contain at least one "If CONTEXT.md" conditional guard'
     );
   });
