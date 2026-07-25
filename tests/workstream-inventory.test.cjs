@@ -14,7 +14,7 @@ const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
 const { buildWorkstreamInventory, isCompletedInventory } = require('../gsd-core/bin/lib/workstream-inventory-builder.cjs');
 const { inspectWorkstream } = require('../gsd-core/bin/lib/workstream-inventory.cjs');
 const { VERIFIER_STATUSES } = require('../gsd-core/bin/lib/verification.cjs');
-const { phaseKeyFromDir, phaseKeyFromProse } = require('../gsd-core/bin/lib/phase-id.cjs');
+const { phaseKeyFromDir, phaseKeyFromProse, phaseKeyFromToken } = require('../gsd-core/bin/lib/phase-id.cjs');
 const fc = require('fast-check');
 
 const STALE_STATE = 'status: executing\n';
@@ -521,6 +521,109 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
     assert.ok(inv);
     assert.equal(inv.status, 'executing');
     assert.equal(inv.progress_percent, 0);
+  });
+
+  // `phaseKeyFromToken` strips leading zeros per hyphen-separated segment before
+  // `normalizePhaseName` runs — which is BEFORE that function strips the
+  // project-code prefix. lint-phase-id-drift exempts phase-id.cts by design, so
+  // it is silent here by construction; these cases are the coverage instead.
+  test('key derivation is symmetric across project codes and hyphenated ids', () => {
+    for (const [token, dir] of [
+      ['CK-01', 'CK-01-x'],
+      ['CK-1', 'CK-001-x'],   // padding differs across the prefix
+      ['M1-2', 'M1-2-x'],
+      ['P0.3-2', 'P0.3-2-x'], // letter-prefixed leading segment, preserved verbatim
+      ['01-02', '01-02-x'],
+    ]) {
+      assert.equal(phaseKeyFromToken(token), phaseKeyFromDir(dir),
+        `token ${token} and dir ${dir} must share a key`);
+    }
+    // Known, PRE-EXISTING asymmetry, pinned so it is not "fixed" by accident:
+    // in a DIRECTORY a single-digit segment after the phase number is a slug
+    // word, not a sub-phase (#2043/#2232 — `extractPhaseToken`), so `M1-46-6-rs`
+    // is phase 46. A ROADMAP token `M1-46-6` has no slug and is phase 46-06.
+    // Unchanged by #2562: both sides behaved this way before.
+    assert.equal(phaseKeyFromToken('M1-46-6'), '46-06');
+    assert.equal(phaseKeyFromDir('M1-46-6-rs-x'), '46');
+  });
+
+  // The Builder's invariant throw is a contract assertion for external callers.
+  // `listWorkstreamInventories` loops every workstream with no try/catch, so a
+  // reachable throw would take down `workstream list`/`status`/`progress` for
+  // ALL workstreams — this pins that the real reader cannot construct one, with
+  // every adversarial shape at once.
+  test('inspectWorkstream cannot trip the Builder invariant', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-adversarial' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Prior | v1.0 | 2/2 | Complete | - |',
+      '| 01. Dupe | v2.0 | 1/1 | Complete | - |',
+      '| 2. Dirless | v2.0 | 0/1 | Not started | - |',
+      '| 3. Unattributed |  | 0/1 | Not started | - |',
+      '| PROJ-04. Prefixed | v2.0 | 1/1 | Complete | - |',
+    ]));
+    writePhase(wsDir, '1-prior', { plans: 2, summaries: 2, verification: 'passed' });
+    writePhase(wsDir, '01-dupe', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '1-dupe-stale', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '001-dupe-staler', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, 'PROJ-04-prefixed', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '3.1-inserted', { plans: 1, summaries: 0 });
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-adversarial', { active: null }); });
+    assert.ok(inv);
+    assert.ok(inv.completed_phases <= inv.roadmap_phase_count,
+      `numerator ${inv.completed_phases} must not exceed denominator ${inv.roadmap_phase_count}`);
+    assert.ok(inv.progress_percent < 100, 'incomplete phases must keep this below 100');
+  });
+
+  // A flat table earlier in the document must not shadow the milestone-grouped
+  // table that carries the attribution: every row would come back unattributed,
+  // be treated as current-milestone, and silently re-admit prior phases.
+  test('a milestone-grouped table wins over an earlier flat table', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-two-tables' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      '# Roadmap', '', '## Summary', '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- |',
+      '| 1. Prior | 2/2 | Complete | - |',
+      '| 2. Alpha | 1/1 | Complete | - |',
+      '| 3. Beta | 0/1 | Not started | - |',
+      '', '## Progress', '',
+      '| Phase | Milestone | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- |  --- |',
+      '| 1. Prior | v1.0 | 2/2 | Complete | - |',
+      '| 2. Alpha | v2.0 | 1/1 | Complete | - |',
+      '| 3. Beta | v2.0 | 0/1 | Not started | - |',
+      '',
+    ].join('\n'));
+    writePhase(wsDir, '1-prior', { plans: 2, summaries: 2, verification: 'passed' });
+    writePhase(wsDir, '2-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-two-tables', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 2, 'denominator = v2.0 phases {2,3}');
+    assert.equal(inv.completed_phases, 1, 'the shipped v1.0 phase must stay out');
+    assert.equal(inv.progress_percent, 50);
+  });
+
+  // An in-progress marker on the milestone heading always wins over a checkmark
+  // elsewhere on the same line — the active-wins rule the sectioniser applies.
+  test('an in-progress marker on the milestone heading beats a checkmark', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-active-wins' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      roadmapWithRows(['| 1. Alpha | v2.0 | 0/1 | In Progress | - |']),
+      '## v2.0 Launch — 🚧 IN PROGRESS (phase 1 scaffolded ✅)',
+      '',
+    ].join('\n'));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-active-wins', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'executing');
+    assert.equal(inv.status_source, 'field');
   });
 
   // The current milestone's OWN shipped heading is still honoured — the boundary

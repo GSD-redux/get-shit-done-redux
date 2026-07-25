@@ -100,8 +100,12 @@ function parseRoadmapProgressRows(roadmapPath: string): RoadmapProgressRow[] {
   } catch {
     return []; /* no roadmap */
   }
-  const table = findTableWithColumns(content, ['Phase', 'Plans Complete'])
-    ?? findTableWithColumns(content, ['Phase', 'Milestone']);
+  // Milestone-ATTRIBUTING shape first. Both shapes carry `Plans Complete`, so
+  // probing that column first would pick a flat table appearing earlier in the
+  // document over a milestone-grouped one later — every row would come back
+  // unattributed and be treated as current-milestone, silently over-including.
+  const table = findTableWithColumns(content, ['Phase', 'Milestone'])
+    ?? findTableWithColumns(content, ['Phase', 'Plans Complete']);
   if (!table) return [];
   const rows: RoadmapProgressRow[] = [];
   for (const row of table.rows) {
