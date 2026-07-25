@@ -8,25 +8,8 @@ _To add your integration, see the [registry README](./README.md)._
 
 | Name | What it is | Latest release | GSD compat | Discussion |
 |---|---|---|---|---|
-| [GSD for Oh My Pi](https://github.com/tchivs/gsd-omp) | Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection. | ![release](https://img.shields.io/github/v/release/tchivs/gsd-omp?sort=semver&include_prereleases) | `>=1.7.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2342) |
 | [GSD Cursor Model Profiles](https://github.com/clezcoding/gsd-cursor) | Adds a Cursor runtime tier map and four ready-to-use model profiles (max / hybrid / value / budget) to a GSD project by writing model_profile_overrides.cursor and the models phase-type block into the user's GSD config, spanning Anthropic, OpenAI, Google Gemini, xAI Grok, Zhipu GLM and Cursor Composer, without modifying gsd-core. | ![release](https://img.shields.io/github/v/release/clezcoding/gsd-cursor?sort=semver&include_prereleases) | `>=1.39.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2578) |
-
-## GSD for Oh My Pi
-- **Repository:** https://github.com/tchivs/gsd-omp — [latest release](https://github.com/tchivs/gsd-omp/releases/latest)
-- **What it is:** Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection.
-- **Author:** tchivs
-- **Every interaction with GSD:** Interface points: command, dispatch, model, hooks, state, artifact; profile: programmatic-cli; protocol v1; axes: embeddingMode=imperative, commandSurface=slash-programmatic, dispatch=Native named and nested OMP task dispatch with background execution, full subagent tools, and host-managed isolation, modelMode=passive, hookBus=host, stateIO=filesystem, transport=native-extension, runtime=bun
-- **Install:**
-```sh
-npm install --global github:tchivs/gsd-omp#v1.0.0 && gsd-omp install
-```
-- **Uninstall:**
-```sh
-gsd-omp uninstall && npm uninstall --global gsd-omp
-```
-- **GSD compatibility:** `>=1.7.0`, protocol v1
-- **License:** MIT
-- **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/2342
+| [GSD for Oh My Pi](https://github.com/tchivs/gsd-omp) | Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection. | ![release](https://img.shields.io/github/v/release/tchivs/gsd-omp?sort=semver&include_prereleases) | `>=1.7.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2342) |
 
 ## GSD Cursor Model Profiles
 - **Repository:** https://github.com/clezcoding/gsd-cursor — [latest release](https://github.com/clezcoding/gsd-cursor/releases/latest)
@@ -44,3 +27,20 @@ gsd-cursor uninstall && npm uninstall --global gsd-cursor
 - **GSD compatibility:** `>=1.39.0`, protocol v1
 - **License:** MIT
 - **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/2578
+
+## GSD for Oh My Pi
+- **Repository:** https://github.com/tchivs/gsd-omp — [latest release](https://github.com/tchivs/gsd-omp/releases/latest)
+- **What it is:** Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection.
+- **Author:** tchivs
+- **Every interaction with GSD:** Interface points: command, dispatch, model, hooks, state, artifact; profile: programmatic-cli; protocol v1; axes: embeddingMode=imperative, commandSurface=slash-programmatic, dispatch=Native named and nested OMP task dispatch with background execution, full subagent tools, and host-managed isolation, modelMode=passive, hookBus=host, stateIO=filesystem, transport=native-extension, runtime=bun
+- **Install:**
+```sh
+npm install --global github:tchivs/gsd-omp#v1.0.0 && gsd-omp install
+```
+- **Uninstall:**
+```sh
+gsd-omp uninstall && npm uninstall --global gsd-omp
+```
+- **GSD compatibility:** `>=1.7.0`, protocol v1
+- **License:** MIT
+- **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/2342
