@@ -1553,7 +1553,13 @@ describe('resolveOrchestratorExec — fast-check property test', () => {
     fc.constant(undefined),
     fc.string({ minLength: 1 }).filter((s) => s.length > 0),
   );
-  const cwdArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0);
+  // #2627: a dash-leading cwd is now REJECTED (unsafe_leading_dash_cwd) —
+  // the spawned CLI would parse it as a flag, the same hazard worktree-safety's
+  // git-argument guard rejects. That is intentional new fail-closed behavior,
+  // so the ok:true property below is stated over the domain it actually holds
+  // on: real working directories. The rejected half is asserted explicitly in
+  // its own property immediately after, so narrowing here loses no coverage.
+  const cwdArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0 && !s.startsWith('-'));
 
   test('property: ok:true, command preserved, cwdFlag appended exactly once (or never for null/absent)', () => {
     fc.assert(
@@ -1579,6 +1585,43 @@ describe('resolveOrchestratorExec — fast-check property test', () => {
         }
       }),
       { numRuns: 200, seed: 2584 },
+    );
+  });
+
+  // The complementary half of the narrowed domain above (#2627): every
+  // dash-leading cwd fails closed, for ANY descriptor shape.
+  test('property: a dash-leading cwd is always rejected, never silently passed through', () => {
+    fc.assert(
+      fc.property(
+        commandArb,
+        argsArb,
+        cwdFlagArb,
+        fc.string().map((s) => `-${s}`),
+        (command, args, cwdFlag, cwd) => {
+          const descriptor = cwdFlag === undefined ? { command, args } : { command, args, cwdFlag };
+          const result = resolveOrchestratorExec(descriptor, cwd);
+          assert.equal(result.ok, false);
+          assert.equal(result.reason, 'unsafe_leading_dash_cwd');
+        },
+      ),
+      { numRuns: 200, seed: 2627 },
+    );
+  });
+
+  // Same shape for the prompt argument, which the resolver appends to argv.
+  test('property: a dash-leading prompt is always rejected', () => {
+    fc.assert(
+      fc.property(
+        commandArb,
+        argsArb,
+        fc.string().map((s) => `-${s}`),
+        (command, args, prompt) => {
+          const result = resolveOrchestratorExec({ command, args }, '/repo/wt', prompt);
+          assert.equal(result.ok, false);
+          assert.equal(result.reason, 'unsafe_leading_dash_prompt');
+        },
+      ),
+      { numRuns: 200, seed: 2627 },
     );
   });
 });
@@ -1852,7 +1895,9 @@ describe('#2627 dispatch-isolation CLI route', () => {
   test('each orchestrator-worktree host resolves to its own documented argv shape', () => {
     const args = (id) => queryJson(id, ['--cwd-target', '/tmp/wt', '--prompt', 'P']).exec.args;
     assert.deepEqual(args('opencode'), ['run', '--dir', '/tmp/wt', 'P']);
-    assert.deepEqual(args('kimi'), ['--print', '--work-dir', '/tmp/wt', 'P']);
+    // kimi carries the prompt behind --prompt (its --print mode requires it),
+    // unlike codex/opencode which take it positionally.
+    assert.deepEqual(args('kimi'), ['--print', '--work-dir', '/tmp/wt', '--prompt', 'P']);
     // kimi-code binds by process cwd — no flag in argv, but cwd still returned.
     assert.deepEqual(args('kimi-code'), ['--prompt', 'P']);
     assert.equal(queryJson('kimi-code', ['--cwd-target', '/tmp/wt', '--prompt', 'P']).exec.cwd, '/tmp/wt');
