@@ -812,7 +812,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   const filesToStage = explicitFiles ? files : ['.planning/'];
   const stagedPaths: string[] = [];
   for (const file of filesToStage) {
-    const fullPath = path.join(cwd, file);
+    const fullPath = path.resolve(cwd, file);
     if (!fs.existsSync(fullPath)) {
       if (explicitFiles) {
         // Caller passed an explicit --files list: missing files are skipped.
@@ -824,8 +824,13 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       // removed planning files are not left dangling in the index.
       execGit(['rm', '--cached', '--ignore-unmatch', file], { cwd });
     } else {
-      execGit(['add', file], { cwd });
-      stagedPaths.push(file);
+      const addResult = execGit(['add', file], { cwd });
+      // Only record paths that actually staged — a failed `git add` (permissions,
+      // out-of-repo edge) must not enter the commit pathspec (#2523). Mirrors
+      // cmdCommitToSubrepo's exitCode-gated push.
+      if (addResult.exitCode === 0) {
+        stagedPaths.push(file);
+      }
     }
   }
 

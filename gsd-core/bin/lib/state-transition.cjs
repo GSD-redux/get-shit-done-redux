@@ -831,6 +831,18 @@ function plannedPhaseCore(content, intent, deps) {
     }, statusDefaults, lastActivityDefaults);
     if (body !== beforePos)
         updated.push('Current Position');
+    // #2400 Bug B: sync progress.total_plans to the frontmatter when a plan count
+    // is given. This writes the explicitly-provided count — it is NOT a re-derivation
+    // from disk (#500 RC1 is about deriving from a half-planned snapshot, not about
+    // refusing to write an explicitly-passed argument).
+    if (intent.planCount !== null && intent.planCount !== undefined && hasFrontmatter) {
+        const fmProgress = existingFm['progress'] || {};
+        if (fmProgress['total_plans'] !== intent.planCount) {
+            fmProgress['total_plans'] = intent.planCount;
+            existingFm['progress'] = fmProgress;
+            updated.push('progress.total_plans');
+        }
+    }
     return { content: reassemble(body), updated };
 }
 // ----------------------------------------------------------------------------

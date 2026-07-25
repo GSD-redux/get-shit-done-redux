@@ -517,6 +517,7 @@ const capabilities = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "harnessIsolationFlag": "isolation=\"worktree\"",
       "hostBehaviors": {
         "attributionSource": "settings-json-commit",
         "authorsCanonicalWorkflow": true,
@@ -950,6 +951,14 @@ const capabilities = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "orchestratorExec": {
+        "command": "codex",
+        "args": [
+          "exec"
+        ],
+        "cwdFlag": "--cd",
+        "promptFlag": null
+      },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
         "tomlConfigInstall": true,
@@ -1158,6 +1167,7 @@ const capabilities = {
         "runtime": "node",
         "effortSurface": "undocumented"
       },
+      "harnessIsolationFlag": "--worktree",
       "hostBehaviors": {
         "reapplyCommand": "gsd-update --reapply (mention the skill name)",
         "frontmatterDialect": "cursor",
@@ -1753,6 +1763,14 @@ const capabilities = {
         "runtime": "python",
         "effortSurface": "undocumented"
       },
+      "orchestratorExec": {
+        "command": "kimi",
+        "args": [
+          "--print"
+        ],
+        "cwdFlag": "--work-dir",
+        "promptFlag": "--prompt"
+      },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
         "localInstallDeferred": true,
@@ -1837,6 +1855,12 @@ const capabilities = {
         "stateIO": "filesystem",
         "transport": "mcp",
         "runtime": "node"
+      },
+      "orchestratorExec": {
+        "command": "kimi",
+        "args": [],
+        "cwdFlag": null,
+        "promptFlag": "--prompt"
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -2161,6 +2185,14 @@ const capabilities = {
         "transport": "mcp",
         "runtime": "bun",
         "effortSurface": "argv"
+      },
+      "orchestratorExec": {
+        "command": "opencode",
+        "args": [
+          "run"
+        ],
+        "cwdFlag": "--dir",
+        "promptFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "/gsd-update --reapply",
@@ -4390,6 +4422,7 @@ const runtimes = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "harnessIsolationFlag": "isolation=\"worktree\"",
       "hostBehaviors": {
         "attributionSource": "settings-json-commit",
         "authorsCanonicalWorkflow": true,
@@ -4674,6 +4707,14 @@ const runtimes = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "orchestratorExec": {
+        "command": "codex",
+        "args": [
+          "exec"
+        ],
+        "cwdFlag": "--cd",
+        "promptFlag": null
+      },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
         "tomlConfigInstall": true,
@@ -4882,6 +4923,7 @@ const runtimes = {
         "runtime": "node",
         "effortSurface": "undocumented"
       },
+      "harnessIsolationFlag": "--worktree",
       "hostBehaviors": {
         "reapplyCommand": "gsd-update --reapply (mention the skill name)",
         "frontmatterDialect": "cursor",
@@ -5182,6 +5224,14 @@ const runtimes = {
         "runtime": "python",
         "effortSurface": "undocumented"
       },
+      "orchestratorExec": {
+        "command": "kimi",
+        "args": [
+          "--print"
+        ],
+        "cwdFlag": "--work-dir",
+        "promptFlag": "--prompt"
+      },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
         "localInstallDeferred": true,
@@ -5266,6 +5316,12 @@ const runtimes = {
         "stateIO": "filesystem",
         "transport": "mcp",
         "runtime": "node"
+      },
+      "orchestratorExec": {
+        "command": "kimi",
+        "args": [],
+        "cwdFlag": null,
+        "promptFlag": "--prompt"
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -5366,6 +5422,14 @@ const runtimes = {
         "transport": "mcp",
         "runtime": "bun",
         "effortSurface": "argv"
+      },
+      "orchestratorExec": {
+        "command": "opencode",
+        "args": [
+          "run"
+        ],
+        "cwdFlag": "--dir",
+        "promptFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "/gsd-update --reapply",

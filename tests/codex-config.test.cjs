@@ -5747,9 +5747,17 @@ function parseWorkflowSteps(content) {
         name: match[1],
         // After #3797 architectural fix, callsites use gsd_run
         readsRuntimeConfig: body.includes('RUNTIME=$(gsd_run query config-get runtime --default claude'),
-        // #1521: guard generalized from Codex-specific to all non-Claude runtimes
-        codexWorktreeGuard: body.includes('git worktree isolation') && body.includes('unsupported on runtime'),
-        worktreeDispatchGuidance: body.includes('isolation="worktree"'),
+        // #1521 generalized the guard from Codex-specific to all non-Claude
+        // runtimes; #2584 Phase 3 (#2627) generalized it again — off runtime
+        // identity entirely and onto the negotiated `dispatch.isolation`
+        // capability. The step now resolves ISOLATION (delegating the block to
+        // the isolation-dispatch fragment) and fails closed when a host
+        // declares no primitive, which is what #3360 actually protects.
+        resolvesIsolationCapability: body.includes('Resolve ISOLATION'),
+        // Worktree dispatch guidance is no longer a hardcoded Claude flag —
+        // step 3 emits the host's DECLARED harness flag.
+        worktreeDispatchGuidance: body.includes('{harnessFlag}')
+          || body.includes('executor-isolation-dispatch.md'),
       };
     });
 }
@@ -5764,27 +5772,58 @@ function executePhaseWorktreeContract(content) {
   const initialize = steps[initializeIndex];
   return {
     initializeReadsRuntimeConfig: initialize.readsRuntimeConfig,
-    initializeHasCodexWorktreeGuard: initialize.codexWorktreeGuard,
+    initializeResolvesIsolationCapability: initialize.resolvesIsolationCapability,
     guardStepPrecedesWorktreeDispatch: initializeIndex <= firstWorktreeDispatchIndex,
   };
 }
 
-describe('#3360 — Codex execute-phase fails closed for unsupported worktree isolation', () => {
-  test('execute-phase reads runtime before worktree dispatch and blocks Codex worktree mode', () => {
+describe('#3360 — execute-phase fails closed for unsupported worktree isolation', () => {
+  // #2584 Phase 3 (#2627) moved this from "Codex is blocked by name" to "a host
+  // with no declared isolation primitive is blocked". Codex now DECLARES
+  // orchestrator-worktree and gets a real isolated path, so the guard can no
+  // longer key on its name — but #3360's actual protection (never run executors
+  // unisolated against the main checkout) is unchanged and asserted below.
+  const ISOLATION_FRAGMENT = path.join(
+    ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md',
+  );
+
+  test('execute-phase resolves the isolation capability before any worktree dispatch', () => {
     const workflow = fs.readFileSync(EXECUTE_PHASE, 'utf8');
     const contract = executePhaseWorktreeContract(workflow);
 
     assert.deepEqual(contract, {
       initializeReadsRuntimeConfig: true,
-      initializeHasCodexWorktreeGuard: true,
+      initializeResolvesIsolationCapability: true,
       guardStepPrecedesWorktreeDispatch: true,
     });
   });
 
-  test('Codex adapter documents that worktree isolation has no direct spawn_agent mapping', () => {
+  test('a host declaring no isolation primitive still fails closed', () => {
+    const fragment = fs.readFileSync(ISOLATION_FRAGMENT, 'utf8');
+    assert.match(fragment, /ISOLATION="?none"?/,
+      'fragment must resolve the none case');
+    assert.match(fragment, /FATAL[^\n]*no executor-isolation primitive/,
+      'a host with dispatch.isolation=none must fail closed before dispatch (#3360)');
+    assert.match(fragment, /use_worktrees=false/,
+      'the fail-closed message must tell the user how to proceed');
+  });
+
+  test('the scheduler never gates worktree dispatch on a runtime name', () => {
+    const workflow = fs.readFileSync(EXECUTE_PHASE, 'utf8');
+    const fragment = fs.readFileSync(ISOLATION_FRAGMENT, 'utf8');
+    for (const [label, src] of [['execute-phase.md', workflow], ['isolation fragment', fragment]]) {
+      assert.ok(
+        !/\[\s*"\$RUNTIME"\s*(?:!=|=)\s*"(?:codex|claude)"\s*\]\s*&&\s*\[\s*"\$USE_WORKTREES"/.test(src),
+        `${label}: worktree dispatch must branch on dispatch.isolation, not a runtime name (ADR-1239)`,
+      );
+    }
+  });
+
+  test('Codex adapter documents the orchestrator-managed worktree mapping', () => {
     const header = getCodexSkillAdapterHeader('gsd-execute-phase');
     assert.match(header, /isolation="worktree"/);
-    assert.match(header, /no direct Codex mapping/i);
+    assert.match(header, /orchestrator-worktree/i,
+      'the adapter header must no longer claim Codex has no worktree mapping — #2584 Phase 3 gave it one');
   });
 });
   });

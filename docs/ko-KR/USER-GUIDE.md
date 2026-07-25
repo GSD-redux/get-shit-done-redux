@@ -853,7 +853,7 @@ All subagent/executor commits MUST use `--no-verify`.
   reports/                # Session reports (from /gsd-pause-work --report)
   todos/
     pending/              # Captured ideas awaiting work
-    done/                 # Completed todos
+    completed/             # Completed todos
   debug/                  # Active debug sessions
     resolved/             # Archived debug sessions
   spikes/                 # Feasibility experiments (from /gsd-spike)

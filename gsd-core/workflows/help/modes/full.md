@@ -417,7 +417,7 @@ List pending todos and select one to work on.
 - Optional area filter (e.g., `/gsd:capture --list api`)
 - Loads full context for selected todo
 - Routes to appropriate action (work now, add to phase, brainstorm)
-- Moves todo to done/ when work begins
+- Moves todo to completed/ when work begins
 
 Usage: `/gsd:capture --list`
 Usage: `/gsd:capture --list api`
@@ -688,7 +688,7 @@ These six skills exist primarily for the model to perform two-stage hierarchical
 ├── config.json           # Workflow mode & gates
 ├── todos/                # Captured ideas and tasks
 │   ├── pending/          # Todos waiting to be worked on
-│   └── done/             # Completed todos
+│   └── completed/        # Completed todos
 ├── spikes/               # Spike experiments (/gsd:spike)
 │   ├── MANIFEST.md       # Spike inventory and verdicts
 │   └── NNN-name/         # Individual spike directories

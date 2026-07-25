@@ -553,7 +553,7 @@ Caminhos equivalentes para outros runtimes:
 │       └── SUMMARY.md
 ├── todos/
 │   ├── pending/            # Ideias capturadas
-│   └── done/               # Todos concluídos
+│   └── completed/          # Todos concluídos
 ├── threads/               # Threads de contexto persistentes (do /gsd-thread)
 ├── seeds/                 # Ideias prospectivas (do /gsd-capture --seed)
 ├── debug/                  # Sessões de depuração ativas

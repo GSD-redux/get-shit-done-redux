@@ -740,6 +740,111 @@ function extensionEventSurfaceFor(extensionEvents: unknown): readonly string[] |
 }
 
 // ---------------------------------------------------------------------------
+// resolveOrchestratorExec — ADR-1239 Codex-binding amendment (#2584), Phase 2
+//
+// The `orchestratorExec` descriptor field (sibling of `runtime.hostBehaviors`
+// in capability.json) tells GSD how to process-spawn a host's own CLI as the
+// executor inside a worktree GSD itself created (`isolation:
+// 'orchestrator-worktree'`). Pure, no I/O — this only shapes the argv/cwd a
+// caller would pass to a process-spawn primitive; it does not spawn anything
+// itself. UNCONSUMED in Phase 2 — no scheduler calls this yet (Phase 3 wires
+// it to the actual spawn).
+// ---------------------------------------------------------------------------
+
+interface OrchestratorExec {
+  command: string;
+  args?: string[];
+  cwdFlag?: string | null;
+  promptFlag?: string | null;
+}
+
+type OrchestratorExecResolution =
+  | { ok: true; command: string; args: string[]; cwd: string }
+  | { ok: false; reason: string };
+
+/**
+ * Resolve an `orchestratorExec` descriptor + target cwd (+ optional executor
+ * prompt) into a concrete argv/cwd shape for a process-spawn primitive.
+ *
+ * Fail-closed: never throws, always returns a discriminated result. When
+ * `cwdFlag` is a non-empty string, `[cwdFlag, cwd]` is appended to `args`
+ * exactly once (e.g. codex: `exec --cd <cwd>`); when `cwdFlag` is `null` or
+ * absent (e.g. kimi-code, which binds via the spawned process's own cwd —
+ * "process-cwd" case), no flag is appended and `cwd` is returned for the
+ * caller to bind via the subprocess's own working-directory option.
+ *
+ * Prompt passing (Phase 3, #2627) is descriptor data for the same reason the
+ * cwd flag is: the confirmed `orchestrator-worktree` hosts disagree on the
+ * shape. `codex exec "<prompt>"` and `opencode run "<prompt>"` take it
+ * positionally; `kimi --print --prompt "<p>"` and Kimi Code's `kimi -p "<p>"`
+ * take a flag. Encoding that as `promptFlag` keeps the scheduler free of the
+ * per-host branch ADR-1239 exists to remove. Omit `prompt` entirely and the
+ * resolution is byte-identical to Phase 2's (the unconsumed-resolver shape).
+ *
+ * Argv order is base args → cwd flag → prompt, so the prompt stays the final
+ * positional token for the hosts that read it that way.
+ */
+function resolveOrchestratorExec(
+  orchestratorExec: OrchestratorExec | undefined,
+  cwd: string,
+  prompt?: string,
+): OrchestratorExecResolution {
+  if (!orchestratorExec || typeof orchestratorExec !== 'object' || Array.isArray(orchestratorExec)) {
+    return { ok: false, reason: 'missing_command' };
+  }
+  const oe = orchestratorExec as unknown as Record<string, unknown>;
+  if (typeof oe.command !== 'string' || oe.command.length === 0) {
+    return { ok: false, reason: 'missing_command' };
+  }
+  if (typeof cwd !== 'string' || cwd.length === 0) {
+    return { ok: false, reason: 'invalid_cwd' };
+  }
+  if (oe.args !== undefined && (!Array.isArray(oe.args) || !oe.args.every((a) => typeof a === 'string'))) {
+    return { ok: false, reason: 'invalid_args' };
+  }
+  if (oe.cwdFlag !== undefined && oe.cwdFlag !== null && typeof oe.cwdFlag !== 'string') {
+    return { ok: false, reason: 'invalid_cwd_flag' };
+  }
+  if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
+    return { ok: false, reason: 'invalid_prompt_flag' };
+  }
+  // An executor spawned with no instruction is a hang, not a degraded run —
+  // fail closed rather than launching a prompt-less process.
+  if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length === 0)) {
+    return { ok: false, reason: 'invalid_prompt' };
+  }
+  // Leading-dash guard, mirroring worktree-safety.cts's `unsafe_leading_dash`
+  // check on git arguments. A positional prompt (or a cwd) beginning with '-'
+  // is parsed by the spawned CLI as a FLAG, not a value — the same failure the
+  // git path already rejects, and for the same reason: `--` end-of-options
+  // support is inconsistent across these CLIs, so rejecting outright is the
+  // portable fix rather than relying on a separator. Applied to the resolver
+  // (not just its current caller) because this is a general descriptor->argv
+  // seam: a future caller must not have to rediscover the hazard.
+  if (typeof prompt === 'string' && prompt.startsWith('-')) {
+    return { ok: false, reason: 'unsafe_leading_dash_prompt' };
+  }
+  if (cwd.startsWith('-')) {
+    return { ok: false, reason: 'unsafe_leading_dash_cwd' };
+  }
+
+  const baseArgs = Array.isArray(oe.args) ? [...oe.args] : [];
+  const args = typeof oe.cwdFlag === 'string' && oe.cwdFlag.length > 0
+    ? [...baseArgs, oe.cwdFlag, cwd]
+    : baseArgs;
+
+  if (typeof prompt === 'string') {
+    if (typeof oe.promptFlag === 'string' && oe.promptFlag.length > 0) {
+      args.push(oe.promptFlag, prompt);
+    } else {
+      args.push(prompt);
+    }
+  }
+
+  return { ok: true, command: oe.command, args, cwd };
+}
+
+// ---------------------------------------------------------------------------
 // Module export (CommonJS — matches existing src/*.cts pattern)
 // ---------------------------------------------------------------------------
 
@@ -759,4 +864,5 @@ export = {
   resolveDispatchType,
   hookEventSurfaceFor,
   extensionEventSurfaceFor,
+  resolveOrchestratorExec,
 };

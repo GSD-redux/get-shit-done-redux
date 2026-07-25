@@ -87,6 +87,12 @@
       "runtime": "bun",
       "effortSurface": "argv"
     },
+    "orchestratorExec": {
+      "command": "opencode",
+      "args": ["run"],
+      "cwdFlag": "--dir",
+      "promptFlag": null
+    },
     "hostBehaviors": {
       "reapplyCommand": "/gsd-update --reapply",
       "attributionConfigResolver": "opencode",

@@ -75,6 +75,12 @@
       "runtime": "node",
       "effortSurface": "argv"
     },
+    "orchestratorExec": {
+      "command": "codex",
+      "args": ["exec"],
+      "cwdFlag": "--cd",
+      "promptFlag": null
+    },
     "hostBehaviors": {
       "reapplyCommand": "$gsd-update --reapply",
       "tomlConfigInstall": true,

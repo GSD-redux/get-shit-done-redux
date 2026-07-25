@@ -101,6 +101,7 @@
       "runtime": "node",
       "effortSurface": "undocumented"
     },
+    "harnessIsolationFlag": "--worktree",
     "hostBehaviors": {
       "reapplyCommand": "gsd-update --reapply (mention the skill name)",
       "frontmatterDialect": "cursor",

@@ -78,6 +78,12 @@
       "runtime": "python",
       "effortSurface": "undocumented"
     },
+    "orchestratorExec": {
+      "command": "kimi",
+      "args": ["--print"],
+      "cwdFlag": "--work-dir",
+      "promptFlag": "--prompt"
+    },
     "hostBehaviors": {
       "reapplyCommand": "/skill:gsd-update --reapply",
       "localInstallDeferred": true,

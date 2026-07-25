@@ -100,24 +100,14 @@ USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/nul
 EXECUTOR_STALL_INTERVAL_MINUTES=$(gsd_run query config-get executor.stall_detect_interval_minutes 2>/dev/null || echo "5")
 EXECUTOR_STALL_THRESHOLD_MINUTES=$(gsd_run query config-get executor.stall_threshold_minutes 2>/dev/null || echo "10")
 
-if [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]; then
-  echo "FATAL: git worktree isolation (isolation=\"worktree\") is unsupported on runtime '$RUNTIME' — it would run executor agents unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
-  exit 1
-fi
-# Sweep orphaned locked worktrees from prior crashed sessions before spawning executors (#3707).
-[ "$USE_WORKTREES" != "false" ] && gsd_run query worktree.reap-orphans 2>/dev/null || true
-# Auto-degrade to sequential if HEAD has diverged from the worktree fork base (#683).
-# Only applies to Claude Code (isolation="worktree" is Claude-Code-specific).
-if [ "$RUNTIME" = "claude" ] && [ "$USE_WORKTREES" != "false" ]; then
-  _SHOULD_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
-  if [ "$_SHOULD_DEGRADE" = "true" ]; then
-    _DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
-    [ -n "$_DEGRADE_MSG" ] && printf '%s\n' "$_DEGRADE_MSG" >&2
-    USE_WORKTREES=false
-  fi
-fi
+# Resolve ISOLATION + apply its guards: read and execute the "Resolve ISOLATION"
+# section of execute-phase/steps/executor-isolation-dispatch.md. It sets
+# ISOLATION (harness-worktree|orchestrator-worktree|none), forces none when
+# USE_WORKTREES=false, fails closed when a host has no primitive, sweeps orphans,
+# and applies the #683 fork-base auto-degrade.
 ```
-`isolation="worktree"` is a Claude-Code-specific agent primitive; no other runtime can honor it (Codex maps subagents to `spawn_agent`, others prohibit or omit worktree binding). Failing closed prevents main-checkout edits while the workflow believes agents are isolated.
+
+`ISOLATION` — not `RUNTIME` — is the ONLY fan-out branch point; **never add a `RUNTIME = "codex"` test here.** Per-host dispatch detail lives in `execute-phase/steps/executor-isolation-dispatch.md` (read from step 3).
 
 If the project uses git submodules, worktree isolation is unsafe **only when a plan touches a submodule path** — the executor commit protocol cannot correctly handle submodule commits inside isolated worktrees. Compute submodule paths once and intersect them per-plan with the plan's declared `files_modified` frontmatter.
 
@@ -133,9 +123,9 @@ fi
 
 `SUBMODULE_PATHS` is exported to the `execute_waves` step, where the per-plan decision happens (see "Per-plan worktree decision" sub-step inside `execute_waves`). The decision is per-plan because different plans in the same wave can touch different files — only plans whose paths intersect a submodule must drop worktree isolation; plans nowhere near a submodule keep parallel isolation.
 
-When `USE_WORKTREES` (project-level) is `false`, all executor agents run without `isolation="worktree"` — they execute sequentially on the main working tree instead of in parallel worktrees. The per-plan decision below has no effect when worktrees are project-disabled.
+When `USE_WORKTREES` is `false`, `ISOLATION` is forced to `none`: executors run sequentially on the main working tree. The per-plan decision below has no effect when worktrees are project-disabled.
 
-`USE_WORKTREES` is also automatically set to `false` for the duration of a run when `worktree base-check` detects that the orchestrator HEAD has diverged from the worktree fork base (the #683 condition — e.g. an unmerged milestone or feature branch). This check runs only when `RUNTIME=claude` because `isolation="worktree"` is a Claude Code-specific feature; other runtimes do not use it. The auto-degrade prints a one-line warning to stderr and falls through to the sequential path so executors do not hit the exit-42 worktree-branch-check halt. To restore parallel worktree execution, set `worktree.baseRef:"head"` in `.claude/settings.local.json` (or run `gsd-tools worktree set-baseref`) — this makes the fork base track the live HEAD instead of a fixed remote ref. The `worktree-branch-check` exit-42 guard inside each executor remains in place as a backstop.
+`USE_WORKTREES` and `ISOLATION` are also reset for the run when `worktree base-check` detects the orchestrator HEAD has diverged from the worktree fork base (#683 — e.g. an unmerged milestone branch). This runs for **any** isolated run, not only Claude: fork-base divergence is a property of the repository, so it degrades a GSD-created worktree exactly as a harness-created one. The auto-degrade prints a one-line warning to stderr and falls through to the sequential path so executors do not hit the exit-42 worktree-branch-check halt. To restore parallel worktree execution, set `worktree.baseRef:"head"` in `.claude/settings.local.json` (or run `gsd-tools worktree set-baseref`) — this makes the fork base track the live HEAD instead of a fixed remote ref. The `worktree-branch-check` exit-42 guard inside each executor remains in place as a backstop.
 
 Read context window size for adaptive prompt enrichment:
 
@@ -311,10 +301,8 @@ else
   else
     git switch --quiet "$DEFAULT_BRANCH" 2>/dev/null && git merge --ff-only --quiet "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   fi
-  # Pinned base + fail-fast: on success HEAD is exactly at origin/$DEFAULT_BRANCH,
-  # so a post-creation merge-base or "ahead-of" guard would be unreachable. The
-  # explicit base argument here is the single source of correctness for #2916.
-  git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" \
+  # Pinned base (#2916); --no-track (#2498) so default autoSetupMerge doesn't wire upstream to origin/$DEFAULT_BRANCH.
+  git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" --no-track \
     || { echo "ERROR: Could not create '$BRANCH_NAME' from origin/$DEFAULT_BRANCH (#2916)." >&2; exit 1; }
 fi
 ```
@@ -597,6 +585,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
    fi
    ```
 
+   **Isolation model.** The block below is the **`harness-worktree`** path. For `orchestrator-worktree` use the dispatch below it; for `none` use sequential mode. Both are detailed in `execute-phase/steps/executor-isolation-dispatch.md`.
+
    **Sequential dispatch for parallel execution (waves with 2+ agents):**
    Dispatch each `Agent()` call **one at a time with `run_in_background: true`**. Do NOT
    send all Agent calls in a single message: simultaneous `git worktree add` calls race
@@ -615,7 +605,10 @@ increases monotonically across waves. `{status}` is `complete` (success),
      # When executor_model is "inherit", omit this parameter entirely so
      # Claude Code inherits the orchestrator model automatically.
      model="{executor_model}",  # omit this line when executor_model == "inherit"
-     isolation="worktree",
+     # The host's OWN declared isolation flag (`harnessFlag` from
+     # `dispatch-isolation --json`; see the isolation-dispatch fragment).
+     # Emit the declared token — do NOT hardcode a runtime's flag.
+     {harnessFlag},
      prompt="
        <objective>
        Execute plan {plan_number} of phase {phase_number}-{phase_name}.
@@ -698,6 +691,8 @@ increases monotonically across waves. `{status}` is `complete` (success),
    > **Worktree recovery policy (#48 + #1292):** See `execute-phase/steps/worktree-recovery-policy.md` — FAIL-CLOSED rule for base/HEAD-namespace mismatches AND isolated-run fail-safe recovery.
 
    > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above to spawn executor agent(s), stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+
+   **Orchestrator-managed worktree dispatch** (`ISOLATION=orchestrator-worktree`): read and execute `execute-phase/steps/executor-isolation-dispatch.md`. GSD creates each worktree (`worktree create`) and spawns the executor into it; the orchestrator performs every git operation. Merge-back and cleanup are the existing manifest-scoped gauntlet, unchanged.
 
    **Sequential mode** (`USE_WORKTREES_FOR_PLAN` is `false` — either project-level `USE_WORKTREES=false`, or per-plan submodule intersection forced it false in step 2.5):
 
@@ -1574,88 +1569,7 @@ gsd_run query commit "docs(phase-{X}): evolve PROJECT.md after phase completion"
 </step>
 
 <step name="offer_next">
-
-**Exception:** If `gaps_found`, the `verify_phase_goal` step already presents the gap-closure path (`/gsd:plan-phase {X} --gaps`). No additional routing needed — skip auto-advance.
-
-**No-transition check (spawned by auto-advance chain):**
-
-Parse `--no-transition` flag from $ARGUMENTS.
-
-**If `--no-transition` flag present:**
-
-Execute-phase was spawned by plan-phase's auto-advance. Do NOT run transition.md.
-After verification passes and roadmap is updated, return completion status to parent:
-
-```
-## PHASE COMPLETE
-
-Phase: ${PHASE_NUMBER} - ${PHASE_NAME}
-Plans: ${completed_count}/${total_count}
-Verification: {Passed | Gaps Found}
-
-[Include aggregate_results output]
-```
-
-STOP. Do not proceed to auto-advance or transition.
-
-**If `--no-transition` flag is NOT present:**
-
-**Auto-advance detection:**
-
-1. Parse `--auto` flag from $ARGUMENTS
-2. Read consolidated auto-mode (`active` = chain flag OR user preference; chain flag already synced in init step):
-   ```bash
-   AUTO_MODE=$(gsd_run query check auto-mode --pick active 2>/dev/null || echo "false")
-   ```
-
-**If `--auto` flag present OR `AUTO_MODE` is true (AND verification passed with no gaps):**
-
-```
-╔══════════════════════════════════════════╗
-║  AUTO-ADVANCING → TRANSITION             ║
-║  Phase {X} verified, continuing chain    ║
-╚══════════════════════════════════════════╝
-```
-
-Execute the transition workflow inline (do NOT use Agent — orchestrator context is ~10-15%, transition needs phase completion data already in context):
-
-Read and follow `~/.claude/gsd-core/workflows/transition.md`, passing through the `--auto` flag so it propagates to the next phase invocation.
-
-**If neither `--auto` nor `AUTO_MODE` is true:**
-
-**STOP. Do not auto-advance. Do not execute transition. Do not plan next phase. Present options to the user and wait.**
-
-**IMPORTANT: There is NO `/gsd-transition` command. Never suggest it. The transition workflow is internal only.**
-
-Check whether CONTEXT.md already exists for the next phase:
-
-```bash
-ls .planning/phases/*{next}*/{next}-CONTEXT.md 2>/dev/null || echo "no-context"
-```
-
-If CONTEXT.md does **not** exist for the next phase, present:
-
-```
-## ✓ Phase {X}: {Name} Complete
-
-/gsd:progress ${GSD_WS} — see updated roadmap
-/gsd:discuss-phase {next} ${GSD_WS} — start here: discuss next phase before planning  ← recommended
-/gsd:plan-phase {next} ${GSD_WS} — plan next phase (skip discuss)
-/gsd:execute-phase {next} ${GSD_WS} — execute next phase (skip discuss and plan)
-```
-
-If CONTEXT.md **exists** for the next phase, present:
-
-```
-## ✓ Phase {X}: {Name} Complete
-
-/gsd:progress ${GSD_WS} — see updated roadmap
-/gsd:plan-phase {next} ${GSD_WS} — start here: plan next phase (CONTEXT.md already present)  ← recommended
-/gsd:discuss-phase {next} ${GSD_WS} — re-discuss next phase
-/gsd:execute-phase {next} ${GSD_WS} — execute next phase (skip planning)
-```
-
-Only suggest the commands listed above. Do not invent or hallucinate command names.
+@~/.claude/gsd-core/references/offer-next.md
 </step>
 
 </process>

@@ -1316,6 +1316,81 @@ function validateRuntimeBody(cap) {
     }
   }
 
+  // orchestratorExec — ADR-1239 Codex-binding amendment (#2584), Phase 2.
+  // OPTIONAL top-level field (sibling of hostBehaviors), like hookEvents:
+  // only hosts whose hostIntegration.dispatch.isolation is
+  // 'orchestrator-worktree' need it, so it is not required on every runtime
+  // descriptor. When present it must be a well-formed exec descriptor for
+  // src/host-integration.cts's resolveOrchestratorExec.
+  if (r.orchestratorExec !== undefined) {
+    if (typeof r.orchestratorExec !== 'object' || r.orchestratorExec === null || Array.isArray(r.orchestratorExec)) {
+      errors.push(
+        'runtime.orchestratorExec must be an object (got: ' +
+        (r.orchestratorExec === null ? 'null' : (Array.isArray(r.orchestratorExec) ? 'array' : typeof r.orchestratorExec)) + ')',
+      );
+    } else {
+      const oe = r.orchestratorExec;
+
+      // S2b: reserved-OWN-KEY guard (CodeQL barrier — inline literal comparisons)
+      if (Object.prototype.hasOwnProperty.call(oe, '__proto__')) {
+        errors.push('runtime.orchestratorExec must not contain reserved key "__proto__"');
+      }
+      if (Object.prototype.hasOwnProperty.call(oe, 'constructor')) {
+        errors.push('runtime.orchestratorExec must not contain reserved key "constructor"');
+      }
+      if (Object.prototype.hasOwnProperty.call(oe, 'prototype')) {
+        errors.push('runtime.orchestratorExec must not contain reserved key "prototype"');
+      }
+
+      // command — required non-empty string; reserved-name guard (CodeQL barrier)
+      if (oe.command === '__proto__' || oe.command === 'constructor' || oe.command === 'prototype') {
+        errors.push('runtime.orchestratorExec.command "' + oe.command + '" is a reserved name');
+      } else if (typeof oe.command !== 'string' || oe.command.length === 0) {
+        errors.push(
+          'runtime.orchestratorExec.command must be a non-empty string (got: ' + JSON.stringify(oe.command) + ')',
+        );
+      }
+
+      // args — optional array of strings
+      if (oe.args !== undefined) {
+        if (!Array.isArray(oe.args) || !oe.args.every((a) => typeof a === 'string')) {
+          errors.push(
+            'runtime.orchestratorExec.args must be an array of strings (got: ' + JSON.stringify(oe.args) + ')',
+          );
+        }
+      }
+
+      // cwdFlag — optional; string or null
+      if (oe.cwdFlag !== undefined && oe.cwdFlag !== null && typeof oe.cwdFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.cwdFlag must be a string or null (got: ' + JSON.stringify(oe.cwdFlag) + ')',
+        );
+      }
+
+      // promptFlag — optional; string or null (#2627, Phase 3). `null`/absent
+      // means the host takes the executor prompt positionally (codex, opencode);
+      // a string names the flag that carries it (kimi/kimi-code: --prompt).
+      if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.promptFlag must be a string or null (got: ' + JSON.stringify(oe.promptFlag) + ')',
+        );
+      }
+    }
+  }
+
+  // harnessIsolationFlag — ADR-1239 Codex-binding amendment (#2584), Phase 3
+  // (#2627). OPTIONAL top-level field: the counterpart of orchestratorExec for
+  // `dispatch.isolation: 'harness-worktree'` hosts, naming the host's OWN
+  // isolation flag that GSD passes on dispatch (claude: isolation="worktree";
+  // cursor: --worktree). Descriptor data so the scheduler passes a declared
+  // token instead of branching on a runtime id (ADR-1239: "the per-host
+  // dispatch invocation ... is descriptor data, not a scheduler branch").
+  if (r.harnessIsolationFlag !== undefined && (typeof r.harnessIsolationFlag !== 'string' || r.harnessIsolationFlag.length === 0)) {
+    errors.push(
+      'runtime.harnessIsolationFlag must be a non-empty string (got: ' + JSON.stringify(r.harnessIsolationFlag) + ')',
+    );
+  }
+
   // GATE A: installSurface ↔ hooksSurface consistency (DEFECT.GENERATIVE-FIX)
   // Only check if both fields are valid strings (individual field validators above report type errors).
   if (typeof r.installSurface === 'string' && typeof r.hooksSurface === 'string') {
