@@ -20,10 +20,22 @@ That matters more for an LLM executor than it did for humans, because degradatio
 estimate:
   tokens: 60000        # integer > 0 — projected execution cost
   tasks: 5             # integer > 0 — task count the projection assumes
-  confidence: med      # low | med | high
+  confidence: med      # low | med | high — DERIVED, not self-rated (see below)
 ```
 
 Optional. A PLAN.md without `estimate` behaves exactly as today.
+
+**`confidence` is derived from calibration sample count, not from the planner's self-assessment.** It is a pure function of how much measured history backs the number:
+
+| Calibration samples (`n`) | `confidence` |
+|---|---|
+| `n < 3` (no correction applied) | `low` |
+| `3 <= n < 6` | `med` |
+| `n >= 6` | `high` |
+
+This is deliberate and it is the one place this ADR overrules the obvious design. Asking the planner to rate its own certainty is endogenous self-assessment, and this project has **measured** that mechanism and found it weak: `gsd-core/references/honest-verifier.md:25-29` records that "abstain if unsure" moves a confident-false-pass rate only 100% → 67%, "and only on ambiguity it already notices; on a true blind spot it stays confidently wrong." `honest-verifier.md` therefore routes on an exogenous tag and contains no "are you sure?" prompt, and `.out-of-scope/general-purpose-agent-prompt-skills.md` (#2614) declines core mechanisms centered on self-rated confidence on exactly that evidence.
+
+Deriving `confidence` from `n` keeps the field exogenous and reproducible: two planners looking at the same project must produce the same value, and the field answers the question a reader actually has — *how much measured history is behind this figure?* — rather than how certain the model happens to feel.
 
 ### 2. `actuals` — additive, optional SUMMARY.md frontmatter, measured on the *same scale*
 
@@ -81,6 +93,7 @@ Recorded because the reasoning is invisible from the code: a future contributor 
 - **Gall's Law.** This grows the existing working system — the Context Weight heuristic — into a recorded figure, then into a calibrated one. It does not replace phase sizing with a new engine.
 - **The estimate is the quantitative backbone under tracer-first planning (#1945).** Tracer bullets say *slice thin*; the estimate says *here is the measured reason this phase must be sliced, and how big the slices should be for this codebase*.
 - **Estimation without calibration is the failure mode being fixed, not a smaller version of it.** Hunt & Thomas's discipline is to log the estimate, track it against the actual, and investigate a wide miss. A fixed heuristic that never learns stays wrong in the same direction forever — which is the status quo.
+- **Every signal in this design is exogenous.** The correction routes on a measured ratio; `confidence` routes on a sample count. Nothing routes on the model's self-assessment. This is the same property `honest-verifier.md` names "exogenous, not endogenous", applied to estimation — and it is what places this work inside the carve-out in `.out-of-scope/general-purpose-agent-prompt-skills.md`, which denies *self-rated* confidence mechanisms while explicitly excepting "objectively-measured or externally-triggered calibration… a categorically different mechanism."
 
 ## Consequences
 
@@ -100,5 +113,7 @@ Recorded because the reasoning is invisible from the code: a future contributor 
 - `gsd-core/references/context-budget.md` — existing context-degradation tiers and the `context_window` / `workflow.context_guard_mode` keys this sits beside.
 - `src/prompt-budget.cts:87` — `estimateTokens`, the shared measurement primitive.
 - `tests/agent-size-budget.test.cjs` — the tier caps that force Decision 6.
+- `gsd-core/references/honest-verifier.md:25-29` — the measured result that self-rated confidence is weak, and the exogenous-not-endogenous property Decision 1 inherits.
+- `.out-of-scope/general-purpose-agent-prompt-skills.md` (#2614) — denies self-rated-confidence mechanisms in core; its "What this does NOT cover" section excepts externally-measured calibration, which is what this ADR specifies.
 - [ADR-2164](2164-statusline-scope-boundary.md) — prior art for a scope-boundary policy ADR.
 - Issues: #1952 (epic), #1945 (tracer-first), #2630 / #2631 / #2632 (implementation phases).
