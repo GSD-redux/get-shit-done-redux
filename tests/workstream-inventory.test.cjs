@@ -13,6 +13,7 @@ const { cleanup } = require('./helpers.cjs');
 const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
 const { buildWorkstreamInventory, isCompletedInventory } = require('../gsd-core/bin/lib/workstream-inventory-builder.cjs');
 const { inspectWorkstream } = require('../gsd-core/bin/lib/workstream-inventory.cjs');
+const { VERIFIER_STATUSES } = require('../gsd-core/bin/lib/verification.cjs');
 
 const STALE_STATE = 'status: executing\n';
 const IN_PROGRESS_ROADMAP =
@@ -326,5 +327,273 @@ describe('#2562 — progress/status scoped to the current milestone (derived fro
     assert.ok(inv);
     assert.equal(inv.status, 'milestone complete');
     assert.equal(inv.status_source, 'derived');
+  });
+});
+
+// #2562 review round 2 — every one of these is a DISTINCT way to reproduce this
+// issue's own symptom ("milestone complete"/100% while phases are incomplete),
+// introduced by deriving the two sides of the rollup from different phase-key
+// derivations rather than from the phase-id owner module. Each test reddens when
+// only its own fix is reverted.
+describe('#2562 — milestone scoping boundaries (one phase-key derivation)', () => {
+  let tmpDir;
+  before(() => { tmpDir = createFixture(); });
+  after(() => cleanup(tmpDir));
+
+  function writePhase(wsDir, slug, { plans = 0, summaries = 0, verification } = {}) {
+    const dir = path.join(wsDir, 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
+    for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
+    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+  }
+
+  function roadmapWithRows(rows) {
+    return [
+      '# Roadmap', '', '## Progress', '',
+      '| Phase | Milestone | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- | --- |',
+      ...rows,
+      '',
+    ].join('\n');
+  }
+
+  const V2_STATE = 'milestone: v2.0\nstatus: executing\n';
+
+  // A zero-padded roadmap table against zero-padded directories. Deriving the
+  // table key with one regex and the directory key with another put `01` and `1`
+  // in different key spaces: NOTHING matched, every phase fell out of the
+  // milestone, and the rollup reported 0% while listing both phases complete.
+  test('zero-padded table rows match zero-padded directories', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-padded' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 01. Alpha | v2.0 | 1/1 | Complete | - |',
+      '| 02. Beta | v2.0 | 1/1 | Complete | - |',
+    ]));
+    writePhase(wsDir, '01-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '02-beta', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-padded', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 2);
+    assert.equal(inv.completed_phases, 2, 'padded dirs must match padded table rows');
+    assert.equal(inv.progress_percent, 100);
+    assert.deepEqual(inv.phases.map(p => p.status), ['complete', 'complete'],
+      'phases[] and the rollup must agree');
+  });
+
+  // The mirror image: an UNPADDED table against PADDED directories. Padding is a
+  // presentation choice on either side; one key function makes it irrelevant.
+  test('unpadded table rows match padded directories (and vice versa)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-mixed-pad' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Alpha | v2.0 | 1/1 | Complete | - |',
+      '| 2. Beta | v2.0 | 0/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '01-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '02-beta', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-mixed-pad', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 2, 'the two phases must not double-count as four');
+    assert.equal(inv.completed_phases, 1);
+    assert.equal(inv.progress_percent, 50);
+  });
+
+  // A project-code-prefixed directory (`PROJ-05-…`). The bespoke `^0*(\d+…)`
+  // directory parser yielded null for these, excluding EVERY directory from the
+  // milestone and pinning the workstream at 0% forever.
+  test('project-code-prefixed directories are scoped, not excluded', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-projcode' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| PROJ-05. Alpha | v2.0 | 1/1 | Complete | - |',
+      '| PROJ-06. Beta | v2.0 | 0/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, 'PROJ-05-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, 'PROJ-06-beta', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-projcode', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 2);
+    assert.equal(inv.completed_phases, 1, 'prefixed dirs must count, not be excluded outright');
+    assert.equal(inv.progress_percent, 50);
+  });
+
+  // A blank Milestone cell must not silently delete the phase from BOTH sides of
+  // the calculation — that is how an unstarted phase vanished and the remaining
+  // completed one rounded the workstream to 100%.
+  test('a blank Milestone cell keeps the phase in the denominator', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-blank-cell' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Alpha | v2.0 | 1/1 | Complete | - |',
+      '| 2. Beta |  | 0/1 | Not started | - |',
+      '| 3. Gamma | TBD | 0/1 | Not started | - |',
+    ]));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-blank-cell', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 3, 'unattributable rows degrade over-inclusively');
+    assert.equal(inv.completed_phases, 1);
+    assert.equal(inv.progress_percent, 33);
+    assert.notEqual(inv.progress_percent, 100);
+  });
+
+  // A bullet that merely NAMES the current version with a checkmark is prose
+  // about a phase, not a milestone verdict. Reading it as a shipped signal
+  // reproduces this issue's exact symptom.
+  test('a checkmarked bullet naming the version does NOT mark the milestone shipped', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-bullet-tick' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      roadmapWithRows([
+        '| 1. Alpha | v2.0 | 1/1 | Complete | - |',
+        '| 2. Beta | v2.0 | 0/1 | In Progress | - |',
+      ]),
+      '## Plans',
+      '- [x] 03-01: Ship the v2.0 login endpoint ✅',
+      '',
+    ].join('\n'));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '2-beta', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-bullet-tick', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'executing');
+    assert.equal(inv.status_source, 'field');
+    assert.equal(inv.progress_percent, 50);
+  });
+
+  // `\b` does not bound a version token: `.` is a non-word character, so a naive
+  // `\bv2\.0\b` matches inside `v2.0.1`. A shipped SIBLING patch release must not
+  // close the current milestone.
+  test('a shipped v2.0.1 heading does NOT mark v2.0 shipped', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-version-boundary' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      roadmapWithRows(['| 1. Alpha | v2.0 | 0/1 | In Progress | - |']),
+      '## v2.0.1 Patch — ✅ SHIPPED',
+      '',
+    ].join('\n'));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-version-boundary', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'executing');
+    assert.equal(inv.progress_percent, 0);
+  });
+
+  // The current milestone's OWN shipped heading is still honoured — the boundary
+  // fix must not cost the signal it exists to carry.
+  test('the current milestone\'s own shipped heading still marks it complete', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-own-heading' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      roadmapWithRows(['| 1. Alpha | v2.0 | 1/1 | Complete | - |']),
+      '## v2.0 Launch — ✅ SHIPPED',
+      '',
+    ].join('\n'));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-own-heading', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'milestone complete');
+    assert.equal(inv.status_source, 'derived');
+  });
+
+  // Bug #2445's scenario: a stale directory colliding on phase number with a
+  // current one. Counting the numerator per-DIRECTORY while the denominator
+  // counts distinct PHASES pushed completed_phases past the denominator, where
+  // the old Math.min cap reported 100% and hid the unstarted phase.
+  test('a stale same-numbered directory does not double-count the numerator', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-dupe-dir' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Alpha | v2.0 | 1/1 | Complete | - |',
+      '| 2. Beta | v2.0 | 0/1 | Not started | - |',
+    ]));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '01-alpha-old', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-dupe-dir', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 2);
+    assert.equal(inv.completed_phases, 1, 'two dirs, one phase');
+    assert.equal(inv.progress_percent, 50, 'the unstarted phase 2 must stay visible');
+  });
+
+  // The builder is the pure seam: a caller that hands it an inconsistent pair
+  // must fail loudly rather than have Math.min round the contradiction to 100%.
+  test('builder: a numerator above the denominator throws instead of capping to 100%', () => {
+    assert.throws(() => buildWorkstreamInventory({
+      name: 'ws',
+      projectDir: '/tmp/ws-proj',
+      workstreamDir: '/tmp/ws-proj/.planning/workstreams/ws',
+      activeWorkstreamName: '',
+      stateProjection: { status: 'executing', current_phase: null, last_activity: null },
+      filesExist: { roadmap: true, state: true, requirements: true },
+      milestoneShipped: false,
+      phaseDirNames: ['1-a', '2-b', '3-c'],
+      phaseFilesCounts: [
+        { directory: '1-a', phaseKey: '01', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+        { directory: '2-b', phaseKey: '02', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+        { directory: '3-c', phaseKey: '03', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: 'passed' },
+      ],
+      roadmapPhaseCount: 3,
+      currentMilestonePhaseCount: 2,
+    }), /invariant violated/);
+  });
+
+  // The builder hand-lists the verdicts that disqualify a phase from `complete`.
+  // Pin it to the verifier's own vocabulary so a new emitted status cannot land
+  // without a decision here.
+  test('parity: every verifier status other than passed blocks completeness', () => {
+    const nonPassing = VERIFIER_STATUSES.filter(s => s !== 'passed');
+    assert.ok(nonPassing.length > 0, 'guard: the verifier must emit a non-passing status');
+    for (const status of nonPassing) {
+      const inv = buildWorkstreamInventory({
+        name: 'ws',
+        projectDir: '/tmp/ws-proj',
+        workstreamDir: '/tmp/ws-proj/.planning/workstreams/ws',
+        activeWorkstreamName: '',
+        stateProjection: { status: 'executing', current_phase: null, last_activity: null },
+        filesExist: { roadmap: true, state: true, requirements: true },
+        milestoneShipped: false,
+        phaseDirNames: ['1-a'],
+        phaseFilesCounts: [
+          { directory: '1-a', phaseKey: '01', planCount: 1, summaryCount: 1, inMilestone: true, verificationStatus: status },
+        ],
+        roadmapPhaseCount: 1,
+        currentMilestonePhaseCount: 1,
+      });
+      assert.equal(inv.phases[0].status, 'in_progress', `verifier status "${status}" must not count complete`);
+    }
+  });
+
+  // The scoping reads the WORKSTREAM's ROADMAP/STATE pair, not the project root's.
+  // getMilestonePhaseFilter resolves via planningDir(cwd, ws); without the ws
+  // argument it falls back to GSD_WORKSTREAM, which a loop over workstreams
+  // cannot set per iteration.
+  test('scoping reads the workstream ROADMAP, not the project-root ROADMAP', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-not-root' });
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), [
+      '# Root Roadmap', '', '## v2.0 Root — ✅ SHIPPED', '', '### Phase 9: Root only', '**Goal:** root', '',
+    ].join('\n'));
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'milestone: v2.0\nstatus: milestone complete\n');
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Alpha | v2.0 | 0/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-not-root', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'executing', 'the ROOT roadmap\'s shipped v2.0 must not leak in');
+    assert.equal(inv.roadmap_phase_count, 1, 'root-only phase 9 must not join the denominator');
+    assert.equal(inv.progress_percent, 0);
   });
 });
