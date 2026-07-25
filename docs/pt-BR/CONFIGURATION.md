@@ -734,7 +734,7 @@ Configure flags por etapa que `/gsd-manager` acrescenta a cada comando despachad
 |---------|------|---------|-------------|
 | `manager.flags.discuss` | string | (nenhum) | Flags acrescidas a comandos de discuss-phase (por exemplo, `"--auto"`) |
 | `manager.flags.plan` | string | (nenhum) | Flags acrescidas a comandos de plan-phase (por exemplo, `"--skip-research"`) |
-| `manager.flags.execute` | string | (nenhum) | Flags acrescidas a comandos de execute-phase (por exemplo, `"--validate"`) |
+| `manager.flags.execute` | string | (nenhum) | Flags acrescidas a comandos de execute-phase (por exemplo, `"--cross-ai"`) |
 
 **Exemplo:**
 
@@ -744,7 +744,7 @@ Configure flags por etapa que `/gsd-manager` acrescenta a cada comando despachad
     "flags": {
       "discuss": "--auto",
       "plan": "--skip-research",
-      "execute": "--validate"
+      "execute": "--cross-ai"
     }
   }
 }

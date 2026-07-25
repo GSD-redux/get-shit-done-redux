@@ -712,7 +712,7 @@ gsd-tools query config-set features.thinking_partner false
 |---------|------|---------|-------------|
 | `manager.flags.discuss` | string | （无） | 追加到 discuss-phase 命令的标志（如 `"--auto"`） |
 | `manager.flags.plan` | string | （无） | 追加到 plan-phase 命令的标志（如 `"--skip-research"`） |
-| `manager.flags.execute` | string | （无） | 追加到 execute-phase 命令的标志（如 `"--validate"`） |
+| `manager.flags.execute` | string | （无） | 追加到 execute-phase 命令的标志（如 `"--cross-ai"`） |
 
 **示例：**
 
@@ -722,7 +722,7 @@ gsd-tools query config-set features.thinking_partner false
     "flags": {
       "discuss": "--auto",
       "plan": "--skip-research",
-      "execute": "--validate"
+      "execute": "--cross-ai"
     }
   }
 }

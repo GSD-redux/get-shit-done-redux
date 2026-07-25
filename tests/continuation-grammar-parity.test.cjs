@@ -20,12 +20,14 @@
  * "is this segment absorbed as a continuation?" MUST equal
  * `isPhaseContinuationSegment(segment)`.
  *
- * Surfaces covered (the five #2043 sites):
+ * Surfaces covered (the five #2043 sites, plus the #612 bracket read path):
  *   1. phase-id.cjs      extractPhaseToken
  *   2. validate.cjs      PHASE_TOKEN_FROM_DIR_RE
  *   3. validate.cjs      canonicalPlanStem
  *   4. core-utils.cjs    extractCanonicalPlanId (paired plan component)
  *   5. roadmap-parser.cjs getMilestonePhaseFilter → isDirInMilestone (hyphenated mode)
+ *   6. phase-id.cjs      BRACKET_PHASE_TOKEN_SOURCE (slug-adjacent position only —
+ *                        see the divergence block at the foot of this file)
  */
 
 const { test, describe } = require('node:test');
@@ -110,6 +112,20 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
         owner,
         `extractCanonicalPlanId(${JSON.stringify(planFile)}) diverged from the owner`,
       );
+
+      // ── Surface 6: #612 BRACKET_PHASE_TOKEN_SOURCE (slug-adjacent position) ──
+      // The bracket run is MM-PP[.SS][-LL]; `-LL` is the only position a slug
+      // word can collide with, so it is the position #2232 owns. Same shape as
+      // surface 1 with the bracket's extra milestone level: `01-14-<seg>-slug…`
+      // puts <seg> at dash-2, exactly where a year over-collected before.
+      const bracketDir = `01-14-${seg}-photos-performance`;
+      const bracketToken = bracketDir.match(new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE))?.[0];
+      assert.strictEqual(
+        bracketToken === `01-14-${seg}`,
+        owner,
+        `BRACKET_PHASE_TOKEN_SOURCE on ${JSON.stringify(bracketDir)} collected ` +
+          `${JSON.stringify(bracketToken)} — diverged from the owner at the slug-adjacent position`,
+      );
     });
   }
 });
@@ -157,4 +173,52 @@ describe('#2232 continuation-grammar parity — roadmap isDirInMilestone (hyphen
       tmpDir = null;
     });
   }
+});
+
+// ─── #612: the DELIBERATE divergence, pinned ────────────────────────────────
+// Surface 6 consumes the owner at the slug-adjacent position (above), but is
+// deliberately WIDER at the other positions. That is a divergence, so per the
+// Generative Fix Divergence rule it gets pinned here rather than left to a
+// comment: if someone later "unifies" the bracket run onto the exactly-2 cap,
+// or re-widens the slug-adjacent position back to `\d+`, one of these fails and
+// points them at the rationale in phase-id.cts.
+//
+// The policy is stated independently of the regex: bracket's non-slug-adjacent
+// positions are DELIMITER-disambiguated (a grammar-required field separator; a
+// dot no slug can contain), not heuristically recognized, so they carry the
+// canonical width toDir emits — while #2232's cap defends the one position that
+// sits against a slug.
+describe('#612 bracket divergence — wider only where the delimiter disambiguates', () => {
+  const tokenOf = (s) => s.match(new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE))?.[0];
+
+  test('the #2232 repro cannot reopen on the bracket path', () => {
+    // The review's scenario: roadmap phase "2026 Photos & Performance" at
+    // phase 14 → slug leads with a year. The token is the phase, not the year.
+    assert.strictEqual(tokenOf('01-14-2026-photos-performance'), '01-14');
+    assert.strictEqual(tokenOf('01-14.03-2026-photos-performance'), '01-14.03');
+  });
+
+  test('3+-digit phase and sub-phase — widths toDir emits — stay recognized', () => {
+    // Both are rejected by a verbatim exactly-2 cap; both are canonical per
+    // CANONICAL_NUMERIC_RE, so under-collecting them would break the read path
+    // against ids the emit path produces.
+    assert.strictEqual(tokenOf('02-105-slug'), '02-105', '3-digit phase (dash-1)');
+    assert.strictEqual(tokenOf('05.100'), '05.100', '3-digit sub-phase (dot)');
+    assert.strictEqual(tokenOf('01-2026-photos'), '01-2026', 'a 4-digit phase is unambiguous at dash-1');
+  });
+
+  test('the divergence is bounded: a PLAN >=100 is out of the grammar (#2232 policy verbatim)', () => {
+    // The accepted trade-off. Stated as a test so it is a decision on record,
+    // not an accident: the slug-adjacent position cannot be widened without
+    // reopening the year collision.
+    assert.strictEqual(tokenOf('02-05-100'), '02-05', 'a 3-digit plan is not absorbed');
+    assert.strictEqual(tokenOf('02-05-01'), '02-05-01', 'a canonical 2-digit plan is absorbed');
+  });
+
+  test('an over-padded field is not canonical, so it is not collected', () => {
+    // `014` matches neither canonical branch (leading zero + 3 digits), which is
+    // what parsePhaseId rejects too — the read side under-collects rather than
+    // inventing a field the parser would refuse.
+    assert.strictEqual(tokenOf('01-014-slug'), '01');
+  });
 });

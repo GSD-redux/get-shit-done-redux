@@ -208,7 +208,6 @@ Research, plan, and verify a phase.
 | `--ingest <path-or-glob>` | Use ADR file(s) instead of discuss-phase for context synthesis |
 | `--ingest-format <auto\|nygard\|madr\|narrative>` | Optional ADR parser format override for `--ingest` |
 | `--reviews` | Replan with cross-AI review feedback from REVIEWS.md |
-| `--validate` | Run state validation before planning begins |
 | `--bounce` | Run external plan bounce validation after planning (uses `workflow.plan_bounce_script`) |
 | `--skip-bounce` | Skip plan bounce even if enabled in config |
 | `--mvp` | MVP enrichment on top of the default tracer-first ordering — frames the phase goal as a user story and, on Phase 1 of a new project with no prior phase summaries, also emits `SKELETON.md` (Walking Skeleton). Vertical slicing is now the default (see `--no-tracer`); `--mvp` no longer turns it on. Can be persisted on a phase via `**Mode:** mvp` in ROADMAP.md, which applies `--mvp` automatically without the flag. |
@@ -240,7 +239,6 @@ See [Package Legitimacy Gate in the User Guide](USER-GUIDE.md#package-legitimacy
 /gsd-plan-phase 1                              # Research + plan + verify phase 1
 /gsd-plan-phase 3 --skip-research              # Plan without research (familiar domain)
 /gsd-plan-phase --auto                         # Non-interactive planning
-/gsd-plan-phase 2 --validate                   # Validate state before planning
 /gsd-plan-phase 1 --bounce                     # Plan + external bounce validation
 /gsd-plan-phase 2 --ingest docs/adr/0010.md   # ADR express path for context synthesis
 /gsd-plan-phase 2 --ingest 'docs/adr/00*.md' --ingest-format auto
@@ -298,7 +296,6 @@ Execute all plans in a phase with wave-based parallelization, or run a specific 
 |----------|----------|-------------|
 | `N` | **Yes** | Phase number to execute |
 | `--wave N` | No | Execute only Wave `N` in the phase |
-| `--validate` | No | Run state validation before execution begins |
 | `--cross-ai` | No | Delegate execution to an external AI CLI (uses `workflow.cross_ai_command`) |
 | `--no-cross-ai` | No | Force local execution even if cross-AI is enabled in config |
 
@@ -310,7 +307,6 @@ Execute all plans in a phase with wave-based parallelization, or run a specific 
 ```bash
 /gsd-execute-phase 1                # Execute phase 1
 /gsd-execute-phase 1 --wave 2       # Execute only Wave 2
-/gsd-execute-phase 1 --validate     # Validate state before execution
 /gsd-execute-phase 2 --cross-ai     # Delegate phase 2 to external AI CLI
 ```
 
@@ -714,7 +710,7 @@ Configure per-step flags in `.planning/config.json` under `manager.flags`. These
     "flags": {
       "discuss": "--auto",
       "plan": "--skip-research",
-      "execute": "--validate"
+      "execute": "--cross-ai"
     }
   }
 }

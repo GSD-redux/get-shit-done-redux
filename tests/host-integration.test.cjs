@@ -9,6 +9,9 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const fc = require('fast-check');
 
 const hi = require('../gsd-core/bin/lib/host-integration.cjs');
 const {
@@ -25,7 +28,29 @@ const {
   HOOK_EVENT_SURFACES,
   extensionEventSurfaceFor,
   EXTENSION_EVENT_SURFACES,
+  resolveOrchestratorExec,
 } = hi;
+
+const {
+  _HOST_INTEGRATION_VOCAB,
+  validateCapability,
+} = require('../gsd-core/bin/lib/capability-validator.cjs');
+
+const REPO_ROOT = path.resolve(__dirname, '..');
+
+/**
+ * A real shipped runtime descriptor with its `dispatch.isolation` value
+ * stripped, so validator behavioral tests exercise the actual dispatch shape
+ * shipped for a host rather than a hand-modeled fixture (fixture-provenance,
+ * #2371 — mirrors `shippedDescriptorWithout` in tests/effort-surface-axis.test.cjs).
+ */
+function shippedClaudeCapabilityWithoutIsolation() {
+  const cap = JSON.parse(
+    fs.readFileSync(path.join(REPO_ROOT, 'capabilities', 'claude', 'capability.json'), 'utf8'),
+  );
+  delete cap.runtime.hostIntegration.dispatch.isolation;
+  return cap;
+}
 
 describe('hookEventSurfaceFor (MANAGED-hook dialect consumer — claude/gemini only)', () => {
   test('returns the full Claude managed-hook surface for "claude"', () => {
@@ -163,6 +188,17 @@ describe('CONTRACT-PIN', () => {
       [...HOST_INTEGRATION_AXES.subagentToolkit].sort(),
       ['built-in-only', 'full', 'read-only'],
     );
+  });
+
+  test('isolation values (sorted) — #2584 ADR-1239 Codex-binding amendment', () => {
+    assert.deepStrictEqual(
+      [...HOST_INTEGRATION_AXES.isolation].sort(),
+      ['harness-worktree', 'none', 'orchestrator-worktree'],
+    );
+  });
+
+  test('isolation: "undocumented" is NOT a vocabulary member — it is the corpus sentinel', () => {
+    assert.ok(!HOST_INTEGRATION_AXES.isolation.includes('undocumented'));
   });
 
   test('INTERFACE_POINTS frozen and contains expected values', () => {
@@ -1096,5 +1132,805 @@ describe('Fix 2: negotiate — host omits dispatch → subagentToolkit read-only
     const result = negotiateHostCapabilities(hostWithoutDispatch);
     assert.strictEqual(result.effective.dispatch.subagentToolkit, 'read-only',
       'Host missing dispatch must produce subagentToolkit "read-only"; got "' + result.effective.dispatch.subagentToolkit + '"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2584 — ADR-1239 Codex-binding amendment: dispatch.isolation sub-field
+// (Phase 1 — declared and negotiated, but NOT consumed by any scheduler yet).
+// ---------------------------------------------------------------------------
+
+describe('#2584 dispatch.isolation — negotiation', () => {
+  const BASE_DISPATCH = {
+    namedDispatch: true, nested: false, maxDepth: 1, background: false,
+    subagentToolkit: 'full', backgroundDispatch: false,
+  };
+
+  for (const value of HOST_INTEGRATION_AXES.isolation) {
+    test(`host declares isolation:"${value}" → effective.dispatch.isolation === "${value}"`, () => {
+      const result = negotiateHostCapabilities({
+        dispatch: { ...BASE_DISPATCH, isolation: value },
+      });
+      assert.strictEqual(result.effective.dispatch.isolation, value);
+    });
+  }
+
+  test('isolation:"undocumented" → effective "none" + a warning naming dispatch.isolation', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, isolation: 'undocumented' },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+    const warnText = result.warnings.join(' ');
+    assert.ok(warnText.includes('dispatch.isolation') && warnText.includes('undocumented'),
+      `Expected a warning naming dispatch.isolation as undocumented; got: ${warnText}`);
+  });
+
+  test('isolation: unknown/garbage value (not the sentinel) → effective "none", no throw', () => {
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, isolation: 'quantum-worktree' },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('isolation: non-string value (number/object/array/null) → effective "none", no throw', () => {
+    for (const bogus of [42, {}, [], null, true]) {
+      const result = negotiateHostCapabilities({
+        dispatch: { ...BASE_DISPATCH, isolation: bogus },
+      });
+      assert.strictEqual(result.effective.dispatch.isolation, 'none',
+        `isolation=${JSON.stringify(bogus)} must degrade to "none"`);
+    }
+  });
+
+  test('host declares dispatch but omits isolation entirely → effective "none"', () => {
+    const result = negotiateHostCapabilities({ dispatch: { ...BASE_DISPATCH } });
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('host omits dispatch entirely → effective.dispatch.isolation === "none"', () => {
+    const result = negotiateHostCapabilities({});
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('negotiateHostCapabilities({}) → SAFE_DEFAULTS floor carries isolation "none"', () => {
+    // FAIL_CLOSED_FLOOR.dispatch.isolation (src/host-integration.cts SAFE_DEFAULTS)
+    const result = negotiateHostCapabilities({});
+    assert.strictEqual(result.effective.dispatch.isolation, 'none');
+  });
+
+  test('isolation is NOT gated by namedDispatch:false — unlike nested/background/backgroundDispatch, it is not capped', () => {
+    // orchestrator-worktree fan-out is OS-level (process-spawn), independent of
+    // the host's native named-subagent dispatch (ADR-1239 §2584: "does not use
+    // the host's native subagent tool"). A host may plausibly declare
+    // namedDispatch:false yet still have isolation info; either way it must not
+    // silently flip to a DIFFERENT valid value or throw.
+    const result = negotiateHostCapabilities({
+      dispatch: { ...BASE_DISPATCH, namedDispatch: false, isolation: 'orchestrator-worktree' },
+    });
+    assert.strictEqual(result.effective.dispatch.isolation, 'orchestrator-worktree');
+  });
+
+  // ─── Boundary: exact valid-set membership ──────────────────────────────────
+
+  describe('boundary — a value one character off a valid member fails closed to "none"', () => {
+    const NEAR_MISSES = [
+      'harness-worktre',       // missing trailing 'e' (limit-1)
+      'harness-worktreee',     // extra trailing 'e' (limit+1)
+      'Harness-Worktree',      // case mismatch
+      'orchestrator-worktre',  // missing trailing 'e'
+      'orchestrator-worktrees', // extra trailing 's'
+      'non',                   // missing trailing 'e' of "none"
+      'nonee',                 // extra trailing 'e'
+      ' none',                 // leading space
+      'none ',                 // trailing space
+    ];
+    for (const nearMiss of NEAR_MISSES) {
+      test(`isolation:${JSON.stringify(nearMiss)} → "none"`, () => {
+        const result = negotiateHostCapabilities({
+          dispatch: { ...BASE_DISPATCH, isolation: nearMiss },
+        });
+        assert.strictEqual(result.effective.dispatch.isolation, 'none');
+      });
+    }
+  });
+
+  // ─── Property: valid-set-passthrough-else-none contract ─────────────────────
+
+  test('property: effective.dispatch.isolation equals the declared value iff it is a known vocabulary member, else "none"', () => {
+    const declaredArb = fc.oneof(
+      fc.constantFrom(...HOST_INTEGRATION_AXES.isolation, 'undocumented'),
+      fc.string(),
+    );
+    fc.assert(
+      fc.property(declaredArb, (declared) => {
+        const result = negotiateHostCapabilities({
+          dispatch: { ...BASE_DISPATCH, isolation: declared },
+        });
+        const eff = result.effective.dispatch.isolation;
+        assert.ok(HOST_INTEGRATION_AXES.isolation.includes(eff),
+          `effective.dispatch.isolation '${eff}' must always be a known vocabulary member`);
+        if (HOST_INTEGRATION_AXES.isolation.includes(declared)) {
+          assert.strictEqual(eff, declared, `a valid declared value ('${declared}') must pass through unchanged`);
+        } else {
+          assert.strictEqual(eff, 'none', `an invalid/sentinel declared value ('${declared}') must degrade to "none"`);
+        }
+      }),
+      { numRuns: 200, seed: 2584 },
+    );
+  });
+});
+
+describe('#2584 dispatch.isolation — validator', () => {
+  test('_HOST_INTEGRATION_VOCAB.isolation matches HOST_INTEGRATION_AXES.isolation (parity guard)', () => {
+    assert.deepEqual(
+      [..._HOST_INTEGRATION_VOCAB.isolation].sort(),
+      [...HOST_INTEGRATION_AXES.isolation].sort(),
+    );
+  });
+
+  test('a descriptor that omits dispatch.isolation entirely still validates clean (added after existing descriptors)', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    const errors = validateCapability(cap, 'claude');
+    assert.deepEqual(errors, [], `omitted isolation must validate clean, got: ${JSON.stringify(errors)}`);
+  });
+
+  for (const value of ['harness-worktree', 'orchestrator-worktree', 'none', 'undocumented']) {
+    test(`dispatch.isolation:"${value}" → ZERO validator errors`, () => {
+      const cap = shippedClaudeCapabilityWithoutIsolation();
+      cap.runtime.hostIntegration.dispatch.isolation = value;
+      const errors = validateCapability(cap, 'claude');
+      const isoErrors = errors.filter((e) => e.includes('dispatch.isolation'));
+      assert.strictEqual(isoErrors.length, 0,
+        `"${value}" must produce no validator errors; got: ${JSON.stringify(isoErrors)}`);
+    });
+  }
+
+  test('a present invalid dispatch.isolation value is rejected', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    cap.runtime.hostIntegration.dispatch.isolation = 'quantum-worktree';
+    const errors = validateCapability(cap, 'claude');
+    assert.ok(
+      errors.some((e) => e.includes('dispatch.isolation')),
+      `an invalid dispatch.isolation must produce a validator error; got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('a reserved-name dispatch.isolation value ("__proto__") is rejected', () => {
+    const cap = shippedClaudeCapabilityWithoutIsolation();
+    cap.runtime.hostIntegration.dispatch.isolation = '__proto__';
+    const errors = validateCapability(cap, 'claude');
+    assert.ok(
+      errors.some((e) => e.includes('dispatch.isolation') && e.includes('reserved name')),
+      `"__proto__" must produce a reserved-name validator error; got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('every shipped runtime descriptor with an isolation value passes validateCapability', () => {
+    const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+    for (const [id, cap] of Object.entries(registry.runtimes)) {
+      const iso = cap && cap.runtime && cap.runtime.hostIntegration && cap.runtime.hostIntegration.dispatch
+        && cap.runtime.hostIntegration.dispatch.isolation;
+      if (iso === undefined) continue;
+      const errors = validateCapability(cap, id);
+      const isoErrors = errors.filter((e) => e.includes('dispatch.isolation'));
+      assert.strictEqual(isoErrors.length, 0,
+        `${id}: shipped dispatch.isolation:"${iso}" must validate clean; got: ${JSON.stringify(isoErrors)}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2584 — ADR-1239 Codex-binding amendment, Phase 2: resolveOrchestratorExec
+// + the `runtime.orchestratorExec` descriptor field (sibling of hostBehaviors).
+// UNCONSUMED in Phase 2 — no scheduler calls this yet (Phase 3 wires it).
+// ---------------------------------------------------------------------------
+
+describe('resolveOrchestratorExec — the 4 shipped orchestrator-worktree descriptors', () => {
+  const CWD = '/repo/.claude/worktrees/agent-a1';
+
+  test('codex: exec --cd <cwd>', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec'], cwdFlag: '--cd' }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'codex');
+    assert.deepEqual(result.args, ['exec', '--cd', CWD]);
+    assert.equal(result.cwd, CWD);
+  });
+
+  test('opencode: run --dir <cwd>', () => {
+    const result = resolveOrchestratorExec({ command: 'opencode', args: ['run'], cwdFlag: '--dir' }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'opencode');
+    assert.deepEqual(result.args, ['run', '--dir', CWD]);
+    assert.equal(result.cwd, CWD);
+  });
+
+  // #2627: `args` carries --print because kimi's working mode is otherwise the
+  // interactive TUI — an orchestrator spawning a TUI hangs forever rather than
+  // returning a completed plan.
+  test('kimi: --print --work-dir <cwd> (headless flag leads)', () => {
+    const result = resolveOrchestratorExec({ command: 'kimi', args: ['--print'], cwdFlag: '--work-dir' }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'kimi');
+    assert.deepEqual(result.args, ['--print', '--work-dir', CWD]);
+    assert.equal(result.cwd, CWD);
+  });
+
+  // #2627: the binary is `kimi`, NOT `kimi-code` — Moonshot's TypeScript Kimi
+  // Code installs its binary as `kimi`; `kimi-code` is only the npm package and
+  // config-home name, so spawning it is an immediate ENOENT.
+  test('kimi-code: command is "kimi"; cwdFlag:null appends NO flag, cwd still returned (process-cwd case)', () => {
+    const result = resolveOrchestratorExec({ command: 'kimi', args: [], cwdFlag: null }, CWD);
+    assert.equal(result.ok, true);
+    assert.equal(result.command, 'kimi');
+    assert.deepEqual(result.args, []);
+    assert.equal(result.cwd, CWD);
+  });
+});
+
+describe('resolveOrchestratorExec — prompt passing (#2627, Phase 3)', () => {
+  const CWD = '/repo/.claude/worktrees/agent-a1';
+  const PROMPT = 'Execute plan 2 of phase 3.';
+
+  test('promptFlag:null → prompt appended POSITIONALLY, last (codex shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], cwdFlag: '--cd', promptFlag: null }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['exec', '--cd', CWD, PROMPT]);
+  });
+
+  test('promptFlag absent → prompt appended POSITIONALLY (opencode shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'opencode', args: ['run'], cwdFlag: '--dir' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['run', '--dir', CWD, PROMPT]);
+  });
+
+  test('promptFlag string → [flag, prompt] appended (kimi shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'kimi', args: ['--print'], cwdFlag: '--work-dir', promptFlag: '--prompt' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['--print', '--work-dir', CWD, '--prompt', PROMPT]);
+  });
+
+  test('promptFlag string + cwdFlag null → prompt flag only, cwd via process cwd (kimi-code shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'kimi', args: [], cwdFlag: null, promptFlag: '--prompt' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['--prompt', PROMPT]);
+    assert.equal(result.cwd, CWD, 'cwd is returned even with no cwd flag — caller binds it on the subprocess');
+  });
+
+  test('omitting prompt is byte-identical to the Phase-2 two-arg resolution', () => {
+    const descriptor = { command: 'codex', args: ['exec'], cwdFlag: '--cd', promptFlag: null };
+    assert.deepEqual(
+      resolveOrchestratorExec(descriptor, CWD),
+      resolveOrchestratorExec(descriptor, CWD, undefined),
+    );
+    assert.deepEqual(resolveOrchestratorExec(descriptor, CWD).args, ['exec', '--cd', CWD]);
+  });
+
+  test('empty prompt → invalid_prompt (a prompt-less executor hangs, not degrades)', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec'] }, CWD, '');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_prompt');
+  });
+
+  test('non-string promptFlag → invalid_prompt_flag', () => {
+    for (const bogus of [42, {}, []]) {
+      const result = resolveOrchestratorExec(
+        { command: 'codex', args: ['exec'], promptFlag: bogus }, CWD, PROMPT,
+      );
+      assert.equal(result.ok, false, `promptFlag=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'invalid_prompt_flag');
+    }
+  });
+
+  // Parity with worktree-safety.cts's `unsafe_leading_dash` guard on git args:
+  // a dash-leading positional is parsed by the spawned CLI as a flag, not a
+  // value. Same hazard, same rejection — these two surfaces must not diverge.
+  test('a dash-leading prompt is rejected (would be parsed as a flag, not a prompt)', () => {
+    for (const hostile of ['--dangerously-skip-permissions', '-p', '--help']) {
+      const result = resolveOrchestratorExec(
+        { command: 'codex', args: ['exec'], cwdFlag: '--cd' }, CWD, hostile,
+      );
+      assert.equal(result.ok, false, `prompt=${hostile} must be rejected`);
+      assert.equal(result.reason, 'unsafe_leading_dash_prompt');
+    }
+  });
+
+  test('a dash-leading cwd is rejected', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], cwdFlag: '--cd' }, '-oProxyCommand=x', 'ok prompt',
+    );
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'unsafe_leading_dash_cwd');
+  });
+
+  test('a prompt merely CONTAINING a dash is fine — only a leading dash is a flag', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], cwdFlag: '--cd' }, CWD, 'Execute plan 2 --verbose style',
+    );
+    assert.equal(result.ok, true);
+    assert.ok(result.args.includes('Execute plan 2 --verbose style'));
+  });
+
+  test('empty-string promptFlag falls back to positional rather than emitting a bare ""', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], promptFlag: '' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['exec', PROMPT]);
+  });
+});
+
+describe('resolveOrchestratorExec — fail-closed', () => {
+  test('undefined descriptor → missing_command', () => {
+    const result = resolveOrchestratorExec(undefined, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing_command');
+  });
+
+  test('{} (no command) → missing_command', () => {
+    const result = resolveOrchestratorExec({}, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing_command');
+  });
+
+  test('command: "" (empty string) → missing_command', () => {
+    const result = resolveOrchestratorExec({ command: '' }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'missing_command');
+  });
+
+  test('command: non-string → missing_command', () => {
+    for (const bogus of [42, null, {}, []]) {
+      const result = resolveOrchestratorExec({ command: bogus }, '/repo/wt');
+      assert.equal(result.ok, false, `command=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'missing_command');
+    }
+  });
+
+  test('empty cwd → invalid_cwd', () => {
+    const result = resolveOrchestratorExec({ command: 'codex' }, '');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_cwd');
+  });
+
+  test('non-string cwd → invalid_cwd', () => {
+    for (const bogus of [undefined, null, 42, {}]) {
+      const result = resolveOrchestratorExec({ command: 'codex' }, bogus);
+      assert.equal(result.ok, false, `cwd=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'invalid_cwd');
+    }
+  });
+
+  test('args not an array → invalid_args', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: 'exec' }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_args');
+  });
+
+  test('args array with a non-string element → invalid_args', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec', 42] }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_args');
+  });
+
+  test('cwdFlag a number → invalid_cwd_flag', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', cwdFlag: 42 }, '/repo/wt');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_cwd_flag');
+  });
+
+  test('cwdFlag an object/array → invalid_cwd_flag', () => {
+    for (const bogus of [{}, []]) {
+      const result = resolveOrchestratorExec({ command: 'codex', cwdFlag: bogus }, '/repo/wt');
+      assert.equal(result.ok, false, `cwdFlag=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'invalid_cwd_flag');
+    }
+  });
+
+  test('a reserved-name command string ("__proto__") still resolves at the resolver layer', () => {
+    // The resolver only checks "is it a non-empty string" — it never does a
+    // property lookup keyed by `command`, so there is no prototype-pollution
+    // surface here. The VALIDATOR (capability-validator.cjs) is what rejects
+    // "__proto__" at descriptor-load time — see the validator describe block below.
+    const result = resolveOrchestratorExec({ command: '__proto__' }, '/repo/wt');
+    assert.equal(result.ok, true);
+    assert.equal(result.command, '__proto__');
+  });
+});
+
+describe('resolveOrchestratorExec — fast-check property test', () => {
+  const commandArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0);
+  const argsArb = fc.array(fc.string());
+  const cwdFlagArb = fc.oneof(
+    fc.constant(null),
+    fc.constant(undefined),
+    fc.string({ minLength: 1 }).filter((s) => s.length > 0),
+  );
+  // #2627: a dash-leading cwd is now REJECTED (unsafe_leading_dash_cwd) —
+  // the spawned CLI would parse it as a flag, the same hazard worktree-safety's
+  // git-argument guard rejects. That is intentional new fail-closed behavior,
+  // so the ok:true property below is stated over the domain it actually holds
+  // on: real working directories. The rejected half is asserted explicitly in
+  // its own property immediately after, so narrowing here loses no coverage.
+  const cwdArb = fc.string({ minLength: 1 }).filter((s) => s.length > 0 && !s.startsWith('-'));
+
+  test('property: ok:true, command preserved, cwdFlag appended exactly once (or never for null/absent)', () => {
+    fc.assert(
+      fc.property(commandArb, argsArb, cwdFlagArb, cwdArb, (command, args, cwdFlag, cwd) => {
+        // Guard against the astronomically-rare but non-zero case where the
+        // arbitrary `args` already happens to contain the exact `cwd` string —
+        // that would make "cwd appears exactly once, at the tail" a false
+        // assertion about pre-existing data rather than the resolver's own
+        // behavior. Deterministic given the seed; not a flakiness workaround.
+        fc.pre(!args.includes(cwd));
+        const descriptor = cwdFlag === undefined ? { command, args } : { command, args, cwdFlag };
+        const result = resolveOrchestratorExec(descriptor, cwd);
+        assert.equal(result.ok, true);
+        assert.equal(result.command, command);
+        assert.equal(result.cwd, cwd);
+        if (typeof cwdFlag === 'string' && cwdFlag.length > 0) {
+          assert.deepEqual(result.args.slice(-2), [cwdFlag, cwd]);
+          // exactly once: cwdFlag/cwd do not appear anywhere earlier in args
+          const earlier = result.args.slice(0, -2);
+          assert.ok(!earlier.includes(cwd), 'cwd must not appear before the trailing pair');
+        } else {
+          assert.ok(!result.args.includes(cwd), 'cwd must not appear in args when cwdFlag is null/absent');
+        }
+      }),
+      { numRuns: 200, seed: 2584 },
+    );
+  });
+
+  // The complementary half of the narrowed domain above (#2627): every
+  // dash-leading cwd fails closed, for ANY descriptor shape.
+  test('property: a dash-leading cwd is always rejected, never silently passed through', () => {
+    fc.assert(
+      fc.property(
+        commandArb,
+        argsArb,
+        cwdFlagArb,
+        fc.string().map((s) => `-${s}`),
+        (command, args, cwdFlag, cwd) => {
+          const descriptor = cwdFlag === undefined ? { command, args } : { command, args, cwdFlag };
+          const result = resolveOrchestratorExec(descriptor, cwd);
+          assert.equal(result.ok, false);
+          assert.equal(result.reason, 'unsafe_leading_dash_cwd');
+        },
+      ),
+      { numRuns: 200, seed: 2627 },
+    );
+  });
+
+  // Same shape for the prompt argument, which the resolver appends to argv.
+  test('property: a dash-leading prompt is always rejected', () => {
+    fc.assert(
+      fc.property(
+        commandArb,
+        argsArb,
+        fc.string().map((s) => `-${s}`),
+        (command, args, prompt) => {
+          const result = resolveOrchestratorExec({ command, args }, '/repo/wt', prompt);
+          assert.equal(result.ok, false);
+          assert.equal(result.reason, 'unsafe_leading_dash_prompt');
+        },
+      ),
+      { numRuns: 200, seed: 2627 },
+    );
+  });
+});
+
+describe('#2584 orchestratorExec — parity / divergence guard', () => {
+  const CAPABILITIES_DIR = path.join(REPO_ROOT, 'capabilities');
+
+  function loadCapability(id) {
+    return JSON.parse(fs.readFileSync(path.join(CAPABILITIES_DIR, id, 'capability.json'), 'utf8'));
+  }
+
+  test('every capability whose dispatch.isolation is "orchestrator-worktree" declares a resolvable orchestratorExec', () => {
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => {
+      const capPath = path.join(CAPABILITIES_DIR, entry, 'capability.json');
+      return fs.existsSync(capPath);
+    });
+    const orchestratorWorktreeHosts = [];
+    for (const id of capIds) {
+      const cap = loadCapability(id);
+      const iso = cap && cap.runtime && cap.runtime.hostIntegration && cap.runtime.hostIntegration.dispatch
+        && cap.runtime.hostIntegration.dispatch.isolation;
+      if (iso !== 'orchestrator-worktree') continue;
+      orchestratorWorktreeHosts.push(id);
+
+      const orchestratorExec = cap.runtime.orchestratorExec;
+      assert.ok(
+        orchestratorExec,
+        `${id}: dispatch.isolation:"orchestrator-worktree" but no runtime.orchestratorExec declared — ` +
+        `a future orchestrator-worktree host MUST declare orchestratorExec (Phase 3 has nothing to spawn otherwise)`,
+      );
+      const result = resolveOrchestratorExec(orchestratorExec, '/tmp/wt');
+      assert.equal(result.ok, true,
+        `${id}: runtime.orchestratorExec must resolve cleanly; got reason="${result.ok ? '' : result.reason}"`);
+    }
+    // Sanity: the sweep actually found the 4 known hosts (guards a broken sweep
+    // silently matching zero capabilities and passing vacuously).
+    assert.deepEqual(orchestratorWorktreeHosts.sort(), ['codex', 'kimi', 'kimi-code', 'opencode']);
+  });
+
+  // #2627: the two guards below encode the per-host research that found two
+  // shipped descriptors which would have failed at spawn time — kimi resolving
+  // to an interactive TUI (orchestrator hangs) and kimi-code naming a binary
+  // that does not exist (ENOENT).
+  test('every orchestrator-worktree descriptor resolves to a HEADLESS invocation, never an interactive TUI', () => {
+    // A host that binds cwd by flag alone, with no leading subcommand or
+    // headless flag, launches its interactive UI. Each host must contribute at
+    // least one non-cwd token (a subcommand like `exec`/`run`, or an explicit
+    // headless flag like `--print`) BEFORE the cwd flag — or bind by process
+    // cwd only, which implies a prompt flag carries the instruction.
+    const expected = {
+      codex: ['exec'],
+      opencode: ['run'],
+      kimi: ['--print'],
+      'kimi-code': [],
+    };
+    for (const [id, leadingArgs] of Object.entries(expected)) {
+      const cap = loadCapability(id);
+      const oe = cap.runtime.orchestratorExec;
+      assert.deepEqual(oe.args, leadingArgs,
+        `${id}: orchestratorExec.args must be ${JSON.stringify(leadingArgs)} — an empty/verb-less argv for a ` +
+        `flag-bound host launches the interactive TUI and the orchestrator waits on it forever`);
+      const resolved = resolveOrchestratorExec(oe, '/tmp/wt', 'do the thing');
+      assert.equal(resolved.ok, true, `${id}: must resolve with a prompt`);
+      assert.ok(resolved.args.includes('do the thing'),
+        `${id}: the executor prompt must reach the argv, else the spawned process has no instruction`);
+    }
+  });
+
+  test('kimi and kimi-code both spawn the "kimi" binary — kimi-code is a package name, not a binary', () => {
+    // Moonshot ships both agents as a binary named `kimi`; `kimi-code` is the
+    // npm package / config-home name only. Declaring command:"kimi-code" is an
+    // immediate ENOENT at spawn.
+    for (const id of ['kimi', 'kimi-code']) {
+      assert.equal(loadCapability(id).runtime.orchestratorExec.command, 'kimi',
+        `${id}: orchestratorExec.command must be the real binary name "kimi"`);
+    }
+  });
+
+  test('every capability whose dispatch.isolation is "harness-worktree" declares a non-empty harnessIsolationFlag', () => {
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => (
+      fs.existsSync(path.join(CAPABILITIES_DIR, entry, 'capability.json'))
+    ));
+    const harnessHosts = [];
+    for (const id of capIds) {
+      const cap = loadCapability(id);
+      const iso = cap?.runtime?.hostIntegration?.dispatch?.isolation;
+      if (iso !== 'harness-worktree') continue;
+      harnessHosts.push(id);
+      const flag = cap.runtime.harnessIsolationFlag;
+      assert.ok(
+        typeof flag === 'string' && flag.length > 0,
+        `${id}: dispatch.isolation:"harness-worktree" but no runtime.harnessIsolationFlag — the scheduler ` +
+        `would have nothing to pass and would dispatch UNISOLATED executors believing they are isolated`,
+      );
+    }
+    assert.deepEqual(harnessHosts.sort(), ['claude', 'cursor']);
+  });
+
+  test('no capability declares BOTH isolation mechanisms (they are mutually exclusive models)', () => {
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => (
+      fs.existsSync(path.join(CAPABILITIES_DIR, entry, 'capability.json'))
+    ));
+    for (const id of capIds) {
+      const cap = loadCapability(id);
+      const hasHarness = typeof cap?.runtime?.harnessIsolationFlag === 'string';
+      const hasOrchestrator = cap?.runtime?.orchestratorExec !== undefined;
+      assert.ok(!(hasHarness && hasOrchestrator),
+        `${id}: declares both harnessIsolationFlag and orchestratorExec — a host has exactly one fan-out model`);
+    }
+  });
+});
+
+describe('#2584 orchestratorExec — validator', () => {
+  function shippedCodexCapabilityWithoutOrchestratorExec() {
+    const cap = JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, 'capabilities', 'codex', 'capability.json'), 'utf8'),
+    );
+    delete cap.runtime.orchestratorExec;
+    return cap;
+  }
+
+  test('a descriptor that omits orchestratorExec entirely still validates clean (optional field)', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    const errors = validateCapability(cap, 'codex');
+    assert.deepEqual(errors, [], `omitted orchestratorExec must validate clean, got: ${JSON.stringify(errors)}`);
+  });
+
+  test('a well-formed orchestratorExec passes with zero orchestratorExec errors', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', args: ['exec'], cwdFlag: '--cd' };
+    const errors = validateCapability(cap, 'codex');
+    const oeErrors = errors.filter((e) => e.includes('orchestratorExec'));
+    assert.deepEqual(oeErrors, []);
+  });
+
+  test('orchestratorExec: not an object (array/null/string) → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    for (const bogus of [[], null, 'codex', 42]) {
+      cap.runtime.orchestratorExec = bogus;
+      const errors = validateCapability(cap, 'codex');
+      assert.ok(
+        errors.some((e) => e.includes('runtime.orchestratorExec must be an object')),
+        `orchestratorExec=${JSON.stringify(bogus)} must be rejected; got: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
+  test('command missing → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { args: [], cwdFlag: null };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.command')));
+  });
+
+  test('command: "" (empty string) → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: '' };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.command')));
+  });
+
+  test('command: "__proto__" (reserved name) → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: '__proto__' };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(
+      errors.some((e) => e.includes('runtime.orchestratorExec.command') && e.includes('reserved name')),
+      `"__proto__" must produce a reserved-name validator error; got: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  test('args: non-array → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', args: 'exec' };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.args')));
+  });
+
+  test('args: array with a non-string element → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', args: ['exec', 42] };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.args')));
+  });
+
+  test('cwdFlag: a number → rejected', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'codex', cwdFlag: 42 };
+    const errors = validateCapability(cap, 'codex');
+    assert.ok(errors.some((e) => e.includes('runtime.orchestratorExec.cwdFlag')));
+  });
+
+  test('cwdFlag: null is valid (no error)', () => {
+    const cap = shippedCodexCapabilityWithoutOrchestratorExec();
+    cap.runtime.orchestratorExec = { command: 'kimi-code', args: [], cwdFlag: null };
+    const errors = validateCapability(cap, 'codex');
+    const oeErrors = errors.filter((e) => e.includes('orchestratorExec'));
+    assert.deepEqual(oeErrors, []);
+  });
+
+  test('full descriptor sweep: every shipped capability.json still validates clean after the orchestratorExec addition', () => {
+    const CAPABILITIES_DIR = path.join(REPO_ROOT, 'capabilities');
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => {
+      const capPath = path.join(CAPABILITIES_DIR, entry, 'capability.json');
+      return fs.existsSync(capPath);
+    });
+    for (const id of capIds) {
+      const cap = JSON.parse(fs.readFileSync(path.join(CAPABILITIES_DIR, id, 'capability.json'), 'utf8'));
+      if (cap.role !== 'runtime') continue;
+      const errors = validateCapability(cap, id);
+      assert.deepEqual(errors, [], `${id}: capability.json must still validate clean; got: ${JSON.stringify(errors)}`);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2627 Phase 3 — the `dispatch-isolation` CLI route.
+//
+// Behavioral: each case SPAWNS the real gsd-tools CLI and asserts on its actual
+// stdout, rather than inspecting the route's source. This is the scheduler
+// consumer's only entry point — execute-phase branches on exactly this output.
+// ---------------------------------------------------------------------------
+describe('#2627 dispatch-isolation CLI route', () => {
+  const { execFileSync } = require('node:child_process');
+  const GSD_TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  function query(runtimeId, extraArgs = []) {
+    return execFileSync(
+      process.execPath,
+      [GSD_TOOLS, 'query', 'dispatch-isolation', ...extraArgs],
+      { cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, GSD_RUNTIME: runtimeId } },
+    );
+  }
+  const queryJson = (runtimeId, extraArgs = []) => JSON.parse(query(runtimeId, ['--json', ...extraArgs]));
+
+  test('raw output is the bare negotiated value for each isolation model', () => {
+    assert.equal(query('claude').trim(), 'harness-worktree');
+    assert.equal(query('codex').trim(), 'orchestrator-worktree');
+    assert.equal(query('pi').trim(), 'none');
+  });
+
+  test('an undocumented isolation declaration degrades to none (fail-closed)', () => {
+    // cline declares isolation:"undocumented" — the corpus-wide sentinel.
+    assert.equal(query('cline').trim(), 'none');
+  });
+
+  test('an unknown runtime degrades to none rather than erroring', () => {
+    assert.equal(query('no-such-runtime-xyz').trim(), 'none');
+  });
+
+  test('harness-worktree surfaces the host\'s declared flag, and no exec', () => {
+    const claude = queryJson('claude');
+    assert.equal(claude.isolation, 'harness-worktree');
+    assert.equal(claude.harnessFlag, 'isolation="worktree"');
+    assert.equal(claude.exec, null, 'GSD runs no git on the harness path — there is nothing to spawn');
+
+    assert.equal(queryJson('cursor').harnessFlag, '--worktree');
+  });
+
+  test('orchestrator-worktree yields exec only when a cwd target is supplied', () => {
+    assert.equal(queryJson('codex').exec, null, 'no --cwd-target → nothing to bind');
+
+    const withTarget = queryJson('codex', ['--cwd-target', '/tmp/wt', '--prompt', 'do the thing']);
+    assert.equal(withTarget.isolation, 'orchestrator-worktree');
+    assert.equal(withTarget.exec.command, 'codex');
+    assert.deepEqual(withTarget.exec.args, ['exec', '--cd', '/tmp/wt', 'do the thing']);
+    assert.equal(withTarget.exec.cwd, '/tmp/wt');
+    assert.equal(withTarget.harnessFlag, null);
+  });
+
+  test('each orchestrator-worktree host resolves to its own documented argv shape', () => {
+    const args = (id) => queryJson(id, ['--cwd-target', '/tmp/wt', '--prompt', 'P']).exec.args;
+    assert.deepEqual(args('opencode'), ['run', '--dir', '/tmp/wt', 'P']);
+    // kimi carries the prompt behind --prompt (its --print mode requires it),
+    // unlike codex/opencode which take it positionally.
+    assert.deepEqual(args('kimi'), ['--print', '--work-dir', '/tmp/wt', '--prompt', 'P']);
+    // kimi-code binds by process cwd — no flag in argv, but cwd still returned.
+    assert.deepEqual(args('kimi-code'), ['--prompt', 'P']);
+    assert.equal(queryJson('kimi-code', ['--cwd-target', '/tmp/wt', '--prompt', 'P']).exec.cwd, '/tmp/wt');
+  });
+
+  test('a cwd target with no prompt still resolves (prompt is optional at this seam)', () => {
+    const noPrompt = queryJson('codex', ['--cwd-target', '/tmp/wt']);
+    assert.equal(noPrompt.isolation, 'orchestrator-worktree');
+    assert.deepEqual(noPrompt.exec.args, ['exec', '--cd', '/tmp/wt']);
+  });
+
+  test('the route never reports an isolation model it cannot actually service', () => {
+    // The invariant the scheduler depends on: if isolation is non-none, the
+    // corresponding mechanism is present. Anything else would have the wave
+    // create a worktree and then discover it has nothing to spawn into it.
+    for (const id of ['claude', 'cursor', 'codex', 'opencode', 'kimi', 'kimi-code', 'pi', 'cline', 'zcode']) {
+      const r = queryJson(id, ['--cwd-target', '/tmp/wt', '--prompt', 'P']);
+      if (r.isolation === 'harness-worktree') {
+        assert.ok(r.harnessFlag && r.harnessFlag.length > 0, `${id}: harness-worktree without a flag`);
+      } else if (r.isolation === 'orchestrator-worktree') {
+        assert.ok(r.exec && r.exec.command, `${id}: orchestrator-worktree without a spawnable exec`);
+      } else {
+        assert.equal(r.isolation, 'none', `${id}: unexpected isolation value ${r.isolation}`);
+        assert.equal(r.exec, null);
+        assert.equal(r.harnessFlag, null);
+      }
+    }
+  });
+
+  test('a none-isolation host never yields an exec even when a target is supplied', () => {
+    const pi = queryJson('pi', ['--cwd-target', '/tmp/wt', '--prompt', 'P']);
+    assert.equal(pi.isolation, 'none');
+    assert.equal(pi.exec, null);
+    assert.equal(pi.harnessFlag, null);
   });
 });

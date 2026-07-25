@@ -648,7 +648,7 @@ Equivalent paths for other runtimes:
 │       └── SUMMARY.md
 ├── todos/
 │   ├── pending/            # Captured ideas
-│   └── done/               # Completed todos
+│   └── completed/          # Completed todos
 ├── threads/               # Persistent context threads (from /gsd-thread)
 ├── seeds/                 # Forward-looking ideas (from /gsd-capture --seed)
 ├── debug/                  # Active debug sessions

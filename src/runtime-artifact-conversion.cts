@@ -1530,10 +1530,14 @@ Typed mapping (agent_type-capable schema only):
   inherited, or unsupported values; do not invent one-off effort literals in
   workflow prose.
 - \`fork_context: false\` by default — GSD agents load their own context via \`<files_to_read>\` blocks
-- \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct Codex mapping.
-  Codex \`spawn_agent\` does not create or bind a git worktree automatically.
-  Workflows that require this isolation must fail closed or use an explicit
-  manual worktree protocol before spawning (#3360).
+- \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
+  but Codex declares \`dispatch.isolation: orchestrator-worktree\` (#2584). Codex
+  \`spawn_agent\` still does not create or bind a git worktree; instead GSD itself
+  creates the worktree and process-spawns the executor into it with
+  \`codex exec --cd <dir>\`, performing every git operation on the executor's behalf
+  (its \`workspace-write\` sandbox makes \`.git\` read-only). Workflows must therefore
+  never fabricate a manual worktree protocol — route through the negotiated
+  isolation adapter, which still fails closed for hosts declaring \`none\` (#3360).
 
 Generic-agent workaround (multi_agent_v1 schema — NO agent_type field):
 When only the generic \`multi_agent_v1\` schema is available, typed GSD agent dispatch

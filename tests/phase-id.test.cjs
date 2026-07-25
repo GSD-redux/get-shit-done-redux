@@ -209,6 +209,27 @@ describe('extractPhaseToken', () => {
     assert.strictEqual(phaseId.extractPhaseToken('M1-2-brain'), 'M1-2');
   });
 
+  // #612/#2249: the #2043/#1324 letter-prefixed-decimal family has a NUMERIC-tail
+  // variant (`P0.3-2`) the #1324 pins above never covered — every tail there is
+  // non-numeric (`-tenant`, `-gate`) or hyphen-only (`M1-2`). PR-1 added a bracket
+  // dir reader `{CODE}.{MM}-{PP}` to extractPhaseToken; because that shape is
+  // string-indistinguishable from this family when the code ends in a digit, the
+  // reader is GATED on an explicit `convention` arg. This characterization locks
+  // the convention-less (legacy) reading byte-identical across the WHOLE family —
+  // single- AND multi-digit tails — so the gate can never silently regress it.
+  // (The multi-digit rows are precisely the ones no discriminator-tightening fix
+  // could have preserved: `P0.12-34` stays ambiguous with a padded bracket dir,
+  // whereas the convention gate is complete.)
+  test('preserves the #2043 numeric-tail letter-prefixed family (convention-less, byte-identical)', () => {
+    assert.strictEqual(phaseId.extractPhaseToken('P0.3-2-tenant'), 'P0.3-2');
+    assert.strictEqual(phaseId.extractPhaseToken('P1.2-3'), 'P1.2-3');
+    assert.strictEqual(phaseId.extractPhaseToken('A0.1-2'), 'A0.1-2');
+    assert.strictEqual(phaseId.extractPhaseToken('X9.9-9-name'), 'X9.9-9');
+    assert.strictEqual(phaseId.extractPhaseToken('P0.12-34-name'), 'P0.12-34');
+    assert.strictEqual(phaseId.extractPhaseToken('P0.34-56-name'), 'P0.34-56');
+    assert.strictEqual(phaseId.extractPhaseToken('P0X.3-2'), 'P0X.3-2');
+  });
+
   test('returns the full dirName when no numeric token found', () => {
     assert.strictEqual(phaseId.extractPhaseToken('no-numeric'), 'no-numeric');
     assert.strictEqual(phaseId.extractPhaseToken('alpha'), 'alpha');

@@ -45,18 +45,6 @@ O GSD Core executa apenas os planos da Onda 2. Ele primeiro verifica se todas as
 
 ---
 
-## Validar o estado antes da execução
-
-Se você suspeitar que o diretório `.planning/` está fora de sincronia com o sistema de arquivos — por exemplo, após uma falha ou uma execução anterior interrompida — passe `--validate`:
-
-```bash
-/gsd-execute-phase 1 --validate
-```
-
-O GSD Core executa uma verificação de consistência de estado antes de criar qualquer executor. Desvios detectados são relatados e você pode aceitá-los ou corrigi-los antes de prosseguir.
-
----
-
 ## Retomar uma execução paralisada
 
 Se a execução parar no meio — um erro de cota, uma queda de rede ou uma sessão travada — o progresso no nível de onda é preservado. O GSD Core verifica a existência de um arquivo `SUMMARY.md` para cada plano; planos que já possuem esse arquivo são ignorados automaticamente ao reexecutar:

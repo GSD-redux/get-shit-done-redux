@@ -128,16 +128,6 @@ node gsd-tools.cjs config-set workflow.tdd_mode true
 
 ---
 
-## 在规划开始前验证项目状态
-
-```bash
-/gsd-plan-phase 2 --validate
-```
-
-在启动研究代理前运行状态验证。如果怀疑 ROADMAP.md 或 STATE.md 已发生偏移，请使用此选项。
-
----
-
 ## 规划完成后运行外部弹跳验证
 
 **如果已配置 `workflow.plan_bounce_script` 且需要对完成的计划进行外部验证：**

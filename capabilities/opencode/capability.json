@@ -77,7 +77,8 @@
         "maxDepth": "undocumented",
         "background": true,
         "subagentToolkit": "full",
-        "backgroundDispatch": true
+        "backgroundDispatch": true,
+        "isolation": "orchestrator-worktree"
       },
       "modelMode": "active",
       "hookBus": "host",
@@ -85,6 +86,12 @@
       "transport": "mcp",
       "runtime": "bun",
       "effortSurface": "argv"
+    },
+    "orchestratorExec": {
+      "command": "opencode",
+      "args": ["run"],
+      "cwdFlag": "--dir",
+      "promptFlag": null
     },
     "hostBehaviors": {
       "reapplyCommand": "/gsd-update --reapply",

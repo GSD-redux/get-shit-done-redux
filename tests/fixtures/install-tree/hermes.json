@@ -249,6 +249,7 @@
   "gsd-core/workflows/eval-review.md",
   "gsd-core/workflows/execute-phase.md",
   "gsd-core/workflows/execute-phase/steps/codebase-drift-gate.md",
+  "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md",
   "gsd-core/workflows/execute-phase/steps/per-plan-worktree-gate.md",
   "gsd-core/workflows/execute-phase/steps/post-merge-gate.md",
   "gsd-core/workflows/execute-phase/steps/regression-gate.md",

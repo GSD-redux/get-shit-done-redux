@@ -91,7 +91,8 @@
         "maxDepth": 2,
         "background": true,
         "subagentToolkit": "full",
-        "backgroundDispatch": true
+        "backgroundDispatch": true,
+        "isolation": "harness-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",
@@ -100,6 +101,7 @@
       "runtime": "node",
       "effortSurface": "undocumented"
     },
+    "harnessIsolationFlag": "--worktree",
     "hostBehaviors": {
       "reapplyCommand": "gsd-update --reapply (mention the skill name)",
       "frontmatterDialect": "cursor",

@@ -114,12 +114,6 @@ Se precisar executar novamente apenas uma onda específica:
 /gsd-execute-phase 1 --wave 2
 ```
 
-Se quiser validar a integridade de `.planning/` antes de despachar:
-
-```bash
-/gsd-execute-phase 1 --validate
-```
-
 ---
 
 ## Reverter com `/gsd-undo`

@@ -154,16 +154,6 @@ Research is skipped; the planner reads the verification gaps directly.
 
 ---
 
-## Validate project state before planning begins
-
-```bash
-/gsd-plan-phase 2 --validate
-```
-
-Runs state validation before spawning the researcher. Use this if you suspect ROADMAP.md or STATE.md has drifted.
-
----
-
 ## Run an external bounce validation after planning
 
 **If `workflow.plan_bounce_script` is configured and you want external validation of the finished plan:**

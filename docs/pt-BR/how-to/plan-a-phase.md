@@ -128,16 +128,6 @@ A pesquisa é ignorada; o planejador lê as lacunas de verificação diretamente
 
 ---
 
-## Validar o estado do projeto antes de iniciar o planejamento
-
-```bash
-/gsd-plan-phase 2 --validate
-```
-
-Executa a validação de estado antes de acionar o pesquisador. Use isso se suspeitar que o ROADMAP.md ou STATE.md derivou.
-
----
-
 ## Executar uma validação externa de bounce após o planejamento
 
 **Se `workflow.plan_bounce_script` estiver configurado e você quiser validação externa do plano concluído:**

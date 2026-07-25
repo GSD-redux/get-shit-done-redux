@@ -68,7 +68,8 @@
         "maxDepth": 1,
         "background": true,
         "subagentToolkit": "undocumented",
-        "backgroundDispatch": true
+        "backgroundDispatch": true,
+        "isolation": "orchestrator-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",
@@ -76,6 +77,12 @@
       "transport": "mcp",
       "runtime": "python",
       "effortSurface": "undocumented"
+    },
+    "orchestratorExec": {
+      "command": "kimi",
+      "args": ["--print"],
+      "cwdFlag": "--work-dir",
+      "promptFlag": "--prompt"
     },
     "hostBehaviors": {
       "reapplyCommand": "/skill:gsd-update --reapply",

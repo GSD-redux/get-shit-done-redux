@@ -72,7 +72,8 @@
         "maxDepth": 5,
         "background": true,
         "subagentToolkit": "full",
-        "backgroundDispatch": false
+        "backgroundDispatch": false,
+        "isolation": "harness-worktree"
       },
       "modelMode": "passive",
       "hookBus": "host",
@@ -81,6 +82,7 @@
       "runtime": "node",
       "effortSurface": "argv"
     },
+    "harnessIsolationFlag": "isolation=\"worktree\"",
     "hostBehaviors": {
       "attributionSource": "settings-json-commit",
       "authorsCanonicalWorkflow": true,
