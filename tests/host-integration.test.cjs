@@ -1344,20 +1344,97 @@ describe('resolveOrchestratorExec — the 4 shipped orchestrator-worktree descri
     assert.equal(result.cwd, CWD);
   });
 
-  test('kimi: --work-dir <cwd> (no leading verb)', () => {
-    const result = resolveOrchestratorExec({ command: 'kimi', args: [], cwdFlag: '--work-dir' }, CWD);
+  // #2627: `args` carries --print because kimi's working mode is otherwise the
+  // interactive TUI — an orchestrator spawning a TUI hangs forever rather than
+  // returning a completed plan.
+  test('kimi: --print --work-dir <cwd> (headless flag leads)', () => {
+    const result = resolveOrchestratorExec({ command: 'kimi', args: ['--print'], cwdFlag: '--work-dir' }, CWD);
     assert.equal(result.ok, true);
     assert.equal(result.command, 'kimi');
-    assert.deepEqual(result.args, ['--work-dir', CWD]);
+    assert.deepEqual(result.args, ['--print', '--work-dir', CWD]);
     assert.equal(result.cwd, CWD);
   });
 
-  test('kimi-code: cwdFlag:null — NO flag appended, cwd still returned (process-cwd case)', () => {
-    const result = resolveOrchestratorExec({ command: 'kimi-code', args: [], cwdFlag: null }, CWD);
+  // #2627: the binary is `kimi`, NOT `kimi-code` — Moonshot's TypeScript Kimi
+  // Code installs its binary as `kimi`; `kimi-code` is only the npm package and
+  // config-home name, so spawning it is an immediate ENOENT.
+  test('kimi-code: command is "kimi"; cwdFlag:null appends NO flag, cwd still returned (process-cwd case)', () => {
+    const result = resolveOrchestratorExec({ command: 'kimi', args: [], cwdFlag: null }, CWD);
     assert.equal(result.ok, true);
-    assert.equal(result.command, 'kimi-code');
+    assert.equal(result.command, 'kimi');
     assert.deepEqual(result.args, []);
     assert.equal(result.cwd, CWD);
+  });
+});
+
+describe('resolveOrchestratorExec — prompt passing (#2627, Phase 3)', () => {
+  const CWD = '/repo/.claude/worktrees/agent-a1';
+  const PROMPT = 'Execute plan 2 of phase 3.';
+
+  test('promptFlag:null → prompt appended POSITIONALLY, last (codex shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], cwdFlag: '--cd', promptFlag: null }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['exec', '--cd', CWD, PROMPT]);
+  });
+
+  test('promptFlag absent → prompt appended POSITIONALLY (opencode shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'opencode', args: ['run'], cwdFlag: '--dir' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['run', '--dir', CWD, PROMPT]);
+  });
+
+  test('promptFlag string → [flag, prompt] appended (kimi shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'kimi', args: ['--print'], cwdFlag: '--work-dir', promptFlag: '--prompt' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['--print', '--work-dir', CWD, '--prompt', PROMPT]);
+  });
+
+  test('promptFlag string + cwdFlag null → prompt flag only, cwd via process cwd (kimi-code shape)', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'kimi', args: [], cwdFlag: null, promptFlag: '--prompt' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['--prompt', PROMPT]);
+    assert.equal(result.cwd, CWD, 'cwd is returned even with no cwd flag — caller binds it on the subprocess');
+  });
+
+  test('omitting prompt is byte-identical to the Phase-2 two-arg resolution', () => {
+    const descriptor = { command: 'codex', args: ['exec'], cwdFlag: '--cd', promptFlag: null };
+    assert.deepEqual(
+      resolveOrchestratorExec(descriptor, CWD),
+      resolveOrchestratorExec(descriptor, CWD, undefined),
+    );
+    assert.deepEqual(resolveOrchestratorExec(descriptor, CWD).args, ['exec', '--cd', CWD]);
+  });
+
+  test('empty prompt → invalid_prompt (a prompt-less executor hangs, not degrades)', () => {
+    const result = resolveOrchestratorExec({ command: 'codex', args: ['exec'] }, CWD, '');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'invalid_prompt');
+  });
+
+  test('non-string promptFlag → invalid_prompt_flag', () => {
+    for (const bogus of [42, {}, []]) {
+      const result = resolveOrchestratorExec(
+        { command: 'codex', args: ['exec'], promptFlag: bogus }, CWD, PROMPT,
+      );
+      assert.equal(result.ok, false, `promptFlag=${JSON.stringify(bogus)} must fail`);
+      assert.equal(result.reason, 'invalid_prompt_flag');
+    }
+  });
+
+  test('empty-string promptFlag falls back to positional rather than emitting a bare ""', () => {
+    const result = resolveOrchestratorExec(
+      { command: 'codex', args: ['exec'], promptFlag: '' }, CWD, PROMPT,
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.args, ['exec', PROMPT]);
   });
 });
 
@@ -1510,6 +1587,78 @@ describe('#2584 orchestratorExec — parity / divergence guard', () => {
     // Sanity: the sweep actually found the 4 known hosts (guards a broken sweep
     // silently matching zero capabilities and passing vacuously).
     assert.deepEqual(orchestratorWorktreeHosts.sort(), ['codex', 'kimi', 'kimi-code', 'opencode']);
+  });
+
+  // #2627: the two guards below encode the per-host research that found two
+  // shipped descriptors which would have failed at spawn time — kimi resolving
+  // to an interactive TUI (orchestrator hangs) and kimi-code naming a binary
+  // that does not exist (ENOENT).
+  test('every orchestrator-worktree descriptor resolves to a HEADLESS invocation, never an interactive TUI', () => {
+    // A host that binds cwd by flag alone, with no leading subcommand or
+    // headless flag, launches its interactive UI. Each host must contribute at
+    // least one non-cwd token (a subcommand like `exec`/`run`, or an explicit
+    // headless flag like `--print`) BEFORE the cwd flag — or bind by process
+    // cwd only, which implies a prompt flag carries the instruction.
+    const expected = {
+      codex: ['exec'],
+      opencode: ['run'],
+      kimi: ['--print'],
+      'kimi-code': [],
+    };
+    for (const [id, leadingArgs] of Object.entries(expected)) {
+      const cap = loadCapability(id);
+      const oe = cap.runtime.orchestratorExec;
+      assert.deepEqual(oe.args, leadingArgs,
+        `${id}: orchestratorExec.args must be ${JSON.stringify(leadingArgs)} — an empty/verb-less argv for a ` +
+        `flag-bound host launches the interactive TUI and the orchestrator waits on it forever`);
+      const resolved = resolveOrchestratorExec(oe, '/tmp/wt', 'do the thing');
+      assert.equal(resolved.ok, true, `${id}: must resolve with a prompt`);
+      assert.ok(resolved.args.includes('do the thing'),
+        `${id}: the executor prompt must reach the argv, else the spawned process has no instruction`);
+    }
+  });
+
+  test('kimi and kimi-code both spawn the "kimi" binary — kimi-code is a package name, not a binary', () => {
+    // Moonshot ships both agents as a binary named `kimi`; `kimi-code` is the
+    // npm package / config-home name only. Declaring command:"kimi-code" is an
+    // immediate ENOENT at spawn.
+    for (const id of ['kimi', 'kimi-code']) {
+      assert.equal(loadCapability(id).runtime.orchestratorExec.command, 'kimi',
+        `${id}: orchestratorExec.command must be the real binary name "kimi"`);
+    }
+  });
+
+  test('every capability whose dispatch.isolation is "harness-worktree" declares a non-empty harnessIsolationFlag', () => {
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => (
+      fs.existsSync(path.join(CAPABILITIES_DIR, entry, 'capability.json'))
+    ));
+    const harnessHosts = [];
+    for (const id of capIds) {
+      const cap = loadCapability(id);
+      const iso = cap?.runtime?.hostIntegration?.dispatch?.isolation;
+      if (iso !== 'harness-worktree') continue;
+      harnessHosts.push(id);
+      const flag = cap.runtime.harnessIsolationFlag;
+      assert.ok(
+        typeof flag === 'string' && flag.length > 0,
+        `${id}: dispatch.isolation:"harness-worktree" but no runtime.harnessIsolationFlag — the scheduler ` +
+        `would have nothing to pass and would dispatch UNISOLATED executors believing they are isolated`,
+      );
+    }
+    assert.deepEqual(harnessHosts.sort(), ['claude', 'cursor']);
+  });
+
+  test('no capability declares BOTH isolation mechanisms (they are mutually exclusive models)', () => {
+    const capIds = fs.readdirSync(CAPABILITIES_DIR).filter((entry) => (
+      fs.existsSync(path.join(CAPABILITIES_DIR, entry, 'capability.json'))
+    ));
+    for (const id of capIds) {
+      const cap = loadCapability(id);
+      const hasHarness = typeof cap?.runtime?.harnessIsolationFlag === 'string';
+      const hasOrchestrator = cap?.runtime?.orchestratorExec !== undefined;
+      assert.ok(!(hasHarness && hasOrchestrator),
+        `${id}: declares both harnessIsolationFlag and orchestratorExec — a host has exactly one fan-out model`);
+    }
   });
 });
 

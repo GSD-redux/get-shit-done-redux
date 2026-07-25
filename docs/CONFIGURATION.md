@@ -306,7 +306,7 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | `workflow.max_discuss_passes` | number | `3` | Maximum number of question rounds in discuss-phase before the workflow stops asking. Useful in headless/auto mode to prevent infinite discussion loops. |
 | `workflow.skip_discuss` | boolean | `false` | When `true`, `/gsd-autonomous` bypasses the discuss-phase entirely, writing minimal CONTEXT.md from the ROADMAP phase goal. Useful for projects where developer preferences are fully captured in PROJECT.md/REQUIREMENTS.md. Added in v1.28 |
 | `workflow.text_mode` | boolean | `false` | Replaces AskUserQuestion TUI menus with plain-text numbered lists. Required for Claude Code remote sessions (`/rc` mode) where TUI menus don't render. Can also be set per-session with `--text` flag on discuss-phase. Added in v1.28 |
-| `workflow.use_worktrees` | boolean | `true` | When `false`, disables git worktree isolation for parallel execution. Users who prefer sequential execution or whose environment does not support worktrees can disable this. Added in v1.31. **Branch-divergence note:** when your branch has diverged from `origin/HEAD`, GSD auto-degrades to sequential and prints a warning. See [`worktree.baseRef`](#worktree-settings) to restore parallel execution on a diverged branch. **Non-Claude note:** git worktree isolation uses Claude Code's `isolation="worktree"` agent primitive, which no other runtime honors. On any non-Claude install (Codex, Cursor, Antigravity, Qwen, etc.) a runtime-neutral `.planning/config.json` resolves the runtime to that install's own id and defaults this key to `false`; forcing `use_worktrees: true` on a non-Claude install fails closed before any executor dispatch (#1515, #1521). |
+| `workflow.use_worktrees` | boolean | `true` | When `false`, disables git worktree isolation for parallel execution. Users who prefer sequential execution or whose environment does not support worktrees can disable this. Added in v1.31. **Branch-divergence note:** when your branch has diverged from `origin/HEAD`, GSD auto-degrades to sequential and prints a warning. See [`worktree.baseRef`](#worktree-settings) to restore parallel execution on a diverged branch. **Per-runtime note:** whether this key can be honored depends on the runtime's declared `dispatch.isolation` capability, not on its name (#2584). Three cases: runtimes whose own harness isolates each executor (**Claude Code**, **Cursor**) run parallel worktrees natively; runtimes that expose a headless exec with an explicit working directory (**Codex**, **OpenCode**, **Kimi**, **Kimi Code**) get parallel worktrees that GSD itself creates, validates and merges; every other runtime declares no isolation primitive, and forcing `use_worktrees: true` there still fails closed before any executor dispatch (#1515, #1521). See [Executor isolation per runtime](#executor-isolation-per-runtime). |
 | `workflow.worktree_skip_hooks` | boolean | `false` | When `true`, executor agents in worktree mode pass `--no-verify` (skipping pre-commit hooks) and post-wave hook validation runs against the merged result instead. Opt-in escape hatch for projects whose hooks cannot run in agent worktrees. Default `false` runs hooks on every commit (#2924). |
 | `workflow.code_review` | boolean | `true` | Enable `/gsd-code-review` and `/gsd-code-review --fix` commands. When `false`, the commands exit with a configuration gate message. Added in v1.34 |
 | `workflow.code_review_depth` | string | `standard` | Default review depth for `/gsd-code-review`: `quick` (pattern-matching only), `standard` (per-file analysis), or `deep` (cross-file with import graphs). Can be overridden per-run with `--depth=`. Added in v1.34 |
@@ -346,6 +346,24 @@ All workflow toggles follow the **absent = enabled** pattern. If a key is missin
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `worktree.baseRef` | string | (unset) | Controls which ref the worktree-based parallel executor uses as the base when creating new phase/wave worktrees. When unset, the executor bases new worktrees on the repository default branch (`origin/HEAD`); if the current branch has diverged, execute-phase auto-degrades to sequential execution rather than halting (as of v1.4.0). Set to `"head"` to base new worktrees on the local `HEAD` instead — the appropriate choice when working on a branch that has diverged from the default branch, as it prevents the exit-42 base-mismatch halt and allows wave-based parallel execution to proceed normally. See [Fix the worktree base-mismatch (exit 42) error](how-to/fix-worktree-base-mismatch.md). |
+
+### Executor isolation per runtime
+
+When `/gsd-execute-phase` runs a wave containing several independent plans, it can execute them concurrently — but only if the runtime can keep each executor isolated. Two executors sharing one checkout race on files, git state, hooks, and `.planning/`. Which runtimes can do this is a **declared capability** (`dispatch.isolation`), not a hardcoded list, so the scheduler behaves the same way for every host that declares the same value.
+
+| Isolation | Runtimes | What happens |
+|---|---|---|
+| `harness-worktree` | `claude`, `cursor` | The runtime's own harness creates and binds a git worktree per executor. GSD passes the host's isolation flag and runs no git itself. |
+| `orchestrator-worktree` | `codex`, `opencode`, `kimi`, `kimi-code` | The runtime has no harness-native isolation, but exposes a headless exec that accepts a working directory. **GSD** creates the worktree, spawns each executor into it, then validates and merges the result. All git operations are performed by GSD, never by the sandboxed executor. |
+| `none` | every other runtime | No isolation primitive — plans in a wave run sequentially. Setting `workflow.use_worktrees: true` here fails closed before any executor is dispatched. |
+
+You do not configure this directly: set `workflow.use_worktrees` and GSD negotiates the rest. `use_worktrees: false` forces sequential execution on **every** runtime, including the ones that support isolation. An unknown or undeclared isolation value always degrades to sequential — GSD never guesses its way into an unisolated parallel run.
+
+To see what your current runtime negotiated:
+
+```bash
+gsd-tools query dispatch-isolation --json
+```
 
 ## Code Quality Settings
 

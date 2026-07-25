@@ -78,7 +78,8 @@
     "orchestratorExec": {
       "command": "codex",
       "args": ["exec"],
-      "cwdFlag": "--cd"
+      "cwdFlag": "--cd",
+      "promptFlag": null
     },
     "hostBehaviors": {
       "reapplyCommand": "$gsd-update --reapply",

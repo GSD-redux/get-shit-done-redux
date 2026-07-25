@@ -80,8 +80,9 @@
     },
     "orchestratorExec": {
       "command": "kimi",
-      "args": [],
-      "cwdFlag": "--work-dir"
+      "args": ["--print"],
+      "cwdFlag": "--work-dir",
+      "promptFlag": "--prompt"
     },
     "hostBehaviors": {
       "reapplyCommand": "/skill:gsd-update --reapply",

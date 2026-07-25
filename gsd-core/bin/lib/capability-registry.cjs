@@ -517,6 +517,7 @@ const capabilities = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "harnessIsolationFlag": "isolation=\"worktree\"",
       "hostBehaviors": {
         "attributionSource": "settings-json-commit",
         "authorsCanonicalWorkflow": true,
@@ -955,7 +956,8 @@ const capabilities = {
         "args": [
           "exec"
         ],
-        "cwdFlag": "--cd"
+        "cwdFlag": "--cd",
+        "promptFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -1165,6 +1167,7 @@ const capabilities = {
         "runtime": "node",
         "effortSurface": "undocumented"
       },
+      "harnessIsolationFlag": "--worktree",
       "hostBehaviors": {
         "reapplyCommand": "gsd-update --reapply (mention the skill name)",
         "frontmatterDialect": "cursor",
@@ -1762,8 +1765,11 @@ const capabilities = {
       },
       "orchestratorExec": {
         "command": "kimi",
-        "args": [],
-        "cwdFlag": "--work-dir"
+        "args": [
+          "--print"
+        ],
+        "cwdFlag": "--work-dir",
+        "promptFlag": "--prompt"
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -1851,9 +1857,10 @@ const capabilities = {
         "runtime": "node"
       },
       "orchestratorExec": {
-        "command": "kimi-code",
+        "command": "kimi",
         "args": [],
-        "cwdFlag": null
+        "cwdFlag": null,
+        "promptFlag": "--prompt"
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -2184,7 +2191,8 @@ const capabilities = {
         "args": [
           "run"
         ],
-        "cwdFlag": "--dir"
+        "cwdFlag": "--dir",
+        "promptFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "/gsd-update --reapply",
@@ -4414,6 +4422,7 @@ const runtimes = {
         "runtime": "node",
         "effortSurface": "argv"
       },
+      "harnessIsolationFlag": "isolation=\"worktree\"",
       "hostBehaviors": {
         "attributionSource": "settings-json-commit",
         "authorsCanonicalWorkflow": true,
@@ -4703,7 +4712,8 @@ const runtimes = {
         "args": [
           "exec"
         ],
-        "cwdFlag": "--cd"
+        "cwdFlag": "--cd",
+        "promptFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "$gsd-update --reapply",
@@ -4913,6 +4923,7 @@ const runtimes = {
         "runtime": "node",
         "effortSurface": "undocumented"
       },
+      "harnessIsolationFlag": "--worktree",
       "hostBehaviors": {
         "reapplyCommand": "gsd-update --reapply (mention the skill name)",
         "frontmatterDialect": "cursor",
@@ -5215,8 +5226,11 @@ const runtimes = {
       },
       "orchestratorExec": {
         "command": "kimi",
-        "args": [],
-        "cwdFlag": "--work-dir"
+        "args": [
+          "--print"
+        ],
+        "cwdFlag": "--work-dir",
+        "promptFlag": "--prompt"
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -5304,9 +5318,10 @@ const runtimes = {
         "runtime": "node"
       },
       "orchestratorExec": {
-        "command": "kimi-code",
+        "command": "kimi",
         "args": [],
-        "cwdFlag": null
+        "cwdFlag": null,
+        "promptFlag": "--prompt"
       },
       "hostBehaviors": {
         "reapplyCommand": "/skill:gsd-update --reapply",
@@ -5413,7 +5428,8 @@ const runtimes = {
         "args": [
           "run"
         ],
-        "cwdFlag": "--dir"
+        "cwdFlag": "--dir",
+        "promptFlag": null
       },
       "hostBehaviors": {
         "reapplyCommand": "/gsd-update --reapply",

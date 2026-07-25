@@ -82,6 +82,7 @@
       "runtime": "node",
       "effortSurface": "argv"
     },
+    "harnessIsolationFlag": "isolation=\"worktree\"",
     "hostBehaviors": {
       "attributionSource": "settings-json-commit",
       "authorsCanonicalWorkflow": true,

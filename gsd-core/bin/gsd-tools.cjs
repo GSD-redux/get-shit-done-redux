@@ -1187,6 +1187,96 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           }
   }
 
+  function routeDispatchIsolation({ args, cwd, raw, error }) {
+    // #2584 Phase 3 (#2627): typed query exposing the negotiated
+    // `dispatch.isolation` to the execute-phase wave scheduler, so the
+    // scheduler branches on a declared capability instead of on a runtime id.
+    // Direct sibling of `dispatch-should-flatten` above, which exists (#1708 /
+    // #853) for exactly this reason — it replaced a `RUNTIME === 'codex'`
+    // prose rule.
+    //
+    // Resolves the current runtime (GSD_RUNTIME > config.runtime > 'claude'),
+    // reads registry.runtimes[id].runtime.hostIntegration.dispatch.isolation,
+    // and validates it against the closed vocabulary.
+    //
+    // Fail-closed: unknown runtime, missing/undeclared/out-of-vocabulary value,
+    // or any thrown error yields `none` — sequential execution, never an
+    // unsafe parallel path (ADR-1239, "Fail-closed").
+    //
+    // Output:
+    //   --raw   → prints exactly harness-worktree | orchestrator-worktree | none
+    //   --json  → prints { runtime, isolation, exec }
+    //   default → same as --raw
+    //
+    // `exec` is the resolved orchestratorExec argv/cwd shape, present only for
+    // `orchestrator-worktree`. It requires `--cwd-target` (the GSD-created
+    // worktree path) and optionally `--prompt`; without a target there is
+    // nothing to bind, so `exec` is null.
+    const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+    let isolation = 'none';
+    let runtimeId = null;
+    let exec = null;
+    let harnessFlag = null;
+    try {
+      const { resolveRuntime } = require('./lib/runtime-slash.cjs');
+      runtimeId = resolveRuntime(cwd);
+
+      const registry = require('./lib/capability-registry.cjs');
+      const runtimeEntry = registry.runtimes != null
+        ? registry.runtimes[runtimeId]
+        : null;
+      const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
+      if (typeof declared === 'string' && VALID_ISOLATION.has(declared)) {
+        isolation = declared;
+      }
+
+      if (isolation === 'harness-worktree') {
+        const declaredFlag = runtimeEntry?.runtime?.harnessIsolationFlag ?? null;
+        // A host claiming harness isolation with no declared flag gives the
+        // scheduler nothing to pass — degrade to sequential rather than
+        // dispatch unisolated executors believing they are isolated.
+        if (typeof declaredFlag === 'string' && declaredFlag.length > 0) {
+          harnessFlag = declaredFlag;
+        } else {
+          isolation = 'none';
+        }
+      }
+
+      if (isolation === 'orchestrator-worktree') {
+        const cwdIdx = args.indexOf('--cwd-target');
+        const cwdTarget = cwdIdx !== -1 ? args[cwdIdx + 1] : '';
+        if (cwdTarget) {
+          const promptIdx = args.indexOf('--prompt');
+          const promptArg = promptIdx !== -1 ? args[promptIdx + 1] : undefined;
+          const hostIntegration = require('./lib/host-integration.cjs');
+          const resolution = hostIntegration.resolveOrchestratorExec(
+            runtimeEntry?.runtime?.orchestratorExec,
+            cwdTarget,
+            promptArg,
+          );
+          // A host declaring orchestrator-worktree whose exec descriptor does
+          // not resolve cannot be spawned — degrade to sequential rather than
+          // hand the scheduler an unusable command.
+          if (resolution.ok) {
+            exec = { command: resolution.command, args: resolution.args, cwd: resolution.cwd };
+          } else {
+            isolation = 'none';
+          }
+        }
+      }
+    } catch {
+      isolation = 'none';
+      exec = null;
+      harnessFlag = null;
+    }
+
+    if (args.indexOf('--json') !== -1) {
+      output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
+    } else {
+      process.stdout.write(isolation);
+    }
+  }
+
   function routeResolveDispatchType({ args, cwd, raw, error }) {
     // #2508 Phase 4 Option A: resolve a requested GSD subagent name to the
            // type an Agent() call should use on the current runtime. On
@@ -2121,6 +2211,7 @@ const HOST_COMMAND_ROUTERS = {
     'quick-tasks-append': routeQuickTasksAppend,
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
+    'dispatch-isolation': routeDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
     'agent-skills': routeAgentSkills,
     'skill-manifest': routeSkillManifest,

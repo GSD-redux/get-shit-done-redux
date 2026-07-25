@@ -1337,7 +1337,7 @@ function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCm
 
   const manifestPath = flag('--manifest');
   if (!manifestPath) {
-    writeErr('Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha>\n');
+    writeErr('Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> [--root <dir>]\n');
     process.exitCode = 2;
     return { ok: false, reason: 'usage' };
   }
@@ -1408,6 +1408,40 @@ function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCm
     write(`${JSON.stringify({ ok: false, reason: plan.reason, hint: plan.hint }, null, 2)}\n`);
     process.exitCode = 1;
     return { ok: false, reason: plan.reason, hint: plan.hint };
+  }
+
+  // 3b. Optional root confinement (#2627, Phase 3 — the confinement Phase 2
+  //     deferred here from planWorktreeCreate's path-traversal guard).
+  //     planWorktreeCreate rejects a literal ".." SEGMENT, but a plain absolute
+  //     path outside the project contains no ".." and passes. Phase 3 makes the
+  //     orchestrator SPAWN executor processes into these paths, so an
+  //     unconfined --path is a write primitive aimed anywhere on the filesystem.
+  //
+  //     The root is DECLARED by the caller (`--root`) rather than inferred: agent
+  //     worktrees legitimately live outside the orchestrator's own root (a lane
+  //     orchestrator creates siblings under the repo's .claude/worktrees/), so
+  //     there is no layout this module could derive without guessing. Absent
+  //     `--root` the behavior is exactly as shipped in Phase 2 — the
+  //     orchestrator-worktree scheduler path always passes it.
+  //
+  //     Lexical by design: the worktree does not exist yet, so there is nothing
+  //     to realpath, and resolving only the root would not close a symlinked-leaf
+  //     hole. Pairs with the leading-dash and ".."-segment guards above.
+  const rootFlag = flag('--root');
+  if (rootFlag) {
+    const absRoot = path.resolve(cwd, rootFlag);
+    const absWorktree = path.resolve(cwd, plan.entry.worktree_path);
+    const rel = path.relative(absRoot, absWorktree);
+    // rel === ''           → the worktree IS the root (would clobber the checkout)
+    // rel === '..' / '../…' → escapes the root
+    // path.isAbsolute(rel) → a different Windows drive or UNC root
+    if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      const hint = `--path must resolve INSIDE --root (root="${absRoot}", path="${absWorktree}"). A worktree outside the declared root is unreachable by manifest-scoped cleanup and would let a spawned executor write outside the project.`;
+      writeErr(`[gsd] worktree.create: path_outside_root — ${hint}\n`);
+      write(`${JSON.stringify({ ok: false, reason: 'path_outside_root', hint }, null, 2)}\n`);
+      process.exitCode = 1;
+      return { ok: false, reason: 'path_outside_root', hint };
+    }
   }
 
   // 4. Compute the deduped final manifest STRING in memory now — the ONLY

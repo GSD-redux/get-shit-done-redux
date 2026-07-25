@@ -1366,7 +1366,29 @@ function validateRuntimeBody(cap) {
           'runtime.orchestratorExec.cwdFlag must be a string or null (got: ' + JSON.stringify(oe.cwdFlag) + ')',
         );
       }
+
+      // promptFlag — optional; string or null (#2627, Phase 3). `null`/absent
+      // means the host takes the executor prompt positionally (codex, opencode);
+      // a string names the flag that carries it (kimi/kimi-code: --prompt).
+      if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
+        errors.push(
+          'runtime.orchestratorExec.promptFlag must be a string or null (got: ' + JSON.stringify(oe.promptFlag) + ')',
+        );
+      }
     }
+  }
+
+  // harnessIsolationFlag — ADR-1239 Codex-binding amendment (#2584), Phase 3
+  // (#2627). OPTIONAL top-level field: the counterpart of orchestratorExec for
+  // `dispatch.isolation: 'harness-worktree'` hosts, naming the host's OWN
+  // isolation flag that GSD passes on dispatch (claude: isolation="worktree";
+  // cursor: --worktree). Descriptor data so the scheduler passes a declared
+  // token instead of branching on a runtime id (ADR-1239: "the per-host
+  // dispatch invocation ... is descriptor data, not a scheduler branch").
+  if (r.harnessIsolationFlag !== undefined && (typeof r.harnessIsolationFlag !== 'string' || r.harnessIsolationFlag.length === 0)) {
+    errors.push(
+      'runtime.harnessIsolationFlag must be a non-empty string (got: ' + JSON.stringify(r.harnessIsolationFlag) + ')',
+    );
   }
 
   // GATE A: installSurface ↔ hooksSurface consistency (DEFECT.GENERATIVE-FIX)

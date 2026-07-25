@@ -755,6 +755,7 @@ interface OrchestratorExec {
   command: string;
   args?: string[];
   cwdFlag?: string | null;
+  promptFlag?: string | null;
 }
 
 type OrchestratorExecResolution =
@@ -762,8 +763,8 @@ type OrchestratorExecResolution =
   | { ok: false; reason: string };
 
 /**
- * Resolve an `orchestratorExec` descriptor + target cwd into a concrete
- * argv/cwd shape for a process-spawn primitive.
+ * Resolve an `orchestratorExec` descriptor + target cwd (+ optional executor
+ * prompt) into a concrete argv/cwd shape for a process-spawn primitive.
  *
  * Fail-closed: never throws, always returns a discriminated result. When
  * `cwdFlag` is a non-empty string, `[cwdFlag, cwd]` is appended to `args`
@@ -771,8 +772,23 @@ type OrchestratorExecResolution =
  * absent (e.g. kimi-code, which binds via the spawned process's own cwd —
  * "process-cwd" case), no flag is appended and `cwd` is returned for the
  * caller to bind via the subprocess's own working-directory option.
+ *
+ * Prompt passing (Phase 3, #2627) is descriptor data for the same reason the
+ * cwd flag is: the confirmed `orchestrator-worktree` hosts disagree on the
+ * shape. `codex exec "<prompt>"` and `opencode run "<prompt>"` take it
+ * positionally; `kimi --print --prompt "<p>"` and Kimi Code's `kimi -p "<p>"`
+ * take a flag. Encoding that as `promptFlag` keeps the scheduler free of the
+ * per-host branch ADR-1239 exists to remove. Omit `prompt` entirely and the
+ * resolution is byte-identical to Phase 2's (the unconsumed-resolver shape).
+ *
+ * Argv order is base args → cwd flag → prompt, so the prompt stays the final
+ * positional token for the hosts that read it that way.
  */
-function resolveOrchestratorExec(orchestratorExec: OrchestratorExec | undefined, cwd: string): OrchestratorExecResolution {
+function resolveOrchestratorExec(
+  orchestratorExec: OrchestratorExec | undefined,
+  cwd: string,
+  prompt?: string,
+): OrchestratorExecResolution {
   if (!orchestratorExec || typeof orchestratorExec !== 'object' || Array.isArray(orchestratorExec)) {
     return { ok: false, reason: 'missing_command' };
   }
@@ -789,11 +805,27 @@ function resolveOrchestratorExec(orchestratorExec: OrchestratorExec | undefined,
   if (oe.cwdFlag !== undefined && oe.cwdFlag !== null && typeof oe.cwdFlag !== 'string') {
     return { ok: false, reason: 'invalid_cwd_flag' };
   }
+  if (oe.promptFlag !== undefined && oe.promptFlag !== null && typeof oe.promptFlag !== 'string') {
+    return { ok: false, reason: 'invalid_prompt_flag' };
+  }
+  // An executor spawned with no instruction is a hang, not a degraded run —
+  // fail closed rather than launching a prompt-less process.
+  if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length === 0)) {
+    return { ok: false, reason: 'invalid_prompt' };
+  }
 
   const baseArgs = Array.isArray(oe.args) ? [...oe.args] : [];
   const args = typeof oe.cwdFlag === 'string' && oe.cwdFlag.length > 0
     ? [...baseArgs, oe.cwdFlag, cwd]
     : baseArgs;
+
+  if (typeof prompt === 'string') {
+    if (typeof oe.promptFlag === 'string' && oe.promptFlag.length > 0) {
+      args.push(oe.promptFlag, prompt);
+    } else {
+      args.push(prompt);
+    }
+  }
 
   return { ok: true, command: oe.command, args, cwd };
 }

@@ -90,7 +90,8 @@
     "orchestratorExec": {
       "command": "opencode",
       "args": ["run"],
-      "cwdFlag": "--dir"
+      "cwdFlag": "--dir",
+      "promptFlag": null
     },
     "hostBehaviors": {
       "reapplyCommand": "/gsd-update --reapply",

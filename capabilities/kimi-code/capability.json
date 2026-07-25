@@ -74,9 +74,10 @@
       "runtime": "node"
     },
     "orchestratorExec": {
-      "command": "kimi-code",
+      "command": "kimi",
       "args": [],
-      "cwdFlag": null
+      "cwdFlag": null,
+      "promptFlag": "--prompt"
     },
     "hostBehaviors": {
       "reapplyCommand": "/skill:gsd-update --reapply",

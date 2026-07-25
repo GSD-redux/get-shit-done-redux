@@ -1330,6 +1330,77 @@ describe('cmdWorktreeCreate', () => {
     assert.match(out.join(''), /"ok": true/);
   });
 
+  // #2627 Phase 3: --root confines the created worktree. Absent the flag the
+  // behavior is exactly Phase 2's (every test above passes unchanged); the
+  // orchestrator-worktree scheduler path always passes it, because Phase 3 is
+  // what starts SPAWNING processes into these directories.
+  describe('--root confinement', () => {
+    const rootedArgs = (wtPath, root) => [
+      '--manifest', 'manifest.json',
+      '--agent-id', 'a1',
+      '--path', wtPath,
+      '--branch', 'worktree-agent-a1',
+      '--base', 'abc123',
+      '--root', root,
+    ];
+
+    function run(args) {
+      const out = [];
+      let gitCalled = false;
+      const result = withExitCode(() => cmdWorktreeCreate('/repo/main', args, {
+        readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+        writeFile: () => {},
+        write: (s) => out.push(s),
+        writeErr: () => {},
+        execGit: () => { gitCalled = true; return { exitCode: 0, stdout: '', stderr: '', timedOut: false }; },
+      }));
+      return { result, out: out.join(''), gitCalled };
+    }
+
+    test('a path inside --root is accepted', () => {
+      const { result } = run(rootedArgs('/repo/main/.claude/worktrees/agent-a1', '/repo/main'));
+      assert.equal(result.ok, true);
+      assert.equal(result.reason, 'created');
+    });
+
+    test('a sibling path OUTSIDE --root is rejected before any git runs', () => {
+      const { result, gitCalled } = run(rootedArgs('/repo/.claude/worktrees/agent-a1', '/repo/main'));
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'path_outside_root');
+      assert.equal(gitCalled, false, 'confinement must reject BEFORE the git side effect');
+    });
+
+    test('an arbitrary absolute path is rejected (the hole a ".."-segment check cannot see)', () => {
+      const { result } = run(rootedArgs('/etc/gsd-evil', '/repo/main'));
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'path_outside_root');
+    });
+
+    test('a path EQUAL to --root is rejected (would clobber the checkout)', () => {
+      const { result } = run(rootedArgs('/repo/main', '/repo/main'));
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'path_outside_root');
+    });
+
+    test('a sibling whose name merely PREFIXES the root is rejected (not a substring check)', () => {
+      // '/repo/main-evil' starts with '/repo/main' textually but is not inside it.
+      const { result } = run(rootedArgs('/repo/main-evil/wt', '/repo/main'));
+      assert.equal(result.ok, false);
+      assert.equal(result.reason, 'path_outside_root');
+    });
+
+    test('omitting --root preserves Phase-2 behavior (no confinement)', () => {
+      const { result } = run([
+        '--manifest', 'manifest.json',
+        '--agent-id', 'a1',
+        '--path', '/repo/.claude/worktrees/agent-a1',
+        '--branch', 'worktree-agent-a1',
+        '--base', 'abc123',
+      ]);
+      assert.equal(result.ok, true, 'no --root → unchanged Phase-2 acceptance');
+    });
+  });
+
   test('boundary: appending to a manifest with 1 existing entry yields 2', () => {
     let writtenContent = null;
     const result = cmdWorktreeCreate('/repo/main', okArgs, {
