@@ -64,9 +64,10 @@ const PHASE_NUMBER_TOKEN_SOURCE = '\\d+[A-Z]?(?:\\.\\d+)*';
 // trailing grammar (letter suffixes, dotted sub-phases, segment boundaries).
 // POLICY (locked by boundary tests): sub-phase/plan numbers ≥100 are out of the
 // dir-token grammar — the LEADING phase number stays unbounded (`\d+`), only
-// continuation segments are width-capped. Shared from here so the five #2043
+// continuation segments are pure two-digit segments, with an alphanumeric
+// boundary when embedded in another regex. Shared from here so the five #2043
 // call sites cannot drift independently (see scripts/lint-phase-id-drift.cjs).
-const PHASE_CONTINUATION_SEGMENT_SOURCE = '\\d{2}(?!\\d)';
+const PHASE_CONTINUATION_SEGMENT_SOURCE = '\\d{2}(?![\\dA-Za-z])';
 const PHASE_CONTINUATION_SEGMENT_PREFIX_RE = new RegExp(`^${PHASE_CONTINUATION_SEGMENT_SOURCE}`);
 function isPhaseContinuationSegment(seg: string): boolean {
   return PHASE_CONTINUATION_SEGMENT_PREFIX_RE.test(seg);

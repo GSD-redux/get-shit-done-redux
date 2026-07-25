@@ -34,6 +34,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
 const validate = require('../gsd-core/bin/lib/validate.cjs');
@@ -72,6 +73,7 @@ describe('#2232 continuation-grammar parity — owner vs. corpus', () => {
     assert.ok(re.test('02'), 'the 2-digit form must match');
     assert.ok(!re.test('2026'), 'a 4-digit run must not match');
     assert.ok(!re.test('6'), 'a 1-digit run must not match');
+    assert.ok(!re.test('10x'), 'a digit-plus-letter slug word must not match');
   });
 });
 
@@ -134,6 +136,7 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
       ['10-24-7-autonomy', '10'],
       ['05-80-20-25abc', '05-80-20'],
       ['14-06-2026-photos-and-performance', '14-06'],
+      ['14-10x-growth', '14'],
     ];
     for (const [dir, expected] of cases) {
       assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
@@ -143,6 +146,30 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
         `PHASE_TOKEN_FROM_DIR_RE diverged from extractPhaseToken for ${dir}`,
       );
     }
+  });
+
+  test('#2528: digit-plus-letter slug words preserve owner/regex parity', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 99 }),
+        fc.integer({ min: 10, max: 99 }),
+        fc.string({
+          unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyz'),
+          minLength: 1,
+          maxLength: 8,
+        }),
+        (phase, digits, letters) => {
+          const expected = String(phase).padStart(2, '0');
+          const dir = `${expected}-${digits}${letters}-growth`;
+          assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
+          assert.strictEqual(
+            validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+            expected,
+            `PHASE_TOKEN_FROM_DIR_RE diverged from extractPhaseToken for ${dir}`,
+          );
+        },
+      ),
+    );
   });
 });
 
