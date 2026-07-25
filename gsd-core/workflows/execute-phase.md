@@ -754,10 +754,12 @@ increases monotonically across waves. `{status}` is `complete` (success),
    First build the executor prompt. It is the **same prompt text the harness path's `Agent()` call uses**, with the harness-only framing removed — drop the `<worktree_branch_check>` build-time embed note and the `<parallel_execution>` harness block, keep `<objective>`, the execution context, and `<success_criteria>` verbatim. Assign it to a shell variable so it can be passed as one argument:
 
    ```bash
-   # Compose the executor prompt for THIS plan. Heredoc (quoted delimiter) so no
-   # shell expansion mangles the prompt body.
-   EXECUTOR_PROMPT=$(cat <<'GSD_PROMPT_EOF'
-   <objective>
+   # Compose the executor prompt for THIS plan. Single-quoted multi-line
+   # assignment (NOT a heredoc): these blocks are indented inside the workflow,
+   # and a heredoc terminator must sit at column 0 — `<<-` strips only tabs, not
+   # the leading spaces, so a heredoc here would never terminate. Single quotes
+   # also stop the shell expanding anything in the prompt body.
+   EXECUTOR_PROMPT='<objective>
    Execute plan {plan_number} of phase {phase_number}-{phase_name}.
    Commit each task atomically. Create SUMMARY.md.
    Do NOT update STATE.md or ROADMAP.md — the orchestrator owns those writes after all worktree agents in the wave complete.
@@ -765,21 +767,21 @@ increases monotonically across waves. `{status}` is `complete` (success),
 
    <execution_context>
    You are running as an executor in a git worktree GSD created for you. Your
-   working directory IS that worktree — do not cd elsewhere, and do not run any
+   working directory IS that worktree. Do not cd elsewhere, and do not run any
    git command that targets the main checkout. Use normal git commits WITH hooks.
    Do NOT use --no-verify.
-   REQUIRED ORDER: Write SUMMARY.md → commit → only then any narration.
+   REQUIRED ORDER: Write SUMMARY.md, commit, then any narration.
    </execution_context>
 
    <success_criteria>
    - [ ] All tasks executed
    - [ ] Each task committed individually
    - [ ] SUMMARY.md created AND committed in the plan directory
-   </success_criteria>
-   GSD_PROMPT_EOF
-   )
+   </success_criteria>'
    [ -n "$EXECUTOR_PROMPT" ] || { echo "FATAL: executor prompt is empty for plan {plan_number}." >&2; exit 1; }
    ```
+
+   The prompt body must contain no single-quote character, since the assignment above is single-quoted; keep apostrophes out of it when editing.
 
    Then create the worktree and resolve the spawn:
 
