@@ -2912,16 +2912,27 @@ describe('bug-3707: startup orphan sweep is wired into workflow entry points', (
     );
   });
 
-  test('execute-phase.md calls worktree.reap-orphans at startup when USE_WORKTREES is not false', () => {
-    const content = fs.readFileSync(EXECUTE_PHASE_PATH, 'utf8');
+  test('execute-phase.md calls worktree.reap-orphans at startup, guarded by the isolation decision', () => {
+    // #2584 Phase 3 (#2627): the startup sweep moved into the isolation-dispatch
+    // fragment alongside the ISOLATION resolution it is guarded by (the host
+    // workflow keeps only a pointer, per the ADR-857 byte budget). The guard is
+    // now `ISOLATION != none`, which USE_WORKTREES=false forces — so the #3707
+    // protection is unchanged, just keyed one level up.
+    const ISOLATION_FRAGMENT_PATH = path.join(
+      __dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'executor-isolation-dispatch.md',
+    );
+    const content = fs.readFileSync(EXECUTE_PHASE_PATH, 'utf8')
+      + fs.readFileSync(ISOLATION_FRAGMENT_PATH, 'utf8');
     assert.ok(
       content.includes('worktree.reap-orphans'),
-      'execute-phase.md must call gsd-sdk query worktree.reap-orphans at startup'
+      'execute-phase must call gsd-sdk query worktree.reap-orphans at startup'
     );
     assert.ok(
       /USE_WORKTREES.*!=.*false[\s\S]{0,200}worktree\.reap-orphans/m.test(content) ||
-      /worktree\.reap-orphans[\s\S]{0,200}USE_WORKTREES.*!=.*false/m.test(content),
-      'execute-phase.md startup sweep must be guarded by USE_WORKTREES != false'
+      /worktree\.reap-orphans[\s\S]{0,200}USE_WORKTREES.*!=.*false/m.test(content) ||
+      /ISOLATION.*!=.*none[\s\S]{0,200}worktree\.reap-orphans/m.test(content) ||
+      /worktree\.reap-orphans[\s\S]{0,200}ISOLATION.*!=.*none/m.test(content),
+      'execute-phase startup sweep must be guarded by USE_WORKTREES != false or ISOLATION != none'
     );
   });
 
