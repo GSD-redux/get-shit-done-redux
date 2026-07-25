@@ -111,7 +111,7 @@
     "lint:test-file-count": "node scripts/lint-test-file-count.cjs",
     "lint:pr-checks": "node scripts/lint-pr-check-project-dir.cjs",
     "lint:changeset": "node scripts/changeset/lint.cjs",
-    "lint:generated-sync": "node scripts/gen-capability-registry.cjs --check && node scripts/gen-loop-host-contract.cjs --check && node scripts/gen-capability-matrix.cjs --check && node scripts/sync-manifest-versions.cjs --check && node scripts/gen-inventory-manifest.cjs --check && node scripts/generate-package-identity.cjs --check && node scripts/gen-plugin-skills.cjs --check && node scripts/gen-registry.cjs --check && node scripts/gen-adr-index.cjs --check && node scripts/check-glossary-refs.cjs --check",
+    "lint:generated-sync": "node scripts/gen-capability-registry.cjs --check && node scripts/gen-loop-host-contract.cjs --check && node scripts/gen-capability-matrix.cjs --check && node scripts/sync-manifest-versions.cjs --check && node scripts/gen-inventory-manifest.cjs --check && node scripts/generate-package-identity.cjs --check && node scripts/gen-plugin-skills.cjs --check && node scripts/gen-registry.cjs --check && node scripts/gen-adr-index.cjs --check && node scripts/check-glossary-refs.cjs --check && node scripts/lint-compiled-artifact-sync.cjs --check",
     "lint:docs": "node scripts/lint-docs-required.cjs",
     "lint:legacy-name": "node scripts/lint-legacy-dir-name.cjs",
     "ci:test-scope": "node scripts/ci-test-scope.cjs",
