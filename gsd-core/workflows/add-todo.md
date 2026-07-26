@@ -151,12 +151,12 @@ If `.planning/STATE.md` exists:
 4. Render one physical line per pending todo using this exact shape:
 
 ```markdown
-- [YYYY-MM-DD] [area] Title — [todo file](.planning/todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
+- [YYYY-MM-DD] [area] Title — [todo file](todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
 ```
 
 Formatting rules:
 - Use the first 10 characters of `created` for `YYYY-MM-DD`; if unavailable, use the date prefix from `file`.
-- Build the repository-relative link as `.planning/todos/pending/{file}`; never write the absolute `path` from init context.
+- Build the link as `todos/pending/{file}` so it resolves from `.planning/STATE.md` to `.planning/todos/pending/{file}`; never write the absolute `path` from init context.
 - Start the final clause with `Needs` and keep it to one short sentence. Collapse embedded newlines to spaces.
 - Never concatenate multiple todos onto one line.
 - If the refreshed `todo_count` is 0, replace the section body with `None yet.`.

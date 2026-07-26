@@ -69,8 +69,8 @@ Recent decisions affecting current work:
 
 <!-- Keep one compact pointer per pending todo on one physical line.
 Canonical format:
-- [YYYY-MM-DD] [area] Title — [todo file](.planning/todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
-Use a repository-relative link and a short "Needs ..." clause. Never copy multiline todo content here.
+- [YYYY-MM-DD] [area] Title — [todo file](todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
+Use a link relative to .planning/STATE.md and a short "Needs ..." clause. Never copy multiline todo content here.
 -->
 
 None yet.
@@ -169,7 +169,7 @@ Updated after each plan completion.
 **Decisions:** Reference to PROJECT.md Key Decisions table, plus recent decisions summary for quick access. Full decision log lives in PROJECT.md.
 
 **Pending Todos:** Ideas captured via /gsd-add-todo
-- One compact pointer per pending todo, with creation date, area, title, and a repository-relative file link
+- One compact pointer per pending todo, with creation date, area, title, and a STATE.md-relative file link
 - One short "Needs ..." clause summarizing the unresolved problem or next step
 - `None yet.` when no pending todos remain
 

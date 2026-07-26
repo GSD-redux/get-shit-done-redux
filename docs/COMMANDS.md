@@ -1574,7 +1574,7 @@ Capture ideas, tasks, notes, and seeds to their appropriate destination. Default
 **STATE.md output:** Pending todos are refreshed as one compact pointer per physical line, with creation date, area, title, repository-relative todo link, and a short `Needs ...` clause:
 
 ```markdown
-- [2026-07-26] [auth] Add auth token refresh — [todo file](.planning/todos/pending/2026-07-26-add-auth-token-refresh.md) — Needs define retry behavior.
+- [2026-07-26] [auth] Add auth token refresh — [todo file](todos/pending/2026-07-26-add-auth-token-refresh.md) — Needs define retry behavior.
 ```
 
 **Produces:** `.planning/todos/` (default), note files (--note), ROADMAP.md backlog section (--backlog), `.planning/seeds/SEED-NNN-slug.md` (--seed)

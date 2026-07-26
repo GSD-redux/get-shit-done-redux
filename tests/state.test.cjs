@@ -30,7 +30,7 @@ describe('enhancement #2618 — compact Pending Todos pointers', () => {
     checkTodos: path.join(__dirname, '..', 'gsd-core', 'workflows', 'check-todos.md'),
   };
   const canonicalExemplar =
-    '- [YYYY-MM-DD] [area] Title — [todo file](.planning/todos/pending/YYYY-MM-DD-slug.md) — Needs next step.';
+    '- [YYYY-MM-DD] [area] Title — [todo file](todos/pending/YYYY-MM-DD-slug.md) — Needs next step.';
 
   function readProductFile(filePath) {
     return fs.readFileSync(filePath, 'utf8');
@@ -56,6 +56,13 @@ describe('enhancement #2618 — compact Pending Todos pointers', () => {
     assert.equal(
       extractPointerExemplar(template, 'state template'),
       canonicalExemplar,
+    );
+
+    const href = canonicalExemplar.match(/\[todo file\]\(([^)]+)\)/)?.[1];
+    assert.equal(
+      path.posix.normalize(path.posix.join('.planning', href)),
+      '.planning/todos/pending/YYYY-MM-DD-slug.md',
+      'the link must resolve from .planning/STATE.md to the pending todo file',
     );
   });
 

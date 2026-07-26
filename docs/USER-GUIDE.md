@@ -321,7 +321,7 @@ Use `/gsd-capture` to park a task or idea without interrupting the current sessi
 The full context lives in `.planning/todos/pending/`. STATE.md keeps a compact, diff-friendly pointer for each pending todo:
 
 ```markdown
-- [2026-07-26] [auth] Add auth token refresh — [todo file](.planning/todos/pending/2026-07-26-add-auth-token-refresh.md) — Needs define retry behavior.
+- [2026-07-26] [auth] Add auth token refresh — [todo file](todos/pending/2026-07-26-add-auth-token-refresh.md) — Needs define retry behavior.
 ```
 
 Each pointer stays on one physical line. Capturing or completing a todo refreshes the whole Pending Todos section; when the list is empty, it reads `None yet.`. Browse and act on the full list with `/gsd-capture --list`.
