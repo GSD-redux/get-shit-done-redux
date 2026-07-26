@@ -112,6 +112,40 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
     }
   });
 
+  test('ship.md decides the verification gate on a single verification.status read', () => {
+    // Pre-fix, ship.md captured verification.status ONCE and picked three fields
+    // off the cached JSON with jq. --pick takes a single field, so a naive
+    // conversion issues three queries up front — 3x the spawn cost on the common
+    // passing path, and three reads that are not guaranteed to observe the same
+    // state. The gate must read `status` once and decide; the two message-only
+    // fields belong on the blocking path.
+    const content = readWorkflow('ship.md');
+    assert.ok(content, 'ship.md must exist');
+
+    const statusIdx = content.indexOf('STATUS=$(gsd_run query verification.status');
+    assert.notEqual(statusIdx, -1, 'ship.md must read verification.status --pick status');
+
+    const picks = content.match(/gsd_run query verification\.status "\$\{PHASE_DIR\}" --pick (\w+)/g) || [];
+    assert.deepEqual(
+      picks.length,
+      3,
+      `ship.md should read status once plus the two message fields, found ${picks.length}`,
+    );
+
+    // The gate's own read must come first, and the message-only reads must both
+    // sit after the blocking prose — i.e. they are not on the passing path.
+    const blockIdx = content.indexOf('PHASE_VERIFICATION_INCOMPLETE');
+    assert.ok(blockIdx > statusIdx, 'the block decision must follow the status read');
+    for (const field of ['next_action', 'next_command']) {
+      const idx = content.indexOf(`--pick ${field}`);
+      assert.notEqual(idx, -1, `ship.md must still surface ${field}`);
+      assert.ok(
+        idx > blockIdx,
+        `${field} must be read only on the blocking path, not before the gate decides`,
+      );
+    }
+  });
+
   test('review.md still declares jq a prerequisite for the lanes that genuinely need it', () => {
     // Dropping the jq pipes from the CONFIG lookups must not drop the project's
     // jq-prerequisite declaration: the ollama / lm_studio / llama_cpp / opencode

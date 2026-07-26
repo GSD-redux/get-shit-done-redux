@@ -52,11 +52,19 @@ Verify the work is ready to ship:
 
 1. **Verification passed?**
    ```bash
+   # The gate decides on ONE read. --pick takes a single field, so the two
+   # human-facing fields are read only on the blocking path below — never on the
+   # passing path — rather than issuing three queries up front (#2589).
    STATUS=$(gsd_run query verification.status "${PHASE_DIR}" --pick status 2>/dev/null || echo "")
+   ```
+   Only `passed` may ship. If `$STATUS` is `passed`, verification is complete — continue to the next preflight check; do not read any further verification field.
+
+   Any other value (including `gaps_found`, `human_needed`, `missing`, and `unknown`) blocks with `PHASE_VERIFICATION_INCOMPLETE`. Only then, read the two message fields:
+   ```bash
    NEXT_ACTION=$(gsd_run query verification.status "${PHASE_DIR}" --pick next_action 2>/dev/null || echo "")
    NEXT_COMMAND=$(gsd_run query verification.status "${PHASE_DIR}" --pick next_command 2>/dev/null || echo "")
    ```
-   Only `passed` may ship. If `$STATUS` is `passed`, verification is complete — continue to the next preflight check. Any other value (including `gaps_found`, `human_needed`, `missing`, and `unknown`) blocks with `PHASE_VERIFICATION_INCOMPLETE`: present `$NEXT_ACTION` to the user and, when `$NEXT_COMMAND` is non-empty, show it as the command to run next. The query already handles missing files and unexpected values, so no per-status arm is needed.
+   Present `$NEXT_ACTION` to the user and, when `$NEXT_COMMAND` is non-empty, show it as the command to run next. These two are message text only — the block/allow decision has already been made from `$STATUS`, so a concurrent write between the reads cannot change the gate's verdict. The query already handles missing files and unexpected values, so no per-status arm is needed.
 
 2. **Clean working tree?**
    ```bash
