@@ -82,8 +82,9 @@ Then re-run: /gsd:plan-review-convergence {PHASE}
 if [ -z "$REVIEWER_FLAGS" ]; then
   DEFAULT_REVIEWERS_JSON=$(gsd_run query config-get review.default_reviewers 2>/dev/null || echo "")
   if ! command -v jq >/dev/null 2>&1; then
-    # jq is a documented production dependency (review.md:244 — "install jq if
-    # missing"). If it is absent we cannot inspect the configured default, so
+    # jq is a documented production dependency (review.md, detect_clis — the
+    # "jq-dependent reviewer lanes" note). If it is absent we cannot inspect
+    # the configured default (it is a JSON array, not a --raw/--pick scalar), so
     # fail safe with --codex and surface the reason rather than silently
     # reproducing the #2315 override under degraded conditions.
     echo "WARNING: jq not on PATH — cannot read review.default_reviewers; falling back to --codex (#2315)" >&2

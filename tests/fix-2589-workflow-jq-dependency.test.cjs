@@ -112,6 +112,43 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
     }
   });
 
+  test('review.md still declares jq a prerequisite for the lanes that genuinely need it', () => {
+    // Dropping the jq pipes from the CONFIG lookups must not drop the project's
+    // jq-prerequisite declaration: the ollama / lm_studio / llama_cpp / opencode
+    // / agy lanes parse HTTP + CLI JSON that gsd-tools does not emit, so they
+    // still hard-require jq. Removing the declaration (as the first cut of this
+    // fix did) leaves those lanes silently degrading on a jq-less host — the
+    // exact defect class #2589 exists to close.
+    const content = readWorkflow('review.md');
+    assert.ok(content, 'review.md must exist');
+    assert.match(
+      content,
+      /command -v jq >\/dev\/null 2>&1 && echo "jq:available" \|\| echo "jq:missing"/,
+      'review.md detect_clis must probe jq alongside the other reviewer prerequisites',
+    );
+    for (const lane of ['ollama', 'lm_studio', 'llama_cpp', 'opencode', 'antigravity']) {
+      assert.ok(
+        new RegExp(`jq-dependent reviewer lanes[\\s\\S]*\\b${lane}\\b`).test(content),
+        `review.md must name ${lane} as a jq-dependent lane`,
+      );
+    }
+  });
+
+  test('no workflow cites the jq prerequisite by a stale review.md line number', () => {
+    // plan-review-convergence.md used to cite "review.md:244". That anchor moved
+    // when the jq pipes were replaced, so cross-references must be by name.
+    for (const name of fs.readdirSync(WF).filter((f) => f.endsWith('.md'))) {
+      const content = readWorkflow(name);
+      if (content == null) continue;
+      const stale = content.match(/review\.md:\d+/g);
+      assert.deepEqual(
+        stale || [],
+        [],
+        `${name}: cite review.md by section name, not a line number (found ${JSON.stringify(stale)})`,
+      );
+    }
+  });
+
   test('resolve-execution lookups use --pick, not a jq pipe (sibling of resolve-model)', () => {
     // resolve-execution returns an object (model/profile/effort/effort_argv_string);
     // the native --pick <field> descends it — same defect class as resolve-model.

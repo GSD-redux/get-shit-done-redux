@@ -37,7 +37,32 @@ curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" >/dev/null 2>&1 && echo "lm_s
 LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_HOST" ] || [ "$LLAMA_CPP_HOST" = "null" ]; then LLAMA_CPP_HOST="http://localhost:8080"; fi
 curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" >/dev/null 2>&1 && echo "llama_cpp:available" || echo "llama_cpp:missing"
+
+# jq prerequisite (#2589). The config/model/budget lookups in this workflow no
+# longer need jq — they use the native --raw/--pick flags. But the lanes listed
+# under "jq-dependent reviewer lanes" below parse structured JSON that gsd-tools
+# does not emit (OpenAI-compatible /v1/chat/completions responses, opencode's
+# JSONL event stream, agy's conversation cache), so they cannot run without jq.
+# Probe it here rather than letting each lane swallow exit 127 into empty output.
+command -v jq >/dev/null 2>&1 && echo "jq:available" || echo "jq:missing"
 ```
+
+**jq-dependent reviewer lanes.** `jq` is a production prerequisite for the
+`ollama`, `lm_studio`, `llama_cpp`, `opencode`, and `antigravity` lanes only. If
+`detect_clis` reports `jq:missing`, treat those five as **undetected** — they
+follow the same "known-but-undetected" path as a missing CLI (info note, ignored;
+and if they were the only selected reviewers, fail with the actionable message
+below rather than producing an empty review). Tell the user to install jq:
+
+```
+NOTE: jq is not on PATH — the ollama, lm_studio, llama_cpp, opencode, and
+antigravity reviewer lanes are unavailable. Install jq (https://jqlang.org/download/)
+or select a lane that does not require it (--gemini, --claude, --codex,
+--coderabbit, --qwen, --cursor).
+```
+
+The remaining lanes (`gemini`, `claude`, `codex`, `coderabbit`, `qwen`, `cursor`)
+do not require jq and must stay selectable on a jq-less host.
 
 Parse flags from `$ARGUMENTS`:
 - `--gemini` → include Gemini
