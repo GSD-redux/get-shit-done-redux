@@ -75,11 +75,8 @@ AGENT_SKILLS_PLANNER=$(gsd_run query agent-skills gsd-planner)
 AGENT_SKILLS_CHECKER=$(gsd_run query agent-skills gsd-plan-checker)
 CONTEXT_WINDOW=$(gsd_run query config-get context_window 2>/dev/null || echo "200000")
 SMART_ZONE_TOKENS=$(gsd_run query config-get workflow.smart_zone_tokens --default 100000 --raw 2>/dev/null || echo "100000")
-CALIBRATION_JSON=$(gsd_run query estimate-calibration 2>/dev/null || echo '{"factor":1,"confidence":"low","sample_count":0}')
-CALIBRATION_FACTOR=$(printf '%s' "$CALIBRATION_JSON" | grep -o '"factor":[0-9.]*' | cut -d: -f2)
-CALIBRATION_CONFIDENCE=$(printf '%s' "$CALIBRATION_JSON" | grep -o '"confidence":"[a-z]*"' | cut -d'"' -f4)
-[ -z "$CALIBRATION_FACTOR" ] && CALIBRATION_FACTOR=1
-[ -z "$CALIBRATION_CONFIDENCE" ] && CALIBRATION_CONFIDENCE=low
+CALIBRATION_FACTOR=$(gsd_run query estimate-calibration --pick factor --raw 2>/dev/null || echo "1")
+CALIBRATION_CONFIDENCE=$(gsd_run query estimate-calibration --pick confidence --raw 2>/dev/null || echo "low")
 MVP_MODE_CFG=$(gsd_run query config-get workflow.mvp_mode 2>/dev/null || echo "false")
 ```
 
@@ -775,11 +772,9 @@ ${API_SURFACE_PATH ? `
 ${AGENT_SKILLS_PLANNER}
 
 <estimate_contract>
-**Emit an `estimate` block in every PLAN.md frontmatter (#2631, ADR-2629).**
-
-- `CALIBRATION_FACTOR` = ${CALIBRATION_FACTOR} — multiply your raw token projection by this. It is the measured estimate-vs-actual ratio for this project; `1` means there is not yet enough history to correct.
-- `confidence` = ${CALIBRATION_CONFIDENCE} — use this value verbatim. It is **derived from the calibration sample count, not a self-assessment**. Do not substitute your own judgment of how sure you feel.
-- Smart-zone budget = ${SMART_ZONE_TOKENS} tokens. A plan estimated above it should be re-sliced into a tracer plus expansion slices. Advisory, never a block.
+Emit `estimate` in PLAN.md frontmatter (#2631). Calibration factor = ${CALIBRATION_FACTOR} — multiply your raw
+token projection by it. confidence = ${CALIBRATION_CONFIDENCE} — copy verbatim; it is derived from the calibration
+sample count, not your self-assessment. Budget = ${SMART_ZONE_TOKENS}; over budget → re-slice. Advisory, never a block.
 </estimate_contract>
 
 <review_incorporation_contract>
@@ -843,65 +838,8 @@ Output consumed by /gsd:execute-phase. Plans need:
 <deep_work_rules>
 ## Anti-Shallow Execution Rules (MANDATORY)
 
-Every task MUST include these fields — they are NOT optional:
-
-1. **`<read_first>`** — Files the executor MUST read before touching anything. Always include:
-   - The file being modified (so executor sees current state, not assumptions)
-   - Any "source of truth" file referenced in CONTEXT.md (reference implementations, existing patterns, config files, schemas)
-   - Any file whose patterns, signatures, types, or conventions must be replicated or respected
-
-2. **`<acceptance_criteria>`** — Verifiable conditions that prove the task was done correctly. Rules:
-   - Every criterion must be checkable as a source assertion, behavior assertion, test command, or CLI output
-   - NEVER use subjective language ("looks correct", "properly configured", "consistent with")
-   - Include exact strings, patterns, values, command outputs, or observable behavior where that is the right proof
-   - Examples:
-     - Code: `auth.py contains def verify_token(` / `test_auth.py exits 0`
-     - Behavior: `POST /api/auth/login returns 200 + httpOnly JWT cookie for valid credentials`
-     - Config: `.env.example contains DATABASE_URL=` / `Dockerfile contains HEALTHCHECK`
-     - Docs: `README.md contains '## Installation'` / `API.md lists all endpoints`
-     - Infra: `deploy.yml has rollback step` / `docker-compose.yml has healthcheck for db`
-
-3. **`<action>`** — Must include CONCRETE values, not references. Rules:
-   - NEVER say "align X with Y", "match X to Y", "update to be consistent" without specifying the exact target state
-   - Include concrete identifiers and reference values: config keys, function signatures, SQL table names, class names, import paths, env vars, endpoint paths, etc.
-   - If CONTEXT.md has a comparison table or expected values, copy only the target identifiers/values needed to remove ambiguity
-   - Do not include full file contents, fenced code blocks, or complete implementations in `<action>`
-   - The executor should understand the intended target state from `<action>` and use `<read_first>` files for current implementation details, patterns, and source-of-truth context
-
-**Why this matters:** Executor agents work from the plan text. Vague instructions like "update the config to match production" produce shallow one-line changes. Concrete instructions like "add DATABASE_URL, set POOL_SIZE=20, add REDIS_URL, and read config/runtime.ts before editing" produce complete work without turning the planner into the executor.
-</deep_work_rules>
-
-<quality_gate>
-- [ ] PLAN.md files created in phase directory
-- [ ] Each plan has valid frontmatter
-- [ ] Tasks are specific and actionable
-- [ ] Every task has `<read_first>` with at least the file being modified
-- [ ] Every task has `<acceptance_criteria>` with behavior, test-command, CLI, or source assertions
-- [ ] Every `<action>` contains concrete identifiers without fenced code blocks or full implementations
-- [ ] Dependencies correctly identified
-- [ ] Waves assigned for parallel execution
-- [ ] must_haves derived from phase goal
-- [ ] Every PLAN.md includes an "Artifacts this phase produces" section listing symbols created by this phase (decorators, classes, functions, CLI flags, struct/dataclass fields, new file paths)
-- [ ] Every SPEC ## Edge Coverage covered/backstop edge is represented in a plan's must_haves (no silent drops)
-- [ ] Every UI-SPEC ## UI Considerations covered/backstop consideration is represented in a plan's must_haves (no silent drops)
-- [ ] Every SPEC ## Prohibitions resolved item is represented in a plan's must_haves.prohibitions (no silent drops)
-</quality_gate>
-```
-
-**If `CHUNKED_MODE` is `false` (default):** Spawn the planner as a single long-lived Agent:
-
-```text
-Agent(
-  prompt=filled_prompt,
-  subagent_type="gsd-planner",
-  model="{planner_model}",
-  description="Plan Phase {phase}"
-)
-```
-
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
-
-**If `CHUNKED_MODE` is `true`:** Skip the Agent() call above — proceed to step 8.5 instead.
+Every task MUST carry `<read_first>`, a specific `<action>`, and a runnable `<verify>`.
+Full rules and examples: @~/.claude/gsd-core/references/planner-guidance.md
 
 ## 8.5. Chunked Planning Mode
 
@@ -1514,26 +1452,17 @@ This commits all PLAN.md files for the phase plus the updated STATE.md and ROADM
 
 ## 13d-2. Smart-Zone Estimate Report (#2631, ADR-2629)
 
-Non-blocking. For each plan carrying an `estimate` block, check it against the
-configured budget and surface the result. **Never exits non-zero** — an
-over-budget estimate is advice, not a gate.
+Non-blocking. Full detail: @~/.claude/gsd-core/references/context-budget.md
 
 ```bash
 for plan in "${PHASE_DIR}"/*-PLAN.md; do
-  EST_TOKENS=$(sed -n '/^estimate:/,/^[a-z_]*:/p' "$plan" | grep -o 'tokens: *[0-9]*' | head -1 | grep -o '[0-9]*')
-  [ -z "$EST_TOKENS" ] && continue
-  gsd_run query estimate-check --tokens "$EST_TOKENS" 2>/dev/null || true
+  EST=$(sed -n '/^estimate:/,/^[a-z_]*:/p' "$plan" | grep -o 'tokens: *[0-9]*' | head -1 | grep -o '[0-9]*')
+  [ -n "$EST" ] && gsd_run query estimate-check --tokens "$EST" 2>/dev/null || true
 done
 ```
 
-Present one line per plan: plan id, estimated tokens, the budget, and — when
-`over_budget` is true — the returned `recommendation`, which names how many
-slices the phase should become. Recommend re-slicing (a tracer plus expansion
-slices); do not re-plan automatically and do not fail the workflow.
-
-`confidence: low` means fewer than 3 completed phases carry actuals, so the
-figure is not yet calibrated for this project — say so rather than presenting it
-as precise.
+Report one line per plan (id, tokens, budget); when `over_budget`, include the returned `recommendation`
+and advise re-slicing. Never re-plan automatically, never fail. `confidence: low` = not yet calibrated.
 
 ## 13e. Post-Planning Gap Analysis (plan:post capability gate dispatch)
 

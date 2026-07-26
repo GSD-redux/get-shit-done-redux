@@ -288,41 +288,15 @@ See @~/.claude/gsd-core/references/planner-guidance.md for dependency graph buil
 
 <scope_estimation>
 
-## Estimate Emission (#2631, ADR-2629)
+## Sizing and the Estimate Block
 
-Every plan carries an `estimate` block. It is the quantitative reason a phase must be sliced — tracer-first says *slice thin*, the estimate says *how thin, for this codebase*.
+Full rules: @~/.claude/gsd-core/references/context-budget.md (Phase Sizing). Read before sizing.
 
-**Compute it:**
-1. Sum `estimateTokens`-scale cost across the plan: implementation + the files each task reads + verification output. Roughly chars/4 over what the executor will actually touch.
-2. The orchestrator passes `CALIBRATION_FACTOR` (from `gsd_run query estimate-calibration`). **Multiply your raw figure by it.** It is the measured estimate-vs-actual ratio for THIS project — a factor of 1 means there is not yet enough history to correct.
-3. `confidence` is **derived, not judged**: it is the orchestrator-supplied value from the same calibration query, keyed to the sample count (`low` <3, `med` 3–5, `high` ≥6). **Do not rate your own certainty.** Self-rated confidence was measured in this project and found weak (`references/honest-verifier.md:25-29`); every signal here routes on measured history instead.
-
-**Over budget?** The orchestrator flags a plan whose estimate exceeds `workflow.smart_zone_tokens`. This is advisory — it never blocks. When flagged, re-slice: a tracer plus expansion slices, each inside the budget. Prefer more, smaller plans over one that spends the agent's best early-context tokens and finishes degraded.
-
-## Context Budget Rules
-
-Plans should complete within ~50% context (not 80%). No context anxiety, quality maintained start to finish, room for unexpected complexity.
-
-**Each plan: 2-3 tasks maximum.**
-
-| Context Weight | Tasks/Plan | Context/Task | Total |
-|----------------|------------|--------------|-------|
-| Light (CRUD, config) | 3 | ~10-15% | ~30-45% |
-| Medium (auth, payments) | 2 | ~20-30% | ~40-50% |
-| Heavy (migrations, multi-subsystem) | 1-2 | ~30-40% | ~30-50% |
-
-## Split Signals
-
-**ALWAYS split if:**
-- More than 3 tasks
-- Multiple subsystems (DB + API + UI = separate plans)
-- Any task with >5 file modifications
-- Checkpoint + implementation in same plan
-- Discovery + implementation in same plan
-
-**CONSIDER splitting:** >5 files total, natural semantic boundaries, context cost estimate exceeds 40% for a single plan. See `<planner_authority_limits>` for prohibited split reasons.
-
-See @~/.claude/gsd-core/references/planner-guidance.md for Granularity Calibration table (Coarse/Standard/Fine plans-per-phase).
+- **2-3 tasks per plan.** Split at >3 tasks, multiple subsystems, or any task touching >5 files.
+- **Emit `estimate`** in PLAN.md frontmatter: multiply your raw token projection by the supplied
+  calibration factor, and copy its `confidence` verbatim — that value is derived from the calibration
+  sample count, never self-rated.
+- **Over the smart-zone budget?** Re-slice: tracer + expansion slices. Advisory, never a block.
 
 </scope_estimation>
 

@@ -250,3 +250,67 @@ must_haves:
       via: "database query via prisma.message"
       pattern: "prisma\\.message\\.(find|create)"
 ```
+
+---
+
+## Anti-Shallow Execution Rules (MANDATORY)
+
+Every task MUST include these fields — they are NOT optional:
+
+1. **`<read_first>`** — Files the executor MUST read before touching anything. Always include:
+   - The file being modified (so executor sees current state, not assumptions)
+   - Any "source of truth" file referenced in CONTEXT.md (reference implementations, existing patterns, config files, schemas)
+   - Any file whose patterns, signatures, types, or conventions must be replicated or respected
+
+2. **`<acceptance_criteria>`** — Verifiable conditions that prove the task was done correctly. Rules:
+   - Every criterion must be checkable as a source assertion, behavior assertion, test command, or CLI output
+   - NEVER use subjective language ("looks correct", "properly configured", "consistent with")
+   - Include exact strings, patterns, values, command outputs, or observable behavior where that is the right proof
+   - Examples:
+     - Code: `auth.py contains def verify_token(` / `test_auth.py exits 0`
+     - Behavior: `POST /api/auth/login returns 200 + httpOnly JWT cookie for valid credentials`
+     - Config: `.env.example contains DATABASE_URL=` / `Dockerfile contains HEALTHCHECK`
+     - Docs: `README.md contains '## Installation'` / `API.md lists all endpoints`
+     - Infra: `deploy.yml has rollback step` / `docker-compose.yml has healthcheck for db`
+
+3. **`<action>`** — Must include CONCRETE values, not references. Rules:
+   - NEVER say "align X with Y", "match X to Y", "update to be consistent" without specifying the exact target state
+   - Include concrete identifiers and reference values: config keys, function signatures, SQL table names, class names, import paths, env vars, endpoint paths, etc.
+   - If CONTEXT.md has a comparison table or expected values, copy only the target identifiers/values needed to remove ambiguity
+   - Do not include full file contents, fenced code blocks, or complete implementations in `<action>`
+   - The executor should understand the intended target state from `<action>` and use `<read_first>` files for current implementation details, patterns, and source-of-truth context
+
+**Why this matters:** Executor agents work from the plan text. Vague instructions like "update the config to match production" produce shallow one-line changes. Concrete instructions like "add DATABASE_URL, set POOL_SIZE=20, add REDIS_URL, and read config/runtime.ts before editing" produce complete work without turning the planner into the executor.
+</deep_work_rules>
+
+<quality_gate>
+- [ ] PLAN.md files created in phase directory
+- [ ] Each plan has valid frontmatter
+- [ ] Tasks are specific and actionable
+- [ ] Every task has `<read_first>` with at least the file being modified
+- [ ] Every task has `<acceptance_criteria>` with behavior, test-command, CLI, or source assertions
+- [ ] Every `<action>` contains concrete identifiers without fenced code blocks or full implementations
+- [ ] Dependencies correctly identified
+- [ ] Waves assigned for parallel execution
+- [ ] must_haves derived from phase goal
+- [ ] Every PLAN.md includes an "Artifacts this phase produces" section listing symbols created by this phase (decorators, classes, functions, CLI flags, struct/dataclass fields, new file paths)
+- [ ] Every SPEC ## Edge Coverage covered/backstop edge is represented in a plan's must_haves (no silent drops)
+- [ ] Every UI-SPEC ## UI Considerations covered/backstop consideration is represented in a plan's must_haves (no silent drops)
+- [ ] Every SPEC ## Prohibitions resolved item is represented in a plan's must_haves.prohibitions (no silent drops)
+</quality_gate>
+```
+
+**If `CHUNKED_MODE` is `false` (default):** Spawn the planner as a single long-lived Agent:
+
+```text
+Agent(
+  prompt=filled_prompt,
+  subagent_type="gsd-planner",
+  model="{planner_model}",
+  description="Plan Phase {phase}"
+)
+```
+
+> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+
+**If `CHUNKED_MODE` is `true`:** Skip the Agent() call above — proceed to step 8.5 instead.

@@ -83,3 +83,68 @@ Either list works — `enabledMcpjsonServers` is an explicit allow-list, `disabl
 ### Composition with model_profile
 
 Trimming MCPs and tuning `model_profile` are independent levers that **compound**. Disabling a 25k-token MCP saves 25k per turn whether you're running `quality` (opus everywhere) or `budget` (sonnet/haiku); the savings are additive, not in lieu of model tuning. Don't pick one — do both, and audit MCPs first because the per-turn savings show up immediately and stack across every subagent the orchestrator spawns.
+
+---
+
+# Phase Sizing (gsd-planner)
+
+## Estimate Emission (#2631, ADR-2629)
+
+Every plan carries an `estimate` block. It is the quantitative reason a phase must be sliced — tracer-first says *slice thin*, the estimate says *how thin, for this codebase*.
+
+**Compute it:**
+1. Sum `estimateTokens`-scale cost across the plan: implementation + the files each task reads + verification output. Roughly chars/4 over what the executor will actually touch.
+2. The orchestrator passes `CALIBRATION_FACTOR` (from `gsd_run query estimate-calibration`). **Multiply your raw figure by it.** It is the measured estimate-vs-actual ratio for THIS project — a factor of 1 means there is not yet enough history to correct.
+3. `confidence` is **derived, not judged**: it is the orchestrator-supplied value from the same calibration query, keyed to the sample count (`low` <3, `med` 3–5, `high` ≥6). **Do not rate your own certainty.** Self-rated confidence was measured in this project and found weak (`references/honest-verifier.md:25-29`); every signal here routes on measured history instead.
+
+**Over budget?** The orchestrator flags a plan whose estimate exceeds `workflow.smart_zone_tokens`. This is advisory — it never blocks. When flagged, re-slice: a tracer plus expansion slices, each inside the budget. Prefer more, smaller plans over one that spends the agent's best early-context tokens and finishes degraded.
+
+## Context Budget Rules
+
+Plans should complete within ~50% context (not 80%). No context anxiety, quality maintained start to finish, room for unexpected complexity.
+
+**Each plan: 2-3 tasks maximum.**
+
+| Context Weight | Tasks/Plan | Context/Task | Total |
+|----------------|------------|--------------|-------|
+| Light (CRUD, config) | 3 | ~10-15% | ~30-45% |
+| Medium (auth, payments) | 2 | ~20-30% | ~40-50% |
+| Heavy (migrations, multi-subsystem) | 1-2 | ~30-40% | ~30-50% |
+
+## Split Signals
+
+**ALWAYS split if:**
+- More than 3 tasks
+- Multiple subsystems (DB + API + UI = separate plans)
+- Any task with >5 file modifications
+- Checkpoint + implementation in same plan
+- Discovery + implementation in same plan
+
+**CONSIDER splitting:** >5 files total, natural semantic boundaries, context cost estimate exceeds 40% for a single plan. See `<planner_authority_limits>` for prohibited split reasons.
+
+See @~/.claude/gsd-core/references/planner-guidance.md for Granularity Calibration table (Coarse/Standard/Fine plans-per-phase).
+
+---
+
+# Smart-Zone Estimate Report (plan-phase §13d-2)
+
+Non-blocking. For each plan carrying an `estimate` block, check it against the
+configured budget and surface the result. **Never exits non-zero** — an
+over-budget estimate is advice, not a gate.
+
+```bash
+for plan in "${PHASE_DIR}"/*-PLAN.md; do
+  EST_TOKENS=$(sed -n '/^estimate:/,/^[a-z_]*:/p' "$plan" | grep -o 'tokens: *[0-9]*' | head -1 | grep -o '[0-9]*')
+  [ -z "$EST_TOKENS" ] && continue
+  gsd_run query estimate-check --tokens "$EST_TOKENS" 2>/dev/null || true
+done
+```
+
+Present one line per plan: plan id, estimated tokens, the budget, and — when
+`over_budget` is true — the returned `recommendation`, which names how many
+slices the phase should become. Recommend re-slicing (a tracer plus expansion
+slices); do not re-plan automatically and do not fail the workflow.
+
+`confidence: low` means fewer than 3 completed phases carry actuals, so the
+figure is not yet calibrated for this project — say so rather than presenting it
+as precise.
