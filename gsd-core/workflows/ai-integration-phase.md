@@ -33,10 +33,10 @@ Parse JSON for: `phase_dir`, `phase_number`, `phase_name`, `phase_slug`, `padded
 
 Resolve agent models:
 ```bash
-SELECTOR_MODEL=$(gsd_run query resolve-model gsd-framework-selector 2>/dev/null | jq -r '.model' 2>/dev/null || true)
-RESEARCHER_MODEL=$(gsd_run query resolve-model gsd-ai-researcher 2>/dev/null | jq -r '.model' 2>/dev/null || true)
-DOMAIN_MODEL=$(gsd_run query resolve-model gsd-domain-researcher 2>/dev/null | jq -r '.model' 2>/dev/null || true)
-PLANNER_MODEL=$(gsd_run query resolve-model gsd-eval-planner 2>/dev/null | jq -r '.model' 2>/dev/null || true)
+SELECTOR_MODEL=$(gsd_run query resolve-model gsd-framework-selector --pick model 2>/dev/null || true)
+RESEARCHER_MODEL=$(gsd_run query resolve-model gsd-ai-researcher --pick model 2>/dev/null || true)
+DOMAIN_MODEL=$(gsd_run query resolve-model gsd-domain-researcher --pick model 2>/dev/null || true)
+PLANNER_MODEL=$(gsd_run query resolve-model gsd-eval-planner --pick model 2>/dev/null || true)
 ```
 
 Check config:

@@ -26,15 +26,15 @@ command -v cursor-agent >/dev/null 2>&1 && echo "cursor:available" || echo "curs
 command -v agy >/dev/null 2>&1 && echo "antigravity:available" || echo "antigravity:missing"
 
 # Check local model servers (OpenAI-compatible HTTP API — no CLI binary required)
-OLLAMA_HOST=$(gsd_run query config-get review.ollama_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
 if [ -z "$OLLAMA_HOST" ] || [ "$OLLAMA_HOST" = "null" ]; then OLLAMA_HOST="http://localhost:11434"; fi
 curl -s --max-time 2 "${OLLAMA_HOST}/v1/models" >/dev/null 2>&1 && echo "ollama:available" || echo "ollama:missing"
 
-LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host --raw 2>/dev/null || echo "")
 if [ -z "$LM_STUDIO_HOST" ] || [ "$LM_STUDIO_HOST" = "null" ]; then LM_STUDIO_HOST="http://localhost:1234"; fi
 curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" >/dev/null 2>&1 && echo "lm_studio:available" || echo "lm_studio:missing"
 
-LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_HOST" ] || [ "$LLAMA_CPP_HOST" = "null" ]; then LLAMA_CPP_HOST="http://localhost:8080"; fi
 curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" >/dev/null 2>&1 && echo "llama_cpp:available" || echo "llama_cpp:missing"
 ```
@@ -241,20 +241,21 @@ Note: `INSTRUCTIONS_BLOCK_FILE`, `ROADMAP_SECTION_FILE`, and `PHASE_DIR` come fr
 Read model preferences from planning config. Null/missing values fall back to CLI defaults.
 
 ```bash
-# JSON scalars from gsd-tools.cjs query; use jq -r to strip JSON string quotes (install jq if missing)
-GEMINI_MODEL=$(gsd_run query config-get review.models.gemini 2>/dev/null | jq -r '.' 2>/dev/null || true)
-CLAUDE_MODEL=$(gsd_run query config-get review.models.claude 2>/dev/null | jq -r '.' 2>/dev/null || true)
-CODEX_MODEL=$(gsd_run query config-get review.models.codex 2>/dev/null | jq -r '.' 2>/dev/null || true)
-OPENCODE_MODEL=$(gsd_run query config-get review.models.opencode 2>/dev/null | jq -r '.' 2>/dev/null || true)
+# JSON scalars from gsd-tools.cjs query; --raw strips the JSON quotes natively
+# (no jq dependency — jq is absent on stock Windows/Git-Bash, #2589)
+GEMINI_MODEL=$(gsd_run query config-get review.models.gemini --raw 2>/dev/null || true)
+CLAUDE_MODEL=$(gsd_run query config-get review.models.claude --raw 2>/dev/null || true)
+CODEX_MODEL=$(gsd_run query config-get review.models.codex --raw 2>/dev/null || true)
+OPENCODE_MODEL=$(gsd_run query config-get review.models.opencode --raw 2>/dev/null || true)
 # review.models.agy, when set, is passed to agy as --model (escape hatch for a
 # pinned model that 404s server-side); otherwise agy uses its persisted default.
-AGY_MODEL=$(gsd_run query config-get review.models.agy 2>/dev/null | jq -r '.' 2>/dev/null || true)
+AGY_MODEL=$(gsd_run query config-get review.models.agy --raw 2>/dev/null || true)
 
 # Reasoning effort per reviewer (#2481). Empty unless the host's effortSurface
 # axis is `argv`. Pass --attempt N to walk ADR-443's escalation ladder.
-CLAUDE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host claude 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
-CODEX_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host codex 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
-OPENCODE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host opencode 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
+CLAUDE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host claude --pick effort_argv_string 2>/dev/null || true)
+CODEX_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host codex --pick effort_argv_string 2>/dev/null || true)
+OPENCODE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host opencode --pick effort_argv_string 2>/dev/null || true)
 ```
 
 **No hook-trust bypass (#2479):** the codex invocations below deliberately pass no
@@ -644,9 +645,9 @@ prepare_trimmed_prompt_for_reviewer() {
 }
 
 # Resolve prompt budget for Ollama: per-reviewer override > global default > null
-OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.ollama 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.ollama --raw 2>/dev/null || echo "null")
 if [ -z "$OLLAMA_REVIEWER_BUDGET" ] || [ "$OLLAMA_REVIEWER_BUDGET" = "null" ]; then
-  OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+  OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
 
 # Apply budget trim for Ollama if a budget is configured
@@ -670,9 +671,9 @@ if [ -n "$OLLAMA_REVIEWER_BUDGET" ] && [ "$OLLAMA_REVIEWER_BUDGET" != "null" ] &
 fi
 
 if [ "$OLLAMA_SKIP" != "1" ]; then
-OLLAMA_HOST=$(gsd_run query config-get review.ollama_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
 if [ -z "$OLLAMA_HOST" ] || [ "$OLLAMA_HOST" = "null" ]; then OLLAMA_HOST="http://localhost:11434"; fi
-OLLAMA_MODEL=$(gsd_run query config-get review.models.ollama 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+OLLAMA_MODEL=$(gsd_run query config-get review.models.ollama --raw 2>/dev/null || echo "")
 if [ -z "$OLLAMA_MODEL" ] || [ "$OLLAMA_MODEL" = "null" ]; then
   OLLAMA_MODEL=$(curl -s --max-time 2 "${OLLAMA_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "llama3"' 2>/dev/null || echo "llama3")
 fi
@@ -692,9 +693,9 @@ fi
 **LM Studio (local, OpenAI-compatible):**
 ```bash
 # Resolve prompt budget for LM Studio: per-reviewer override > global default > null
-LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.lm_studio 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.lm_studio --raw 2>/dev/null || echo "null")
 if [ -z "$LM_STUDIO_REVIEWER_BUDGET" ] || [ "$LM_STUDIO_REVIEWER_BUDGET" = "null" ]; then
-  LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+  LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
 
 # Apply budget trim for LM Studio if a budget is configured
@@ -718,9 +719,9 @@ if [ -n "$LM_STUDIO_REVIEWER_BUDGET" ] && [ "$LM_STUDIO_REVIEWER_BUDGET" != "nul
 fi
 
 if [ "$LM_STUDIO_SKIP" != "1" ]; then
-LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host --raw 2>/dev/null || echo "")
 if [ -z "$LM_STUDIO_HOST" ] || [ "$LM_STUDIO_HOST" = "null" ]; then LM_STUDIO_HOST="http://localhost:1234"; fi
-LM_STUDIO_MODEL=$(gsd_run query config-get review.models.lm_studio 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LM_STUDIO_MODEL=$(gsd_run query config-get review.models.lm_studio --raw 2>/dev/null || echo "")
 if [ -z "$LM_STUDIO_MODEL" ] || [ "$LM_STUDIO_MODEL" = "null" ]; then
   LM_STUDIO_MODEL=$(curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
 fi
@@ -745,9 +746,9 @@ fi
 **llama.cpp (local, OpenAI-compatible):**
 ```bash
 # Resolve prompt budget for llama.cpp: per-reviewer override > global default > null
-LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.llama_cpp 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.llama_cpp --raw 2>/dev/null || echo "null")
 if [ -z "$LLAMA_CPP_REVIEWER_BUDGET" ] || [ "$LLAMA_CPP_REVIEWER_BUDGET" = "null" ]; then
-  LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+  LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
 
 # Apply budget trim for llama.cpp if a budget is configured
@@ -771,9 +772,9 @@ if [ -n "$LLAMA_CPP_REVIEWER_BUDGET" ] && [ "$LLAMA_CPP_REVIEWER_BUDGET" != "nul
 fi
 
 if [ "$LLAMA_CPP_SKIP" != "1" ]; then
-LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_HOST" ] || [ "$LLAMA_CPP_HOST" = "null" ]; then LLAMA_CPP_HOST="http://localhost:8080"; fi
-LLAMA_CPP_MODEL=$(gsd_run query config-get review.models.llama_cpp 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LLAMA_CPP_MODEL=$(gsd_run query config-get review.models.llama_cpp --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_MODEL" ] || [ "$LLAMA_CPP_MODEL" = "null" ]; then
   LLAMA_CPP_MODEL=$(curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
 fi

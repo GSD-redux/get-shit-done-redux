@@ -24,7 +24,7 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 Parse: `phase_dir`, `phase_number`, `phase_name`, `phase_slug`, `padded_phase`, `commit_docs`.
 
 ```bash
-AUDITOR_MODEL=$(gsd_run query resolve-model gsd-eval-auditor 2>/dev/null | jq -r '.model' 2>/dev/null || true)
+AUDITOR_MODEL=$(gsd_run query resolve-model gsd-eval-auditor --pick model 2>/dev/null || true)
 AGENT_SKILLS_AUDITOR=$(gsd_run query agent-skills gsd-eval-auditor)
 ```
 

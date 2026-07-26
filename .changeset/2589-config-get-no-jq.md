@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 0
+---
+**Reviewer/workflow config lookups no longer silently drop the configured value on machines without `jq`** — `review.md`, `plan-phase.md`, `ship.md`, `debug.md`, `autonomous.md`, `ai-integration-phase.md`, and `eval-review.md` now resolve `config-get` scalars with the native `--raw` flag and `resolve-model` / `resolve-execution` / `verification.status` object fields with `--pick`, instead of piping through `jq`. Previously, on a stock Windows/Git-Bash box with no `jq` on PATH, the `… | jq …` stage failed (exit 127), the failure was swallowed by `2>/dev/null || <default>`, and the configured per-lane model/host/budget came back empty — so the lane fell back to CLI defaults (e.g. `~/.codex/config.toml` instead of the configured `review.models.codex`) with no diagnostic, and the `autonomous.md` verify gate could misroute on an empty status. The legitimate structured-JSON `jq` sites that parse HTTP `curl` responses (`.choices[0]`, `jq -rs`, `jq -n --rawfile`) are untouched — only the jq-replaceable config/model/verify lookups moved to the native flags. (#2589)
