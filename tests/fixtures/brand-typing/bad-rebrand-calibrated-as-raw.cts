@@ -9,10 +9,12 @@
  * projection because no factor had been applied yet — lives in
  * `calibrationBasis()` behind an explicit, commented assertion, so it stays a
  * single auditable line rather than an open door.
+ *
+ * `OFFENDING` is the marker the test pins the diagnostic to — see the README.
  */
 
 import estimation = require('../../../src/phase-estimation.cjs');
 
-const calibrated = estimation.asCalibratedTokens(100000);
+const OFFENDING = estimation.asCalibratedTokens(100000);
 
-export const relabelled = estimation.asRawTokens(calibrated);
+export const relabelled = estimation.asRawTokens(OFFENDING);

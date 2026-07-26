@@ -5,8 +5,12 @@
  * still compile and the whole guard would be theatre. A bare number carries no
  * basis, so it must pass through `asRawTokens` / `asCalibratedTokens` and the
  * caller must state which one it is.
+ *
+ * `OFFENDING` is the marker the test pins the diagnostic to — see the README.
  */
 
 import estimation = require('../../../src/phase-estimation.cjs');
 
-export const calibrated = estimation.applyCalibration(50000, 2);
+const OFFENDING = 50000;
+
+export const calibrated = estimation.applyCalibration(OFFENDING, 2);

@@ -769,13 +769,51 @@ describe('RawTokens / CalibratedTokens brands', () => {
   ];
 
   /**
+   * Every `bad-*` fixture routes its violating value through a const with this
+   * name, and the test asserts the diagnostic lands ON that node.
+   *
+   * Code-and-count alone is NOT enough: a fixture that stops exercising its
+   * brand violation but acquires an unrelated error of the same code still
+   * yields "exactly one TS2345" and would report green while testing nothing.
+   * That was demonstrated against an earlier version of this block, so the
+   * position check is a regression guard, not a precaution.
+   */
+  const OFFENDING = 'OFFENDING';
+
+  /**
+   * Spans a diagnostic is allowed to occupy: any occurrence of the marker
+   * identifier, plus — because TypeScript reports an object-literal property
+   * mismatch on the property NAME rather than its initializer — the name of any
+   * property initialized from the marker. Located through the AST, so this
+   * survives reformatting and never pattern-matches source text.
+   */
+  const markerSpans = (sourceFile) => {
+    const spans = [];
+    const visit = (node) => {
+      if (ts.isIdentifier(node) && node.text === OFFENDING) {
+        spans.push([node.getStart(sourceFile), node.getEnd()]);
+      } else if (ts.isPropertyAssignment(node)
+        && ts.isIdentifier(node.initializer)
+        && node.initializer.text === OFFENDING) {
+        spans.push([node.name.getStart(sourceFile), node.name.getEnd()]);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return spans;
+  };
+
+  /**
    * Compile every fixture in ONE program and bucket the diagnostics by source
-   * file. One program keeps this to a single type-check of `src/`, and lets the
-   * "src stays clean" assertion below be meaningful: any diagnostic NOT in the
-   * fixture directory is a real compile error in the module under test.
+   * file. The program covers `phase-estimation.cts` and its transitive
+   * dependencies — not all of `src/`, which `npm run build:lib` gates
+   * separately — which is what makes the "no foreign diagnostics" assertion
+   * below meaningful: anything outside the fixture directory is a real compile
+   * error in the module under test.
    */
   let byFixture;
   let foreign;
+  let sourceFileOf;
 
   before(() => {
     const configPath = path.join(REPO_ROOT, 'tsconfig.build.json');
@@ -802,6 +840,9 @@ describe('RawTokens / CalibratedTokens brands', () => {
 
     byFixture = new Map(CASES.map((c) => [c.fixture, []]));
     foreign = [];
+    sourceFileOf = new Map(
+      CASES.map((c) => [c.fixture, program.getSourceFile(path.join(FIXTURE_DIR, c.fixture))]),
+    );
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
       const name = diagnostic.file === undefined ? null : path.basename(diagnostic.file.fileName);
       if (name !== null && byFixture.has(name)) byFixture.get(name).push(diagnostic);
@@ -825,11 +866,23 @@ describe('RawTokens / CalibratedTokens brands', () => {
   });
 
   for (const { fixture, expected } of CASES.filter((c) => c.expected !== null)) {
-    test(`${fixture} is a compile error`, () => {
-      const codes = byFixture.get(fixture).map((d) => d.code);
-      assert.equal(codes.length, 1,
+    test(`${fixture} is a compile error on its ${OFFENDING} marker`, () => {
+      const diagnostics = byFixture.get(fixture);
+      assert.equal(diagnostics.length, 1,
         `${fixture} must produce exactly one diagnostic — see the fixture README`);
-      assert.equal(codes[0], expected);
+      assert.equal(diagnostics[0].code, expected);
+
+      // The diagnostic must land on the marker. Without this a fixture that
+      // stopped exercising its brand violation, but gained an unrelated error
+      // of the same code, would still pass.
+      const spans = markerSpans(sourceFileOf.get(fixture));
+      assert.ok(spans.length > 0, `${fixture} must declare a ${OFFENDING} marker`);
+      const start = diagnostics[0].start;
+      assert.ok(
+        spans.some(([from, to]) => start >= from && start < to),
+        `${fixture}: diagnostic at offset ${start} is not on the ${OFFENDING} marker `
+        + `(marker spans: ${JSON.stringify(spans)}) — the fixture is failing for the wrong reason`,
+      );
     });
   }
 });
