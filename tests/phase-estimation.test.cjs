@@ -333,7 +333,11 @@ describe('estimate/actuals round-trip', () => {
           assert.ok(m, `unparseable rendered line: ${line}`);
           parsedBack[m[1]] = m[1] === 'confidence' ? m[2] : Number(m[2]);
         }
-        assert.deepEqual(est.parseEstimate(parsedBack), estimate);
+        // fast-check's fc.record yields a null-prototype object; deepEqual
+        // compares prototypes, so rebuild a plain object to compare values.
+        assert.deepEqual(est.parseEstimate(parsedBack), {
+          tokens: estimate.tokens, tasks: estimate.tasks, confidence: estimate.confidence,
+        });
       },
     ), { numRuns: 300, seed: 19525, verbose: true });
   });
@@ -353,7 +357,10 @@ describe('estimate/actuals round-trip', () => {
           assert.ok(m, `unparseable rendered line: ${line}`);
           parsedBack[m[1]] = Number(m[2]);
         }
-        assert.deepEqual(est.parseActuals(parsedBack), actuals);
+        // Same null-prototype caveat as the estimate round-trip above.
+        assert.deepEqual(est.parseActuals(parsedBack), {
+          tokens: actuals.tokens, tasks: actuals.tasks, commits: actuals.commits,
+        });
       },
     ), { numRuns: 300, seed: 19526, verbose: true });
   });
