@@ -1,6 +1,5 @@
 // allow-test-rule: source-text-is-the-product see #2631
-// agents/gsd-planner.md, agents/gsd-plan-checker.md, gsd-core/workflows/plan-phase.md
-// and docs/reference/plan-md.md — their text IS what the runtime loads and what
+// agents/gsd-planner.md, agents/gsd-plan-checker.md and docs/reference/plan-md.md — their text IS what the runtime loads and what
 // the planner emits against. Per CONTRIBUTING.md exception matrix.
 
 /**

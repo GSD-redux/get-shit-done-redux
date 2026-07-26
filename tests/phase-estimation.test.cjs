@@ -679,3 +679,57 @@ describe('query estimate-calibration', () => {
     assert.equal(calibration.factor, 1);
   });
 });
+
+// ─── double-calibration guard (#2631) ──────────────────────────────────────
+
+describe('estimate-check --calibrated', () => {
+  // A plan's recorded `estimate.tokens` already has the factor applied at
+  // emission time (ADR-2629 Decision 1). Without --calibrated, estimate-check
+  // applies it a SECOND time and compares factor^2 against the budget. With the
+  // [0.5, 3.0] clamp that ranges from 4x under to 9x over — and it is invisible
+  // until a project reaches 3 samples, because below that factor === 1 and
+  // 1^2 === 1. These tests pin both modes at a factor where they diverge.
+  const withHistory = (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'estimation-calibration.json'),
+      est.renderCalibrationDocument([sample(100, 200), sample(100, 200), sample(100, 200)]),
+    );
+    return tmpDir;
+  };
+
+  test('without the flag, a raw projection IS corrected', (t) => {
+    const tmpDir = withHistory(t);
+    const out = JSON.parse(runGsdTools('query estimate-check --tokens 50000', tmpDir).output);
+    assert.equal(out.calibration_factor, 2, 'fixture must produce factor 2');
+    assert.equal(out.calibrated_tokens, 100000, 'a raw projection must be multiplied by the factor');
+    assert.equal(out.pre_calibrated, false);
+  });
+
+  test('with the flag, an already-calibrated figure is NOT corrected again', (t) => {
+    const tmpDir = withHistory(t);
+    const out = JSON.parse(runGsdTools('query estimate-check --tokens 50000 --calibrated', tmpDir).output);
+    assert.equal(out.calibration_factor, 2, 'the factor is still reported');
+    assert.equal(out.calibrated_tokens, 50000,
+      'a pre-calibrated figure must pass through untouched — re-applying squares the correction');
+    assert.equal(out.pre_calibrated, true);
+  });
+
+  test('the two modes diverge by exactly the factor', (t) => {
+    const tmpDir = withHistory(t);
+    const raw = JSON.parse(runGsdTools('query estimate-check --tokens 40000', tmpDir).output);
+    const pre = JSON.parse(runGsdTools('query estimate-check --tokens 40000 --calibrated', tmpDir).output);
+    assert.equal(raw.calibrated_tokens, pre.calibrated_tokens * raw.calibration_factor);
+  });
+
+  test('the flag changes the over-budget verdict at the boundary', (t) => {
+    const tmpDir = withHistory(t);
+    runGsdTools('config-set workflow.smart_zone_tokens 60000', tmpDir);
+    // 50000 raw -> 100000 calibrated -> over 60000. Same value pre-calibrated -> under.
+    const raw = JSON.parse(runGsdTools('query estimate-check --tokens 50000', tmpDir).output);
+    const pre = JSON.parse(runGsdTools('query estimate-check --tokens 50000 --calibrated', tmpDir).output);
+    assert.equal(raw.over_budget, true, 'double-applied correction reports a false over-budget');
+    assert.equal(pre.over_budget, false, 'the honest figure is under budget');
+  });
+});

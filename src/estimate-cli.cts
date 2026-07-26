@@ -89,7 +89,7 @@ export function readCalibrationSamples(cwd: string): ReturnType<typeof estimatio
 export function parseTokensFlag(args: string[]): number {
   const idx = args.indexOf('--tokens');
   if (idx === -1) {
-    error('Usage: estimate-check --tokens <positive integer>', ERROR_REASON.USAGE);
+    error('Usage: estimate-check --tokens <positive integer> [--calibrated]', ERROR_REASON.USAGE);
   }
 
   const value = args[idx + 1];
@@ -119,15 +119,26 @@ export function parseTokensFlag(args: string[]): number {
  * in the payload is the signal.
  */
 export function cmdEstimateCheck(cwd: string, args: string[], raw: boolean): void {
-  const rawTokens = parseTokensFlag(args);
+  const inputTokens = parseTokensFlag(args);
+  const preCalibrated = args.includes('--calibrated');
   const budget = readSmartZoneBudget(cwd);
   const calibration = estimation.computeCalibration(readCalibrationSamples(cwd));
-  const calibratedTokens = estimation.applyCalibration(rawTokens, calibration.factor);
+  // `--calibrated` says the caller already applied the factor. Without it we
+  // would apply the correction a SECOND time and compare factor^2 against the
+  // budget — with the [0.5, 3.0] clamp that is anywhere from 4x under to 9x
+  // over, and it is invisible until a project reaches 3 samples (below that
+  // factor === 1, and 1^2 === 1). A plan's recorded `estimate.tokens` is
+  // calibrated at emission time per ADR-2629 Decision 1, so the plan-checker
+  // MUST pass this flag.
+  const calibratedTokens = preCalibrated
+    ? inputTokens
+    : estimation.applyCalibration(inputTokens, calibration.factor);
   const classification = estimation.classifyAgainstBudget(calibratedTokens, budget);
 
   output({
-    raw_tokens: rawTokens,
+    raw_tokens: inputTokens,
     calibrated_tokens: calibratedTokens,
+    pre_calibrated: preCalibrated,
     budget,
     over_budget: classification.overBudget,
     budget_valid: classification.budgetValid,
