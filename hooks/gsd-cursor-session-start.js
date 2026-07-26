@@ -30,6 +30,34 @@ const MSG_PRESENT =
 const MSG_ABSENT =
   'GSD: no .planning/ workflow found — run /gsd:new-project to start a tracked workflow.';
 
+// Resolve the workspace this hook is reporting on (#2587).
+//
+// Under the cursor-agent CLI, hooks are invoked with cwd set to the Cursor
+// config dir (~/.cursor), NOT the workspace — so resolving .planning/ from
+// process.cwd() always missed and this hook could only ever emit MSG_ABSENT.
+// The stdin payload carries the real path in `workspace_roots`.
+//
+// Multi-root: prefer the first root that actually carries .planning/STATE.md, so
+// a workspace whose GSD project is not the first root still resolves. Fall back
+// to the first root (the single-root CLI case), then to cwd (keeps IDE behavior
+// if the IDE ever invokes hooks from the workspace itself).
+//
+// DUPLICATED VERBATIM in gsd-cursor-stop.js — these hooks ship as standalone
+// scripts and hooks/lib/ additions must be registered in the generated
+// installer's GSD_HOOK_LIB_FILES allowlist. tests/fix-2587-cursor-hook-workspace-roots.test.cjs
+// asserts the two copies stay in parity (CLAUDE.md: Generative Fix Divergence).
+function resolveWorkspaceRoot(rawInput) {
+  let input = {};
+  try { input = JSON.parse(rawInput || '{}'); } catch { /* fall back to cwd */ }
+  const roots = Array.isArray(input.workspace_roots)
+    ? input.workspace_roots.filter((r) => typeof r === 'string' && r.length > 0)
+    : [];
+  for (const root of roots) {
+    if (fs.existsSync(path.join(root, '.planning', 'STATE.md'))) return root;
+  }
+  return roots[0] || process.cwd();
+}
+
 let raw = '';
 const stdinTimeout = setTimeout(() => {
   // Timeout guard: exit silently rather than hanging.
@@ -41,7 +69,7 @@ process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
   clearTimeout(stdinTimeout);
   try {
-    const statePath = path.join(process.cwd(), '.planning', 'STATE.md');
+    const statePath = path.join(resolveWorkspaceRoot(raw), '.planning', 'STATE.md');
     const statePresent = fs.existsSync(statePath);
     const msg = statePresent ? MSG_PRESENT : MSG_ABSENT;
     process.stdout.write(JSON.stringify({ additional_context: msg }));
