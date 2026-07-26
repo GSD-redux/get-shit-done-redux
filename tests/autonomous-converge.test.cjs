@@ -176,13 +176,13 @@ describe('autonomous verification deferral contract', () => {
     assert.ok(promoteIdx > humanNeededIdx, 'human_needed branch must contain the promotion action');
     assert.match(
       section,
-      /VERIFY_STATUS=\$\(gsd_run query verification\.status "\$\{PHASE_DIR\}" 2>\/dev\/null \| jq -r '\.status\/\/empty'\)/,
+      /VERIFY_STATUS=\$\(gsd_run query verification\.status "\$\{PHASE_DIR\}" --pick status 2>\/dev/null \|\| true\)/,
       'autonomous must route human validation through canonical verification.status',
     );
     assert.match(
       section,
-      /jq -r '\.status\/\/empty'/,
-      'autonomous must parse the projected canonical status value',
+      /verification\.status "\$\{PHASE_DIR\}" --pick status/,
+      'autonomous must parse the projected canonical status value via the native --pick flag (#2589: no jq dependency)',
     );
     assert.doesNotMatch(
       section,
