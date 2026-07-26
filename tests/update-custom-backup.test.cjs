@@ -1,3 +1,10 @@
+// allow-test-rule: source-text-is-the-product [#1854]
+// The workflow-wiring blocks read gsd-core/workflows/update.md and assert on
+// its text. That text IS the deployed contract — the runtime loads the .md and
+// follows it — so there is no behavioral seam beneath it to assert on instead.
+// Scoped to the workflow document only; every gsd-tools assertion in this file
+// goes through runGsdTools and reads typed --json fields.
+
 /**
  * GSD Tools Tests — update workflow custom file backup detection (#1997)
  *
@@ -671,6 +678,20 @@ function warningCodes(entry) {
   return (entry.warnings || []).map(w => w.code);
 }
 
+// Unprivileged Windows cannot create symlinks. Those cases are a genuine
+// t.skip() — a bare `return` in a node:test body registers as a PASS and would
+// hide the gap in exactly the environment the guard matters least to verify.
+const SYMLINK_UNAVAILABLE = 'symlink creation unavailable on this host';
+
+function trySymlink(target, linkPath, type) {
+  try {
+    fs.symlinkSync(target, linkPath, type);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe('restore-custom-files — plan mode', () => {
   let tmpDir;
 
@@ -1013,20 +1034,16 @@ describe('restore-custom-files — hostile input and path safety', () => {
     cleanup(tmpDir);
   });
 
-  test('a symlinked backup entry is skipped and never followed', () => {
+  test('a symlinked backup entry is skipped and never followed', (t) => {
     writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
     const outsideDir = createTempDir('gsd-1854-outside-');
+    t.after(() => cleanup(outsideDir));
     const secret = path.join(outsideDir, 'secret.md');
     fs.writeFileSync(secret, 'SECRET\n');
 
     const linkPath = path.join(tmpDir, 'gsd-user-files-backup', 'skills', 'gsd-evil', 'SKILL.md');
     fs.mkdirSync(path.dirname(linkPath), { recursive: true });
-    try {
-      fs.symlinkSync(secret, linkPath);
-    } catch {
-      cleanup(outsideDir);
-      return; // symlink creation unavailable (unprivileged Windows) — nothing to assert
-    }
+    if (!trySymlink(secret, linkPath)) return t.skip(SYMLINK_UNAVAILABLE);
 
     const json = parseRestore(tmpDir, ['--apply']);
     const entry = entryFor(json, 'skills/gsd-evil/SKILL.md');
@@ -1037,26 +1054,21 @@ describe('restore-custom-files — hostile input and path safety', () => {
       'a symlinked backup entry must not be materialized into the config dir',
     );
     assert.strictEqual(fs.readFileSync(secret, 'utf8'), 'SECRET\n', 'link target untouched');
-    cleanup(outsideDir);
   });
 
-  test('a symlinked destination is skipped, never written through', () => {
+  test('a symlinked destination is skipped, never written through', (t) => {
     // copyFileSync FOLLOWS a symlinked destination, so a link planted at the
     // restore target would write outside the config dir even though every
     // ancestor directory is real.
     writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
     const outsideDir = createTempDir('gsd-1854-linktarget-');
+    t.after(() => cleanup(outsideDir));
     const outsideFile = path.join(outsideDir, 'victim.md');
     fs.writeFileSync(outsideFile, 'ORIGINAL\n');
 
     const dest = path.join(tmpDir, 'skills', 'gsd-mine', 'SKILL.md');
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    try {
-      fs.symlinkSync(outsideFile, dest);
-    } catch {
-      cleanup(outsideDir);
-      return;
-    }
+    if (!trySymlink(outsideFile, dest)) return t.skip(SYMLINK_UNAVAILABLE);
     writeBackupEntry(tmpDir, 'skills/gsd-mine/SKILL.md', 'ATTACKER CONTENT\n');
 
     const entry = entryFor(parseRestore(tmpDir, ['--apply']), 'skills/gsd-mine/SKILL.md');
@@ -1066,22 +1078,42 @@ describe('restore-custom-files — hostile input and path safety', () => {
       fs.readFileSync(outsideFile, 'utf8'), 'ORIGINAL\n',
       'the symlink target outside the config dir must be untouched',
     );
-    cleanup(outsideDir);
   });
 
-  test('a symlinked backup root is not walked', () => {
+  test('a dangling symlinked destination is skipped, never created through', (t) => {
+    // The nastier variant: the link target does NOT exist, so existsSync on the
+    // destination returns false and the differing-file guard never fires —
+    // copyFileSync would CREATE the target wherever the link points.
+    writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
+    const outsideDir = createTempDir('gsd-1854-dangling-');
+    t.after(() => cleanup(outsideDir));
+    const neverCreated = path.join(outsideDir, 'shell-profile');
+
+    const dest = path.join(tmpDir, 'skills', 'gsd-mine', 'SKILL.md');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    if (!trySymlink(neverCreated, dest)) return t.skip(SYMLINK_UNAVAILABLE);
+    writeBackupEntry(tmpDir, 'skills/gsd-mine/SKILL.md', 'ATTACKER CONTENT\n');
+
+    const entry = entryFor(parseRestore(tmpDir, ['--apply']), 'skills/gsd-mine/SKILL.md');
+
+    assert.strictEqual(entry.outcome, OUTCOME.SKIPPED_UNSAFE_PATH);
+    assert.ok(
+      !fs.existsSync(neverCreated),
+      'a dangling link must not be used to create a file outside the config dir',
+    );
+  });
+
+  test('a symlinked backup root is not walked', (t) => {
     // A gsd-user-files-backup/ that is itself a link would let the walk read
     // arbitrary files and present them as the user's own backup.
     writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
     const outsideDir = createTempDir('gsd-1854-fakebackup-');
+    t.after(() => cleanup(outsideDir));
     fs.mkdirSync(path.join(outsideDir, 'skills', 'gsd-implant'), { recursive: true });
     fs.writeFileSync(path.join(outsideDir, 'skills', 'gsd-implant', 'SKILL.md'), '# Implant\n');
 
-    try {
-      fs.symlinkSync(outsideDir, path.join(tmpDir, 'gsd-user-files-backup'), 'dir');
-    } catch {
-      cleanup(outsideDir);
-      return;
+    if (!trySymlink(outsideDir, path.join(tmpDir, 'gsd-user-files-backup'), 'dir')) {
+      return t.skip(SYMLINK_UNAVAILABLE);
     }
 
     const json = parseRestore(tmpDir, ['--apply']);
@@ -1089,22 +1121,17 @@ describe('restore-custom-files — hostile input and path safety', () => {
     assert.strictEqual(json.backup_found, false, 'a symlinked backup root is not a backup');
     assert.deepStrictEqual(json.entries, []);
     assert.ok(!fs.existsSync(path.join(tmpDir, 'skills', 'gsd-implant', 'SKILL.md')));
-    cleanup(outsideDir);
   });
 
-  test('a symlinked backup directory is not traversed out of the config dir', () => {
+  test('a symlinked backup directory is not traversed out of the config dir', (t) => {
     writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
     const outsideDir = createTempDir('gsd-1854-outdir-');
+    t.after(() => cleanup(outsideDir));
     fs.writeFileSync(path.join(outsideDir, 'loot.md'), 'LOOT\n');
 
     const linkDir = path.join(tmpDir, 'gsd-user-files-backup', 'escaped');
     fs.mkdirSync(path.dirname(linkDir), { recursive: true });
-    try {
-      fs.symlinkSync(outsideDir, linkDir, 'dir');
-    } catch {
-      cleanup(outsideDir);
-      return;
-    }
+    if (!trySymlink(outsideDir, linkDir, 'dir')) return t.skip(SYMLINK_UNAVAILABLE);
 
     const json = parseRestore(tmpDir, ['--apply']);
 
@@ -1113,7 +1140,6 @@ describe('restore-custom-files — hostile input and path safety', () => {
       `symlinked dir must not be traversed and restored; got ${JSON.stringify(json.entries)}`,
     );
     assert.ok(!fs.existsSync(path.join(tmpDir, 'escaped', 'loot.md')));
-    cleanup(outsideDir);
   });
 
   test('shell metacharacters in a backup path are treated as literal path text', () => {

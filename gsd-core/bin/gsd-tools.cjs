@@ -1851,6 +1851,14 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     return out;
   }
 
+  // Why these three checks rather than security.cjs's `validatePath`: that seam
+  // resolves symlinks with realpathSync and then tests containment, so a link
+  // whose target sits inside the config dir passes. For a restore that is still
+  // wrong — writing through any link overwrites whatever it points at instead
+  // of materializing a regular file at the backed-up path. These checks reject
+  // links outright, which is strictly stricter than validatePath, not a
+  // reimplementation of it. Do not "simplify" this to validatePath.
+
   /** True when `target` resolves strictly inside `root`. */
   function isInsideDir(root, target) {
     const rel = path.relative(path.resolve(root), path.resolve(target));
