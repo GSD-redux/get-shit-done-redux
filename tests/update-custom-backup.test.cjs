@@ -874,6 +874,33 @@ describe('restore-custom-files — compatibility pass against the new release', 
     assert.ok(fs.existsSync(path.join(tmpDir, 'skills', 'gsd-broken', 'SKILL.md')));
   });
 
+  test('a manifest whose files field is not a plain object reports manifest_found false', () => {
+    // An array/scalar `files` yields numeric-index keys that match no path, so
+    // the managed-path check is silently dead. Reporting manifest_found:true
+    // there would claim a check ran that did not (ADR-227: shape, not type).
+    for (const badFiles of ['["a","b"]', '"a string"', '42', 'null']) {
+      fs.writeFileSync(
+        path.join(tmpDir, 'gsd-file-manifest.json'),
+        `{"version":"1.9.0","files":${badFiles}}`,
+      );
+      const json = parseRestore(tmpDir);
+      assert.strictEqual(
+        json.manifest_found, false,
+        `files: ${badFiles} must not count as a usable manifest`,
+      );
+    }
+  });
+
+  test('a well-formed but empty files map still counts as a usable manifest', () => {
+    // Boundary companion to the test above: {} is a legitimate manifest that
+    // simply ships nothing, and must NOT be conflated with a malformed one.
+    fs.writeFileSync(
+      path.join(tmpDir, 'gsd-file-manifest.json'),
+      '{"version":"1.9.0","files":{}}',
+    );
+    assert.strictEqual(parseRestore(tmpDir).manifest_found, true);
+  });
+
   test('missing manifest degrades to restore-without-managed-checks rather than failing', () => {
     // No gsd-file-manifest.json — the destination-managed check has no source
     // of truth. The restore must still work (the backup is the user's data).

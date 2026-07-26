@@ -2005,8 +2005,18 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     if (fs.existsSync(manifestPath)) {
       try {
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-        manifestKeys = new Set(Object.keys(manifest.files || {}));
-        manifestFound = true;
+        // Shape, not just type (ADR-227): `files` must be a plain object for
+        // its keys to mean "paths this release ships". An array or a scalar
+        // yields numeric-index keys that silently match nothing, which would
+        // report a usable manifest while the managed-path check is dead.
+        const files = manifest && manifest.files;
+        const isPlainObject = typeof files === 'object'
+          && files !== null
+          && !Array.isArray(files);
+        if (isPlainObject) {
+          manifestKeys = new Set(Object.keys(files));
+          manifestFound = true;
+        }
       } catch {
         manifestFound = false;
       }
