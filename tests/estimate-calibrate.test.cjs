@@ -207,3 +207,68 @@ describe('estimate-calibrate', () => {
       'must stamp the current schema version so a future reader can refuse it');
   });
 });
+
+// ─── convergence guard (#2632) ─────────────────────────────────────────────
+
+describe('calibration converges instead of oscillating', () => {
+  // The loop must measure actual/RAW, not actual/calibrated. Measuring against
+  // the already-corrected figure is self-defeating: once the correction works
+  // the observed ratio approaches 1, dragging the median back toward 1, which
+  // un-corrects the next estimate. This test pins convergence over enough
+  // phases for that oscillation to show up — it fails at ~1.41 if the basis
+  // regresses to the calibrated value.
+  const RAW = 50000;
+  const TRUE_COST = 100000;   // the planner is consistently 2x low
+
+  const simulate = (useRawBasis) => {
+    const samples = [];
+    for (let phase = 0; phase < 10; phase += 1) {
+      const cal = est.computeCalibration(samples);
+      const emitted = est.applyCalibration(RAW, cal.factor);
+      const estimate = { tokens: emitted, rawTokens: RAW, tasks: 3, confidence: cal.confidence };
+      samples.push({
+        estimateTokens: useRawBasis ? est.calibrationBasis(estimate) : estimate.tokens,
+        actualTokens: TRUE_COST,
+      });
+    }
+    return est.computeCalibration(samples).factor;
+  };
+
+  test('measuring against the raw projection converges on the true ratio', () => {
+    assert.ok(Math.abs(simulate(true) - 2) < 1e-9,
+      `expected convergence on 2.0, got ${simulate(true)}`);
+  });
+
+  test('measuring against the calibrated figure does NOT converge', () => {
+    // Negative proof that the basis choice is load-bearing, not incidental.
+    assert.ok(simulate(false) < 1.9,
+      'if this passes at ~2.0 the two bases are equivalent and this guard is vacuous');
+  });
+
+  test('calibrationBasis prefers raw_tokens and falls back for older plans', () => {
+    assert.equal(est.calibrationBasis({ tokens: 100000, rawTokens: 50000, tasks: 3, confidence: 'med' }), 50000);
+    assert.equal(est.calibrationBasis({ tokens: 60000, tasks: 3, confidence: 'low' }), 60000,
+      'a pre-#2632 plan with no raw_tokens must still contribute a sample');
+  });
+
+  test('estimate-calibrate uses raw_tokens from the plan when present', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    // tokens=100000 (calibrated) but raw_tokens=50000; actual=100000.
+    // Ratio must be 100000/50000 = 2, NOT 100000/100000 = 1.
+    for (const phase of ['01-a', '02-b', '03-c']) {
+      const dir = path.join(tmpDir, '.planning', 'phases', phase);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, '01-PLAN.md'),
+        `---\nphase: ${phase}\nestimate:\n  tokens: 100000\n  raw_tokens: 50000\n  tasks: 3\n  confidence: med\nmust_haves:\n---\nx\n`);
+      fs.writeFileSync(path.join(dir, '01-SUMMARY.md'),
+        `---\nphase: ${phase}\nactuals:\n  tokens: 100000\n  tasks: 3\n  commits: 5\n---\nx\n`);
+    }
+
+    const out = JSON.parse(runGsdTools('query estimate-calibrate', tmpDir).output);
+    assert.equal(out.sample_count, 3);
+    assert.equal(out.factor, 2,
+      'ratio must be actual/raw (2.0), not actual/calibrated (1.0)');
+  });
+});

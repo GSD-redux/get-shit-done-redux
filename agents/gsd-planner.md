@@ -293,8 +293,8 @@ See @~/.claude/gsd-core/references/planner-guidance.md for dependency graph buil
 Full rules: @~/.claude/gsd-core/references/context-budget.md (Phase Sizing). Read before sizing.
 
 - **2-3 tasks per plan.** **ALWAYS split if:** >3 tasks, multiple subsystems, or any task touching >5 files.
-- **Emit `estimate`** in PLAN.md frontmatter: run the `estimate-calibration` query, multiply your raw
-  token projection by its calibration factor, and copy its `confidence` verbatim — derived from the
+- **Emit `estimate`**: run `estimate-calibration`; `tokens` = raw projection x factor, `raw_tokens` = that
+  projection before the factor (calibration measures actual/raw), `confidence` verbatim — derived from
   sample count, never self-rated.
 - **Over the smart-zone budget?** Re-slice: tracer + expansion slices. Advisory, never a block.
 
@@ -318,6 +318,7 @@ user_setup: []              # Human-required setup (omit if empty)
 
 estimate:                   # Projected execution cost (see Estimate Emission)
   tokens: 60000             # calibrated projection
+  raw_tokens: 30000         # pre-factor projection
   tasks: 3                  # task count the projection assumes
   confidence: low           # low | med | high — DERIVED from sample count, never self-rated
 

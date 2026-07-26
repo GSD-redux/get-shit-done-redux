@@ -199,7 +199,9 @@ export function collectCalibrationSamples(cwd: string): estimation.CalibrationSa
     const actuals = estimation.parseActuals(readBlock('-SUMMARY.md', 'actuals'));
     if (estimate === null || actuals === null) continue;
 
-    samples.push({ estimateTokens: estimate.tokens, actualTokens: actuals.tokens });
+    // Measure against the RAW projection — see PhaseEstimate.rawTokens for why
+    // measuring against the calibrated figure makes the loop self-defeating.
+    samples.push({ estimateTokens: estimation.calibrationBasis(estimate), actualTokens: actuals.tokens });
   }
   return samples;
 }
