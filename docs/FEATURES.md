@@ -487,6 +487,7 @@
 - REQ-PHASE-03: Remove MUST renumber all subsequent phases
 - REQ-PHASE-04: Remove MUST prevent removing phases that have been executed
 - REQ-PHASE-05: All operations MUST update ROADMAP.md and create/remove phase directories
+- REQ-PHASE-06: Bare-number phase lookup MUST resolve digit-leading slug names consistently across phase verbs, preserve project-code-prefixed result shaping, and fail loudly when multiple directories match
 
 ---
 
