@@ -21,6 +21,88 @@ function writePassedVerification(tmpDir, phaseDirName, paddedPhase) {
   );
 }
 
+// ─── Enhancement #2618: compact Pending Todos pointers ─────────────────────
+
+describe('enhancement #2618 — compact Pending Todos pointers', () => {
+  const productFiles = {
+    template: path.join(__dirname, '..', 'gsd-core', 'templates', 'state.md'),
+    addTodo: path.join(__dirname, '..', 'gsd-core', 'workflows', 'add-todo.md'),
+    checkTodos: path.join(__dirname, '..', 'gsd-core', 'workflows', 'check-todos.md'),
+  };
+  const canonicalExemplar =
+    '- [YYYY-MM-DD] [area] Title — [todo file](.planning/todos/pending/YYYY-MM-DD-slug.md) — Needs next step.';
+
+  function readProductFile(filePath) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+
+  function extractPointerExemplar(content, surface) {
+    const exemplars = content
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.startsWith('- [YYYY-MM-DD] [area] '));
+
+    assert.equal(
+      exemplars.length,
+      1,
+      `${surface} must define exactly one Pending Todos pointer exemplar`,
+    );
+    return exemplars[0];
+  }
+
+  test('STATE.md template pins the canonical one-line pointer exemplar', () => {
+    const template = readProductFile(productFiles.template);
+
+    assert.equal(
+      extractPointerExemplar(template, 'state template'),
+      canonicalExemplar,
+    );
+  });
+
+  test('both todo workflows use the STATE.md template exemplar verbatim', () => {
+    const templateExemplar = extractPointerExemplar(
+      readProductFile(productFiles.template),
+      'state template',
+    );
+
+    for (const [surface, filePath] of Object.entries({
+      'add-todo workflow': productFiles.addTodo,
+      'check-todos workflow': productFiles.checkTodos,
+    })) {
+      assert.equal(
+        extractPointerExemplar(readProductFile(filePath), surface),
+        templateExemplar,
+        `${surface} must not drift from the STATE.md template`,
+      );
+    }
+  });
+
+  test('both todo workflows require one physical bullet per todo and an empty fallback', () => {
+    for (const [surface, filePath] of Object.entries({
+      'add-todo workflow': productFiles.addTodo,
+      'check-todos workflow': productFiles.checkTodos,
+    })) {
+      const content = readProductFile(filePath);
+
+      assert.match(
+        content,
+        /one physical line per pending todo/i,
+        `${surface} must keep each todo on its own physical line`,
+      );
+      assert.match(
+        content,
+        /never concatenate (?:multiple )?todos? onto (?:one|the same) line/i,
+        `${surface} must explicitly prohibit run-on todo lines`,
+      );
+      assert.match(
+        content,
+        /If (?:the refreshed )?`?todo_count`? is 0,[^\n]*`None yet\.`/i,
+        `${surface} must define the empty Pending Todos state`,
+      );
+    }
+  });
+});
+
 describe('state-snapshot command', () => {
   let tmpDir;
 
