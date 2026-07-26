@@ -59,7 +59,7 @@ Parse current values (default to `true` if not present):
 - `graphify.auto_update` — opt-in: auto-rebuild graph after main HEAD advances (#3347) (default: `false`)
 - `model_profile` — which model each agent uses (default: `balanced`)
 - `git.branching_strategy` — branching approach (default: `"none"`)
-- `workflow.use_worktrees` — whether parallel executor agents run in worktree isolation (default: `true` on Claude Code; non-Claude installs default it to `false` and fail closed on an explicit `true` — #1521, #2486)
+- `workflow.use_worktrees` — whether parallel executor agents run in worktree isolation (honored when the runtime declares a `dispatch.isolation` primitive — `harness-worktree` or `orchestrator-worktree`; runtimes declaring `none` default it to `false` and fail closed on an explicit `true` — #1521, #2486, #2584)
 - `model_policy.provider` — provider slug for model policy (default: `null`; known values: anthropic, openai, google, qwen; set via /gsd:config --advanced)
 - `model_policy.budget` — budget level for model policy (default: `null`; known values: high, medium, low; set via /gsd:config --advanced)
 - `model_policy.high` — model ID for high-cost tier (default: `null`; set via /gsd:config --advanced)
@@ -87,10 +87,10 @@ configure `model_overrides` manually in .planning/config.json to target specific
 models per agent.
 ```
 
-**Runtime resolution for the Worktrees question (#2486):** resolve the runtime and the current worktrees value with the same reads the execution workflows use, before presenting the questions:
+**Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value with the same reads the execution workflows use, before presenting the questions:
 
 ```bash
-RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
+ISOLATION=$(gsd_run query dispatch-isolation --raw 2>/dev/null || echo "none")
 USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
 ```
 
@@ -120,10 +120,10 @@ Context Warnings, Research Qs
 
 **Conditional visibility — graphify.auto_update:** This question is shown only when the user's chosen `graphify.enabled` value is on. If `graphify.enabled` is off, omit the `graphify.auto_update` question and preserve the existing `graphify.auto_update` value in config (do not overwrite). Implementation: ask Graphify first; only ask Graph auto-update when Graphify is enabled.
 
-**Conditional options — Worktrees (#2486):** GSD's worktree isolation uses Claude Code's `isolation="worktree"` agent primitive, which no other runtime honors — the execution workflows fail closed on an explicit `workflow.use_worktrees: true` when `RUNTIME != claude`. This question deliberately branches on the same `config-get runtime` read those guards use (an explicit `runtime` key in config overrides the emitted default in both places), so this flow and the execution guards always reach the same verdict — never persist a value the guards would fail closed on, never withhold one they accept. Branch the Worktrees question on `$RUNTIME`:
+**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584). Runtimes whose own harness isolates each executor (`harness-worktree`) and runtimes GSD drives into worktrees itself (`orchestrator-worktree`) both run parallel worktrees; a runtime that declares no primitive resolves to `none`, and the execution workflows fail closed on an explicit `true` there. This question branches on the same `dispatch-isolation` read those guards use — which fail-closes an unknown, undeclared, or `undocumented` value to `none` — so this flow and the execution guards always reach the same verdict: never persist a value the guards would fail closed on, never withhold one they accept. **Do not add a runtime-name test here.** Branch the Worktrees question on `$ISOLATION`:
 
-- **If `RUNTIME` = `claude`:** present the Worktrees question exactly as written in the block below (unchanged behavior).
-- **If `RUNTIME` ≠ `claude`:** replace the Worktrees question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow on a non-Claude runtime, regardless of the user's answer:
+- **If `ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): present the Worktrees question exactly as written in the block below — this runtime supports worktree isolation.
+- **If `ISOLATION` = `none`:** replace the Worktrees question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive, regardless of the user's answer:
 
 ```
 {
@@ -131,23 +131,25 @@ Context Warnings, Research Qs
   header: "Worktrees",
   multiSelect: false,
   options: [
-    { label: "No (Recommended)", description: "Write use_worktrees: false. Worktree isolation requires Claude Code's isolation=\"worktree\" agent primitive — this runtime cannot honor it, and execution fails closed on an explicit true." },
-    { label: "Leave unchanged", description: "Do not write the key. Absent, it already resolves to false on this runtime; an existing explicit value is kept intact (e.g. for a Claude Code install sharing this config)." }
+    { label: "No (Recommended)", description: "Write use_worktrees: false. This runtime declares no executor-isolation primitive, so parallel plans run sequentially and execution fails closed on an explicit true." },
+    { label: "Leave unchanged", description: "Do not write the key. Absent, it already resolves to false on this runtime; an existing explicit value is kept intact (e.g. for a worktree-capable install sharing this config)." }
   ]
 }
 ```
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 
-  Pre-selection: the generic "current values pre-selected" rule does not apply to this question on a non-Claude runtime (an explicit `true` has no matching option by design). Pre-select "Leave unchanged" only when the key is absent (nothing to repair — absence already resolves to `false` on this runtime). Otherwise pre-select "No (Recommended)": both when `$USE_WORKTREES_CURRENT` is `false` (matches the current value) and when it is an explicit non-false value — the broken-inheritance case the notice below describes. The pre-selected default must be the repair that the "(Recommended)" label and the notice point to, so a user who accepts the default never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default choice in the numbered list.
+  **Known asymmetry (`quick.md`, `diagnose-issues.md`):** `#2584` migrated `/gsd:execute-phase` to the isolation capability but has not yet migrated `quick.md` or `diagnose-issues.md`. Both still fail closed on any non-Claude runtime carrying an explicit `true`, both hardcode Claude's `isolation="worktree"` spawn primitive, and neither implements an `orchestrator-worktree` dispatch path. So on an `orchestrator-worktree` runtime (Codex, OpenCode, Kimi, Kimi Code) an enabled `use_worktrees` is honored by `/gsd:execute-phase` but still rejected by those two. Do not "fix" that by loosening their guards — without the dispatch path they would run executor agents unisolated against the main checkout. Tracked as follow-up work on the #2584 epic.
 
-  Additionally, if `$USE_WORKTREES_CURRENT` is not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a Claude Code install sharing the repo), prepend this notice before the question:
+  Pre-selection: the generic "current values pre-selected" rule does not apply to this question when `ISOLATION` is `none` (an explicit `true` has no matching option by design). Pre-select "Leave unchanged" only when the key is absent (nothing to repair — absence already resolves to `false` on this runtime). Otherwise pre-select "No (Recommended)": both when `$USE_WORKTREES_CURRENT` is `false` (matches the current value) and when it is an explicit non-false value — the broken-inheritance case the notice below describes. The pre-selected default must be the repair that the "(Recommended)" label and the notice point to, so a user who accepts the default never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default choice in the numbered list.
+
+  Additionally, if `$USE_WORKTREES_CURRENT` is not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a worktree-capable install sharing the repo), prepend this notice before the question:
 
 ```
 Note: .planning/config.json currently sets workflow.use_worktrees: true. This
-runtime cannot honor worktree isolation (a Claude Code-only agent primitive), so
+runtime declares no executor-isolation primitive (dispatch.isolation: none), so
 /gsd:execute-phase and /gsd:quick fail closed on this value. Choose "No" to
-repair it for this runtime, or "Leave unchanged" to keep it for a Claude Code
+repair it for this runtime, or "Leave unchanged" to keep it for a worktree-capable
 install that shares this config (this runtime's commands will keep failing until
 it is set to false here).
 ```
@@ -450,7 +452,7 @@ Merge new settings into existing config.json:
     "research_before_questions": true/false,
     "discuss_mode": "discuss" | "assumptions",
     "skip_discuss": true/false,
-    "use_worktrees": true/false   // never written as true on a non-Claude runtime; omitted entirely when the user chose "Leave unchanged" (#2486)
+    "use_worktrees": true/false   // never written as true when the runtime's dispatch.isolation is none; omitted entirely when the user chose "Leave unchanged" (#2486)
   },
   "plan_review": {
     "source_grounding": true/false
