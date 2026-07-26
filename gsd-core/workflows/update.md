@@ -555,17 +555,18 @@ than treating them as failures. The backup is **never** deleted. Name the
 resolved `backup_dir` (`$RESTORE_DIR`), not the bare directory name, so the
 user has a path they can act on:
 
-```
+```text
 ✅ Restored N file(s).
    The backup was left in place at {RESTORE_DIR}.
 ```
 
 **If the user declines:**
 
-```
+```text
 Left N file(s) in {RESTORE_DIR}.
 Restore them later with:
-  gsd-tools restore-custom-files --config-dir <config-dir> --apply
+  node <config-dir>/gsd-core/bin/gsd-tools.cjs restore-custom-files \
+    --config-dir <config-dir> --apply
 ```
 </step>
 
