@@ -184,6 +184,8 @@ build/
 /gsd-core/bin/lib/capability-activation.cjs
 /gsd-core/bin/lib/federated-config.cjs
 /gsd-core/bin/lib/phase-locator.cjs
+/gsd-core/bin/lib/phase-estimation.cjs
+/gsd-core/bin/lib/estimate-cli.cjs
 /gsd-core/bin/lib/roadmap-parser.cjs
 /gsd-core/bin/lib/drift.cjs
 /gsd-core/bin/lib/cjs-command-router-adapter.cjs

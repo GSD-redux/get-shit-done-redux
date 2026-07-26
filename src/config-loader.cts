@@ -124,6 +124,7 @@ const CONFIG_DEFAULTS = {
   security_asvs_level: _getNestedConfigDefault('workflow', 'security_asvs_level'),
   security_block_on: _getNestedConfigDefault('workflow', 'security_block_on'),
   post_planning_gaps: _getNestedConfigDefault('workflow', 'post_planning_gaps'),
+  smart_zone_tokens: _getNestedConfigDefault('workflow', 'smart_zone_tokens'),
 };
 
 /**

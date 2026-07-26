@@ -268,6 +268,7 @@ const roadmap = require('./lib/roadmap.cjs');
 const { detectAssumptionDelta } = require('./lib/assumption-delta.cjs');
 const verify = require('./lib/verify.cjs');
 const config = require('./lib/config.cjs');
+const estimateCli = require('./lib/estimate-cli.cjs');
 const template = require('./lib/template.cjs');
 const milestone = require('./lib/milestone.cjs');
 const commands = require('./lib/commands.cjs');
@@ -2182,6 +2183,10 @@ const HOST_COMMAND_ROUTERS = {
   'config-set': routeConfigSet,
   'config-set-model-profile': routeConfigSetModelProfile,
   'config-get': routeConfigGet,
+  // Phase-effort estimation (#2630, ADR-2629). A PAIR of verbs, so leaves
+  // rather than a family — ADR-2346 promotes to a family only at >=3.
+  'estimate-check': ({ args, cwd, raw }) => estimateCli.cmdEstimateCheck(cwd, args.slice(1), raw),
+  'estimate-calibration': ({ args, cwd, raw }) => estimateCli.cmdEstimateCalibration(cwd, args.slice(1), raw),
   'config-new-project': routeConfigNewProject,
   'config-path': routeConfigPath,
   'migrate-config': routeMigrateConfig,

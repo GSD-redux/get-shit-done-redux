@@ -154,6 +154,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/core-utils.cjs',
       'gsd-core/bin/lib/io.cjs',
       'gsd-core/bin/lib/phase-id.cjs',
+      'gsd-core/bin/lib/phase-estimation.cjs',
+      'gsd-core/bin/lib/estimate-cli.cjs',
       'gsd-core/bin/lib/normalize-test-command.cjs',
       'gsd-core/bin/lib/config-loader.cjs',
       'gsd-core/bin/lib/phase-locator.cjs',
