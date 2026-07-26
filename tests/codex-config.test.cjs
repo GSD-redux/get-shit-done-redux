@@ -859,6 +859,23 @@ describe('CODEX_AGENT_SANDBOX', () => {
   const requiresWrite = (content) =>
     declaredTools(content).some((t) => WRITE_TOOLS.has(t));
 
+  // The single expectation used by both the parity loop and the guard test
+  // below, so the guard exercises the production path rather than a copy of
+  // its formula. Strict equality is deliberate: the sandbox must follow the
+  // declared contract in BOTH directions. If a role ever legitimately needs
+  // write access without declaring Write/Edit/NotebookEdit (e.g. a Bash-only
+  // generator), declare the tool in its contract so the need is visible —
+  // do not relax this to a one-sided check, which is what made the original
+  // assertion vacuous (#2540 review).
+  const assertMapMatchesContract = (name, mode, content) => {
+    const expected = requiresWrite(content) ? 'workspace-write' : 'read-only';
+    assert.strictEqual(
+      mode,
+      expected,
+      `${name}: map says "${mode}" but contract tools "${declaredTools(content).join(', ')}" require "${expected}"`
+    );
+  };
+
   test('#2540: every repo agent whose contract declares Write/Edit gets a workspace-write TOML', () => {
     assert.ok(agentFiles.length > 0, 'repo agents/ directory must not be empty');
     for (const file of agentFiles) {
@@ -921,6 +938,26 @@ describe('CODEX_AGENT_SANDBOX', () => {
       ['Read', 'Write'],
       'bracketed flow with a trailing comment still normalizes'
     );
+    assert.deepStrictEqual(
+      parseToolsContract('tools:\n  # why these tools\n  - Read\n  - Write'),
+      ['Read', 'Write'],
+      'a comment line inside a block sequence must not truncate the contract'
+    );
+  });
+
+  test('#2540 review: the contract seam exports exactly its two public functions', () => {
+    // Pins the public surface: WRITE_TOOLS was exported with zero consumers
+    // (every caller destructures only the two functions, and this file
+    // declares its own copy for oracle independence). Without this, the dead
+    // export could silently return.
+    const seam = require(path.join(
+      __dirname, '..', 'gsd-core', 'bin', 'lib', 'agent-tools-contract.cjs'
+    ));
+    assert.deepStrictEqual(
+      Object.keys(seam).sort(),
+      ['parseToolsContract', 'toolsRequireWrite'],
+      'agent-tools-contract must export exactly its two public functions'
+    );
   });
 
   test('#2540 review: block-list contract agents derive correctly (issue example #8)', () => {
@@ -973,17 +1010,47 @@ describe('CODEX_AGENT_SANDBOX', () => {
   test('#2540: explicit map entries never contradict the agent tool contract', () => {
     // The map keeps precedence over the contract-derived fallback, so a stale
     // entry could silently reintroduce the downgrade. Pin map/contract parity.
+    //
+    // Review round 2: the previous form computed the expectation as
+    // `requiresWrite(content) ? 'workspace-write' : mode` — for a read-only
+    // contract that collapsed to assert(mode, mode) and could never fail,
+    // exactly where over-privilege would matter. The expectation is now
+    // derived solely from the contract, so the assertion discriminates in
+    // BOTH directions: a map that under-privileges a write contract, and a
+    // map that grants workspace-write to an agent declaring no write tools.
+    let checked = 0;
     for (const [name, mode] of Object.entries(CODEX_AGENT_SANDBOX)) {
       const file = path.join(agentsDir, `${name}.md`);
       if (!fs.existsSync(file)) continue; // map may reference retired agents
       const content = fs.readFileSync(file, 'utf8');
-      const required = requiresWrite(content) ? 'workspace-write' : mode;
-      assert.strictEqual(
-        mode,
-        required,
-        `${name}: map says "${mode}" but contract tools "${declaredTools(content).join(', ')}" require "${required}"`
-      );
+      assertMapMatchesContract(name, mode, content);
+      checked++;
     }
+    // A `continue`-heavy loop that silently checks nothing would restore the
+    // vacuous pass by a different route.
+    assert.ok(checked > 0, 'no map entry was actually checked against a contract');
+  });
+
+  test('#2540 review: the map/contract parity check can actually fail', () => {
+    // Guards the invariant above against regressing to a tautology by calling
+    // the SAME helper the loop calls (not a re-implementation of its formula,
+    // which would drift from the production path) with a deliberately
+    // contradictory map entry, in both directions.
+    const readOnly = fs.readFileSync(path.join(agentsDir, 'gsd-plan-checker.md'), 'utf8');
+    assert.strictEqual(requiresWrite(readOnly), false, 'fixture must declare no write tools');
+    assert.throws(
+      () => assertMapMatchesContract('gsd-plan-checker', 'workspace-write', readOnly),
+      /workspace-write/,
+      'an OVER-privileged map entry must fail parity, not pass silently'
+    );
+
+    const writeCapable = fs.readFileSync(path.join(agentsDir, 'gsd-executor.md'), 'utf8');
+    assert.strictEqual(requiresWrite(writeCapable), true, 'fixture must declare write tools');
+    assert.throws(
+      () => assertMapMatchesContract('gsd-executor', 'read-only', writeCapable),
+      /read-only/,
+      'an UNDER-privileged map entry must fail parity'
+    );
   });
 });
 

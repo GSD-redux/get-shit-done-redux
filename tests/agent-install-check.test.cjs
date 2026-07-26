@@ -523,6 +523,68 @@ describe('#2540 regression: sandbox_mode weaker than declared tool contract is r
     assert.strictEqual(result.agents_installed, false);
   });
 
+  test('#2540 review: a TOML literal string sandbox_mode does not evade the check', () => {
+    // GSD emits basic (double-quoted) strings, but this validator exists to
+    // catch installs that no longer match what GSD emitted — a drifted
+    // single-quoted value silently skipped the check entirely.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit'));
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.toml`),
+      `name = "${target}"\ndescription = "d"\nsandbox_mode = 'read-only'\n`
+    );
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.strictEqual(result.sandbox_violations.length, 1, "literal-string sandbox_mode must still be checked");
+    assert.strictEqual(result.sandbox_violations[0].sandbox_mode, 'read-only');
+  });
+
+  test('#2540 review: a sandbox_mode line inside developer_instructions is not read as the sandbox', () => {
+    // The /m scan covered the whole file including the trailing instructions
+    // literal, so an agent body line could be mistaken for the real key.
+    //
+    // The contract/value pairing here is deliberate: a WRITE-requiring
+    // contract with a fake `read-only` inside the body. The validator flags
+    // write-contract + read-only, so the old whole-file scan reads the fake
+    // key and reports a violation that does not exist, while the scoped read
+    // correctly finds no key at all. Pairing a no-write contract with a fake
+    // `workspace-write` would pass under BOTH readers and guard nothing.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit'));
+    fs.writeFileSync(
+      path.join(agentsDir, `${target}.toml`),
+      `name = "${target}"\ndescription = "d"\ndeveloper_instructions = '''\nExample config:\nsandbox_mode = "read-only"\n'''\n`
+    );
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.deepStrictEqual(
+      result.sandbox_violations,
+      [],
+      'no real sandbox_mode key is present (sandboxTier "none"), so the check must skip rather than read the body'
+    );
+  });
+
+  test('#2540 review: TOML shapes that must not defeat (or falsely trip) the sandbox_mode read', () => {
+    // Each row is a shape that an earlier cut of this reader got wrong in one
+    // direction or the other. Table-driven so a future narrowing fails on the
+    // specific shape it broke. `true` = violation expected.
+    const shapes = [
+      ['trailing comment on the value', 'Read, Write, Edit', `name = "x"\nsandbox_mode = "read-only" # policy note\n`, true],
+      ["a ''' inside an ordinary string value", 'Read, Write', `name = "x"\ndescription = "has ''' inside"\nsandbox_mode = "read-only"\n`, true],
+      ['CRLF line endings', 'Read, Write', `name = "x"\r\nsandbox_mode = "read-only"\r\n`, true],
+      ['a commented-out key (no real key)', 'Read, Write', `name = "x"\n# sandbox_mode = "read-only"\n`, false],
+      ['a key only under a [table] header', 'Read, Write', `name = "x"\n\n[profile.ex]\nsandbox_mode = "read-only"\n`, false],
+    ];
+    for (const [label, tools, tomlBody, expectViolation] of shapes) {
+      fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd(tools));
+      fs.writeFileSync(path.join(agentsDir, `${target}.toml`), tomlBody);
+      const result = agentInstallCheck.checkAgentsInstalled('codex');
+      assert.strictEqual(
+        result.sandbox_violations.length > 0,
+        expectViolation,
+        `${label}: expected violation=${expectViolation}`
+      );
+    }
+  });
+
   test('#2540 review: a UTF-8 BOM before the frontmatter does not hide the contract from the validator', () => {
     fs.writeFileSync(
       path.join(agentsDir, `${target}.md`),

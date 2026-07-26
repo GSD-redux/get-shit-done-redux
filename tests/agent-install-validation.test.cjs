@@ -740,4 +740,45 @@ describe('#2540 regression: validate agents --raw exposes sandbox_violations', (
     assert.strictEqual(output.sandbox_violations[0].agent, target);
     assert.strictEqual(output.sandbox_violations[0].sandbox_mode, 'read-only');
   });
+
+  test('#2540 review: a sandbox violation still surfaces in W010 when another agent is MISSING', () => {
+    // The sandbox clause used to live in a branch guarded by
+    // `missing_agents.length === 0`, so a single missing agent hid every
+    // sandbox violation from the health report. Both must be reported.
+    const agentsDir = path.join(tmpDir, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const violating = EXPECTED_AGENTS[0];
+    const absent = EXPECTED_AGENTS[1];
+    for (const name of EXPECTED_AGENTS) {
+      if (name === absent) continue; // deliberately not written → missing
+      fs.writeFileSync(
+        path.join(agentsDir, `${name}.md`),
+        `---\nname: ${name}\ndescription: Test agent\ntools: Read, Bash\n---\nAgent content.\n`
+      );
+    }
+    fs.writeFileSync(
+      path.join(agentsDir, `${violating}.md`),
+      `---\nname: "${violating}"\ndescription: "Test agent"\n---\n\n<codex_agent_role>\nrole: ${violating}\ntools: Read, Write, Edit\npurpose: Test agent\n</codex_agent_role>\n\nAgent content.\n`
+    );
+    fs.writeFileSync(
+      path.join(agentsDir, `${violating}.toml`),
+      `name = "${violating}"\ndescription = "Test agent"\nsandbox_mode = "read-only"\n`
+    );
+
+    const result = runGsdTools('validate health --raw', tmpDir, {
+      GSD_AGENTS_DIR: agentsDir,
+      GSD_RUNTIME: 'codex',
+    });
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    const w010 = (output.warnings || []).find((w) => w.code === 'W010');
+    assert.ok(w010, 'W010 must be raised when an agent is missing');
+    assert.match(w010.message, new RegExp(absent), 'the missing agent must be named');
+    assert.match(
+      w010.message,
+      new RegExp(violating),
+      'the sandbox violation must not be hidden by the missing agent'
+    );
+  });
 });

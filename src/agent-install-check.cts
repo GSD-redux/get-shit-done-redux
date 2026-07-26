@@ -53,6 +53,34 @@ function _extractDeclaredTools(md: string): string[] {
 }
 
 /**
+ * Read the `sandbox_mode` scalar out of a generated agent .toml.
+ *
+ * Scoped deliberately to the shape GSD emits (generateCodexAgentToml): bare
+ * top-level keys, `developer_instructions = \'\'\'` always last. The search is
+ * cut at that exact line so a `sandbox_mode = "…"` line occurring inside the
+ * agent body is never read as the key. Both basic and literal strings are
+ * accepted because an install that drifted to `sandbox_mode = \'read-only\'` is
+ * exactly the hand-edit this validator exists to catch.
+ *
+ * NOT a TOML parser, and deliberately not trying to be: arbitrary valid TOML
+ * (dotted keys, escapes, nested tables, multiline openers of other keys) needs
+ * a real parser, and this repo already has one in `bin/install.js`
+ * (`parseTomlToObject`). That module consumes this leaf, so using it here means
+ * extracting it to a shared leaf first — tracked as a follow-up rather than
+ * carried by this bug-fix (#2540 review round 3). Returns null when no key is
+ * present (e.g. sandboxTier "none").
+ */
+function _sandboxModeOf(toml: string): string | null {
+  // Cut at the canonical trailing multiline value, and at the first table
+  // header — a key under `[table]` is not the top-level sandbox, and reading
+  // one would report a violation that does not exist.
+  const beforeInstructions = toml.split(/^developer_instructions\s*=\s*(?:'''|""")/m)[0] ?? toml;
+  const body = beforeInstructions.split(/^\s*\[/m)[0] ?? '';
+  const m = /^sandbox_mode\s*=\s*(?:"([^"]*)"|'([^']*)')/m.exec(body);
+  return m ? (m[1] ?? m[2] ?? '') : null;
+}
+
+/**
  * Resolve the agents directory for the given runtime.
  *
  * Priority:
@@ -212,6 +240,13 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // Agents without a .toml, without a sandbox_mode key (sandboxTier "none"),
   // or without a readable contract are skipped, keeping the check a no-op for
   // runtimes that do not emit TOML sandboxes.
+  //
+  // The inverse direction (workspace-write on a contract declaring no write
+  // tools) is deliberately NOT checked here — see the PR discussion. Its
+  // realistic vector, a CODEX_AGENT_SANDBOX entry contradicting the contract,
+  // is closed at the repo gate by the map/contract parity test; detecting it
+  // in an arbitrary hand-edited .toml needs a real TOML parse, which is a
+  // follow-up rather than a rider on this fix.
   const sandboxViolations: SandboxViolation[] = [];
   for (const agent of expectedAgents) {
     const tomlPath = path.join(agentsDir, `${agent}.toml`);
@@ -235,13 +270,13 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
       }
       continue;
     }
-    const sandboxMatch = /^sandbox_mode\s*=\s*"([^"]+)"/m.exec(toml);
-    if (!sandboxMatch) continue;
+    const sandboxMode = _sandboxModeOf(toml);
+    if (sandboxMode === null) continue;
     const declaredTools = _extractDeclaredTools(md);
-    if (toolsRequireWrite(declaredTools) && sandboxMatch[1] === 'read-only') {
+    if (toolsRequireWrite(declaredTools) && sandboxMode === 'read-only') {
       sandboxViolations.push({
         agent,
-        sandbox_mode: sandboxMatch[1],
+        sandbox_mode: sandboxMode,
         declared_tools: declaredTools.join(', '),
       });
     }

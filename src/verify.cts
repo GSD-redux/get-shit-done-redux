@@ -1864,36 +1864,45 @@ function cmdValidateHealth(
           `No GSD agents found in ${agentStatus.agents_dir} — Task(subagent_type="gsd-*") will fall back to general-purpose`,
           `Run the GSD installer: npx ${PACKAGE_NAME}@latest`,
         );
-      } else if ((agentStatus.incomplete_agents).length > 0 && (agentStatus.missing_agents).length === 0) {
-        addIssue(
-          'warning',
-          'W010',
-          `Incomplete agent installs (missing generated file): ${(agentStatus.incomplete_agents).join(', ')} — affected workflows may fall back to general-purpose`,
-          `Re-run the GSD installer to complete the install: npx ${PACKAGE_NAME}@latest`,
-        );
-      } else if ((agentStatus.incomplete_agents).length > 0) {
-        addIssue(
-          'warning',
-          'W010',
-          `Missing ${(agentStatus.missing_agents).length} GSD agents: ${(agentStatus.missing_agents).join(', ')}; incomplete agent installs (missing generated file): ${(agentStatus.incomplete_agents).join(', ')} — affected workflows will fall back to general-purpose`,
-          `Run the GSD installer: npx ${PACKAGE_NAME}@latest`,
-        );
-      } else if ((agentStatus.sandbox_violations).length > 0 && (agentStatus.missing_agents).length === 0) {
-        // #2540 — every file present but a generated sandbox contradicts the
-        // role's declared tool contract: the agent cannot write its outputs.
-        addIssue(
-          'warning',
-          'W010',
-          `Agent sandbox weaker than declared tool contract: ${(agentStatus.sandbox_violations).map((v) => v.agent).join(', ')} — these agents cannot write their declared outputs`,
-          `Re-run the GSD installer to regenerate agent configs: npx ${PACKAGE_NAME}@latest`,
-        );
       } else {
-        addIssue(
-          'warning',
-          'W010',
-          `Missing ${(agentStatus.missing_agents).length} GSD agents: ${(agentStatus.missing_agents).join(', ')} — affected workflows will fall back to general-purpose`,
-          `Run the GSD installer: npx ${PACKAGE_NAME}@latest`,
-        );
+        // #2540 review round 2 — sandbox violations used to be their own
+        // exclusive branch guarded by `missing_agents.length === 0`, so one
+        // missing agent hid every sandbox violation from the report. The
+        // clause is additive instead: whichever presence message applies, any
+        // sandbox findings are appended rather than dropped.
+        const violations = agentStatus.sandbox_violations;
+        const sandboxSummary =
+          violations.length > 0
+            ? `sandbox weaker than declared tool contract: ${violations.map((v) => v.agent).join(', ')} (cannot write their declared outputs)`
+            : '';
+        const sandboxClause = sandboxSummary ? `; agent ${sandboxSummary}` : '';
+        const regenerateFix = `Re-run the GSD installer to regenerate agent configs: npx ${PACKAGE_NAME}@latest`;
+
+        if ((agentStatus.incomplete_agents).length > 0 && (agentStatus.missing_agents).length === 0) {
+          addIssue(
+            'warning',
+            'W010',
+            `Incomplete agent installs (missing generated file): ${(agentStatus.incomplete_agents).join(', ')} — affected workflows may fall back to general-purpose${sandboxClause}`,
+            `Re-run the GSD installer to complete the install: npx ${PACKAGE_NAME}@latest`,
+          );
+        } else if ((agentStatus.incomplete_agents).length > 0) {
+          addIssue(
+            'warning',
+            'W010',
+            `Missing ${(agentStatus.missing_agents).length} GSD agents: ${(agentStatus.missing_agents).join(', ')}; incomplete agent installs (missing generated file): ${(agentStatus.incomplete_agents).join(', ')} — affected workflows will fall back to general-purpose${sandboxClause}`,
+            `Run the GSD installer: npx ${PACKAGE_NAME}@latest`,
+          );
+        } else if ((agentStatus.missing_agents).length === 0) {
+          // Every file present; the only finding is the sandbox mismatch.
+          addIssue('warning', 'W010', `Agent ${sandboxSummary}`, regenerateFix);
+        } else {
+          addIssue(
+            'warning',
+            'W010',
+            `Missing ${(agentStatus.missing_agents).length} GSD agents: ${(agentStatus.missing_agents).join(', ')} — affected workflows will fall back to general-purpose${sandboxClause}`,
+            `Run the GSD installer: npx ${PACKAGE_NAME}@latest`,
+          );
+        }
       }
     }
   } catch {

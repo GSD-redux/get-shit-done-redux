@@ -94,6 +94,10 @@ function parseToolsContract(scope: string): string[] {
   for (let i = idx + 1; i < lines.length; i++) {
     const line = lines[i] ?? '';
     if (!line.trim()) continue; // blank lines inside a block sequence are valid YAML
+    // A comment line between items must not terminate the scan — the module
+    // contract lists comments as in scope, and truncating here silently
+    // dropped every tool after the comment (review round 2).
+    if (line.trim().startsWith('#')) continue;
     const m = /^\s*-\s+(.*\S)\s*$/.exec(line);
     if (!m) break; // next mapping key (or end of the sequence scope)
     const item = _cleanItem(m[1] ?? '');
@@ -110,7 +114,6 @@ function toolsRequireWrite(tools: readonly string[]): boolean {
 }
 
 export = {
-  WRITE_TOOLS,
   parseToolsContract,
   toolsRequireWrite,
 };
