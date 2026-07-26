@@ -21,7 +21,7 @@ import coreUtilsMod = require('./core-utils.cjs');
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken } = phaseIdMod;
+const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { getArchivedPhaseDirs, findPhaseInternal } = phaseLocatorMod;
@@ -775,7 +775,11 @@ function detectPhaseNumberFromFiles(files: string[] | undefined): string | null 
         // normalizes to a numeric phase form (the single-owner rule shared by
         // every other phase-token reader — see #2528).
         const normalized = normalizePhaseName(token);
-        if (token !== phaseDir && /^\d+[A-Z]?(?:\.\d+)*$/i.test(normalized)) {
+        // Built from the single-owner PHASE_NUMBER_TOKEN_SOURCE (the canonical
+        // phase-number grammar — #2128 anti-divergence guard) so this read-side
+        // acceptance check cannot drift from every other phase-token reader.
+        const phaseTokenShape = new RegExp(`^${PHASE_NUMBER_TOKEN_SOURCE}$`, 'i');
+        if (token !== phaseDir && phaseTokenShape.test(normalized)) {
           return token;
         }
       }
