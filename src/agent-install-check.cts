@@ -2,8 +2,8 @@
  * Agent Install Check — moved from core.cts (ADR-857 T0 #1268 phase rehome-core-squatters).
  *
  * Owns:
- *   - getAgentsDir(runtime?): string
- *   - checkAgentsInstalled(runtime?): AgentsInstalledResult
+ *   - getAgentsDir(runtime?, projectRoot?): string
+ *   - checkAgentsInstalled(runtime?, projectRoot?): AgentsInstalledResult
  *
  * The core.cjs re-export spine was retired in epic #1267; callers import
  * these symbols from agent-install-check.cjs directly.
@@ -15,6 +15,7 @@ import path from 'node:path';
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
+import { getDirName } from './runtime-name-policy.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -33,7 +34,7 @@ interface AgentsInstalledResult {
  *   2. For claude runtime: __dirname-relative path (agents/ sibling of gsd-core/)
  *      This is correct for both repo runs and real installs (the runtime config dir's
  *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
- *   3. For codex with an existing project-local install: <projectRoot>/.codex/agents
+ *   3. For codex with an existing project-local install: <projectRoot>/<localConfigDir>/agents
  *   4. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
@@ -48,7 +49,7 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
     return path.join(__dirname, '..', '..', '..', 'agents');
   }
   if (resolved === 'codex' && projectRoot) {
-    const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
+    const localAgentsDir = path.join(projectRoot, getDirName(resolved), 'agents');
     try {
       if (fs.statSync(localAgentsDir).isDirectory()) return localAgentsDir;
     } catch {
