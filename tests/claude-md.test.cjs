@@ -639,10 +639,14 @@ describe('bug #2565: generate-claude-profile uses AGENTS.md for Codex runtime', 
     writeConfig({ runtime: 'claude' });
     const analysisPath = writeAnalysis();
 
+    // #2659: set USERPROFILE alongside HOME so os.homedir() resolves to tmpDir
+    // on Windows too — Node's os.homedir() reads USERPROFILE on Windows and
+    // HOME on POSIX, so HOME alone leaves the real user profile in place on
+    // Windows and the path assertion fails cross-platform.
     const result = runGsdTools(
       ['generate-claude-profile', '--analysis', analysisPath, '--global'],
       tmpDir,
-      { HOME: tmpDir }
+      { HOME: tmpDir, USERPROFILE: tmpDir }
     );
     assert.ok(result.success, `Command failed: ${result.error}`);
 
