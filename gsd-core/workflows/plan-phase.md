@@ -74,6 +74,12 @@ AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)
 AGENT_SKILLS_PLANNER=$(gsd_run query agent-skills gsd-planner)
 AGENT_SKILLS_CHECKER=$(gsd_run query agent-skills gsd-plan-checker)
 CONTEXT_WINDOW=$(gsd_run query config-get context_window 2>/dev/null || echo "200000")
+SMART_ZONE_TOKENS=$(gsd_run query config-get workflow.smart_zone_tokens --default 100000 --raw 2>/dev/null || echo "100000")
+CALIBRATION_JSON=$(gsd_run query estimate-calibration 2>/dev/null || echo '{"factor":1,"confidence":"low","sample_count":0}')
+CALIBRATION_FACTOR=$(printf '%s' "$CALIBRATION_JSON" | grep -o '"factor":[0-9.]*' | cut -d: -f2)
+CALIBRATION_CONFIDENCE=$(printf '%s' "$CALIBRATION_JSON" | grep -o '"confidence":"[a-z]*"' | cut -d'"' -f4)
+[ -z "$CALIBRATION_FACTOR" ] && CALIBRATION_FACTOR=1
+[ -z "$CALIBRATION_CONFIDENCE" ] && CALIBRATION_CONFIDENCE=low
 MVP_MODE_CFG=$(gsd_run query config-get workflow.mvp_mode 2>/dev/null || echo "false")
 ```
 
@@ -767,6 +773,14 @@ ${API_SURFACE_PATH ? `
 </intel_surface_hint>
 ` : ''}
 ${AGENT_SKILLS_PLANNER}
+
+<estimate_contract>
+**Emit an `estimate` block in every PLAN.md frontmatter (#2631, ADR-2629).**
+
+- `CALIBRATION_FACTOR` = ${CALIBRATION_FACTOR} — multiply your raw token projection by this. It is the measured estimate-vs-actual ratio for this project; `1` means there is not yet enough history to correct.
+- `confidence` = ${CALIBRATION_CONFIDENCE} — use this value verbatim. It is **derived from the calibration sample count, not a self-assessment**. Do not substitute your own judgment of how sure you feel.
+- Smart-zone budget = ${SMART_ZONE_TOKENS} tokens. A plan estimated above it should be re-sliced into a tracer plus expansion slices. Advisory, never a block.
+</estimate_contract>
 
 <review_incorporation_contract>
 **If Mode is reviews:** REVIEWS.md is feedback input, not a hidden execution contract. /gsd:execute-phase primarily consumes PLAN.md plus the normal phase context, so every current actionable review finding must become visible in the relevant PLAN.md before planning can pass.
@@ -1497,6 +1511,29 @@ gsd_run query commit "docs(${PADDED_PHASE}): create phase plan" --files "${PHASE
 ```
 
 This commits all PLAN.md files for the phase plus the updated STATE.md and ROADMAP.md to version-control the planning artifacts. Skip this step if `commit_docs` is false.
+
+## 13d-2. Smart-Zone Estimate Report (#2631, ADR-2629)
+
+Non-blocking. For each plan carrying an `estimate` block, check it against the
+configured budget and surface the result. **Never exits non-zero** — an
+over-budget estimate is advice, not a gate.
+
+```bash
+for plan in "${PHASE_DIR}"/*-PLAN.md; do
+  EST_TOKENS=$(sed -n '/^estimate:/,/^[a-z_]*:/p' "$plan" | grep -o 'tokens: *[0-9]*' | head -1 | grep -o '[0-9]*')
+  [ -z "$EST_TOKENS" ] && continue
+  gsd_run query estimate-check --tokens "$EST_TOKENS" 2>/dev/null || true
+done
+```
+
+Present one line per plan: plan id, estimated tokens, the budget, and — when
+`over_budget` is true — the returned `recommendation`, which names how many
+slices the phase should become. Recommend re-slicing (a tracer plus expansion
+slices); do not re-plan automatically and do not fail the workflow.
+
+`confidence: low` means fewer than 3 completed phases carry actuals, so the
+figure is not yet calibrated for this project — say so rather than presenting it
+as precise.
 
 ## 13e. Post-Planning Gap Analysis (plan:post capability gate dispatch)
 

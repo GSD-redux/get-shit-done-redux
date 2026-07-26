@@ -1,4 +1,4 @@
-// allow-test-rule: source-text-is-the-product
+// allow-test-rule: source-text-is-the-product see #2631
 // agents/gsd-planner.md, agents/gsd-plan-checker.md, gsd-core/workflows/plan-phase.md
 // and docs/reference/plan-md.md — their text IS what the runtime loads and what
 // the planner emits against. Per CONTRIBUTING.md exception matrix.
@@ -35,7 +35,7 @@ const PLAN_MD_REF = 'docs/reference/plan-md.md';
 /** Extract the fenced PLAN.md frontmatter template the planner tells agents to emit. */
 function plannerFrontmatterTemplate(src) {
   // The template block is the first fenced yaml region containing `phase:` and `must_haves:`.
-  for (const m of src.matchAll(/```ya?ml\n([\s\S]*?)```/g)) {
+  for (const m of src.matchAll(/```ya?ml\r?\n([\s\S]*?)```/g)) {
     const body = m[1];
     if (/^phase:/m.test(body) && /^must_haves:/m.test(body)) return body;
   }

@@ -252,6 +252,7 @@ issue:
 1. Count tasks per plan
 2. Estimate files modified per plan
 3. Check against thresholds
+4. Read each plan's `estimate` block (#2631). When present, compare `estimate.tokens` against the configured `workflow.smart_zone_tokens` budget: over budget is a **warning with a split recommendation, never a blocker** (ADR-2629 Decision 5). Report `estimate.confidence` alongside it — `low` means there is not yet enough measured history to trust the figure, so weigh the task/file thresholds above more heavily. A plan with no `estimate` block is not a defect; the field is optional.
 
 **Thresholds:**
 | Metric | Target | Warning | Blocker |
