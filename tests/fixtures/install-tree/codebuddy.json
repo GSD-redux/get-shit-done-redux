@@ -422,6 +422,7 @@
   "hooks/gsd-windsurf-pre-write.js",
   "hooks/gsd-workflow-guard.js",
   "hooks/gsd-worktree-path-guard.js",
+  "hooks/lib/cursor-workspace.js",
   "hooks/lib/git-cmd.js",
   "hooks/lib/gsd-graphify-rebuild.sh",
   "hooks/managed-hooks-registry.cjs",

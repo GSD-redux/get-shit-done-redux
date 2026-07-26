@@ -404,6 +404,7 @@
   "hooks/gsd-cursor-stop.js",
   "hooks/gsd-cursor-subagent-start.js",
   "hooks/gsd-cursor-subagent-stop.js",
+  "hooks/lib/cursor-workspace.js",
   "scripts/changeset/README.md",
   "scripts/changeset/cli.cjs",
   "scripts/changeset/github-release-notes.cjs",

@@ -1153,6 +1153,32 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
     }
   }
 
+  // Stage the hooks/lib/ helpers the staged scripts require (#2587). Cursor sets
+  // hostBehaviors.skipSharedHooksInstall, so it never reaches the installer's
+  // bulk hooks/lib copy — without this, a script requiring './lib/…' would throw
+  // MODULE_NOT_FOUND at load, BEFORE its own try/catch, and wedge every Cursor
+  // session on the one runtime these hooks exist for. Driven off what the staged
+  // scripts actually require so a future helper cannot be silently omitted.
+  const requiredLibFiles = new Set<string>();
+  for (const script of installedScripts) {
+    const staged = fs.readFileSync(path.join(hooksDir, script), 'utf8');
+    const re = /require\(['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(staged)) !== null) requiredLibFiles.add(m[1]);
+  }
+  if (requiredLibFiles.size > 0) {
+    const srcLibDir = path.join(srcHooksDir, 'lib');
+    const destLibDir = path.join(hooksDir, 'lib');
+    fs.mkdirSync(destLibDir, { recursive: true });
+    for (const libFile of requiredLibFiles) {
+      const libSrc = path.join(srcLibDir, libFile);
+      if (!fs.existsSync(libSrc)) continue;
+      let libContent = fs.readFileSync(libSrc, 'utf8');
+      libContent = libContent.replace(/gsd:/gi, 'gsd-');
+      fs.writeFileSync(path.join(destLibDir, libFile), libContent);
+    }
+  }
+
   const hookOpts: BuildHookCommandOpts = { runtime: 'cursor', platform: opts.platform || process.platform };
   const commands: Record<string, string | null> = {};
   for (const ev of events) {

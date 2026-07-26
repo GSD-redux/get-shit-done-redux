@@ -248,13 +248,15 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
     const projectAtCwd = makeWorkspace(true);
     const unrelatedRoot = makeWorkspace(false);
     try {
-      for (const hook of [SESSION_START, SUBAGENT_START]) {
+      for (const hook of RESOLVING_HOOKS) {
         const out = runHook(hook, {
           cwd: projectAtCwd,
           payload: { hook_event_name: 'sessionStart', workspace_roots: [unrelatedRoot] },
         });
+        // stop's present-branch is its verify-work reminder, not a STATE.md phrase.
+        const ctx = out.additional_context || '';
         assert.ok(
-          /STATE\.md is present|review \.planning\/STATE\.md/.test(out.additional_context || ''),
+          /STATE\.md is present|review \.planning\/STATE\.md|Agent stopping/.test(ctx),
           `${path.basename(hook)}: a project at cwd must still be found when roots miss`,
         );
       }
@@ -264,27 +266,58 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
     }
   });
 
-  test('parity: the resolver is identical in both hook scripts', () => {
-    // The two hooks ship as standalone scripts, so the resolver is duplicated
-    // rather than shared via hooks/lib/ (which would require registering a new
-    // file in the generated installer's GSD_HOOK_LIB_FILES allowlist). Per
-    // CLAUDE.md "Generative Fix Divergence", the duplication carries a parity
-    // assertion so the two copies cannot silently drift apart.
-    const extract = (file) => {
+  test('single source: every hook requires the shared resolver, none redefines it', () => {
+    // The resolver lives in hooks/lib/cursor-workspace.js. Divergence is
+    // prevented structurally (one implementation) rather than by a parity
+    // assertion over copies, so this guards the structure: no hook may grow a
+    // local copy back.
+    for (const file of RESOLVING_HOOKS) {
       const src = fs.readFileSync(file, 'utf8');
-      const start = src.indexOf('function resolveWorkspaceRoot(');
-      assert.notEqual(start, -1, `${path.basename(file)} must define resolveWorkspaceRoot`);
-      const end = src.indexOf('\n}', start);
-      assert.notEqual(end, -1, `${path.basename(file)} resolveWorkspaceRoot must be terminated`);
-      return src.slice(start, end + 2);
-    };
-    const canonical = extract(SESSION_START);
-    for (const other of [STOP, SUBAGENT_START]) {
-      assert.equal(
-        extract(other),
-        canonical,
-        `resolveWorkspaceRoot must be byte-identical in ${path.basename(other)}`,
+      assert.ok(
+        src.includes("require('./lib/cursor-workspace.js')"),
+        `${path.basename(file)} must use the shared resolver`,
       );
+      assert.ok(
+        !src.includes('function resolveWorkspaceRoot('),
+        `${path.basename(file)} must not redefine resolveWorkspaceRoot locally`,
+      );
+    }
+  });
+
+  test('the shared resolver is staged next to the hooks that require it', () => {
+    // The MODULE_NOT_FOUND guard. Cursor sets skipSharedHooksInstall, so it
+    // never reaches the installer's bulk hooks/lib copy — every other runtime
+    // that ships these hooks does. If writeCursorHooksJson stopped staging the
+    // helper, each hook would throw at require time, BEFORE its own try/catch,
+    // and wedge every Cursor session on the one runtime this fix exists for.
+    const { runMinimalInstall } = require('./helpers/install-shared.cjs');
+    const { configDir, root } = runMinimalInstall({ runtime: 'cursor', scope: 'global' });
+    try {
+      const staged = path.join(configDir, 'hooks', 'lib', 'cursor-workspace.js');
+      assert.ok(
+        fs.existsSync(staged),
+        'cursor install must stage hooks/lib/cursor-workspace.js next to the hook scripts',
+      );
+      // And the staged hook must actually load against it.
+      const hook = path.join(configDir, 'hooks', 'gsd-cursor-session-start.js');
+      assert.ok(fs.existsSync(hook), 'cursor install must stage the sessionStart hook');
+      const ws = makeWorkspace(true);
+      try {
+        const out = JSON.parse(execFileSync(process.execPath, [hook], {
+          cwd: root,
+          input: JSON.stringify({ workspace_roots: [ws] }),
+          encoding: 'utf8',
+          timeout: 20000,
+        }) || '{}');
+        assert.ok(
+          (out.additional_context || '').includes('STATE.md is present'),
+          'the INSTALLED hook must resolve the workspace, not crash on a missing helper',
+        );
+      } finally {
+        cleanup(ws);
+      }
+    } finally {
+      cleanup(root);
     }
   });
 
