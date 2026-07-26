@@ -7,29 +7,25 @@
 git clone https://github.com/open-gsd/gsd-core.git
 cd gsd-core
 
-# Install dependencies
-npm install
+# Activate the pinned Node version from .nvmrc
+nvm use
+
+# Validate your environment
+npm run check:env
+
+# Install dependencies (reproducible, lockfile-driven)
+npm ci
 
 # Run tests
 npm test
 ```
 
----
+`npm ci` is required over `npm install`. It installs exactly what `package-lock.json`
+specifies and fails fast if the lockfile is out of sync — this is intentional.
 
-## Bootstrap your environment
-
-For a step-by-step setup guide covering Node version managers, `npm ci`, the environment
-validator, daily commands, and troubleshooting, see:
-
-**[docs/contributing/bootstrap.md](docs/contributing/bootstrap.md)**
-
-Quick start:
-
-```bash
-nvm use           # activate the pinned Node version from .nvmrc
-npm run check:env # validate your environment
-npm ci            # install from lockfile
-```
+**[docs/contributing/bootstrap.md](docs/contributing/bootstrap.md)** is the source of truth
+for setup. See it for Node version managers other than nvm (fnm, asdf, mise), the
+environment validator, daily commands, and troubleshooting.
 
 ---
 
