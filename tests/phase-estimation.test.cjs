@@ -15,7 +15,7 @@
  *      limit-1 / limit / limit+1 per RULESET.TESTS.boundary-coverage.fixtures.
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -774,7 +774,10 @@ describe('RawTokens / CalibratedTokens brands', () => {
    * "src stays clean" assertion below be meaningful: any diagnostic NOT in the
    * fixture directory is a real compile error in the module under test.
    */
-  const compileFixtures = () => {
+  let byFixture;
+  let foreign;
+
+  before(() => {
     const configPath = path.join(REPO_ROOT, 'tsconfig.build.json');
     const readConfig = ts.readConfigFile(configPath, ts.sys.readFile);
     assert.equal(readConfig.error, undefined, 'tsconfig.build.json must parse');
@@ -797,18 +800,14 @@ describe('RawTokens / CalibratedTokens brands', () => {
     const roots = CASES.map((c) => path.join(FIXTURE_DIR, c.fixture));
     const program = ts.createProgram(roots, options);
 
-    const byFixture = new Map(CASES.map((c) => [c.fixture, []]));
-    const foreign = [];
+    byFixture = new Map(CASES.map((c) => [c.fixture, []]));
+    foreign = [];
     for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
       const name = diagnostic.file === undefined ? null : path.basename(diagnostic.file.fileName);
       if (name !== null && byFixture.has(name)) byFixture.get(name).push(diagnostic);
       else foreign.push(diagnostic);
     }
-    return { byFixture, foreign };
-  };
-
-  // One compile, shared by every assertion below.
-  const { byFixture, foreign } = compileFixtures();
+  });
 
   test('the module and its real build options compile clean', () => {
     // A diagnostic outside the fixture directory means `src/` itself is broken,
