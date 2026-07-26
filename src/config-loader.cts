@@ -308,8 +308,14 @@ function _warnUnknownProfileOverrides(parsed: Record<string, unknown>, configLab
 
 // Internal helper exposed for tests so per-process warning state can be reset
 // between cases that intentionally exercise the warning path repeatedly.
+// Clears BOTH dedup sets: _warnedConfigKeys (runtime/model-policy/tier warnings)
+// and _warnedUnknownConfigKeys (unknown top-level keys). Omitting the latter made
+// this a silent no-op for the suite that exists to test it — the leaked state
+// suppressed any later case reusing a key, and the existing cases only passed
+// because each picked a key name no other case reused (#2674).
 function _resetRuntimeWarningCacheForTests(): void {
   _warnedConfigKeys.clear();
+  _warnedUnknownConfigKeys.clear();
 }
 
 // ─── FIX 2: Federated overlay helpers ────────────────────────────────────────
