@@ -1298,6 +1298,39 @@ function matchSessionSection(body: string): string | null {
   return section ? section.body : null;
 }
 
+/**
+ * #2567: prevent a stale archive "Last activity:" line from overwriting a
+ * newer frontmatter value. `stateExtractField` matches the first body
+ * occurrence, which may be a historical line in an archive section. Unlike
+ * Stopped At / Paused At (which canonically live in `## Session`), Last
+ * Activity has no single canonical section — it appears in the preamble,
+ * `## Configuration`, and `## Current Position` across STATE.md layouts, so a
+ * section scope cannot reliably exclude archive copies. Guard the
+ * information-losing direction instead: when the body-derived date is OLDER
+ * than the existing frontmatter date, keep the existing value and its
+ * description. Applied at both the write seam (syncStateFrontmatter) and the
+ * read seam (cmdStateJson) so they agree. Date fields only — non-date values
+ * pass through unchanged.
+ */
+function preferNewerLastActivity(
+  existingFm: Record<string, unknown> | null,
+  derivedFm: Record<string, unknown>,
+): void {
+  if (!existingFm) return;
+  const exRaw = existingFm['last_activity'];
+  const derRaw = derivedFm['last_activity'];
+  if (typeof exRaw !== 'string' || typeof derRaw !== 'string') return;
+  const exDate = exRaw.slice(0, 10);
+  const derDate = derRaw.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
+  if (derDate < exDate) {
+    derivedFm['last_activity'] = exRaw;
+    if (existingFm['last_activity_desc'] !== undefined) {
+      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
+    }
+  }
+}
+
 function parseProsePhaseField(value: string | null): { phase: string | null; name: string | null } {
   // #2121 Phase 2 (#2125): delegate to the canonical anchored parser so this
   // module holds no independent prose phase-id regex. Drives #2111 — the
@@ -1520,8 +1553,8 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
   const proseLastActivity = parseProseLastActivityField(rawLastActivity);
   const lastActivity = proseLastActivity.date ?? rawLastActivity;
   const lastActivityDesc = stateExtractField(bodyContent, 'Last Activity Description') ?? proseLastActivity.description;
-  // Bug #2444: scope Stopped At extraction to the ## Session section so that
-  // historical "Stopped at:" prose elsewhere in the body (e.g. in a
+  // Bug #2444 / #2567: scope Stopped At AND Paused At extraction to the
+  // ## Session section so historical prose elsewhere in the body (e.g. in a
   // Session Continuity Archive section) never overwrites the current value.
   // Fall back to full-body search only when no ## Session section exists.
   // #1101: prefer the canonical `## Session` block, falling back to the bootstrap
@@ -1529,7 +1562,9 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
   const sessionSectionMatch = matchSessionSection(bodyContent);
   const sessionBodyScope = sessionSectionMatch ?? bodyContent;
   const stoppedAt = stateExtractField(sessionBodyScope, 'Stopped At') || stateExtractField(sessionBodyScope, 'Stopped at');
-  const pausedAt = stateExtractField(bodyContent, 'Paused At');
+  // #2567: Paused At is a session field — scope it to ## Session too so a
+  // stale "Paused At:" line in an archive section cannot overwrite the value.
+  const pausedAt = stateExtractField(sessionBodyScope, 'Paused At');
 
   let milestone: string | null = null;
   let milestoneName: string | null = null;
@@ -1821,6 +1856,10 @@ function syncStateFrontmatter(content: string, cwd: string | undefined): string 
       derivedFm[key] = existingFm[key];
     }
   }
+
+  // #2567: guard the information-losing direction — a stale archive
+  // "Last activity:" line must not overwrite a newer frontmatter value.
+  preferNewerLastActivity(existingFm, derivedFm);
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);
   return `---\n${yamlStr}\n---\n\n${body}`;
@@ -2227,6 +2266,11 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   if (existingFm && shouldPreserveExistingProgress(existingFm['progress'], built['progress'])) {
     built['progress'] = normalizeProgressNumbers(existingFm['progress']);
   }
+
+  // #2567: guard the information-losing direction — a stale archive
+  // "Last activity:" line must not surface as the current value. Mirrors the
+  // syncStateFrontmatter guard so the read path agrees with the write path.
+  preferNewerLastActivity(existingFm, built);
 
   output(built, raw, JSON.stringify(built, null, 2));
 }
