@@ -161,9 +161,9 @@ export function cmdEstimateCheck(cwd: string, args: string[], raw: boolean): voi
  */
 export function collectCalibrationSamples(cwd: string): estimation.CalibrationSample[] {
   const phasesRoot = path.join(planningDir(cwd), 'phases');
-  let entries: string[];
+  let phases: string[];
   try {
-    entries = fs.readdirSync(phasesRoot, { withFileTypes: true })
+    phases = fs.readdirSync(phasesRoot, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => d.name)
       .sort();
@@ -171,37 +171,57 @@ export function collectCalibrationSamples(cwd: string): estimation.CalibrationSa
     return [];
   }
 
+  const readBlock = (file: string, key: string): Record<string, unknown> | null => {
+    let text: string;
+    try {
+      text = fs.readFileSync(file, 'utf-8');
+    } catch {
+      return null;
+    }
+    return estimation.extractFrontmatterBlock(text, key);
+  };
+
   const samples: estimation.CalibrationSample[] = [];
-  for (const phase of entries) {
+  for (const phase of phases) {
     const dir = path.join(phasesRoot, phase);
     let files: string[];
     try {
-      files = fs.readdirSync(dir);
+      files = fs.readdirSync(dir).sort();
     } catch {
       continue;
     }
 
-    const readBlock = (suffix: string, key: string): Record<string, unknown> | null => {
-      for (const f of files.filter((x) => x.endsWith(suffix)).sort()) {
-        let text: string;
-        try {
-          text = fs.readFileSync(path.join(dir, f), 'utf-8');
-        } catch {
-          continue;
-        }
-        const block = estimation.extractFrontmatterBlock(text, key);
-        if (block !== null) return block;
-      }
-      return null;
-    };
+    // Pair PER PLAN, keyed on the `<NN>-<PP>` stem, NOT per phase directory.
+    // A phase routinely holds several plans (docs/reference/planning-artifacts.md:
+    // "one file per plan"). Taking the first plan with an estimate and the first
+    // summary with actuals independently cross-pairs one plan's projection with
+    // another's cost — a fabricated sample — and discards every later plan.
+    const stems = new Map<string, { plan?: string; summary?: string }>();
+    for (const f of files) {
+      const m = /^(.*?)-(PLAN|SUMMARY)\.md$/.exec(f);
+      if (m === null) continue;
+      const stem = m[1];
+      const entry = stems.get(stem) ?? {};
+      if (m[2] === 'PLAN') entry.plan = path.join(dir, f);
+      else entry.summary = path.join(dir, f);
+      stems.set(stem, entry);
+    }
 
-    const estimate = estimation.parseEstimate(readBlock('-PLAN.md', 'estimate'));
-    const actuals = estimation.parseActuals(readBlock('-SUMMARY.md', 'actuals'));
-    if (estimate === null || actuals === null) continue;
+    for (const stem of [...stems.keys()].sort()) {
+      const { plan, summary } = stems.get(stem) as { plan?: string; summary?: string };
+      if (plan === undefined || summary === undefined) continue;
 
-    // Measure against the RAW projection — see PhaseEstimate.rawTokens for why
-    // measuring against the calibrated figure makes the loop self-defeating.
-    samples.push({ estimateTokens: estimation.calibrationBasis(estimate), actualTokens: actuals.tokens });
+      const estimate = estimation.parseEstimate(readBlock(plan, 'estimate'));
+      const actuals = estimation.parseActuals(readBlock(summary, 'actuals'));
+      if (estimate === null || actuals === null) continue;
+
+      // Measure against the RAW projection — see PhaseEstimate.rawTokens for why
+      // measuring against the calibrated figure makes the loop self-defeating.
+      samples.push({
+        estimateTokens: estimation.calibrationBasis(estimate),
+        actualTokens: actuals.tokens,
+      });
+    }
   }
   return samples;
 }
@@ -220,11 +240,21 @@ export function cmdEstimateCalibrate(cwd: string, _args: string[], raw: boolean)
 
   const target = path.join(planningDir(cwd), CALIBRATION_FILENAME);
   let written = true;
+  let writeError: string | null = null;
   try {
-    fs.writeFileSync(target, estimation.renderCalibrationDocument(samples), 'utf-8');
-  } catch {
+    // Write-then-rename: a direct writeFileSync can leave a truncated file if
+    // interrupted, and parseCalibrationDocument treats malformed JSON exactly
+    // like "no history yet" — so a torn write would silently erase the
+    // calibration instead of surfacing.
+    const tmp = `${target}.tmp-${String(process.pid)}`;
+    fs.writeFileSync(tmp, estimation.renderCalibrationDocument(samples), 'utf-8');
+    fs.renameSync(tmp, target);
+  } catch (err) {
     // Persisting is best-effort: a read-only .planning must not fail the phase.
+    // But report WHY — a genuine bug and a benign permission issue are otherwise
+    // indistinguishable to both the caller and the workflow.
     written = false;
+    writeError = err instanceof Error ? (err.message || String(err)) : String(err);
   }
 
   output({
@@ -235,6 +265,7 @@ export function cmdEstimateCalibrate(cwd: string, _args: string[], raw: boolean)
     clamped: calibration.clamped,
     min_samples: estimation.MIN_CALIBRATION_SAMPLES,
     written,
+    write_error: writeError,
   }, raw);
 }
 

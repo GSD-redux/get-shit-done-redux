@@ -272,3 +272,94 @@ describe('calibration converges instead of oscillating', () => {
       'ratio must be actual/raw (2.0), not actual/calibrated (1.0)');
   });
 });
+
+// ─── multi-plan pairing (#2632 review BLOCKER) ─────────────────────────────
+
+describe('multi-plan phases pair per plan, not per phase', () => {
+  // A phase routinely holds several plans (`<NN>-<PP>-PLAN.md`, one per plan —
+  // docs/reference/planning-artifacts.md). An earlier implementation took the
+  // first PLAN carrying an estimate and the first SUMMARY carrying actuals
+  // INDEPENDENTLY, which cross-paired one plan's projection with another plan's
+  // cost and discarded every later plan. The whole suite passed because its
+  // helper only ever wrote `01-PLAN.md`.
+
+  /** Write one plan/summary pair inside a phase, using the real `<NN>-<PP>` naming. */
+  const writePlan = (tmpDir, phase, pp, { estTokens, actTokens }) => {
+    const dir = path.join(tmpDir, '.planning', 'phases', phase);
+    fs.mkdirSync(dir, { recursive: true });
+    const nn = phase.slice(0, 2);
+    if (estTokens !== null) {
+      fs.writeFileSync(path.join(dir, `${nn}-${pp}-PLAN.md`),
+        `---\nphase: ${phase}\nplan: ${pp}\nestimate:\n  tokens: ${estTokens}\n`
+        + `  raw_tokens: ${estTokens}\n  tasks: 3\n  confidence: low\nmust_haves:\n---\nx\n`);
+    } else {
+      fs.writeFileSync(path.join(dir, `${nn}-${pp}-PLAN.md`), `---\nphase: ${phase}\nplan: ${pp}\n---\nx\n`);
+    }
+    fs.writeFileSync(path.join(dir, `${nn}-${pp}-SUMMARY.md`),
+      `---\nphase: ${phase}\nplan: ${pp}\nactuals:\n  tokens: ${actTokens}\n  tasks: 3\n  commits: 4\n---\nx\n`);
+  };
+
+  test('never cross-pairs one plan\'s estimate with another plan\'s actuals', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    // Plan 01 has NO estimate but cheap actuals; plan 02 has both (true 2.5x).
+    writePlan(tmpDir, '04-multi', '01', { estTokens: null, actTokens: 30000 });
+    writePlan(tmpDir, '04-multi', '02', { estTokens: 80000, actTokens: 200000 });
+
+    runGsdTools('query estimate-calibrate', tmpDir);
+    const doc = est.parseCalibrationDocument(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'estimation-calibration.json'), 'utf8'),
+    );
+
+    assert.deepEqual(doc, [{ estimateTokens: 80000, actualTokens: 200000 }],
+      'plan 02\'s estimate must pair with plan 02\'s actuals — cross-pairing fabricates a sample '
+      + 'and throws away the real signal');
+  });
+
+  test('counts every correctly-paired plan in a multi-plan phase', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    // Three plans in ONE phase, each cleanly 2x.
+    writePlan(tmpDir, '05-wave', '01', { estTokens: 40000, actTokens: 80000 });
+    writePlan(tmpDir, '05-wave', '02', { estTokens: 50000, actTokens: 100000 });
+    writePlan(tmpDir, '05-wave', '03', { estTokens: 60000, actTokens: 120000 });
+
+    const out = JSON.parse(runGsdTools('query estimate-calibrate', tmpDir).output);
+    assert.equal(out.sample_count, 3, 'all three plans must contribute — not just the first');
+    assert.equal(out.factor, 2);
+    assert.equal(out.applied, true, 'three samples in one phase must reach the minimum');
+  });
+
+  test('a plan with no matching summary contributes nothing', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const dir = path.join(tmpDir, '.planning', 'phases', '06-partial');
+    fs.mkdirSync(dir, { recursive: true });
+    // 06-01 pairs; 06-02 is a plan with no summary (mid-execution).
+    fs.writeFileSync(path.join(dir, '06-01-PLAN.md'),
+      '---\nphase: 06-partial\nestimate:\n  tokens: 100\n  raw_tokens: 100\n  tasks: 1\n  confidence: low\nmust_haves:\n---\nx\n');
+    fs.writeFileSync(path.join(dir, '06-01-SUMMARY.md'),
+      '---\nphase: 06-partial\nactuals:\n  tokens: 200\n  tasks: 1\n  commits: 1\n---\nx\n');
+    fs.writeFileSync(path.join(dir, '06-02-PLAN.md'),
+      '---\nphase: 06-partial\nestimate:\n  tokens: 999999\n  raw_tokens: 999999\n  tasks: 1\n  confidence: low\nmust_haves:\n---\nx\n');
+
+    const out = JSON.parse(runGsdTools('query estimate-calibrate', tmpDir).output);
+    assert.equal(out.sample_count, 1, 'an in-flight plan must not contribute a half-sample');
+  });
+
+  test('samples accumulate across BOTH plans and phases', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    writePlan(tmpDir, '01-a', '01', { estTokens: 100, actTokens: 200 });
+    writePlan(tmpDir, '01-a', '02', { estTokens: 100, actTokens: 200 });
+    writePlan(tmpDir, '02-b', '01', { estTokens: 100, actTokens: 200 });
+
+    const out = JSON.parse(runGsdTools('query estimate-calibrate', tmpDir).output);
+    assert.equal(out.sample_count, 3, 'two plans in phase 1 plus one in phase 2');
+    assert.equal(out.applied, true);
+  });
+});
