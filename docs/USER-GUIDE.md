@@ -839,6 +839,7 @@ WINDSURF_CONFIG_DIR=~/.codeium/windsurf-next npx @opengsd/gsd-core@latest --wind
 | Augment | `~/.augment` | `AUGMENT_CONFIG_DIR` |
 | Trae | `~/.trae` | `TRAE_CONFIG_DIR` |
 | Qwen Code | `~/.qwen` | `QWEN_CONFIG_DIR` |
+| Qoder | `~/.qoder` | `QODER_CONFIG_DIR` |
 | Kilo | `~/.config/kilo` | `KILO_CONFIG_DIR` |
 | CodeBuddy | `~/.codebuddy` | `CODEBUDDY_CONFIG_DIR` |
 | Cline | `~/.cline` | `CLINE_CONFIG_DIR` |

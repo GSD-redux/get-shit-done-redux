@@ -2042,7 +2042,8 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     // (Claude Code matches by filename, not full path).  The hook exits silently
     // when the changed file is not the gsd config.
     //
-    // Scoped to Claude Code only: Qwen Code's FileChanged support is not yet
+    // Wired for any runtime that declares FileChanged in extendedHookEvents
+    // (Claude Code, Qoder). Qwen Code's FileChanged support is not yet
     // verified; extend in a follow-on if empirically confirmed.
     if (extendedEvents.includes('FileChanged')) {
       if (!settings.hooks.FileChanged) {
@@ -2063,7 +2064,7 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
             }
           ]
         });
-        console.log(`  ${green}✓${reset} Configured FileChanged config-reload hook (Claude Code)`);
+        console.log(`  ${green}✓${reset} Configured FileChanged config-reload hook (${_capabilityTitle(runtime)})`);
       } else if (!alreadyHasConfigReload && !fs.existsSync(configReloadFile)) {
         console.warn(`  ${yellow}⚠${reset}  Skipped FileChanged hook — gsd-config-reload.js not found at target`);
       } else if (!alreadyHasConfigReload && !configReloadCommand) {

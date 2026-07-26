@@ -83,9 +83,17 @@ describe('convertClaudeToQoderMarkdown', () => {
   test('is idempotent — applying twice equals once (fast-check property)', () => {
     // Every regex replacement produces output that no subsequent replacement
     // matches (.qoder/, AGENTS.md, Qoder, /gsd-), so a second pass is a no-op.
-    fc.assert(fc.property(
-      fc.string({ maxLength: 2000 }),
-      (s) => convertClaudeToQoderMarkdown(s) === convertClaudeToQoderMarkdown(convertClaudeToQoderMarkdown(s))
+    // Inputs are composed from the converter's actual trigger tokens so the
+    // property exercises the transformation paths, not just the identity path
+    // (round 17: pure fc.string never hits any trigger token in 100k runs).
+    const triggerArb = fc.array(fc.constantFrom(
+      '~/.claude/', './.claude/', '.claude/', '$HOME/.claude', '.claudeignore',
+      '.claude-plugin', 'CLAUDE_CONFIG_DIR', 'CLAUDE.md', '`./CLAUDE.md`',
+      '`CLAUDE.md`', 'Claude Code', '/gsd:plan-phase', '/gsd:execute-phase',
+      ' x ',
+    )).map((a) => a.join(''));
+    fc.assert(fc.property(triggerArb, (s) =>
+      convertClaudeToQoderMarkdown(s) === convertClaudeToQoderMarkdown(convertClaudeToQoderMarkdown(s)),
     ));
   });
 });
