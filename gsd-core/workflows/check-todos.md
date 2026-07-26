@@ -163,7 +163,7 @@ After any action that changes todo count:
 
 Formatting rules:
 - Use the first 10 characters of `created` for `YYYY-MM-DD`; if unavailable, use the date prefix from `file`.
-- Build the repository-relative link from `file`; never write the absolute `path` from init context.
+- Build the repository-relative link as `.planning/todos/pending/{file}`; never write the absolute `path` from init context.
 - Start the final clause with `Needs` and keep it to one short sentence. Collapse embedded newlines to spaces.
 - Never concatenate multiple todos onto one line.
 - If the refreshed `todo_count` is 0, replace the section body with `None yet.`.
