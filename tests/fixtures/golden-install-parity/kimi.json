@@ -25,7 +25,7 @@
   ".kimi/hooks/gsd-windsurf-pre-write.js": "92d4dbfbc36ab0cf",
   ".kimi/hooks/gsd-workflow-guard.js": "56414206bc13b3dc",
   ".kimi/hooks/gsd-worktree-path-guard.js": "d00a75505429355c",
-  ".kimi/hooks/lib/cursor-workspace.js": "2fb10dde861bd339",
+  ".kimi/hooks/lib/cursor-workspace.js": "45061acd75d55a28",
   ".kimi/hooks/lib/git-cmd.js": "268ba15992ca0b23",
   ".kimi/hooks/lib/gsd-graphify-rebuild.sh": "66af89601074d2a9",
   ".kimi/hooks/managed-hooks-registry.cjs": "08ec2585a3f8f132",

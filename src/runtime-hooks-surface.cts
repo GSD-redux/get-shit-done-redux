@@ -1162,7 +1162,10 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
   const requiredLibFiles = new Set<string>();
   for (const script of installedScripts) {
     const staged = fs.readFileSync(path.join(hooksDir, script), 'utf8');
-    const re = /require\(['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\)/g;
+    // Tolerant of interior whitespace and either quote style: a hook author
+    // writing `require( "./lib/x.js" )` must still get its helper staged, since
+    // a miss here surfaces as MODULE_NOT_FOUND at hook load, not at install.
+    const re = /require\(\s*['"]\.\/lib\/([A-Za-z0-9._-]+)['"]\s*\)/g;
     let m: RegExpExecArray | null;
     while ((m = re.exec(staged)) !== null) requiredLibFiles.add(m[1]);
   }
@@ -1172,7 +1175,16 @@ function writeCursorHooksJson(targetDir: string, src: string, opts?: WriteCursor
     fs.mkdirSync(destLibDir, { recursive: true });
     for (const libFile of requiredLibFiles) {
       const libSrc = path.join(srcLibDir, libFile);
-      if (!fs.existsSync(libSrc)) continue;
+      if (!fs.existsSync(libSrc)) {
+        // FAIL LOUD. Skipping here would ship hook scripts whose top-level
+        // require() throws before their own try/catch, wedging every session —
+        // and the install would still exit 0, so nobody would know until a user
+        // hit it. A missing helper source is a packaging bug; surface it.
+        throw new Error(
+          `hooks/lib/${libFile} is required by a staged Cursor hook but is missing from ${srcLibDir}. `
+          + 'Installing would ship a hook that throws MODULE_NOT_FOUND at load.',
+        );
+      }
       let libContent = fs.readFileSync(libSrc, 'utf8');
       libContent = libContent.replace(/gsd:/gi, 'gsd-');
       fs.writeFileSync(path.join(destLibDir, libFile), libContent);

@@ -1,5 +1,10 @@
-// gsd-hook-version: {{GSD_VERSION}}
 // cursor-workspace.js — shared workspace resolution for Cursor lifecycle hooks (#2587).
+//
+// No `gsd-hook-version:` marker, deliberately — matching hooks/lib/git-cmd.js.
+// Neither copy path that stages hooks/lib/*.js substitutes the version
+// placeholder (copyLibDir stamps .sh files only), and the managed-hooks
+// staleness scan covers top-level hooks/ names, not hooks/lib/. A marker here
+// would ship to users as an unsubstituted literal.
 //
 // Cursor invokes hooks with cwd set to the Cursor config dir (~/.cursor) under
 // the cursor-agent CLI, NOT the workspace. Every hook that resolves a project

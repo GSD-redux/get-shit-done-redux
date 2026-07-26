@@ -404,7 +404,7 @@
   "hooks/gsd-cursor-stop.js": "cce2bf0e14e267a1",
   "hooks/gsd-cursor-subagent-start.js": "bb004049f0e49aa9",
   "hooks/gsd-cursor-subagent-stop.js": "8da03aad6bb05d3f",
-  "hooks/lib/cursor-workspace.js": "2fb10dde861bd339",
+  "hooks/lib/cursor-workspace.js": "45061acd75d55a28",
   "scripts/changeset/README.md": "86ff89331dfd94b2",
   "scripts/changeset/cli.cjs": "68f92a344b199271",
   "scripts/changeset/github-release-notes.cjs": "795677f0c009b132",

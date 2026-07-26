@@ -284,6 +284,33 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
     }
   });
 
+  test('staging fails loudly if a required lib source is missing', () => {
+    // Previously this path did `continue`, so a helper missing from source
+    // (typo, bad rebase, accidental delete) produced an install that exits 0 and
+    // ships hooks whose top-level require() throws MODULE_NOT_FOUND at load —
+    // before their own try/catch — wedging every session, with nothing to
+    // indicate why. Packaging bugs must surface at install, not at the user.
+    const hooksSurface = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
+    const fakeSrc = createTempDir('gsd-2587-src-');
+    const target = createTempDir('gsd-2587-tgt-');
+    try {
+      // A source tree with the hook scripts but NO hooks/lib/ backing them.
+      const srcHooks = path.join(fakeSrc, 'hooks');
+      fs.mkdirSync(srcHooks, { recursive: true });
+      for (const hook of RESOLVING_HOOKS) {
+        fs.copyFileSync(hook, path.join(srcHooks, path.basename(hook)));
+      }
+      assert.throws(
+        () => hooksSurface.writeCursorHooksJson(target, fakeSrc, {}),
+        /cursor-workspace\.js.*missing|missing.*cursor-workspace\.js/s,
+        'a missing lib source must abort the install, not ship a broken hook',
+      );
+    } finally {
+      cleanup(fakeSrc);
+      cleanup(target);
+    }
+  });
+
   test('the shared resolver is staged next to the hooks that require it', () => {
     // The MODULE_NOT_FOUND guard. Cursor sets skipSharedHooksInstall, so it
     // never reaches the installer's bulk hooks/lib copy — every other runtime
