@@ -145,8 +145,21 @@ files:
 <step name="update_state">
 If `.planning/STATE.md` exists:
 
-1. Use `todo_count` from init context (or re-run `init todos` if count changed)
-2. Update "### Pending Todos" under "## Accumulated Context"
+1. Re-run `gsd_run query init.todos` after creating the todo and extract the refreshed `todo_count` and `todos`.
+2. Rebuild "### Pending Todos" under "## Accumulated Context" from the refreshed pending set; do not append prose to the existing body.
+3. For each todo, use its `created`, `area`, `title`, and `file` fields. Read the todo file's Problem/Solution only as needed to write one short unresolved need or next step.
+4. Render one physical line per pending todo using this exact shape:
+
+```markdown
+- [YYYY-MM-DD] [area] Title — [todo file](.planning/todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
+```
+
+Formatting rules:
+- Use the first 10 characters of `created` for `YYYY-MM-DD`; if unavailable, use the date prefix from `file`.
+- Build the repository-relative link from `file`; never write the absolute `path` from init context.
+- Start the final clause with `Needs` and keep it to one short sentence. Collapse embedded newlines to spaces.
+- Never concatenate multiple todos onto one line.
+- If the refreshed `todo_count` is 0, replace the section body with `None yet.`.
 </step>
 
 <step name="git_commit">
@@ -187,6 +200,6 @@ Would you like to:
 - [ ] Problem section has enough context for future Claude
 - [ ] No duplicates (checked and resolved)
 - [ ] Area consistent with existing todos
-- [ ] STATE.md updated if exists
+- [ ] STATE.md uses one compact pointer per pending todo (or `None yet.`)
 - [ ] Todo and state committed to git
 </success_criteria>

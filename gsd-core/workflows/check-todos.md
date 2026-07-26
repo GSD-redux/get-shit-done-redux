@@ -152,7 +152,21 @@ Return to list_todos step.
 <step name="update_state">
 After any action that changes todo count:
 
-Re-run `init todos` to get updated count, then update STATE.md "### Pending Todos" section if exists.
+1. Re-run `gsd_run query init.todos` and extract the refreshed `todo_count` and `todos`.
+2. If STATE.md has "### Pending Todos", rebuild that section from the refreshed pending set; do not edit the old body incrementally.
+3. For each remaining todo, use its `created`, `area`, `title`, and `file` fields. Read the todo file's Problem/Solution only as needed to write one short unresolved need or next step.
+4. Render one physical line per pending todo using this exact shape:
+
+```markdown
+- [YYYY-MM-DD] [area] Title — [todo file](.planning/todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
+```
+
+Formatting rules:
+- Use the first 10 characters of `created` for `YYYY-MM-DD`; if unavailable, use the date prefix from `file`.
+- Build the repository-relative link from `file`; never write the absolute `path` from init context.
+- Start the final clause with `Needs` and keep it to one short sentence. Collapse embedded newlines to spaces.
+- Never concatenate multiple todos onto one line.
+- If the refreshed `todo_count` is 0, replace the section body with `None yet.`.
 </step>
 
 <step name="git_commit">
@@ -177,6 +191,6 @@ Confirm: "Committed: docs: start work on todo - [title]"
 - [ ] Roadmap context checked for phase match
 - [ ] Appropriate actions offered
 - [ ] Selected action executed
-- [ ] STATE.md updated if todo count changed
+- [ ] STATE.md uses one compact pointer per pending todo (or `None yet.`)
 - [ ] Changes committed to git (if todo moved to completed/)
 </success_criteria>
