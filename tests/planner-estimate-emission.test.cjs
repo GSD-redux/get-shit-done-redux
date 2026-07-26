@@ -29,13 +29,17 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
 const PLANNER = 'agents/gsd-planner.md';
 const PLAN_CHECKER = 'agents/gsd-plan-checker.md';
-const PLAN_PHASE_WF = 'gsd-core/workflows/plan-phase.md';
 const PLAN_MD_REF = 'docs/reference/plan-md.md';
 
-/** Extract the fenced PLAN.md frontmatter template the planner tells agents to emit. */
+/**
+ * Extract the PLAN.md frontmatter template the planner tells agents to emit.
+ *
+ * The template is a bare `---`-delimited YAML block, NOT a fenced ```yaml
+ * region — an earlier version of this helper looked for a fence and silently
+ * matched nothing, which made every assertion below fail for the wrong reason.
+ */
 function plannerFrontmatterTemplate(src) {
-  // The template block is the first fenced yaml region containing `phase:` and `must_haves:`.
-  for (const m of src.matchAll(/```ya?ml\r?\n([\s\S]*?)```/g)) {
+  for (const m of src.matchAll(/^---\r?\n([\s\S]*?)^---\r?$/gm)) {
     const body = m[1];
     if (/^phase:/m.test(body) && /^must_haves:/m.test(body)) return body;
   }
@@ -66,23 +70,27 @@ describe('planner emits an estimate block (AC1)', () => {
   });
 });
 
-describe('plan-phase surfaces the over-budget flag (AC2)', () => {
-  const wf = read(PLAN_PHASE_WF);
+describe('the over-budget flag is surfaced (AC2)', () => {
+  // Surfaced by gsd-plan-checker, not plan-phase.md: that workflow sits ~74
+  // bytes under the phase-6 capstone ratchet (94519) and cannot take new
+  // content without an unrelated extraction. Dimension 5 already owns scope
+  // sanity, so the estimate check belongs there.
+  const src = read(PLAN_CHECKER);
 
-  test('the workflow resolves the configured smart-zone budget', () => {
-    assert.match(wf, /workflow\.smart_zone_tokens/,
-      'plan-phase must read the configured budget, not hardcode one');
+  test('the checker resolves the configured smart-zone budget', () => {
+    assert.match(src, /workflow\.smart_zone_tokens/,
+      'must read the configured budget, not hardcode one');
   });
 
-  test('the workflow invokes the estimate-check verb', () => {
-    assert.match(wf, /estimate-check/,
-      'the over-budget flag must be computed by the Phase 1 verb, not re-derived in prose');
+  test('the checker invokes the estimate-check verb', () => {
+    assert.match(src, /estimate-check/,
+      'the flag must be computed by the Phase 1 verb, not re-derived in prose');
   });
 
-  test('the over-budget path recommends splitting rather than blocking', () => {
-    assert.match(wf, /split/i, 'must recommend splitting');
-    assert.doesNotMatch(wf, /estimate-check[^\n]*\|\|\s*exit\s+1/,
-      'the advisory flag must never hard-fail planning (ADR-2629 Decision 5)');
+  test('over budget recommends splitting and is never a blocker', () => {
+    assert.match(src, /re-slic|split/i, 'must recommend splitting');
+    assert.match(src, /WARNING, never a blocker|never a blocker/i,
+      'ADR-2629 Decision 5: the flag is advisory');
   });
 });
 
@@ -144,11 +152,12 @@ describe('prose ↔ module parity (generative fix divergence guard)', () => {
     const shipped = manifest.workflow.smart_zone_tokens;
     assert.ok(Number.isSafeInteger(shipped) && shipped > 0, 'manifest must ship a usable default');
 
-    const wf = read(PLAN_PHASE_WF);
-    const fallbacks = [...wf.matchAll(/smart_zone_tokens[^\n]*?--default\s+(\d+)/g)].map((m) => Number(m[1]));
-    for (const fb of fallbacks) {
-      assert.equal(fb, shipped,
-        `plan-phase falls back to ${fb} but the manifest ships ${shipped} — a drifted fallback silently changes the gate`);
-    }
+    // docs/CONFIGURATION.md states the default in prose; a drifted doc silently
+    // misdescribes the gate to every reader.
+    const docs = read('docs/CONFIGURATION.md');
+    const row = docs.split('\n').find((l) => l.includes('workflow.smart_zone_tokens'));
+    assert.ok(row, 'CONFIGURATION.md must document the key');
+    assert.ok(row.includes(String(shipped)),
+      `CONFIGURATION.md documents a default that is not the shipped ${shipped}`);
   });
 });
