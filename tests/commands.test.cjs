@@ -1303,7 +1303,7 @@ describe('resolve-model command', () => {
 
 describe('commit command', () => {
   const { createTempGitProject } = require('./helpers.cjs');
-  const { execSync } = require('child_process');
+  const { execSync, execFileSync } = require('child_process');
   let tmpDir;
 
   beforeEach(() => {
@@ -1503,7 +1503,6 @@ describe('commit command', () => {
   // whole working tree onto the wrong branch in the same call that then
   // committed. This fixture reproduces both preconditions.
   test('#2539: digit-suffixed project_code does not collide with the phase number', () => {
-    const { execFileSync } = require('child_process');
     // Configure phase branching strategy with a project_code ending in a digit.
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1573,7 +1572,6 @@ describe('commit command', () => {
   // tree is on some other branch, switching to it silently is the dangerous
   // drift; the fix keeps create-if-absent but drops the silent switch-to-existing.
   test('#2539: does not silently switch onto an existing unrelated phase branch', () => {
-    const { execFileSync } = require('child_process');
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
       JSON.stringify({
@@ -1604,13 +1602,22 @@ describe('commit command', () => {
       cwd: tmpDir, encoding: 'utf-8',
     }).trim();
 
-    const result = runGsdTools(
-      'commit "docs(01): add context" --files .planning/phases/01-first-phase/01-CONTEXT.md',
-      tmpDir
-    );
-    assert.ok(result.success, `Command failed: ${result.error}`);
+    // Invoke gsd-tools via spawnSync so stderr is observable on the success
+    // path — the warning that proves the no-switch path is not silent (#2539
+    // AC2) is written to stderr, which execFileSync discards on success.
+    const { TOOLS_PATH } = require('./helpers.cjs');
+    const { spawnSync } = require('child_process');
+    const proc = spawnSync(process.execPath, [
+      TOOLS_PATH, 'commit', 'docs(01): add context',
+      '--files', '.planning/phases/01-first-phase/01-CONTEXT.md',
+    ], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const stdout = proc.stdout || '';
+    const stderr = proc.stderr || '';
+    if (proc.status !== 0) {
+      throw new Error(`gsd-tools commit exited ${proc.status}: stdout=${stdout} stderr=${stderr}`);
+    }
 
-    const output = JSON.parse(result.output);
+    const output = JSON.parse(stdout.trim());
     assert.strictEqual(output.committed, true, 'should have committed');
 
     // The command must NOT have silently switched the working tree onto the
@@ -1622,6 +1629,13 @@ describe('commit command', () => {
       afterBranch,
       beforeBranch,
       `must not silently switch onto an existing phase branch mid-commit (was ${beforeBranch}, now ${afterBranch})`
+    );
+
+    // #2539 AC2: the no-switch path must not be silent either. The warning
+    // surfaces the resolved branch and the branch the commit actually lands on.
+    assert.ok(
+      /Warning: resolved phase branch .* already exists/.test(stderr),
+      `expected a non-silent warning on stderr when the resolved branch already exists; got stderr=${stderr}`
     );
   });
 });

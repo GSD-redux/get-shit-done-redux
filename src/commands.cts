@@ -768,8 +768,14 @@ function detectPhaseNumberFromFiles(files: string[] | undefined): string | null 
         if (!phaseDir) continue;
         const token = extractPhaseToken(phaseDir);
         // extractPhaseToken falls back to returning dirName unchanged when no
-        // numeric token is found — only accept a real numeric phase token.
-        if (token && token !== phaseDir && /\d/.test(token)) {
+        // numeric token is found. normalizePhaseName is the canonical arbiter
+        // of "is this a real phase token": it strips the project-code prefix
+        // and returns a zero-padded numeric form for a genuine phase token, or
+        // the input unchanged otherwise. Accept the token only when it
+        // normalizes to a numeric phase form (the single-owner rule shared by
+        // every other phase-token reader — see #2528).
+        const normalized = normalizePhaseName(token);
+        if (token !== phaseDir && /^\d+[A-Z]?(?:\.\d+)*$/i.test(normalized)) {
           return token;
         }
       }
@@ -858,10 +864,19 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         // the whole working tree onto an existing unrelated branch in the same
         // call that then committed (the only trace was a reflog entry). So:
         // create-if-absent only. If the resolved branch already exists and the
-        // tree is on some other branch, do NOT switch — the operator is on the
-        // branch they intend to be on. `git checkout -b` fails (non-zero) when
-        // the branch already exists; that is the signal to leave the tree alone.
-        execGit(['checkout', '-b', branchName], { cwd });
+        // tree is on some other branch, do NOT switch — but never silently: log
+        // the resolution so the operator sees that the phase branch was
+        // resolved and deliberately not switched to (#2539 AC2: an auto-
+        // checkout mid-commit must never happen silently).
+        const create = execGit(['checkout', '-b', branchName], { cwd });
+        if (create.exitCode !== 0) {
+          // `git checkout -b` fails (non-zero) when the branch already exists.
+          // The operator is on the branch they intend to be on; commit there.
+          process.stderr.write(
+            `Warning: resolved ${branchingStrategy} branch "${branchName}" already exists; ` +
+            `committing on the current branch "${currentBranch.stdout.trim()}" instead of switching.\n`
+          );
+        }
       }
     }
   }
