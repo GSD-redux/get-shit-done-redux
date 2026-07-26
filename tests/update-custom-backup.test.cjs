@@ -1013,6 +1013,58 @@ describe('restore-custom-files — hostile input and path safety', () => {
     cleanup(outsideDir);
   });
 
+  test('a symlinked destination is skipped, never written through', () => {
+    // copyFileSync FOLLOWS a symlinked destination, so a link planted at the
+    // restore target would write outside the config dir even though every
+    // ancestor directory is real.
+    writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
+    const outsideDir = createTempDir('gsd-1854-linktarget-');
+    const outsideFile = path.join(outsideDir, 'victim.md');
+    fs.writeFileSync(outsideFile, 'ORIGINAL\n');
+
+    const dest = path.join(tmpDir, 'skills', 'gsd-mine', 'SKILL.md');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    try {
+      fs.symlinkSync(outsideFile, dest);
+    } catch {
+      cleanup(outsideDir);
+      return;
+    }
+    writeBackupEntry(tmpDir, 'skills/gsd-mine/SKILL.md', 'ATTACKER CONTENT\n');
+
+    const entry = entryFor(parseRestore(tmpDir, ['--apply']), 'skills/gsd-mine/SKILL.md');
+
+    assert.strictEqual(entry.outcome, OUTCOME.SKIPPED_UNSAFE_PATH);
+    assert.strictEqual(
+      fs.readFileSync(outsideFile, 'utf8'), 'ORIGINAL\n',
+      'the symlink target outside the config dir must be untouched',
+    );
+    cleanup(outsideDir);
+  });
+
+  test('a symlinked backup root is not walked', () => {
+    // A gsd-user-files-backup/ that is itself a link would let the walk read
+    // arbitrary files and present them as the user's own backup.
+    writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
+    const outsideDir = createTempDir('gsd-1854-fakebackup-');
+    fs.mkdirSync(path.join(outsideDir, 'skills', 'gsd-implant'), { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, 'skills', 'gsd-implant', 'SKILL.md'), '# Implant\n');
+
+    try {
+      fs.symlinkSync(outsideDir, path.join(tmpDir, 'gsd-user-files-backup'), 'dir');
+    } catch {
+      cleanup(outsideDir);
+      return;
+    }
+
+    const json = parseRestore(tmpDir, ['--apply']);
+
+    assert.strictEqual(json.backup_found, false, 'a symlinked backup root is not a backup');
+    assert.deepStrictEqual(json.entries, []);
+    assert.ok(!fs.existsSync(path.join(tmpDir, 'skills', 'gsd-implant', 'SKILL.md')));
+    cleanup(outsideDir);
+  });
+
   test('a symlinked backup directory is not traversed out of the config dir', () => {
     writeInstalledManifest(tmpDir, { 'skills/gsd-planner/SKILL.md': '# Planner\n' });
     const outsideDir = createTempDir('gsd-1854-outdir-');

@@ -1858,6 +1858,20 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   }
 
   /**
+   * True when `target` itself exists and is a symlink. `fs.existsSync` and
+   * `copyFileSync` both FOLLOW links, so a symlinked destination would let a
+   * restore write through to the link's target — outside the config dir —
+   * even though every ancestor is a real directory.
+   */
+  function isSymlinkPath(target) {
+    try {
+      return fs.lstatSync(target).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * True when the deepest already-existing ancestor of `target` is a symlink.
    * A symlinked parent directory would let a copy land outside the config dir
    * even though the joined path looks contained.
@@ -1972,8 +1986,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       error(`Config directory not found: ${resolvedConfigDir}`, ERROR_REASON.USAGE);
     }
 
+    // lstat, not stat: a symlinked backup root would let the walk read files
+    // from anywhere on disk and present them as the user's own backup.
     const backupDir = path.join(resolvedConfigDir, RESTORE_BACKUP_DIR_NAME);
-    const backupFound = fs.existsSync(backupDir) && fs.statSync(backupDir).isDirectory();
+    let backupFound = false;
+    try {
+      backupFound = fs.lstatSync(backupDir).isDirectory();
+    } catch {
+      backupFound = false;
+    }
 
     // The manifest describes what the NEW release ships. Without it the
     // destination-managed check has no source of truth — degrade to restoring
@@ -1999,6 +2020,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
       if (found.unsafe
         || !isInsideDir(resolvedConfigDir, destPath)
+        || isSymlinkPath(destPath)
         || hasSymlinkedAncestor(resolvedConfigDir, destPath)) {
         entries.push({
           path: relPath,
