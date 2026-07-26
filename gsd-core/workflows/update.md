@@ -45,10 +45,18 @@ if [ -n "$GSD_TOOLS" ]; then
 fi
 
 if [ -n "$UC" ]; then
-  INSTALLED_VERSION="$(printf '%s' "$UC" | jq -r '.installedVersion')"
-  INSTALL_SCOPE="$(printf '%s' "$UC" | jq -r '.scope')"
-  TARGET_RUNTIME="$(printf '%s' "$UC" | jq -r '.runtime')"
-  GSD_DIR="$(printf '%s' "$UC" | jq -r '.gsdDir')"
+  # Field extraction is node-only, NOT `| jq -r '.field'`. #2589 established
+  # that the jq pipe yields an EMPTY variable with no diagnostic on any machine
+  # without jq (the default on Windows/Git-Bash) — the whole install context
+  # then silently degrades to the fresh-install fallback. The field name is
+  # passed as argv, never interpolated into the script text.
+  uc_field() {
+    printf '%s' "$UC" | node -e "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const v=JSON.parse(d)[process.argv[1]];process.stdout.write(v==null?'':String(v));}catch{}})" "$1" 2>/dev/null
+  }
+  INSTALLED_VERSION="$(uc_field installedVersion)"
+  INSTALL_SCOPE="$(uc_field scope)"
+  TARGET_RUNTIME="$(uc_field runtime)"
+  GSD_DIR="$(uc_field gsdDir)"
 else
   # No tool resolvable / projection failed -> treat as a fresh install.
   INSTALLED_VERSION="0.0.0"
@@ -345,7 +353,7 @@ Then inform the user:
 ```
 ⚠️  Found N custom file(s) inside GSD-managed directories.
     These have been backed up to gsd-user-files-backup/ before the update.
-    Restore them after the update if needed.
+    You'll be offered a restore once the new version is installed.
 ```
 
 **If `CUSTOM_COUNT` == 0:** No user-added files detected. Continue to install.
@@ -472,6 +480,73 @@ Format completion message (changelog was already shown in confirmation step):
 </step>
 
 
+<step name="restore_custom_files">
+`backup_custom_files` copied user-added files into `gsd-user-files-backup/`
+before the wipe. Offer to put them back — now, against the release that was
+just installed. This is the counterpart to `check_local_patches` below: that
+step covers shipped files the user *modified*, this one covers files the user
+*added*. Backups accumulate across updates, so an entry left behind by an
+earlier run is offered here too.
+
+Run the planner (read-only — it writes nothing without `--apply`):
+
+```bash
+RESTORE_JSON=''
+if [ -f "$GSD_TOOLS" ] && [ -n "$GSD_DIR" ]; then
+  RESTORE_JSON=$(node "$GSD_TOOLS" restore-custom-files --config-dir "$GSD_DIR" 2>/dev/null)
+fi
+if [ -z "$RESTORE_JSON" ]; then
+  RESTORE_JSON='{"entries":[],"eligible_count":0,"skipped_count":0}'
+fi
+RESTORE_TOTAL=$(printf '%s' "$RESTORE_JSON" | node -e "let d='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).entries.length);}catch{console.log(0);}})" 2>/dev/null || echo "0")
+```
+
+**If `RESTORE_TOTAL` == 0:** nothing was ever backed up (or the backup is
+already empty). Say nothing and continue — the update flow is unchanged.
+
+**If `RESTORE_TOTAL` > 0:** show what is on offer, then ask. Each entry carries
+`path`, `outcome`, and a `warnings` array of `{code, detail}` produced by a
+compatibility pass against the just-installed release — a renamed workflow it
+`@`-references, a `/gsd:` command that no longer exists, missing skill
+frontmatter. Render each entry's warnings under its path. Entries whose
+`outcome` already starts with `skipped_` will **not** be restored (the new
+release ships that path, or a different file is already there); list them
+separately so the user knows why.
+
+Ask with `AskUserQuestion`:
+
+- **Question:** `Restore N user-added file(s) backed up before this update?`
+- **Options:** `Restore them now` / `Leave them in the backup`
+
+**Text mode** (`--text`, or a runtime without `AskUserQuestion`): present the
+same two options as a numbered list and read the user's choice. Do not restore
+without an explicit answer either way.
+
+**If the user chooses to restore:**
+
+```bash
+node "$GSD_TOOLS" restore-custom-files --config-dir "$GSD_DIR" --apply
+```
+
+Report `restored_count` restored and, for every entry whose `outcome` is not
+`restored`, the path and the reason. Warnings are advisory — a file with
+warnings is still restored, so surface them next to what was restored rather
+than treating them as failures. The backup is **never** deleted:
+
+```
+✅ Restored N file(s) from gsd-user-files-backup/.
+   The backup was left in place at <backup_dir>.
+```
+
+**If the user declines:**
+
+```
+Left N file(s) in gsd-user-files-backup/.
+Restore them later with:
+  gsd-tools restore-custom-files --config-dir <config-dir> --apply
+```
+</step>
+
 <step name="check_local_patches">
 After update completes, check if the installer detected and backed up any locally modified files:
 
@@ -497,4 +572,5 @@ Run `/gsd:update --reapply` to merge your modifications into the new version.
 - [ ] User confirmation obtained
 - [ ] Update executed successfully
 - [ ] Restart reminder shown
+- [ ] Backed-up user-added files offered for restore (or step skipped when the backup is empty)
 </success_criteria>

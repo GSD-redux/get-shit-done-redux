@@ -23,7 +23,8 @@ GSD will:
 5. Back up any user-added files found inside GSD-managed directories to `gsd-user-files-backup/`.
 6. Run the installer (`npx @opengsd/gsd-core@latest --<runtime> --<scope>`).
 7. Clear the update-check cache so the statusline indicator resets.
-8. Report whether locally modified GSD files were backed up to `gsd-local-patches/`.
+8. Offer to restore the user-added files it backed up in step 5.
+9. Report whether locally modified GSD files were backed up to `gsd-local-patches/`.
 
 Restart your runtime after the update to pick up new commands and agents.
 
@@ -89,7 +90,31 @@ If the changelog cannot be fetched (no network access, npm outage), the update s
 
 ### Files you added inside GSD-managed directories
 
-If you placed custom files inside directories that GSD owns (for example, custom agents prefixed with `gsd-` or extra files in `commands/gsd/`), the installer will detect them and copy them to `gsd-user-files-backup/` before wiping those directories. After the update, restore them manually from that backup location.
+If you placed custom files inside directories that GSD owns (for example, custom agents prefixed with `gsd-` or extra files in `commands/gsd/`), the installer detects them and copies them to `gsd-user-files-backup/` before wiping those directories.
+
+After the new version is installed, the update offers to put them back. You get a list of what was backed up, then a choice:
+
+- **Restore them now** — each file is copied back to its original location and the update reports what it restored.
+- **Leave them in the backup** — nothing is copied; the backup stays exactly where it is.
+
+Either way the backup is **never deleted**, so declining is not destructive and you can restore later.
+
+Before copying anything back, the restore runs a compatibility pass against the version that was just installed and attaches a warning to any file that looks like it may no longer work — one that references a workflow or `/gsd:` command the new release retired, or a skill missing its `name` / `description` frontmatter. Warnings are advisory: the file is still restored, with the warning shown next to it, so you can decide whether to fix it.
+
+Two cases are skipped rather than restored, because restoring would destroy something:
+
+- The new release now ships a file at that exact path (your custom file would overwrite GSD's).
+- A different file is already sitting at that path (restoring would overwrite your current version).
+
+Both stay in the backup and are reported with the reason.
+
+To restore later — or after an update where you declined — run the same operation directly:
+
+```bash
+node <config-dir>/gsd-core/bin/gsd-tools.cjs restore-custom-files --config-dir <config-dir> --apply
+```
+
+Drop `--apply` to preview what would be restored without writing anything.
 
 Files you placed outside GSD-managed directories — custom agents not prefixed with `gsd-`, custom commands outside `commands/gsd/`, your `CLAUDE.md` files, and custom hooks — are never touched by the installer.
 
