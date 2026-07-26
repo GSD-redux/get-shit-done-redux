@@ -42,17 +42,22 @@ const MSG_ABSENT =
 // to the first root (the single-root CLI case), then to cwd (keeps IDE behavior
 // if the IDE ever invokes hooks from the workspace itself).
 //
-// DUPLICATED VERBATIM in gsd-cursor-stop.js — these hooks ship as standalone
-// scripts and hooks/lib/ additions must be registered in the generated
-// installer's GSD_HOOK_LIB_FILES allowlist. tests/fix-2587-cursor-hook-workspace-roots.test.cjs
-// asserts the two copies stay in parity (CLAUDE.md: Generative Fix Divergence).
+// DUPLICATED VERBATIM in gsd-cursor-stop.js and gsd-cursor-subagent-start.js —
+// these hooks ship as standalone scripts and hooks/lib/ additions must be
+// registered in the generated installer's GSD_HOOK_LIB_FILES allowlist.
+// tests/fix-2587-cursor-hook-workspace-roots.test.cjs asserts all three copies
+// stay in parity (CLAUDE.md: Generative Fix Divergence).
 function resolveWorkspaceRoot(rawInput) {
   let input = {};
   try { input = JSON.parse(rawInput || '{}'); } catch { /* fall back to cwd */ }
   const roots = Array.isArray(input.workspace_roots)
     ? input.workspace_roots.filter((r) => typeof r === 'string' && r.length > 0)
     : [];
-  for (const root of roots) {
+  // cwd is a CANDIDATE, not merely the empty-roots fallback: an IDE invocation
+  // can supply workspace_roots AND run from the project, and searching roots
+  // alone would report "absent" for a project sitting right at cwd — narrower
+  // than the pre-fix behavior it replaces.
+  for (const root of [...roots, process.cwd()]) {
     if (fs.existsSync(path.join(root, '.planning', 'STATE.md'))) return root;
   }
   return roots[0] || process.cwd();

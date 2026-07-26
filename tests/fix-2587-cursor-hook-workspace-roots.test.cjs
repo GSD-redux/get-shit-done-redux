@@ -35,6 +35,13 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const HOOKS = path.join(__dirname, '..', 'hooks');
 const SESSION_START = path.join(HOOKS, 'gsd-cursor-session-start.js');
 const STOP = path.join(HOOKS, 'gsd-cursor-stop.js');
+// subagentStart carried the identical defect — it was not named in the report
+// but its cwd lookup meant every Cursor subagent (planner, executor, verifier)
+// started without phase context under the CLI.
+const SUBAGENT_START = path.join(HOOKS, 'gsd-cursor-subagent-start.js');
+// Every cursor hook that resolves .planning/ from the payload. Kept as one list
+// so a future hook added to this family is not silently left on the old path.
+const RESOLVING_HOOKS = [SESSION_START, STOP, SUBAGENT_START];
 
 const MSG_PRESENT_FRAGMENT = '.planning/STATE.md is present';
 const MSG_ABSENT_FRAGMENT = 'no .planning/ workflow found';
@@ -196,6 +203,67 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
     }
   });
 
+  test('subagentStart: reminder resolves via workspace_roots (missed site)', () => {
+    const workspace = makeWorkspace(true);
+    const cursorConfigDir = makeWorkspace(false);
+    try {
+      const out = runHook(SUBAGENT_START, {
+        cwd: cursorConfigDir,
+        payload: { hook_event_name: 'subagentStart', workspace_roots: [workspace] },
+      });
+      assert.match(
+        out.additional_context || '',
+        /review \.planning\/STATE\.md/,
+        'subagents must receive phase context, not the absent nudge',
+      );
+    } finally {
+      cleanup(workspace);
+      cleanup(cursorConfigDir);
+    }
+  });
+
+  test('stop: absent branch still emits {} when no root and no cwd has .planning', () => {
+    const workspace = makeWorkspace(false);
+    const cursorConfigDir = makeWorkspace(false);
+    try {
+      const out = runHook(STOP, {
+        cwd: cursorConfigDir,
+        payload: { hook_event_name: 'stop', workspace_roots: [workspace] },
+      });
+      assert.deepEqual(
+        out,
+        {},
+        'stop must stay silent when there is genuinely no GSD project',
+      );
+    } finally {
+      cleanup(workspace);
+      cleanup(cursorConfigDir);
+    }
+  });
+
+  test('cwd is a candidate, not just the empty-roots fallback', () => {
+    // Regression guard: resolving ONLY over workspace_roots would report absent
+    // whenever roots are supplied but the project actually sits at cwd — a
+    // NARROWING versus the pre-fix behavior, which always consulted cwd.
+    const projectAtCwd = makeWorkspace(true);
+    const unrelatedRoot = makeWorkspace(false);
+    try {
+      for (const hook of [SESSION_START, SUBAGENT_START]) {
+        const out = runHook(hook, {
+          cwd: projectAtCwd,
+          payload: { hook_event_name: 'sessionStart', workspace_roots: [unrelatedRoot] },
+        });
+        assert.ok(
+          /STATE\.md is present|review \.planning\/STATE\.md/.test(out.additional_context || ''),
+          `${path.basename(hook)}: a project at cwd must still be found when roots miss`,
+        );
+      }
+    } finally {
+      cleanup(projectAtCwd);
+      cleanup(unrelatedRoot);
+    }
+  });
+
   test('parity: the resolver is identical in both hook scripts', () => {
     // The two hooks ship as standalone scripts, so the resolver is duplicated
     // rather than shared via hooks/lib/ (which would require registering a new
@@ -210,15 +278,18 @@ describe('#2587: cursor hooks resolve the workspace from workspace_roots, not cw
       assert.notEqual(end, -1, `${path.basename(file)} resolveWorkspaceRoot must be terminated`);
       return src.slice(start, end + 2);
     };
-    assert.equal(
-      extract(SESSION_START),
-      extract(STOP),
-      'resolveWorkspaceRoot must be byte-identical across the two cursor hooks',
-    );
+    const canonical = extract(SESSION_START);
+    for (const other of [STOP, SUBAGENT_START]) {
+      assert.equal(
+        extract(other),
+        canonical,
+        `resolveWorkspaceRoot must be byte-identical in ${path.basename(other)}`,
+      );
+    }
   });
 
-  test('neither hook resolves .planning from process.cwd() directly', () => {
-    for (const file of [SESSION_START, STOP]) {
+  test('no cursor hook resolves .planning from process.cwd() directly', () => {
+    for (const file of RESOLVING_HOOKS) {
       const src = fs.readFileSync(file, 'utf8');
       assert.ok(
         !/path\.join\(\s*process\.cwd\(\)\s*,\s*'\.planning'/.test(src),
