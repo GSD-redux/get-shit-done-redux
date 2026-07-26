@@ -152,6 +152,91 @@ export function cmdEstimateCheck(cwd: string, args: string[], raw: boolean): voi
 }
 
 /**
+ * Pair each completed phase's PLAN estimate with its SUMMARY actuals.
+ *
+ * A phase contributes a sample only when BOTH sides are present and well-formed.
+ * A plan with no `estimate` block, a summary with no `actuals`, or a malformed
+ * value is skipped rather than guessed — a fabricated sample would silently
+ * steer every future estimate.
+ */
+export function collectCalibrationSamples(cwd: string): estimation.CalibrationSample[] {
+  const phasesRoot = path.join(planningDir(cwd), 'phases');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(phasesRoot, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort();
+  } catch {
+    return [];
+  }
+
+  const samples: estimation.CalibrationSample[] = [];
+  for (const phase of entries) {
+    const dir = path.join(phasesRoot, phase);
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+
+    const readBlock = (suffix: string, key: string): Record<string, unknown> | null => {
+      for (const f of files.filter((x) => x.endsWith(suffix)).sort()) {
+        let text: string;
+        try {
+          text = fs.readFileSync(path.join(dir, f), 'utf-8');
+        } catch {
+          continue;
+        }
+        const block = estimation.extractFrontmatterBlock(text, key);
+        if (block !== null) return block;
+      }
+      return null;
+    };
+
+    const estimate = estimation.parseEstimate(readBlock('-PLAN.md', 'estimate'));
+    const actuals = estimation.parseActuals(readBlock('-SUMMARY.md', 'actuals'));
+    if (estimate === null || actuals === null) continue;
+
+    samples.push({ estimateTokens: estimate.tokens, actualTokens: actuals.tokens });
+  }
+  return samples;
+}
+
+/**
+ * `estimate-calibrate` — rebuild the calibration document from completed phases.
+ *
+ * Rebuilds from scratch every run rather than appending, so it is idempotent and
+ * a corrupt prior document is replaced rather than merged. This is the verb that
+ * closes the loop (#1952 AC4): extract-learnings invokes it, and the planner's
+ * next estimate reads the result.
+ */
+export function cmdEstimateCalibrate(cwd: string, _args: string[], raw: boolean): void {
+  const samples = collectCalibrationSamples(cwd);
+  const calibration = estimation.computeCalibration(samples);
+
+  const target = path.join(planningDir(cwd), CALIBRATION_FILENAME);
+  let written = true;
+  try {
+    fs.writeFileSync(target, estimation.renderCalibrationDocument(samples), 'utf-8');
+  } catch {
+    // Persisting is best-effort: a read-only .planning must not fail the phase.
+    written = false;
+  }
+
+  output({
+    factor: calibration.factor,
+    applied: calibration.applied,
+    sample_count: calibration.sampleCount,
+    confidence: calibration.confidence,
+    clamped: calibration.clamped,
+    min_samples: estimation.MIN_CALIBRATION_SAMPLES,
+    written,
+  }, raw);
+}
+
+/**
  * `estimate-calibration` — report the current correction factor and the
  * history behind it.
  */

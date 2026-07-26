@@ -21,6 +21,13 @@ provides:
   - [bullet list of what this phase built/delivered]
 affects: [list of phase names or keywords that will need this context]
 
+# Actuals (#2632) — pairs with the plan's `estimate` to calibrate future estimates.
+# Same estimateTokens scale (chars/4 over the realized diff), never a harness token count.
+actuals:
+  tokens: [chars/4 over files actually changed]
+  tasks: [tasks completed]
+  commits: [commits made]
+
 # Tech tracking
 tech-stack:
   added: [libraries/tools added in this phase]

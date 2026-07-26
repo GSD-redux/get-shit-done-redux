@@ -2187,6 +2187,7 @@ const HOST_COMMAND_ROUTERS = {
   // rather than a family — ADR-2346 promotes to a family only at >=3.
   'estimate-check': ({ args, cwd, raw }) => estimateCli.cmdEstimateCheck(cwd, args.slice(1), raw),
   'estimate-calibration': ({ args, cwd, raw }) => estimateCli.cmdEstimateCalibration(cwd, args.slice(1), raw),
+  'estimate-calibrate': ({ args, cwd, raw }) => estimateCli.cmdEstimateCalibrate(cwd, args.slice(1), raw),
   'config-new-project': routeConfigNewProject,
   'config-path': routeConfigPath,
   'migrate-config': routeMigrateConfig,

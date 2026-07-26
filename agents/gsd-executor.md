@@ -638,7 +638,16 @@ This file is the canonical output of this step. The orchestrator reads `.plannin
 
 **Use template:** @~/.claude/gsd-core/templates/summary.md
 
-**Frontmatter:** phase, plan, subsystem, tags, dependency graph (requires/provides/affects), tech-stack (added/patterns), key-files (created/modified), decisions, metrics (duration, completed date), status (`status: complete` — required so the audit-open scanner recognises the summary as done).
+**Frontmatter:** phase, plan, subsystem, tags, dependency graph (requires/provides/affects), tech-stack (added/patterns), key-files (created/modified), decisions, metrics (duration, completed date), status (`status: complete` — required so the audit-open scanner recognises the summary as done), and `actuals` (#2632).
+
+**`actuals` (required when the plan carried an `estimate`):** record what the phase ACTUALLY cost, on the SAME scale the estimate used — `estimateTokens` (chars/4) over the realized diff, NOT a harness token count. Mixing scales measures the measurement methods, not the miss.
+```yaml
+actuals:
+  tokens: 74000    # chars/4 over the files you actually changed
+  tasks: 5         # tasks completed
+  commits: 7       # commits made
+```
+These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 
