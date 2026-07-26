@@ -643,7 +643,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   // Built via new RegExp (no /i — the [A-Za-z] letter class does real case handling).
   const numericRe = roadmapUsesHyphenedIds
     ? new RegExp(
-        `^0*(\\d+(?:-${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE})*[A-Za-z]?(?:\\.\\d+)*)`,
+        `^0*(\\d+[A-Za-z]?(?:-${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?(?!-${phaseIdModule.SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*(?:\\.\\d+)*)(?=-|$)`,
       )
     // phase-id-owner: the [A-Za-z] letter class does real case handling here — this regex carries NO /i flag; kept literal, not source-byte-equal to the canonical PHASE_NUMBER_TOKEN_SOURCE.
     : /^0*(\d+[A-Za-z]?(?:\.\d+)*)/;

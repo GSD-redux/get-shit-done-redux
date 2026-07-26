@@ -196,8 +196,12 @@ function extractCanonicalPlanId(filename: string): string {
     `^(?:${phaseIdModule.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?|\\d[A-Z])(?:\\.\\d+)*$`,
     'i',
   );
+  const singleDigitSlugRe = new RegExp(`^${phaseIdModule.SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
   const phaseIdx = parts.findIndex(p => tokenRe.test(p));
   if (phaseIdx >= 0 && phaseIdx + 1 < parts.length && planTokenRe.test(parts[phaseIdx + 1])) {
+    if (phaseIdx + 2 < parts.length && singleDigitSlugRe.test(parts[phaseIdx + 2])) {
+      return parts[phaseIdx];
+    }
     return `${parts[phaseIdx]}-${parts[phaseIdx + 1]}`;
   }
   return base;

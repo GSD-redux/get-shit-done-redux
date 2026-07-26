@@ -63,9 +63,11 @@ export const phaseDirNameRe = new RegExp(
 // milestone-prefixed single-digit sub-phases ("M1-2" → prefix "M1-" stripped, then
 // "2") still match. The trailing boundary "(?:-|$)" (was "(?:-[a-z]|$)") lets a slug
 // that starts with a digit terminate the token.
+const CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE =
+  OPTIONAL_PROJECT_CODE_PREFIX_SOURCE.replaceAll('A-Z', 'A-Za-z');
 export const PHASE_TOKEN_FROM_DIR_RE = new RegExp(
-  `^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}(\\d+(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*[A-Z]?(?:\\.\\d+)*)(?:-|$)`,
-  'i',
+  `^${CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE}` +
+  `(\\d+[A-Za-z]?(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*(?:\\.\\d+)*)(?:-|$)`,
 );
 export const MILESTONE_ARCHIVE_DIR_RE = /^v\d+.*-phases$/i;
 
@@ -75,10 +77,23 @@ export function canonicalPlanStem(stem: string): string {
   // so a digit-leading slug word (e.g. "46-6-rs-…") is not mistaken
   // for a "46-6" phase/plan pair. #2232: exactly 2 digits, so a year-leading
   // slug ("14-2026-photos-…") is not mistaken for a "14-2026" pair either.
+  const caseFlexiblePhaseTokenSource = PHASE_NUMBER_TOKEN_SOURCE.replaceAll('A-Z', 'A-Za-z');
   const m = stem.match(
-    new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE}-${PHASE_CONTINUATION_SEGMENT_SOURCE})`, 'i'),
+    new RegExp(
+      `^(${caseFlexiblePhaseTokenSource}-${PHASE_CONTINUATION_SEGMENT_SOURCE})` +
+      `(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE})(?=[A-Z](?:-|$)|-|$)`,
+    ),
   );
-  return m ? m[1] : stem;
+  if (m) return m[1];
+
+  // A two-digit segment followed by a one-digit slug segment is a phase-name
+  // collision ("10-24-7-autonomy"), not a plan pair.
+  const collision = stem.match(
+    new RegExp(
+      `^(${caseFlexiblePhaseTokenSource})-${PHASE_CONTINUATION_SEGMENT_SOURCE}-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`,
+    ),
+  );
+  return collision ? collision[1] : stem;
 }
 
 /** Result of buildRoadmapPhaseVariants. */

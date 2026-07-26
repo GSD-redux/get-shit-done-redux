@@ -769,6 +769,7 @@ describe('#2528 two-digit numeric slug words', () => {
     // shape is locked by the #2232 metamorphic round-trip.
     assert.strictEqual(phaseId.extractPhaseToken('14-06-2026-photos-and-performance'), '14-06');
     assert.strictEqual(phaseId.extractPhaseToken('05-80-20-25abc'), '05-80-20');
+    assert.strictEqual(phaseId.extractPhaseToken('10-01.2-setup'), '10-01.2');
     // The letter-prefixed family keeps its single-digit continuations.
     assert.strictEqual(phaseId.extractPhaseToken('M1-2-brain'), 'M1-2');
     assert.strictEqual(phaseId.extractPhaseToken('P0.3-tenant-primitives'), 'P0.3');
@@ -840,6 +841,7 @@ describe('#2528 matchPhaseDirs — canonical dir-match selection', () => {
 
   test('phaseNumberForMatch uses the leading digit run only for fallback matches', () => {
     assert.strictEqual(phaseId.phaseNumberForMatch('05-80-20-cleanup', true), '05');
+    assert.strictEqual(phaseId.phaseNumberForMatch('MEM-05-80-20-cleanup', true), 'MEM-05');
     assert.strictEqual(phaseId.phaseNumberForMatch('10-24-setup', false), '10-24');
   });
 });

@@ -182,8 +182,12 @@ function extractCanonicalPlanId(filename: string): string {
     `^(?:${phaseIdMod.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?|\\d[A-Z])(?:\\.\\d+)*$`,
     'i',
   );
+  const singleDigitSlugRe = new RegExp(`^${phaseIdMod.SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
   const phaseIdx = parts.findIndex((p) => tokenRe.test(p));
   if (phaseIdx >= 0 && phaseIdx + 1 < parts.length && planTokenRe.test(parts[phaseIdx + 1])) {
+    if (phaseIdx + 2 < parts.length && singleDigitSlugRe.test(parts[phaseIdx + 2])) {
+      return parts[phaseIdx];
+    }
     return `${parts[phaseIdx]}-${parts[phaseIdx + 1]}`;
   }
   return base;
@@ -585,6 +589,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
 
   let phaseDir: string | null = null;
   let phaseDirName: string | null = null;
+  let ambiguousMatches: string[] | null = null;
   try {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
     const dirs = entries
@@ -597,23 +602,26 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     // now applies here too, so the three resolution paths cannot disagree).
     const { matches } = matchPhaseDirs(dirs, normalized);
     if (matches.length > 1) {
-      output(
-        {
-          phase: normalized,
-          error: `Phase ${normalized} is ambiguous: ${matches.length} directories match (${matches.map((m) => `"${m}"`).join(', ')}).`,
-          ambiguous_matches: matches,
-          plans: [], waves: {}, incomplete: [], has_checkpoints: false,
-        },
-        raw,
-      );
-      return;
-    }
-    if (matches.length === 1) {
+      ambiguousMatches = matches;
+    } else if (matches.length === 1) {
       phaseDir = path.join(phasesDir, matches[0]);
       phaseDirName = matches[0];
     }
   } catch {
     // phases dir doesn't exist
+  }
+
+  if (ambiguousMatches) {
+    output(
+      {
+        phase: normalized,
+        error: `Phase ${normalized} is ambiguous: ${ambiguousMatches.length} directories match (${ambiguousMatches.map((m) => `"${m}"`).join(', ')}).`,
+        ambiguous_matches: ambiguousMatches,
+        plans: [], waves: {}, incomplete: [], has_checkpoints: false,
+      },
+      raw,
+    );
+    return;
   }
 
   if (!phaseDir) {

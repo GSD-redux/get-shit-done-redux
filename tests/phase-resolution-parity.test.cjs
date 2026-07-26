@@ -49,6 +49,14 @@ const SCENARIOS = [
     expect: '30-12-factor-refactor',
   },
   {
+    name: '#2528 prefixed fallback preserves phase number and phase name boundaries',
+    dirs: ['MEM-05-80-20-cleanup'],
+    query: '5',
+    expect: 'MEM-05-80-20-cleanup',
+    expectPhaseNumber: 'MEM-05',
+    expectPhaseName: '80-20-cleanup',
+  },
+  {
     name: '#2232 regression stays green: year-leading slug',
     dirs: ['14-2026-photos-performance'],
     query: '14',
@@ -98,7 +106,7 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
     tmpDir = null;
   });
 
-  for (const { name, dirs, query, expect } of SCENARIOS) {
+  for (const { name, dirs, query, expect, expectPhaseNumber, expectPhaseName } of SCENARIOS) {
     test(name, () => {
       const phasesDir = path.join(tmpDir, '.planning', 'phases');
       for (const d of dirs) {
@@ -106,7 +114,8 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
         fs.mkdirSync(dir, { recursive: true });
         // One canonical plan per dir so a resolved phase-plan-index proves it
         // actually read the directory (plans: [] was the reported symptom).
-        const padded = d.match(/^\d+/) ? d.match(/^\d+/)[0] : '01';
+        const leadingDigits = d.match(/^\d+/);
+        const padded = leadingDigits ? leadingDigits[0] : '01';
         fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '---\nwave: 1\n---\n');
       }
 
@@ -150,6 +159,10 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
         assert.strictEqual(idxOut.error, 'Phase not found', 'phase-plan-index must report not-found');
       } else {
         assert.strictEqual(locatorDir, expect, 'locator resolved the wrong dir');
+        if (expectPhaseNumber) {
+          assert.strictEqual(located.phase_number, expectPhaseNumber);
+          assert.strictEqual(located.phase_name, expectPhaseName);
+        }
         assert.strictEqual(findDir, expect, 'find-phase resolved the wrong dir');
         assert.ok(
           idxResolved,

@@ -64,14 +64,20 @@ const PHASE_NUMBER_TOKEN_SOURCE = '\\d+[A-Z]?(?:\\.\\d+)*';
 // trailing grammar (letter suffixes, dotted sub-phases, segment boundaries).
 // POLICY (locked by boundary tests): sub-phase/plan numbers ≥100 are out of the
 // dir-token grammar — the LEADING phase number stays unbounded (`\d+`), only
-// continuation segments are pure two-digit segments, with an alphanumeric
-// boundary when embedded in another regex. Shared from here so the five #2043
+// continuation segments begin with a two-digit run; consuming sites retain
+// their established suffix and boundary grammar. Shared from here so the five #2043
 // call sites cannot drift independently (see scripts/lint-phase-id-drift.cjs).
-const PHASE_CONTINUATION_SEGMENT_SOURCE = '\\d{2}(?![\\dA-Za-z])';
+const PHASE_CONTINUATION_SEGMENT_SOURCE = '\\d{2}(?!\\d)';
 const PHASE_CONTINUATION_SEGMENT_PREFIX_RE = new RegExp(`^${PHASE_CONTINUATION_SEGMENT_SOURCE}`);
 function isPhaseContinuationSegment(seg: string): boolean {
   return PHASE_CONTINUATION_SEGMENT_PREFIX_RE.test(seg);
 }
+
+// #2528: the #2043 slug-word class (a segment whose leading digit run has
+// width exactly 1) used as a RETROACTIVE signal by consumers that can inspect
+// the following segment.
+const SINGLE_DIGIT_RUN_SEGMENT_SOURCE = '\\d(?!\\d)';
+const SINGLE_DIGIT_RUN_SEGMENT_RE = new RegExp(`^${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
 
 // #612 (PR-1): bracket-convention token/heading sources, kept next to the M-NN
 // PHASE_NUMBER_TOKEN_SOURCE so this owner file stays the single origin of every
@@ -133,29 +139,14 @@ const BRACKET_PHASE_TOKEN_SOURCE =
   `\\d+[A-Z]?` +
   `(?:-${BRACKET_CANONICAL_NUMERIC_SOURCE}(?!\\d))?` +
   `(?:\\.${BRACKET_CANONICAL_NUMERIC_SOURCE}(?!\\d))?` +
-  `(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE})?`;
+  `(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))?` +
+  `(?=-|$)`;
 
 // A phase HEADING intro under bracket is either a `[...]` bracket (optionally
 // followed by a `Phase ` label) or a bare `Phase ` label; a bare number is NOT
 // a phase-heading intro. The `[^\]]{1,200}` bound mirrors the existing
 // roadmap-parser heading regexes (ReDoS-safe: a header is one short line).
 const PHASE_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*(?:Phase\\s+)?|Phase\\s+)';
-
-// #2528: extractPhaseToken absorbs a continuation segment only when the WHOLE
-// segment is the 2-digit zero-padded form the write side emits
-// (getPhaseDirFromPhaseId pads genuine sub-phase/plan numbers to exactly 2
-// digits and never appends letters) — so a slug word like "10x" (phase named
-// "10x Growth" → dir "14-10x-growth") is a slug word, not a continuation.
-// Derived from the owner SOURCE with both ends anchored; the prefix form above
-// stays as-is for call sites that append their own trailing grammar.
-const PHASE_CONTINUATION_SEGMENT_EXACT_RE = new RegExp(`^${PHASE_CONTINUATION_SEGMENT_SOURCE}$`);
-
-// #2528: the #2043 slug-word class (a segment whose leading digit run has
-// width exactly 1) used as a RETROACTIVE signal: when it immediately follows
-// absorbed continuation segments, the run was a digit-leading slug (the
-// "24/7" / "80/20" / "30-Day" family — see extractPhaseToken).
-const SINGLE_DIGIT_RUN_SEGMENT_SOURCE = '\\d(?!\\d)';
-const SINGLE_DIGIT_RUN_SEGMENT_RE = new RegExp(`^${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
 
 function stripProjectCodePrefix(value: unknown, caseInsensitive = true): string {
   const input = String(value);
@@ -560,7 +551,7 @@ function extractPhaseToken(dirName: string, convention?: string): string {
       }
     } else if (
       (firstLetterPrefixed && /^\d/.test(seg)) ||
-      (!firstLetterPrefixed && PHASE_CONTINUATION_SEGMENT_EXACT_RE.test(seg))
+      (!firstLetterPrefixed && isPhaseContinuationSegment(seg))
     ) {
       tokenSegments.push(seg);
     } else {
@@ -593,6 +584,18 @@ function extractPhaseToken(dirName: string, convention?: string): string {
     SINGLE_DIGIT_RUN_SEGMENT_RE.test(segments[scanStoppedAt])
   ) {
     tokenSegments.length = 1;
+  }
+
+  // A generated slug is lowercase. If the owner admitted a two-digit prefix
+  // from a digit+letter slug segment ("10x", "25abc"), remove only that final
+  // segment. Uppercase suffixes remain available to the established plan-ID
+  // grammar, and dotted continuations remain intact.
+  if (
+    !firstLetterPrefixed &&
+    tokenSegments.length > 1 &&
+    /^\d{2}[a-z][a-z0-9]*$/.test(tokenSegments[tokenSegments.length - 1])
+  ) {
+    tokenSegments.pop();
   }
 
   return prefix + tokenSegments.join('-');
@@ -641,13 +644,13 @@ function matchPhaseDirs(dirs: string[], normalized: string): { matches: string[]
   const primary = dirs.filter(d => phaseTokenMatches(d, normalized));
   if (primary.length > 0) return { matches: primary, usedBareFallback: false };
 
-  const bare = String(normalized).match(/^0*(\d+)$/);
-  if (!bare) return { matches: primary, usedBareFallback: false };
-  const want = bare[1];
+  const bare = String(normalized);
+  if (!/^\d+$/.test(bare)) return { matches: primary, usedBareFallback: false };
+  const want = bare.replace(/^0+(?=\d)/, '');
 
   const fallback = dirs.filter(d => {
-    const m = stripProjectCodePrefix(d).match(/^0*(\d+)(?:-|$)/);
-    return m !== null && m[1] === want;
+    const m = stripProjectCodePrefix(d).match(/^(\d+)(?:-|$)/);
+    return m !== null && m[1].replace(/^0+(?=\d)/, '') === want;
   });
   return { matches: fallback, usedBareFallback: fallback.length > 0 };
 }
@@ -660,8 +663,10 @@ function matchPhaseDirs(dirs: string[], normalized: string): { matches: string[]
  */
 function phaseNumberForMatch(dirName: string, usedBareFallback: boolean): string {
   if (!usedBareFallback) return extractPhaseToken(dirName);
-  const m = stripProjectCodePrefix(dirName).match(/^\d+/);
-  return m ? m[0] : extractPhaseToken(dirName);
+  const stripped = stripProjectCodePrefix(dirName);
+  const prefix = dirName.slice(0, dirName.length - stripped.length);
+  const m = stripped.match(/^\d+/);
+  return m ? prefix + m[0] : extractPhaseToken(dirName);
 }
 
 // ─── #2121 canonical surface (ADR-2121) ──────────────────────────────────────

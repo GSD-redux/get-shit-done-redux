@@ -148,6 +148,38 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
     }
   });
 
+  test('#2528: a one-digit terminator is rejected by every non-I/O surface', () => {
+    const dir = '10-24-7-autonomy';
+    assert.strictEqual(phaseId.extractPhaseToken(dir), '10');
+    assert.strictEqual(validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1], '10');
+    assert.strictEqual(validate.canonicalPlanStem(dir), '10');
+    assert.strictEqual(
+      coreUtils.extractCanonicalPlanId(`${dir}-PLAN.md`),
+      '10',
+    );
+
+    const bracketDir = '01-10-24-7-autonomy';
+    assert.strictEqual(
+      bracketDir.match(new RegExp(phaseId.BRACKET_PHASE_TOKEN_SOURCE))?.[0],
+      '01-10',
+    );
+  });
+
+  test('letter-suffixed plan components and dotted sub-phases keep their established grammar', () => {
+    assert.strictEqual(phaseId.isPhaseContinuationSegment('01A'), true);
+    assert.strictEqual(validate.PHASE_TOKEN_FROM_DIR_RE.exec('10-01A-auth')?.[1], '10-01A');
+    assert.strictEqual(validate.canonicalPlanStem('10-01A-auth-setup'), '10-01');
+    assert.strictEqual(
+      coreUtils.extractCanonicalPlanId('10-01A-auth-setup-PLAN.md'),
+      '10-01A',
+    );
+    assert.strictEqual(phaseId.extractPhaseToken('10-01.2-auth'), '10-01.2');
+    assert.strictEqual(
+      phaseId.phaseTokenMatches('10-01.2-auth', phaseId.normalizePhaseName('10')),
+      false,
+    );
+  });
+
   test('#2528: digit-plus-letter slug words preserve owner/regex parity', () => {
     fc.assert(
       fc.property(
@@ -216,6 +248,21 @@ describe('#2232 continuation-grammar parity — roadmap isDirInMilestone (hyphen
       tmpDir = null;
     });
   }
+
+  test('#2528: a one-digit terminator leaves the directory in bare Phase 10', () => {
+    writeProject([
+      '## v1.0: Current',
+      '### Phase 2-01: Alpha',
+      '**Goal:** force hyphenated mode',
+      '',
+      '### Phase 10: Autonomy',
+      '**Goal:** the 24/7 name',
+    ]);
+    const filter = getMilestonePhaseFilter(tmpDir);
+    assert.strictEqual(filter('10-24-7-autonomy'), true);
+    cleanup(tmpDir);
+    tmpDir = null;
+  });
 });
 
 // ─── #612: the DELIBERATE divergence, pinned ────────────────────────────────
