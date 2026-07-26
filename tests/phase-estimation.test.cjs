@@ -733,3 +733,104 @@ describe('estimate-check --calibrated', () => {
     assert.equal(pre.over_budget, false, 'the honest figure is under budget');
   });
 });
+
+// ─── branded raw-vs-calibrated basis (#2671) ───────────────────────────────
+
+describe('RawTokens / CalibratedTokens brands', () => {
+  // The behavioural guards above pin the two shipped defects (#2631 factor^2,
+  // #2632 self-defeating loop) at the CLI surface. Both were composition errors
+  // between individually-correct functions, and ~26,800 unit/boundary/property
+  // tests were green for both. This block asserts the stronger property: with
+  // the brands in place the wrong composition is not merely wrong, it is
+  // UNREPRESENTABLE — `npm run build:lib` refuses it.
+  //
+  // The oracle is the TypeScript compiler, driven in-process through its API
+  // (no subprocess, so no timeout and no spawn flake) against the repo's REAL
+  // tsconfig.build.json options — the same strictness the publish build uses.
+  // Assertions are on the returned diagnostic OBJECTS (`code`, `file`), never
+  // on rendered compiler prose.
+  const ts = require('typescript');
+
+  const REPO_ROOT = path.join(__dirname, '..');
+  const FIXTURE_DIR = path.join(__dirname, 'fixtures', 'brand-typing');
+
+  /** TS "argument of type X is not assignable to parameter of type Y". */
+  const TS_ARG_NOT_ASSIGNABLE = 2345;
+  /** TS "type X is not assignable to type Y" (object-literal property). */
+  const TS_TYPE_NOT_ASSIGNABLE = 2322;
+
+  const CASES = [
+    { fixture: 'ok-correct-composition.cts', expected: null },
+    { fixture: 'bad-double-calibration.cts', expected: TS_ARG_NOT_ASSIGNABLE },
+    { fixture: 'bad-raw-against-budget.cts', expected: TS_ARG_NOT_ASSIGNABLE },
+    { fixture: 'bad-calibrated-as-sample-basis.cts', expected: TS_TYPE_NOT_ASSIGNABLE },
+    { fixture: 'bad-rebrand-calibrated-as-raw.cts', expected: TS_ARG_NOT_ASSIGNABLE },
+    { fixture: 'bad-unbranded-number-as-raw.cts', expected: TS_ARG_NOT_ASSIGNABLE },
+  ];
+
+  /**
+   * Compile every fixture in ONE program and bucket the diagnostics by source
+   * file. One program keeps this to a single type-check of `src/`, and lets the
+   * "src stays clean" assertion below be meaningful: any diagnostic NOT in the
+   * fixture directory is a real compile error in the module under test.
+   */
+  const compileFixtures = () => {
+    const configPath = path.join(REPO_ROOT, 'tsconfig.build.json');
+    const readConfig = ts.readConfigFile(configPath, ts.sys.readFile);
+    assert.equal(readConfig.error, undefined, 'tsconfig.build.json must parse');
+
+    const parsed = ts.parseJsonConfigFileContent(readConfig.config, ts.sys, REPO_ROOT);
+    assert.deepEqual(parsed.errors, [], 'tsconfig.build.json must yield usable compiler options');
+
+    const options = {
+      ...parsed.options,
+      // The fixtures live outside `src/`, so the emit-shaped settings have to go.
+      // Everything that governs STRICTNESS is inherited untouched — that is the
+      // whole point of reading the real config instead of hand-rolling options.
+      noEmit: true,
+      rootDir: undefined,
+      outDir: undefined,
+      incremental: false,
+      tsBuildInfoFile: undefined,
+    };
+
+    const roots = CASES.map((c) => path.join(FIXTURE_DIR, c.fixture));
+    const program = ts.createProgram(roots, options);
+
+    const byFixture = new Map(CASES.map((c) => [c.fixture, []]));
+    const foreign = [];
+    for (const diagnostic of ts.getPreEmitDiagnostics(program)) {
+      const name = diagnostic.file === undefined ? null : path.basename(diagnostic.file.fileName);
+      if (name !== null && byFixture.has(name)) byFixture.get(name).push(diagnostic);
+      else foreign.push(diagnostic);
+    }
+    return { byFixture, foreign };
+  };
+
+  // One compile, shared by every assertion below.
+  const { byFixture, foreign } = compileFixtures();
+
+  test('the module and its real build options compile clean', () => {
+    // A diagnostic outside the fixture directory means `src/` itself is broken,
+    // or the harness picked up the wrong options. Either way the negative cases
+    // below would be passing for the wrong reason.
+    assert.deepEqual(foreign.map((d) => d.code), [],
+      'no diagnostic may originate outside tests/fixtures/brand-typing/');
+  });
+
+  test('the correct composition compiles — the positive control', () => {
+    // This is what makes every "must not compile" case non-vacuous: it proves
+    // the fixture imports resolve and the option set is usable, so a diagnostic
+    // in a bad-* fixture is the brand rejecting rather than a broken harness.
+    assert.deepEqual(byFixture.get('ok-correct-composition.cts').map((d) => d.code), []);
+  });
+
+  for (const { fixture, expected } of CASES.filter((c) => c.expected !== null)) {
+    test(`${fixture} is a compile error`, () => {
+      const codes = byFixture.get(fixture).map((d) => d.code);
+      assert.equal(codes.length, 1,
+        `${fixture} must produce exactly one diagnostic — see the fixture README`);
+      assert.equal(codes[0], expected);
+    });
+  }
+});
