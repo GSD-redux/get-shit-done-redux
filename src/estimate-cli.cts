@@ -159,9 +159,15 @@ export function cmdEstimateCheck(cwd: string, args: string[], raw: boolean): voi
   // factor === 1, and 1^2 === 1). A plan's recorded `estimate.tokens` is
   // calibrated at emission time per ADR-2629 Decision 1, so the plan-checker
   // MUST pass this flag.
+  //
+  // `--calibrated` is the whole basis question, and argv cannot answer it for
+  // the type system — so this is where the caller's claim is turned into a type
+  // (#2671). Past this expression the basis is carried by RawTokens /
+  // CalibratedTokens and the wrong composition stops compiling; the ambiguity
+  // is confined to these two lines instead of running the length of the seam.
   const calibratedTokens = preCalibrated
-    ? inputTokens
-    : estimation.applyCalibration(inputTokens, calibration.factor);
+    ? estimation.asCalibratedTokens(inputTokens)
+    : estimation.applyCalibration(estimation.asRawTokens(inputTokens), calibration.factor);
   const classification = estimation.classifyAgainstBudget(calibratedTokens, budget);
 
   output({

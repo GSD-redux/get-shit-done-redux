@@ -36,6 +36,64 @@ const { estimateTokens } = promptBudget;
 /** Confidence in an estimate. DERIVED from calibration sample count — never self-rated. */
 export type Confidence = 'low' | 'med' | 'high';
 
+declare const RAW_TOKENS_BRAND: unique symbol;
+declare const CALIBRATED_TOKENS_BRAND: unique symbol;
+
+/**
+ * A token count the correction factor has NOT been applied to — the planner's
+ * uncorrected projection, and the only legal denominator for calibration.
+ *
+ * Both types below are compile-time brands (#2671). They erase entirely: the
+ * emitted `.cjs` sees plain numbers, the CLI's JSON output is unchanged, and
+ * every untyped `.cjs` caller keeps working exactly as before. What they buy is
+ * that the two states stop being interchangeable `number`s at the seams where
+ * epic #1952 twice mixed them up:
+ *
+ *   - #2631 — an already-calibrated figure was fed to a parameter named
+ *     `rawTokens`, so the correction became factor^2 (4x under to 9x over under
+ *     the [0.5, 3.0] clamp), invisible below 3 samples because factor === 1
+ *     there and 1^2 === 1.
+ *   - #2632 — calibration measured actual/calibrated instead of actual/raw, so
+ *     the loop un-corrected itself and settled near 1.41 instead of 2.0.
+ *
+ * Both were composition errors between individually-correct functions, and both
+ * shipped past a green ~26,800-test suite. `--calibrated` and `raw_tokens` fix
+ * the two known call sites but remain conventions a caller must remember; the
+ * brands make the wrong composition unrepresentable instead. Compile fixtures:
+ * `tests/fixtures/brand-typing/`.
+ */
+export type RawTokens = number & { readonly [RAW_TOKENS_BRAND]: true };
+
+/**
+ * A token count the correction factor HAS been applied to — what a plan records
+ * in `estimate.tokens` and the only figure meaningful against the smart-zone
+ * budget.
+ *
+ * "Applied" is about provenance, not arithmetic: a project below
+ * MIN_CALIBRATION_SAMPLES has factor 1, so the calibrated figure equals the raw
+ * one numerically while still being a different thing to a reader and to the
+ * calibration loop.
+ */
+export type CalibratedTokens = number & { readonly [CALIBRATED_TOKENS_BRAND]: true };
+
+/**
+ * Assert that a bare number is an UNCORRECTED projection.
+ *
+ * Call this only where a number crosses a trust boundary carrying a basis the
+ * type system cannot see — argv, disk frontmatter, a persisted document. The
+ * parameter type refuses a `CalibratedTokens`, so a corrected figure cannot be
+ * laundered back into the basis; without that the brand would be decorative and
+ * #2632 would be one keystroke away again.
+ */
+export function asRawTokens(tokens: number & { readonly [CALIBRATED_TOKENS_BRAND]?: never }): RawTokens {
+  return tokens as RawTokens;
+}
+
+/** Assert that a bare number already has the correction applied. Refuses a `RawTokens`. */
+export function asCalibratedTokens(tokens: number & { readonly [RAW_TOKENS_BRAND]?: never }): CalibratedTokens {
+  return tokens as CalibratedTokens;
+}
+
 export const CONFIDENCE_VALUES: readonly Confidence[] = Object.freeze(['low', 'med', 'high'] as const);
 
 /** Below this many calibration samples, no correction is applied (ADR-2629 Decision 4). */
@@ -53,7 +111,8 @@ export const CALIBRATION_FACTOR_MAX = 3.0;
 export const CALIBRATION_SCHEMA_VERSION = 1;
 
 export interface PhaseEstimate {
-  tokens: number;
+  /** Calibrated at emission time per ADR-2629 Decision 1 — never the raw projection. */
+  tokens: CalibratedTokens;
   tasks: number;
   confidence: Confidence;
   /**
@@ -68,7 +127,7 @@ export interface PhaseEstimate {
    * 10 phases with a true 2x underestimate, that oscillates and settles at
    * ~1.41 instead of converging on 2.0.
    */
-  rawTokens?: number;
+  rawTokens?: RawTokens;
 }
 
 export interface PhaseActuals {
@@ -89,7 +148,17 @@ export interface BudgetClassification {
 }
 
 export interface CalibrationSample {
-  estimateTokens: number;
+  /**
+   * The RAW basis — ADR-2629 Decision 4. Branded so a calibrated figure cannot
+   * take this slot: that substitution is #2632, and it is silent at runtime
+   * because both sides are positive integers of the same magnitude.
+   */
+  estimateTokens: RawTokens;
+  /**
+   * Measured cost on the `estimateTokens` scale. Deliberately unbranded — an
+   * actual is neither a projection nor a correction of one, so giving it either
+   * brand would make the type say something untrue.
+   */
   actualTokens: number;
 }
 
@@ -133,6 +202,10 @@ function isConfidence(value: unknown): value is Confidence {
 function isCalibrationSample(value: unknown): value is CalibrationSample {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
+  // The RawTokens brand on estimateTokens is asserted here, at the disk trust
+  // boundary — a persisted sample's basis is a fact about the writer, and the
+  // only writers are collectCalibrationSamples() (which reads it through
+  // calibrationBasis()) and this module's own renderCalibrationDocument().
   return isPositiveFinite(record['estimateTokens']) && isPositiveFinite(record['actualTokens']);
 }
 
@@ -169,7 +242,10 @@ export function deriveConfidence(sampleCount: unknown): Confidence {
  * violation: it reports budgetValid=false and overBudget=false, so a broken
  * config cannot spam split recommendations.
  */
-export function classifyAgainstBudget(estimate: unknown, budget: unknown): BudgetClassification {
+export function classifyAgainstBudget(estimate: CalibratedTokens, budget: number): BudgetClassification {
+  // Kept for untyped `.cjs` callers — see the note in applyCalibration. A
+  // hand-edited config reaches `budget` as anything at runtime regardless of
+  // what the TypeScript signature promises.
   if (!isPositiveFinite(budget) || !isPositiveFinite(estimate)) {
     return { overBudget: false, ratio: 0, recommendation: null, budgetValid: isPositiveFinite(budget) };
   }
@@ -232,15 +308,20 @@ export function computeCalibration(samples: unknown): CalibrationResult {
  * `estimate.tokens` is an integer field; floors at 1 so a heavy shrink factor
  * can never produce a zero-token estimate.
  */
-export function applyCalibration(rawTokens: unknown, factor: unknown): number {
-  if (!isPositiveFinite(rawTokens)) return 0;
-  if (!isPositiveFinite(factor)) return Math.max(1, Math.round(rawTokens));
+export function applyCalibration(rawTokens: RawTokens, factor: number): CalibratedTokens {
+  // These two guards look dead to the type-checker and are not: this module is
+  // compiled to `.cjs` and consumed by untyped callers (gsd-tools.cjs, the test
+  // suite), which reach it with NaN, null, 0 and worse. The brands are a
+  // compile-time contract for TypeScript callers; validation is what defends
+  // everyone else. Do not delete either one because the parameter is now typed.
+  if (!isPositiveFinite(rawTokens)) return asCalibratedTokens(0);
+  if (!isPositiveFinite(factor)) return asCalibratedTokens(Math.max(1, Math.round(rawTokens)));
   // Bound the product: an inexact float past MAX_SAFE_INTEGER would masquerade
   // as an integer token count. Unreachable through today's CLI (which is
   // safe-integer bounded) but the function is exported and must not depend on
   // its caller for that guarantee.
   const scaled = Math.round(rawTokens * factor);
-  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, scaled));
+  return asCalibratedTokens(Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, scaled)));
 }
 
 /**
@@ -309,10 +390,13 @@ export function parseEstimate(input: unknown): PhaseEstimate | null {
 
   if (!isPositiveInt(tokens) || !isPositiveInt(tasks) || !isConfidence(confidence)) return null;
 
+  // The frontmatter trust boundary: `tokens` is calibrated-at-emission and
+  // `raw_tokens` is the uncorrected projection (ADR-2629 Decision 1/4), so this
+  // is where each figure's basis becomes a type rather than a field name.
   const rawTokens = record['raw_tokens'];
   return isPositiveInt(rawTokens)
-    ? { tokens, tasks, confidence, rawTokens }
-    : { tokens, tasks, confidence };
+    ? { tokens: asCalibratedTokens(tokens), tasks, confidence, rawTokens: asRawTokens(rawTokens) }
+    : { tokens: asCalibratedTokens(tokens), tasks, confidence };
 }
 
 /** Pull the `actuals:` mapping out of an already-parsed frontmatter object. */
@@ -362,8 +446,14 @@ export function renderEstimate(estimate: PhaseEstimate): string {
  * the plan recorded one, else the stored value (pre-#2632 plans, where the two
  * were the same because no factor had yet been applied).
  */
-export function calibrationBasis(estimate: PhaseEstimate): number {
-  return isPositiveInt(estimate.rawTokens) ? estimate.rawTokens : estimate.tokens;
+export function calibrationBasis(estimate: PhaseEstimate): RawTokens {
+  if (isPositiveInt(estimate.rawTokens)) return estimate.rawTokens;
+  // THE one legitimate crossover in this module, and the reason asRawTokens()
+  // refuses a CalibratedTokens rather than being permissive: on a plan written
+  // before #2632 no factor had been applied yet, so `tokens` IS the raw
+  // projection. Deliberately an explicit assertion so it stays a single
+  // auditable line instead of a hole in the brand.
+  return estimate.tokens as unknown as RawTokens;
 }
 
 /** Render an actuals block for SUMMARY.md frontmatter. Inverse of parseActuals. */
