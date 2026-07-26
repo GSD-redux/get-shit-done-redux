@@ -1238,13 +1238,36 @@ describe('update workflow wires the restore step (#1854)', () => {
     );
   });
 
-  test('declining restore leaves the backup and says where it is', () => {
+  test('declining restore leaves the backup and names the resolved path', () => {
+    const content = workflow();
+    const step = content.split('<step name="restore_custom_files">')[1] || '';
+    const decline = step.split('**If the user declines:**')[1] || '';
+
+    assert.ok(decline.length > 0, 'the restore step must define a decline path');
+    assert.ok(
+      /RESTORE_DIR/.test(decline),
+      'the decline path must name the resolved backup_dir, not the bare directory name',
+    );
+  });
+
+  test('the restore prompt is sized by eligible_count, not the raw entry count', () => {
+    // A backup holding only blocked entries (the new release ships that path)
+    // must not produce "Restore 1 file(s)?" when accepting would restore zero.
     const content = workflow();
     const step = content.split('<step name="restore_custom_files">')[1] || '';
 
     assert.ok(
-      /gsd-user-files-backup/.test(step),
-      'the decline path must name the backup location',
+      /RESTORE_ELIGIBLE=\$\(json_field eligible_count\)/.test(step),
+      'the step must read eligible_count separately from the raw entry count',
+    );
+    const question = step.split('**Question:**')[1] || '';
+    assert.ok(
+      /RESTORE_ELIGIBLE/.test(question.split('\n')[0]),
+      'the question text must be sized by RESTORE_ELIGIBLE',
+    );
+    assert.ok(
+      /If `RESTORE_ELIGIBLE` == 0/.test(step),
+      'the step must define the all-blocked branch that skips the prompt entirely',
     );
   });
 
