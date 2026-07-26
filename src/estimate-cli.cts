@@ -130,6 +130,7 @@ export function cmdEstimateCheck(cwd: string, args: string[], raw: boolean): voi
     calibrated_tokens: calibratedTokens,
     budget,
     over_budget: classification.overBudget,
+    budget_valid: classification.budgetValid,
     ratio: Number(classification.ratio.toFixed(4)),
     recommendation: classification.recommendation,
     confidence: calibration.confidence,

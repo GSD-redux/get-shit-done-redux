@@ -51,10 +51,21 @@ describe('deriveConfidence', () => {
     }
   });
 
-  test('is a pure function of the count — same input, same output', () => {
+  test('only ever returns a declared confidence value', () => {
+    // f(n) === f(n) would hold for ANY deterministic function, including one
+    // that always returned 'high'. Constrain the codomain instead.
     fc.assert(fc.property(fc.integer({ min: 0, max: 500 }), (n) => {
-      assert.equal(est.deriveConfidence(n), est.deriveConfidence(n));
+      assert.ok(
+        est.CONFIDENCE_VALUES.includes(est.deriveConfidence(n)),
+        `deriveConfidence(${n}) returned a value outside CONFIDENCE_VALUES`,
+      );
     }), { numRuns: 100, seed: 19520, verbose: true });
+    // ...and that every declared value is actually reachable, so the enum and
+    // the thresholds cannot drift apart.
+    assert.deepEqual(
+      [...new Set([0, 3, 6].map((n) => est.deriveConfidence(n)))].sort(),
+      [...est.CONFIDENCE_VALUES].sort(),
+    );
   });
 
   test('is monotonic — more history never lowers confidence', () => {
@@ -164,6 +175,16 @@ describe('computeCalibration', () => {
     assert.equal(r.applied, true);
     assert.ok(r.factor < 1, `expected a downward correction, got ${r.factor}`);
     assert.ok(est.applyCalibration(50000, r.factor) < 50000);
+  });
+
+  test('median averages the two middle ratios on an even-length history', () => {
+    // Every explicit-value case elsewhere uses 3 samples (odd), so the
+    // even-length averaging branch had no fixed-value assertion.
+    const history = [sample(100, 100), sample(100, 120), sample(100, 140), sample(100, 160)];
+    const r = est.computeCalibration(history);
+    assert.equal(r.sampleCount, 4);
+    // ratios [1.0, 1.2, 1.4, 1.6] -> median = (1.2 + 1.4) / 2 = 1.3
+    assert.ok(Math.abs(r.factor - 1.3) < 1e-9, `expected ~1.3, got ${r.factor}`);
   });
 
   test('median resists a single pathological outlier', () => {
@@ -312,6 +333,20 @@ describe('parseActuals', () => {
     assert.equal(est.parseActuals({ tokens: 100, tasks: 1, commits: 1.5 }), null);
     assert.equal(est.parseActuals({ tokens: 100, tasks: 1, commits: '3' }), null);
     assert.equal(est.parseActuals({ tokens: 100, tasks: 1 }), null);
+  });
+});
+
+describe('estimate/actuals schema disjointness', () => {
+  // estimateBlockOf/actualsBlockOf fall back to treating the whole record as
+  // the block when the wrapper key is absent. That is only safe while the two
+  // schemas require disjoint fields. Pin it: if either schema ever gains the
+  // other's disambiguator, this fails loudly instead of silently cross-parsing.
+  test('an actuals block never parses as an estimate, and vice versa', () => {
+    const actualsBlock = { tokens: 74000, tasks: 5, commits: 7 };
+    const estimateBlock = { tokens: 60000, tasks: 5, confidence: 'med' };
+
+    assert.equal(est.parseEstimate(actualsBlock), null, 'actuals must not parse as an estimate');
+    assert.equal(est.parseActuals(estimateBlock), null, 'an estimate must not parse as actuals');
   });
 });
 
@@ -611,9 +646,14 @@ describe('query estimate-calibration', () => {
     const target = path.join(tmpDir, '.planning', 'estimation-calibration.json');
     fs.writeFileSync(target, est.renderCalibrationDocument([sample(100, 200)]));
 
-    // Deterministic IO fault injection: monkeypatch the fs method and restore
-    // in finally. chmod 0o000 is not used — root bypasses mode bits, so the
-    // test would silently pass with zero coverage in root Docker/CI.
+    // Drives the REAL readCalibrationSamples — an earlier version of this test
+    // re-implemented the try/catch inline and would have kept passing if the
+    // production guard were deleted.
+    const cli = require('../gsd-core/bin/lib/estimate-cli.cjs');
+
+    // Deterministic IO fault injection: monkeypatch the fs method and restore in
+    // finally. Never chmod 0o000 — root bypasses mode bits, so the test would
+    // silently pass with zero coverage in root Docker/CI.
     const originalReadFileSync = fs.readFileSync;
     let sawInjectedRead = false;
     fs.readFileSync = function patched(p, ...rest) {
@@ -623,20 +663,19 @@ describe('query estimate-calibration', () => {
       }
       return originalReadFileSync.call(this, p, ...rest);
     };
+    let samples;
     try {
-      const samples = est.parseCalibrationDocument(
-        (() => {
-          try {
-            return fs.readFileSync(target, 'utf-8');
-          } catch {
-            return '';
-          }
-        })(),
-      );
-      assert.equal(sawInjectedRead, true, 'the injected fault must actually have fired');
-      assert.deepEqual(samples, [], 'an unreadable file degrades to no history');
+      samples = cli.readCalibrationSamples(tmpDir);
     } finally {
       fs.readFileSync = originalReadFileSync;
     }
+
+    assert.equal(sawInjectedRead, true, 'the injected fault must actually have fired');
+    assert.deepEqual(samples, [], 'an unreadable file degrades to no history');
+
+    // And the degraded history must still yield an inert calibration.
+    const calibration = est.computeCalibration(samples);
+    assert.equal(calibration.applied, false);
+    assert.equal(calibration.factor, 1);
   });
 });

@@ -109,7 +109,7 @@ function isPositiveFinite(value: unknown): value is number {
 }
 
 function isConfidence(value: unknown): value is Confidence {
-  return value === 'low' || value === 'med' || value === 'high';
+  return typeof value === 'string' && (CONFIDENCE_VALUES as readonly string[]).includes(value);
 }
 
 /**
@@ -222,7 +222,12 @@ export function computeCalibration(samples: unknown): CalibrationResult {
 export function applyCalibration(rawTokens: unknown, factor: unknown): number {
   if (!isPositiveFinite(rawTokens)) return 0;
   if (!isPositiveFinite(factor)) return Math.max(1, Math.round(rawTokens));
-  return Math.max(1, Math.round(rawTokens * factor));
+  // Bound the product: an inexact float past MAX_SAFE_INTEGER would masquerade
+  // as an integer token count. Unreachable through today's CLI (which is
+  // safe-integer bounded) but the function is exported and must not depend on
+  // its caller for that guarantee.
+  const scaled = Math.round(rawTokens * factor);
+  return Math.min(Number.MAX_SAFE_INTEGER, Math.max(1, scaled));
 }
 
 /** Pull the `estimate:` mapping out of an already-parsed frontmatter object. */

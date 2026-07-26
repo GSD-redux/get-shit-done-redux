@@ -778,8 +778,13 @@ function cmdConfigSet(cwd: string, keyPath: string | undefined, value: string | 
 
   // Smart-zone token budget (#2630, ADR-2629). Same shape as context_window:
   // a positive integer token count. A POLICY default, not a benchmark constant.
+  // Number.isSafeInteger, NOT Number.isInteger: the read side
+  // (estimate-cli readSmartZoneBudget) accepts only safe integers, so an
+  // isInteger-only gate would let config-set 'succeed' on a value past 2^53
+  // that estimate-check then silently ignores in favour of the default.
+  // Accept and honour must agree.
   if (kp === 'workflow.smart_zone_tokens') {
-    if (typeof parsedValue !== 'number' || !Number.isFinite(parsedValue) || !Number.isInteger(parsedValue) || parsedValue < 1) {
+    if (typeof parsedValue !== 'number' || !Number.isSafeInteger(parsedValue) || parsedValue < 1) {
       error(`Invalid workflow.smart_zone_tokens '${val}'. Must be a positive integer (token count).`, ERROR_REASON.USAGE);
     }
   }
