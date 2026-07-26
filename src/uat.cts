@@ -489,14 +489,17 @@ function isWideCodePoint(codePoint: number): boolean {
   );
 }
 
-const COMBINING_MARK_RE = /\p{Mark}/u;
+// Only non-spacing and enclosing marks occupy zero terminal cells. Spacing
+// combining marks (General_Category=Mc), such as Devanagari vowel signs, still
+// advance the cursor and must contribute one column.
+const ZERO_WIDTH_MARK_RE = /\p{gc=Mn}|\p{gc=Me}/u;
 
 // Iterates by Unicode code point (not UTF-16 code unit) so astral characters
 // are measured once, not as two surrogate units.
 function displayWidth(text: string): number {
   let width = 0;
   for (const ch of text) {
-    if (COMBINING_MARK_RE.test(ch)) continue;
+    if (ZERO_WIDTH_MARK_RE.test(ch)) continue;
     width += isWideCodePoint(ch.codePointAt(0) as number) ? 2 : 1;
   }
   return width;
@@ -998,5 +1001,6 @@ export = {
   cmdRenderCheckpoint,
   parseCurrentTest,
   buildCheckpoint,
+  checkpointBoxLine,
   parseDeferredItems,
 };

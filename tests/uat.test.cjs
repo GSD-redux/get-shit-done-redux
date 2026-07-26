@@ -8,8 +8,9 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const fc = require('./helpers/fast-check-setup.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
-const { buildCheckpoint } = require('../gsd-core/bin/lib/uat.cjs');
+const { buildCheckpoint, checkpointBoxLine } = require('../gsd-core/bin/lib/uat.cjs');
 
 describe('audit-uat command', () => {
   let tmpDir;
@@ -890,69 +891,42 @@ describe('uat render-checkpoint', () => {
   });
 
   // Regression: #2402 review medium finding — checkpointBoxLine() padded using
-  // JS string `.length` (UTF-16 code units), not display width. Japanese/
-  // Chinese/Korean use full-width characters that render at 2 terminal
-  // columns each, so the padded line was JS-length-correct (64) but visually
-  // 8-15 columns too wide, misaligning the right `║` border relative to the
-  // box's single-width border lines. Independently recomputes display width
-  // (East Asian Width W/F ranges) rather than reading source, so this test
-  // fails if the fix regresses even if the banner copy itself later changes.
+  // JS string `.length` (UTF-16 code units), not display width. The property
+  // below supplies an independent, category-labelled cell-width oracle rather
+  // than copying the implementation's Unicode range logic.
   describe('checkpoint banner padding uses terminal display width (#2402, #2530)', () => {
-    function isWideCodePoint(codePoint) {
-      return (
-        (codePoint >= 0x1100 && codePoint <= 0x115f) ||
-        codePoint === 0x2329 || codePoint === 0x232a ||
-        (codePoint >= 0x2e80 && codePoint <= 0x303e) ||
-        (codePoint >= 0x3041 && codePoint <= 0x33ff) ||
-        (codePoint >= 0x3400 && codePoint <= 0x4dbf) ||
-        (codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
-        (codePoint >= 0xa000 && codePoint <= 0xa4cf) ||
-        (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-        (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-        (codePoint >= 0xfe30 && codePoint <= 0xfe4f) ||
-        (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-        (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-        (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+    test('property: category-labelled strings are padded to a 62-cell interior', () => {
+      const oneCell = fc.constantFrom(
+        { text: 'a', width: 1 },
+        { text: '7', width: 1 },
+        { text: ' ', width: 1 },
+        { text: '\u093e', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN AA
+        { text: '\u093f', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN I
+        { text: '\u0949', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN CANDRA O
       );
-    }
-    function displayWidth(text) {
-      let width = 0;
-      for (const ch of text) {
-        if (/\p{Mark}/u.test(ch)) continue;
-        width += isWideCodePoint(ch.codePointAt(0)) ? 2 : 1;
-      }
-      return width;
-    }
+      const zeroCell = fc.constantFrom(
+        { text: '\u0301', width: 0 }, // Mn: COMBINING ACUTE ACCENT
+        { text: '\u093c', width: 0 }, // Mn: DEVANAGARI SIGN NUKTA
+        { text: '\u20dd', width: 0 }, // Me: COMBINING ENCLOSING CIRCLE
+      );
+      const twoCell = fc.constantFrom(
+        { text: '界', width: 2 },
+        { text: '語', width: 2 },
+        { text: '한', width: 2 },
+      );
 
-    for (const lang of [
-      'Japanese',
-      'Chinese',
-      'Korean',
-      'Dutch',
-      'Polish',
-      'Russian',
-      'Ukrainian',
-      'Turkish',
-      'Hindi',
-      'Arabic',
-      'Vietnamese',
-      'Indonesian',
-    ]) {
-      test(`${lang} checkpoint banner line renders at display-width 64, aligning the right border`, () => {
-        const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
-        const output = buildCheckpoint(currentTest, lang);
-        const lines = output.split('\n');
-        const topBorder = lines[0];
-        const bannerLine = lines[1];
-        const bottomBorder = lines[2];
-
-        assert.strictEqual(displayWidth(topBorder), 64, 'top border is the 64-column reference width');
-        assert.strictEqual(displayWidth(bottomBorder), 64, 'bottom border is the 64-column reference width');
-        assert.strictEqual(displayWidth(bannerLine), 64,
-          `${lang} banner line must render at the same 64-column display width as the borders — ` +
-          'padding by UTF-16 .length under-pads full-width characters and overflows the box');
-      });
-    }
+      fc.assert(fc.property(
+        fc.array(fc.oneof(oneCell, zeroCell, twoCell), { maxLength: 24 }),
+        (cells) => {
+          const text = cells.map((cell) => cell.text).join('');
+          const textWidth = cells.reduce((sum, cell) => sum + cell.width, 0);
+          assert.strictEqual(
+            checkpointBoxLine(text),
+            `║  ${text}${' '.repeat(60 - textWidth)}║`,
+          );
+        },
+      ));
+    });
 
     test('exact rendered banner lines for Japanese/Chinese/Korean (regression pin)', () => {
       const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
@@ -974,7 +948,7 @@ describe('uat render-checkpoint', () => {
       const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
       assert.strictEqual(
         buildCheckpoint(currentTest, 'Hindi').split('\n')[1],
-        `║  चेकपॉइंट: सत्यापन आवश्यक${' '.repeat(42)}║`,
+        `║  चेकपॉइंट: सत्यापन आवश्यक${' '.repeat(40)}║`,
       );
     });
   });
