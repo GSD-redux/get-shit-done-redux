@@ -1221,18 +1221,9 @@ describe('update workflow wires the restore step (#1854)', () => {
     );
   });
 
-  test('update.md resolves update-context fields without piping through jq (#2589)', () => {
-    // #2589 established that `<gsd-tools verb> --json | jq -r '.field'` silently
-    // yields an EMPTY variable on any machine without jq (the default on
-    // Windows/Git-Bash). update-context was missed by that sweep; gsd-tools
-    // ships `--pick` natively for exactly this.
-    const content = workflow();
-
-    assert.ok(
-      !/update-context[\s\S]{0,400}?\|\s*jq\b/.test(content),
-      'update-context lookups must use --pick, not a jq pipe',
-    );
-  });
+  // The update-context jq guard lives with the rest of the #2589 sweep in
+  // tests/fix-2589-workflow-jq-dependency.test.cjs (update.md was added to its
+  // AUDITED list) rather than being duplicated here.
 });
 
   });
