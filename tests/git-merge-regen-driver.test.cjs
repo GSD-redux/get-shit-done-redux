@@ -1,7 +1,3 @@
-// allow-test-rule: integration-test-input
-// The .gitattributes scoping block reads the repo's own .gitattributes only by handing
-// paths to real `git check-attr` — git is the system under test for glob semantics, and
-// a hand-rolled matcher would prove my reading of the pattern rather than git's.
 
 /**
  * Tests for the `gsd-regen` merge driver (#2721, epic #2719, ADR-2719 Phase 1).

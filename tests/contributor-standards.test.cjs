@@ -90,12 +90,38 @@ describe('docs/contributor-standards.md', () => {
  */
 const CONTEXT_MD = path.join(REPO_ROOT, 'CONTEXT.md');
 
-/** Backticked heading references, minus `<Placeholder>` templates like `### <Module Name>`. */
+/**
+ * The body of one `## ` section, exclusive of the next `## `. Split on /\r?\n/ so a CRLF
+ * checkout parses identically. Shared by every assertion below — two copies of the same
+ * section parser is exactly the silent divergence RULESET.SHARED-HELPERS-LINT-VS-TEST warns of.
+ */
+function sectionBody(content, heading) {
+  const lines = content.split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim() === heading);
+  if (start === -1) return null;
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((l) => /^##\s/.test(l));
+  return (end === -1 ? rest : rest.slice(0, end)).join('\n');
+}
+
+/**
+ * Backticked heading references that the standards doc attributes to CONTEXT.md.
+ *
+ * Scoped to the doc's own `## CONTEXT.md` section on purpose. The doc also names headings
+ * belonging to *other* documents — `## Decision` and `## Consequences` describe an ADR
+ * body, `## Standards followed` describes an issue/PR body. Extracting doc-wide would
+ * demand CONTEXT.md grow headings that have nothing to do with it.
+ *
+ * `<Placeholder>` templates like `### <Module Name>` are skipped: they are shapes to
+ * follow, not headings to find.
+ */
 function extractContextHeadingRefs(standardsContent) {
+  const scope = sectionBody(standardsContent, '## CONTEXT.md');
+  if (scope === null) return [];
   const refs = new Set();
-  for (const m of standardsContent.matchAll(/`(#{2,6}\s+[^`]+)`/g)) {
+  for (const m of scope.matchAll(/`(#{2,6}\s+[^`]+)`/g)) {
     const heading = m[1].trim();
-    if (heading.includes('<')) continue; // a template placeholder, not a real heading
+    if (heading.includes('<')) continue;
     refs.add(heading);
   }
   return [...refs];
@@ -129,6 +155,20 @@ describe('docs/contributor-standards.md ↔ CONTEXT.md heading parity', () => {
     );
   });
 
+  // Negative space for the extractor itself. The RED run of this suite flagged
+  // `## Decision`, `## Consequences` and `## Standards followed` — all headings the doc
+  // attributes to an ADR body or a PR body, not to CONTEXT.md. A doc-wide extractor would
+  // demand CONTEXT.md sprout headings that do not belong to it.
+  test('doesNotTreatAdrOrPrBodyHeadingsAsContextMdClaims', () => {
+    const refs = extractContextHeadingRefs(readStandardsDoc());
+    for (const foreign of ['## Decision', '## Consequences', '## Standards followed']) {
+      assert.ok(
+        !refs.includes(foreign),
+        `${foreign} describes another document's structure and must not be read as a CONTEXT.md claim`
+      );
+    }
+  });
+
   test('matchesAHeadingReferenceRegardlessOfLineEndingStyle', () => {
     const crlf = '## Test rules and lint\r\n\r\n### Emitted Artifact Provenance\r\n';
     const found = actualHeadings(crlf);
@@ -143,16 +183,6 @@ describe('docs/contributor-standards.md ↔ CONTEXT.md heading parity', () => {
  * up — which ADR-2719 identifies as a direct cause of the problem.
  */
 describe('CONTEXT.md names the emitted-artifact family', () => {
-  /** The body of a `## ` section, exclusive of the next `## ` heading. Anchored /m, CRLF-safe. */
-  function sectionBody(content, heading) {
-    const lines = content.split(/\r?\n/);
-    const start = lines.findIndex((l) => l.trim() === heading);
-    if (start === -1) return null;
-    const rest = lines.slice(start + 1);
-    const end = rest.findIndex((l) => /^##\s/.test(l));
-    return (end === -1 ? rest : rest.slice(0, end)).join('\n');
-  }
-
   test('emittedAttributionRulesetIsUnderTheTestRulesAndLintSection', () => {
     const body = sectionBody(fs.readFileSync(CONTEXT_MD, 'utf-8'), '## Test rules and lint');
     assert.ok(body, 'CONTEXT.md must have a `## Test rules and lint` section');
