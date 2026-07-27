@@ -285,12 +285,17 @@ describe('C. resolveWaveDispatch composes detectWorkflowBackend + emitWorkflowSc
         '--phase-dir', '.planning/phases/01-foo',
         '--runtime', 'claude',
         '--agent-sdk-version', ABOVE_FLOOR_SDK,
+        // #2686: the router now DEFAULTS the executor model from project config,
+        // so pin it on both sides — otherwise this compares a config-resolved CLI
+        // run against a pure call that was given no model, and the equality this
+        // test exists to prove would be testing the default instead of the seam.
+        '--executor-model', 'sonnet',
         '--raw',
       ], tmp);
       assert.strictEqual(res.success, true, 'CLI command must succeed; stderr: ' + (res.error || ''));
       const parsed = JSON.parse(res.output);
 
-      const direct = resolveWaveDispatch(baseInput());
+      const direct = resolveWaveDispatch(baseInput({ executorModel: 'sonnet' }));
       assert.strictEqual(parsed.backend, direct.backend);
       assert.strictEqual(parsed.script, direct.script);
       assert.deepStrictEqual(parsed.summary, direct.summary);
@@ -453,7 +458,10 @@ describe('F. Workflow backend never forces worktree isolation on a submodule / u
     const result = resolveWaveDispatch(baseInput({ ...waveWithSubmodulePlan() }));
     assert.strictEqual(result.backend, 'workflow');
     assert.match(result.script, /agent\("normal plan", \{ agentType: "gsd-executor", isolation: "worktree" \}\)/);
-    assert.match(result.script, /agent\("submodule plan", \{ agentType: "gsd-executor" \}\)/);
+    // #2686: the options object legitimately gained an optional `model` key, so assert
+    // the invariant this test exists to protect — agentType present, isolation absent —
+    // rather than a frozen literal that any future additive key would break.
+    assert.match(result.script, /agent\("submodule plan", \{ agentType: "gsd-executor"[^}]*\}\)/);
     assert.ok(
       !/agent\("submodule plan"[^)]*isolation/.test(result.script),
       'the submodule-touching plan must NEVER be emitted with forced worktree isolation',
@@ -483,7 +491,8 @@ describe('F. Workflow backend never forces worktree isolation on a submodule / u
       assert.strictEqual(res.success, true, 'CLI command must succeed; stderr: ' + (res.error || ''));
       const parsed = JSON.parse(res.output);
       assert.strictEqual(parsed.backend, 'workflow');
-      assert.match(parsed.script, /agent\("submodule plan", \{ agentType: "gsd-executor" \}\)/);
+      // #2686: additive `model` key — see the note on the pure-seam test above.
+      assert.match(parsed.script, /agent\("submodule plan", \{ agentType: "gsd-executor"[^}]*\}\)/);
       assert.ok(!/agent\("submodule plan"[^)]*isolation/.test(parsed.script));
     } finally {
       cleanup(tmp);

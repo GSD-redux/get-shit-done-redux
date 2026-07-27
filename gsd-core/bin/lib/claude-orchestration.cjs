@@ -265,6 +265,36 @@ function quoteString(s) {
     return JSON.stringify(s);
 }
 /**
+ * #2686 — the single decision of whether a resolved executor model is emittable,
+ * and what to emit. Shared by `agentOptions` (the emission) and the provenance
+ * comment (the claim about it) so the two can never disagree — a generated
+ * comment asserting something the generator does not actually do is the exact
+ * failure #2686 was filed for.
+ *
+ * Returns the model to emit, or `undefined` for "emit nothing":
+ *   - non-string        → malformed config; omit rather than throw, matching the
+ *                         defensive typeof guard `mapClaudeOverrideForRuntime`
+ *                         already carries in model-resolver for the same reason.
+ *   - empty/whitespace  → #2517: emitting `model: ""` 404s on runtimes without
+ *                         native tier aliases. Trimmed, so `" "` is also "none".
+ *   - "inherit"         → same rule; matched case-insensitively after trimming,
+ *                         since config is user-authored free text.
+ *
+ * NOTE it does NOT reject unscriptable characters — that is a hard input error,
+ * not a silent omission, and is rejected up front by `emitWorkflowScript` so the
+ * caller sees a reason instead of quietly losing their model routing.
+ */
+function emittableModel(executorModel) {
+    if (typeof executorModel !== 'string')
+        return undefined;
+    const trimmed = executorModel.trim();
+    if (trimmed.length === 0)
+        return undefined;
+    if (trimmed.toLowerCase() === 'inherit')
+        return undefined;
+    return trimmed;
+}
+/**
  * Render the `agent()` options object for a single plan — `isolation: "worktree"`
  * ONLY when the plan's `use_worktree` is not explicitly `false` (#2772 / #2285
  * finding 1). This is the single place that decides worktree isolation for the
@@ -275,14 +305,10 @@ function agentOptions(p, executorModel) {
     if (p.use_worktree !== false)
         parts.push('isolation: "worktree"');
     // #2686: carry the resolved executor model so this backend honors
-    // model_overrides / model_policy / model_profile exactly as the inline path
-    // does. #2517: an "inherit" or empty resolution must OMIT the key — emitting
-    // `model: ""` 404s on runtimes without native tier aliases. A non-string is a
-    // malformed config; omit rather than throw, matching the defensive typeof
-    // guard mapClaudeOverrideForRuntime already carries for the same reason.
-    if (typeof executorModel === 'string' && executorModel.length > 0 && executorModel !== 'inherit') {
-        parts.push('model: ' + quoteString(executorModel));
-    }
+    // model_overrides / model_policy / model_profile exactly as the inline path.
+    const model = emittableModel(executorModel);
+    if (model !== undefined)
+        parts.push('model: ' + quoteString(model));
     return '{ ' + parts.join(', ') + ' }';
 }
 /**
@@ -320,6 +346,19 @@ function emitWorkflowScript(input) {
     }
     if (!isScriptableIdentifier(runId)) {
         return { ok: false, reason: 'runId must be a non-empty string without newlines/quotes/backslash/control chars' };
+    }
+    // #2686 security: the resolved model is interpolated into BOTH an object
+    // literal (safe under quoteString) and a `//` provenance comment (NOT safe
+    // under quoteString — U+2028/U+2029 are LineTerminators that end a single-line
+    // comment in every engine, so a hostile model id would make the rest of the
+    // line live code). Reject the whole emission rather than silently dropping the
+    // model: an unscriptable id is malformed input, and `resolveWaveDispatch` maps
+    // an emit failure to the inline backend WITH a reason, so the user sees it.
+    // Only a STRING carrying such a character is rejected. A non-string is a
+    // malformed config rather than an injection attempt, and stays on the existing
+    // defensive path: `emittableModel` omits it and emission proceeds.
+    if (typeof executorModel === 'string' && UNSCRIPTABLE_CHAR_RE.test(executorModel)) {
+        return { ok: false, reason: 'executorModel must not contain newlines/quotes/backslash/control/line-separator chars' };
     }
     if (!Array.isArray(waves) || waves.length === 0) {
         return { ok: false, reason: 'waves must be a non-empty array' };
@@ -400,8 +439,18 @@ function emitWorkflowScript(input) {
     // #2686 / ADR-1411: state which model was applied — or that none resolved —
     // so an opted-in user can SEE the routing decision instead of having to read
     // the emitted options. A fallback must be a visible value, never silent.
-    if (typeof executorModel === 'string' && executorModel.length > 0 && executorModel !== 'inherit') {
-        lines.push('// model: ' + quoteString(executorModel) + ' (resolved for gsd-executor, same source as the inline path)');
+    //
+    // SECURITY: this is a `//` comment, and U+2028/U+2029 are ECMAScript
+    // LineTerminators that END a single-line comment in every engine — the ES2019
+    // change legalized them inside string LITERALS only, so `quoteString` alone is
+    // NOT sufficient here even though it is sufficient in the object literal
+    // above. An unscriptable model id would otherwise close the comment and make
+    // the remainder live top-level code. `emitWorkflowScript` rejects such ids
+    // before reaching this point (see the validation above), which is what makes
+    // interpolating here safe.
+    const provenanceModel = emittableModel(executorModel);
+    if (provenanceModel !== undefined) {
+        lines.push('// model: ' + quoteString(provenanceModel) + ' (resolved for gsd-executor, same source as the inline path)');
     }
     else {
         lines.push('// model: none applied — resolved to "inherit"/empty, so each agent inherits the');

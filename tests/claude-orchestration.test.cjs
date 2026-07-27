@@ -772,9 +772,35 @@ describe('#2686 — Workflow backend model threading', () => {
   // The emitted agent() options objects only. Scoped deliberately: the #2686
   // provenance header legitimately contains the token "model:", so a whole-script
   // regex would report a false positive on the omit path.
-  const optionsOf = (script) =>
-    (script.match(/agent\([\s\S]*?(\{[^}]*\})/g) || [])
-      .map((call) => call.slice(call.indexOf('{')));
+  //
+  // Brace-and-string aware rather than /\{[^}]*\}/: a model value may legitimately
+  // contain a brace, and a naive class would truncate the object there and silently
+  // stop testing what it claims to test.
+  const optionsOf = (script) => {
+    const out = [];
+    const re = /\(\s*\{/g;
+    let m;
+    while ((m = re.exec(script)) !== null) {
+      const open = script.indexOf('{', m.index);
+      let i = open + 1;
+      let depth = 1;
+      let str = null;
+      while (i < script.length && depth > 0) {
+        const ch = script[i];
+        if (str) {
+          if (ch === '\\') i += 1;
+          else if (ch === str) str = null;
+        } else if (ch === '"' || ch === "'") str = ch;
+        else if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+        i += 1;
+      }
+      if (depth === 0 && script.slice(0, m.index).includes('agent(')) {
+        out.push(script.slice(open, i));
+      }
+    }
+    return out.filter((o) => o.includes('agentType'));
+  };
 
   test('#2686: the Workflow backend dispatches the same model the inline path would use', () => {
     const dir = mkProject2686('gsd-2686-');
@@ -808,7 +834,7 @@ describe('#2686 — Workflow backend model threading', () => {
   test('#2686: omits the model key when the resolved model is inherit or empty', () => {
     // #2517: an empty/inherit model must be OMITTED, never emitted — emitting it
     // 404s on runtimes without native tier aliases.
-    for (const value of ['inherit', '', undefined, null, 42, {}, []]) {
+    for (const value of ['inherit', 'INHERIT', '  inherit  ', ' ', '', undefined, null, 42, {}, []]) {
       const res = emit2686({ executorModel: value });
       assert.ok(res.ok, `emit failed for ${JSON.stringify(value)}: ${res.reason}`);
       const opts = optionsOf(res.script);
@@ -859,31 +885,50 @@ describe('#2686 — Workflow backend model threading', () => {
     assert.match(wt, /model:\s*"sonnet"/, 'model must be threaded on the worktree plan');
   });
 
-  test('#2686: an adversarial model id cannot break out of the emitted string literal', () => {
-    // The model id is externally-supplied config reaching a CODE GENERATOR.
+  test('#2686: a model id carrying a script-breaking character is rejected outright', () => {
+    // The model id is externally-supplied config (model_overrides / model_policy)
+    // reaching a CODE GENERATOR. It is interpolated into BOTH an object literal
+    // and a `//` provenance comment.
+    //
+    // quoteString (JSON.stringify) is sufficient for the object literal but NOT
+    // for the comment: U+2028 / U+2029 are ECMAScript LineTerminators that END a
+    // single-line comment in every engine — the ES2019 change legalized them
+    // inside string LITERALS only. A raw one would close the comment and make the
+    // rest of the line live top-level code. Hence: reject, do not merely quote.
     const hostile = [
-      'sonnet", isolation: "worktree',
-      'a"\n})\nprocess.exit(1)\n//',
-      'a\\", x: "y',
-      'a\tb',
-      'a b',
+      'evil\u2028process.exit(42);//',   // proven comment-terminator injection
+      'evil\u2029process.exit(42);//',
+      'a\nb', 'a\rb', 'a"b', 'a\\b', 'a\tb', 'a\u0000b', 'a\u007fb',
     ];
     for (const id of hostile) {
       const res = emit2686({ executorModel: id });
-      assert.ok(res.ok, `emit failed for hostile id: ${res.reason}`);
-      // Whatever is emitted must be a valid JS string literal round-tripping to
-      // the exact input — i.e. quoteString/JSON.stringify was used, not raw
-      // interpolation.
-      assert.ok(
-        res.script.includes(JSON.stringify(id)),
-        'the model id must be emitted through quoteString (JSON.stringify), not raw',
-      );
       assert.equal(
-        new Function(`return ${JSON.stringify(id)};`)(),
-        id,
-        'the emitted literal must round-trip to the exact input',
+        res.ok,
+        false,
+        `executorModel ${JSON.stringify(id)} must be REJECTED, not emitted — it can ` +
+          'terminate the provenance comment and execute as top-level code.',
       );
+      assert.match(res.reason, /executorModel must not contain/);
     }
+  });
+
+  test('#2686: the emitted provenance comment cannot become live code', () => {
+    // Execution-level proof, not a shape check: run the emitted header through a
+    // parser and confirm the model value never escapes its comment/literal. A
+    // previous version of this test asserted only that JSON.stringify was used,
+    // which passed against the vulnerable generator.
+    const good = emit2686({ executorModel: 'opus' });
+    assert.ok(good.ok);
+    const header = good.script.split('\n').filter((l) => l.startsWith('// model:'));
+    assert.equal(header.length, 1, 'exactly one provenance line');
+    for (const line of header) {
+      assert.doesNotMatch(line, /[\u2028\u2029\r\n]/, 'no LineTerminator may survive into the comment');
+    }
+    // Every emitted comment line must still be a comment after parsing: wrapping
+    // the header in a function body must produce no executable statement.
+    const commentBlock = good.script.split('\n').filter((l) => l.startsWith('//')).join('\n');
+    assert.doesNotThrow(() => new Function(commentBlock + '\nreturn 1;'));
+    assert.equal(new Function(commentBlock + '\nreturn 1;')(), 1);
   });
 
   test('#2686: resolveWaveDispatch forwards the executor model to emission', () => {
