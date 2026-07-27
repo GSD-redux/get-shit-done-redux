@@ -140,6 +140,28 @@ GSD stores project settings in `.planning/config.json`. Created during `/gsd-new
 
 ---
 
+## When your config file cannot be read
+
+GSD distinguishes a config file that is **absent** from one that is **present but unusable**. The
+two used to be indistinguishable: a single trailing comma in `.planning/config.json` silently
+replaced your entire configuration with built-in defaults, and nothing said so (#1880).
+
+| Situation | What GSD does | Diagnostic |
+|---|---|---|
+| No `.planning/config.json` | Uses built-in defaults. This is normal. | none |
+| File present, valid, has settings | Uses your settings. | none |
+| File present, valid, but empty (`{}`) | Uses built-in defaults. | none |
+| **File present but not valid JSON** | Uses built-in defaults — **your settings are not applied** | `warning: <path> is not valid JSON — its settings were NOT applied` |
+| **File present but unreadable** (e.g. permissions) | Uses built-in defaults — **your settings are not applied** | `warning: <path> could not be read (EACCES) — its settings were NOT applied` |
+
+The warning is printed once per file per run, so a repeated command will not spam it.
+
+The same applies to the global `~/.gsd/defaults.json`. If the project config is also unusable, the
+project one is reported, since that is the file you are most likely able to fix.
+
+**If you see this warning:** your config was not applied. Validate the file, for example with
+`node -e "JSON.parse(require('fs').readFileSync('.planning/config.json','utf8'))"`, then re-run.
+
 ## Core Settings
 
 | Setting | Type | Options | Default | Description |
