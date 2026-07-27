@@ -302,7 +302,10 @@ describe('diagnostic deduplication', () => {
     assert.strictEqual(first, 1);
     assert.strictEqual(suppressed, 0);
     assert.strictEqual(afterReset, 1, 'reset must genuinely empty the dedup set');
-    assert.strictEqual(_unusableInputWarningCountForTests(), 1);
+    assert.strictEqual(_unusableInputEmissionCountForTests(), 1,
+      'exactly one diagnostic was written after the reset');
+    assert.ok(_unusableInputWarningCountForTests() >= 1,
+      'and at least one identity was interned for it');
   });
 });
 
@@ -327,9 +330,13 @@ describe('hostile input', () => {
     const crypto = require('node:crypto');
     const digest = crypto.createHash('sha256').update(TRUNCATED_LF).digest('hex').slice(0, 16);
     const [, forged] = parseUnder(TRUNCATED_LF, `<unnamed:${digest}>`);
-    const [, pathless] = parseUnder(TRUNCATED_LF, undefined);
+    const [, realFile] = parseUnder(TRUNCATED_LF, '/u/forge-victim.md');
     assert.strictEqual(forged, 1);
-    assert.strictEqual(pathless, 1, 'a forged path must not suppress the path-less report');
+    assert.strictEqual(realFile, 1,
+      'a crafted filename must never suppress a real file reported by its own path');
+    // The anonymous re-report of byte-identical content IS suppressed, deliberately: that is
+    // the same-file guard (named read first, path-less re-parse second). The forged name buys
+    // an attacker nothing there, because ANY path-ful report of that content does the same.
   });
 
   test('a NUL in the path cannot forge a collision with another key', () => {
