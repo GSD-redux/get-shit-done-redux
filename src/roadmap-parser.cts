@@ -33,6 +33,9 @@ const {
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
 import { platformReadSync } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputMod = require('./unusable-input.cjs');
+const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
 import { tokenizeHeadings, stripTaggedBlocks, withSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 
@@ -352,9 +355,31 @@ function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseRe
     }
 
     return null;
-  } catch {
+  } catch (err) {
+    // Absence already returned above via existsSync; anything caught here is a read fault
+    // or the synthetic missing-marker. The null is preserved exactly either way.
+    reportUnreadableRoadmap(err, roadmapPath);
     return null;
   }
+}
+
+/**
+ * Report a ROADMAP.md that exists but could not be read (#1881, ADR-1411).
+ *
+ * The discriminator is the errno, and it matters in the SILENT direction.
+ * platformReadSync returns null for ENOENT and both callers convert that null into a
+ * synthetic Error carrying no code, which lands in the same catch as a real EACCES.
+ * Reporting unconditionally here would flag every project that has no ROADMAP.md yet --
+ * every brand-new project -- as corrupt. A genuine read fault always carries an errno;
+ * absence never does.
+ *
+ * The parse itself is regex over text and cannot throw, so anything reaching a catch is
+ * either a read fault or that synthetic absence marker. Nothing else gets here.
+ */
+function reportUnreadableRoadmap(err: unknown, roadmapPath: string): void {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  if (typeof code !== 'string') return;
+  warnUnusableInput({ reason: UNUSABLE_REASON.ROADMAP_UNREADABLE, source: roadmapPath });
 }
 
 // ─── Milestone info lookup ────────────────────────────────────────────────────
@@ -378,8 +403,10 @@ function stripLeadingDelimiter(s: string): string {
 }
 
 function getMilestoneInfo(cwd: string): MilestoneInfo {
+  // Hoisted so the catch can name the file it failed on (#1881).
+  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
   try {
-    const roadmap = platformReadSync(path.join(planningDir(cwd), 'ROADMAP.md'));
+    const roadmap = platformReadSync(roadmapPath);
     if (roadmap === null) throw new Error('missing');
 
     let stateVersion: string | null = null;
@@ -453,7 +480,12 @@ function getMilestoneInfo(cwd: string): MilestoneInfo {
       version: versionMatch ? versionMatch[0] : 'v1.0',
       name: 'milestone',
     };
-  } catch {
+  } catch (err) {
+    // This function has no existsSync guard, so an absent ROADMAP arrives here too, as a
+    // synthetic Error with no errno. Only a real read fault is reported; the populated
+    // default is returned unchanged either way, and a plausible-looking default needs the
+    // diagnostic more than an empty sentinel does, not less (ADR-1411).
+    reportUnreadableRoadmap(err, roadmapPath);
     return { version: 'v1.0', name: 'milestone' };
   }
 }
