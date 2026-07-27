@@ -38,8 +38,12 @@ const DISPATCH_KEYS = ['namedDispatch', 'nested', 'maxDepth', 'background', 'sub
 const RUNTIME_IDS = Object.keys(registry.runtimes);
 
 // Contract-pinned profile split (derived from .host-cli-final.json):
-// programmatic-cli: claude, cline, cursor, hermes, kilo, kimi, kimi-code, opencode, pi, qwen, trae (11)
-// declarative-cli:  antigravity, augment, codebuddy, codex, copilot, windsurf, zcode (7)
+// programmatic-cli: claude, cline, cursor, hermes, kilo, kimi, opencode, pi, qwen, trae (10)
+// declarative-cli:  antigravity, augment, codebuddy, codex, copilot, kimi-code, windsurf, zcode (8)
+// kimi-code moved programmatic-cli → declarative-cli in #2603: its plugin surface is a
+// `kimi.plugin.json` manifest plus markdown Skills with no in-process programmatic API
+// (docs/en/customization/plugins.md), the same shape as codex. The value had been inherited
+// from the Python `kimi` descriptor rather than sourced for Kimi Code CLI.
 // ide: vscode (1) — #2103, the first installed ide-profile host.
 const EXPECTED_PROFILES = {
   claude:      'programmatic-cli',
@@ -48,7 +52,6 @@ const EXPECTED_PROFILES = {
   hermes:      'programmatic-cli',
   kilo:        'programmatic-cli',
   kimi:        'programmatic-cli',
-  'kimi-code': 'programmatic-cli',
   opencode:    'programmatic-cli',
   pi:          'programmatic-cli',
   qwen:        'programmatic-cli',
@@ -58,6 +61,7 @@ const EXPECTED_PROFILES = {
   codebuddy:   'declarative-cli',
   codex:       'declarative-cli',
   copilot:     'declarative-cli',
+  'kimi-code': 'declarative-cli',
   windsurf:    'declarative-cli',
   zcode:       'declarative-cli',
   vscode:      'ide',

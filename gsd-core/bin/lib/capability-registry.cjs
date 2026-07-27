@@ -1834,12 +1834,12 @@ const capabilities = {
         "SubagentStart"
       ],
       "hostIntegration": {
-        "embeddingMode": "imperative",
+        "embeddingMode": "declarative",
         "commandSurface": "slash-file",
         "dispatch": {
           "namedDispatch": false,
-          "nested": false,
-          "maxDepth": 1,
+          "nested": true,
+          "maxDepth": "undocumented",
           "background": true,
           "subagentToolkit": "built-in-only",
           "backgroundDispatch": true,
@@ -5295,12 +5295,12 @@ const runtimes = {
         "SubagentStart"
       ],
       "hostIntegration": {
-        "embeddingMode": "imperative",
+        "embeddingMode": "declarative",
         "commandSurface": "slash-file",
         "dispatch": {
           "namedDispatch": false,
-          "nested": false,
-          "maxDepth": 1,
+          "nested": true,
+          "maxDepth": "undocumented",
           "background": true,
           "subagentToolkit": "built-in-only",
           "backgroundDispatch": true,

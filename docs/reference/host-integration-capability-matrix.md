@@ -33,7 +33,7 @@ consumed verbatim by `gen:capability-registry` and validated by `capability-vali
 | `nested` | Whether subagents can themselves spawn subagents (true/false/`undocumented`). |
 | `maxDepth` | Maximum nesting depth (integer; -1 = unbounded; `undocumented`). |
 | `background` | Whether subagents can run asynchronously in the background (true/false/`undocumented`). |
-| `subagentToolkit` | Tool surface available to subagents: `full`, `read-only`, or `undocumented`. |
+| `subagentToolkit` | Tool surface available to subagents: `full`, `read-only`, `built-in-only`, or `undocumented`. `built-in-only` means the host ships a fixed set of built-in subagent types whose tool surfaces differ from one another, so no single `full`/`read-only` value describes them; it degrades closed to `read-only` in the negotiated axes. |
 | `backgroundDispatch` | Whether a BACKGROUND-dispatched sub-agent can itself spawn further named sub-agents — the #853 discriminator (true/false/`undocumented`). |
 
 ### Interface points
@@ -627,6 +627,48 @@ Sources consulted:
 Documentation gaps:
 - dispatch.subagentToolkit — docs show three built-in subagent types each with different tool subsets (coder=full, explore=read-only, plan=no shell/write); no single 'full' or 'read-only' value covers all types; maintainer should clarify the intended classification.
 - runtime — CLI core is Python; a Rust Wire implementation also exists; docs do not state a canonical plugin extension runtime.
+
+---
+
+## kimi-code
+
+> **`kimi-code` is a different product from `kimi` above — every axis below is sourced independently.** `kimi` is Moonshot's Python `kimi-cli` (`from kimi_cli.app import KimiCLI`, `~/.kimi/config.toml`, `--work-dir`); `kimi-code` is the TypeScript/Node **Kimi Code CLI** (`~/.kimi-code/config.toml`, `$KIMI_CODE_HOME`, process-cwd, `AgentSwarm`). None of the values here are inherited from the `kimi` section. See `docs/migration/kimi-to-kimi-code.md` for the user-facing split.
+
+| Axis | Value | Source | Evidence |
+|---|---|---|---|
+| embeddingMode | declarative | https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/plugins.md | "Plugins package reusable Kimi Code CLI capabilities into installable units — they can add Agent Skills, automatically load a specified Skill at session start, and declare MCP servers to provide real tool capabilities." A plugin is a `kimi.plugin.json` manifest plus markdown Skills; real tool capability arrives via external MCP processes. No in-process programmatic extension API is documented — the same shape as `codex` above. |
+| commandSurface | slash-file | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/slash-commands.md | "External skills are automatically registered as slash commands using the skill: namespace prefix. Users can invoke these by typing /skill:\<name\> followed by optional text, which is then appended to the skill prompt." Skills are `SKILL.md` markdown files with YAML frontmatter (`name`, `description`, `type`, `whenToUse`, `arguments`). |
+| modelMode | passive | https://github.com/moonshotai/kimi-code/blob/main/apps/kimi-code/src/cli/commands.ts ; /docs/en/guides/getting-started.md | "`-m, --model <model>` — LLM model alias to use for this invocation. Defaults to `default_model` in config.toml." Model selection is config alias + `--model` flag + the interactive `/model` command; no API lets an extension programmatically supply a model. |
+| hookBus | host | https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/hooks.md | "All hook rules are written in the `[[hooks]]` array in `~/.kimi-code/config.toml`, where each entry is one rule." The CLI fires the lifecycle events (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionResult`, `SessionStart`, `SessionEnd`, `SubagentStart`, `SubagentStop`, `PreCompact`, `PostCompact`, `Stop`, `Notification`, `Interrupt`); each rule is `event` + optional `matcher` + `command` + optional `timeout` (1–600s, default 30). |
+| stateIO | filesystem | https://github.com/MoonshotAI/kimi-code | "Kimi Code CLI is an AI coding agent that runs in your terminal — it can read and edit code, run shell commands, search files, fetch web pages, and choose the next step based on the feedback it receives." Full local filesystem; no sandboxed-storage tier is documented. |
+| transport | mcp | https://github.com/MoonshotAI/kimi-code ; /docs/en/customization/plugins.md | "AI-native MCP configuration. Add, edit, and authenticate Model Context Protocol servers conversationally with `/mcp-config`, without hand-editing JSON." Plugin manifests additionally carry an `mcpServers` field. |
+| runtime | node | https://github.com/MoonshotAI/kimi-code | "Requirements: Node.js ≥ 24.15.0, pnpm 10.33.0." The CLI is a TypeScript pnpm monorepo (`apps/kimi-code`, `packages/agent-core-v2`); hook commands are shell, and MCP servers are external processes. |
+| dispatch.namedDispatch | false | https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/agents.md ; `capabilities/kimi-code/capability.json` (`artifactLayout` — skills only) | "The system includes three built-in sub-agents: 'coder' for general software engineering tasks like file modification, 'explore' for read-only codebase navigation and summarization, and 'plan' for architecture design without file or shell access." GSD's kimi-code artifact layout installs Agent **Skills** only (no `agents` kind), so no named GSD subagent is ever registered with the host and every GSD role resolves to one of the three built-ins (`resolveDispatchType`, `src/host-integration.cts`). **This is a GSD-integration-scoped `false`, not a claim that the host lacks named agents — see Documentation gaps.** |
+| dispatch.nested | true | https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/agents.md | The `coder` sub-agent "can dispatch its own nested sub-agents when a task decomposes naturally." (Agent files also expose a `subagents` delegation allowlist, where `subagents: []` is what *prevents* further delegation — nesting is the default.) |
+| dispatch.maxDepth | undocumented | searched: https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/agents.md | Nesting is documented, but no maximum nesting depth is stated anywhere in the agents or tools reference. |
+| dispatch.background | true | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md | "**`Agent`** delegates a subtask to a sub-Agent. Supports foreground execution (waiting for completion) or background execution (returning a task ID). … `run_in_background` (boolean) - Optional - Defaults to false." |
+| dispatch.subagentToolkit | built-in-only | https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/agents.md | The three built-ins carry deliberately different tool surfaces — coder "Shares most of the main Agent's toolset; can run shell commands, maintain todo lists, enter Plan mode, and invoke Agent Skills"; explore "Performs read-only operations only and does not modify any files"; plan "Even shell commands are not available". No single `full`/`read-only` value covers the set, so the `built-in-only` member applies (degrades closed to `read-only` when negotiated). |
+| dispatch.backgroundDispatch | true | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md ; /docs/en/customization/agents.md | The `coder` built-in "can dispatch its own nested sub-agents" and the `Agent` tool's `run_in_background` is a call-time parameter available to it, so a background-dispatched sub-agent may itself dispatch further. `AgentSwarm` additionally fans out concurrently: "By default the tool ramps up concurrency without an upper limit (5 subagents start immediately, then 1 more every 700 ms); set `KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY` to a positive integer to cap how many subagents run at the same time during that ramp, or leave it unset for no cap." |
+| dispatch.isolation | orchestrator-worktree | https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md ; ADR-1239 §Codex-binding amendment | Neither `Agent` nor `AgentSwarm` exposes a working-directory/cwd parameter — sub-agents inherit the CLI's process cwd — and the CLI has no `--work-dir`-style flag (unlike `kimi`). GSD therefore creates, validates and merges the worktree itself and spawns the executor with that cwd (#2584). |
+
+**Negotiation note.** Because `dispatch.namedDispatch` is `false`, `negotiateHostCapabilities` caps `nested`, `maxDepth`, `background` and `backgroundDispatch` to `false`/`0` in the **effective** axes for structural consistency (`src/host-integration.cts`). The declared values above are still the host-capability record the matrix exists to hold; they are what a future named-dispatch upgrade would negotiate against.
+
+Sources consulted:
+- https://github.com/MoonshotAI/kimi-code
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/agents.md
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/hooks.md
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/plugins.md
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/customization/skills.md
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/tools.md
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/reference/slash-commands.md
+- https://github.com/moonshotai/kimi-code/blob/main/docs/en/guides/getting-started.md
+- https://github.com/moonshotai/kimi-code/blob/main/apps/kimi-code/src/cli/commands.ts
+- /moonshotai/kimi-code (Context7)
+
+Documentation gaps:
+- **dispatch.namedDispatch — host capability vs. GSD surface.** Kimi Code *does* support user-authored named agents: "Beyond the three built-in sub-agents, you can define your own agents as Markdown files", discovered across five scopes (`--agent-file` > `.kimi-code/agents/`, `.agents/agents/` > extra dirs > `$KIMI_CODE_HOME/agents/` > built-in). The axis is `false` because GSD installs **no** agent files for this host, so its reachable dispatch surface is the three built-ins — flipping the axis without also shipping agent artifacts would reintroduce the dispatch failure recorded in `docs/migration/kimi-to-kimi-code.md` ("Every workflow that called a named GSD subagent … **failed at dispatch**"). Shipping GSD agent files to kimi-code is an unbuilt capability upgrade, not a gap in the host's documentation.
+- **dispatch.maxDepth** — nesting is documented but no depth bound is published, so the axis carries the `undocumented` sentinel rather than a guessed integer.
+- **runtime** — the published artifact is a single bundled binary; `Node.js ≥ 24.15.0` is stated as a *development* requirement. The sources are a TypeScript/Node monorepo, so `node` is the best-supported classification, but the docs do not name a canonical plugin-execution runtime (the same ambiguity noted for `codex` above).
 
 ---
 
