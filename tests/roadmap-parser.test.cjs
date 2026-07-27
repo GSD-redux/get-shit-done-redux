@@ -2764,11 +2764,10 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
   });
 
   test('the roadmap reason is present in the frozen vocabulary', () => {
+    // The full key-set lock lives once, in tests/unusable-input.test.cjs. Duplicating it
+    // here would mean two files to update every time a phase adds a reason, which defeats
+    // the point of a single coordinated change. This asserts only what #1881 owns.
     assert.ok(Object.isFrozen(UNUSABLE_REASON));
-    assert.deepStrictEqual(
-      Object.keys(UNUSABLE_REASON).sort(),
-      ['FRONTMATTER_UNTERMINATED', 'ROADMAP_UNREADABLE'],
-    );
     assert.strictEqual(UNUSABLE_REASON.ROADMAP_UNREADABLE, 'roadmap_unreadable');
   });
 });
