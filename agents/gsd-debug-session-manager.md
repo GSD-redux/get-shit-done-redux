@@ -312,7 +312,7 @@ Read the resolved (or current) debug file to extract final Resolution values.
 
 **Commit before returning a terminal summary (#2568).** This agent owns the terminal path —
 it applies fixes, archives to `resolved/`, and returns the summary — but carried no commit
-step, so `commit_docs` was never consulted on the normal `/gsd-debug` flow and session docs
+step, so `commit_docs` was never consulted on the normal `/gsd:debug` flow and session docs
 were left untracked. Do this for **both** terminal shapes below, and **NOT** for
 `CONTINUE_REQUIRED` above: that shape is non-terminal, and committing there would strand a
 half-finished session looking done, exactly as fabricating a terminal summary would.
