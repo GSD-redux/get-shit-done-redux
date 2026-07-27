@@ -7,7 +7,7 @@
     "description": "Adds a Cursor runtime tier map and four ready-to-use model profiles (max / hybrid / value / budget) to a GSD project by writing model_profile_overrides.cursor and the models phase-type block into the user's GSD config, spanning Anthropic, OpenAI, Google Gemini, xAI Grok, Zhipu GLM and Cursor Composer, without modifying gsd-core.",
     "author": "clezcoding",
     "license": "MIT",
-    "enginesGsd": ">=1.39.0",
+    "enginesGsd": ">=1.8.0",
     "protocolVersion": 1,
     "install": "npm install --global github:clezcoding/gsd-cursor#v1.0.0 && gsd-cursor install",
     "uninstall": "gsd-cursor uninstall && npm uninstall --global gsd-cursor",
