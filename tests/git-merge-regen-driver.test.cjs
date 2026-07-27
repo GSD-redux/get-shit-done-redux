@@ -42,9 +42,20 @@ function git(cwd, args) {
   });
 }
 
-/** `git check-attr <attr> -- <path>` in the real repo. Returns the attribute value. */
+/**
+ * `git check-attr <attr> -- <path>` in the real repo. Returns the attribute value.
+ *
+ * `-c safe.directory=…` is required, not incidental: the test container checks this repo
+ * out at a path its user does not own, and git then refuses every command with
+ * "detected dubious ownership in repository at '/work'". `check-attr` is a pure read of
+ * `.gitattributes` — no hooks, no filters — so scoping the exemption to this one
+ * invocation is safe. It is deliberately NOT applied to the driver's own production
+ * `git config` calls, which run in the user's own clone and should keep the protection.
+ * Forward slashes unconditionally: git wants them in this value on every platform.
+ */
 function checkAttr(attr, relPath) {
-  const r = cp.spawnSync('git', ['check-attr', attr, '--', relPath], {
+  const safeRoot = REPO_ROOT.replace(/\\/g, '/');
+  const r = cp.spawnSync('git', ['-c', `safe.directory=${safeRoot}`, 'check-attr', attr, '--', relPath], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
