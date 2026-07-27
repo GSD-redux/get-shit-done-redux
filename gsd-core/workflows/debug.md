@@ -116,6 +116,10 @@ Print before spawning (runs in a subagent — no output until it returns, ~1–5
 
 Spawn session manager:
 
+<!-- #2517 model-omit-on-inherit -->
+
+> **Model omission (#2517).** Omit the `model=` parameter entirely from an `Agent()` call when the value it would carry (`debugger_model`) is `"inherit"` or empty — do NOT pass an empty or `"inherit"` model. An empty model 404s on every runtime without native tier aliases, which is the default on non-Claude runtimes (the installer writes `resolve_model_ids: "omit"`). Omitting the parameter inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
+
 ```
 Agent(
   prompt="""
