@@ -70,7 +70,6 @@ const _warnedUnusableInputs = new Set<string>();
  *    collision with a different (path, reason) pair and suppress a genuine second failure;
  *  - a path carrying ANSI escapes would be replayed verbatim into the operator's terminal.
  */
-// eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
 
 /**
