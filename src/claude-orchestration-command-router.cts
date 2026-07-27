@@ -13,8 +13,11 @@
  *
  * Subcommands:
  *   detect-backend [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch]
- *       Resolves whether the Workflow backend should activate. `--runtime`
- *       defaults to the GSD_RUNTIME env var (or 'unknown'). Reads the
+ *       Resolves whether the Workflow backend should activate. Both flags are
+ *       OPTIONAL (#2590): `--runtime` falls back to the canonical
+ *       `GSD_RUNTIME > config.runtime > 'claude'` chain, and
+ *       `--agent-sdk-version` to `GSD_AGENT_SDK_VERSION` then the installed
+ *       @anthropic-ai/claude-agent-sdk version. Reads the
  *       `claude_orchestration.*` keys from .planning/config.json. Emits
  *       { available, backend, reason }.
  *
@@ -101,11 +104,6 @@ function resolveFlatClaudeOrchestrationConfig(cwd: string): Record<string, unkno
 }
 
 /**
- * Resolve `--runtime`/`--agent-sdk-version`/`--no-nested-dispatch` into the
- * `{ runtimeId, hostIntegration, agentSdkVersion }` triple both `detect-backend`
- * and `resolve-wave-dispatch` pass to the pure detection seam.
- */
-/**
  * Resolve the installed Agent SDK version (#2590).
  *
  * The `execute:wave:pre` fragment claimed the orchestrator "has no scriptable
@@ -144,6 +142,11 @@ function resolveInstalledAgentSdkVersion(cwd: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Resolve `--runtime`/`--agent-sdk-version`/`--no-nested-dispatch` into the
+ * `{ runtimeId, hostIntegration, agentSdkVersion }` triple both `detect-backend`
+ * and `resolve-wave-dispatch` pass to the pure detection seam.
+ */
 function resolveDetectionArgs(args: string[], cwd?: string): { runtimeId: string; hostIntegration: { dispatch: { nested: boolean; background: boolean } }; agentSdkVersion: string | undefined } {
   // #2590: the old fallback chain was `--runtime > GSD_RUNTIME > 'unknown'`,
   // diverging from the canonical `GSD_RUNTIME > config.runtime > 'claude'` used

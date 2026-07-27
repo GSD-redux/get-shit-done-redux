@@ -314,6 +314,12 @@ function emitWorkflowScript(input) {
     if (!Array.isArray(waves) || waves.length === 0) {
         return { ok: false, reason: 'waves must be a non-empty array' };
     }
+    // Wave ids must be unique ACROSS waves, not just plan ids within one (#2590).
+    // Each wave emits a `phase("Wave <id>")` call plus a matching meta.phases
+    // entry, and the Workflow tool matches phase titles by exact string — two
+    // waves sharing an id would collapse into one progress group and misattribute
+    // every agent in the second wave to the first.
+    const seenWaveIds = new Set();
     for (let i = 0; i < waves.length; i++) {
         const w = waves[i];
         if (w === null || typeof w !== 'object' || typeof w.id !== 'string') {
@@ -322,6 +328,10 @@ function emitWorkflowScript(input) {
         if (!isScriptableIdentifier(w.id)) {
             return { ok: false, reason: 'waves[' + i + '].id must not contain newlines/quotes/backslash/control chars' };
         }
+        if (seenWaveIds.has(w.id)) {
+            return { ok: false, reason: 'duplicate wave id "' + w.id + '" — wave ids must be unique (phase titles must map 1:1)' };
+        }
+        seenWaveIds.add(w.id);
         if (!Array.isArray(w.plans) || w.plans.length === 0) {
             return { ok: false, reason: 'waves[' + i + '] must have a non-empty plans array' };
         }

@@ -106,6 +106,34 @@ describe('#2590: emitted Workflow scripts satisfy the Workflow tool contract', (
     assert.deepEqual(phaseTitles, metaTitles, 'phase() titles must match meta.phases exactly');
   });
 
+  test('duplicate wave ids are rejected (phase titles must map 1:1)', () => {
+    // Two waves sharing an id emit two identical `phase("Wave x")` calls and two
+    // identical meta.phases entries; the tool matches titles by exact string, so
+    // the second wave's agents would be attributed to the first's progress group.
+    const r = core.emitWorkflowScript({
+      phaseDir: '.planning/phases/01',
+      runId: 'execute-1',
+      waves: [
+        { id: 'dup', plans: [{ id: 'a', brief: 'one', files_modified: ['a.ts'] }] },
+        { id: 'dup', plans: [{ id: 'b', brief: 'two', files_modified: ['b.ts'] }] },
+      ],
+    });
+    assert.equal(r.ok, false, 'duplicate wave ids must be rejected, not silently merged');
+    assert.match(String(r.reason), /duplicate wave id/);
+  });
+
+  test('distinct wave ids are still accepted (the boundary either side)', () => {
+    const r = core.emitWorkflowScript({
+      phaseDir: '.planning/phases/01',
+      runId: 'execute-1',
+      waves: [
+        { id: 'w1', plans: [{ id: 'a', brief: 'one', files_modified: ['a.ts'] }] },
+        { id: 'w2', plans: [{ id: 'b', brief: 'two', files_modified: ['b.ts'] }] },
+      ],
+    });
+    assert.equal(r.ok, true, `distinct wave ids must pass: ${JSON.stringify(r)}`);
+  });
+
   test('2. resumeFromRunId is never CALLED (it is a tool input, not a function)', () => {
     const { script, summary } = emit({ runId: 'execute-7' });
     assert.ok(

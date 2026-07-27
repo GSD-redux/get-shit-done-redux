@@ -107,7 +107,11 @@ describe('A. resolveWaveDispatch — enabled + all gates satisfied → workflow 
     assert.strictEqual(result.backend, 'workflow');
     assert.strictEqual(result.reason, 'workflow_backend_active');
     assert.ok(typeof result.script === 'string' && result.script.length > 0, 'script must be a non-empty string');
-    assert.match(result.script, /resumeFromRunId\("run-2285-1"\)/);
+    // #2590: resumeFromRunId is a Workflow TOOL INPUT, not a script function —
+    // calling it threw "resumeFromRunId is not defined". The run id must still
+    // reach the caller (which passes it as that input), but never as a call.
+    assert.ok(!/^\s*resumeFromRunId\s*\(/m.test(result.script), 'must not CALL resumeFromRunId');
+    assert.strictEqual(result.summary.resumeRunId, 'run-2285-1');
     assert.match(result.script, /agentType: "gsd-executor", isolation: "worktree"/);
     assert.ok(result.summary && result.summary.plans === 1, 'summary.plans must reflect the manifest');
   });

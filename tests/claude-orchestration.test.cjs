@@ -358,17 +358,24 @@ describe('emitWorkflowScript', () => {
     assert.deepStrictEqual(stages[0].slice().sort(), ['p1', 'p2']);
   });
 
-  test('resumeFromRunId wired to the provided runId (criterion 4)', () => {
+  test('runId carried for the caller, never CALLED as resumeFromRunId (criterion 4, #2590)', () => {
     const r = emitWorkflowScript(singleWaveManifest());
-    assert.ok(r.script.includes('resumeFromRunId'), 'references resumeFromRunId');
-    assert.ok(r.script.includes('run-abc-1143'), 'carries the run id');
+    // resumeFromRunId is a Workflow TOOL INPUT parameter, not a script function;
+    // emitting a call threw "resumeFromRunId is not defined" and rejected the
+    // whole script. The id reaches the caller via summary.resumeRunId.
+    assert.ok(!/^\s*resumeFromRunId\s*\(/m.test(r.script), 'must not CALL resumeFromRunId');
+    assert.ok(r.script.includes('run-abc-1143'), 'carries the run id for the caller');
     assert.strictEqual(r.summary.resumeRunId, 'run-abc-1143');
   });
 
-  test('shared budget pool emitted when budgetTokens provided', () => {
+  test('budgetTokens recorded as intent, never CALLED as budget() (#2590)', () => {
     const r = emitWorkflowScript({ ...singleWaveManifest(), budgetTokens: 500000 });
-    assert.ok(r.script.includes('budget('), 'emits budget() pool');
-    assert.ok(r.script.includes('500000'));
+    // `budget` is a read-only object { total, spent(), remaining() } supplied by
+    // the caller's token directive; `budget(500000)` threw "budget is not a
+    // function". The intent is recorded in a comment and in the summary.
+    assert.ok(!/^\s*budget\s*\(/m.test(r.script), 'must not CALL budget()');
+    assert.ok(r.script.includes('500000'), 'records the intended budget');
+    assert.strictEqual(r.summary.budgetTokens, 500000);
   });
 
   test('no budget() emitted when budgetTokens omitted', () => {

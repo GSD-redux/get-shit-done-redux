@@ -58,7 +58,7 @@ function backing it is `resolveWaveDispatch` in
 `gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:
 `{ backend: 'inline'|'workflow', reason, script?, summary? }`.
 
-### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`, `$AGENT_SDK_VERSION`)
+### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)
 
 These are NOT pre-existing execute-phase.md variables — the orchestrator builds
 them at this step, from data it already has in-context from `discover_and_group_plans`
@@ -161,8 +161,12 @@ worktree isolation applied PER PLAN from the manifest's `use_worktree` field
   gate (#2772 / #2285 finding 1).
 - **`files_modified` overlap → separate sequential stages** — the same overlap
   rule execute-phase already applies inline (step 1 of the wave loop).
-- **`resumeFromRunId`** — wired to the phase run id, so an interrupted phase
-  resumes without re-running completed plans.
+- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's
+  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,
+  not a script function; the script deliberately does not call it (#2590 — doing
+  so threw "resumeFromRunId is not defined" and rejected the entire script).
+  Omitting it from the tool invocation silently regresses phase-resume to a
+  no-op: an interrupted phase re-runs completed plans.
 
 The orchestrator still runs steps 4–5.8 (wait for completion, worktree cleanup,
 post-merge gate, tracking update) exactly as it does for inline dispatch — the
