@@ -564,13 +564,12 @@ describe('planInstall', () => {
     assert.ok(!driver.includes('\\'), `driver command must contain no backslash: ${driver}`);
   });
 
-  test('driverCommandPassesEveryPlaceholderGitProvides', () => {
-    const { entries } = planInstall({ repoRoot: '/repo' });
-    const driver = entries.find((e) => e.key === 'merge.gsd-regen.driver').value;
-    for (const ph of ['%O', '%A', '%B', '%L', '%P']) {
-      assert.ok(driver.includes(ph), `driver command must pass ${ph}`);
-    }
-  });
+  // `driverCommandPassesEveryPlaceholderGitProvides` lived here and asserted that the
+  // command carried %P. That was the vulnerable behaviour, so the test has been deleted
+  // rather than relaxed — a test that asserts the old, now-wrong behaviour is worse than
+  // no test. Its useful half (the four git-generated placeholders ARE passed) is folded
+  // into `registeredDriverCommandNeverPassesThePlaceholderForTheFilePath`, which asserts
+  // both directions in one place.
 
   test('plansIdenticalEntriesOnRepeatedInvocation', () => {
     assert.deepEqual(planInstall({ repoRoot: '/repo' }), planInstall({ repoRoot: '/repo' }));
