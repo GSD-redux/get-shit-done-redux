@@ -64,7 +64,8 @@ describe('claude-orchestration emit-workflow (CLI)', () => {
       assert.ok(parsed.script.includes('parallel('), 'parallel() barrier emitted');
       assert.ok(parsed.script.includes('gsd-executor'), 'gsd-executor agentType');
       assert.ok(parsed.script.includes('worktree'), 'worktree isolation');
-      assert.ok(parsed.script.includes('resumeFromRunId'), 'resumeFromRunId wired');
+      // #2590: never CALLED — it is a Workflow tool input, not a script function.
+      assert.ok(!/^\s*resumeFromRunId\s*\(/m.test(parsed.script), 'must not CALL resumeFromRunId');
       assert.ok(parsed.script.includes('run-cli-1143'), 'carries the run id');
       assert.strictEqual(parsed.summary.resumeRunId, 'run-cli-1143');
       assert.strictEqual(parsed.summary.waves, 1);
@@ -84,8 +85,11 @@ describe('claude-orchestration emit-workflow (CLI)', () => {
         '--run-id', 'r',
         '--budget', '750000',
       ], tmp);
-      assert.ok(parsed.script.includes('budget('), 'budget() pool emitted');
+      // #2590: `budget` is read-only; budget(750000) threw "budget is not a
+      // function". The intended pool is recorded, not called.
+      assert.ok(!/^\s*budget\s*\(/m.test(parsed.script), 'must not CALL budget()');
       assert.ok(parsed.script.includes('750000'));
+      assert.strictEqual(parsed.summary.budgetTokens, 750000);
     } finally {
       cleanup(tmp);
     }

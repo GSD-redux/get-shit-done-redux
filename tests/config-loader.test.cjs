@@ -231,6 +231,32 @@ describe('loadConfig — unknown-key warning dedup', () => {
     // Should appear at most once
     assert.ok(warnings.length <= 1, `warning emitted more than once: ${warnings.length} times`);
   });
+
+  // #2674: the two cases above only pass because each picks a key name no other
+  // case reuses — so neither can observe whether the documented reset actually
+  // runs. _resetRuntimeWarningCacheForTests is documented as resetting
+  // "per-process warning state", and this suite's beforeEach calls it expecting
+  // exactly that, but it cleared only _warnedConfigKeys and left
+  // _warnedUnknownConfigKeys populated. Any later case that reused a key would
+  // have its warning silently suppressed by the previous case's leaked state.
+  // Asserts on the exported Set rather than stderr prose (CONTRIBUTING.md —
+  // Prohibited: Raw Text Matching on Test Outputs).
+  test('_resetRuntimeWarningCacheForTests clears the unknown-key dedup set', () => {
+    writeConfig(tmpDir, { __gsd_reset_probe__: true });
+    loadConfig(tmpDir);
+    assert.ok(
+      configLoader._warnedUnknownConfigKeys.size > 0,
+      'precondition: loading an unknown key must populate the unknown-key dedup set',
+    );
+
+    configLoader._resetRuntimeWarningCacheForTests();
+
+    assert.equal(
+      configLoader._warnedUnknownConfigKeys.size,
+      0,
+      'the documented per-process warning-state reset must clear the unknown-key dedup set too',
+    );
+  });
 });
 
 // ─── malformed JSON handling ──────────────────────────────────────────────────
