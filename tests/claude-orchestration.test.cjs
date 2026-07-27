@@ -986,6 +986,11 @@ describe('#2686 — Workflow backend model threading', () => {
     //   unscriptable char  → ok:false (rejected; it could terminate the // comment)
     //   trims to empty or "inherit" (any case) → ok:true, model key OMITTED (#2517)
     //   otherwise          → ok:true, model key emitted as the TRIMMED value
+    // Mirrors UNSCRIPTABLE_CHAR_RE in src/claude-orchestration.cts, which is not
+    // exported. The control-character class is the POINT of the check — these are
+    // exactly the bytes that must be rejected — so the rule is disabled here rather
+    // than the class weakened.
+    // eslint-disable-next-line no-control-regex
     const UNSCRIPTABLE = /[\r\n"\\\x00-\x1f\x7f\u2028\u2029]/;
     fc.assert(
       fc.property(fc.string({ maxLength: 40 }), (model) => {
