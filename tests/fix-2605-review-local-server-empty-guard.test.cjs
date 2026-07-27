@@ -70,18 +70,39 @@ const skipReason = process.platform === 'win32'
  * coupling, the same contract the #2494 suite pins for the claude/gemini legs.
  */
 function extractBlock(headingRe, label) {
-  const re = new RegExp(`${headingRe}\\n\`\`\`bash\\n([\\s\\S]*?)\\n\`\`\``);
+  // Some legs (Ollama, CodeRabbit) put an explanatory paragraph between the
+  // heading and the fence, so allow non-fence content in between. The lazy
+  // quantifiers take the FIRST ```bash fence after the heading, which is that
+  // leg's own block.
+  const re = new RegExp(`${headingRe}\\n[\\s\\S]*?\`\`\`bash\\n([\\s\\S]*?)\\n\`\`\``);
   const m = WORKFLOW.match(re);
   assert.ok(m, `review.md must define the ${label} reviewer dispatch as a bash block (#2605)`);
   return m[1];
 }
 
-const LM_STUDIO_BLOCK = extractBlock('\\*\\*LM Studio \\(local, OpenAI-compatible\\):\\*\\*', 'LM Studio');
-const LLAMA_CPP_BLOCK = extractBlock('\\*\\*llama\\.cpp \\(local, OpenAI-compatible\\):\\*\\*', 'llama.cpp');
-
 const LEGS = [
-  { key: 'lm_studio', label: 'LM Studio', block: LM_STUDIO_BLOCK },
-  { key: 'llama_cpp', label: 'llama.cpp', block: LLAMA_CPP_BLOCK },
+  {
+    key: 'lm_studio',
+    label: 'LM Studio',
+    budgetVar: 'LM_STUDIO_REVIEWER_BUDGET',
+    block: extractBlock('\\*\\*LM Studio \\(local, OpenAI-compatible\\):\\*\\*', 'LM Studio'),
+  },
+  {
+    key: 'llama_cpp',
+    label: 'llama.cpp',
+    budgetVar: 'LLAMA_CPP_REVIEWER_BUDGET',
+    block: extractBlock('\\*\\*llama\\.cpp \\(local, OpenAI-compatible\\):\\*\\*', 'llama.cpp'),
+  },
+  // Ollama was the least diagnosable of the three local-server legs (bare `-s`,
+  // stderr to /dev/null, response piped straight into jq). It emitted a stub, so
+  // it never silently vanished — but it is the same family and is held to the
+  // same contract here.
+  {
+    key: 'ollama',
+    label: 'Ollama',
+    budgetVar: 'OLLAMA_REVIEWER_BUDGET',
+    block: extractBlock('\\*\\*Ollama \\(local, OpenAI-compatible\\):\\*\\*', 'Ollama'),
+  },
 ];
 
 const STUB_STDERR = 'gsd-2605-stub: curl: (7) Failed to connect to localhost';
@@ -107,7 +128,7 @@ after(() => { cleanup(sandbox); });
  * this early return keeps the exec unreachable there rather than relying on the
  * skip alone.
  */
-function runLeg({ leg, curlBody }) {
+function runLeg({ leg, curlBody, preamble = '' }) {
   if (process.platform === 'win32') return null;
   if (!jqAvailable) return null;
 
@@ -123,7 +144,7 @@ function runLeg({ leg, curlBody }) {
 
   fs.writeFileSync(path.join(runDir, 'gsd-review-prompt.md'), '# review prompt\n');
 
-  const script = leg.block.split('{run_dir}').join(runDir);
+  const script = preamble + leg.block.split('{run_dir}').join(runDir);
   const result = spawnSync('bash', ['-c', script], {
     encoding: 'utf8',
     timeout: 30000,
@@ -226,6 +247,72 @@ for (const leg of LEGS) {
       assertDiagnosable(out, leg.label);
     });
 
+    test('a whitespace-only response is treated as empty, not as a successful review', () => {
+      // `[ ! -s … ]` counts BYTES, so a reply of "   " was written out and passed
+      // the guard as a "successful" but vacuous review — the same
+      // indistinguishable-from-success outcome the guard exists to prevent.
+      // Command substitution strips trailing newlines but NOT spaces, so this
+      // case is not covered by the empty-string case above.
+      const out = runLeg({
+        leg,
+        curlBody: curlStub({
+          completionStdout: '{"choices":[{"message":{"content":"   "}}]}',
+          exitCode: 0,
+        }),
+      });
+
+      assertDiagnosable(out, leg.label);
+    });
+
+    test('a reply that is exactly an echo option is not misclassified as empty', () => {
+      // `echo "$VAR" > file` writes 0 bytes when VAR is exactly `-n`, which would
+      // trip the empty guard and DISCARD a genuine reply. printf is required.
+      const out = runLeg({
+        leg,
+        curlBody: curlStub({
+          completionStdout: '{"choices":[{"message":{"content":"-n"}}]}',
+          exitCode: 0,
+        }),
+      });
+
+      assert.ok(out.review !== null, `${leg.label}: a reply of "-n" must still produce a review file (#2605)`);
+      assert.ok(
+        out.review.includes('-n'),
+        `${leg.label}: a reply of "-n" must be written verbatim, not swallowed by echo's option parsing (#2605)`,
+      );
+      assert.ok(
+        !/failed or returned empty output/i.test(out.review),
+        `${leg.label}: a genuine "-n" reply must not be misclassified as empty (#2605)`,
+      );
+    });
+
+    test('a budget skip leaves a visible stub rather than no file', () => {
+      // The skip path sits one `if` away from the guard and dropped the lane just
+      // as silently: no file, so write_reviews omitted the section entirely and
+      // the only trace was a stderr warning nothing persists.
+      const out = runLeg({
+        leg,
+        curlBody: curlStub({ completionStdout: '{"choices":[{"message":{"content":"unused"}}]}' }),
+        // `gsd_run` supplies the budget, so stubbing the variable directly is
+        // useless — the block's first line overwrites it. Drive the skip through
+        // `gsd_run` itself: `config-get` yields a non-null budget so the trim
+        // branch is entered, and `prompt-budget` returns 2 — the documented
+        // "budget too small for the minimum review set" code. Stubbing only the
+        // helper would not work for the Ollama leg, whose fence also carries the
+        // shared `prepare_trimmed_prompt_for_reviewer` definition and so
+        // overrides any stub of it.
+        preamble: 'gsd_run() { case "$2" in prompt-budget) return 2 ;; esac; echo 1; }\n'
+          + 'prepare_trimmed_prompt_for_reviewer() { return 2; }\n',
+      });
+
+      assert.ok(out.review !== null, `${leg.label}: a budget-skipped lane must still produce a review file (#2605)`);
+      assert.match(
+        out.review,
+        /review skipped: prompt budget/i,
+        `${leg.label}: a budget-skipped lane must say so in the review file (#2605)`,
+      );
+    });
+
     test('a successful review passes through untouched', () => {
       // The guard must not fire on real content, and must not wrap or annotate it.
       const out = runLeg({
@@ -249,7 +336,50 @@ for (const leg of LEGS) {
   });
 }
 
-describe('#2605 — both local-server legs use -sS so curl errors are not suppressed', { skip: skipReason }, () => {
+describe('#2605 — the CodeRabbit leg fails loudly', { skip: skipReason }, () => {
+  // CodeRabbit was the last CLI leg still shaped like pre-#2494 code:
+  // `2>/dev/null > file` with no stub. A missing or unauthenticated binary left a
+  // zero-byte file that write_reviews rendered as "ran cleanly, nothing to report".
+  const CODERABBIT_BLOCK = extractBlock('\\*\\*CodeRabbit:\\*\\*', 'CodeRabbit');
+
+  test('a failing coderabbit CLI produces a diagnosable stub, not a zero-byte file', () => {
+    if (process.platform === 'win32') return;
+
+    const caseDir = fs.mkdtempSync(path.join(sandbox, 'cr-'));
+    const runDir = path.join(caseDir, 'run');
+    const binDir = path.join(caseDir, 'bin');
+    fs.mkdirSync(runDir);
+    fs.mkdirSync(binDir);
+
+    const stub = path.join(binDir, 'coderabbit');
+    fs.writeFileSync(stub, `#!/bin/sh\necho "${STUB_STDERR}" >&2\nexit 127\n`);
+    fs.chmodSync(stub, 0o755);
+
+    const script = CODERABBIT_BLOCK.split('{run_dir}').join(runDir);
+    spawnSync('bash', ['-c', script], {
+      encoding: 'utf8',
+      timeout: 30000,
+      killSignal: 'SIGKILL',
+      env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}` },
+    });
+
+    const reviewPath = path.join(runDir, 'gsd-review-coderabbit.md');
+    assert.ok(fs.existsSync(reviewPath), 'CodeRabbit: review file must exist after a failed lane (#2605)');
+    const review = fs.readFileSync(reviewPath, 'utf-8');
+    assert.notStrictEqual(review.trim(), '', 'CodeRabbit: review file must not be zero-byte after a failed lane (#2605)');
+    assert.match(
+      review,
+      /CodeRabbit review failed or returned empty output/i,
+      'CodeRabbit: review file must carry a diagnosable failure line (#2605)',
+    );
+    assert.ok(
+      review.includes(STUB_STDERR),
+      'CodeRabbit: captured stderr must be appended, not discarded to /dev/null (#2605)',
+    );
+  });
+});
+
+describe('#2605 — every local-server leg uses -sS so curl errors are not suppressed', { skip: skipReason }, () => {
   test('the chat/completions call captures stderr to a sidecar instead of /dev/null', () => {
     // Pins the two changes that make the stub's evidence real rather than empty.
     // Asserted on the extracted block text because the redirect target is the

@@ -367,7 +367,15 @@ fi
 Note: CodeRabbit reviews the current git diff/working tree — it does not accept a prompt or model flag. It may take up to 5 minutes. Use `timeout: 360000` on the Bash tool call. The source-grounding requirement in the build_prompt Review Instructions applies only to the prompt-fed reviewers above; CodeRabbit is a diff-only reviewer and never receives it. Treat its output as a diff observation, not a grounded plan-level verdict.
 
 ```bash
-coderabbit review --prompt-only 2>/dev/null > {run_dir}/gsd-review-coderabbit.md
+# #2605: same guard as every other leg (#2494/#2592). `2>/dev/null` with no
+# `[ ! -s … ]` stub left a zero-byte file when coderabbit was missing,
+# unauthenticated, or exited without stdout — write_reviews then rendered a
+# reviewer that "ran cleanly with nothing to report", silently dropping the lane.
+coderabbit review --prompt-only 2>{run_dir}/gsd-review-coderabbit.err > {run_dir}/gsd-review-coderabbit.md
+if [ ! -s {run_dir}/gsd-review-coderabbit.md ]; then
+  echo "CodeRabbit review failed or returned empty output. stderr:" > {run_dir}/gsd-review-coderabbit.md
+  cat {run_dir}/gsd-review-coderabbit.err >> {run_dir}/gsd-review-coderabbit.md 2>/dev/null
+fi
 ```
 
 **OpenCode (via GitHub Copilot):**
@@ -702,16 +710,34 @@ OLLAMA_MODEL=$(gsd_run query config-get review.models.ollama --raw 2>/dev/null |
 if [ -z "$OLLAMA_MODEL" ] || [ "$OLLAMA_MODEL" = "null" ]; then
   OLLAMA_MODEL=$(curl -s --max-time 2 "${OLLAMA_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "llama3"' 2>/dev/null || echo "llama3")
 fi
-jq -n --rawfile content "$OLLAMA_PROMPT_FILE" \
+# #2605: brought to parity with the LM Studio / llama.cpp legs below. Ollama
+# already emitted a non-empty stub, so it never silently vanished — but it was
+# the LEAST diagnosable leg: bare `-s` (which suppresses curl's error text as
+# well as the progress meter), stderr to /dev/null, and the response piped
+# straight into jq so the body — where an OpenAI-compatible server puts its error
+# JSON on an HTTP 4xx/5xx, with curl still exiting 0 — was discarded unread.
+OLLAMA_RESPONSE=$(jq -n --rawfile content "$OLLAMA_PROMPT_FILE" \
   --arg model "$OLLAMA_MODEL" \
   '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -s --max-time 120 -X POST "${OLLAMA_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>/dev/null | \
-  jq -r '.choices[0].message.content // "Ollama review failed or returned empty output."' \
-  > {run_dir}/gsd-review-ollama.md
-if [ ! -s {run_dir}/gsd-review-ollama.md ]; then
-  echo "Ollama review failed or returned empty output." > {run_dir}/gsd-review-ollama.md
+  curl -sS --max-time 120 -X POST "${OLLAMA_HOST}/v1/chat/completions" \
+    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-ollama.err)
+OLLAMA_CONTENT=$(echo "$OLLAMA_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+case "$OLLAMA_CONTENT" in
+  *[![:space:]]*) : ;;
+  *) OLLAMA_CONTENT="" ;;
+esac
+if [ -n "$OLLAMA_CONTENT" ]; then
+  printf '%s\n' "$OLLAMA_CONTENT" > {run_dir}/gsd-review-ollama.md
 fi
+if [ ! -s {run_dir}/gsd-review-ollama.md ]; then
+  echo "Warning: Ollama returned empty content — see {run_dir}/gsd-review-ollama.md" >&2
+  echo "Ollama review failed or returned empty output. stderr:" > {run_dir}/gsd-review-ollama.md
+  cat {run_dir}/gsd-review-ollama.err >> {run_dir}/gsd-review-ollama.md 2>/dev/null
+  echo "Raw response body:" >> {run_dir}/gsd-review-ollama.md
+  printf '%s\n' "$OLLAMA_RESPONSE" >> {run_dir}/gsd-review-ollama.md
+fi
+else
+echo "Ollama review skipped: prompt budget (${OLLAMA_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-ollama.md
 fi
 ```
 
@@ -770,16 +796,33 @@ if [ -n "$LM_STUDIO_ACTUAL_MODEL" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "null" ] &
   echo "Warning: LM Studio served model '$LM_STUDIO_ACTUAL_MODEL' but '$LM_STUDIO_MODEL' was requested. Review may be from a different model." >&2
 fi
 LM_STUDIO_CONTENT=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+# A whitespace-only reply must count as empty. `[ ! -s … ]` counts BYTES, so a
+# response of "   " would be written out and pass the guard as a "successful"
+# but vacuous review — the same indistinguishable-from-success outcome the guard
+# exists to prevent. Command substitution strips trailing newlines but not
+# spaces, so this case-glob is what actually closes it.
+case "$LM_STUDIO_CONTENT" in
+  *[![:space:]]*) : ;;
+  *) LM_STUDIO_CONTENT="" ;;
+esac
+# printf, not echo: `echo "$VAR"` swallows a value that is exactly `-n`/`-e`/`-E`
+# and would write 0 bytes, misclassifying a real reply as empty. Same idiom the
+# OpenCode leg already uses above.
 if [ -n "$LM_STUDIO_CONTENT" ]; then
-  echo "$LM_STUDIO_CONTENT" > {run_dir}/gsd-review-lm_studio.md
+  printf '%s\n' "$LM_STUDIO_CONTENT" > {run_dir}/gsd-review-lm_studio.md
 fi
 if [ ! -s {run_dir}/gsd-review-lm_studio.md ]; then
   echo "Warning: LM Studio returned empty content — see {run_dir}/gsd-review-lm_studio.md" >&2
   echo "LM Studio review failed or returned empty output. stderr:" > {run_dir}/gsd-review-lm_studio.md
   cat {run_dir}/gsd-review-lm_studio.err >> {run_dir}/gsd-review-lm_studio.md 2>/dev/null
   echo "Raw response body:" >> {run_dir}/gsd-review-lm_studio.md
-  echo "$LM_STUDIO_RESPONSE" >> {run_dir}/gsd-review-lm_studio.md
+  printf '%s\n' "$LM_STUDIO_RESPONSE" >> {run_dir}/gsd-review-lm_studio.md
 fi
+else
+# A budget skip drops the lane just as silently as an empty response did: no
+# file, so write_reviews omits the section entirely. Leave the same diagnosable
+# stub so the skip is visible in the review output, not only on stderr (#2605).
+echo "LM Studio review skipped: prompt budget (${LM_STUDIO_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-lm_studio.md
 fi
 ```
 
@@ -828,16 +871,24 @@ LLAMA_CPP_RESPONSE=$(jq -n --rawfile content "$LLAMA_CPP_PROMPT_FILE" \
   curl -sS --max-time 120 -X POST "${LLAMA_CPP_HOST}/v1/chat/completions" \
     -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-llama_cpp.err)
 LLAMA_CPP_CONTENT=$(echo "$LLAMA_CPP_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+# Whitespace-only reply counts as empty; printf not echo. See the LM Studio leg
+# above for why both are required.
+case "$LLAMA_CPP_CONTENT" in
+  *[![:space:]]*) : ;;
+  *) LLAMA_CPP_CONTENT="" ;;
+esac
 if [ -n "$LLAMA_CPP_CONTENT" ]; then
-  echo "$LLAMA_CPP_CONTENT" > {run_dir}/gsd-review-llama_cpp.md
+  printf '%s\n' "$LLAMA_CPP_CONTENT" > {run_dir}/gsd-review-llama_cpp.md
 fi
 if [ ! -s {run_dir}/gsd-review-llama_cpp.md ]; then
   echo "Warning: llama.cpp returned empty content — see {run_dir}/gsd-review-llama_cpp.md" >&2
   echo "llama.cpp review failed or returned empty output. stderr:" > {run_dir}/gsd-review-llama_cpp.md
   cat {run_dir}/gsd-review-llama_cpp.err >> {run_dir}/gsd-review-llama_cpp.md 2>/dev/null
   echo "Raw response body:" >> {run_dir}/gsd-review-llama_cpp.md
-  echo "$LLAMA_CPP_RESPONSE" >> {run_dir}/gsd-review-llama_cpp.md
+  printf '%s\n' "$LLAMA_CPP_RESPONSE" >> {run_dir}/gsd-review-llama_cpp.md
 fi
+else
+echo "llama.cpp review skipped: prompt budget (${LLAMA_CPP_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-llama_cpp.md
 fi
 ```
 
