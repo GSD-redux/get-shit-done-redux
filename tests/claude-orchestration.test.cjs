@@ -778,10 +778,11 @@ describe('#2686 — Workflow backend model threading', () => {
   // stop testing what it claims to test.
   const optionsOf = (script) => {
     const out = [];
-    const re = /\(\s*\{/g;
+    const re = /\bagent\(/g;
     let m;
     while ((m = re.exec(script)) !== null) {
       const open = script.indexOf('{', m.index);
+      if (open === -1) continue;
       let i = open + 1;
       let depth = 1;
       let str = null;
@@ -795,9 +796,7 @@ describe('#2686 — Workflow backend model threading', () => {
         else if (ch === '}') depth -= 1;
         i += 1;
       }
-      if (depth === 0 && script.slice(0, m.index).includes('agent(')) {
-        out.push(script.slice(open, i));
-      }
+      if (depth === 0) out.push(script.slice(open, i));
     }
     return out.filter((o) => o.includes('agentType'));
   };
@@ -983,20 +982,35 @@ describe('#2686 — Workflow backend model threading', () => {
   });
 
   test('#2686: emitted options round-trip any resolved model (property)', () => {
+    // Three-way contract over ARBITRARY strings:
+    //   unscriptable char  → ok:false (rejected; it could terminate the // comment)
+    //   trims to empty or "inherit" (any case) → ok:true, model key OMITTED (#2517)
+    //   otherwise          → ok:true, model key emitted as the TRIMMED value
+    const UNSCRIPTABLE = /[\r\n"\\\x00-\x1f\x7f\u2028\u2029]/;
     fc.assert(
       fc.property(fc.string({ maxLength: 40 }), (model) => {
         const res = emit2686({ executorModel: model });
-        assert.ok(res.ok);
-        const shouldEmit = model.length > 0 && model !== 'inherit';
-        for (const o of optionsOf(res.script)) {
+        if (UNSCRIPTABLE.test(model)) {
+          assert.equal(res.ok, false, `${JSON.stringify(model)} must be rejected`);
+          return;
+        }
+        assert.ok(res.ok, `${JSON.stringify(model)} should emit: ${res.reason}`);
+        const opts = optionsOf(res.script);
+        assert.ok(opts.length >= 2, `expected per-plan options, got ${opts.length}`);
+        const trimmed = model.trim();
+        const shouldEmit = trimmed.length > 0 && trimmed.toLowerCase() !== 'inherit';
+        for (const o of opts) {
           if (shouldEmit) {
-            assert.ok(o.includes('model: ' + JSON.stringify(model)));
+            assert.ok(
+              o.includes('model: ' + JSON.stringify(trimmed)),
+              `expected model ${JSON.stringify(trimmed)} in ${o}`,
+            );
           } else {
             assert.doesNotMatch(o, /model:/);
           }
         }
       }),
-      { numRuns: 200 },
+      { numRuns: 300 },
     );
   });
 });
