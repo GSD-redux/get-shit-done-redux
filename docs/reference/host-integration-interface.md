@@ -18,7 +18,7 @@ assumes a capability.
 negotiated capability set; see the [versioning policy](../explanation/interface-versioning-policy.md)
 for what a bump means.
 
-## The eight negotiated axes
+## The nine negotiated axes
 
 `HOST_INTEGRATION_AXES` is the closed vocabulary. Each axis takes a documented
 value (or the `undocumented` sentinel):
@@ -33,6 +33,7 @@ value (or the `undocumented` sentinel):
 | `stateIO` | `filesystem` \| `sandboxed-storage` \| `session-log-append` |
 | `transport` | `mcp` \| `native-extension` |
 | `runtime` | `node` \| `bun` \| `sandboxed-web` \| `python` \| `go` \| `rust` \| `electron` \| `other` |
+| `effortSurface` | `argv` \| `none` |
 
 ## Classification + negotiation
 
