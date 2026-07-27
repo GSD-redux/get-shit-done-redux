@@ -62,7 +62,7 @@ const UNMUTATED = [
 // Full test command used by local runs and as the fallback when CI does not
 // inject a per-shard command via MUTATION_TEST_CMD.
 // Keep this list in sync with the tests arrays in scripts/mutation-matrix.cjs COVERED.
-const DEFAULT_TEST_CMD = 'node --test tests/context-utilization.property.test.cjs tests/prompt-budget.property.test.cjs tests/frontmatter.property.test.cjs tests/adr-parser.property.test.cjs tests/config-schema.property.test.cjs tests/adr-parser.test.cjs tests/active-workstream-store.test.cjs tests/active-workstream-store.unit.test.cjs tests/prompt-budget.unit.test.cjs tests/adr-parser.unit.test.cjs tests/frontmatter.unit.test.cjs tests/core-utils.test.cjs tests/broken-windows.test.cjs';
+const DEFAULT_TEST_CMD = 'node --test tests/context-utilization.property.test.cjs tests/prompt-budget.property.test.cjs tests/frontmatter.property.test.cjs tests/adr-parser.property.test.cjs tests/config-schema.property.test.cjs tests/adr-parser.test.cjs tests/active-workstream-store.test.cjs tests/active-workstream-store.unit.test.cjs tests/prompt-budget.unit.test.cjs tests/adr-parser.unit.test.cjs tests/frontmatter.unit.test.cjs tests/unusable-input.test.cjs tests/core-utils.test.cjs tests/broken-windows.test.cjs';
 
 /** @type {import('@stryker-mutator/core').PartialStrykerOptions} */
 export default {
