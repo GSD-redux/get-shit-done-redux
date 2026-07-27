@@ -8,7 +8,7 @@ _To add your integration, see the [registry README](./README.md)._
 
 | Name | What it is | Latest release | GSD compat | Discussion |
 |---|---|---|---|---|
-| [GSD Cursor Model Profiles](https://github.com/clezcoding/gsd-cursor) | Adds a Cursor runtime tier map and four ready-to-use model profiles \(max / hybrid / value / budget\) to a GSD project by writing model\_profile\_overrides.cursor and the models phase-type block into the user's GSD config, spanning Anthropic, OpenAI, Google Gemini, xAI Grok, Zhipu GLM and Cursor Composer, without modifying gsd-core. | ![release](https://img.shields.io/github/v/release/clezcoding/gsd-cursor?sort=semver&include_prereleases) | `>=1.39.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2578) |
+| [GSD Cursor Model Profiles](https://github.com/clezcoding/gsd-cursor) | Adds a Cursor runtime tier map and four ready-to-use model profiles \(max / hybrid / value / budget\) to a GSD project by writing model\_profile\_overrides.cursor and the models phase-type block into the user's GSD config, spanning Anthropic, OpenAI, Google Gemini, xAI Grok, Zhipu GLM and Cursor Composer, without modifying gsd-core. | ![release](https://img.shields.io/github/v/release/clezcoding/gsd-cursor?sort=semver&include_prereleases) | `>=1.8.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2578) |
 | [GSD for Oh My Pi](https://github.com/tchivs/gsd-omp) | Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection. | ![release](https://img.shields.io/github/v/release/tchivs/gsd-omp?sort=semver&include_prereleases) | `>=1.7.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2342) |
 
 ## GSD Cursor Model Profiles
@@ -24,7 +24,7 @@ npm install --global github:clezcoding/gsd-cursor#v1.0.0 && gsd-cursor install
 ```sh
 gsd-cursor uninstall && npm uninstall --global gsd-cursor
 ```
-- **GSD compatibility:** `>=1.39.0`, protocol v1
+- **GSD compatibility:** `>=1.8.0`, protocol v1
 - **License:** MIT
 - **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/2578
 
