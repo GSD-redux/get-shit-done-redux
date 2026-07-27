@@ -780,12 +780,12 @@ describe('gsd-regen driver under real git operations', () => {
     git(dir, ['config', 'user.email', 'test@example.com']);
     git(dir, ['config', 'user.name', 'test']);
     if (register) {
-      git(dir, ['config', 'merge.gsd-regen.name', 'regenerating driver']);
-      git(dir, [
-        'config',
-        'merge.gsd-regen.driver',
-        `node ${DRIVER_PATH.replace(/\\/g, '/')} %O %A %B %L %P`,
-      ]);
+      // Register the REAL production entries. A hand-rolled command string would let the
+      // end-to-end tests keep passing while planInstall drifted — and would have kept
+      // registering the %P form these tests exist to prove is gone.
+      for (const { key, value } of planInstall({ repoRoot: REPO_ROOT }).entries) {
+        git(dir, ['config', key, value]);
+      }
     }
 
     fs.mkdirSync(path.join(dir, 'workflows'));
