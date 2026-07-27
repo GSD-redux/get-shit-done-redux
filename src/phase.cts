@@ -2395,6 +2395,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
             clock: realClock,
             progressProvider: () => null, // completePhase derives progress from the roadmap, not disk
             roadmapProvider: () => roadmapContent,
+            sourcePath: statePath,
           },
         );
         stateContent = completeResult.content;

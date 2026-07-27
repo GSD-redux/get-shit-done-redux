@@ -518,6 +518,7 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const deps: StateTransitionDeps = {
     clock: realClock,
     progressProvider: () => null,
+    sourcePath: statePath,
   };
 
   let resultData: Record<string, unknown> | undefined;
@@ -2310,6 +2311,7 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   const deps: StateTransitionDeps = {
     clock: realClock,
     progressProvider: () => null, // beginPhase doesn't consult disk progress; syncStateFrontmatter's scan is authoritative
+    sourcePath: statePath,
   };
 
   let updated: string[] = [];
@@ -2571,6 +2573,7 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
   const deps: StateTransitionDeps = {
     clock: realClock,
     progressProvider: () => null,
+    sourcePath: statePath,
   };
 
   let updated: string[] = [];
@@ -2607,7 +2610,7 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
   // milestoneSwitch rebuilds frontmatter directly and must not run the
   // steady-state syncStateFrontmatter post-sync.
   const intent: StateTransitionIntent = { kind: 'milestoneSwitch', version, name: resolvedName };
-  const deps: StateTransitionDeps = { clock: realClock, progressProvider: () => null };
+  const deps: StateTransitionDeps = { clock: realClock, progressProvider: () => null, sourcePath: statePath };
 
   const lockPath = acquireStateLock(statePath);
   try {
