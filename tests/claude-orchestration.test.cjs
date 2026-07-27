@@ -769,6 +769,13 @@ describe('#2686 — Workflow backend model threading', () => {
     ...extra,
   });
 
+  // The emitted agent() options objects only. Scoped deliberately: the #2686
+  // provenance header legitimately contains the token "model:", so a whole-script
+  // regex would report a false positive on the omit path.
+  const optionsOf = (script) =>
+    (script.match(/agent\([\s\S]*?(\{[^}]*\})/g) || [])
+      .map((call) => call.slice(call.indexOf('{')));
+
   test('#2686: the Workflow backend dispatches the same model the inline path would use', () => {
     const dir = mkProject2686('gsd-2686-');
     try {
@@ -804,11 +811,15 @@ describe('#2686 — Workflow backend model threading', () => {
     for (const value of ['inherit', '', undefined, null, 42, {}, []]) {
       const res = emit2686({ executorModel: value });
       assert.ok(res.ok, `emit failed for ${JSON.stringify(value)}: ${res.reason}`);
-      assert.doesNotMatch(
-        res.script,
-        /model:/,
-        `executorModel=${JSON.stringify(value)} must omit the model key entirely (#2517)`,
-      );
+      const opts = optionsOf(res.script);
+      assert.ok(opts.length >= 2, `expected per-plan options objects, got ${opts.length}`);
+      for (const o of opts) {
+        assert.doesNotMatch(
+          o,
+          /model:/,
+          `executorModel=${JSON.stringify(value)} must omit the model key entirely (#2517)`,
+        );
+      }
     }
   });
 
@@ -932,10 +943,12 @@ describe('#2686 — Workflow backend model threading', () => {
         const res = emit2686({ executorModel: model });
         assert.ok(res.ok);
         const shouldEmit = model.length > 0 && model !== 'inherit';
-        if (shouldEmit) {
-          assert.ok(res.script.includes('model: ' + JSON.stringify(model)));
-        } else {
-          assert.doesNotMatch(res.script, /model:/);
+        for (const o of optionsOf(res.script)) {
+          if (shouldEmit) {
+            assert.ok(o.includes('model: ' + JSON.stringify(model)));
+          } else {
+            assert.doesNotMatch(o, /model:/);
+          }
         }
       }),
       { numRuns: 200 },

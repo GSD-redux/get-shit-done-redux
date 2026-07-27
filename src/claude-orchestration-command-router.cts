@@ -21,7 +21,7 @@
  *       `claude_orchestration.*` keys from .planning/config.json. Emits
  *       { available, backend, reason }.
  *
- *   emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>]
+ *   emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]
  *       Reads a wave/plan manifest JSON file and emits the generated Workflow
  *       script + summary. The manifest shape matches emitWorkflowScript's input:
  *       { waves: [{ id, plans: [{ id, brief, files_modified: string[], use_worktree?: boolean }] }] }.
@@ -31,7 +31,7 @@
  *
  *   resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>]
  *       [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>]
- *       [--budget <n>]
+ *       [--budget <n>] [--executor-model <id>]
  *       #2285 — the single composed seam a PRE-wave dispatch-backend selector
  *       (`execute:wave:pre`) uses: resolves detect-backend + emit-workflow in
  *       ONE call. Emits { backend: 'inline'|'workflow', reason, script?, summary? }.
@@ -50,6 +50,8 @@ import core = require('./claude-orchestration.cjs');
 import configLoader = require('./config-loader.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import runtimeSlash = require('./runtime-slash.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
+import modelResolver = require('./model-resolver.cjs');
 
 const { output } = io;
 const { detectWorkflowBackend, emitWorkflowScript, resolveWaveDispatch } = core;
@@ -67,8 +69,8 @@ function usage(error: (msg: string, reason?: string) => void): void {
   error(
     'Usage: gsd-tools claude-orchestration <detect-backend|emit-workflow|resolve-wave-dispatch> [...]\n' +
     '  detect-backend [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch]\n' +
-    '  emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>]\n' +
-    '  resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>] [--budget <n>]',
+    '  emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]\n' +
+    '  resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]',
   );
 }
 
@@ -164,6 +166,31 @@ function resolveDetectionArgs(args: string[], cwd?: string): { runtimeId: string
   return { runtimeId, hostIntegration, agentSdkVersion };
 }
 
+/**
+ * #2686 — resolve the `gsd-executor` model this dispatch should carry.
+ *
+ * Defaults from the project config rather than requiring a flag. The Workflow
+ * backend previously emitted no model at all, so `model_overrides` /
+ * `model_policy` / `model_profile` were silently inert on that path while the
+ * inline path honored them. Reading the same source the inline path reads is
+ * what makes the two backends agree by construction: an orchestrator that never
+ * learns about a new flag would otherwise silently keep the old bug.
+ *
+ * `--executor-model` exists only to pin/override. Resolution is side-effect-free
+ * and fails closed to `undefined` (emission then omits the key, i.e. exactly the
+ * pre-#2686 output) rather than guessing a model.
+ */
+function resolveExecutorModel(args: string[], cwd: string): string | undefined {
+  const pinned = argValue(args, '--executor-model');
+  if (pinned !== undefined) return pinned;
+  try {
+    const resolved = modelResolver.resolveModelInternal(cwd, 'gsd-executor') as unknown;
+    return typeof resolved === 'string' ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Discriminated result for readWavesManifest — see doc comment below. */
 type WavesReadResult =
   | { ok: true; waves: unknown }
@@ -208,7 +235,7 @@ function cmdDetectBackend(args: string[], cwd: string, raw: boolean): void {
 /**
  * Emit a Workflow script from a wave/plan manifest file.
  */
-function cmdEmitWorkflow(args: string[], _cwd: string, raw: boolean, error: (msg: string, reason?: string) => void): void {
+function cmdEmitWorkflow(args: string[], cwd: string, raw: boolean, error: (msg: string, reason?: string) => void): void {
   const wavesPath = argValue(args, '--waves');
   const runId = argValue(args, '--run-id');
   const phaseDir = argValue(args, '--phase-dir') || '.planning/phases/current';
@@ -234,6 +261,7 @@ function cmdEmitWorkflow(args: string[], _cwd: string, raw: boolean, error: (msg
     runId,
     waves: read.waves as EmitInput['waves'],
     budgetTokens: budget,
+    executorModel: resolveExecutorModel(args, cwd),
   });
 
   if (!result.ok) {
@@ -282,6 +310,7 @@ function cmdResolveWaveDispatch(args: string[], cwd: string, raw: boolean, error
     runId,
     waves: read.waves as EmitInput['waves'],
     budgetTokens: budget,
+    executorModel: resolveExecutorModel(args, cwd),
   });
 
   output(result, raw);

@@ -270,10 +270,20 @@ function quoteString(s) {
  * finding 1). This is the single place that decides worktree isolation for the
  * Workflow backend; it must never diverge from the inline path's per-plan gate.
  */
-function agentOptions(p) {
-    return p.use_worktree === false
-        ? '{ agentType: "gsd-executor" }'
-        : '{ agentType: "gsd-executor", isolation: "worktree" }';
+function agentOptions(p, executorModel) {
+    const parts = ['agentType: "gsd-executor"'];
+    if (p.use_worktree !== false)
+        parts.push('isolation: "worktree"');
+    // #2686: carry the resolved executor model so this backend honors
+    // model_overrides / model_policy / model_profile exactly as the inline path
+    // does. #2517: an "inherit" or empty resolution must OMIT the key — emitting
+    // `model: ""` 404s on runtimes without native tier aliases. A non-string is a
+    // malformed config; omit rather than throw, matching the defensive typeof
+    // guard mapClaudeOverrideForRuntime already carries for the same reason.
+    if (typeof executorModel === 'string' && executorModel.length > 0 && executorModel !== 'inherit') {
+        parts.push('model: ' + quoteString(executorModel));
+    }
+    return '{ ' + parts.join(', ') + ' }';
 }
 /**
  * True if `s` is a safe identifier/path token to interpolate into the generated
@@ -301,7 +311,7 @@ function emitWorkflowScript(input) {
     if (input === null || input === undefined || typeof input !== 'object') {
         return { ok: false, reason: 'invalid_input' };
     }
-    const { phaseDir, waves, runId } = input;
+    const { phaseDir, waves, runId, executorModel } = input;
     // Identifiers/paths interpolated into the generated script must be free of any
     // character that could terminate a comment, break out of a string literal, or
     // smuggle control bytes — reject up front (security: #1143 review Finding 1).
@@ -387,6 +397,16 @@ function emitWorkflowScript(input) {
     lines.push('// Composes the SAME gsd-executor agent as the inline path, so artifacts (SUMMARY.md)');
     lines.push('// and commits are produced identically. Worktree isolation is per-plan (use_worktree)');
     lines.push('// and mirrors execute-phase.md step 2.5\'s submodule gate exactly (#2772 / #2285).');
+    // #2686 / ADR-1411: state which model was applied — or that none resolved —
+    // so an opted-in user can SEE the routing decision instead of having to read
+    // the emitted options. A fallback must be a visible value, never silent.
+    if (typeof executorModel === 'string' && executorModel.length > 0 && executorModel !== 'inherit') {
+        lines.push('// model: ' + quoteString(executorModel) + ' (resolved for gsd-executor, same source as the inline path)');
+    }
+    else {
+        lines.push('// model: none applied — resolved to "inherit"/empty, so each agent inherits the');
+        lines.push('// orchestrator model (#2517: emitting an empty model 404s on some runtimes).');
+    }
     lines.push('//');
     // resumeFromRunId is a Workflow TOOL INPUT parameter, not a script function —
     // calling it threw "resumeFromRunId is not defined" (#2590). The run id is
@@ -424,7 +444,7 @@ function emitWorkflowScript(input) {
             // parallel() could bound concurrency.
             lines.push('await parallel([');
             for (const p of stagePlans) {
-                lines.push('  () => agent(' + quoteString(p.brief) + ', ' + agentOptions(p) + '),');
+                lines.push('  () => agent(' + quoteString(p.brief) + ', ' + agentOptions(p, executorModel) + '),');
             }
             lines.push('])');
         }
@@ -489,6 +509,7 @@ function resolveWaveDispatch(input) {
         waves: input.waves,
         runId: input.runId,
         budgetTokens: input.budgetTokens,
+        executorModel: input.executorModel,
     });
     if (!emitted.ok) {
         return { backend: 'inline', reason: 'emit_failed: ' + emitted.reason };
