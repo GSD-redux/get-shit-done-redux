@@ -1208,6 +1208,20 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
     assert.equal(res.degraded, false, "an empty file is not corruption");
   });
 
+  // Found by the property test below: valid JSON that is not an OBJECT parsed
+  // "ok", then threw downstream, and the outer catch reported not_configured —
+  // a present file indistinguishable from an absent one, the exact defect this
+  // issue closes. Shape is now validated at the read seam (ADR-227).
+  for (const body of ["0", '"a string"', "[]", "null", "true"]) {
+    test(`valid JSON that is not an object is unusable, not absent: ${body}`, () => {
+      fs.writeFileSync(configPath(tmpDir), body, "utf-8");
+      const res = configLoader.loadConfigResolved(tmpDir);
+      assert.equal(res.reason, R.CONFIG_UNPARSEABLE,
+        "a present-but-unusable file must never report as not_configured");
+      assert.equal(res.degraded, true);
+    });
+  }
+
   // Property test (CONTRIBUTING.md: parsers require >=1 fast-check property).
   // The classification is total and mutually exclusive: any byte string is
   // exactly one of resolved/configured_empty (parses) or config_unparseable.

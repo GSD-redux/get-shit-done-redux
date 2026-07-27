@@ -497,11 +497,21 @@ function _readConfigFile(filePath: string):
     return { kind: 'fault', fault: { reason: CONFIG_REASON.CONFIG_UNREADABLE, path: filePath, code } };
   }
   if (raw === null) return { kind: 'absent' };
+  let parsed: unknown;
   try {
-    return { kind: 'ok', data: JSON.parse(raw) as Record<string, unknown> };
+    parsed = JSON.parse(raw);
   } catch {
     return { kind: 'fault', fault: { reason: CONFIG_REASON.CONFIG_UNPARSEABLE, path: filePath, code: '' } };
   }
+  // Shape, not just parseability (ADR-227). `0`, `"x"`, `[]` and `null` are all
+  // valid JSON but are not a config object. Accepting them let a PRESENT file
+  // parse "ok", then throw downstream, and be reported not_configured by the
+  // outer catch — a corrupt file indistinguishable from an absent one, which is
+  // the exact defect this change closes. Caught by the fast-check property.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { kind: 'fault', fault: { reason: CONFIG_REASON.CONFIG_UNPARSEABLE, path: filePath, code: '' } };
+  }
+  return { kind: 'ok', data: parsed as Record<string, unknown> };
 }
 
 /**
