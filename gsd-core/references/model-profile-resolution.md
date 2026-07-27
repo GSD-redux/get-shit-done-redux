@@ -54,9 +54,12 @@ No model parameter is passed at all — `planner_model` resolved to `"inherit"` 
 omitting it inherits the orchestrator's model. Passing either value through as an argument
 instead 404s on non-Claude runtimes.
 
-This is not cosmetic. `resolve_model_ids: "omit"`, `model_profile: "inherit"`, and any
-agent type absent from the profile table all resolve to the empty string; emitting it
-verbatim fails the spawn on every runtime without native tier aliases.
+This is not cosmetic, and both values really occur. `model_profile: "inherit"` — and any
+opus-tier agent — resolves to the literal string `"inherit"`. `resolve_model_ids: "omit"`
+resolves to the **empty string** whenever the project sets it explicitly or the active
+runtime has no native tier aliases; an agent type absent from the profile table takes that
+same empty-string path, because it has no tier for the earlier steps to resolve. Emitting
+either value verbatim fails the spawn on every runtime without native tier aliases.
 
 **#2684 — substitute a field your workflow actually bound.** `model="{…}"` must name a key
 your own `init.*` payload emits, a shell variable you assigned, or a field on your declared

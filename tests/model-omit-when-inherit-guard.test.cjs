@@ -225,15 +225,29 @@ test('#2684: ship.md validates capability-supplied ref.agent before it reaches a
 
   // `ref.agent` comes from a capability manifest, which may be third-party. The
   // #2684 fix is the first place that value reaches a shell command, so the
-  // workflow must constrain its shape before substituting it.
-  // The bash character classes contain `]`, so capture up to the closing ` ]]`
-  // rather than stopping at the first bracket.
-  const gate = /\[\[\s*"\$HOOK_AGENT"\s*=~\s*(\^.*\$)\s*\]\]/.exec(content);
+  // workflow must constrain its shape BEFORE substituting it.
+  //
+  // The check must be performed in-context, not in the shell: the orchestrator
+  // substitutes the raw value textually, so a shell-side test would run only
+  // AFTER a payload like `x"; id; echo "` had already closed the assignment and
+  // executed. Assert the workflow states the in-context ordering explicitly.
+  const gate = /`(\^\[A-Za-z0-9\]\[[^`]*\]\*\$)`/.exec(content);
   assert.ok(
     gate,
-    'ship.md must gate the capability-supplied ref.agent through a shell-variable ' +
-      'regex check before interpolating it into `query resolve-model` — a manifest is ' +
-      'not trusted input.',
+    'ship.md must publish the shape `ref.agent` has to match before it is used ' +
+      '— a capability manifest is not trusted input.',
+  );
+  assert.match(
+    content,
+    /IN-CONTEXT, before any shell use/i,
+    'ship.md must require the ref.agent check to run in-context BEFORE any shell ' +
+      'use. A shell-side check runs after the injection point and protects nothing.',
+  );
+  assert.doesNotMatch(
+    content,
+    /HOOK_AGENT="/,
+    'ship.md must not assign the raw ref.agent value into a shell variable — that ' +
+      'assignment IS the injection point (#2684 isolated review).',
   );
 
   const shape = new RegExp(gate[1]);

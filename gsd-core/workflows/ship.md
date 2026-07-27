@@ -485,21 +485,15 @@ Read the `activeHooks` array directly from `SHIP_POST_HOOKS_JSON` in-context (do
 
   **#2684 model resolution.** `init.phase-op` emits no model field, and `ref.agent` is only known at runtime, so resolve it per hook before dispatching.
 
-  **Input sanitization (defense-in-depth):** `ref.agent` originates in a capability manifest, which may be third-party — never paste it into a shell command unchecked. Assign it to a shell variable and validate its shape first; a value that fails the check is a malformed manifest, so **skip that hook** rather than dispatching it:
+  **Input validation (defense-in-depth) — do this IN-CONTEXT, before any shell use.** `ref.agent` originates in a capability manifest, which may be third-party. Check the value you read from `activeHooks` against `^[A-Za-z0-9][A-Za-z0-9._-]*$` yourself, the same way you read `activeHooks` itself — **never** by pasting it into a shell command to be tested there. A value carrying a quote, `;`, `` ` ``, `$(`, or a newline would terminate the assignment and run as its own statement *before* any shell-side check could execute, so a shell-side check is no protection at all.
+
+  A value that fails the check is a malformed manifest: record a warning, **skip that hook entirely**, and move to the next `activeHooks` entry. Do not dispatch it and do not place it in a command line.
+
+  Only once the value has passed, resolve its model — substituting the validated value for `<agent>`:
 
   ```bash
-  HOOK_AGENT="<the ref.agent value>"
-  HOOK_AGENT_OK=0
-  HOOK_AGENT_MODEL=""
-  if [[ "$HOOK_AGENT" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
-    HOOK_AGENT_OK=1
-    HOOK_AGENT_MODEL=$(gsd_run query resolve-model "$HOOK_AGENT" --raw 2>/dev/null || true)
-  else
-    echo "Skipping ship:post hook — invalid agent name: '${HOOK_AGENT}'" >&2
-  fi
+  HOOK_AGENT_MODEL=$(gsd_run query resolve-model "<agent>" --raw 2>/dev/null || true)
   ```
-
-  **If `HOOK_AGENT_OK` is `0`, do not dispatch this hook at all** — record the warning and move to the next `activeHooks` entry. Only continue below when it is `1`.
 
   **#2517: omit the `model=` parameter entirely when `HOOK_AGENT_MODEL` is `inherit` or empty** — a capability may name an agent absent from the model-profile table, which resolves to the empty string, and passing an empty model 404s on non-Claude runtimes. Omitting inherits the orchestrator's model.
 
