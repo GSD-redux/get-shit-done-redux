@@ -71,7 +71,7 @@ esac
 [ "$USE_WORKTREES" = "false" ] && ISOLATION=none
 # Single-agent dispatch: the host subagent tool can only express harness-worktree.
 if [ "$ISOLATION" = "orchestrator-worktree" ]; then
-  echo "⚠ Runtime '$RUNTIME' declares dispatch.isolation=orchestrator-worktree, which requires GSD-driven process spawning. Diagnosis dispatches through the host subagent tool, so debug agents run sequentially on the main working tree. Parallel wave execution (/gsd-execute-phase) is unaffected." >&2
+  echo "⚠ Runtime '$RUNTIME' declares dispatch.isolation=orchestrator-worktree, which requires GSD-driven process spawning. Diagnosis dispatches through the host subagent tool, so debug agents run sequentially on the main working tree. Parallel wave execution (/gsd:execute-phase) is unaffected." >&2
   ISOLATION=none
   USE_WORKTREES=false
 fi

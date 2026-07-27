@@ -67,7 +67,7 @@ reporting isolation is the one outcome worse than running sequentially:
 
 ```bash
 if [ "$ISOLATION" = "orchestrator-worktree" ]; then
-  echo "⚠ Runtime '$RUNTIME' declares dispatch.isolation=orchestrator-worktree, which requires GSD-driven process spawning. This dispatch site uses the host subagent tool, so it is running sequentially on the main working tree instead. Parallel wave execution (/gsd-execute-phase) is unaffected." >&2
+  echo "⚠ Runtime '$RUNTIME' declares dispatch.isolation=orchestrator-worktree, which requires GSD-driven process spawning. This dispatch site uses the host subagent tool, so it is running sequentially on the main working tree instead. Parallel wave execution (/gsd:execute-phase) is unaffected." >&2
   ISOLATION=none
   USE_WORKTREES=false
 fi
