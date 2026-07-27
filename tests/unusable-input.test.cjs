@@ -140,6 +140,27 @@ describe('extractFrontmatter — stays silent on everything that is not corrupti
     });
   });
 
+  test('a thematic break above TWO labelled lines followed by prose stays silent', () => {
+    // Review finding: raising the key threshold to 2 only moved the boundary — two labelled
+    // lines are as common in ordinary prose as one. What separates a truncated write from a
+    // document opening with a rule is that a truncated write ends mid-block, so EVERY line is
+    // still frontmatter-shaped; this document goes on to prose.
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder(
+      '---\nAuthor: Jane Doe\nReviewed-by: John Smith\n\nOrdinary prose, no other --- anywhere.\n',
+      '/u/two-labelled-lines.md',
+    );
+    assert.strictEqual(emitted, 0, 'a labelled preamble above prose is not a truncated file');
+  });
+
+  test('a truncated block whose values are nested lists is still reported', () => {
+    // The shape check must not reject legitimate frontmatter: list items and indented
+    // continuations are frontmatter-shaped too.
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder('---\nphase: 01\nmust_haves:\n  - alpha\n  - beta\n', '/u/nested.md');
+    assert.strictEqual(emitted, 1);
+  });
+
   test('a well-formed document still parses its keys and stays silent', () => {
     _resetUnusableInputWarningsForTests();
     let parsed;
@@ -272,6 +293,18 @@ describe('diagnostic deduplication', () => {
     assert.strictEqual(emitted, 1);
   });
 
+  test('anonymous-first then named reports twice — the documented asymmetry', () => {
+    // Pinned deliberately. A path-less caller cannot identify its file, so suppressing the
+    // later NAMED report would also suppress a genuine second failure in a DIFFERENT file
+    // whenever two files share byte-identical truncated content. ADR-1411 ranks that swallow
+    // the worse failure, so the duplicate is accepted and the named line carries the filename.
+    _resetUnusableInputWarningsForTests();
+    const [, anonymous] = parseUnder(TRUNCATED_LF, undefined);
+    const [, named] = parseUnder(TRUNCATED_LF, '/u/anon-then-named.md');
+    assert.strictEqual(anonymous, 1);
+    assert.strictEqual(named, 1, 'the named report must still name the file');
+  });
+
   test('one file parsed both with and without a path reports exactly once', () => {
     // A read wrapper knows the path; a pure core downstream (state-transition.cts, per
     // ADR-1769) is handed only the string. Keying those two parses separately reported the
@@ -371,19 +404,17 @@ describe('hostile input', () => {
     assert.strictEqual(emitted, 1);
   });
 
-  test('a failing stderr write is swallowed and never escalates into a throw', () => {
+  test('a failing stderr write is swallowed and never escalates into a throw', (t) => {
     // Fault injection by method override + restore, never chmod 0o000: root bypasses mode
     // bits, so a permission-based version of this test would silently pass with zero
     // coverage in root Docker/CI.
     _resetUnusableInputWarningsForTests();
     const original = process.stderr.write;
+    t.after(() => { process.stderr.write = original; });
     process.stderr.write = () => { throw new Error('EPIPE injected'); };
-    let result;
-    try {
-      result = extractFrontmatter(TRUNCATED_LF, '/u/broken-stderr.md');
-    } finally {
-      process.stderr.write = original;
-    }
+    const result = extractFrontmatter(TRUNCATED_LF, '/u/broken-stderr.md');
     assert.deepStrictEqual(result, {}, 'a broken stderr must not change the return value');
+    assert.strictEqual(_unusableInputEmissionCountForTests(), 0,
+      'a write that threw must not be counted as a diagnostic the operator saw');
   });
 });

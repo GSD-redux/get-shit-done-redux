@@ -158,33 +158,36 @@ function warnUnusableInput({ reason, source, content }: WarnUnusableInputArgs): 
     : null;
   if (prose === null) return false;
 
-  // One file must produce one diagnostic even when it is parsed more than once per run by
-  // callers that hold different amounts of information about it. A read wrapper knows the
-  // path; a pure core downstream (state-transition.cts, per ADR-1769) is handed only the
-  // string and cannot know it. Keying those two parses separately reported the SAME
-  // truncated STATE.md twice, under a path key and a digest key.
+  // The guarantee, stated precisely, because it is not symmetric:
   //
-  // So every emission registers BOTH keys it could ever be identified by, and checks both
-  // before writing. Whichever caller gets there first speaks; the other is suppressed.
-  // Distinct files with distinct content still key distinctly, which is the property
-  // ADR-1411 actually requires; two different files whose truncated content is
-  // byte-identical collapse to one diagnostic, which is the documented limit.
+  //   * a file reported BY NAME is reported at most once, and
+  //   * an anonymous re-parse of content already reported by name stays silent, and
+  //   * two DIFFERENT files always both report, even when their truncated bytes are identical.
+  //
+  // The asymmetry is the anonymous-FIRST ordering (a path-less parse, then a named parse of the
+  // same content), which emits twice. That is a deliberate limit, not an oversight. A path-less
+  // caller cannot identify its file, so suppressing the later named report would also suppress a
+  // genuine second failure in a DIFFERENT file whenever two files share byte-identical truncated
+  // content — the over-coarse keying ADR-1411 explicitly forbids. Between a duplicate line and a
+  // swallowed diagnostic the ADR ranks the swallow worse, so the duplicate is accepted; and the
+  // second line is the more useful of the two, because it carries the filename.
+  //
+  // Mechanically: check ONLY the key matching what this caller actually knows, but record every
+  // key the input could later be identified by.
   const identity = sourceKey(source, content);
   const keys = [`${identity}\u0000${reason}`];
   if (typeof content === 'string' && identity.startsWith('p\u0000')) {
     keys.push(`${sourceKey(undefined, content)}\u0000${reason}`);
   }
-  // Check ONLY the key matching what this caller actually knows, but record every key the
-  // input could later be identified by. Checking both suppressed a genuine second failure
-  // in a DIFFERENT file whose truncated content happened to be byte-identical -- the exact
-  // over-coarse keying ADR-1411 forbids. Recording both still silences the redundant
-  // path-less re-parse of a file already reported by name.
   if (_warnedUnusableInputs.has(keys[0])) return false;
   for (const k of keys) _warnedUnusableInputs.add(k);
 
-  _unusableInputEmissions += 1;
   try {
     process.stderr.write(`gsd: warning — ${displaySource(identity)}: ${prose}. (#1879)\n`);
+    // Counted only after a write that actually completed. Incrementing before the try counted
+    // attempts, so on a broken stderr the counter claimed a diagnostic had reached the operator
+    // when nothing had — a seam documented as "written" reporting something else.
+    _unusableInputEmissions += 1;
   } catch {
     /* a closed or broken stderr must never escalate a degraded read into a crash */
   }

@@ -3029,6 +3029,12 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
     progressProvider: () => null,
     clock: realClock,
     phaseInventoryProvider,
+    // Without this, `state rebuild --dry-run` reported a truncated STATE.md anonymously: the
+    // write path is named only because readModifyWriteStateMd parses with the path first, and
+    // the dry-run branch reads the file directly and never does. Dry-run is the read-only mode
+    // an operator reaches for first when they suspect corruption, so it is the one that most
+    // needs to name the file (#1882).
+    sourcePath: statePath,
   };
 
   const runRebuild = (content: string) => transitionCore(content, { kind: 'rebuild' }, deps);

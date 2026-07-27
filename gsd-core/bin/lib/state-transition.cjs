@@ -1351,7 +1351,9 @@ function rebuildCore(content, _intent, deps) {
     let modified = content;
     // §2 Decision: re-derive derived sections, preserve others. Order is
     // oldest-section-first so log entries appear in body order.
-    modified = reconcileCurrentPosition(modified, timestamp, log);
+    // sourcePath threaded so `state rebuild --dry-run` names the file: that branch reads STATE.md
+    // directly rather than through readModifyWriteStateMd, so nothing upstream has named it yet.
+    modified = reconcileCurrentPosition(modified, timestamp, log, deps.sourcePath);
     modified = reconcileByPhaseTable(modified, deps, timestamp, log);
     modified = stripTemplatePlaceholders(modified, timestamp, log);
     modified = deduplicateSessionArchive(modified, timestamp, log);
@@ -1385,8 +1387,8 @@ function rebuildCore(content, _intent, deps) {
  * the key (Leaky-Abstractions guard — don't synthesize values the canonical
  * source doesn't have).
  */
-function reconcileCurrentPosition(content, timestamp, log) {
-    const fm = extractFrontmatter(content);
+function reconcileCurrentPosition(content, timestamp, log, sourcePath) {
+    const fm = extractFrontmatter(content, sourcePath);
     if (!fm || typeof fm !== 'object')
         return content;
     let modified = content;

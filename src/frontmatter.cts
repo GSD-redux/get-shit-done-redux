@@ -64,6 +64,35 @@ function splitInlineArray(body: string): string[] {
 const UNTERMINATED_KEY_THRESHOLD = 2;
 
 /**
+ * Does every non-empty line of an unterminated region look like frontmatter?
+ *
+ * The key count alone cannot separate a truncated write from ordinary Markdown, because a
+ * thematic break above a short labelled preamble parses as keys too:
+ *
+ *     ---
+ *     Author: Jane Doe
+ *     Reviewed-by: John Smith
+ *
+ *     Ordinary prose, and no second `---` anywhere.
+ *
+ * Raising the threshold only moves that boundary — two labelled lines are as common in prose as
+ * one. What actually distinguishes the two is what follows: a write interrupted part-way through
+ * a frontmatter block ends mid-block, so *every* line in the region is still frontmatter-shaped,
+ * whereas a document merely opening with a rule goes on to prose. So the region must be
+ * uniformly frontmatter-shaped AND carry enough keys to be worth reporting; either test alone
+ * has a false-positive class the other closes.
+ */
+function isFrontmatterShaped(region: string): boolean {
+  const lines = region.split(/\r?\n/).filter((line) => line.trim() !== '');
+  if (lines.length === 0) return false;
+  return lines.every((line) => (
+    /^\s*[a-zA-Z0-9_-]+:/.test(line)   // key: value
+    || /^\s*-\s+/.test(line)           // - list item
+    || /^\s+\S/.test(line)             // indented continuation of a nested value
+  ));
+}
+
+/**
  * Parse one already-delimited YAML region into a Frontmatter object.
  *
  * Extracted from `extractFrontmatter` (#1882) so the truncation probe below and the real
@@ -181,8 +210,9 @@ function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
 
   const closingLineStart = content.indexOf('\n---', headerEnd);
   if (closingLineStart === -1) {
-    const probe = parseYamlRegion(content.slice(headerEnd));
-    if (Object.keys(probe).length >= UNTERMINATED_KEY_THRESHOLD) {
+    const region = content.slice(headerEnd);
+    const probe = parseYamlRegion(region);
+    if (Object.keys(probe).length >= UNTERMINATED_KEY_THRESHOLD && isFrontmatterShaped(region)) {
       warnUnusableInput({
         reason: UNUSABLE_REASON.FRONTMATTER_UNTERMINATED,
         source: sourcePath,

@@ -1737,7 +1737,9 @@ function rebuildCore(
 
   // §2 Decision: re-derive derived sections, preserve others. Order is
   // oldest-section-first so log entries appear in body order.
-  modified = reconcileCurrentPosition(modified, timestamp, log);
+  // sourcePath threaded so `state rebuild --dry-run` names the file: that branch reads STATE.md
+  // directly rather than through readModifyWriteStateMd, so nothing upstream has named it yet.
+  modified = reconcileCurrentPosition(modified, timestamp, log, deps.sourcePath);
   modified = reconcileByPhaseTable(modified, deps, timestamp, log);
   modified = stripTemplatePlaceholders(modified, timestamp, log);
   modified = deduplicateSessionArchive(modified, timestamp, log);
@@ -1778,8 +1780,9 @@ function reconcileCurrentPosition(
   content: string,
   timestamp: string,
   log: RebuildLogEntry[],
+  sourcePath?: string,
 ): string {
-  const fm = extractFrontmatter(content) as Record<string, unknown>;
+  const fm = extractFrontmatter(content, sourcePath) as Record<string, unknown>;
   if (!fm || typeof fm !== 'object') return content;
 
   let modified = content;

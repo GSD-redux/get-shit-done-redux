@@ -299,10 +299,10 @@ describe('frontmatter: reconstructFrontmatter strict-YAML property (#1779)', () 
 //     sites: whatever the argument does, it must never reach the parsed result, and the
 //     LF/CRLF equivalence the parser already promised must survive the new branch.
 describe('frontmatter: extractFrontmatter sourcePath is parse-inert (#1882)', () => {
-  test('property: the optional path argument never changes the parsed result', () => {
+  test('property: the optional path argument never changes the parsed result', (t) => {
     const original = process.stderr.write;
+    t.after(() => { process.stderr.write = original; });
     process.stderr.write = () => true;
-    try {
       fc.assert(
         fc.property(
           fc.oneof(
@@ -319,15 +319,12 @@ describe('frontmatter: extractFrontmatter sourcePath is parse-inert (#1882)', ()
           }
         )
       );
-    } finally {
-      process.stderr.write = original;
-    }
   });
 
-  test('property: a document and its CRLF twin parse identically', () => {
+  test('property: a document and its CRLF twin parse identically', (t) => {
     const original = process.stderr.write;
+    t.after(() => { process.stderr.write = original; });
     process.stderr.write = () => true;
-    try {
       fc.assert(
         fc.property(fc.string({ maxLength: 300 }), (content) => {
           const lf = content.replace(/\r\n/g, '\n');
@@ -339,8 +336,5 @@ describe('frontmatter: extractFrontmatter sourcePath is parse-inert (#1882)', ()
           );
         })
       );
-    } finally {
-      process.stderr.write = original;
-    }
   });
 });
