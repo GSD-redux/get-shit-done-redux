@@ -889,6 +889,14 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   const explicitFiles = files && files.length > 0;
   const filesToStage = explicitFiles ? files : ['.planning/'];
   const stagedPaths: string[] = [];
+  // #2608: a `git add` that fails must abort the commit, not be skipped.
+  // #2523 stopped a failed path entering the commit pathspec, but skipping it
+  // silently left two bad outcomes: a PARTIAL commit when only some requested
+  // paths failed, and a misleading `nothing_to_commit` when all of them did —
+  // in both cases the original staging error (permissions, unwritable index in
+  // a linked worktree, timeout) was discarded and the operator saw a downstream
+  // pathspec error pointing at an innocent file.
+  const stagingFailures: Array<{ file: string; error: string; timed_out: boolean }> = [];
   for (const file of filesToStage) {
     const fullPath = path.resolve(cwd, file);
     if (!fs.existsSync(fullPath)) {
@@ -908,8 +916,40 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       // cmdCommitToSubrepo's exitCode-gated push.
       if (addResult.exitCode === 0) {
         stagedPaths.push(file);
+      } else {
+        // `SpawnResultOutput.error` is typed `Error | null`; widen to the errno
+        // shape by ANNOTATION rather than assertion — `Error` is assignable to
+        // `NodeJS.ErrnoException` (its extra fields are optional), so an `as`
+        // cast here trips no-unnecessary-type-assertion.
+        const addErr: NodeJS.ErrnoException | null = addResult.error;
+        stagingFailures.push({
+          file,
+          error: addResult.stderr || addResult.stdout,
+          // The projection exposes a timeout distinctly (#2608 AC5); this is the
+          // same SIGTERM+ETIMEDOUT idiom worktree-safety.cts uses.
+          timed_out: addResult.signal === 'SIGTERM' && addErr?.code === 'ETIMEDOUT',
+        });
       }
     }
+  }
+
+  // #2608: fail closed before `git commit` runs. Checked ahead of the
+  // nothing_to_commit branch below so a run where EVERY path failed to stage
+  // reports the staging cause rather than "nothing to commit", and ahead of the
+  // commit itself so a multi-file scope never partially commits the subset that
+  // happened to stage.
+  if (stagingFailures.length > 0) {
+    const first = stagingFailures[0];
+    const result = {
+      committed: false,
+      hash: null,
+      reason: first.timed_out ? 'staging_timeout' : 'staging_failed',
+      file: first.file,
+      error: first.error,
+      failures: stagingFailures,
+    };
+    output(result, raw, 'failed');
+    return;
   }
 
   // Commit — when the caller declared a scope (--files), append a pathspec so
