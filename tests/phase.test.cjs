@@ -2832,7 +2832,11 @@ describe('phase complete canonical verification gate (#1522)', () => {
     const errorPayload = JSON.parse(result.error);
     assert.equal(errorPayload.reason, 'phase_verification_incomplete');
     assert.match(errorPayload.message, /stale/i);
-    assert.match(errorPayload.message, /\/gsd:verify-work 0?1/);
+    // #2617: the blocked-completion message now projects next_command onto the
+    // runtime's installed surface. This project has no runtime configured, so it
+    // takes the `claude` default — the canonical `/gsd-` hyphen form. The colon
+    // form this previously asserted is the deprecated shape #2617 removed.
+    assert.match(errorPayload.message, /\/gsd-verify-work 0?1/);
     assert.equal(fs.readFileSync(roadmapPath, 'utf-8'), beforeRoadmap);
     assert.equal(fs.readFileSync(statePath, 'utf-8'), beforeState);
   });
