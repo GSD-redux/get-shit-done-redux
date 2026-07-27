@@ -2536,8 +2536,9 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
       // with explicit '/' separators rather than path.join).
       relPath: string,
       content: string,
+      sourcePath?: string,
     ): boolean {
-      const frontmatter = extractFrontmatter(content);
+      const frontmatter = extractFrontmatter(content, sourcePath);
       const dirPart = relPath.replace(/\/SKILL\.md$/, '');
       const stem = dirPart.includes('/') ? dirPart.split('/').pop()! : dirPart;
       const name = (frontmatter['name'] as string) || stem;
@@ -2579,7 +2580,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
       const skillMdPath = path.join(rootPath, entry.name, 'SKILL.md');
       const content = platformReadSync(skillMdPath);
       if (content !== null) {
-        if (pushSkillEntry(`${entry.name}/SKILL.md`, content)) skillCount++;
+        if (pushSkillEntry(`${entry.name}/SKILL.md`, content, skillMdPath)) skillCount++;
       }
 
       // Nested layout: <entry>/skills/<stem>/SKILL.md
@@ -2604,7 +2605,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
         // Use forward-slash separator explicitly so manifest paths are posix-style
         // on all platforms, matching the flat-layout behaviour above.
         const relPath = `${entry.name}/skills/${nested.name}/SKILL.md`;
-        if (pushSkillEntry(relPath, nestedContent)) skillCount++;
+        if (pushSkillEntry(relPath, nestedContent, nestedSkillMd)) skillCount++;
       }
     }
 

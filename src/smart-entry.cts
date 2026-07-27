@@ -280,7 +280,7 @@ function readStateFile(statePath: string): {
   } catch {
     return null;
   }
-  const fm = extractFrontmatter(content) as Record<string, unknown>;
+  const fm = extractFrontmatter(content, statePath) as Record<string, unknown>;
   const body = content.replace(/^---[\s\S]*?---\s*/, '');
   return { fm, body };
 }

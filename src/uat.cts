@@ -98,7 +98,8 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
 
     // Process UAT files
     for (const file of files.filter(f => f.includes('-UAT') && f.endsWith('.md'))) {
-      const content = fs.readFileSync(path.join(phaseDir, file), 'utf-8');
+      const uatFilePath = path.join(phaseDir, file);
+      const content = fs.readFileSync(uatFilePath, 'utf-8');
       const items = parseUatItems(content);
       if (items.length > 0) {
         results.push({
@@ -107,7 +108,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           file,
           file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, file))),
           type: 'uat',
-          status: (extractFrontmatter(content).status as string || 'unknown'),
+          status: (extractFrontmatter(content, uatFilePath).status as string || 'unknown'),
           items,
         });
       }
@@ -115,10 +116,11 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
 
     // Process VERIFICATION files
     for (const file of files.filter(f => f.includes('-VERIFICATION') && f.endsWith('.md'))) {
-      const content = fs.readFileSync(path.join(phaseDir, file), 'utf-8');
-      const status = extractFrontmatter(content).status as string || 'unknown';
+      const verificationFilePath = path.join(phaseDir, file);
+      const content = fs.readFileSync(verificationFilePath, 'utf-8');
+      const status = extractFrontmatter(content, verificationFilePath).status as string || 'unknown';
       if (status === 'human_needed' || status === 'gaps_found') {
-        const items = parseVerificationItems(content, status);
+        const items = parseVerificationItems(content, status, verificationFilePath);
         if (items.length > 0) {
           results.push({
             phase: phaseNum,
@@ -743,7 +745,7 @@ function rawGapEntryText(entryLines: string[]): string {
 
 // ─── parseVerificationItems ───────────────────────────────────────────────────
 
-function parseVerificationItems(content: string, status: string): UatItem[] {
+function parseVerificationItems(content: string, status: string, sourcePath?: string): UatItem[] {
   const items: UatItem[] = [];
   if (status === 'human_needed') {
     // #2286: the frontmatter's structured `human_verification:` YAML array
@@ -752,7 +754,7 @@ function parseVerificationItems(content: string, status: string): UatItem[] {
     // whose frontmatter declares the array doesn't require any particular
     // `## Human Verification` body shape at all. An absent or empty array
     // (length 0) falls back to the body scan unchanged.
-    const frontmatter = extractFrontmatter(content);
+    const frontmatter = extractFrontmatter(content, sourcePath);
     const humanVerification = frontmatter.human_verification;
     if (Array.isArray(humanVerification) && humanVerification.length > 0) {
       humanVerification.forEach((entry, idx) => {

@@ -781,7 +781,7 @@ function cmdRoadmapAnnotateDependencies(cwd: string, phaseNum: string | null | u
     const planPath = path.join(path.resolve(cwd, phaseInfo.directory), planFile);
     try {
       const content = fs.readFileSync(planPath, 'utf-8');
-      const fm = extractFrontmatter(content);
+      const fm = extractFrontmatter(content, planPath);
       const wave = parseInt(fm.wave as string, 10) || 1;
       const planId = planFile.replace(/-PLAN\.md$/i, '').replace(/PLAN\.md$/i, '');
       const truths = parseMustHavesBlock(content, 'truths') || [];

@@ -237,9 +237,10 @@ function evaluateUatPassed(
   // ── Process UAT files ──────────────────────────────────────────────────────
   for (const file of uatFileNames) {
     uatFiles.push(file);
+    const uatFilePath = path.join(phaseFullDir, file);
     let raw = '';
     try {
-      raw = fs.readFileSync(path.join(phaseFullDir, file), 'utf-8');
+      raw = fs.readFileSync(uatFilePath, 'utf-8');
     } catch {
       blockers.push(`${file}: could not read file`);
       continue;
@@ -254,7 +255,7 @@ function evaluateUatPassed(
       blockers.push(`${file}: malformed markdown (unterminated fence or comment)`);
     }
 
-    const fm = extractFrontmatter(raw) as Record<string, unknown>;
+    const fm = extractFrontmatter(raw, uatFilePath) as Record<string, unknown>;
 
     // File-level frontmatter status check
     if (fm['status'] && BLOCKING_UAT_FM_STATUSES.has(fm['status'] as string)) {
@@ -288,15 +289,16 @@ function evaluateUatPassed(
   let hasPassingVerification = false;
   for (const file of verFileNames) {
     verificationFiles.push(file);
+    const verificationFilePath = path.join(phaseFullDir, file);
     let raw = '';
     try {
-      raw = fs.readFileSync(path.join(phaseFullDir, file), 'utf-8');
+      raw = fs.readFileSync(verificationFilePath, 'utf-8');
     } catch {
       blockers.push(`${file}: could not read verification file`);
       continue;
     }
 
-    const vfm = extractFrontmatter(raw) as Record<string, unknown>;
+    const vfm = extractFrontmatter(raw, verificationFilePath) as Record<string, unknown>;
     const vStatus = vfm['status'] as string | undefined;
 
     if (vStatus && BLOCKING_VERIFICATION_FM_STATUSES.has(vStatus)) {

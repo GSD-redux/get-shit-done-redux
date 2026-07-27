@@ -150,12 +150,24 @@ function warnUnusableInput({ reason, source, content }: WarnUnusableInputArgs): 
     : null;
   if (prose === null) return false;
 
-  // Computed once: on the path-less branch this hashes the content, and doing it twice
-  // (once for the key, once for the message) is pure waste.
+  // One file must produce one diagnostic even when it is parsed more than once per run by
+  // callers that hold different amounts of information about it. A read wrapper knows the
+  // path; a pure core downstream (state-transition.cts, per ADR-1769) is handed only the
+  // string and cannot know it. Keying those two parses separately reported the SAME
+  // truncated STATE.md twice, under a path key and a digest key.
+  //
+  // So every emission registers BOTH keys it could ever be identified by, and checks both
+  // before writing. Whichever caller gets there first speaks; the other is suppressed.
+  // Distinct files with distinct content still key distinctly, which is the property
+  // ADR-1411 actually requires; two different files whose truncated content is
+  // byte-identical collapse to one diagnostic, which is the documented limit.
   const identity = sourceKey(source, content);
-  const key = `${identity}\u0000${reason}`;
-  if (_warnedUnusableInputs.has(key)) return false;
-  _warnedUnusableInputs.add(key);
+  const keys = [`${identity}\u0000${reason}`];
+  if (typeof content === 'string' && identity.startsWith('p\u0000')) {
+    keys.push(`${sourceKey(undefined, content)}\u0000${reason}`);
+  }
+  if (keys.some((k) => _warnedUnusableInputs.has(k))) return false;
+  for (const k of keys) _warnedUnusableInputs.add(k);
 
   try {
     process.stderr.write(`gsd: warning — ${displaySource(identity)}: ${prose}. (#1879)\n`);

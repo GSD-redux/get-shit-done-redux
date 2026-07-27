@@ -407,7 +407,7 @@ function readVerificationStatus(
   let rawStatus: string | null = null;
   try {
     const content = fsImpl.readFileSync(filePath, 'utf-8');
-    const fm = extractFrontmatter(content);
+    const fm = extractFrontmatter(content, filePath);
     const statusVal = fm['status'];
     // status is always a scalar string in a well-formed VERIFICATION.md frontmatter;
     // only accept string values — arrays and objects are not valid status values.

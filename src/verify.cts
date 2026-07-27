@@ -724,7 +724,7 @@ function cmdVerifyPlanStructure(cwd: string, filePath: string, raw: boolean): vo
     return;
   }
 
-  const fm = extractFrontmatter(content);
+  const fm = extractFrontmatter(content, fullPath);
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -1021,7 +1021,7 @@ function collectPromisedFilesAtOrAfterWave(phaseDir: string, minWave: number): S
     const planFullPath = path.join(phaseDir, planFile);
     const planContent = safeReadFile(planFullPath);
     if (!planContent) continue;
-    const fm = extractFrontmatter(planContent);
+    const fm = extractFrontmatter(planContent, planFullPath);
     const waveRaw = fm['wave'];
     const wave = typeof waveRaw === 'string' ? parseInt(waveRaw, 10) : (typeof waveRaw === 'number' ? waveRaw : NaN);
     if (isNaN(wave) || wave < minWave) continue;
@@ -1056,7 +1056,7 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
 
   // Derive the current plan's wave number and phase directory for wave-aware
   // missing-file handling (fix #1202).
-  const currentFm = extractFrontmatter(content);
+  const currentFm = extractFrontmatter(content, fullPath);
   const currentWaveRaw = currentFm['wave'];
   const currentWave = typeof currentWaveRaw === 'string'
     ? parseInt(currentWaveRaw, 10)
@@ -1364,8 +1364,9 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
         }
 
         for (const plan of plans) {
-          const content = fs.readFileSync(path.join(phasePath, plan), 'utf-8');
-          const fmData = extractFrontmatter(content);
+          const planFilePath = path.join(phasePath, plan);
+          const content = fs.readFileSync(planFilePath, 'utf-8');
+          const fmData = extractFrontmatter(content, planFilePath);
           if (!fmData['wave']) {
             warnings.push(`${phaseLabel}/${plan}: missing 'wave' in frontmatter`);
           }

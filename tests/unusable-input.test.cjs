@@ -271,6 +271,25 @@ describe('diagnostic deduplication', () => {
     assert.strictEqual(emitted, 1);
   });
 
+  test('one file parsed both with and without a path reports exactly once', () => {
+    // A read wrapper knows the path; a pure core downstream (state-transition.cts, per
+    // ADR-1769) is handed only the string. Keying those two parses separately reported the
+    // SAME truncated file twice, under a path key and a digest key.
+    _resetUnusableInputWarningsForTests();
+    const [, named] = parseUnder(TRUNCATED_LF, '/u/both-identities.md');
+    const [, anonymous] = parseUnder(TRUNCATED_LF, undefined);
+    assert.strictEqual(named, 1);
+    assert.strictEqual(anonymous, 0, 'the same file must not report twice under two keys');
+  });
+
+  test('widening the key does not merge two genuinely different files', () => {
+    _resetUnusableInputWarningsForTests();
+    const [, a] = parseUnder('---\nphase: 01\nplan: 02\n', '/u/widen-a.md');
+    const [, b] = parseUnder('---\nphase: 09\nplan: 09\n', '/u/widen-b.md');
+    assert.strictEqual(a, 1);
+    assert.strictEqual(b, 1, 'distinct content in distinct files must still both report');
+  });
+
   test('the reset seam actually clears state, so the same key can report again', () => {
     // #2674 shape: a reset that silently fails to clear turns every later dedup assertion
     // into a vacuous pass. Prove the seam by re-reporting a key that was just suppressed.

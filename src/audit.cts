@@ -160,7 +160,7 @@ function scanDebugSessions(planDir: string): DebugSessionItem[] {
     const content = platformReadSync(safeFilePath);
     if (content === null) continue;
 
-    const fm = extractFrontmatter(content);
+    const fm = extractFrontmatter(content, safeFilePath);
     const status = ((fm.status as string) || 'unknown').toLowerCase();
     if (status === 'resolved' || status === 'complete') continue;
 
@@ -246,7 +246,7 @@ function scanQuickTasks(planDir: string): QuickTaskItem[] {
       if (content === null) {
         status = 'unreadable';
       } else {
-        const fm = extractFrontmatter(content);
+        const fm = extractFrontmatter(content, safeSum);
         status = ((fm.status as string) || 'unknown').toLowerCase();
       }
     }
@@ -309,7 +309,7 @@ function scanThreads(planDir: string): ThreadItem[] {
     const content = platformReadSync(safeFilePath);
     if (content === null) continue;
 
-    const fm = extractFrontmatter(content);
+    const fm = extractFrontmatter(content, safeFilePath);
     let status = ((fm.status as string) || '').toLowerCase().trim();
 
     // Fall back to scanning body for ## Status: OPEN / IN PROGRESS
@@ -378,7 +378,7 @@ function scanTodos(planDir: string): TodoItem[] {
     const content = platformReadSync(safeFilePath);
     if (content === null) continue;
 
-    const fm = extractFrontmatter(content);
+    const fm = extractFrontmatter(content, safeFilePath);
 
     // Extract first line of body after frontmatter
     const bodyMatch = content.replace(/^---[\s\S]*?---\n?/, '');
@@ -436,7 +436,7 @@ function scanSeeds(planDir: string): SeedItem[] {
     const content = platformReadSync(safeFilePath);
     if (content === null) continue;
 
-    const fm = extractFrontmatter(content);
+    const fm = extractFrontmatter(content, safeFilePath);
     const status = ((fm.status as string) || 'dormant').toLowerCase();
 
     if (!unimplementedStatuses.has(status)) continue;
@@ -509,7 +509,7 @@ function scanUatGaps(planDir: string): UatGapItem[] {
       const content = platformReadSync(safeFilePath);
       if (content === null) continue;
 
-      const fm = extractFrontmatter(content);
+      const fm = extractFrontmatter(content, safeFilePath);
       const status = ((fm.status as string) || 'unknown').toLowerCase();
       const result = ((fm.result as string) || '').toLowerCase();
 
@@ -579,7 +579,7 @@ function scanVerificationGaps(planDir: string): VerificationGapItem[] {
       const content = platformReadSync(safeFilePath);
       if (content === null) continue;
 
-      const fm = extractFrontmatter(content);
+      const fm = extractFrontmatter(content, safeFilePath);
       const status = ((fm.status as string) || 'unknown').toLowerCase();
 
       if (status !== 'gaps_found' && status !== 'human_needed') continue;
@@ -641,7 +641,7 @@ function scanContextQuestions(planDir: string): ContextQuestionItem[] {
       const content = platformReadSync(safeFilePath);
       if (content === null) continue;
 
-      const fm = extractFrontmatter(content);
+      const fm = extractFrontmatter(content, safeFilePath);
 
       // Check frontmatter open_questions field
       let questions: string[] = [];

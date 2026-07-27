@@ -149,12 +149,13 @@ function determinePhaseStatus(plans: number, summaries: number, phaseDir: string
     const files = fs.readdirSync(phaseDir);
     const verificationFile = files.find(f => f === 'VERIFICATION.md' || f.endsWith('-VERIFICATION.md'));
     if (verificationFile) {
-      const content = platformReadSync(path.join(phaseDir, verificationFile)) || '';
+      const verificationFilePath = path.join(phaseDir, verificationFile);
+      const content = platformReadSync(verificationFilePath) || '';
       // #1159 (Defect A): read ONLY the frontmatter `status` key to avoid false
       // matches from historical body metadata such as `previous_status: gaps_found`.
       // Full-text regexes like /status:\s*gaps_found/ match the substring inside
       // `previous_status: gaps_found`, producing incorrect phase status labels.
-      const fm = extractFrontmatter(content) as Record<string, unknown>;
+      const fm = extractFrontmatter(content, verificationFilePath) as Record<string, unknown>;
       // Normalise to lower-case to preserve the prior case-insensitive behaviour
       // while reading only the frontmatter `status` key (not the full body text).
       const fmStatus = typeof fm['status'] === 'string' ? fm['status'].trim().toLowerCase() : '';
@@ -319,7 +320,7 @@ function cmdListSeeds(cwd: string, statusFilter: string | undefined, raw: boolea
     const content = platformReadSync(safeFilePath);
     if (content === null) continue;
 
-    const fm = extractFrontmatter(content) as Record<string, unknown>;
+    const fm = extractFrontmatter(content, safeFilePath) as Record<string, unknown>;
     const status = (fmStr(fm.status) || 'dormant').toLowerCase().trim() || 'dormant';
 
     // Match on the raw lowercased status (both sides already normalized);
@@ -423,10 +424,11 @@ function cmdHistoryDigest(cwd: string, raw: boolean): void {
       const summaries = fs.readdirSync(dirPath).filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
 
       for (const summary of summaries) {
-        const content = platformReadSync(path.join(dirPath, summary));
+        const summaryFilePath = path.join(dirPath, summary);
+        const content = platformReadSync(summaryFilePath);
         if (content === null) continue;
         try {
-          const fm = extractFrontmatter(content) as Record<string, unknown>;
+          const fm = extractFrontmatter(content, summaryFilePath) as Record<string, unknown>;
 
           const phaseNum = (fm['phase'] as string) || dir.split('-')[0];
 
@@ -1365,7 +1367,7 @@ function cmdSummaryExtract(cwd: string, summaryPath: string | undefined, fields:
   }
 
   const content = fs.readFileSync(fullPath, 'utf-8');
-  const fm = extractFrontmatter(content) as Record<string, unknown>;
+  const fm = extractFrontmatter(content, fullPath) as Record<string, unknown>;
 
   // Parse key-decisions into structured format
   const parseDecisions = (decisionsList: unknown) => {
