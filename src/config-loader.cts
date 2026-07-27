@@ -530,7 +530,7 @@ const _warnedUnusableConfig = new Set<string>();
  * silently discarded still gets no signal. That was the whole defect in #1880.
  */
 function _warnUnusableConfig(fault: ConfigFault): void {
-  const key = `${fault.path} ${fault.reason} ${fault.code}`;
+  const key = `${fault.path}${fault.reason}${fault.code}`;
   if (_warnedUnusableConfig.has(key)) return;
   _warnedUnusableConfig.add(key);
   const what = fault.reason === CONFIG_REASON.CONFIG_UNPARSEABLE

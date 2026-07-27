@@ -12,6 +12,9 @@ import path from 'node:path';
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 import { platformReadSync as safeReadFile, platformWriteSync } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputMod = require('./unusable-input.cjs');
+const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -52,18 +55,15 @@ function splitInlineArray(body: string): string[] {
   return items;
 }
 
-function extractFrontmatter(content: string): Frontmatter {
+/**
+ * Parse one already-delimited YAML region into a Frontmatter object.
+ *
+ * Extracted from `extractFrontmatter` (#1882) so the truncation probe below and the real
+ * parse run the *same* parser. A second, simpler "does this look like YAML?" matcher would
+ * be a parallel surface that drifts — exactly the generative-fix-divergence class.
+ */
+function parseYamlRegion(yaml: string): Frontmatter {
   const frontmatter: Frontmatter = {};
-  // Match frontmatter only at byte 0 — a `---` block later in the document
-  // body (YAML examples, horizontal rules) must never be treated as frontmatter.
-  const headerEnd = content.startsWith('---\r\n') ? 5 : content.startsWith('---\n') ? 4 : -1;
-  if (headerEnd === -1) return frontmatter;
-
-  const closingLineStart = content.indexOf('\n---', headerEnd);
-  if (closingLineStart === -1) return frontmatter;
-
-  const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
-  const yaml = content.slice(headerEnd, yamlEnd);
   const lines = yaml.split(/\r?\n/);
 
   // Stack to track nested objects: [{obj, key, indent}]
@@ -131,6 +131,51 @@ function extractFrontmatter(content: string): Frontmatter {
   }
 
   return frontmatter;
+}
+
+/**
+ * Extract frontmatter from a document.
+ *
+ * Returns `{}` when the document has no frontmatter — and, unchanged since #1882, also
+ * returns `{}` when the frontmatter fence was opened and never closed. That return value is
+ * deliberately preserved: ADR-1411's amendment requires the fallback to stay, because
+ * changing it would break callers that treat "absent" and "unusable" identically. What #1882
+ * adds is that the second case is no longer *silent*.
+ *
+ * The discriminator is the reason this is not simply "opened but never closed". A Markdown
+ * document whose first line is a thematic break (`---`) takes that exact branch, so flagging
+ * on the missing fence alone reports corruption on perfectly good Markdown. Instead the
+ * unterminated region is run through this module's own parser and reported only when it
+ * yields at least one key — i.e. only when the text actually looks like the frontmatter
+ * someone was in the middle of writing. This inverts the instinct already present in
+ * `parseMustHavesBlock` (warn when a block has content lines but parsed zero items).
+ *
+ * @param content Raw document text.
+ * @param sourcePath Optional resolved path, used to name the file in the diagnostic and to
+ *   key its deduplication. Optional because this function has 50-odd call sites and several
+ *   hold only an in-memory string; those dedup on a content digest instead.
+ */
+function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
+  // Match frontmatter only at byte 0 — a `---` block later in the document
+  // body (YAML examples, horizontal rules) must never be treated as frontmatter.
+  const headerEnd = content.startsWith('---\r\n') ? 5 : content.startsWith('---\n') ? 4 : -1;
+  if (headerEnd === -1) return {};
+
+  const closingLineStart = content.indexOf('\n---', headerEnd);
+  if (closingLineStart === -1) {
+    const probe = parseYamlRegion(content.slice(headerEnd));
+    if (Object.keys(probe).length > 0) {
+      warnUnusableInput({
+        reason: UNUSABLE_REASON.FRONTMATTER_UNTERMINATED,
+        source: sourcePath,
+        content,
+      });
+    }
+    return {};
+  }
+
+  const yamlEnd = content[closingLineStart - 1] === '\r' ? closingLineStart - 1 : closingLineStart;
+  return parseYamlRegion(content.slice(headerEnd, yamlEnd));
 }
 
 /**
@@ -547,7 +592,9 @@ function cmdFrontmatterGet(cwd: string, filePath: string, field: string | undefi
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
-  const fm = extractFrontmatter(content);
+  // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
+  // per file rather than per content digest (#1882, ADR-1411 wiring clause).
+  const fm = extractFrontmatter(content, fullPath);
   if (field) {
     const value = fm[field];
     if (value === undefined) { output({ error: 'Field not found', field }, raw, undefined); return; }
@@ -564,7 +611,9 @@ function cmdFrontmatterSet(cwd: string, filePath: string, field: string | undefi
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   if (!fs.existsSync(fullPath)) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
   const content = fs.readFileSync(fullPath, 'utf-8');
-  const fm = extractFrontmatter(content);
+  // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
+  // per file rather than per content digest (#1882, ADR-1411 wiring clause).
+  const fm = extractFrontmatter(content, fullPath);
   let parsedValue: unknown;
   try { parsedValue = JSON.parse(value as string); } catch { parsedValue = value; }
   fm[field as string] = parsedValue as FrontmatterValue;
@@ -603,7 +652,9 @@ function cmdFrontmatterMerge(cwd: string, filePath: string, data: string | undef
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   if (!fs.existsSync(fullPath)) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
   const content = fs.readFileSync(fullPath, 'utf-8');
-  const fm = extractFrontmatter(content);
+  // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
+  // per file rather than per content digest (#1882, ADR-1411 wiring clause).
+  const fm = extractFrontmatter(content, fullPath);
   let mergeData: Record<string, FrontmatterValue>;
   try { mergeData = JSON.parse(data as string) as Record<string, FrontmatterValue>; } catch { error('Invalid JSON for --data'); return; }
   Object.assign(fm, mergeData);
@@ -619,7 +670,9 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
-  const fm = extractFrontmatter(content);
+  // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
+  // per file rather than per content digest (#1882, ADR-1411 wiring clause).
+  const fm = extractFrontmatter(content, fullPath);
   const missing = schema.required.filter(f => fm[f] === undefined);
   const present = schema.required.filter(f => fm[f] !== undefined);
   output({ valid: missing.length === 0, missing, present, schema: schemaName }, raw, missing.length === 0 ? 'valid' : 'invalid');
