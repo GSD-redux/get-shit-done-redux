@@ -74,6 +74,12 @@ const SIZE_ONLY_WORKFLOWS = new Set([
   // scanned, exactly like docs-update.md. Splitting it per the progressive-
   // disclosure pattern is the real fix and is worth its own change.
   'gsd-core/workflows/review.md',
+  // ~50.2K after the #2711 omit-rule block. This file sat at 49,9xx chars on next —
+  // under the 50K prompt-stuffing threshold by ~200 — so, exactly like review.md above,
+  // it was going to trip on whatever was added to it next. Size-only: still fully
+  // injection scanned. Splitting it per the progressive-disclosure pattern is the real
+  // fix and is worth its own change.
+  'gsd-core/workflows/quick.md',
 ]);
 
 // ─── Scanner ────────────────────────────────────────────────────────────────

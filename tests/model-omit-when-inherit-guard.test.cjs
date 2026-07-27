@@ -25,7 +25,18 @@ const WORKFLOWS = path.join(ROOT, 'gsd-core', 'workflows');
  * plan-phase.md and execute-phase.md each state it in their own wording and both
  * are correct.
  */
+const OMIT_RULE_MARKER = "<!-- #2517 model-omit-on-inherit -->";
+
 function statesOmitRule(content) {
+  // Canonical form: the marker block, which links the rule's single source of truth.
+  // Preferred for new files because it is unambiguous and greppable, and because it
+  // carries no literal `model=` token — the installed Hermes copy of a workflow is
+  // asserted to contain none outside string literals (delegate_task has no per-call
+  // model parameter at all), so the older phrasing cannot be used everywhere.
+  if (content.includes(OMIT_RULE_MARKER)) return true;
+  // Legacy form: the rule stated inline in the file's own words. All four files that
+  // predate the marker (plan-phase, execute-phase, scan, ship) match this branch, and
+  // rewriting them to a template would churn correct files for no behavioral gain.
   const omitNearModel = /omit[\s\S]{0,200}model=|model=[\s\S]{0,200}omit/i.test(content);
   return omitNearModel && /inherit/i.test(content);
 }

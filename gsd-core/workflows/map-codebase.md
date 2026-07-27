@@ -146,7 +146,7 @@ Spawn 4 parallel gsd-codebase-mapper agents.
 
 <!-- #2517 model-omit-on-inherit -->
 
-> **Model omission (#2517).** Omit the `model=` parameter entirely from an `Agent()` call when the value it would carry (`mapper_model`) is `"inherit"` or empty — do NOT pass an empty or `"inherit"` model. An empty model 404s on every runtime without native tier aliases, which is the default on non-Claude runtimes (the installer writes `resolve_model_ids: "omit"`). Omitting the parameter inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
+> **Model omission (#2517).** Omit the `model` parameter entirely when the value it would carry (`mapper_model`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
 
 Use Agent tool with `subagent_type="gsd-codebase-mapper"`, `model="{mapper_model}"`, and `run_in_background=true` for parallel execution.
 
