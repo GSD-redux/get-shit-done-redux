@@ -16,7 +16,7 @@
   "agents/gsd-domain-researcher.agent.md": "d603239b3e9fe428",
   "agents/gsd-eval-auditor.agent.md": "3c03009564de55c8",
   "agents/gsd-eval-planner.agent.md": "14751876fc2b5f16",
-  "agents/gsd-executor.agent.md": "bc653b3325390f2a",
+  "agents/gsd-executor.agent.md": "79770a630b4f9e58",
   "agents/gsd-framework-selector.agent.md": "cafeec0b3489be45",
   "agents/gsd-integration-checker.agent.md": "30439b804927acc7",
   "agents/gsd-intel-updater.agent.md": "238c1a886f35a25c",

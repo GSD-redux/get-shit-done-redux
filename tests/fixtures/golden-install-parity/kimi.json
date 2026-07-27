@@ -62,7 +62,7 @@
   "agents/subagents/gsd-eval-auditor.yaml": "e3d868bd5fefe938",
   "agents/subagents/gsd-eval-planner.md": "70f8c5727bfb9876",
   "agents/subagents/gsd-eval-planner.yaml": "df8499f7af297ec2",
-  "agents/subagents/gsd-executor.md": "dfd141e63157f0ec",
+  "agents/subagents/gsd-executor.md": "6cbab4fe3103856a",
   "agents/subagents/gsd-executor.yaml": "e29422986636fd64",
   "agents/subagents/gsd-framework-selector.md": "a15b7aa1e0576e16",
   "agents/subagents/gsd-framework-selector.yaml": "fb52c31cde27b0e3",

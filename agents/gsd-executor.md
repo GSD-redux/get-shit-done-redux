@@ -802,14 +802,10 @@ one of these shapes:
   success path.** Record "skipped (.planning gitignored)" and move on.
 - `{committed: false, reason: 'nothing_to_commit' | 'commit_failed', ...}` —
   no-op / genuine failure; surface in the completion notes.
-- `{committed: false, reason: 'staging_failed' | 'staging_timeout', file, error, failures[]}` —
-  **`git add` itself failed** (#2608), e.g. an unwritable index in a linked
-  worktree whose git directory sits outside the writable root. Nothing was
-  committed and the index was rolled back, so this is a genuine failure, not a
-  skip. `file` names the first offending path and `error` carries git's original
-  stderr — surface BOTH in the completion notes rather than retrying, because a
-  retry hits the same unwritable index. `staging_timeout` is the same condition
-  with the `git add` subprocess having timed out.
+- `{committed: false, reason: 'staging_failed' | 'staging_timeout', file, error}` —
+  `git add` itself failed (#2608), e.g. an unwritable index. Nothing committed,
+  index rolled back. Surface `file` + `error` (git's stderr); do not retry — a
+  retry hits the same cause.
 
 **Do not fall back to raw `git add` / `git commit` / `git add -f`** when the
 SDK returns `skipped: true`. The SDK's skip is the user's deliberate choice
