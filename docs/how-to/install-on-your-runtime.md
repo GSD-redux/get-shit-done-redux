@@ -161,16 +161,13 @@ Skills land in `~/.codex/skills/gsd-*/SKILL.md`. Agents are written as standalon
 
 **Hook coverage**
 
-GSD registers the following Codex hook events automatically on install (requires Codex CLI 0.137.0+ for the stable hook-event schema):
+GSD registers the following supported Codex hook automatically on install:
 
 | Event | Hook | Purpose |
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js` | Update check at session open; Windows installs also emit a `commandWindows` field pointing to the `.cmd` shim so Codex picks the correct executor on Windows without requiring per-OS config regeneration |
-| `SubagentStart` | `gsd-context-monitor.js` | Inject context / GSD_AGENT_NAME awareness at subagent open |
-| `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |
-| `PostToolUse` | `gsd-context-monitor.js` | Mirror the context-monitor coverage available in Claude Code |
 
-All registered hooks are managed by GSD and are removed cleanly on `--uninstall`.
+Codex does not expose the remaining-context metric needed by GSD's context monitor, so Codex installs do not copy or register `gsd-context-monitor.js`. Agent-facing context warnings and GSD phase/lifecycle display are unsupported. On reinstall, GSD removes only exact current or recognized legacy context-monitor registrations and leaves customized or unknown hook commands unchanged. All supported GSD-managed hooks are removed cleanly on `--uninstall`.
 
 ---
 
