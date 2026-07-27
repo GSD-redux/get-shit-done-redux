@@ -45,7 +45,10 @@ const ROOT = path.join(__dirname, '..');
 const DESCRIPTOR = path.join(ROOT, 'capabilities', 'kimi-code', 'capability.json');
 const MATRIX = path.join(ROOT, 'docs', 'reference', 'host-integration-capability-matrix.md');
 
-const { profileOf } = require(path.join(ROOT, 'gsd-core/bin/lib/host-integration.cjs'));
+const {
+  profileOf,
+  negotiateHostCapabilities,
+} = require(path.join(ROOT, 'gsd-core/bin/lib/host-integration.cjs'));
 
 function kimiCodeAxes() {
   return JSON.parse(fs.readFileSync(DESCRIPTOR, 'utf8')).runtime.hostIntegration;
@@ -167,6 +170,42 @@ describe('#2603: axis values inherited from the Python kimi descriptor are corre
     // this makes resolveDispatchType return `gsd-planner` unchanged, which kimi-code
     // cannot dispatch (docs/migration/kimi-to-kimi-code.md).
     assert.equal(kimiCodeAxes().dispatch.namedDispatch, false);
+  });
+
+  test('the undocumented maxDepth sentinel is reported as a sentinel, not as malformed', () => {
+    // Surfaced by this change: maxDepth was the ONE dispatch sub-axis with no
+    // sentinel-specific warning, so the documented fail-closed value was reported
+    // as "missing or not a number" — indistinguishable from a genuinely broken
+    // descriptor. kimi-code would have been the sixth runtime to hit that path.
+    const { warnings } = negotiateHostCapabilities(kimiCodeAxes());
+
+    assert.ok(
+      warnings.some((w) => w.includes('dispatch.maxDepth is undocumented')),
+      `expected a maxDepth sentinel warning, got: ${JSON.stringify(warnings)}`,
+    );
+    assert.ok(
+      !warnings.some((w) => w.includes('maxDepth is missing or not a number')),
+      'the documented sentinel must not be reported as a malformed value',
+    );
+  });
+
+  test('a genuinely malformed maxDepth is still reported as malformed', () => {
+    // Boundary: the sentinel carve-out must not swallow the real error case.
+    const axes = kimiCodeAxes();
+    const malformed = { ...axes, dispatch: { ...axes.dispatch, maxDepth: 'not-a-number' } };
+    const { warnings } = negotiateHostCapabilities(malformed);
+
+    assert.ok(
+      warnings.some((w) => w.includes('maxDepth is missing or not a number')),
+      `expected the malformed-value warning, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  test('both maxDepth paths still degrade the effective value closed to 0', () => {
+    const axes = kimiCodeAxes();
+    assert.equal(negotiateHostCapabilities(axes).effective.dispatch.maxDepth, 0);
+    const malformed = { ...axes, dispatch: { ...axes.dispatch, maxDepth: 'not-a-number' } };
+    assert.equal(negotiateHostCapabilities(malformed).effective.dispatch.maxDepth, 0);
   });
 
   test('the axes that were already correct are left intact', () => {

@@ -454,6 +454,13 @@ function negotiateHostCapabilities(
     if (hostDispatch.isolation === 'undocumented') {
       warnings.push(`dispatch.isolation is undocumented — degraded closed (none)`);
     }
+    if (hostDispatch.maxDepth === UNDOCUMENTED) {
+      // #2603: maxDepth was the one dispatch sub-axis with no sentinel-specific
+      // warning, so a descriptor carrying the documented fail-closed sentinel was
+      // reported as `missing or not a number` — indistinguishable from a genuinely
+      // malformed descriptor. Six shipped runtimes use the sentinel here.
+      warnings.push(`dispatch.maxDepth is undocumented — degraded closed (0)`);
+    }
 
     effectiveNamedDispatch      = (hostDispatch.namedDispatch === true) && engineDispatch.namedDispatch;
     effectiveNested             = (hostDispatch.nested === true) && engineDispatch.nested;
@@ -475,10 +482,14 @@ function negotiateHostCapabilities(
       ? hostIso as DispatchIsolation
       : 'none';
 
-    // maxDepth: missing/non-number/non-finite → 0 + warning
+    // maxDepth: missing/non-number/non-finite → 0 + warning. The documented
+    // 'undocumented' sentinel also degrades to 0, but is reported by the
+    // sentinel-specific warning above rather than as a malformed value (#2603).
     let hostMaxDepth: number;
     if (typeof hostDispatch.maxDepth !== 'number' || !Number.isFinite(hostDispatch.maxDepth)) {
-      warnings.push(`host dispatch.maxDepth is missing or not a number — treating as 0`);
+      if (hostDispatch.maxDepth !== UNDOCUMENTED) {
+        warnings.push(`host dispatch.maxDepth is missing or not a number — treating as 0`);
+      }
       hostMaxDepth = 0;
     } else {
       hostMaxDepth = hostDispatch.maxDepth;
