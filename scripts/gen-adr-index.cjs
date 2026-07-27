@@ -347,10 +347,12 @@ function validate({ adrs, byFile, byId, nonConforming }) {
   //
   // Only a RATIFIED (Accepted) claimant is owed the back-link. A Proposed ADR's
   // supersession claim is prospective — it has not taken effect, so stamping its
-  // target as superseded would assert something untrue (ADR-857 is Proposed and
-  // claims to generalize ADR-0011/ADR-58, both of which are Accepted and live).
-  // When such an ADR is ratified to Accepted, this check starts demanding the
-  // back-links at exactly the right moment.
+  // target as superseded would assert something untrue. When such an ADR is
+  // ratified to Accepted, this check starts demanding the back-links at exactly
+  // the right moment — as ADR-857 shows: it was Proposed when this guard was
+  // written, was ratified to Accepted on 2026-07-17 (its claim over ADR-0011 /
+  // ADR-58 restated as "Subsumes", since both remain Accepted and live), and
+  // both targets now carry the reciprocal "Subsumed by" back-link this demands.
   const OPPOSITE = { out: 'in', in: 'out' };
   for (const a of adrs) {
     for (const kind of Object.keys(RELATION_SPEC)) {
