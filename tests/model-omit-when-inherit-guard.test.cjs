@@ -18,28 +18,116 @@ const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOWS = path.join(ROOT, 'gsd-core', 'workflows');
 
-// Each orchestrator that spawns model-tagged subagents must carry the rule.
-const GUARDED = [
-  'gsd-core/workflows/plan-phase.md',
-  'gsd-core/workflows/execute-phase.md',
-  // #2684 — both dispatched with an unbound placeholder and no omit rule.
-  'gsd-core/workflows/scan.md',
-  'gsd-core/workflows/ship.md',
-];
+/**
+ * Does this body state the omit rule? The rule is "omit the model= param when the
+ * bound *_model is inherit/empty", so require `omit` adjacent to `model=` AND the
+ * word `inherit`. Deliberately a PROPERTY check, not a fixed template string:
+ * plan-phase.md and execute-phase.md each state it in their own wording and both
+ * are correct.
+ */
+function statesOmitRule(content) {
+  const omitNearModel = /omit[\s\S]{0,200}model=|model=[\s\S]{0,200}omit/i.test(content);
+  return omitNearModel && /inherit/i.test(content);
+}
 
-test('#2517: orchestrators document omitting model= when *_model is inherit/empty', () => {
-  for (const rel of GUARDED) {
-    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    // The rule: "omit the model= param ... when *_model is inherit/empty".
-    // Require "omit" near "model=" AND "inherit" present — the three signals of the rule.
-    const omitNearModel = /omit[\s\S]{0,200}model=|model=[\s\S]{0,200}omit/i.test(content);
-    assert.ok(
-      omitNearModel && /inherit/i.test(content),
-      `${rel}: must instruct the agent to OMIT the model= param from Agent() calls when the ` +
-        `*_model var is "inherit" or empty (#2517) — else model="" 404s on non-Claude runtimes ` +
-        `(resolve_model_ids:"omit" + model_profile:"inherit" yields an empty model string).`,
-    );
+/**
+ * #2711 — the guarded set is DERIVED from the corpus: every workflow that emits a
+ * `model="{…}"` dispatch site must carry the rule.
+ *
+ * This replaces a hand-maintained array. That array was a Goodhart metric — it
+ * reported green across 15 non-compliant files for no better reason than that
+ * nobody had added them to it. Deriving the set is what makes a 16th file
+ * impossible to add silently.
+ */
+function workflowsThatDispatchWithAModel() {
+  return fs
+    .readdirSync(WORKFLOWS)
+    .filter((f) => f.endsWith('.md'))
+    .map((f) => ({ file: f, content: fs.readFileSync(path.join(WORKFLOWS, f), 'utf8') }))
+    .filter((w) => /model="\{/.test(w.content));
+}
+
+test('#2517: every workflow that dispatches model= documents omitting it on inherit/empty', () => {
+  const dispatching = workflowsThatDispatchWithAModel();
+
+  // Non-vacuity: an empty or truncated derivation is not a passing guard.
+  assert.ok(
+    dispatching.length >= 17,
+    `expected >=17 model=-dispatching workflows, derived ${dispatching.length} — ` +
+      'the derivation itself is broken, so this guard proves nothing.',
+  );
+
+  // Report ALL offenders in one message rather than stopping at the first, so a
+  // sweep can be completed in a single pass.
+  const missing = dispatching.filter((w) => !statesOmitRule(w.content)).map((w) => w.file);
+  assert.deepEqual(
+    missing,
+    [],
+    `these workflows dispatch model="{…}" but never tell the orchestrator to OMIT the ` +
+      `model= param when the bound *_model is "inherit" or empty (#2517/#2711):\n  ` +
+      `${missing.join('\n  ')}\n` +
+      'Without the rule, model="" is passed verbatim and 404s on every runtime lacking ' +
+      'native tier aliases — which is the DEFAULT state on non-Claude runtimes, where ' +
+      'the installer writes resolve_model_ids:"omit". See ' +
+      'gsd-core/references/model-profile-resolution.md.',
+  );
+});
+
+test('#2711: the guarded set is derived from dispatch sites, not hand-maintained', () => {
+  const derived = workflowsThatDispatchWithAModel().map((w) => w.file);
+
+  // limit: a workflow with exactly one dispatch site is still guarded.
+  assert.ok(derived.includes('audit-milestone.md'), 'a single-site workflow must be derived in');
+  // limit+1: a many-site workflow appears once, not once per site.
+  assert.equal(
+    derived.filter((f) => f === 'docs-update.md').length,
+    1,
+    'a workflow with 10 dispatch sites must be derived exactly once',
+  );
+  // limit-1: a workflow that never emits model= must NOT be dragged in.
+  const nonDispatching = fs
+    .readdirSync(WORKFLOWS)
+    .filter((f) => f.endsWith('.md') && !/model="\{/.test(fs.readFileSync(path.join(WORKFLOWS, f), 'utf8')));
+  assert.ok(nonDispatching.length > 0, 'expected some workflows to dispatch no model= at all');
+  for (const f of nonDispatching) {
+    assert.ok(!derived.includes(f), `${f} emits no model= and must not be required to carry the rule`);
   }
+});
+
+test('#2711: detects a dispatching workflow that lacks the rule', () => {
+  const site = 'Agent(subagent_type="gsd-planner", model="{planner_model}")';
+
+  assert.equal(statesOmitRule(`# doc\n${site}\n`), false, 'a bare dispatch site must be reported');
+
+  // plan-phase.md's own wording — the guard checks the property, not a template.
+  const planPhaseWording =
+    '**#2517:** omit the `model=` param from an `Agent()` call when its ' +
+    '`researcher`/`planner`/`checker`_model is `"inherit"` or empty.';
+  assert.equal(statesOmitRule(`# doc\n${planPhaseWording}\n${site}\n`), true);
+
+  // execute-phase.md's differently-worded copy must also satisfy it.
+  const executePhaseWording =
+    '**Model resolution:** If `executor_model` is `"inherit"`, omit the `model=` ' +
+    'parameter from all `Agent()` calls.';
+  assert.equal(statesOmitRule(`# doc\n${executePhaseWording}\n${site}\n`), true);
+
+  // "omit" alone, with no mention of inherit, is not the rule.
+  assert.equal(statesOmitRule(`# doc\nomit the \`model=\` param sometimes.\n${site}\n`), false);
+});
+
+test('#2711: rule detection is CRLF-safe', () => {
+  const body = [
+    '# doc',
+    '**#2517:** omit the `model=` param when the bound `planner_model` is `"inherit"` or empty.',
+    'Agent(subagent_type="gsd-planner", model="{planner_model}")',
+    '',
+  ];
+  assert.equal(statesOmitRule(body.join('\n')), true);
+  assert.equal(
+    statesOmitRule(body.join('\r\n')),
+    statesOmitRule(body.join('\n')),
+    'CRLF input must yield the same verdict as LF (recurring class: #1658/#1668/#2206/#2449/#2450)',
+  );
 });
 
 // ---------------------------------------------------------------------------
