@@ -148,6 +148,71 @@ test('#2568: the debugger keeps its own commit step for the single-spawn path', 
   );
 });
 
+test('#2568: every token substituted into a commit command is a declared session parameter', () => {
+  // The first cut of this fix pasted `{debug_dir}` straight from the issue's suggested
+  // patch. That variable is real in gsd-core/workflows/debug.md — the ORCHESTRATOR
+  // receives it from init JSON — but this agent never does: <session_parameters>
+  // declares only slug, debug_file_path, symptoms_prefilled, tdd_mode, goal and
+  // specialist_dispatch_enabled. An unbound token makes --files resolve to a
+  // nonexistent path, cmdCommit skips missing explicit files, and the doc silently
+  // never commits — reproducing #2568 through a different broken path. Same class as
+  // #2684's dangling placeholders.
+  const body = manager();
+
+  const block = body.slice(body.indexOf('<session_parameters>'), body.indexOf('</session_parameters>'));
+  const declared = new Set([...block.matchAll(/^- `([a-z_]+)`/gm)].map((m) => m[1]));
+  assert.ok(declared.size >= 5, `precondition: session parameters parsed, got ${declared.size}`);
+
+  const commitLines = [...body.matchAll(/gsd_run query commit[^\n]*/g)].map((m) => m[0]);
+  assert.ok(commitLines.length >= 2, `expected the resolved + checkpoint commits, got ${commitLines.length}`);
+
+  for (const line of commitLines) {
+    for (const [, token] of line.matchAll(/\{([a-z_]+)\}/g)) {
+      assert.ok(
+        declared.has(token),
+        `{${token}} is substituted into a commit command but is not a declared session ` +
+          `parameter — the agent has no value for it (#2568/#2684 dangling-substitution class): ${line}`,
+      );
+    }
+  }
+});
+
+test('#2568: the commit block defines gsd_run in its own shell', () => {
+  // Shell state does not persist across tool invocations, and the Step 2 preamble is
+  // ~230 lines and an entire spawn-and-loop earlier. gsd-debugger.md redeclares the
+  // full preamble immediately before each of its own gsd_run call sites; the commit
+  // block must do the same or the call is "gsd_run: command not found".
+  const body = manager();
+  const commitAt = body.indexOf('gsd_run query commit');
+  assert.notEqual(commitAt, -1, 'precondition: the commit call exists');
+
+  const preambleBefore = body.lastIndexOf('_GSD_SHIM_NAME=', commitAt);
+  assert.notEqual(preambleBefore, -1, 'a gsd_run preamble must precede the commit call');
+
+  // It must be the SAME fenced block, not merely earlier in the file: no summary
+  // shape or spawn may intervene, which would mean a separate shell.
+  const between = body.slice(preambleBefore, commitAt);
+  assert.doesNotMatch(
+    between,
+    /^## /m,
+    'the preamble must be in the commit block itself — a step boundary between them ' +
+      'means a different shell invocation, where gsd_run is undefined',
+  );
+});
+
+test('#2568: the in-session fix commit is idempotent', () => {
+  // gsd-debugger.md's archive_session already commits the fix on the confirmed-checkpoint
+  // path, which is the standard find_and_fix flow. A bare `git commit` with nothing
+  // staged exits non-zero and would abort this step before the summary is returned.
+  const body = manager();
+  assert.match(
+    body,
+    /git diff --cached --quiet \|\| git commit/,
+    'the fix-code commit must be guarded on staged content — archive_session may have ' +
+      'already committed it, and an unguarded git commit exits non-zero on an empty diff',
+  );
+});
+
 // ── The commit_docs gate the whole fix relies on — behavioral, not assumed ──
 
 function seedDoc(dir) {
