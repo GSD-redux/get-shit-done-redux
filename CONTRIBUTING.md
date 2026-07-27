@@ -775,7 +775,11 @@ npm run setup:merge-driver   # once per clone: conflicts resolve to your copy
 npm run regen:derived        # then recompute, before committing
 ```
 
-`regen:derived` replaces the six separate generator invocations it used to take.
+`regen:derived` replaces the seven separate invocations this used to take (`npm run
+build` plus six more), and runs them in dependency order — `gen:golden` last, because it
+hashes installed output. It covers twelve generators: the eleven that produce committed
+artifacts, plus `sync-manifest-versions`, which `npm run lint:generated-sync` also checks —
+without it, the command that claims to regenerate everything could still leave that gate red.
 Full guide, including what the driver deliberately does not do:
 [docs/TESTING-SUITES.md](docs/TESTING-SUITES.md) → "the baselines or golden fixtures
 conflict on merge".

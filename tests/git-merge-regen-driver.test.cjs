@@ -25,7 +25,7 @@ const {
   GITDIR_SOURCE,
   NOTICE_WINDOW_MS,
   resolveGitDir,
-  planResolution,
+  resolveAndRecord,
   planInstall,
 } = require(DRIVER_PATH);
 
@@ -76,13 +76,17 @@ function writeOurs(dir, content = 'ours-content\n') {
   return p;
 }
 
-/** The argv shape git actually supplies: [%O, %A, %B, %L, %P]. */
-function gitArgv(dir, realPath = 'tests/workflow-size-baseline.json') {
+/**
+ * The argv shape git actually supplies under the registered command: [%O, %A, %B, %L].
+ * `%P` is deliberately NOT registered — see planInstall's comment on shell interpolation.
+ * `extra` lets one test prove a stray 5th entry (an old registration) is ignored.
+ */
+function gitArgv(dir, ...extra) {
   const o = path.join(dir, '.merge_file_ANC');
   const b = path.join(dir, '.merge_file_THEIRS');
   fs.writeFileSync(o, '');
   fs.writeFileSync(b, 'theirs-content\n');
-  return [o, writeOurs(dir), b, '7', realPath];
+  return [o, writeOurs(dir), b, '7', ...extra];
 }
 
 function readMarker(gitDir) {
@@ -286,35 +290,32 @@ describe('resolveGitDir', () => {
   });
 });
 
-// --- planResolution: happy & boundary (rows 20-29) -------------------------
+// --- resolveAndRecord: happy & boundary (rows 20-29) -------------------------
 
-describe('planResolution — resolution and the notice window', () => {
+describe('resolveAndRecord — resolution and the notice window', () => {
   test('acceptsOursAndNoticesOnTheFirstResolution', (t) => {
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     fs.mkdirSync(gitDir);
 
-    const r = planResolution({ argv: gitArgv(dir), gitDir, now: 1_000_000 });
+    const r = resolveAndRecord({ argv: gitArgv(dir), gitDir, now: 1_000_000 });
     assert.equal(r.action, ACTION.ACCEPT_OURS);
     assert.equal(r.reason, REASON.OK_RESOLVED);
     assert.equal(r.exitCode, 0);
     assert.equal(r.notice, true);
-    assert.deepEqual(r.pendingPaths, ['tests/workflow-size-baseline.json']);
+    assert.equal(r.pendingCount, 1);
   });
 
   test('suppressesTheNoticeForASubsequentPathInTheSameOperation', (t) => {
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
-    seedMarker(gitDir, { startedAt: 999_999, paths: ['tests/agent-size-baseline.json'] });
+    seedMarker(gitDir, { startedAt: 999_999, count: 1 });
 
-    const r = planResolution({ argv: gitArgv(dir), gitDir, now: 1_000_000 });
+    const r = resolveAndRecord({ argv: gitArgv(dir), gitDir, now: 1_000_000 });
     assert.equal(r.notice, false);
-    assert.deepEqual(r.pendingPaths, [
-      'tests/agent-size-baseline.json',
-      'tests/workflow-size-baseline.json',
-    ]);
+    assert.equal(r.pendingCount, 2, 'the second conflicted path in the same operation');
   });
 
   test('treatsAMarkerJustInsideTheWindowAsTheSameOperation', (t) => {
@@ -322,9 +323,9 @@ describe('planResolution — resolution and the notice window', () => {
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     const now = 5_000_000;
-    seedMarker(gitDir, { startedAt: now - (NOTICE_WINDOW_MS - 1), paths: ['a.json'] });
+    seedMarker(gitDir, { startedAt: now - (NOTICE_WINDOW_MS - 1), count: 1 });
 
-    assert.equal(planResolution({ argv: gitArgv(dir), gitDir, now }).notice, false);
+    assert.equal(resolveAndRecord({ argv: gitArgv(dir), gitDir, now }).notice, false);
   });
 
   test('treatsAMarkerAtExactlyTheWindowAsTheSameOperation', (t) => {
@@ -332,10 +333,10 @@ describe('planResolution — resolution and the notice window', () => {
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     const now = 5_000_000;
-    seedMarker(gitDir, { startedAt: now - NOTICE_WINDOW_MS, paths: ['a.json'] });
+    seedMarker(gitDir, { startedAt: now - NOTICE_WINDOW_MS, count: 1 });
 
     assert.equal(
-      planResolution({ argv: gitArgv(dir), gitDir, now }).notice,
+      resolveAndRecord({ argv: gitArgv(dir), gitDir, now }).notice,
       false,
       'the window is inclusive at the limit',
     );
@@ -346,14 +347,14 @@ describe('planResolution — resolution and the notice window', () => {
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     const now = 5_000_000;
-    seedMarker(gitDir, { startedAt: now - (NOTICE_WINDOW_MS + 1), paths: ['stale.json'] });
+    seedMarker(gitDir, { startedAt: now - (NOTICE_WINDOW_MS + 1), count: 7 });
 
-    const r = planResolution({ argv: gitArgv(dir), gitDir, now });
+    const r = resolveAndRecord({ argv: gitArgv(dir), gitDir, now });
     assert.equal(r.notice, true, 'a later operation must not inherit the previous silence');
-    assert.deepEqual(r.pendingPaths, ['tests/workflow-size-baseline.json']);
+    assert.equal(r.pendingCount, 1, 'the stale count must reset, not accumulate');
   });
 
-  test('noticesOnceAcrossAllTwentyArtifactPaths', (t) => {
+  test('noticesOnceAcrossAllTwentyArtifactResolutions', (t) => {
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
@@ -361,26 +362,22 @@ describe('planResolution — resolution and the notice window', () => {
 
     const notices = [];
     for (let i = 0; i < 20; i += 1) {
-      const r = planResolution({
-        argv: gitArgv(dir, `tests/fixtures/golden-install-parity/host-${i}.json`),
-        gitDir,
-        now: 2_000_000 + i,
-      });
+      const r = resolveAndRecord({ argv: gitArgv(dir), gitDir, now: 2_000_000 + i });
       notices.push(r.notice);
     }
     assert.equal(notices.filter(Boolean).length, 1, 'exactly one notice for the whole operation');
-    assert.equal(readMarker(gitDir).paths.length, 20);
+    assert.equal(readMarker(gitDir).count, 20, 'this repo conflicts on 20 artifacts');
   });
 
-  test('dedupesARepeatedPathWithinOneOperation', (t) => {
+  test('countsEveryResolutionInTheOperation', (t) => {
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     fs.mkdirSync(gitDir);
 
-    planResolution({ argv: gitArgv(dir, 'tests/x.json'), gitDir, now: 3_000_000 });
-    const r = planResolution({ argv: gitArgv(dir, 'tests/x.json'), gitDir, now: 3_000_001 });
-    assert.deepEqual(r.pendingPaths, ['tests/x.json']);
+    resolveAndRecord({ argv: gitArgv(dir), gitDir, now: 3_000_000 });
+    const r = resolveAndRecord({ argv: gitArgv(dir), gitDir, now: 3_000_001 });
+    assert.equal(r.pendingCount, 2);
   });
 
   test('resolvesAnAddAddConflictWhereTheAncestorIsEmpty', (t) => {
@@ -391,38 +388,45 @@ describe('planResolution — resolution and the notice window', () => {
 
     const argv = gitArgv(dir);
     fs.writeFileSync(argv[0], ''); // %O is a 0-byte file in the add/add case
-    const r = planResolution({ argv, gitDir, now: 4_000_000 });
+    const r = resolveAndRecord({ argv, gitDir, now: 4_000_000 });
     assert.equal(r.action, ACTION.ACCEPT_OURS);
     assert.equal(r.exitCode, 0);
   });
 
-  test('resolvesWhenGitSuppliesNoRealPathPlaceholder', (t) => {
+  test('resolvesOnTheMinimumThreeArgumentForm', (t) => {
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     fs.mkdirSync(gitDir);
 
     const [o, a, b] = gitArgv(dir);
-    const r = planResolution({ argv: [o, a, b], gitDir, now: 4_100_000 });
+    const r = resolveAndRecord({ argv: [o, a, b], gitDir, now: 4_100_000 });
     assert.equal(r.action, ACTION.ACCEPT_OURS);
-    assert.equal(r.realPath, '<unknown>');
+    assert.equal(r.pendingCount, 1);
   });
 
-  test('ignoresArgvEntriesBeyondTheKnownPlaceholders', (t) => {
+  // An old registration (or a hand-edited .git/config) may still pass %P. It must be
+  // inert data, never consumed — the driver's contract does not depend on it.
+  test('ignoresAStrayFifthArgumentFromAnOldRegistration', (t) => {
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
     const gitDir = path.join(dir, '.git');
     fs.mkdirSync(gitDir);
 
-    const r = planResolution({ argv: [...gitArgv(dir), 'extra'], gitDir, now: 4_200_000 });
+    const r = resolveAndRecord({
+      argv: gitArgv(dir, 'tests/workflow-size-baseline.json'),
+      gitDir,
+      now: 4_200_000,
+    });
     assert.equal(r.action, ACTION.ACCEPT_OURS);
-    assert.equal(r.realPath, 'tests/workflow-size-baseline.json');
+    assert.equal(r.pendingCount, 1);
+    assert.equal(r.realPath, undefined, 'no path is read from argv at all');
   });
 });
 
-// --- planResolution: negative & hostile (rows 30-46) -----------------------
+// --- resolveAndRecord: negative & hostile (rows 30-46) -----------------------
 
-describe('planResolution — degrades toward a normal conflict, never toward a wrong resolution', () => {
+describe('resolveAndRecord — degrades toward a normal conflict, never toward a wrong resolution', () => {
   const badArgvCases = [
     ['declinesRatherThanGuessingWhenArgvIsTooShort', (dir) => gitArgv(dir).slice(0, 2)],
     ['declinesOnEmptyArgv', () => []],
@@ -434,7 +438,7 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
       const gitDir = path.join(dir, '.git');
       fs.mkdirSync(gitDir);
 
-      const r = planResolution({ argv: build(dir), gitDir, now: 6_000_000 });
+      const r = resolveAndRecord({ argv: build(dir), gitDir, now: 6_000_000 });
       assert.equal(r.action, ACTION.DECLINE);
       assert.equal(r.reason, REASON.FAIL_BAD_ARGV);
       assert.equal(r.exitCode, 1, 'a non-zero exit gives git a normal conflict — today’s behavior');
@@ -449,7 +453,7 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
 
     const [ancestor, , theirs] = gitArgv(dir);
     const neverWritten = path.join(dir, '.merge_file_NEVER_WRITTEN');
-    const r = planResolution({
+    const r = resolveAndRecord({
       argv: [ancestor, neverWritten, theirs, '7', 'tests/workflow-size-baseline.json'],
       gitDir,
       now: 6_100_000,
@@ -471,7 +475,7 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
       fs.mkdirSync(gitDir);
 
       const [o, , b] = gitArgv(dir);
-      const r = planResolution({ argv: [o, oursPath, b], gitDir, now: 6_200_000 });
+      const r = resolveAndRecord({ argv: [o, oursPath, b], gitDir, now: 6_200_000 });
       assert.equal(r.action, ACTION.DECLINE);
       assert.equal(r.reason, REASON.FAIL_BAD_ARGV);
     });
@@ -487,9 +491,12 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
     ['treatsABooleanMarkerAsAbsent', 'true'],
     ['treatsAnEmptyMarkerFileAsAbsent', ''],
     ['treatsACorruptMarkerAsAbsent', '{not json at all'],
-    ['treatsANonNumericStartedAtAsAbsent', '{"startedAt":"yesterday","paths":["x"]}'],
-    ['treatsANonFiniteStartedAtAsAbsent', '{"startedAt":1e999,"paths":["x"]}'],
-    ['treatsANonArrayPathsFieldAsAbsent', '{"startedAt":1,"paths":"notanarray"}'],
+    ['treatsANonNumericStartedAtAsAbsent', '{"startedAt":"yesterday","count":1}'],
+    ['treatsANonFiniteStartedAtAsAbsent', '{"startedAt":1e999,"count":1}'],
+    ['treatsANonNumericCountAsAbsent', '{"startedAt":1,"count":"three"}'],
+    ['treatsANonFiniteCountAsAbsent', '{"startedAt":1,"count":1e999}'],
+    ['treatsANegativeCountAsAbsent', '{"startedAt":1,"count":-5}'],
+    ['treatsAMissingCountAsAbsent', '{"startedAt":1}'],
   ];
   for (const [name, raw] of hostileMarkers) {
     test(name, (t) => {
@@ -498,10 +505,10 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
       const gitDir = path.join(dir, '.git');
       seedMarker(gitDir, raw);
 
-      const r = planResolution({ argv: gitArgv(dir), gitDir, now: 7_000_000 });
+      const r = resolveAndRecord({ argv: gitArgv(dir), gitDir, now: 7_000_000 });
       assert.equal(r.action, ACTION.ACCEPT_OURS, 'a bad marker must never block the merge');
       assert.equal(r.notice, true);
-      assert.deepEqual(r.pendingPaths, ['tests/workflow-size-baseline.json']);
+      assert.equal(r.pendingCount, 1, 'an unusable marker resets rather than accumulating');
     });
   }
 
@@ -513,7 +520,7 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
 
     const argv = gitArgv(dir);
     const r = withFsFailure('writeFileSync', () =>
-      planResolution({ argv, gitDir, now: 8_000_000 }),
+      resolveAndRecord({ argv, gitDir, now: 8_000_000 }),
     );
     assert.equal(r.action, ACTION.ACCEPT_OURS);
     assert.equal(r.exitCode, 0, 'a diagnostic must never fail a merge');
@@ -523,8 +530,8 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
     const dir = createTempDir('gsd-regen-');
     t.after(() => cleanup(dir));
 
-    const first = planResolution({ argv: gitArgv(dir), gitDir: null, now: 9_000_000 });
-    const second = planResolution({ argv: gitArgv(dir), gitDir: null, now: 9_000_001 });
+    const first = resolveAndRecord({ argv: gitArgv(dir), gitDir: null, now: 9_000_000 });
+    const second = resolveAndRecord({ argv: gitArgv(dir), gitDir: null, now: 9_000_001 });
     assert.equal(first.action, ACTION.ACCEPT_OURS);
     assert.equal(first.exitCode, 0);
     assert.equal(first.notice, true);
@@ -556,6 +563,193 @@ describe('planInstall', () => {
 
   test('plansIdenticalEntriesOnRepeatedInvocation', () => {
     assert.deepEqual(planInstall({ repoRoot: '/repo' }), planInstall({ repoRoot: '/repo' }));
+  });
+});
+
+// --- CLI dispatch (rows 62-73) ---------------------------------------------
+// CONTRIBUTING.md → "QA Matrix Requirements" / "CLI and command routing" requires a
+// negative-input matrix for any command dispatcher: unknown subcommands, duplicate and
+// conflicting flags, plus assertions on exit status and the absence of a stack trace.
+
+describe('CLI dispatch', () => {
+  /** Run the driver as a real child process — its output never touches this test's stdout. */
+  function runCli(args, cwd = REPO_ROOT) {
+    return cp.spawnSync(process.execPath, [DRIVER_PATH, ...args], {
+      cwd,
+      encoding: 'utf8',
+      timeout: GIT_TIMEOUT_MS,
+    });
+  }
+
+  /**
+   * Swap process.stdout.write for the duration of `fn`. Same monkeypatch-and-restore-in-
+   * finally shape as withFsFailure — the run* functions print, and leaking that into the
+   * runner's stream is how a reporter ends up parsing a driver banner as a test result.
+   */
+  function withStdoutSilenced(fn) {
+    const original = process.stdout.write;
+    process.stdout.write = () => true;
+    try {
+      return fn();
+    } finally {
+      process.stdout.write = original;
+    }
+  }
+
+  /** A stack frame looks like a line beginning with whitespace + "at ". */
+  function hasStackTrace(text) {
+    return /^\s+at\s/m.test(String(text));
+  }
+
+  const rejectedInvocations = [
+    ['rejectsAnUnknownFlag', ['--bogus']],
+    ['rejectsTwoConflictingFlags', ['--install', '--status']],
+    ['rejectsADuplicatedFlag', ['--install', '--install']],
+    ['rejectsAFlagCombinedWithAPositionalArgument', ['--status', 'extra']],
+  ];
+  for (const [name, args] of rejectedInvocations) {
+    test(name, () => {
+      const r = runCli(args);
+      assert.equal(r.status, 2, `${args.join(' ')} must exit 2, got ${r.status}: ${r.stderr}`);
+      assert.ok(
+        !hasStackTrace(r.stderr),
+        `usage errors must not print a stack trace, got: ${r.stderr}`,
+      );
+    });
+  }
+
+  test('driverModeWithNoArgumentsDeclinesRatherThanCrashing', () => {
+    const r = runCli([]);
+    assert.equal(r.status, 1, 'too-few-args declines, which git reads as a normal conflict');
+    assert.ok(!hasStackTrace(r.stderr), `expected no stack trace, got: ${r.stderr}`);
+  });
+
+  test('statusEmitsParseableJsonWithTheDocumentedShape', () => {
+    const r = runCli(['--status']);
+    assert.equal(r.status, 0);
+    const report = JSON.parse(r.stdout);
+    assert.equal(typeof report.registered, 'boolean');
+    assert.equal(typeof report.pendingCount, 'number');
+  });
+
+  /** A scratch repo so registration never touches the developer's own .git/config. */
+  function scratchRepo(t) {
+    const dir = createTempDir('gsd-regen-cli-');
+    t.after(() => cleanup(dir));
+    git(dir, ['init', '-q', '.']);
+    return dir;
+  }
+
+  test('installRegistersBothConfigEntriesAndStatusReportsIt', (t) => {
+    const dir = scratchRepo(t);
+    const { statusOf, runInstall } = require(DRIVER_PATH);
+
+    assert.equal(statusOf({ repoRoot: dir }).registered, false, 'precondition: not registered');
+    assert.equal(withStdoutSilenced(() => runInstall({ repoRoot: dir })), 0);
+    assert.equal(statusOf({ repoRoot: dir }).registered, true);
+
+    const driver = git(dir, ['config', '--get', 'merge.gsd-regen.driver']).stdout.trim();
+    assert.equal(driver, planInstall({ repoRoot: dir }).entries[1].value);
+  });
+
+  test('installIsIdempotent', (t) => {
+    const dir = scratchRepo(t);
+    const { statusOf, runInstall } = require(DRIVER_PATH);
+
+    withStdoutSilenced(() => runInstall({ repoRoot: dir }));
+    const first = git(dir, ['config', '--get-all', 'merge.gsd-regen.driver']).stdout;
+    assert.equal(withStdoutSilenced(() => runInstall({ repoRoot: dir })), 0);
+    const second = git(dir, ['config', '--get-all', 'merge.gsd-regen.driver']).stdout;
+
+    assert.equal(second, first, 'a second install must not append a duplicate value');
+    assert.equal(statusOf({ repoRoot: dir }).registered, true);
+  });
+
+  test('uninstallRemovesTheRegistration', (t) => {
+    const dir = scratchRepo(t);
+    const { statusOf, runInstall, runUninstall } = require(DRIVER_PATH);
+
+    withStdoutSilenced(() => runInstall({ repoRoot: dir }));
+    assert.equal(withStdoutSilenced(() => runUninstall({ repoRoot: dir })), 0);
+    assert.equal(statusOf({ repoRoot: dir }).registered, false);
+  });
+
+  test('uninstallOnACleanRepoSucceedsRatherThanFailing', (t) => {
+    const dir = scratchRepo(t);
+    const { runUninstall, statusOf } = require(DRIVER_PATH);
+
+    assert.equal(withStdoutSilenced(() => runUninstall({ repoRoot: dir })), 0);
+    assert.equal(statusOf({ repoRoot: dir }).registered, false);
+  });
+
+  /**
+   * REGRESSION — arbitrary command execution via `%P` (isolated security review, #2721).
+   *
+   * Git does not invoke a merge driver with an argv array: it substitutes the placeholders
+   * textually into the configured string and runs the whole thing through a shell. Quoting
+   * does not save you — `$(…)` executes inside POSIX double quotes. `%O`/`%A`/`%B` are
+   * git-generated temp names and `%L` is an integer, but `%P` is the file's own path, which
+   * any contributor names freely. Registering `"%P"` let a branch that renamed a covered
+   * fixture to `evil$(touch PWNED).json` run that command on the machine of every maintainer
+   * who merged it — and the merge still reported success, so nothing looked wrong.
+   *
+   * The structural assertion is the real guard: it is platform-independent and fails the
+   * moment someone re-adds the placeholder.
+   */
+  test('registeredDriverCommandNeverPassesThePlaceholderForTheFilePath', () => {
+    const { entries } = planInstall({ repoRoot: REPO_ROOT });
+    const driver = entries.find((e) => e.key === 'merge.gsd-regen.driver').value;
+    assert.ok(
+      !driver.includes('%P'),
+      'git shell-interpolates %P — passing it is arbitrary command execution. Do not re-add it.',
+    );
+    for (const safe of ['%O', '%A', '%B', '%L']) {
+      assert.ok(driver.includes(safe), `${safe} is git-generated and must still be passed`);
+    }
+  });
+
+  test('aFilenameCarryingShellSubstitutionCannotExecuteDuringAMerge', (t) => {
+    const dir = createTempDir('gsd-regen-inject-');
+    t.after(() => cleanup(dir));
+
+    git(dir, ['init', '-q', '.']);
+    git(dir, ['config', 'user.email', 'test@example.com']);
+    git(dir, ['config', 'user.name', 'test']);
+    // Register the REAL production command string — a hand-rolled one would not regress.
+    for (const { key, value } of planInstall({ repoRoot: REPO_ROOT }).entries) {
+      git(dir, ['config', key, value]);
+    }
+
+    fs.writeFileSync(path.join(dir, '.gitattributes'), 'evil*.json merge=gsd-regen\n');
+    // Written with fs, so this shell never expands it — the payload is the literal name.
+    const evil = 'evil$(touch PWNED_SENTINEL).json';
+    const sentinel = path.join(dir, 'PWNED_SENTINEL');
+    const write = (v) => fs.writeFileSync(path.join(dir, evil), `{"v":${v}}\n`);
+
+    write(0);
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-qm', 'base']);
+    const base = git(dir, ['rev-parse', 'HEAD']).stdout.trim();
+
+    git(dir, ['checkout', '-qb', 'ours']);
+    write(1);
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-qm', 'ours']);
+
+    git(dir, ['checkout', '-q', base]);
+    git(dir, ['checkout', '-qb', 'theirs']);
+    write(2);
+    git(dir, ['add', '-A']);
+    git(dir, ['commit', '-qm', 'theirs']);
+
+    git(dir, ['checkout', '-q', 'ours']);
+    git(dir, ['merge', 'theirs', '-m', 'merge']);
+
+    assert.equal(
+      fs.existsSync(sentinel),
+      false,
+      'a filename containing $(...) must never execute — see the regression note above',
+    );
   });
 });
 

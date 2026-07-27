@@ -50,7 +50,6 @@ const { runMain, ExitError } = require('./lib/cli-exit.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const MARKER_NAME = 'gsd-regen-pending.json';
-const UNKNOWN_PATH = '<unknown>';
 
 /** Bounded per the repo's unbounded-subprocess rule (5-30s for git). */
 const GIT_TIMEOUT_MS = 15_000;
@@ -117,13 +116,13 @@ function resolveGitDir(cwd) {
 }
 
 /**
- * Read the pending-paths marker, treating anything unusable as absent.
+ * Read the pending-resolution marker, treating anything unusable as absent.
  *
  * Valid JSON is not the same as a usable marker: `0`, `"str"`, `[]`, `null` and `true` all
- * parse. So does an object whose `startedAt` is a string or whose `paths` is not an array.
- * Every one of those means "no previous invocation I can trust" — reset, do not throw.
+ * parse. So does an object whose `startedAt` or `count` is a string. Every one of those
+ * means "no previous invocation I can trust" — reset, do not throw.
  *
- * @returns {{startedAt: number, paths: string[]}|null}
+ * @returns {{startedAt: number, count: number}|null}
  */
 function readMarker(markerPath) {
   let parsed;
@@ -134,8 +133,8 @@ function readMarker(markerPath) {
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
   if (!Number.isFinite(parsed.startedAt)) return null;
-  if (!Array.isArray(parsed.paths)) return null;
-  return { startedAt: parsed.startedAt, paths: parsed.paths.filter((p) => typeof p === 'string') };
+  if (!Number.isFinite(parsed.count) || parsed.count < 0) return null;
+  return { startedAt: parsed.startedAt, count: parsed.count };
 }
 
 function decline(reason) {
@@ -144,23 +143,26 @@ function decline(reason) {
     reason,
     exitCode: 1,
     notice: false,
-    realPath: UNKNOWN_PATH,
-    pendingPaths: [],
+    pendingCount: 0,
   };
 }
 
 /**
  * Decide how to resolve one conflicted path, and record it.
  *
+ * Deliberately NOT named `plan*` like `planInstall`: that prefix promises purity, and this
+ * function reads and writes the marker file. The name says both halves out loud.
+ *
  * @param {object} opts
- * @param {string[]} opts.argv  exactly what git supplies: [%O, %A, %B, %L, %P]
+ * @param {string[]} opts.argv  exactly what git supplies: [%O, %A, %B, %L]. Any further
+ *   entry is ignored — see planInstall on why `%P` is deliberately not registered.
  * @param {string|null} opts.gitDir  from resolveGitDir; null means marker-less (degraded)
  * @param {number} opts.now  injected clock — never Date.now() inline, so tests are
  *   deterministic and never assert on elapsed wall-clock
  * @returns {{action: string, reason: string, exitCode: number, notice: boolean,
- *            realPath: string, pendingPaths: string[]}}
+ *            pendingCount: number}}
  */
-function planResolution({ argv, gitDir, now }) {
+function resolveAndRecord({ argv, gitDir, now }) {
   if (!Array.isArray(argv) || argv.length < 3) return decline(REASON.FAIL_BAD_ARGV);
 
   const oursPath = argv[1];
@@ -175,23 +177,18 @@ function planResolution({ argv, gitDir, now }) {
     return decline(REASON.FAIL_OURS_UNREADABLE);
   }
 
-  const realPath = typeof argv[4] === 'string' && argv[4] !== '' ? argv[4] : UNKNOWN_PATH;
   const markerPath = gitDir ? path.join(gitDir, MARKER_NAME) : null;
   const previous = markerPath ? readMarker(markerPath) : null;
   const sameOperation = previous !== null && now - previous.startedAt <= NOTICE_WINDOW_MS;
 
   const startedAt = sameOperation ? previous.startedAt : now;
-  const pendingPaths = sameOperation
-    ? previous.paths.includes(realPath)
-      ? previous.paths
-      : [...previous.paths, realPath]
-    : [realPath];
+  const pendingCount = sameOperation ? previous.count + 1 : 1;
 
   if (markerPath) {
     // A diagnostic must never fail a merge: a read-only .git degrades to a repeated
     // notice, which is noisy but correct.
     try {
-      fs.writeFileSync(markerPath, `${JSON.stringify({ startedAt, paths: pendingPaths })}\n`);
+      fs.writeFileSync(markerPath, `${JSON.stringify({ startedAt, count: pendingCount })}\n`);
     } catch {
       /* degraded, not failed */
     }
@@ -202,17 +199,33 @@ function planResolution({ argv, gitDir, now }) {
     reason: REASON.OK_RESOLVED,
     exitCode: 0,
     notice: !sameOperation,
-    realPath,
-    pendingPaths,
+    pendingCount,
   };
 }
 
 /**
  * The `.git/config` entries that register this driver.
  *
- * Paths are normalized to forward slashes **unconditionally** — a backslash path can
- * reach a config value on any platform, and git runs the driver command through `sh`
- * everywhere including Git for Windows.
+ * ## Why `%P` is NOT passed — do not "helpfully" add it back
+ *
+ * Git does **not** invoke a merge driver with an argv array. It substitutes `%O %A %B %L
+ * %P` textually into this string and runs the whole thing through a shell. Quoting a
+ * placeholder does not make it safe: inside POSIX double quotes `$(…)` and backticks still
+ * execute, and a `"` in the value ends the quoting outright.
+ *
+ * `%O`, `%A` and `%B` are git-generated temp names (`.merge_file_XXXXXX`) and `%L` is an
+ * integer, so none of them are attacker-controlled. **`%P` is the file's own path**, which
+ * any contributor chooses freely. A branch that renames a covered fixture to
+ * `evil$(touch PWNED).json` would execute that command on the machine of every maintainer
+ * who merges it — silently, since the merge still reports success. Verified by reproduction
+ * against a real `git merge`, not by inspection.
+ *
+ * So the driver takes no attacker-controlled argument at all, and records a count rather
+ * than path names. A filter would have been a guess about shell grammar; passing nothing is
+ * a property.
+ *
+ * Paths are normalized to forward slashes **unconditionally** — a backslash path can reach a
+ * config value on any platform, and git shells this command everywhere including Windows.
  *
  * @param {{repoRoot: string}} opts
  * @returns {{entries: Array<{key: string, value: string}>}}
@@ -229,15 +242,15 @@ function planInstall({ repoRoot }) {
       },
       {
         key: 'merge.gsd-regen.driver',
-        value: `node "${script}" "%O" "%A" "%B" "%L" "%P"`,
+        value: `node "${script}" "%O" "%A" "%B" "%L"`,
       },
     ],
   };
 }
 
-function gitConfig(args) {
+function gitConfig(args, cwd = REPO_ROOT) {
   const r = cp.spawnSync('git', ['config', ...args], {
-    cwd: REPO_ROOT,
+    cwd,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
   });
@@ -247,10 +260,10 @@ function gitConfig(args) {
   return r;
 }
 
-function runInstall() {
-  const { entries } = planInstall({ repoRoot: REPO_ROOT });
+function runInstall({ repoRoot = REPO_ROOT } = {}) {
+  const { entries } = planInstall({ repoRoot });
   for (const { key, value } of entries) {
-    const r = gitConfig([key, value]);
+    const r = gitConfig([key, value], repoRoot);
     if (r.status !== 0) throw new ExitError(1, `git config ${key} failed: ${r.stderr}`);
   }
   process.stdout.write(
@@ -262,27 +275,36 @@ function runInstall() {
   return 0;
 }
 
-function runUninstall() {
+function runUninstall({ repoRoot = REPO_ROOT } = {}) {
   for (const key of ['merge.gsd-regen.driver', 'merge.gsd-regen.name']) {
-    gitConfig(['--unset-all', key]); // exit 5 == "was not set"; both are success here
+    // exit 5 == "was not set"; uninstalling something absent is success here
+    gitConfig(['--unset-all', key], repoRoot);
   }
   process.stdout.write('Removed the gsd-regen merge driver from this clone.\n');
   return 0;
 }
 
-function runStatus() {
-  const registered = gitConfig(['--get', 'merge.gsd-regen.driver']).status === 0;
-  const { gitDir } = resolveGitDir(REPO_ROOT);
+/**
+ * @returns {{registered: boolean, pendingCount: number}} the same object it prints, so
+ *   callers and tests consume the structure rather than re-parsing the rendered JSON.
+ *   A count, not path names: the driver is never handed the conflicted path, by design
+ *   (see planInstall).
+ */
+function statusOf({ repoRoot = REPO_ROOT } = {}) {
+  const registered = gitConfig(['--get', 'merge.gsd-regen.driver'], repoRoot).status === 0;
+  const { gitDir } = resolveGitDir(repoRoot);
   const marker = gitDir ? readMarker(path.join(gitDir, MARKER_NAME)) : null;
-  process.stdout.write(
-    JSON.stringify({ registered, pendingPaths: marker ? marker.paths : [] }, null, 2) + '\n',
-  );
+  return { registered, pendingCount: marker ? marker.count : 0 };
+}
+
+function runStatus({ repoRoot = REPO_ROOT } = {}) {
+  process.stdout.write(JSON.stringify(statusOf({ repoRoot }), null, 2) + '\n');
   return 0;
 }
 
 function runDriver(argv) {
   const { gitDir } = resolveGitDir(process.cwd());
-  const plan = planResolution({ argv, gitDir, now: Date.now() });
+  const plan = resolveAndRecord({ argv, gitDir, now: Date.now() });
 
   if (plan.action === ACTION.DECLINE) {
     process.stderr.write(
@@ -334,8 +356,12 @@ module.exports = {
   NOTICE_WINDOW_MS,
   MARKER_NAME,
   resolveGitDir,
-  planResolution,
+  resolveAndRecord,
   planInstall,
+  runInstall,
+  runUninstall,
+  runStatus,
+  statusOf,
 };
 
 if (require.main === module) runMain(main);
