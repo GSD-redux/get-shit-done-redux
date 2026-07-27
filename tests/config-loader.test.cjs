@@ -1092,3 +1092,99 @@ describe('bug-3523 — CJS↔SDK contract: both agree on legacy branching_strate
 });
   });
 }
+
+// ─── #1880: corrupt is not absent (ADR-1411 amendment) ────────────────────────
+
+describe("loadConfigResolved — corrupt config is distinguishable from absent", () => {
+  let tmpDir;
+  let stderrLines;
+  let originalStderrWrite;
+
+  beforeEach(() => {
+    tmpDir = makeTempProject();
+    stderrLines = [];
+    originalStderrWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => { stderrLines.push(String(chunk)); return true; };
+    configLoader._resetRuntimeWarningCacheForTests();
+  });
+
+  afterEach(() => {
+    process.stderr.write = originalStderrWrite;
+    if (tmpDir) cleanup(tmpDir);
+    tmpDir = null;
+  });
+
+  const configPath = (d) => path.join(d, ".planning", "config.json");
+  const R = configLoader.CONFIG_REASON;
+
+  // The repro from the issue: absent and malformed were byte-identical.
+  test("absent config resolves not_configured and is NOT degraded", () => {
+    fs.rmSync(configPath(tmpDir), { force: true });
+    const res = configLoader.loadConfigResolved(tmpDir);
+    assert.equal(res.degraded, false, "a missing config is legitimate absence");
+    assert.equal(res.reason, R.NOT_CONFIGURED);
+  });
+
+  test("malformed config is degraded with reason config_unparseable", () => {
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget",}', "utf-8");
+    const res = configLoader.loadConfigResolved(tmpDir);
+    assert.equal(res.reason, R.CONFIG_UNPARSEABLE,
+      "a trailing comma must not read as \"no config here\"");
+    assert.equal(res.degraded, true, "corruption is a degraded resolution");
+  });
+
+  test("absent and malformed no longer produce the same resolution", () => {
+    fs.rmSync(configPath(tmpDir), { force: true });
+    const absent = configLoader.loadConfigResolved(tmpDir);
+    configLoader._resetRuntimeWarningCacheForTests();
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget",}', "utf-8");
+    const corrupt = configLoader.loadConfigResolved(tmpDir);
+    assert.notEqual(absent.reason, corrupt.reason,
+      "the whole defect: these two were indistinguishable");
+    assert.notEqual(absent.degraded, corrupt.degraded);
+  });
+
+  test("unreadable config is degraded with reason config_unreadable", (t) => {
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget"}', "utf-8");
+    // Deterministic IO fault via fs monkeypatch, restored in t.after() — never
+    // chmod 0o000, which root bypasses (CLAUDE.md cross-platform IO rule).
+    const realRead = fs.readFileSync;
+    t.after(() => { fs.readFileSync = realRead; });
+    fs.readFileSync = (f, ...rest) => {
+      if (String(f).endsWith("config.json")) {
+        const e = new Error("EACCES: permission denied"); e.code = "EACCES"; throw e;
+      }
+      return realRead(f, ...rest);
+    };
+    const res = configLoader.loadConfigResolved(tmpDir);
+    assert.equal(res.reason, R.CONFIG_UNREADABLE);
+    assert.equal(res.degraded, true);
+  });
+
+  // The wiring clause: loadConfig returns .config alone to ~51 call sites, so
+  // without a diagnostic the reason field is unreachable to nearly every consumer.
+  test("the plain loadConfig path still surfaces the cause on stderr", () => {
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget",}', "utf-8");
+    configLoader.loadConfig(tmpDir);
+    assert.equal(configLoader._warnedUnusableConfig.size, 1,
+      "a loadConfig caller must still get a signal it can act on");
+  });
+
+  test("the diagnostic is deduplicated across repeat loads", () => {
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget",}', "utf-8");
+    configLoader.loadConfig(tmpDir);
+    configLoader.loadConfig(tmpDir);
+    configLoader.loadConfig(tmpDir);
+    assert.equal(configLoader._warnedUnusableConfig.size, 1, "keyed on path+errno, warned once");
+  });
+
+  // Contract markers required by scripts/lint-resolution-provenance.cjs:
+  // configured_empty and not_configured must stay distinguishable.
+  test("an empty config object is configured_empty, not not_configured", () => {
+    fs.writeFileSync(configPath(tmpDir), "{}", "utf-8");
+    const res = configLoader.loadConfigResolved(tmpDir);
+    assert.equal(res.reason, R.CONFIGURED_EMPTY,
+      "configured_empty and not_configured must be distinguishable (ADR-1411 rule 3)");
+    assert.equal(res.degraded, false, "an empty file is not corruption");
+  });
+});
