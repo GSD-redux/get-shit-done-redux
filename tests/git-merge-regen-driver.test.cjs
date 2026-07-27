@@ -451,9 +451,13 @@ describe('planResolution — degrades toward a normal conflict, never toward a w
     const gitDir = path.join(dir, '.git');
     fs.mkdirSync(gitDir);
 
-    const argv = gitArgv(dir);
-    fs.rmSync(argv[1]);
-    const r = planResolution({ argv, gitDir, now: 6_100_000 });
+    const [ancestor, , theirs] = gitArgv(dir);
+    const neverWritten = path.join(dir, '.merge_file_NEVER_WRITTEN');
+    const r = planResolution({
+      argv: [ancestor, neverWritten, theirs, '7', 'tests/workflow-size-baseline.json'],
+      gitDir,
+      now: 6_100_000,
+    });
     assert.equal(r.action, ACTION.DECLINE);
     assert.equal(r.reason, REASON.FAIL_OURS_UNREADABLE);
     assert.equal(r.exitCode, 1);
