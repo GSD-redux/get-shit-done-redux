@@ -1,12 +1,14 @@
 # ADR-2264: Redesign golden-install-parity — single-source manifest builder + split invariant
 
-- **Status:** Proposed
+- **Status:** Superseded by [ADR-2719](2719-emitted-artifact-attribution.md) (Emitted-artifact attribution — replace the committed parity fixtures with a computed conservation law) (2026-07-27); originally Proposed (2026-07-14). ADR-2719 replaces Decision §2–§4 and the Amendment below; **Phase 1 (the single-source manifest builder) is retained and depended upon**, not reverted.
 - **Date:** 2026-07-14
 - **Issue:** [#2264](https://github.com/open-gsd/gsd-core/issues/2264) (epic); Phase 0 tracked by [#2265](https://github.com/open-gsd/gsd-core/issues/2265)
 - **Supersedes:** nothing; amends the ADR-1239 Phase-B safety-net harness
 - **Relationship to prior work:** Evolves `tests/golden-install-parity.test.cjs` (ADR-1239 Phase B). Related: #2086 (claude-local realpath normalization), #2095/#2100/#2117 (exclusion-set drift incidents), #1691 (scoped-CI drift guard).
 
-## Why this is still `Proposed` (audited 2026-07-17)
+## Why this was still `Proposed` (audited 2026-07-17; resolved by supersession 2026-07-27)
+
+> **Resolved.** The unblock condition below proposed rewording AC1 away to match the amended design. [ADR-2719](2719-emitted-artifact-attribution.md) instead **satisfies** AC1, and supersedes Decision §2–§4 and the Amendment. Phase 1 is retained and depended upon. The audit is preserved unedited as the record of why.
 
 Audited 2026-07-17 against the live tree and GitHub. Phase 1 shipped cleanly and is genuinely done: `buildParityManifest`, `buildInstallTree`, and the four exclusion constants (`VOLATILE_FILES`, `HOOK_CONFIG_FILES`, `HOOK_CONFIG_RELATIVE_PATHS`, `EXCLUDED_PREFIXES`) live as the single source of truth in `tests/helpers/install-shared.cjs` (lines 104-234); `scripts/gen-golden-install-parity-zcode.cjs` now imports them instead of re-declaring them; the anti-divergence guard (`tests/golden-parity-single-source.test.cjs`) enforces no second copy; `scripts/ci-test-scope.cjs` (lines 121, 145, 175-176) selects the golden suite on the wider path set the Amendment describes; `npm run gen:golden` (`package.json:93`) exists; and all five issues (#2264-#2268) are closed as completed.
 
