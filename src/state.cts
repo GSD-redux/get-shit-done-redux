@@ -1364,7 +1364,9 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   // Bug #3265: prefer YAML frontmatter for canonical scalar fields so that a
   // body table cell containing **Status:** Y cannot shadow the authoritative
   // frontmatter value.  Mirrors the fix in sdk/src/query/state.ts.
-  const fm = extractFrontmatter(content) as Record<string, unknown>;
+  // Pass statePath so a truncated STATE.md is named in the #1882 diagnostic rather than
+  // reported under a content digest — STATE.md is one of the artefacts epic #1879 is about.
+  const fm = extractFrontmatter(content, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(content);
 
   // Helper: return frontmatter scalar value when present and non-empty.

@@ -73,28 +73,51 @@ const _warnedUnusableInputs = new Set<string>();
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/g;
 
 /**
- * Path separators are normalized **unconditionally** rather than via `path.sep`, because a
- * backslash-bearing path can arrive on Linux too — see the repo's recurring
- * path-separator-normalization defect. Without this, `C:\a\b.md` and `C:/a/b.md` are two
- * keys for one file and the diagnostic fires twice on Windows.
+ * Strip control characters. Deliberately does NOT normalize path separators.
+ *
+ * An earlier revision folded backslashes to `/` unconditionally, reasoning that `C:\a\b.md`
+ * and `C:/a/b.md` are one file and should not report twice. That is true on Windows, and
+ * false — destructively — everywhere else: `\` is a legal filename character on Linux and
+ * macOS, so `/repo/weird\name/PLAN.md` and `/repo/weird/name/PLAN.md` are two genuinely
+ * different files that collapsed to one key, and the second one's diagnostic was silently
+ * swallowed. ADR-1411 forbids exactly that ("keying too coarsely suppresses a genuine second
+ * failure in a different file"), and this repo targets Linux/macOS/Windows alike.
+ *
+ * The trade is now explicit and one-directional: two spellings of one Windows path may
+ * report twice (mild noise), but two distinct files can never silence each other (lost
+ * signal). Dropping a real diagnostic is the strictly worse failure.
  */
-function normalizeSource(source: string): string {
-  return source.replace(CONTROL_CHARS, '').replace(/\\/g, '/');
+function sanitizeSource(source: string): string {
+  return source.replace(CONTROL_CHARS, '');
 }
 
 /**
  * Identify the offending input. A path is preferred because it is what an operator can act
- * on. When the caller has only an in-memory string (no path to give), fall back to a short
- * content digest so that *different* bad inputs still produce *different* keys — keying too
- * coarsely would suppress a genuine second failure, which ADR-1411 explicitly forbids.
+ * on. When the caller has only an in-memory string, fall back to a short content digest so
+ * that *different* bad inputs still produce *different* keys.
  *
- * Computed only on the flag path, which is rare, so the hash never costs anything on a
- * healthy read.
+ * The leading `p`/`d` tag is what keeps the two namespaces disjoint. Without it a caller
+ * whose file is literally named `<unnamed:8efa5269728e7271>` would key identically to a
+ * path-less caller whose content happens to hash to that digest — no brute force required,
+ * since the digest of any predictable content (a shared template, known boilerplate) can
+ * simply be computed and used as a filename to pre-seed suppression. Because control
+ * characters — including NUL — are stripped from `source`, a caller-supplied path can never
+ * contain the separator and so can never forge a key in the other namespace either.
+ *
+ * The digest is computed only on the emission path, which is rare, so it never costs
+ * anything on a healthy read.
  */
 function sourceKey(source?: string, content?: string): string {
-  if (typeof source === 'string' && source.trim() !== '') return normalizeSource(source);
+  if (typeof source === 'string' && source.trim() !== '') {
+    return `p\u0000${sanitizeSource(source)}`;
+  }
   const digest = crypto.createHash('sha256').update(content ?? '').digest('hex').slice(0, 16);
-  return `<unnamed:${digest}>`;
+  return `d\u0000${digest}`;
+}
+
+/** Human-facing name for the offending input, derived from the same key. */
+function displaySource(key: string): string {
+  return key.startsWith('p\u0000') ? key.slice(2) : `<unnamed:${key.slice(2)}>`;
 }
 
 // ─── Emission ─────────────────────────────────────────────────────────────────
@@ -127,12 +150,15 @@ function warnUnusableInput({ reason, source, content }: WarnUnusableInputArgs): 
     : null;
   if (prose === null) return false;
 
-  const key = `${sourceKey(source, content)}\u0000${reason}`;
+  // Computed once: on the path-less branch this hashes the content, and doing it twice
+  // (once for the key, once for the message) is pure waste.
+  const identity = sourceKey(source, content);
+  const key = `${identity}\u0000${reason}`;
   if (_warnedUnusableInputs.has(key)) return false;
   _warnedUnusableInputs.add(key);
 
   try {
-    process.stderr.write(`gsd: warning — ${sourceKey(source, content)}: ${prose}. (#1879)\n`);
+    process.stderr.write(`gsd: warning — ${displaySource(identity)}: ${prose}. (#1879)\n`);
   } catch {
     /* a closed or broken stderr must never escalate a degraded read into a crash */
   }
@@ -159,8 +185,15 @@ function _unusableInputWarningCountForTests(): number {
   return _warnedUnusableInputs.size;
 }
 
+/** Test seam: the sanitized form of a source, so control-char handling is asserted on a
+ * returned value instead of by scraping what reached stderr. */
+function _sanitizeSourceForTests(source: string): string {
+  return sanitizeSource(source);
+}
+
 export = {
   UNUSABLE_REASON,
+  _sanitizeSourceForTests,
   warnUnusableInput,
   _resetUnusableInputWarningsForTests,
   _unusableInputWarningCountForTests,

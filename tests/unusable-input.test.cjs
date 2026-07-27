@@ -24,9 +24,10 @@ const {
   warnUnusableInput,
   _resetUnusableInputWarningsForTests,
   _unusableInputWarningCountForTests,
+  _sanitizeSourceForTests,
 } = require('../gsd-core/bin/lib/unusable-input.cjs');
 
-const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+const { extractFrontmatter, UNTERMINATED_KEY_THRESHOLD } = require('../gsd-core/bin/lib/frontmatter.cjs');
 
 /**
  * Run `fn` with stderr captured, and report how many NEW diagnostics it produced.
@@ -57,8 +58,8 @@ function parseUnder(content, sourcePath) {
   return [result, emitted];
 }
 
-const TRUNCATED_LF = '---\ntitle: x\n';
-const TRUNCATED_CRLF = '---\r\ntitle: x\r\n';
+const TRUNCATED_LF = '---\nphase: 01\nplan: 02\n';
+const TRUNCATED_CRLF = '---\r\nphase: 01\r\nplan: 02\r\n';
 
 // ─── The reason vocabulary is a contract ─────────────────────────────────────
 
@@ -85,7 +86,7 @@ describe('UNUSABLE_REASON', () => {
 // ─── The discriminator: truncated vs. everything that merely looks like it ───
 
 describe('extractFrontmatter — flags a genuinely truncated frontmatter', () => {
-  test('unterminated fence carrying one key is reported, and still returns {}', () => {
+  test('unterminated fence carrying two keys is reported, and still returns {}', () => {
     _resetUnusableInputWarningsForTests();
     const [result, emitted] = parseUnder(TRUNCATED_LF, '/u/truncated-lf.md');
     assert.deepStrictEqual(result, {}, 'return value must be preserved exactly');
@@ -101,7 +102,7 @@ describe('extractFrontmatter — flags a genuinely truncated frontmatter', () =>
 
   test('an indented "---" is not a closing fence, so the file is still truncated', () => {
     _resetUnusableInputWarningsForTests();
-    const [result, emitted] = parseUnder('---\ntitle: x\n  ---\n', '/u/indented-close.md');
+    const [result, emitted] = parseUnder('---\nphase: 01\nplan: 02\n  ---\n', '/u/indented-close.md');
     assert.deepStrictEqual(result, {});
     assert.strictEqual(emitted, 1);
   });
@@ -121,15 +122,22 @@ describe('extractFrontmatter — stays silent on everything that is not corrupti
     ['a BOM before the fence', '\uFEFF---\ntitle: x\n---\nbody\n'],
     ['a blank line before the fence', '\n---\ntitle: x\n---\n'],
     ['an opening fence with a trailing space', '--- \ntitle: x\n---\n'],
+    // #1882 review blocker: a thematic break above ONE labelled prose line is ordinary
+    // technical writing and parses as exactly one key. Each of these was flagged as
+    // corruption before the threshold moved to two.
+    ['a thematic break above a Note: paragraph', '---\nNote: this is just a markdown paragraph, not frontmatter.\n'],
+    ['a thematic break above an Author byline', '---\nAuthor: Jane Doe\n'],
+    ['a thematic break above a TODO line', '---\nTODO: fix this later\n'],
+    ['a thematic break above a See: link', '---\nSee: https://example.com\n'],
   ];
 
-  for (const [label, content] of silentCases) {
+  silentCases.forEach(([label, content], caseIndex) => {
     test(`${label} produces no diagnostic`, () => {
       _resetUnusableInputWarningsForTests();
-      const [, emitted] = parseUnder(content, `/u/silent-${silentCases.findIndex(c => c[0] === label)}.md`);
+      const [, emitted] = parseUnder(content, `/u/silent-${caseIndex}.md`);
       assert.strictEqual(emitted, 0, `${label} must not be reported as corruption`);
     });
-  }
+  });
 
   test('a well-formed document still parses its keys and stays silent', () => {
     _resetUnusableInputWarningsForTests();
@@ -152,24 +160,30 @@ describe('extractFrontmatter — stays silent on everything that is not corrupti
   });
 });
 
-// ─── Boundary: the discriminator's threshold is ">= 1 parsed key" ────────────
+// ─── Boundary: the discriminator's threshold is ">= 2 parsed keys" ──────────
 
-describe('extractFrontmatter — key-count boundary around the >=1 threshold', () => {
-  test('limit-1: zero keys in the unterminated region is silent', () => {
+describe('extractFrontmatter — key-count boundary around the >=2 threshold', () => {
+  test('below threshold: zero keys is silent', () => {
     _resetUnusableInputWarningsForTests();
     const [, emitted] = parseUnder('---\njust prose, no colon\n', '/u/boundary-0.md');
     assert.strictEqual(emitted, 0);
   });
 
-  test('limit: exactly one key is reported', () => {
+  test('limit-1: exactly one key is silent — a labelled line under a thematic break', () => {
     _resetUnusableInputWarningsForTests();
     const [, emitted] = parseUnder('---\na: 1\n', '/u/boundary-1.md');
-    assert.strictEqual(emitted, 1);
+    assert.strictEqual(emitted, 0, 'one key is ambiguous with ordinary Markdown');
   });
 
-  test('limit+1: two keys is reported exactly once, not once per key', () => {
+  test('limit: exactly two keys is reported', () => {
     _resetUnusableInputWarningsForTests();
     const [, emitted] = parseUnder('---\na: 1\nb: 2\n', '/u/boundary-2.md');
+    assert.strictEqual(emitted, UNTERMINATED_KEY_THRESHOLD - 1);
+  });
+
+  test('limit+1: three keys is reported exactly once, not once per key', () => {
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder('---\na: 1\nb: 2\nc: 3\n', '/u/boundary-3.md');
     assert.strictEqual(emitted, 1);
   });
 });
@@ -271,6 +285,29 @@ describe('diagnostic deduplication', () => {
 // ─── Hostile input ───────────────────────────────────────────────────────────
 
 describe('hostile input', () => {
+  test('a literal backslash in a POSIX filename does not collide with a real directory', () => {
+    // Review finding: folding backslashes to '/' unconditionally made these two GENUINELY
+    // different files share one key on Linux/macOS, where '\\' is a legal filename
+    // character, and silently swallowed the second diagnostic.
+    _resetUnusableInputWarningsForTests();
+    const [, withBackslash] = parseUnder(TRUNCATED_LF, '/repo/weird\\name/PLAN.md');
+    const [, withSlash] = parseUnder(TRUNCATED_LF, '/repo/weird/name/PLAN.md');
+    assert.strictEqual(withBackslash, 1);
+    assert.strictEqual(withSlash, 1, 'two distinct files must never silence each other');
+  });
+
+  test('a path spelled like the unnamed-digest fallback cannot pre-seed suppression', () => {
+    // Review finding: the digest of any predictable content can be computed and used as a
+    // filename, so the two key namespaces must be disjoint by construction.
+    _resetUnusableInputWarningsForTests();
+    const crypto = require('node:crypto');
+    const digest = crypto.createHash('sha256').update(TRUNCATED_LF).digest('hex').slice(0, 16);
+    const [, forged] = parseUnder(TRUNCATED_LF, `<unnamed:${digest}>`);
+    const [, pathless] = parseUnder(TRUNCATED_LF, undefined);
+    assert.strictEqual(forged, 1);
+    assert.strictEqual(pathless, 1, 'a forged path must not suppress the path-less report');
+  });
+
   test('a NUL in the path cannot forge a collision with another key', () => {
     _resetUnusableInputWarningsForTests();
     // The key separator is NUL. If it were not stripped, "a\0frontmatter_unterminated"
@@ -281,21 +318,18 @@ describe('hostile input', () => {
     assert.strictEqual(genuine, 1, 'a crafted path must not suppress a real report');
   });
 
-  test('control characters in the path are never written through to the terminal', () => {
+  test('control characters are stripped from the source before it is used', () => {
+    // Asserted on the sanitizer's RETURN VALUE, not by capturing what reached stderr.
+    // Scraping the rendered stream and regex-testing it is the shape CONTRIBUTING.md bans
+    // (Prohibited: Raw Text Matching on Test Outputs) — the rule targets the mechanism,
+    // not just prose-wording checks, so the typed surface is the correct fix.
     _resetUnusableInputWarningsForTests();
-    let written = '';
-    const original = process.stderr.write;
-    process.stderr.write = (chunk) => { written += String(chunk); return true; };
-    try {
-      extractFrontmatter(TRUNCATED_LF, '/u/ansi\u001b[31mred\u0007.md');
-    } finally {
-      process.stderr.write = original;
+    const cleaned = _sanitizeSourceForTests('/u/ansi\u001b[31mred\u0007\u0000.md');
+    assert.strictEqual(cleaned, '/u/ansi[31mred.md');
+    for (const ch of cleaned) {
+      assert.ok(ch.charCodeAt(0) > 31 && ch.charCodeAt(0) !== 127,
+        'sanitized source must contain no C0 or DEL bytes');
     }
-    assert.ok(written.length > 0, 'a diagnostic should have been produced');
-    // Structural assertion on the bytes emitted, not on the message wording.
-    // eslint-disable-next-line no-control-regex
-    assert.ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(written),
-      'no raw control bytes may reach the operator terminal');
   });
 
   test('a large unterminated region completes without pathological behaviour', () => {

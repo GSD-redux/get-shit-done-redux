@@ -530,7 +530,13 @@ const _warnedUnusableConfig = new Set<string>();
  * silently discarded still gets no signal. That was the whole defect in #1880.
  */
 function _warnUnusableConfig(fault: ConfigFault): void {
-  const key = `${fault.path}${fault.reason}${fault.code}`;
+  // The NUL separators are load-bearing: without them `path`+`reason`+`code` is bare
+  // concatenation and two distinct faults can key alike. They are written as escapes rather
+  // than literal 0x00 bytes because a literal NUL makes the whole file binary to file(1) and
+  // grep(1), which silently skipped it — RULESET.AUDIT.search-source-not-generated tells
+  // agents to search this exact source to confirm an invariant exists, and it was returning
+  // nothing. Same runtime string, still greppable.
+  const key = `${fault.path}\u0000${fault.reason}\u0000${fault.code}`;
   if (_warnedUnusableConfig.has(key)) return;
   _warnedUnusableConfig.add(key);
   const what = fault.reason === CONFIG_REASON.CONFIG_UNPARSEABLE

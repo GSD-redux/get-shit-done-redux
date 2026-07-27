@@ -56,6 +56,14 @@ function splitInlineArray(body: string): string[] {
 }
 
 /**
+ * How many parsed keys an unterminated region must yield before it is reported as a
+ * truncated frontmatter rather than left alone as ordinary Markdown. See the rationale on
+ * `extractFrontmatter`; exported for tests so the boundary is asserted against the constant
+ * rather than a magic number duplicated in the suite.
+ */
+const UNTERMINATED_KEY_THRESHOLD = 2;
+
+/**
  * Parse one already-delimited YAML region into a Frontmatter object.
  *
  * Extracted from `extractFrontmatter` (#1882) so the truncation probe below and the real
@@ -146,9 +154,19 @@ function parseYamlRegion(yaml: string): Frontmatter {
  * document whose first line is a thematic break (`---`) takes that exact branch, so flagging
  * on the missing fence alone reports corruption on perfectly good Markdown. Instead the
  * unterminated region is run through this module's own parser and reported only when it
- * yields at least one key — i.e. only when the text actually looks like the frontmatter
- * someone was in the middle of writing. This inverts the instinct already present in
- * `parseMustHavesBlock` (warn when a block has content lines but parsed zero items).
+ * yields **two or more** keys.
+ *
+ * Two, not one, and the extra key is doing real work. A single `key: value` line is genuinely
+ * ambiguous: `---` followed by `Note: this is a paragraph.` — or `Author:`, `TODO:`, `See:` —
+ * is ordinary technical writing, a thematic break above a labelled line, and it parses as
+ * exactly one key. There is no textual signal that separates it from a write interrupted
+ * after its first key, so the threshold is set where the ambiguity ends. The cost is a false
+ * negative on a file truncated after exactly one key; the benefit is silence on a very common
+ * Markdown shape. That direction is deliberate and matches the choice already made at zero
+ * keys: a false positive on valid Markdown is worse than a missed edge, because the
+ * diagnostic is unconditional and cannot be turned off. Every GSD artefact this guards
+ * (STATE.md, PLAN.md, ROADMAP.md, SUMMARY.md, agent/command docs) carries two or more
+ * frontmatter keys, so the realistic interruption window stays covered.
  *
  * @param content Raw document text.
  * @param sourcePath Optional resolved path, used to name the file in the diagnostic and to
@@ -164,7 +182,7 @@ function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
   const closingLineStart = content.indexOf('\n---', headerEnd);
   if (closingLineStart === -1) {
     const probe = parseYamlRegion(content.slice(headerEnd));
-    if (Object.keys(probe).length > 0) {
+    if (Object.keys(probe).length >= UNTERMINATED_KEY_THRESHOLD) {
       warnUnusableInput({
         reason: UNUSABLE_REASON.FRONTMATTER_UNTERMINATED,
         source: sourcePath,
@@ -680,6 +698,7 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
 
 export = {
   extractFrontmatter,
+  UNTERMINATED_KEY_THRESHOLD,
   // Additive alias (#644 prohibition-probe schema contract): the probe round-trip seam reads a
   // frontmatter object via `parseFrontmatter` (the name the contract test pins). It is the SAME
   // function as `extractFrontmatter` — a bare-object parse with no behavior change — exposed under

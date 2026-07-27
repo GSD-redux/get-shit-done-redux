@@ -621,7 +621,8 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     const planId = planFile.replace('-PLAN.md', '').replace('PLAN.md', '');
     const planPath = path.join(phaseDir, planFile);
     const content = fs.readFileSync(planPath, 'utf-8');
-    const fm = extractFrontmatter(content);
+    // Pass planPath so a truncated PLAN.md names the file in the #1882 diagnostic.
+    const fm = extractFrontmatter(content, planPath);
 
     const xmlTasks = content.match(/<task[\s>]/gi) || [];
     const mdTasks = content.match(/##\s*Task\s*\d+/gi) || [];
