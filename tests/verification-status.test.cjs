@@ -114,7 +114,9 @@ describe('verification-status', () => {
       writeVerificationMd(dir, '01-hn-VERIFICATION.md', 'human_needed');
       const result = readVerificationStatus(dir);
       assert.equal(result.status, 'human_needed');
-      assert.equal(result.next_command, '');
+      // #2617: human_needed now names the command the next_action describes.
+      // This fixture's dir is not phase-shaped, so no number is appended.
+      assert.equal(result.next_command, '/gsd-verify-work');
       assert.ok(result.next_action.length > 0);
     } finally {
       cleanup(dir);
@@ -882,19 +884,19 @@ for (const { id, prefix } of RUNTIMES) {
 
     test('missing verification', () => {
       removeVerification();
-      assert.equal(read(id).next_command, `${prefix}execute-phase`);
+      assert.equal(read(id).next_command, `${prefix}execute-phase 01`);
     });
 
     test('unparseable/absent frontmatter status is also "missing"', () => {
       fs.writeFileSync(verificationPath(), '# Verification\n\nNo frontmatter here.\n');
-      assert.equal(read(id).next_command, `${prefix}execute-phase`);
+      assert.equal(read(id).next_command, `${prefix}execute-phase 01`);
     });
 
     test('unknown status value', () => {
       writeStatus('not-a-real-status');
       const result = read(id);
       assert.equal(result.status, 'unknown');
-      assert.equal(result.next_command, `${prefix}execute-phase`);
+      assert.equal(result.next_command, `${prefix}execute-phase 01`);
     });
 
     test('gaps_found carries the phase number and --gaps flag through the projection', () => {
@@ -912,13 +914,19 @@ for (const { id, prefix } of RUNTIMES) {
       assert.equal(result.next_command, `${prefix}verify-work 01`);
     });
 
-    test('states with no next step stay empty, not a bare prefix', () => {
+    test('passed has no next step and stays empty, not a bare prefix', () => {
       // Boundary: projecting an empty command must not emit `$gsd-` / `/gsd-`.
-      for (const status of ['passed', 'human_needed']) {
-        writeStatus(status);
-        assert.equal(read(id).next_command, '',
-          `${status} has no next command and must project to the empty string`);
-      }
+      writeStatus('passed');
+      assert.equal(read(id).next_command, '',
+        'passed has no next command and must project to the empty string');
+    });
+
+    test('human_needed names the verify-work command its next_action describes', () => {
+      // #2617 unification: the table used to return '' here while init.cts's
+      // parallel projector returned `verify-work <N>` for the same state — the
+      // two surfaces disagreed on whether a next command existed at all.
+      writeStatus('human_needed');
+      assert.equal(read(id).next_command, `${prefix}verify-work 01`);
     });
   });
 }
@@ -960,7 +968,7 @@ describe('#2617: no verification output suggests the deprecated colon form', () 
   test('the default runtime yields the canonical hyphen form, not the colon form', () => {
     removeVerification();
     // No `runtime` option at all — the pre-fix default emitted `/gsd:execute-phase`.
-    assert.equal(readVerificationStatus(projPhaseDir).next_command, '/gsd-execute-phase');
+    assert.equal(readVerificationStatus(projPhaseDir).next_command, '/gsd-execute-phase 01');
   });
 });
 

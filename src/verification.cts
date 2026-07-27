@@ -93,7 +93,12 @@ const VERIFICATION_ROUTING_TABLE: Record<string, VerificationRoute> = {
   human_needed: {
     status: 'human_needed',
     next_action: "Human verification required. Complete the manual tests in the phase's *-UAT.md, then re-run the verify step until status is passed.",
-    next_command: '',
+    // #2617: was '' — next_action told the user to "re-run the verify step" but
+    // named no command, while init.cts's parallel projector emitted
+    // `verify-work <N>` for this same state. The two surfaces disagreed on
+    // whether a next command existed at all; init's answer was the useful one,
+    // and init now delegates here rather than re-deriving it.
+    next_command: 'verify-work',
   },
   stale: {
     status: 'stale',
@@ -256,12 +261,12 @@ function defaultPhaseCleanCommitTimesMs(
  * Used for two early-return paths: no *-VERIFICATION.md file found, and
  * file present but no parseable frontmatter status.
  */
-function missingResult(runtime: string): VerificationStatusResult {
+function missingResult(runtime: string, phaseArg: string): VerificationStatusResult {
   const route = VERIFICATION_ROUTING_TABLE['missing'];
   return {
     status: route.status,
     next_action: route.next_action,
-    next_command: projectNextCommand(route.next_command, runtime),
+    next_command: projectNextCommand(route.next_command, runtime, phaseArg),
   };
 }
 
@@ -278,6 +283,13 @@ interface ReadVerificationStatusOptions {
    * deprecated `/gsd:` colon form this field used to hard-code.
    */
   runtime?: string;
+  /**
+   * Phase number appended to the routed command (#2617). Defaults to the token
+   * parsed from `phaseDir`, but only when that token is unambiguously numeric.
+   * Callers that already know the number pass it explicitly — `init` reaches
+   * this with `phaseDir` unresolved in some branches.
+   */
+  phaseNumber?: string;
 }
 
 interface VerificationStatusResult {
@@ -364,7 +376,15 @@ function readVerificationStatus(
   // Phase token for the gaps_found command
   const baseName = path.basename(phaseDir);
   const phaseToken = extractPhaseToken(baseName);
-  const phaseNumber = phaseToken.length > 0 ? phaseToken : baseName;
+  const derivedPhaseNumber = phaseToken.length > 0 ? phaseToken : baseName;
+  // #2617: the phase number becomes a COMMAND ARGUMENT, so it is appended only
+  // when it is unambiguously one. extractPhaseToken also returns project-code
+  // forms (`PROJ-07`), which are indistinguishable by shape from an ordinary
+  // directory name — `gsd-651-parent` yields `gsd-651` — and emitting
+  // `execute-phase gsd-651` is worse than emitting no argument at all. Callers
+  // that already know the number (init) pass it explicitly and always get it.
+  const phaseArgSource = opts.phaseNumber ?? (/^\d+(\.\d+)*$/.test(derivedPhaseNumber) ? derivedPhaseNumber : '');
+  const phaseArg = phaseArgSource ? ` ${phaseArgSource}` : '';
 
   // 1. Find *-VERIFICATION.md
   let verificationFile: string | null = null;
@@ -378,7 +398,7 @@ function readVerificationStatus(
   }
 
   if (!verificationFile) {
-    return missingResult(runtime);
+    return missingResult(runtime, phaseArg);
   }
 
   // 2. Read and parse frontmatter using the shared parser.
@@ -400,7 +420,7 @@ function readVerificationStatus(
   }
 
   if (!rawStatus) {
-    return missingResult(runtime);
+    return missingResult(runtime, phaseArg);
   }
 
   // gaps_found takes priority over stale — gap closure is the correct next
@@ -410,7 +430,7 @@ function readVerificationStatus(
     return {
       status: entry.status,
       next_action: entry.next_action,
-      next_command: projectNextCommand('plan-phase', runtime, ` ${phaseNumber} --gaps`),
+      next_command: projectNextCommand('plan-phase', runtime, `${phaseArg} --gaps`),
     };
   }
 
@@ -420,7 +440,7 @@ function readVerificationStatus(
     return {
       status: entry.status,
       next_action: entry.next_action,
-      next_command: projectNextCommand('verify-work', runtime, ` ${phaseNumber}`),
+      next_command: projectNextCommand('verify-work', runtime, phaseArg),
     };
   }
 
@@ -437,7 +457,7 @@ function readVerificationStatus(
     return {
       status: entry.status,
       next_action: entry.next_action,
-      next_command: projectNextCommand(entry.next_command, runtime),
+      next_command: projectNextCommand(entry.next_command, runtime, phaseArg),
     };
   }
 
@@ -446,7 +466,7 @@ function readVerificationStatus(
   return {
     status: unknownRoute.status,
     next_action: `Unexpected verification status '${rawStatus}'. Re-run execute-phase verification.`,
-    next_command: projectNextCommand(unknownRoute.next_command, runtime),
+    next_command: projectNextCommand(unknownRoute.next_command, runtime, phaseArg),
   };
 }
 
