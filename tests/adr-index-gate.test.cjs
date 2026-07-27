@@ -483,7 +483,19 @@ test('no ADR H1 status bracket contradicts its Status field', () => {
     const bracket = heading.match(/\[(Proposed|Accepted|Superseded|Legacy|Retired)\]\s*$/i);
     if (!bracket) continue;
     const statusLine = lines.find((l) => /^\s*[-*]?\s*\*\*Status/.test(l)) || '';
-    const token = STATUS_TOKENS.find((s) => new RegExp(`\\b${s}\\b`, 'i').test(statusLine));
+    // Resolve by earliest position in the line, not by STATUS_TOKENS order: a
+    // Status field like "Superseded by ADR-X (was Accepted ...)" mentions two
+    // tokens, and array order would pick 'Accepted' and report a false mismatch
+    // against a correct [Superseded] bracket.
+    let token;
+    let tokenAt = Infinity;
+    for (const s of STATUS_TOKENS) {
+      const at = statusLine.search(new RegExp(`\\b${s}\\b`, 'i'));
+      if (at !== -1 && at < tokenAt) {
+        tokenAt = at;
+        token = s;
+      }
+    }
     if (token && token.toLowerCase() !== bracket[1].toLowerCase()) {
       mismatches.push(`${file}: H1 says [${bracket[1]}], Status field says ${token}`);
     }
