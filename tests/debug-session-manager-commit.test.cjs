@@ -91,9 +91,12 @@ test('#2568: the manager must NOT commit on the non-terminal CONTINUE_REQUIRED p
 
 test('#2568: the manager stages specific files and never git add -A', () => {
   const body = manager();
+  // Target an INSTRUCTION, not any mention: the spec legitimately names `git add -A`
+  // in order to forbid it, and a bare substring check would reject the prohibition
+  // itself. What must never appear is a command line telling the agent to run it.
   assert.doesNotMatch(
     body,
-    /git add -A/,
+    /^\s*git add -A/m,
     'staging everything would sweep unrelated working-tree changes into a debug commit ' +
       '(#2568 explicitly requires specific-file staging)',
   );

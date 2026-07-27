@@ -7,7 +7,7 @@
   "agents/gsd-code-fixer.agent.md": "8f39aacb760aab57",
   "agents/gsd-code-reviewer.agent.md": "fa1e7c421c78eae1",
   "agents/gsd-codebase-mapper.agent.md": "347d66bb17975c3e",
-  "agents/gsd-debug-session-manager.agent.md": "e669e5d76bfd7810",
+  "agents/gsd-debug-session-manager.agent.md": "5ef0a0c5dc1eca47",
   "agents/gsd-debugger.agent.md": "f7d0307490617a8a",
   "agents/gsd-doc-classifier.agent.md": "aea81c0ba00e06cf",
   "agents/gsd-doc-synthesizer.agent.md": "6ae32e4db005696d",

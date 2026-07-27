@@ -44,7 +44,7 @@
   "agents/subagents/gsd-code-reviewer.yaml": "5f2398f56018f50d",
   "agents/subagents/gsd-codebase-mapper.md": "91fc76ecb02bbc30",
   "agents/subagents/gsd-codebase-mapper.yaml": "bce1c6d15f55c477",
-  "agents/subagents/gsd-debug-session-manager.md": "cec62a7fd99ab1c3",
+  "agents/subagents/gsd-debug-session-manager.md": "b05cf708866e40be",
   "agents/subagents/gsd-debug-session-manager.yaml": "aab147717b5082e7",
   "agents/subagents/gsd-debugger.md": "2021c72a39d56fe5",
   "agents/subagents/gsd-debugger.yaml": "6d02d7feb90cad43",

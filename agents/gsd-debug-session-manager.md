@@ -310,6 +310,32 @@ If user selects 3: proceed to Step 4 with fix = "not applied (guardrail rejected
 
 Read the resolved (or current) debug file to extract final Resolution values.
 
+**Commit before returning a terminal summary (#2568).** This agent owns the terminal path —
+it applies fixes, archives to `resolved/`, and returns the summary — but carried no commit
+step, so `commit_docs` was never consulted on the normal `/gsd-debug` flow and session docs
+were left untracked. Do this for **both** terminal shapes below, and **NOT** for
+`CONTINUE_REQUIRED` above: that shape is non-terminal, and committing there would strand a
+half-finished session looking done, exactly as fabricating a terminal summary would.
+`CHECKPOINT REACHED` (Step 3d) likewise does not commit — it pauses for user input and loops
+back to Step 3.
+
+1. **In-session fix code.** If a fix was applied during this session and its code changes are
+   still uncommitted, commit them first. Stage **specific files only** — the files the fix
+   touched. Do this rather than `git add -A`, which would sweep unrelated working-tree
+   changes into a debug commit:
+   ```bash
+   git add <files the fix touched> && git commit -m "fix: {brief description}"
+   ```
+2. **Session doc.** Commit via the CLI, which already gates on `commit_docs` and returns
+   `skipped_commit_docs_false` when disabled — call it unconditionally rather than
+   re-checking the config here, so the policy lives in one place:
+   ```bash
+   # resolved session
+   gsd_run query commit "docs(debug): resolve {slug} session" --files {debug_dir}/resolved/{slug}.md
+   # abandoned session (checkpoint retained for `/gsd:debug continue {slug}`)
+   gsd_run query commit "docs(debug): checkpoint {slug} session" --files {debug_file_path}
+   ```
+
 Return compact summary (terminal — investigation resolved):
 
 ```markdown
@@ -349,5 +375,6 @@ If the session was abandoned by user choice, return (terminal — user stopped):
 - [ ] TDD gate applied when tdd_mode=true and ROOT CAUSE FOUND
 - [ ] Loop continues until DEBUG COMPLETE, ABANDONED, or user stops
 - [ ] Non-terminal `CONTINUE_REQUIRED` (not a fabricated terminal summary) returned when the manager's own turn/context budget is exhausted mid-investigation
+- [ ] Session doc (and any uncommitted fix code from this session) committed before a terminal summary, respecting `commit_docs` — and NOT committed on the non-terminal `CONTINUE_REQUIRED` path
 - [ ] Compact summary returned (at most 2K tokens)
 </success_criteria>
