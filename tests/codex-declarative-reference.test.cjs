@@ -9,7 +9,7 @@
  * correctly (including the documented `maxDepth === 1 → flat` dispatch
  * degradation), that negotiation fails CLOSED on a corrupted descriptor, that
  * the three Context7-verified UPGRADES land on the user-reachable surface
- * (skill-root → $HOME/.agents/skills, the 6 new hooks.json lifecycle events, and
+ * (skill-root → $HOME/.agents/skills, the supported SessionStart update hook, and
  * explicit `[agents] max_depth` dispatch tuning), and that the migration retired
  * the hardcoded `runtime === 'codex'` / positive-`isCodex` projection (folded
  * into descriptor-driven `runtime.hostBehaviors`).
@@ -20,6 +20,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const espree = require('espree');
+const tsParser = require('@typescript-eslint/parser');
 
 process.env.GSD_TEST_MODE = '1';
 
@@ -34,6 +36,7 @@ const {
 } = require('../gsd-core/bin/lib/host-integration.cjs');
 
 const install = require('../bin/install.js');
+const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const CODEX_CAP = JSON.parse(
@@ -129,27 +132,56 @@ test('codex descriptor declares runtime.hostBehaviors (the folded-in behaviors)'
 });
 
 test('no `runtime === "codex"` string-equality and no positive `isCodex` gate remain in the install source (AC2)', () => {
-  const strip = (src) => src
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\r\n]*/g, '')
-    .replace(/`[^`]*`/g, '');
   for (const rel of ['bin/install.js', 'src/install-engine.cts', 'src/runtime-artifact-conversion.cts']) {
     const raw = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
-    const src = strip(raw);
-
-    const stringEq = src.match(/runtime\s*[!=]==\s*'codex'/g) || [];
-    assert.deepEqual(stringEq, [], `AC2: no hardcoded runtime==='codex' branch may remain in ${rel}; found: ${stringEq.join(', ')}`);
-
-    // Every `isCodex` reference must be either a runtimeFlags(...) destructure
-    // line or a NEGATED occurrence inside a shared multi-runtime roster
-    // (`!isCodex && !isCopilot && ...`). A positive `isCodex` gate is forbidden.
-    for (const line of src.split(/\r?\n/)) {
-      if (!/\bisCodex\b/.test(line)) continue;
-      if (/runtimeFlags\s*\(/.test(line)) continue; // destructure declaration
-      const positive = line.replace(/!\s*isCodex\b/g, '').match(/\bisCodex\b/);
-      assert.equal(positive, null, `AC2: positive isCodex gate forbidden in ${rel}: ${line.trim()}`);
+    const source = raw.startsWith('#!') ? `//${raw.slice(2)}` : raw;
+    const ast = rel.endsWith('.cts')
+      ? tsParser.parse(source, { loc: true, range: true })
+      : espree.parse(source, {
+        ecmaVersion: 2022,
+        loc: true,
+        range: true,
+        sourceType: 'script',
+      });
+    const violations = [];
+    function walk(node, parent = null, grandparent = null) {
+      if (!node || typeof node !== 'object') return;
+      if (
+        node.type === 'BinaryExpression'
+        && ['===', '!=='].includes(node.operator)
+        && (
+          (node.left?.type === 'Identifier' && node.left.name === 'runtime'
+            && node.right?.type === 'Literal' && node.right.value === 'codex')
+          || (node.right?.type === 'Identifier' && node.right.name === 'runtime'
+            && node.left?.type === 'Literal' && node.left.value === 'codex')
+        )
+      ) {
+        violations.push(`runtime/codex comparison at line ${node.loc.start.line}`);
+      }
+      if (node.type === 'Identifier' && node.name === 'isCodex') {
+        const destructured = parent?.type === 'Property' && grandparent?.type === 'ObjectPattern';
+        const negated = parent?.type === 'UnaryExpression' && parent.operator === '!';
+        if (!destructured && !negated) {
+          violations.push(`positive isCodex reference at line ${node.loc.start.line}`);
+        }
+      }
+      for (const value of Object.values(node)) {
+        if (Array.isArray(value)) {
+          for (const child of value) walk(child, node, parent);
+        } else if (value && typeof value === 'object' && typeof value.type === 'string') {
+          walk(value, node, parent);
+        }
+      }
     }
+    walk(ast);
+    assert.deepEqual(violations, [], `AC2 descriptor dispatch violations in ${rel}: ${violations.join(', ')}`);
   }
+});
+
+test('unsupported Codex context-monitor event registration is not publicly exported', () => {
+  assert.equal(install.ensureCodexHooksJsonEvent, undefined);
+  assert.equal(install.removeCodexHooksJsonEvent, undefined);
+  assert.equal(install.reconcileCodexHooksJsonEvent, undefined);
 });
 
 // -- AC4 upgrade 3: skill root is the canonical $HOME/.agents/skills ---------
@@ -185,39 +217,31 @@ test('upgrade 3 — the pre-move location is migrated (stale ~/.codex/skills/gsd
   }
 });
 
-// -- AC4 upgrade 1: the 6 new hooks.json lifecycle events are registered ------
+// -- AC4 upgrade 1: Codex keeps only the supported update hook ----------------
 
-test('upgrade 1 — codex registers all documented hooks.json lifecycle events, incl. the 6 new in #2088', () => {
-  const expected = [
-    'SubagentStart', 'Stop', 'PostToolUse',       // #772
-    'PreToolUse', 'PermissionRequest', 'PreCompact', 'PostCompact', 'SubagentStop', 'UserPromptSubmit', // #2088
-  ];
-  assert.deepEqual(install.CODEX_EXTENDED_HOOK_EVENTS, expected,
-    'the shared install/uninstall event list must contain the 3 original + 6 new events');
-
+test('upgrade 1 — codex registers only the supported SessionStart update hook', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-hooks-'));
   try {
     fs.mkdirSync(path.join(tmp, 'hooks'), { recursive: true });
-    fs.writeFileSync(path.join(tmp, 'hooks', 'gsd-context-monitor.js'), '// stub');
     fs.writeFileSync(path.join(tmp, 'hooks', 'gsd-check-update.js'), '// stub');
-    for (const ev of install.CODEX_EXTENDED_HOOK_EVENTS) {
-      install.ensureCodexHooksJsonEvent(tmp, ev, { absoluteRunner: '/usr/bin/node', platform: 'linux' });
-    }
     install.ensureCodexHooksJsonSessionStart(tmp, { absoluteRunner: '/usr/bin/node', platform: 'linux' });
     const hooksJson = JSON.parse(fs.readFileSync(path.join(tmp, 'hooks.json'), 'utf8'));
-    const registered = Object.keys(hooksJson.hooks || hooksJson || {});
-    for (const ev of ['PreToolUse', 'PermissionRequest', 'PreCompact', 'PostCompact', 'SubagentStop', 'UserPromptSubmit']) {
-      assert.ok(registered.includes(ev), `#2088 must register the ${ev} hook in hooks.json`);
-    }
-    assert.ok(registered.includes('SessionStart'), 'the SessionStart baseline stays registered');
+    const hooks = hooksJson.hooks || hooksJson || {};
+    assert.deepEqual(Object.keys(hooks), ['SessionStart'],
+      'Codex must not register unsupported context-monitor lifecycle events');
+    const serialized = JSON.stringify(hooks);
+    assert.match(serialized, /gsd-check-update(?:\.js|\.cmd)/,
+      'the supported SessionStart registration must run the update hook');
+    assert.doesNotMatch(serialized, /gsd-context-monitor(?:\.js|\.cmd)/,
+      'no Codex registration may reference the unsupported context monitor');
   } finally {
     cleanup(tmp);
   }
 });
 
-test('upgrade 1 — extendedHookEvents descriptor reconciled to the schema-valid wired subset (no longer [])', () => {
-  assert.deepEqual(CODEX_CAP.runtime.extendedHookEvents, ['SubagentStop', 'Stop', 'PreCompact'],
-    'reconciled from [] to the wired extended-lifecycle events expressible in the cross-runtime vocabulary');
+test('upgrade 1 — codex install plan advertises no unsupported extended lifecycle hooks', () => {
+  assert.deepEqual(resolveInstallPlan('codex').extendedHookEvents, [],
+    'SessionStart is the only supported Codex lifecycle registration');
 });
 
 // -- AC4 upgrade 2: explicit [agents] max_depth dispatch tuning ---------------

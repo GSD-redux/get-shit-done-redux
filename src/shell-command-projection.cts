@@ -234,9 +234,9 @@ const MANAGED_HOOK_COMMAND_BASENAMES_BY_SURFACE: Record<string, Set<string>> = {
     // reconcileCodexHooksJsonSessionStart can replace stale node-runner commands
     // with the .cmd shim on reinstall (and vice-versa on cross-platform moves).
     'gsd-check-update.cmd',
-    // #772: context-monitor is now registered for Codex SubagentStart/Stop/PostToolUse.
+    // Cleanup-only legacy basename retained for exact retired monitor recognition.
     'gsd-context-monitor.js',
-    // #772: Windows .cmd shim for gsd-context-monitor — same #3426 pattern.
+    // Windows .cmd legacy counterpart; cleanup-only for exact recognition.
     'gsd-context-monitor.cmd',
   ]),
 };
@@ -300,6 +300,41 @@ export function isManagedHookCommand(commandText: unknown, opts: { surface?: str
     const escapedBasename = basename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const pattern = new RegExp(`(^|[\\\\/\\s"'` + '`' + `])${escapedBasename}(?=$|[\\s"'` + '`' + `])`);
     if (pattern.test(normalizedCommand)) return true;
+  }
+  return false;
+}
+
+export function isRecognizedCodexContextMonitorCommand(commandText: unknown, configDir: string): boolean {
+  if (typeof commandText !== 'string' || typeof configDir !== 'string' || configDir.length === 0) {
+    return false;
+  }
+
+  const normalizedHooksDir = posixNormalize(path.resolve(configDir, 'hooks'));
+  const monitorScript = `${normalizedHooksDir}/gsd-context-monitor.js`;
+  const monitorShim = `${normalizedHooksDir}/gsd-context-monitor.cmd`;
+  const jsonString = '"(?:\\\\.|[^"\\\\])*"';
+
+  const shimMatch = commandText.match(new RegExp(`^(${jsonString})$`));
+  if (shimMatch) {
+    try {
+      return posixNormalize(JSON.parse(shimMatch[1]) as string) === monitorShim;
+    } catch {
+      return false;
+    }
+  }
+
+  const nodeMatch = commandText.match(new RegExp(`^(${jsonString}) (${jsonString})$`));
+  if (nodeMatch) {
+    try {
+      const runner = JSON.parse(nodeMatch[1]) as string;
+      const script = JSON.parse(nodeMatch[2]) as string;
+      const runnerBasename = posixNormalize(runner).split('/').pop()?.toLowerCase();
+      return (path.isAbsolute(runner) || path.win32.isAbsolute(runner))
+        && (runnerBasename === 'node' || runnerBasename === 'node.exe')
+        && posixNormalize(script) === monitorScript;
+    } catch {
+      return false;
+    }
   }
   return false;
 }

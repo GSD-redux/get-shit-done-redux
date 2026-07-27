@@ -117,26 +117,6 @@ const CODEX_AGENTS_TOML_SCALAR_KEYS = new Set([
 // (ADR-1239 upgrade 2 / #2088). Per the negotiated capability, GSD-hosted Codex
 // dispatch is single-level (maxDepth === 1 \u2192 `degradationFor` flattens waves).
 const GSD_CODEX_AGENTS_MAX_DEPTH = 1;
-// Codex hooks.json lifecycle events GSD registers beyond SessionStart (which has
-// its own dedicated path). This is Codex's OWN hook-event vocabulary (per
-// developers.openai.com/codex/config-reference), distinct from the cross-runtime
-// settings.json `extendedHookEvents` descriptor field (a claude/gemini-family
-// allowlist consumed only by hooksSurface==='settings-json' runtimes — Codex is
-// codex-hooks-json). All route through gsd-context-monitor.js. #772 wired the
-// first three; #2088 adds the remaining six documented events so GSD's monitor
-// fires at the same lifecycle points as in Claude Code. Install and uninstall
-// share this list so the registered set and the removed set never diverge.
-const CODEX_EXTENDED_HOOK_EVENTS = [
-  'SubagentStart',
-  'Stop',
-  'PostToolUse',
-  'PreToolUse',
-  'PermissionRequest',
-  'PreCompact',
-  'PostCompact',
-  'SubagentStop',
-  'UserPromptSubmit',
-];
 // Codex's hook-enabling feature flag (issue #3566). Codex itself marks
 // `codex_hooks` as a `legacy_key` in codex-rs/features/src/legacy.rs; the
 // canonical current key under [features] is `hooks`. The installer always
@@ -548,8 +528,11 @@ function _runtimeAdapter(runtime) {
   }
 }
 const {
+  acquireInstallMigrationLock,
   applyInstallerMigrationPlan,
+  classifyArtifact,
   discoverInstallerMigrations,
+  readInstallManifest,
   runInstallerMigrations,
 } = require(path.join(_gsdLibDir, 'installer-migrations.cjs'));
 const {
@@ -1019,10 +1002,6 @@ function rewriteLegacyCodexHookBlock(content, absoluteRunner, opts) {
  *   timeout: optional timeout in seconds.
  * @returns {{ changed: boolean, wrote: boolean, path: string }}
  */
-function reconcileCodexHooksJsonEvent(targetDir, eventName, opts = {}) {
-  return hooksSurface.reconcileCodexHooksJsonEvent(targetDir, eventName, opts);
-}
-
 /**
  * Reconcile the GSD-managed SessionStart hook entry in hooks.json.
  * Delegates to the generic reconcileCodexHooksJsonEvent helper.
@@ -1096,48 +1075,143 @@ function buildCodexHookWindowsShimIR(scriptAbsPath, absoluteRunnerToken) {
  * @returns {{ changed: boolean, wrote: boolean, path: string }}
  */
 function ensureCodexHooksJsonSessionStart(targetDir, opts = {}) {
-  return hooksSurface.ensureCodexHooksJsonSessionStart(targetDir, opts);
+  return withCodexHooksJsonLock(targetDir, 'SessionStart registration', () =>
+    hooksSurface.ensureCodexHooksJsonSessionStart(targetDir, opts));
 }
 
-/**
- * Ensure hooks.json contains exactly one managed GSD hook entry for the given
- * Codex event, wired to gsd-context-monitor.js. Preserves user-owned entries.
- *
- * Used for the new Codex events added in #772:
- *   SubagentStart — inject context / GSD_AGENT_NAME awareness at subagent open
- *   Stop          — post-session context headroom tracking
- *   PostToolUse   — mirror the Claude Code PostToolUse context monitor
- *
- * All three events are routed through gsd-context-monitor.js — the same hook
- * used for PostToolUse in the Claude Code baseline — so context-headroom
- * warnings surface at these key Codex session lifecycle moments.
- *
- * On Windows (#3426): writes a gsd-context-monitor.cmd shim alongside the .js
- * file and uses the .cmd path as the hook command — exactly the same fix as
- * SessionStart uses for gsd-check-update — to avoid the bash.exe POSIX-exec
- * failure when Codex's hook dispatcher tries to run node.exe through Git Bash.
- *
- * @param {string} targetDir
- * @param {string} eventName - One of 'SubagentStart', 'Stop', 'PostToolUse'.
- * @param {{ absoluteRunner: string|null, platform?: NodeJS.Platform }} opts
- * @returns {{ changed: boolean, wrote: boolean, path: string }}
- */
-function ensureCodexHooksJsonEvent(targetDir, eventName, opts = {}) {
-  return hooksSurface.ensureCodexHooksJsonEvent(targetDir, eventName, opts);
+function withCodexHooksJsonLock(targetDir, operation, action) {
+  const hooksJsonPath = path.join(targetDir, 'hooks.json');
+  let releaseLock;
+  let primaryError = null;
+  try {
+    releaseLock = acquireInstallMigrationLock(targetDir);
+  } catch {
+    throw new Error(`Codex ${operation} failed to acquire lock for ${hooksJsonPath}`);
+  }
+
+  try {
+    return action();
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      releaseLock();
+    } catch {
+      const releaseError = new Error(
+        `Codex ${operation} failed to release lock for ${hooksJsonPath}`,
+      );
+      if (primaryError) {
+        primaryError.suppressed = [...(primaryError.suppressed || []), releaseError];
+      } else {
+        throw releaseError;
+      }
+    }
+  }
 }
 
-/**
- * Remove a GSD-managed event entry from hooks.json. Called during uninstall.
- *
- * @param {string} targetDir
- * @param {string} eventName
- */
-function removeCodexHooksJsonEvent(targetDir, eventName) {
-  return hooksSurface.removeCodexHooksJsonEvent(targetDir, eventName);
+function cleanupCodexContextMonitor(targetDir) {
+  return withCodexHooksJsonLock(targetDir, 'context-monitor cleanup', () => {
+    // Recompute both the configuration rewrite and manifest-owned artifact
+    // actions from durable state while holding the existing installer lock.
+    // The rewrite is applied first so a later orphan-removal failure can never
+    // reintroduce the unsupported registration.
+    const cleanupPlan = hooksSurface.planCodexContextMonitorCleanup(targetDir);
+    const result = hooksSurface.applyCodexContextMonitorCleanup(cleanupPlan);
+    const manifest = readInstallManifest(targetDir);
+    const artifactActions = [];
+    const artifactInspectionFailures = [];
+    if (cleanupPlan.removed > 0 && !cleanupPlan.monitorArtifactsReferenced) {
+      const resolvedTargetDir = path.resolve(targetDir);
+      for (const relPath of [
+        'hooks/gsd-context-monitor.js',
+        'hooks/gsd-context-monitor.cmd',
+      ]) {
+        const artifactPath = path.resolve(targetDir, relPath);
+        if (hasExistingSymlinkBetween(resolvedTargetDir, artifactPath)) continue;
+        let stat;
+        try {
+          stat = fs.lstatSync(artifactPath, { throwIfNoEntry: false });
+        } catch (error) {
+          if (error && error.code !== 'ENOENT') {
+            artifactInspectionFailures.push(artifactPath);
+          }
+          continue;
+        }
+        if (!stat || !stat.isFile() || stat.isSymbolicLink()) continue;
+
+        let classification;
+        try {
+          classification = classifyArtifact(targetDir, relPath, manifest);
+        } catch {
+          throw new Error(`Codex context-monitor cleanup failed to inspect ${artifactPath}`);
+        }
+        if (
+          classification.classification !== 'managed-pristine'
+          && classification.classification !== 'managed-modified'
+        ) {
+          continue;
+        }
+        artifactActions.push({
+          migrationId: '2026-07-24-codex-context-monitor-artifact',
+          migrationChecksum: `sha256:${crypto.createHash('sha256')
+            .update('2026-07-24-codex-context-monitor-artifact')
+            .digest('hex')}`,
+          type: classification.classification === 'managed-modified'
+            ? 'backup-and-remove'
+            : 'remove-managed',
+          relPath,
+          reason: 'obsolete Codex context-monitor artifact is no longer referenced',
+          classification: classification.classification,
+          originalHash: classification.originalHash,
+          currentHash: classification.currentHash,
+        });
+      }
+    }
+
+    if (result.removed > 0) {
+      console.log(
+        `  ${green}✓${reset} Removed obsolete Codex context-monitor registration; `
+        + 'agent-facing context warnings remain unavailable.',
+      );
+    }
+
+    for (const artifactPath of artifactInspectionFailures) {
+      console.warn(
+        `  ${yellow}Warning:${reset} failed to inspect obsolete Codex `
+        + `context-monitor artifact at ${artifactPath}; `
+        + 'the registration remains removed.',
+      );
+    }
+
+    if (artifactActions.length > 0) {
+      try {
+        applyInstallerMigrationPlan({
+          configDir: targetDir,
+          plan: {
+            actions: artifactActions,
+            blocked: [],
+            checksumDrift: [],
+          },
+        });
+      } catch {
+        for (const action of artifactActions) {
+          console.warn(
+            `  ${yellow}Warning:${reset} failed to remove obsolete Codex `
+            + `context-monitor artifact at ${path.join(targetDir, action.relPath)}; `
+            + 'the registration remains removed.',
+          );
+        }
+      }
+    }
+
+    return result;
+  });
 }
 
 function removeCodexHooksJsonSessionStart(targetDir) {
-  return hooksSurface.removeCodexHooksJsonSessionStart(targetDir);
+  return withCodexHooksJsonLock(targetDir, 'SessionStart removal', () =>
+    hooksSurface.removeCodexHooksJsonSessionStart(targetDir));
 }
 
 /**
@@ -7980,7 +8054,8 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // #2099: isCopilot dropped — both Copilot side-effect branches below are now
   // gated on resolveInstallPlan(runtime).installSurface === 'copilot-instructions'.
   // #2100: isWindsurf dropped — unused in this function.
-  const { isOpencode, isCodex, isCursor, isAugment, isQwen, isHermes, isCline } = runtimeFlags(runtime);
+  const { isOpencode, isCursor, isAugment, isQwen, isHermes, isCline } = runtimeFlags(runtime);
+  const plan = resolveInstallPlan(runtime);
   const dirName = getDirName(runtime);
 
   // Get the target directory based on runtime and install type. Cline local
@@ -8015,7 +8090,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // which writes this same repo-root AGENTS.md only for local ('!isGlobal')
   // installs — 'copilot-instructions' is unique to copilot's descriptor, so
   // this is byte-parity.
-  if (resolveInstallPlan(runtime).installSurface === 'copilot-instructions' && !isGlobal) {
+  if (plan.installSurface === 'copilot-instructions' && !isGlobal) {
     const agentsMdPath = path.join(process.cwd(), 'AGENTS.md');
     if (fs.existsSync(agentsMdPath)) {
       const content = fs.readFileSync(agentsMdPath, 'utf8');
@@ -8038,6 +8113,14 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   }
 
   let removedCount = 0;
+  if (plan.installSurface === 'codex-toml') {
+    cleanupCodexContextMonitor(targetDir);
+    const hooksJsonCleanup = removeCodexHooksJsonSessionStart(targetDir);
+    if (hooksJsonCleanup.changed) {
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed managed Codex SessionStart hook from hooks.json`);
+    }
+  }
 
   // Remove profile marker so a clean reinstall defaults to full surface.
   try {
@@ -8107,22 +8190,6 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       }
     }
 
-    const hooksJsonCleanup = removeCodexHooksJsonSessionStart(targetDir);
-    if (hooksJsonCleanup.changed) {
-      removedCount++;
-      console.log(`  ${green}✓${reset} Removed managed Codex SessionStart hook from hooks.json`);
-    }
-
-    // #772/#2088: remove every managed Codex extended hook-event registration.
-    // Shares CODEX_EXTENDED_HOOK_EVENTS with the install loop — removal set ==
-    // registration set, so no managed event is ever orphaned.
-    for (const eventName of CODEX_EXTENDED_HOOK_EVENTS) {
-      const eventCleanup = removeCodexHooksJsonEvent(targetDir, eventName);
-      if (eventCleanup.changed) {
-        removedCount++;
-        console.log(`  ${green}✓${reset} Removed managed Codex ${eventName} hook from hooks.json`);
-      }
-    }
   }
 
   // 1a-kimi. Non-layout Kimi side-effect (#2095 EoS/kimi Upgrade 1): kimi's
@@ -8130,7 +8197,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // resolves ~/.kimi, a sibling of targetDir's ~/.config/agents), so its
   // cleanup can't be driven by anything under targetDir the way every other
   // hook surface above is.
-  if (resolveInstallPlan(runtime).hooksSurface === 'kimi-hooks-toml') {
+  if (plan.hooksSurface === 'kimi-hooks-toml') {
     const kimiHooksRoot = resolveKimiHooksTomlDir();
     const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
     const kimiHooksCleanup = removeKimiHooksToml(kimiHooksTomlPath);
@@ -8202,7 +8269,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // #2099: descriptor-driven via resolveInstallPlan(runtime).installSurface ===
   // 'copilot-instructions' (was hardcoded `isCopilot`), mirroring the same
   // gate used at the install-time 'copilot-instructions' branch.
-  if (resolveInstallPlan(runtime).installSurface === 'copilot-instructions') {
+  if (plan.installSurface === 'copilot-instructions') {
     const instructionsPath = path.join(targetDir, 'copilot-instructions.md');
     if (fs.existsSync(instructionsPath)) {
       const content = fs.readFileSync(instructionsPath, 'utf8');
@@ -10012,6 +10079,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     ? targetDir.replace(os.homedir(), '~')
     : targetDir.replace(process.cwd(), '.');
 
+  if (plan.installSurface === 'codex-toml') {
+    cleanupCodexContextMonitor(targetDir);
+  }
+
   // Path prefix for file references in markdown content (e.g. gsd-tools.cjs).
   // Replaces $HOME/.claude/ or ~/.claude/ so the result is <pathPrefix>gsd-core/bin/...
   // For global installs: use $HOME/ so paths expand correctly inside double-quoted
@@ -11437,7 +11508,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // If installer migrations touched hooks.json, rollbackInstallerMigrations()
       // already restored the pre-migration file. Don't overwrite that state with
       // a post-migration snapshot.
-      if (!migrationTouchesHooksJson) {
+      if (
+        !migrationTouchesHooksJson
+        && !hasExistingSymlinkBetween(path.resolve(targetDir), codexHooksJsonPathPreInstall)
+      ) {
         if (codexHooksJsonPreInstallSnapshot !== null) {
           try { fs.writeFileSync(codexHooksJsonPathPreInstall, codexHooksJsonPreInstallSnapshot); }
           catch (_) { /* best-effort restore — surface the original error */ }
@@ -11570,10 +11644,9 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     }
 
     // Copy only the hook files that Codex actually registers via its hook configuration (#2153).
-    // #772: added gsd-context-monitor.js for the new SubagentStart/Stop/PostToolUse events.
     // We deliberately do *not* copy gsd-graphify-update.sh or hooks/lib/ for Codex
     // in this change (graphify auto-update support for Codex is out of scope for #3579).
-    const CODEX_HOOKS_TO_COPY = ['gsd-check-update.js', 'gsd-context-monitor.js'];
+    const CODEX_HOOKS_TO_COPY = ['gsd-check-update.js'];
     const codexHooksSrc = path.join(src, 'hooks', 'dist');
     if (fs.existsSync(codexHooksSrc)) {
       const codexHooksDest = path.join(targetDir, 'hooks');
@@ -11703,38 +11776,6 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
             console.log(`  ${green}✓${reset} Verified Codex hooks (SessionStart via hooks.json)`);
           }
         }
-
-        // ── Codex extended hook events (#772, #2088) ─────────────────────────
-        // Codex CLI stabilised a full hook-event set in rust-v0.137.0. GSD
-        // registers CODEX_EXTENDED_HOOK_EVENTS (#2088 adds the 6 documented
-        // events beyond the original #772 three) — all routed through
-        // gsd-context-monitor.js so context-headroom warnings surface at each
-        // lifecycle point: SubagentStart/SubagentStop (subagent open/close),
-        // Stop (final-response), PreToolUse/PostToolUse (tool boundaries),
-        // PermissionRequest (approval prompts), Pre/PostCompact (context
-        // compaction), and UserPromptSubmit (per-turn context injection). The
-        // context-monitor script decides per-payload what to do; unregistered
-        // events simply never fire.
-        //
-        // Guard: only register when the context-monitor file exists and the node
-        // runner is available — same guards as the SessionStart path above.
-        const contextMonitorFile = path.join(targetDir, 'hooks', 'gsd-context-monitor.js');
-        if (codexNodeRunner && fs.existsSync(contextMonitorFile)) {
-          for (const codexEvent of CODEX_EXTENDED_HOOK_EVENTS) {
-            const eventWrite = ensureCodexHooksJsonEvent(targetDir, codexEvent, {
-              absoluteRunner: codexNodeRunner,
-              platform: process.platform,
-            });
-            if (eventWrite.wrote) {
-              console.log(`  ${green}✓${reset} Configured Codex hooks (${codexEvent} via hooks.json)`);
-            } else if (eventWrite.changed) {
-              console.log(`  ${green}✓${reset} Verified Codex hooks (${codexEvent} via hooks.json)`);
-            }
-          }
-        } else if (!codexNodeRunner) {
-          console.warn(`  ${yellow}⚠${reset}  Skipped Codex extended hook-event registration — Node runner unavailable.`);
-        }
-        // ── end Codex extended hook events ────────────────────────────────────
       }
     } catch (e) {
       // #2760 — schema-validation and write failures must be loud and fatal
@@ -11762,6 +11803,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       throw wrapped;
     }
 
+    console.log(
+      `  ${yellow}Notice:${reset} Agent-facing context warnings and GSD phase/lifecycle display `
+      + 'are unsupported on Codex.',
+    );
     persistActiveProfileMarker();
     return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
   }
@@ -13247,7 +13292,6 @@ module.exports = {
     codexBareAgentsHasOnlyKnownScalars,
     extractCodexUserAgentsScalars,
     spliceCodexAgentsScalars,
-    CODEX_EXTENDED_HOOK_EVENTS,
     generateCodexConfigBlock,
     stripGsdFromCodexConfig,
     migrateCodexHooksMapFormat,
@@ -13406,9 +13450,7 @@ module.exports = {
     rewriteLegacyCodexHookBlock,
     buildCodexHookWindowsShimIR,
     ensureCodexHooksJsonSessionStart,
-    ensureCodexHooksJsonEvent,
-    removeCodexHooksJsonEvent,
-    reconcileCodexHooksJsonEvent,
+    cleanupCodexContextMonitor,
     readGsdCommandNames,
     installRuntimeArtifacts,
     installOpencodeFamilySkills,

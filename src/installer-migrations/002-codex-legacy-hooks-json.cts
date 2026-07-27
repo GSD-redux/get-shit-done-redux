@@ -7,7 +7,10 @@
  * the prior hand-written .cjs; only types are added.
  */
 
-import { isManagedHookCommand } from '../shell-command-projection.cjs';
+import {
+  isManagedHookCommand,
+  isRecognizedCodexContextMonitorCommand,
+} from '../shell-command-projection.cjs';
 
 type JsonValue =
   | string
@@ -64,6 +67,15 @@ function isStructurallyEmpty(value: JsonValue): boolean {
 }
 
 function isManagedCodexHookCommand(command: unknown, configDir: string): boolean {
+  if (
+    typeof command === 'string'
+    && (
+      command.includes('gsd-context-monitor.js')
+      || command.includes('gsd-context-monitor.cmd')
+    )
+  ) {
+    return isRecognizedCodexContextMonitorCommand(command, configDir);
+  }
   return isManagedHookCommand(command, {
     surface: 'codex-hooks-json',
     includeLegacyAliases: true,
@@ -92,7 +104,7 @@ function pruneLegacyCodexHooksJsonValue(value: JsonValue, configDir: string): Pr
     }
 
     let changed = false;
-    const next: { [key: string]: JsonValue } = {};
+    const next = Object.create(null) as { [key: string]: JsonValue };
     for (const [key, child] of Object.entries(valueObj)) {
       const pruned = pruneLegacyCodexHooksJsonValue(child, configDir);
       if (pruned.changed) changed = true;
@@ -129,7 +141,7 @@ const migration: InstallerMigration = {
         value: pruned.value,
         deleteIfEmpty: true,
         reason: 'legacy Codex hooks.json GSD registration retired by installer migration',
-        ownershipEvidence: 'pruned command matches generated GSD hook command under the install hooks directory',
+        ownershipEvidence: 'pruned command is an exact retired monitor or target-confined update hook registration',
       },
     ];
   },

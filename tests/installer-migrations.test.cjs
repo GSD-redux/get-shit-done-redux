@@ -1561,6 +1561,42 @@ test('runs a Codex legacy hooks.json cleanup migration without removing user hoo
   }
 });
 
+test('Codex legacy hooks.json cleanup plan preserves an own __proto__ event', () => {
+  const configDir = createTempInstall();
+  try {
+    writeFile(configDir, 'hooks.json', [
+      '{',
+      '  "hooks": {',
+      '    "__proto__": [{ "hooks": [{ "type": "command", "command": "custom-special-handler" }] }],',
+      `    "SessionStart": ${JSON.stringify([legacyCodexHook(configDir)])}`,
+      '  }',
+      '}',
+    ].join('\n'));
+    writeManifest(configDir, {});
+
+    const plan = planInstallerMigrations({
+      configDir,
+      migrations: discoverInstallerMigrations({
+        migrationsDir: path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'installer-migrations'),
+      }),
+      runtime: 'codex',
+      scope: 'global',
+      now: () => '2026-05-11T00:00:06.000Z',
+    });
+    const action = plan.actions.find((item) =>
+      item.migrationId === '2026-05-11-codex-legacy-hooks-json'
+      && item.relPath === 'hooks.json'
+    );
+
+    assert.ok(action);
+    assert.ok(Object.hasOwn(action.value.hooks, '__proto__'));
+    assert.equal(action.value.hooks.__proto__[0].hooks[0].command, 'custom-special-handler');
+    assert.equal(action.value.hooks.SessionStart, undefined);
+  } finally {
+    cleanup(configDir);
+  }
+});
+
 test('preserves unrelated empty hooks.json structure while pruning legacy Codex hooks', () => {
   const configDir = createTempInstall();
   try {
@@ -1650,8 +1686,10 @@ test('shipped installer-migration checksums are locked to a committed baseline (
       'sha256:4ec58d35b30dbf39cc56e3972146086d8d31861ecd800cf0b37a7aa94fe74c2a',
     '2026-05-11-legacy-orphan-files':
       'sha256:e492698748a2436a12a55f0940f539b9bf651d8ffcac6f60cd856a6dabd6788c',
+    // Intentional issue #670 exception: align the shipped Codex cleanup with
+    // exact monitor ownership so upgrades stop deleting customized commands.
     '2026-05-11-codex-legacy-hooks-json':
-      'sha256:5ce55294aa02f25758f604a569c899a6d2d060299189f5f447f68d8033157058',
+      'sha256:78a2b83b770774fdd0e51d4919c41d4ad5630c1887b4292f1cebb32b687ad87f',
     '2026-06-02-rename-get-shit-done-to-gsd-core':
       'sha256:3a9f1d97f64097fb313203d19c6d93a187a38df61dd299afa5eef73e16124e95',
     // Migration 004: prune stale gsd-pristine/get-shit-done/ snapshots (#934) // gsd-allow-legacy-name
@@ -1816,7 +1854,14 @@ const { execFileSync } = require('node:child_process');
 
 const installModule = require('../bin/install.js');
 const { readInstallState } = require('../gsd-core/bin/lib/installer-migrations.cjs');
-const { install, parseTomlToObject, reconcileCodexHooksJsonEvent } = installModule;
+const {
+  install,
+  parseTomlToObject,
+  resolveNodeRunner,
+} = installModule;
+const {
+  reconcileCodexHooksJsonEvent,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
@@ -1853,13 +1898,22 @@ function legacyGsdHook(codexHome) {
   };
 }
 
-function userHook() {
+function userHook(command = 'node "/Users/example/bin/user-hook.js"') {
   return {
     hooks: [{
       type: 'command',
-      command: 'node "/Users/example/bin/user-hook.js"',
+      command,
     }],
   };
+}
+
+function hooksJsonCommands(codexHome) {
+  const parsed = JSON.parse(fs.readFileSync(path.join(codexHome, 'hooks.json'), 'utf8'));
+  return Object.values(parsed.hooks ?? parsed)
+    .flatMap((entries) => Array.isArray(entries) ? entries : [])
+    .flatMap((entry) => Array.isArray(entry.hooks) ? entry.hooks : [])
+    .map((hook) => hook.command)
+    .filter((command) => typeof command === 'string');
 }
 
 function tomlGsdHookCount(codexHome) {
@@ -1945,9 +1999,64 @@ describe('#3357 — Codex install removes legacy GSD hooks.json entries', { conc
     assert.equal(tomlGsdHookCount(codexHome), 0);
   });
 
-  test('restores migrated hooks.json and install state when later Codex validation fails', () => {
-    const before = JSON.stringify({ SessionStart: [legacyGsdHook(codexHome)] }, null, 2);
-    fs.writeFileSync(path.join(codexHome, 'hooks.json'), before);
+  test('preserves user-owned monitor commands through full Codex install', () => {
+    const absoluteNodeRunner = resolveNodeRunner();
+    assert.ok(absoluteNodeRunner, 'test requires the installer Node runner');
+
+    const targetMonitorPath = path.normalize(path.resolve(
+      codexHome,
+      'hooks',
+      'gsd-context-monitor.js',
+    ));
+    const exactMonitorCommand = `${absoluteNodeRunner} ${JSON.stringify(targetMonitorPath)}`;
+    const preservedCommands = [
+      `${exactMonitorCommand} --custom-threshold 25`,
+      `${exactMonitorCommand} && echo custom`,
+      `"/usr/bin/bun" ${JSON.stringify(targetMonitorPath)}`,
+      `node ${JSON.stringify(targetMonitorPath)}`,
+      `${absoluteNodeRunner} ${JSON.stringify(path.join(tmpRoot, 'external', 'gsd-context-monitor.js'))}`,
+      'node "/Users/example/bin/user-hook.js"',
+    ];
+    fs.writeFileSync(
+      path.join(codexHome, 'hooks.json'),
+      JSON.stringify({
+        SessionStart: [
+          legacyGsdHook(codexHome),
+          userHook(exactMonitorCommand),
+          ...preservedCommands.map((command) => userHook(command)),
+        ],
+      }, null, 2),
+    );
+
+    withCodexHome(codexHome, () => install(true, 'codex'));
+
+    const commands = hooksJsonCommands(codexHome);
+    assert.equal(commands.includes(exactMonitorCommand), false);
+    for (const command of preservedCommands) {
+      assert.equal(commands.includes(command), true, `preserves user-owned command: ${command}`);
+    }
+    assert.equal(
+      commands.filter((command) => /gsd-check-update\.(?:js|cmd)/.test(command)).length,
+      1,
+      'legacy update hook converges to one supported SessionStart command',
+    );
+  });
+
+  test('keeps preflight monitor cleanup durable while restoring later migration state on validation failure', () => {
+    const absoluteNodeRunner = resolveNodeRunner();
+    assert.ok(absoluteNodeRunner, 'test requires the installer Node runner');
+    const monitorCommand = `${absoluteNodeRunner} ${JSON.stringify(path.normalize(path.resolve(
+      codexHome,
+      'hooks',
+      'gsd-context-monitor.js',
+    )))}`;
+    fs.writeFileSync(
+      path.join(codexHome, 'hooks.json'),
+      JSON.stringify({
+        SessionStart: [legacyGsdHook(codexHome)],
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand }] }],
+      }, null, 2),
+    );
 
     installModule.__codexSchemaValidator = () => ({
       ok: false,
@@ -1959,7 +2068,22 @@ describe('#3357 — Codex install removes legacy GSD hooks.json entries', { conc
       /forced migration rollback test/
     );
 
-    assert.equal(fs.readFileSync(path.join(codexHome, 'hooks.json'), 'utf8'), before);
+    const hooksJson = JSON.parse(fs.readFileSync(path.join(codexHome, 'hooks.json'), 'utf8'));
+    assert.deepEqual(Object.keys(hooksJson), ['hooks']);
+    assert.equal(hooksJson.hooks.Stop, undefined, 'obsolete monitor-only event stays removed');
+    assert.equal(
+      JSON.stringify(hooksJson).includes('gsd-context-monitor'),
+      false,
+      'later validation rollback cannot reintroduce the unsupported monitor registration',
+    );
+    assert.equal(
+      hooksJson.hooks.SessionStart
+        .flatMap((entry) => entry.hooks)
+        .filter((hook) => hook.command.includes('gsd-check-update'))
+        .length,
+      1,
+      'the supported update hook survives preflight cleanup',
+    );
     assert.equal(
       readInstallState(codexHome).appliedMigrations.some((entry) => entry.id === '2026-05-11-codex-legacy-hooks-json'),
       false

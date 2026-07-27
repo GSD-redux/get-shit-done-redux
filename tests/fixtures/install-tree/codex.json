@@ -434,7 +434,6 @@
   "gsd-core/workflows/verify-phase.md",
   "gsd-core/workflows/verify-work.md",
   "hooks/gsd-check-update.js",
-  "hooks/gsd-context-monitor.js",
   "scripts/changeset/README.md",
   "scripts/changeset/cli.cjs",
   "scripts/changeset/github-release-notes.cjs",

@@ -18,10 +18,12 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
-const { cleanup } = require('./helpers.cjs');
+const nodeCrypto = require('node:crypto');
+const { execFileSync, spawn } = require('child_process');
+const { cleanup, captureConsole, waitFor } = require('./helpers.cjs');
 const fc = require('fast-check');
 const { CLAUDE_AGENT_ALIASES } = require('../gsd-core/bin/lib/model-resolver.cjs');
+const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
 
 // #2153 follow-up: ensure hooks/dist/ exists before any install integration
 // test runs. The Codex install path copies hook files from hooks/dist/, which
@@ -47,11 +49,14 @@ const {
   convertClaudeCommandToCodexSkill,
   generateCodexAgentToml,
   cleanupCodexSkillMetadataSidecars,
+  cleanupCodexContextMonitor,
+  ensureCodexHooksJsonSessionStart,
   generateCodexConfigBlock,
   stripGsdFromCodexConfig,
   migrateCodexHooksMapFormat,
   mergeCodexConfig,
   install,
+  uninstall,
   GSD_CODEX_MARKER,
   CODEX_AGENT_SANDBOX,
   parseTomlToObject,
@@ -60,6 +65,13 @@ const {
 } = require('../bin/install.js');
 
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
+const {
+  isRecognizedCodexContextMonitorCommand,
+} = require('../gsd-core/bin/lib/shell-command-projection.cjs');
+const {
+  applyCodexContextMonitorCleanup,
+  planCodexContextMonitorCleanup,
+} = require('../gsd-core/bin/lib/runtime-hooks-surface.cjs');
 
 function runCodexInstall(codexHome, cwd = path.join(__dirname, '..')) {
   const previousCodeHome = process.env.CODEX_HOME;
@@ -77,6 +89,29 @@ function runCodexInstall(codexHome, cwd = path.join(__dirname, '..')) {
   try {
     process.chdir(cwd);
     return install(true, 'codex');
+  } finally {
+    process.chdir(previousCwd);
+    if (previousCodeHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodeHome;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = previousUserProfile;
+  }
+}
+
+function runCodexUninstall(codexHome, cwd = path.join(__dirname, '..')) {
+  const previousCodeHome = process.env.CODEX_HOME;
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCwd = process.cwd();
+  process.env.CODEX_HOME = codexHome;
+  process.env.HOME = codexHome;
+  process.env.USERPROFILE = codexHome;
+
+  try {
+    process.chdir(cwd);
+    return uninstall(true, 'codex');
   } finally {
     process.chdir(previousCwd);
     if (previousCodeHome === undefined) delete process.env.CODEX_HOME;
@@ -119,6 +154,24 @@ function readHooksSessionStartCommands(codexHome) {
   ]);
 }
 
+function readAllHooksCommands(codexHome) {
+  const hooksPath = path.join(codexHome, 'hooks.json');
+  if (!fs.existsSync(hooksPath)) return [];
+  const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+  const table = (parsed.hooks && typeof parsed.hooks === 'object' && !Array.isArray(parsed.hooks))
+    ? parsed.hooks
+    : parsed;
+  return Object.values(table).flatMap((entries) => (
+    Array.isArray(entries)
+      ? entries.flatMap((entry) => (
+        Array.isArray(entry?.hooks)
+          ? entry.hooks.map((hook) => hook?.command).filter((command) => typeof command === 'string')
+          : []
+      ))
+      : []
+  ));
+}
+
 function countMatches(content, pattern) {
   return (content.match(pattern) || []).length;
 }
@@ -153,6 +206,15 @@ function assertNoCodexBareGsdToolsInvocation(content, label) {
     );
   }
 }
+
+describe('Codex public capability metadata', () => {
+  test('reports agent-facing warnings and GSD phase display as unsupported', () => {
+    const hostBehaviors = runtimes.codex.runtime.hostBehaviors;
+
+    assert.strictEqual(hostBehaviors.agentFacingContextWarnings, false);
+    assert.strictEqual(hostBehaviors.gsdPhaseLifecycleDisplay, false);
+  });
+});
 
 // ─── getCodexSkillAdapterHeader ─────────────────────────────────────────────────
 
@@ -1922,6 +1984,86 @@ describe('Codex install hook configuration (e2e)', () => {
     );
   });
 
+  test('fresh and repeated installs expose only the supported update hook', () => {
+    runCodexInstall(codexHome);
+    runCodexInstall(codexHome);
+
+    const commands = readAllHooksCommands(codexHome);
+    assert.strictEqual(
+      commands.filter((command) => command.includes('gsd-check-update')).length,
+      1,
+      'reinstall leaves exactly one update handler',
+    );
+    assert.ok(
+      commands.every((command) => !command.includes('gsd-context-monitor')),
+      'no hooks.json event references the unsupported context monitor',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(codexHome, 'hooks', 'gsd-context-monitor.js')),
+      'does not install the context monitor',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(codexHome, 'hooks', 'gsd-context-monitor.cmd')),
+      'does not install a context-monitor Windows shim',
+    );
+  });
+
+  test('fresh and repeated installs state the unsupported Codex capability boundary once per run', () => {
+    const noticePattern = /Agent-facing context warnings and GSD phase\/lifecycle display are unsupported on Codex\./g;
+
+    const freshOutput = captureConsole(() => runCodexInstall(codexHome)).stdout;
+    const repeatOutput = captureConsole(() => runCodexInstall(codexHome)).stdout;
+
+    assert.strictEqual((freshOutput.match(noticePattern) || []).length, 1);
+    assert.strictEqual((repeatOutput.match(noticePattern) || []).length, 1);
+    assert.doesNotMatch(freshOutput, /Removed obsolete Codex context-monitor registration/);
+    assert.doesNotMatch(repeatOutput, /Removed obsolete Codex context-monitor registration/);
+  });
+
+  test('monitor cleanup on an absent hooks.json is a no-op', () => {
+    assert.strictEqual(typeof cleanupCodexContextMonitor, 'function');
+
+    const result = cleanupCodexContextMonitor(codexHome);
+
+    assert.deepStrictEqual(result, {
+      changed: false,
+      wrote: false,
+      path: path.join(codexHome, 'hooks.json'),
+      removed: 0,
+    });
+    assert.ok(!fs.existsSync(path.join(codexHome, 'hooks.json')));
+  });
+
+  test('monitor recognition is exact and confined to the target hooks directory', () => {
+    assert.strictEqual(typeof isRecognizedCodexContextMonitorCommand, 'function');
+
+    const hooksDir = path.join(codexHome, 'hooks').replace(/\\/g, '/');
+    const exactNodeCommand = `"/usr/bin/node" "${hooksDir}/gsd-context-monitor.js"`;
+    const exactNodeExeCommand = `"C:/Program Files/nodejs/node.exe" "${hooksDir}/gsd-context-monitor.js"`;
+    const exactCmdCommand = `"${hooksDir}/gsd-context-monitor.cmd"`;
+    for (const command of [exactNodeCommand, exactNodeExeCommand, exactCmdCommand]) {
+      assert.strictEqual(isRecognizedCodexContextMonitorCommand(command, codexHome), true, command);
+    }
+
+    const externalMonitor = path.join(tmpDir, 'external', 'gsd-context-monitor.js').replace(/\\/g, '/');
+    for (const command of [
+      `${exactNodeCommand} --custom-threshold 25`,
+      `${exactNodeCommand}; echo custom`,
+      `sh -c '${exactNodeCommand}'`,
+      ` ${exactNodeCommand}`,
+      `${exactNodeCommand} `,
+      `node "${hooksDir}/gsd-context-monitor.js"`,
+      `"/usr/bin/bun" "${hooksDir}/gsd-context-monitor.js"`,
+      `"/usr/bin/node" "$CODEX_HOME/hooks/gsd-context-monitor.js"`,
+      `"/usr/bin/node" "${hooksDir}/gsd-context-monitor.js.backup"`,
+      `"/usr/bin/node" "${hooksDir}/custom-gsd-context-monitor.js"`,
+      `"/usr/bin/node" "${hooksDir}/gsd-check-update.js"`,
+      `"/usr/bin/node" "${externalMonitor}"`,
+    ]) {
+      assert.strictEqual(isRecognizedCodexContextMonitorCommand(command, codexHome), false, command);
+    }
+  });
+
   test('fresh CODEX_HOME enables codex_hooks without draft root defaults', () => {
     runCodexInstall(codexHome);
 
@@ -2616,6 +2758,876 @@ describe('Codex install hook configuration (e2e)', () => {
     assert.ok(content.includes('[model]\r\nname = "o3"'), 'preserves the existing CRLF model lines');
     assert.strictEqual(countMatches(content, /^hooks = true$/gm), 1, 'remains idempotent on repeated installs');
     assertNoDraftRootKeys(content);
+  });
+});
+
+describe('Codex legacy context-monitor cleanup hardening', { concurrency: false }, () => {
+  let tmpDir;
+  let codexHome;
+  let originalRenameSync;
+  let originalRmSync;
+  let originalLstatSync;
+  let originalOpenSync;
+  let originalWriteFileSync;
+  let originalConsoleWarn;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-codex-monitor-cleanup-'));
+    codexHome = path.join(tmpDir, 'codex-home');
+    fs.mkdirSync(codexHome, { recursive: true });
+    originalRenameSync = fs.renameSync;
+    originalRmSync = fs.rmSync;
+    originalLstatSync = fs.lstatSync;
+    originalOpenSync = fs.openSync;
+    originalWriteFileSync = fs.writeFileSync;
+    originalConsoleWarn = console.warn;
+  });
+
+  afterEach(() => {
+    fs.renameSync = originalRenameSync;
+    fs.rmSync = originalRmSync;
+    fs.lstatSync = originalLstatSync;
+    fs.openSync = originalOpenSync;
+    fs.writeFileSync = originalWriteFileSync;
+    console.warn = originalConsoleWarn;
+    cleanup(tmpDir);
+  });
+
+  function monitorCommand(file = 'gsd-context-monitor.js') {
+    const monitorPath = path.join(codexHome, 'hooks', file).replace(/\\/g, '/');
+    return file.endsWith('.cmd')
+      ? `"${monitorPath}"`
+      : `"/usr/bin/node" "${monitorPath}"`;
+  }
+
+  function writeHooks(value) {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    fs.writeFileSync(hooksPath, JSON.stringify(value, null, 2) + '\n');
+    return hooksPath;
+  }
+
+  function writeManifestOwnedArtifacts(contentsByRelPath) {
+    const files = {};
+    const paths = {};
+    for (const [relPath, content] of Object.entries(contentsByRelPath)) {
+      const artifactPath = path.join(codexHome, relPath);
+      fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+      fs.writeFileSync(artifactPath, content);
+      files[relPath] = nodeCrypto.createHash('sha256').update(content).digest('hex');
+      paths[relPath] = artifactPath;
+    }
+    fs.writeFileSync(path.join(codexHome, 'gsd-file-manifest.json'), JSON.stringify({
+      version: 'legacy',
+      files,
+    }, null, 2) + '\n');
+    return paths;
+  }
+
+  function writeManifestOwnedMonitor(content) {
+    return writeManifestOwnedArtifacts({
+      'hooks/gsd-context-monitor.js': content,
+    })['hooks/gsd-context-monitor.js'];
+  }
+
+  test('removes exact monitor handlers from mixed flat and nested events and converges byte-for-byte', () => {
+    const externalMonitor = path.join(tmpDir, 'external', 'gsd-context-monitor.js').replace(/\\/g, '/');
+    const updateHook = path.join(codexHome, 'hooks', 'gsd-check-update.js').replace(/\\/g, '/');
+    const hooksPath = writeHooks({
+      Stop: [{
+        matcher: 'stop',
+        hooks: [
+          { type: 'command', command: monitorCommand() },
+          { type: 'command', command: 'custom-stop-handler' },
+        ],
+      }],
+      hooks: {
+        SessionStart: [{
+          hooks: [
+            { type: 'command', command: monitorCommand('gsd-context-monitor.cmd') },
+            { type: 'command', command: `"/usr/bin/node" "${updateHook}"` },
+          ],
+        }],
+        PostToolUse: [{
+          hooks: [
+            { type: 'command', command: `"/usr/bin/node" "${externalMonitor}"` },
+            { type: 'command', command: 'unknown-handler --context-monitor' },
+          ],
+        }],
+      },
+    });
+
+    const first = cleanupCodexContextMonitor(codexHome);
+    const firstBytes = fs.readFileSync(hooksPath, 'utf8');
+    const second = cleanupCodexContextMonitor(codexHome);
+
+    assert.strictEqual(first.removed, 2);
+    assert.strictEqual(first.changed, true);
+    assert.strictEqual(second.changed, false);
+    assert.strictEqual(second.removed, 0);
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), firstBytes);
+
+    const parsed = JSON.parse(firstBytes);
+    assert.deepStrictEqual(Object.keys(parsed), ['hooks']);
+    assert.deepStrictEqual(Object.keys(parsed.hooks).sort(), ['PostToolUse', 'SessionStart', 'Stop']);
+    const commands = readAllHooksCommands(codexHome);
+    assert.ok(commands.includes('custom-stop-handler'));
+    assert.ok(commands.some((command) => command.includes('gsd-check-update.js')));
+    assert.ok(commands.some((command) => command.includes(externalMonitor)));
+    assert.ok(commands.includes('unknown-handler --context-monitor'));
+    assert.ok(commands.every((command) => !isRecognizedCodexContextMonitorCommand(command, codexHome)));
+  });
+
+  test('preserves customized monitor commands while removing only exact retired registrations', () => {
+    const exactCommand = monitorCommand();
+    const customCommands = [
+      `${exactCommand} --custom-threshold 25`,
+      `${exactCommand}; echo custom`,
+      `sh -c '${exactCommand}'`,
+      `node "${path.join(codexHome, 'hooks', 'gsd-context-monitor.js').replace(/\\/g, '/')}"`,
+      `"/usr/bin/bun" "${path.join(codexHome, 'hooks', 'gsd-context-monitor.js').replace(/\\/g, '/')}"`,
+      '"/usr/bin/node" "$CODEX_HOME/hooks/gsd-context-monitor.js"',
+    ];
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{
+          hooks: [
+            { type: 'command', command: exactCommand },
+            ...customCommands.map((command) => ({ type: 'command', command })),
+          ],
+        }],
+      },
+    });
+
+    const result = cleanupCodexContextMonitor(codexHome);
+    const remainingCommands = readAllHooksCommands(codexHome);
+
+    assert.strictEqual(result.removed, 1);
+    assert.deepStrictEqual(remainingCommands, customCommands);
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(hooksPath, 'utf8')));
+  });
+
+  test('retains both managed monitor artifacts when any surviving field still references one', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{
+          hooks: [
+            { type: 'command', command: monitorCommand() },
+            {
+              type: 'command',
+              command: 'node "$CODEX_HOME/hooks/gsd-context-monitor.js" --custom',
+              commandWindows: '"%CODEX_HOME%/hooks/gsd-context-monitor.cmd"',
+              args: ['$CODEX_HOME/hooks/gsd-context-monitor.js'],
+              customHandler: {
+                fallback: 'hooks/gsd-context-monitor.cmd',
+              },
+            },
+          ],
+        }],
+      },
+    });
+    const artifactPaths = writeManifestOwnedArtifacts({
+      'hooks/gsd-context-monitor.js': 'managed js monitor\n',
+      'hooks/gsd-context-monitor.cmd': 'managed cmd monitor\n',
+    });
+
+    const result = cleanupCodexContextMonitor(codexHome);
+
+    assert.strictEqual(result.removed, 1);
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(hooksPath, 'utf8')));
+    for (const artifactPath of Object.values(artifactPaths)) {
+      assert.strictEqual(fs.existsSync(artifactPath), true, artifactPath);
+    }
+  });
+
+  test('monitor-free flat and nested hooks remain byte-identical and retain managed artifacts', () => {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    const cases = [
+      '{"Stop":[{"hooks":[{"type":"command","command":"custom-flat"}]}]}\n',
+      '{"customTopLevel":true,"hooks":{"Stop":[{"custom":"keep","hooks":[{"type":"command","command":"custom-nested"}]}]}}\n',
+    ];
+
+    for (const originalBytes of cases) {
+      fs.writeFileSync(hooksPath, originalBytes);
+      const artifactPaths = writeManifestOwnedArtifacts({
+        'hooks/gsd-context-monitor.js': 'managed js monitor\n',
+        'hooks/gsd-context-monitor.cmd': 'managed cmd monitor\n',
+      });
+
+      const result = cleanupCodexContextMonitor(codexHome);
+
+      assert.deepStrictEqual(result, {
+        changed: false,
+        wrote: false,
+        path: hooksPath,
+        removed: 0,
+      });
+      assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), originalBytes);
+      for (const artifactPath of Object.values(artifactPaths)) {
+        assert.strictEqual(fs.existsSync(artifactPath), true, artifactPath);
+      }
+    }
+  });
+
+  test('symlinked hooks directory cannot remove or back up an external monitor artifact', () => {
+    const externalHooksDir = path.join(tmpDir, 'external-hooks');
+    fs.mkdirSync(externalHooksDir, { recursive: true });
+    const hooksLink = path.join(codexHome, 'hooks');
+    fs.symlinkSync(externalHooksDir, hooksLink, 'dir');
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{
+          hooks: [
+            { type: 'command', command: monitorCommand() },
+            { type: 'command', command: monitorCommand('gsd-context-monitor.cmd') },
+          ],
+        }],
+      },
+    });
+    const artifactPaths = writeManifestOwnedArtifacts({
+      'hooks/gsd-context-monitor.js': 'managed pristine monitor\n',
+      'hooks/gsd-context-monitor.cmd': 'manifest baseline monitor\n',
+    });
+    fs.writeFileSync(
+      artifactPaths['hooks/gsd-context-monitor.cmd'],
+      'managed modified monitor\n',
+    );
+    const expectedBytes = Object.fromEntries(
+      Object.entries(artifactPaths)
+        .map(([relPath, artifactPath]) => [relPath, fs.readFileSync(artifactPath)]),
+    );
+
+    const previousSymlinkOptIn = process.env.GSD_ALLOW_SYMLINKED_DEST;
+    process.env.GSD_ALLOW_SYMLINKED_DEST = '1';
+    let result;
+    try {
+      result = cleanupCodexContextMonitor(codexHome);
+    } finally {
+      if (previousSymlinkOptIn === undefined) delete process.env.GSD_ALLOW_SYMLINKED_DEST;
+      else process.env.GSD_ALLOW_SYMLINKED_DEST = previousSymlinkOptIn;
+    }
+
+    assert.strictEqual(result.removed, 2);
+    assert.strictEqual(fs.lstatSync(hooksLink).isSymbolicLink(), true);
+    for (const [relPath, artifactPath] of Object.entries(artifactPaths)) {
+      assert.strictEqual(fs.existsSync(artifactPath), true, relPath);
+      assert.deepStrictEqual(fs.readFileSync(artifactPath), expectedBytes[relPath], relPath);
+    }
+    assert.strictEqual(
+      fs.existsSync(path.join(codexHome, 'gsd-migration-journal')),
+      false,
+      'unsafe external referents do not create migration backups',
+    );
+    assert.ok(!fs.readFileSync(hooksPath, 'utf8').includes('gsd-context-monitor'));
+  });
+
+  test('rejects symlinked hooks.json before install or uninstall mutation', () => {
+    const previousSymlinkOptIn = process.env.GSD_ALLOW_SYMLINKED_DEST;
+    try {
+      for (const allowSymlinkFollow of [false, true]) {
+        for (const operation of ['install', 'uninstall']) {
+          const caseDir = path.join(
+            tmpDir,
+            `${operation}-${allowSymlinkFollow ? 'follow-enabled' : 'follow-disabled'}`,
+          );
+          const caseHome = path.join(caseDir, 'codex-home');
+          const externalHooksPath = path.join(caseDir, 'external-hooks.json');
+          fs.mkdirSync(caseHome, { recursive: true });
+          const privateSentinel = `PRIVATE_${operation.toUpperCase()}_HOOK_VALUE`;
+          const externalBytes = `${JSON.stringify({
+            hooks: {
+              Stop: [{
+                hooks: [{
+                  type: 'command',
+                  command: `"/usr/bin/node" "${path.join(caseHome, 'hooks', 'gsd-context-monitor.js')}"`,
+                  marker: privateSentinel,
+                }],
+              }],
+            },
+          }, null, 2)}\n`;
+          fs.writeFileSync(externalHooksPath, externalBytes);
+          const hooksPath = path.join(caseHome, 'hooks.json');
+          fs.symlinkSync(externalHooksPath, hooksPath);
+          const configPath = path.join(caseHome, 'config.toml');
+          const configBytes = '# PRIVATE_USER_CONFIG\n';
+          fs.writeFileSync(configPath, configBytes);
+          fs.writeFileSync(path.join(caseHome, '.gsd-profile'), 'full\n');
+          const beforeInventory = fs.readdirSync(caseHome).sort();
+          const beforeLink = fs.lstatSync(hooksPath);
+
+          if (allowSymlinkFollow) process.env.GSD_ALLOW_SYMLINKED_DEST = '1';
+          else delete process.env.GSD_ALLOW_SYMLINKED_DEST;
+
+          assert.throws(
+            () => {
+              if (operation === 'install') runCodexInstall(caseHome);
+              else {
+                const previousCodeHome = process.env.CODEX_HOME;
+                const previousHome = process.env.HOME;
+                const previousUserProfile = process.env.USERPROFILE;
+                process.env.CODEX_HOME = caseHome;
+                process.env.HOME = caseHome;
+                process.env.USERPROFILE = caseHome;
+                try {
+                  uninstall(true, 'codex');
+                } finally {
+                  if (previousCodeHome === undefined) delete process.env.CODEX_HOME;
+                  else process.env.CODEX_HOME = previousCodeHome;
+                  if (previousHome === undefined) delete process.env.HOME;
+                  else process.env.HOME = previousHome;
+                  if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+                  else process.env.USERPROFILE = previousUserProfile;
+                }
+              }
+            },
+            (error) => {
+              assert.match(error.message, /Codex context-monitor cleanup failed to (inspect|rewrite)/);
+              assert.ok(error.message.includes(hooksPath));
+              assert.ok(!error.message.includes(privateSentinel));
+              assert.ok(!error.message.includes('PRIVATE_USER_CONFIG'));
+              return true;
+            },
+          );
+
+          assert.strictEqual(fs.lstatSync(hooksPath).isSymbolicLink(), true);
+          assert.strictEqual(fs.lstatSync(hooksPath).ino, beforeLink.ino);
+          assert.strictEqual(fs.readlinkSync(hooksPath), externalHooksPath);
+          assert.strictEqual(fs.readFileSync(externalHooksPath, 'utf8'), externalBytes);
+          assert.strictEqual(fs.readFileSync(configPath, 'utf8'), configBytes);
+          assert.deepStrictEqual(fs.readdirSync(caseHome).sort(), beforeInventory);
+        }
+      }
+    } finally {
+      if (previousSymlinkOptIn === undefined) delete process.env.GSD_ALLOW_SYMLINKED_DEST;
+      else process.env.GSD_ALLOW_SYMLINKED_DEST = previousSymlinkOptIn;
+    }
+  });
+
+  test('install preserves a symlink introduced after preflight and does not touch its referent', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'original-user-handler' }] }],
+      },
+    });
+    const externalHooksPath = path.join(tmpDir, 'external-hooks.json');
+    const externalBytes = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"external-user-handler"}]}]}}\n';
+    fs.writeFileSync(externalHooksPath, externalBytes);
+    const configPath = path.join(codexHome, 'config.toml');
+    const configBytes = '# PRIVATE_USER_CONFIG\n';
+    fs.writeFileSync(configPath, configBytes);
+    let swapped = false;
+    fs.writeFileSync = (target, ...args) => {
+      const result = originalWriteFileSync(target, ...args);
+      if (
+        !swapped
+        && path.resolve(String(target)) === path.resolve(codexHome, 'hooks', 'gsd-check-update.js')
+      ) {
+        swapped = true;
+        fs.unlinkSync(hooksPath);
+        fs.symlinkSync(externalHooksPath, hooksPath);
+      }
+      return result;
+    };
+
+    assert.throws(
+      () => runCodexInstall(codexHome),
+      /Codex hooks.json reconciliation failed to inspect/,
+    );
+
+    assert.strictEqual(swapped, true);
+    assert.strictEqual(fs.lstatSync(hooksPath).isSymbolicLink(), true);
+    assert.strictEqual(fs.readlinkSync(hooksPath), externalHooksPath);
+    assert.strictEqual(fs.readFileSync(externalHooksPath, 'utf8'), externalBytes);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), configBytes);
+  });
+
+  test('uninstall preserves a symlink introduced between preflight and SessionStart removal', () => {
+    runCodexInstall(codexHome);
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    const externalHooksPath = path.join(tmpDir, 'external-uninstall-hooks.json');
+    const externalBytes = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"external-user-handler"}]}]}}\n';
+    fs.writeFileSync(externalHooksPath, externalBytes);
+    const configPath = path.join(codexHome, 'config.toml');
+    const configBytes = fs.readFileSync(configPath, 'utf8');
+    const lockPath = path.join(codexHome, 'gsd-install-migration.lock');
+    let lockAcquisitions = 0;
+    fs.openSync = (target, ...args) => {
+      if (path.resolve(String(target)) === path.resolve(lockPath)) {
+        lockAcquisitions++;
+        if (lockAcquisitions === 2) {
+          fs.unlinkSync(hooksPath);
+          fs.symlinkSync(externalHooksPath, hooksPath);
+        }
+      }
+      return originalOpenSync(target, ...args);
+    };
+
+    assert.throws(
+      () => runCodexUninstall(codexHome),
+      /Codex hooks.json reconciliation failed to inspect/,
+    );
+
+    assert.strictEqual(lockAcquisitions, 2);
+    assert.strictEqual(fs.lstatSync(hooksPath).isSymbolicLink(), true);
+    assert.strictEqual(fs.readlinkSync(hooksPath), externalHooksPath);
+    assert.strictEqual(fs.readFileSync(externalHooksPath, 'utf8'), externalBytes);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), configBytes);
+  });
+
+  test('rejects incompatible flat and nested hook events without data loss', () => {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    const originalBytes = `${JSON.stringify({
+      Stop: [{
+        hooks: [{ type: 'command', command: monitorCommand() }],
+      }],
+      hooks: {
+        Stop: {
+          privateUserValue: 'PRIVATE_COLLISION_VALUE',
+        },
+      },
+    }, null, 2)}\n`;
+    fs.writeFileSync(hooksPath, originalBytes);
+    const configPath = path.join(codexHome, 'config.toml');
+    fs.writeFileSync(configPath, '# PRIVATE_USER_CONFIG\n');
+    const beforeInventory = fs.readdirSync(codexHome).sort();
+
+    assert.throws(
+      () => runCodexInstall(codexHome),
+      (error) => {
+        assert.match(error.message, /Codex context-monitor cleanup failed to validate/);
+        assert.ok(error.message.includes(hooksPath));
+        assert.ok(!error.message.includes('PRIVATE_COLLISION_VALUE'));
+        assert.ok(!error.message.includes('PRIVATE_USER_CONFIG'));
+        return true;
+      },
+    );
+
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), originalBytes);
+    assert.strictEqual(fs.readFileSync(configPath, 'utf8'), '# PRIVATE_USER_CONFIG\n');
+    assert.deepStrictEqual(fs.readdirSync(codexHome).sort(), beforeInventory);
+  });
+
+  test('preserves __proto__ as an own hook event key', () => {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    const originalBytes = [
+      '{',
+      '  "__proto__": [{ "hooks": [{ "type": "command", "command": "custom-special-handler" }] }],',
+      `  "Stop": [{ "hooks": [{ "type": "command", "command": ${JSON.stringify(monitorCommand())} }] }],`,
+      '  "hooks": {',
+      '    "SessionStart": [{ "hooks": [{ "type": "command", "command": "custom-session-handler" }] }]',
+      '  }',
+      '}',
+      '',
+    ].join('\n');
+    fs.writeFileSync(hooksPath, originalBytes);
+
+    const result = cleanupCodexContextMonitor(codexHome);
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+
+    assert.strictEqual(result.removed, 1);
+    assert.ok(Object.hasOwn(parsed.hooks, '__proto__'));
+    assert.deepStrictEqual(
+      parsed.hooks.__proto__,
+      [{ hooks: [{ type: 'command', command: 'custom-special-handler' }] }],
+    );
+    assert.deepStrictEqual(
+      parsed.hooks.SessionStart,
+      [{ hooks: [{ type: 'command', command: 'custom-session-handler' }] }],
+    );
+    assert.strictEqual(Object.hasOwn(Object.prototype, 'hooks'), false);
+  });
+
+  test('install preserves a nested own __proto__ event while pruning a legacy update hook', () => {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    const legacyCommand = `node "${path.join(codexHome, 'hooks', 'gsd-check-update.js')}"`;
+    fs.writeFileSync(hooksPath, [
+      '{',
+      '  "hooks": {',
+      '    "__proto__": [{ "hooks": [{ "type": "command", "command": "custom-special-handler" }] }],',
+      `    "SessionStart": [{ "hooks": [{ "type": "command", "command": ${JSON.stringify(legacyCommand)} }] }],`,
+      '    "Stop": [{ "hooks": [{ "type": "command", "command": "custom-stop-handler" }] }]',
+      '  }',
+      '}',
+      '',
+    ].join('\n'));
+
+    runCodexInstall(codexHome);
+
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(Object.hasOwn(parsed.hooks, '__proto__'));
+    assert.deepStrictEqual(
+      parsed.hooks.__proto__,
+      [{ hooks: [{ type: 'command', command: 'custom-special-handler' }] }],
+    );
+    assert.ok(readAllHooksCommands(codexHome).includes('custom-stop-handler'));
+    assert.equal(
+      readAllHooksCommands(codexHome)
+        .filter((command) => command.includes('gsd-check-update')).length,
+      1,
+    );
+    assert.strictEqual(Object.hasOwn(Object.prototype, 'hooks'), false);
+  });
+
+  test('uninstall preserves a monitor-free top-level __proto__ hook event', () => {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    runCodexInstall(codexHome);
+    const installed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    fs.writeFileSync(hooksPath, [
+      '{',
+      '  "__proto__": [{ "hooks": [{ "type": "command", "command": "custom-special-handler" }] }],',
+      `  "hooks": { "SessionStart": ${JSON.stringify(installed.hooks.SessionStart)} }`,
+      '}',
+      '',
+    ].join('\n'));
+
+    runCodexUninstall(codexHome);
+
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(Object.hasOwn(parsed.hooks, '__proto__'));
+    assert.deepStrictEqual(
+      parsed.hooks.__proto__,
+      [{ hooks: [{ type: 'command', command: 'custom-special-handler' }] }],
+    );
+    assert.ok(readAllHooksCommands(codexHome)
+      .every((command) => !command.includes('gsd-check-update')));
+    assert.strictEqual(Object.hasOwn(Object.prototype, 'hooks'), false);
+  });
+
+  test('a stale cleanup plan cannot overwrite newer hooks.json bytes', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand() }] }],
+      },
+    });
+    const plan = planCodexContextMonitorCleanup(codexHome);
+    const newerBytes = `${JSON.stringify({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'concurrent-user-handler' }] }],
+      },
+    }, null, 2)}\n`;
+    fs.writeFileSync(hooksPath, newerBytes);
+
+    assert.throws(
+      () => applyCodexContextMonitorCleanup(plan),
+      /Codex context-monitor cleanup failed to rewrite/,
+    );
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), newerBytes);
+  });
+
+  test('SessionStart publication rejects a concurrent hooks.json content change', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'original-user-handler' }] }],
+      },
+    });
+    fs.mkdirSync(path.join(codexHome, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(codexHome, 'hooks', 'gsd-check-update.js'), '// update hook\n');
+    const newerBytes = `${JSON.stringify({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'concurrent-user-handler' }] }],
+      },
+    }, null, 2)}\n`;
+    let injected = false;
+    fs.writeFileSync = (target, ...args) => {
+      const result = originalWriteFileSync(target, ...args);
+      if (!injected && String(target).startsWith(`${hooksPath}.tmp-`)) {
+        injected = true;
+        originalWriteFileSync(hooksPath, newerBytes);
+      }
+      return result;
+    };
+
+    assert.throws(
+      () => ensureCodexHooksJsonSessionStart(codexHome, {
+        absoluteRunner: '"/usr/bin/node"',
+        platform: 'linux',
+      }),
+      /Codex hooks.json reconciliation failed to rewrite/,
+    );
+    assert.strictEqual(injected, true);
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), newerBytes);
+    assert.strictEqual(
+      fs.existsSync(path.join(codexHome, 'gsd-install-migration.lock')),
+      false,
+    );
+  });
+
+  test('barrier-synchronized cleanup processes converge on complete monitor-free JSON', async () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{
+          hooks: [
+            { type: 'command', command: monitorCommand() },
+            { type: 'command', command: 'custom-stop-handler' },
+          ],
+        }],
+      },
+    });
+    const barrierPath = path.join(tmpDir, 'cleanup-barrier');
+    const readyPaths = [
+      path.join(tmpDir, 'cleanup-ready-a'),
+      path.join(tmpDir, 'cleanup-ready-b'),
+    ];
+    const wrapperPath = path.join(tmpDir, 'cleanup-wrapper.cjs');
+    fs.writeFileSync(barrierPath, 'hold');
+    fs.writeFileSync(wrapperPath, [
+      "'use strict';",
+      "const fs = require('node:fs');",
+      "process.env.GSD_TEST_MODE = '1';",
+      "const { cleanupCodexContextMonitor } = require(process.env.INSTALL_PATH);",
+      'fs.writeFileSync(process.env.READY_PATH, String(process.pid));',
+      'const signal = new Int32Array(new SharedArrayBuffer(4));',
+      'const deadline = Date.now() + 10000;',
+      'while (fs.existsSync(process.env.BARRIER_PATH)) {',
+      '  if (Date.now() > deadline) throw new Error("cleanup barrier timeout");',
+      '  Atomics.wait(signal, 0, 0, 10);',
+      '}',
+      'cleanupCodexContextMonitor(process.env.CODEX_HOME);',
+    ].join('\n'));
+
+    const children = [];
+    const runCleanup = (readyPath) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [wrapperPath], {
+        env: {
+          ...process.env,
+          BARRIER_PATH: barrierPath,
+          CODEX_HOME: codexHome,
+          INSTALL_PATH: path.resolve(__dirname, '..', 'bin', 'install.js'),
+          READY_PATH: readyPath,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      children.push(child);
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.on('error', reject);
+      child.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`cleanup child exited ${code}: ${stderr}`));
+      });
+    });
+    const runs = readyPaths.map(runCleanup);
+
+    try {
+      await waitFor(
+        () => readyPaths.every((readyPath) => fs.existsSync(readyPath)),
+        { message: 'cleanup subprocesses did not reach the barrier' },
+      );
+      fs.unlinkSync(barrierPath);
+      await Promise.all(runs);
+    } finally {
+      for (const child of children) {
+        try { child.kill(); } catch { /* already exited */ }
+      }
+    }
+
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    const commands = readAllHooksCommands(codexHome);
+    assert.ok(parsed && typeof parsed === 'object');
+    assert.ok(commands.includes('custom-stop-handler'));
+    assert.ok(commands.every((command) => !isRecognizedCodexContextMonitorCommand(command, codexHome)));
+  });
+
+  test('malformed hooks.json aborts install before any other Codex mutation without disclosing content', () => {
+    const hooksPath = path.join(codexHome, 'hooks.json');
+    const malformed = '{"hooks":{"Stop":[SECRET_MONITOR_PAYLOAD';
+    fs.writeFileSync(hooksPath, malformed);
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '# user config\n');
+    const before = fs.readdirSync(codexHome).sort();
+
+    assert.throws(
+      () => runCodexInstall(codexHome),
+      (error) => {
+        assert.match(error.message, /Codex context-monitor cleanup failed to parse/);
+        assert.ok(error.message.includes(hooksPath));
+        assert.ok(!error.message.includes('SECRET_MONITOR_PAYLOAD'));
+        return true;
+      },
+    );
+
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), malformed);
+    assert.strictEqual(fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8'), '# user config\n');
+    assert.deepStrictEqual(fs.readdirSync(codexHome).sort(), before);
+  });
+
+  test('atomic rewrite failure preserves original state and aborts before other Codex mutation', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand(), marker: 'PRIVATE_HOOK_VALUE' }] }],
+      },
+    });
+    const originalBytes = fs.readFileSync(hooksPath, 'utf8');
+    const before = fs.readdirSync(codexHome).sort();
+    fs.renameSync = (source, destination) => {
+      if (path.resolve(String(destination)) === path.resolve(hooksPath)) {
+        assert.ok(
+          fs.existsSync(path.join(codexHome, 'gsd-install-migration.lock')),
+          'atomic hooks replacement runs while the installer lock is held',
+        );
+        throw new Error('injected pre-rename failure PRIVATE_HOOK_VALUE');
+      }
+      return originalRenameSync(source, destination);
+    };
+
+    assert.throws(
+      () => runCodexInstall(codexHome),
+      (error) => {
+        assert.match(error.message, /Codex context-monitor cleanup failed to rewrite/);
+        assert.ok(error.message.includes(hooksPath));
+        assert.ok(!error.message.includes('PRIVATE_HOOK_VALUE'));
+        return true;
+      },
+    );
+
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), originalBytes);
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(hooksPath, 'utf8')));
+    assert.deepStrictEqual(fs.readdirSync(codexHome).sort(), before);
+
+    fs.renameSync = originalRenameSync;
+    const successfulRetry = cleanupCodexContextMonitor(codexHome);
+    const successfulBytes = fs.readFileSync(hooksPath, 'utf8');
+    const convergedRetry = cleanupCodexContextMonitor(codexHome);
+    assert.strictEqual(successfulRetry.removed, 1);
+    assert.strictEqual(convergedRetry.changed, false);
+    assert.strictEqual(fs.readFileSync(hooksPath, 'utf8'), successfulBytes);
+  });
+
+  test('durable deregistration removes an unreferenced manifest-owned monitor artifact', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand() }] }],
+      },
+    });
+    const artifactPath = writeManifestOwnedMonitor('legacy managed monitor\n');
+
+    const captured = captureConsole(() => cleanupCodexContextMonitor(codexHome));
+
+    assert.match(
+      captured.stdout,
+      /Removed obsolete Codex context-monitor registration; agent-facing context warnings remain unavailable\./,
+    );
+    assert.strictEqual(fs.existsSync(artifactPath), false);
+    assert.ok(!fs.readFileSync(hooksPath, 'utf8').includes('gsd-context-monitor'));
+  });
+
+  test('modified manifest-owned monitor artifact is backed up before removal', () => {
+    writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand() }] }],
+      },
+    });
+    const artifactPath = writeManifestOwnedMonitor('manifest baseline monitor\n');
+    const modifiedContents = 'user-modified legacy monitor\n';
+    fs.writeFileSync(artifactPath, modifiedContents);
+
+    cleanupCodexContextMonitor(codexHome);
+
+    assert.strictEqual(fs.existsSync(artifactPath), false);
+    const journalRoot = path.join(codexHome, 'gsd-migration-journal');
+    const backupDir = fs.readdirSync(journalRoot)
+      .find((entry) => entry.endsWith('-backups'));
+    assert.ok(backupDir, 'managed-modified removal creates a user-facing backup');
+    assert.strictEqual(
+      fs.readFileSync(path.join(journalRoot, backupDir, 'hooks', 'gsd-context-monitor.js'), 'utf8'),
+      modifiedContents,
+    );
+  });
+
+  test('unowned monitor artifact survives after its obsolete registration is removed', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand() }] }],
+      },
+    });
+    const artifactPath = path.join(codexHome, 'hooks', 'gsd-context-monitor.js');
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    fs.writeFileSync(artifactPath, 'unowned monitor\n');
+
+    cleanupCodexContextMonitor(codexHome);
+
+    assert.strictEqual(fs.readFileSync(artifactPath, 'utf8'), 'unowned monitor\n');
+    assert.ok(!fs.readFileSync(hooksPath, 'utf8').includes('gsd-context-monitor'));
+  });
+
+  test('artifact inspection failure keeps deregistration durable and warns safely', () => {
+    writeHooks({
+      hooks: {
+        Stop: [{
+          hooks: [{
+            type: 'command',
+            command: monitorCommand(),
+            marker: 'PRIVATE_HOOKS_CONFIG_CONTENT',
+          }],
+        }],
+      },
+    });
+    const artifactContents = 'PRIVATE_RETAINED_ARTIFACT\n';
+    const artifactPath = writeManifestOwnedMonitor(artifactContents);
+    const warnings = [];
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    fs.lstatSync = (target, options) => {
+      if (
+        path.resolve(String(target)) === path.resolve(artifactPath)
+        && options?.throwIfNoEntry === false
+      ) {
+        const error = new Error('PRIVATE_INSPECTION_FAILURE');
+        error.code = 'EACCES';
+        throw error;
+      }
+      return originalLstatSync(target, options);
+    };
+
+    runCodexInstall(codexHome);
+
+    assert.ok(fs.existsSync(path.join(codexHome, 'config.toml')), 'install completes');
+    assert.strictEqual(fs.readFileSync(artifactPath, 'utf8'), artifactContents);
+    assert.ok(readAllHooksCommands(codexHome)
+      .every((command) => !isRecognizedCodexContextMonitorCommand(command, codexHome)));
+    assert.strictEqual(cleanupCodexContextMonitor(codexHome).changed, false);
+    const matchingWarnings = warnings.filter((line) => line.includes(artifactPath));
+    assert.strictEqual(matchingWarnings.length, 1);
+    assert.match(matchingWarnings[0], /inspect obsolete Codex context-monitor artifact/);
+    assert.match(matchingWarnings[0], /registration remains removed/);
+    assert.ok(!matchingWarnings[0].includes('PRIVATE_RETAINED_ARTIFACT'));
+    assert.ok(!matchingWarnings[0].includes('PRIVATE_INSPECTION_FAILURE'));
+    assert.ok(!matchingWarnings[0].includes('PRIVATE_HOOKS_CONFIG_CONTENT'));
+  });
+
+  test('artifact deletion failure keeps deregistration durable, warns safely, and lets install finish', () => {
+    const hooksPath = writeHooks({
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: monitorCommand() }] }],
+      },
+    });
+    const artifactContents = 'PRIVATE_ORPHAN_CONTENT\n';
+    const artifactPath = writeManifestOwnedMonitor(artifactContents);
+    const warnings = [];
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+    fs.rmSync = (target, options) => {
+      if (path.resolve(String(target)) === path.resolve(artifactPath)) {
+        assert.ok(
+          fs.existsSync(path.join(codexHome, 'gsd-install-migration.lock')),
+          'artifact removal runs while the installer lock is held',
+        );
+        throw new Error('injected deletion failure PRIVATE_ORPHAN_CONTENT');
+      }
+      return originalRmSync(target, options);
+    };
+
+    runCodexInstall(codexHome);
+
+    assert.ok(fs.existsSync(path.join(codexHome, 'config.toml')), 'install completes');
+    assert.strictEqual(fs.readFileSync(artifactPath, 'utf8'), artifactContents);
+    const hooksDocument = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(hooksDocument && typeof hooksDocument === 'object');
+    assert.ok(readAllHooksCommands(codexHome)
+      .every((command) => !isRecognizedCodexContextMonitorCommand(command, codexHome)));
+    assert.strictEqual(cleanupCodexContextMonitor(codexHome).changed, false);
+    const warning = warnings.find((line) => line.includes(artifactPath));
+    assert.ok(warning, 'warning identifies the retained artifact path');
+    assert.match(warning, /remove obsolete Codex context-monitor artifact/);
+    assert.match(warning, /registration remains removed/);
+    assert.doesNotMatch(warning, /monitor remains registered/);
+    assert.ok(!warning.includes('PRIVATE_ORPHAN_CONTENT'));
   });
 });
 
@@ -8236,37 +9248,8 @@ describe('bug #851: Codex adapter documents multi_agent_v1 schema limitation and
 process.env.GSD_TEST_MODE = '1';
 
 /**
- * Enhancement #772: Adopt new stable Codex hook events + commandWindows for
- * Windows parity.
- *
- * Codex CLI (rust-v0.137.0) stabilised the full hook-event set. This suite
- * asserts that a Codex install:
- *
- * (a) Registers the 3 new high-value hook events in hooks.json:
- *   - SubagentStart — inject context / GSD_AGENT_NAME awareness at subagent open
- *   - Stop          — post-session context headroom tracking
- *   - PostToolUse   — mirror the Claude Code PostToolUse context monitor
- *
- * (b) Emits `commandWindows` in the SessionStart hooks.json entry so that
- *   Windows users get the .cmd shim path and non-Windows users get the POSIX
- *   node runner command. Both fields are present in the same entry; Codex picks
- *   the right one per its HookHandlerConfig schema
- *   (codex-rs/config/src/hook_config.rs: commandWindows / command_windows alias).
- *
- * Note: UserPromptSubmit is NOT wired (same rationale as Qwen #788 — the
- * gsd-prompt-guard handler exits unless tool_name is Write|Edit, so it would be
- * a silent no-op for the UserPromptSubmit payload shape).
- *
- * Test strategy:
- *   - Test new event registration via ensureCodexHooksJsonEvent() directly
- *     (mirrors the #3426 pattern of testing ensureCodexHooksJsonSessionStart
- *     directly with a stub hook file — avoids full install() migration dance).
- *   - Test commandWindows via ensureCodexHooksJsonSessionStart() directly.
- *   - IR-first discipline: assert on the structured result, not rendered text.
- *
- * Verified hook event schema:
- *   https://github.com/openai/codex/blob/main/codex-rs/protocol/src/protocol.rs
- *   https://github.com/openai/codex/blob/main/codex/codex-rs/config/src/hook_config.rs
+ * Retained #772 coverage for the supported SessionStart update hook's Windows
+ * command projection. Context-monitor event registration was retired by WARN-01.
  */
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
@@ -8274,13 +9257,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const INSTALL = require('../bin/install.js');
-const {
-  ensureCodexHooksJsonSessionStart,
-  ensureCodexHooksJsonEvent,
-  removeCodexHooksJsonEvent,
-  reconcileCodexHooksJsonEvent,
-} = INSTALL;
+const { ensureCodexHooksJsonSessionStart } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -8316,118 +9293,6 @@ function stubHookFile(targetDir, hookName) {
     try { fs.chmodSync(dest, 0o755); } catch { /* Windows */ }
   }
 }
-
-// ─── Suite 1: ensureCodexHooksJsonEvent export surface ───────────────────────
-
-describe('enh-772: export surface — new functions are exported', () => {
-  test('ensureCodexHooksJsonEvent is a function', () => {
-    assert.strictEqual(typeof ensureCodexHooksJsonEvent, 'function',
-      'ensureCodexHooksJsonEvent must be exported from bin/install.js');
-  });
-
-  test('removeCodexHooksJsonEvent is a function', () => {
-    assert.strictEqual(typeof removeCodexHooksJsonEvent, 'function',
-      'removeCodexHooksJsonEvent must be exported from bin/install.js');
-  });
-
-  test('reconcileCodexHooksJsonEvent is a function', () => {
-    assert.strictEqual(typeof reconcileCodexHooksJsonEvent, 'function',
-      'reconcileCodexHooksJsonEvent must be exported from bin/install.js');
-  });
-});
-
-// ─── Suite 2: ensureCodexHooksJsonEvent registers new events ─────────────────
-
-describe('enh-772: ensureCodexHooksJsonEvent registers SubagentStart, Stop, PostToolUse', () => {
-  let tmpDir;
-
-  beforeEach(() => {
-    tmpDir = createTempDir('gsd-772-events-');
-    stubHookFile(tmpDir, 'gsd-context-monitor.js');
-  });
-
-  afterEach(() => {
-    cleanup(tmpDir);
-  });
-
-  for (const eventName of ['SubagentStart', 'Stop', 'PostToolUse']) {
-    test(`${eventName}: ensureCodexHooksJsonEvent writes hooks.json`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      const result = ensureCodexHooksJsonEvent(tmpDir, eventName, {
-        absoluteRunner: fakeRunner,
-        platform: 'linux',
-      });
-      assert.ok(result && result.path, `result must have path for ${eventName}`);
-      assert.ok(result.wrote || result.changed,
-        `ensureCodexHooksJsonEvent must write or change hooks.json for ${eventName}`);
-      assert.ok(fs.existsSync(path.join(tmpDir, 'hooks.json')),
-        `hooks.json must exist after registering ${eventName}`);
-    });
-
-    test(`${eventName}: hooks.json contains the event entry`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      ensureCodexHooksJsonEvent(tmpDir, eventName, {
-        absoluteRunner: fakeRunner,
-        platform: 'linux',
-      });
-      const hooksJson = readHooksJson(tmpDir);
-      const handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-      assert.ok(handlers.length > 0,
-        `Expected ${eventName} entry in hooks.json; got: ${JSON.stringify(hooksJson)}`);
-    });
-
-    test(`${eventName}: hook entry uses gsd-context-monitor`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      ensureCodexHooksJsonEvent(tmpDir, eventName, {
-        absoluteRunner: fakeRunner,
-        platform: 'linux',
-      });
-      const hooksJson = readHooksJson(tmpDir);
-      const handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-      assert.ok(
-        handlers.some(h => h.command && h.command.includes('gsd-context-monitor')),
-        `${eventName} hook must use gsd-context-monitor; got: ${JSON.stringify(handlers)}`
-      );
-    });
-
-    test(`${eventName}: hook entry has type: 'command'`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      ensureCodexHooksJsonEvent(tmpDir, eventName, {
-        absoluteRunner: fakeRunner,
-        platform: 'linux',
-      });
-      const hooksJson = readHooksJson(tmpDir);
-      const handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-      const entry = handlers.find(h => h.command && h.command.includes('gsd-context-monitor'));
-      assert.strictEqual(entry && entry.type, 'command',
-        `${eventName} hook entry must have type 'command'`);
-    });
-
-    test(`${eventName}: hook entry has timeout: 10`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      ensureCodexHooksJsonEvent(tmpDir, eventName, {
-        absoluteRunner: fakeRunner,
-        platform: 'linux',
-      });
-      const hooksJson = readHooksJson(tmpDir);
-      const handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-      const entry = handlers.find(h => h.command && h.command.includes('gsd-context-monitor'));
-      assert.strictEqual(entry && entry.timeout, 10,
-        `${eventName} hook entry must have timeout 10`);
-    });
-  }
-
-  test('null absoluteRunner returns unchanged result without writing', () => {
-    const result = ensureCodexHooksJsonEvent(tmpDir, 'SubagentStart', {
-      absoluteRunner: null,
-      platform: 'linux',
-    });
-    assert.strictEqual(result.changed, false,
-      'null runner must return changed: false');
-    assert.ok(!fs.existsSync(path.join(tmpDir, 'hooks.json')),
-      'hooks.json must NOT be written when runner is null');
-  });
-});
 
 // ─── Suite 3: commandWindows parity in SessionStart ──────────────────────────
 
@@ -8530,118 +9395,6 @@ describe('enh-772: commandWindows parity — ensureCodexHooksJsonSessionStart em
   });
 });
 
-// ─── Suite 4: idempotency ────────────────────────────────────────────────────
-
-describe('enh-772: ensureCodexHooksJsonEvent is idempotent', () => {
-  let tmpDir;
-
-  beforeEach(() => {
-    tmpDir = createTempDir('gsd-772-idem-');
-    stubHookFile(tmpDir, 'gsd-context-monitor.js');
-  });
-
-  afterEach(() => {
-    cleanup(tmpDir);
-  });
-
-  for (const eventName of ['SubagentStart', 'Stop', 'PostToolUse']) {
-    test(`${eventName}: calling twice does not duplicate hook entries`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      const opts = { absoluteRunner: fakeRunner, platform: 'linux' };
-
-      ensureCodexHooksJsonEvent(tmpDir, eventName, opts);
-      ensureCodexHooksJsonEvent(tmpDir, eventName, opts);
-
-      const hooksJson = readHooksJson(tmpDir);
-      const handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-      assert.strictEqual(handlers.length, 1,
-        `${eventName} should have exactly 1 hook handler after idempotent re-register; got ${handlers.length}: ${JSON.stringify(handlers)}`);
-    });
-  }
-});
-
-// ─── Suite 5: removeCodexHooksJsonEvent ──────────────────────────────────────
-
-describe('enh-772: removeCodexHooksJsonEvent removes managed entries', () => {
-  let tmpDir;
-
-  beforeEach(() => {
-    tmpDir = createTempDir('gsd-772-remove-');
-    stubHookFile(tmpDir, 'gsd-context-monitor.js');
-  });
-
-  afterEach(() => {
-    cleanup(tmpDir);
-  });
-
-  for (const eventName of ['SubagentStart', 'Stop', 'PostToolUse']) {
-    test(`${eventName}: removeCodexHooksJsonEvent removes the managed entry`, () => {
-      const fakeRunner = '"/usr/local/bin/node"';
-      ensureCodexHooksJsonEvent(tmpDir, eventName, {
-        absoluteRunner: fakeRunner,
-        platform: 'linux',
-      });
-
-      // Verify it was registered
-      let hooksJson = readHooksJson(tmpDir);
-      let handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-      assert.ok(handlers.length > 0, `${eventName} must be registered before removal`);
-
-      // Remove
-      const result = removeCodexHooksJsonEvent(tmpDir, eventName);
-      assert.ok(result.changed || result.wrote,
-        `removeCodexHooksJsonEvent must change hooks.json for ${eventName}`);
-
-      hooksJson = readHooksJson(tmpDir);
-      if (hooksJson) {
-        handlers = hooksJsonHandlersForEvent(hooksJson, eventName);
-        assert.strictEqual(handlers.length, 0,
-          `After removal, ${eventName} should have 0 handlers; got: ${JSON.stringify(handlers)}`);
-      }
-    });
-  }
-});
-
-// ─── Suite 6: reconcileCodexHooksJsonEvent preserves user entries ─────────────
-
-describe('enh-772: reconcileCodexHooksJsonEvent preserves user-owned entries', () => {
-  let tmpDir;
-
-  beforeEach(() => {
-    tmpDir = createTempDir('gsd-772-preserve-');
-  });
-
-  afterEach(() => {
-    cleanup(tmpDir);
-  });
-
-  test('user-owned SubagentStart entry is preserved when GSD entry is registered', () => {
-    const hooksJsonPath = path.join(tmpDir, 'hooks.json');
-    const userEntry = {
-      hooks: [{ type: 'command', command: 'my-custom-hook.sh' }]
-    };
-    fs.writeFileSync(hooksJsonPath, JSON.stringify({
-      SubagentStart: [userEntry]
-    }, null, 2) + '\n');
-
-    reconcileCodexHooksJsonEvent(tmpDir, 'SubagentStart', {
-      managedCommand: '"/usr/local/bin/node" "/home/me/.codex/hooks/gsd-context-monitor.js"',
-    });
-
-    const hooksJson = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
-    const table = hooksJson.hooks || hooksJson;
-    const entries = Array.isArray(table.SubagentStart) ? table.SubagentStart : [];
-    // Should have 2 entries: user entry + GSD entry
-    assert.ok(entries.length >= 2,
-      `User entry must be preserved; got entries: ${JSON.stringify(entries)}`);
-    // User entry must still be present
-    const userEntryStillPresent = entries.some(e =>
-      Array.isArray(e.hooks) && e.hooks.some(h => h.command === 'my-custom-hook.sh')
-    );
-    assert.ok(userEntryStillPresent,
-      `User entry must survive GSD registration; entries: ${JSON.stringify(entries)}`);
-  });
-});
   });
 }
 

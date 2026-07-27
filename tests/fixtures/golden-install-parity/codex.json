@@ -434,7 +434,6 @@
   "gsd-core/workflows/verify-phase.md": "ce508f9c2242b91f",
   "gsd-core/workflows/verify-work.md": "618068315b712d29",
   "hooks/gsd-check-update.js": "ef48957eb6ac6a10",
-  "hooks/gsd-context-monitor.js": "ec76b23f45d29b02",
   "scripts/changeset/README.md": "86ff89331dfd94b2",
   "scripts/changeset/cli.cjs": "68f92a344b199271",
   "scripts/changeset/github-release-notes.cjs": "795677f0c009b132",

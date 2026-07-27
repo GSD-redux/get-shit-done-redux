@@ -927,11 +927,7 @@ const capabilities = {
       "installSurface": "codex-toml",
       "writesSharedSettings": false,
       "permissionWriter": null,
-      "extendedHookEvents": [
-        "SubagentStop",
-        "Stop",
-        "PreCompact"
-      ],
+      "extendedHookEvents": [],
       "hostIntegration": {
         "embeddingMode": "declarative",
         "commandSurface": "slash-file",
@@ -965,7 +961,9 @@ const capabilities = {
         "cleanupSkillSidecars": true,
         "agentTomlFiles": true,
         "frontmatterDialect": "codex",
-        "reviewerCli": true
+        "reviewerCli": true,
+        "agentFacingContextWarnings": false,
+        "gsdPhaseLifecycleDisplay": false
       }
     }
   },
@@ -4683,11 +4681,7 @@ const runtimes = {
       "installSurface": "codex-toml",
       "writesSharedSettings": false,
       "permissionWriter": null,
-      "extendedHookEvents": [
-        "SubagentStop",
-        "Stop",
-        "PreCompact"
-      ],
+      "extendedHookEvents": [],
       "hostIntegration": {
         "embeddingMode": "declarative",
         "commandSurface": "slash-file",
@@ -4721,7 +4715,9 @@ const runtimes = {
         "cleanupSkillSidecars": true,
         "agentTomlFiles": true,
         "frontmatterDialect": "codex",
-        "reviewerCli": true
+        "reviewerCli": true,
+        "agentFacingContextWarnings": false,
+        "gsdPhaseLifecycleDisplay": false
       }
     }
   },

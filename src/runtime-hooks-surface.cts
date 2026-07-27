@@ -10,9 +10,9 @@
  *   Cursor:  buildCursorHookEntry, isManagedCursorHookEntry,
  *            reconcileCursorHooksJson, writeCursorHooksJson, removeCursorHooksJson
  *   Copilot: buildCopilotHookConfig, writeCopilotHookConfig
- *   Codex hooks.json: ensureCodexHooksJsonSessionStart, ensureCodexHooksJsonEvent,
+ *   Codex hooks.json: ensureCodexHooksJsonSessionStart,
  *            reconcileCodexHooksJsonEvent, reconcileCodexHooksJsonSessionStart,
- *            removeCodexHooksJsonEvent, removeCodexHooksJsonSessionStart,
+ *            removeCodexHooksJsonSessionStart,
  *            buildCodexHookWindowsShimIR, buildCodexHookBlock, rewriteLegacyCodexHookBlock
  *   Shared:  buildHookCommand, rewriteLegacyManagedNodeHookCommands
  *
@@ -36,9 +36,12 @@ import {
 } from './host-integration-adapters/imperative-hook-bus.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import shellCmdProjection = require('./shell-command-projection.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import installEngine = require('./install-engine.cjs');
 const {
   isManagedHookBasename,
   isManagedHookCommand,
+  isRecognizedCodexContextMonitorCommand,
   projectLegacySettingsHookCommand,
   projectManagedHookCommand,
   projectPortableHookBaseDir,
@@ -48,12 +51,16 @@ const {
 } = shellCmdProjection as {
   isManagedHookBasename: (scriptPath: string, opts?: { surface?: string }) => boolean;
   isManagedHookCommand: (cmd: string | null | undefined, opts?: { surface?: string; includeLegacyAliases?: boolean; configDir?: string }) => boolean;
+  isRecognizedCodexContextMonitorCommand: (cmd: unknown, configDir: string) => boolean;
   projectLegacySettingsHookCommand: (opts: { absoluteRunner: string; scriptPath: string; scriptToken: string; runtime: string; platform: string }) => string | null;
   projectManagedHookCommand: (opts: { absoluteRunner: string; scriptPath: string; runtime: string; platform: string; hookShell?: string }) => string | null;
   projectPortableHookBaseDir: (opts: { configDir: string; homeDir: string }) => string;
   projectCodexHookTomlCommand: (opts: { absoluteRunner: string; scriptPath: string; platform: string }) => string;
   shellHookOmitsBashRunner: (opts: { platform: string; runtime: string; isShellHook: boolean }) => boolean;
   escapeTomlDoubleQuotedString: (value: unknown) => string;
+};
+const { hasExistingSymlinkBetween } = installEngine as {
+  hasExistingSymlinkBetween: (root: string, fullPath: string) => boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -183,12 +190,18 @@ let __atomicWriteCounter = 0;
 // Set<string> — absolute paths of .tmp-<pid>-<n> files this process created.
 const __atomicWrittenTmps: Set<string> = new Set();
 
-function atomicWriteFileSync(target: string, data: string, options: fs.WriteFileOptions): void {
+function atomicWriteFileSync(
+  target: string,
+  data: string,
+  options: fs.WriteFileOptions,
+  beforeRename?: () => void,
+): void {
   __atomicWriteCounter += 1;
   const tmp = `${target}.tmp-${process.pid}-${__atomicWriteCounter}`;
   __atomicWrittenTmps.add(tmp);
   try {
     fs.writeFileSync(tmp, data, options);
+    beforeRename?.();
     shellCmdProjection.retryRenameSync(tmp, target);
     // Successful rename: the tmp path no longer exists, but leave it in the
     // Set so _cleanTmpFiles can recognise it as installer-owned if it somehow
@@ -580,47 +593,329 @@ interface ReconcileResult {
   path: string;
 }
 
+interface CodexMonitorCleanupResult extends ReconcileResult {
+  removed: number;
+}
+
+interface CodexMonitorCleanupPlan extends CodexMonitorCleanupResult {
+  currentContent: string | null;
+  currentIdentity: CodexHooksJsonIdentity | null;
+  nextContent: string | null;
+  monitorArtifactsReferenced: boolean;
+}
+
+const REMOVE_CODEX_MONITOR_ENTRY = Symbol('remove-codex-monitor-entry');
+
+interface CodexHooksJsonIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface CodexHooksJsonSnapshot {
+  content: string | null;
+  identity: CodexHooksJsonIdentity | null;
+}
+
+function sameCodexHooksJsonIdentity(
+  left: CodexHooksJsonIdentity | null,
+  right: CodexHooksJsonIdentity | null,
+): boolean {
+  return left === null
+    ? right === null
+    : right !== null && left.dev === right.dev && left.ino === right.ino;
+}
+
+function inspectCodexHooksJson(
+  hooksJsonPath: string,
+  failureMessage: string,
+): CodexHooksJsonSnapshot {
+  if (hasExistingSymlinkBetween(path.dirname(hooksJsonPath), hooksJsonPath)) {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+
+  let before: fs.Stats | undefined;
+  try {
+    before = fs.lstatSync(hooksJsonPath, { throwIfNoEntry: false });
+  } catch {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+  if (!before) return { content: null, identity: null };
+  if (!before.isFile() || before.isSymbolicLink()) {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+
+  let content: string;
+  let after: fs.Stats | undefined;
+  try {
+    content = fs.readFileSync(hooksJsonPath, 'utf8');
+    after = fs.lstatSync(hooksJsonPath, { throwIfNoEntry: false });
+  } catch {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+  const beforeIdentity = { dev: before.dev, ino: before.ino };
+  const afterIdentity = after ? { dev: after.dev, ino: after.ino } : null;
+  if (
+    !after
+    || !after.isFile()
+    || after.isSymbolicLink()
+    || !sameCodexHooksJsonIdentity(beforeIdentity, afterIdentity)
+  ) {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+  return { content, identity: afterIdentity };
+}
+
+function assertCodexHooksJsonUnchanged(
+  hooksJsonPath: string,
+  expected: CodexHooksJsonSnapshot,
+  failureMessage: string,
+): void {
+  const current = inspectCodexHooksJson(hooksJsonPath, failureMessage);
+  if (
+    current.content !== expected.content
+    || !sameCodexHooksJsonIdentity(current.identity, expected.identity)
+  ) {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+}
+
+function defineCodexHookEvent(
+  hookTable: Record<string, unknown>,
+  eventName: string,
+  value: unknown[],
+): void {
+  Object.defineProperty(hookTable, eventName, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+function normalizeCodexHooksJson(
+  parsed: Record<string, unknown>,
+  hooksJsonPath: string,
+  failureMessage: string,
+): Record<string, unknown> {
+  const nestedHooks = parsed['hooks'];
+  if (
+    nestedHooks !== undefined
+    && (!nestedHooks || typeof nestedHooks !== 'object' || Array.isArray(nestedHooks))
+  ) {
+    throw new Error(`${failureMessage} ${hooksJsonPath}`);
+  }
+
+  const hookTable: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  if (nestedHooks) {
+    for (const [eventName, value] of Object.entries(nestedHooks as Record<string, unknown>)) {
+      if (!Array.isArray(value)) {
+        throw new Error(`${failureMessage} ${hooksJsonPath}`);
+      }
+      defineCodexHookEvent(hookTable, eventName, value);
+    }
+  }
+
+  for (const key of Object.keys(parsed)) {
+    if (key === 'hooks' || !Array.isArray(parsed[key])) continue;
+    const existing = Object.hasOwn(hookTable, key) ? hookTable[key] as unknown[] : [];
+    defineCodexHookEvent(hookTable, key, [...parsed[key] as unknown[], ...existing]);
+    delete parsed[key];
+  }
+  parsed['hooks'] = hookTable;
+  return hookTable;
+}
+
+function containsCodexMonitorArtifactReference(value: unknown): boolean {
+  if (typeof value === 'string') {
+    const normalized = shellCmdProjection.posixNormalize(value).toLowerCase();
+    return normalized.includes('gsd-context-monitor.js')
+      || normalized.includes('gsd-context-monitor.cmd');
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsCodexMonitorArtifactReference);
+  }
+  if (value && typeof value === 'object') {
+    return Object.values(value as Record<string, unknown>)
+      .some(containsCodexMonitorArtifactReference);
+  }
+  return false;
+}
+
+function pruneCodexMonitorEntry(
+  entry: unknown,
+  targetDir: string,
+): { value: unknown; removed: number } {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    return { value: entry, removed: 0 };
+  }
+
+  const entryObject = entry as Record<string, unknown>;
+  if (isRecognizedCodexContextMonitorCommand(entryObject['command'], targetDir)) {
+    return { value: REMOVE_CODEX_MONITOR_ENTRY, removed: 1 };
+  }
+  if (!Array.isArray(entryObject['hooks'])) {
+    return { value: entry, removed: 0 };
+  }
+
+  let removed = 0;
+  const hooks: unknown[] = [];
+  for (const hook of entryObject['hooks']) {
+    const pruned = pruneCodexMonitorEntry(hook, targetDir);
+    removed += pruned.removed;
+    if (pruned.value !== REMOVE_CODEX_MONITOR_ENTRY) hooks.push(pruned.value);
+  }
+  if (hooks.length === 0 && removed > 0) {
+    return { value: REMOVE_CODEX_MONITOR_ENTRY, removed };
+  }
+  return {
+    value: removed > 0 ? { ...entryObject, hooks } : entry,
+    removed,
+  };
+}
+
+function planCodexContextMonitorCleanup(targetDir: string): CodexMonitorCleanupPlan {
+  const hooksJsonPath = path.join(targetDir, 'hooks.json');
+  if (hasExistingSymlinkBetween(path.resolve(targetDir), hooksJsonPath)) {
+    throw new Error(`Codex context-monitor cleanup failed to inspect ${hooksJsonPath}`);
+  }
+  if (!fs.existsSync(hooksJsonPath)) {
+    return {
+      changed: false,
+      wrote: false,
+      path: hooksJsonPath,
+      removed: 0,
+      currentContent: null,
+      currentIdentity: null,
+      nextContent: null,
+      monitorArtifactsReferenced: false,
+    };
+  }
+
+  const snapshot = inspectCodexHooksJson(
+    hooksJsonPath,
+    'Codex context-monitor cleanup failed to inspect',
+  );
+  const currentContent = snapshot.content as string;
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = currentContent.trim()
+      ? JSON.parse(currentContent) as Record<string, unknown>
+      : {};
+  } catch {
+    throw new Error(`Codex context-monitor cleanup failed to parse ${hooksJsonPath}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Codex context-monitor cleanup failed to validate ${hooksJsonPath}`);
+  }
+
+  const hookTable = normalizeCodexHooksJson(
+    parsed,
+    hooksJsonPath,
+    'Codex context-monitor cleanup failed to validate',
+  );
+
+  let removed = 0;
+  for (const [eventName, value] of Object.entries(hookTable)) {
+    if (!Array.isArray(value)) {
+      throw new Error(`Codex context-monitor cleanup failed to validate ${hooksJsonPath}`);
+    }
+    const entries: unknown[] = [];
+    for (const entry of value) {
+      const pruned = pruneCodexMonitorEntry(entry, targetDir);
+      removed += pruned.removed;
+      if (pruned.value !== REMOVE_CODEX_MONITOR_ENTRY) entries.push(pruned.value);
+    }
+    if (entries.length > 0) hookTable[eventName] = entries;
+    else delete hookTable[eventName];
+  }
+
+  const monitorArtifactsReferenced = containsCodexMonitorArtifactReference(hookTable);
+  if (removed === 0) {
+    return {
+      changed: false,
+      wrote: false,
+      path: hooksJsonPath,
+      removed,
+      currentContent,
+      currentIdentity: snapshot.identity,
+      nextContent: currentContent,
+      monitorArtifactsReferenced,
+    };
+  }
+
+  if (Object.keys(hookTable).length === 0) delete parsed['hooks'];
+  const nextContent = `${JSON.stringify(parsed, null, 2)}\n`;
+  const changed = currentContent !== nextContent;
+  return {
+    changed,
+    wrote: false,
+    path: hooksJsonPath,
+    removed,
+    currentContent,
+    currentIdentity: snapshot.identity,
+    nextContent,
+    monitorArtifactsReferenced,
+  };
+}
+
+function applyCodexContextMonitorCleanup(plan: CodexMonitorCleanupPlan): CodexMonitorCleanupResult {
+  if (!plan.changed || plan.nextContent === null) {
+    return { changed: false, wrote: false, path: plan.path, removed: plan.removed };
+  }
+  if (hasExistingSymlinkBetween(path.dirname(plan.path), plan.path)) {
+    throw new Error(`Codex context-monitor cleanup failed to rewrite ${plan.path}`);
+  }
+  try {
+    atomicWriteFileSync(plan.path, plan.nextContent, 'utf8', () => {
+      assertCodexHooksJsonUnchanged(
+        plan.path,
+        { content: plan.currentContent, identity: plan.currentIdentity },
+        'Codex context-monitor cleanup failed to rewrite',
+      );
+    });
+  } catch {
+    throw new Error(`Codex context-monitor cleanup failed to rewrite ${plan.path}`);
+  }
+  return { changed: true, wrote: true, path: plan.path, removed: plan.removed };
+}
+
+function cleanupCodexContextMonitor(targetDir: string): CodexMonitorCleanupResult {
+  return applyCodexContextMonitorCleanup(planCodexContextMonitorCleanup(targetDir));
+}
+
 function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts: ReconcileCodexOpts = {}): ReconcileResult {
   const hooksJsonPath = path.join(targetDir, 'hooks.json');
   const managedCommand = typeof opts.managedCommand === 'string' ? opts.managedCommand : null;
   const commandWindows = typeof opts.commandWindows === 'string' ? opts.commandWindows : null;
   const matcher = typeof opts.matcher === 'string' ? opts.matcher : undefined;
   const timeout = typeof opts.timeout === 'number' ? opts.timeout : undefined;
+  const snapshot = inspectCodexHooksJson(
+    hooksJsonPath,
+    'Codex hooks.json reconciliation failed to inspect',
+  );
+  const currentContent = snapshot.content;
   let parsed: Record<string, unknown> = {};
-  let currentContent: string | null = null;
-  if (fs.existsSync(hooksJsonPath)) {
-    const raw = fs.readFileSync(hooksJsonPath, 'utf8');
-    currentContent = raw;
-    if (raw.trim()) {
-      try {
-        parsed = JSON.parse(raw) as Record<string, unknown>;
-      } catch (err) {
-        throw new Error(`hooks.json parse failed: ${err && (err as Error).message ? (err as Error).message : String(err)}`);
-      }
+  if (currentContent?.trim()) {
+    try {
+      parsed = JSON.parse(currentContent) as Record<string, unknown>;
+    } catch (err) {
+      throw new Error(`hooks.json parse failed: ${err && (err as Error).message ? (err as Error).message : String(err)}`);
     }
   }
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) parsed = {};
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Codex hooks.json reconciliation failed to validate ${hooksJsonPath}`);
+  }
 
-  const usesNestedHooksObject =
-    parsed['hooks'] && typeof parsed['hooks'] === 'object' && !Array.isArray(parsed['hooks']);
   // #1348: canonicalize every write to the nested { hooks: { <Event>: [...] } }
   // shape. Lift ANY top-level event array (legacy, empty, OR mixed nested+top-level)
   // into the nested table — merging when the same event exists in both — so
   // user/legacy entries are preserved under `hooks` and no stray top-level event
   // key survives (Codex deny_unknown_fields rejects them). Mirrors reconcileCursorHooksJson.
-  const hookTable: Record<string, unknown> = usesNestedHooksObject
-    ? (parsed['hooks'] as Record<string, unknown>)
-    : {};
-  for (const key of Object.keys(parsed)) {
-    if (key === 'hooks') continue;
-    if (Array.isArray(parsed[key])) {
-      const lifted = parsed[key] as unknown[];
-      const existing = Array.isArray(hookTable[key]) ? (hookTable[key] as unknown[]) : [];
-      hookTable[key] = [...lifted, ...existing];
-      delete parsed[key];
-    }
-  }
-  parsed['hooks'] = hookTable;
+  const hookTable = normalizeCodexHooksJson(
+    parsed,
+    hooksJsonPath,
+    'Codex hooks.json reconciliation failed to validate',
+  );
   const eventEntries = Array.isArray(hookTable[eventName]) ? (hookTable[eventName] as unknown[]) : [];
 
   let removedLegacy = false;
@@ -635,11 +930,18 @@ function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts
     }
     const keptHooks = originalHooks.filter((hook) => {
       const cmd = hook && typeof hook === 'object' ? (hook as Record<string, unknown>)['command'] : null;
-      const managed = isManagedHookCommand(cmd as string | null | undefined, {
-        surface: 'codex-hooks-json',
-        includeLegacyAliases: true,
-        configDir: targetDir,
-      });
+      const monitorCandidate = typeof cmd === 'string'
+        && (
+          cmd.includes('gsd-context-monitor.js')
+          || cmd.includes('gsd-context-monitor.cmd')
+        );
+      const managed = monitorCandidate
+        ? isRecognizedCodexContextMonitorCommand(cmd, targetDir)
+        : isManagedHookCommand(cmd as string | null | undefined, {
+          surface: 'codex-hooks-json',
+          includeLegacyAliases: true,
+          configDir: targetDir,
+        });
       if (managed) removedLegacy = true;
       return !managed;
     });
@@ -672,7 +974,13 @@ function reconcileCodexHooksJsonEvent(targetDir: string, eventName: string, opts
   const changed = currentContent !== nextContent;
   const shouldWrite = changed && (currentContent !== null || Object.keys(parsed).length > 0);
   if (shouldWrite) {
-    atomicWriteFileSync(hooksJsonPath, nextContent, 'utf8');
+    atomicWriteFileSync(hooksJsonPath, nextContent, 'utf8', () => {
+      assertCodexHooksJsonUnchanged(
+        hooksJsonPath,
+        snapshot,
+        'Codex hooks.json reconciliation failed to rewrite',
+      );
+    });
   }
 
   return { changed: changed || removedLegacy, wrote: shouldWrite, path: hooksJsonPath };
@@ -782,57 +1090,8 @@ function ensureCodexHooksJsonSessionStart(targetDir: string, opts: EnsureCodexSe
 }
 
 // ---------------------------------------------------------------------------
-// ensureCodexHooksJsonEvent
+// removeCodexHooksJsonSessionStart
 // ---------------------------------------------------------------------------
-
-interface EnsureCodexEventOpts {
-  absoluteRunner?: string | null;
-  platform?: NodeJS.Platform;
-}
-
-function ensureCodexHooksJsonEvent(targetDir: string, eventName: string, opts: EnsureCodexEventOpts = {}): ReconcileResult {
-  const platform = opts.platform || process.platform;
-  const absoluteRunner = opts.absoluteRunner || null;
-  const hooksJsonPath = path.join(targetDir, 'hooks.json');
-  if (!absoluteRunner) return { changed: false, wrote: false, path: hooksJsonPath };
-
-  const scriptPath = shellCmdProjection.posixNormalize(path.resolve(targetDir, 'hooks', 'gsd-context-monitor.js'));
-
-  let managedCommand: string | undefined;
-  if (platform === 'win32') {
-    const shimIR = buildCodexHookWindowsShimIR(scriptPath, absoluteRunner);
-    if (!shimIR) return { changed: false, wrote: false, path: hooksJsonPath };
-    try {
-      atomicWriteFileSync(shimIR.cmdPath, shimIR.render.cmd(), 'utf8');
-    } catch (shimWriteErr) {
-      const reason = shimWriteErr && (shimWriteErr as Error).message ? (shimWriteErr as Error).message : String(shimWriteErr);
-      console.warn(
-        `  ${yellow}⚠${reset}  Codex Windows hook NOT installed — .cmd shim write failed for ${eventName}: ${reason}. ` +
-          `Fix the write error (permissions? disk full?) and re-run the installer.`,
-      );
-      return { changed: false, wrote: false, path: hooksJsonPath };
-    }
-    managedCommand = shimIR.hookCommand;
-  } else {
-    managedCommand = projectManagedHookCommand({
-      absoluteRunner,
-      scriptPath,
-      runtime: 'codex',
-      platform,
-    }) ?? undefined;
-  }
-
-  if (!managedCommand) return { changed: false, wrote: false, path: hooksJsonPath };
-  return reconcileCodexHooksJsonEvent(targetDir, eventName, { managedCommand, timeout: 10 });
-}
-
-// ---------------------------------------------------------------------------
-// removeCodexHooksJsonEvent / removeCodexHooksJsonSessionStart
-// ---------------------------------------------------------------------------
-
-function removeCodexHooksJsonEvent(targetDir: string, eventName: string): ReconcileResult {
-  return reconcileCodexHooksJsonEvent(targetDir, eventName, { managedCommand: null });
-}
 
 function removeCodexHooksJsonSessionStart(targetDir: string): ReconcileResult {
   return reconcileCodexHooksJsonSessionStart(targetDir, { managedCommand: null });
@@ -2362,9 +2621,10 @@ export = {
   // Codex hooks.json
   reconcileCodexHooksJsonEvent,
   reconcileCodexHooksJsonSessionStart,
+  planCodexContextMonitorCleanup,
+  applyCodexContextMonitorCleanup,
+  cleanupCodexContextMonitor,
   ensureCodexHooksJsonSessionStart,
-  ensureCodexHooksJsonEvent,
-  removeCodexHooksJsonEvent,
   removeCodexHooksJsonSessionStart,
   buildCodexHookWindowsShimIR,
 
