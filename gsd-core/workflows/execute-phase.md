@@ -460,23 +460,31 @@ if printf '%s' "$ORCH_BRANCH" | grep -Eq '^(worktree-)?agent-'; then
   done
   _WT_AHEAD=""
   [ -n "$_WT_BASE" ] && _WT_AHEAD=$(git rev-list --count "$_WT_BASE..HEAD" 2>/dev/null || true)
-  _WT_DIRTY=$(git status --porcelain 2>/dev/null | head -20 || true)
+  # Count BEFORE truncating, so a long list reports its true size rather than
+  # under-reporting what is stranded — which is the whole point of this report.
+  _WT_DIRTY_ALL=$(git status --porcelain 2>/dev/null || true)
+  _WT_DIRTY_N=0
+  [ -n "$_WT_DIRTY_ALL" ] && _WT_DIRTY_N=$(printf '%s\n' "$_WT_DIRTY_ALL" | wc -l | tr -d ' ')
+  _WT_HAS_COMMITS=0
+  [ -n "$_WT_AHEAD" ] && [ "$_WT_AHEAD" -gt 0 ] 2>/dev/null && _WT_HAS_COMMITS=1
 
   echo "" >&2
   echo "── Handoff: what is in this worktree (#1856) ──" >&2
-  if [ -n "$_WT_AHEAD" ] && [ "$_WT_AHEAD" -gt 0 ] 2>/dev/null; then
+  if [ "$_WT_HAS_COMMITS" -eq 1 ]; then
     echo "  $_WT_AHEAD commit(s) on '$ORCH_BRANCH' not on '$_WT_BASE':" >&2
     git log --oneline --no-decorate "$_WT_BASE..HEAD" 2>/dev/null | head -20 | sed 's/^/    /' >&2 || true
+    [ "$_WT_AHEAD" -gt 20 ] 2>/dev/null && echo "    … and $((_WT_AHEAD - 20)) more" >&2
     echo "  These live ONLY on this branch. Switching away without integrating loses them." >&2
   fi
-  if [ -n "$_WT_DIRTY" ]; then
-    echo "  Uncommitted changes still in this worktree:" >&2
-    printf '%s\n' "$_WT_DIRTY" | sed 's/^/    /' >&2
+  if [ -n "$_WT_DIRTY_ALL" ]; then
+    echo "  $_WT_DIRTY_N uncommitted change(s) still in this worktree:" >&2
+    printf '%s\n' "$_WT_DIRTY_ALL" | head -20 | sed 's/^/    /' >&2
+    [ "$_WT_DIRTY_N" -gt 20 ] 2>/dev/null && echo "    … and $((_WT_DIRTY_N - 20)) more" >&2
   fi
-  if [ -n "$_WT_AHEAD" ] && [ "$_WT_AHEAD" -gt 0 ] 2>/dev/null || [ -n "$_WT_DIRTY" ]; then
+  if [ "$_WT_HAS_COMMITS" -eq 1 ] || [ -n "$_WT_DIRTY_ALL" ]; then
     echo "" >&2
     echo "  To integrate before continuing:" >&2
-    [ -n "$_WT_DIRTY" ] && echo "    1. git add -A && git commit -m 'wip: recover worktree state'   # from THIS worktree" >&2
+    [ -n "$_WT_DIRTY_ALL" ] && echo "    1. git add -A && git commit -m 'wip: recover worktree state'   # from THIS worktree" >&2
     echo "    2. cd <orchestrator worktree>   # a checkout whose branch is NOT agent-*/worktree-agent-*" >&2
     echo "    3. git merge --no-ff $ORCH_BRANCH        # or: git cherry-pick <sha>...  for selected commits" >&2
     echo "    4. re-run the phase from there" >&2
