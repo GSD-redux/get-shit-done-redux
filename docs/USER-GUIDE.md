@@ -853,7 +853,16 @@ Set `commit_docs: false` during `/gsd-new-project` or via `/gsd-settings`. Add `
 
 ### GSD Update Overwrote My Local Changes
 
-Since v1.17, the installer backs up locally modified files to `gsd-local-patches/`. Run `/gsd-update --reapply` to merge your changes back.
+Which recovery you need depends on whether you *modified a GSD file* or *added your own*:
+
+- **You edited a file GSD ships** (an agent prompt, a workflow). Since v1.17 the installer backs it up to `gsd-local-patches/`. Run `/gsd-update --reapply` to merge your changes back.
+- **You added your own file inside a GSD-managed directory** (a custom skill under `skills/`, an extra file in `commands/gsd/`). The installer saves it to `gsd-user-files-backup/`, and the update offers to restore it once the new version is installed. If you declined, or the backup is left over from an older update, restore it any time:
+
+  ```bash
+  node <config-dir>/gsd-core/bin/gsd-tools.cjs restore-custom-files --config-dir <config-dir> --apply
+  ```
+
+  Run it without `--apply` first to see what would be restored. The backup is never deleted, and the restore skips any file that would overwrite something the new release ships.
 
 ### Install or Refresh a Release Candidate
 
@@ -956,6 +965,7 @@ To disable parallel execution entirely: `/gsd-settings` → set `parallelization
 | Plan doesn't match your vision       | `/gsd-discuss-phase [N]` then re-plan                                    |
 | Costs running high                   | `/gsd-config --profile budget` and `/gsd-settings` to toggle agents off  |
 | Update broke local changes           | `/gsd-update --reapply`                                                  |
+| Custom file gone after an update     | `gsd-tools restore-custom-files --config-dir <dir> --apply`              |
 | Want session summary for stakeholder | `/gsd-pause-work --report`                                               |
 | Don't know what step is next         | `/gsd-progress --next`                                                   |
 | Parallel execution build errors      | Update GSD or set `parallelization.enabled: false`                       |

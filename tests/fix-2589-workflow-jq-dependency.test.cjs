@@ -42,6 +42,10 @@ const AUDITED = [
   'autonomous.md',
   'ai-integration-phase.md',
   'eval-review.md',
+  // #1854: update.md was missed by the original sweep — its get_installed_version
+  // step piped `update-context --json` through `jq -r`, the same silently-empty
+  // shape on a jq-less host, with the whole install context as the blast radius.
+  'update.md',
 ];
 
 function readWorkflow(name) {
@@ -179,6 +183,41 @@ describe('#2589: config/model/verify lookups do not depend on jq', () => {
         stale || [],
         [],
         `${name}: cite review.md by section name, not a line number (found ${JSON.stringify(stale)})`,
+      );
+    }
+  });
+
+  test('update-context lookups do not pipe to jq (#1854)', () => {
+    // update-context returns {installedVersion, scope, runtime, gsdDir}. The
+    // original sweep did not cover it, so update.md kept four `| jq -r '.field'`
+    // reads. On a jq-less host all four come back EMPTY, which does not fail
+    // loudly — it silently reproduces the fresh-install fallback
+    // (INSTALLED_VERSION=0.0.0, scope UNKNOWN), so `/gsd:update` re-installs
+    // over a working install and targets the wrong runtime directory.
+    const re = /update-context\b[^|\n]*\|\s*jq\b/;
+    for (const name of AUDITED) {
+      const content = readWorkflow(name);
+      if (content == null) continue;
+      const matches = content.match(new RegExp(re.source, 'g'));
+      assert.deepEqual(
+        matches || [],
+        [],
+        `${name}: update-context lookups must not pipe to jq (found ${JSON.stringify(matches)})`,
+      );
+    }
+  });
+
+  test('update.md still resolves all four update-context fields', () => {
+    // Negative proof for the test above: asserting the jq pipe is gone is
+    // vacuous if the fields stopped being read at all. The install context is
+    // only correct when every field still lands.
+    const content = readWorkflow('update.md');
+    assert.ok(content, 'update.md must exist');
+    for (const field of ['installedVersion', 'scope', 'runtime', 'gsdDir']) {
+      assert.match(
+        content,
+        new RegExp(`uc_field\\s+${field}\\b`),
+        `update.md must still resolve ${field} from the update-context projection`,
       );
     }
   });

@@ -1352,6 +1352,20 @@ Update GSD with changelog preview, and optionally sync skills or reapply local p
 /gsd-update --next                  # Install from the @next RC dist-tag
 ```
 
+**Recovering your own files.** The update protects two different buckets, and
+they recover differently:
+
+| Bucket | What it holds | How it comes back |
+|---|---|---|
+| `gsd-local-patches/` | GSD-shipped files **you modified** | `/gsd-update --reapply` (three-way merge) |
+| `gsd-user-files-backup/` | Files **you added** inside GSD-managed directories | The update offers a restore before it finishes |
+
+When the backup is non-empty, the update lists what it saved, flags anything
+that may no longer be compatible with the release just installed, and asks
+whether to restore. Declining leaves the backup untouched — it is never
+deleted — so you can restore later with
+`gsd-tools restore-custom-files --config-dir <config-dir> --apply`.
+
 ---
 
 ## Code Quality Commands

@@ -1775,6 +1775,349 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           process.stdout.write(JSON.stringify(out, null, 2));
   }
 
+  // ─── restore-custom-files (#1854) ───────────────────────────────────────────
+  // The counterpart to detect-custom-files. `backup_custom_files` copies
+  // user-added files into <config-dir>/gsd-user-files-backup/ before the
+  // clean-install wipe; until #1854 nothing ever read them back — the update
+  // workflow just printed "Restore them after the update if needed" and moved
+  // on. (`/gsd:update --reapply` covers the OTHER bucket: shipped files the
+  // user MODIFIED, kept in gsd-local-patches/.)
+  //
+  // Two modes, both emitting the same JSON report:
+  //   plan (default)  — walk the backup, run the compatibility pass, write nothing
+  //   --apply         — same, then copy the eligible entries back
+  //
+  // Invariants: the backup is never deleted; a shipped file is never clobbered;
+  // an existing differing file is never clobbered; one failed entry never
+  // aborts the rest; nothing is written outside the config dir.
+  const RESTORE_OUTCOME = Object.freeze({
+    ELIGIBLE: 'eligible',
+    RESTORED: 'restored',
+    SKIPPED_DESTINATION_MANAGED: 'skipped_destination_managed',
+    SKIPPED_DESTINATION_EXISTS: 'skipped_destination_exists',
+    SKIPPED_COPY_FAILED: 'skipped_copy_failed',
+    SKIPPED_UNSAFE_PATH: 'skipped_unsafe_path',
+  });
+
+  const RESTORE_WARNING = Object.freeze({
+    DESTINATION_MANAGED: 'destination_managed',
+    DESTINATION_EXISTS: 'destination_exists',
+    MISSING_REFERENCED_PATH: 'missing_referenced_path',
+    MISSING_REFERENCED_COMMAND: 'missing_referenced_command',
+    FRONTMATTER_MISSING_FIELD: 'frontmatter_missing_field',
+    WRITE_FAILED: 'write_failed',
+  });
+
+  // Compatibility scanning reads backed-up files whole. Cap the read so a
+  // stray large artifact in the backup cannot balloon memory; oversized files
+  // still restore, they just skip the (advisory) content scan.
+  const RESTORE_SCAN_MAX_BYTES = 1024 * 1024;
+  const RESTORE_BACKUP_DIR_NAME = 'gsd-user-files-backup';
+
+  // Referenced shipped paths (`@gsd-core/workflows/foo.md`) and slash commands
+  // (`/gsd:plan-phase`) are the two references a custom skill most commonly
+  // makes into GSD itself, and the two that a release most commonly renames.
+  const RESTORE_GSD_PATH_RE = /gsd-core\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)*\.(?:md|cjs|js|json|sh)/g;
+  const RESTORE_SLASH_COMMAND_RE = /\/gsd:[a-z0-9][a-z0-9-]*/g;
+
+  /**
+   * Walk the backup tree, refusing to follow symlinks. Returns entries in
+   * stable sorted order; `unsafe` marks a link we saw but will not traverse
+   * or copy (reported for auditability rather than silently dropped).
+   */
+  function collectBackupEntries(dir, baseDir, out) {
+    let dirents;
+    try {
+      dirents = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return out;
+    }
+    for (const entry of dirents.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+      const fullPath = path.join(dir, entry.name);
+      // Path separators are normalized unconditionally: backslash-shaped
+      // relative paths reach Linux too (backups copied between machines).
+      const relPath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+      if (entry.isSymbolicLink()) {
+        out.push({ relPath, unsafe: true });
+        continue;
+      }
+      if (entry.isDirectory()) {
+        collectBackupEntries(fullPath, baseDir, out);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      out.push({ relPath, unsafe: false });
+    }
+    return out;
+  }
+
+  // Why these three checks rather than security.cjs's `validatePath`: that seam
+  // resolves symlinks with realpathSync and then tests containment, so a link
+  // whose target sits inside the config dir passes. For a restore that is still
+  // wrong — writing through any link overwrites whatever it points at instead
+  // of materializing a regular file at the backed-up path. These checks reject
+  // links outright, which is strictly stricter than validatePath, not a
+  // reimplementation of it. Do not "simplify" this to validatePath.
+
+  /** True when `target` resolves strictly inside `root`. */
+  function isInsideDir(root, target) {
+    const rel = path.relative(path.resolve(root), path.resolve(target));
+    return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+  }
+
+  /**
+   * True when `target` itself exists and is a symlink. `fs.existsSync` and
+   * `copyFileSync` both FOLLOW links, so a symlinked destination would let a
+   * restore write through to the link's target — outside the config dir —
+   * even though every ancestor is a real directory.
+   */
+  function isSymlinkPath(target) {
+    try {
+      return fs.lstatSync(target).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * True when the deepest already-existing ancestor of `target` is a symlink.
+   * A symlinked parent directory would let a copy land outside the config dir
+   * even though the joined path looks contained.
+   */
+  function hasSymlinkedAncestor(root, target) {
+    let cursor = path.dirname(path.resolve(target));
+    const stop = path.resolve(root);
+    while (cursor.length >= stop.length && cursor.startsWith(stop)) {
+      let st;
+      try {
+        st = fs.lstatSync(cursor);
+      } catch {
+        cursor = path.dirname(cursor);
+        if (cursor === stop) return false;
+        continue;
+      }
+      if (st.isSymbolicLink()) return true;
+      if (cursor === stop) return false;
+      cursor = path.dirname(cursor);
+    }
+    return false;
+  }
+
+  /**
+   * Best-effort compatibility pass of one backed-up file against the NEWLY
+   * installed release. Every finding is advisory — a warning never blocks a
+   * restore, it just travels with the entry into the report.
+   */
+  function scanRestoreCompatibility(srcPath, relPath, configDir) {
+    const warnings = [];
+    let size = 0;
+    try {
+      size = fs.statSync(srcPath).size;
+    } catch {
+      return warnings;
+    }
+    if (size > RESTORE_SCAN_MAX_BYTES) return warnings;
+
+    let content;
+    try {
+      content = fs.readFileSync(srcPath, 'utf8');
+    } catch {
+      return warnings;
+    }
+
+    const missingPaths = new Set();
+    for (const match of content.match(RESTORE_GSD_PATH_RE) || []) {
+      if (!fs.existsSync(path.join(configDir, match))) missingPaths.add(match);
+    }
+    for (const missing of missingPaths) {
+      warnings.push({
+        code: RESTORE_WARNING.MISSING_REFERENCED_PATH,
+        detail: `references ${missing}, which the installed release does not ship`,
+      });
+    }
+
+    const missingCommands = new Set();
+    for (const match of content.match(RESTORE_SLASH_COMMAND_RE) || []) {
+      const verb = match.slice('/gsd:'.length);
+      if (!fs.existsSync(path.join(configDir, 'commands', 'gsd', `${verb}.md`))) {
+        missingCommands.add(match);
+      }
+    }
+    for (const missing of missingCommands) {
+      warnings.push({
+        code: RESTORE_WARNING.MISSING_REFERENCED_COMMAND,
+        detail: `references ${missing}, which the installed release does not provide`,
+      });
+    }
+
+    // Skills and agents/commands are frontmatter-driven surfaces: a file the
+    // runtime cannot parse is restored-but-dead, which is worth saying out loud.
+    const base = relPath.split('/').pop();
+    const isFrontmatterSurface = base === 'SKILL.md'
+      || relPath.startsWith('agents/')
+      || relPath.startsWith('commands/');
+    if (isFrontmatterSurface) {
+      const block = /^---\r?\n([\s\S]*?)\r?\n---/.exec(content);
+      const missingFields = [];
+      if (!block) {
+        missingFields.push('name', 'description');
+      } else {
+        if (!/^name:\s*\S/m.test(block[1])) missingFields.push('name');
+        if (!/^description:\s*\S/m.test(block[1])) missingFields.push('description');
+      }
+      if (missingFields.length > 0) {
+        warnings.push({
+          code: RESTORE_WARNING.FRONTMATTER_MISSING_FIELD,
+          detail: `frontmatter is missing required field(s): ${missingFields.join(', ')}`,
+        });
+      }
+    }
+
+    return warnings;
+  }
+
+  function routeRestoreCustomFiles({ args, error }) {
+    // Last-wins so a duplicated flag resolves rather than erroring, matching
+    // the rest of the gsd-tools flag surface.
+    let configDir = null;
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] !== '--config-dir') continue;
+      configDir = args[i + 1] === undefined ? null : args[i + 1];
+    }
+    const apply = args.includes('--apply');
+
+    if (configDir === null || configDir.trim() === '' || configDir.startsWith('--')) {
+      error('Usage: gsd-tools restore-custom-files --config-dir <path> [--apply]', ERROR_REASON.USAGE);
+    }
+    const resolvedConfigDir = path.resolve(configDir);
+    if (!fs.existsSync(resolvedConfigDir)) {
+      error(`Config directory not found: ${resolvedConfigDir}`, ERROR_REASON.USAGE);
+    }
+
+    // lstat, not stat: a symlinked backup root would let the walk read files
+    // from anywhere on disk and present them as the user's own backup.
+    const backupDir = path.join(resolvedConfigDir, RESTORE_BACKUP_DIR_NAME);
+    let backupFound = false;
+    try {
+      backupFound = fs.lstatSync(backupDir).isDirectory();
+    } catch {
+      backupFound = false;
+    }
+
+    // The manifest describes what the NEW release ships. Without it the
+    // destination-managed check has no source of truth — degrade to restoring
+    // without that check rather than refusing to restore the user's own data.
+    let manifestKeys = new Set();
+    let manifestFound = false;
+    const manifestPath = path.join(resolvedConfigDir, 'gsd-file-manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        // Shape, not just type (ADR-227): `files` must be a plain object for
+        // its keys to mean "paths this release ships". An array or a scalar
+        // yields numeric-index keys that silently match nothing, which would
+        // report a usable manifest while the managed-path check is dead.
+        const files = manifest && manifest.files;
+        const isPlainObject = typeof files === 'object'
+          && files !== null
+          && !Array.isArray(files);
+        if (isPlainObject) {
+          manifestKeys = new Set(Object.keys(files));
+          manifestFound = true;
+        }
+      } catch {
+        manifestFound = false;
+      }
+    }
+
+    const entries = [];
+    for (const found of backupFound ? collectBackupEntries(backupDir, backupDir, []) : []) {
+      const { relPath } = found;
+      const srcPath = path.join(backupDir, relPath);
+      const destPath = path.join(resolvedConfigDir, relPath);
+
+      if (found.unsafe
+        || !isInsideDir(resolvedConfigDir, destPath)
+        || isSymlinkPath(destPath)
+        || hasSymlinkedAncestor(resolvedConfigDir, destPath)) {
+        entries.push({
+          path: relPath,
+          outcome: RESTORE_OUTCOME.SKIPPED_UNSAFE_PATH,
+          warnings: [],
+        });
+        continue;
+      }
+
+      const warnings = scanRestoreCompatibility(srcPath, relPath, resolvedConfigDir);
+
+      if (manifestFound && manifestKeys.has(relPath)) {
+        warnings.unshift({
+          code: RESTORE_WARNING.DESTINATION_MANAGED,
+          detail: 'the installed release now ships this path — restoring would overwrite it',
+        });
+        entries.push({ path: relPath, outcome: RESTORE_OUTCOME.SKIPPED_DESTINATION_MANAGED, warnings });
+        continue;
+      }
+
+      // An identical destination is a no-op restore, not a conflict: re-running
+      // the restore after a successful one must stay quiet and idempotent.
+      let destDiffers = false;
+      if (fs.existsSync(destPath)) {
+        try {
+          destDiffers = !fs.readFileSync(destPath).equals(fs.readFileSync(srcPath));
+        } catch {
+          destDiffers = true;
+        }
+      }
+      if (destDiffers) {
+        warnings.unshift({
+          code: RESTORE_WARNING.DESTINATION_EXISTS,
+          detail: 'a different file already exists at this path — restoring would overwrite it',
+        });
+        entries.push({ path: relPath, outcome: RESTORE_OUTCOME.SKIPPED_DESTINATION_EXISTS, warnings });
+        continue;
+      }
+
+      if (!apply) {
+        entries.push({ path: relPath, outcome: RESTORE_OUTCOME.ELIGIBLE, warnings });
+        continue;
+      }
+
+      try {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        fs.copyFileSync(srcPath, destPath);
+        entries.push({ path: relPath, outcome: RESTORE_OUTCOME.RESTORED, warnings });
+      } catch (err) {
+        const code = err && err.code ? String(err.code) : 'ERROR';
+        entries.push({
+          path: relPath,
+          outcome: RESTORE_OUTCOME.SKIPPED_COPY_FAILED,
+          warnings: warnings.concat([{
+            code: RESTORE_WARNING.WRITE_FAILED,
+            detail: `could not write the destination [${code}] — the backup copy is unchanged`,
+          }]),
+        });
+      }
+    }
+
+    const restoredCount = entries.filter(e => e.outcome === RESTORE_OUTCOME.RESTORED).length;
+    const eligibleCount = entries.filter(
+      e => e.outcome === RESTORE_OUTCOME.ELIGIBLE || e.outcome === RESTORE_OUTCOME.RESTORED,
+    ).length;
+
+    process.stdout.write(JSON.stringify({
+      backup_dir: backupDir,
+      backup_found: backupFound,
+      manifest_found: manifestFound,
+      applied: apply,
+      entries,
+      eligible_count: eligibleCount,
+      restored_count: restoredCount,
+      skipped_count: entries.length - eligibleCount,
+      warning_count: entries.reduce((sum, e) => sum + e.warnings.length, 0),
+    }, null, 2));
+  }
+
   function routeFromGsd2({ args, cwd, raw, error }) {
     const gsd2Import = require('./lib/gsd2-import.cjs');
           gsd2Import.cmdFromGsd2(args.slice(1), cwd, raw);
@@ -2243,6 +2586,7 @@ const HOST_COMMAND_ROUTERS = {
     'learnings': routeLearnings,
     'teams-status': routeTeamsStatus,
     'detect-custom-files': routeDetectCustomFiles,
+    'restore-custom-files': routeRestoreCustomFiles,
     'from-gsd2': routeFromGsd2,
     'prompt-budget': routePromptBudget,
     'update-context': routeUpdateContext,
@@ -2566,7 +2910,7 @@ async function main() {
     'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
     'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
     'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
-    'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, roadmap, scaffold, smart-entry, state, ' +
+    'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
     'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
     'Global flags:\n' +
     '  --raw              Emit raw output without post-processing\n' +
@@ -2614,6 +2958,9 @@ async function main() {
   const SKIP_ROOT_RESOLUTION = new Set([
     'generate-slug', 'current-timestamp', 'verify-path-exists',
     'verify-summary', 'template', 'frontmatter', 'detect-custom-files',
+    // #1854: restore-custom-files operates on a runtime config dir passed
+    // explicitly via --config-dir; it never reads .planning/.
+    'restore-custom-files',
     'worktree', 'prompt-budget',
     'research-store', 'research-plan', 'package-legitimacy', 'classify-confidence',
     'user-story', // pure string validation — no .planning/ access needed

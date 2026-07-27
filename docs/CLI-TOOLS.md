@@ -568,9 +568,55 @@ node gsd-tools.cjs commit <message> [--files f1 f2] [--amend] [--no-verify] [--r
 > `--no-verify`: Skips pre-commit hooks. Used by parallel executor agents during wave-based execution to avoid build lock contention (e.g., cargo lock fights in Rust projects). The orchestrator runs hooks once after each wave completes. Do not use `--no-verify` during sequential execution — let hooks run normally.
 > `--files <paths>` **staging behaviour**: by default, `--files` runs `git add -- <path>` for each named file before committing. This overwrites any per-hunk staging set up via `git add -p`. Pass `--respect-staged` to skip the `git add` step and commit only what is already in the index within the requested pathspec. If nothing is staged within that scope, the command returns `{ committed: false, reason: 'nothing staged' }` without error. The trailing `-- <paths>` pathspec on the commit is applied under both modes, so files staged outside the `--files` scope are never included (#3061 invariant).
 
+```bash
 # Web search (requires Brave API key)
 node gsd-tools.cjs websearch <query> [--limit N] [--freshness day|week|month]
 ```
+
+---
+
+## Update Backup and Restore
+
+The two halves of `/gsd:update`'s user-added-file protection. `detect-custom-files`
+lists files that exist inside GSD-managed directories but are absent from
+`gsd-file-manifest.json` — the update workflow copies those into
+`gsd-user-files-backup/` before the clean-install wipe. `restore-custom-files`
+puts them back afterwards.
+
+```bash
+# List user-added files the installer would destroy (JSON)
+node gsd-tools.cjs detect-custom-files --config-dir <config-dir>
+
+# Plan a restore — reports what would be restored, writes nothing
+node gsd-tools.cjs restore-custom-files --config-dir <config-dir>
+
+# Restore the eligible entries
+node gsd-tools.cjs restore-custom-files --config-dir <config-dir> --apply
+```
+
+`restore-custom-files` emits one entry per backed-up file:
+
+| Field | Meaning |
+|---|---|
+| `path` | Path relative to the config dir — where the file came from and goes back to |
+| `outcome` | `eligible` (plan mode) · `restored` · `skipped_destination_managed` · `skipped_destination_exists` · `skipped_copy_failed` · `skipped_unsafe_path` |
+| `warnings` | Advisory `{code, detail}` findings from the compatibility pass; never blocks a restore |
+
+Warning codes: `destination_managed`, `destination_exists`,
+`missing_referenced_path`, `missing_referenced_command`,
+`frontmatter_missing_field`, `write_failed`.
+
+The compatibility pass runs against the **newly installed** release, so it
+catches a backed-up skill that `@`-references a workflow the new version
+retired, invokes a `/gsd:` command that no longer exists, or is missing the
+`name` / `description` frontmatter its runtime needs.
+
+Three things the restore never does: it never deletes the backup, it never
+overwrites a path the new release ships (`skipped_destination_managed`), and it
+never overwrites a different file already on disk
+(`skipped_destination_exists`). Symlinked backup entries are skipped outright
+rather than followed (`skipped_unsafe_path`). A single unwritable entry is
+reported and the remaining entries still restore.
 
 ---
 

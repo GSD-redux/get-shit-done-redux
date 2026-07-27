@@ -5502,7 +5502,16 @@ function runInstall(cwd, args) {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     env,
-    timeout: 60000,
+    // 120s, not 60s. A full install copies and converts the whole shipped
+    // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
+    // measures 13-30s on an idle runner — under 2x headroom at the old cap.
+    // On a loaded bench that margin is not enough: the Cursor suite's before
+    // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
+    // lane passed the SAME commit in 12.7s, cancelling three child tests as
+    // collateral. The cap also shrinks in real terms every time a file joins
+    // the payload. Matches the 120s already used for the heavy install case
+    // below. Aligned with the other runInstall helper in this file.
+    timeout: 120000,
   });
 }
 
@@ -9517,7 +9526,16 @@ function runInstall(cwd, args) {
     encoding: 'utf-8',
     stdio: ['pipe', 'pipe', 'pipe'],
     env,
-    timeout: 60000,
+    // 120s, not 60s. A full install copies and converts the whole shipped
+    // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
+    // measures 13-30s on an idle runner — under 2x headroom at the old cap.
+    // On a loaded bench that margin is not enough: the Cursor suite's before
+    // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
+    // lane passed the SAME commit in 12.7s, cancelling three child tests as
+    // collateral. The cap also shrinks in real terms every time a file joins
+    // the payload. Matches the 120s already used for the heavy install case
+    // below. Aligned with the other runInstall helper in this file.
+    timeout: 120000,
   });
 }
 
