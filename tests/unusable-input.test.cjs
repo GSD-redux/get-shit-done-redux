@@ -153,6 +153,41 @@ describe('extractFrontmatter — stays silent on everything that is not corrupti
     assert.strictEqual(emitted, 0, 'a labelled preamble above prose is not a truncated file');
   });
 
+  // The shape check decides whether an unterminated region reads as an interrupted frontmatter
+  // block or as a document that merely opened with a rule. These four pin each half of that
+  // decision independently; without them the predicate's individual branches are unconstrained
+  // and a mutation that drops any one of them still passes.
+  test('a blank line inside an interrupted block does not disqualify it', () => {
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder('---\nphase: 01\n\nplan: 02\n', '/u/shape-blank-line.md');
+    assert.strictEqual(emitted, 1, 'blank lines are skipped, not treated as non-frontmatter');
+  });
+
+  test('an unindented list item counts as frontmatter-shaped', () => {
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder('---\nphase: 01\nmust_haves:\n- alpha\n', '/u/shape-flat-list.md');
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('an indented folded-scalar continuation counts as frontmatter-shaped', () => {
+    // This line is neither a key nor a list item, so it is the only case that exercises the
+    // indented-continuation branch on its own.
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder('---\nphase: 01\ndescription: >\n  folded text\n', '/u/shape-folded.md');
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('two keys followed by prose is NOT frontmatter-shaped', () => {
+    // The negative half: enough keys to clear the threshold, but the region goes on to prose,
+    // so it is a document opening with a rule rather than an interrupted write.
+    _resetUnusableInputWarningsForTests();
+    const [, emitted] = parseUnder(
+      '---\nphase: 01\nplan: 02\n\nOrdinary prose sentence here.\n',
+      '/u/shape-then-prose.md',
+    );
+    assert.strictEqual(emitted, 0, 'key count alone must not be sufficient');
+  });
+
   test('a truncated block whose values are nested lists is still reported', () => {
     // The shape check must not reject legitimate frontmatter: list items and indented
     // continuations are frontmatter-shaped too.
