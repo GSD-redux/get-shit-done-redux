@@ -177,26 +177,25 @@ test('#2568: every token substituted into a commit command is a declared session
   }
 });
 
-test('#2568: the commit block defines gsd_run in its own shell', () => {
-  // Shell state does not persist across tool invocations, and the Step 2 preamble is
-  // ~230 lines and an entire spawn-and-loop earlier. gsd-debugger.md redeclares the
-  // full preamble immediately before each of its own gsd_run call sites; the commit
-  // block must do the same or the call is "gsd_run: command not found".
+test('#2568: the commit call is covered by the single canonical preamble', () => {
+  // The repo invariant (tests/…B-agents…) is that each agent .md using gsd_run carries
+  // EXACTLY ONE canonical preamble, placed before the first gsd_run call — the runtime
+  // establishes it once. An earlier cut of this fix pasted a second preamble into the
+  // commit block on the theory that shell state does not persist; that broke the
+  // invariant and five suites with it. The correct property is coverage, not locality.
   const body = manager();
+  const preambles = body.match(/^\s*_GSD_SHIM_NAME=/gm) || [];
+  assert.equal(
+    preambles.length,
+    1,
+    `exactly one canonical gsd_run preamble per agent file, got ${preambles.length}`,
+  );
+  const preambleAt = body.search(/^\s*_GSD_SHIM_NAME=/m);
   const commitAt = body.indexOf('gsd_run query commit');
   assert.notEqual(commitAt, -1, 'precondition: the commit call exists');
-
-  const preambleBefore = body.lastIndexOf('_GSD_SHIM_NAME=', commitAt);
-  assert.notEqual(preambleBefore, -1, 'a gsd_run preamble must precede the commit call');
-
-  // It must be the SAME fenced block, not merely earlier in the file: no summary
-  // shape or spawn may intervene, which would mean a separate shell.
-  const between = body.slice(preambleBefore, commitAt);
-  assert.doesNotMatch(
-    between,
-    /^## /m,
-    'the preamble must be in the commit block itself — a step boundary between them ' +
-      'means a different shell invocation, where gsd_run is undefined',
+  assert.ok(
+    preambleAt < commitAt,
+    'the canonical preamble must precede the commit call that relies on gsd_run',
   );
 });
 
