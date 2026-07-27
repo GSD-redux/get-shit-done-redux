@@ -9107,3 +9107,105 @@ describe('bug-2866: stripStaleGsdHookBlocks handles end-of-file without trailing
 });
   });
 }
+
+// ---------------------------------------------------------------------------
+// #2540 review — property tests for the tools-contract parser.
+//
+// The oracle test above compares parseToolsContract against js-yaml over every
+// real agents/*.md. That is a strong regression guard but example-based: 34
+// fixed files reach only the shapes those files happen to use. This parser now
+// decides whether an agent is generated with a write-capable Codex sandbox, so
+// the security-relevant invariant — "a write tool anywhere in any shape is
+// detected" — is worth exploring across generated input.
+// ---------------------------------------------------------------------------
+describe('#2540 parseToolsContract — properties', () => {
+  const { parseToolsContract, toolsRequireWrite } = require(path.join(
+    __dirname, '..', 'gsd-core', 'bin', 'lib', 'agent-tools-contract.cjs',
+  ));
+
+  const WRITE = ['Write', 'Edit', 'NotebookEdit'];
+  const READ = ['Read', 'Glob', 'Grep', 'Bash', 'WebFetch', 'mcp__context7__query-docs'];
+  const anyTool = fc.constantFrom(...WRITE, ...READ);
+  // Non-empty, duplicate-free list so round-trip equality is well defined.
+  const toolList = fc
+    .uniqueArray(anyTool, { minLength: 1, maxLength: 8 })
+    .filter(a => a.length > 0);
+
+  // The three real YAML shapes the parser must treat identically.
+  const renderers = {
+    inline: tools => `---\nname: x\ntools: ${tools.join(', ')}\n---\nbody`,
+    block: tools => `---\nname: x\ntools:\n${tools.map(t => `  - ${t}`).join('\n')}\n---\nbody`,
+    flow: tools => `---\nname: x\ntools: [${tools.join(', ')}]\n---\nbody`,
+  };
+
+  for (const [shape, render] of Object.entries(renderers)) {
+    test(`round-trips every generated list in the ${shape} shape`, () => {
+      fc.assert(
+        fc.property(toolList, tools => {
+          assert.deepEqual(parseToolsContract(render(tools)), tools);
+        }),
+        { numRuns: 200 },
+      );
+    });
+
+    test(`detects a write tool in the ${shape} shape regardless of position`, () => {
+      fc.assert(
+        fc.property(
+          fc.uniqueArray(fc.constantFrom(...READ), { minLength: 0, maxLength: 5 }),
+          fc.constantFrom(...WRITE),
+          fc.nat(),
+          (reads, writeTool, at) => {
+            const tools = [...reads];
+            tools.splice(at % (tools.length + 1), 0, writeTool);
+            assert.equal(
+              toolsRequireWrite(parseToolsContract(render(tools))), true,
+              `${shape}: write tool ${writeTool} at index ${at % tools.length} must force workspace-write`,
+            );
+          },
+        ),
+        { numRuns: 200 },
+      );
+    });
+
+    test(`a read-only contract never claims write in the ${shape} shape`, () => {
+      fc.assert(
+        fc.property(
+          fc.uniqueArray(fc.constantFrom(...READ), { minLength: 1, maxLength: 6 }),
+          reads => {
+            assert.equal(toolsRequireWrite(parseToolsContract(render(reads))), false);
+          },
+        ),
+        { numRuns: 200 },
+      );
+    });
+  }
+
+  test('a trailing YAML comment never changes the parsed contract', () => {
+    fc.assert(
+      fc.property(toolList, fc.string(), (tools, comment) => {
+        const clean = comment.replace(/[\r\n]/g, ' ');
+        const withComment = `---\nname: x\ntools: ${tools.join(', ')}  # ${clean}\n---\nbody`;
+        assert.deepEqual(parseToolsContract(withComment), tools);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  test('never throws and always returns string[] on arbitrary input', () => {
+    fc.assert(
+      fc.property(fc.string(), src => {
+        const out = parseToolsContract(src);
+        assert.ok(Array.isArray(out), 'must return an array');
+        assert.ok(out.every(t => typeof t === 'string'), 'entries must be strings');
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  test('fail-closed: no contract yields no write requirement', () => {
+    for (const src of ['', '---\nname: x\n---\nbody', 'no frontmatter at all']) {
+      assert.deepEqual(parseToolsContract(src), []);
+      assert.equal(toolsRequireWrite(parseToolsContract(src)), false);
+    }
+  });
+});
