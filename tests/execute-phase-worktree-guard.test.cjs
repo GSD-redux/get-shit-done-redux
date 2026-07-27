@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
+const { cleanup } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -97,7 +98,7 @@ test('#1856: refusal names the stranded commits and the dirty tree', () => {
       'must give an integration command, not just "re-run from the orchestrator worktree"',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -111,7 +112,7 @@ test('#1856: the bare agent- namespace is handled identically', () => {
     assert.match(r.stderr, /agent-a1b2c3/);
     assert.match(r.stderr, /1\s+commit/i);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -133,7 +134,7 @@ test('#1856: a clean agent worktree still refuses, without a wall of empty secti
       'a clean tree must not be reported as dirty',
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -147,7 +148,7 @@ test('#1856: boundary — 1 and 2 commits ahead are both reported accurately', (
       assert.equal(r.status, 1);
       assert.match(r.stderr, new RegExp(`\\b${n}\\s+commit`, 'i'), `${n} ahead reported`);
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      cleanup(dir);
     }
   }
 });
@@ -159,7 +160,7 @@ test('#1856: does not fire on an ordinary orchestrator branch', () => {
     assert.equal(r.status, 0, `guard must not fire on a normal branch: ${r.stderr}`);
     assert.doesNotMatch(r.stderr, /refusing to execute waves/);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -172,7 +173,7 @@ test('#1856: does not fire on a branch that merely starts with "agent"', () => {
     const r = runGuard(dir);
     assert.equal(r.status, 0, `guard must not fire on agentic-refactor: ${r.stderr}`);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -188,7 +189,7 @@ test('#1856: does not fire on a legitimate feature worktree', () => {
     const r = runGuard(wt);
     assert.equal(r.status, 0, `a feature worktree must run: ${r.stderr}`);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -207,7 +208,7 @@ test('#1856: reporting degrades to the plain refusal when no base ref resolves',
     assert.equal(r.status, 1, 'still refuses with no resolvable base');
     assert.match(r.stderr, /refusing to execute waves/);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
 
@@ -221,6 +222,6 @@ test('#1856: detached HEAD does not crash the guard', () => {
     // branch, so the guard must pass through without erroring.
     assert.equal(r.status, 0, `detached HEAD must not crash the guard: ${r.stderr}`);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
   }
 });
