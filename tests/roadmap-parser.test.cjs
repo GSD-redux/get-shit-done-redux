@@ -2738,7 +2738,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     assert.strictEqual(emitted, 2, 'a second file must never be suppressed by the first');
   });
 
-  test('getMilestoneInfo never throws, whatever the read does', (t) => {
+  test('getMilestoneInfo does not throw when the read fails', (t) => {
     // ADR-1411 names this explicitly: src/state.cts removed a defensive try/catch
     // around getMilestoneInfo under the #2245 audit because it "never throws".
     // Introducing a throw here silently breaks that invariant.
@@ -2752,7 +2752,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
   });
 
-  test('getRoadmapPhaseInternal never throws, whatever the read does', (t) => {
+  test('getRoadmapPhaseInternal does not throw when the read fails', (t) => {
     _resetUnusableInputWarningsForTests();
     const dir = project(t, HEALTHY);
     failReads(t, () => true, eacces());
@@ -2761,6 +2761,32 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
       assert.doesNotThrow(() => { result = getRoadmapPhaseInternal(dir, '1'); });
     });
     assert.strictEqual(result, null);
+  });
+
+  test('neither lookup throws when the planning path itself cannot be resolved', (t) => {
+    // The regression this pair exists to catch. planningDir throws a plain Error for an
+    // invalid GSD_WORKSTREAM segment. Resolving it OUTSIDE the try -- which is what naming
+    // the file for the diagnostic naively required -- let that escape uncaught, crashing
+    // every caller of getMilestoneInfo for a workstream name containing a slash, and
+    // breaking the invariant #2245 relies on. The earlier 'does not throw' cases inject
+    // only through platformReadSync and so could never have caught it.
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    const previous = process.env.GSD_WORKSTREAM;
+    t.after(() => {
+      if (previous === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = previous;
+    });
+    process.env.GSD_WORKSTREAM = 'evil/../thing';
+    let info, phase;
+    const emitted = emissionsDuring(() => {
+      assert.doesNotThrow(() => { info = getMilestoneInfo(dir); });
+      assert.doesNotThrow(() => { phase = getRoadmapPhaseInternal(dir, '1'); });
+    });
+    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+    assert.strictEqual(phase, null);
+    assert.strictEqual(emitted, 0,
+      'the path never resolved, so there is no file to name');
   });
 
   test('the roadmap reason is present in the frozen vocabulary', () => {

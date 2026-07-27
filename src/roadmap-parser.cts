@@ -326,10 +326,18 @@ function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseRe
   if (!phaseNum) return null;
   const normalizedPhase = stripProjectCodePrefix(phaseNum);
   if (/^999(?:\.|$)/.test(normalizedPhase)) return null;
-  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
-  if (!fs.existsSync(roadmapPath)) return null;
+  // Resolved INSIDE the try for the same reason as getMilestoneInfo below: planningDir
+  // throws a plain Error for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and resolving
+  // it outside let that escape uncaught, crashing every caller for a malformed workstream
+  // name. ADR-227 is explicit that throwing breaks pipeline continuity, and this read path
+  // has no reason to be the exception -- it already degrades to null for every other
+  // failure. Absence still returns null before any diagnostic, and when the path never
+  // resolved there is nothing to name.
+  let roadmapPath: string | undefined;
 
   try {
+    roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+    if (!fs.existsSync(roadmapPath)) return null;
     const roadmapRaw = platformReadSync(roadmapPath);
     if (roadmapRaw === null) throw new Error('missing');
     const content = extractCurrentMilestone(roadmapRaw, cwd);
@@ -358,7 +366,7 @@ function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseRe
   } catch (err) {
     // Absence already returned above via existsSync; anything caught here is a read fault
     // or the synthetic missing-marker. The null is preserved exactly either way.
-    reportUnreadableRoadmap(err, roadmapPath);
+    if (roadmapPath !== undefined) reportUnreadableRoadmap(err, roadmapPath);
     return null;
   }
 }
@@ -403,9 +411,15 @@ function stripLeadingDelimiter(s: string): string {
 }
 
 function getMilestoneInfo(cwd: string): MilestoneInfo {
-  // Hoisted so the catch can name the file it failed on (#1881).
-  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+  // Declared here but RESOLVED INSIDE the try, so the catch can name the file without
+  // moving planningDir() out of the protected region. planningDir throws a plain Error
+  // for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and hoisting the call let that
+  // escape uncaught — breaking the invariant #2245 relies on, that this function never
+  // throws. When the path never resolved there is nothing to name, so the diagnostic is
+  // skipped and the default is returned exactly as before.
+  let roadmapPath: string | undefined;
   try {
+    roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
     const roadmap = platformReadSync(roadmapPath);
     if (roadmap === null) throw new Error('missing');
 
@@ -485,7 +499,7 @@ function getMilestoneInfo(cwd: string): MilestoneInfo {
     // synthetic Error with no errno. Only a real read fault is reported; the populated
     // default is returned unchanged either way, and a plausible-looking default needs the
     // diagnostic more than an empty sentinel does, not less (ADR-1411).
-    reportUnreadableRoadmap(err, roadmapPath);
+    if (roadmapPath !== undefined) reportUnreadableRoadmap(err, roadmapPath);
     return { version: 'v1.0', name: 'milestone' };
   }
 }
