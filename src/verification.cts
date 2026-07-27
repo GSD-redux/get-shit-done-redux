@@ -38,6 +38,7 @@ import frontmatterMod = require('./frontmatter.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import scanPhasePlans = require('./plan-scan.cjs');
 import { execGit } from './shell-command-projection.cjs';
+import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 
 const { output, error } = io;
 const { extractPhaseToken } = phaseId;
@@ -70,6 +71,12 @@ interface VerificationRoute {
  *
  * For 'gaps_found', next_command is built at call time in readVerificationStatus
  * by substituting the phase number — it is NOT stored as a function in the table.
+ *
+ * #2617: `next_command` here holds a BARE command name (`execute-phase`), never a
+ * prefixed one. Every return path projects it through `formatGsdSlash` with the
+ * caller's runtime, so Codex sees `$gsd-execute-phase` and slash-hyphen runtimes
+ * see `/gsd-execute-phase`. Storing a prefixed literal is what leaked the
+ * hard-coded (and deprecated) `/gsd:` colon form to every runtime.
  */
 const VERIFICATION_ROUTING_TABLE: Record<string, VerificationRoute> = {
   passed: {
@@ -98,16 +105,30 @@ const VERIFICATION_ROUTING_TABLE: Record<string, VerificationRoute> = {
   missing: {
     status: 'missing',
     next_action: 'No verification report found — the verify step never completed. Re-run execute-phase.',
-    next_command: '/gsd:execute-phase',
+    next_command: 'execute-phase',
   },
   // INTERNAL SENTINEL: constructed when the file has a status value not in
   // VERIFIER_STATUSES. Never emitted by the verifier.
   unknown: {
     status: 'unknown',
     next_action: '', // filled in dynamically with the raw value
-    next_command: '/gsd:execute-phase',
+    next_command: 'execute-phase',
   },
 };
+
+/**
+ * Project a BARE command name (plus optional argument tail) into the surface the
+ * given runtime actually installs (#2617).
+ *
+ * `formatGsdSlash` owns the per-runtime shape (`$gsd-<cmd>` for shell-var
+ * runtimes like Codex, `/gsd-<cmd>` otherwise) and is idempotent, so passing an
+ * already-prefixed string is safe. An empty command stays empty — "no next
+ * command" must not become a bare prefix.
+ */
+function projectNextCommand(bare: string, runtime: string, tail = ''): string {
+  if (!bare) return '';
+  return `${formatGsdSlash(bare, runtime) as string}${tail}`;
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -235,12 +256,12 @@ function defaultPhaseCleanCommitTimesMs(
  * Used for two early-return paths: no *-VERIFICATION.md file found, and
  * file present but no parseable frontmatter status.
  */
-function missingResult(): VerificationStatusResult {
+function missingResult(runtime: string): VerificationStatusResult {
   const route = VERIFICATION_ROUTING_TABLE['missing'];
   return {
     status: route.status,
     next_action: route.next_action,
-    next_command: route.next_command,
+    next_command: projectNextCommand(route.next_command, runtime),
   };
 }
 
@@ -250,6 +271,13 @@ interface ReadVerificationStatusOptions {
   fs?: FsLike;
   /** Injectable per-phase clean-commit-time resolver for the staleness clock (#2348). */
   phaseCleanCommitTimesMs?: PhaseCleanCommitTimesFn;
+  /**
+   * Runtime whose command surface `next_command` is projected into (#2617).
+   * Callers that have a cwd should pass `resolveRuntime(cwd)`. Defaults to
+   * `'claude'`, which yields the canonical `/gsd-<cmd>` hyphen form — never the
+   * deprecated `/gsd:` colon form this field used to hard-code.
+   */
+  runtime?: string;
 }
 
 interface VerificationStatusResult {
@@ -321,6 +349,8 @@ function findStaleVerificationSummary(
  *
  * @param phaseDir - Absolute path to the phase directory.
  * @param opts     - Options. `opts.fs` allows test injection (defaults to node:fs).
+ *                   `opts.runtime` selects the command surface `next_command` is
+ *                   projected into (#2617).
  */
 function readVerificationStatus(
   phaseDir: string,
@@ -329,6 +359,7 @@ function readVerificationStatus(
   const fsImpl: FsLike = opts.fs ?? fs;
   const phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn =
     opts.phaseCleanCommitTimesMs ?? defaultPhaseCleanCommitTimesMs;
+  const runtime = opts.runtime ?? 'claude';
 
   // Phase token for the gaps_found command
   const baseName = path.basename(phaseDir);
@@ -347,7 +378,7 @@ function readVerificationStatus(
   }
 
   if (!verificationFile) {
-    return missingResult();
+    return missingResult(runtime);
   }
 
   // 2. Read and parse frontmatter using the shared parser.
@@ -369,7 +400,7 @@ function readVerificationStatus(
   }
 
   if (!rawStatus) {
-    return missingResult();
+    return missingResult(runtime);
   }
 
   // gaps_found takes priority over stale — gap closure is the correct next
@@ -379,7 +410,7 @@ function readVerificationStatus(
     return {
       status: entry.status,
       next_action: entry.next_action,
-      next_command: `/gsd:plan-phase ${phaseNumber} --gaps`,
+      next_command: projectNextCommand('plan-phase', runtime, ` ${phaseNumber} --gaps`),
     };
   }
 
@@ -389,7 +420,7 @@ function readVerificationStatus(
     return {
       status: entry.status,
       next_action: entry.next_action,
-      next_command: `/gsd:verify-work ${phaseNumber}`,
+      next_command: projectNextCommand('verify-work', runtime, ` ${phaseNumber}`),
     };
   }
 
@@ -406,7 +437,7 @@ function readVerificationStatus(
     return {
       status: entry.status,
       next_action: entry.next_action,
-      next_command: entry.next_command,
+      next_command: projectNextCommand(entry.next_command, runtime),
     };
   }
 
@@ -415,7 +446,7 @@ function readVerificationStatus(
   return {
     status: unknownRoute.status,
     next_action: `Unexpected verification status '${rawStatus}'. Re-run execute-phase verification.`,
-    next_command: unknownRoute.next_command,
+    next_command: projectNextCommand(unknownRoute.next_command, runtime),
   };
 }
 
@@ -433,7 +464,7 @@ function cmdVerificationStatus(cwd: string, phaseDirArg: string | undefined, raw
     return;
   }
   const phaseDir = path.resolve(cwd, phaseDirArg);
-  const result = readVerificationStatus(phaseDir);
+  const result = readVerificationStatus(phaseDir, { runtime: resolveRuntime(cwd) });
   output(result, raw);
 }
 

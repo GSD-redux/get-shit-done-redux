@@ -1760,7 +1760,10 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let isLastPhase = true;
 
   const verificationBlocked = withPlanningLock(cwd, () => {
-    const verificationStatus = readVerificationStatus(phaseFullDir);
+    // #2617: pass the project's runtime so the blocked-completion error below
+    // suggests the command surface this runtime actually installs
+    // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
+    const verificationStatus = readVerificationStatus(phaseFullDir, { runtime: resolveRuntime(cwd) });
     if (verificationStatus.status !== 'passed') {
       return verificationStatus;
     }
