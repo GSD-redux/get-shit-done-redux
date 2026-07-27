@@ -2174,9 +2174,9 @@ const capabilities = {
           "namedDispatch": true,
           "nested": "undocumented",
           "maxDepth": "undocumented",
-          "background": true,
+          "background": false,
           "subagentToolkit": "full",
-          "backgroundDispatch": true,
+          "backgroundDispatch": false,
           "isolation": "orchestrator-worktree"
         },
         "modelMode": "active",
@@ -5411,9 +5411,9 @@ const runtimes = {
           "namedDispatch": true,
           "nested": "undocumented",
           "maxDepth": "undocumented",
-          "background": true,
+          "background": false,
           "subagentToolkit": "full",
-          "backgroundDispatch": true,
+          "backgroundDispatch": false,
           "isolation": "orchestrator-worktree"
         },
         "modelMode": "active",
