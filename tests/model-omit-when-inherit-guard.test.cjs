@@ -52,8 +52,8 @@ test('#2517: every workflow that dispatches model= documents omitting it on inhe
 
   // Non-vacuity: an empty or truncated derivation is not a passing guard.
   assert.ok(
-    dispatching.length >= 17,
-    `expected >=17 model=-dispatching workflows, derived ${dispatching.length} — ` +
+    dispatching.length >= 19,
+    `expected >=19 model=-dispatching workflows, derived ${dispatching.length} — ` +
       'the derivation itself is broken, so this guard proves nothing.',
   );
 
