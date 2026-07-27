@@ -166,7 +166,12 @@ function warnUnusableInput({ reason, source, content }: WarnUnusableInputArgs): 
   if (typeof content === 'string' && identity.startsWith('p\u0000')) {
     keys.push(`${sourceKey(undefined, content)}\u0000${reason}`);
   }
-  if (keys.some((k) => _warnedUnusableInputs.has(k))) return false;
+  // Check ONLY the key matching what this caller actually knows, but record every key the
+  // input could later be identified by. Checking both suppressed a genuine second failure
+  // in a DIFFERENT file whose truncated content happened to be byte-identical -- the exact
+  // over-coarse keying ADR-1411 forbids. Recording both still silences the redundant
+  // path-less re-parse of a file already reported by name.
+  if (_warnedUnusableInputs.has(keys[0])) return false;
   for (const k of keys) _warnedUnusableInputs.add(k);
 
   try {
