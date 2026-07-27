@@ -150,11 +150,15 @@ PROJECT_PATH="$(dirname "${quick_dir}")/PROJECT.md"
 ```bash
 USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
 RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null || echo "claude")
-if [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]; then
-  echo "FATAL: git worktree isolation (isolation=\"worktree\") is unsupported on runtime '$RUNTIME' — it would run executor agents unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
-  exit 1
-fi
 ```
+
+**Resolve isolation now (#2584/#2652).** Read @gsd-core/references/dispatch-isolation-gate.md
+and run its `Resolve ISOLATION`, `Single-agent dispatch sites`, and `Resolve the harness flag`
+blocks in order; they set `ISOLATION`/`HARNESS_FLAG` via `query dispatch-isolation`.
+`ISOLATION` — not `RUNTIME` — gates every worktree decision below. Substitute `{harnessFlag}`
+in Step 6's `Agent()` with `$HARNESS_FLAG`+comma when `ISOLATION = "harness-worktree"`, else
+empty. `{harnessFlag}`
+is a template placeholder, not a shell variable.
 
 If `USE_WORKTREES` is not `"false"`, run a startup orphan sweep before spawning any executors. This reaps locked worktrees whose lock-owner process is dead, whose branch is merged into the default branch, and whose lock file mtime is older than 5 minutes. Running it at startup prevents accumulation of orphaned worktrees from prior sessions that exited without cleanup (#3707).
 
@@ -703,13 +707,14 @@ halts with a base-mismatch fatal — potentially many commits behind, not just o
 immediately before capturing `EXPECTED_BASE` so it reflects the most current local state.
 
 ```bash
-if [ "$RUNTIME" = "claude" ] && [ "${USE_WORKTREES:-true}" != "false" ]; then
+if [ "$ISOLATION" = "harness-worktree" ] && [ "${USE_WORKTREES:-true}" != "false" ]; then
   _QUICK_SHOULD_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
   if [ "$_QUICK_SHOULD_DEGRADE" = "true" ]; then
     _QUICK_DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
     [ -n "$_QUICK_DEGRADE_MSG" ] && printf '%s\n' "$_QUICK_DEGRADE_MSG" >&2
     echo "⚠ [#1941] Worktree fork base diverged from orchestrator HEAD — auto-degrading to sequential mode for this quick task to avoid a base-mismatch halt." >&2
     USE_WORKTREES=false
+    ISOLATION=none
   fi
 fi
 ```
@@ -807,7 +812,7 @@ SUMMARY.md and stop — the user must rerun with worktrees disabled.
 ",
   subagent_type="gsd-executor",
   model="{executor_model}",
-  ${USE_WORKTREES !== "false" ? 'isolation="worktree",' : ''}
+  {harnessFlag}
   description="Execute: ${DESCRIPTION}"
 )
 ```

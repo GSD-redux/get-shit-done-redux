@@ -1934,3 +1934,131 @@ describe('#2627 dispatch-isolation CLI route', () => {
     assert.equal(pi.harnessFlag, null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2652 — dispatch-site parity: isolation is decided by the negotiated
+// dispatch.isolation capability, never by a runtime id.
+//
+// #2584 migrated the phase scheduler off `RUNTIME != "claude"` but left quick.md
+// and diagnose-issues.md behind, so Codex — which declares orchestrator-worktree
+// — was refused isolation it had negotiated. That is this repo's
+// DEFECT.GENERATIVE-FIX-DIVERGENCE shape: parallel surfaces reading one contract,
+// one migrated and the others silently stale. This guard fails when any dispatch
+// site reintroduces a runtime-name test around its isolation decision.
+// ---------------------------------------------------------------------------
+describe('#2652 dispatch-site parity — isolation gates on capability, not runtime id', () => {
+  // Scan workflows AND the reference fragments they inline: scheduler branches that
+  // mutate USE_WORKTREES live in gsd-core/references/ too (execute-phase-wave-guard,
+  // execute-phase-between-wave-reset), and a workflows-only scan misses them.
+  const SCAN_ROOTS = [
+    path.join(REPO_ROOT, 'gsd-core', 'workflows'),
+    path.join(REPO_ROOT, 'gsd-core', 'references'),
+  ];
+
+  function collectMarkdown(dir) {
+    const out = [];
+    if (!fs.existsSync(dir)) return out;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) out.push(...collectMarkdown(full));
+      else if (entry.name.endsWith('.md')) out.push(full);
+    }
+    return out;
+  }
+
+  const ISOLATION_TOKEN = /USE_WORKTREES|ISOLATION|isolation="worktree"|harnessFlag/;
+
+  // Any shape that reads RUNTIME as a branch condition. Line-based matching missed
+  // multiline `&&`, [[ ]], case, `test`, and JS-template forms, so match the RUNTIME
+  // test itself and then look for an isolation token within the following window.
+  const RUNTIME_TESTS = [
+    /\[\s*"?\$\{?RUNTIME\}?"?\s*(!=|=|==)\s*["'][a-z-]+["']\s*\]/,          // [ "$RUNTIME" = "x" ]
+    /\[\[\s*"?\$\{?RUNTIME\}?"?\s*(!=|=|==)\s*["']?[a-z-]+["']?\s*\]\]/,   // [[ "$RUNTIME" == x ]]
+    /\btest\s+"?\$\{?RUNTIME\}?"?\s*(!=|=)\s*["'][a-z-]+["']/,               // test "$RUNTIME" = "x"
+    /\bcase\s+"?\$\{?RUNTIME\}?"?\s+in\b/,                                    // case "$RUNTIME" in
+    /\$\{\s*RUNTIME\s*(===|!==|==|!=)\s*["'][a-z-]+["']/,                       // ${RUNTIME === "x" ? ...}
+  ];
+
+  const WINDOW = 400; // chars after the RUNTIME test to look for an isolation decision
+
+  function isolationGateOffenders(text, label) {
+    const hits = [];
+    for (const re of RUNTIME_TESTS) {
+      const global = new RegExp(re.source, 'g');
+      let m;
+      while ((m = global.exec(text)) !== null) {
+        const window = text.slice(m.index, m.index + WINDOW);
+        if (ISOLATION_TOKEN.test(window)) {
+          const line = text.slice(0, m.index).split('\n').length;
+          hits.push(`${label}:${line}: ${m[0].trim()}`);
+        }
+      }
+    }
+    return hits;
+  }
+
+  const dispatchSites = SCAN_ROOTS.flatMap(collectMarkdown).filter(f =>
+    ISOLATION_TOKEN.test(fs.readFileSync(f, 'utf-8')),
+  );
+
+  test('the scan covers the known dispatch sites (guards against a vacuous pass)', () => {
+    const rel = dispatchSites.map(f => path.relative(REPO_ROOT, f));
+    // Assert identities, not just a count: a count survives the scan silently
+    // drifting off the files that actually matter.
+    for (const required of [
+      'gsd-core/workflows/quick.md',
+      'gsd-core/workflows/diagnose-issues.md',
+      'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md',
+    ]) {
+      assert.ok(rel.includes(required), `dispatch-site scan must cover ${required}; found ${rel.length} files`);
+    }
+  });
+
+  test('the detector flags every known runtime-gate shape (discrimination proof)', () => {
+    // Each of these slipped past the original same-line, single-bracket detector.
+    const mutations = {
+      'single bracket, same line':
+        'if [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]; then',
+      'multiline &&':
+        'if [ "$RUNTIME" != "claude" ] && \\\n   [ "$USE_WORKTREES" != "false" ]; then',
+      'double bracket':
+        'if [[ "$RUNTIME" == claude ]]; then\n  USE_WORKTREES=false\nfi',
+      'nested, later assignment':
+        'if [ "$RUNTIME" = "codex" ]; then\n  echo hi\n  ISOLATION=none\nfi',
+      'case statement':
+        'case "$RUNTIME" in\n  claude) USE_WORKTREES=true ;;\nesac',
+      'js template':
+        '${RUNTIME === "claude" ? \'isolation="worktree",\' : \'\'}',
+      'test builtin':
+        'if test "$RUNTIME" = "claude"; then\n  ISOLATION=harness-worktree\nfi',
+    };
+    for (const [name, snippet] of Object.entries(mutations)) {
+      assert.equal(
+        isolationGateOffenders(snippet, 'mutation').length >= 1,
+        true,
+        `detector must flag the "${name}" reintroduction — otherwise the guard below proves nothing`,
+      );
+    }
+  });
+
+  test('a RUNTIME read with no isolation decision nearby is NOT flagged (no false positive)', () => {
+    const benign = 'RUNTIME=$(gsd_run query config-get runtime --raw)\necho "runtime is $RUNTIME"';
+    assert.deepEqual(isolationGateOffenders(benign, 'benign'), []);
+  });
+
+  test('no dispatch site gates isolation on a runtime id', () => {
+    const offenders = [];
+    for (const file of dispatchSites) {
+      offenders.push(
+        ...isolationGateOffenders(fs.readFileSync(file, 'utf-8'), path.relative(REPO_ROOT, file)),
+      );
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'isolation must be resolved from `gsd_run query dispatch-isolation` (see ' +
+        'gsd-core/references/dispatch-isolation-gate.md), never from a RUNTIME comparison:\n' +
+        offenders.join('\n'),
+    );
+  });
+});

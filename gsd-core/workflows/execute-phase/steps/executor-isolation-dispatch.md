@@ -7,6 +7,11 @@ resolution and its fail-closed guard.
 
 ## Resolve ISOLATION
 
+The resolution rule is shared with every other dispatch site — see
+@gsd-core/references/dispatch-isolation-gate.md, the canonical statement of the
+`ISOLATION`-not-`RUNTIME` contract (#2652). This fragment keeps the wave-specific
+extras (`worktree.reap-orphans`, the `worktree.base-check` auto-degrade) inline below.
+
 Run this in the config-gate step, right after `RUNTIME`/`USE_WORKTREES` are read.
 
 ```bash

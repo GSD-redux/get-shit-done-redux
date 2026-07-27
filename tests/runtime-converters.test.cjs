@@ -1185,21 +1185,38 @@ test('execute-phase.md, quick.md, and diagnose-issues.md guards are generalized 
   // #2584 Phase 3 (#2627): execute-phase.md graduated PAST the `!= "claude"`
   // guard — worktree isolation there is now keyed on the negotiated
   // `dispatch.isolation` capability, so no runtime name appears in its guard at
-  // all. quick.md and diagnose-issues.md still use the #1521 generalized form
-  // (they do not negotiate isolation), so they keep asserting it.
-  const GUARD_WORKFLOWS = ['quick.md', 'diagnose-issues.md'];
+  // all.
+  //
+  // #2652: quick.md and diagnose-issues.md have now graduated too. This block
+  // previously asserted they still carried the #1521 generalized form, with a
+  // comment noting "they do not negotiate isolation" — i.e. the test knowingly
+  // pinned the un-migrated state #2652 was filed about. They negotiate now, so
+  // they are held to the same capability-keyed contract as execute-phase.md.
+  const GUARD_WORKFLOWS = ['quick.md', 'diagnose-issues.md', 'execute-phase.md'];
   for (const wf of GUARD_WORKFLOWS) {
     const src = fs.readFileSync(
       path.join(__dirname, '..', 'gsd-core', 'workflows', wf),
       'utf8',
     );
     assert.ok(
-      src.includes('[ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]'),
-      `${wf}: expected generalized guard [ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]`,
+      !src.includes('[ "$RUNTIME" != "claude" ] && [ "$USE_WORKTREES" != "false" ]'),
+      `${wf}: worktree isolation must branch on dispatch.isolation, not on != "claude" (#2584/#2652)`,
     );
     assert.ok(
       !src.includes('[ "$RUNTIME" = "codex" ] && [ "$USE_WORKTREES" != "false" ]'),
-      `${wf}: found Codex-specific guard — should have been generalized to != "claude"`,
+      `${wf}: found Codex-specific guard — isolation is a negotiated capability (#2584/#2652)`,
+    );
+  }
+
+  // The two migrated sites must actually negotiate, not merely drop the guard.
+  for (const wf of ['quick.md', 'diagnose-issues.md']) {
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'workflows', wf),
+      'utf8',
+    );
+    assert.ok(
+      src.includes('query dispatch-isolation'),
+      `${wf}: must resolve ISOLATION via \`gsd_run query dispatch-isolation\` (#2652)`,
     );
   }
 
