@@ -750,11 +750,21 @@ LM_STUDIO_MODEL=$(gsd_run query config-get review.models.lm_studio --raw 2>/dev/
 if [ -z "$LM_STUDIO_MODEL" ] || [ "$LM_STUDIO_MODEL" = "null" ]; then
   LM_STUDIO_MODEL=$(curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
 fi
+# #2605: same guard as the claude/gemini/codex legs above (#2494/#2592). Two
+# changes make a dropped lane diagnosable rather than silently omitted:
+#   1. `-sS` instead of `-s`. Plain `-s` silences curl's ERROR text too, so an
+#      unreachable endpoint produced no message anywhere. `-S` restores errors
+#      while keeping the progress meter off; they land in the .err sidecar.
+#   2. An `[ ! -s … ]` stub. Previously nothing was written when content was
+#      empty, so the file never existed, write_reviews omitted the section, and
+#      the result was indistinguishable from the reviewer never being selected.
+# The raw response body is appended too: an HTTP 4xx/5xx from an OpenAI-compatible
+# server exits 0 with the error JSON in the BODY, so stderr alone would be empty.
 LM_STUDIO_RESPONSE=$(jq -n --rawfile content "$LM_STUDIO_PROMPT_FILE" \
   --arg model "$LM_STUDIO_MODEL" \
   '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -s --max-time 120 -X POST "${LM_STUDIO_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>/dev/null)
+  curl -sS --max-time 120 -X POST "${LM_STUDIO_HOST}/v1/chat/completions" \
+    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-lm_studio.err)
 LM_STUDIO_ACTUAL_MODEL=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.model // ""' 2>/dev/null || echo "")
 if [ -n "$LM_STUDIO_ACTUAL_MODEL" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "null" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "$LM_STUDIO_MODEL" ]; then
   echo "Warning: LM Studio served model '$LM_STUDIO_ACTUAL_MODEL' but '$LM_STUDIO_MODEL' was requested. Review may be from a different model." >&2
@@ -762,8 +772,13 @@ fi
 LM_STUDIO_CONTENT=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
 if [ -n "$LM_STUDIO_CONTENT" ]; then
   echo "$LM_STUDIO_CONTENT" > {run_dir}/gsd-review-lm_studio.md
-else
-  echo "Warning: LM Studio returned empty content — skipping review." >&2
+fi
+if [ ! -s {run_dir}/gsd-review-lm_studio.md ]; then
+  echo "Warning: LM Studio returned empty content — see {run_dir}/gsd-review-lm_studio.md" >&2
+  echo "LM Studio review failed or returned empty output. stderr:" > {run_dir}/gsd-review-lm_studio.md
+  cat {run_dir}/gsd-review-lm_studio.err >> {run_dir}/gsd-review-lm_studio.md 2>/dev/null
+  echo "Raw response body:" >> {run_dir}/gsd-review-lm_studio.md
+  echo "$LM_STUDIO_RESPONSE" >> {run_dir}/gsd-review-lm_studio.md
 fi
 fi
 ```
@@ -803,16 +818,25 @@ LLAMA_CPP_MODEL=$(gsd_run query config-get review.models.llama_cpp --raw 2>/dev/
 if [ -z "$LLAMA_CPP_MODEL" ] || [ "$LLAMA_CPP_MODEL" = "null" ]; then
   LLAMA_CPP_MODEL=$(curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
 fi
-LLAMA_CPP_CONTENT=$(jq -n --rawfile content "$LLAMA_CPP_PROMPT_FILE" \
+# #2605: same guard as the LM Studio leg above. The response is captured to a
+# variable FIRST rather than piped straight into jq — piping discarded the raw
+# body, which is exactly where an OpenAI-compatible server puts its error JSON on
+# an HTTP 4xx/5xx (curl still exits 0), leaving nothing to diagnose.
+LLAMA_CPP_RESPONSE=$(jq -n --rawfile content "$LLAMA_CPP_PROMPT_FILE" \
   --arg model "$LLAMA_CPP_MODEL" \
   '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -s --max-time 120 -X POST "${LLAMA_CPP_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>/dev/null | \
-  jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+  curl -sS --max-time 120 -X POST "${LLAMA_CPP_HOST}/v1/chat/completions" \
+    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-llama_cpp.err)
+LLAMA_CPP_CONTENT=$(echo "$LLAMA_CPP_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
 if [ -n "$LLAMA_CPP_CONTENT" ]; then
   echo "$LLAMA_CPP_CONTENT" > {run_dir}/gsd-review-llama_cpp.md
-else
-  echo "Warning: llama.cpp returned empty content — skipping review." >&2
+fi
+if [ ! -s {run_dir}/gsd-review-llama_cpp.md ]; then
+  echo "Warning: llama.cpp returned empty content — see {run_dir}/gsd-review-llama_cpp.md" >&2
+  echo "llama.cpp review failed or returned empty output. stderr:" > {run_dir}/gsd-review-llama_cpp.md
+  cat {run_dir}/gsd-review-llama_cpp.err >> {run_dir}/gsd-review-llama_cpp.md 2>/dev/null
+  echo "Raw response body:" >> {run_dir}/gsd-review-llama_cpp.md
+  echo "$LLAMA_CPP_RESPONSE" >> {run_dir}/gsd-review-llama_cpp.md
 fi
 fi
 ```
