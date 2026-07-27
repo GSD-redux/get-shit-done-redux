@@ -897,6 +897,13 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   // a linked worktree, timeout) was discarded and the operator saw a downstream
   // pathspec error pointing at an innocent file.
   const stagingFailures: Array<{ file: string; error: string; timed_out: boolean }> = [];
+  // Paths already in the index BEFORE this call. On a staging failure the
+  // rollback below unstages only what THIS call added — unstaging a path the
+  // caller had staged themselves would destroy their work.
+  const preStaged = new Set(
+    execGit(['diff', '--cached', '--name-only'], { cwd })
+      .stdout.split('\n').map(s => s.trim()).filter(Boolean),
+  );
   for (const file of filesToStage) {
     const fullPath = path.resolve(cwd, file);
     if (!fs.existsSync(fullPath)) {
@@ -908,7 +915,19 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       }
       // Default mode (staging all of .planning/): stage the deletion so
       // removed planning files are not left dangling in the index.
-      execGit(['rm', '--cached', '--ignore-unmatch', file], { cwd });
+      // This mutates the index exactly like `git add` does, so it fails closed
+      // the same way — an unwritable index must not be swallowed here either.
+      // `--ignore-unmatch` already makes "no such path" a success, so a non-zero
+      // exit is a real I/O failure, not a missing file.
+      const rmResult = execGit(['rm', '--cached', '--ignore-unmatch', file], { cwd });
+      if (rmResult.exitCode !== 0) {
+        const rmErr: NodeJS.ErrnoException | null = rmResult.error;
+        stagingFailures.push({
+          file,
+          error: rmResult.stderr || rmResult.stdout,
+          timed_out: rmResult.signal === 'SIGTERM' && rmErr?.code === 'ETIMEDOUT',
+        });
+      }
     } else {
       const addResult = execGit(['add', file], { cwd });
       // Only record paths that actually staged — a failed `git add` (permissions,
@@ -939,6 +958,18 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
   // commit itself so a multi-file scope never partially commits the subset that
   // happened to stage.
   if (stagingFailures.length > 0) {
+    // Fail closed AND clean. Without this the paths that DID stage stay in the
+    // index with no commit made, so the next bare `git commit` sweeps them up —
+    // the same silent partial commit this fix exists to prevent, deferred one
+    // step. Mirrors cmdPrSubrepo's rollback-then-error convention. Only paths
+    // this call staged are unstaged (preStaged is excluded), and the reset is
+    // best-effort: if the index is unwritable — the very failure being reported
+    // — the reset cannot succeed either, and the staging error is still what
+    // gets returned.
+    const toUnstage = stagedPaths.filter(p => !preStaged.has(p));
+    if (toUnstage.length > 0) {
+      execGit(['reset', '-q', '--', ...toUnstage], { cwd });
+    }
     const first = stagingFailures[0];
     const result = {
       committed: false,
@@ -1077,13 +1108,45 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
     const repoCwd = path.join(cwd, repo);
 
     // Stage files (strip sub-repo prefix for paths relative to that repo)
+    // #2608: this is the sub-repo twin of cmdCommit's staging loop and carried
+    // the identical defect — a failed `git add` was dropped silently and the
+    // function went straight on to commit the subset that happened to stage,
+    // discarding git's stderr. Fails closed per-repo, with the same rollback of
+    // only what this call staged.
+    const preStagedSub = new Set(
+      execGit(['diff', '--cached', '--name-only'], { cwd: repoCwd })
+        .stdout.split('\n').map(s => s.trim()).filter(Boolean),
+    );
     const stagedRelPaths: string[] = [];
+    const subStagingFailures: Array<{ file: string; error: string; timed_out: boolean }> = [];
     for (const file of repoFiles) {
       const relativePath = file.slice(repo.length + 1);
       const addResult = execGit(['add', relativePath], { cwd: repoCwd });
       if (addResult.exitCode === 0) {
         stagedRelPaths.push(relativePath);
+      } else {
+        const addErr: NodeJS.ErrnoException | null = addResult.error;
+        subStagingFailures.push({
+          file,
+          error: addResult.stderr || addResult.stdout,
+          timed_out: addResult.signal === 'SIGTERM' && addErr?.code === 'ETIMEDOUT',
+        });
       }
+    }
+    if (subStagingFailures.length > 0) {
+      const toUnstageSub = stagedRelPaths.filter(p => !preStagedSub.has(p));
+      if (toUnstageSub.length > 0) {
+        execGit(['reset', '-q', '--', ...toUnstageSub], { cwd: repoCwd });
+      }
+      const firstSub = subStagingFailures[0];
+      repos[repo] = {
+        committed: false,
+        hash: null,
+        files: repoFiles,
+        reason: firstSub.timed_out ? 'staging_timeout' : 'staging_failed',
+        error: firstSub.error,
+      };
+      continue;
     }
 
     // Commit — pathspec limits the commit to the staged files only (#2112)

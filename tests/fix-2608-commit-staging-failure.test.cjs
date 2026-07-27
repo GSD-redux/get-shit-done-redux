@@ -54,7 +54,7 @@ const LIB = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib');
  * returning the parsed JSON result and the git argv list that was actually
  * executed (so "git commit never ran" is asserted directly, not inferred).
  */
-function commitWithFailingAdd({ cwd, files, failFor = [], stderr = 'fatal: injected staging failure', timeout = false }) {
+function commitWithFailingAdd({ cwd, files, failFor = [], stderr = 'fatal: injected staging failure', timeout = false, amend = false }) {
   const callsOut = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2608-')), 'calls.json');
   const script = `
 const path = require('path');
@@ -83,7 +83,7 @@ projection.execGit = (args, opts) => {
 process.on('exit', () => {
   require('fs').writeFileSync(${JSON.stringify(callsOut)}, JSON.stringify(calls));
 });
-cmdCommit(${JSON.stringify(cwd)}, 'docs: map existing codebase', ${JSON.stringify(files)}, false);
+cmdCommit(${JSON.stringify(cwd)}, 'docs: map existing codebase', ${JSON.stringify(files)}, false, ${JSON.stringify(amend)}, false);
 `;
 
   const run = spawnSync(process.execPath, ['-e', script], {
@@ -111,6 +111,97 @@ function committedFiles(cwd) {
   return execFileSync('git', ['diff', 'HEAD~1', 'HEAD', '--name-only'], { cwd, encoding: 'utf-8' })
     .trim().split('\n').filter(Boolean).sort();
 }
+
+/**
+ * Same harness for `cmdCommitToSubrepo` — the sub-repo twin of the staging loop,
+ * which carried the identical defect (failed `git add` dropped, commit proceeds
+ * with the subset that staged).
+ */
+function subrepoCommitWithFailingAdd({ cwd, files, failFor = [] }) {
+  const script = `
+const path = require('path');
+const LIB = ${JSON.stringify(LIB)};
+const projection = require(path.join(LIB, 'shell-command-projection.cjs'));
+const { cmdCommitToSubrepo } = require(path.join(LIB, 'commands.cjs'));
+const failFor = ${JSON.stringify(failFor)};
+const real = projection.execGit;
+projection.execGit = (args, opts) => {
+  if (args[0] === 'add' && failFor.includes(args[args.length - 1])) {
+    return { exitCode: 128, stdout: '', stderr: 'fatal: injected subrepo staging failure', signal: null, error: null };
+  }
+  return real(args, opts);
+};
+cmdCommitToSubrepo(${JSON.stringify(cwd)}, 'feat: subrepo change', ${JSON.stringify(files)}, false);
+`;
+  const run = spawnSync(process.execPath, ['-e', script], {
+    encoding: 'utf8',
+    timeout: 30000,
+    killSignal: 'SIGKILL',
+    env: { ...process.env, GSD_TEST_MODE: '1' },
+  });
+  assert.ok(run.stdout && run.stdout.trim(),
+    `cmdCommitToSubrepo child produced no stdout (status=${run.status}): ${run.stderr}`);
+  return JSON.parse(run.stdout);
+}
+
+describe('#2608: commit-to-subrepo fails closed when git add fails', () => {
+  let rootDir;
+  let subDir;
+
+  beforeEach(() => {
+    rootDir = createTempGitProject();
+    fs.writeFileSync(
+      path.join(rootDir, '.planning', 'config.json'),
+      JSON.stringify({ planning: { sub_repos: ['backend'] } }, null, 2),
+    );
+    subDir = path.join(rootDir, 'backend');
+    fs.mkdirSync(subDir, { recursive: true });
+    for (const [cmd, args] of [['init', []], ['config', ['user.email', 'test@example.com']], ['config', ['user.name', 'Test']]]) {
+      execFileSync('git', [cmd, ...args], { cwd: subDir, stdio: 'pipe' });
+    }
+    fs.writeFileSync(path.join(subDir, 'seed.js'), '// seed\n');
+    execFileSync('git', ['add', 'seed.js'], { cwd: subDir, stdio: 'pipe' });
+    execFileSync('git', ['commit', '-m', 'seed'], { cwd: subDir, stdio: 'pipe' });
+    fs.writeFileSync(path.join(subDir, 'a.js'), '// a\n');
+    fs.writeFileSync(path.join(subDir, 'b.js'), '// b\n');
+  });
+
+  afterEach(() => {
+    cleanup(rootDir);
+  });
+
+  test('a failed sub-repo git add reports staging_failed and commits nothing', () => {
+    const before = headCount(subDir);
+    const result = subrepoCommitWithFailingAdd({
+      cwd: rootDir,
+      files: ['backend/a.js', 'backend/b.js'],
+      failFor: ['b.js'],
+    });
+
+    assert.equal(result.repos.backend.reason, 'staging_failed',
+      `expected staging_failed for the sub-repo, got ${JSON.stringify(result)}`);
+    assert.equal(result.repos.backend.committed, false);
+    assert.match(result.repos.backend.error, /injected subrepo staging failure/,
+      "git's original stderr must be preserved");
+    assert.equal(headCount(subDir), before, 'no partial sub-repo commit may be created');
+
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd: subDir, encoding: 'utf-8' });
+    assert.deepEqual(status.split('\n').filter((l) => /^A[ \t]/.test(l)), [],
+      `the sub-repo index must be rolled back, status:\n${status}`);
+  });
+
+  test('successful sub-repo staging still commits', () => {
+    const before = headCount(subDir);
+    const result = subrepoCommitWithFailingAdd({
+      cwd: rootDir,
+      files: ['backend/a.js', 'backend/b.js'],
+      failFor: [],
+    });
+
+    assert.equal(result.repos.backend.committed, true, `expected a commit, got ${JSON.stringify(result)}`);
+    assert.equal(headCount(subDir), before + 1);
+  });
+});
 
 describe('#2608: commit --files fails closed when git add fails', () => {
   let tmpDir;
@@ -267,6 +358,78 @@ describe('#2608: commit --files fails closed when git add fails', () => {
 
     assert.equal(result.committed, true, `expected a commit, got ${JSON.stringify(result)}`);
     assert.deepEqual(committedFiles(tmpDir), ['.planning/ARCHITECTURE.md']);
+  });
+
+  // ── The index must be left clean, not partially staged ───────────────────
+
+  test('a staging failure rolls back the paths this call had already staged', () => {
+    // Without the rollback the paths that DID stage stay in the index with no
+    // commit made, so the next bare `git commit` sweeps them up — the same
+    // silent partial commit this fix exists to prevent, just deferred a step.
+    commitWithFailingAdd({
+      cwd: tmpDir,
+      files: ['.planning/ARCHITECTURE.md', '.planning/CONCERNS.md', '.planning/CONVENTIONS.md'],
+      failFor: ['.planning/CONCERNS.md'],
+    });
+
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd: tmpDir, encoding: 'utf-8' });
+    const stagedAdds = status.split('\n').filter((l) => /^A[ \t]/.test(l));
+    assert.deepEqual(stagedAdds, [],
+      `no path may remain staged after a staging failure, status:\n${status}`);
+  });
+
+  test('the rollback does not unstage work the caller had staged before the call', () => {
+    // Boundary: the reset must touch only what THIS call staged. Unstaging a
+    // path the caller staged themselves would destroy their work.
+    fs.writeFileSync(path.join(tmpDir, 'caller-staged.txt'), 'mine\n');
+    execFileSync('git', ['add', 'caller-staged.txt'], { cwd: tmpDir, stdio: 'pipe' });
+
+    commitWithFailingAdd({
+      cwd: tmpDir,
+      files: ['.planning/ARCHITECTURE.md', '.planning/CONCERNS.md'],
+      failFor: ['.planning/CONCERNS.md'],
+    });
+
+    const status = execFileSync('git', ['status', '--porcelain'], { cwd: tmpDir, encoding: 'utf-8' });
+    assert.match(status, /^A[ \t]+caller-staged\.txt$/m,
+      `the caller's own staged file must survive the rollback, status:\n${status}`);
+  });
+
+  // ── The default (non---files) staging path is guarded too ─────────────────
+
+  test('a failed default-mode git add fails closed instead of committing the index', () => {
+    // Default mode stages `.planning/`. Pre-fix a failure there also fell
+    // through to an unguarded `git commit`.
+    const before = headCount(tmpDir);
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: undefined,
+      failFor: ['.planning/'],
+    });
+
+    assert.equal(result.reason, 'staging_failed');
+    assert.ok(!gitCalls.some((a) => a[0] === 'commit'), 'git commit must not run');
+    assert.equal(headCount(tmpDir), before);
+  });
+
+  test('a failed default-mode git add blocks --amend too', () => {
+    // --amend has no carve-out: amending on top of a failed staging would
+    // rewrite the tip without the changes the caller asked for.
+    const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const { result, gitCalls } = commitWithFailingAdd({
+      cwd: tmpDir,
+      files: undefined,
+      failFor: ['.planning/'],
+      amend: true,
+    });
+
+    assert.equal(result.reason, 'staging_failed');
+    assert.ok(!gitCalls.some((a) => a[0] === 'commit'), 'git commit --amend must not run');
+    assert.equal(
+      execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim(),
+      before,
+      'HEAD must not be rewritten when staging failed',
+    );
   });
 
   test('when all explicit files are missing the reason is still nothing_to_commit', () => {
