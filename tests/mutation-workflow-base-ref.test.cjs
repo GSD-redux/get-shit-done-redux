@@ -173,7 +173,15 @@ describe('#2452 CI gates: base-ref fetch must preserve ancestry', () => {
       git(origin, ['checkout', '--quiet', 'base']);
       for (let n = 1; n <= BASE_ADVANCE; n++) {
         fs.writeFileSync(path.join(origin, `base-${n}.txt`), `${n}\n`);
-        git(origin, ['add', '.']);
+        // Stage only the file this iteration created. `git add .` re-stages every
+        // file already in the tree, so across BASE_ADVANCE iterations it rehashes
+        // O(n²) blobs — roughly 1,800 stagings and 60 full index rewrites to add 60
+        // one-line files. That churn is what this loop failed on in CI: the index
+        // ended up referencing a blob whose object write had not landed
+        // ("invalid object … for 'base-31.txt' / Error building trees") at commit 32
+        // of 60. Staging the single new path is equivalent here — each commit adds
+        // exactly one file — and removes the redundant work entirely.
+        git(origin, ['add', `base-${n}.txt`]);
         git(origin, ['commit', '--quiet', '-m', `base advance ${n}`]);
       }
 
