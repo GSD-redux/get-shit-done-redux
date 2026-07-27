@@ -23,6 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
+const fc = require('fast-check');
 
 // ─── module under test ────────────────────────────────────────────────────────
 
@@ -1122,6 +1123,7 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
     const res = configLoader.loadConfigResolved(tmpDir);
     assert.equal(res.degraded, false, "a missing config is legitimate absence");
     assert.equal(res.reason, R.NOT_CONFIGURED);
+    assert.equal(res.reason, "not_configured", "enum value is the wire contract");
   });
 
   test("malformed config is degraded with reason config_unparseable", () => {
@@ -1176,6 +1178,58 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
     assert.equal(configLoader._warnedUnusableConfig.size, 1, "keyed on path+errno, warned once");
   });
 
+  // Regression: found by isolated review of the first cut of this fix. The
+  // success path returned early WITHOUT consulting configFault, so a corrupt
+  // ROOT config whose workstream override happened to parse reported
+  // degraded:false / resolved — the same silent-discard defect this issue
+  // exists to close, reappearing for any project that uses workstreams.
+  test("a corrupt ROOT config still degrades when the workstream config parses", () => {
+    const wsDir = path.join(tmpDir, ".planning", "workstreams", "ws-a");
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget",}', "utf-8");
+    fs.writeFileSync(path.join(wsDir, "config.json"), '{"mode":"autonomous"}', "utf-8");
+    const res = configLoader.loadConfigResolved(tmpDir, { workstream: "ws-a" });
+    assert.equal(res.reason, R.CONFIG_UNPARSEABLE,
+      "the root config was discarded — that must not report as a clean resolve");
+    assert.equal(res.degraded, true);
+  });
+
+  // Regression: reason was computed from the root+workstream MERGE, so an empty
+  // workstream file inheriting a non-empty root reported "resolved" despite
+  // carrying no settings of its own.
+  test("an empty workstream file inheriting a non-empty root is configured_empty", () => {
+    const wsDir = path.join(tmpDir, ".planning", "workstreams", "ws-b");
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(configPath(tmpDir), '{"model_profile":"quality"}', "utf-8");
+    fs.writeFileSync(path.join(wsDir, "config.json"), "{}", "utf-8");
+    const res = configLoader.loadConfigResolved(tmpDir, { workstream: "ws-b" });
+    assert.equal(res.reason, R.CONFIGURED_EMPTY,
+      "emptiness is a property of the file read, not of the merged result");
+    assert.equal(res.degraded, false, "an empty file is not corruption");
+  });
+
+  // Property test (CONTRIBUTING.md: parsers require >=1 fast-check property).
+  // The classification is total and mutually exclusive: any byte string is
+  // exactly one of resolved/configured_empty (parses) or config_unparseable.
+  test("classification is total and never reports a corrupt file as absent", () => {
+    fc.assert(
+      fc.property(fc.string(), (body) => {
+        configLoader._resetRuntimeWarningCacheForTests();
+        fs.writeFileSync(configPath(tmpDir), body, "utf-8");
+        const res = configLoader.loadConfigResolved(tmpDir);
+        let parses = true;
+        try { const v = JSON.parse(body); parses = v !== null && typeof v === "object" && !Array.isArray(v); }
+        catch { parses = false; }
+        // The invariant that matters: a file that is PRESENT is never reported
+        // as not_configured, whatever its bytes.
+        assert.notEqual(res.reason, R.NOT_CONFIGURED);
+        if (!parses) assert.equal(res.reason, R.CONFIG_UNPARSEABLE);
+        return true;
+      }),
+      { numRuns: 200, seed: 1880 },
+    );
+  });
+
   // Contract markers required by scripts/lint-resolution-provenance.cjs:
   // configured_empty and not_configured must stay distinguishable.
   test("an empty config object is configured_empty, not not_configured", () => {
@@ -1183,6 +1237,7 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
     const res = configLoader.loadConfigResolved(tmpDir);
     assert.equal(res.reason, R.CONFIGURED_EMPTY,
       "configured_empty and not_configured must be distinguishable (ADR-1411 rule 3)");
+    assert.equal(res.reason, "configured_empty", "enum value is the wire contract");
     assert.equal(res.degraded, false, "an empty file is not corruption");
   });
 });

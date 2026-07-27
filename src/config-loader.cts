@@ -426,8 +426,10 @@ type ConfigSource = 'workstream' | 'root' | 'builtin-defaults' | 'global-default
 /**
  * Result of loadConfigResolved — wraps the config object with provenance metadata.
  * - source: which layer supplied the config
- * - degraded: true when a workstream was requested but its config.json was absent
- *             (fell back to root config); false otherwise
+ * - degraded: true when the resolution did not deliver the configuration it
+ *             should have — either a workstream was requested but its
+ *             config.json was absent (fell back to root), or a file on the
+ *             resolution path exists but is unusable (#1880). `reason` says which.
  */
 /**
  * Machine-readable outcome of a config resolution (#1880, ADR-1411 amendment
@@ -641,6 +643,8 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
     }
     if (read.kind !== 'ok') throw new Error('config absent or unusable');
     const fileData: ParsedConfig = read.data;
+    // Snapshot BEFORE normalizeLegacyKeys mutates fileData in place.
+    const fileHadKeys = Object.keys(read.data).length > 0;
 
     let configDirty = false;
     {
@@ -814,10 +818,23 @@ function loadConfigResolved(cwd: string, options: Record<string, unknown> = {}):
     // A1 vs A2: disambiguate by whether a real workstream was requested.
     // Fix 4: empty-string ws ('') resolves the root path → source:'root'.
     const source: ConfigSource = wsRequested ? 'workstream' : 'root';
-    // A parsed-but-empty file is `configured_empty`, not `resolved` — the
-    // distinction ADR-1411 rule 3 requires between "not configured" and
-    // "configured but resolved to nothing".
-    const reason = Object.keys(parsed).length > 0
+
+    // This config parsed — but a DIFFERENT file on the resolution path may not
+    // have. A workstream config that loads cleanly while the root config it
+    // inherits from is corrupt is still a degraded resolution: the root's
+    // settings were silently dropped. Reporting `resolved` here would reopen
+    // the exact hole this change closes, for the common case of a project that
+    // uses workstreams at all.
+    if (configFault) {
+      return { config: _baseConfig, source, degraded: true, reason: configFault.reason };
+    }
+
+    // Emptiness is judged on the FILE THAT WAS READ, not on `parsed` (the
+    // root+workstream merge). An empty workstream file inheriting a non-empty
+    // root would otherwise report `resolved` while carrying no settings of its
+    // own — the opposite of the not-configured/configured-empty distinction
+    // ADR-1411 rule 3 requires.
+    const reason = fileHadKeys
       ? CONFIG_REASON.RESOLVED
       : CONFIG_REASON.CONFIGURED_EMPTY;
     return { config: _baseConfig, source, degraded: false, reason };
