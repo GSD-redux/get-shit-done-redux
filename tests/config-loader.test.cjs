@@ -1119,7 +1119,6 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
 
   // The repro from the issue: absent and malformed were byte-identical.
   test("absent config resolves not_configured and is NOT degraded", () => {
-    fs.rmSync(configPath(tmpDir), { force: true });
     const res = configLoader.loadConfigResolved(tmpDir);
     assert.equal(res.degraded, false, "a missing config is legitimate absence");
     assert.equal(res.reason, R.NOT_CONFIGURED);
@@ -1134,7 +1133,6 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
   });
 
   test("absent and malformed no longer produce the same resolution", () => {
-    fs.rmSync(configPath(tmpDir), { force: true });
     const absent = configLoader.loadConfigResolved(tmpDir);
     configLoader._resetRuntimeWarningCacheForTests();
     fs.writeFileSync(configPath(tmpDir), '{"model_profile":"budget",}', "utf-8");
