@@ -546,7 +546,7 @@ describe('frontmatter get — truncated vs absent frontmatter (#1882)', () => {
   // whether stderr is empty — which is a behavioural claim, not a match against the message
   // wording, so it stays inside CONTRIBUTING.md's ban on raw text matching.
   test('a truncated file is reported while an absent-frontmatter file stays silent', () => {
-    const truncated = writeTempFile('---\ntitle: half-written\n');
+    const truncated = writeTempFile('---\nphase: 01\nplan: half-written\n');
     const absent = writeTempFile('plain body with no frontmatter\n');
 
     const bad = runCapturingStderr(truncated);

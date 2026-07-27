@@ -225,12 +225,16 @@ describe('diagnostic deduplication', () => {
     assert.strictEqual(emitted, 1);
   });
 
-  test('a Windows and a POSIX spelling of one path share a single key', () => {
+  test('two spellings of one Windows path may report twice — the accepted trade', () => {
+    // Separator folding was REMOVED: it collapsed genuinely distinct POSIX files whose
+    // names contain a backslash. The residual cost is that one Windows file written two
+    // ways can report twice. Mild noise is strictly preferable to a swallowed diagnostic,
+    // and this test pins the direction of that trade so it is not silently reversed.
     _resetUnusableInputWarningsForTests();
     const [, backslash] = parseUnder(TRUNCATED_LF, 'C:\\proj\\phases\\PLAN.md');
     const [, forward] = parseUnder(TRUNCATED_LF, 'C:/proj/phases/PLAN.md');
     assert.strictEqual(backslash, 1);
-    assert.strictEqual(forward, 0, 'separator spelling must not double-report one file');
+    assert.strictEqual(forward, 1, 'noise is acceptable; a lost diagnostic is not');
   });
 
   test('path-less callers dedup on content, so identical content reports once', () => {
@@ -243,16 +247,16 @@ describe('diagnostic deduplication', () => {
 
   test('path-less callers with DIFFERENT content each report', () => {
     _resetUnusableInputWarningsForTests();
-    const [, first] = parseUnder('---\nalpha: 1\n', undefined);
-    const [, second] = parseUnder('---\nbeta: 2\n', undefined);
+    const [, first] = parseUnder('---\nalpha: 1\na2: x\n', undefined);
+    const [, second] = parseUnder('---\nbeta: 2\nb2: y\n', undefined);
     assert.strictEqual(first, 1);
     assert.strictEqual(second, 1);
   });
 
   test('an empty-string path falls back to the content key rather than keying on ""', () => {
     _resetUnusableInputWarningsForTests();
-    const [, first] = parseUnder('---\ngamma: 1\n', '   ');
-    const [, second] = parseUnder('---\ndelta: 2\n', '   ');
+    const [, first] = parseUnder('---\ngamma: 1\ng2: x\n', '   ');
+    const [, second] = parseUnder('---\ndelta: 2\nd2: y\n', '   ');
     assert.strictEqual(first, 1);
     assert.strictEqual(second, 1, 'blank paths must not collapse distinct files into one key');
   });
