@@ -10,7 +10,11 @@ const fs = require('fs');
 const path = require('path');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
-const { buildCheckpoint, checkpointBoxLine } = require('../gsd-core/bin/lib/uat.cjs');
+const {
+  buildCheckpoint,
+  resolveCheckpointFrame,
+  checkpointBoxLine,
+} = require('../gsd-core/bin/lib/uat.cjs');
 
 describe('audit-uat command', () => {
   let tmpDir;
@@ -862,30 +866,82 @@ describe('uat render-checkpoint', () => {
     assert.notStrictEqual(japanese, english);
   });
 
-  test('buildCheckpoint: every extended-pack alias resolves its localized frame', () => {
-    const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
-    const english = buildCheckpoint(currentTest);
+  test('resolveCheckpointFrame: every extended-pack alias resolves its localized frame', () => {
     // Exercise canonical names, ISO codes, endonyms, and transliterations so a
     // typo or duplicate alias cannot silently route a supported language back
     // to the English fallback.
     const cases = [
-      [['Dutch', 'nl', 'nederlands', 'flemish', 'vlaams'], 'CONTROLEPUNT'],
-      [['Polish', 'pl', 'polski'], 'PUNKT KONTROLNY'],
-      [['Russian', 'ru', 'ru-ru', 'русский'], 'КОНТРОЛЬНАЯ ТОЧКА'],
-      [['Ukrainian', 'uk', 'ua', 'українська'], 'КОНТРОЛЬНА ТОЧКА'],
-      [['Turkish', 'tr', 'türkçe', 'turkce'], 'KONTROL NOKTASI'],
-      [['Hindi', 'hi', 'हिन्दी', 'हिंदी'], 'चेकपॉइंट'],
-      [['Arabic', 'ar', 'العربية'], 'نقطة تحقق'],
-      [['Vietnamese', 'vi', 'tiếng việt', 'tieng viet'], 'ĐIỂM KIỂM TRA'],
-      [['Indonesian', 'id', 'bahasa indonesia'], 'TITIK PEMERIKSAAN'],
+      {
+        aliases: ['Dutch', 'nl', 'nederlands', 'flemish', 'vlaams'],
+        frame: {
+          banner: 'CONTROLEPUNT: Verificatie vereist',
+          instruction: 'Typ `pass` of beschrijf wat er mis is.',
+        },
+      },
+      {
+        aliases: ['Polish', 'pl', 'polski'],
+        frame: {
+          banner: 'PUNKT KONTROLNY: Wymagana weryfikacja',
+          instruction: 'Wpisz `pass` lub opisz, co jest nie tak.',
+        },
+      },
+      {
+        aliases: ['Russian', 'ru', 'ru-ru', 'русский'],
+        frame: {
+          banner: 'КОНТРОЛЬНАЯ ТОЧКА: требуется проверка',
+          instruction: 'Введите `pass` или опишите, что не так.',
+        },
+      },
+      {
+        aliases: ['Ukrainian', 'uk', 'ua', 'українська'],
+        frame: {
+          banner: 'КОНТРОЛЬНА ТОЧКА: потрібна перевірка',
+          instruction: 'Введіть `pass` або опишіть, що не так.',
+        },
+      },
+      {
+        aliases: ['Turkish', 'tr', 'türkçe', 'turkce'],
+        frame: {
+          banner: 'KONTROL NOKTASI: Doğrulama gerekli',
+          instruction: '`pass` yazın veya sorunu açıklayın.',
+        },
+      },
+      {
+        aliases: ['Hindi', 'hi', 'हिन्दी', 'हिंदी'],
+        frame: {
+          banner: 'चेकपॉइंट: सत्यापन आवश्यक',
+          instruction: '`pass` लिखें या बताएं कि क्या गलत है।',
+        },
+      },
+      {
+        aliases: ['Arabic', 'ar', 'العربية'],
+        frame: {
+          banner: 'نقطة تحقق: المراجعة مطلوبة',
+          instruction: 'اكتب `pass` أو صف المشكلة.',
+        },
+      },
+      {
+        aliases: ['Vietnamese', 'vi', 'tiếng việt', 'tieng viet'],
+        frame: {
+          banner: 'ĐIỂM KIỂM TRA: Cần xác minh',
+          instruction: 'Nhập `pass` hoặc mô tả vấn đề.',
+        },
+      },
+      {
+        aliases: ['Indonesian', 'id', 'bahasa indonesia'],
+        frame: {
+          banner: 'TITIK PEMERIKSAAN: Verifikasi diperlukan',
+          instruction: 'Ketik `pass` atau jelaskan apa yang salah.',
+        },
+      },
     ];
-    for (const [aliases, bannerFragment] of cases) {
+    for (const { aliases, frame } of cases) {
       for (const alias of aliases) {
-        const localized = buildCheckpoint(currentTest, alias);
-        assert.ok(localized.includes(bannerFragment), `${alias} banner missing`);
-        assert.ok(localized.includes('`pass`'), `${alias} instruction lost the \`pass\` literal`);
-        assert.ok(localized.includes('**Test 1: Sample**'), `${alias} structural heading changed`);
-        assert.notStrictEqual(localized, english, `${alias} fell back to the English frame`);
+        assert.deepStrictEqual(
+          resolveCheckpointFrame(alias),
+          frame,
+          `${alias} resolved to the wrong checkpoint frame`,
+        );
       }
     }
   });

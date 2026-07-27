@@ -1001,6 +1001,7 @@ export = {
   cmdRenderCheckpoint,
   parseCurrentTest,
   buildCheckpoint,
+  resolveCheckpointFrame,
   checkpointBoxLine,
   parseDeferredItems,
 };
