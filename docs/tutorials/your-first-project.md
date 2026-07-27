@@ -15,7 +15,7 @@
 > **This is the one guaranteed path.** You will build a tiny app, run **every**
 > command in the core loop exactly once, and — the part most tutorials skip —
 > understand *why* each step exists. It works whether you use **Cursor, Claude
-> Code, OpenCode, Codex, Gemini CLI, Copilot, Windsurf** or any other supported
+> Code, OpenCode, Codex, Antigravity, Copilot, Windsurf** or any other supported
 > runtime.
 
 ---
@@ -120,7 +120,6 @@ below are identical everywhere** — only two things differ per runtime:
 | **Cursor** | `--cursor` | `/gsd-*` |
 | **OpenCode** | `--opencode` | `/gsd-*` |
 | **Codex** | `--codex` (CLI ≥ 0.130.0) | `/gsd-*` |
-| **Gemini CLI** | `--gemini` | `/gsd:*` — **colon** form (`/gsd:new-project`) |
 | **GitHub Copilot** | `--copilot` | `/gsd-*` |
 | **Windsurf** | `--windsurf` | `/gsd-*` |
 | **Kilo** | `--kilo` | `/gsd-*` |
@@ -131,7 +130,7 @@ below are identical everywhere** — only two things differ per runtime:
 
 > [!NOTE]
 > **How to read the rest of this guide.** Commands are written in the `/gsd-*`
-> form. If you're on **Gemini CLI** or **Antigravity**, swap the hyphen for a
+> form. If you're on **Antigravity**, swap the hyphen for a
 > colon (`/gsd:new-project`). If you're on **Cline**, there are no slash commands
 > — just ask, e.g. *"start a new GSD project"*. Full per-runtime details:
 > [Install on your runtime](../how-to/install-on-your-runtime.md).
@@ -163,7 +162,7 @@ loop, not a toolchain.
 | You need | Check with | "Good" looks like |
 |----------|------------|-------------------|
 | **Node.js 18+** | `node --version` | `v18.x.x` or higher |
-| **Your AI IDE / CLI** | Cursor, Claude Code, OpenCode, Codex, Gemini CLI… | installed and opens |
+| **Your AI IDE / CLI** | Cursor, Claude Code, OpenCode, Codex, Antigravity… | installed and opens |
 | **A terminal in an empty folder** | `pwd` | the project dir you want to use |
 | **Internet** | — | needed once, for the installer |
 
@@ -190,13 +189,13 @@ runtime's flag** (see [Pick your runtime](#-pick-your-runtime)):
 npx @opengsd/gsd-core@latest --<your-runtime> --local
 ```
 
-For example `--cursor`, `--claude`, `--opencode`, `--codex`, or `--gemini`. Use
-`--local` for just this project (or `--global` for all projects). You'll see:
+For example `--cursor`, `--claude`, `--opencode`, `--codex`, or `--antigravity`. Use
+`--local` for just this project (or `--global` for all projects). You'll see a summary of what was installed (exact lines vary by runtime), e.g.:
 
 ```text
-✓ Installed 86 skills
+✓ Installed 71 skills to skills/
+✓ Installed 71 commands to commands/
 ✓ Installed agents
-✓ GSD Core ready — run /gsd-new-project to start
 ```
 
 Then **restart your runtime** so it picks up the new commands and agents.
@@ -210,7 +209,7 @@ A config directory now holds GSD's **commands** and **agents** — `.claude/` fo
 Claude Code, `~/.cursor/` for Cursor, `~/.config/opencode/` for OpenCode, and so
 on. You never edit these by hand — the installer owns them, and it transforms
 each command into your runtime's native format (for example, the `/gsd:*` colon
-form for Gemini CLI, or `.clinerules` for Cline).
+form for Antigravity, or `.clinerules` for Cline).
 
 </details>
 
@@ -244,7 +243,7 @@ At your runtime's prompt:
 ```
 
 > [!NOTE]
-> **Command syntax by runtime:** Gemini CLI / Antigravity → `/gsd:new-project`;
+> **Command syntax by runtime:** Antigravity → `/gsd:new-project`;
 > Cline → just type *"start a new GSD project"*; everything else →
 > `/gsd-new-project`. The same rule applies to every `/gsd-*` command below.
 
@@ -256,7 +255,7 @@ A Node.js CLI tool for managing to-do items. Users run `todo add "buy milk"`,
 No external dependencies — Node built-ins only.
 ```
 
-Then answer the **clarifying questions**, choose **Skip research**, take the
+Then answer the **clarifying questions**, choose **No** when asked *"Research before planning each phase?"* (skip it for this small build), take the
 **recommended defaults** for workflow settings, and wait for the **roadmapper**
 (~1 min). Type **Approve** on the proposed roadmap:
 
@@ -292,7 +291,7 @@ your laptop, and let a fresh sub-agent pick up exactly where the last left off.
 </details>
 
 👉 **Do this now:** open `.planning/ROADMAP.md`. Phase 1 has a **Goal**,
-**Requirements**, and **Success Criteria** — the observable behaviours execution
+**Requirements**, and **Success Criteria** — the observable behaviors execution
 must deliver. This file is your map for the rest of the tutorial.
 
 ---
@@ -500,14 +499,14 @@ next? Let GSD detect it:
 
 | Term | Meaning in GSD |
 |------|----------------|
-| **Runtime** | Your AI IDE/CLI: Cursor, Claude Code, OpenCode, Codex, Gemini CLI, … |
+| **Runtime** | Your AI IDE/CLI: Cursor, Claude Code, OpenCode, Codex, Antigravity, … |
 | **Phase** | One slice of the roadmap you take through the whole loop. |
 | **The loop** | Discuss → Plan → Execute → Verify → Ship. |
 | **Sub-agent** | A fresh, throwaway worker GSD spawns for research or execution. |
 | **Context rot** | Quality decay as the main window fills up; fresh sub-agents prevent it. |
 | **`.planning/`** | GSD's shared memory: PROJECT, REQUIREMENTS, ROADMAP, STATE, per-phase files. |
 | **Requirement (REQ-ID)** | A single v1 capability the roadmap must cover, e.g. `CLI-01`. |
-| **Success criteria** | Observable behaviours a phase must deliver, checked in Verify. |
+| **Success criteria** | Observable behaviors a phase must deliver, checked in Verify. |
 | **Wave** | A batch of independent task plans executed in parallel. |
 
 ---
@@ -516,7 +515,7 @@ next? Let GSD detect it:
 
 | Symptom | Likely cause | Fix |
 |---------|--------------|-----|
-| A GSD command isn't recognized | Wrong syntax for your runtime, or runtime not restarted | Gemini CLI/Antigravity use `/gsd:*`; Cline uses plain language. Restart the runtime after install. |
+| A GSD command isn't recognized | Wrong syntax for your runtime, or runtime not restarted | Antigravity uses `/gsd:*`; Cline uses plain language. Restart the runtime after install. |
 | `Spawning researchers…` looks stuck | Research runs 1–5 min | Wait — don't interrupt. If truly hung, `/clear` and re-run the step. |
 | Verify keeps failing | Real bug in the code | Let GSD write the fix plan → `/gsd-execute-phase 1` → re-verify. |
 | Lost track of where you are | — | Open `.planning/STATE.md`, or run `/gsd-progress --next`. |
