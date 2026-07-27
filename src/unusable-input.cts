@@ -63,6 +63,14 @@ const REASON_PROSE: Readonly<Record<UnusableReason, string>> = Object.freeze({
 const _warnedUnusableInputs = new Set<string>();
 
 /**
+ * Count of diagnostics actually WRITTEN, which is not the same as the size of the dedup set:
+ * one emission records every key the input could later be identified by, so set size counts
+ * identities while this counts events. Tests assert on this because the behavioural claim is
+ * "how many diagnostics did the operator see", not "how many keys are interned".
+ */
+let _unusableInputEmissions = 0;
+
+/**
  * ASCII control characters (including NUL) are stripped from any path before it is used
  * as a key component or written to a terminal. Two reasons, both real:
  *
@@ -174,6 +182,7 @@ function warnUnusableInput({ reason, source, content }: WarnUnusableInputArgs): 
   if (_warnedUnusableInputs.has(keys[0])) return false;
   for (const k of keys) _warnedUnusableInputs.add(k);
 
+  _unusableInputEmissions += 1;
   try {
     process.stderr.write(`gsd: warning — ${displaySource(identity)}: ${prose}. (#1879)\n`);
   } catch {
@@ -195,9 +204,15 @@ function warnUnusableInput({ reason, source, content }: WarnUnusableInputArgs): 
  */
 function _resetUnusableInputWarningsForTests(): void {
   _warnedUnusableInputs.clear();
+  _unusableInputEmissions = 0;
 }
 
-/** Size of the dedup set — the typed surface tests assert on instead of stderr prose. */
+/** Number of diagnostics written — the typed surface tests assert on instead of stderr prose. */
+function _unusableInputEmissionCountForTests(): number {
+  return _unusableInputEmissions;
+}
+
+/** Size of the dedup set (identities interned, not events). Retained for key-shape assertions. */
 function _unusableInputWarningCountForTests(): number {
   return _warnedUnusableInputs.size;
 }
@@ -214,4 +229,5 @@ export = {
   warnUnusableInput,
   _resetUnusableInputWarningsForTests,
   _unusableInputWarningCountForTests,
+  _unusableInputEmissionCountForTests,
 };

@@ -24,6 +24,7 @@ const {
   warnUnusableInput,
   _resetUnusableInputWarningsForTests,
   _unusableInputWarningCountForTests,
+  _unusableInputEmissionCountForTests,
   _sanitizeSourceForTests,
 } = require('../gsd-core/bin/lib/unusable-input.cjs');
 
@@ -38,7 +39,7 @@ const { extractFrontmatter, UNTERMINATED_KEY_THRESHOLD } = require('../gsd-core/
  * permits try/finally (a helper with no access to test context).
  */
 function emissionsDuring(fn) {
-  const before = _unusableInputWarningCountForTests();
+  const before = _unusableInputEmissionCountForTests();
   const original = process.stderr.write;
   process.stderr.write = () => true;
   try {
@@ -46,7 +47,7 @@ function emissionsDuring(fn) {
   } finally {
     process.stderr.write = original;
   }
-  return _unusableInputWarningCountForTests() - before;
+  return _unusableInputEmissionCountForTests() - before;
 }
 
 /** Parse `content` under a path unique to the calling case, returning [result, emissions]. */
