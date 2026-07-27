@@ -45,6 +45,8 @@ import io = require('./io.cjs');
 import core = require('./claude-orchestration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoader = require('./config-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import runtimeSlash = require('./runtime-slash.cjs');
 
 const { output } = io;
 const { detectWorkflowBackend, emitWorkflowScript, resolveWaveDispatch } = core;
@@ -103,9 +105,57 @@ function resolveFlatClaudeOrchestrationConfig(cwd: string): Record<string, unkno
  * `{ runtimeId, hostIntegration, agentSdkVersion }` triple both `detect-backend`
  * and `resolve-wave-dispatch` pass to the pure detection seam.
  */
-function resolveDetectionArgs(args: string[]): { runtimeId: string; hostIntegration: { dispatch: { nested: boolean; background: boolean } }; agentSdkVersion: string | undefined } {
-  const runtimeId = argValue(args, '--runtime') || process.env['GSD_RUNTIME'] || 'unknown';
-  const agentSdkVersion = argValue(args, '--agent-sdk-version');
+/**
+ * Resolve the installed Agent SDK version (#2590).
+ *
+ * The `execute:wave:pre` fragment claimed the orchestrator "has no scriptable
+ * way to introspect the live Agent SDK version" and told callers to omit the
+ * flag — so gate 5 returned `agent_sdk_version_unknown` on every automated run
+ * and the Workflow backend never activated, while `capability state` still
+ * reported it `active: true`. That claim is true for BASH, but this router runs
+ * in Node: the installed package's own package.json is authoritative and
+ * requires no flag at all.
+ *
+ * Resolution is side-effect-free and fails closed to undefined (gate 5 then
+ * declines, exactly as before) rather than guessing a version.
+ */
+const AGENT_SDK_PKG = path.join('@anthropic-ai', 'claude-agent-sdk', 'package.json');
+function resolveInstalledAgentSdkVersion(cwd: string): string | undefined {
+  // Walk node_modules up the tree by hand rather than require.resolve: the SDK's
+  // `exports` map does not expose './package.json', so require.resolve throws
+  // ERR_PACKAGE_PATH_NOT_EXPORTED. Reading the file directly is exports-map
+  // independent and cannot execute package code.
+  for (const start of [cwd, __dirname]) {
+    let dir: string;
+    try { dir = path.resolve(start); } catch { continue; }
+    for (;;) {
+      try {
+        const pkgPath = path.join(dir, 'node_modules', AGENT_SDK_PKG);
+        if (fs.existsSync(pkgPath)) {
+          const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: unknown };
+          if (typeof parsed.version === 'string' && parsed.version.length > 0) return parsed.version;
+        }
+      } catch { /* unreadable/malformed — keep walking */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return undefined;
+}
+
+function resolveDetectionArgs(args: string[], cwd?: string): { runtimeId: string; hostIntegration: { dispatch: { nested: boolean; background: boolean } }; agentSdkVersion: string | undefined } {
+  // #2590: the old fallback chain was `--runtime > GSD_RUNTIME > 'unknown'`,
+  // diverging from the canonical `GSD_RUNTIME > config.runtime > 'claude'` used
+  // by runtime-slash.resolveRuntime — so ANY manual invocation without
+  // --runtime reported `runtime_not_claude` on a perfectly ordinary Claude
+  // project. Delegate to the canonical resolver instead of re-deriving it.
+  const runtimeId = argValue(args, '--runtime') || runtimeSlash.resolveRuntime(cwd || null);
+  // Explicit flag wins (lets a caller pin a version); then the environment;
+  // then the actually-installed SDK.
+  const agentSdkVersion = argValue(args, '--agent-sdk-version')
+    || process.env['GSD_AGENT_SDK_VERSION']
+    || resolveInstalledAgentSdkVersion(cwd || process.cwd());
   const noNested = args.includes('--no-nested-dispatch');
   const hostIntegration = noNested ? { dispatch: { nested: false, background: true } } : CAPABLE_HOST;
   return { runtimeId, hostIntegration, agentSdkVersion };
@@ -146,7 +196,7 @@ function readWavesManifest(wavesPath: string, error: (msg: string, reason?: stri
  * SDK version come from flags (the orchestrator already knows these) or env.
  */
 function cmdDetectBackend(args: string[], cwd: string, raw: boolean): void {
-  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args);
+  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args, cwd);
   const flatConfig = resolveFlatClaudeOrchestrationConfig(cwd);
   const result = detectWorkflowBackend({ runtimeId, hostIntegration, config: flatConfig, agentSdkVersion });
   output(result, raw);
@@ -214,7 +264,7 @@ function cmdResolveWaveDispatch(args: string[], cwd: string, raw: boolean, error
   const read = readWavesManifest(wavesPath, (msg) => error('resolve-wave-dispatch: ' + msg));
   if (!read.ok) return; // read/parse failure — error() already surfaced it loudly above
 
-  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args);
+  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args, cwd);
   const flatConfig = resolveFlatClaudeOrchestrationConfig(cwd);
 
   const budgetTokens = budgetRaw !== undefined ? parseInt(budgetRaw, 10) : undefined;
