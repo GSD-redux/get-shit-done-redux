@@ -8055,7 +8055,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // gated on resolveInstallPlan(runtime).installSurface === 'copilot-instructions'.
   // #2100: isWindsurf dropped — unused in this function.
   const { isOpencode, isCursor, isAugment, isQwen, isHermes, isCline } = runtimeFlags(runtime);
-  const plan = resolveInstallPlan(runtime);
+  const uninstallPlan = resolveInstallPlan(runtime);
   const dirName = getDirName(runtime);
 
   // Get the target directory based on runtime and install type. Cline local
@@ -8090,7 +8090,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // which writes this same repo-root AGENTS.md only for local ('!isGlobal')
   // installs — 'copilot-instructions' is unique to copilot's descriptor, so
   // this is byte-parity.
-  if (plan.installSurface === 'copilot-instructions' && !isGlobal) {
+  if (uninstallPlan.installSurface === 'copilot-instructions' && !isGlobal) {
     const agentsMdPath = path.join(process.cwd(), 'AGENTS.md');
     if (fs.existsSync(agentsMdPath)) {
       const content = fs.readFileSync(agentsMdPath, 'utf8');
@@ -8113,7 +8113,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   }
 
   let removedCount = 0;
-  if (plan.installSurface === 'codex-toml') {
+  if (uninstallPlan.installSurface === 'codex-toml') {
     cleanupCodexContextMonitor(targetDir);
     const hooksJsonCleanup = removeCodexHooksJsonSessionStart(targetDir);
     if (hooksJsonCleanup.changed) {
@@ -8197,7 +8197,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // resolves ~/.kimi, a sibling of targetDir's ~/.config/agents), so its
   // cleanup can't be driven by anything under targetDir the way every other
   // hook surface above is.
-  if (plan.hooksSurface === 'kimi-hooks-toml') {
+  if (uninstallPlan.hooksSurface === 'kimi-hooks-toml') {
     const kimiHooksRoot = resolveKimiHooksTomlDir();
     const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
     const kimiHooksCleanup = removeKimiHooksToml(kimiHooksTomlPath);
@@ -8269,7 +8269,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // #2099: descriptor-driven via resolveInstallPlan(runtime).installSurface ===
   // 'copilot-instructions' (was hardcoded `isCopilot`), mirroring the same
   // gate used at the install-time 'copilot-instructions' branch.
-  if (plan.installSurface === 'copilot-instructions') {
+  if (uninstallPlan.installSurface === 'copilot-instructions') {
     const instructionsPath = path.join(targetDir, 'copilot-instructions.md');
     if (fs.existsSync(instructionsPath)) {
       const content = fs.readFileSync(instructionsPath, 'utf8');

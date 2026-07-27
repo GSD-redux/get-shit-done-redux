@@ -104,14 +104,14 @@ function pruneLegacyCodexHooksJsonValue(value: JsonValue, configDir: string): Pr
     }
 
     let changed = false;
-    const next = Object.create(null) as { [key: string]: JsonValue };
+    const nextEntries: Array<[string, JsonValue]> = [];
     for (const [key, child] of Object.entries(valueObj)) {
       const pruned = pruneLegacyCodexHooksJsonValue(child, configDir);
       if (pruned.changed) changed = true;
       if (pruned.changed && isStructurallyEmpty(pruned.value)) changed = true;
-      else next[key] = pruned.value;
+      else nextEntries.push([key, pruned.value]);
     }
-    return { value: next, changed };
+    return { value: Object.fromEntries(nextEntries), changed };
   }
 
   return { value, changed: false };
