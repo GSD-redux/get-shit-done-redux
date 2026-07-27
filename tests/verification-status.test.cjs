@@ -828,16 +828,27 @@ const RUNTIMES = [
   { id: 'cursor', prefix: '/gsd-' },
 ];
 
+// NOTE: deliberately NOT file-scope beforeEach/afterEach. node:test applies
+// module-scope hooks to EVERY test in the file, so hooks added here for the
+// #2617 suites would also wrap the ~40 pre-existing tests above — making this
+// block a single point of failure for suites it has nothing to do with. Each
+// test allocates and releases its own phase dir instead.
 let projBaseDir;
 let projPhaseDir;
 
-beforeEach(() => {
-  projBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2617-'));
-  projPhaseDir = path.join(projBaseDir, '01-example');
-  fs.mkdirSync(projPhaseDir, { recursive: true });
-});
-
-afterEach(() => cleanup(projBaseDir));
+/**
+ * Install the #2617 temp-phase-dir lifecycle INSIDE the calling describe.
+ * node:test scopes hooks to their enclosing describe, so this keeps them off the
+ * ~40 pre-existing tests in this file.
+ */
+function useProjectionPhaseDir() {
+  beforeEach(() => {
+    projBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2617-'));
+    projPhaseDir = path.join(projBaseDir, '01-example');
+    fs.mkdirSync(projPhaseDir, { recursive: true });
+  });
+  afterEach(() => cleanup(projBaseDir));
+}
 
 const verificationPath = () => path.join(projPhaseDir, '01-VERIFICATION.md');
 
@@ -867,6 +878,8 @@ function read(runtime, extra = {}) {
 
 for (const { id, prefix } of RUNTIMES) {
   describe(`#2617: next_command uses the ${id} command surface`, () => {
+    useProjectionPhaseDir();
+
     test('missing verification', () => {
       removeVerification();
       assert.equal(read(id).next_command, `${prefix}execute-phase`);
@@ -911,6 +924,8 @@ for (const { id, prefix } of RUNTIMES) {
 }
 
 describe('#2617: no verification output suggests the deprecated colon form', () => {
+  useProjectionPhaseDir();
+
   test('across every state and runtime, and for the default runtime', () => {
     const runtimeIds = [...RUNTIMES.map((r) => r.id), undefined];
     let checked = 0;
@@ -990,6 +1005,37 @@ describe('#2617: the phase-complete error path projects too', () => {
           !text.includes('/gsd:'),
           `phase complete must not surface the deprecated colon form: ${text}`,
         );
+      } finally {
+        cleanup(projectDir);
+      }
+    });
+
+    test(`phase complete on ${id} projects the gaps_found command too`, () => {
+      // Finding from review: the live-CLI check previously exercised only the
+      // `missing` state, so a regression in any other routed branch would show
+      // up in the router's return object but not in what a user actually reads.
+      const projectDir = createTempGitProject();
+      try {
+        fs.writeFileSync(
+          path.join(projectDir, '.planning', 'config.json'),
+          JSON.stringify({ runtime: id }, null, 2),
+        );
+        const phase = path.join(projectDir, '.planning', 'phases', '01-example');
+        fs.mkdirSync(phase, { recursive: true });
+        fs.writeFileSync(
+          path.join(phase, '01-VERIFICATION.md'),
+          '---\nstatus: gaps_found\n---\n\n# Verification\n',
+        );
+
+        const res = runGsdTools(['phase', 'complete', '01'], projectDir);
+        const text = `${res.output || ''}${res.error || ''}`;
+
+        assert.equal(res.success, false, 'gaps_found must block completion');
+        assert.ok(
+          text.includes(`${prefix}plan-phase 01 --gaps`),
+          `phase complete must suggest ${prefix}plan-phase 01 --gaps on ${id}, got: ${text}`,
+        );
+        assert.ok(!text.includes('/gsd:'), `deprecated colon form leaked: ${text}`);
       } finally {
         cleanup(projectDir);
       }
