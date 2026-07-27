@@ -40,6 +40,32 @@ GSD detects this at the next run and surfaces a safe-resume gate with three opti
 - **Re-execute from scratch** — revert or supersede the partial commits before dispatching a new executor.
 - **Mark-and-skip** — record the anomaly and continue, only with your explicit confirmation.
 
+### If you see a "frontmatter opens with `---` but never closes" warning
+
+```
+gsd: warning — /path/.planning/STATE.md: frontmatter opens with "---" but never closes; metadata was NOT applied. (#1879)
+```
+
+The named file was written only partly — typically a crash, a full disk, or a killed process
+between the opening fence and the closing one. GSD read it as having **no** metadata and carried
+on, so any phase, plan, or state value that file was supposed to supply is missing from this run.
+
+1. Open the named file and check whether its frontmatter block is closed by a `---` line of its
+   own.
+2. If it is truncated, restore it — `git checkout -- <file>` if the file is tracked and the good
+   version is committed, or re-add the missing fields and the closing `---` by hand.
+3. Re-run the command that produced the warning. The warning is reported once per file per run,
+   so a silent re-run means the file now reads cleanly.
+
+The warning cannot be turned off, and it never changes what a command returns or its exit code —
+it only tells you a file could not be used.
+
+**A file can still be truncated without this warning.** GSD stays silent when the partial block
+carries fewer than two fields, or when the text after the opening `---` reads as prose rather than
+frontmatter, because a Markdown document that opens with a horizontal rule is indistinguishable
+from one of those. If a run behaves as though metadata is missing and you see no warning, inspect
+the file anyway.
+
 ---
 
 ## Diagnose the root cause
