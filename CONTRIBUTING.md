@@ -98,7 +98,7 @@ An ADR (Architecture Decision Record) documents a significant architectural deci
 
 **Do not compute a "next number" locally.** Any PR that uses the legacy `NNNN-*` sequential pattern for a *new* ADR or PRD will be asked to rename the file to the `<issue#>-<slug>.md` format before merge.
 
-**Example:** Issue #2264 was opened, approved, and its number became the prefix: `docs/adr/2264-golden-parity-redesign.md` on branch `docs/2264-golden-parity-redesign`.
+**Example:** Issue #2264 was opened, approved, and its number became the prefix: `docs/adr/2264-golden-parity-redesign.md`.
 
 **Rejection reasons:** Issue not approved before file was created, filename uses local-compute sequential number instead of issue#, multiple decisions bundled in one PR, file placed in wrong directory (`docs/adr/` vs `docs/prd/`).
 
