@@ -44,6 +44,8 @@ INIT=$(gsd_run query init.map-codebase 2>/dev/null || echo "{}")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
 
+Parse JSON for: `mapper_model`, `commit_docs`, `search_gitignored`, `parallelization`, `subagent_timeout`, `date`, `codebase_dir`, `existing_maps`, `has_maps`, `planning_exists`, `codebase_dir_exists`.
+
 Look up which documents would be produced for the selected focus (from the mapping table above).
 
 For each target document, check if it already exists in `.planning/codebase/`:
@@ -78,11 +80,13 @@ Print: `◆ Spawning scanner... (runs in a subagent — no output until it retur
 
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
+**#2517 model resolution:** `mapper_model` is the field `init.map-codebase` emits (parsed in Step 2) — this is the same binding `map-codebase.md` uses. **Omit the `model=` parameter entirely when `mapper_model` is `"inherit"` or empty**; do NOT pass `model=""` or `model="inherit"`, which 404s on non-Claude runtimes. Omitting inherits the orchestrator's model.
+
 ```
 Agent(
   prompt="Scan this codebase with focus: {focus}. Write results to {codebase_dir}/. Produce only: {document_list}",
   subagent_type="gsd-codebase-mapper",
-  model="{resolved_model}"
+  model="{mapper_model}"
 )
 ```
 

