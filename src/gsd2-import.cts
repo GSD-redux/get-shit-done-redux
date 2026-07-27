@@ -25,6 +25,9 @@ import { platformWriteSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import frontmatterMod = require('./frontmatter.cjs');
+const frontmatter = frontmatterMod as { stripFrontmatter(content: string): string };
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output } = ioMod;
 
@@ -283,9 +286,7 @@ function buildPlanMd(task: TaskInfo, phasePrefix: string, planPrefix: string, ph
  */
 function buildSummaryMd(task: TaskInfo, phasePrefix: string, planPrefix: string): string {
   const raw = task.summary || '';
-  // Strip GSD-2 frontmatter block (--- ... ---) if present
-  const bodyMatch = raw.match(/^---[\s\S]*?---\n+([\s\S]*)$/);
-  const body = bodyMatch ? bodyMatch[1].trim() : raw.trim();
+  const body = frontmatter.stripFrontmatter(raw).replace(/\r\n?/g, '\n').trim();
 
   return [
     '---',

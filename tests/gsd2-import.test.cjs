@@ -410,6 +410,37 @@ describe('buildPlanningArtifacts', () => {
     assert.ok(summary.includes('Init Project'));
   });
 
+  test('SUMMARY.md strips CRLF GSD-2 frontmatter the same as LF frontmatter', () => {
+    const gsdDir = makeGsd2Project(tmpDir);
+    const data = parseGsd2(gsdDir);
+    const task = data.milestones[0].slices[0].tasks[0];
+    const lfSummary = task.summary;
+
+    const lfArtifacts = buildPlanningArtifacts(data);
+    const lfOutput = lfArtifacts.get('phases/01-setup/01-01-SUMMARY.md');
+
+    task.summary = lfSummary.replace(/\n/g, '\r\n');
+    const crlfArtifacts = buildPlanningArtifacts(data);
+    const crlfOutput = crlfArtifacts.get('phases/01-setup/01-01-SUMMARY.md');
+
+    assert.strictEqual(crlfOutput, lfOutput);
+    assert.strictEqual((crlfOutput.match(/^---$/gm) || []).length, 2);
+    assert.ok(!crlfOutput.includes('completed_at:'));
+    assert.ok(crlfOutput.includes('Init Project'));
+  });
+
+  test('SUMMARY.md preserves summaries with no GSD-2 frontmatter', () => {
+    const gsdDir = makeGsd2Project(tmpDir);
+    const data = parseGsd2(gsdDir);
+    data.milestones[0].slices[0].tasks[0].summary = '# Plain summary\n\nNo frontmatter here.\n';
+
+    const artifacts = buildPlanningArtifacts(data);
+    const summary = artifacts.get('phases/01-setup/01-01-SUMMARY.md');
+
+    assert.ok(summary.includes('# Plain summary'));
+    assert.ok(summary.includes('No frontmatter here.'));
+  });
+
   test('config.json is valid JSON', () => {
     const gsdDir = makeGsd2Project(tmpDir);
     const data = parseGsd2(gsdDir);
