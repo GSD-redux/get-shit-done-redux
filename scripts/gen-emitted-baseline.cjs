@@ -16,16 +16,29 @@
  * ## What it does
  *
  * Builds the emitted manifest set (19 real installer spawns) and the workflow/agent size
- * maps for WHATEVER commit is currently checked out — this script does not know or care
- * whether that is `next` HEAD or a worktree checked out at an older ref; the caller
- * decides that by what it has checked out before running this script. Writes the result
- * to `--out <path>` (default `.gsd-cache/emitted-baseline.json`).
+ * maps for the tree at `--dir <path>` (default: THIS script's own checkout — i.e.
+ * whatever commit is currently checked out where `gen-emitted-baseline.cjs` itself
+ * lives). Writes the result to `--out <path>` (default `.gsd-cache/emitted-baseline.json`).
+ *
+ * `--dir` decouples "which copy of this script runs" from "which tree gets measured"
+ * (#2767). The MEASUREMENT SCHEMA — this script, and the `currentManifests`/
+ * `currentSizes`/`buildParityManifest` functions it calls — always comes from wherever
+ * `gen-emitted-baseline.cjs` itself is being run from (relative `require`s resolve
+ * there); only the tree being measured (which `bin/install.js` gets spawned, which
+ * `hooks/`/`gsd-core/workflows/`/`agents/` get read) moves to `--dir`. That is what lets
+ * a differential apply ONE definition of "the emitted manifest" to two different
+ * commits and stay comparable even as that definition evolves — see
+ * `tests/helpers/emitted-runtime.cjs`'s `buildBaselineAtRef` for the caller that
+ * exercises this for real, and why it must NOT run the `--dir` tree's own copy of this
+ * script (which may be an older version, or — for any base ref that predates the PR
+ * that added this script at all — may not exist there yet).
  *
  * ## Callers
  *
- *   1. CI's push-to-`next` job runs this straight after `next` advances, then uploads
- *      `.gsd-cache/emitted-baseline.json` as a cache entry keyed on the merge sha
- *      (.github/workflows/test.yml, `publish-emitted-baseline` job).
+ *   1. CI's push-to-`next` job runs this straight after `next` advances (no `--dir`,
+ *      measuring its own checkout), then uploads `.gsd-cache/emitted-baseline.json` as a
+ *      cache entry keyed on the merge sha (.github/workflows/test.yml,
+ *      `publish-emitted-baseline` job).
  *   2. `tests/emitted-attribution.test.cjs`'s real-tree test passes
  *      `buildBaselineAtRef` (tests/helpers/emitted-runtime.cjs) to `resolveBaseline()`
  *      as the `buildFallback` for a cache miss: it checks out `base` into a throwaway
@@ -33,8 +46,8 @@
  *      (this script and the test helpers are Node-builtins-only per CONTRIBUTING.md's
  *      "No external dependencies in core", but `tests/helpers/install-shared.cjs`
  *      requires the TSC-compiled, gitignored `gsd-core/bin/lib/*.cjs`, so that one build
- *      step is unavoidable), spawns `node gen-emitted-baseline.cjs --out <tmp>` there,
- *      then reads the artifact back.
+ *      step is unavoidable), then spawns THIS repo's OWN `gen-emitted-baseline.cjs`
+ *      with `--dir <worktree> --out <tmp>` and reads the artifact back.
  *
  * Every git subprocess is bounded (CLAUDE.md → KNOWN DEFECTS: unbounded subprocesses
  * hang CI silently).
@@ -61,9 +74,13 @@ function resolveHeadSha(cwd) {
 
 function parseArgs(argv) {
   let out = DEFAULT_OUT;
+  let dir = REPO_ROOT;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--out') {
       out = argv[i + 1];
+      i++;
+    } else if (argv[i] === '--dir') {
+      dir = argv[i + 1];
       i++;
     } else {
       throw new ExitError(2, `gen-emitted-baseline: unknown argument "${argv[i]}"`);
@@ -72,23 +89,40 @@ function parseArgs(argv) {
   if (!out || typeof out !== 'string') {
     throw new ExitError(2, 'gen-emitted-baseline: --out requires a path');
   }
-  return { out: path.isAbsolute(out) ? out : path.join(process.cwd(), out) };
+  if (!dir || typeof dir !== 'string') {
+    throw new ExitError(2, 'gen-emitted-baseline: --dir requires a path');
+  }
+  return {
+    out: path.isAbsolute(out) ? out : path.join(process.cwd(), out),
+    dir: path.isAbsolute(dir) ? dir : path.join(process.cwd(), dir),
+  };
 }
 
 async function main() {
-  const { out } = parseArgs(process.argv.slice(2));
+  const { out, dir } = parseArgs(process.argv.slice(2));
 
-  const sha = resolveHeadSha(REPO_ROOT);
+  if (!fs.existsSync(dir)) {
+    throw new ExitError(1, `gen-emitted-baseline: --dir "${dir}" does not exist`);
+  }
+
+  const sha = resolveHeadSha(dir);
   if (!/^[0-9a-f]{40}$/.test(sha)) {
-    throw new ExitError(1, `gen-emitted-baseline: HEAD did not resolve to a 40-hex sha: ${sha}`);
+    throw new ExitError(1, `gen-emitted-baseline: HEAD of "${dir}" did not resolve to a 40-hex sha: ${sha}`);
   }
 
   // hooks/dist is gitignored and built; a scoped CI checkout may not have run
-  // build:hooks yet. Idempotent, mirrors the real-tree test.
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe', timeout: 120_000 });
+  // build:hooks yet. Idempotent, mirrors the real-tree test. Built INSIDE `dir` — the
+  // MEASURED tree's own hooks/ source, not this script's — so a `--dir` pointed at a
+  // different checkout (e.g. a base-ref worktree) reflects that checkout's hooks, not
+  // the caller's. `dir === REPO_ROOT` (the default, no `--dir`) collapses to the
+  // pre-#2767 behavior of building this own repo's hooks/dist.
+  const buildScript = dir === REPO_ROOT ? BUILD_SCRIPT : path.join(dir, 'scripts', 'build-hooks.js');
+  execFileSync(process.execPath, [buildScript], { cwd: dir, encoding: 'utf-8', stdio: 'pipe', timeout: 120_000 });
 
-  const manifests = currentManifests();
-  const sizes = currentSizes();
+  // The measurement SCHEMA (currentManifests/currentSizes/buildParityManifest) is
+  // always THIS script's own — only the tree being measured moves with `repoRoot`.
+  const manifests = currentManifests({ repoRoot: dir });
+  const sizes = currentSizes({ repoRoot: dir });
 
   const artifact = { version: BASELINE_VERSION, sha, manifests, sizes };
 
@@ -98,7 +132,7 @@ async function main() {
   const familyCount = Object.keys(manifests).length;
   const sizeCount = Object.keys(sizes).length;
   process.stdout.write(
-    `gen-emitted-baseline: wrote ${out} (sha=${sha.slice(0, 12)}, ${familyCount} families, ${sizeCount} sized files)\n`,
+    `gen-emitted-baseline: wrote ${out} (dir=${dir}, sha=${sha.slice(0, 12)}, ${familyCount} families, ${sizeCount} sized files)\n`,
   );
   return 0;
 }
@@ -107,4 +141,4 @@ if (require.main === module) {
   runMain(main);
 }
 
-module.exports = { parseArgs, resolveHeadSha, DEFAULT_OUT };
+module.exports = { parseArgs, resolveHeadSha, DEFAULT_OUT, REPO_ROOT };

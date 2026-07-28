@@ -34,12 +34,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('fast-check');
 
-const { cleanup } = require('./helpers.cjs');
 const {
   EXPECTED_MANIFEST_COUNT,
   PROVENANCE_RULES,
   COMMANDS_SRC,
   CLINE_BODY_SRC,
+  HOOKS_WINDOWS_SHIM_SRC,
   KIMI_ROOT_AGENT_SRC,
   AGENT_TRANSFORM_SRCS,
   stripSkillPrefix,
@@ -100,9 +100,10 @@ test('every attributed source exists in the repo (identity/rewrite/derived rules
   // points at the wrong place. A source path that does not exist is proof the rule
   // is wrong, and it is how the three real bugs in this table were found.
   const missing = [];
+  const missingTransforms = [];
   for (const { runtime, file, keys } of manifests()) {
     for (const rel of keys) {
-      const { ruleId, kind, sources } = attributeEmittedPath(rel, runtime);
+      const { ruleId, kind, sources, transforms } = attributeEmittedPath(rel, runtime);
       if (kind === 'synthesized') {
         assert.equal(sources.length, 0, `synthesized rule "${ruleId}" must have no sources`);
         continue;
@@ -116,9 +117,23 @@ test('every attributed source exists in the repo (identity/rewrite/derived rules
         const full = path.join(REPO_ROOT, src);
         if (!fs.existsSync(full)) missing.push(`${file}: ${rel} -> ${src} (rule ${ruleId})`);
       }
+      // Same existence gate for `transforms` (#2757/#2767). This is what actually
+      // exercises a FUNCTION-valued transforms field (e.g. hooks-built's `.cmd`
+      // special-case) against every REAL emitted key on the platform that emits
+      // it — the static "every declared transform path exists" test below cannot
+      // do this for a function, since it never invokes it.
+      for (const t of transforms) {
+        const full = path.join(REPO_ROOT, t);
+        if (!fs.existsSync(full)) missingTransforms.push(`${file}: ${rel} -> ${t} (rule ${ruleId})`);
+      }
     }
   }
   assert.deepEqual(missing, [], `attributed sources that do not exist:\n  ${missing.slice(0, 10).join('\n  ')}`);
+  assert.deepEqual(
+    missingTransforms,
+    [],
+    `attributed transforms that do not exist:\n  ${missingTransforms.slice(0, 10).join('\n  ')}`,
+  );
 });
 
 // ─── Spot-checks: known emitted/source pairs (#2722 "add spot-check tests") ──
@@ -251,6 +266,45 @@ test('spot-check: hooks attribute to repo source, not the dist build artifact', 
   assert.deepEqual(reg.sources, [CLINE_BODY_SRC]);
 });
 
+test('spot-check: Windows-only .cmd shim attributes to the .js hook it wraps, not to itself (#3426/#2767)', () => {
+  // Regression coverage for the windows-latest-only CI failure: the shim is emitted
+  // ONLY when the installer actually runs on win32 (ensureCodexHooksJsonSessionStart /
+  // ensureCodexHooksJsonEvent), so this drives attributeEmittedPath directly rather
+  // than through `manifests()` — that keeps the test meaningful on every OS this
+  // suite runs on, not just the one CI lane that happens to emit the key for real.
+  //
+  // Verified empirically: zero `.cmd` files are tracked anywhere in the repo
+  // (`git ls-files | grep '\\.cmd$'` is empty), so the prior generic `hooks-built`
+  // attribution (source = the emitted path itself) resolved every `.cmd` shim to a
+  // file that exists on no platform — exactly the false-attribution class "every
+  // attributed source exists" exists to catch, and it only fired on windows-latest
+  // because that is the only lane where the key is ever actually emitted.
+  for (const name of ['gsd-check-update', 'gsd-context-monitor']) {
+    const got = attributeEmittedPath(`hooks/${name}.cmd`, 'codex');
+    assert.equal(got.ruleId, 'hooks-built');
+    assert.deepEqual(got.sources, [`hooks/${name}.js`]);
+    assert.ok(
+      !got.sources.includes(`hooks/${name}.cmd`),
+      'a .cmd shim must never attribute to itself — no .cmd file is ever tracked in the repo',
+    );
+    assert.ok(
+      fs.existsSync(path.join(REPO_ROOT, 'hooks', `${name}.js`)),
+      `precondition: hooks/${name}.js must exist for this attribution to be real, not just non-crashing`,
+    );
+    assert.deepEqual(got.transforms, [HOOKS_WINDOWS_SHIM_SRC]);
+    assert.ok(
+      fs.existsSync(path.join(REPO_ROOT, HOOKS_WINDOWS_SHIM_SRC)),
+      'the declared transform path must exist',
+    );
+  }
+
+  // A plain (non-.cmd) hook is unaffected: still a straight identity-shaped copy,
+  // still no transform (the shim generator cannot move a plain hook's bytes).
+  const plain = attributeEmittedPath('hooks/gsd-statusline.js', 'claude');
+  assert.deepEqual(plain.sources, ['hooks/gsd-statusline.js']);
+  assert.deepEqual(plain.transforms, []);
+});
+
 test('spot-check: cline rules are code-derived (attributable), not exempt', () => {
   for (const rel of ['.clinerules/gsd.md', '.clinerules/hooks/PreToolUse']) {
     const got = attributeEmittedPath(rel, 'cline');
@@ -298,6 +352,38 @@ test('a rule with no transforms field still returns an empty array, never undefi
   assert.deepEqual(got.transforms, [], 'absence of transforms must be a stable empty array, not undefined');
 });
 
+test('a FUNCTION-valued transforms field is invoked with (match, ctx) and its array is returned', () => {
+  // hooks-built's `.cmd` special-case exercises this in production, but this test
+  // pins the general contract with an injected rule so it does not depend on
+  // hooks-built's specific pattern surviving a future refactor.
+  const rules = [{
+    id: 'fn-transforms-probe',
+    kind: 'derived',
+    roots: ['probe'],
+    pattern: /^(.+)$/,
+    sources: (m) => [`probe/${m[1]}`],
+    transforms: (m, ctx) => [`transform-for-${m[1]}-on-${ctx.runtime}`],
+  }];
+  const got = attributeEmittedPath('probe/thing.txt', 'claude', rules);
+  assert.deepEqual(got.transforms, ['transform-for-thing.txt-on-claude']);
+});
+
+test('a FUNCTION-valued transforms field that returns a non-array throws, naming the rule', () => {
+  const rules = [{
+    id: 'bad-fn-transforms',
+    kind: 'derived',
+    roots: ['probe'],
+    pattern: /^(.+)$/,
+    sources: (m) => [`probe/${m[1]}`],
+    transforms: () => 'not-an-array',
+  }];
+  assert.throws(
+    () => attributeEmittedPath('probe/thing.txt', 'claude', rules),
+    (err) => err.message.includes('bad-fn-transforms') && err.message.includes('array'),
+    'a malformed transforms() return value must fail loud and name the rule',
+  );
+});
+
 test('every declared transform path exists in the repo', () => {
   // Same philosophy as "every attributed source exists in the repo": a transform path
   // that does not exist is proof the rule (or the design's own suggested files) is
@@ -305,6 +391,11 @@ test('every declared transform path exists in the repo', () => {
   // design: it does not exist in this tree.
   const missing = [];
   for (const rule of PROVENANCE_RULES) {
+    // Function-valued transforms (#2767, e.g. hooks-built's `.cmd` special-case) vary
+    // per match and can't be enumerated statically without one — they are checked
+    // against every REAL emitted key instead, by "every attributed source exists in
+    // the repo" above (which now also asserts transform-path existence).
+    if (typeof rule.transforms === 'function') continue;
     for (const t of rule.transforms || []) {
       if (!fs.existsSync(path.join(REPO_ROOT, t))) missing.push(`${rule.id}: ${t}`);
     }
@@ -327,6 +418,21 @@ test('assertNoIdentityTransforms rejects an identity rule declaring transforms, 
     () => assertNoIdentityTransforms(corrupted),
     (err) => err.message.includes('scripts-verbatim') && err.message.includes('identity'),
     'the offending rule id must be named',
+  );
+});
+
+test('assertNoIdentityTransforms rejects a FUNCTION-valued transforms on an identity rule (#2767)', () => {
+  // hooks-built's `.cmd` special-case (this PR) proved `transforms` can legally be a
+  // function on a `derived` rule. This pins the other half: the function form must be
+  // rejected on `identity` exactly like the array form is — an identity copy's bytes
+  // can only move when its source moves, regardless of which shape declares otherwise.
+  const corrupted = PROVENANCE_RULES.map((r) => (
+    r.id === 'scripts-verbatim' ? { ...r, transforms: () => ['scripts/build-hooks.js'] } : r
+  ));
+  assert.throws(
+    () => assertNoIdentityTransforms(corrupted),
+    (err) => err.message.includes('scripts-verbatim') && err.message.includes('identity'),
+    'a function-valued transforms on an identity rule must be named and rejected',
   );
 });
 

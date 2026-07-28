@@ -743,6 +743,75 @@ test('an unreadable baseline surfaces an error', () => {
   assert.match(r.errors.join('\n'), /injected read failure/);
 });
 
+// ─── buildBaselineAtRef: the in-job build must bootstrap without its own generator ──
+
+test(
+  'buildBaselineAtRef resolves a baseline via the in-job build even when the generator '
+  + 'script is absent at the ref (#2767 regression)',
+  { timeout: 300_000 },
+  (t) => {
+    // Mirrors "differential attribution over the real tree": install output is
+    // platform-specific on Windows, and this drives the same heavy worktree +
+    // build:lib + 19-installer pipeline.
+    if (process.platform === 'win32') {
+      t.skip('emitted parity is asserted on macOS + Linux; Windows install output is platform-specific');
+      return;
+    }
+
+    const resolved = resolveBase();
+    if (!resolved) {
+      t.skip(
+        'no base ref resolvable — tried ' + baseRefCandidates().join(', ') +
+        '. Same environmental gap "differential attribution over the real tree" documents.',
+      );
+      return;
+    }
+    const { ref, sha } = resolved;
+
+    // Precondition, ASSERTED not assumed. Before the #2767 fix, `buildBaselineAtRef`
+    // unconditionally ran `<worktreeDir>/scripts/gen-emitted-baseline.cjs` — the
+    // WORKTREE'S OWN copy of the generator this PR adds. Any ref checked out into that
+    // worktree BEFORE this PR merged (which is exactly what `origin/next` is at the
+    // time this test was written — verified via `git cat-file -e`, not assumed) has no
+    // such file, so the old code failed closed on every single call with `Cannot find
+    // module`, which is precisely the CI failure this fix addresses. Once this PR has
+    // merged, EVERY `next` onward carries the script, so the bug this test targets
+    // stops being reproducible against a fresh `origin/next` — an honest, self-
+    // documented skip is the correct response then, not a false failure and not a
+    // stale hardcoded assumption that `ref` will forever lack the file.
+    let hasGeneratorAtRef;
+    try {
+      execFileSync('git', ['cat-file', '-e', `${ref}:scripts/gen-emitted-baseline.cjs`], {
+        encoding: 'utf8', timeout: 30_000, stdio: 'pipe',
+      });
+      hasGeneratorAtRef = true;
+    } catch {
+      hasGeneratorAtRef = false;
+    }
+    if (hasGeneratorAtRef) {
+      t.skip(
+        `${ref}@${sha.slice(0, 12)} already carries scripts/gen-emitted-baseline.cjs — the ` +
+        '#2767 bug this test targets is not reproducible against it. Expected once this PR ' +
+        'has merged into next; not a coverage gap introduced here.',
+      );
+      return;
+    }
+
+    // The actual regression assertion: this must NOT throw "Cannot find module", and
+    // must produce a well-formed baseline artifact measuring the ref, not the caller's
+    // own tree — `sha` below is `ref`'s real HEAD, read from INSIDE the worktree.
+    const artifact = buildBaselineAtRef(ref);
+    assert.equal(artifact.version, BASELINE_VERSION);
+    assert.equal(artifact.sha, sha, 'the artifact must report the REF\'s sha, not the caller checkout\'s');
+    assert.ok(artifact.manifests && typeof artifact.manifests === 'object');
+    assert.ok(
+      Object.keys(artifact.manifests).length >= MINIMUM_MANIFEST_FAMILIES,
+      `expected at least ${MINIMUM_MANIFEST_FAMILIES} manifest families, got ${Object.keys(artifact.manifests).length}`,
+    );
+    assert.ok(artifact.sizes && Object.keys(artifact.sizes).length > 0, 'sizes must be non-empty');
+  },
+);
+
 test('readAckFile: absent is legal, malformed and unreadable are not', () => {
   const tmp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-ack-'));
   try {

@@ -379,20 +379,39 @@ function baselineManifestsAtRef(base = 'origin/next') {
 
 /**
  * Build the baseline artifact at `ref` FOR REAL — a throwaway `git worktree` checked
- * out at `ref`, running `scripts/gen-emitted-baseline.cjs` there (#2724, ADR-2719 §5's
- * "in-job build at origin/next" fallback).
+ * out at `ref`, MEASURED by `cwd`'s (the calling checkout's) OWN
+ * `scripts/gen-emitted-baseline.cjs` (#2724/#2767, ADR-2719 §5's "in-job build at
+ * origin/next" fallback).
  *
- * This is the slow path, used only on a `resolveBaseline()` cache miss. It needs no
- * `npm ci` in the worktree: `bin/install.js`, the `tests/helpers/*.cjs` real-tree
- * shells, and `gen-emitted-baseline.cjs` itself are all Node-builtins-only
- * (CONTRIBUTING.md's "No external dependencies in core"). It DOES need `npm run
- * build:lib` run there first, though — `tests/helpers/install-shared.cjs` requires the
- * TSC-COMPILED `gsd-core/bin/lib/runtime-artifact-layout.cjs`, which is gitignored, not
- * committed, and therefore absent from a bare worktree checkout. `node_modules` is
- * symlinked in from the calling checkout (never copied — `npm ci` inside every
+ * ── Why the generator runs from `cwd`, not from the worktree ─────────────────────
+ * `scripts/gen-emitted-baseline.cjs` was ADDED by the same PR that deleted the golden
+ * fixtures this fallback used to read instead (#2724). A base ref that predates that PR
+ * — which is every `next` this fallback is ever asked to measure, since the fallback
+ * only runs on a cache miss for a ref that has not been through the publish job yet —
+ * therefore never has the script at `<worktreeDir>/scripts/gen-emitted-baseline.cjs`,
+ * and invoking it there fails closed with `Cannot find module` on every single call: the
+ * fallback could never bootstrap. Running `cwd`'s copy instead, with `--dir worktreeDir`
+ * telling it WHICH tree's installer to measure, isn't merely the workaround for that —
+ * it is the more correct differential semantics regardless: a diff needs ONE measurement
+ * schema applied to BOTH sides, or the sides stop being comparable the moment that
+ * schema evolves (a new exclusion rule, a new manifest family) between the two commits.
+ * Letting each side measure itself with its own, potentially different, version of the
+ * script would silently reintroduce exactly that incomparability.
+ *
+ * This is the slow path, used only on a `resolveBaseline()` cache miss. The worktree
+ * needs no `npm ci`: `bin/install.js` and the `tests/helpers/*.cjs` real-tree shells are
+ * all Node-builtins-only (CONTRIBUTING.md's "No external dependencies in core"). It DOES
+ * need `npm run build:lib` run there first, though — `tests/helpers/install-shared.cjs`
+ * requires the TSC-COMPILED `gsd-core/bin/lib/runtime-artifact-layout.cjs`, which is
+ * gitignored, not committed, and therefore absent from a bare worktree checkout, and
+ * `<worktreeDir>/bin/install.js` (spawned BY `cwd`'s generator via `currentManifests`'s
+ * `repoRoot` override) needs its own compiled copy alongside it, not `cwd`'s. `node_modules`
+ * is symlinked in from the calling checkout (never copied — `npm ci` inside every
  * fallback build would make an already-slow path far slower) so `tsc` is available
  * without a second install; the worktree's OWN `src/*.cts` and `tsconfig.build.json`
- * are what gets compiled, so the baseline reflects `ref`, not the caller's tree.
+ * are what gets compiled, so the MEASURED installer reflects `ref`, not `cwd`'s tree —
+ * only the measurement CODE (the generator, install-shared.cjs, emitted-runtime.cjs)
+ * comes from `cwd`.
  *
  * Every subprocess is bounded. The worktree is always removed, success or failure —
  * a leaked worktree would poison `git worktree list` for every subsequent run in the
@@ -400,7 +419,7 @@ function baselineManifestsAtRef(base = 'origin/next') {
  *
  * @param {string} ref     the ref/sha to build at (e.g. `origin/next`, a 40-hex sha)
  * @param {object} [o]
- * @param {string} [o.cwd] repo to run `git worktree` from
+ * @param {string} [o.cwd] repo to run `git worktree` from AND whose generator measures it
  * @returns {object} the parsed baseline artifact ({version, sha, manifests, sizes})
  */
 function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
@@ -428,10 +447,12 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
       cwd: worktreeDir, encoding: 'utf8', timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
     });
 
+    // Run `cwd`'s OWN generator (not the worktree's — see the function doc for why),
+    // pointed at the worktree as the tree to measure.
     execFileSync(
       process.execPath,
-      [path.join(worktreeDir, 'scripts', 'gen-emitted-baseline.cjs'), '--out', outFile],
-      { cwd: worktreeDir, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+      [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
+      { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
     );
 
     const raw = fs.readFileSync(outFile, 'utf8');
@@ -481,11 +502,23 @@ function baselineSizesAtRef(base = 'origin/next') {
  * Build the CURRENT emitted manifest set for real — one installer spawn per runtime.
  * This is the expensive, honest half: it reflects what the tree actually emits now,
  * not what the author regenerated into a fixture.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot] - Measure a DIFFERENT checkout's installer instead of
+ *   this one's (#2767). When set, `<repoRoot>/bin/install.js` is spawned rather than
+ *   THIS checkout's `bin/install.js` — the measurement schema (this function, the
+ *   exclusion rules in install-shared.cjs) stays fixed at the caller's version while the
+ *   installer code being measured varies. This is what lets `gen-emitted-baseline.cjs`
+ *   apply ONE definition of "the emitted manifest" to two different trees (PR HEAD and a
+ *   base-ref worktree) so the two sides stay comparable even if the definition itself
+ *   evolves — running the OTHER tree's own (older, or absent) copy of this function would
+ *   defeat that.
  */
-function currentManifests() {
+function currentManifests({ repoRoot } = {}) {
+  const installScript = repoRoot ? path.join(repoRoot, 'bin', 'install.js') : undefined;
   const manifests = {};
   for (const { name, runtime, scope } of MANIFEST_FAMILIES) {
-    const { configDir, root } = runMinimalInstall({ runtime, scope });
+    const { configDir, root } = runMinimalInstall({ runtime, scope, installScript });
     try {
       manifests[name] = buildParityManifest(configDir, root);
     } finally {
@@ -495,12 +528,18 @@ function currentManifests() {
   return manifests;
 }
 
-/** Current on-disk sizes for the workflow + agent families the ratchet covers. */
-function currentSizes() {
+/**
+ * Current on-disk sizes for the workflow + agent families the ratchet covers.
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot] - Read `<repoRoot>/gsd-core/workflows` and
+ *   `<repoRoot>/agents` instead of this checkout's own (#2767) — same rationale as
+ *   `currentManifests`'s `repoRoot`.
+ */
+function currentSizes({ repoRoot = REPO_ROOT } = {}) {
   const sizes = {};
   for (const [dir, filter] of [
-    [path.join(REPO_ROOT, 'gsd-core', 'workflows'), (f) => f.endsWith('.md')],
-    [path.join(REPO_ROOT, 'agents'), (f) => f.endsWith('.md')],
+    [path.join(repoRoot, 'gsd-core', 'workflows'), (f) => f.endsWith('.md')],
+    [path.join(repoRoot, 'agents'), (f) => f.endsWith('.md')],
   ]) {
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
