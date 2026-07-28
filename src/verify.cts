@@ -11,7 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { phaseVariants, buildRoadmapPhaseVariants, buildNotStartedPhaseVariants } from './validate.cjs';
 import { realClock } from './clock.cjs';
-import { phaseDirNameRe, PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE, canonicalPlanStem, textEncodingError } from './validate.cjs';
+import { MILESTONE_ARCHIVE_DIR_RE, canonicalPlanStem, isPhaseDirName, phaseTokenFromDir, textEncodingError } from './validate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -27,7 +27,7 @@ import { PACKAGE_NAME } from './package-identity.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { detectSchemaFiles, checkSchemaDrift } from './schema-detect.cjs';
 import { isCanonicalPlanningFile } from './artifacts.cjs';
-import { extractTaggedBlocks } from './markdown-sectionizer.cjs';
+import { extractTaggedBlocks, tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { VALID_PROFILES, VALID_TIERS, VALID_PHASE_TYPES } from './model-catalog.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
@@ -40,7 +40,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum } = phaseIdMod;
+const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum, isSentinelPhaseId, foldBracketId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, BRACKET_ID_SRC, BRACKET_MILESTONE_NUMERIC_SRC, SENTINEL_RANGES } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -54,7 +54,7 @@ const { inspectWorktreeHealth } = worktreeSafetyMod;
 import commandsMod = require('./commands.cjs');
 const { determinePhaseStatus } = commandsMod;
 
-const { planningDir, planningRoot } = planningWorkspace;
+const { planningDir, planningRoot, resolvePhaseIdConvention } = planningWorkspace;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
 const { writeStateMd } = stateMod;
 const { MODEL_PROFILES } = modelProfilesMod;
@@ -1287,14 +1287,17 @@ function listMilestoneArchiveDirs(planBase: string): string[] {
   }
 }
 
-function forEachArchivedPhaseToken(planBase: string, onPhase: (token: string) => void): void {
+// #612: `convention` reaches these dir scanners so a bracket repo's
+// `{CODE}.{MM}-{PP}-slug` directories resolve. Module-internal helpers, so the
+// parameter is additive with no cross-module signature change.
+function forEachArchivedPhaseToken(planBase: string, onPhase: (token: string) => void, convention?: string | null): void {
   for (const archiveDir of listMilestoneArchiveDirs(planBase)) {
     try {
       const entries = fs.readdirSync(archiveDir, { withFileTypes: true });
       for (const e of entries) {
         if (!e.isDirectory()) continue;
-        const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-        if (m) onPhase(m[1]);
+        const token = phaseTokenFromDir(e.name, convention);
+        if (token) onPhase(token);
       }
     } catch {
       /* archive dir absent/unreadable */
@@ -1335,7 +1338,7 @@ function collectPhaseRoots(planBase: string): string[] {
   return roots;
 }
 
-function collectDiskPhases(planBase: string): Set<string> {
+function collectDiskPhases(planBase: string, convention?: string | null): Set<string> {
   const diskPhases = new Set<string>();
   const phaseRoots = collectPhaseRoots(planBase);
   const scanDir = (dir: string) => {
@@ -1343,8 +1346,8 @@ function collectDiskPhases(planBase: string): Set<string> {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       for (const e of entries) {
         if (e.isDirectory()) {
-          const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-          if (m) diskPhases.add(m[1]);
+          const token = phaseTokenFromDir(e.name, convention);
+          if (token) diskPhases.add(token);
         }
       }
     } catch {
@@ -1395,6 +1398,108 @@ function checkMilestonePrefixMismatches(
   return mismatches;
 }
 
+interface BracketIncoherence {
+  kind: 'mismatch' | 'missing-bracket';
+  phaseId: string;
+  /** The milestone integer of the enclosing `## [CODE.MM] Name` section. */
+  sectionMilestone: string;
+  /** The milestone integer the phase heading itself carries (mismatch only). */
+  phaseMilestone: string;
+}
+
+/**
+ * Bracket-coherence check (#612). ADVISORY, and invoked ONLY under
+ * `phase_id_convention === 'bracket'`. Two sub-checks, both surfaced as W021:
+ *   (1) a phase whose in-bracket milestone differs from its enclosing section's;
+ *   (2) a phase heading not in bracket form under a repo that opted into bracket.
+ * Sentinel milestones are exempt — they have no real milestone to cohere with.
+ *
+ * Anchored to tokenizeHeadings(): the tokenizer strips fenced code blocks, so a
+ * bracket heading inside a ```markdown example cannot raise a warning, and it
+ * yields the heading LEVEL so section-vs-phase is structural rather than a
+ * hash-counting regex.
+ *
+ * SCOPE RULES, all three load-bearing:
+ *   - Only a genuine MILESTONE heading opens or closes a section. A `### Notes`
+ *     is not a section boundary; treating any non-phase heading as one meant a
+ *     single prose heading silently disabled both sub-checks for every phase
+ *     after it.
+ *   - A legacy `## v3.0` milestone heading CLOSES the bracket section, so a
+ *     phase under it is out of scope rather than compared against — and reported
+ *     against — a section it is not in.
+ *   - An M-NN or letter-suffixed phase heading (`### Phase 2-01:`, `### Phase 12A:`)
+ *     raises missing-bracket AND CONTINUES. Treating it as a section reset let a
+ *     single M-NN heading — the exact mid-migration content this epic targets —
+ *     silently disable the whole check.
+ *
+ * A bare `### 2026:` with no `Phase` label and no bracket is NOT a phase heading
+ * and raises nothing; the previous rule flagged year and version headings as
+ * phases needing migration.
+ */
+function checkBracketCoherence(roadmapContent: string): BracketIncoherence[] {
+  const incoherences: BracketIncoherence[] = [];
+  const isSentinel = (n: number) => SENTINEL_RANGES.includes(n);
+  const pad2 = (n: number) => (Number.isSafeInteger(n) ? String(n).padStart(2, '0') : 'unknown');
+
+  // A bracket PHASE heading: `### [CODE.MM] 05:` or `### [CODE.MM] Phase 5:`.
+  const bracketPhaseRe = new RegExp(`^\\[(${BRACKET_ID_SRC})\\][ \\t]*(?:Phase\\s+)?(${PHASE_NUMBER_TOKEN_SOURCE})\\s*:`, 'i');
+  // A NON-bracket phase heading — requires the literal `Phase` label, so a bare
+  // `2026:` year heading is not a phase. Token is the full phase-number grammar
+  // so M-NN and letter-suffixed ids are RECOGNIZED (and flagged), not skipped.
+  const legacyPhaseRe = new RegExp(`^Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE}|\\d+(?:-\\d+)+[A-Z]?(?:\\.\\d+)*)\\s*:`, 'i');
+  // A bracket MILESTONE section heading.
+  const bracketSectionRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\]`, 'i');
+  // A legacy milestone section heading (`## v2.0 — Name`).
+  const legacyMilestoneRe = /^v\d+(?:\.\d+)*\b/i;
+
+  let sectionMilestone: number | null = null;
+  for (const heading of tokenizeHeadings(roadmapContent)) {
+    const text = heading.text.trim();
+    const bracketPhase = text.match(bracketPhaseRe);
+    const legacyPhase = bracketPhase ? null : text.match(legacyPhaseRe);
+    const isPhaseHeading = Boolean(bracketPhase || legacyPhase);
+
+    if (!isPhaseHeading && heading.level <= 3) {
+      const bracketSection = text.match(bracketSectionRe);
+      if (bracketSection) {
+        const mm = parseInt(bracketSection[1], 10);
+        sectionMilestone = Number.isSafeInteger(mm) ? mm : null;
+        continue;
+      }
+      // Only a MILESTONE heading closes the section. Any other heading (`### Notes`,
+      // `## Backlog`) leaves the scope exactly as it was.
+      if (legacyMilestoneRe.test(text.replace(/^\[[^\]]{0,200}\][ \t]*/, ''))) sectionMilestone = null;
+      continue;
+    }
+    if (!isPhaseHeading) continue;
+    if (sectionMilestone === null || isSentinel(sectionMilestone)) continue;
+
+    if (bracketPhase) {
+      const folded = foldBracketId(bracketPhase[1]);
+      const dot = folded.lastIndexOf('.');
+      const phaseMilestone = parseInt(folded.slice(dot + 1), 10);
+      if (!Number.isSafeInteger(phaseMilestone) || isSentinel(phaseMilestone)) continue;
+      if (phaseMilestone !== sectionMilestone) {
+        incoherences.push({
+          kind: 'mismatch',
+          phaseId: bracketPhase[2],
+          sectionMilestone: pad2(sectionMilestone),
+          phaseMilestone: pad2(phaseMilestone),
+        });
+      }
+      continue;
+    }
+
+    incoherences.push({
+      kind: 'missing-bracket',
+      phaseId: legacyPhase![1],
+      sectionMilestone: pad2(sectionMilestone),
+      phaseMilestone: pad2(sectionMilestone),
+    });
+  }
+  return incoherences;
+}
+
 interface IssueEntry {
   code: string;
   message: string;
@@ -1417,12 +1522,22 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
   const roadmapContentRaw = fs.readFileSync(roadmapPath, 'utf-8');
   const roadmapContent = extractCurrentMilestone(roadmapContentRaw, cwd);
 
-  const { roadmapPhases } = buildRoadmapPhaseVariants(roadmapContent);
-  const { roadmapPhaseVariants: fullRoadmapPhaseVariants } = buildRoadmapPhaseVariants(roadmapContentRaw);
+  // #612: ONE federated resolution (workstream -> root). Reading it from the
+  // workstream base here while health read it from the root split this command
+  // against itself on workstream repos: the ROADMAP read widened and the
+  // directory read did not, so every bracket phase reported missing from disk.
+  const convention = resolvePhaseIdConvention(cwd);
+  const { roadmapPhases, sentinelPhases } = buildRoadmapPhaseVariants(roadmapContent, convention);
+  const { roadmapPhaseVariants: fullRoadmapPhaseVariants } = buildRoadmapPhaseVariants(roadmapContentRaw, convention);
 
-  const diskPhases = collectDiskPhases(planBase);
+  const diskPhases = collectDiskPhases(planBase, convention);
 
   for (const p of roadmapPhases) {
+    // #612: a backlog/icebox phase legitimately has no directory. `sentinelPhases`
+    // is empty unless the bracket convention is active, so the legacy reading —
+    // including its pre-existing wart that `### Phase 999:` still warns here
+    // while `validate health` suppresses it — is untouched.
+    if (sentinelPhases.has(p)) continue;
     if (!diskPhases.has(p) && !diskPhases.has(normalizePhaseName(p))) {
       warnings.push(`Phase ${p} in ROADMAP.md but no directory on disk`);
     }
@@ -1544,6 +1659,9 @@ function cmdValidateHealth(
   const roadmapPath = path.join(wsBase, 'ROADMAP.md');
   const statePath = path.join(wsBase, 'STATE.md');
   const configPath = path.join(rootBase, 'config.json');
+  // #612: resolved ONCE, federated workstream -> root, and shared by the phase
+  // readers below and the W021 gates further down, so no two of them can split.
+  const phaseConvention = resolvePhaseIdConvention(cwd);
   const phasesDir = path.join(wsBase, 'phases');
   const _slashRuntime = resolveRuntime(cwd);
   const slash = (name: string) => formatGsdSlash(name, _slashRuntime) as string;
@@ -1604,7 +1722,7 @@ function cmdValidateHealth(
     ].map(
       (m) => m[1],
     );
-    const validPhases = collectDiskPhases(planBase);
+    const validPhases = collectDiskPhases(planBase, phaseConvention);
     try {
       if (fs.existsSync(roadmapPath)) {
         const roadmapRaw = fs.readFileSync(roadmapPath, 'utf-8');
@@ -1616,7 +1734,7 @@ function cmdValidateHealth(
     } catch {
       /* intentionally empty */
     }
-    forEachArchivedPhaseToken(planBase, (token) => validPhases.add(token));
+    forEachArchivedPhaseToken(planBase, (token) => validPhases.add(token), phaseConvention);
     const normalizedValid = new Set<string>();
     for (const p of validPhases) {
       normalizedValid.add(p);
@@ -1753,7 +1871,7 @@ function cmdValidateHealth(
   }
 
   for (const e of phaseDirEntries) {
-    if (!e.name.match(phaseDirNameRe)) {
+    if (!isPhaseDirName(e.name, phaseConvention)) {
       addIssue(
         'warning',
         'W005',
@@ -1895,16 +2013,16 @@ function cmdValidateHealth(
     const roadmapContentRaw = fs.readFileSync(roadmapPath, 'utf-8');
     const roadmapContent = extractCurrentMilestone(roadmapContentRaw, cwd);
 
-    const { roadmapPhases } = buildRoadmapPhaseVariants(roadmapContent);
+    const { roadmapPhases } = buildRoadmapPhaseVariants(roadmapContent, phaseConvention);
     const { roadmapPhaseVariants: fullRoadmapPhaseVariants } =
-      buildRoadmapPhaseVariants(roadmapContentRaw);
+      buildRoadmapPhaseVariants(roadmapContentRaw, phaseConvention);
 
-    const diskPhases = collectDiskPhases(planBase);
-    forEachArchivedPhaseToken(planBase, (token) => diskPhases.add(token));
+    const diskPhases = collectDiskPhases(planBase, phaseConvention);
+    forEachArchivedPhaseToken(planBase, (token) => diskPhases.add(token), phaseConvention);
 
-    const activeDiskPhases = collectDiskPhases(planBase);
+    const activeDiskPhases = collectDiskPhases(planBase, phaseConvention);
 
-    const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent);
+    const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent, phaseConvention);
 
     for (const p of roadmapPhases) {
       const variants = phaseVariants(p);
@@ -2101,7 +2219,11 @@ function cmdValidateHealth(
   }
 
   try {
-    const phaseConvention = (() => {
+    // The shipped milestone-prefixed gate reads the ROOT config only, exactly as
+    // it did before this PR. Federating it silently moved a legacy convention's
+    // answer in BOTH directions on workstream repos — a W021 that fires at base
+    // vanishing, and one that is silent at base firing.
+    const rootConvention = (() => {
       if (!fs.existsSync(configPath)) return null;
       try {
         const configRaw = fs.readFileSync(configPath, 'utf-8');
@@ -2111,7 +2233,7 @@ function cmdValidateHealth(
         return null;
       }
     })();
-    if (phaseConvention === 'milestone-prefixed') {
+    if (rootConvention === 'milestone-prefixed') {
       if (fs.existsSync(roadmapPath)) {
         const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
         const mismatches = checkMilestonePrefixMismatches(roadmapContent, {
@@ -2125,6 +2247,20 @@ function cmdValidateHealth(
             'Run `gsd-tools roadmap upgrade --convention milestone-prefixed` to migrate (dry-run by default)',
           );
         }
+      }
+    }
+    // #612: an additive sibling branch — the milestone-prefixed branch above is
+    // untouched. Gated strictly on the ACTIVE convention (never on project_code
+    // presence): reads are selected per convention, and a CHECK that can fail a
+    // repo only runs for the convention that repo opted into.
+    if (phaseConvention === 'bracket' && fs.existsSync(roadmapPath)) {
+      const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
+      for (const mm of checkBracketCoherence(roadmapContent)) {
+        const message = mm.kind === 'missing-bracket'
+          ? `Phase ${mm.phaseId}: heading is not in bracket form under the 'bracket' convention (expected \`[CODE.${mm.sectionMilestone}] ${mm.phaseId}:\`)`
+          : `Phase ${mm.phaseId}: bracket milestone ${mm.phaseMilestone} does not match its section milestone ${mm.sectionMilestone}`;
+        addIssue('warning', 'W021', message,
+          'Run `gsd-tools roadmap upgrade --convention bracket` to migrate (dry-run by default)');
       }
     }
   } catch {
@@ -2196,7 +2332,14 @@ function cmdValidateHealth(
         const roadmapRaw = fs.readFileSync(roadmapPath, 'utf-8');
         const scopedContent = extractCurrentMilestone(roadmapRaw, cwd);
         // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-        const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+        // #612: this check is convention-AGNOSTIC in posture — bug-557 pins it
+        // with an empty config, so it fires on every repo — but its heading
+        // grammar is still SELECTED, not widened. Inferring 'bracket' from the
+        // shape of a matched bracket would run a repo-failing check against a
+        // repo that never opted in: a legacy ROADMAP containing
+        // `### [RFC.2119] 5:` gained both a W006 and this W021.
+        const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, phaseConvention, true)}(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+        const bracketGroup = phaseConvention === 'bracket' ? 1 : 0;
         const unstarted: string[] = [];
         let pm: RegExpExecArray | null;
         // Non-hoisted: load-order matters (circular dep guard)
@@ -2214,9 +2357,16 @@ function cmdValidateHealth(
           }
         })();
         while ((pm = phasePattern.exec(scopedContent)) !== null) {
-          const phaseNum = pm[1];
+          const bracketId = bracketGroup ? pm[1] : undefined;
+          const phaseNum = pm[1 + bracketGroup];
+          // A bracket sentinel is an icebox item, not an unstarted phase.
+          if (bracketId && isSentinelPhaseId(`${bracketId}-${phaseNum}`, 'bracket')) continue;
           const normalizedPh = normalizePhaseName(phaseNum);
-          const hasDirectory = phaseDirNames2.some((d) => phaseTokenMatches(d, normalizedPh));
+          // The directory read widens with the heading read or every bracket
+          // phase resolves to nothing, reads as unstarted, and this UNGATED
+          // warning false-fires on any bracket repo whose STATE says the
+          // milestone is complete.
+          const hasDirectory = phaseDirNames2.some((d) => phaseTokenMatches(d, normalizedPh, phaseConvention));
           if (!hasDirectory) {
             unstarted.push(phaseNum);
           }

@@ -449,6 +449,118 @@ describe('#612 PR-2: directory recognition is convention-gated', () => {
   });
 });
 
+// ─── G6: validate consistency suppresses bracket sentinels ─────────────────
+
+describe('#612 PR-2: bracket sentinels do not warn as missing directories', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-consist-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const consistencyWarnings = () => {
+    const r = runGsdTools(['validate', 'consistency'], tmpDir);
+    return (JSON.parse(r.output).warnings || []).filter(w => /no directory on disk/.test(w));
+  };
+
+  test('an icebox bracket phase is not reported as missing from disk', () => {
+    // validate health suppressed these via notStartedPhases while consistency
+    // did not, so the two verbs disagreed on the same repo.
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [gsd.999] 07: Icebox
+**Goal:** a
+
+### [GSD.999] 08: Icebox
+**Goal:** b
+
+### [GSD.02] 01: Real
+**Goal:** c
+`, 'bracket');
+    assert.deepEqual(
+      consistencyWarnings().filter(w => /\b0[78]\b/.test(w)), [],
+      'sentinel phases legitimately have no directory',
+    );
+  });
+
+  test('a real bracket phase with no directory still warns', () => {
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 09: Real but absent
+**Goal:** a
+`, 'bracket');
+    const w = consistencyWarnings();
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 09/);
+  });
+
+  test('INHERITED WART, unchanged: a legacy `### Phase 999:` still warns here', () => {
+    // Base behaviour, disclosed rather than fixed — the legacy path stays
+    // byte-identical, so the pre-existing disagreement between the two verbs
+    // survives on legacy repos exactly as it does today.
+    write(`# Roadmap
+
+## v2.0
+
+### Phase 999: Backlog
+**Goal:** a
+`, undefined);
+    const w = consistencyWarnings();
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 999/);
+  });
+});
+
+describe('#612 PR-2: sentinel suppression is occurrence-aware', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-occ-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const consistencyWarnings = () => {
+    const r = runGsdTools(['validate', 'consistency'], tmpDir);
+    return (JSON.parse(r.output).warnings || []).filter(w => /no directory on disk/.test(w));
+  };
+
+  test('a token borne ONLY by an icebox heading is suppressed', () => {
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.999] 07: Icebox only
+**Goal:** a
+
+### [GSD.02] 02: Real two
+**Goal:** b
+`, 'bracket');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', 'GSD.02-02-real-two'), { recursive: true });
+    assert.deepEqual(consistencyWarnings().filter(w => /\b07\b/.test(w)), []);
+  });
+
+  test('a token SHARED with a real heading still warns', () => {
+    // roadmapPhases is a token set, so `[GSD.999] 01` and `[GSD.02] 01` collapse
+    // to one entry. Keying suppression on the token alone let the icebox item
+    // silence a real phase that has no directory — a false negative worse than
+    // the warning it removed.
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.999] 01: Icebox one
+**Goal:** a
+
+### [GSD.02] 01: REAL one, dir missing
+**Goal:** b
+
+### [GSD.02] 02: Real two
+**Goal:** c
+`, 'bracket');
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', 'GSD.02-02-real-two'), { recursive: true });
+    const w = consistencyWarnings();
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 01/);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R4-M1 — the DIRECTORY read inside `roadmap analyze`.
 //
