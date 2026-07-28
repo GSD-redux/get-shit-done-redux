@@ -39,6 +39,11 @@ const CANONICAL = [
   'phaseMarkdownRegexSourceExact', 'comparePhaseNum', 'extractPhaseToken',
   'phaseTokenMatches', 'parsePhaseFromProse', 'stripConfiguredProjectCodePrefix',
   'isForeignPrefixedPhaseQuery', 'roadmapPhaseLookupSources',
+  // #612 PR-2: the one bracket identity grammar + the gated heading-intro selector.
+  'BRACKET_ID_SRC', 'BRACKET_MILESTONE_NUMERIC_SRC', 'BRACKET_DIR_PREFIX_SRC',
+  'BASE_ANY_BRACKET_HEADING_PREFIX_SRC', 'BASE_PHASE_LABEL_PREFIX_SRC',
+  'PHASE_HEADING_BASELINE', 'phaseHeadingPrefixSrcFor', 'foldBracketId',
+  'bracketQualifiedKey',
 ];
 
 describe('#2128 phase-id drift scanner: findPhaseIdRegexDrift (pure)', () => {

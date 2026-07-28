@@ -142,6 +142,59 @@ function planningRoot(cwd: string): string {
   return path.join(cwd, '.planning');
 }
 
+/**
+ * #612: resolve `phase_id_convention` with the SAME workstream->root federation
+ * config-loader uses (config-loader.cts:618/:649) — the workstream config wins,
+ * the root config is the fallback.
+ *
+ * Why this exists rather than `loadConfig(cwd)['phase_id_convention']`: loadConfig
+ * merges against CONFIG_DEFAULTS and drops keys it does not know, and
+ * `phase_id_convention` is not among them, so it returns `undefined` no matter
+ * where the file lives. Adding the key to the defaults is the convention-enum
+ * work, not this change. Cycles were never the obstacle.
+ *
+ * Why federation matters here specifically: the phase-id readers were splitting
+ * on this value from two different bases — one resolving from the workstream
+ * directory, one from the root — so a workstream repo got the widened ROADMAP
+ * read with the narrow directory read, or the reverse, and reported every phase
+ * either missing from disk or malformed on disk. One resolver, one answer.
+ *
+ * The active workstream is whatever `planningDir` resolves, so this shares the
+ * canonical resolution (and its GSD_PROJECT/GSD_WORKSTREAM handling) instead of
+ * re-reading the environment. Root is consulted as a fallback only when a
+ * workstream is active, matching config-loader; a project-scoped directory
+ * stands alone. Returns null when unset, absent, or unreadable — every caller
+ * treats null as "not the bracket convention".
+ *
+ * SCOPE: this governs the #612 bracket-selection reads ONLY. The shipped
+ * milestone-prefixed W021 gate keeps its own root-only read — re-basing a
+ * legacy convention's gate onto a different config is a behaviour change to a
+ * shipped check, in both directions, and is not part of read tolerance.
+ */
+function resolvePhaseIdConvention(cwd: string): string | null {
+  const readFrom = (dir: string): string | null => {
+    const configPath = path.join(dir, 'config.json');
+    if (!fs.existsSync(configPath)) return null;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+      const value = parsed['phase_id_convention'];
+      return typeof value === 'string' && value !== '' ? value : null;
+    } catch {
+      return null;
+    }
+  };
+  const scoped = planningDir(cwd);
+  const root = planningRoot(cwd);
+  if (scoped === root) return readFrom(root);
+  // Root is a fallback only when a WORKSTREAM is active — config-loader falls
+  // back to the root config under `if (ws)` and not otherwise, so a
+  // project-scoped directory stands alone. Detected by suppressing the
+  // workstream segment rather than re-reading the environment.
+  const projectOnly = planningDir(cwd, null);
+  if (scoped === projectOnly) return readFrom(scoped);
+  return readFrom(scoped) ?? readFrom(root);
+}
+
 // Sorted list of workstream directory names under `<root>/.planning/workstreams`,
 // or `[]` when the project is flat (no workstreams dir). Single source of truth
 // for the "workstream mode" detection shared by the #1912/#2028 fail-safe guards
@@ -411,6 +464,7 @@ export = {
   createMemoryPointerAdapter,
   planningDir,
   planningRoot,
+  resolvePhaseIdConvention,
   listAvailableWorkstreams,
   planningPaths,
   withPlanningLock,
