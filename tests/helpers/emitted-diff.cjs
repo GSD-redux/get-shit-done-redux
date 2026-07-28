@@ -195,6 +195,10 @@ function diffEmitted({
         continue;
       }
 
+      // Sources are checked before transforms so `via` is deterministic when a moved
+      // path is explained by both at once — the SOURCE is the more specific, more
+      // legible story ("the agent file changed") and is what a reviewer expects to
+      // see first, not an accident of iteration order.
       let via = null;
       for (const source of attribution.sources) {
         const hit = sourceSatisfiedBy(source, changedSet);
@@ -204,6 +208,16 @@ function diffEmitted({
         // non-empty template) but it is a footgun for the next rule author.
         if (hit !== null) { via = hit; break; }
       }
+      // #2757: a `derived`/`code-derived` artifact's bytes can also move because the
+      // TRANSFORM code that generates them changed, not the source it derives from —
+      // `sources` alone cannot express that. Reuses `sourceSatisfiedBy` unchanged so
+      // exact/prefix semantics stay identical for both lists.
+      if (via === null) {
+        for (const transform of attribution.transforms) {
+          const hit = sourceSatisfiedBy(transform, changedSet);
+          if (hit !== null) { via = hit; break; }
+        }
+      }
 
       if (via !== null) {
         attributed.push({ ...record, via });
@@ -211,7 +225,11 @@ function diffEmitted({
         usedAcks.add(rel);
         acked.push({ ...record, reason: ackEntries.get(rel).reason });
       } else {
-        unattributable.push({ ...record, expectedSources: attribution.sources });
+        unattributable.push({
+          ...record,
+          expectedSources: attribution.sources,
+          expectedTransforms: attribution.transforms,
+        });
       }
     }
   }
@@ -279,7 +297,18 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
 
   if (result.unattributable.length) {
     const list = result.unattributable.slice(0, sampleLimit)
-      .map((u) => `  ${u.runtime}: ${u.rel}\n      rule ${u.ruleId}; expected a change under ${u.expectedSources.join(' or ')}`);
+      .map((u) => {
+        // #2757: a rule may explain a moved path via its source OR its transform
+        // code; name whichever possibilities exist so the message tells the whole
+        // story, not just half of it.
+        const expected = [
+          u.expectedSources.length ? `a change under ${u.expectedSources.join(' or ')}` : null,
+          (u.expectedTransforms && u.expectedTransforms.length)
+            ? `a transform change under ${u.expectedTransforms.join(' or ')}`
+            : null,
+        ].filter(Boolean).join(', or ');
+        return `  ${u.runtime}: ${u.rel}\n      rule ${u.ruleId}; expected ${expected}`;
+      });
     parts.push(
       `${result.unattributable.length} emitted path(s) changed that nothing in this diff explains:\n${list.join('\n')}` +
       (result.unattributable.length > sampleLimit

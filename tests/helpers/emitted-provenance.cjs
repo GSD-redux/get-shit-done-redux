@@ -84,6 +84,41 @@ const INSTALLER_SRC = 'bin/install.js';
 const KIMI_ROOT_AGENT_SRC = 'src/runtime-artifact-layout.cts';
 
 /**
+ * Transform sources for the per-runtime agent-content pipeline (#2757).
+ *
+ * `runtime-artifact-conversion.cts` rewrites frontmatter (quoting, dropping `tools:`/
+ * `color:`), reformats the tools list, and rewrites the hardcoded `.claude/` self-
+ * reference to each runtime's own home (`applyAgentPathRewrites`,
+ * `normalizeAgentBodyForRuntime`, the `convertClaudeAgentTo*Agent` family).
+ * `install-effort-resolver.cts` (+ the `model-catalog.cts` primitives it calls)
+ * resolves the `reasoning_effort` value that both Claude's `.md` (`effort:` frontmatter,
+ * injected by `injectEffortFrontmatter` in bin/install.js) and Codex's `.toml`
+ * (`model_reasoning_effort`) embed — "the same config-driven precedence chain" per
+ * bin/install.js's own #443 comment.
+ *
+ * Verified empirically (#2757), not assumed: installing every runtime for a sample
+ * agent and diffing the output against the raw repo `.md` (after normalizing the
+ * install-time HOME/version substitutions the golden fixtures already normalize) shows
+ * NO runtime — including Claude — emits a byte-identical copy. Every one rewrites at
+ * least the frontmatter and the `.claude/skills` self-reference; Claude additionally
+ * gets `effort:` injected. This is why `agents-verbatim` below is `derived`, not
+ * `identity`, despite its (retained, historical) id.
+ *
+ * Deliberately excludes `bin/install.js`: that file also implements the final splice
+ * (`injectEffortFrontmatter`, `generateCodexAgentToml`), but at 13k+ lines spanning
+ * hooks, MCP config, uninstall, and every other installer concern, declaring it here
+ * would be the blanket escape hatch ADR-2719 warns against — almost any PR touches SOME
+ * line of it. A change localized to those two functions and not reachable through the
+ * three files below stays unattributable and falls to the drift-ack file, which is the
+ * documented escape hatch for exactly that case.
+ */
+const AGENT_TRANSFORM_SRCS = [
+  'src/runtime-artifact-conversion.cts',
+  'src/install-effort-resolver.cts',
+  'src/model-catalog.cts',
+];
+
+/**
  * A `sources` entry ending in `/` is a PREFIX, not a file: it means "any repo path
  * under this directory legitimately explains this emitted path". Used where an
  * emitted artifact aggregates a whole directory (Kimi's root agent enumerates every
@@ -139,6 +174,17 @@ function nativePluginDescriptor(runtime) {
 // `roots`   — emitted prefixes this rule applies under (null = match `rel` whole)
 // `pattern` — matched against the root-stripped tail (or whole `rel` when roots is null)
 // `sources` — (match, ctx) => string[] of repo-relative paths; [] only for `synthesized`
+// `transforms` — OPTIONAL string[] of repo paths implementing the TRANSFORM that
+//                produces this rule's emitted bytes (#2757). A `derived`/`code-derived`
+//                artifact's bytes can move for a second reason `sources` alone cannot
+//                express: the transform code changed, not the source it derives from.
+//                Phase 3 (emitted-diff.cjs) attributes a moved path if the diff
+//                satisfies EITHER `sources` OR `transforms`, reusing the same
+//                `sourceSatisfiedBy` matcher for both so exact/prefix semantics stay
+//                identical. `kind: 'identity'` rules MUST NOT declare a non-empty
+//                `transforms` — enforced by `assertNoIdentityTransforms` below — because
+//                an identity copy's bytes can only move when its source moves; that is
+//                what makes it an identity.
 //
 // Rule ORDER CARRIES NO SEMANTICS. Exactly-one matching is enforced, so rules are
 // mutually exclusive by construction and the table reads correctly in any order.
@@ -163,8 +209,21 @@ const PROVENANCE_RULES = [
     sources: (m) => [`scripts/${m[0]}`],
   },
   {
+    // Historical id — retained even though, per #2757, this is no longer identity.
+    // Nothing else in the repo keys off this string (checked), and the `sources`
+    // shape below is unchanged, so renaming it would only widen the diff.
     id: 'agents-verbatim',
-    kind: 'identity',
+    // #2757 (was `identity`): measured against origin/next's own committed fixtures,
+    // the SAME emitted agents/<name>.md hashes DIFFERENTLY per runtime (e.g. codex vs
+    // claude for gsd-nyquist-auditor.md) — impossible for a true verbatim copy.
+    // Verified empirically by installing every runtime and diffing the output against
+    // the raw repo source: no runtime reproduces it byte-for-byte. Every one rewrites
+    // frontmatter quoting and the hardcoded `.claude/` self-reference
+    // (src/runtime-artifact-conversion.cts); Claude additionally gets an `effort:`
+    // line injected (src/install-effort-resolver.cts + src/model-catalog.cts). See
+    // the #2757 design doc for the alternatives considered (per-runtime split,
+    // per-runtime `kind`) and why this wholesale reclassification was chosen instead.
+    kind: 'derived',
     roots: ['agents'],
     // Excludes `gsd.md`: that is Kimi's ROOT agent, built from a code literal and
     // NOT a repo agent file. Without the exclusion it matched here and resolved to
@@ -176,6 +235,7 @@ const PROVENANCE_RULES = [
     // resolved to a file that does not exist. Same false-attribution class.
     pattern: /^(?!gsd\.md$)(?!.*\.agent\.md$)[^/]+\.md$/,
     sources: (m) => [`agents/${m[0]}`],
+    transforms: AGENT_TRANSFORM_SRCS,
   },
   {
     id: 'copilot-agent-rename',
@@ -194,6 +254,9 @@ const PROVENANCE_RULES = [
     // from the same agents/<name>.md source.
     pattern: /^([^/]+)\.toml$/,
     sources: (m) => [`agents/${m[1]}.md`],
+    // #2757 (issue text, PR #2566): a change to the conversion/effort code can move
+    // every emitted .toml without touching any agents/*.md. See AGENT_TRANSFORM_SRCS.
+    transforms: AGENT_TRANSFORM_SRCS,
   },
   {
     id: 'agents-subagent-derived',
@@ -414,7 +477,7 @@ function matchRules(rel, runtime, rules = PROVENANCE_RULES) {
 /**
  * Resolve the provenance of one emitted path.
  * @throws when the path matches zero or more than one rule.
- * @returns {{ruleId: string, kind: string, sources: string[]}}
+ * @returns {{ruleId: string, kind: string, sources: string[], transforms: string[]}}
  */
 function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
   const hits = matchRules(rel, runtime, rules);
@@ -435,8 +498,43 @@ function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
     ruleId: rule.id,
     kind: rule.kind,
     sources: rule.sources(match, { rel, runtime }),
+    // #2757: always an array, never undefined, so callers (Phase 3's diffEmitted)
+    // never need a defensive `|| []`.
+    transforms: Array.isArray(rule.transforms) ? rule.transforms : [],
   };
 }
+
+/**
+ * Invariant (#2757): a `kind: 'identity'` rule may not declare a non-empty
+ * `transforms`. An identity copy's bytes can only move when its source moves — that
+ * is what makes it an identity; a transforms list on an identity rule would silently
+ * readmit the exact false-attribution risk defect 2 found (a rule that is total and
+ * "passes" while resolving to the wrong causal story).
+ *
+ * Called once at module load against the real PROVENANCE_RULES (fails fast on a
+ * future authoring mistake) and exported so tests can drive it against an injected
+ * corrupted table, matching this module's existing injectable-table convention.
+ *
+ * @param {Array} rules rule table (injectable)
+ * @throws when any identity rule declares a non-empty transforms array
+ */
+function assertNoIdentityTransforms(rules = PROVENANCE_RULES) {
+  const violators = rules.filter(
+    (r) => r.kind === 'identity' && Array.isArray(r.transforms) && r.transforms.length > 0,
+  );
+  if (violators.length) {
+    throw new Error(
+      `emitted-provenance: identity rule(s) [${violators.map((r) => r.id).join(', ')}] ` +
+      'declare a non-empty "transforms" — an identity copy\'s bytes can only move when ' +
+      'its source moves, which is what makes it an identity. Reclassify the rule\'s ' +
+      '"kind" (e.g. to "derived") if it legitimately needs a transforms list.',
+    );
+  }
+}
+
+// Fail fast: a malformed table crashes at require time rather than passing silently
+// until some test happens to exercise the corrupted rule.
+assertNoIdentityTransforms(PROVENANCE_RULES);
 
 // ─── Fixture loading ──────────────────────────────────────────────────────────
 
@@ -549,6 +647,7 @@ module.exports = {
   PROVENANCE_RULES,
   SKILLS_ROOTS,
   KIMI_ROOT_AGENT_SRC,
+  AGENT_TRANSFORM_SRCS,
   SOURCE_PREFIX_SUFFIX,
   HOOKS_ROOTS,
   COMMANDS_SRC,
@@ -560,6 +659,7 @@ module.exports = {
   assertSafeRelPath,
   matchRules,
   attributeEmittedPath,
+  assertNoIdentityTransforms,
   loadManifests,
   assertTotality,
 };

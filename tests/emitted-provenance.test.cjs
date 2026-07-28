@@ -41,11 +41,13 @@ const {
   COMMANDS_SRC,
   CLINE_BODY_SRC,
   KIMI_ROOT_AGENT_SRC,
+  AGENT_TRANSFORM_SRCS,
   stripSkillPrefix,
   matchRules,
   attributeEmittedPath,
   loadManifests,
   assertTotality,
+  assertNoIdentityTransforms,
 } = require('./helpers/emitted-provenance.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -273,6 +275,94 @@ test('spot-check: install-time state is exempt with an empty source list', () =>
     assert.equal(got.kind, 'synthesized', `${rel} should be synthesized`);
     assert.deepEqual(got.sources, [], `${rel} is exempt and must declare no sources`);
   }
+});
+
+// ─── Transforms (#2757): derived rules can declare a transform-code source ───
+
+test('agents-toml-derived declares AGENT_TRANSFORM_SRCS as transforms', () => {
+  const got = attributeEmittedPath('agents/gsd-planner.toml', 'codex');
+  assert.equal(got.kind, 'derived');
+  assert.deepEqual(got.sources, ['agents/gsd-planner.md']);
+  assert.deepEqual(got.transforms, AGENT_TRANSFORM_SRCS);
+});
+
+test('agents-verbatim is reclassified to derived with the same transforms, sources unchanged', () => {
+  const got = attributeEmittedPath('agents/gsd-planner.md', 'claude');
+  assert.equal(got.kind, 'derived', 'no runtime emits a byte-identical copy — see #2757 design doc');
+  assert.deepEqual(got.sources, ['agents/gsd-planner.md'], 'sources must be unchanged by the reclassification');
+  assert.deepEqual(got.transforms, AGENT_TRANSFORM_SRCS);
+});
+
+test('a rule with no transforms field still returns an empty array, never undefined', () => {
+  const got = attributeEmittedPath('gsd-core/workflows/plan-phase.md', 'claude');
+  assert.deepEqual(got.transforms, [], 'absence of transforms must be a stable empty array, not undefined');
+});
+
+test('every declared transform path exists in the repo', () => {
+  // Same philosophy as "every attributed source exists in the repo": a transform path
+  // that does not exist is proof the rule (or the design's own suggested files) is
+  // wrong — this is exactly how src/agent-tools-contract.cts was ruled out during
+  // design: it does not exist in this tree.
+  const missing = [];
+  for (const rule of PROVENANCE_RULES) {
+    for (const t of rule.transforms || []) {
+      if (!fs.existsSync(path.join(REPO_ROOT, t))) missing.push(`${rule.id}: ${t}`);
+    }
+  }
+  assert.deepEqual(missing, [], `declared transform paths that do not exist:\n  ${missing.join('\n  ')}`);
+});
+
+test('identity rules never declare a non-empty transforms list (real table)', () => {
+  const violators = PROVENANCE_RULES.filter(
+    (r) => r.kind === 'identity' && Array.isArray(r.transforms) && r.transforms.length > 0,
+  );
+  assert.deepEqual(violators.map((r) => r.id), [], 'an identity copy can only move when its source moves');
+});
+
+test('assertNoIdentityTransforms rejects an identity rule declaring transforms, naming it', () => {
+  const corrupted = PROVENANCE_RULES.map((r) => (
+    r.id === 'scripts-verbatim' ? { ...r, transforms: ['scripts/build-hooks.js'] } : r
+  ));
+  assert.throws(
+    () => assertNoIdentityTransforms(corrupted),
+    (err) => err.message.includes('scripts-verbatim') && err.message.includes('identity'),
+    'the offending rule id must be named',
+  );
+});
+
+test('assertNoIdentityTransforms does not throw when transforms is absent or empty', () => {
+  const emptyArray = PROVENANCE_RULES.map((r) => (
+    r.id === 'scripts-verbatim' ? { ...r, transforms: [] } : r
+  ));
+  assert.doesNotThrow(() => assertNoIdentityTransforms(emptyArray), 'an empty transforms array is legal on identity');
+  assert.doesNotThrow(() => assertNoIdentityTransforms(PROVENANCE_RULES), 'no transforms key at all is legal on identity');
+});
+
+test('assertNoIdentityTransforms names only the offending rule, not unrelated valid ones', () => {
+  const corrupted = PROVENANCE_RULES.map((r) => (
+    r.id === 'scripts-verbatim' ? { ...r, transforms: ['scripts/build-hooks.js'] } : r
+  ));
+  assert.throws(
+    () => assertNoIdentityTransforms(corrupted),
+    (err) => !err.message.includes('gsd-core-verbatim'),
+    'an unrelated valid identity rule must not be named',
+  );
+});
+
+test('a derived rule may declare an empty transforms array with no special meaning', () => {
+  const withEmpty = PROVENANCE_RULES.map((r) => (
+    r.id === 'agents-toml-derived' ? { ...r, transforms: [] } : r
+  ));
+  assert.doesNotThrow(() => assertNoIdentityTransforms(withEmpty));
+  const got = attributeEmittedPath('agents/gsd-planner.toml', 'codex', withEmpty);
+  assert.deepEqual(got.transforms, []);
+});
+
+test('reclassifying agents-verbatim does not change totality byRule counts', () => {
+  // The match set is a function of (pattern, roots), not kind — asserting the count
+  // is unchanged proves the reclassification touched classification only.
+  const { byRule } = assertTotality(manifests());
+  assert.ok(byRule.get('agents-verbatim') > 0, 'agents-verbatim must still match its real family');
 });
 
 // ─── Negative space: the guard must fail loud ────────────────────────────────

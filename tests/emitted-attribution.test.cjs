@@ -217,6 +217,153 @@ test('a failed git diff is an error, not an empty change set', () => {
   assert.match(r.errors.join('\n'), /changedPaths must be an array/);
 });
 
+// ─── Transform attribution (#2757 defect 1) ──────────────────────────────────
+//
+// A `kind: 'derived'` rule's bytes can legitimately move for a second reason the
+// `sources`-only design cannot express: the TRANSFORM code that generates the
+// derived artifact changed, not the source it derives from. Replays the #2566
+// shape verbatim: 16 emitted `agents/*.toml` moved, the diff touches
+// `src/runtime-artifact-conversion.cts` and zero `agents/*.md`.
+
+test('a derived path explained only by a transform change is attributed (#2566 shape)', () => {
+  const moved = {};
+  const base = {};
+  const agentNames = [
+    'gsd-planner', 'gsd-executor', 'gsd-verifier', 'gsd-code-reviewer',
+    'gsd-security-auditor', 'gsd-nyquist-auditor', 'gsd-doc-writer', 'gsd-roadmapper',
+    'gsd-phase-researcher', 'gsd-pattern-mapper', 'gsd-plan-checker', 'gsd-debugger',
+    'gsd-ui-checker', 'gsd-eval-planner', 'gsd-framework-selector', 'gsd-code-fixer',
+  ];
+  assert.equal(agentNames.length, 16, 'the #2566 reproduction is 16 emitted .toml files');
+  for (const name of agentNames) {
+    base[`agents/${name}.toml`] = `before-${name}`;
+    moved[`agents/${name}.toml`] = `after-${name}`;
+  }
+
+  // Before the fix, `agents-toml-derived` has no `transforms` field: this must fail.
+  const withoutTransformChange = diffEmitted({
+    baseline: mf(base),
+    current: mf(moved),
+    // Deliberately NOT `src/runtime-artifact-conversion.cts` — proves the negative
+    // (an unrelated source change does not accidentally attribute).
+    changedPaths: ['README.md'],
+  });
+  assert.equal(withoutTransformChange.unattributable.length, 16);
+  assert.ok(!withoutTransformChange.ok);
+
+  // The actual #2566 shape: the diff touches the transform, not any agents/*.md.
+  const withTransformChange = diffEmitted({
+    baseline: mf(base),
+    current: mf(moved),
+    changedPaths: ['src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(
+    withTransformChange.unattributable.length, 0,
+    'a transform-only change must attribute every moved derived path',
+  );
+  assert.equal(withTransformChange.attributed.length, 16);
+  for (const rec of withTransformChange.attributed) {
+    assert.equal(rec.via, 'src/runtime-artifact-conversion.cts');
+    assert.equal(rec.ruleId, 'agents-toml-derived');
+  }
+  assert.ok(withTransformChange.ok);
+});
+
+test('an identity-classified agent .md moved by a transform-only change is unattributable (#2757 defect 2, pre-fix shape)', () => {
+  // Reproduces the maintainer's follow-up: codex's agents/*.md hash moves without any
+  // agents/*.md in the diff. Whether this attributes now depends entirely on whether
+  // `agents-verbatim` has been reclassified to `derived` with `transforms` declared —
+  // this test asserts the REAL, current behavior of the shipped table, so it doubles
+  // as the defect-2 regression once the fix lands (the id in the rule table has not
+  // changed, only `kind`/`transforms`, so this same test proves both "was broken" and
+  // "is fixed" depending on which commit runs it).
+  const r = diffEmitted({
+    baseline: { codex: { 'agents/gsd-nyquist-auditor.md': 'before' } },
+    current: { codex: { 'agents/gsd-nyquist-auditor.md': 'after' } },
+    changedPaths: ['src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(r.unattributable.length, 0, 'a declared transform must explain the moved identity-family path');
+  assert.equal(r.attributed[0].ruleId, 'agents-verbatim');
+  assert.equal(r.attributed[0].via, 'src/runtime-artifact-conversion.cts');
+  assert.ok(r.ok);
+});
+
+test('a moved derived path with neither source nor transform in the diff still fails, named', () => {
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['docs/README.md'],
+  });
+  assert.equal(r.unattributable.length, 1);
+  assert.equal(r.unattributable[0].rel, 'agents/gsd-planner.toml');
+  assert.deepEqual(r.unattributable[0].expectedSources, ['agents/gsd-planner.md']);
+  assert.ok(
+    r.unattributable[0].expectedTransforms.includes('src/runtime-artifact-conversion.cts'),
+    'the message must be able to say what transform WOULD have explained it too',
+  );
+  const msg = formatReport(r);
+  assert.ok(msg.includes('agents/gsd-planner.toml'));
+  assert.ok(msg.includes('src/runtime-artifact-conversion.cts'), 'the transform hint must appear in the report');
+});
+
+test('an unrelated src file does not attribute a moved derived path (transforms list stays narrow)', () => {
+  // The review's own risk: a transform list that is too broad silently excuses real
+  // ripples. src/state-document.cts has nothing to do with agent conversion.
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['src/state-document.cts'],
+  });
+  assert.equal(r.unattributable.length, 1, 'an unrelated src/*.cts file must NOT excuse the ripple');
+  assert.ok(!r.ok);
+});
+
+test('bin/install.js alone does not attribute a moved agent artifact (deliberate exclusion)', () => {
+  // bin/install.js implements the final splice (injectEffortFrontmatter,
+  // generateCodexAgentToml) but is deliberately excluded from AGENT_TRANSFORM_SRCS —
+  // at 13k+ lines spanning every installer concern, including it would be the blanket
+  // escape hatch ADR-2719 warns against. This proves the exclusion holds in the
+  // shipped table, not just in the design doc.
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['bin/install.js'],
+  });
+  assert.equal(r.unattributable.length, 1, 'bin/install.js alone must not attribute — it is not a declared transform');
+  assert.ok(!r.ok);
+});
+
+test('a moved path with a source match wins over an also-present transform match (deterministic via)', () => {
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['agents/gsd-planner.md', 'src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(r.unattributable.length, 0);
+  assert.equal(r.attributed[0].via, 'agents/gsd-planner.md', 'sources are checked before transforms');
+});
+
+test('a transform-explained converter ripple still needs no ack (transforms are a first-class attribution, not a workaround)', () => {
+  // Contrast with 'a converter change fails without an ack and passes with one' above:
+  // THAT test simulates a family with NO transforms declared, so it correctly still
+  // requires an ack. agents-toml-derived DOES declare a transform, so the equivalent
+  // ripple must attribute directly, with no ack needed at all.
+  const moved = {};
+  const base = {};
+  for (let i = 0; i < 5; i++) {
+    base[`agents/gsd-fixture-${i}.toml`] = `h${i}`;
+    moved[`agents/gsd-fixture-${i}.toml`] = `x${i}`;
+  }
+  const r = diffEmitted({
+    baseline: mf(base),
+    current: mf(moved),
+    changedPaths: ['src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(r.unattributable.length, 0);
+  assert.equal(r.acked.length, 0, 'no ack was needed — the transform explains it directly');
+  assert.ok(r.ok);
+});
+
 test('an unattributable-by-table path surfaces as an error', () => {
   const r = diffEmitted({
     baseline: mf({ 'totally/unknown/thing.md': 'aaa' }),
