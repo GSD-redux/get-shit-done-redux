@@ -75,6 +75,10 @@ The design property that matters: the acknowledgment file appears in the changed
 
 This does not make a bad change impossible. It converts a silent regeneration into a conspicuous declaration. That is the intended strength, stated plainly rather than overclaimed.
 
+> **Amendment (#2789):** *touching* the acknowledgment is still the alarm, and is now strictly harder to fake. Mere **presence** is not, and treating it as such was a real defect. The document was read only from the working tree while every other input to the law is base-relative, so `staleAcks` — "acks no delta consumed" — could not tell an ack that never explained anything from one whose ripple had been **absorbed into the base**, which is the ack's success condition. Merging an acknowledgment therefore reddened `next` and every PR branching off it (#2768).
+>
+> An ack is now scoped to the diff that introduced it: `diffEmitted` also takes the document at the base ref, and an entry already present there is **spent** — it can no longer consume a delta and is never reported stale, only listed for tidying. New or reworded entries stay live, and re-arming costs actual prose (internal whitespace, invisible characters and the unread `runtime` field are all normalized away), so the conspicuous declaration this section asks for cannot be forged with a zero-information edit. That also closes a hazard the *implementation* named but could not prevent — a leftover ack silently pre-clearing the next ripple on its path; note this ADR's own residual-risk list never covered it. `scripts/lint-emitted-drift-ack.cjs` refuses the merge if a malformed document would reach the base, where the base-side reader's deliberate hard failure is expensive.
+
 ### 4. The size ratchet folds into the same machine
 
 `workflow-size-baseline.json` conflicts on 7 of 7 — deleting only the golden fixtures would leave every affected PR still blocked. The attribution law does not transfer to it (growth is trivially attributable to the edit that caused it), so instead the same differential machine reports growth with exact byte deltas, and growth requires the same acknowledgment entry.
