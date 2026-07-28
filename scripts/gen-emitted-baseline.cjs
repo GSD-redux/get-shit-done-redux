@@ -59,17 +59,18 @@ const { execFileSync } = require('node:child_process');
 
 const { runMain, ExitError } = require('./lib/cli-exit.cjs');
 const { BUILD_SCRIPT } = require('../tests/helpers/install-shared.cjs');
-const { currentManifests, currentSizes } = require('../tests/helpers/emitted-runtime.cjs');
+const { currentManifests, currentSizes, git } = require('../tests/helpers/emitted-runtime.cjs');
 const { BASELINE_VERSION } = require('../tests/helpers/emitted-baseline.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const DEFAULT_OUT = path.join(REPO_ROOT, '.gsd-cache', 'emitted-baseline.json');
-const GIT_TIMEOUT_MS = 30_000;
 
+// Reuses emitted-runtime.cjs's `git()` (not a local execFileSync) so the
+// `-c safe.directory=<dir>` fix for the remote runner's dubious-ownership
+// mount (#2767) has exactly one source of truth — see that module's
+// `safeDirArgs` doc comment.
 function resolveHeadSha(cwd) {
-  return execFileSync('git', ['rev-parse', 'HEAD'], {
-    cwd, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
+  return git(['rev-parse', 'HEAD'], { cwd }).trim();
 }
 
 function parseArgs(argv) {

@@ -229,8 +229,33 @@ function reconcileFamilies({
  *  macOS CI silently stops reporting. */
 const GIT_TIMEOUT_MS = 30_000;
 
+/**
+ * Prepend `-c safe.directory=<dir>` to a git argv.
+ *
+ * The remote test-runner container mounts the repository at a path owned by a
+ * different uid than the process running the suite; git's dubious-ownership
+ * protection then refuses EVERY operation there with "detected dubious ownership"
+ * (#2767 — surfaced when a previously-always-skipping regression test started
+ * actually executing in that container and its very first `git rev-parse HEAD`
+ * failed closed). GitHub Actions never hits this because `actions/checkout`
+ * registers the workspace as a safe directory automatically; this runner's
+ * container does not. `buildBaselineAtRef` is the PRODUCTION build-fallback path
+ * the sole remaining emitted gate depends on (`resolveBaseline`'s in-job-build leg,
+ * ADR-2719 §5) — not just a test helper — so the fix belongs here, not papered
+ * over by skipping the test that found it.
+ *
+ * Declares the SPECIFIC resolved directory each call site already operates on —
+ * never the `*` wildcard, which would mark every repository on the machine safe —
+ * so this cannot broaden trust beyond the one path the caller already intends to
+ * touch. Every git call in this module (and its production/test callers) passes
+ * through here so the fix cannot silently drift per call site.
+ */
+function safeDirArgs(dir) {
+  return ['-c', `safe.directory=${path.resolve(dir)}`];
+}
+
 function git(args, { cwd = REPO_ROOT } = {}) {
-  return execFileSync('git', args, {
+  return execFileSync('git', [...safeDirArgs(cwd), ...args], {
     cwd,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
@@ -434,7 +459,7 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   const BUILD_TIMEOUT_MS = 300_000;
 
   try {
-    execFileSync('git', ['worktree', 'add', '--detach', worktreeDir, ref], {
+    execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
       cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -459,14 +484,14 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
     return JSON.parse(raw);
   } finally {
     try {
-      execFileSync('git', ['worktree', 'remove', '--force', worktreeDir], {
+      execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'remove', '--force', worktreeDir], {
         cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch {
       // Best-effort: the checkout may already be gone (e.g. the build step failed
       // before writing anything). Prune stale admin data rather than leaving it.
       try {
-        execFileSync('git', ['worktree', 'prune'], {
+        execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'prune'], {
           cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch { /* best-effort cleanup; never mask the primary result/error */ }
@@ -580,6 +605,7 @@ module.exports = {
   touchesRuntimeRegistry,
   reconcileFamilies,
   GIT_TIMEOUT_MS,
+  safeDirArgs,
   git,
   resolveChangedPaths,
   resolveBaseSha,

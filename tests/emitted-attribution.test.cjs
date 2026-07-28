@@ -54,6 +54,7 @@ const {
   FAMILY_REASON,
   touchesRuntimeRegistry,
   reconcileFamilies,
+  safeDirArgs,
 } = require('./helpers/emitted-runtime.cjs');
 
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
@@ -796,7 +797,13 @@ test(
       GIT_AUTHOR_NAME: 'GSD Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
       GIT_COMMITTER_NAME: 'GSD Test', GIT_COMMITTER_EMAIL: 'test@example.invalid',
     };
-    const run = (...args) => execFileSync('git', args, {
+    // `-c safe.directory=<REPO_ROOT>` via the shared `safeDirArgs` (emitted-runtime.cjs):
+    // the remote runner mounts this repo at a path owned by a different uid, and git's
+    // dubious-ownership protection refuses every operation there otherwise — this test
+    // proved that the hard way (#2767 review) when its first `git rev-parse HEAD` failed
+    // closed. Reusing the SAME helper `buildBaselineAtRef` now uses (below) rather than
+    // hand-rolling the flag here keeps the fix from silently diverging per call site.
+    const run = (...args) => execFileSync('git', [...safeDirArgs(REPO_ROOT), ...args], {
       cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
 
@@ -812,7 +819,7 @@ test(
     // Precondition, ASSERTED not assumed: the synthetic commit truly lacks the file —
     // otherwise this test would prove nothing.
     assert.throws(
-      () => execFileSync('git', ['cat-file', '-e', `${syntheticSha}:scripts/gen-emitted-baseline.cjs`], {
+      () => execFileSync('git', [...safeDirArgs(REPO_ROOT), 'cat-file', '-e', `${syntheticSha}:scripts/gen-emitted-baseline.cjs`], {
         cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, stdio: 'pipe',
       }),
       /./,
@@ -1287,6 +1294,10 @@ test('baseline families are enumerated from the ref, not from the current regist
   // clone and fails in the runner, which is exactly what it did.
   const repo = createTempDir('emitted-baseline-ref');
   t.after(() => cleanup(repo));
+  // No `safeDirArgs` needed here (unlike the #2767 fix above): `repo` is a directory
+  // this same process just created with `mkdtempSync` + `git init`, so its owner is
+  // always the uid running the test regardless of container — it is never the
+  // externally-mounted repo path the dubious-ownership check reacts to.
   const run = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
 
   run('init', '--quiet', '-b', 'main');
