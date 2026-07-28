@@ -1003,12 +1003,13 @@ Configure per-CLI model selection for `/gsd-review`. When set, overrides the CLI
 | `review.models.opencode` | string | (CLI default) | Model used when `--opencode` reviewer is invoked |
 | `review.models.qwen` | string | (CLI default) | Model used when `--qwen` reviewer is invoked |
 | `review.models.cursor` | string | (CLI default) | Model used when `--cursor` reviewer is invoked |
+| `review.models.kimi-code` | string | (CLI default) | Model used when `--kimi-code` reviewer is invoked |
 | `review.models.ollama` | string | (server default) | Model name passed to Ollama when `--ollama` reviewer is invoked. If unset, the first available model reported by the server is used (e.g. `llama3`). Set to a specific tag: `gsd config-set review.models.ollama codellama` |
 | `review.models.lm_studio` | string | (server default) | Model name passed to LM Studio when `--lm-studio` reviewer is invoked. If unset, the first available model reported by the server is used. |
 | `review.models.llama_cpp` | string | (server default) | Model name passed to llama.cpp when `--llama-cpp` reviewer is invoked. If unset, the first model reported by `/v1/models` is used. |
 | `review.default_reviewers` | string[] \| null | (all detected reviewers) | Default reviewer subset for no-flag `/gsd-review`. Example: `["gemini","codex"]`. May include configured `review.reviewer_instances` names. Explicit flags and `--all` override this setting. |
 | `review.max_prompt_tokens` | number\|null | null | Default maximum estimated tokens for the assembled review prompt. When set, the prompt is deterministically trimmed before being sent to each reviewer. Per-reviewer overrides via `review.max_prompt_tokens_per_reviewer` take precedence. null = no trim (current behavior). |
-| `review.max_prompt_tokens_per_reviewer` | object | {} | Per-reviewer token budget overrides. Keys are reviewer slugs (ollama, llama_cpp, lm_studio, gemini, claude, codex, opencode, qwen, cursor). Values override `review.max_prompt_tokens` for that reviewer. Recommended for local model servers. |
+| `review.max_prompt_tokens_per_reviewer` | object | {} | Per-reviewer token budget overrides. Keys are reviewer slugs (ollama, llama_cpp, lm_studio, gemini, claude, codex, opencode, qwen, cursor, kimi-code). Values override `review.max_prompt_tokens` for that reviewer. Recommended for local model servers. |
 | `review.ollama_host` | string | `http://localhost:11434` | Base URL of the Ollama server. Override when running Ollama on a non-default port or remote host: `gsd config-set review.ollama_host http://192.168.1.10:11434` |
 | `review.lm_studio_host` | string | `http://localhost:1234` | Base URL of the LM Studio local server. Override when using a non-default port. |
 | `review.llama_cpp_host` | string | `http://localhost:8080` | Base URL of the llama.cpp server (`llama-server`). Override when using a non-default port. |

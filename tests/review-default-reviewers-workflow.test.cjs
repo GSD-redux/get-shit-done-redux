@@ -474,3 +474,51 @@ describe('bug #1936: OpenCode reviewer must not silently yield an empty review',
 
   });
 }
+
+describe('review workflow kimi-code reviewer lane (#2718)', () => {
+  const workflow = fs.readFileSync(
+    path.join(process.cwd(), 'gsd-core', 'workflows', 'review.md'),
+    'utf8'
+  );
+
+  test('detection probe disambiguates Kimi Code CLI from the legacy Python kimi-cli', () => {
+    // #2718 approval condition: both products ship a `kimi` binary, so an
+    // existence-only probe would register the lane on hosts where only the
+    // legacy CLI (no `-p` streaming semantics) is installed. The probe must
+    // require a Node-only flag marker from --help in addition to the binary.
+    assert.match(workflow, /command -v kimi/,
+      'probe must still locate the kimi binary');
+    assert.match(workflow, /kimi --help 2>\/dev\/null \| grep -q -- '--output-format'/,
+      'probe must require the Node-only --output-format marker from kimi --help');
+    assert.doesNotMatch(workflow,
+      /command -v kimi >\/dev\/null 2>&1 && echo "kimi-code:available"/,
+      'must not register the lane on binary existence alone (legacy CLI would false-positive)');
+  });
+
+  test('lane invokes kimi headless with a file-reference prompt and model override', () => {
+    assert.match(workflow, /KIMI_CODE_MODEL=\$\(gsd_run query config-get review\.models\.kimi-code --raw/,
+      'must read the optional model override from review.models.kimi-code');
+    assert.match(workflow, /kimi -m "\$KIMI_CODE_MODEL" -p "\$KIMI_PROMPT_ARG"/,
+      'must pass the configured model via -m');
+    assert.match(workflow, /kimi -p "\$KIMI_PROMPT_ARG"/,
+      'must invoke kimi headless via -p with the file-reference prompt argument');
+    assert.match(workflow, /KIMI_PROMPT_ARG="Read the file at \{run_dir\}\/gsd-review-prompt\.md/,
+      'must use the file-reference prompt pattern (arg-list overflow), not an inlined prompt');
+  });
+
+  test('lane follows the #2494 stderr-sidecar + empty-output stub convention', () => {
+    assert.match(workflow, /2>\{run_dir\}\/gsd-review-kimi-code\.err/,
+      'must capture stderr to a .err sidecar');
+    assert.match(workflow, /\[ ! -s \{run_dir\}\/gsd-review-kimi-code\.md \]/,
+      'must stub an empty result instead of leaving a zero-byte file');
+    assert.match(workflow, /cat \{run_dir\}\/gsd-review-kimi-code\.err >> \{run_dir\}\/gsd-review-kimi-code\.md/,
+      'the stub must append the captured stderr');
+  });
+
+  test('lane is selectable via --kimi-code and lands in REVIEWS.md', () => {
+    assert.match(workflow, /--kimi-code` → include Kimi Code CLI/,
+      'flag docs must list --kimi-code');
+    assert.match(workflow, /## Kimi Code Review/,
+      'REVIEWS.md template must have a Kimi Code Review section');
+  });
+});

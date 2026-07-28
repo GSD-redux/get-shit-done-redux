@@ -460,7 +460,7 @@ Usage: `/gsd:ship 4` or `/gsd:ship 4 --draft`
 
 ---
 
-**`/gsd:review --phase N [--gemini] [--claude] [--codex] [--coderabbit] [--opencode] [--qwen] [--cursor] [--agy] [--all]`**
+**`/gsd:review --phase N [--gemini] [--claude] [--codex] [--coderabbit] [--opencode] [--qwen] [--cursor] [--kimi-code] [--agy] [--all]`**
 Cross-AI peer review — invoke external AI CLIs to independently review phase plans.
 
 - Detects available CLIs (gemini, claude, codex, coderabbit, agy)

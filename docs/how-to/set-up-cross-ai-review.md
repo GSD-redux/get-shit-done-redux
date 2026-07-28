@@ -147,6 +147,7 @@ This runs `plan-phase → review → replan → re-review` up to three cycles (d
 | You want free multi-reviewer coverage | `--gemini` + `--agy` (both use Google credentials) |
 | Your project is OpenAI-heavy | add `--codex` for an OpenAI-model perspective |
 | You want GitHub Copilot's model | add `--opencode` |
+| You use Kimi Code CLI (Moonshot AI) | add `--kimi-code` (binary `kimi`, slug `kimi-code`) |
 | You want to avoid API costs entirely | configure Ollama with a local model and use `--ollama` |
 | You need maximum coverage before a release | `/gsd-plan-review-convergence N --all` |
 | You're iterating quickly and want fast feedback | pick one CLI: `/gsd-review --phase N --gemini` |

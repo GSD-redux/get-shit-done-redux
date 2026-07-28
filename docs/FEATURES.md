@@ -1242,7 +1242,7 @@ When verification returns `human_needed`, items are persisted as a trackable HUM
 
 ### 42. Cross-AI Peer Review
 
-**Command:** `/gsd-review --phase N [--gemini] [--claude] [--codex] [--coderabbit] [--opencode] [--qwen] [--cursor] [--agy] [--ollama] [--lm-studio] [--llama-cpp] [--all]`
+**Command:** `/gsd-review --phase N [--gemini] [--claude] [--codex] [--coderabbit] [--opencode] [--qwen] [--cursor] [--kimi-code] [--agy] [--ollama] [--lm-studio] [--llama-cpp] [--all]`
 
 **Purpose:** Invoke external AI CLIs (Gemini, Claude, Codex, CodeRabbit, OpenCode, Qwen Code, Cursor, Antigravity) to independently review phase plans. Produces structured REVIEWS.md with per-reviewer feedback.
 

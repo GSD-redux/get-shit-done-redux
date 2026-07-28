@@ -1,7 +1,7 @@
 ---
 name: gsd-review
 description: "Request cross-AI peer review of phase plans from external AI CLIs"
-argument-hint: "--phase N [--gemini] [--claude] [--codex] [--opencode] [--qwen] [--cursor] [--agy] [--all]"
+argument-hint: "--phase N [--gemini] [--claude] [--codex] [--opencode] [--qwen] [--cursor] [--kimi-code] [--agy] [--all]"
 allowed-tools:
   - Read
   - Write
@@ -12,7 +12,7 @@ allowed-tools:
 
 
 <objective>
-Invoke external AI CLIs (Gemini, Claude, Codex, OpenCode, Qwen Code, Cursor) to independently review phase plans.
+Invoke external AI CLIs (Gemini, Claude, Codex, OpenCode, Qwen Code, Cursor, Kimi Code) to independently review phase plans.
 Produces a structured REVIEWS.md with per-reviewer feedback that can be fed back into
 planning via /gsd-plan-phase --reviews.
 
@@ -33,6 +33,7 @@ Phase number: extracted from $ARGUMENTS (required)
 - `--opencode` — Include OpenCode review (uses model from user's OpenCode config)
 - `--qwen` — Include Qwen Code review (Alibaba Qwen models)
 - `--cursor` — Include Cursor agent review
+- `--kimi-code` — Include Kimi Code CLI review
 - `--agy` / `--antigravity` — Include Antigravity CLI review
 - `--all` — Include all available CLIs
 

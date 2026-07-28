@@ -1869,7 +1869,8 @@ const capabilities = {
         "agentManifestStyle": "none",
         "doneBannerStyle": "kimi-code",
         "skipSharedHooksInstall": true,
-        "namedSubagentsSupported": false
+        "namedSubagentsSupported": false,
+        "reviewerCli": true
       }
     }
   },
@@ -5330,7 +5331,8 @@ const runtimes = {
         "agentManifestStyle": "none",
         "doneBannerStyle": "kimi-code",
         "skipSharedHooksInstall": true,
-        "namedSubagentsSupported": false
+        "namedSubagentsSupported": false,
+        "reviewerCli": true
       }
     }
   },

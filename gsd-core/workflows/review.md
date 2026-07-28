@@ -24,6 +24,16 @@ command -v opencode >/dev/null 2>&1 && echo "opencode:available" || echo "openco
 command -v qwen >/dev/null 2>&1 && echo "qwen:available" || echo "qwen:missing"
 command -v cursor-agent >/dev/null 2>&1 && echo "cursor:available" || echo "cursor:missing"
 command -v agy >/dev/null 2>&1 && echo "antigravity:available" || echo "antigravity:missing"
+# `kimi` is shared by Kimi Code CLI (Node) and the legacy Python kimi-cli (the
+# separate `kimi` capability). An existence-only probe would register this lane on
+# hosts with ONLY the legacy CLI, which lacks the Node `-p`/`-m` semantics — require
+# a Node-only --help marker (#2718 approval condition; `--output-format` is absent
+# on the Python kimi-cli, whose headless flags are --print/--work-dir).
+if command -v kimi >/dev/null 2>&1 && kimi --help 2>/dev/null | grep -q -- '--output-format'; then
+  echo "kimi-code:available"
+else
+  echo "kimi-code:missing"
+fi
 
 # Check local model servers (OpenAI-compatible HTTP API — no CLI binary required)
 OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
@@ -58,11 +68,11 @@ below rather than producing an empty review). Tell the user to install jq:
 NOTE: jq is not on PATH — the ollama, lm_studio, llama_cpp, opencode, and
 antigravity reviewer lanes are unavailable. Install jq (https://jqlang.org/download/)
 or select a lane that does not require it (--gemini, --claude, --codex,
---coderabbit, --qwen, --cursor).
+--coderabbit, --qwen, --cursor, --kimi-code).
 ```
 
-The remaining lanes (`gemini`, `claude`, `codex`, `coderabbit`, `qwen`, `cursor`)
-do not require jq and must stay selectable on a jq-less host.
+The remaining lanes (`gemini`, `claude`, `codex`, `coderabbit`, `qwen`, `cursor`,
+`kimi-code`) do not require jq and must stay selectable on a jq-less host.
 
 Parse flags from `$ARGUMENTS`:
 - `--gemini` → include Gemini
@@ -72,6 +82,7 @@ Parse flags from `$ARGUMENTS`:
 - `--opencode` → include OpenCode
 - `--qwen` → include Qwen Code
 - `--cursor` → include Cursor
+- `--kimi-code` → include Kimi Code CLI
 - `--agy` or `--antigravity` → include Antigravity CLI
 - `--ollama` → include Ollama (local server, OpenAI-compatible)
 - `--lm-studio` → include LM Studio (local server, OpenAI-compatible)
@@ -105,6 +116,7 @@ No external AI CLIs found. Install at least one:
 - opencode: https://opencode.ai (leverages GitHub Copilot subscription models)
 - qwen: https://github.com/nicepkg/qwen-code (Alibaba Qwen models)
 - cursor: https://cursor.com (Cursor IDE agent mode)
+- kimi-code: https://www.kimi.com/code (Kimi Code CLI — Moonshot AI)
 - agy: curl -fsSL https://antigravity.google/cli/install.sh | bash (Antigravity CLI — free with Google credentials)
 
 Then run /gsd:review again.
@@ -275,6 +287,7 @@ OPENCODE_MODEL=$(gsd_run query config-get review.models.opencode --raw 2>/dev/nu
 # review.models.agy, when set, is passed to agy as --model (escape hatch for a
 # pinned model that 404s server-side); otherwise agy uses its persisted default.
 AGY_MODEL=$(gsd_run query config-get review.models.agy --raw 2>/dev/null || true)
+KIMI_CODE_MODEL=$(gsd_run query config-get review.models.kimi-code --raw 2>/dev/null || true)
 
 # Reasoning effort per reviewer (#2481). Empty unless the host's effortSurface
 # axis is `argv`. Pass --attempt N to walk ADR-443's escalation ladder.
@@ -450,6 +463,24 @@ cursor-agent -p --mode ask --trust --output-format text "$CURSOR_PROMPT_ARG" 2>{
 if [ ! -s {run_dir}/gsd-review-cursor.md ]; then
   echo "Cursor review failed or returned empty output. stderr:" > {run_dir}/gsd-review-cursor.md
   cat {run_dir}/gsd-review-cursor.err >> {run_dir}/gsd-review-cursor.md
+fi
+```
+
+**Kimi Code CLI:**
+```bash
+# kimi -p takes the prompt as an ARGUMENT, not stdin (like cursor-agent) — reference
+# the prompt file by path. Assistant text → stdout; thinking/tool progress → stderr
+# (.err sidecar, #2494). #2176 absolute-root anchor as in the Cursor block.
+_KIMI_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+KIMI_PROMPT_ARG="Read the file at {run_dir}/gsd-review-prompt.md in full and carry out the review request it contains. The repository under review is at $_KIMI_ROOT — resolve every relative file path in the review request against that absolute root. Output only the resulting markdown review. Do not edit any files."
+if [ -n "$KIMI_CODE_MODEL" ] && [ "$KIMI_CODE_MODEL" != "null" ]; then
+  kimi -m "$KIMI_CODE_MODEL" -p "$KIMI_PROMPT_ARG" 2>{run_dir}/gsd-review-kimi-code.err > {run_dir}/gsd-review-kimi-code.md
+else
+  kimi -p "$KIMI_PROMPT_ARG" 2>{run_dir}/gsd-review-kimi-code.err > {run_dir}/gsd-review-kimi-code.md
+fi
+if [ ! -s {run_dir}/gsd-review-kimi-code.md ]; then
+  echo "Kimi Code review failed or returned empty output. stderr:" > {run_dir}/gsd-review-kimi-code.md
+  cat {run_dir}/gsd-review-kimi-code.err >> {run_dir}/gsd-review-kimi-code.md
 fi
 ```
 
@@ -918,7 +949,7 @@ instances print a one-line shared-adapter caveat. Format in
 ```markdown
 ---
 phase: {N}
-reviewers: [gemini, claude, codex, coderabbit, opencode, qwen, cursor, antigravity, ollama, lm_studio, llama_cpp]  # populate at runtime with only the reviewers actually invoked
+reviewers: [gemini, claude, codex, coderabbit, opencode, qwen, cursor, kimi-code, antigravity, ollama, lm_studio, llama_cpp]  # populate at runtime with only the reviewers actually invoked
 reviewed_at: {ISO timestamp}
 plans_reviewed: [{list of PLAN.md files}]
 trimmed_reviewers:        # only present if at least one reviewer was trimmed
@@ -986,6 +1017,12 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
 ## Cursor Review
 
 {cursor review content}
+
+---
+
+## Kimi Code Review
+
+{kimi-code review content}
 
 ---
 

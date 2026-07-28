@@ -1461,13 +1461,14 @@ Reviewers are prompted to verify the plan's claims against the actual repository
 | `--opencode` | Include OpenCode review (via GitHub Copilot) |
 | `--qwen` | Include Qwen Code review (Alibaba Qwen models) |
 | `--cursor` | Include Cursor agent review |
+| `--kimi-code` | Include Kimi Code CLI review |
 | `--agy` / `--antigravity` | Include Antigravity CLI review (free with Google credentials) |
 | `--ollama` | Include Ollama server review |
 | `--lm-studio` | Include LM Studio server review |
 | `--llama-cpp` | Include llama.cpp server review |
 | `--all` | Include all available reviewers (CLI + local model servers) |
 
-**`jq` prerequisite (some lanes only):** `--ollama`, `--lm-studio`, `--llama-cpp`, `--opencode`, and `--agy` parse JSON that GSD does not produce itself — OpenAI-compatible `/v1/chat/completions` responses, OpenCode's JSONL event stream, and Antigravity's conversation cache — so they require [`jq`](https://jqlang.org/download/) on your `PATH`. If `jq` is missing, `/gsd-review` reports those five as unavailable and tells you to install it, rather than running them into an empty review. The other six lanes (`--gemini`, `--claude`, `--codex`, `--coderabbit`, `--qwen`, `--cursor`) need no `jq`. Reading your configured models, hosts, and token budgets never requires `jq`.
+**`jq` prerequisite (some lanes only):** `--ollama`, `--lm-studio`, `--llama-cpp`, `--opencode`, and `--agy` parse JSON that GSD does not produce itself — OpenAI-compatible `/v1/chat/completions` responses, OpenCode's JSONL event stream, and Antigravity's conversation cache — so they require [`jq`](https://jqlang.org/download/) on your `PATH`. If `jq` is missing, `/gsd-review` reports those five as unavailable and tells you to install it, rather than running them into an empty review. The other seven lanes (`--gemini`, `--claude`, `--codex`, `--coderabbit`, `--qwen`, `--cursor`, `--kimi-code`) need no `jq`. Reading your configured models, hosts, and token budgets never requires `jq`.
 
 **Default reviewer behavior (no flags):**
 - If `review.default_reviewers` is **unset**, `/gsd-review` runs all detected reviewers (current default behavior).

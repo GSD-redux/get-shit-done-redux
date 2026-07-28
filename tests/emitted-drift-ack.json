@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "review.md": {
+      "reason": "kimi-code reviewer lane: disambiguating detection probe, --kimi-code flag docs, KIMI_CODE_MODEL read, invocation block, and REVIEWS.md section (#2718)"
+    }
+  }
+}
