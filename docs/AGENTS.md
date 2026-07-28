@@ -69,6 +69,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 - Reads CONTEXT.md to focus research on user's decisions
 - Investigates implementation patterns for the specific phase domain
 - Detects test infrastructure for Nyquist validation mapping
+- Tags in-repo discrete values (enums, schema unions, error codes, status constants, paths) `[VERIFIED]` only after reading the source-of-truth file that run, citing path and line range, and quoting the values verbatim
 
 ---
 
