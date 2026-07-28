@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-const path = require('node:path');
+const path = require('path');
 const { execFileSync } = require('child_process');
 const { existsSync, readdirSync, appendFileSync } = require('fs');
 
@@ -577,4 +577,4 @@ if (require.main === module) {
   runMain(main);
 }
 
-module.exports = { RULES, missingRuleTestFiles, classify, isInertCi };
+module.exports = { RULES, missingRuleTestFiles };
