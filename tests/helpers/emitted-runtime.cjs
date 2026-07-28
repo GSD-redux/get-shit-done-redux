@@ -109,6 +109,49 @@ function resolveBaseSha(base = 'origin/next') {
 }
 
 /**
+ * Base-ref candidates, most-specific first.
+ *
+ * The differential needs a ref for `next`, and that ref is NOT universally present:
+ *   - the gsd-test runner shallow-clones and merges base+head, so no `origin/*`
+ *     remote-tracking refs exist in the container (verified: `git rev-parse
+ *     origin/next` fails there, which is what turned this test red on its first run);
+ *   - GitHub Actions' checkout does not create remote-tracking branches for OTHER
+ *     branches by default, which is exactly why `changeset-required.yml` carries an
+ *     explicit `git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"` step.
+ *
+ * `GSD_EMITTED_BASE` lets a lane name the ref (or sha) directly. `GITHUB_BASE_REF` is
+ * set by Actions on pull_request events.
+ */
+function baseRefCandidates(env = process.env) {
+  const candidates = [];
+  if (env.GSD_EMITTED_BASE) candidates.push(env.GSD_EMITTED_BASE);
+  if (env.GITHUB_BASE_REF) {
+    candidates.push(`origin/${env.GITHUB_BASE_REF}`, env.GITHUB_BASE_REF);
+  }
+  candidates.push('origin/next', 'next');
+  return [...new Set(candidates)];
+}
+
+/**
+ * First candidate base ref that actually resolves, or null when none do.
+ *
+ * Returning null is NOT a pass — the caller turns it into an explicit `t.skip()` with
+ * the full candidate list in the message, so an environment where the gate did not run
+ * says so out loud. A bare `return` there would be a PASS (ADR-2719 §6), and a hard
+ * failure would make the suite permanently red in the gsd-test container, where no
+ * base ref can exist by construction.
+ */
+function resolveBase(env = process.env) {
+  for (const candidate of baseRefCandidates(env)) {
+    try {
+      const sha = git(['rev-parse', '--verify', `${candidate}^{commit}`]).trim();
+      if (/^[0-9a-f]{40}$/.test(sha)) return { ref: candidate, sha };
+    } catch { /* try the next candidate */ }
+  }
+  return null;
+}
+
+/**
  * Emitted manifest set at `base`, read from the committed fixtures at that ref.
  * Returns null when the fixtures are absent at `base` (i.e. after Phase 4's cutover),
  * which is the signal to fall back to `resolveBaseline`'s cache path.
@@ -216,6 +259,8 @@ module.exports = {
   git,
   resolveChangedPaths,
   resolveBaseSha,
+  baseRefCandidates,
+  resolveBase,
   baselineManifestsAtRef,
   baselineSizesAtRef,
   currentManifests,
