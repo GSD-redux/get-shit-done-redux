@@ -86,7 +86,7 @@ for (const runtime of runtimes) {
     if (!fs.existsSync(fixturePath)) {
       assert.fail(
         `Install-tree fixture missing for runtime '${runtime}': ${fixturePath}\n` +
-        'Run "npm run gen:golden" to generate the fixtures (or, for humans, UPDATE_INSTALL_TREE=1 node --test tests/golden-install-tree.test.cjs).'
+        'Run "npm run gen:install-tree" to generate the fixtures (or, for humans, UPDATE_INSTALL_TREE=1 node --test tests/golden-install-tree.test.cjs).'
       );
     }
 
@@ -98,7 +98,7 @@ for (const runtime of runtimes) {
       const lines = [`Install-tree mismatch for runtime '${runtime}':`];
       if (added.length)   lines.push(`  added   (${added.length}): ${added.join(', ')}`);
       if (removed.length) lines.push(`  removed (${removed.length}): ${removed.join(', ')}`);
-      lines.push('If the change is intentional, run "npm run gen:golden" to regenerate the fixtures (works without node --test; humans may also use UPDATE_INSTALL_TREE=1 node --test).');
+      lines.push('If the change is intentional, run "npm run gen:install-tree" to regenerate the fixtures (works without node --test; humans may also use UPDATE_INSTALL_TREE=1 node --test).');
       assert.deepEqual(actual, fixture, lines.join('\n'));
     }
   });
@@ -132,7 +132,7 @@ test('install tree — claude (local legacy layout)', async (t) => {
   if (!fs.existsSync(fixturePath)) {
     assert.fail(
       `Install-tree fixture missing for claude-local: ${fixturePath}\n` +
-      'Run "npm run gen:golden" to generate the fixtures (or, for humans, UPDATE_INSTALL_TREE=1 node --test tests/golden-install-tree.test.cjs).',
+      'Run "npm run gen:install-tree" to generate the fixtures (or, for humans, UPDATE_INSTALL_TREE=1 node --test tests/golden-install-tree.test.cjs).',
     );
   }
 
@@ -142,7 +142,7 @@ test('install tree — claude (local legacy layout)', async (t) => {
     const lines = ['Install-tree mismatch for claude-local:'];
     if (added.length)   lines.push(`  added   (${added.length}): ${added.join(', ')}`);
     if (removed.length) lines.push(`  removed (${removed.length}): ${removed.join(', ')}`);
-    lines.push('If the change is intentional, run "npm run gen:golden" to regenerate the fixtures (works without node --test; humans may also use UPDATE_INSTALL_TREE=1 node --test).');
+    lines.push('If the change is intentional, run "npm run gen:install-tree" to regenerate the fixtures (works without node --test; humans may also use UPDATE_INSTALL_TREE=1 node --test).');
     assert.deepEqual(actual, fixture, lines.join('\n'));
   }
 });

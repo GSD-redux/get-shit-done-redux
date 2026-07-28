@@ -75,12 +75,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('node:os');
 const path = require('path');
-const { assertFileBaseline } = require('../scripts/lib/allowlist-ratchet.cjs');
 const { lfByteCount: byteCount, listWorkflowStems, measureWorkflows } = require('../scripts/workflow-size.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
-const BASELINE_PATH = path.join(__dirname, 'workflow-size-baseline.json');
 
 // Tier HARD CAPS (#1074) — absolute red lines, not high-water-hugging ceilings.
 // Day-to-day creep is caught per-file by the baseline guard below; these exist
@@ -96,10 +94,6 @@ const XL_CAP = 98304;       // 96 KiB
 const LARGE_CAP = 61440;    // 60 KiB
 const DEFAULT_CAP = 40960;  // 40 KiB
 
-// New workflow files (not yet in the committed baseline) must stay under the
-// Codex project_doc_max_bytes anchor unless explicitly tiered into XL/LARGE in
-// the same PR. Keeps net-new orchestrators from being born oversized.
-const NEW_FILE_CAP = 32768; // 32 KiB
 
 // Top-level orchestrators that own end-to-end multi-phase rubrics.
 // Grandfathered at current sizes — see the discuss-phase/modes split (#717) for the progressive-disclosure
@@ -169,47 +163,31 @@ describe('SIZE: workflow tier hard caps (issue #1074)', () => {
     });
   }
 
-  test('new workflow files (not yet baselined) stay under the 32 KiB Codex anchor', () => {
-    const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
-    for (const workflow of ALL_WORKFLOWS) {
-      const key = `${workflow}.md`;
-      const isNew = !(key in baseline);
-      const isTiered = XL_WORKFLOWS.has(workflow) || LARGE_WORKFLOWS.has(workflow);
-      if (!isNew || isTiered) continue;
-      const bytes = SIZES[key];
-      assert.ok(
-        bytes < NEW_FILE_CAP,
-        `${key} is a new workflow at ${bytes} bytes — new files must stay under ` +
-        `${NEW_FILE_CAP} (the Codex project_doc_max_bytes anchor) unless explicitly ` +
-        `tiered into XL_WORKFLOWS/LARGE_WORKFLOWS in this same PR with a rationale.`
-      );
-    }
-  });
+  // A prior "new workflow files (not yet baselined) stay under the 32 KiB Codex
+  // anchor" test lived here, keyed on `tests/workflow-size-baseline.json` to tell a
+  // brand-new file (not yet in the baseline) from an existing grandfathered one.
+  // #2724 (ADR-2719 Phase 4) deletes that baseline — there is no longer a "not yet
+  // baselined" signal to key off. Every workflow file, new or old, is still bounded
+  // by its tier's hard cap above (DEFAULT_CAP for anything untiered); what is lost
+  // is the STRICTER 32 KiB anchor specifically for brand-new files sized between
+  // 32768 and 40960 bytes, a narrower band than the tier cap already covers. This is
+  // a disclosed, deliberate narrowing, not an oversight — reintroducing "is this file
+  // new" would require a git-diff-against-base dependency this pure, fast test
+  // deliberately does not have (that class of check now lives in the differential
+  // attribution check's real-tree test, which already has that dependency).
 });
 
-describe('SIZE: per-file workflow baseline (issue #1074)', () => {
-  // Per-file exact-size ratchet — the primary anti-creep guard (it replaced the
-  // tier-max tighten-only ceilings, which only bound the single largest file in
-  // each tier). Guards EVERY workflow file by name against a committed snapshot
-  // (tests/workflow-size-baseline.json). Growth fails with the file and delta;
-  // shrinkage fails as a stale snapshot (regenerate to ratchet down). The fix
-  // for any failure is `npm run size:baseline` plus a PR justification for
-  // genuine growth (or lazy extraction). The tier hard caps above are the outer
-  // bound; this is the day-to-day creep control.
-  test('every workflow file matches its committed baseline', () => {
-    const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
-    const current = measureWorkflows();
-    assertFileBaseline({
-      label: 'workflow-size',
-      current,
-      baseline,
-      fail: assert.fail,
-      updateHint:
-        'Run `npm run size:baseline` to update tests/workflow-size-baseline.json, ' +
-        'then justify any growth in your PR (or extract content lazily — see workflows/discuss-phase/).',
-    });
-  });
-});
+// A prior "SIZE: per-file workflow baseline (issue #1074)" describe block lived here,
+// asserting every workflow file's exact byte count against the committed
+// `tests/workflow-size-baseline.json` snapshot. #2724 (ADR-2719 Phase 4) deletes that
+// snapshot: it was a pure function of the source tree, conflicted on 7 of 7 PRs that
+// touched it, and its purpose — "growth must be noticed and justified" — is now served
+// by the same differential machine that replaced the golden-install-parity fixtures
+// (tests/emitted-attribution.test.cjs's real-tree test, via `emitted-diff.cjs`'s size
+// ratchet: growth is reported with its exact byte delta and requires an entry in
+// tests/emitted-drift-ack.json, ADR-2719 §4 / must-have 6). The tier hard caps above
+// are unaffected — they are independent of the deleted baseline and remain the outer
+// bound.
 
 describe('SIZE: discuss-phase progressive disclosure (#717 byte budget)', () => {
   // The discuss-phase progressive-disclosure split (#717) targets discuss-phase.md as a thin dispatcher, separate from

@@ -376,8 +376,14 @@ function baselineManifestsAtRef(base = 'origin/next') {
  * This is the slow path, used only on a `resolveBaseline()` cache miss. It needs no
  * `npm ci` in the worktree: `bin/install.js`, the `tests/helpers/*.cjs` real-tree
  * shells, and `gen-emitted-baseline.cjs` itself are all Node-builtins-only
- * (CONTRIBUTING.md's "No external dependencies in core"), so a bare `node` spawn
- * against the checked-out worktree is sufficient.
+ * (CONTRIBUTING.md's "No external dependencies in core"). It DOES need `npm run
+ * build:lib` run there first, though — `tests/helpers/install-shared.cjs` requires the
+ * TSC-COMPILED `gsd-core/bin/lib/runtime-artifact-layout.cjs`, which is gitignored, not
+ * committed, and therefore absent from a bare worktree checkout. `node_modules` is
+ * symlinked in from the calling checkout (never copied — `npm ci` inside every
+ * fallback build would make an already-slow path far slower) so `tsc` is available
+ * without a second install; the worktree's OWN `src/*.cts` and `tsconfig.build.json`
+ * are what gets compiled, so the baseline reflects `ref`, not the caller's tree.
  *
  * Every subprocess is bounded. The worktree is always removed, success or failure —
  * a leaked worktree would poison `git worktree list` for every subsequent run in the
@@ -396,11 +402,21 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
   const outFile = path.join(os.tmpdir(), `gsd-emitted-baseline-out-${crypto.randomBytes(8).toString('hex')}.json`);
 
   const WORKTREE_TIMEOUT_MS = 60_000;
+  const BUILD_LIB_TIMEOUT_MS = 180_000;
   const BUILD_TIMEOUT_MS = 300_000;
 
   try {
     execFileSync('git', ['worktree', 'add', '--detach', worktreeDir, ref], {
       cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const sharedNodeModules = path.join(cwd, 'node_modules');
+    if (fs.existsSync(sharedNodeModules)) {
+      fs.symlinkSync(sharedNodeModules, path.join(worktreeDir, 'node_modules'), 'dir');
+    }
+
+    execFileSync('npm', ['run', 'build:lib'], {
+      cwd: worktreeDir, encoding: 'utf8', timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     execFileSync(

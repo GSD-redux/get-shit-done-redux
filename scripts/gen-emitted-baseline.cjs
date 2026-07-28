@@ -26,12 +26,15 @@
  *   1. CI's push-to-`next` job runs this straight after `next` advances, then uploads
  *      `.gsd-cache/emitted-baseline.json` as a cache entry keyed on the merge sha
  *      (.github/workflows/test.yml, `publish-emitted-baseline` job).
- *   2. `tests/emitted-attribution.test.cjs`'s real-tree test passes this script to
- *      `resolveBaseline()` as the `buildFallback` for a cache miss: it checks out `base`
- *      into a throwaway `git worktree`, spawns `node gen-emitted-baseline.cjs --out <tmp>`
- *      there (no `npm ci` needed — `bin/install.js`, `tests/helpers/*.cjs`, and this
- *      script are all Node-builtins-only per CONTRIBUTING.md's "No external dependencies
- *      in core"), then reads the artifact back.
+ *   2. `tests/emitted-attribution.test.cjs`'s real-tree test passes
+ *      `buildBaselineAtRef` (tests/helpers/emitted-runtime.cjs) to `resolveBaseline()`
+ *      as the `buildFallback` for a cache miss: it checks out `base` into a throwaway
+ *      `git worktree`, symlinks in `node_modules` and runs `npm run build:lib` there
+ *      (this script and the test helpers are Node-builtins-only per CONTRIBUTING.md's
+ *      "No external dependencies in core", but `tests/helpers/install-shared.cjs`
+ *      requires the TSC-compiled, gitignored `gsd-core/bin/lib/*.cjs`, so that one build
+ *      step is unavoidable), spawns `node gen-emitted-baseline.cjs --out <tmp>` there,
+ *      then reads the artifact back.
  *
  * Every git subprocess is bounded (CLAUDE.md → KNOWN DEFECTS: unbounded subprocesses
  * hang CI silently).
