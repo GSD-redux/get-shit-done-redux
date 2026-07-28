@@ -320,7 +320,12 @@ function baselineFamilyNamesAtRef(base) {
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line.endsWith('.json'))
-    .map((line) => line.slice(line.lastIndexOf('/') + 1).replace(/\.json$/, ''));
+    .map((line) => line.slice(line.lastIndexOf('/') + 1).replace(/\.json$/, ''))
+    // These names become object keys below. They now come from git output rather than a
+    // trusted constant, so a fixture committed as `__proto__.json` would turn
+    // `manifests[name] = parsed` into a prototype write. Compared inline (not via a Set)
+    // because that is the form the prototype-pollution analysis recognizes.
+    .filter((name) => name !== '__proto__' && name !== 'constructor' && name !== 'prototype');
 }
 
 /**
