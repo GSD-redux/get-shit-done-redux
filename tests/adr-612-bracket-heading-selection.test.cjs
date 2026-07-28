@@ -68,7 +68,12 @@ const BASE_SITES = [
   { file: 'state.cts', site: 'cmdStateSync roadmapPhaseCount', baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
   { file: 'state.cts', site: 'extractRetiredPhaseNumbers phaseRef',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
-  { file: 'verify.cts', site: 'cmdValidateHealth milestone-complete (B6)',
+  // #3309/#3310 moved the health reads out of verify.cts and into the parsed
+  // planning snapshot consumed by the diagnostic rule table. Pin the same two
+  // ROADMAP reads at their new owner so neither can silently narrow.
+  { file: 'planning-snapshot.cts', site: 'buildCurrentMilestoneRoadmapPhaseIdsField (W026, ex-verify.cts B6)',
+    baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
+  { file: 'planning-snapshot.cts', site: 'buildRoadmapPhaseCheckboxesField (W011/W006 not-started)',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
 ];
 
@@ -403,5 +408,66 @@ describe('#612 PR-2: phase_id_convention resolves workstream -> root', () => {
       fs.writeFileSync(path.join(d, '.planning', 'config.json'), JSON.stringify({ phase_id_convention: true }));
       withWs(null, () => assert.equal(resolvePhaseIdConvention(d), null, 'non-string'));
     } finally { cleanupDir(); }
+  });
+});
+
+// ─── G8: the pin reads LIVE source, not a transcription ────────────────────
+
+describe('#612 PR-2: every selector call site declares the right baseline (live src)', () => {
+  // allow-test-rule: source-text-is-the-product -- #2761
+  // The structural table above pins transcription <-> selector. It cannot see a
+  // call site whose BASELINE ARGUMENT is wrong: flipping the planning
+  // snapshot's milestone-complete site from LABEL_ONLY to ANY_BRACKET grants a
+  // fires-on-every-repo check `[anything] Phase N` tolerance it has never had,
+  // and every behavioural test still passed. This reads the shipped sources and
+  // asserts the mode at each site, count-exact, so that class cannot recur
+  // silently.
+  const fsx = require('fs');
+  const pathx = require('path');
+  const SRC = pathx.join(__dirname, '..', 'src');
+
+  // file -> [ANY_BRACKET count, LABEL_ONLY count]
+  const EXPECTED = {
+    'roadmap.cts': [3, 3],
+    'validate.cts': [1, 2],
+    'state.cts': [0, 3],
+    'planning-snapshot.cts': [0, 2],
+    'roadmap-parser.cts': [1, 0],
+  };
+
+  const callsIn = (file) => {
+    const text = fsx.readFileSync(pathx.join(SRC, file), 'utf-8');
+    const re = /phaseHeadingPrefixSrcFor\(\s*PHASE_HEADING_BASELINE\.(ANY_BRACKET|LABEL_ONLY)/g;
+    const out = { ANY_BRACKET: 0, LABEL_ONLY: 0 };
+    let m;
+    while ((m = re.exec(text)) !== null) out[m[1]] += 1;
+    // Any call that does NOT name a PHASE_HEADING_BASELINE member is a hole in
+    // this pin, so count total invocations too.
+    const total = (text.match(/phaseHeadingPrefixSrcFor\(/g) || []).length;
+    return { ...out, total };
+  };
+
+  for (const [file, [anyBracket, labelOnly]] of Object.entries(EXPECTED)) {
+    test(`${file}: ${anyBracket} any-bracket + ${labelOnly} label-only, and nothing else`, () => {
+      const c = callsIn(file);
+      assert.equal(c.ANY_BRACKET, anyBracket, `${file} any-bracket call count`);
+      assert.equal(c.LABEL_ONLY, labelOnly, `${file} label-only call count`);
+      assert.equal(
+        c.total, anyBracket + labelOnly,
+        `${file} has a phaseHeadingPrefixSrcFor call that does not name a PHASE_HEADING_BASELINE mode`,
+      );
+    });
+  }
+
+  test('no OTHER src file consumes the selector unpinned', () => {
+    const unpinned = fsx.readdirSync(SRC)
+      .filter(f => f.endsWith('.cts') && !(f in EXPECTED) && f !== 'phase-id.cts')
+      .filter(f => /phaseHeadingPrefixSrcFor\(/.test(fsx.readFileSync(pathx.join(SRC, f), 'utf-8')));
+    assert.deepEqual(unpinned, [], 'a new selector consumer must be added to EXPECTED');
+  });
+
+  test('the transcription table covers exactly the live call sites', () => {
+    const live = Object.values(EXPECTED).reduce((n, [a, l]) => n + a + l, 0);
+    assert.equal(BASE_SITES.length, live, 'BASE_SITES row count must equal live call-site count');
   });
 });

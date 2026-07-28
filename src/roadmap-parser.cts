@@ -36,10 +36,15 @@ const {
   // see BRACKET_PHASE_ENTRY_HEADING_RE below.
   PHASE_HEADING_PREFIX_SRC,
   PHASE_NUMBER_TOKEN_SOURCE,
+  phaseHeadingPrefixSrcFor,
+  PHASE_HEADING_BASELINE,
+  // #612: the disk-side milestone filter resolves bracket directories through
+  // the owner's gated helpers rather than spelling the grammar a second time.
+  phaseTokenMatches,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir } = planningWorkspace;
+const { planningDir, resolvePhaseIdConvention } = planningWorkspace;
 import { platformReadSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
@@ -540,16 +545,36 @@ function collectTablePhaseRows(window: string): Array<{ id: string; name: string
  * narrower question — "which phase ids does this window declare" — where only
  * the 999 icebox range is excluded.
  */
-function scanMilestonePhaseIds(window: string): Set<string> {
+function scanMilestonePhaseIdSets(
+  window: string,
+  convention: string | null | undefined,
+): { ids: Set<string>; qualifiedIds: Set<string> } {
   const ids = new Set<string>();
+  const qualifiedIds = new Set<string>();
   // Use tokenizeHeadings (fence-aware) instead of stripFencedLines + regex.
   // T4 seam migration: phase headings inside fences are excluded automatically.
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-  const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  // #612: select the heading grammar from the resolved convention and retain
+  // the bracket id so the disk-side filter can distinguish equal phase tokens
+  // belonging to different milestones.
+  const capturing = convention === 'bracket';
+  const bracketGroups = capturing ? 1 : 0;
+  const phaseHeadingPattern = new RegExp(
+    `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention, capturing)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`,
+    'i',
+  );
   for (const h of tokenizeHeadings(window)) {
     if (h.level < 2 || h.level > 4) continue;
     const pm = phaseHeadingPattern.exec(h.text);
-    if (pm && !/^999\b/.test(pm[1])) ids.add(pm[1]);
+    if (!pm) continue;
+    const bracketId = bracketGroups ? pm[1] : undefined;
+    const token = pm[1 + bracketGroups];
+    if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+    // This scan's legacy contract excludes only the 999 icebox range. Keep the
+    // narrower rule so real decimal phase 00.1 is not swallowed as milestone 0.
+    if (/^999\b/.test(token)) continue;
+    ids.add(token);
+    if (bracketId && !token.includes('-')) qualifiedIds.add(`${bracketId}-${token}`);
   }
   // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
   // so a bullet-house-style ROADMAP populates the milestone phase set instead of
@@ -563,7 +588,20 @@ function scanMilestonePhaseIds(window: string): Set<string> {
   // #3577: table-declared ids join the same membership set — the milestone
   // filter must not collapse a table-house-style window to zero-count.
   for (const tr of collectTablePhaseRows(window)) ids.add(tr.id);
-  return ids;
+  return { ids, qualifiedIds };
+}
+
+/**
+ * Public #3262 owner contract: the declared-id Set remains directly iterable.
+ * #612's qualified bracket ids are an internal companion used only by the
+ * milestone directory filter, so extending that internal read must not break
+ * existing consumers of this exported Set (including #3577's table scan).
+ */
+function scanMilestonePhaseIds(
+  window: string,
+  convention?: string | null,
+): Set<string> {
+  return scanMilestonePhaseIdSets(window, convention).ids;
 }
 
 /**
@@ -715,7 +753,30 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
     `<summary[^>]*>([^<]*${escapeRegex(version)}[^<]*)<\\/summary>`,
     'i'
   );
-  const headingMatches = locateMilestoneHeadings(content, version);
+  // #3184 keeps the version-heading locator single-owned. #612 adds a gated
+  // bracket candidate source only when that owner finds no version-bearing
+  // heading; it never replaces or re-derives the legacy lookup.
+  let headingMatches = locateMilestoneHeadings(content, version);
+
+  let bracketScopeConvention: string | null = phaseIdConvention ?? null;
+  if (phaseIdConvention === undefined) {
+    try {
+      bracketScopeConvention = resolvePhaseIdConvention(cwd);
+    } catch { /* unresolvable convention → preserve the legacy fallback */ }
+  }
+  if (headingMatches.length === 0 && bracketScopeConvention === 'bracket') {
+    const vMatch = version.match(/^v(\d+)/i);
+    const milestoneInt = vMatch ? parseInt(vMatch[1], 10) : NaN;
+    if (Number.isSafeInteger(milestoneInt)) {
+      // Canonical padded milestone spelling only. Accepting `[CODE.2]` would
+      // bound a section whose phase headings the bracket grammar rejects.
+      const canonical = String(milestoneInt).padStart(2, '0');
+      headingMatches = [...content.matchAll(new RegExp(
+        `(^#{1,3}\\s+\\[[A-Z][A-Z0-9_]*\\.${canonical}\\][^\\n]*)`,
+        'gmi',
+      ))];
+    }
+  }
 
   if (headingMatches.length === 0) {
     const summaryMatch = content.match(summaryPattern);
@@ -771,7 +832,12 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
   // #3184: selection collapses to the sole owner; `allMatches` is still needed
   // below (offsets, detailsMatch search), so only the selection itself routes
   // through `selectMilestoneHeading` rather than the whole block.
-  const selected = selectMilestoneHeading(content, version)!;
+  // Preserve the canonical legacy selector, then fall back to the gated
+  // bracket candidates above when a name-only bracket milestone carries no
+  // version token for that selector to find.
+  const selected = selectMilestoneHeading(content, version)
+    ?? allMatches.find((m) => !isClosed(m[1]))
+    ?? firstMatch;
 
   const sectionStart = selected.index;
 
@@ -1436,6 +1502,23 @@ type MilestonePhaseFilter = ((dirName: string) => boolean) & {
  */
 function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, phaseIdConvention?: string | null, ws?: string | null): MilestonePhaseFilter {
   const milestonePhaseNums = new Set<string>();
+  // #612: the milestone-QUALIFIED form (`{CODE}.{MM}-{PP}`) of each in-scope
+  // bracket heading, kept in its OWN set — deliberately not in
+  // milestonePhaseNums. A qualified id ALWAYS contains a hyphen, so putting one
+  // there would flip `roadmapUsesHyphenedIds` below on EVERY bracket repo, which
+  // swaps `numericRe` to the continuation-segment variant and silently moves the
+  // LEGACY dir path. Separate set; `phaseCount` is unchanged.
+  //
+  // Stated exactly, because the narrower claim is the true one: this keeps
+  // QUALIFIED IDS out of that flag's input, not hyphens in general. A heading
+  // whose TOKEN carries its own hyphen (`### [GSD.02] Phase 02-01:`) still flips
+  // it through milestonePhaseNums — as it also does at base, which matches that
+  // spelling through the un-widened intro. See the token-hyphen guard below.
+  const milestoneQualifiedIds = new Set<string>();
+  // Hoisted out of the try so the DIR side can select the same grammar the
+  // HEADING side selected. The two halves of this one filter reading different
+  // conventions is exactly the defect the bracket branch below closes.
+  let headingConvention: string | null | undefined;
   let missingExplicitVersion = false;
   let versionScoped = false;
   let versionSectionFound = false;
@@ -1510,12 +1593,18 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       });
     }
 
-    // #3262: the set-building scan now lives in its own named owner
-    // (`scanMilestonePhaseIds`) so the new `roadmap milestone-scope` probe
-    // reads the SAME derivation this filter does — never a second copy.
-    for (const id of scanMilestonePhaseIds(roadmap)) {
-      milestonePhaseNums.add(id);
-    }
+    // Resolve once, then thread the same answer through the shared scan and
+    // the directory matcher. A split convention would widen the ROADMAP side
+    // while leaving every bracket directory unmatched.
+    headingConvention = phaseIdConvention === undefined
+      ? resolvePhaseIdConvention(cwd)
+      : phaseIdConvention;
+    // #3262 remains the single owner of the phase-set scan. #612 extends its
+    // return with qualified bracket ids rather than restoring the superseded
+    // inline duplicate this commit was originally written against.
+    const scanned = scanMilestonePhaseIdSets(roadmap, headingConvention);
+    for (const id of scanned.ids) milestonePhaseNums.add(id);
+    for (const qualified of scanned.qualifiedIds) milestoneQualifiedIds.add(qualified);
   } catch {
     /* best-effort (#2245 audit): the real throw source is platformReadSync
      * at the top of this try (re-throws for a non-ENOENT read failure). On
@@ -1574,6 +1663,27 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     : /^0*(\d+[A-Za-z]?(?:\.\d+)*)/;
 
   function isDirInMilestone(dirName: string): boolean {
+    // #612: the DIR side of this filter, selected by the same convention the
+    // heading side selected. Without it the heading scan's new bracket reach was
+    // half a fix: `milestonePhaseNums` became non-empty, so the pass-all degrade
+    // stopped firing, but no bracket directory could satisfy the three legacy
+    // checks below (numericRe fails on `GSD.02-05-five`, the custom-id match
+    // captures the project code `GSD`, and stripProjectCodePrefix does not strip
+    // a dotted prefix) — so EVERY bracket directory was rejected and
+    // completed_phases / total_plans / completed_plans / percent collapsed to 0
+    // while `state sync` went on writing a percent off the unfiltered disk.
+    //
+    // Matching is delegated to phaseTokenMatches against the milestone-QUALIFIED
+    // id, not the bare token: READING-B puts the milestone in the bracket, so
+    // `GSD.01-01-old-one` and `GSD.02-01-one` share the token `01` and only the
+    // qualified key separates them. That is the scoping this filter exists to do.
+    // ADDITIVE: on a miss we fall through to the three legacy checks, so a
+    // bracket repo carrying legacy-shaped directories reads exactly as before.
+    if (headingConvention === 'bracket') {
+      for (const qualified of milestoneQualifiedIds) {
+        if (phaseTokenMatches(dirName, qualified, 'bracket')) return true;
+      }
+    }
     const m2 = dirName.match(numericRe);
     if (m2 && normalized.has(normalizePhaseIdSegments(m2[1]).toLowerCase())) return true;
     // #3213: segment-boundary membership test, scoped to LETTER-LEADING (custom-

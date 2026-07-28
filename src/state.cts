@@ -2368,7 +2368,11 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
           // CURRENT (stored) milestone" — routed through the canonical owner
           // instead of a hand-rolled readdirSync + isDirInMilestone filter
           // (which also never excluded sentinels, unlike the owner).
-          const { value: allMatchingDirs, scope: phaseDirScope } = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null });
+          const { value: allMatchingDirs, scope: phaseDirScope } = listMilestonePhaseDirs(phasesDir, {
+            cwd,
+            versionOverride: storedMilestone ?? null,
+            phaseIdConvention: phaseConvention,
+          });
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,

@@ -829,7 +829,7 @@ function cmdRoadmapMilestoneScope(cwd: string, raw: boolean): void {
   }
   const { value: window, scope } = extractCurrentMilestoneScoped(rawContent, cwd, undefined, phaseIdConvention);
   // Document order (Set insertion order) — deterministic for a given document.
-  const phases = [...scanMilestonePhaseIds(window)];
+  const phases = [...scanMilestonePhaseIds(window, phaseIdConvention)];
   output({ scope, phases, phase_count: phases.length }, raw, undefined);
 }
 
