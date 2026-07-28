@@ -2002,7 +2002,7 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
   );
 
   test('the scan covers the known dispatch sites (guards against a vacuous pass)', () => {
-    const rel = dispatchSites.map(f => path.relative(REPO_ROOT, f));
+    const rel = dispatchSites.map(f => path.relative(REPO_ROOT, f).replace(/\\/g, '/'));
     // Assert identities, not just a count: a count survives the scan silently
     // drifting off the files that actually matter.
     for (const required of [
@@ -2050,7 +2050,10 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
     const offenders = [];
     for (const file of dispatchSites) {
       offenders.push(
-        ...isolationGateOffenders(fs.readFileSync(file, 'utf-8'), path.relative(REPO_ROOT, file)),
+        ...isolationGateOffenders(
+          fs.readFileSync(file, 'utf-8'),
+          path.relative(REPO_ROOT, file).replace(/\\/g, '/'),
+        ),
       );
     }
     assert.deepEqual(
