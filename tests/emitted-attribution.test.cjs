@@ -15,16 +15,38 @@
  * acknowledgment, never a flag (a contributor facing a red gate sets a flag, which is
  * what UPDATE_GOLDEN=1 is today).
  *
- * Scope note: the pure core is exercised here against synthetic manifests, which is what
- * makes the four failing-first criteria practical to write at all. Wiring real 19-runtime
- * manifests into it is I/O at the edges and is covered by the resolver tests below.
+ * Structure: the pure law is exercised against synthetic manifests, which is what makes
+ * the four failing-first criteria practical to assert at all — and then the final test
+ * runs that same law against the REAL tree: 19 actual installer spawns for the current
+ * side, `git show origin/next:<fixture>` for the baseline side, real `git diff` for the
+ * changed paths, and the real `tests/emitted-drift-ack.json`.
+ *
+ * That last test is load-bearing. Without it this file would be interface-only — every
+ * assertion true of hand-built inputs and none of the repo — which is the
+ * promised-but-not-built failure this epic keeps finding in its own predecessors.
+ * Verified by injecting an uncommitted edit to a shipped workflow: emitted output moves
+ * but the path never appears in `git diff origin/next...HEAD`, and the check names all
+ * 18 affected emitted paths.
  */
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const fc = require('fast-check');
+
+const { cleanup } = require('./helpers.cjs');
+const { BUILD_SCRIPT } = require('./helpers/install-shared.cjs');
+const {
+  resolveChangedPaths,
+  resolveBaseSha,
+  baselineManifestsAtRef,
+  baselineSizesAtRef,
+  currentManifests,
+  currentSizes,
+  readAckFile,
+} = require('./helpers/emitted-runtime.cjs');
 
 const {
   ACK_VERSION,
@@ -251,7 +273,7 @@ test('an absent ack file means no acks', () => {
   assert.ok(r.ok, 'the healthy steady state is no ack file at all');
 });
 
-test('only the stale ack entry is named (limit+1)', () => {
+test('a live ack and a stale ack together: only the stale one is named', () => {
   const ack = {
     version: ACK_VERSION,
     paths: {
@@ -474,23 +496,68 @@ test('an unreadable baseline surfaces an error', () => {
   assert.match(r.errors.join('\n'), /injected read failure/);
 });
 
-test('an unreadable ack surfaces an error', () => {
-  // Cross-platform IO failure: monkeypatch the fs method and restore in `finally`.
-  // NEVER chmod 0o000 — root bypasses mode bits, so the test would silently pass with
-  // zero coverage in root Docker/CI.
+test('readAckFile: absent is legal, malformed and unreadable are not', () => {
   const tmp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-ack-'));
-  const ackPath = path.join(tmp, 'emitted-drift-ack.json');
-  fs.writeFileSync(ackPath, JSON.stringify({ version: ACK_VERSION, paths: {} }));
-  const orig = fs.readFileSync;
   try {
-    fs.readFileSync = () => { throw new Error('injected ack read failure'); };
-    assert.throws(() => fs.readFileSync(ackPath, 'utf8'), /injected ack read failure/);
+    const ackPath = path.join(tmp, 'emitted-drift-ack.json');
+
+    // Absent == no acks. The healthy steady state.
+    assert.equal(readAckFile(ackPath), null);
+
+    // Present and valid.
+    fs.writeFileSync(ackPath, JSON.stringify({ version: ACK_VERSION, paths: {} }));
+    assert.deepEqual(readAckFile(ackPath), { version: ACK_VERSION, paths: {} });
+
+    // Present but empty — must NOT be read as absent.
+    fs.writeFileSync(ackPath, '');
+    assert.throws(() => readAckFile(ackPath), /present but empty/);
+
+    // Present but not JSON.
+    fs.writeFileSync(ackPath, '{not json');
+    assert.throws(() => readAckFile(ackPath), /not valid JSON/);
+
+    // Unreadable: monkeypatch the fs method, restore in `finally`. NEVER chmod 0o000 —
+    // root bypasses mode bits, so the test would silently pass with zero coverage in
+    // root Docker/CI. This exercises the SUT (readAckFile), not fs itself.
+    fs.writeFileSync(ackPath, JSON.stringify({ version: ACK_VERSION, paths: {} }));
+    const orig = fs.readFileSync;
+    try {
+      fs.readFileSync = () => { throw new Error('injected ack read failure'); };
+      assert.throws(() => readAckFile(ackPath), /injected ack read failure/);
+    } finally {
+      fs.readFileSync = orig;
+    }
+    // Restoration is real, not assumed.
+    assert.deepEqual(readAckFile(ackPath), { version: ACK_VERSION, paths: {} });
   } finally {
-    fs.readFileSync = orig;
+    cleanup(tmp);
   }
-  // Restoration is real, not assumed.
-  assert.equal(typeof fs.readFileSync(ackPath, 'utf8'), 'string');
-  fs.rmSync(tmp, { recursive: true, force: true }); // eslint-disable-line local/no-raw-rmsync-in-tests -- temp dir created in this test, no Windows handle contention
+});
+
+test('formatReport truncation is exact at limit-1 / limit / limit+1', () => {
+  // sampleLimit gates a real branch. CLAUDE.md's boundary rule applies to it like any
+  // other limit; the earlier suite named a test "limit+1" that tested no numeric limit
+  // at all, which is worse than no coverage because it reads as covered.
+  const build = (n) => {
+    const baseline = {}; const current = {};
+    for (let i = 0; i < n; i++) {
+      const k = `gsd-core/workflows/w${String(i).padStart(3, '0')}.md`;
+      baseline[k] = 'a'; current[k] = 'b';
+    }
+    return diffEmitted({ baseline: mf(baseline), current: mf(current), changedPaths: [] });
+  };
+
+  const at19 = formatReport(build(19), { sampleLimit: 20 });
+  assert.ok(at19.includes('w018.md'), 'limit-1 lists every path');
+  assert.ok(!at19.includes('…and'), 'limit-1 must not truncate');
+
+  const at20 = formatReport(build(20), { sampleLimit: 20 });
+  assert.ok(at20.includes('w019.md'), 'at the limit the last path is listed');
+  assert.ok(!at20.includes('…and'), 'exactly at the limit must not truncate');
+
+  const at21 = formatReport(build(21), { sampleLimit: 20 });
+  assert.ok(at21.includes('…and 1 more'), 'limit+1 truncates and says how many were hidden');
+  assert.ok(!at21.includes('w020.md'), 'the 21st path is not listed');
 });
 
 // ─── Independence + purity ───────────────────────────────────────────────────
@@ -558,5 +625,81 @@ test('property: every moved key lands in exactly one bucket', () => {
       },
     ),
     { numRuns: 400 },
+  );
+});
+
+// ─── The real thing: the law, run against the actual tree ───────────────────
+//
+// Everything above exercises the pure law against synthetic input, which is what makes
+// the acceptance criteria practical to assert at all. This block is what stops the
+// phase from being interface-only: it builds the CURRENT emitted manifests for real
+// (one installer spawn per runtime), reads the BASELINE from `origin/next`, resolves
+// the changed paths with real git, reads the real ack file, and runs the conservation
+// law over all of it.
+//
+// Baseline source note: `git show origin/next:<fixture>` — next's RECORDED emitted
+// state. Deliberately not the working-tree fixtures, which are whatever this PR's
+// author regenerated; comparing against those would be vacuous. Phase 4 (#2724)
+// deletes the fixtures and swaps in resolveBaseline's cache path, which is already
+// implemented and tested above.
+
+test('differential attribution over the real tree', { timeout: 900_000 }, async (t) => {
+  if (process.platform === 'win32') {
+    // Mirrors the golden harness: install output is platform-specific on Windows
+    // (backslash paths), so parity is asserted on macOS + Linux. An explicit t.skip,
+    // never a bare `return` — in node:test that would be a PASS (ADR-2719 §6).
+    t.skip('emitted parity is asserted on macOS + Linux; Windows install output is platform-specific');
+    return;
+  }
+
+  // hooks/dist is gitignored and built (DEFECT.HOOKS-DIST-SCOPED-CI): the scoped CI
+  // lane does not run build:hooks, so a real install there would emit no hooks/ dir.
+  // Build idempotently, exactly as the golden harness does.
+  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe', timeout: 120_000 });
+
+  const base = 'origin/next';
+  let baseSha;
+  try {
+    baseSha = resolveBaseSha(base);
+  } catch (err) {
+    // No silent pass: an environment without the base ref cannot verify the law, and
+    // a skipped propagation gate is worth less than a slow one (ADR-2719 §6).
+    assert.fail(
+      `cannot resolve ${base} (${err.message}). The differential check needs the base ref; ` +
+      'it will not pass without verifying.',
+    );
+  }
+  assert.match(baseSha, /^[0-9a-f]{40}$/);
+
+  const baseline = baselineManifestsAtRef(base);
+  assert.ok(
+    baseline && Object.keys(baseline).length > 0,
+    `no baseline manifests found at ${base}. During the dual-run window these come from the ` +
+    'committed golden fixtures at that ref; after Phase 4 they come from the cached ' +
+    'baseline artifact via resolveBaseline().',
+  );
+
+  const changedPaths = resolveChangedPaths(base);
+  const ack = readAckFile();
+  const current = currentManifests();
+
+  assert.equal(
+    Object.keys(current).length,
+    Object.keys(baseline).length,
+    'every runtime present at base must also be built now (a dropped runtime is a real finding)',
+  );
+
+  const result = diffEmitted({
+    baseline,
+    current,
+    changedPaths,
+    ack,
+    sizeBaseline: baselineSizesAtRef(base),
+    sizeCurrent: currentSizes(),
+  });
+
+  assert.ok(
+    result.ok,
+    `emitted-attribution failed against ${base}@${baseSha.slice(0, 12)}:\n\n${formatReport(result)}`,
   );
 });
