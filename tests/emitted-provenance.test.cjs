@@ -266,7 +266,7 @@ test('spot-check: hooks attribute to repo source, not the dist build artifact', 
   assert.deepEqual(reg.sources, [CLINE_BODY_SRC]);
 });
 
-test('spot-check: Windows-only .cmd shim attributes to the .js hook it wraps, not to itself (#3426/#2767)', () => {
+test('spot-check: Windows-only .cmd shim is code-derived from its generator, not from the .js hook it wraps (#3426/#2767)', () => {
   // Regression coverage for the windows-latest-only CI failure: the shim is emitted
   // ONLY when the installer actually runs on win32 (ensureCodexHooksJsonSessionStart /
   // ensureCodexHooksJsonEvent), so this drives attributeEmittedPath directly rather
@@ -274,32 +274,44 @@ test('spot-check: Windows-only .cmd shim attributes to the .js hook it wraps, no
   // suite runs on, not just the one CI lane that happens to emit the key for real.
   //
   // Verified empirically: zero `.cmd` files are tracked anywhere in the repo
-  // (`git ls-files | grep '\\.cmd$'` is empty), so the prior generic `hooks-built`
+  // (`git ls-files | grep '\\.cmd$'` is empty), so the original generic `hooks-built`
   // attribution (source = the emitted path itself) resolved every `.cmd` shim to a
   // file that exists on no platform — exactly the false-attribution class "every
   // attributed source exists" exists to catch, and it only fired on windows-latest
   // because that is the only lane where the key is ever actually emitted.
+  //
+  // A SECOND false-attribution then replaced the first (caught by isolated review,
+  // #2767): pointing `sources` at `hooks/<name>.js` asserts the wrapped script's
+  // BYTES flow into the `.cmd` bytes. Traced against buildCodexHookWindowsShimIR
+  // (src/runtime-hooks-surface.cts), they do not — the `.cmd` bytes are
+  // `@ECHO OFF\r\n@SETLOCAL\r\n@<runner> <script> %*\r\n`, built from the install-time
+  // interpreter token and the absolute install path, plus a hardcoded literal
+  // filename baked into that same source file. Only the `.js` file's NAME flows in;
+  // its content never does. `sources` must therefore point at the SAME file as
+  // `transforms` (HOOKS_WINDOWS_SHIM_SRC) — the `code-derived` shape used elsewhere
+  // in this table — not at the wrapped script.
   for (const name of ['gsd-check-update', 'gsd-context-monitor']) {
     const got = attributeEmittedPath(`hooks/${name}.cmd`, 'codex');
     assert.equal(got.ruleId, 'hooks-built');
-    assert.deepEqual(got.sources, [`hooks/${name}.js`]);
+    assert.deepEqual(got.sources, [HOOKS_WINDOWS_SHIM_SRC]);
     assert.ok(
       !got.sources.includes(`hooks/${name}.cmd`),
       'a .cmd shim must never attribute to itself — no .cmd file is ever tracked in the repo',
     );
     assert.ok(
-      fs.existsSync(path.join(REPO_ROOT, 'hooks', `${name}.js`)),
-      `precondition: hooks/${name}.js must exist for this attribution to be real, not just non-crashing`,
+      !got.sources.includes(`hooks/${name}.js`),
+      'a .cmd shim must not attribute to the wrapped .js script — its CONTENT never flows into the .cmd bytes, only its NAME (a literal inside HOOKS_WINDOWS_SHIM_SRC) does',
     );
     assert.deepEqual(got.transforms, [HOOKS_WINDOWS_SHIM_SRC]);
     assert.ok(
       fs.existsSync(path.join(REPO_ROOT, HOOKS_WINDOWS_SHIM_SRC)),
-      'the declared transform path must exist',
+      'the declared source/transform path must exist',
     );
   }
 
-  // A plain (non-.cmd) hook is unaffected: still a straight identity-shaped copy,
-  // still no transform (the shim generator cannot move a plain hook's bytes).
+  // A plain (non-.cmd) hook is unaffected: still a straight identity-shaped copy
+  // sourced from the repo hook it was built from, still no transform (the shim
+  // generator cannot move a plain hook's bytes).
   const plain = attributeEmittedPath('hooks/gsd-statusline.js', 'claude');
   assert.deepEqual(plain.sources, ['hooks/gsd-statusline.js']);
   assert.deepEqual(plain.transforms, []);

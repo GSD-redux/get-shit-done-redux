@@ -314,6 +314,17 @@ const PROVENANCE_RULES = [
   },
   {
     id: 'hooks-built',
+    // `kind` is a single scalar per rule, and this rule's majority sub-family
+    // (plain built hook files) is genuinely `derived` from hooks/<name> via
+    // scripts/build-hooks.js. The `.cmd` shim sub-family is code-derived (see
+    // the pattern-comment and `sources` comment below), but that does not
+    // change this rule's `kind` — a per-match `kind` would need a dedicated
+    // rule, which is exactly what was rejected above (dead on non-Windows CI
+    // lanes). The `.cmd` branch's real (code-derived) provenance is instead
+    // carried precisely by `sources`/`transforms` both pointing at
+    // HOOKS_WINDOWS_SHIM_SRC — `assertNoIdentityTransforms` only constrains
+    // `kind: 'identity'` rules, so a `derived` rule with a non-empty
+    // `transforms` here is unaffected by that guard.
     kind: 'derived',
     roots: HOOKS_ROOTS,
     // Emitted from hooks/dist/, which scripts/build-hooks.js builds from hooks/.
@@ -325,17 +336,27 @@ const PROVENANCE_RULES = [
     // `.cmd` shims are a SEPARATE, Windows-only emission path folded into this
     // SAME rule rather than a dedicated one (see the `transforms` doc above for
     // why a standalone rule would go dead on non-Windows CI lanes). Verified via
-    // Memtrace + a repo-wide check that zero `.cmd` files are tracked anywhere:
-    // `hooks/<name>.cmd` is written at install time by
-    // ensureCodexHooksJsonSessionStart / ensureCodexHooksJsonEvent (both gated on
-    // `platform === 'win32'`, HOOKS_WINDOWS_SHIM_SRC) as a wrapper around the
-    // SAME-named `.js` hook — never a copy of itself. The default (generic)
-    // branch below previously attributed `hooks/<name>.cmd` to itself, a path
-    // that exists on no platform — caught by "every attributed source exists in
-    // the repo", windows-latest-only, because that is the only lane where the
-    // installer ever emits the key at all.
+    // Memtrace: `hooks/<name>.cmd` is written at install time by
+    // ensureCodexHooksJsonSessionStart / ensureCodexHooksJsonEvent (both gated
+    // on `platform === 'win32'`) via buildCodexHookWindowsShimIR
+    // (HOOKS_WINDOWS_SHIM_SRC, src/runtime-hooks-surface.cts). The `.cmd` bytes
+    // are `@ECHO OFF\r\n@SETLOCAL\r\n@<runner> <script> %*\r\n` — built from the
+    // install-time interpreter token and the absolute install path, plus a
+    // hardcoded literal filename (e.g. `gsd-check-update.js`) baked into that
+    // same source file. The wrapped `.js` file's NAME flows into the `.cmd`
+    // bytes; its CONTENT never does — see the `sources` comment below for why
+    // that rules out attributing to `hooks/<name>.js`.
     pattern: /^(?!gsd-session\.json$).+$/,
-    sources: (m) => [`hooks/${m[0].endsWith('.cmd') ? m[0].replace(/\.cmd$/, '.js') : m[0]}`],
+    // `.cmd` shim bytes are code-derived (a literal template + the install-time
+    // interpreter/path tokens in HOOKS_WINDOWS_SHIM_SRC) — the wrapped `.js`
+    // file's NAME flows in (as a hardcoded literal filename inside that same
+    // source file), but its CONTENT never does, so attributing `sources` to
+    // `hooks/<name>.js` would be a false byte-provenance claim. Point `sources`
+    // at the same file as `transforms`, matching the `code-derived` convention
+    // used elsewhere in this table (copilot-hook-registration, cline-rules-
+    // code-derived, hermes-category-description). The redundancy between
+    // `sources` and `transforms` here is harmless — the mis-attribution was not.
+    sources: (m) => [m[0].endsWith('.cmd') ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
     transforms: (m) => (m[0].endsWith('.cmd') ? [HOOKS_WINDOWS_SHIM_SRC] : []),
   },
   {

@@ -76,6 +76,10 @@ const {
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 
+/** This checkout's own root — used to build a synthetic commit in-place (see
+ *  `buildBaselineAtRef resolves a baseline via the in-job build...` below). */
+const REPO_ROOT = path.join(__dirname, '..');
+
 /** A real emitted key + its real source, so rows assert the shape production uses. */
 const WORKFLOW_KEY = 'gsd-core/workflows/plan-phase.md';
 const WORKFLOW_SRC = 'gsd-core/workflows/plan-phase.md';
@@ -758,51 +762,74 @@ test(
       return;
     }
 
-    const resolved = resolveBase();
-    if (!resolved) {
-      t.skip(
-        'no base ref resolvable — tried ' + baseRefCandidates().join(', ') +
-        '. Same environmental gap "differential attribution over the real tree" documents.',
-      );
-      return;
-    }
-    const { ref, sha } = resolved;
+    // Hermetic by construction (#2767 review finding B). This test used to resolve a
+    // real base ref (typically `origin/next`) and skip unless that ref, checked via
+    // `git cat-file -e`, still LACKED scripts/gen-emitted-baseline.cjs — the file THIS
+    // PR adds. That was true only until this PR merged: after merge every resolvable
+    // base ref carries the file, the precondition is permanently false, and the test
+    // would skip forever, losing all regression value silently (a skip reads as green).
+    // It also depended on `origin/next` being resolvable at all, which the gsd-test
+    // runner's shallow clone + base/head merge does not guarantee (no remote-tracking
+    // refs) — the same non-hermetic-history failure mode "baseline families are
+    // enumerated from the ref, not from the current registry" (above) was rewritten to
+    // avoid, by building its own throwaway git repo instead of reaching for this
+    // repo's history.
+    //
+    // That precedent doesn't directly transplant here: `buildBaselineAtRef` needs a
+    // REAL, buildable gsd-core tree (`npm run build:lib`, the compiled `bin/lib/*.cjs`,
+    // `node_modules`) to produce a real manifest — a minimal from-scratch repo has none
+    // of that. So instead of a from-scratch repo, this synthesizes the missing-generator
+    // condition IN-PLACE with git plumbing: read this checkout's own HEAD tree into a
+    // scratch index (a temp `GIT_INDEX_FILE`, never the real `.git/index`), remove just
+    // `scripts/gen-emitted-baseline.cjs` from that index, write the resulting tree, and
+    // commit it as a child of HEAD. The result is one loose commit object — a real,
+    // buildable tree identical to HEAD's except missing the one file under test — that
+    // is never referenced by any branch, tag, or ref, so it is not checked out, not
+    // pushed, and needs no cleanup beyond the scratch index directory itself. The real
+    // working tree, HEAD, and index of this checkout are never touched.
+    const tmpIndexDir = createTempDir('emitted-baseline-synth-index-');
+    t.after(() => cleanup(tmpIndexDir));
+    const tmpIndexFile = path.join(tmpIndexDir, 'index');
+    const gitEnv = {
+      ...process.env,
+      GIT_INDEX_FILE: tmpIndexFile,
+      GIT_AUTHOR_NAME: 'GSD Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+      GIT_COMMITTER_NAME: 'GSD Test', GIT_COMMITTER_EMAIL: 'test@example.invalid',
+    };
+    const run = (...args) => execFileSync('git', args, {
+      cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
 
-    // Precondition, ASSERTED not assumed. Before the #2767 fix, `buildBaselineAtRef`
-    // unconditionally ran `<worktreeDir>/scripts/gen-emitted-baseline.cjs` — the
-    // WORKTREE'S OWN copy of the generator this PR adds. Any ref checked out into that
-    // worktree BEFORE this PR merged (which is exactly what `origin/next` is at the
-    // time this test was written — verified via `git cat-file -e`, not assumed) has no
-    // such file, so the old code failed closed on every single call with `Cannot find
-    // module`, which is precisely the CI failure this fix addresses. Once this PR has
-    // merged, EVERY `next` onward carries the script, so the bug this test targets
-    // stops being reproducible against a fresh `origin/next` — an honest, self-
-    // documented skip is the correct response then, not a false failure and not a
-    // stale hardcoded assumption that `ref` will forever lack the file.
-    let hasGeneratorAtRef;
-    try {
-      execFileSync('git', ['cat-file', '-e', `${ref}:scripts/gen-emitted-baseline.cjs`], {
-        encoding: 'utf8', timeout: 30_000, stdio: 'pipe',
-      });
-      hasGeneratorAtRef = true;
-    } catch {
-      hasGeneratorAtRef = false;
-    }
-    if (hasGeneratorAtRef) {
-      t.skip(
-        `${ref}@${sha.slice(0, 12)} already carries scripts/gen-emitted-baseline.cjs — the ` +
-        '#2767 bug this test targets is not reproducible against it. Expected once this PR ' +
-        'has merged into next; not a coverage gap introduced here.',
-      );
-      return;
-    }
+    const headSha = run('rev-parse', 'HEAD');
+    run('read-tree', 'HEAD');
+    run('update-index', '--force-remove', 'scripts/gen-emitted-baseline.cjs');
+    const syntheticTree = run('write-tree');
+    const syntheticSha = run(
+      'commit-tree', syntheticTree, '-p', headSha, '-m',
+      'synthetic: missing scripts/gen-emitted-baseline.cjs (#2767 test fixture — unreferenced, never pushed)',
+    );
+
+    // Precondition, ASSERTED not assumed: the synthetic commit truly lacks the file —
+    // otherwise this test would prove nothing.
+    assert.throws(
+      () => execFileSync('git', ['cat-file', '-e', `${syntheticSha}:scripts/gen-emitted-baseline.cjs`], {
+        cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, stdio: 'pipe',
+      }),
+      /./,
+      'the synthetic ref must genuinely lack the generator script for this test to prove anything',
+    );
 
     // The actual regression assertion: this must NOT throw "Cannot find module", and
-    // must produce a well-formed baseline artifact measuring the ref, not the caller's
-    // own tree — `sha` below is `ref`'s real HEAD, read from INSIDE the worktree.
-    const artifact = buildBaselineAtRef(ref);
+    // must produce a well-formed baseline artifact measuring the SYNTHETIC ref, not the
+    // caller's own tree. Before the #2767 fix, `buildBaselineAtRef` unconditionally ran
+    // `<worktreeDir>/scripts/gen-emitted-baseline.cjs` — the checked-out WORKTREE'S OWN
+    // copy — which fails closed with `Cannot find module` for exactly this ref shape.
+    const artifact = buildBaselineAtRef(syntheticSha, { cwd: REPO_ROOT });
     assert.equal(artifact.version, BASELINE_VERSION);
-    assert.equal(artifact.sha, sha, 'the artifact must report the REF\'s sha, not the caller checkout\'s');
+    assert.equal(
+      artifact.sha, syntheticSha,
+      'the artifact must report the REF\'s sha, not the caller checkout\'s',
+    );
     assert.ok(artifact.manifests && typeof artifact.manifests === 'object');
     assert.ok(
       Object.keys(artifact.manifests).length >= MINIMUM_MANIFEST_FAMILIES,
