@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "paths": {
+    "quick.md": "#2652 — same migration. Growth is minimized deliberately: the resolution block lives in gsd-core/references/dispatch-isolation-gate.md and this file reads it, because quick.md is at its prompt-stuffing size limit (SIZE_ONLY_WORKFLOWS on next). Net +230 bytes is the reference pointer plus the ISOLATION=none degrade pairing.",
+    "diagnose-issues.md": "#2652 — migrates the dispatch site off the pre-#2584 RUNTIME != \"claude\" gate onto the negotiated dispatch.isolation seam. Growth is the ISOLATION resolution, the orchestrator-worktree degrade, and the ISOLATION-conditional WORKTREE_GUARD/{harnessFlag} substitution instructions this file had no equivalent of."
+  }
+}

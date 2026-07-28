@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "diagnose-issues.md": "#2649: spawn_agents step gained a pre-dispatch worktree.base-check gate (mirrors execute-phase #683/#1369 and quick #1941). Claude Code's isolation=\"worktree\" forks from origin/HEAD, not live local HEAD; without the gate the documented GSD steady state (commit every step locally, push only on request) hit the verify-only worktree_branch_check guard's exit-42 halt mid-investigation. Growth is the base-check bash block (gsd_run query worktree.base-check --pick shouldDegrade → USE_WORKTREES=false + stderr warning) + the #2649 rationale comment. The verify-only guard stays as a backstop.",
-    "execute-plan.md": "#2649: Pattern A (single-plan interactive dispatch) gained the same pre-dispatch worktree.base-check gate the wave path (executor-isolation-dispatch.md) and quick.md already run — the triage found Pattern A had the identical missing-gate gap. Growth is the base-check instruction in the Pattern A description (consult shouldDegrade, auto-degrade to sequential on true, keep the verify-only guard as backstop) + the #2649 rationale."
-  }
-}
