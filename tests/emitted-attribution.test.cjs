@@ -47,6 +47,8 @@ const {
   currentManifests,
   currentSizes,
   readAckFile,
+  REPO_ROOT,
+  baselineFamilyNamesAtRef,
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,
   REGISTRY_SIGNAL_PATHS,
@@ -691,7 +693,6 @@ function reconcileWith({ derivedNames = ALL_FAMILIES, fixtureNames, baselineName
     baseline: manifestsOf(baselineNames || derivedNames),
     current: manifestsOf(currentNames || derivedNames),
     changedPaths: CONTENT_ONLY_CHANGE,
-    ack: null,
     ...rest,
   });
 }
@@ -700,9 +701,10 @@ const codesOf = (r) => r.errors.map((e) => e.code);
 
 test('reason codes are a frozen, locked set', () => {
   assert.deepEqual(Object.keys(FAMILY_REASON).sort(), [
-    'ADDED_UNATTRIBUTED', 'BAD_ACK', 'BAD_CHANGED_PATHS', 'BASELINE_UNUSABLE',
-    'BELOW_FLOOR', 'CURRENT_UNUSABLE', 'DROPPED_UNATTRIBUTED',
-    'FIXTURE_WITHOUT_RUNTIME', 'MISSING_CLAUDE_LOCAL', 'RUNTIME_WITHOUT_FIXTURE',
+    'ADDED_UNATTRIBUTED', 'BAD_CHANGED_PATHS', 'BASELINE_UNUSABLE', 'BELOW_FLOOR',
+    'CURRENT_UNUSABLE', 'DERIVED_UNUSABLE', 'DROPPED_UNATTRIBUTED',
+    'FIXTURES_UNUSABLE', 'FIXTURE_WITHOUT_RUNTIME', 'MISSING_CLAUDE_LOCAL',
+    'RUNTIME_WITHOUT_FIXTURE',
   ]);
   assert.ok(Object.isFrozen(FAMILY_REASON));
 });
@@ -767,17 +769,23 @@ test('rejects a silently dropped family, naming it', () => {
   assert.deepEqual(r.errors, [{ code: FAMILY_REASON.DROPPED_UNATTRIBUTED, family: 'trae' }]);
 });
 
-test('a dropped family can be cleared by an ack entry', () => {
+test('attribution is the ONLY permission path, symmetrically', () => {
+  // No ack-style bypass on either side: a one-sided escape hatch would make removals
+  // easier to wave through than additions, and the drift-ack file covers unattributable
+  // emitted-PATH deltas, not family churn.
   const without = ALL_FAMILIES.filter((n) => n !== 'trae');
-  const r = reconcileWith({
-    derivedNames: without,
-    baselineNames: ALL_FAMILIES,
-    currentNames: without,
-    changedPaths: CONTENT_ONLY_CHANGE,
-    ack: { families: ['trae'] },
-    minimum: 18,
-  });
-  assert.deepEqual(r, { ok: true, errors: [] });
+  const added = [...ALL_FAMILIES, 'qoder'];
+  for (const [names, baselineNames, code, family] of [
+    [without, ALL_FAMILIES, FAMILY_REASON.DROPPED_UNATTRIBUTED, 'trae'],
+    [added, ALL_FAMILIES, FAMILY_REASON.ADDED_UNATTRIBUTED, 'qoder'],
+  ]) {
+    const r = reconcileWith({
+      derivedNames: names, baselineNames, currentNames: names,
+      changedPaths: CONTENT_ONLY_CHANGE, minimum: 18,
+    });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.errors, [{ code, family }]);
+  }
 });
 
 test('an add and a drop together are permitted when attributed', () => {
@@ -903,13 +911,25 @@ test('a non-array changedPaths is an explicit error, never a silent "no registry
   }
 });
 
-test('an ack that parses but is not an object is rejected, not read as "no entries"', () => {
-  for (const bad of [0, 'str', [], true]) {
-    const r = reconcileWith({ ack: bad });
-    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.BAD_ACK }] });
+test('malformed derived and fixtures inputs fail with a verdict, not a TypeError', () => {
+  // Every input is gated. An unhandled throw here would read as an infrastructure fault
+  // rather than a gate verdict, which is how a propagation check goes quiet.
+  for (const bad of [null, undefined, 'nope', {}, [{ nope: 1 }], [null]]) {
+    const r = reconcileFamilies({
+      derived: bad, fixtures: ALL_FAMILIES,
+      baseline: manifestsOf(ALL_FAMILIES), current: manifestsOf(ALL_FAMILIES),
+      changedPaths: [],
+    });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.DERIVED_UNUSABLE }] });
   }
-  // Absent is legal and distinct from malformed.
-  assert.equal(reconcileWith({ ack: null }).ok, true);
+  for (const bad of [null, undefined, 'nope', {}, [1], [null]]) {
+    const r = reconcileFamilies({
+      derived: derivedOf(ALL_FAMILIES), fixtures: bad,
+      baseline: manifestsOf(ALL_FAMILIES), current: manifestsOf(ALL_FAMILIES),
+      changedPaths: [],
+    });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.FIXTURES_UNUSABLE }] });
+  }
 });
 
 // ── Registry attribution ─────────────────────────────────────────────────────
@@ -917,6 +937,11 @@ test('an ack that parses but is not an object is rejected, not read as "no entri
 test('each registry-signal path independently attributes a family change', () => {
   for (const p of [...REGISTRY_SIGNAL_PATHS, 'capabilities/qoder/capability.json']) {
     assert.equal(touchesRuntimeRegistry([p]), true, `${p} should attribute`);
+  }
+  // Narrow on purpose: surfaces that merely accompany a runtime addition must NOT
+  // excuse an unattributed family delta.
+  for (const p of ['src/runtime-name-policy.cts', 'gsd-core/bin/lib/capability-registry.cjs']) {
+    assert.equal(touchesRuntimeRegistry([p]), false, `${p} must NOT attribute on its own`);
   }
 });
 
@@ -937,6 +962,42 @@ test('near-miss paths do not attribute a family change', () => {
     assert.equal(touchesRuntimeRegistry([p]), false, `${p} should NOT attribute`);
   }
   assert.equal(touchesRuntimeRegistry([]), false);
+});
+
+// ── The baseline must come from the REF, not from HEAD's registry ────────────
+
+test('baseline families are enumerated from the ref, not from the current registry', () => {
+  // Regression: enumerating the baseline from MANIFEST_FAMILIES (imported at module load,
+  // so it describes PR HEAD) makes a REMOVED runtime invisible — the name is already gone
+  // from the current registry, so the base ref is never asked for it, and the dropped-
+  // family check can never fire in production even though its unit tests pass.
+  //
+  // The discriminator: a historical ref whose fixture set differs from today's registry.
+  // A registry-derived implementation reports the SAME families for every ref; a
+  // ref-derived one reports what that commit actually carried.
+  const rootCommit = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], {
+    cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
+  }).trim().split('\n')[0];
+
+  const atRoot = baselineFamilyNamesAtRef(rootCommit);
+  assert.ok(atRoot.length > 0, 'the root commit does carry fixtures');
+  assert.ok(
+    atRoot.length < ALL_FAMILIES.length,
+    `the root commit predates runtimes added since (${atRoot.length} vs ${ALL_FAMILIES.length}); ` +
+    'an equal count would mean the family set is being read from the current registry',
+  );
+  assert.ok(
+    !atRoot.includes('claude-local'),
+    'claude-local postdates the root commit — its presence would prove registry-derivation',
+  );
+
+  // A ref that cannot be resolved yields nothing rather than throwing, which is the
+  // post-cutover signal to fall back to resolveBaseline's cache path.
+  assert.deepEqual(baselineFamilyNamesAtRef('refs/heads/no-such-ref-2723'), []);
+
+  const atHead = baselineFamilyNamesAtRef('HEAD').slice().sort();
+  assert.deepEqual(atHead, ALL_FAMILIES.slice().sort());
+  assert.ok(atHead.length >= MINIMUM_MANIFEST_FAMILIES);
 });
 
 // ── Independence / purity ────────────────────────────────────────────────────
@@ -1063,7 +1124,6 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
     baseline,
     current,
     changedPaths,
-    ack,
   });
   assert.ok(
     familyVerdict.ok,
