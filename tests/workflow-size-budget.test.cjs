@@ -165,16 +165,17 @@ describe('SIZE: workflow tier hard caps (issue #1074)', () => {
 
   // A prior "new workflow files (not yet baselined) stay under the 32 KiB Codex
   // anchor" test lived here, keyed on `tests/workflow-size-baseline.json` to tell a
-  // brand-new file (not yet in the baseline) from an existing grandfathered one.
-  // #2724 (ADR-2719 Phase 4) deletes that baseline — there is no longer a "not yet
-  // baselined" signal to key off. Every workflow file, new or old, is still bounded
-  // by its tier's hard cap above (DEFAULT_CAP for anything untiered); what is lost
-  // is the STRICTER 32 KiB anchor specifically for brand-new files sized between
-  // 32768 and 40960 bytes, a narrower band than the tier cap already covers. This is
-  // a disclosed, deliberate narrowing, not an oversight — reintroducing "is this file
-  // new" would require a git-diff-against-base dependency this pure, fast test
-  // deliberately does not have (that class of check now lives in the differential
-  // attribution check's real-tree test, which already has that dependency).
+  // brand-new file (not yet in the baseline) from an existing grandfathered one
+  // (ADR-1610 Decision point 3). #2724 (ADR-2719 Phase 4) deletes that baseline, but
+  // the cap is NOT lost: it is revived as `NEW_FILE_CAP` inside the differential
+  // attribution check's size ratchet (tests/helpers/emitted-diff.cjs), which already
+  // computes "present in sizeCurrent, absent from sizeBaseline" for its own reasons —
+  // exactly the same "is this file new" signal, with no additional git dependency.
+  // It could not live here: this test is pure and fast (no baseline/base-ref of any
+  // kind), and the differential's real-tree test is the only place that dependency
+  // already exists. Narrower than the original — the pure differential module cannot
+  // see XL_WORKFLOWS/LARGE_WORKFLOWS tiering, so a legitimately large new file must
+  // extract rather than tier in — a disclosed, deliberate simplification.
 });
 
 // A prior "SIZE: per-file workflow baseline (issue #1074)" describe block lived here,

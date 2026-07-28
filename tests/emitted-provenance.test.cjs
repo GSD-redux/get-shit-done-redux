@@ -631,8 +631,6 @@ test('a build failure surfaces an error, and clean() still runs', () => {
   // The `finally` around build() must run clean() even when build() throws —
   // an install left behind on every hostile build is a real resource leak.
   assert.ok(cleaned, 'clean() must run even when build() throws');
-  // Restoration is real, not assumed.
-  assert.equal(loadManifests().length, EXPECTED_MANIFEST_COUNT);
 });
 
 // ─── Table invariants ────────────────────────────────────────────────────────

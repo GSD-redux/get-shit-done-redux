@@ -59,6 +59,7 @@ const {
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
 const {
   ACK_VERSION,
+  NEW_FILE_CAP,
   sourceSatisfiedBy,
   parseAck,
   diffEmitted,
@@ -552,6 +553,70 @@ test('shrinkage is reported but needs no ack', () => {
   });
   assert.deepEqual(r.shrunk, [{ name: 'a.md', from: 9000, to: 8000, delta: 1000 }]);
   assert.ok(r.ok, 'shrinkage is not creep — gating it would punish what the ratchet wants');
+});
+
+// ─── New-file cap (ADR-1610 Decision point 3, revived after #2724) ───────────
+//
+// tests/workflow-size-baseline.json used to double as the "has this file been
+// baselined before" signal a NEW_FILE_CAP check keyed off. #2724 deleted it without
+// reviving that check anywhere — a brand-new workflow/agent file (present in
+// sizeCurrent, absent from sizeBaseline) got zero size scrutiny at all, silently
+// loosening the bound from 32768 (ADR-1610) to whichever tier cap it happened to
+// fall under (DEFAULT_CAP = 40960, nearly 8 KiB looser) with nothing in CI to say so.
+// A file in that gap risks silent truncation at the Codex `project_doc_max_bytes`
+// anchor. Not ack-able — same as the tier hard caps, the fix is extraction.
+
+test('a brand-new file at exactly the cap is accepted (limit)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP },
+  });
+  assert.deepEqual(r.newFileCapExceeded, []);
+  assert.ok(r.ok, `exactly ${NEW_FILE_CAP} bytes must be accepted`);
+});
+
+test('a brand-new file one byte over the cap is rejected (limit+1)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
+  });
+  assert.deepEqual(r.newFileCapExceeded, [
+    { name: 'new-workflow.md', bytes: NEW_FILE_CAP + 1, cap: NEW_FILE_CAP },
+  ]);
+  assert.ok(!r.ok, `${NEW_FILE_CAP + 1} bytes must be rejected`);
+  assert.match(formatReport(r), /new-workflow\.md is 32769 bytes/);
+});
+
+test('a brand-new file one byte under the cap is accepted (limit-1)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP - 1 },
+  });
+  assert.deepEqual(r.newFileCapExceeded, []);
+  assert.ok(r.ok, `${NEW_FILE_CAP - 1} bytes must be accepted`);
+});
+
+test('the new-file cap is not ack-able (extraction, not acknowledgment, is the fix)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
+    ack: { version: ACK_VERSION, paths: { 'new-workflow.md': { reason: 'trying to bypass it' } } },
+  });
+  assert.equal(r.newFileCapExceeded.length, 1, 'an ack entry must not exempt the new-file cap');
+  assert.ok(!r.ok);
+});
+
+test('an existing (baselined) file is governed by growth, not the new-file cap', () => {
+  // A file already IN sizeBaseline is not "new" even if it happens to sit above
+  // NEW_FILE_CAP — that is the tier hard cap's job, not this one's.
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: { 'old.md': NEW_FILE_CAP + 5000 },
+    sizeCurrent: { 'old.md': NEW_FILE_CAP + 5000 },
+  });
+  assert.deepEqual(r.newFileCapExceeded, []);
+  assert.deepEqual(r.grown, []);
+  assert.ok(r.ok);
 });
 
 // ─── Baseline resolution + staleness ─────────────────────────────────────────
