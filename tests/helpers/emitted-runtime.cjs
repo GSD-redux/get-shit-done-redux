@@ -31,7 +31,9 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const { cleanup } = require('../helpers.cjs');
@@ -366,6 +368,68 @@ function baselineManifestsAtRef(base = 'origin/next') {
   return found === 0 ? null : manifests;
 }
 
+/**
+ * Build the baseline artifact at `ref` FOR REAL — a throwaway `git worktree` checked
+ * out at `ref`, running `scripts/gen-emitted-baseline.cjs` there (#2724, ADR-2719 §5's
+ * "in-job build at origin/next" fallback).
+ *
+ * This is the slow path, used only on a `resolveBaseline()` cache miss. It needs no
+ * `npm ci` in the worktree: `bin/install.js`, the `tests/helpers/*.cjs` real-tree
+ * shells, and `gen-emitted-baseline.cjs` itself are all Node-builtins-only
+ * (CONTRIBUTING.md's "No external dependencies in core"), so a bare `node` spawn
+ * against the checked-out worktree is sufficient.
+ *
+ * Every subprocess is bounded. The worktree is always removed, success or failure —
+ * a leaked worktree would poison `git worktree list` for every subsequent run in the
+ * same checkout (CI runners reuse the same clone across jobs in some configurations).
+ *
+ * @param {string} ref     the ref/sha to build at (e.g. `origin/next`, a 40-hex sha)
+ * @param {object} [o]
+ * @param {string} [o.cwd] repo to run `git worktree` from
+ * @returns {object} the parsed baseline artifact ({version, sha, manifests, sizes})
+ */
+function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
+  const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-emitted-baseline-wt-'));
+  // mkdtempSync already created the directory; `git worktree add` requires the
+  // target to not exist (or be empty) — remove it and let git recreate it.
+  fs.rmdirSync(worktreeDir);
+  const outFile = path.join(os.tmpdir(), `gsd-emitted-baseline-out-${crypto.randomBytes(8).toString('hex')}.json`);
+
+  const WORKTREE_TIMEOUT_MS = 60_000;
+  const BUILD_TIMEOUT_MS = 300_000;
+
+  try {
+    execFileSync('git', ['worktree', 'add', '--detach', worktreeDir, ref], {
+      cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    execFileSync(
+      process.execPath,
+      [path.join(worktreeDir, 'scripts', 'gen-emitted-baseline.cjs'), '--out', outFile],
+      { cwd: worktreeDir, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    const raw = fs.readFileSync(outFile, 'utf8');
+    return JSON.parse(raw);
+  } finally {
+    try {
+      execFileSync('git', ['worktree', 'remove', '--force', worktreeDir], {
+        cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      // Best-effort: the checkout may already be gone (e.g. the build step failed
+      // before writing anything). Prune stale admin data rather than leaving it.
+      try {
+        execFileSync('git', ['worktree', 'prune'], {
+          cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch { /* best-effort cleanup; never mask the primary result/error */ }
+    }
+    fs.rmSync(outFile, { force: true });
+    fs.rmSync(worktreeDir, { recursive: true, force: true });
+  }
+}
+
 /** Size maps at `base`, for the ratchet half. Null when absent at that ref. */
 function baselineSizesAtRef(base = 'origin/next') {
   const sizes = {};
@@ -454,6 +518,7 @@ module.exports = {
   baselineFamilyNamesAtRef,
   baselineManifestsAtRef,
   baselineSizesAtRef,
+  buildBaselineAtRef,
   currentManifests,
   currentSizes,
   readAckFile,

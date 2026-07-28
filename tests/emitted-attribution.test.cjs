@@ -1,25 +1,26 @@
 'use strict';
 
 /**
- * emitted-attribution.test.cjs — the differential attribution check (#2723,
- * ADR-2719 §1/§3/§4/§5/§6, epic #2719 Phase 3).
+ * emitted-attribution.test.cjs — the differential attribution check (#2723/#2724,
+ * ADR-2719 §1/§3/§4/§5/§6, epic #2719 Phases 3-4).
  *
- * Runs BESIDE tests/golden-install-parity.test.cjs — both green, fixtures untouched.
- * Any PR where the golden fails and this passes is a Phase 2 provenance-table hole;
- * that disagreement is the entire point of the dual-run window, and Phase 4 (#2724)
- * must not land until it has been observed on real PRs.
+ * This is the SOLE gate for emitted-artifact propagation (#2724, Phase 4 cutover).
+ * `tests/golden-install-parity.test.cjs` — the committed path->hash fixtures it dual-ran
+ * beside during Phase 3 — is deleted. The dual-run window it ran on real PRs (#2412,
+ * #2566, #2728) surfaced two real defects (#2750, #2760), both now fixed and merged; no
+ * disagreement between the two checks was ever observed once both landed correctly.
  *
  * The law: every emitted path whose hash moved between `next` HEAD and PR HEAD must be
  * attributable — through the Phase 2 table — to a path the PR actually changed.
  * Unattributable deltas fail with the paths NAMED. The only way through is a committed
  * acknowledgment, never a flag (a contributor facing a red gate sets a flag, which is
- * what UPDATE_GOLDEN=1 is today).
+ * what UPDATE_GOLDEN=1 used to be, before #2724 removed it).
  *
  * Structure: the pure law is exercised against synthetic manifests, which is what makes
  * the four failing-first criteria practical to assert at all — and then the final test
  * runs that same law against the REAL tree: 19 actual installer spawns for the current
- * side, `git show origin/next:<fixture>` for the baseline side, real `git diff` for the
- * changed paths, and the real `tests/emitted-drift-ack.json`.
+ * side, `resolveBaseline()` (env / cache / in-job build) for the baseline side, real
+ * `git diff` for the changed paths, and the real `tests/emitted-drift-ack.json`.
  *
  * That last test is load-bearing. Without it this file would be interface-only — every
  * assertion true of hand-built inputs and none of the repo — which is the
@@ -42,8 +43,7 @@ const {
   resolveChangedPaths,
   resolveBase,
   baseRefCandidates,
-  baselineManifestsAtRef,
-  baselineSizesAtRef,
+  buildBaselineAtRef,
   currentManifests,
   currentSizes,
   readAckFile,
@@ -68,6 +68,7 @@ const {
 const {
   BASELINE_ENV,
   BASELINE_VERSION,
+  DEFAULT_CACHE_PATH,
   resolveBaseline,
 } = require('./helpers/emitted-baseline.cjs');
 
@@ -1225,15 +1226,19 @@ test('property: reported added/dropped are exactly the set differences', () => {
 // Everything above exercises the pure law against synthetic input, which is what makes
 // the acceptance criteria practical to assert at all. This block is what stops the
 // phase from being interface-only: it builds the CURRENT emitted manifests for real
-// (one installer spawn per runtime), reads the BASELINE from `origin/next`, resolves
-// the changed paths with real git, reads the real ack file, and runs the conservation
-// law over all of it.
+// (one installer spawn per runtime), resolves the BASELINE via `resolveBaseline()`,
+// resolves the changed paths with real git, reads the real ack file, and runs the
+// conservation law over all of it.
 //
-// Baseline source note: `git show origin/next:<fixture>` — next's RECORDED emitted
-// state. Deliberately not the working-tree fixtures, which are whatever this PR's
-// author regenerated; comparing against those would be vacuous. Phase 4 (#2724)
-// deletes the fixtures and swaps in resolveBaseline's cache path, which is already
-// implemented and tested above.
+// Baseline source note (#2724, post-cutover): the committed golden fixtures this test
+// used to read via `git show origin/next:<fixture>` are deleted. `resolveBaseline()`'s
+// documented precedence takes over: `GSD_EMITTED_BASELINE` env (CI's PR-lane cache
+// restore, keyed on the PR's base sha) -> the on-disk cache at
+// `.gsd-cache/emitted-baseline.json` (populated by CI's push-to-next publish step,
+// scripts/gen-emitted-baseline.cjs) -> an in-job build (a throwaway `git worktree`
+// checked out at `base`, running the same script there — slow but never absent). Never
+// the working-tree fixtures, which would be whatever this PR's author regenerated;
+// comparing against those would be vacuous.
 
 test('differential attribution over the real tree', { timeout: 900_000 }, async (t) => {
   if (process.platform === 'win32') {
@@ -1271,13 +1276,26 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
   const { ref: base, sha: baseSha } = resolved;
   assert.match(baseSha, /^[0-9a-f]{40}$/);
 
-  const baseline = baselineManifestsAtRef(base);
+  // Phase 4 (#2724): the golden fixtures this used to read via `baselineManifestsAtRef`
+  // (git show <base>:<fixture>) are deleted, so the baseline now comes through
+  // `resolveBaseline()`'s documented precedence: GSD_EMITTED_BASELINE env (CI's PR-lane
+  // cache restore) -> the on-disk cache (CI's push-to-next publish step) -> an in-job
+  // build at `base` (a throwaway git worktree + scripts/gen-emitted-baseline.cjs) ->
+  // explicit failure. The build fallback is deliberately the slow path — it exists so a
+  // cache miss degrades rather than fails outright (ADR-2719 §5).
+  const readBaselineJson = (p) => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null);
+  const resolvedBaseline = resolveBaseline({
+    expectedSha: baseSha,
+    readJson: readBaselineJson,
+    buildFallback: () => buildBaselineAtRef(base),
+  });
   assert.ok(
-    baseline && Object.keys(baseline).length > 0,
-    `no baseline manifests found at ${base}. During the dual-run window these come from the ` +
-    'committed golden fixtures at that ref; after Phase 4 they come from the cached ' +
-    'baseline artifact via resolveBaseline().',
+    resolvedBaseline.ok,
+    `no usable emitted baseline for ${base}@${baseSha.slice(0, 12)} (tried env, ` +
+    `${DEFAULT_CACHE_PATH}, and an in-job build):\n  ${(resolvedBaseline.errors || []).join('\n  ')}`,
   );
+  const baseline = resolvedBaseline.baseline;
+  assert.ok(baseline && Object.keys(baseline).length > 0, `resolved baseline via ${resolvedBaseline.via} has no families`);
 
   const changedPaths = resolveChangedPaths(base);
   const ack = readAckFile();
@@ -1308,7 +1326,7 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
     current,
     changedPaths,
     ack,
-    sizeBaseline: baselineSizesAtRef(base),
+    sizeBaseline: resolvedBaseline.sizeBaseline,
     sizeCurrent: currentSizes(),
   });
 

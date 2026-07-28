@@ -38,13 +38,12 @@
  * risk ADR-2719 records. The spot-check tests pin this pair.
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
-const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'golden-install-parity');
 
-const { MANIFEST_FAMILIES } = require('./install-shared.cjs');
+const { cleanup } = require('../helpers.cjs');
+const { MANIFEST_FAMILIES, runMinimalInstall, buildParityManifest } = require('./install-shared.cjs');
 
 /**
  * Number of runtime manifests the guard expects to cover. Asserted, so a glob that
@@ -561,39 +560,47 @@ function assertNoIdentityTransforms(rules = PROVENANCE_RULES) {
 // until some test happens to exercise the corrupted rule.
 assertNoIdentityTransforms(PROVENANCE_RULES);
 
-// ─── Fixture loading ──────────────────────────────────────────────────────────
+// ─── Manifest loading ─────────────────────────────────────────────────────────
 
 /**
- * Load every committed golden-parity manifest as {runtime, rel, keys}.
- * Rejects a manifest whose JSON parses but is not a plain object — treating `0`,
+ * Build the emitted manifest set for every family, for real — one installer spawn
+ * per runtime, exactly as `tests/helpers/emitted-runtime.cjs`'s `currentManifests()`
+ * does for the differential check's CURRENT side.
+ *
+ * Pre-#2724 this read the committed `tests/fixtures/golden-install-parity/*.json`
+ * snapshots. Phase 4 (ADR-2719) deletes those fixtures entirely — not just at HEAD,
+ * at every future ref — so a fixture-reading implementation would throw at module
+ * load on every commit from here forward, taking the Phase 2 totality guard down
+ * with it (the totality guard is supposed to be the *replacement* for the golden
+ * check, not another casualty of deleting it). Building from real installs instead
+ * makes this the same honest, no-fixture-dependency shape as the differential's
+ * current-tree side, and it needs no `fixturesDir` parameter because there is no
+ * longer a fixture directory to point it at.
+ *
+ * Rejects a manifest whose build result is not a plain object — treating `0`,
  * `"s"`, `[]`, `null` or `true` as "no keys" would let the whole guard pass
- * vacuously on a corrupt fixture.
+ * vacuously on a corrupt build.
  */
-function loadManifests(fixturesDir = FIXTURES_DIR) {
-  const files = fs.readdirSync(fixturesDir).filter((f) => f.endsWith('.json')).sort();
-  return files.map((file) => {
-    const full = path.join(fixturesDir, file);
-    const raw = fs.readFileSync(full, 'utf8');
-    if (raw.trim() === '') {
-      throw new Error(`emitted-provenance: fixture ${file} is empty`);
-    }
+function loadManifests() {
+  return MANIFEST_FAMILIES.map(({ name, runtime, scope }) => {
+    const { configDir, root } = runMinimalInstall({ runtime, scope });
     let parsed;
     try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`emitted-provenance: fixture ${file} is not valid JSON: ${err.message}`);
+      parsed = buildParityManifest(configDir, root);
+    } finally {
+      cleanup(root);
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(
-        `emitted-provenance: fixture ${file} must be a JSON object of path->hash, ` +
+        `emitted-provenance: build for ${name} must produce an object of path->hash, ` +
         `got ${Array.isArray(parsed) ? 'array' : typeof parsed}`,
       );
     }
     return {
-      file,
-      // `claude-local.json` is the claude runtime at local scope; the descriptor
-      // lookup keys on the runtime id, not the fixture name.
-      runtime: file.replace(/\.json$/, '').replace(/-local$/, ''),
+      file: `${name}.json`,
+      // `claude-local` is the claude runtime at local scope; the descriptor lookup
+      // keys on the runtime id, not the family name.
+      runtime,
       keys: Object.keys(parsed),
     };
   });
@@ -668,7 +675,6 @@ function assertTotality(manifests, rules = PROVENANCE_RULES, sampleLimit = 10) {
 
 module.exports = {
   EXPECTED_MANIFEST_COUNT,
-  FIXTURES_DIR,
   PROVENANCE_RULES,
   SKILLS_ROOTS,
   KIMI_ROOT_AGENT_SRC,
