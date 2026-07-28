@@ -45,6 +45,27 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 const ACK_PATH = path.join(REPO_ROOT, 'tests', 'emitted-drift-ack.json');
 const FIXTURE_SUBDIR = 'tests/fixtures/golden-install-parity';
 
+/**
+ * The emitted manifest families, as (fixtureName -> install spec).
+ *
+ * NOT simply `Object.keys(RUNTIME_META)`: that has 18 entries while the fixture set has
+ * 19. The extra one is `claude-local` — claude is the reference host and the ONLY
+ * runtime with a distinct LOCAL "legacy flat-commands" layout (`commands/gsd-*.md` +
+ * `agents/gsd-*.md` at project scope), which `golden-install-parity.test.cjs` guards
+ * with a hand-coded test outside its RUNTIME_META loop (#2086).
+ *
+ * Enumerating from RUNTIME_META alone dropped that family from BOTH sides of the
+ * differential, so a same-count self-check (18 === 18) passed vacuously and a PR
+ * changing Claude's local-scope output would fail the golden while this check reported
+ * ok. That disagreement is exactly what the dual-run window is meant to surface as a
+ * provenance-table hole — so a wiring omission masquerading as one is the worst
+ * possible failure here. Derived explicitly, and asserted against the fixture count.
+ */
+const MANIFEST_FAMILIES = [
+  ...Object.keys(RUNTIME_META).map((runtime) => ({ name: runtime, runtime, scope: 'global' })),
+  { name: 'claude-local', runtime: 'claude', scope: 'local' },
+];
+
 /** Bounded git invocation. CLAUDE.md → KNOWN DEFECTS: every git subprocess needs a
  *  timeout (5-30s); an unbounded execFileSync is an indefinite hang, and it is how
  *  macOS CI silently stops reporting. */
@@ -95,10 +116,10 @@ function resolveBaseSha(base = 'origin/next') {
 function baselineManifestsAtRef(base = 'origin/next') {
   const manifests = {};
   let found = 0;
-  for (const runtime of Object.keys(RUNTIME_META)) {
+  for (const { name } of MANIFEST_FAMILIES) {
     let raw;
     try {
-      raw = git(['show', `${base}:${FIXTURE_SUBDIR}/${runtime}.json`]);
+      raw = git(['show', `${base}:${FIXTURE_SUBDIR}/${name}.json`]);
     } catch {
       continue; // absent at that ref
     }
@@ -106,12 +127,12 @@ function baselineManifestsAtRef(base = 'origin/next') {
     try {
       parsed = JSON.parse(raw);
     } catch (err) {
-      throw new Error(`emitted-attribution: ${base}:${FIXTURE_SUBDIR}/${runtime}.json is not valid JSON: ${err.message}`);
+      throw new Error(`emitted-attribution: ${base}:${FIXTURE_SUBDIR}/${name}.json is not valid JSON: ${err.message}`);
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      throw new Error(`emitted-attribution: ${base}:${FIXTURE_SUBDIR}/${runtime}.json must be an object of path->hash`);
+      throw new Error(`emitted-attribution: ${base}:${FIXTURE_SUBDIR}/${name}.json must be an object of path->hash`);
     }
-    manifests[runtime] = parsed;
+    manifests[name] = parsed;
     found++;
   }
   return found === 0 ? null : manifests;
@@ -140,10 +161,10 @@ function baselineSizesAtRef(base = 'origin/next') {
  */
 function currentManifests() {
   const manifests = {};
-  for (const runtime of Object.keys(RUNTIME_META)) {
-    const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
+  for (const { name, runtime, scope } of MANIFEST_FAMILIES) {
+    const { configDir, root } = runMinimalInstall({ runtime, scope });
     try {
-      manifests[runtime] = buildParityManifest(configDir, root);
+      manifests[name] = buildParityManifest(configDir, root);
     } finally {
       cleanup(root);
     }
@@ -190,6 +211,7 @@ module.exports = {
   REPO_ROOT,
   ACK_PATH,
   FIXTURE_SUBDIR,
+  MANIFEST_FAMILIES,
   GIT_TIMEOUT_MS,
   git,
   resolveChangedPaths,

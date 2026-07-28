@@ -198,10 +198,14 @@ function diffEmitted({
       let via = null;
       for (const source of attribution.sources) {
         const hit = sourceSatisfiedBy(source, changedSet);
-        if (hit) { via = hit; break; }
+        // `!== null`, not truthiness: an exact match returns the source string, and an
+        // empty-string source would return '' — falsy, so a real match would be
+        // silently discarded. Unreachable with today's rules (every source is a
+        // non-empty template) but it is a footgun for the next rule author.
+        if (hit !== null) { via = hit; break; }
       }
 
-      if (via) {
+      if (via !== null) {
         attributed.push({ ...record, via });
       } else if (ackEntries.has(rel)) {
         usedAcks.add(rel);

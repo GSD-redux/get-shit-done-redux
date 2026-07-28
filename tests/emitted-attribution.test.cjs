@@ -48,6 +48,7 @@ const {
   readAckFile,
 } = require('./helpers/emitted-runtime.cjs');
 
+const { EXPECTED_MANIFEST_COUNT } = require('./helpers/emitted-provenance.cjs');
 const {
   ACK_VERSION,
   sourceSatisfiedBy,
@@ -575,7 +576,8 @@ test('diff is pure and repeatable', () => {
   const args = {
     baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
     current: mf({ [WORKFLOW_KEY]: 'bbb' }),
-    changedPaths: [WORKFLOW_SRC],
+    // 3 elements in deliberately unsorted order, so an in-place sort would be visible.
+    changedPaths: ['zzz/last.md', WORKFLOW_SRC, 'aaa/first.md'],
   };
   const frozen = JSON.stringify(args);
   const a = diffEmitted(args);
@@ -683,11 +685,22 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
   const ack = readAckFile();
   const current = currentManifests();
 
+  // Assert against the INDEPENDENT expected count, not just baseline-vs-current.
+  // Comparing the two sides to each other cannot catch a family dropped from BOTH —
+  // which is exactly what happened with claude-local: 18 === 18 passed vacuously while
+  // the 19th family went unchecked.
+  assert.equal(
+    Object.keys(baseline).length,
+    EXPECTED_MANIFEST_COUNT,
+    `baseline must cover all ${EXPECTED_MANIFEST_COUNT} emitted manifest families`,
+  );
   assert.equal(
     Object.keys(current).length,
-    Object.keys(baseline).length,
-    'every runtime present at base must also be built now (a dropped runtime is a real finding)',
+    EXPECTED_MANIFEST_COUNT,
+    `current must cover all ${EXPECTED_MANIFEST_COUNT} emitted manifest families`,
   );
+  assert.ok(baseline['claude-local'], 'the claude local-scope layout (#2086) must be covered');
+  assert.ok(current['claude-local'], 'the claude local-scope layout (#2086) must be covered');
 
   const result = diffEmitted({
     baseline,
