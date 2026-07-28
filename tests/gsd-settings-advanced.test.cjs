@@ -27,6 +27,7 @@ const path = require('node:path');
 
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const { VALID_CONFIG_KEYS } = require('../gsd-core/bin/lib/config-schema.cjs');
+const fc = require('fast-check');
 
 /** How far after a key mention the default may appear and still count as documenting it. */
 const DEFAULT_PROXIMITY_WINDOW = 400;
@@ -52,6 +53,13 @@ const DEFAULT_PROXIMITY_WINDOW = 400;
 function findDocumentedDefault(workflow, key, defaultToken, windowSize = DEFAULT_PROXIMITY_WINDOW) {
   let occurrences = 0;
   let lastWindow = '';
+  // An empty needle would HANG this loop, not end it: String#indexOf('', pos) clamps to
+  // str.length instead of returning -1, so `idx` stabilizes at the end and never goes
+  // negative. Every SPEC_FIELDS key is non-empty today, which is exactly why this has to be
+  // guarded rather than assumed.
+  if (typeof key !== 'string' || key === '') {
+    return { ok: false, occurrences: 0, window: '' };
+  }
   // Advance by one char, not by key length: a key that overlaps itself or sits inside the
   // default token must still terminate.
   for (let idx = workflow.indexOf(key); idx >= 0; idx = workflow.indexOf(key, idx + 1)) {
@@ -931,9 +939,48 @@ describe('findDocumentedDefault', () => {
 
   test('is newline-agnostic (CRLF reaches the same verdict as LF)', () => {
     const lf = `prose ${KEY}\n${pad(2000)}\n| ${KEY} | ${DEF} |`;
+    const crlf = lf.replace(/\n/g, '\r\n');
+    // Asserting only that the two agree is vacuous — a stub returning a constant satisfies it.
+    // Pin the ABSOLUTE verdict on both, then that they agree.
+    assert.equal(findDocumentedDefault(lf, KEY, DEF).ok, true);
+    assert.equal(findDocumentedDefault(crlf, KEY, DEF).ok, true);
+    // And a document neither newline style can rescue must fail under both.
+    const missLf = [pad(500), KEY, pad(500), KEY, pad(500)].join('\n');
+    assert.equal(findDocumentedDefault(missLf, KEY, DEF).ok, false);
+    assert.equal(findDocumentedDefault(missLf.replace(/\n/g, '\r\n'), KEY, DEF).ok, false);
+  });
+
+  test('an empty key is refused rather than hanging the scan', () => {
+    // String#indexOf('', pos) clamps to str.length instead of returning -1, so an unguarded
+    // scan loops forever. Guarded above; this pins it. A timeout here means the guard is gone.
+    const r = findDocumentedDefault('some workflow text', '', DEF);
+    assert.deepEqual(r, { ok: false, occurrences: 0, window: '' });
     assert.deepEqual(
-      findDocumentedDefault(lf.replace(/\n/g, '\r\n'), KEY, DEF).ok,
-      findDocumentedDefault(lf, KEY, DEF).ok
+      findDocumentedDefault('', '', ''),
+      { ok: false, occurrences: 0, window: '' }
+    );
+  });
+
+  test('property: verdict is exactly "default fits inside the window from the key"', () => {
+    // windowSize is a budget limit, so it carries a property test (CLAUDE.md TEST RULES).
+    // Disjoint alphabets keep key/default/filler from colliding, so the expected verdict is
+    // pure arithmetic: the window starts AT the key and spans windowSize chars.
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[a-f]{1,12}$/),
+        fc.stringMatching(/^[m-r]{1,8}$/),
+        fc.integer({ min: 0, max: 600 }),
+        fc.integer({ min: 20, max: 400 }),
+        (key, def, gap, windowSize) => {
+          const doc = `${key}${'z'.repeat(gap)}${def}`;
+          const expected = key.length + gap + def.length <= windowSize;
+          const r = findDocumentedDefault(doc, key, def, windowSize);
+          assert.equal(r.ok, expected);
+          assert.ok(r.occurrences >= 1, 'the key is present by construction');
+          return true;
+        }
+      ),
+      { numRuns: 300, seed: 2753 }
     );
   });
 });
