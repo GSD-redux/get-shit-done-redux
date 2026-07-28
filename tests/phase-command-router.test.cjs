@@ -564,3 +564,79 @@ describe('bug-1437 — phase.list-plans is wired in gsd-tools', () => {
 });
   });
 }
+
+// ─── 6. Observability logger wiring (#2620) ──────────────────────────────────
+//
+// The fix wires the reference DispatchLogger at BOTH live createHub() seams.
+// The sibling seam (cjs-command-router-adapter) is covered in its own file;
+// this pins the phase seam so a later refactor that drops the isAuditEnabled()
+// gate or the injection here cannot reintroduce the #2620 defect silently.
+{
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { createTempDir, cleanup } = require('./helpers.cjs');
+
+  describe('phase-command-router — observability logger wiring (#2620)', () => {
+    test('a dispatch through the phase seam writes the opt-in audit trail when GSD_AUDIT=1', (t) => {
+      const tmp = createTempDir('gsd-obs-phase-');
+      const prevAudit = process.env.GSD_AUDIT;
+      t.after(() => {
+        if (prevAudit === undefined) delete process.env.GSD_AUDIT;
+        else process.env.GSD_AUDIT = prevAudit;
+        cleanup(tmp);
+      });
+      process.env.GSD_AUDIT = '1';
+
+      const phase = makePhase({ cmdPhaseNextDecimal: () => {} });
+      routePhaseCommand({
+        phase,
+        args: ['phase', 'next-decimal', '5'],
+        cwd: tmp,
+        raw: false,
+        error: (m) => { throw new Error(m); },
+      });
+
+      const auditPath = path.join(tmp, '.planning', '.gsd-trace.jsonl');
+      assert.ok(
+        fs.existsSync(auditPath),
+        'GSD_AUDIT=1 must produce .planning/.gsd-trace.jsonl — the phase router must build the Hub with a real DispatchLogger (ADR-0174 §6), not createNoOpLogger'
+      );
+
+      const lines = fs.readFileSync(auditPath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
+      assert.ok(lines.length > 0, 'at least one dispatch event must be recorded');
+      assert.equal(lines.length, 1, 'exactly one dispatch event must be recorded');
+
+      const event = JSON.parse(lines[0]);
+      assert.equal(event.result.kind, 'ok', 'a successful dispatch is recorded with result.kind === "ok"');
+      assert.ok(typeof event.command === 'string' && event.command.length > 0, 'event carries the dispatched command');
+      assert.ok(typeof event.traceId === 'string' && event.traceId.length > 0, 'event carries a traceId');
+      assert.ok(typeof event.timestamp === 'string' && event.timestamp.length > 0, 'event carries an ISO timestamp');
+    });
+
+    test('no audit trail is written when GSD_AUDIT is unset (Hub stays silent via the no-op fallback)', (t) => {
+      const tmp = createTempDir('gsd-obs-phase-off-');
+      const prevAudit = process.env.GSD_AUDIT;
+      t.after(() => {
+        if (prevAudit === undefined) delete process.env.GSD_AUDIT;
+        else process.env.GSD_AUDIT = prevAudit;
+        cleanup(tmp);
+      });
+      delete process.env.GSD_AUDIT;
+
+      const phase = makePhase({ cmdPhaseNextDecimal: () => {} });
+      routePhaseCommand({
+        phase,
+        args: ['phase', 'next-decimal', '5'],
+        cwd: tmp,
+        raw: false,
+        error: (m) => { throw new Error(m); },
+      });
+
+      assert.equal(
+        fs.existsSync(path.join(tmp, '.planning', '.gsd-trace.jsonl')),
+        false,
+        'without the opt-in signal the seam must leave no audit artifact'
+      );
+    });
+  });
+}
