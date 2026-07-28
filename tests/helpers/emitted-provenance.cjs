@@ -38,13 +38,12 @@
  * risk ADR-2719 records. The spot-check tests pin this pair.
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
-const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'golden-install-parity');
 
-const { MANIFEST_FAMILIES } = require('./install-shared.cjs');
+const { cleanup } = require('../helpers.cjs');
+const { MANIFEST_FAMILIES, runMinimalInstall, buildParityManifest } = require('./install-shared.cjs');
 
 /**
  * Number of runtime manifests the guard expects to cover. Asserted, so a glob that
@@ -75,6 +74,18 @@ const COMMANDS_SRC = 'commands/gsd';
  *  code literals (buildClineRulesBody / buildClineAgentsMdBody /
  *  buildClinePreToolUseHook). */
 const CLINE_BODY_SRC = 'src/runtime-hooks-surface.cts';
+
+/**
+ * Installer source file that GENERATES the Windows-only `hooks/<name>.cmd` shim
+ * wrapping a Codex hook's `.js` script (#3426). Same physical file as
+ * CLINE_BODY_SRC — kept as its own named constant because the two constants
+ * attribute unrelated transform code that happens to live in one file:
+ * buildCodexHookWindowsShimIR / ensureCodexHooksJsonSessionStart /
+ * ensureCodexHooksJsonEvent (verified via Memtrace: these are the ONLY writers
+ * of a `.cmd` file anywhere in the installer — no other runtime's hook surface
+ * builds one).
+ */
+const HOOKS_WINDOWS_SHIM_SRC = 'src/runtime-hooks-surface.cts';
 
 /** Installer source file that emits the Hermes skill-category DESCRIPTION.md
  *  (writeHermesCategoryDescription) as a code literal. */
@@ -199,10 +210,10 @@ function nativePluginDescriptor(runtime) {
 // `roots`   — emitted prefixes this rule applies under (null = match `rel` whole)
 // `pattern` — matched against the root-stripped tail (or whole `rel` when roots is null)
 // `sources` — (match, ctx) => string[] of repo-relative paths; [] only for `synthesized`
-// `transforms` — OPTIONAL string[] of repo paths implementing the TRANSFORM that
-//                produces this rule's emitted bytes (#2757). A `derived`/`code-derived`
-//                artifact's bytes can move for a second reason `sources` alone cannot
-//                express: the transform code changed, not the source it derives from.
+// `transforms` — OPTIONAL repo paths implementing the TRANSFORM that produces this
+//                rule's emitted bytes (#2757). A `derived`/`code-derived` artifact's
+//                bytes can move for a second reason `sources` alone cannot express:
+//                the transform code changed, not the source it derives from.
 //                Phase 3 (emitted-diff.cjs) attributes a moved path if the diff
 //                satisfies EITHER `sources` OR `transforms`, reusing the same
 //                `sourceSatisfiedBy` matcher for both so exact/prefix semantics stay
@@ -210,6 +221,15 @@ function nativePluginDescriptor(runtime) {
 //                `transforms` — enforced by `assertNoIdentityTransforms` below — because
 //                an identity copy's bytes can only move when its source moves; that is
 //                what makes it an identity.
+//                May be a plain `string[]` (the common case) OR a `(match, ctx) => string[]`
+//                function, mirroring `sources`, for a rule whose transform attribution
+//                depends on WHICH emitted path matched — e.g. `hooks-built` below, where
+//                only the `.cmd` shim sub-family has transform code at all; a static
+//                array would either miss that or (worse) falsely blanket-attribute every
+//                plain hook file to the shim generator that cannot move its bytes. A
+//                dedicated rule for the `.cmd` sub-family was considered and rejected: it
+//                is emitted ONLY on win32 (see `hooks-built` below), so on every non-
+//                Windows CI lane it would match zero paths and fail as a "dead" rule.
 //
 // Rule ORDER CARRIES NO SEMANTICS. Exactly-one matching is enforced, so rules are
 // mutually exclusive by construction and the table reads correctly in any order.
@@ -294,6 +314,17 @@ const PROVENANCE_RULES = [
   },
   {
     id: 'hooks-built',
+    // `kind` is a single scalar per rule, and this rule's majority sub-family
+    // (plain built hook files) is genuinely `derived` from hooks/<name> via
+    // scripts/build-hooks.js. The `.cmd` shim sub-family is code-derived (see
+    // the pattern-comment and `sources` comment below), but that does not
+    // change this rule's `kind` — a per-match `kind` would need a dedicated
+    // rule, which is exactly what was rejected above (dead on non-Windows CI
+    // lanes). The `.cmd` branch's real (code-derived) provenance is instead
+    // carried precisely by `sources`/`transforms` both pointing at
+    // HOOKS_WINDOWS_SHIM_SRC — `assertNoIdentityTransforms` only constrains
+    // `kind: 'identity'` rules, so a `derived` rule with a non-empty
+    // `transforms` here is unaffected by that guard.
     kind: 'derived',
     roots: HOOKS_ROOTS,
     // Emitted from hooks/dist/, which scripts/build-hooks.js builds from hooks/.
@@ -301,8 +332,32 @@ const PROVENANCE_RULES = [
     // Excludes Copilot's hook-registration JSON (next rule) — that is a code
     // literal, not a built script, and attributing it here resolved to a
     // nonexistent `hooks/gsd-session.json`.
+    //
+    // `.cmd` shims are a SEPARATE, Windows-only emission path folded into this
+    // SAME rule rather than a dedicated one (see the `transforms` doc above for
+    // why a standalone rule would go dead on non-Windows CI lanes). Verified via
+    // Memtrace: `hooks/<name>.cmd` is written at install time by
+    // ensureCodexHooksJsonSessionStart / ensureCodexHooksJsonEvent (both gated
+    // on `platform === 'win32'`) via buildCodexHookWindowsShimIR
+    // (HOOKS_WINDOWS_SHIM_SRC, src/runtime-hooks-surface.cts). The `.cmd` bytes
+    // are `@ECHO OFF\r\n@SETLOCAL\r\n@<runner> <script> %*\r\n` — built from the
+    // install-time interpreter token and the absolute install path, plus a
+    // hardcoded literal filename (e.g. `gsd-check-update.js`) baked into that
+    // same source file. The wrapped `.js` file's NAME flows into the `.cmd`
+    // bytes; its CONTENT never does — see the `sources` comment below for why
+    // that rules out attributing to `hooks/<name>.js`.
     pattern: /^(?!gsd-session\.json$).+$/,
-    sources: (m) => [`hooks/${m[0]}`],
+    // `.cmd` shim bytes are code-derived (a literal template + the install-time
+    // interpreter/path tokens in HOOKS_WINDOWS_SHIM_SRC) — the wrapped `.js`
+    // file's NAME flows in (as a hardcoded literal filename inside that same
+    // source file), but its CONTENT never does, so attributing `sources` to
+    // `hooks/<name>.js` would be a false byte-provenance claim. Point `sources`
+    // at the same file as `transforms`, matching the `code-derived` convention
+    // used elsewhere in this table (copilot-hook-registration, cline-rules-
+    // code-derived, hermes-category-description). The redundancy between
+    // `sources` and `transforms` here is harmless — the mis-attribution was not.
+    sources: (m) => [m[0].endsWith('.cmd') ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
+    transforms: (m) => (m[0].endsWith('.cmd') ? [HOOKS_WINDOWS_SHIM_SRC] : []),
   },
   {
     id: 'copilot-hook-registration',
@@ -519,13 +574,25 @@ function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
     );
   }
   const { rule, match } = hits[0];
+  let transforms;
+  if (typeof rule.transforms === 'function') {
+    transforms = rule.transforms(match, { rel, runtime });
+    if (!Array.isArray(transforms)) {
+      throw new Error(
+        `emitted-provenance: rule "${rule.id}" transforms(match, ctx) must return an array, ` +
+        `got ${typeof transforms} for ${rel}`,
+      );
+    }
+  } else {
+    // #2757: always an array, never undefined, so callers (Phase 3's diffEmitted)
+    // never need a defensive `|| []`.
+    transforms = Array.isArray(rule.transforms) ? rule.transforms : [];
+  }
   return {
     ruleId: rule.id,
     kind: rule.kind,
     sources: rule.sources(match, { rel, runtime }),
-    // #2757: always an array, never undefined, so callers (Phase 3's diffEmitted)
-    // never need a defensive `|| []`.
-    transforms: Array.isArray(rule.transforms) ? rule.transforms : [],
+    transforms,
   };
 }
 
@@ -540,12 +607,18 @@ function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
  * future authoring mistake) and exported so tests can drive it against an injected
  * corrupted table, matching this module's existing injectable-table convention.
  *
+ * A function-valued `transforms` on an identity rule is rejected outright (without
+ * invoking it) — an identity rule has no legitimate match-dependent transform story
+ * by definition, so allowing the function form there would just be a slower path to
+ * the same false-attribution risk this guard exists to catch.
+ *
  * @param {Array} rules rule table (injectable)
- * @throws when any identity rule declares a non-empty transforms array
+ * @throws when any identity rule declares a non-empty transforms array or a function
  */
 function assertNoIdentityTransforms(rules = PROVENANCE_RULES) {
   const violators = rules.filter(
-    (r) => r.kind === 'identity' && Array.isArray(r.transforms) && r.transforms.length > 0,
+    (r) => r.kind === 'identity'
+      && (typeof r.transforms === 'function' || (Array.isArray(r.transforms) && r.transforms.length > 0)),
   );
   if (violators.length) {
     throw new Error(
@@ -561,39 +634,60 @@ function assertNoIdentityTransforms(rules = PROVENANCE_RULES) {
 // until some test happens to exercise the corrupted rule.
 assertNoIdentityTransforms(PROVENANCE_RULES);
 
-// ─── Fixture loading ──────────────────────────────────────────────────────────
+// ─── Manifest loading ─────────────────────────────────────────────────────────
 
 /**
- * Load every committed golden-parity manifest as {runtime, rel, keys}.
- * Rejects a manifest whose JSON parses but is not a plain object — treating `0`,
+ * Build the emitted manifest set for every family, for real — one installer spawn
+ * per runtime, exactly as `tests/helpers/emitted-runtime.cjs`'s `currentManifests()`
+ * does for the differential check's CURRENT side.
+ *
+ * Pre-#2724 this read the committed `tests/fixtures/golden-install-parity/*.json`
+ * snapshots. Phase 4 (ADR-2719) deletes those fixtures entirely — not just at HEAD,
+ * at every future ref — so a fixture-reading implementation would throw at module
+ * load on every commit from here forward, taking the Phase 2 totality guard down
+ * with it (the totality guard is supposed to be the *replacement* for the golden
+ * check, not another casualty of deleting it). Building from real installs instead
+ * makes this the same honest, no-fixture-dependency shape as the differential's
+ * current-tree side, and it needs no `fixturesDir` parameter because there is no
+ * longer a fixture directory to point it at.
+ *
+ * Rejects a manifest whose build result is not a plain object — treating `0`,
  * `"s"`, `[]`, `null` or `true` as "no keys" would let the whole guard pass
- * vacuously on a corrupt fixture.
+ * vacuously on a corrupt build.
  */
-function loadManifests(fixturesDir = FIXTURES_DIR) {
-  const files = fs.readdirSync(fixturesDir).filter((f) => f.endsWith('.json')).sort();
-  return files.map((file) => {
-    const full = path.join(fixturesDir, file);
-    const raw = fs.readFileSync(full, 'utf8');
-    if (raw.trim() === '') {
-      throw new Error(`emitted-provenance: fixture ${file} is empty`);
-    }
+/**
+ * @param {object} [deps]  injected for testability (hostile-input coverage below) —
+ *   production callers use the defaults.
+ * @param {Array}    [deps.families]  MANIFEST_FAMILIES by default
+ * @param {function} [deps.install]   runMinimalInstall by default
+ * @param {function} [deps.build]     buildParityManifest by default
+ * @param {function} [deps.clean]     cleanup by default
+ */
+function loadManifests({
+  families = MANIFEST_FAMILIES,
+  install = runMinimalInstall,
+  build = buildParityManifest,
+  clean = cleanup,
+} = {}) {
+  return families.map(({ name, runtime, scope }) => {
+    const { configDir, root } = install({ runtime, scope });
     let parsed;
     try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`emitted-provenance: fixture ${file} is not valid JSON: ${err.message}`);
+      parsed = build(configDir, root);
+    } finally {
+      clean(root);
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(
-        `emitted-provenance: fixture ${file} must be a JSON object of path->hash, ` +
+        `emitted-provenance: build for ${name} must produce an object of path->hash, ` +
         `got ${Array.isArray(parsed) ? 'array' : typeof parsed}`,
       );
     }
     return {
-      file,
-      // `claude-local.json` is the claude runtime at local scope; the descriptor
-      // lookup keys on the runtime id, not the fixture name.
-      runtime: file.replace(/\.json$/, '').replace(/-local$/, ''),
+      file: `${name}.json`,
+      // `claude-local` is the claude runtime at local scope; the descriptor lookup
+      // keys on the runtime id, not the family name.
+      runtime,
       keys: Object.keys(parsed),
     };
   });
@@ -668,7 +762,6 @@ function assertTotality(manifests, rules = PROVENANCE_RULES, sampleLimit = 10) {
 
 module.exports = {
   EXPECTED_MANIFEST_COUNT,
-  FIXTURES_DIR,
   PROVENANCE_RULES,
   SKILLS_ROOTS,
   KIMI_ROOT_AGENT_SRC,
@@ -677,6 +770,7 @@ module.exports = {
   HOOKS_ROOTS,
   COMMANDS_SRC,
   CLINE_BODY_SRC,
+  HOOKS_WINDOWS_SHIM_SRC,
   INSTALLER_SRC,
   stripSkillPrefix,
   nativePluginDescriptor,

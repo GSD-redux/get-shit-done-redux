@@ -117,8 +117,7 @@ const RULES = [
     match: path => path.startsWith('src/') || path === 'tsconfig.build.json',
     tests: [
       'tests/semver-compare.test.cjs', // #2758: absorbs the former tests/bug-10-semver-policy-consolidation.test.cjs (folded into it by consolidation epic #1969 B3 #1972; the stale filename here was a silent coverage hole this rule never actually re-selected)
-      'tests/golden-install-parity.test.cjs', // any src/installer change can alter emitted install artifacts → re-verify golden install parity (drift guard)
-      'tests/emitted-provenance.test.cjs', // #2758: the differential travels with the golden — ADR-2719 dual-run
+      'tests/emitted-provenance.test.cjs', // any src/installer change can alter emitted install artifacts → re-verify provenance totality (#2724: golden-install-parity retired, this is the sole gate)
       'tests/emitted-attribution.test.cjs',
     ],
   },
@@ -143,25 +142,23 @@ const RULES = [
       // SCOPED_LANE_EXCLUDE guard below, which also drops it when it is itself a
       // changed test file.
       'tests/runtime-artifact-layout.test.cjs',
-      'tests/golden-install-parity.test.cjs', // any src/installer change can alter emitted install artifacts → re-verify golden install parity (drift guard)
-      'tests/emitted-provenance.test.cjs', // #2758: the differential travels with the golden — ADR-2719 dual-run
+      'tests/emitted-provenance.test.cjs', // any src/installer change can alter emitted install artifacts → re-verify provenance totality (#2724: golden-install-parity retired, this is the sole gate)
       'tests/emitted-attribution.test.cjs',
     ],
   },
   {
-    name: 'shipped install content (golden-parity drift guard, #2267)',
+    name: 'shipped install content (emitted-attribution drift guard, #2267/#2724)',
     // Every source file the installer EMITS into a runtime layout is captured by
-    // golden-install-parity + the install-tree snapshot. A source edit here that
-    // changes emitted output MUST re-verify the fixtures — otherwise stale golden
-    // fixtures merge silently (#2266: a hooks/gsd-statusline.js edit changed
-    // installed output but no rule selected golden-parity, so stale fixtures
-    // shipped to next undetected). Union semantics: this ADDS the parity guard on
-    // top of each path's existing content-specific tests. Targeted lane only (the
-    // golden test skips win32 by design), no fullMatrix.
-    // #2758: the Phase 2/3 emitted differential (ADR-2719) travels alongside the
-    // golden here too — a PR editing only shipped content is the archetypal
-    // emitted ripple, and until this fix no rule selected the differential at
-    // all. Both green, fixtures untouched, is the dual-run premise.
+    // the emitted-attribution differential + the install-tree snapshot. A source
+    // edit here that changes emitted output MUST re-verify (#2266: a
+    // hooks/gsd-statusline.js edit changed installed output but no rule selected
+    // the drift guard, so a stale emitted state shipped to next undetected).
+    // Union semantics: this ADDS the drift guard on top of each path's existing
+    // content-specific tests. Targeted lane only (the real-tree test skips win32
+    // by design), no fullMatrix.
+    // #2724: golden-install-parity.test.cjs is retired (ADR-2719 Phase 4); the
+    // emitted differential (ADR-2719 Phase 2/3) is now the sole gate for a PR
+    // editing only shipped content, the archetypal emitted-ripple case.
     // NOTE: intentionally NOT a blanket 'gsd-core/' prefix, for two reasons:
     // (1) gsd-core/bin/** is tsc-compiled runtime output — EXCLUDED_PREFIXES-
     //     excluded from both manifests, and already covered by the 'installer and
@@ -179,7 +176,6 @@ const RULES = [
       (path.startsWith('gsd-core/bin/shared/') && path.endsWith('.json')) ||
       ['scripts/fix-slash-commands.cjs', 'scripts/gen-capability-registry.cjs', 'scripts/gen-loop-host-contract.cjs'].includes(path),
     tests: [
-      'tests/golden-install-parity.test.cjs',
       'tests/golden-install-tree.test.cjs',
       'tests/emitted-provenance.test.cjs',
       'tests/emitted-attribution.test.cjs',

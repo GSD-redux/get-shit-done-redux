@@ -43,12 +43,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('node:os');
 const path = require('path');
-const { assertFileBaseline } = require('../scripts/lib/allowlist-ratchet.cjs');
-const { lfByteCount, measureMdFiles } = require('../scripts/workflow-size.cjs');
+const { lfByteCount } = require('../scripts/workflow-size.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const AGENTS_DIR = path.join(__dirname, '..', 'agents');
-const BASELINE_PATH = path.join(__dirname, 'agent-size-baseline.json');
 const isGsdAgent = (f) => f.startsWith('gsd-');
 
 // Tier HARD CAPS (#1074, bytes) — absolute red lines, not high-water-hugging
@@ -132,25 +130,16 @@ describe('SIZE: agent hard-cap boundary fixtures (#1074 — negative proof)', ()
   });
 });
 
-describe('SIZE: per-agent baseline (issue #1074)', () => {
-  // Per-agent exact-size ratchet — the primary anti-creep guard. Guards EVERY
-  // agent by name against tests/agent-size-baseline.json. Growth fails with the
-  // file and delta; shrinkage fails as a stale snapshot. Fix: `npm run
-  // size:baseline` plus a PR justification for genuine growth (or extraction).
-  test('every agent matches its committed baseline', () => {
-    const baseline = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf-8'));
-    const current = measureMdFiles(AGENTS_DIR, isGsdAgent);
-    assertFileBaseline({
-      label: 'agent-size',
-      current,
-      baseline,
-      fail: assert.fail,
-      updateHint:
-        'Run `npm run size:baseline` to update tests/agent-size-baseline.json, ' +
-        'then justify any growth in your PR (or extract shared boilerplate to gsd-core/references/).',
-    });
-  });
-});
+// A prior "SIZE: per-agent baseline (issue #1074)" describe block lived here,
+// asserting every agent's exact byte count against the committed
+// `tests/agent-size-baseline.json` snapshot. #2724 (ADR-2719 Phase 4) deletes that
+// snapshot: it was a pure function of the source tree, and its purpose — "growth
+// must be noticed and justified" — is now served by the same differential machine
+// that replaced the golden-install-parity fixtures (tests/emitted-attribution.test.cjs's
+// real-tree test, via `emitted-diff.cjs`'s size ratchet: growth is reported with its
+// exact byte delta and requires an entry in tests/emitted-drift-ack.json, ADR-2719 §4 /
+// must-have 6). The tier hard caps above are unaffected — they are independent of the
+// deleted baseline and remain the outer bound.
 
 describe('SIZE: every agent is classified', () => {
   test('every agent falls in exactly one tier', () => {
