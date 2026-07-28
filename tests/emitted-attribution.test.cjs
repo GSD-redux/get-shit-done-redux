@@ -349,6 +349,23 @@ test('growth is reported with its exact byte delta and needs an ack', () => {
   assert.ok(withAck.ok);
 });
 
+test('an ack consumed by size growth alone is not reported as stale', () => {
+  // Ordering regression: stale-ack detection must run AFTER the size pass. Computing it
+  // between the hash pass and the size pass reports a legitimate growth ack as stale —
+  // a false failure that would push contributors to delete the very ack that is working.
+  const r = diffEmitted({
+    baseline: mf({}),
+    current: mf({}),
+    changedPaths: [],
+    sizeBaseline: { 'verify-work.md': 10000 },
+    sizeCurrent: { 'verify-work.md': 11247 },
+    ack: { version: ACK_VERSION, paths: { 'verify-work.md': { reason: 'new UAT section' } } },
+  });
+  assert.deepEqual(r.staleAcks, [], 'a growth-consumed ack is live, not stale');
+  assert.equal(r.grown[0].acked, true);
+  assert.ok(r.ok);
+});
+
 test('shrinkage is reported but needs no ack', () => {
   const r = diffEmitted({
     baseline: mf({}), current: mf({}), changedPaths: [],

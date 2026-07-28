@@ -212,11 +212,10 @@ function diffEmitted({
     }
   }
 
-  // An ack that outlives the ripple it explained is future blindness: it would silently
-  // pre-clear a NEW ripple on the same path. It must be deleted when the ripple is.
-  const staleAcks = [...ackEntries.keys()].filter((rel) => !usedAcks.has(rel)).sort();
-
   // ── Size ratchet, folded into the same machine (ADR-2719 §4, must-have 6) ──
+  // NOTE: stale-ack detection is computed AFTER this block, not before. An ack may be
+  // consumed by either a hash move or a size growth, so computing it earlier would
+  // report a size-growth ack as stale.
   const grown = [];
   const shrunk = [];
   if (sizeBaseline && sizeCurrent) {
@@ -238,13 +237,16 @@ function diffEmitted({
   }
 
   const unackedGrowth = grown.filter((g) => !g.acked);
-  // Recompute stale acks after size acks are consumed.
-  const staleAfterSize = [...ackEntries.keys()].filter((rel) => !usedAcks.has(rel)).sort();
+
+  // An ack that outlives the ripple it explained is future blindness: it would silently
+  // pre-clear a NEW ripple on the same path. It must be deleted when the ripple is.
+  // Computed here, once, after BOTH the hash pass and the size pass have consumed acks.
+  const staleAcks = [...ackEntries.keys()].filter((rel) => !usedAcks.has(rel)).sort();
 
   const ok = errors.length === 0
     && unattributable.length === 0
     && unackedGrowth.length === 0
-    && staleAfterSize.length === 0;
+    && staleAcks.length === 0;
 
   return {
     moved,
@@ -254,7 +256,7 @@ function diffEmitted({
     removed,
     grown,
     shrunk,
-    staleAcks: staleAfterSize,
+    staleAcks,
     errors,
     ok,
   };
