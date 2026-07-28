@@ -1,6 +1,6 @@
 # ADR-2719: Emitted-artifact attribution — replace the committed parity fixtures with a computed conservation law
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-07-27
 - **Issue:** [#2719](https://github.com/open-gsd/gsd-core/issues/2719) (epic); Phase 0 tracked by [#2720](https://github.com/open-gsd/gsd-core/issues/2720)
 - **Supersedes:** [ADR-2264](2264-golden-parity-redesign.md) (Redesign golden-install-parity) — replaces its Decision §2–§4 and its 2026-07-14 Amendment. ADR-2264 **Phase 1 is retained and depended upon**: the single-source `buildParityManifest` and the four exclusion constants in `tests/helpers/install-shared.cjs` are the foundation this design builds on, not something being reverted.

@@ -31,7 +31,9 @@
  */
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const { cleanup } = require('../helpers.cjs');
@@ -227,8 +229,33 @@ function reconcileFamilies({
  *  macOS CI silently stops reporting. */
 const GIT_TIMEOUT_MS = 30_000;
 
+/**
+ * Prepend `-c safe.directory=<dir>` to a git argv.
+ *
+ * The remote test-runner container mounts the repository at a path owned by a
+ * different uid than the process running the suite; git's dubious-ownership
+ * protection then refuses EVERY operation there with "detected dubious ownership"
+ * (#2767 — surfaced when a previously-always-skipping regression test started
+ * actually executing in that container and its very first `git rev-parse HEAD`
+ * failed closed). GitHub Actions never hits this because `actions/checkout`
+ * registers the workspace as a safe directory automatically; this runner's
+ * container does not. `buildBaselineAtRef` is the PRODUCTION build-fallback path
+ * the sole remaining emitted gate depends on (`resolveBaseline`'s in-job-build leg,
+ * ADR-2719 §5) — not just a test helper — so the fix belongs here, not papered
+ * over by skipping the test that found it.
+ *
+ * Declares the SPECIFIC resolved directory each call site already operates on —
+ * never the `*` wildcard, which would mark every repository on the machine safe —
+ * so this cannot broaden trust beyond the one path the caller already intends to
+ * touch. Every git call in this module (and its production/test callers) passes
+ * through here so the fix cannot silently drift per call site.
+ */
+function safeDirArgs(dir) {
+  return ['-c', `safe.directory=${path.resolve(dir)}`];
+}
+
 function git(args, { cwd = REPO_ROOT } = {}) {
-  return execFileSync('git', args, {
+  return execFileSync('git', [...safeDirArgs(cwd), ...args], {
     cwd,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
@@ -316,6 +343,15 @@ function resolveBase(env = process.env) {
  * current registry, so the loop never asks the base ref for it, `baseline` silently omits
  * a family that genuinely existed, and the dropped-family check can never fire. Asking
  * the ref what it actually contains is the only way the "before" side is really "before".
+ *
+ * NOT called by the real-tree test's production path as of #2724 (ADR-2719 Phase 4) —
+ * `buildBaselineAtRef` + `resolveBaseline()` replaced it, since the fixture directory
+ * this reads no longer exists at any ref from the cutover commit forward. Kept
+ * (alongside `baselineManifestsAtRef`/`baselineSizesAtRef` below) because it still
+ * answers a real question for a REF THAT PREDATES THE CUTOVER — bisecting into the
+ * dual-run window (#2723) or earlier — and its own regression test below pins a real
+ * property (the baseline must reflect the ref, not the current registry) that would
+ * otherwise go untested.
  */
 function baselineFamilyNamesAtRef(base, { cwd = REPO_ROOT } = {}) {
   let out;
@@ -366,6 +402,111 @@ function baselineManifestsAtRef(base = 'origin/next') {
   return found === 0 ? null : manifests;
 }
 
+/**
+ * Build the baseline artifact at `ref` FOR REAL — a throwaway `git worktree` checked
+ * out at `ref`, MEASURED by `cwd`'s (the calling checkout's) OWN
+ * `scripts/gen-emitted-baseline.cjs` (#2724/#2767, ADR-2719 §5's "in-job build at
+ * origin/next" fallback).
+ *
+ * ── Why the generator runs from `cwd`, not from the worktree ─────────────────────
+ * `scripts/gen-emitted-baseline.cjs` was ADDED by the same PR that deleted the golden
+ * fixtures this fallback used to read instead (#2724). A base ref that predates that PR
+ * — which is every `next` this fallback is ever asked to measure, since the fallback
+ * only runs on a cache miss for a ref that has not been through the publish job yet —
+ * therefore never has the script at `<worktreeDir>/scripts/gen-emitted-baseline.cjs`,
+ * and invoking it there fails closed with `Cannot find module` on every single call: the
+ * fallback could never bootstrap. Running `cwd`'s copy instead, with `--dir worktreeDir`
+ * telling it WHICH tree's installer to measure, isn't merely the workaround for that —
+ * it is the more correct differential semantics regardless: a diff needs ONE measurement
+ * schema applied to BOTH sides, or the sides stop being comparable the moment that
+ * schema evolves (a new exclusion rule, a new manifest family) between the two commits.
+ * Letting each side measure itself with its own, potentially different, version of the
+ * script would silently reintroduce exactly that incomparability.
+ *
+ * This is the slow path, used only on a `resolveBaseline()` cache miss. The worktree
+ * needs no `npm ci`: `bin/install.js` and the `tests/helpers/*.cjs` real-tree shells are
+ * all Node-builtins-only (CONTRIBUTING.md's "No external dependencies in core"). It DOES
+ * need `npm run build:lib` run there first, though — `tests/helpers/install-shared.cjs`
+ * requires the TSC-COMPILED `gsd-core/bin/lib/runtime-artifact-layout.cjs`, which is
+ * gitignored, not committed, and therefore absent from a bare worktree checkout, and
+ * `<worktreeDir>/bin/install.js` (spawned BY `cwd`'s generator via `currentManifests`'s
+ * `repoRoot` override) needs its own compiled copy alongside it, not `cwd`'s. `node_modules`
+ * is symlinked in from the calling checkout (never copied — `npm ci` inside every
+ * fallback build would make an already-slow path far slower) so `tsc` is available
+ * without a second install; the worktree's OWN `src/*.cts` and `tsconfig.build.json`
+ * are what gets compiled, so the MEASURED installer reflects `ref`, not `cwd`'s tree —
+ * only the measurement CODE (the generator, install-shared.cjs, emitted-runtime.cjs)
+ * comes from `cwd`.
+ *
+ * Every subprocess is bounded. The worktree is always removed, success or failure —
+ * a leaked worktree would poison `git worktree list` for every subsequent run in the
+ * same checkout (CI runners reuse the same clone across jobs in some configurations).
+ *
+ * @param {string} ref     the ref/sha to build at (e.g. `origin/next`, a 40-hex sha)
+ * @param {object} [o]
+ * @param {string} [o.cwd] repo to run `git worktree` from AND whose generator measures it
+ * @returns {object} the parsed baseline artifact ({version, sha, manifests, sizes})
+ */
+function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
+  const worktreeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-emitted-baseline-wt-'));
+  // mkdtempSync already created the directory; `git worktree add` requires the
+  // target to not exist (or be empty) — remove it and let git recreate it.
+  fs.rmdirSync(worktreeDir);
+  const outFile = path.join(os.tmpdir(), `gsd-emitted-baseline-out-${crypto.randomBytes(8).toString('hex')}.json`);
+
+  const WORKTREE_TIMEOUT_MS = 60_000;
+  const BUILD_LIB_TIMEOUT_MS = 180_000;
+  const BUILD_TIMEOUT_MS = 300_000;
+
+  try {
+    execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'add', '--detach', worktreeDir, ref], {
+      cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const sharedNodeModules = path.join(cwd, 'node_modules');
+    if (fs.existsSync(sharedNodeModules)) {
+      fs.symlinkSync(sharedNodeModules, path.join(worktreeDir, 'node_modules'), 'dir');
+    }
+
+    execFileSync('npm', ['run', 'build:lib'], {
+      cwd: worktreeDir, encoding: 'utf8', timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Run `cwd`'s OWN generator (not the worktree's — see the function doc for why),
+    // pointed at the worktree as the tree to measure.
+    execFileSync(
+      process.execPath,
+      [path.join(cwd, 'scripts', 'gen-emitted-baseline.cjs'), '--dir', worktreeDir, '--out', outFile],
+      { cwd, encoding: 'utf8', timeout: BUILD_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    const raw = fs.readFileSync(outFile, 'utf8');
+    return JSON.parse(raw);
+  } finally {
+    try {
+      execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'remove', '--force', worktreeDir], {
+        cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch {
+      // Best-effort: the checkout may already be gone (e.g. the build step failed
+      // before writing anything). Prune stale admin data rather than leaving it.
+      try {
+        execFileSync('git', [...safeDirArgs(cwd), 'worktree', 'prune'], {
+          cwd, encoding: 'utf8', timeout: WORKTREE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch { /* best-effort cleanup; never mask the primary result/error */ }
+    }
+    // Same guarantee as the git cleanup above: an EBUSY/EPERM here must not replace
+    // whatever the `try` block was about to return or throw.
+    try {
+      fs.rmSync(outFile, { force: true });
+    } catch { /* best-effort cleanup; never mask the primary result/error */ }
+    try {
+      fs.rmSync(worktreeDir, { recursive: true, force: true });
+    } catch { /* best-effort cleanup; never mask the primary result/error */ }
+  }
+}
+
 /** Size maps at `base`, for the ratchet half. Null when absent at that ref. */
 function baselineSizesAtRef(base = 'origin/next') {
   const sizes = {};
@@ -386,11 +527,23 @@ function baselineSizesAtRef(base = 'origin/next') {
  * Build the CURRENT emitted manifest set for real — one installer spawn per runtime.
  * This is the expensive, honest half: it reflects what the tree actually emits now,
  * not what the author regenerated into a fixture.
+ *
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot] - Measure a DIFFERENT checkout's installer instead of
+ *   this one's (#2767). When set, `<repoRoot>/bin/install.js` is spawned rather than
+ *   THIS checkout's `bin/install.js` — the measurement schema (this function, the
+ *   exclusion rules in install-shared.cjs) stays fixed at the caller's version while the
+ *   installer code being measured varies. This is what lets `gen-emitted-baseline.cjs`
+ *   apply ONE definition of "the emitted manifest" to two different trees (PR HEAD and a
+ *   base-ref worktree) so the two sides stay comparable even if the definition itself
+ *   evolves — running the OTHER tree's own (older, or absent) copy of this function would
+ *   defeat that.
  */
-function currentManifests() {
+function currentManifests({ repoRoot } = {}) {
+  const installScript = repoRoot ? path.join(repoRoot, 'bin', 'install.js') : undefined;
   const manifests = {};
   for (const { name, runtime, scope } of MANIFEST_FAMILIES) {
-    const { configDir, root } = runMinimalInstall({ runtime, scope });
+    const { configDir, root } = runMinimalInstall({ runtime, scope, installScript });
     try {
       manifests[name] = buildParityManifest(configDir, root);
     } finally {
@@ -400,12 +553,18 @@ function currentManifests() {
   return manifests;
 }
 
-/** Current on-disk sizes for the workflow + agent families the ratchet covers. */
-function currentSizes() {
+/**
+ * Current on-disk sizes for the workflow + agent families the ratchet covers.
+ * @param {object} [opts]
+ * @param {string} [opts.repoRoot] - Read `<repoRoot>/gsd-core/workflows` and
+ *   `<repoRoot>/agents` instead of this checkout's own (#2767) — same rationale as
+ *   `currentManifests`'s `repoRoot`.
+ */
+function currentSizes({ repoRoot = REPO_ROOT } = {}) {
   const sizes = {};
   for (const [dir, filter] of [
-    [path.join(REPO_ROOT, 'gsd-core', 'workflows'), (f) => f.endsWith('.md')],
-    [path.join(REPO_ROOT, 'agents'), (f) => f.endsWith('.md')],
+    [path.join(repoRoot, 'gsd-core', 'workflows'), (f) => f.endsWith('.md')],
+    [path.join(repoRoot, 'agents'), (f) => f.endsWith('.md')],
   ]) {
     if (!fs.existsSync(dir)) continue;
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -446,6 +605,7 @@ module.exports = {
   touchesRuntimeRegistry,
   reconcileFamilies,
   GIT_TIMEOUT_MS,
+  safeDirArgs,
   git,
   resolveChangedPaths,
   resolveBaseSha,
@@ -454,6 +614,7 @@ module.exports = {
   baselineFamilyNamesAtRef,
   baselineManifestsAtRef,
   baselineSizesAtRef,
+  buildBaselineAtRef,
   currentManifests,
   currentSizes,
   readAckFile,

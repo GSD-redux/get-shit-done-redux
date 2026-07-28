@@ -297,7 +297,18 @@ function installerEnv(overrides = {}) {
   return env;
 }
 
-function runMinimalInstall({ runtime, scope, extraArgs = [] }) {
+/**
+ * @param {object} opts
+ * @param {string} opts.runtime
+ * @param {string} opts.scope
+ * @param {string[]} [opts.extraArgs]
+ * @param {string} [opts.installScript] - Absolute path to the `bin/install.js` to spawn.
+ *   Defaults to THIS checkout's own INSTALL_SCRIPT. Overridable (#2767) so a caller can
+ *   measure a DIFFERENT tree's installer — e.g. the differential baseline builder
+ *   pointing at a `git worktree` checked out at the base ref, so the emitted manifest it
+ *   produces reflects that ref's own installer code, not the PR checkout's.
+ */
+function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INSTALL_SCRIPT }) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-${runtime}-${scope}-`));
   try {
     const LOCAL_DIR_NAME = {
@@ -308,7 +319,7 @@ function runMinimalInstall({ runtime, scope, extraArgs = [] }) {
     };
     let configDir;
     let cwd = process.cwd();
-    const args = [INSTALL_SCRIPT, `--${runtime}`];
+    const args = [installScript, `--${runtime}`];
     if (scope === 'global') {
       args.push('--global', '--config-dir', root);
       configDir = root;
