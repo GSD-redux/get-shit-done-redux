@@ -48,7 +48,13 @@ const DEFAULT_PROXIMITY_WINDOW = 400;
  * pass on any unrelated occurrence of the token and gut the check; parsing the settings table
  * would couple this to table markup. Both rejected.
  *
- * @returns {{ok: boolean, occurrences: number, window: string}} `occurrences: 0` = key absent.
+ * @returns {{ok: boolean, occurrences: number, window: string}}
+ *   `occurrences` is how many key occurrences were EXAMINED before deciding — not how many
+ *   exist. The scan short-circuits on the first documenting window, so on success this is the
+ *   1-based position of the match, and on failure it is the document's full count. That
+ *   asymmetry is deliberate: the failure path is where the number has to be trustworthy, since
+ *   "examined N, none documented it" is what distinguishes a genuine miss from the
+ *   first-occurrence false negative this function exists to remove. `occurrences: 0` = key absent.
  */
 function findDocumentedDefault(workflow, key, defaultToken, windowSize = DEFAULT_PROXIMITY_WINDOW) {
   let occurrences = 0;
@@ -891,7 +897,10 @@ describe('findDocumentedDefault', () => {
     const doc = `| ${KEY} | ${DEF} |\n${pad(2000)}\nlater prose about ${KEY}.`;
     const r = findDocumentedDefault(doc, KEY, DEF);
     assert.equal(r.ok, true);
-    assert.equal(r.occurrences, 2);
+    // The document contains the key twice, but the scan short-circuits on the first
+    // documenting window, so exactly one occurrence is EXAMINED. Asserting 2 here would be
+    // asserting the document's contents rather than the function's behavior.
+    assert.equal(r.occurrences, 1, 'must short-circuit rather than scan the whole document');
   });
 
   test('documents default on the LAST of many occurrences', () => {
