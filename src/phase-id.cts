@@ -1204,8 +1204,8 @@ const unpad = (digits: string): string => digits.replace(/^0+(?=\d)/, '');
  * the directory's leading digit run instead of `extractPhaseToken` (whose
  * token for these dirs is the mis-absorbed multi-segment form).
  */
-function matchPhaseDirs(dirs: string[], normalized: string): { matches: string[]; usedBareFallback: boolean } {
-  const primary = dirs.filter(d => phaseTokenMatches(d, normalized));
+function matchPhaseDirs(dirs: string[], normalized: string, convention?: string | null): { matches: string[]; usedBareFallback: boolean } {
+  const primary = dirs.filter(d => phaseTokenMatches(d, normalized, convention));
   if (primary.length > 0) return { matches: primary, usedBareFallback: false };
 
   const bare = String(normalized);

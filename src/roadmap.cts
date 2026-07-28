@@ -16,7 +16,7 @@ import ioMod = require('./io.cjs');
 const { output, error, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
@@ -33,7 +33,7 @@ import { clampPercent } from './phase-lifecycle.cjs';
 import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningPaths, withPlanningLock, findContextMdIn } = planningWorkspace;
+const { planningPaths, withPlanningLock, findContextMdIn, resolvePhaseIdConvention } = planningWorkspace;
 // #3641: milestone-scope's convention resolution reads the project config
 // (no cycle — config-loader does not import this module).
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -166,9 +166,9 @@ function countPhasePlansAndSummaries(phaseDir: string): PhasePlansAndSummaries {
  * exact production pattern instead of hand-duplicating it.
  * #1729: OPTIONAL_PHASE_TAG_SOURCE after the number tolerates a pre-colon ( ) tag.
  */
-function buildPhaseHeadingRegex(escapedPhase: string): RegExp {
+function buildPhaseHeadingRegex(escapedPhase: string, convention?: string | null): RegExp {
   return new RegExp(
-    `^(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
+    `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention)}${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*(.+)$`,
     'i'
   );
 }
@@ -178,16 +178,18 @@ function buildPhaseHeadingRegex(escapedPhase: string): RegExp {
  * Returns a result object if found (either a full match or a malformed_roadmap
  * checklist-only match), or null if the phase is not present at all.
  */
-function searchPhaseInContent(content: string, escapedPhase: string, phaseNum: string): PhaseSearchResult | null {
-  const headingPattern = buildPhaseHeadingRegex(escapedPhase);
+function searchPhaseInContent(content: string, escapedPhase: string, phaseNum: string, convention?: string | null): PhaseSearchResult | null {
+  const headingPattern = buildPhaseHeadingRegex(escapedPhase, convention);
   const headings = tokenizeHeadings(content);
   const headingIndex = headings.findIndex((heading) => headingPattern.test(heading.text));
   const headerMatch = headingIndex === -1 ? null : headings[headingIndex].text.match(headingPattern);
 
   if (!headerMatch) {
     // Fallback: check if phase exists in summary list but missing detail section
+    // A BARE `Phase\s+` at base — takes the label-only baseline, so a bracket
+    // repo gains the bracket-ID form and nothing else.
     const checklistPattern = new RegExp(
-      `-\\s*\\[[ x]\\]\\s*\\*\\*Phase\\s+${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*([^*]+)\\*\\*`,
+      `-\\s*\\[[ x]\\]\\s*\\*\\*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}${escapedPhase}${OPTIONAL_PHASE_TAG_SOURCE}:\\s*([^*]+)\\*\\*`,
       'i'
     );
     const checklistMatch = content.match(checklistPattern);
@@ -285,10 +287,11 @@ function getRoadmapPhaseWithFallback(cwd: string, phaseNum: string): string | nu
   // #2121/#2114: iterate the shared lookup-source list (exact → numeric →
   // prefix-tolerant) so this resolver matches getRoadmapPhaseInternal and a
   // bare-number query resolves a drifted project-code-prefixed heading.
+  const convention = resolvePhaseIdConvention(cwd);
   for (const source of roadmapPhaseLookupSources(phaseNum)) {
-    const milestoneResult = searchPhaseInContent(milestoneContent, source, phaseNum);
+    const milestoneResult = searchPhaseInContent(milestoneContent, source, phaseNum, convention);
     if (milestoneResult && !milestoneResult.error) return milestoneResult.section ?? null;
-    const fullResult = searchPhaseInContent(fullContent, source, phaseNum);
+    const fullResult = searchPhaseInContent(fullContent, source, phaseNum, convention);
     if (fullResult && !fullResult.error) return fullResult.section ?? null;
   }
 
@@ -315,6 +318,7 @@ function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
     const milestoneContent = extractCurrentMilestone(rawContent, cwd);
 
     const fullContent = stripShippedMilestones(rawContent);
+    const convention = resolvePhaseIdConvention(cwd);
 
     // #2121/#2114: iterate the shared lookup-source list (exact → numeric →
     // prefix-tolerant) so all three roadmap resolvers share one contract and a
@@ -326,12 +330,12 @@ function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
     // heading — so a milestone checklist never blocks a full-roadmap header.
     let malformed: PhaseSearchResult | null = null;
     for (const source of roadmapPhaseLookupSources(phaseNum)) {
-      const milestoneResult = searchPhaseInContent(milestoneContent, source, phaseNum);
+      const milestoneResult = searchPhaseInContent(milestoneContent, source, phaseNum, convention);
       if (milestoneResult && !milestoneResult.error) {
         output(milestoneResult, raw, milestoneResult.section);
         return;
       }
-      const fullResult = searchPhaseInContent(fullContent, source, phaseNum);
+      const fullResult = searchPhaseInContent(fullContent, source, phaseNum, convention);
       if (fullResult && !fullResult.error) {
         output(fullResult, raw, fullResult.section);
         return;
@@ -391,6 +395,14 @@ type AnalyzePhase = {
   context_read_error: string | null;
 };
 
+// #612 composes the convention-qualified sentinel reading with upstream's
+// canonical legacy sentinel owner. A reserved bracket milestone OR a reserved
+// phase token excludes the occurrence.
+const isSentinelPhase = (num: string, bracketId?: string): boolean => {
+  if (bracketId && isSentinelPhaseId(`${bracketId}-${num}`, 'bracket')) return true;
+  return isSentinelPhaseId(num);
+};
+
 /**
  * #3165: scan `content` for phase-detail headings (`##/###/#### Phase N: Name`)
  * and enrich each with its on-disk plan/summary/completion status and ROADMAP
@@ -400,21 +412,34 @@ type AnalyzePhase = {
  * `cmdRoadmapAnalyze`'s former inline loop so the fallback re-runs the EXACT
  * same enrichment, not a second derivation.
  */
-function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames: string[]): AnalyzePhase[] {
+function collectAnalyzePhases(
+  content: string,
+  phasesDir: string,
+  phaseDirNames: string[],
+  convention?: string | null,
+): AnalyzePhase[] {
   // Extract all phase headings: ## Phase N: Name or ### Phase N: Name
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  // #612: CAPTURING intro under the bracket convention — group 1 is the
+  // `[CODE.MM]` bracket id (undefined otherwise), group 2 the token, group 3 the
+  // name. The bracket id is what the sentinel filter needs: READING-B puts the
+  // sentinel milestone in the bracket, not in the token.
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   // #3036: widen the id capture to accept non-numeric-leading ids (e.g. B7, P0.3-2)
   // that get-phase/execute-phase already resolve. An optional leading letter prefix
   // ([A-Za-z]?) covers letter-prefixed ids without breaking numeric-leading ones.
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
-  const phasePattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
+  const phasePattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention, true)}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:\\s*([^\\n]+)`, 'gi');
+  // The capturing intro inserts the bracket id at group 1 only under the
+  // bracket convention; the token and name shift by the same offset.
+  const G = convention === 'bracket' ? 1 : 0;
   const phases: AnalyzePhase[] = [];
   let match: RegExpExecArray | null;
   while ((match = phasePattern.exec(content)) !== null) {
-    const phaseNum = match[1];
-    if (isSentinelPhaseId(phaseNum)) continue;
-    const phaseName = match[2].replace(/\(INSERTED\)/i, '').trim();
+    const bracketId = G ? match[1] : undefined;
+    const phaseNum = match[1 + G];
+    if (isSentinelPhase(phaseNum, bracketId)) continue;
+    const phaseName = match[2 + G].replace(/\(INSERTED\)/i, '').trim();
 
     // Extract goal from the section
     const sectionStart = match.index;
@@ -422,7 +447,7 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
     // #3691: `\d` → `\d[\d.]*` so decimal phase headings (e.g. `### Phase 02.3:`) are
     // recognised as section boundaries. #3036: `[A-Za-z]?\d` so non-numeric-leading ids
     // (e.g. B7) are also recognised.
-    const nextHeader = restOfContent.match(/\n#{2,4}\s+(?:\[[^\]]{1,200}\]\s*)?Phase\s+[A-Za-z]?\d[\d.-]*/i);
+    const nextHeader = restOfContent.match(new RegExp(`\\n#{2,4}\\s+${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, convention)}[A-Za-z]?\\d[\\d.-]*`, 'i'));
     const sectionEnd = nextHeader ? sectionStart + nextHeader.index! : content.length;
     const section = content.slice(sectionStart, sectionEnd);
 
@@ -453,7 +478,23 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
     // readdirSync is self-guarded, and it delegates to scanPhasePlans, which
     // never throws) — nothing in this block can throw, so the try/catch could
     // never be triggered.
-    const dirMatch = matchPhaseDirs(phaseDirNames, normalized).matches[0];
+    // #612: the DIRECTORY read is selected by the same `convention` the four
+    // heading/checklist patterns above already thread. Left two-argument, this
+    // one call reported EVERY canonical `{CODE}.{MM}-{PP}-slug` directory as
+    // `disk_status: "no_directory"` with `plan_count`/`summary_count` 0 —
+    // `extractPhaseToken('GSD.02-01-one')` with no convention returns the whole
+    // dir name — while the same build resolved those same directories correctly
+    // in three other places on the same repo (W006/W007 via phaseTokenFromDir,
+    // `state json` via the milestone filter, and the W021 milestone-complete read
+    // through this very helper's three-argument form at verify.cts:2229). It
+    // failed ONLY for the directory shape the convention exists to name: a
+    // mid-migration bracket repo carrying legacy `01-one` dirs resolved fine.
+    // That is verbatim the asymmetry the note above the W021 site says this PR
+    // closed — the directory read widens with the heading read, or every bracket
+    // phase resolves to nothing.
+    // Upstream centralized this choice in `matchPhaseDirs`; thread the same
+    // convention into that owner rather than reviving the primitive `.find()`.
+    const dirMatch = matchPhaseDirs(phaseDirNames, normalized, convention).matches[0];
 
     if (dirMatch) {
       const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatch));
@@ -492,7 +533,7 @@ function collectAnalyzePhases(content: string, phasesDir: string, phaseDirNames:
     // checkbox — no passing `*-VERIFICATION.md`, plans outstanding — now
     // reports incomplete; this is the deliberate Tier-2 break (ADR-3180 §7.4
     // Decision 3).
-    const checkboxPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+${phaseMarkdownRegexSource(phaseNum)}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'i');
+    const checkboxPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention)}${phaseMarkdownRegexSource(phaseNum)}${OPTIONAL_PHASE_TAG_SOURCE}[:\\s]`, 'i');
     const checkboxMatch = content.match(checkboxPattern);
     const roadmapComplete = checkboxMatch ? checkboxMatch[1] === 'x' : false;
 
@@ -570,6 +611,10 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // indistinguishable from a genuinely empty milestone.
   const { value: content, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
   const phasesDir = planningPaths(cwd).phases;
+  // #612: resolve once per command and thread the same reading through both
+  // the scoped scan and any fallback scan.
+  const convention = resolvePhaseIdConvention(cwd);
+  const G = convention === 'bracket' ? 1 : 0;
 
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
   // #3185 exemption reason (ADR-3180 Decision 4a): this is a heading->directory
@@ -587,7 +632,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // Scan the scoped milestone window for phase-detail headings and enrich each
   // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so
   // the SAME enrichment re-runs on the fallback below — not a second copy.
-  let phases = collectAnalyzePhases(content, phasesDir, _phaseDirNames);
+  let phases = collectAnalyzePhases(content, phasesDir, _phaseDirNames, convention);
   // `effectiveContent` is what the downstream checklist scan (missing_details)
   // iterates. Defaults to the scoped window; switched to the fallback document
   // when the recovery path below fires, so a phase found via fallback is not
@@ -610,7 +655,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // populated, flagged result.
   if (phases.length === 0 && scope !== SCOPE.COMPLETE && _phaseDirNames.length > 0) {
     const fallbackContent = stripShippedMilestones(rawContent);
-    const fallbackPhases = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames);
+    const fallbackPhases = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames, convention);
     if (fallbackPhases.length > 0) {
       phases = fallbackPhases;
       effectiveContent = fallbackContent;
@@ -639,17 +684,22 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // The char class must allow `-` (not just `.`) so dash-separated milestone-prefixed
   // IDs (e.g. `1-01`) match the detail-heading scanner above; otherwise they truncate
   // at the dash (`1-01` -> `1`) and every such phase reports a phantom missing detail.
+  // #612: CAPTURING label-only intro — the bracket id rides along so the
+  // sentinel filter below is not blind to `- [ ] **[GSD.999] 01: Icebox**`.
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   // #3036: widen to accept non-numeric-leading ids (same widening as the detail-heading pattern above).
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
-  const checklistPattern = /-\s*\[[ x]\]\s*\*\*Phase\s+([A-Za-z]?\d+[A-Z]?(?:[.-]\d+)*)/gi;
-  const checklistPhases = new Set<string>();
+  const checklistPattern = new RegExp(`-\\s*\\[[ x]\\]\\s*\\*\\*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)`, 'gi');
+  const checklistPhases = new Map<string, string | undefined>();
   let checklistMatch: RegExpExecArray | null;
   while ((checklistMatch = checklistPattern.exec(effectiveContent)) !== null) {
-    checklistPhases.add(checklistMatch[1]);
+    const token = checklistMatch[1 + G];
+    if (!checklistPhases.has(token)) checklistPhases.set(token, G ? checklistMatch[1] : undefined);
   }
   const detailPhases = new Set(phases.map(p => p.number));
-  const missingDetails = [...checklistPhases].filter(p => !detailPhases.has(p) && !isSentinelPhaseId(p));
+  const missingDetails = [...checklistPhases.keys()].filter(
+    p => !detailPhases.has(p) && !isSentinelPhase(p, checklistPhases.get(p)),
+  );
 
   // #3217 (ADR-3180 §7.6 rules 3-4): `progress_percent` used to accumulate
   // `totalPlans`/`totalSummaries` above — a heading-matched enumeration
