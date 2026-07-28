@@ -59,11 +59,17 @@ function writeProject(roadmap, convention, dirs = ['GSD.02-01-setup']) {
   // `state sync` short-circuits with no phase directories, leaving STATE.md
   // byte-unchanged — which is exactly how a mutation to the write-path counter
   // survives a test that reads `state json` afterwards. Give it real work.
-  for (const d of dirs) {
+  // A dir spec is either `'name'` (a PLAN and its SUMMARY — a COMPLETE phase,
+  // the shape every earlier fixture in this file wants) or `['name', false]`
+  // (a PLAN with no SUMMARY — INCOMPLETE). The numerator assertions at the end
+  // of this file need the mix: a fixture where every phase is complete cannot
+  // tell `completed_phases` apart from `total_phases`.
+  for (const spec of dirs) {
+    const [d, complete = true] = Array.isArray(spec) ? spec : [spec, true];
     const dir = path.join(planning, 'phases', d);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, '01-01-x-PLAN.md'), '# plan\n', 'utf-8');
-    fs.writeFileSync(path.join(dir, '01-01-x-SUMMARY.md'), '# summary\n', 'utf-8');
+    if (complete) fs.writeFileSync(path.join(dir, '01-01-x-SUMMARY.md'), '# summary\n', 'utf-8');
   }
 }
 
@@ -356,5 +362,572 @@ describe('#612 PR-2: legacy counting is byte-identical', () => {
 `, undefined);
     assert.equal(readTotal(), 2);
     assert.equal(syncedTotal(), 2);
+  });
+});
+
+describe('#612 PR-2: the ADR-canonical milestone heading scopes the milestone', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-scope-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  // ADR-612 Decision 1 pins the bracket milestone heading as `## [GSD.02] Foundation`
+  // — a NAME, with no version. Milestone scoping matches STATE's `milestone: v2.0`
+  // STRING against a heading, so the canonical form matched nothing, scoping was
+  // lost, and total_phases fell back to the on-disk directory count. Every earlier
+  // fixture in this file embeds `v2.0` in the heading and so never ran the form
+  // the ADR actually specifies.
+  const roadmap = (heading) => `# Roadmap
+
+${heading}
+
+### [GSD.02] 05: Real work
+**Goal:** a
+
+### [GSD.02] 06: Follow-up
+**Goal:** b
+
+### [GSD.02] 07: Third
+**Goal:** c
+`;
+
+  test('name-only heading: total_phases comes from the ROADMAP, not the dir count', () => {
+    writeProject(roadmap('## [GSD.02] Foundation'), 'bracket', ['GSD.02-05-real-work']);
+    assert.equal(readTotal(), 3, 'three headings in scope, not one directory');
+  });
+
+  test('the dir count no longer drives the answer', () => {
+    // The tell for the fallback: without scoping the total tracks the number of
+    // directories instead of staying at the ROADMAP's phase count.
+    writeProject(roadmap('## [GSD.02] Foundation'), 'bracket',
+      ['GSD.02-05-real-work', 'GSD.02-06-follow-up']);
+    assert.equal(readTotal(), 3);
+  });
+
+  test('the version-embedded heading still works', () => {
+    writeProject(roadmap('## [GSD.02] v2.0 — Foundation'), 'bracket', ['GSD.02-05-real-work']);
+    assert.equal(readTotal(), 3);
+  });
+
+  test('an unpadded bracket milestone scopes NOTHING (emit-grammar strict)', () => {
+    // Post-unification an unpadded `[GSD.2]` is malformed: it is not a phase id,
+    // so it must not bound or scope a milestone either. The tell is that the
+    // bracket reading equals the null-convention reading — if either behaviour
+    // flips, these two numbers diverge.
+    // The tell is that the unpadded heading SCOPES NOTHING: with it, the reading
+    // must equal the reading of a roadmap that has no milestone heading at all.
+    // If `[GSD.2]` ever starts scoping again, these two diverge.
+    const dirs = ['GSD.02-05-real-work'];
+    writeProject(roadmap('## [GSD.2] Foundation'), 'bracket', dirs);
+    const unpadded = readTotal();
+    writeProject(roadmap('## Some heading with no milestone'), 'bracket', dirs);
+    const unscoped = readTotal();
+    assert.equal(unpadded, unscoped,
+      'an unpadded bracket milestone must bound nothing, exactly like no milestone heading');
+    // And the canonical spelling DOES scope, so the pair is not trivially equal.
+    writeProject(roadmap('## [GSD.02] Foundation'), 'bracket', dirs);
+    assert.equal(readTotal(), 3, 'the padded spelling scopes');
+  });
+
+  test('a milestone that does NOT match STATE is not scoped in', () => {
+    writeProject(`# Roadmap
+
+## [GSD.03] Later milestone
+
+### [GSD.03] 09: Not this milestone
+**Goal:** a
+`, 'bracket', ['GSD.02-05-real-work']);
+    // The disk-side milestone filter is convention-selected now, so a directory
+    // whose phase is not in the scoped ROADMAP is excluded rather than counted:
+    // STATE asserts v2.0 and the ROADMAP only describes milestone 03.
+    assert.equal(readTotal(), 0, 'no phases for the asserted milestone');
+  });
+
+  test('a NON-bracket repo does not gain bracket scoping', () => {
+    writeProject(roadmap('## [GSD.02] Foundation'), undefined, ['GSD.02-05-real-work']);
+    assert.equal(readTotal(), 1, 'no scoping, no counting — invisible as designed');
+  });
+});
+
+describe('#612 PR-2: labeled sentinels, composed sentinels, and the disk-side filter', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-g3g4g5-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const analyze = () => {
+    const r = runGsdTools(['roadmap', 'analyze'], tmpDir);
+    assert.ok(r.success, `roadmap analyze failed: ${r.error}`);
+    return JSON.parse(r.output);
+  };
+
+  test('G3: a LABELED bracket sentinel is excluded from every counter', () => {
+    // `### [GSD.999] Phase 07:` fell through to the base alternative, which
+    // captures nothing — so analyze applied the legacy token rule and counted it
+    // while state json excluded it. Two derivations of one ROADMAP disagreed.
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.999] Phase 07: Icebox labeled
+**Goal:** a
+
+### [GSD.999] 08: Icebox bare
+**Goal:** b
+
+### [GSD.02] 01: Real
+**Goal:** c
+`, 'bracket');
+    const out = analyze();
+    assert.deepEqual(out.phases.map(p => p.number), ['01'], 'labeled and bare both excluded');
+    assert.equal(readTotal(), 1);
+    assert.equal(out.phase_count, readTotal(), 'analyze and state must agree');
+  });
+
+  test('G5: the legacy 999/0 token rule still applies to a bracketed heading', () => {
+    // READING-B ADDS a rule; it does not replace one. A mid-migration ROADMAP
+    // carrying a legacy backlog block under bracket headings must not gain
+    // denominator entries.
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 999: Backlog
+**Goal:** b
+
+### [GSD.02] 0: Zero
+**Goal:** c
+`, 'bracket');
+    const out = analyze();
+    assert.deepEqual(out.phases.map(p => p.number), ['01'],
+      'analyze excludes both the 999 and the 0 token, as it does for legacy headings');
+    // DISCLOSED, pre-existing: the state counter's legacy token rule is 999-only
+    // — it has never excluded a bare `0` — so `[GSD.02] 0:` still reaches the
+    // denominator there. Adding a 0 filter would move legacy totals, which is out
+    // of scope; what this pin asserts is that the 999 rule was not DROPPED for
+    // bracketed headings.
+    // Under bracket the token rule composes as the full {0, 999} set, so this
+    // counter now agrees with roadmap analyze. The LEGACY path keeps its
+    // pre-existing 999-only rule — pinned separately.
+    assert.equal(readTotal(), 1, 'both 999 and 0 excluded under bracket');
+  });
+
+  test('G4: the disk-side milestone filter does not count another milestone dirs', () => {
+    // getMilestonePhaseFilter's heading scan collected nothing on a bracket
+    // ROADMAP, so it degraded to pass-all and Math.max(dirs, roadmap) counted
+    // the previous milestone's directories — making bracket strictly worse than
+    // the M-NN convention it supersedes.
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+### [GSD.02] 03: Three
+**Goal:** c
+`, 'bracket', ['GSD.01-01-prev', 'GSD.01-02-prev2', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.02-03-three']);
+    assert.equal(readTotal(), 3, 'scoped to this milestone, not the whole disk');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The four numbers `total_phases` was hiding.
+//
+// Every bracket counting assertion above reads `total_phases` and nothing else,
+// and `total_phases` is the ONE number the disk-side milestone filter cannot
+// move: `Math.max(phaseDirs.length, roadmapPhaseCount)` (state.cts) floors it at
+// the ROADMAP count no matter how many directories the filter rejects. So a
+// filter that rejects EVERY bracket directory leaves that number right and
+// zeroes `completed_phases`, `total_plans`, `completed_plans` and `percent` —
+// green suite, `state json` reporting 0% on a repo `state sync` calls 67% in the
+// same second. These pin all five.
+//
+// THE ORACLE IS THE LEGACY TWIN, and it is computed in the same run rather than
+// quoted: each test builds the identical repo in the flat legacy spelling and
+// asserts the bracket reading equals it, number for number. Exact literals are
+// asserted too — an equality alone would pass with both sides broken.
+//
+// WHY FLAT LEGACY AND NOT M-NN. The M-NN spelling of these shapes cannot serve
+// as the oracle: buildStateFrontmatter's #2445 de-dup key is
+// `dir.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/)`, which captures only the LEADING
+// integer, so `02-01-one`, `02-02-two` and `02-03-three` all key to `2` and two
+// of the three directories are dropped before they are ever counted. Measured
+// on the true base build (d04592de), the M-NN twin of the first shape below
+// reads `[3,0,1,0,0]` where flat legacy reads `[3,2,3,2,67]`; the divergence is
+// present identically at base and is untouched by this PR. It is a legacy defect
+// in a key space bracket directories cannot enter — `GSD.02-01-one` does not
+// match that regex at all, so each bracket dir keys to its own name. The
+// source's own `phase-id-owner:` sanction at that line records the divergence.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The whole progress block as the READ path derives it. */
+function readProgress() {
+  const r = runGsdTools(['state', 'json'], tmpDir);
+  assert.ok(r.success, `state json failed: ${r.error}`);
+  const p = JSON.parse(r.output).progress || {};
+  return [p.total_phases, p.completed_phases, p.total_plans, p.completed_plans, p.percent];
+}
+
+/**
+ * The progress block `state sync` WROTE into STATE.md.
+ *
+ * Labelled precisely: this is the READ derivation observed a second time (sync
+ * rebuilds the frontmatter through buildStateFrontmatter). It is asserted
+ * because a write that disagrees with `state json` is the #3242 Bug B artifact
+ * this file exists to prevent — but it is NOT coverage of cmdStateSync's own
+ * counter. That counter reaches `computeProgressPercent` and nothing else, so
+ * `syncedPercent()` above is its only observable.
+ *
+ * `state json` echoes a `progress:` frontmatter block verbatim when one exists
+ * and only derives when there is none, so this must be read out of the FILE and
+ * `stateMd()` must stay block-free. (Measured: same repo, block-free `state
+ * json` → 3/2/3/2/67; with a `progress: 99…` block → 99/99/99/99/99.)
+ */
+function syncedProgress() {
+  const r = runGsdTools(['state', 'sync'], tmpDir);
+  assert.ok(r.success, `state sync failed: ${r.error}`);
+  const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+  const m = raw.match(
+    /total_phases:\s*(\d+)[\s\S]*?completed_phases:\s*(\d+)[\s\S]*?total_plans:\s*(\d+)[\s\S]*?completed_plans:\s*(\d+)[\s\S]*?percent:\s*(-?\d+)/);
+  assert.ok(m, `state sync must have written a full progress block; got:\n${raw}`);
+  return m.slice(1).map(Number);
+}
+
+describe('#612 PR-2: the disk-side filter scopes bracket dirs — all five numbers', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-fivenum-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  // ── SHAPE 1: one milestone, three phases, three dirs, the first two complete ──
+  const ONE_MILESTONE_BRACKET = `# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+### [GSD.02] 03: Three
+**Goal:** c
+`;
+  const ONE_MILESTONE_LEGACY = `# Roadmap
+
+## v2.0: Current
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+
+### Phase 03: Three
+**Goal:** c
+`;
+  // The M-NN spelling of the same shape — pinned as a CHARACTERIZATION at the end
+  // of this block, not used as an oracle. See the comment there.
+  const ONE_MILESTONE_MNN = `# Roadmap
+
+## v2.0: Current
+
+### Phase 2-01: One
+**Goal:** a
+
+### Phase 2-02: Two
+**Goal:** b
+
+### Phase 2-03: Three
+**Goal:** c
+`;
+  const ONE_BRACKET_DIRS = ['GSD.02-01-one', 'GSD.02-02-two', ['GSD.02-03-three', false]];
+  const ONE_LEGACY_DIRS = ['01-one', '02-two', ['03-three', false]];
+  const ONE_MNN_DIRS = ['02-01-one', '02-02-two', ['02-03-three', false]];
+
+  test('shape 1 READ: 3 phases, 2 complete, 3 plans, 2 done, 67% — not four zeros', () => {
+    writeProject(ONE_MILESTONE_BRACKET, 'bracket', ONE_BRACKET_DIRS);
+    assert.deepEqual(readProgress(), [3, 2, 3, 2, 67],
+      'every bracket directory must satisfy the milestone filter');
+  });
+
+  test('shape 1 READ equals its flat-legacy twin exactly', () => {
+    writeProject(ONE_MILESTONE_BRACKET, 'bracket', ONE_BRACKET_DIRS);
+    const bracket = readProgress();
+    writeProject(ONE_MILESTONE_LEGACY, undefined, ONE_LEGACY_DIRS);
+    const legacy = readProgress();
+    assert.deepEqual(bracket, legacy, 'bracket must read exactly what the legacy twin reads');
+    assert.deepEqual(legacy, [3, 2, 3, 2, 67], 'and the twin is the right answer, not a shared wrong one');
+  });
+
+  test('shape 1 WRITE: sync writes 67%, and its frontmatter agrees with `state json`', () => {
+    writeProject(ONE_MILESTONE_BRACKET, 'bracket', ONE_BRACKET_DIRS);
+    // The write derivation's own observable.
+    assert.equal(syncedPercent(), 67, 'state sync must write 67% into the body');
+    // …and the block it wrote must not contradict it (#3242 Bug B).
+    assert.deepEqual(syncedProgress(), [3, 2, 3, 2, 67]);
+    assert.deepEqual(readProgress(), syncedProgress(), 'the two derivations must not disagree');
+  });
+
+  test('shape 1 WRITE percent equals its flat-legacy twin', () => {
+    writeProject(ONE_MILESTONE_BRACKET, 'bracket', ONE_BRACKET_DIRS);
+    const bracket = syncedPercent();
+    writeProject(ONE_MILESTONE_LEGACY, undefined, ONE_LEGACY_DIRS);
+    assert.equal(bracket, syncedPercent());
+    assert.equal(bracket, 67);
+  });
+
+  // ── SHAPE 2: two milestones, scoped to v2.0, two stale prior-milestone dirs ──
+  const TWO_MILESTONE_BRACKET = `# Roadmap
+
+## [GSD.01] v1.0: Prior
+
+### [GSD.01] 01: Old one
+**Goal:** a
+
+### [GSD.01] 02: Old two
+**Goal:** b
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** c
+
+### [GSD.02] 02: Two
+**Goal:** d
+
+### [GSD.02] 03: Three
+**Goal:** e
+`;
+  const TWO_MILESTONE_LEGACY = `# Roadmap
+
+## v1.0: Prior
+
+### Phase 01: Old one
+**Goal:** a
+
+### Phase 02: Old two
+**Goal:** b
+
+## v2.0: Current
+
+### Phase 03: One
+**Goal:** c
+
+### Phase 04: Two
+**Goal:** d
+
+### Phase 05: Three
+**Goal:** e
+`;
+  const TWO_BRACKET_DIRS = ['GSD.01-01-old-one', 'GSD.01-02-old-two', 'GSD.02-01-one',
+    ['GSD.02-02-two', false], ['GSD.02-03-three', false]];
+  const TWO_LEGACY_DIRS = ['01-old-one', '02-old-two', '03-one', ['04-two', false], ['05-three', false]];
+
+  test('shape 2 READ: the prior milestone dirs are excluded — 3/1/3/1/33', () => {
+    // Both milestones number their phases 01/02/…, so the bare token cannot tell
+    // `GSD.01-01-old-one` from `GSD.02-01-one`. Only the milestone-qualified key
+    // separates them; matching on the token would read 5/3/5/3/60 instead.
+    writeProject(TWO_MILESTONE_BRACKET, 'bracket', TWO_BRACKET_DIRS);
+    assert.deepEqual(readProgress(), [3, 1, 3, 1, 33]);
+  });
+
+  test('shape 2 READ equals its flat-legacy twin exactly', () => {
+    writeProject(TWO_MILESTONE_BRACKET, 'bracket', TWO_BRACKET_DIRS);
+    const bracket = readProgress();
+    writeProject(TWO_MILESTONE_LEGACY, undefined, TWO_LEGACY_DIRS);
+    const legacy = readProgress();
+    assert.deepEqual(bracket, legacy);
+    assert.deepEqual(legacy, [3, 1, 3, 1, 33]);
+  });
+
+  test('shape 2 WRITE: 60%, the DISCLOSED legacy gap, mirrored — not closed', () => {
+    // cmdStateSync does its own `fs.readdirSync` and never calls the milestone
+    // filter, so its denominator is the whole disk: 3 summaries over 5 plans =
+    // 60%, against the read path's scoped 33%. That divergence is PRE-EXISTING
+    // and identical on the flat-legacy twin at the true base build — scoping the
+    // sync counter here would fix legacy behaviour inside a bracket read-path PR
+    // and move every legacy repo's percent. It is mirrored deliberately.
+    writeProject(TWO_MILESTONE_BRACKET, 'bracket', TWO_BRACKET_DIRS);
+    const bracket = syncedPercent();
+    writeProject(TWO_MILESTONE_LEGACY, undefined, TWO_LEGACY_DIRS);
+    assert.equal(bracket, syncedPercent(), 'the gap must be mirrored, not closed on one side');
+    assert.equal(bracket, 60);
+  });
+
+  test('shape 2 WRITE frontmatter agrees with `state json` on both spellings', () => {
+    writeProject(TWO_MILESTONE_BRACKET, 'bracket', TWO_BRACKET_DIRS);
+    assert.deepEqual(syncedProgress(), [3, 1, 3, 1, 33]);
+    assert.deepEqual(readProgress(), syncedProgress());
+    writeProject(TWO_MILESTONE_LEGACY, undefined, TWO_LEGACY_DIRS);
+    assert.deepEqual(syncedProgress(), [3, 1, 3, 1, 33]);
+    assert.deepEqual(readProgress(), syncedProgress());
+  });
+
+  test('a bracket repo carrying LEGACY-shaped dirs is unaffected (the branch is additive)', () => {
+    // The bracket branch tries the qualified key first and FALLS THROUGH on a
+    // miss, so the three legacy dir checks still run on a bracket project. An
+    // early `return false` there would silently drop this repo to zero.
+    writeProject(ONE_MILESTONE_LEGACY, 'bracket', ONE_LEGACY_DIRS);
+    assert.deepEqual(readProgress(), [3, 2, 3, 2, 67]);
+  });
+
+  test('CHARACTERIZATION: the M-NN twin of shape 1 counts ONE plan, not three', () => {
+    // Holds the oracle substitution honest. The two "equals its flat-legacy
+    // twin" tests above compare bracket against FLAT legacy; nothing else in the
+    // suite pins the M-NN spelling, so the changeset's claim that the M-NN
+    // divergence is pre-existing and untouched would go stale silently the first
+    // time a sibling slice widens the de-dup key.
+    //
+    // buildStateFrontmatter's #2445 de-dup key captures only a directory's
+    // LEADING integer (state.cts, under its own `phase-id-owner:` sanction), so
+    // `02-01-one`, `02-02-two` and `02-03-three` all key to `2` and two of the
+    // three are dropped before they are ever counted. Measured identical on the
+    // true base build (d04592de), on the pre-fix HEAD, and here.
+    //
+    // The full reading measured on the base build is [3,0,1,0,0], but the two
+    // numerator fields depend on WHICH directory wins, and the winner is the one
+    // with the newest mtime among three created inside a single test — a tie on
+    // a coarser-granularity filesystem than this was measured on would flip
+    // completed_phases/completed_plans/percent without any behaviour changing.
+    // So the pin is the two survivor-INDEPENDENT numbers: total_phases still
+    // comes from the ROADMAP (3), and exactly one directory survives the de-dup,
+    // carrying exactly one plan. If the de-dup key is ever widened, total_plans
+    // goes to 3 and this fails — which is the whole point.
+    writeProject(ONE_MILESTONE_MNN, undefined, ONE_MNN_DIRS);
+    const mnn = readProgress();
+    assert.equal(mnn[0], 3, 'M-NN: total_phases still tracks the ROADMAP');
+    assert.equal(mnn[2], 1, 'M-NN: one plan counted, from the single de-duped dir');
+    // …and the flat-legacy twin of the same repo does NOT collapse, which is why
+    // it, not this, is the parity oracle for the bracket assertions above.
+    writeProject(ONE_MILESTONE_LEGACY, undefined, ONE_LEGACY_DIRS);
+    assert.deepEqual(readProgress(), [3, 2, 3, 2, 67]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R4-m3 — the milestone-qualified key is a string SPLICE, so a heading whose
+// token carries its own hyphen mis-parses into the wrong directory.
+//
+// `### [GSD.02] Phase 02-01:` spliced to `GSD.02-02-01`, which the qualified-key
+// grammar reads as milestone 02 / phase 02 — the trailing `-01` truncated, both
+// such headings collapsing to one key, and the heading claiming
+// `GSD.02-02-two` (the directory it does NOT name) while rejecting
+// `GSD.02-01-one` (the one it does).
+//
+// The oracle is the SAME ROADMAP read under `milestone-prefixed`, which is
+// base-identical on this shape — so the bracket acceptance vector must equal it.
+// Scope note: only the ACCEPTANCE VECTOR is claimed base-equivalent.
+// `total_phases` on this fixture does move 1 -> 2, because the bracket heading
+// count is the feature this PR ships; measured, that move is identical with and
+// without this guard, and identical to what the canonical `### [GSD.02] 01:`
+// spelling does (both read 2 with zero directories on disk, where base reads 0).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#612 PR-2: a hyphenated heading token forms no qualified key', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-hyphen-tok-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const MIXED = `# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] Phase 02-01: One
+**Goal:** a
+
+### [GSD.02] Phase 02-02: Two
+**Goal:** b
+`;
+  const DIRS = ['GSD.02-02-two', 'GSD.02-01-one', '02-01-mnn', '02-2026-photos', '46-6-rs-thing', '2-01-x'];
+
+  /** The disk-side filter's own acceptance vector, read straight off the module. */
+  const acceptance = () => {
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    return Object.fromEntries(DIRS.map(d => [d, !!f(d)]));
+  };
+
+  test('the heading does not claim the directory it does not name', () => {
+    writeProject(MIXED, 'bracket', DIRS);
+    const a = acceptance();
+    assert.equal(a['GSD.02-02-two'], false,
+      '`[GSD.02] Phase 02-01` must not claim GSD.02-02-two by a truncated key');
+    assert.equal(a['GSD.02-01-one'], false,
+      'and it does not resolve its own dir either — unqualified, exactly as at base');
+    assert.equal(a['02-01-mnn'], true, 'the legacy fall-through is untouched');
+  });
+
+  test('the acceptance vector equals the milestone-prefixed control on the same ROADMAP', () => {
+    writeProject(MIXED, 'bracket', DIRS);
+    const bracket = acceptance();
+    cleanup(tmpDir);
+    tmpDir = createTempProject('adr-612-hyphen-tok-ctl-');
+    writeProject(MIXED, 'milestone-prefixed', DIRS);
+    const control = acceptance();
+    assert.deepEqual(bracket, control,
+      'a hyphenated token must read the disk identically under both conventions');
+  });
+
+  test('a CANONICAL bracket heading still forms its qualified key', () => {
+    // Guards the guard: `!token.includes('-')` must not disable qualified
+    // matching for the spelling the convention actually specifies.
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+`, 'bracket', ['GSD.02-01-one', 'GSD.01-01-old-one']);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(f('GSD.02-01-one'), true, 'the canonical qualified key still resolves');
+    assert.equal(f('GSD.01-01-old-one'), false, 'and still scopes out the foreign milestone');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R4-m2 — extractCurrentMilestone must not throw.
+//
+// Its bracket-scoping fallback calls resolvePhaseIdConvention, which reaches
+// planningDir, which throws a plain Error for a GSD_PROJECT/GSD_WORKSTREAM
+// segment containing `/`, `\` or `..`. At base the only planningDir call in this
+// function sits inside the STATE-read try, so the function returned normally;
+// an unguarded call broke the never-throws invariant that getRoadmapPhaseInternal
+// and getMilestoneInfo carry #2245 / ADR-227 notes about.
+//
+// Module level on purpose: the CLI rejects a bad GSD_WORKSTREAM up front, so
+// this contract is only observable to an in-process embedder — which is exactly
+// who the invariant protects.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#612 PR-2: extractCurrentMilestone never throws on a poisoned env', () => {
+  const ROADMAP = `# Roadmap
+
+## Milestones
+
+- 🚧 **v1.0 Alpha** — in progress
+
+## Alpha
+
+### Phase 01: Setup
+`;
+
+  test('a traversal segment in GSD_WORKSTREAM degrades instead of escaping', () => {
+    const dir = createTempProject('adr-612-envguard-');
+    fs.writeFileSync(path.join(dir, '.planning', 'ROADMAP.md'), ROADMAP, 'utf-8');
+    fs.writeFileSync(path.join(dir, '.planning', 'config.json'), '{}', 'utf-8');
+    const prior = process.env.GSD_WORKSTREAM;
+    try {
+      process.env.GSD_WORKSTREAM = '../evil';
+      const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+      const out = rp.extractCurrentMilestone(ROADMAP, dir);
+      assert.equal(typeof out, 'string', 'must return content, not throw');
+      assert.ok(out.length > 0);
+    } finally {
+      // Restore before anything else in this chunk runs — a leaked
+      // GSD_WORKSTREAM would poison every later test in the same process.
+      if (prior === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = prior;
+      cleanup(dir);
+    }
   });
 });
