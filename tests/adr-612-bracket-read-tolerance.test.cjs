@@ -306,6 +306,149 @@ describe('#612 PR-2: bracket sentinel milestones never count', () => {
   });
 });
 
+// ─── validate.cts: the W006/W007 feeders and directory recognition ─────────
+
+describe('#612 PR-2: validate.cts heading builders are convention-selected', () => {
+  const validate = require('../gsd-core/bin/lib/validate.cjs');
+
+  // The letter-tolerant `[\w][\w.-]*` capture lives here, so this is where an
+  // ungated widening does the most damage: a phantom becomes a W007.
+  const PHANTOM_HEADINGS = [
+    '### [RFC.2119] 5: Keyword definitions',
+    '### [v1.0] 2024: Retrospective',
+    '### [ADR.612] 3: Decisions to ratify',
+    '### [ISO.8601] 2026: Dates',
+  ];
+
+  test('a non-bracket repo admits none of the phantom headings', () => {
+    const doc = ['### Phase 5: Real work', ...PHANTOM_HEADINGS].join('\n');
+    for (const convention of [undefined, null, 'milestone-prefixed', 'Bracket']) {
+      const { roadmapPhases } = validate.buildRoadmapPhaseVariants(doc, convention);
+      assert.deepEqual([...roadmapPhases], ['5'], `convention=${convention}`);
+    }
+  });
+
+  test('a bracket repo reads bracket headings', () => {
+    const { roadmapPhases } = validate.buildRoadmapPhaseVariants(
+      '### [GSD.02] 05: Real work\n### [GSD.02] 06: Follow-up\n', 'bracket',
+    );
+    assert.deepEqual([...roadmapPhases].sort(), ['05', '06']);
+  });
+
+  test('legacy headings and bullets are byte-identical either way', () => {
+    const doc = [
+      '### Phase 1: Foundation', '### Phase 2-01 (INSERTED): API', '### Phase 12A: Hotfix',
+      '#### Phase Details:', '- [x] **Phase 3: Done**', '- [ ] **Phase 4: Todo**',
+    ].join('\n');
+    const legacy = [...validate.buildRoadmapPhaseVariants(doc).roadmapPhases].sort();
+    assert.deepEqual(legacy, ['1', '12A', '2-01', '3', '4', 'Details'].sort());
+    assert.deepEqual([...validate.buildRoadmapPhaseVariants(doc, 'bracket').roadmapPhases].sort(), legacy);
+  });
+
+  test('a label-only bullet site never gains any-bracket tolerance', () => {
+    const doc = '- [x] **[GSD] Phase 2-01: Legacy**\n- [ ] **[GSD.02] 07: Bracket**\n';
+    assert.deepEqual([...validate.buildRoadmapPhaseVariants(doc).roadmapPhases], []);
+    assert.deepEqual([...validate.buildRoadmapPhaseVariants(doc, 'bracket').roadmapPhases], ['07']);
+  });
+
+  test('the unchecked-bullet site keeps its live W006 on a legacy repo', () => {
+    // `[v1.0] Phase 05` in an unchecked bullet used to SUPPRESS a W006 that
+    // fires at base — a vanishing warning, worse than an added one.
+    const doc = '- [ ] **[v1.0] Phase 05: Thing**\n';
+    assert.deepEqual([...validate.buildNotStartedPhaseVariants(doc)], [],
+      'the bullet must not register phase 05 as not-started on a legacy repo');
+    // `[v1.0]` is no longer a bracket id at all: the milestone width is now the
+    // emit grammar's, and pad2 never produces a bare `0`. The residual this
+    // previously disclosed is gone rather than merely gated.
+    assert.deepEqual([...validate.buildNotStartedPhaseVariants(doc, 'bracket')], []);
+  });
+
+  test('a bracket repo picks up unchecked bracket bullets', () => {
+    const notStarted = validate.buildNotStartedPhaseVariants(
+      '- [ ] **[GSD.02] 05: Real work**\n- [x] **[GSD.02] 01: Done**\n', 'bracket');
+    assert.ok(notStarted.has('05'));
+    assert.ok(!notStarted.has('01'));
+  });
+});
+
+describe('#612 PR-2: directory recognition is convention-gated', () => {
+  const validate = require('../gsd-core/bin/lib/validate.cjs');
+  const core = require('../gsd-core/bin/lib/phase-id.cjs');
+
+  const LEGACY_DIRS = [
+    '02-01-setup', '01-setup', 'GSD-02-01-setup', '999.1-backlog', '14-2026-photos',
+    '02-04-01-deep', '12A-hotfix', 'not-a-phase', 'P0.34-56-name', 'P0.12-34-name',
+    'P0.3-2-tenant', 'P0.16-gate',
+  ];
+
+  test('legacy dirs answer identically to the untouched constants', () => {
+    for (const d of LEGACY_DIRS) {
+      assert.equal(validate.isPhaseDirName(d), validate.phaseDirNameRe.test(d), d);
+      const viaConst = d.match(validate.PHASE_TOKEN_FROM_DIR_RE);
+      assert.equal(validate.phaseTokenFromDir(d), viaConst ? viaConst[1] : null, d);
+    }
+  });
+
+  test('the default-off invariant, extended to the directory side', () => {
+    for (const d of ['P0.34-56-name', 'P0.12-34-name']) {
+      for (const convention of [undefined, null, 'milestone-prefixed', 'BRACKET']) {
+        assert.equal(validate.isPhaseDirName(d, convention), false, `${d} / ${convention}`);
+        assert.equal(validate.phaseTokenFromDir(d, convention), null);
+      }
+      assert.equal(validate.isPhaseDirName(d, 'bracket'), true, `${d} opted in`);
+    }
+  });
+
+  test('bracket dirs resolve under the bracket convention', () => {
+    for (const [dir, token] of [
+      ['GSD.02-05-feature', '05'], ['GSD.02-05.03-feature', '05.03'],
+      ['GSD.02-05', '05'], ['CK.01-12.04-feature', '12.04'], ['GSD_X2.100-05-feature', '05'],
+    ]) {
+      assert.equal(validate.isPhaseDirName(dir, 'bracket'), true, dir);
+      assert.equal(validate.phaseTokenFromDir(dir, 'bracket'), token, dir);
+      assert.equal(validate.isPhaseDirName(dir), false, `${dir} without the signal`);
+    }
+  });
+
+  test('shapes outside the emit grammar are not bracket dirs', () => {
+    // Admitting these would make the recognizer disagree with the resolver.
+    for (const d of ['GSD.02-12A-hotfix', 'GSD.02-05.03.07-x', 'GSD.2-05-x', 'not-a-phase', 'GSD.02']) {
+      assert.equal(validate.isPhaseDirName(d, 'bracket'), false, d);
+    }
+  });
+
+  test('the two bracket dir readers agree on ACCEPTED and REJECTED input alike', () => {
+    const corpus = [
+      'GSD.02-05-feature', 'GSD.02-05.03-feature', 'GSD.02-05', 'CK.01-12.04-f',
+      'GSD_X2.100-05-f', 'GSD.999-01-icebox', 'GSD.02-12A-hotfix', 'GSD.02-05.03.07-x',
+      'GSD.2-05-x', '02-01-setup', 'GSD-02-01-setup', 'not-a-phase', 'P0.34-56-name',
+    ];
+    for (const dir of corpus) {
+      const shaped = validate.BRACKET_PHASE_DIR_RE.test(dir);
+      const viaOwner = core.extractPhaseToken(dir, 'bracket');
+      if (shaped) {
+        assert.equal(validate.phaseTokenFromDir(dir, 'bracket'), viaOwner, `accepted: ${dir}`);
+      } else {
+        // Rejected by the recognizer — the owner must NOT resolve it through the
+        // bracket branch either, or W005 calls a directory malformed in the same
+        // run that the milestone-complete check treats it as a real phase dir.
+        const legacyToken = core.extractPhaseToken(dir);
+        assert.equal(
+          viaOwner, legacyToken,
+          `rejected by the recognizer but bracket-resolved by the owner: ${dir}`,
+        );
+      }
+    }
+  });
+
+  test('non-string input throws, matching the constants they wrap', () => {
+    for (const bad of [42, undefined, null, {}, [], true]) {
+      assert.throws(() => validate.isPhaseDirName(bad, 'bracket'), TypeError, String(bad));
+      assert.throws(() => validate.phaseTokenFromDir(bad, 'bracket'), TypeError, String(bad));
+    }
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // R4-M1 — the DIRECTORY read inside `roadmap analyze`.
 //
@@ -398,3 +541,85 @@ describe('#612 PR-2: roadmap analyze resolves bracket phase DIRECTORIES', () => 
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// R4-m1 — the CHECKLIST scan in buildRoadmapPhaseVariants.
+//
+// The heading scan is sentinel-aware; its checklist twin was compiled
+// non-capturing and called every token REAL. The occurrence-aware un-suppression
+// loop then deleted the icebox token the heading scan had correctly marked
+// sentinel, and `validate consistency` warned that a bracket ICEBOX phase had no
+// directory — in the HOUSE ROADMAP shape, where the icebox appears as both a
+// bold bullet and a detail heading. `validate health` stayed silent on the same
+// repo, so the two verbs disagreed.
+//
+// Both directions are pinned here: the icebox must be silent, AND a REAL phase
+// carrying the same token must still warn. A fix that over-suppresses fails the
+// second test.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#612 PR-2: a bracket sentinel in the CHECKLIST index is suppressed too', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-checklist-sent-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const warnings = () => {
+    const r = runGsdTools(['validate', 'consistency'], tmpDir);
+    return (JSON.parse(r.output).warnings || []).filter(w => /no directory on disk/.test(w));
+  };
+  const realTwoOnDisk = () => fs.mkdirSync(
+    path.join(tmpDir, '.planning', 'phases', 'GSD.02-02-real-two'), { recursive: true });
+
+  test('house shape: icebox as BOTH a bold bullet and a heading is silent', () => {
+    write(`# Roadmap
+
+## [GSD.02] v2.0: Current
+
+- [ ] **[GSD.999] 01: Icebox item**
+- [ ] **[GSD.02] 02: Real two**
+
+### [GSD.999] 01: Icebox item
+**Goal:** z
+
+### [GSD.02] 02: Real two
+**Goal:** b
+`, 'bracket');
+    realTwoOnDisk();
+    assert.deepEqual(warnings(), [], 'an icebox phase legitimately has no directory');
+  });
+
+  test('CONTROL: the same ROADMAP without the icebox lines is also silent', () => {
+    // Makes the assertion above non-vacuous: silence must come from suppression,
+    // not from the repo having nothing to say.
+    write(`# Roadmap
+
+## [GSD.02] v2.0: Current
+
+- [ ] **[GSD.02] 02: Real two**
+
+### [GSD.02] 02: Real two
+**Goal:** b
+`, 'bracket');
+    realTwoOnDisk();
+    assert.deepEqual(warnings(), []);
+  });
+
+  test('a REAL phase sharing the sentinel token still warns (no over-suppression)', () => {
+    // The opposite direction. A checklist bullet for a REAL `[GSD.02] 01` must
+    // un-suppress the token that the `[GSD.999] 01` heading marked sentinel.
+    write(`# Roadmap
+
+## [GSD.02] v2.0: Current
+
+- [ ] **[GSD.02] 01: Real one**
+- [ ] **[GSD.02] 02: Real two**
+
+### [GSD.999] 01: Icebox item
+**Goal:** z
+
+### [GSD.02] 02: Real two
+**Goal:** b
+`, 'bracket');
+    realTwoOnDisk();
+    const w = warnings();
+    assert.equal(w.length, 1, JSON.stringify(w));
+    assert.match(w[0], /Phase 01/);
+  });
+});
