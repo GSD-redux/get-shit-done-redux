@@ -93,6 +93,8 @@
     "gen:capability-registry": "node scripts/gen-capability-registry.cjs --write",
     "gen:registry": "node scripts/gen-registry.cjs --write",
     "gen:golden": "node scripts/gen-golden-install-parity-zcode.cjs && node scripts/gen-install-tree-fixtures.cjs",
+    "regen:derived": "npm run build && npm run gen:registry && node scripts/gen-adr-index.cjs --write && node scripts/gen-capability-matrix.cjs --write && node scripts/gen-inventory-manifest.cjs --write && node scripts/sync-manifest-versions.cjs && npm run size:baseline && npm run gen:golden",
+    "setup:merge-driver": "node scripts/git-merge-regen-driver.cjs --install",
     "validate:registry": "node scripts/validate-registry.cjs",
     "prepack": "npm run build:lib",
     "prepare": "npm run build:lib",

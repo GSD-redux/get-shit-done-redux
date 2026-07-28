@@ -117,12 +117,56 @@ the workflow and agent guards). To resolve:
 If a hard cap (not the baseline) is what failed, regeneration will **not** help —
 that is the signal to extract, per step 3.
 
+### How-to: the baselines or golden fixtures conflict on merge
+
+`tests/workflow-size-baseline.json`, `tests/agent-size-baseline.json` and
+`tests/fixtures/golden-install-parity/*.json` are **Emitted Artifact Provenance**
+files (`CONTEXT.md` → `RULESET.EMITTED_ATTRIBUTION`): pure functions of the source
+tree. Their correct merge is always *recompute*, which git's ours/theirs interface
+cannot express — so a conflict here is never something to hand-resolve.
+
+Register the merge driver once per clone:
+
+```bash
+npm run setup:merge-driver
+```
+
+Afterwards a conflicting merge, rebase or cherry-pick keeps your branch's copy and
+prints a one-line notice. Recompute the artifacts before committing:
+
+```bash
+npm run regen:derived
+```
+
+That one command runs every generator in dependency order (`gen:golden` last,
+because it hashes installed output). On an unmodified tree it produces no diff.
+
+Two things it deliberately does **not** do:
+
+- **It does not clear GitHub's `CONFLICTING` label.** Merge drivers live in
+  `.git/config`, so forks do not have one and github.com's own merge never runs a
+  custom driver. The driver removes the labour, not the label.
+- **It does not regenerate during the merge.** At the moment git invokes a merge
+  driver, neither the working tree nor the index reflects the merge yet — so
+  regenerating there would compute the artifact from the *pre-merge* tree and write
+  a confidently wrong answer. Running `regen:derived` afterwards is what makes it
+  correct.
+
+This driver is a bridge introduced by [#2721](https://github.com/open-gsd/gsd-core/issues/2721)
+and retired by [#2724](https://github.com/open-gsd/gsd-core/issues/2724), which
+replaces these committed artifacts with a computed attribution check (ADR-2719).
+`tests/fixtures/install-tree/*.json` is deliberately excluded and keeps normal merge
+semantics — its diffs are readable and it must stay an absolute "the installer
+stopped shipping X" failure.
+
 ### Reference
 
 | Artifact | Role |
 |---|---|
 | `scripts/workflow-size.cjs` | Single source of truth — LF-normalized byte counter (`lfByteCount`) + generic `measureMdFiles(dir, predicate)` (backs both workflows and agents) + workflow enumeration (`listWorkflowStems`, `measureWorkflows`). Imported by **both** the guards and the generator so they can never measure differently. |
 | `scripts/update-size-baseline.cjs` (`npm run size:baseline`) | Regenerates **both** `tests/workflow-size-baseline.json` and `tests/agent-size-baseline.json` — sorted keys, trailing newline, idempotent. |
+| `npm run regen:derived` | Runs every generator in dependency order (build → registry → ADR index → capability matrix → inventory manifest → manifest versions → size baselines → golden fixtures). Use it instead of remembering which generator owns which artifact. |
+| `scripts/git-merge-regen-driver.cjs` (`npm run setup:merge-driver`) | Registers the `gsd-regen` merge driver in this clone. Keeps your branch's copy of a conflicting generated artifact and points you at `regen:derived`. Bridge for #2721; retired by #2724. |
 | `tests/workflow-size-baseline.json` | The committed per-workflow snapshot (one entry per workflow). |
 | `tests/agent-size-baseline.json` | The committed per-agent snapshot (one entry per `gsd-*` agent). |
 | `tests/workflow-size-budget.test.cjs` | The three workflow guards above, plus the `discuss-phase` progressive-disclosure checks. |

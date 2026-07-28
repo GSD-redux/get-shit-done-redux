@@ -354,7 +354,7 @@
   "gsd-core/workflows/docs-update.md": "2b0db5c092ac573d",
   "gsd-core/workflows/edit-phase.md": "e592a4d85ce5380f",
   "gsd-core/workflows/eval-review.md": "4d367d1e028629bd",
-  "gsd-core/workflows/execute-phase.md": "7bcc0a33f91336c7",
+  "gsd-core/workflows/execute-phase.md": "4d94ef7b8cf41b80",
   "gsd-core/workflows/execute-phase/steps/codebase-drift-gate.md": "cd8678d082d6e191",
   "gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md": "ab70374e44eb85cd",
   "gsd-core/workflows/execute-phase/steps/per-plan-worktree-gate.md": "7ebb7d1af6082028",

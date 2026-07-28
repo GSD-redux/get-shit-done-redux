@@ -19,11 +19,16 @@ const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 /**
  * Byte size of a file, counted as on an LF (Unix) checkout.
  *
- * The size budget is calibrated against `wc -c` on a Unix (LF) checkout, but
- * these `.md` files have no `eol=lf` in `.gitattributes`, so Windows checks
- * them out as CRLF.  Counting raw on-disk bytes there adds one byte per line,
- * a Windows-only false positive that diverges from the LF calibration basis
+ * The size budget is calibrated against `wc -c` on a Unix (LF) checkout.
+ * Counting raw on-disk bytes on a CRLF checkout adds one byte per line, a
+ * Windows-only false positive that diverges from the LF calibration basis
  * (issue #683).  Stripping CR yields the same LF byte count on every platform.
+ *
+ * `.gitattributes:2` (`* text=auto eol=lf`, added in #1088) now normalizes these
+ * files to LF on checkout everywhere, so the CRLF case should not arise from a
+ * normal clone — but this stays unconditional because it also covers a working
+ * tree produced some other way (an unpacked archive, an editor that rewrites
+ * line endings, a checkout predating that attribute).
  * This is still a raw byte count (not a trailing-newline-stripping line count).
  *
  * @param {string} filePath - Absolute or relative path to the file.

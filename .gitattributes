@@ -10,3 +10,26 @@
 *.woff2 binary
 *.ttf binary
 *.pdf binary
+
+# --- Emitted Artifact Provenance (#2721, ADR-2719 Phase 1) -------------------
+#
+# These artifacts are pure functions of the source tree. Git can offer ours or
+# theirs; both are wrong, because the only correct value is recomputed from the
+# merged tree — so `merge=gsd-regen` keeps your branch's copy and tells you to
+# run `npm run regen:derived`, instead of asking you to hand-merge 7,500 lines
+# of hex. `linguist-generated` stops GitHub rendering them expanded in diffs.
+#
+# BRIDGE — DELETE THIS BLOCK IN #2724, which removes these files entirely.
+# Register the driver in your clone with: npm run setup:merge-driver
+#
+# Declared by exact path, never by a `tests/*-size-baseline.json` glob: a glob
+# would silently capture any future baseline that had not been reasoned about.
+tests/fixtures/golden-install-parity/*.json merge=gsd-regen linguist-generated=true
+tests/workflow-size-baseline.json          merge=gsd-regen linguist-generated=true
+tests/agent-size-baseline.json             merge=gsd-regen linguist-generated=true
+
+# tests/fixtures/install-tree/*.json is deliberately ABSENT from the block above.
+# ADR-2719 §7 keeps it committed and normally-merged: it conflicts on 0 of 7, its
+# diffs are readable, and it preserves "the installer stopped shipping X" as a
+# hard absolute failure with no attribution reasoning involved. Capturing it here
+# would silently convert that absolute into an auto-resolve.

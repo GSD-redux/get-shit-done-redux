@@ -763,6 +763,27 @@ npm run check:alias-drift
 
 This verifies generated alias artifacts are in sync with manifest source-of-truth.
 
+### Generated artifacts that conflict on every merge
+
+If your PR conflicts on `tests/fixtures/golden-install-parity/*.json`,
+`tests/workflow-size-baseline.json`, or `tests/agent-size-baseline.json`, **do not
+hand-resolve them.** They are pure functions of the source tree, so neither "ours"
+nor "theirs" is correct — the only correct value is recomputed.
+
+```bash
+npm run setup:merge-driver   # once per clone: conflicts resolve to your copy
+npm run regen:derived        # then recompute, before committing
+```
+
+`regen:derived` replaces the seven separate invocations this used to take (`npm run
+build` plus six more), and runs them in dependency order — `gen:golden` last, because it
+hashes installed output. It covers twelve generators: the eleven that produce committed
+artifacts, plus `sync-manifest-versions`, which `npm run lint:generated-sync` also checks —
+without it, the command that claims to regenerate everything could still leave that gate red.
+Full guide, including what the driver deliberately does not do:
+[docs/TESTING-SUITES.md](docs/TESTING-SUITES.md) → "the baselines or golden fixtures
+conflict on merge".
+
 Optional local pre-commit hook entry (Git-native):
 
 ```bash
