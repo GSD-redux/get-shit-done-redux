@@ -21,6 +21,12 @@ import { PHASE_SUBCOMMANDS } from './command-aliases.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import commandRoutingHub = require('./command-routing-hub.cjs');
 const { createHub, ERROR_KINDS, makeInvalidArgs } = commandRoutingHub;
+// #2620 (ADR-0174 §6): inject the reference DispatchLogger on the live phase
+// dispatch path, but only when observability is opt-in enabled; otherwise the
+// Hub stays byte-for-byte silent via its no-op fallback.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import observabilityLogger = require('./observability/logger.cjs');
+const { createDefaultLogger, isAuditEnabled } = observabilityLogger;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -246,7 +252,10 @@ function routePhaseCommand({ phase, args, cwd, raw, error }: RoutePhaseCommandOp
 
   // ── Construct hub ──────────────────────────────────────────────────────────
   // #175: Hub is CJS-only — no mode param, no sdkLoader.
-  const hub = createHub({ cjsRegistry, manifest });
+  // #2620: wire the reference logger (ADR-0174 §6) only when observability is
+  // opt-in enabled; otherwise leave it unset so the Hub stays byte-for-byte
+  // silent via its no-op fallback.
+  const hub = createHub({ cjsRegistry, manifest, logger: isAuditEnabled() ? createDefaultLogger({ cwd }) : undefined });
 
   // ── Dispatch ────────────────────────────────────────────────────────────────
   const result = hub.dispatch({

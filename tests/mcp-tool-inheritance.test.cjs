@@ -169,3 +169,338 @@ describe('researcher Step-C dispatch ↔ tools frontmatter parity (#1284)', () =
     });
   }
 });
+
+// --- Regression (#2526): the generalization of the #1284 check above, applied
+// to EVERY agent and its WHOLE body rather than two researchers and one table.
+//
+// gsd-ui-auditor declared `tools: Read, Write, Bash, Grep, Glob, Skill` — no
+// mcp__* grant of any kind — while its body presented a
+// <playwright_mcp_approach> block as the *preferred* capture path. That branch
+// was unreachable by construction: the availability check had a fixed answer,
+// the three mcp__playwright__* calls could never dispatch, and the "when
+// Playwright-MCP is NOT available" fallback was the only branch that ever ran.
+//
+// Frontmatter is read through the canonical parser (gsd-core/bin/lib/
+// frontmatter.cjs), not a hand-rolled scan, so every valid YAML shape —
+// inline CSV, block sequence, flow array, quoted scalar, commented-out key —
+// is handled by construction rather than by accumulating regex special cases.
+//
+// Deliberate scope boundaries (each keeps the check honest rather than merely
+// broad; every one is exercised by the negative controls below):
+//   * The scanned surface is the BODY plus the frontmatter `description`, which
+//     ships and is read by the dispatcher. The rest of the frontmatter is not
+//     scanned: `tools:` is the grant list itself and would self-reference.
+//   * SERVER-level, not exact-tool. A `mcp__playwright__navigate` grant counts
+//     as granting the `playwright` server. The bug class here is a server with
+//     ZERO grants; asserting exact tool names is a stricter, separate invariant.
+//   * A body reference must carry the trailing `__` of a real tool name
+//     (`mcp__playwright__navigate`). Bare prose naming a server is not an
+//     invocation and is not flagged.
+//   * A single-character server id is a prose metavariable, not a reference:
+//     gsd-phase-researcher legitimately writes "for any other provider id `X`
+//     ... use `mcp__X__*`". Real server ids are longer. (Same false-positive
+//     hazard #1284 avoids by scoping to table rows.)
+//     A MULTI-character placeholder is spelled `mcp__<SERVER>__*` — the
+//     angle-bracket form is the sanctioned convention, and it is exempt by
+//     construction because `<` lies outside REFERENCE_RE's character class.
+//     `mcp__SERVER__*` is deliberately NOT exempt: an all-caps escape hatch
+//     would be a false NEGATIVE for any real server that happens to be spelled
+//     in caps, and a guard that misses a dead reference fails in the direction
+//     this whole check exists to prevent. Failing loudly on the bare-caps form
+//     costs one author one message, which names the convention.
+//   * MCP namespaces only. Built-in tool names (Read, Bash, Skill) are ordinary
+//     English words that appear throughout agent prose and would be pure noise.
+// ---
+describe('agent tools: allowlist covers every documented MCP namespace (#2526)', () => {
+  const { parseFrontmatter, stripFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+  const AGENTS_DIR = path.join(__dirname, '..', 'agents');
+
+  // A tool name is `mcp__<server>__<tool>`; `<server>` may contain underscores
+  // and hyphens (mcp__plugin_context7_context7__, mcp__chrome-devtools__).
+  const REFERENCE_RE = /mcp__([A-Za-z0-9_-]+?)__/g;
+
+  // Sentinel for "this allowlist grants every MCP server". Safe as a Set member
+  // alongside real server ids: `*` is outside REFERENCE_RE's character class, so
+  // no body reference can ever produce it and collide.
+  const GRANT_ALL = '*';
+
+  // The frontmatter parser preserves an INLINE comment inside a scalar value
+  // (`tools: Read # mcp__playwright__*` parses as the literal string
+  // `Read # mcp__playwright__*`), so a commented-out grant would otherwise read
+  // as a real one. Full-line comments are already dropped by the parser.
+  const stripInlineComment = (s) => String(s).replace(/\s+#.*$/, '');
+
+  /** `tools:` as a token list. null = no tools: key at all (inherits everything). */
+  function toolTokens(tools) {
+    if (tools === undefined || tools === null) return null;
+    const items = Array.isArray(tools) ? tools : [tools];
+    return items
+      .flatMap((t) => stripInlineComment(t).split(/[,\s]+/))
+      .map((t) => t.trim())
+      .filter(Boolean);
+  }
+
+  /** Server ids granted, from any accepted grant spelling. `GRANT_ALL` = every server. */
+  function grantedServers(tokens) {
+    const servers = new Set();
+    for (const token of tokens) {
+      if (!token.startsWith('mcp__')) continue;
+      // A bare `mcp__*` is a wildcard over EVERY server, not a grant of the
+      // empty-string server id. Without this branch it strips to '' and is
+      // dropped by the `if (server)` guard below, so the one grant spelling
+      // that plainly covers any body would flag every reference in it —
+      // inverting the guard against a correct agent. A bare `mcp__` (no star)
+      // is a typo rather than a wildcard and keeps failing closed.
+      if (/^mcp__\*+$/.test(token)) { servers.add(GRANT_ALL); continue; }
+      const rest = token.slice('mcp__'.length).replace(/\*+$/, '');
+      // `mcp__srv__*` and `mcp__srv__tool` both grant `srv`; so does bare `mcp__srv`.
+      const server = rest.includes('__') ? rest.slice(0, rest.indexOf('__')) : rest;
+      if (server) servers.add(server.toLowerCase());
+    }
+    return servers;
+  }
+
+  /** Server ids a body references as tool namespaces. */
+  function referencedServers(body) {
+    const servers = new Set();
+    for (const m of body.matchAll(REFERENCE_RE)) {
+      if (m[1].length === 1) continue; // prose metavariable, e.g. mcp__X__*
+      servers.add(m[1].toLowerCase());
+    }
+    return servers;
+  }
+
+  /** MCP servers an agent documents but does not grant. Empty = consistent. */
+  function ungrantedServers(content) {
+    const fm = parseFrontmatter(content) || {};
+    const tokens = toolTokens(fm.tools);
+    if (tokens === null) return [];
+    const granted = grantedServers(tokens);
+    if (granted.has(GRANT_ALL)) return [];
+    // `description` ships with the agent and the dispatcher reads it, so an
+    // mcp__ reference there is exactly as dead as one in the body. Only that
+    // one field is scanned, never the whole frontmatter: `tools:` legitimately
+    // contains the grants themselves and would self-reference into a
+    // guaranteed pass.
+    const documented = `${String(fm.description ?? '')}\n${stripFrontmatter(content)}`;
+    return [...referencedServers(documented)]
+      .filter((s) => !granted.has(s))
+      .sort();
+  }
+
+  const agentFiles = fs.readdirSync(AGENTS_DIR).filter((f) => f.endsWith('.md')).sort();
+
+  // Discovery guard: without this, a reorganisation that empties agentFiles
+  // would silently delete every real assertion below while the synthetic
+  // controls kept the suite green. Mirrors #1284's `referenced.size > 0`.
+  test('agent discovery finds the agent definitions to check', () => {
+    assert.ok(agentFiles.length >= 20,
+      `expected agents/ to hold the agent definitions, found ${agentFiles.length}`);
+    const anyGrant = agentFiles.some((f) => {
+      const tokens = toolTokens((parseFrontmatter(
+        fs.readFileSync(path.join(AGENTS_DIR, f), 'utf8')) || {}).tools);
+      return tokens !== null && grantedServers(tokens).size > 0;
+    });
+    assert.ok(anyGrant, 'no agent grants any mcp__ namespace — the grant parser is not matching');
+  });
+
+  for (const file of agentFiles) {
+    test(`${file}: documents no MCP namespace its tools: line withholds`, () => {
+      const ungranted = ungrantedServers(fs.readFileSync(path.join(AGENTS_DIR, file), 'utf8'));
+      assert.deepStrictEqual(ungranted, [],
+        `${file} documents mcp__${ungranted.join('__*, mcp__')}__* but its tools: allowlist ` +
+        'grants none of them — those calls can never dispatch, so the instruction is dead ' +
+        'and invites the agent to claim a path it cannot take (#2526). Either grant the ' +
+        'namespace, drop the block, or — if this is a prose placeholder rather than a real ' +
+        'server — spell it `mcp__<SERVER>__*`, the angle-bracket form this check ignores.');
+    });
+  }
+
+  // Negative controls — these keep the property check from decaying into a
+  // vacuous pass by proving the checker still FIRES, and still stays quiet, on
+  // synthetic inputs independent of whatever agents/ happens to contain.
+  describe('checker fires on known-bad input', () => {
+    const agent = (fm, body) => ['---', ...fm, '---', '', ...body].join('\n');
+
+    test('flags the #2526 shape: MCP block under an MCP-less allowlist', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(
+          ['name: gsd-ui-auditor', 'tools: Read, Write, Bash, Grep, Glob, Skill'],
+          ['Check whether `mcp__playwright__*` tools are available in this session.',
+            'mcp__playwright__navigate(url="http://localhost:3000")'])),
+        ['playwright']);
+    });
+
+    test('accepts the same body once the namespace is granted', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(
+          ['name: a', 'tools: Read, mcp__playwright__*'],
+          ['mcp__playwright__navigate(url="http://localhost:3000")'])),
+        []);
+    });
+
+    test('an exact-tool grant covers its server (documented server-level scope)', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: mcp__playwright__navigate'],
+          ['mcp__playwright__screenshot(name="desktop")'])),
+        []);
+    });
+
+    test('a bare server-wide grant is recognised', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read, mcp__playwright'],
+          ['mcp__playwright__navigate()'])),
+        []);
+    });
+
+    // `mcp__*` strips to the empty string; without the wildcard branch it is
+    // dropped as a grant of nothing, and the guard fires against an allowlist
+    // that plainly covers the body — the one input shape that inverts it.
+    test('a bare mcp__* wildcard grants every server', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read, mcp__*'],
+          ['mcp__playwright__navigate()', 'mcp__chrome-devtools__take_screenshot()'])),
+        []);
+    });
+
+    test('a bare mcp__ without a wildcard is a typo, not a grant', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read, mcp__'],
+          ['mcp__playwright__navigate()'])),
+        ['playwright']);
+    });
+
+    test('reads block-sequence tools:, not just the inline CSV form', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(
+          ['name: a', 'tools:', '  - Read', '  - mcp__context7__*', 'color: pink'],
+          ['Use mcp__context7__resolve-library-id, never mcp__tavily__search.'])),
+        ['tavily']);
+    });
+
+    test('reads a YAML flow array', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: [Read, mcp__context7__*]'],
+          ['mcp__context7__get-library-docs()'])),
+        []);
+    });
+
+    test('reads a quoted scalar tools: value', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: "Read, mcp__playwright__*"'],
+          ['mcp__playwright__navigate()'])),
+        []);
+    });
+
+    test('server ids with hyphens are matched, not silently skipped', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['mcp__chrome-devtools__take_screenshot()'])),
+        ['chrome-devtools']);
+    });
+
+    test('a commented-out grant does not count as granted (full-line form)', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(
+          ['name: a', 'tools: Read', '# tools: mcp__playwright__*'],
+          ['mcp__playwright__navigate()'])),
+        ['playwright']);
+    });
+
+    test('a commented-out grant does not count as granted (inline form)', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(
+          ['name: a', 'tools: Read # mcp__playwright__* withheld'],
+          ['mcp__playwright__navigate()'])),
+        ['playwright']);
+    });
+
+    // Boundary 2: a bare prose mention names a server without invoking it.
+    test('bare prose naming a server is not treated as a reference', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['Screenshots come from the mcp__playwright server when the operator configures it.'])),
+        []);
+    });
+
+    // Boundary 4: built-in tool names are ordinary English and must stay silent.
+    test('built-in tool names in prose are never flagged', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['Use Write and Bash to Edit the file, then Grep and Glob for the results.'])),
+        []);
+    });
+
+    test('ignores prose metavariables like mcp__X__*', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read, mcp__exa__*'],
+          ['For any other provider id `X`: use `mcp__X__*` if available, else WebSearch.'])),
+        []);
+    });
+
+    // The sanctioned spelling for a MULTI-character placeholder. Exempt by
+    // construction — `<` is outside REFERENCE_RE's character class — so this
+    // pins an existing property rather than adding a special case.
+    test('the angle-bracket placeholder form is not a reference', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['For any provider: use `mcp__<SERVER>__*` when it is configured.'])),
+        []);
+    });
+
+    // The deliberate other half: a bare all-caps id still fires. Exempting it
+    // would be a false negative for any real server spelled in caps, and the
+    // failure message names the angle-bracket form instead.
+    test('a bare all-caps placeholder is still flagged, and fails closed', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['For any provider `SERVER`: use `mcp__SERVER__*` when configured.'])),
+        ['server']);
+    });
+
+    // The metavariable exclusion is length===1 exactly: two characters is the
+    // shortest server id that must still be recognized as a real reference.
+    test('a two-character server id is a reference, not a metavariable', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['mcp__ab__foo()'])),
+        ['ab']);
+    });
+
+    // Limit-1, completing the boundary triple (0 / 1 / 2). A zero-length id is
+    // unrepresentable by REFERENCE_RE — `+?` requires at least one character —
+    // so it is skipped by the pattern, never by the length===1 exclusion.
+    test('a zero-length server id is not representable, and not a reference', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read'],
+          ['mcp____foo()'])),
+        []);
+    });
+
+    // The description ships and is read by the dispatcher, so it is part of
+    // what the agent "documents" — scanning only the body left it exempt.
+    test('an ungranted namespace in the description is flagged', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(
+          ['name: a', 'description: Captures screens via mcp__playwright__navigate.',
+            'tools: Read'],
+          ['The body names no MCP tool at all.'])),
+        ['playwright']);
+    });
+
+    // The `tools:` line is a grant list, not documentation of a call — scanning
+    // the whole frontmatter would let every allowlist satisfy itself.
+    test('the tools: line itself is never read as a body reference', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a', 'tools: Read, mcp__context7__*'],
+          ['No MCP call appears in this body.'])),
+        []);
+    });
+
+    test('an agent with no tools: key inherits everything', () => {
+      assert.deepStrictEqual(
+        ungrantedServers(agent(['name: a'], ['mcp__playwright__navigate()'])),
+        []);
+    });
+  });
+});

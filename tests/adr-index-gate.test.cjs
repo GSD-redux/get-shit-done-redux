@@ -436,3 +436,97 @@ test('the real repo corpus is clean and its index is current', () => {
   const res = run(REPO_ROOT, ['--check']);
   assert.equal(res.status, 0, `docs/adr/ must satisfy its own gate:\n${res.stderr}`);
 });
+
+// --- regressions -----------------------------------------------------------
+//
+// The --check gate above passes on a corpus that still carries dangling
+// references: it validates naming, relation symmetry, and index freshness, but
+// it never resolves a link target and it STRIPS the H1 status bracket
+// (gen-adr-index.cjs) rather than comparing it. Both defect classes below were
+// green under `--check` while broken. These assert on the real corpus, so
+// reverting the repair re-reds them.
+
+const ADR_DIR = path.join(REPO_ROOT, 'docs', 'adr');
+const STATUS_TOKENS = ['Accepted', 'Proposed', 'Superseded', 'Legacy', 'Retired'];
+
+function adrMarkdownFiles() {
+  return fs.readdirSync(ADR_DIR).filter((f) => f.endsWith('.md'));
+}
+
+test('every relative markdown link in docs/adr/ resolves to a file that exists', () => {
+  const dangling = [];
+  for (const file of adrMarkdownFiles()) {
+    const body = fs.readFileSync(path.join(ADR_DIR, file), 'utf8');
+    for (const match of body.matchAll(/\]\(([^)#:\s]+\.md)(?:#[^)]*)?\)/g)) {
+      const target = match[1];
+      if (!fs.existsSync(path.resolve(ADR_DIR, target))) {
+        dangling.push(`${file} -> ${target}`);
+      }
+    }
+  }
+  assert.deepEqual(
+    dangling,
+    [],
+    `dangling relative links in docs/adr/ (a link written as reference/x.md from inside docs/adr/ resolves to the nonexistent docs/adr/reference/):\n${dangling.join('\n')}`,
+  );
+});
+
+test('no ADR H1 status bracket contradicts its Status field', () => {
+  // The index generator strips a trailing "[Proposed]"-style bracket for
+  // display instead of comparing it, so a stale bracket is invisible to the
+  // gate while still being the first thing a reader sees.
+  const mismatches = [];
+  for (const file of adrMarkdownFiles()) {
+    if (file === 'README.md') continue;
+    const lines = fs.readFileSync(path.join(ADR_DIR, file), 'utf8').split(/\r?\n/);
+    const heading = lines.find((l) => /^#\s/.test(l)) || '';
+    const bracket = heading.match(/\[(Proposed|Accepted|Superseded|Legacy|Retired)\]\s*$/i);
+    if (!bracket) continue;
+    const statusLine = lines.find((l) => /^\s*[-*]?\s*\*\*Status/.test(l)) || '';
+    // Resolve by earliest position in the line, not by STATUS_TOKENS order: a
+    // Status field like "Superseded by ADR-X (was Accepted ...)" mentions two
+    // tokens, and array order would pick 'Accepted' and report a false mismatch
+    // against a correct [Superseded] bracket.
+    let token;
+    let tokenAt = Infinity;
+    for (const s of STATUS_TOKENS) {
+      const at = statusLine.search(new RegExp(`\\b${s}\\b`, 'i'));
+      if (at !== -1 && at < tokenAt) {
+        tokenAt = at;
+        token = s;
+      }
+    }
+    if (token && token.toLowerCase() !== bracket[1].toLowerCase()) {
+      mismatches.push(`${file}: H1 says [${bracket[1]}], Status field says ${token}`);
+    }
+  }
+  assert.deepEqual(mismatches, [], `H1 bracket contradicts Status:\n${mismatches.join('\n')}`);
+});
+
+test('the ADR path cited by src/plan-drift-guard.cts exists', () => {
+  // This module is compiled into the published payload, so a wrong citation
+  // here ships to users.
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'src', 'plan-drift-guard.cts'), 'utf8');
+  const cited = [...src.matchAll(/docs\/adr\/([A-Za-z0-9._-]+\.md)/g)].map((m) => m[1]);
+  assert.notEqual(cited.length, 0, 'expected plan-drift-guard.cts to cite its governing ADR');
+  for (const name of cited) {
+    assert.ok(
+      fs.existsSync(path.join(ADR_DIR, name)),
+      `src/plan-drift-guard.cts cites docs/adr/${name}, which does not exist`,
+    );
+  }
+});
+
+test('the ADR naming worked example names an ADR file that exists', () => {
+  for (const rel of ['CONTRIBUTING.md', path.join('docs', 'contributor-standards.md')]) {
+    const body = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    const examples = [...body.matchAll(/docs\/adr\/(\d+-[a-z0-9-]+\.md)/g)].map((m) => m[1]);
+    assert.notEqual(examples.length, 0, `expected ${rel} to show a worked ADR-naming example`);
+    for (const name of examples) {
+      assert.ok(
+        fs.existsSync(path.join(ADR_DIR, name)),
+        `${rel} illustrates the naming convention with docs/adr/${name}, which does not exist`,
+      );
+    }
+  }
+});

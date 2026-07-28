@@ -40,7 +40,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-new-project`, `/gsd-new-milestone` |
 | **Parallelism** | 4 instances (stack, features, architecture, pitfalls) |
-| **Tools** | Read, Write, Bash, Grep, Glob, WebSearch, WebFetch, mcp (context7) |
+| **Tools** | Read, Write, Bash, Grep, Glob, Skill, WebSearch, WebFetch, mcp__context7__*, mcp__plugin_context7_context7__*, mcp__firecrawl__*, mcp__exa__*, mcp__tavily__*, mcp__ref__*, mcp__jina__*, mcp__perplexity__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Cyan |
 | **Produces** | `.planning/research/STACK.md`, `FEATURES.md`, `ARCHITECTURE.md`, `PITFALLS.md` |
@@ -60,7 +60,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-plan-phase` |
 | **Parallelism** | 4 instances (same focus areas as project researcher) |
-| **Tools** | Read, Write, Bash, Grep, Glob, WebSearch, WebFetch, mcp (context7) |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, Skill, WebSearch, WebFetch, mcp__context7__*, mcp__plugin_context7_context7__*, mcp__firecrawl__*, mcp__exa__*, mcp__tavily__*, mcp__ref__*, mcp__jina__*, mcp__perplexity__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Cyan |
 | **Produces** | `{phase}-RESEARCH.md` |
@@ -80,7 +80,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-ui-phase` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Bash, Grep, Glob, WebSearch, WebFetch, mcp (context7) |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, Skill, WebSearch, WebFetch, mcp__context7__*, mcp__plugin_context7_context7__*, mcp__firecrawl__*, mcp__exa__*, mcp__tavily__*, mcp__ref__*, mcp__jina__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Purple |
 | **Produces** | `{phase}-UI-SPEC.md` |
@@ -101,7 +101,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `discuss-phase-assumptions` workflow (when `workflow.discuss_mode = 'assumptions'`) |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Bash, Grep, Glob |
+| **Tools** | Read, Bash, Grep, Glob, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Cyan |
 | **Produces** | Structured assumptions with decision statements, evidence file paths, confidence levels |
@@ -124,7 +124,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `discuss-phase` workflow (when ADVISOR_MODE = true) |
 | **Parallelism** | Multiple instances (one per gray area) |
-| **Tools** | Read, Bash, Grep, Glob, WebSearch, WebFetch, mcp (context7) |
+| **Tools** | Read, Bash, Grep, Glob, Skill, WebSearch, WebFetch, mcp__context7__*, mcp__plugin_context7_context7__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Cyan |
 | **Produces** | 5-column comparison table (Option / Pros / Cons / Complexity / Recommendation) with rationale paragraph |
@@ -146,7 +146,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-new-project` (after 4 researchers complete) |
 | **Parallelism** | Single instance (sequential after researchers) |
-| **Tools** | Read, Write, Bash |
+| **Tools** | Read, Write, Bash, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Purple |
 | **Produces** | `.planning/research/SUMMARY.md` |
@@ -161,7 +161,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-plan-phase`, `/gsd-quick` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Edit, Bash, Glob, Grep, WebFetch, mcp (context7) |
+| **Tools** | Read, Write, Edit, Bash, Glob, Grep, Skill, WebFetch, mcp__context7__*, mcp__plugin_context7_context7__* |
 | **Model (balanced)** | Opus |
 | **Color** | Green |
 | **Produces** | `{phase}-{N}-PLAN.md` files |
@@ -185,7 +185,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-new-project` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Bash, Glob, Grep |
+| **Tools** | Read, Write, Bash, Glob, Grep, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Purple |
 | **Produces** | `ROADMAP.md` |
@@ -206,7 +206,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-execute-phase`, `/gsd-quick` |
 | **Parallelism** | Multiple (parallel within waves, sequential across waves) |
-| **Tools** | Read, Write, Edit, Bash, Grep, Glob |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, Skill, mcp__context7__*, mcp__plugin_context7_context7__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Yellow |
 | **Produces** | Code changes, git commits, `{phase}-{N}-SUMMARY.md` |
@@ -230,7 +230,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-plan-phase` (verification loop, max 3 iterations) |
 | **Parallelism** | Single instance (iterative) |
-| **Tools** | Read, Bash, Glob, Grep |
+| **Tools** | Read, Bash, Glob, Grep, Skill |
 | **Disallowed Tools** | Write, Edit, MultiEdit |
 | **Model (balanced)** | Sonnet |
 | **Color** | Green |
@@ -256,7 +256,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-audit-milestone` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Bash, Grep, Glob |
+| **Tools** | Read, Bash, Grep, Glob, Skill |
 | **Disallowed Tools** | Write, Edit, MultiEdit |
 | **Model (balanced)** | Sonnet |
 | **Color** | Blue |
@@ -272,7 +272,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-ui-phase` (validation loop, max 2 iterations) |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Bash, Glob, Grep |
+| **Tools** | Read, Bash, Glob, Grep, Skill |
 | **Disallowed Tools** | Write, Edit, MultiEdit |
 | **Model (balanced)** | Sonnet |
 | **Color** | Cyan |
@@ -291,7 +291,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-execute-phase` (after all executors complete) |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Bash, Grep, Glob |
+| **Tools** | Read, Write, Bash, Grep, Glob, Skill |
 | **Disallowed Tools** | Edit, MultiEdit |
 | **Model (balanced)** | Sonnet |
 | **Color** | Green |
@@ -316,7 +316,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-validate-phase` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Edit, Bash, Grep, Glob |
+| **Tools** | Read, Write, Edit, Bash, Glob, Grep, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Purple |
 | **Produces** | Test files, updated `VALIDATION.md` |
@@ -336,7 +336,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-ui-review` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Bash, Grep, Glob |
+| **Tools** | Read, Write, Bash, Grep, Glob, Skill |
 | **Disallowed Tools** | Edit, MultiEdit |
 | **Model (balanced)** | Sonnet |
 | **Color** | Pink |
@@ -360,7 +360,7 @@ GSD uses a multi-agent architecture where thin orchestrators (workflow files) sp
 |----------|-------|
 | **Spawned by** | `/gsd-map-codebase`, post-execute drift gate in `/gsd-execute-phase` |
 | **Parallelism** | 4 instances (tech, architecture, quality, concerns) |
-| **Tools** | Read, Bash, Grep, Glob, Write |
+| **Tools** | Read, Bash, Grep, Glob, Write, Skill |
 | **Model (balanced)** | Haiku |
 | **Color** | Cyan |
 | **Produces** | `.planning/codebase/*.md` (7 documents, with `last_mapped_commit` frontmatter) |
@@ -388,7 +388,7 @@ runs its default whole-repo scan.
 |----------|-------|
 | **Spawned by** | `/gsd-debug`, `/gsd-verify-work` (for failures) |
 | **Parallelism** | Single instance (interactive) |
-| **Tools** | Read, Write, Edit, Bash, Grep, Glob, WebSearch |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, Skill, WebSearch |
 | **Model (balanced)** | Sonnet |
 | **Color** | Orange |
 | **Produces** | `.planning/debug/*.md`, knowledge-base updates |
@@ -443,7 +443,7 @@ Communication style, decision patterns, debugging approach, UX preferences, vend
 |----------|-------|
 | **Spawned by** | `/gsd-docs-update` |
 | **Parallelism** | Multiple instances (one per doc type) |
-| **Tools** | Read, Write, Bash, Grep, Glob |
+| **Tools** | Read, Bash, Grep, Glob, Write, Edit, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Purple |
 | **Produces** | Project documentation files (README, architecture, API docs, etc.) |
@@ -487,7 +487,7 @@ Communication style, decision patterns, debugging approach, UX preferences, vend
 |----------|-------|
 | **Spawned by** | `/gsd-secure-phase` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Bash, Glob, Grep |
+| **Tools** | Read, Bash, Glob, Grep, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Red |
 | **Produces** | Structured verdict (SECURED / OPEN_THREATS / ESCALATE) — orchestrator writes `{phase}-SECURITY.md` (#2119) |
@@ -533,7 +533,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-debug` |
 | **Parallelism** | Single instance (interactive, stateful) |
-| **Tools** | Read, Write, Bash, Grep, Glob, Task, AskUserQuestion |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, Agent, AskUserQuestion |
 | **Model (balanced)** | Sonnet |
 | **Color** | Orange |
 | **Produces** | Compact summary returned to main context; evolves the `.planning/debug/{slug}.md` session file |
@@ -553,7 +553,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-code-review` |
 | **Parallelism** | Typically single instance per review scope |
-| **Tools** | Read, Write, Bash, Grep, Glob |
+| **Tools** | Read, Write, Bash, Grep, Glob, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Orange |
 | **Produces** | `REVIEW.md` in the phase directory |
@@ -573,7 +573,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-code-review --fix` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Edit, Write, Bash, Grep, Glob |
+| **Tools** | Read, Edit, Write, Bash, Grep, Glob, Skill |
 | **Model (balanced)** | Sonnet |
 | **Color** | Green |
 | **Produces** | `REVIEW-FIX.md`; one atomic git commit per applied fix |
@@ -593,7 +593,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-ai-integration-phase` |
 | **Parallelism** | Single instance (sequential with domain-researcher / eval-planner) |
-| **Tools** | Read, Write, Bash, Grep, Glob, WebFetch, WebSearch, mcp (context7) |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, WebFetch, WebSearch, mcp__context7__*, mcp__plugin_context7_context7__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Green |
 | **Produces** | Sections 3–4b of `AI-SPEC.md` (framework quick reference + implementation guidance) |
@@ -612,7 +612,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-ai-integration-phase` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Bash, Grep, Glob, WebSearch, WebFetch, mcp (context7) |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, WebSearch, WebFetch, mcp__context7__*, mcp__plugin_context7_context7__* |
 | **Model (balanced)** | Sonnet |
 | **Color** | Purple |
 | **Produces** | Section 1b of `AI-SPEC.md` |
@@ -631,7 +631,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-ai-integration-phase` |
 | **Parallelism** | Single instance (sequential after domain-researcher) |
-| **Tools** | Read, Write, Bash, Grep, Glob, AskUserQuestion |
+| **Tools** | Read, Write, Edit, Bash, Grep, Glob, AskUserQuestion |
 | **Model (balanced)** | Sonnet |
 | **Color** | Orange |
 | **Produces** | Sections 5–7 of `AI-SPEC.md` (Evaluation Strategy, Guardrails, Production Monitoring) |
@@ -652,7 +652,7 @@ Twelve additional agents ship under `agents/gsd-*.md` and are used by specialty 
 |----------|-------|
 | **Spawned by** | `/gsd-eval-review` |
 | **Parallelism** | Single instance |
-| **Tools** | Read, Write, Bash, Grep, Glob |
+| **Tools** | Read, Write, Bash, Grep, Glob, Skill |
 | **Disallowed Tools** | Edit, MultiEdit |
 | **Model (balanced)** | Sonnet |
 | **Color** | Red |
