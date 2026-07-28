@@ -327,6 +327,36 @@ const PROVENANCE_RULES = [
 // ─── Matching ─────────────────────────────────────────────────────────────────
 
 /**
+ * Reject an emitted key that could escape the repo once turned into a source path.
+ *
+ * Two rules (`gsd-core-verbatim`, `scripts-verbatim`) capture a whole tail with
+ * `.+` rather than `[^/]+`, so a key like `gsd-core/workflows/../../../etc/passwd`
+ * would otherwise produce a source path that `path.join(REPO_ROOT, src)` resolves
+ * OUTSIDE the repo. Nothing reachable today exploits it — real manifest keys come
+ * from installer output and the only consumer is an `fs.existsSync` probe — but
+ * Phase 3 (#2723) feeds these strings into a diff-consuming check, and a `..`
+ * segment is never legitimate in an emitted manifest key. Fail closed here, once,
+ * rather than per-rule.
+ */
+function assertSafeRelPath(rel) {
+  if (typeof rel !== 'string' || rel === '') {
+    throw new Error(`emitted-provenance: emitted path must be a non-empty string, got ${typeof rel}`);
+  }
+  if (path.posix.isAbsolute(rel) || /^[A-Za-z]:/.test(rel)) {
+    throw new Error(`emitted-provenance: emitted path must be relative, got "${rel}"`);
+  }
+  if (rel.split('/').includes('..')) {
+    throw new Error(
+      `emitted-provenance: emitted path "${rel}" contains a ".." segment — ` +
+      'manifest keys are installer output and must never traverse.',
+    );
+  }
+  if (rel.includes('\0')) {
+    throw new Error(`emitted-provenance: emitted path "${rel}" contains a NUL byte`);
+  }
+}
+
+/**
  * Try one rule against one emitted path.
  * @returns {RegExpMatchArray|null} the regex match, or null when the rule does not apply.
  */
@@ -351,11 +381,16 @@ function matchOne(rule, rel) {
  * @param {string} rel     POSIX emitted manifest key
  * @param {string} runtime runtime id (attribution is per-(rel, runtime) — one emitted
  *                         path can have different sources on different hosts)
+ * @param {Array}  rules   rule table. Injectable so tests can drive the REAL matching
+ *                         path with a corrupted/reordered/pruned table. Without this
+ *                         seam a test can only re-implement matching by hand, which
+ *                         proves nothing about the shipped code path.
  * @returns {Array<{rule: object, match: RegExpMatchArray}>}
  */
-function matchRules(rel, runtime) {
+function matchRules(rel, runtime, rules = PROVENANCE_RULES) {
+  assertSafeRelPath(rel);
   const hits = [];
-  for (const rule of PROVENANCE_RULES) {
+  for (const rule of rules) {
     if (rule.runtimes && !rule.runtimes.has(runtime)) continue;
     const m = matchOne(rule, rel);
     if (m) hits.push({ rule, match: m });
@@ -368,8 +403,8 @@ function matchRules(rel, runtime) {
  * @throws when the path matches zero or more than one rule.
  * @returns {{ruleId: string, kind: string, sources: string[]}}
  */
-function attributeEmittedPath(rel, runtime) {
-  const hits = matchRules(rel, runtime);
+function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
+  const hits = matchRules(rel, runtime, rules);
   if (hits.length === 0) {
     throw new Error(
       `emitted-provenance: no rule matches "${rel}" (runtime "${runtime}"). ` +
@@ -452,11 +487,10 @@ function assertTotality(manifests, rules = PROVENANCE_RULES, sampleLimit = 10) {
   for (const { runtime, file, keys } of manifests) {
     for (const rel of keys) {
       checked++;
-      const hits = [];
-      for (const rule of rules) {
-        if (rule.runtimes && !rule.runtimes.has(runtime)) continue;
-        if (matchOne(rule, rel)) hits.push(rule.id);
-      }
+      // Reuse matchRules rather than re-implementing the loop: two copies of the
+      // matching semantics is the divergence class this repo has been bitten by
+      // before (#2266), and it would let the guard and the attributor disagree.
+      const hits = matchRules(rel, runtime, rules).map((h) => h.rule.id);
       if (hits.length === 0) {
         unmatched.push(`${file}: ${rel}`);
       } else if (hits.length > 1) {
@@ -510,6 +544,7 @@ module.exports = {
   stripSkillPrefix,
   nativePluginDescriptor,
   matchOne,
+  assertSafeRelPath,
   matchRules,
   attributeEmittedPath,
   loadManifests,

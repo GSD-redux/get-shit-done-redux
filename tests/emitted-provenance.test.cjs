@@ -50,8 +50,19 @@ const {
 
 const REPO_ROOT = path.join(__dirname, '..');
 
-/** Manifests are loaded once — reading 19 fixtures per test is pure waste. */
-const MANIFESTS = loadManifests();
+/**
+ * Manifests are loaded once, but LAZILY — never at module scope.
+ * `RULESET.TESTS.guard-toplevel-readFileSync` (CONTEXT.md:456): a module-level
+ * read throws before any `test()` registers, so a missing or corrupt fixture dir
+ * would crash the file at require time and report an opaque error instead of one
+ * named failing test. Memoizing here keeps the "read 19 fixtures once" saving
+ * without the crash-before-registration risk.
+ */
+let _manifests = null;
+function manifests() {
+  if (_manifests === null) _manifests = loadManifests();
+  return _manifests;
+}
 
 // ─── Totality (issue #2722's headline acceptance criterion) ──────────────────
 
@@ -59,12 +70,12 @@ test('totality: every emitted path across all 19 manifests matches exactly one r
   // Assert the COUNT, not just "some files": a glob that silently matched fewer
   // fixtures would otherwise report a vacuous pass over a shrunken universe.
   assert.equal(
-    MANIFESTS.length,
+    manifests().length,
     EXPECTED_MANIFEST_COUNT,
-    `expected ${EXPECTED_MANIFEST_COUNT} runtime manifests, found ${MANIFESTS.length}`,
+    `expected ${EXPECTED_MANIFEST_COUNT} runtime manifests, found ${manifests().length}`,
   );
 
-  const { checked, byRule } = assertTotality(MANIFESTS);
+  const { checked, byRule } = assertTotality(manifests());
 
   assert.ok(checked > 8000, `expected the full emitted corpus, only checked ${checked}`);
   // No dead rules — assertTotality already throws on one; this pins the contract
@@ -75,9 +86,9 @@ test('totality: every emitted path across all 19 manifests matches exactly one r
 });
 
 test('totality covers all 19 runtimes, asserted by count', () => {
-  const runtimes = new Set(MANIFESTS.map((m) => m.file));
+  const runtimes = new Set(manifests().map((m) => m.file));
   assert.equal(runtimes.size, EXPECTED_MANIFEST_COUNT);
-  for (const m of MANIFESTS) {
+  for (const m of manifests()) {
     assert.ok(m.keys.length > 0, `manifest ${m.file} has no keys`);
   }
 });
@@ -87,7 +98,7 @@ test('every attributed source exists in the repo (identity/rewrite/derived rules
   // points at the wrong place. A source path that does not exist is proof the rule
   // is wrong, and it is how the three real bugs in this table were found.
   const missing = [];
-  for (const { runtime, file, keys } of MANIFESTS) {
+  for (const { runtime, file, keys } of manifests()) {
     for (const rel of keys) {
       const { ruleId, kind, sources } = attributeEmittedPath(rel, runtime);
       if (kind === 'synthesized') {
@@ -278,7 +289,7 @@ test('ambiguous match fails loud and names both rules', () => {
   const duplicate = { ...PROVENANCE_RULES.find((r) => r.id === 'scripts-verbatim'), id: 'scripts-verbatim-copy' };
   const rules = [...PROVENANCE_RULES, duplicate];
   assert.throws(
-    () => assertTotality(MANIFESTS, rules),
+    () => assertTotality(manifests(), rules),
     (err) => err.message.includes('more than one rule')
       && err.message.includes('scripts-verbatim')
       && err.message.includes('scripts-verbatim-copy'),
@@ -295,7 +306,7 @@ test('dead rule is reported as drift', () => {
     sources: () => ['nope'],
   };
   assert.throws(
-    () => assertTotality(MANIFESTS, [...PROVENANCE_RULES, deadRule]),
+    () => assertTotality(manifests(), [...PROVENANCE_RULES, deadRule]),
     (err) => err.message.includes('never-matches-anything') && err.message.includes('drifted'),
     'a rule matching nothing is table rot and must be reported',
   );
@@ -306,7 +317,7 @@ test('removing a rule fails the guard with the unmatched paths named', () => {
   // the unmatched paths named."
   const without = PROVENANCE_RULES.filter((r) => r.id !== 'gsd-core-verbatim');
   assert.throws(
-    () => assertTotality(MANIFESTS, without),
+    () => assertTotality(manifests(), without),
     (err) => {
       assert.match(err.message, /match no provenance rule/);
       // A count is reported, and it is the real one — 5,510 gsd-core paths across
@@ -335,18 +346,103 @@ test('wrong-source rule is caught by the spot-check, not by totality', () => {
   ));
 
   // Totality still passes — proving totality is not a correctness check.
-  assert.doesNotThrow(() => assertTotality(MANIFESTS, corrupted));
+  assert.doesNotThrow(() => assertTotality(manifests(), corrupted));
 
-  // The spot-check property is what fails.
-  const rule = corrupted.find((r) => r.id === 'skills-from-commands');
-  const m = 'gsd-add-tests/SKILL.md'.match(rule.pattern);
-  const wrongSources = rule.sources(m, { rel: 'skills/gsd-add-tests/SKILL.md', runtime: 'claude' });
+  // Drive the REAL attribution path with the corrupted table. Hand-calling
+  // rule.sources() and re-deriving the expected value would only re-implement the
+  // assertion, proving nothing about the shipped code path — the injectable
+  // `rules` seam is what makes this an actual demonstration.
+  const got = attributeEmittedPath('skills/gsd-add-tests/SKILL.md', 'claude', corrupted);
+  assert.deepEqual(got.sources, ['skills/gsd-add-tests/SKILL.md']);
   assert.notDeepEqual(
-    wrongSources,
+    got.sources,
     [`${COMMANDS_SRC}/add-tests.md`],
-    'precondition: the corrupted rule really does produce a wrong source',
+    'the corrupted table produces the wrong source through the real path',
   );
-  assert.deepEqual(wrongSources, ['skills/gsd-add-tests/SKILL.md']);
+  // The uncorrupted table, same path, same call — the difference IS the spot-check.
+  assert.deepEqual(
+    attributeEmittedPath('skills/gsd-add-tests/SKILL.md', 'claude').sources,
+    [`${COMMANDS_SRC}/add-tests.md`],
+  );
+
+  // Why the spot-check is load-bearing and the source-existence gate is not
+  // sufficient here: the WRONG source also exists on disk (repo skills/ is a
+  // generated dir). Existence catches a rule pointing at nothing; only a pinned
+  // known-pair catches a rule pointing at the wrong real thing.
+  assert.ok(
+    fs.existsSync(path.join(REPO_ROOT, 'skills', 'gsd-add-tests', 'SKILL.md')),
+    'the wrong source exists, which is exactly why existence alone cannot catch it',
+  );
+});
+
+test('attributeEmittedPath throws on an ambiguous table, naming both rules', () => {
+  // Exercises attributeEmittedPath's OWN hits.length > 1 branch. Previously only
+  // assertTotality's parallel ambiguity path was covered, leaving this throw a
+  // prime surviving-mutant candidate under the 80% Stryker gate.
+  const duplicate = {
+    ...PROVENANCE_RULES.find((r) => r.id === 'scripts-verbatim'),
+    id: 'scripts-verbatim-clone',
+  };
+  assert.throws(
+    () => attributeEmittedPath('scripts/lib/cli-exit.cjs', 'claude', [...PROVENANCE_RULES, duplicate]),
+    (err) => err.message.includes('matches 2 rules')
+      && err.message.includes('scripts-verbatim')
+      && err.message.includes('scripts-verbatim-clone')
+      && err.message.includes('mutually exclusive'),
+  );
+});
+
+test('emitted paths that could traverse out of the repo are rejected', () => {
+  // gsd-core-verbatim / scripts-verbatim capture a whole tail with `.+`, so without
+  // a guard `gsd-core/workflows/../../../etc/passwd` yields a source path that
+  // path.join(REPO_ROOT, src) resolves OUTSIDE the repo. Real manifest keys never
+  // traverse; Phase 3 feeds these strings into a diff-consuming check.
+  for (const bad of [
+    'gsd-core/workflows/../../../../etc/passwd',
+    'scripts/../../../etc/passwd',
+    '../escape.md',
+  ]) {
+    assert.throws(
+      () => attributeEmittedPath(bad, 'claude'),
+      /contains a "\.\." segment/,
+      `${bad} must be rejected`,
+    );
+  }
+  assert.throws(() => attributeEmittedPath('/etc/passwd', 'claude'), /must be relative/);
+  assert.throws(() => attributeEmittedPath('', 'claude'), /non-empty string/);
+
+  // A dot-prefixed segment is NOT traversal — this must still resolve normally.
+  assert.doesNotThrow(() => attributeEmittedPath('.gsd/defaults.json', 'opencode'));
+});
+
+test('sampleLimit truncation is exact at limit-1 / limit / limit+1', () => {
+  // sampleLimit (default 10) gates a real branch — the "…and N more" truncation.
+  // CLAUDE.md's boundary rule applies to it as much as to any other limit.
+  const key = (i) => `bogus/unmatched-${String(i).padStart(3, '0')}.md`;
+  const runFor = (n) => {
+    const keys = Array.from({ length: n }, (_, i) => key(i));
+    try {
+      assertTotality([{ file: 'synthetic.json', runtime: 'claude', keys }], PROVENANCE_RULES, 10);
+      return null;
+    } catch (err) {
+      return err.message;
+    }
+  };
+
+  const at9 = runFor(9);
+  assert.ok(at9.includes('9 emitted path(s) match no provenance rule'));
+  assert.ok(!at9.includes('…and'), 'limit-1 must not truncate');
+  assert.ok(at9.includes(key(8)), 'limit-1 lists every path');
+
+  const at10 = runFor(10);
+  assert.ok(at10.includes('10 emitted path(s) match no provenance rule'));
+  assert.ok(!at10.includes('…and'), 'exactly at the limit must not truncate');
+  assert.ok(at10.includes(key(9)), 'at the limit the last path is still listed');
+
+  const at11 = runFor(11);
+  assert.ok(at11.includes('11 emitted path(s) match no provenance rule'));
+  assert.ok(at11.includes('…and 1 more'), 'limit+1 truncates and says how many were hidden');
+  assert.ok(!at11.includes(key(10)), 'the 11th path is not listed');
 });
 
 test('rules match POSIX separators only', () => {
@@ -462,15 +558,35 @@ test('stripSkillPrefix handles prefixed and bare stems', () => {
 
 // ─── Property: rule order carries no semantics ───────────────────────────────
 
+/** Stride for sampling the emitted corpus: coprime with every family size here, so
+ *  the sample spreads across families instead of landing in one. Any value that is
+ *  not a small divisor of a family's size would do; 47 is simply prime and coarse
+ *  enough to keep the property fast. */
+const CORPUS_STRIDE = 47;
+
 test('property: rule order carries no semantics', () => {
   // The exactly-one design's core safety property. If order ever mattered, adding
   // a rule at the wrong index would silently change existing attributions — the
   // failure mode first-match-wins tables die of.
+  //
+  // Getting this test to be able to FAIL took two attempts, both worth recording:
+  //
+  //   1. Hand-rolling the shuffled side out of the per-rule `matchOne` primitive
+  //      proved nothing — `matchOne` is order-independent by construction, so the
+  //      property held for reasons unrelated to the shipped `matchRules`.
+  //   2. Passing `shuffled` into the real `matchRules` still was not enough: on an
+  //      UNAMBIGUOUS table, first-match-wins and collect-all return the identical
+  //      result for every path (verified: 0 of 190 corpus paths differ). The
+  //      property was vacuous either way.
+  //
+  // Order can only matter where more than one rule matches. So the table under
+  // test deliberately contains a duplicate, and the assertion is that matchRules
+  // reports BOTH hits under every permutation. That fails immediately under a
+  // first-match-wins refactor (length 1, id varying with order), which is the
+  // regression this property exists to guard against.
   const corpus = [];
-  for (const { runtime, keys } of MANIFESTS) {
-    // A deterministic spread across each manifest keeps the property fast without
-    // biasing toward one family.
-    for (let i = 0; i < keys.length; i += 47) corpus.push({ rel: keys[i], runtime });
+  for (const { runtime, keys } of manifests()) {
+    for (let i = 0; i < keys.length; i += CORPUS_STRIDE) corpus.push({ rel: keys[i], runtime });
   }
   assert.ok(corpus.length > 100, `corpus too small: ${corpus.length}`);
 
@@ -482,16 +598,20 @@ test('property: rule order carries no semantics', () => {
         maxLength: PROVENANCE_RULES.length,
       }),
       ({ rel, runtime }, shuffled) => {
+        // (a) the real table: exactly one hit, and the SAME one under any order.
         const baseline = matchRules(rel, runtime);
-        const hits = [];
-        for (const rule of shuffled) {
-          if (rule.runtimes && !rule.runtimes.has(runtime)) continue;
-          const m = require('./helpers/emitted-provenance.cjs').matchOne(rule, rel);
-          if (m) hits.push(rule.id);
-        }
-        return hits.length === 1
-          && baseline.length === 1
-          && hits[0] === baseline[0].rule.id;
+        const shuffledHits = matchRules(rel, runtime, shuffled);
+        if (baseline.length !== 1 || shuffledHits.length !== 1) return false;
+        if (shuffledHits[0].rule.id !== baseline[0].rule.id) return false;
+
+        // (b) an intentionally ambiguous table: BOTH hits reported, as a set, under
+        //     any order. This is the half that a first-match-wins refactor breaks.
+        const matched = baseline[0].rule;
+        const clone = { ...matched, id: `${matched.id}-clone` };
+        const ambiguous = matchRules(rel, runtime, [...shuffled, clone]);
+        if (ambiguous.length !== 2) return false;
+        const ids = ambiguous.map((h) => h.rule.id).sort();
+        return ids[0] === matched.id && ids[1] === `${matched.id}-clone`;
       },
     ),
     { numRuns: 300 },
