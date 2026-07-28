@@ -33,6 +33,9 @@ const {
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
 import { platformReadSync } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import unusableInputMod = require('./unusable-input.cjs');
+const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
 import { tokenizeHeadings, stripTaggedBlocks, withSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 
@@ -323,10 +326,18 @@ function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseRe
   if (!phaseNum) return null;
   const normalizedPhase = stripProjectCodePrefix(phaseNum);
   if (/^999(?:\.|$)/.test(normalizedPhase)) return null;
-  const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
-  if (!fs.existsSync(roadmapPath)) return null;
+  // Resolved INSIDE the try for the same reason as getMilestoneInfo below: planningDir
+  // throws a plain Error for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and resolving
+  // it outside let that escape uncaught, crashing every caller for a malformed workstream
+  // name. ADR-227 is explicit that throwing breaks pipeline continuity, and this read path
+  // has no reason to be the exception -- it already degrades to null for every other
+  // failure. Absence still returns null before any diagnostic, and when the path never
+  // resolved there is nothing to name.
+  let roadmapPath: string | undefined;
 
   try {
+    roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+    if (!fs.existsSync(roadmapPath)) return null;
     const roadmapRaw = platformReadSync(roadmapPath);
     if (roadmapRaw === null) throw new Error('missing');
     const content = extractCurrentMilestone(roadmapRaw, cwd);
@@ -352,9 +363,31 @@ function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseRe
     }
 
     return null;
-  } catch {
+  } catch (err) {
+    // Absence already returned above via existsSync; anything caught here is a read fault
+    // or the synthetic missing-marker. The null is preserved exactly either way.
+    if (roadmapPath !== undefined) reportUnreadableRoadmap(err, roadmapPath);
     return null;
   }
+}
+
+/**
+ * Report a ROADMAP.md that exists but could not be read (#1881, ADR-1411).
+ *
+ * The discriminator is the errno, and it matters in the SILENT direction.
+ * platformReadSync returns null for ENOENT and both callers convert that null into a
+ * synthetic Error carrying no code, which lands in the same catch as a real EACCES.
+ * Reporting unconditionally here would flag every project that has no ROADMAP.md yet --
+ * every brand-new project -- as corrupt. A genuine read fault always carries an errno;
+ * absence never does.
+ *
+ * The parse itself is regex over text and cannot throw, so anything reaching a catch is
+ * either a read fault or that synthetic absence marker. Nothing else gets here.
+ */
+function reportUnreadableRoadmap(err: unknown, roadmapPath: string): void {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  if (typeof code !== 'string') return;
+  warnUnusableInput({ reason: UNUSABLE_REASON.ROADMAP_UNREADABLE, source: roadmapPath });
 }
 
 // ─── Milestone info lookup ────────────────────────────────────────────────────
@@ -378,8 +411,16 @@ function stripLeadingDelimiter(s: string): string {
 }
 
 function getMilestoneInfo(cwd: string): MilestoneInfo {
+  // Declared here but RESOLVED INSIDE the try, so the catch can name the file without
+  // moving planningDir() out of the protected region. planningDir throws a plain Error
+  // for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and hoisting the call let that
+  // escape uncaught — breaking the invariant #2245 relies on, that this function never
+  // throws. When the path never resolved there is nothing to name, so the diagnostic is
+  // skipped and the default is returned exactly as before.
+  let roadmapPath: string | undefined;
   try {
-    const roadmap = platformReadSync(path.join(planningDir(cwd), 'ROADMAP.md'));
+    roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+    const roadmap = platformReadSync(roadmapPath);
     if (roadmap === null) throw new Error('missing');
 
     let stateVersion: string | null = null;
@@ -453,7 +494,12 @@ function getMilestoneInfo(cwd: string): MilestoneInfo {
       version: versionMatch ? versionMatch[0] : 'v1.0',
       name: 'milestone',
     };
-  } catch {
+  } catch (err) {
+    // This function has no existsSync guard, so an absent ROADMAP arrives here too, as a
+    // synthetic Error with no errno. Only a real read fault is reported; the populated
+    // default is returned unchanged either way, and a plausible-looking default needs the
+    // diagnostic more than an empty sentinel does, not less (ADR-1411).
+    if (roadmapPath !== undefined) reportUnreadableRoadmap(err, roadmapPath);
     return { version: 'v1.0', name: 'milestone' };
   }
 }

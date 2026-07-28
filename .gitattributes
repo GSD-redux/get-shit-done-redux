@@ -10,3 +10,16 @@
 *.woff2 binary
 *.ttf binary
 *.pdf binary
+
+# The `merge=gsd-regen` driver + linguist-generated block that used to live here
+# (#2721, ADR-2719 Phase 1) covered tests/fixtures/golden-install-parity/*.json,
+# tests/workflow-size-baseline.json, and tests/agent-size-baseline.json — all
+# three deleted by #2724 (ADR-2719 Phase 4), which retired the bridge driver too.
+# The differential attribution check (tests/emitted-attribution.test.cjs) is the
+# sole gate now; it has no committed artifact to conflict on, so there is nothing
+# left for a merge driver to resolve.
+#
+# tests/fixtures/install-tree/*.json was, and remains, deliberately ABSENT from
+# that block: ADR-2719 §7 keeps it committed and normally-merged (0 of 7
+# conflicts, readable diffs, preserves "the installer stopped shipping X" as a
+# hard absolute failure with no attribution reasoning involved).

@@ -2491,3 +2491,309 @@ describe('feat-3594: roadmap parser does not crash on ANY corpus fixture', () =>
     });
   });
 }
+
+// ─── #1881: an unreadable ROADMAP is not an absent one ───────────────────────
+//
+// getRoadmapPhaseInternal returns null for a read failure exactly as it does for
+// "phase not found", and getMilestoneInfo returns {v1.0, milestone} — which reads
+// as a brand-new project — for a read failure exactly as it does for "no ROADMAP
+// yet". Per ADR-1411's "corrupt is not absent" amendment both return values are
+// preserved and the cause is surfaced out of band instead.
+//
+// The discriminator is the errno, and it is load-bearing in the silent direction:
+// getMilestoneInfo has no existsSync guard, so platformReadSync's null-for-ENOENT
+// is converted to a synthetic Error('missing') that lands in the SAME catch as a
+// real EACCES. Reporting unconditionally there would flag every project that has
+// no ROADMAP.md — i.e. every brand-new project — as corrupt. Half of these cases
+// exist to hold that line.
+//
+// Faults are injected by overriding platformReadSync and restoring in t.after(),
+// never chmod 0o000: root bypasses mode bits, so a permission-based version would
+// silently pass with zero coverage in root Docker/CI.
+
+describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
+  const scp = require('../gsd-core/bin/lib/shell-command-projection.cjs');
+  const {
+    UNUSABLE_REASON,
+    _resetUnusableInputWarningsForTests,
+    _unusableInputEmissionCountForTests,
+  } = require('../gsd-core/bin/lib/unusable-input.cjs');
+
+  const HEALTHY = [
+    '# Roadmap',
+    '',
+    '## Milestone v2.3: Alpha',
+    '',
+    '### Phase 1: Alpha',
+    '**Goal**: ship',
+    '',
+  ].join('\n');
+
+  /** Write a project with the given ROADMAP content (or none when null). */
+  function project(t, roadmap) {
+    const dir = createTempProject('gsd-1881-');
+    t.after(() => cleanup(dir));
+    const planning = path.join(dir, '.planning');
+    fs.mkdirSync(planning, { recursive: true });
+    if (roadmap !== null) fs.writeFileSync(path.join(planning, 'ROADMAP.md'), roadmap);
+    return dir;
+  }
+
+  /**
+   * Make reads of files matching `match` fail with `err`, restoring in t.after().
+   * Overrides the projection seam rather than the filesystem so the failure is
+   * deterministic on every platform and under root.
+   */
+  function failReads(t, match, err) {
+    const original = scp.platformReadSync;
+    t.after(() => {
+      Object.defineProperty(scp, 'platformReadSync', { value: original, configurable: true });
+    });
+    Object.defineProperty(scp, 'platformReadSync', {
+      configurable: true,
+      value: (p) => {
+        if (match(String(p))) throw err;
+        return original(p);
+      },
+    });
+  }
+
+  /** Silence stderr for the duration of `fn` and report how many diagnostics it wrote. */
+  function emissionsDuring(fn) {
+    const before = _unusableInputEmissionCountForTests();
+    const originalWrite = process.stderr.write;
+    process.stderr.write = () => true;
+    try {
+      fn();
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+    return _unusableInputEmissionCountForTests() - before;
+  }
+
+  function eacces() {
+    const e = new Error('EACCES: permission denied');
+    e.code = 'EACCES';
+    return e;
+  }
+
+  test('a healthy roadmap resolves a phase and stays silent', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    let result;
+    const emitted = emissionsDuring(() => { result = getRoadmapPhaseInternal(dir, '1'); });
+    assert.strictEqual(result.found, true);
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('a healthy roadmap resolves the milestone and stays silent', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    let info;
+    const emitted = emissionsDuring(() => { info = getMilestoneInfo(dir); });
+    assert.deepStrictEqual(info, { version: 'v2.3', name: 'Alpha' });
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('an unreadable roadmap is reported on a phase lookup, and still returns null', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), eacces());
+    let result;
+    const emitted = emissionsDuring(() => { result = getRoadmapPhaseInternal(dir, '1'); });
+    assert.strictEqual(result, null, 'the sentinel must be preserved exactly');
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('an unreadable roadmap is reported on a milestone lookup, and still returns the default', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), eacces());
+    let info;
+    const emitted = emissionsDuring(() => { info = getMilestoneInfo(dir); });
+    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' },
+      'the plausible-looking default must be preserved exactly');
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('a project with NO roadmap stays silent — absence is not corruption', (t) => {
+    // The false-positive that would otherwise fire on every brand-new project.
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, null);
+    let phase, info;
+    const emitted = emissionsDuring(() => {
+      phase = getRoadmapPhaseInternal(dir, '1');
+      info = getMilestoneInfo(dir);
+    });
+    assert.strictEqual(phase, null);
+    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+    assert.strictEqual(emitted, 0, 'a missing ROADMAP.md must never be reported as unreadable');
+  });
+
+  test('a phase that is genuinely not in the roadmap stays silent', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    let result;
+    const emitted = emissionsDuring(() => { result = getRoadmapPhaseInternal(dir, '7'); });
+    assert.strictEqual(result, null);
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('roadmap content that parses to nothing stays silent', (t) => {
+    // The parse is regex over text and cannot throw, so unparseable content never
+    // reaches the catch. Content that yields nothing is absent information, not an
+    // unusable file.
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, 'just prose, no headings at all\n');
+    let phase, info;
+    const emitted = emissionsDuring(() => {
+      phase = getRoadmapPhaseInternal(dir, '1');
+      info = getMilestoneInfo(dir);
+    });
+    assert.strictEqual(phase, null);
+    assert.strictEqual(emitted, 0);
+    assert.ok(info, 'still returns a milestone default');
+  });
+
+  test('an unreadable STATE.md alone stays silent — the inner catch is deliberate', (t) => {
+    // roadmap-parser.cts:394-400 records under the #2245 audit that STATE.md's
+    // `milestone:` field is an OPTIONAL enhancement whose failure legitimately falls
+    // back to ROADMAP-only heuristics. A diagnostic leaking from it would misreport
+    // that fallback as roadmap corruption.
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    fs.writeFileSync(path.join(dir, '.planning', 'STATE.md'), 'milestone: v2.3\n');
+    failReads(t, (p) => p.endsWith('STATE.md'), eacces());
+    let info;
+    const emitted = emissionsDuring(() => { info = getMilestoneInfo(dir); });
+    assert.deepStrictEqual(info, { version: 'v2.3', name: 'Alpha' });
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('any errno is reported, not just EACCES', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    const eio = new Error('EIO: i/o error');
+    eio.code = 'EIO';
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), eio);
+    const emitted = emissionsDuring(() => { getRoadmapPhaseInternal(dir, '1'); });
+    assert.strictEqual(emitted, 1, 'the discriminator is "has an errno", not a whitelist');
+  });
+
+  test('an error carrying no errno stays silent — that is the absence path', (t) => {
+    // platformReadSync returns null for ENOENT and the caller converts it to a
+    // synthetic Error with no .code. That error means "absent", not "unusable".
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), new Error('missing'));
+    let result;
+    const emitted = emissionsDuring(() => { result = getRoadmapPhaseInternal(dir, '1'); });
+    assert.strictEqual(result, null);
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('a non-string errno is tolerated and stays silent', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    const weird = new Error('odd');
+    weird.code = 42;
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), weird);
+    let result;
+    const emitted = emissionsDuring(() => { result = getRoadmapPhaseInternal(dir, '1'); });
+    assert.strictEqual(result, null);
+    assert.strictEqual(emitted, 0);
+  });
+
+  test('both lookups against one unreadable roadmap report once', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), eacces());
+    const emitted = emissionsDuring(() => {
+      getRoadmapPhaseInternal(dir, '1');
+      getMilestoneInfo(dir);
+    });
+    assert.strictEqual(emitted, 1, 'it is one unreadable file');
+  });
+
+  test('a repeated lookup of the same unreadable roadmap reports once', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), eacces());
+    const emitted = emissionsDuring(() => {
+      getRoadmapPhaseInternal(dir, '1');
+      getRoadmapPhaseInternal(dir, '1');
+    });
+    assert.strictEqual(emitted, 1);
+  });
+
+  test('two different unreadable roadmaps both report', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const a = project(t, HEALTHY);
+    const b = project(t, HEALTHY);
+    failReads(t, (p) => p.endsWith('ROADMAP.md'), eacces());
+    const emitted = emissionsDuring(() => {
+      getRoadmapPhaseInternal(a, '1');
+      getRoadmapPhaseInternal(b, '1');
+    });
+    assert.strictEqual(emitted, 2, 'a second file must never be suppressed by the first');
+  });
+
+  test('getMilestoneInfo does not throw when the read fails', (t) => {
+    // ADR-1411 names this explicitly: src/state.cts removed a defensive try/catch
+    // around getMilestoneInfo under the #2245 audit because it "never throws".
+    // Introducing a throw here silently breaks that invariant.
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, () => true, eacces());
+    let info;
+    emissionsDuring(() => {
+      assert.doesNotThrow(() => { info = getMilestoneInfo(dir); });
+    });
+    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+  });
+
+  test('getRoadmapPhaseInternal does not throw when the read fails', (t) => {
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    failReads(t, () => true, eacces());
+    let result;
+    emissionsDuring(() => {
+      assert.doesNotThrow(() => { result = getRoadmapPhaseInternal(dir, '1'); });
+    });
+    assert.strictEqual(result, null);
+  });
+
+  test('neither lookup throws when the planning path itself cannot be resolved', (t) => {
+    // The regression this pair exists to catch. planningDir throws a plain Error for an
+    // invalid GSD_WORKSTREAM segment. Resolving it OUTSIDE the try -- which is what naming
+    // the file for the diagnostic naively required -- let that escape uncaught, crashing
+    // every caller of getMilestoneInfo for a workstream name containing a slash, and
+    // breaking the invariant #2245 relies on. The earlier 'does not throw' cases inject
+    // only through platformReadSync and so could never have caught it.
+    _resetUnusableInputWarningsForTests();
+    const dir = project(t, HEALTHY);
+    const previous = process.env.GSD_WORKSTREAM;
+    t.after(() => {
+      if (previous === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = previous;
+    });
+    process.env.GSD_WORKSTREAM = 'evil/../thing';
+    let info, phase;
+    const emitted = emissionsDuring(() => {
+      assert.doesNotThrow(() => { info = getMilestoneInfo(dir); });
+      assert.doesNotThrow(() => { phase = getRoadmapPhaseInternal(dir, '1'); });
+    });
+    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+    assert.strictEqual(phase, null);
+    assert.strictEqual(emitted, 0,
+      'the path never resolved, so there is no file to name');
+  });
+
+  test('the roadmap reason is present in the frozen vocabulary', () => {
+    // The full key-set lock lives once, in tests/unusable-input.test.cjs. Duplicating it
+    // here would mean two files to update every time a phase adds a reason, which defeats
+    // the point of a single coordinated change. This asserts only what #1881 owns.
+    assert.ok(Object.isFrozen(UNUSABLE_REASON));
+    assert.strictEqual(UNUSABLE_REASON.ROADMAP_UNREADABLE, 'roadmap_unreadable');
+  });
+});

@@ -44,6 +44,11 @@ const UNUSABLE_REASON = Object.freeze({
    * legitimately has no frontmatter. (#1882)
    */
   FRONTMATTER_UNTERMINATED: 'frontmatter_unterminated',
+  /**
+   * A ROADMAP.md exists but could not be read (EACCES/EIO/…). Distinct from a project that
+   * simply has no ROADMAP yet: absence returns the same sentinel, silently. (#1881)
+   */
+  ROADMAP_UNREADABLE: 'roadmap_unreadable',
 } as const);
 
 type UnusableReason = (typeof UNUSABLE_REASON)[keyof typeof UNUSABLE_REASON];
@@ -52,6 +57,8 @@ type UnusableReason = (typeof UNUSABLE_REASON)[keyof typeof UNUSABLE_REASON];
 const REASON_PROSE: Readonly<Record<UnusableReason, string>> = Object.freeze({
   [UNUSABLE_REASON.FRONTMATTER_UNTERMINATED]:
     'frontmatter opens with "---" but never closes; metadata was NOT applied',
+  [UNUSABLE_REASON.ROADMAP_UNREADABLE]:
+    'ROADMAP.md exists but could not be read; phase and milestone lookups fell back to defaults',
 });
 
 // ─── Dedup state ──────────────────────────────────────────────────────────────

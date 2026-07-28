@@ -70,7 +70,10 @@ describe('UNUSABLE_REASON', () => {
     assert.ok(Object.isFrozen(UNUSABLE_REASON), 'enum must be frozen');
     // Locking the key set is what makes adding a reason three coordinated changes
     // (enum + call site + this assertion) instead of a silent widening.
-    assert.deepStrictEqual(Object.keys(UNUSABLE_REASON).sort(), ['FRONTMATTER_UNTERMINATED']);
+    assert.deepStrictEqual(
+      Object.keys(UNUSABLE_REASON).sort(),
+      ['FRONTMATTER_UNTERMINATED', 'ROADMAP_UNREADABLE'],
+    );
     assert.strictEqual(UNUSABLE_REASON.FRONTMATTER_UNTERMINATED, 'frontmatter_unterminated');
   });
 

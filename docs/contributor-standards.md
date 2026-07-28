@@ -18,23 +18,23 @@ These apply to every PR — fix, enhancement, or feature. They are part of the m
 
 `CONTEXT.md` is the single source of truth for domain vocabulary. It defines:
 
-- **Domain terms** — canonical Module names, seam vocabulary, and Interface names (e.g. Dispatch Policy Module, Command Contract Validation Module, Planning Workspace Module)
+- **Domain modules and seams** — canonical Module names, seam vocabulary, and Interface names (e.g. Dispatch Policy Module, Command Contract Validation Module, Planning Workspace Module)
 - **Recurring PR mistakes** — CodeRabbit findings that recur; covers tests, shell guards, changesets, docs
 - **Workflow learnings** — patterns distilled from triage + PR cycles
 
 ### Format
 
-`CONTEXT.md` is written as flat named sections under `## Domain terms` (for Modules/seams) and `##` sections for recurring rules. Machine-oriented predicates use `KEY.SUBKEY=value` flat format in code blocks under `## AI Ops Memory`.
+`CONTEXT.md` is written as flat named sections under `## Glossary — Domain modules and seams` (for Modules/seams) and `##` sections for recurring rules. Machine-oriented predicates use `KEY.SUBKEY=value` flat format, grouped into the `##` section that owns the topic — `## Test rules and lint`, `## CodeRabbit + repo-process guards (machine-oriented predicates)`, or `## Workspace seams (machine-oriented predicates)`.
 
 Adding a new Module or seam:
 
-- Add a `### <Module Name>` entry under `## Domain terms`.
+- Add a `### <Module Name>` entry under `## Glossary — Domain modules and seams`.
 - Write one paragraph. State what the Module owns. Be concrete — list the Interface names and policy boundaries it covers.
 - Do not add synonyms; pick one name and use it everywhere.
 
 Extending an existing predicate:
 
-- Add a `KEY.SUBKEY=value` line inside the relevant `## AI Ops Memory` block.
+- Add a `KEY.SUBKEY=value` line inside the relevant predicate section — for a test or lint rule that is `## Test rules and lint`.
 - Do not create a new top-level section for a variation on an existing concept.
 
 When to add a new predicate vs extend an existing one:
