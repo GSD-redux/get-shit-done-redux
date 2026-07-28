@@ -13,7 +13,7 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import commandRoutingHub = require('./command-routing-hub.cjs');
 const { createHub, ERROR_KINDS } = commandRoutingHub;
-// #26 (ADR-0174 §6): the Hub defaults to a no-op logger and the live CLI
+// #2620 (ADR-0174 §6): the Hub defaults to a no-op logger and the live CLI
 // dispatch path never injected the reference DispatchLogger, so GSD_AUDIT and
 // config.audit.enabled were inert. Inject the reference logger ONLY when
 // observability is opt-in enabled; when off, inject nothing so the Hub stays
@@ -145,7 +145,7 @@ function routeHubCommandFamily({
   const hub = createHub({
     cjsRegistry: { [family]: registryHandlers },
     manifest: { [family]: available },
-    // #26: wire the reference logger onto the live dispatch path (ADR-0174 §6),
+    // #2620: wire the reference logger onto the live dispatch path (ADR-0174 §6),
     // but only when observability is opt-in enabled — otherwise leave it unset
     // so the Hub falls back to the no-op logger and stays byte-for-byte silent.
     logger: isAuditEnabled() ? createDefaultLogger({ cwd }) : undefined,

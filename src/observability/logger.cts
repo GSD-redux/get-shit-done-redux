@@ -43,7 +43,7 @@ function _safeStringify(value: unknown): string {
 
 /**
  * Determine whether observability is opt-in enabled — via the GSD_AUDIT env var
- * or config.audit.enabled. Exported (#26) so the live dispatch seam can decide
+ * or config.audit.enabled. Exported (#2620) so the live dispatch seam can decide
  * whether to inject the reference logger at all: when observability is off we
  * inject nothing (the Hub stays byte-for-byte silent, preserving the default
  * dispatch output contract, incl. --json-errors); when on, the caller injects

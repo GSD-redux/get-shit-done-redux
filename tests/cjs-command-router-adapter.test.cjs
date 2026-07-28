@@ -631,7 +631,7 @@ describe('bug #3631 — SDK family routers forward --raw to output()', () => {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// Regression for #26 — the live adapter must inject a real DispatchLogger
+// Regression for #2620 — the live adapter must inject a real DispatchLogger
 // (ADR-0174 §6: "DispatchLogger is injected; the Hub emits DispatchEvent on
 // every dispatch path"). Before the fix, routeHubCommandFamily built the Hub
 // with no logger, so it fell back to createNoOpLogger and GSD_AUDIT was inert.
@@ -644,7 +644,7 @@ describe('bug #3631 — SDK family routers forward --raw to output()', () => {
   const { routeHubCommandFamily } = require('../gsd-core/bin/lib/cjs-command-router-adapter.cjs');
   const { createTempDir, cleanup } = require('./helpers.cjs');
 
-  describe('cjs-command-router-adapter — observability logger wiring (#26)', () => {
+  describe('cjs-command-router-adapter — observability logger wiring (#2620)', () => {
     test('a dispatch through the live adapter writes the opt-in audit trail when GSD_AUDIT=1', (t) => {
       const tmp = createTempDir('gsd-obs-wire-');
       const prev = process.env.GSD_AUDIT;
