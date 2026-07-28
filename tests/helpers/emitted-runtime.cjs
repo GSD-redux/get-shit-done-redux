@@ -65,8 +65,17 @@ const FIXTURE_SUBDIR = 'tests/fixtures/golden-install-parity';
 const REGISTRY_SIGNAL_PATHS = [
   'tests/helpers/install-shared.cjs',
 ];
-const REGISTRY_SIGNAL_PREFIX = 'capabilities/';
-const REGISTRY_SIGNAL_SUFFIX = '/capability.json';
+
+/**
+ * A capability descriptor: `capabilities/<runtime>/capability.json`, exactly one segment deep.
+ *
+ * Anchored, with `[^/]+` for the runtime segment. A prefix+suffix pair is NOT equivalent and
+ * was wrong: `capabilities/capability.json` satisfies both `startsWith('capabilities/')` and
+ * `endsWith('/capability.json')` with no runtime segment at all, and
+ * `capabilities/a/b/capability.json` satisfies them at the wrong depth. Both would have
+ * excused an unattributed family delta.
+ */
+const REGISTRY_SIGNAL_PATTERN = /^capabilities\/[^/]+\/capability\.json$/;
 
 /**
  * Reason codes for family reconciliation.
@@ -98,8 +107,7 @@ function toPosix(p) {
 function touchesRuntimeRegistry(changedPaths) {
   return changedPaths.some((raw) => {
     const p = toPosix(raw);
-    return REGISTRY_SIGNAL_PATHS.includes(p)
-      || (p.startsWith(REGISTRY_SIGNAL_PREFIX) && p.endsWith(REGISTRY_SIGNAL_SUFFIX));
+    return REGISTRY_SIGNAL_PATHS.includes(p) || REGISTRY_SIGNAL_PATTERN.test(p);
   });
 }
 
@@ -309,10 +317,10 @@ function resolveBase(env = process.env) {
  * a family that genuinely existed, and the dropped-family check can never fire. Asking
  * the ref what it actually contains is the only way the "before" side is really "before".
  */
-function baselineFamilyNamesAtRef(base) {
+function baselineFamilyNamesAtRef(base, { cwd = REPO_ROOT } = {}) {
   let out;
   try {
-    out = git(['ls-tree', '--name-only', base, `${FIXTURE_SUBDIR}/`]);
+    out = git(['ls-tree', '--name-only', base, `${FIXTURE_SUBDIR}/`], { cwd });
   } catch {
     return []; // fixtures absent at that ref (e.g. after Phase 4's cutover)
   }

@@ -36,7 +36,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const fc = require('fast-check');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir } = require('./helpers.cjs');
 const { BUILD_SCRIPT } = require('./helpers/install-shared.cjs');
 const {
   resolveChangedPaths,
@@ -47,7 +47,6 @@ const {
   currentManifests,
   currentSizes,
   readAckFile,
-  REPO_ROOT,
   baselineFamilyNamesAtRef,
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,
@@ -966,35 +965,54 @@ test('near-miss paths do not attribute a family change', () => {
 
 // ── The baseline must come from the REF, not from HEAD's registry ────────────
 
-test('baseline families are enumerated from the ref, not from the current registry', () => {
+test('baseline families are enumerated from the ref, not from the current registry', (t) => {
   // Regression: enumerating the baseline from MANIFEST_FAMILIES (imported at module load,
   // so it describes PR HEAD) makes a REMOVED runtime invisible — the name is already gone
   // from the current registry, so the base ref is never asked for it, and the dropped-
   // family check can never fire in production even though its unit tests pass.
   //
-  // The discriminator: a historical ref whose fixture set differs from today's registry.
-  // A registry-derived implementation reports the SAME families for every ref; a
-  // ref-derived one reports what that commit actually carried.
-  const rootCommit = execFileSync('git', ['rev-list', '--max-parents=0', 'HEAD'], {
-    cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000,
-  }).trim().split('\n')[0];
+  // Built as its own git repo rather than reaching for this repo's history. The gsd-test
+  // runner shallow-clones base+head, so `rev-list --max-parents=0` there returns the
+  // GRAFTED boundary commit — a recent one carrying every fixture — not a true root. (This
+  // repo also has two root commits locally.) A history-dependent assertion passes on a full
+  // clone and fails in the runner, which is exactly what it did.
+  const repo = createTempDir('emitted-baseline-ref');
+  t.after(() => cleanup(repo));
+  const run = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
 
-  const atRoot = baselineFamilyNamesAtRef(rootCommit);
-  assert.ok(atRoot.length > 0, 'the root commit does carry fixtures');
+  run('init', '--quiet', '-b', 'main');
+  run('config', 'user.email', 'test@example.invalid');
+  run('config', 'user.name', 'Test');
+  const fixtureDir = path.join(repo, ...'tests/fixtures/golden-install-parity'.split('/'));
+  fs.mkdirSync(fixtureDir, { recursive: true });
+
+  // Deliberately includes a family that is NOT in today's registry. This is the real
+  // discriminator: a registry-derived implementation can never report it, because the name
+  // does not exist in MANIFEST_FAMILIES — which is precisely how a REMOVED runtime went
+  // invisible and made the dropped-family check unreachable in production.
+  const atRefOnly = 'zzz-retired-runtime';
+  const committed = ['claude', 'claude-local', atRefOnly];
+  for (const name of committed) {
+    fs.writeFileSync(path.join(fixtureDir, `${name}.json`), JSON.stringify({ 'a/b': 'hash' }));
+  }
+  run('add', '-A');
+  run('commit', '--quiet', '-m', 'fixtures');
+
   assert.ok(
-    atRoot.length < ALL_FAMILIES.length,
-    `the root commit predates runtimes added since (${atRoot.length} vs ${ALL_FAMILIES.length}); ` +
-    'an equal count would mean the family set is being read from the current registry',
+    !ALL_FAMILIES.includes(atRefOnly),
+    'the probe family must be absent from the current registry for this test to discriminate',
   );
-  assert.ok(
-    !atRoot.includes('claude-local'),
-    'claude-local postdates the root commit — its presence would prove registry-derivation',
+  assert.deepEqual(
+    baselineFamilyNamesAtRef('HEAD', { cwd: repo }).slice().sort(),
+    committed.slice().sort(),
+    'the baseline must report what the REF carries, including a family the current registry lacks',
   );
 
   // A ref that cannot be resolved yields nothing rather than throwing, which is the
   // post-cutover signal to fall back to resolveBaseline's cache path.
-  assert.deepEqual(baselineFamilyNamesAtRef('refs/heads/no-such-ref-2723'), []);
+  assert.deepEqual(baselineFamilyNamesAtRef('refs/heads/no-such-ref-2723', { cwd: repo }), []);
 
+  // And against this repo at HEAD it agrees with the registry, since they are in sync here.
   const atHead = baselineFamilyNamesAtRef('HEAD').slice().sort();
   assert.deepEqual(atHead, ALL_FAMILIES.slice().sort());
   assert.ok(atHead.length >= MINIMUM_MANIFEST_FAMILIES);
