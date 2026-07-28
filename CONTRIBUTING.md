@@ -763,26 +763,32 @@ npm run check:alias-drift
 
 This verifies generated alias artifacts are in sync with manifest source-of-truth.
 
-### Generated artifacts that conflict on every merge
+### Editing shipped content (gsd-core/workflows, references, templates, contexts, agents/, commands/gsd/)
 
-If your PR conflicts on `tests/fixtures/golden-install-parity/*.json`,
-`tests/workflow-size-baseline.json`, or `tests/agent-size-baseline.json`, **do not
-hand-resolve them.** They are pure functions of the source tree, so neither "ours"
-nor "theirs" is correct — the only correct value is recomputed.
+Editing the content of a copied shipped file — a `gsd-core/workflows/*.md`, an agent, a
+command definition — requires **zero manual fixture regeneration**. There is no
+committed path→hash manifest or per-file size baseline to update by hand; the
+differential attribution check (`tests/emitted-attribution.test.cjs`, ADR-2719) computes
+what your PR changed against `next` and requires every emitted-artifact hash that moved
+to be attributable to your diff. If it is not, the check fails and names the paths.
+
+Legitimate cases where emitted bytes move for a reason your diff cannot show directly —
+a converter change, for example — go through `tests/emitted-drift-ack.json` (name the
+path, say why); see `CONTEXT.md`'s `### Emitted Artifact Provenance` entry for the full
+model. Growth in a `gsd-core/workflows/*.md` or `agents/gsd-*.md` file is reported with
+its exact byte delta and needs the same acknowledgment; the outer tier hard caps in
+`tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs` are unaffected
+and still apply.
+
+`npm run regen:derived` still exists for the artifacts that ARE committed and derived —
+`sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
+the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the
+one fixture family ADR-2719 §7 keeps committed, because it conflicts on 0 of 7 and its
+diffs are readable). Run it after a change to any of those, before committing:
 
 ```bash
-npm run setup:merge-driver   # once per clone: conflicts resolve to your copy
-npm run regen:derived        # then recompute, before committing
+npm run regen:derived
 ```
-
-`regen:derived` replaces the seven separate invocations this used to take (`npm run
-build` plus six more), and runs them in dependency order — `gen:golden` last, because it
-hashes installed output. It covers twelve generators: the eleven that produce committed
-artifacts, plus `sync-manifest-versions`, which `npm run lint:generated-sync` also checks —
-without it, the command that claims to regenerate everything could still leave that gate red.
-Full guide, including what the driver deliberately does not do:
-[docs/TESTING-SUITES.md](docs/TESTING-SUITES.md) → "the baselines or golden fixtures
-conflict on merge".
 
 Optional local pre-commit hook entry (Git-native):
 
@@ -909,16 +915,16 @@ gsd-core/
                           the canonical example (the discuss-phase/modes split, #717). New modes for
                           discuss-phase land in
                           workflows/discuss-phase/modes/<mode>.md.
-                          Per-file sizes are pinned by a committed baseline
-                          (tests/workflow-size-baseline.json) plus loose tier
-                          hard caps, both in tests/workflow-size-budget.test.cjs.
-                          If you legitimately grow or shrink a workflow file,
-                          run `npm run size:baseline` to update the snapshot and
-                          justify any growth in your PR (or extract content
-                          lazily). The same guard covers agent files
-                          (agents/gsd-*.md). Full how-to + reference in
-                          docs/TESTING-SUITES.md (Workflow & agent size
-                          budget); see issue #1074.
+                          Per-file growth is caught by the differential
+                          attribution check (tests/emitted-attribution.test.cjs,
+                          ADR-2719) — it reports the exact byte delta and
+                          requires an entry in tests/emitted-drift-ack.json,
+                          no committed snapshot to regenerate. Loose tier
+                          hard caps remain in tests/workflow-size-budget.test.cjs.
+                          The same applies to agent files (agents/gsd-*.md,
+                          tests/agent-size-budget.test.cjs). Full how-to +
+                          reference in docs/TESTING-SUITES.md (Workflow &
+                          agent size budget); see issue #1074.
   references/           — Reference documentation (.md)
   templates/            — File templates
 agents/                 — Agent definitions (.md) — CANONICAL SOURCE
