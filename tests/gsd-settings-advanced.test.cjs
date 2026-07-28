@@ -27,6 +27,56 @@ const path = require('node:path');
 
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const { VALID_CONFIG_KEYS } = require('../gsd-core/bin/lib/config-schema.cjs');
+const fc = require('fast-check');
+
+/** How far after a key mention the default may appear and still count as documenting it. */
+const DEFAULT_PROXIMITY_WINDOW = 400;
+
+/**
+ * Is `defaultToken` documented near ANY occurrence of `key` in `workflow`?
+ *
+ * Scans every occurrence, not just the first (#2753). The contract this enforces is "the
+ * workflow documents the default for this key". A first-occurrence search asserts something
+ * narrower and different — "the FIRST mention of this key is followed by the default" — which
+ * silently breaks the moment a workflow names a key in prose before its settings-table entry.
+ * That is a normal thing for a workflow to do, and #2558 does it: a shared language directive
+ * puts `response_language` at index 6 while the table documents `null` at 7185, so the check
+ * failed on a document that was correct.
+ *
+ * Deliberately still forgiving about WHERE the evidence sits (any occurrence) and strict about
+ * WHAT counts (the token inside a bounded window). Widening the window to the whole file would
+ * pass on any unrelated occurrence of the token and gut the check; parsing the settings table
+ * would couple this to table markup. Both rejected.
+ *
+ * @returns {{ok: boolean, occurrences: number, window: string}}
+ *   `occurrences` is how many key occurrences were EXAMINED before deciding — not how many
+ *   exist. The scan short-circuits on the first documenting window, so on success this is the
+ *   1-based position of the match, and on failure it is the document's full count. That
+ *   asymmetry is deliberate: the failure path is where the number has to be trustworthy, since
+ *   "examined N, none documented it" is what distinguishes a genuine miss from the
+ *   first-occurrence false negative this function exists to remove. `occurrences: 0` = key absent.
+ */
+function findDocumentedDefault(workflow, key, defaultToken, windowSize = DEFAULT_PROXIMITY_WINDOW) {
+  let occurrences = 0;
+  let lastWindow = '';
+  // An empty needle would HANG this loop, not end it: String#indexOf('', pos) clamps to
+  // str.length instead of returning -1, so `idx` stabilizes at the end and never goes
+  // negative. Every SPEC_FIELDS key is non-empty today, which is exactly why this has to be
+  // guarded rather than assumed.
+  if (typeof key !== 'string' || key === '') {
+    return { ok: false, occurrences: 0, window: '' };
+  }
+  // Advance by one char, not by key length: a key that overlaps itself or sits inside the
+  // default token must still terminate.
+  for (let idx = workflow.indexOf(key); idx >= 0; idx = workflow.indexOf(key, idx + 1)) {
+    occurrences += 1;
+    lastWindow = workflow.slice(idx, idx + windowSize);
+    if (lastWindow.includes(defaultToken)) {
+      return { ok: true, occurrences, window: lastWindow };
+    }
+  }
+  return { ok: false, occurrences, window: lastWindow };
+}
 
 const ROOT = path.resolve(__dirname, '..');
 // #2790: settings-advanced.md was consolidated into config.md as the --advanced flag.
@@ -151,14 +201,13 @@ describe('gsd-settings-advanced — workflow structure', () => {
       );
     });
     test(`workflow documents default for \`${field.key}\` (${field.default})`, () => {
-      // Search for the default token in proximity to the key. Keep this
-      // forgiving: same line, or within ~200 chars after the key.
-      const idx = workflow.indexOf(field.key);
-      assert.ok(idx >= 0, `key ${field.key} not found`);
-      const window = workflow.slice(idx, idx + 400);
+      // Proximity search across EVERY occurrence of the key, not just the first (#2753).
+      const found = findDocumentedDefault(workflow, field.key, field.default);
+      assert.ok(found.occurrences > 0, `key ${field.key} not found`);
       assert.ok(
-        window.includes(field.default),
-        `default "${field.default}" not found near key ${field.key}. Window:\n${window}`
+        found.ok,
+        `default "${field.default}" not found within ${DEFAULT_PROXIMITY_WINDOW} chars of any ` +
+        `of the ${found.occurrences} occurrence(s) of key ${field.key}. Last window:\n${found.window}`
       );
     });
   }
@@ -817,3 +866,130 @@ describe('issue #33: model_profile schema and settings.md UI are in sync', () =>
 });
   });
 }
+
+// ─── findDocumentedDefault: the proximity scan itself (#2753) ────────────────
+//
+// The generated `workflow documents default for ...` tests above instantiate this helper
+// against the ONE real workflow, which documents every key — so they can only ever exercise
+// the passing path. The negative cases that stop this from degrading into "the token appears
+// somewhere in the file" are only reachable on synthetic documents, which is what these do.
+
+describe('findDocumentedDefault', () => {
+  const KEY = 'response_language';
+  const DEF = 'null';
+  const pad = (n) => 'x'.repeat(n);
+
+  test('documents default on a single occurrence', () => {
+    const r = findDocumentedDefault(`| ${KEY} | ${DEF} | prose`, KEY, DEF);
+    assert.equal(r.ok, true);
+    assert.equal(r.occurrences, 1);
+  });
+
+  test('documents default when a LATER occurrence carries it (#2558 shape)', () => {
+    // Prose directive names the key first; the settings table documents it much later.
+    const doc = `Apply ${KEY} to all user-facing prose.\n${pad(2000)}\n| ${KEY} | ${DEF} |`;
+    const r = findDocumentedDefault(doc, KEY, DEF);
+    assert.equal(r.ok, true, 'a later occurrence must satisfy the contract');
+    assert.equal(r.occurrences, 2);
+  });
+
+  test('documents default when the FIRST occurrence carries it (no regression)', () => {
+    const doc = `| ${KEY} | ${DEF} |\n${pad(2000)}\nlater prose about ${KEY}.`;
+    const r = findDocumentedDefault(doc, KEY, DEF);
+    assert.equal(r.ok, true);
+    // The document contains the key twice, but the scan short-circuits on the first
+    // documenting window, so exactly one occurrence is EXAMINED. Asserting 2 here would be
+    // asserting the document's contents rather than the function's behavior.
+    assert.equal(r.occurrences, 1, 'must short-circuit rather than scan the whole document');
+  });
+
+  test('documents default on the LAST of many occurrences', () => {
+    const doc = [pad(500), KEY, pad(500), KEY, pad(500), KEY, pad(10), DEF].join('\n');
+    const r = findDocumentedDefault(doc, KEY, DEF);
+    assert.equal(r.ok, true);
+    assert.equal(r.occurrences, 3);
+  });
+
+  test('FAILS when no occurrence documents the default', () => {
+    // The load-bearing negative: scanning more occurrences must not turn a real miss into a pass.
+    const doc = [pad(500), KEY, pad(500), KEY, pad(500), KEY, pad(500)].join('\n');
+    const r = findDocumentedDefault(doc, KEY, DEF);
+    assert.equal(r.ok, false);
+    assert.equal(r.occurrences, 3, 'the count is what makes a genuine miss diagnosable');
+  });
+
+  test('reports zero occurrences when the key is absent', () => {
+    const r = findDocumentedDefault(`nothing relevant here ${DEF}`, KEY, DEF);
+    assert.equal(r.ok, false);
+    assert.equal(r.occurrences, 0);
+    assert.equal(r.window, '');
+  });
+
+  test('window boundary holds at limit-1 / limit / limit+1', () => {
+    // Offset measured from the start of the key, matching slice(idx, idx + windowSize).
+    const at = (gap) => `${KEY}${pad(gap)}${DEF}`;
+    const inside = DEFAULT_PROXIMITY_WINDOW - KEY.length - DEF.length - 1;
+    assert.equal(findDocumentedDefault(at(inside), KEY, DEF).ok, true, 'limit-1 must pass');
+    assert.equal(findDocumentedDefault(at(inside + 1), KEY, DEF).ok, true, 'limit must pass');
+    assert.equal(findDocumentedDefault(at(inside + 2), KEY, DEF).ok, false, 'limit+1 must fail');
+  });
+
+  test('fails cleanly on an empty document', () => {
+    const r = findDocumentedDefault('', KEY, DEF);
+    assert.deepEqual(r, { ok: false, occurrences: 0, window: '' });
+  });
+
+  test('terminates when the key overlaps itself', () => {
+    // Advance-by-one must not loop forever on a self-overlapping needle.
+    const r = findDocumentedDefault('aaaa', 'aa', 'zz');
+    assert.equal(r.ok, false);
+    assert.equal(r.occurrences, 3);
+  });
+
+  test('is newline-agnostic (CRLF reaches the same verdict as LF)', () => {
+    const lf = `prose ${KEY}\n${pad(2000)}\n| ${KEY} | ${DEF} |`;
+    const crlf = lf.replace(/\n/g, '\r\n');
+    // Asserting only that the two agree is vacuous — a stub returning a constant satisfies it.
+    // Pin the ABSOLUTE verdict on both, then that they agree.
+    assert.equal(findDocumentedDefault(lf, KEY, DEF).ok, true);
+    assert.equal(findDocumentedDefault(crlf, KEY, DEF).ok, true);
+    // And a document neither newline style can rescue must fail under both.
+    const missLf = [pad(500), KEY, pad(500), KEY, pad(500)].join('\n');
+    assert.equal(findDocumentedDefault(missLf, KEY, DEF).ok, false);
+    assert.equal(findDocumentedDefault(missLf.replace(/\n/g, '\r\n'), KEY, DEF).ok, false);
+  });
+
+  test('an empty key is refused rather than hanging the scan', () => {
+    // String#indexOf('', pos) clamps to str.length instead of returning -1, so an unguarded
+    // scan loops forever. Guarded above; this pins it. A timeout here means the guard is gone.
+    const r = findDocumentedDefault('some workflow text', '', DEF);
+    assert.deepEqual(r, { ok: false, occurrences: 0, window: '' });
+    assert.deepEqual(
+      findDocumentedDefault('', '', ''),
+      { ok: false, occurrences: 0, window: '' }
+    );
+  });
+
+  test('property: verdict is exactly "default fits inside the window from the key"', () => {
+    // windowSize is a budget limit, so it carries a property test (CLAUDE.md TEST RULES).
+    // Disjoint alphabets keep key/default/filler from colliding, so the expected verdict is
+    // pure arithmetic: the window starts AT the key and spans windowSize chars.
+    fc.assert(
+      fc.property(
+        fc.stringMatching(/^[a-f]{1,12}$/),
+        fc.stringMatching(/^[m-r]{1,8}$/),
+        fc.integer({ min: 0, max: 600 }),
+        fc.integer({ min: 20, max: 400 }),
+        (key, def, gap, windowSize) => {
+          const doc = `${key}${'z'.repeat(gap)}${def}`;
+          const expected = key.length + gap + def.length <= windowSize;
+          const r = findDocumentedDefault(doc, key, def, windowSize);
+          assert.equal(r.ok, expected);
+          assert.ok(r.occurrences >= 1, 'the key is present by construction');
+          return true;
+        }
+      ),
+      { numRuns: 300, seed: 2753 }
+    );
+  });
+});
