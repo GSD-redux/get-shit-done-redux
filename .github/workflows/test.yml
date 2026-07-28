@@ -199,12 +199,10 @@ jobs:
 
       - name: Export GSD_EMITTED_BASELINE when the cache restored
         if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f .gsd-cache/emitted-baseline.json ]; then
-            echo "GSD_EMITTED_BASELINE=$GITHUB_WORKSPACE/.gsd-cache/emitted-baseline.json" >> "$GITHUB_ENV"
-          fi
+        # No `shell:` override — H1 shell policy requires each job's native shell
+        # (pwsh on Windows, zsh on macOS test-full, bash on Linux). A bare `node`
+        # invocation has no shell-specific syntax, so it is valid under all three.
+        run: node scripts/ci-export-emitted-baseline-env.cjs
 
       - name: Prepare scoped test list
         if: matrix.scope != 'full'
@@ -443,12 +441,10 @@ jobs:
 
       - name: Export GSD_EMITTED_BASELINE when the cache restored
         if: github.event_name == 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -f .gsd-cache/emitted-baseline.json ]; then
-            echo "GSD_EMITTED_BASELINE=$GITHUB_WORKSPACE/.gsd-cache/emitted-baseline.json" >> "$GITHUB_ENV"
-          fi
+        # No `shell:` override — H1 shell policy requires each job's native shell
+        # (pwsh on Windows, zsh on macOS test-full, bash on Linux). A bare `node`
+        # invocation has no shell-specific syntax, so it is valid under all three.
+        run: node scripts/ci-export-emitted-baseline-env.cjs
 
       # The heavy unit suite is split across the 3 shards — each runs a
       # deterministic cost-balanced third of the sorted unit-file list (#2472). The

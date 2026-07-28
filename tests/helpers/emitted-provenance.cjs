@@ -581,14 +581,27 @@ assertNoIdentityTransforms(PROVENANCE_RULES);
  * `"s"`, `[]`, `null` or `true` as "no keys" would let the whole guard pass
  * vacuously on a corrupt build.
  */
-function loadManifests() {
-  return MANIFEST_FAMILIES.map(({ name, runtime, scope }) => {
-    const { configDir, root } = runMinimalInstall({ runtime, scope });
+/**
+ * @param {object} [deps]  injected for testability (hostile-input coverage below) —
+ *   production callers use the defaults.
+ * @param {Array}    [deps.families]  MANIFEST_FAMILIES by default
+ * @param {function} [deps.install]   runMinimalInstall by default
+ * @param {function} [deps.build]     buildParityManifest by default
+ * @param {function} [deps.clean]     cleanup by default
+ */
+function loadManifests({
+  families = MANIFEST_FAMILIES,
+  install = runMinimalInstall,
+  build = buildParityManifest,
+  clean = cleanup,
+} = {}) {
+  return families.map(({ name, runtime, scope }) => {
+    const { configDir, root } = install({ runtime, scope });
     let parsed;
     try {
-      parsed = buildParityManifest(configDir, root);
+      parsed = build(configDir, root);
     } finally {
-      cleanup(root);
+      clean(root);
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(

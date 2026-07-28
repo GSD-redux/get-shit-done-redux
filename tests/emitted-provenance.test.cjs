@@ -578,50 +578,59 @@ test('partial failure names only the offending key (limit+1)', () => {
 
 // ─── Hostile input ───────────────────────────────────────────────────────────
 
-test('non-object manifest JSON is rejected, not silently treated as empty', () => {
-  const tmp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-prov-'));
-  try {
-    // Each of these parses cleanly but has no keys — treating them as "no paths"
-    // would let the entire guard pass vacuously on a corrupt fixture.
-    for (const [name, body] of [
-      ['zero.json', '0'],
-      ['str.json', '"a string"'],
-      ['arr.json', '[]'],
-      ['null.json', 'null'],
-      ['bool.json', 'true'],
-    ]) {
-      fs.writeFileSync(path.join(tmp, name), body);
-      assert.throws(
-        () => loadManifests(tmp),
-        (err) => err.message.includes(name) && err.message.includes('path->hash'),
-        `${name} must be rejected with a message naming the file`,
-      );
-      fs.unlinkSync(path.join(tmp, name));
-    }
+// #2724 (ADR-2719 Phase 4): loadManifests() used to read committed fixture JSON off
+// disk (`fs.readFileSync` over `tests/fixtures/golden-install-parity/*.json`), which
+// is what made these two hostile-input tests injectable — write a bad file, point
+// the loader at the temp dir. That fixture directory is deleted; loadManifests()
+// now builds every manifest for real (install + hash), so the injection seam moved
+// to loadManifests()'s own {families, install, build, clean} parameters instead.
 
-    // Present but empty.
-    fs.writeFileSync(path.join(tmp, 'empty.json'), '');
-    assert.throws(() => loadManifests(tmp), /empty\.json is empty/);
-    fs.unlinkSync(path.join(tmp, 'empty.json'));
+const FAKE_FAMILY = [{ name: 'fake', runtime: 'fake', scope: 'global' }];
+const fakeInstall = () => ({ configDir: '/fake/config', root: '/fake/root' });
 
-    // Valid JSON object is accepted.
-    fs.writeFileSync(path.join(tmp, 'ok.json'), '{"scripts/lib/cli-exit.cjs":"deadbeef"}');
-    assert.equal(loadManifests(tmp).length, 1);
-  } finally {
-    cleanup(tmp);
+test('a non-object build result is rejected, not silently treated as empty', () => {
+  // Each of these "parses" cleanly but has no keys — treating them as "no paths"
+  // would let the entire guard pass vacuously on a corrupt build.
+  for (const bad of [0, 'a string', [], null, true]) {
+    let cleaned = false;
+    assert.throws(
+      () => loadManifests({
+        families: FAKE_FAMILY,
+        install: fakeInstall,
+        build: () => bad,
+        clean: () => { cleaned = true; },
+      }),
+      (err) => err.message.includes('fake') && err.message.includes('path->hash'),
+      `${JSON.stringify(bad)} must be rejected with a message naming the family`,
+    );
+    assert.ok(cleaned, 'clean() must still run when build() returns a bad value');
   }
+
+  // A valid object is accepted.
+  const result = loadManifests({
+    families: FAKE_FAMILY,
+    install: fakeInstall,
+    build: () => ({ 'scripts/lib/cli-exit.cjs': 'deadbeef' }),
+    clean: () => {},
+  });
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0], { file: 'fake.json', runtime: 'fake', keys: ['scripts/lib/cli-exit.cjs'] });
 });
 
-test('unreadable fixture surfaces an error', () => {
-  // Deterministic fs monkeypatch restored in `finally` — NEVER chmod 0o000, which
-  // root bypasses (the test would silently pass with zero coverage in root CI).
-  const orig = fs.readFileSync;
-  try {
-    fs.readFileSync = () => { throw new Error('injected read failure'); };
-    assert.throws(() => loadManifests(), /injected read failure/);
-  } finally {
-    fs.readFileSync = orig;
-  }
+test('a build failure surfaces an error, and clean() still runs', () => {
+  let cleaned = false;
+  assert.throws(
+    () => loadManifests({
+      families: FAKE_FAMILY,
+      install: fakeInstall,
+      build: () => { throw new Error('injected build failure'); },
+      clean: () => { cleaned = true; },
+    }),
+    /injected build failure/,
+  );
+  // The `finally` around build() must run clean() even when build() throws —
+  // an install left behind on every hostile build is a real resource leak.
+  assert.ok(cleaned, 'clean() must run even when build() throws');
   // Restoration is real, not assumed.
   assert.equal(loadManifests().length, EXPECTED_MANIFEST_COUNT);
 });
