@@ -35,6 +35,29 @@ const { attributeEmittedPath } = require('./emitted-provenance.cjs');
 const ACK_VERSION = 1;
 
 /**
+ * A brand-new workflow/agent file — absent from the baseline, present now — must
+ * still stay under the Codex `project_doc_max_bytes` anchor (ADR-1610 Decision
+ * point 3, `NEW_FILE_CAP` in the pre-#2724 tests/workflow-size-budget.test.cjs).
+ *
+ * #2724 (ADR-2719 Phase 4) deleted the committed per-file baseline that cap used to
+ * key "not yet baselined" off of. The size ratchet below (ADR-2719 §4) already
+ * computes the exact same signal for a different reason — a name present in
+ * `sizeCurrent` but absent from `sizeBaseline` IS "new" by construction, the same
+ * definition ADR-1610 used — so no new baseline, git diff, or CI wiring is needed to
+ * revive the cap; it only needed a home once the old one was deleted.
+ *
+ * This is a HARD cap, not ack-able, matching the tier hard caps it sits beside
+ * (XL/LARGE/DEFAULT in tests/workflow-size-budget.test.cjs): the fix for exceeding it
+ * is extraction, never an acknowledgment entry. Not exempted by explicit XL/LARGE
+ * tiering the way the original test-file version was — this module is intentionally
+ * pure and has no access to that classification (tests/workflow-size-budget.test.cjs's
+ * XL_WORKFLOWS/LARGE_WORKFLOWS sets) — so a legitimately large NEW file must be split
+ * via the same lazy-extraction pattern the tier caps already require, one release
+ * earlier than an existing file would need to. Documented narrowing, not a silent one.
+ */
+const NEW_FILE_CAP = 32768;
+
+/**
  * Does a changed repo path satisfy a provenance `sources` entry?
  *
  * A trailing `/` marks a PREFIX (Phase 2's SOURCE_PREFIX_SUFFIX contract) — e.g. Kimi's
@@ -115,7 +138,8 @@ function parseAck(doc, { source = 'emitted-drift-ack.json' } = {}) {
  *
  * @returns {{
  *   moved: number, attributed: Array, unattributable: Array, acked: Array,
- *   removed: Array, grown: Array, shrunk: Array, staleAcks: string[], errors: string[], ok: boolean
+ *   removed: Array, grown: Array, shrunk: Array, newFileCapExceeded: Array,
+ *   staleAcks: string[], errors: string[], ok: boolean
  * }}
  */
 function diffEmitted({
@@ -195,6 +219,10 @@ function diffEmitted({
         continue;
       }
 
+      // Sources are checked before transforms so `via` is deterministic when a moved
+      // path is explained by both at once — the SOURCE is the more specific, more
+      // legible story ("the agent file changed") and is what a reviewer expects to
+      // see first, not an accident of iteration order.
       let via = null;
       for (const source of attribution.sources) {
         const hit = sourceSatisfiedBy(source, changedSet);
@@ -204,6 +232,16 @@ function diffEmitted({
         // non-empty template) but it is a footgun for the next rule author.
         if (hit !== null) { via = hit; break; }
       }
+      // #2757: a `derived`/`code-derived` artifact's bytes can also move because the
+      // TRANSFORM code that generates them changed, not the source it derives from —
+      // `sources` alone cannot express that. Reuses `sourceSatisfiedBy` unchanged so
+      // exact/prefix semantics stay identical for both lists.
+      if (via === null) {
+        for (const transform of attribution.transforms) {
+          const hit = sourceSatisfiedBy(transform, changedSet);
+          if (hit !== null) { via = hit; break; }
+        }
+      }
 
       if (via !== null) {
         attributed.push({ ...record, via });
@@ -211,7 +249,11 @@ function diffEmitted({
         usedAcks.add(rel);
         acked.push({ ...record, reason: ackEntries.get(rel).reason });
       } else {
-        unattributable.push({ ...record, expectedSources: attribution.sources });
+        unattributable.push({
+          ...record,
+          expectedSources: attribution.sources,
+          expectedTransforms: attribution.transforms,
+        });
       }
     }
   }
@@ -222,9 +264,17 @@ function diffEmitted({
   // report a size-growth ack as stale.
   const grown = [];
   const shrunk = [];
+  const newFileCapExceeded = [];
   if (sizeBaseline && sizeCurrent) {
     for (const name of Object.keys(sizeCurrent).sort()) {
-      if (!Object.prototype.hasOwnProperty.call(sizeBaseline, name)) continue;
+      if (!Object.prototype.hasOwnProperty.call(sizeBaseline, name)) {
+        // No baseline entry: this file is NEW. No `from` to diff against, so the
+        // growth ratchet does not apply — but the absolute new-file cap does
+        // (ADR-1610 Decision point 3). Never ack-able; see NEW_FILE_CAP's doc comment.
+        const bytes = sizeCurrent[name];
+        if (bytes > NEW_FILE_CAP) newFileCapExceeded.push({ name, bytes, cap: NEW_FILE_CAP });
+        continue;
+      }
       const from = sizeBaseline[name];
       const to = sizeCurrent[name];
       if (to > from) {
@@ -250,7 +300,8 @@ function diffEmitted({
   const ok = errors.length === 0
     && unattributable.length === 0
     && unackedGrowth.length === 0
-    && staleAcks.length === 0;
+    && staleAcks.length === 0
+    && newFileCapExceeded.length === 0;
 
   return {
     moved,
@@ -260,6 +311,7 @@ function diffEmitted({
     removed,
     grown,
     shrunk,
+    newFileCapExceeded,
     staleAcks,
     errors,
     ok,
@@ -279,7 +331,18 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
 
   if (result.unattributable.length) {
     const list = result.unattributable.slice(0, sampleLimit)
-      .map((u) => `  ${u.runtime}: ${u.rel}\n      rule ${u.ruleId}; expected a change under ${u.expectedSources.join(' or ')}`);
+      .map((u) => {
+        // #2757: a rule may explain a moved path via its source OR its transform
+        // code; name whichever possibilities exist so the message tells the whole
+        // story, not just half of it.
+        const expected = [
+          u.expectedSources.length ? `a change under ${u.expectedSources.join(' or ')}` : null,
+          (u.expectedTransforms && u.expectedTransforms.length)
+            ? `a transform change under ${u.expectedTransforms.join(' or ')}`
+            : null,
+        ].filter(Boolean).join(', or ');
+        return `  ${u.runtime}: ${u.rel}\n      rule ${u.ruleId}; expected ${expected}`;
+      });
     parts.push(
       `${result.unattributable.length} emitted path(s) changed that nothing in this diff explains:\n${list.join('\n')}` +
       (result.unattributable.length > sampleLimit
@@ -299,6 +362,14 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
     );
   }
 
+  if (result.newFileCapExceeded.length) {
+    const list = result.newFileCapExceeded.slice(0, sampleLimit)
+      .map((f) => `  ${f.name} is ${f.bytes} bytes — exceeds the ${f.cap}-byte new-file cap (ADR-1610)`);
+    parts.push(
+      `${result.newFileCapExceeded.length} new file(s) exceed the new-file cap (extract, not ack):\n${list.join('\n')}`,
+    );
+  }
+
   if (result.staleAcks.length) {
     parts.push(
       `${result.staleAcks.length} stale acknowledgment(s) — the ripple they explained is gone, ` +
@@ -312,6 +383,7 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
 
 module.exports = {
   ACK_VERSION,
+  NEW_FILE_CAP,
   sourceSatisfiedBy,
   parseAck,
   diffEmitted,

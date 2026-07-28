@@ -186,6 +186,24 @@ jobs:
       - name: Dependency integrity gate
         run: node scripts/check-npm-integrity.cjs
 
+      # #2724 (ADR-2719 §5): the differential attribution check's baseline is cached,
+      # not committed. This restores what the push-to-next job published, keyed on
+      # the PR's base sha — the "next sha the PR was merged with" the ADR requires.
+      # A miss is NOT a failure here: resolveBaseline() degrades to an in-job build.
+      - name: Restore emitted-baseline cache
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .gsd-cache/emitted-baseline.json
+          key: emitted-baseline-${{ github.event.pull_request.base.sha }}
+
+      - name: Export GSD_EMITTED_BASELINE when the cache restored
+        if: github.event_name == 'pull_request'
+        # No `shell:` override — H1 shell policy requires each job's native shell
+        # (pwsh on Windows, zsh on macOS test-full, bash on Linux). A bare `node`
+        # invocation has no shell-specific syntax, so it is valid under all three.
+        run: node scripts/ci-export-emitted-baseline-env.cjs
+
       - name: Prepare scoped test list
         if: matrix.scope != 'full'
         env:
@@ -411,6 +429,23 @@ jobs:
       - name: Dependency integrity gate
         run: node scripts/check-npm-integrity.cjs
 
+      # #2724 (ADR-2719 §5): restore the differential attribution check's cached
+      # baseline, keyed on the PR's base sha. A miss degrades to an in-job build
+      # rather than failing (resolveBaseline()'s documented precedence).
+      - name: Restore emitted-baseline cache
+        if: github.event_name == 'pull_request'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .gsd-cache/emitted-baseline.json
+          key: emitted-baseline-${{ github.event.pull_request.base.sha }}
+
+      - name: Export GSD_EMITTED_BASELINE when the cache restored
+        if: github.event_name == 'pull_request'
+        # No `shell:` override — H1 shell policy requires each job's native shell
+        # (pwsh on Windows, zsh on macOS test-full, bash on Linux). A bare `node`
+        # invocation has no shell-specific syntax, so it is valid under all three.
+        run: node scripts/ci-export-emitted-baseline-env.cjs
+
       # The heavy unit suite is split across the 3 shards — each runs a
       # deterministic cost-balanced third of the sorted unit-file list (#2472). The
       # union of shards 1/3 + 2/3 + 3/3 is the full unit suite, so coverage is
@@ -496,3 +531,39 @@ jobs:
           fi
 
           echo "Required test gate passed."
+
+  # #2724 (ADR-2719 §5): publishes the differential attribution check's baseline
+  # artifact after `next` advances, keyed on the merge sha. PR lanes restore it
+  # (see the `test` and `test-full` jobs' "Restore emitted-baseline cache" steps),
+  # keyed on `pull_request.base.sha` — "the next sha the PR was merged with", the
+  # ADR's own phrasing. Not required by `required-tests`: a miss here degrades PR
+  # lanes to an in-job build (resolveBaseline()'s documented precedence) rather
+  # than failing them, so this job's own failure must not block `next`.
+  publish-emitted-baseline:
+    name: Publish emitted-baseline artifact
+    needs: [changes, test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/next' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: true
+          token: ${{ github.token }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build emitted-baseline artifact
+        run: node scripts/gen-emitted-baseline.cjs --out .gsd-cache/emitted-baseline.json
+
+      - name: Publish baseline cache (keyed on this sha)
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: .gsd-cache/emitted-baseline.json
+          key: emitted-baseline-${{ github.sha }}

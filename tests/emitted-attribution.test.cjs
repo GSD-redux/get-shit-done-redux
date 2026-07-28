@@ -1,25 +1,26 @@
 'use strict';
 
 /**
- * emitted-attribution.test.cjs — the differential attribution check (#2723,
- * ADR-2719 §1/§3/§4/§5/§6, epic #2719 Phase 3).
+ * emitted-attribution.test.cjs — the differential attribution check (#2723/#2724,
+ * ADR-2719 §1/§3/§4/§5/§6, epic #2719 Phases 3-4).
  *
- * Runs BESIDE tests/golden-install-parity.test.cjs — both green, fixtures untouched.
- * Any PR where the golden fails and this passes is a Phase 2 provenance-table hole;
- * that disagreement is the entire point of the dual-run window, and Phase 4 (#2724)
- * must not land until it has been observed on real PRs.
+ * This is the SOLE gate for emitted-artifact propagation (#2724, Phase 4 cutover).
+ * `tests/golden-install-parity.test.cjs` — the committed path->hash fixtures it dual-ran
+ * beside during Phase 3 — is deleted. The dual-run window it ran on real PRs (#2412,
+ * #2566, #2728) surfaced two real defects (#2750, #2760), both now fixed and merged; no
+ * disagreement between the two checks was ever observed once both landed correctly.
  *
  * The law: every emitted path whose hash moved between `next` HEAD and PR HEAD must be
  * attributable — through the Phase 2 table — to a path the PR actually changed.
  * Unattributable deltas fail with the paths NAMED. The only way through is a committed
  * acknowledgment, never a flag (a contributor facing a red gate sets a flag, which is
- * what UPDATE_GOLDEN=1 is today).
+ * what UPDATE_GOLDEN=1 used to be, before #2724 removed it).
  *
  * Structure: the pure law is exercised against synthetic manifests, which is what makes
  * the four failing-first criteria practical to assert at all — and then the final test
  * runs that same law against the REAL tree: 19 actual installer spawns for the current
- * side, `git show origin/next:<fixture>` for the baseline side, real `git diff` for the
- * changed paths, and the real `tests/emitted-drift-ack.json`.
+ * side, `resolveBaseline()` (env / cache / in-job build) for the baseline side, real
+ * `git diff` for the changed paths, and the real `tests/emitted-drift-ack.json`.
  *
  * That last test is load-bearing. Without it this file would be interface-only — every
  * assertion true of hand-built inputs and none of the repo — which is the
@@ -36,22 +37,30 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const fc = require('fast-check');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir } = require('./helpers.cjs');
 const { BUILD_SCRIPT } = require('./helpers/install-shared.cjs');
 const {
   resolveChangedPaths,
   resolveBase,
   baseRefCandidates,
-  baselineManifestsAtRef,
-  baselineSizesAtRef,
+  buildBaselineAtRef,
   currentManifests,
   currentSizes,
   readAckFile,
+  baselineFamilyNamesAtRef,
+  MANIFEST_FAMILIES,
+  MINIMUM_MANIFEST_FAMILIES,
+  REGISTRY_SIGNAL_PATHS,
+  FAMILY_REASON,
+  touchesRuntimeRegistry,
+  reconcileFamilies,
+  safeDirArgs,
 } = require('./helpers/emitted-runtime.cjs');
 
-const { EXPECTED_MANIFEST_COUNT } = require('./helpers/emitted-provenance.cjs');
+const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
 const {
   ACK_VERSION,
+  NEW_FILE_CAP,
   sourceSatisfiedBy,
   parseAck,
   diffEmitted,
@@ -61,11 +70,16 @@ const {
 const {
   BASELINE_ENV,
   BASELINE_VERSION,
+  DEFAULT_CACHE_PATH,
   resolveBaseline,
 } = require('./helpers/emitted-baseline.cjs');
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
+
+/** This checkout's own root — used to build a synthetic commit in-place (see
+ *  `buildBaselineAtRef resolves a baseline via the in-job build...` below). */
+const REPO_ROOT = path.join(__dirname, '..');
 
 /** A real emitted key + its real source, so rows assert the shape production uses. */
 const WORKFLOW_KEY = 'gsd-core/workflows/plan-phase.md';
@@ -208,6 +222,153 @@ test('a failed git diff is an error, not an empty change set', () => {
   const r = diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: null });
   assert.ok(!r.ok);
   assert.match(r.errors.join('\n'), /changedPaths must be an array/);
+});
+
+// ─── Transform attribution (#2757 defect 1) ──────────────────────────────────
+//
+// A `kind: 'derived'` rule's bytes can legitimately move for a second reason the
+// `sources`-only design cannot express: the TRANSFORM code that generates the
+// derived artifact changed, not the source it derives from. Replays the #2566
+// shape verbatim: 16 emitted `agents/*.toml` moved, the diff touches
+// `src/runtime-artifact-conversion.cts` and zero `agents/*.md`.
+
+test('a derived path explained only by a transform change is attributed (#2566 shape)', () => {
+  const moved = {};
+  const base = {};
+  const agentNames = [
+    'gsd-planner', 'gsd-executor', 'gsd-verifier', 'gsd-code-reviewer',
+    'gsd-security-auditor', 'gsd-nyquist-auditor', 'gsd-doc-writer', 'gsd-roadmapper',
+    'gsd-phase-researcher', 'gsd-pattern-mapper', 'gsd-plan-checker', 'gsd-debugger',
+    'gsd-ui-checker', 'gsd-eval-planner', 'gsd-framework-selector', 'gsd-code-fixer',
+  ];
+  assert.equal(agentNames.length, 16, 'the #2566 reproduction is 16 emitted .toml files');
+  for (const name of agentNames) {
+    base[`agents/${name}.toml`] = `before-${name}`;
+    moved[`agents/${name}.toml`] = `after-${name}`;
+  }
+
+  // Before the fix, `agents-toml-derived` has no `transforms` field: this must fail.
+  const withoutTransformChange = diffEmitted({
+    baseline: mf(base),
+    current: mf(moved),
+    // Deliberately NOT `src/runtime-artifact-conversion.cts` — proves the negative
+    // (an unrelated source change does not accidentally attribute).
+    changedPaths: ['README.md'],
+  });
+  assert.equal(withoutTransformChange.unattributable.length, 16);
+  assert.ok(!withoutTransformChange.ok);
+
+  // The actual #2566 shape: the diff touches the transform, not any agents/*.md.
+  const withTransformChange = diffEmitted({
+    baseline: mf(base),
+    current: mf(moved),
+    changedPaths: ['src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(
+    withTransformChange.unattributable.length, 0,
+    'a transform-only change must attribute every moved derived path',
+  );
+  assert.equal(withTransformChange.attributed.length, 16);
+  for (const rec of withTransformChange.attributed) {
+    assert.equal(rec.via, 'src/runtime-artifact-conversion.cts');
+    assert.equal(rec.ruleId, 'agents-toml-derived');
+  }
+  assert.ok(withTransformChange.ok);
+});
+
+test('an identity-classified agent .md moved by a transform-only change is unattributable (#2757 defect 2, pre-fix shape)', () => {
+  // Reproduces the maintainer's follow-up: codex's agents/*.md hash moves without any
+  // agents/*.md in the diff. Whether this attributes now depends entirely on whether
+  // `agents-verbatim` has been reclassified to `derived` with `transforms` declared —
+  // this test asserts the REAL, current behavior of the shipped table, so it doubles
+  // as the defect-2 regression once the fix lands (the id in the rule table has not
+  // changed, only `kind`/`transforms`, so this same test proves both "was broken" and
+  // "is fixed" depending on which commit runs it).
+  const r = diffEmitted({
+    baseline: { codex: { 'agents/gsd-nyquist-auditor.md': 'before' } },
+    current: { codex: { 'agents/gsd-nyquist-auditor.md': 'after' } },
+    changedPaths: ['src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(r.unattributable.length, 0, 'a declared transform must explain the moved identity-family path');
+  assert.equal(r.attributed[0].ruleId, 'agents-verbatim');
+  assert.equal(r.attributed[0].via, 'src/runtime-artifact-conversion.cts');
+  assert.ok(r.ok);
+});
+
+test('a moved derived path with neither source nor transform in the diff still fails, named', () => {
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['docs/README.md'],
+  });
+  assert.equal(r.unattributable.length, 1);
+  assert.equal(r.unattributable[0].rel, 'agents/gsd-planner.toml');
+  assert.deepEqual(r.unattributable[0].expectedSources, ['agents/gsd-planner.md']);
+  assert.ok(
+    r.unattributable[0].expectedTransforms.includes('src/runtime-artifact-conversion.cts'),
+    'the message must be able to say what transform WOULD have explained it too',
+  );
+  const msg = formatReport(r);
+  assert.ok(msg.includes('agents/gsd-planner.toml'));
+  assert.ok(msg.includes('src/runtime-artifact-conversion.cts'), 'the transform hint must appear in the report');
+});
+
+test('an unrelated src file does not attribute a moved derived path (transforms list stays narrow)', () => {
+  // The review's own risk: a transform list that is too broad silently excuses real
+  // ripples. src/state-document.cts has nothing to do with agent conversion.
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['src/state-document.cts'],
+  });
+  assert.equal(r.unattributable.length, 1, 'an unrelated src/*.cts file must NOT excuse the ripple');
+  assert.ok(!r.ok);
+});
+
+test('bin/install.js alone does not attribute a moved agent artifact (deliberate exclusion)', () => {
+  // bin/install.js implements the final splice (injectEffortFrontmatter,
+  // generateCodexAgentToml) but is deliberately excluded from AGENT_TRANSFORM_SRCS —
+  // at 13k+ lines spanning every installer concern, including it would be the blanket
+  // escape hatch ADR-2719 warns against. This proves the exclusion holds in the
+  // shipped table, not just in the design doc.
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['bin/install.js'],
+  });
+  assert.equal(r.unattributable.length, 1, 'bin/install.js alone must not attribute — it is not a declared transform');
+  assert.ok(!r.ok);
+});
+
+test('a moved path with a source match wins over an also-present transform match (deterministic via)', () => {
+  const r = diffEmitted({
+    baseline: mf({ 'agents/gsd-planner.toml': 'before' }),
+    current: mf({ 'agents/gsd-planner.toml': 'after' }),
+    changedPaths: ['agents/gsd-planner.md', 'src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(r.unattributable.length, 0);
+  assert.equal(r.attributed[0].via, 'agents/gsd-planner.md', 'sources are checked before transforms');
+});
+
+test('a transform-explained converter ripple still needs no ack (transforms are a first-class attribution, not a workaround)', () => {
+  // Contrast with 'a converter change fails without an ack and passes with one' above:
+  // THAT test simulates a family with NO transforms declared, so it correctly still
+  // requires an ack. agents-toml-derived DOES declare a transform, so the equivalent
+  // ripple must attribute directly, with no ack needed at all.
+  const moved = {};
+  const base = {};
+  for (let i = 0; i < 5; i++) {
+    base[`agents/gsd-fixture-${i}.toml`] = `h${i}`;
+    moved[`agents/gsd-fixture-${i}.toml`] = `x${i}`;
+  }
+  const r = diffEmitted({
+    baseline: mf(base),
+    current: mf(moved),
+    changedPaths: ['src/runtime-artifact-conversion.cts'],
+  });
+  assert.equal(r.unattributable.length, 0);
+  assert.equal(r.acked.length, 0, 'no ack was needed — the transform explains it directly');
+  assert.ok(r.ok);
 });
 
 test('an unattributable-by-table path surfaces as an error', () => {
@@ -399,6 +560,70 @@ test('shrinkage is reported but needs no ack', () => {
   assert.ok(r.ok, 'shrinkage is not creep — gating it would punish what the ratchet wants');
 });
 
+// ─── New-file cap (ADR-1610 Decision point 3, revived after #2724) ───────────
+//
+// tests/workflow-size-baseline.json used to double as the "has this file been
+// baselined before" signal a NEW_FILE_CAP check keyed off. #2724 deleted it without
+// reviving that check anywhere — a brand-new workflow/agent file (present in
+// sizeCurrent, absent from sizeBaseline) got zero size scrutiny at all, silently
+// loosening the bound from 32768 (ADR-1610) to whichever tier cap it happened to
+// fall under (DEFAULT_CAP = 40960, nearly 8 KiB looser) with nothing in CI to say so.
+// A file in that gap risks silent truncation at the Codex `project_doc_max_bytes`
+// anchor. Not ack-able — same as the tier hard caps, the fix is extraction.
+
+test('a brand-new file at exactly the cap is accepted (limit)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP },
+  });
+  assert.deepEqual(r.newFileCapExceeded, []);
+  assert.ok(r.ok, `exactly ${NEW_FILE_CAP} bytes must be accepted`);
+});
+
+test('a brand-new file one byte over the cap is rejected (limit+1)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
+  });
+  assert.deepEqual(r.newFileCapExceeded, [
+    { name: 'new-workflow.md', bytes: NEW_FILE_CAP + 1, cap: NEW_FILE_CAP },
+  ]);
+  assert.ok(!r.ok, `${NEW_FILE_CAP + 1} bytes must be rejected`);
+  assert.match(formatReport(r), /new-workflow\.md is 32769 bytes/);
+});
+
+test('a brand-new file one byte under the cap is accepted (limit-1)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP - 1 },
+  });
+  assert.deepEqual(r.newFileCapExceeded, []);
+  assert.ok(r.ok, `${NEW_FILE_CAP - 1} bytes must be accepted`);
+});
+
+test('the new-file cap is not ack-able (extraction, not acknowledgment, is the fix)', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
+    ack: { version: ACK_VERSION, paths: { 'new-workflow.md': { reason: 'trying to bypass it' } } },
+  });
+  assert.equal(r.newFileCapExceeded.length, 1, 'an ack entry must not exempt the new-file cap');
+  assert.ok(!r.ok);
+});
+
+test('an existing (baselined) file is governed by growth, not the new-file cap', () => {
+  // A file already IN sizeBaseline is not "new" even if it happens to sit above
+  // NEW_FILE_CAP — that is the tier hard cap's job, not this one's.
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: { 'old.md': NEW_FILE_CAP + 5000 },
+    sizeCurrent: { 'old.md': NEW_FILE_CAP + 5000 },
+  });
+  assert.deepEqual(r.newFileCapExceeded, []);
+  assert.deepEqual(r.grown, []);
+  assert.ok(r.ok);
+});
+
 // ─── Baseline resolution + staleness ─────────────────────────────────────────
 
 const goodBaseline = (sha) => ({
@@ -522,6 +747,104 @@ test('an unreadable baseline surfaces an error', () => {
   assert.ok(!r.ok);
   assert.match(r.errors.join('\n'), /injected read failure/);
 });
+
+// ─── buildBaselineAtRef: the in-job build must bootstrap without its own generator ──
+
+test(
+  'buildBaselineAtRef resolves a baseline via the in-job build even when the generator '
+  + 'script is absent at the ref (#2767 regression)',
+  { timeout: 300_000 },
+  (t) => {
+    // Mirrors "differential attribution over the real tree": install output is
+    // platform-specific on Windows, and this drives the same heavy worktree +
+    // build:lib + 19-installer pipeline.
+    if (process.platform === 'win32') {
+      t.skip('emitted parity is asserted on macOS + Linux; Windows install output is platform-specific');
+      return;
+    }
+
+    // Hermetic by construction (#2767 review finding B). This test used to resolve a
+    // real base ref (typically `origin/next`) and skip unless that ref, checked via
+    // `git cat-file -e`, still LACKED scripts/gen-emitted-baseline.cjs — the file THIS
+    // PR adds. That was true only until this PR merged: after merge every resolvable
+    // base ref carries the file, the precondition is permanently false, and the test
+    // would skip forever, losing all regression value silently (a skip reads as green).
+    // It also depended on `origin/next` being resolvable at all, which the gsd-test
+    // runner's shallow clone + base/head merge does not guarantee (no remote-tracking
+    // refs) — the same non-hermetic-history failure mode "baseline families are
+    // enumerated from the ref, not from the current registry" (above) was rewritten to
+    // avoid, by building its own throwaway git repo instead of reaching for this
+    // repo's history.
+    //
+    // That precedent doesn't directly transplant here: `buildBaselineAtRef` needs a
+    // REAL, buildable gsd-core tree (`npm run build:lib`, the compiled `bin/lib/*.cjs`,
+    // `node_modules`) to produce a real manifest — a minimal from-scratch repo has none
+    // of that. So instead of a from-scratch repo, this synthesizes the missing-generator
+    // condition IN-PLACE with git plumbing: read this checkout's own HEAD tree into a
+    // scratch index (a temp `GIT_INDEX_FILE`, never the real `.git/index`), remove just
+    // `scripts/gen-emitted-baseline.cjs` from that index, write the resulting tree, and
+    // commit it as a child of HEAD. The result is one loose commit object — a real,
+    // buildable tree identical to HEAD's except missing the one file under test — that
+    // is never referenced by any branch, tag, or ref, so it is not checked out, not
+    // pushed, and needs no cleanup beyond the scratch index directory itself. The real
+    // working tree, HEAD, and index of this checkout are never touched.
+    const tmpIndexDir = createTempDir('emitted-baseline-synth-index-');
+    t.after(() => cleanup(tmpIndexDir));
+    const tmpIndexFile = path.join(tmpIndexDir, 'index');
+    const gitEnv = {
+      ...process.env,
+      GIT_INDEX_FILE: tmpIndexFile,
+      GIT_AUTHOR_NAME: 'GSD Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
+      GIT_COMMITTER_NAME: 'GSD Test', GIT_COMMITTER_EMAIL: 'test@example.invalid',
+    };
+    // `-c safe.directory=<REPO_ROOT>` via the shared `safeDirArgs` (emitted-runtime.cjs):
+    // the remote runner mounts this repo at a path owned by a different uid, and git's
+    // dubious-ownership protection refuses every operation there otherwise — this test
+    // proved that the hard way (#2767 review) when its first `git rev-parse HEAD` failed
+    // closed. Reusing the SAME helper `buildBaselineAtRef` now uses (below) rather than
+    // hand-rolling the flag here keeps the fix from silently diverging per call site.
+    const run = (...args) => execFileSync('git', [...safeDirArgs(REPO_ROOT), ...args], {
+      cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, env: gitEnv, stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+
+    const headSha = run('rev-parse', 'HEAD');
+    run('read-tree', 'HEAD');
+    run('update-index', '--force-remove', 'scripts/gen-emitted-baseline.cjs');
+    const syntheticTree = run('write-tree');
+    const syntheticSha = run(
+      'commit-tree', syntheticTree, '-p', headSha, '-m',
+      'synthetic: missing scripts/gen-emitted-baseline.cjs (#2767 test fixture — unreferenced, never pushed)',
+    );
+
+    // Precondition, ASSERTED not assumed: the synthetic commit truly lacks the file —
+    // otherwise this test would prove nothing.
+    assert.throws(
+      () => execFileSync('git', [...safeDirArgs(REPO_ROOT), 'cat-file', '-e', `${syntheticSha}:scripts/gen-emitted-baseline.cjs`], {
+        cwd: REPO_ROOT, encoding: 'utf8', timeout: 30_000, stdio: 'pipe',
+      }),
+      /./,
+      'the synthetic ref must genuinely lack the generator script for this test to prove anything',
+    );
+
+    // The actual regression assertion: this must NOT throw "Cannot find module", and
+    // must produce a well-formed baseline artifact measuring the SYNTHETIC ref, not the
+    // caller's own tree. Before the #2767 fix, `buildBaselineAtRef` unconditionally ran
+    // `<worktreeDir>/scripts/gen-emitted-baseline.cjs` — the checked-out WORKTREE'S OWN
+    // copy — which fails closed with `Cannot find module` for exactly this ref shape.
+    const artifact = buildBaselineAtRef(syntheticSha, { cwd: REPO_ROOT });
+    assert.equal(artifact.version, BASELINE_VERSION);
+    assert.equal(
+      artifact.sha, syntheticSha,
+      'the artifact must report the REF\'s sha, not the caller checkout\'s',
+    );
+    assert.ok(artifact.manifests && typeof artifact.manifests === 'object');
+    assert.ok(
+      Object.keys(artifact.manifests).length >= MINIMUM_MANIFEST_FAMILIES,
+      `expected at least ${MINIMUM_MANIFEST_FAMILIES} manifest families, got ${Object.keys(artifact.manifests).length}`,
+    );
+    assert.ok(artifact.sizes && Object.keys(artifact.sizes).length > 0, 'sizes must be non-empty');
+  },
+);
 
 test('readAckFile: absent is legal, malformed and unreadable are not', () => {
   const tmp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-ack-'));
@@ -656,20 +979,438 @@ test('property: every moved key lands in exactly one bucket', () => {
   );
 });
 
+// ─── Family reconciliation (#2723 correction) ────────────────────────────────
+//
+// #2723 shipped `EXPECTED_MANIFEST_COUNT = 19` asserted against BOTH the baseline (built
+// at the base ref) and the current tree (built at PR HEAD). Those sides legitimately
+// differ by one family whenever a PR adds or removes a runtime, so no value satisfied
+// both: 19 rejected the current side, 20 rejected the baseline side. Every runtime-adding
+// PR was hard-blocked — found by tracing #2005 (Qoder) through the gate.
+//
+// Driven at PURE-FUNCTION altitude on purpose. The real-tree test below skips wherever no
+// base ref exists (the gsd-test runner shallow-clones, so `origin/*` is absent), so a
+// regression written at that altitude would silently skip on the very runner that has to
+// prove RED.
+
+const ALL_FAMILIES = MANIFEST_FAMILIES.map((f) => f.name);
+const REGISTRY_CHANGE = ['tests/helpers/install-shared.cjs'];
+// The shape a shipping caller passes: repo-relative POSIX paths from `git diff --name-only`.
+const CONTENT_ONLY_CHANGE = ['gsd-core/workflows/plan-phase.md'];
+
+const derivedOf = (names) => names.map((name) => ({ name, runtime: name, scope: 'global' }));
+const manifestsOf = (names) => Object.fromEntries(names.map((n) => [n, { 'some/emitted/path': 'hash' }]));
+
+/** Build a fully-consistent reconciliation input, then override one facet per test. */
+function reconcileWith({ derivedNames = ALL_FAMILIES, fixtureNames, baselineNames, currentNames, ...rest }) {
+  return reconcileFamilies({
+    derived: derivedOf(derivedNames),
+    fixtures: fixtureNames || derivedNames,
+    baseline: manifestsOf(baselineNames || derivedNames),
+    current: manifestsOf(currentNames || derivedNames),
+    changedPaths: CONTENT_ONLY_CHANGE,
+    ...rest,
+  });
+}
+
+const codesOf = (r) => r.errors.map((e) => e.code);
+
+test('reason codes are a frozen, locked set', () => {
+  assert.deepEqual(Object.keys(FAMILY_REASON).sort(), [
+    'ADDED_UNATTRIBUTED', 'BAD_CHANGED_PATHS', 'BASELINE_UNUSABLE', 'BELOW_FLOOR',
+    'CURRENT_UNUSABLE', 'DERIVED_UNUSABLE', 'DROPPED_UNATTRIBUTED',
+    'FIXTURES_UNUSABLE', 'FIXTURE_WITHOUT_RUNTIME', 'MISSING_CLAUDE_LOCAL',
+    'RUNTIME_WITHOUT_FIXTURE',
+  ]);
+  assert.ok(Object.isFrozen(FAMILY_REASON));
+});
+
+test('passes when every family signal agrees', () => {
+  assert.deepEqual(reconcileWith({}), { ok: true, errors: [] });
+});
+
+test('the count export agrees with the derived family set (divergence guard)', () => {
+  // The #2723 defect was two surfaces carrying independent notions of this number.
+  assert.equal(EXPECTED_MANIFEST_COUNT, MANIFEST_FAMILIES.length);
+  assert.ok(EXPECTED_MANIFEST_COUNT >= MINIMUM_MANIFEST_FAMILIES);
+});
+
+// ── The deadlock itself ──────────────────────────────────────────────────────
+
+test('permits an added family attributed to a runtime-registry change', () => {
+  const withQoder = [...ALL_FAMILIES, 'qoder'];
+  const r = reconcileWith({
+    derivedNames: withQoder,
+    baselineNames: ALL_FAMILIES,   // base ref predates the new runtime
+    currentNames: withQoder,
+    changedPaths: REGISTRY_CHANGE,
+  });
+  assert.deepEqual(r, { ok: true, errors: [] });
+});
+
+test('rejects an added family with no runtime-registry change, naming it', () => {
+  const withQoder = [...ALL_FAMILIES, 'qoder'];
+  const r = reconcileWith({
+    derivedNames: withQoder,
+    baselineNames: ALL_FAMILIES,
+    currentNames: withQoder,
+    changedPaths: CONTENT_ONLY_CHANGE,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors, [{ code: FAMILY_REASON.ADDED_UNATTRIBUTED, family: 'qoder' }]);
+});
+
+test('permits a dropped family attributed to a runtime-registry change', () => {
+  const without = ALL_FAMILIES.filter((n) => n !== 'trae');
+  const r = reconcileWith({
+    derivedNames: without,
+    baselineNames: ALL_FAMILIES,
+    currentNames: without,
+    changedPaths: REGISTRY_CHANGE,
+    minimum: 18,
+  });
+  assert.deepEqual(r, { ok: true, errors: [] });
+});
+
+test('rejects a silently dropped family, naming it', () => {
+  const without = ALL_FAMILIES.filter((n) => n !== 'trae');
+  const r = reconcileWith({
+    derivedNames: without,
+    baselineNames: ALL_FAMILIES,
+    currentNames: without,
+    changedPaths: CONTENT_ONLY_CHANGE,
+    minimum: 18,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors, [{ code: FAMILY_REASON.DROPPED_UNATTRIBUTED, family: 'trae' }]);
+});
+
+test('attribution is the ONLY permission path, symmetrically', () => {
+  // No ack-style bypass on either side: a one-sided escape hatch would make removals
+  // easier to wave through than additions, and the drift-ack file covers unattributable
+  // emitted-PATH deltas, not family churn.
+  const without = ALL_FAMILIES.filter((n) => n !== 'trae');
+  const added = [...ALL_FAMILIES, 'qoder'];
+  for (const [names, baselineNames, code, family] of [
+    [without, ALL_FAMILIES, FAMILY_REASON.DROPPED_UNATTRIBUTED, 'trae'],
+    [added, ALL_FAMILIES, FAMILY_REASON.ADDED_UNATTRIBUTED, 'qoder'],
+  ]) {
+    const r = reconcileWith({
+      derivedNames: names, baselineNames, currentNames: names,
+      changedPaths: CONTENT_ONLY_CHANGE, minimum: 18,
+    });
+    assert.equal(r.ok, false);
+    assert.deepEqual(r.errors, [{ code, family }]);
+  }
+});
+
+test('an add and a drop together are permitted when attributed', () => {
+  const swapped = [...ALL_FAMILIES.filter((n) => n !== 'trae'), 'qoder'];
+  const r = reconcileWith({
+    derivedNames: swapped,
+    baselineNames: ALL_FAMILIES,
+    currentNames: swapped,
+    changedPaths: REGISTRY_CHANGE,
+  });
+  assert.deepEqual(r, { ok: true, errors: [] });
+});
+
+test('an EQUAL-COUNT membership swap is caught in both directions', () => {
+  // 19 in, 19 out — invisible to any count-based check. This is why the contract is
+  // set-based rather than numeric.
+  const swapped = [...ALL_FAMILIES.filter((n) => n !== 'trae'), 'qoder'];
+  const r = reconcileWith({
+    derivedNames: swapped,
+    baselineNames: ALL_FAMILIES,
+    currentNames: swapped,
+    changedPaths: CONTENT_ONLY_CHANGE,
+  });
+  assert.equal(swapped.length, ALL_FAMILIES.length, 'the swap must leave the totals equal');
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors.slice().sort((a, b) => a.code.localeCompare(b.code)), [
+    { code: FAMILY_REASON.ADDED_UNATTRIBUTED, family: 'qoder' },
+    { code: FAMILY_REASON.DROPPED_UNATTRIBUTED, family: 'trae' },
+  ]);
+});
+
+// ── Single-tree drift ────────────────────────────────────────────────────────
+
+test('rejects a fixture with no registered runtime, naming it', () => {
+  const r = reconcileWith({ fixtureNames: [...ALL_FAMILIES, 'ghost'] });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors, [{ code: FAMILY_REASON.FIXTURE_WITHOUT_RUNTIME, family: 'ghost' }]);
+});
+
+test('rejects a registered runtime with no fixture, naming it', () => {
+  const r = reconcileWith({
+    derivedNames: [...ALL_FAMILIES, 'qoder'],
+    fixtureNames: ALL_FAMILIES,
+    baselineNames: [...ALL_FAMILIES, 'qoder'],
+    currentNames: [...ALL_FAMILIES, 'qoder'],
+    changedPaths: REGISTRY_CHANGE,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.errors, [{ code: FAMILY_REASON.RUNTIME_WITHOUT_FIXTURE, family: 'qoder' }]);
+});
+
+// ── The absolute floor: limit-1 / limit / limit+1 ────────────────────────────
+
+test('floor is enforced at limit-1 / limit / limit+1', () => {
+  const eighteen = ALL_FAMILIES.filter((n) => n !== 'trae');          // limit-1
+  const twenty = [...ALL_FAMILIES, 'qoder'];                          // limit+1
+
+  const below = reconcileWith({
+    derivedNames: eighteen, baselineNames: eighteen, currentNames: eighteen,
+  });
+  assert.equal(below.ok, false);
+  assert.ok(codesOf(below).includes(FAMILY_REASON.BELOW_FLOOR));
+
+  assert.deepEqual(reconcileWith({}), { ok: true, errors: [] });      // limit == 19
+
+  const above = reconcileWith({
+    derivedNames: twenty, baselineNames: twenty, currentNames: twenty,
+  });
+  assert.deepEqual(above, { ok: true, errors: [] });
+});
+
+test('a uniformly shrunken universe fails on the floor', () => {
+  // The Goodhart move the old literal permitted: drop a runtime AND its fixture together
+  // and lower the constant, and 18 === 18 passes over a smaller world.
+  const eighteen = ALL_FAMILIES.filter((n) => n !== 'trae');
+  const r = reconcileWith({
+    derivedNames: eighteen, fixtureNames: eighteen,
+    baselineNames: eighteen, currentNames: eighteen,
+    changedPaths: REGISTRY_CHANGE,
+  });
+  assert.equal(r.ok, false);
+  assert.deepEqual(codesOf(r), [FAMILY_REASON.BELOW_FLOOR]);
+});
+
+// ── #2086: claude-local is pinned by name on both sides ──────────────────────
+
+test('a missing claude-local family is named on either side', () => {
+  const noLocal = ALL_FAMILIES.filter((n) => n !== 'claude-local');
+  const missingCurrent = reconcileWith({
+    currentNames: noLocal, changedPaths: REGISTRY_CHANGE,
+  });
+  assert.ok(codesOf(missingCurrent).includes(FAMILY_REASON.MISSING_CLAUDE_LOCAL));
+
+  const missingBaseline = reconcileWith({
+    baselineNames: noLocal, changedPaths: REGISTRY_CHANGE,
+  });
+  assert.ok(codesOf(missingBaseline).includes(FAMILY_REASON.MISSING_CLAUDE_LOCAL));
+});
+
+// ── Hostile / malformed input: explicit failure, never a quiet ok ────────────
+
+test('unusable baseline and current are rejected explicitly, not read as empty', () => {
+  for (const bad of [null, undefined, [], 'nope', 0]) {
+    const r = reconcileFamilies({
+      derived: derivedOf(ALL_FAMILIES), fixtures: ALL_FAMILIES,
+      baseline: bad, current: manifestsOf(ALL_FAMILIES), changedPaths: [],
+    });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.BASELINE_UNUSABLE }] });
+  }
+  for (const bad of [null, undefined, [], 'nope', 0]) {
+    const r = reconcileFamilies({
+      derived: derivedOf(ALL_FAMILIES), fixtures: ALL_FAMILIES,
+      baseline: manifestsOf(ALL_FAMILIES), current: bad, changedPaths: [],
+    });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.CURRENT_UNUSABLE }] });
+  }
+});
+
+test('a non-array changedPaths is an explicit error, never a silent "no registry change"', () => {
+  for (const bad of [null, undefined, 'tests/helpers/install-shared.cjs', {}, 7]) {
+    const r = reconcileWith({ changedPaths: bad });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.BAD_CHANGED_PATHS }] });
+  }
+});
+
+test('malformed derived and fixtures inputs fail with a verdict, not a TypeError', () => {
+  // Every input is gated. An unhandled throw here would read as an infrastructure fault
+  // rather than a gate verdict, which is how a propagation check goes quiet.
+  for (const bad of [null, undefined, 'nope', {}, [{ nope: 1 }], [null]]) {
+    const r = reconcileFamilies({
+      derived: bad, fixtures: ALL_FAMILIES,
+      baseline: manifestsOf(ALL_FAMILIES), current: manifestsOf(ALL_FAMILIES),
+      changedPaths: [],
+    });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.DERIVED_UNUSABLE }] });
+  }
+  for (const bad of [null, undefined, 'nope', {}, [1], [null]]) {
+    const r = reconcileFamilies({
+      derived: derivedOf(ALL_FAMILIES), fixtures: bad,
+      baseline: manifestsOf(ALL_FAMILIES), current: manifestsOf(ALL_FAMILIES),
+      changedPaths: [],
+    });
+    assert.deepEqual(r, { ok: false, errors: [{ code: FAMILY_REASON.FIXTURES_UNUSABLE }] });
+  }
+});
+
+// ── Registry attribution ─────────────────────────────────────────────────────
+
+test('each registry-signal path independently attributes a family change', () => {
+  for (const p of [...REGISTRY_SIGNAL_PATHS, 'capabilities/qoder/capability.json']) {
+    assert.equal(touchesRuntimeRegistry([p]), true, `${p} should attribute`);
+  }
+  // Narrow on purpose: surfaces that merely accompany a runtime addition must NOT
+  // excuse an unattributed family delta.
+  for (const p of ['src/runtime-name-policy.cts', 'gsd-core/bin/lib/capability-registry.cjs']) {
+    assert.equal(touchesRuntimeRegistry([p]), false, `${p} must NOT attribute on its own`);
+  }
+});
+
+test('backslash-separated registry paths normalize unconditionally', () => {
+  // Path separators normalize on every platform — backslash paths arrive on Linux too.
+  assert.equal(touchesRuntimeRegistry(['tests\\helpers\\install-shared.cjs']), true);
+  assert.equal(touchesRuntimeRegistry(['capabilities\\qoder\\capability.json']), true);
+});
+
+test('near-miss paths do not attribute a family change', () => {
+  for (const p of [
+    'capabilities/qoder/other.json',
+    'capabilities/capability.json',
+    'tests/helpers/install-shared.cjs.bak',
+    'docs/tests/helpers/install-shared.cjs',
+    'gsd-core/workflows/plan-phase.md',
+  ]) {
+    assert.equal(touchesRuntimeRegistry([p]), false, `${p} should NOT attribute`);
+  }
+  assert.equal(touchesRuntimeRegistry([]), false);
+});
+
+// ── The baseline must come from the REF, not from HEAD's registry ────────────
+
+test('baseline families are enumerated from the ref, not from the current registry', (t) => {
+  // Regression: enumerating the baseline from MANIFEST_FAMILIES (imported at module load,
+  // so it describes PR HEAD) makes a REMOVED runtime invisible — the name is already gone
+  // from the current registry, so the base ref is never asked for it, and the dropped-
+  // family check can never fire in production even though its unit tests pass.
+  //
+  // Built as its own git repo rather than reaching for this repo's history. The gsd-test
+  // runner shallow-clones base+head, so `rev-list --max-parents=0` there returns the
+  // GRAFTED boundary commit — a recent one carrying every fixture — not a true root. (This
+  // repo also has two root commits locally.) A history-dependent assertion passes on a full
+  // clone and fails in the runner, which is exactly what it did.
+  const repo = createTempDir('emitted-baseline-ref');
+  t.after(() => cleanup(repo));
+  // No `safeDirArgs` needed here (unlike the #2767 fix above): `repo` is a directory
+  // this same process just created with `mkdtempSync` + `git init`, so its owner is
+  // always the uid running the test regardless of container — it is never the
+  // externally-mounted repo path the dubious-ownership check reacts to.
+  const run = (...args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', timeout: 30_000 });
+
+  run('init', '--quiet', '-b', 'main');
+  run('config', 'user.email', 'test@example.invalid');
+  run('config', 'user.name', 'Test');
+  const fixtureDir = path.join(repo, ...'tests/fixtures/golden-install-parity'.split('/'));
+  fs.mkdirSync(fixtureDir, { recursive: true });
+
+  // Deliberately includes a family that is NOT in today's registry. This is the real
+  // discriminator: a registry-derived implementation can never report it, because the name
+  // does not exist in MANIFEST_FAMILIES — which is precisely how a REMOVED runtime went
+  // invisible and made the dropped-family check unreachable in production.
+  const atRefOnly = 'zzz-retired-runtime';
+  const committed = ['claude', 'claude-local', atRefOnly];
+  for (const name of committed) {
+    fs.writeFileSync(path.join(fixtureDir, `${name}.json`), JSON.stringify({ 'a/b': 'hash' }));
+  }
+  run('add', '-A');
+  run('commit', '--quiet', '-m', 'fixtures');
+
+  assert.ok(
+    !ALL_FAMILIES.includes(atRefOnly),
+    'the probe family must be absent from the current registry for this test to discriminate',
+  );
+  assert.deepEqual(
+    baselineFamilyNamesAtRef('HEAD', { cwd: repo }).slice().sort(),
+    committed.slice().sort(),
+    'the baseline must report what the REF carries, including a family the current registry lacks',
+  );
+
+  // A ref that cannot be resolved yields nothing rather than throwing, which is the
+  // post-cutover signal to fall back to resolveBaseline's cache path.
+  assert.deepEqual(baselineFamilyNamesAtRef('refs/heads/no-such-ref-2723', { cwd: repo }), []);
+
+  // Deliberately NOT asserted against the ambient checkout. Reading this repo's own HEAD is
+  // not guaranteed inside the runner container — it returned [] there, which is this
+  // function's documented behavior when git cannot read the ref, not a defect. Asserting on
+  // it tests the checkout rather than the code, and the temp repo above already proves the
+  // property that matters: the family set follows the REF. The ambient path is covered by
+  // the real-tree test, which skips explicitly when no base ref is resolvable.
+  //
+  // A git failure is never silently permissive downstream: baselineManifestsAtRef returns
+  // null on an empty family set, and the real-tree test asserts the baseline is non-empty.
+});
+
+// ── Independence / purity ────────────────────────────────────────────────────
+
+test('reconciliation is pure across repeated calls', () => {
+  const args = {
+    derivedNames: [...ALL_FAMILIES, 'qoder'],
+    baselineNames: ALL_FAMILIES,
+    currentNames: [...ALL_FAMILIES, 'qoder'],
+    changedPaths: CONTENT_ONLY_CHANGE,
+  };
+  assert.deepEqual(reconcileWith(args), reconcileWith(args));
+});
+
+// ── Property: the reported delta is exactly the set difference ───────────────
+
+test('property: reported added/dropped are exactly the set differences', () => {
+  fc.assert(
+    fc.property(
+      fc.uniqueArray(fc.string({ minLength: 1, maxLength: 6 }).filter((s) => !/^\s*$/.test(s)), { minLength: 0, maxLength: 5 }),
+      fc.uniqueArray(fc.integer({ min: 0, max: ALL_FAMILIES.length - 2 }), { minLength: 0, maxLength: 4 }),
+      (rawAdds, dropIdx) => {
+        const added = rawAdds.filter((s) => !ALL_FAMILIES.includes(s));
+        // never drop claude-local: it has its own dedicated assertion
+        const dropped = dropIdx
+          .map((i) => ALL_FAMILIES[i])
+          .filter((n) => n !== 'claude-local');
+        const current = [...ALL_FAMILIES.filter((n) => !dropped.includes(n)), ...added];
+
+        const r = reconcileFamilies({
+          derived: derivedOf(current),
+          fixtures: current,
+          baseline: manifestsOf(ALL_FAMILIES),
+          current: manifestsOf(current),
+          changedPaths: CONTENT_ONLY_CHANGE,
+          minimum: 0,
+        });
+
+        const reportedAdded = r.errors
+          .filter((e) => e.code === FAMILY_REASON.ADDED_UNATTRIBUTED).map((e) => e.family).sort();
+        const reportedDropped = r.errors
+          .filter((e) => e.code === FAMILY_REASON.DROPPED_UNATTRIBUTED).map((e) => e.family).sort();
+
+        assert.deepEqual(reportedAdded, [...new Set(added)].sort());
+        assert.deepEqual(reportedDropped, [...new Set(dropped)].sort());
+        return true;
+      },
+    ),
+    { numRuns: 200, seed: 2723 },
+  );
+});
+
 // ─── The real thing: the law, run against the actual tree ───────────────────
 //
 // Everything above exercises the pure law against synthetic input, which is what makes
 // the acceptance criteria practical to assert at all. This block is what stops the
 // phase from being interface-only: it builds the CURRENT emitted manifests for real
-// (one installer spawn per runtime), reads the BASELINE from `origin/next`, resolves
-// the changed paths with real git, reads the real ack file, and runs the conservation
-// law over all of it.
+// (one installer spawn per runtime), resolves the BASELINE via `resolveBaseline()`,
+// resolves the changed paths with real git, reads the real ack file, and runs the
+// conservation law over all of it.
 //
-// Baseline source note: `git show origin/next:<fixture>` — next's RECORDED emitted
-// state. Deliberately not the working-tree fixtures, which are whatever this PR's
-// author regenerated; comparing against those would be vacuous. Phase 4 (#2724)
-// deletes the fixtures and swaps in resolveBaseline's cache path, which is already
-// implemented and tested above.
+// Baseline source note (#2724, post-cutover): the committed golden fixtures this test
+// used to read via `git show origin/next:<fixture>` are deleted. `resolveBaseline()`'s
+// documented precedence takes over: `GSD_EMITTED_BASELINE` env (CI's PR-lane cache
+// restore, keyed on the PR's base sha) -> the on-disk cache at
+// `.gsd-cache/emitted-baseline.json` (populated by CI's push-to-next publish step,
+// scripts/gen-emitted-baseline.cjs) -> an in-job build (a throwaway `git worktree`
+// checked out at `base`, running the same script there — slow but never absent). Never
+// the working-tree fixtures, which would be whatever this PR's author regenerated;
+// comparing against those would be vacuous.
 
 test('differential attribution over the real tree', { timeout: 900_000 }, async (t) => {
   if (process.platform === 'win32') {
@@ -707,41 +1448,57 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
   const { ref: base, sha: baseSha } = resolved;
   assert.match(baseSha, /^[0-9a-f]{40}$/);
 
-  const baseline = baselineManifestsAtRef(base);
+  // Phase 4 (#2724): the golden fixtures this used to read via `baselineManifestsAtRef`
+  // (git show <base>:<fixture>) are deleted, so the baseline now comes through
+  // `resolveBaseline()`'s documented precedence: GSD_EMITTED_BASELINE env (CI's PR-lane
+  // cache restore) -> the on-disk cache (CI's push-to-next publish step) -> an in-job
+  // build at `base` (a throwaway git worktree + scripts/gen-emitted-baseline.cjs) ->
+  // explicit failure. The build fallback is deliberately the slow path — it exists so a
+  // cache miss degrades rather than fails outright (ADR-2719 §5).
+  const readBaselineJson = (p) => (fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null);
+  const resolvedBaseline = resolveBaseline({
+    expectedSha: baseSha,
+    readJson: readBaselineJson,
+    buildFallback: () => buildBaselineAtRef(base),
+  });
   assert.ok(
-    baseline && Object.keys(baseline).length > 0,
-    `no baseline manifests found at ${base}. During the dual-run window these come from the ` +
-    'committed golden fixtures at that ref; after Phase 4 they come from the cached ' +
-    'baseline artifact via resolveBaseline().',
+    resolvedBaseline.ok,
+    `no usable emitted baseline for ${base}@${baseSha.slice(0, 12)} (tried env, ` +
+    `${DEFAULT_CACHE_PATH}, and an in-job build):\n  ${(resolvedBaseline.errors || []).join('\n  ')}`,
   );
+  const baseline = resolvedBaseline.baseline;
+  assert.ok(baseline && Object.keys(baseline).length > 0, `resolved baseline via ${resolvedBaseline.via} has no families`);
 
   const changedPaths = resolveChangedPaths(base);
   const ack = readAckFile();
   const current = currentManifests();
 
-  // Assert against the INDEPENDENT expected count, not just baseline-vs-current.
-  // Comparing the two sides to each other cannot catch a family dropped from BOTH —
-  // which is exactly what happened with claude-local: 18 === 18 passed vacuously while
-  // the 19th family went unchecked.
-  assert.equal(
-    Object.keys(baseline).length,
-    EXPECTED_MANIFEST_COUNT,
-    `baseline must cover all ${EXPECTED_MANIFEST_COUNT} emitted manifest families`,
+  // Reconcile the family SET across three independent signals, rather than asserting one
+  // count against both sides. The baseline is built at the base ref and the current tree
+  // at PR HEAD, so the two legitimately differ by a family whenever a PR adds or removes
+  // a runtime — a single shared literal could satisfy neither side at once (#2723), and
+  // a count cannot see a membership swap that leaves the total unchanged either way.
+  const familyVerdict = reconcileFamilies({
+    derived: MANIFEST_FAMILIES,
+    fixtures: loadManifests().map((m) => m.file.replace(/\.json$/, '')),
+    baseline,
+    current,
+    changedPaths,
+  });
+  assert.ok(
+    familyVerdict.ok,
+    'emitted manifest family set is not reconciled:\n  ' +
+    familyVerdict.errors
+      .map((e) => (e.family ? `${e.code}: ${e.family}` : e.code))
+      .join('\n  '),
   );
-  assert.equal(
-    Object.keys(current).length,
-    EXPECTED_MANIFEST_COUNT,
-    `current must cover all ${EXPECTED_MANIFEST_COUNT} emitted manifest families`,
-  );
-  assert.ok(baseline['claude-local'], 'the claude local-scope layout (#2086) must be covered');
-  assert.ok(current['claude-local'], 'the claude local-scope layout (#2086) must be covered');
 
   const result = diffEmitted({
     baseline,
     current,
     changedPaths,
     ack,
-    sizeBaseline: baselineSizesAtRef(base),
+    sizeBaseline: resolvedBaseline.sizeBaseline,
     sizeCurrent: currentSizes(),
   });
 

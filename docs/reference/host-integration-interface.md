@@ -59,8 +59,8 @@ constructed fail-closed (they throw if a required host primitive is absent):
 
 The declarative + imperative adapters delegate install/uninstall in-process to
 the **same** `installRuntimeArtifacts` engine function `bin/install.js` uses, so
-adapter output is byte-identical to a first-party install (gated by
-`tests/golden-install-parity.test.cjs`).
+adapter output is byte-identical to a first-party install (gated by the
+differential attribution check, `tests/emitted-attribution.test.cjs`, ADR-2719).
 
 ## Profiles
 

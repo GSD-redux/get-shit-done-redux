@@ -38,15 +38,27 @@
  * risk ADR-2719 records. The spot-check tests pin this pair.
  */
 
-const fs = require('node:fs');
 const path = require('node:path');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
-const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'golden-install-parity');
 
-/** Number of runtime manifests the guard expects to cover. Asserted, so a glob that
- *  silently matches fewer files can never report a vacuous pass. */
-const EXPECTED_MANIFEST_COUNT = 19;
+const { cleanup } = require('../helpers.cjs');
+const { MANIFEST_FAMILIES, runMinimalInstall, buildParityManifest } = require('./install-shared.cjs');
+
+/**
+ * Number of runtime manifests the guard expects to cover. Asserted, so a glob that
+ * silently matches fewer files can never report a vacuous pass.
+ *
+ * DERIVED, not a literal (#2723). It was `19`, and that same literal was also asserted
+ * against the baseline built at the base ref — two trees that legitimately differ by one
+ * family whenever a PR adds or removes a runtime, which made every such PR unpassable at
+ * any value. Deriving it from the single `MANIFEST_FAMILIES` source keeps the
+ * anti-vacuity property here (this tree's glob must match this tree's registry) while
+ * leaving the cross-tree question to `reconcileFamilies`, which is set-based and
+ * direction-aware. The absolute floor that a shrunken universe cannot satisfy lives with
+ * the derivation as `MINIMUM_MANIFEST_FAMILIES`.
+ */
+const EXPECTED_MANIFEST_COUNT = MANIFEST_FAMILIES.length;
 
 // ─── Emitted roots ────────────────────────────────────────────────────────────
 // Longest-first: `skills/gsd` (hermes category dir) must win over `skills` for
@@ -63,12 +75,84 @@ const COMMANDS_SRC = 'commands/gsd';
  *  buildClinePreToolUseHook). */
 const CLINE_BODY_SRC = 'src/runtime-hooks-surface.cts';
 
+/**
+ * Installer source file that GENERATES the Windows-only `hooks/<name>.cmd` shim
+ * wrapping a Codex hook's `.js` script (#3426). Same physical file as
+ * CLINE_BODY_SRC — kept as its own named constant because the two constants
+ * attribute unrelated transform code that happens to live in one file:
+ * buildCodexHookWindowsShimIR / ensureCodexHooksJsonSessionStart /
+ * ensureCodexHooksJsonEvent (verified via Memtrace: these are the ONLY writers
+ * of a `.cmd` file anywhere in the installer — no other runtime's hook surface
+ * builds one).
+ */
+const HOOKS_WINDOWS_SHIM_SRC = 'src/runtime-hooks-surface.cts';
+
 /** Installer source file that emits the Hermes skill-category DESCRIPTION.md
  *  (writeHermesCategoryDescription) as a code literal. */
 const INSTALLER_SRC = 'bin/install.js';
 
 /** Source file holding the Kimi root-agent literal (runtime-artifact-layout.cts:303). */
 const KIMI_ROOT_AGENT_SRC = 'src/runtime-artifact-layout.cts';
+
+/**
+ * Transform sources for the per-runtime agent-content pipeline (#2757).
+ *
+ * `runtime-artifact-conversion.cts` rewrites frontmatter (quoting, dropping `tools:`/
+ * `color:`), reformats the tools list, and rewrites the hardcoded `.claude/` self-
+ * reference to each runtime's own home (`applyAgentPathRewrites`,
+ * `normalizeAgentBodyForRuntime`, the `convertClaudeAgentTo*Agent` family).
+ * `install-effort-resolver.cts` (+ the `model-catalog.cts` primitives it calls)
+ * resolves the `reasoning_effort` value that both Claude's `.md` (`effort:` frontmatter,
+ * injected by `injectEffortFrontmatter` in bin/install.js) and Codex's `.toml`
+ * (`model_reasoning_effort`) embed — "the same config-driven precedence chain" per
+ * bin/install.js's own #443 comment.
+ *
+ * Verified empirically (#2757), not assumed: installing every runtime for a sample
+ * agent and diffing the output against the raw repo `.md` (after normalizing the
+ * install-time HOME/version substitutions the golden fixtures already normalize) shows
+ * NO runtime — including Claude — emits a byte-identical copy. Every one rewrites at
+ * least the frontmatter and the `.claude/skills` self-reference; Claude additionally
+ * gets `effort:` injected. This is why `agents-verbatim` below is `derived`, not
+ * `identity`, despite its (retained, historical) id.
+ *
+ * Deliberately excludes `bin/install.js`: that file also implements the final splice
+ * (`injectEffortFrontmatter`, `generateCodexAgentToml`), but at 13k+ lines spanning
+ * hooks, MCP config, uninstall, and every other installer concern, declaring it here
+ * would be the blanket escape hatch ADR-2719 warns against — almost any PR touches SOME
+ * line of it. A change localized to those two functions and not reachable through the
+ * three files below stays unattributable and falls to the drift-ack file, which is the
+ * documented escape hatch for exactly that case.
+ *
+ * ── Known follow-up, NOT included here on purpose (#2757 review) ────────────
+ * The issue text also named `src/agent-tools-contract.cts` and
+ * `src/agent-install-check.cts` (both touched by PR #2566, "derive Codex agent sandbox
+ * from the tool"). Verified against THIS tree and excluded on the evidence:
+ *   - `src/agent-tools-contract.cts` does not exist on `next` — #2566 ADDS it (+119/-0).
+ *     A nonexistent path here would immediately fail the
+ *     "every declared transform path exists in the repo" hygiene test in
+ *     emitted-provenance.test.cjs, which exists precisely to catch a rule (or a
+ *     suggested transform, as here) that cites a file that doesn't back real content.
+ *   - `src/agent-install-check.cts` exists today and is READ-ONLY (`getAgentsDir`,
+ *     `checkAgentsInstalled` — no fs.writeFileSync, no content transform); #2566
+ *     nearly doubles it (+112/-1). Whether the addition becomes a real content-writer,
+ *     a larger read-only diagnostic surface, or a helper called BY an already-declared
+ *     file cannot be determined without reading #2566's actual diff, which review is
+ *     explicit should not be fetched here. Declaring it on a line-count guess risks
+ *     the exact false-attribution failure mode this whole table exists to prevent — a
+ *     rule that looks fixed while resolving to the wrong causal story.
+ * Interim safety net: if #2566 lands and either file becomes a real transform without
+ * this list being updated, the differential (Phase 3) will correctly flag the moved
+ * agent artifact as unattributable — that is the guard working, not a regression — and
+ * unblocks via `tests/emitted-drift-ack.json` until this list is verified and extended
+ * using the SAME method used for the three files above: build, install every runtime,
+ * diff the output against the raw repo source, confirm which file's absence/presence
+ * changes the bytes.
+ */
+const AGENT_TRANSFORM_SRCS = [
+  'src/runtime-artifact-conversion.cts',
+  'src/install-effort-resolver.cts',
+  'src/model-catalog.cts',
+];
 
 /**
  * A `sources` entry ending in `/` is a PREFIX, not a file: it means "any repo path
@@ -126,6 +210,26 @@ function nativePluginDescriptor(runtime) {
 // `roots`   — emitted prefixes this rule applies under (null = match `rel` whole)
 // `pattern` — matched against the root-stripped tail (or whole `rel` when roots is null)
 // `sources` — (match, ctx) => string[] of repo-relative paths; [] only for `synthesized`
+// `transforms` — OPTIONAL repo paths implementing the TRANSFORM that produces this
+//                rule's emitted bytes (#2757). A `derived`/`code-derived` artifact's
+//                bytes can move for a second reason `sources` alone cannot express:
+//                the transform code changed, not the source it derives from.
+//                Phase 3 (emitted-diff.cjs) attributes a moved path if the diff
+//                satisfies EITHER `sources` OR `transforms`, reusing the same
+//                `sourceSatisfiedBy` matcher for both so exact/prefix semantics stay
+//                identical. `kind: 'identity'` rules MUST NOT declare a non-empty
+//                `transforms` — enforced by `assertNoIdentityTransforms` below — because
+//                an identity copy's bytes can only move when its source moves; that is
+//                what makes it an identity.
+//                May be a plain `string[]` (the common case) OR a `(match, ctx) => string[]`
+//                function, mirroring `sources`, for a rule whose transform attribution
+//                depends on WHICH emitted path matched — e.g. `hooks-built` below, where
+//                only the `.cmd` shim sub-family has transform code at all; a static
+//                array would either miss that or (worse) falsely blanket-attribute every
+//                plain hook file to the shim generator that cannot move its bytes. A
+//                dedicated rule for the `.cmd` sub-family was considered and rejected: it
+//                is emitted ONLY on win32 (see `hooks-built` below), so on every non-
+//                Windows CI lane it would match zero paths and fail as a "dead" rule.
 //
 // Rule ORDER CARRIES NO SEMANTICS. Exactly-one matching is enforced, so rules are
 // mutually exclusive by construction and the table reads correctly in any order.
@@ -150,8 +254,21 @@ const PROVENANCE_RULES = [
     sources: (m) => [`scripts/${m[0]}`],
   },
   {
+    // Historical id — retained even though, per #2757, this is no longer identity.
+    // Nothing else in the repo keys off this string (checked), and the `sources`
+    // shape below is unchanged, so renaming it would only widen the diff.
     id: 'agents-verbatim',
-    kind: 'identity',
+    // #2757 (was `identity`): measured against origin/next's own committed fixtures,
+    // the SAME emitted agents/<name>.md hashes DIFFERENTLY per runtime (e.g. codex vs
+    // claude for gsd-nyquist-auditor.md) — impossible for a true verbatim copy.
+    // Verified empirically by installing every runtime and diffing the output against
+    // the raw repo source: no runtime reproduces it byte-for-byte. Every one rewrites
+    // frontmatter quoting and the hardcoded `.claude/` self-reference
+    // (src/runtime-artifact-conversion.cts); Claude additionally gets an `effort:`
+    // line injected (src/install-effort-resolver.cts + src/model-catalog.cts). See
+    // the #2757 design doc for the alternatives considered (per-runtime split,
+    // per-runtime `kind`) and why this wholesale reclassification was chosen instead.
+    kind: 'derived',
     roots: ['agents'],
     // Excludes `gsd.md`: that is Kimi's ROOT agent, built from a code literal and
     // NOT a repo agent file. Without the exclusion it matched here and resolved to
@@ -163,6 +280,7 @@ const PROVENANCE_RULES = [
     // resolved to a file that does not exist. Same false-attribution class.
     pattern: /^(?!gsd\.md$)(?!.*\.agent\.md$)[^/]+\.md$/,
     sources: (m) => [`agents/${m[0]}`],
+    transforms: AGENT_TRANSFORM_SRCS,
   },
   {
     id: 'copilot-agent-rename',
@@ -181,6 +299,9 @@ const PROVENANCE_RULES = [
     // from the same agents/<name>.md source.
     pattern: /^([^/]+)\.toml$/,
     sources: (m) => [`agents/${m[1]}.md`],
+    // #2757 (issue text, PR #2566): a change to the conversion/effort code can move
+    // every emitted .toml without touching any agents/*.md. See AGENT_TRANSFORM_SRCS.
+    transforms: AGENT_TRANSFORM_SRCS,
   },
   {
     id: 'agents-subagent-derived',
@@ -193,6 +314,17 @@ const PROVENANCE_RULES = [
   },
   {
     id: 'hooks-built',
+    // `kind` is a single scalar per rule, and this rule's majority sub-family
+    // (plain built hook files) is genuinely `derived` from hooks/<name> via
+    // scripts/build-hooks.js. The `.cmd` shim sub-family is code-derived (see
+    // the pattern-comment and `sources` comment below), but that does not
+    // change this rule's `kind` — a per-match `kind` would need a dedicated
+    // rule, which is exactly what was rejected above (dead on non-Windows CI
+    // lanes). The `.cmd` branch's real (code-derived) provenance is instead
+    // carried precisely by `sources`/`transforms` both pointing at
+    // HOOKS_WINDOWS_SHIM_SRC — `assertNoIdentityTransforms` only constrains
+    // `kind: 'identity'` rules, so a `derived` rule with a non-empty
+    // `transforms` here is unaffected by that guard.
     kind: 'derived',
     roots: HOOKS_ROOTS,
     // Emitted from hooks/dist/, which scripts/build-hooks.js builds from hooks/.
@@ -200,8 +332,32 @@ const PROVENANCE_RULES = [
     // Excludes Copilot's hook-registration JSON (next rule) — that is a code
     // literal, not a built script, and attributing it here resolved to a
     // nonexistent `hooks/gsd-session.json`.
+    //
+    // `.cmd` shims are a SEPARATE, Windows-only emission path folded into this
+    // SAME rule rather than a dedicated one (see the `transforms` doc above for
+    // why a standalone rule would go dead on non-Windows CI lanes). Verified via
+    // Memtrace: `hooks/<name>.cmd` is written at install time by
+    // ensureCodexHooksJsonSessionStart / ensureCodexHooksJsonEvent (both gated
+    // on `platform === 'win32'`) via buildCodexHookWindowsShimIR
+    // (HOOKS_WINDOWS_SHIM_SRC, src/runtime-hooks-surface.cts). The `.cmd` bytes
+    // are `@ECHO OFF\r\n@SETLOCAL\r\n@<runner> <script> %*\r\n` — built from the
+    // install-time interpreter token and the absolute install path, plus a
+    // hardcoded literal filename (e.g. `gsd-check-update.js`) baked into that
+    // same source file. The wrapped `.js` file's NAME flows into the `.cmd`
+    // bytes; its CONTENT never does — see the `sources` comment below for why
+    // that rules out attributing to `hooks/<name>.js`.
     pattern: /^(?!gsd-session\.json$).+$/,
-    sources: (m) => [`hooks/${m[0]}`],
+    // `.cmd` shim bytes are code-derived (a literal template + the install-time
+    // interpreter/path tokens in HOOKS_WINDOWS_SHIM_SRC) — the wrapped `.js`
+    // file's NAME flows in (as a hardcoded literal filename inside that same
+    // source file), but its CONTENT never does, so attributing `sources` to
+    // `hooks/<name>.js` would be a false byte-provenance claim. Point `sources`
+    // at the same file as `transforms`, matching the `code-derived` convention
+    // used elsewhere in this table (copilot-hook-registration, cline-rules-
+    // code-derived, hermes-category-description). The redundancy between
+    // `sources` and `transforms` here is harmless — the mis-attribution was not.
+    sources: (m) => [m[0].endsWith('.cmd') ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
+    transforms: (m) => (m[0].endsWith('.cmd') ? [HOOKS_WINDOWS_SHIM_SRC] : []),
   },
   {
     id: 'copilot-hook-registration',
@@ -401,7 +557,7 @@ function matchRules(rel, runtime, rules = PROVENANCE_RULES) {
 /**
  * Resolve the provenance of one emitted path.
  * @throws when the path matches zero or more than one rule.
- * @returns {{ruleId: string, kind: string, sources: string[]}}
+ * @returns {{ruleId: string, kind: string, sources: string[], transforms: string[]}}
  */
 function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
   const hits = matchRules(rel, runtime, rules);
@@ -418,46 +574,120 @@ function attributeEmittedPath(rel, runtime, rules = PROVENANCE_RULES) {
     );
   }
   const { rule, match } = hits[0];
+  let transforms;
+  if (typeof rule.transforms === 'function') {
+    transforms = rule.transforms(match, { rel, runtime });
+    if (!Array.isArray(transforms)) {
+      throw new Error(
+        `emitted-provenance: rule "${rule.id}" transforms(match, ctx) must return an array, ` +
+        `got ${typeof transforms} for ${rel}`,
+      );
+    }
+  } else {
+    // #2757: always an array, never undefined, so callers (Phase 3's diffEmitted)
+    // never need a defensive `|| []`.
+    transforms = Array.isArray(rule.transforms) ? rule.transforms : [];
+  }
   return {
     ruleId: rule.id,
     kind: rule.kind,
     sources: rule.sources(match, { rel, runtime }),
+    transforms,
   };
 }
 
-// ─── Fixture loading ──────────────────────────────────────────────────────────
+/**
+ * Invariant (#2757): a `kind: 'identity'` rule may not declare a non-empty
+ * `transforms`. An identity copy's bytes can only move when its source moves — that
+ * is what makes it an identity; a transforms list on an identity rule would silently
+ * readmit the exact false-attribution risk defect 2 found (a rule that is total and
+ * "passes" while resolving to the wrong causal story).
+ *
+ * Called once at module load against the real PROVENANCE_RULES (fails fast on a
+ * future authoring mistake) and exported so tests can drive it against an injected
+ * corrupted table, matching this module's existing injectable-table convention.
+ *
+ * A function-valued `transforms` on an identity rule is rejected outright (without
+ * invoking it) — an identity rule has no legitimate match-dependent transform story
+ * by definition, so allowing the function form there would just be a slower path to
+ * the same false-attribution risk this guard exists to catch.
+ *
+ * @param {Array} rules rule table (injectable)
+ * @throws when any identity rule declares a non-empty transforms array or a function
+ */
+function assertNoIdentityTransforms(rules = PROVENANCE_RULES) {
+  const violators = rules.filter(
+    (r) => r.kind === 'identity'
+      && (typeof r.transforms === 'function' || (Array.isArray(r.transforms) && r.transforms.length > 0)),
+  );
+  if (violators.length) {
+    throw new Error(
+      `emitted-provenance: identity rule(s) [${violators.map((r) => r.id).join(', ')}] ` +
+      'declare a non-empty "transforms" — an identity copy\'s bytes can only move when ' +
+      'its source moves, which is what makes it an identity. Reclassify the rule\'s ' +
+      '"kind" (e.g. to "derived") if it legitimately needs a transforms list.',
+    );
+  }
+}
+
+// Fail fast: a malformed table crashes at require time rather than passing silently
+// until some test happens to exercise the corrupted rule.
+assertNoIdentityTransforms(PROVENANCE_RULES);
+
+// ─── Manifest loading ─────────────────────────────────────────────────────────
 
 /**
- * Load every committed golden-parity manifest as {runtime, rel, keys}.
- * Rejects a manifest whose JSON parses but is not a plain object — treating `0`,
+ * Build the emitted manifest set for every family, for real — one installer spawn
+ * per runtime, exactly as `tests/helpers/emitted-runtime.cjs`'s `currentManifests()`
+ * does for the differential check's CURRENT side.
+ *
+ * Pre-#2724 this read the committed `tests/fixtures/golden-install-parity/*.json`
+ * snapshots. Phase 4 (ADR-2719) deletes those fixtures entirely — not just at HEAD,
+ * at every future ref — so a fixture-reading implementation would throw at module
+ * load on every commit from here forward, taking the Phase 2 totality guard down
+ * with it (the totality guard is supposed to be the *replacement* for the golden
+ * check, not another casualty of deleting it). Building from real installs instead
+ * makes this the same honest, no-fixture-dependency shape as the differential's
+ * current-tree side, and it needs no `fixturesDir` parameter because there is no
+ * longer a fixture directory to point it at.
+ *
+ * Rejects a manifest whose build result is not a plain object — treating `0`,
  * `"s"`, `[]`, `null` or `true` as "no keys" would let the whole guard pass
- * vacuously on a corrupt fixture.
+ * vacuously on a corrupt build.
  */
-function loadManifests(fixturesDir = FIXTURES_DIR) {
-  const files = fs.readdirSync(fixturesDir).filter((f) => f.endsWith('.json')).sort();
-  return files.map((file) => {
-    const full = path.join(fixturesDir, file);
-    const raw = fs.readFileSync(full, 'utf8');
-    if (raw.trim() === '') {
-      throw new Error(`emitted-provenance: fixture ${file} is empty`);
-    }
+/**
+ * @param {object} [deps]  injected for testability (hostile-input coverage below) —
+ *   production callers use the defaults.
+ * @param {Array}    [deps.families]  MANIFEST_FAMILIES by default
+ * @param {function} [deps.install]   runMinimalInstall by default
+ * @param {function} [deps.build]     buildParityManifest by default
+ * @param {function} [deps.clean]     cleanup by default
+ */
+function loadManifests({
+  families = MANIFEST_FAMILIES,
+  install = runMinimalInstall,
+  build = buildParityManifest,
+  clean = cleanup,
+} = {}) {
+  return families.map(({ name, runtime, scope }) => {
+    const { configDir, root } = install({ runtime, scope });
     let parsed;
     try {
-      parsed = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`emitted-provenance: fixture ${file} is not valid JSON: ${err.message}`);
+      parsed = build(configDir, root);
+    } finally {
+      clean(root);
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(
-        `emitted-provenance: fixture ${file} must be a JSON object of path->hash, ` +
+        `emitted-provenance: build for ${name} must produce an object of path->hash, ` +
         `got ${Array.isArray(parsed) ? 'array' : typeof parsed}`,
       );
     }
     return {
-      file,
-      // `claude-local.json` is the claude runtime at local scope; the descriptor
-      // lookup keys on the runtime id, not the fixture name.
-      runtime: file.replace(/\.json$/, '').replace(/-local$/, ''),
+      file: `${name}.json`,
+      // `claude-local` is the claude runtime at local scope; the descriptor lookup
+      // keys on the runtime id, not the family name.
+      runtime,
       keys: Object.keys(parsed),
     };
   });
@@ -532,14 +762,15 @@ function assertTotality(manifests, rules = PROVENANCE_RULES, sampleLimit = 10) {
 
 module.exports = {
   EXPECTED_MANIFEST_COUNT,
-  FIXTURES_DIR,
   PROVENANCE_RULES,
   SKILLS_ROOTS,
   KIMI_ROOT_AGENT_SRC,
+  AGENT_TRANSFORM_SRCS,
   SOURCE_PREFIX_SUFFIX,
   HOOKS_ROOTS,
   COMMANDS_SRC,
   CLINE_BODY_SRC,
+  HOOKS_WINDOWS_SHIM_SRC,
   INSTALLER_SRC,
   stripSkillPrefix,
   nativePluginDescriptor,
@@ -547,6 +778,7 @@ module.exports = {
   assertSafeRelPath,
   matchRules,
   attributeEmittedPath,
+  assertNoIdentityTransforms,
   loadManifests,
   assertTotality,
 };

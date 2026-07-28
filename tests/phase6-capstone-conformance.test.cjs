@@ -10,6 +10,7 @@ const { cleanup } = require('./helpers.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const { HOST_LOOP_FILES, scanWiredPoints } = require('../scripts/gen-loop-host-contract.cjs');
+const { lfByteCount } = require('../scripts/workflow-size.cjs');
 
 const CORE_SUBSTRATE_TERMS = [
   'Verification substrate',
@@ -94,12 +95,18 @@ describe('ADR-857 Phase 6 capstone conformance (#1139)', () => {
     }
   });
 
-  test('host loop workflow files have committed byte budgets', () => {
-    const baseline = JSON.parse(readRepoFile('tests/workflow-size-baseline.json'));
+  test('host loop workflow files have a measurable, non-empty byte size', () => {
+    // Was asserted against the committed tests/workflow-size-baseline.json snapshot;
+    // #2724 (ADR-2719 Phase 4) deletes that file — the differential attribution
+    // check's size ratchet (tests/emitted-attribution.test.cjs) is the replacement
+    // anti-creep mechanism, but this test's actual intent was narrower: prove these
+    // host-loop files are real, tracked, non-empty workflow docs. Asserting the
+    // live byte count via the same shared counter the size guards use preserves
+    // that intent without depending on a committed snapshot.
     for (const relativePath of HOST_LOOP_FILES) {
       const fileName = path.basename(relativePath);
-      assert.equal(typeof baseline[fileName], 'number', `${fileName} must have a workflow-size baseline`);
-      assert.ok(baseline[fileName] > 0, `${fileName} baseline must be positive`);
+      const bytes = lfByteCount(path.join(ROOT, relativePath));
+      assert.ok(bytes > 0, `${fileName} must be a non-empty workflow file`);
     }
   });
 

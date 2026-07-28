@@ -609,43 +609,47 @@ describe('test-full shard matrix parity (#1212)', () => {
   });
 });
 
-describe('golden-install-parity selection (#1691 drift guard)', () => {
+describe('emitted-provenance selection (#1691 drift guard, retargeted by #2724)', () => {
   // Regression: a src/*.cts-only edit recompiles bin/lib/*.cjs (changing installed
-  // hashes), but the scoped CI lane was not re-running golden-install-parity —
-  // causing golden fixtures to silently drift (#1691 milestone/roadmap cts change).
-  // Both the 'TS runtime sources' and 'installer and package layout' rules must now
-  // select tests/golden-install-parity.test.cjs.
+  // hashes), but the scoped CI lane was not re-running the drift guard — causing
+  // emitted state to silently drift (#1691 milestone/roadmap cts change). Both the
+  // 'TS runtime sources' and 'installer and package layout' rules must select
+  // tests/emitted-provenance.test.cjs. Originally asserted against
+  // tests/golden-install-parity.test.cjs, deleted by #2724 (ADR-2719 Phase 4); the
+  // differential attribution check is the sole replacement, so this now asserts
+  // its selection directly instead of "travels with the golden".
 
-  test('src/*.cts change selects golden-install-parity (TS runtime sources rule)', () => {
+  test('src/*.cts change selects emitted-provenance (TS runtime sources rule)', () => {
     const result = scopeFor(['src/milestone.cts']);
     assert.strictEqual(result.code_changed, true,
       `expected code_changed=true for src/ change, got: ${JSON.stringify(result)}`);
     assert.ok(
-      result.targeted_tests.includes('tests/golden-install-parity.test.cjs'),
-      `expected golden-install-parity in targeted_tests for src/*.cts change, got: ${JSON.stringify(result.targeted_tests)}`,
+      result.targeted_tests.includes('tests/emitted-provenance.test.cjs'),
+      `expected emitted-provenance in targeted_tests for src/*.cts change, got: ${JSON.stringify(result.targeted_tests)}`,
     );
   });
 
-  test('bin/install.js change selects golden-install-parity (installer and package layout rule)', () => {
+  test('bin/install.js change selects emitted-provenance (installer and package layout rule)', () => {
     const result = scopeFor(['bin/install.js']);
     assert.strictEqual(result.code_changed, true,
       `expected code_changed=true for bin/ change, got: ${JSON.stringify(result)}`);
     assert.ok(
-      result.targeted_tests.includes('tests/golden-install-parity.test.cjs'),
-      `expected golden-install-parity in targeted_tests for bin/install.js change, got: ${JSON.stringify(result.targeted_tests)}`,
+      result.targeted_tests.includes('tests/emitted-provenance.test.cjs'),
+      `expected emitted-provenance in targeted_tests for bin/install.js change, got: ${JSON.stringify(result.targeted_tests)}`,
     );
   });
 });
 
-describe('shipped install content (golden-parity drift guard, #2267)', () => {
+describe('shipped install content (emitted-attribution drift guard, #2267, retargeted by #2724)', () => {
   // #2266 regression: hooks/gsd-statusline.js changed installed output but no
-  // RULES entry selected golden-install-parity, so stale golden fixtures merged
-  // to `next` undetected. The installer emits hooks/*, commands/*, agents/*,
-  // skills/*, gsd-core/workflows/*, gsd-core/templates/*, gsd-core/references/*,
+  // RULES entry selected the drift guard, so stale emitted state merged to `next`
+  // undetected. The installer emits hooks/*, commands/*, agents/*, skills/*,
+  // gsd-core/workflows/*, gsd-core/templates/*, gsd-core/references/*,
   // gsd-core/bin/shared/*.json, and a handful of shipped scripts/* files — every
-  // one of those paths must additionally select golden-install-parity AND the
+  // one of those paths must additionally select the emitted gates AND the
   // install-tree snapshot (union semantics: this rule ADDS to whatever
-  // content-specific rule already matched the path).
+  // content-specific rule already matched the path). Originally asserted the now-
+  // deleted tests/golden-install-parity.test.cjs (#2724, ADR-2719 Phase 4).
   // One path per prefix the rule handles — every installed-source dir the
   // installer emits. gsd-core/contexts/ is the regression for the review miss
   // (a real shipped dir that the initial enumeration omitted).
@@ -667,13 +671,13 @@ describe('shipped install content (golden-parity drift guard, #2267)', () => {
   ];
 
   for (const file of SHIPPED_PATHS) {
-    test(`${file} selects golden-install-parity + golden-install-tree`, () => {
+    test(`${file} selects emitted-provenance + golden-install-tree`, () => {
       const result = scopeFor([file]);
       assert.strictEqual(result.code_changed, true,
         `expected code_changed=true for ${file}, got: ${JSON.stringify(result)}`);
       assert.ok(
-        result.targeted_tests.includes('tests/golden-install-parity.test.cjs'),
-        `expected golden-install-parity in targeted_tests for ${file}, got: ${JSON.stringify(result.targeted_tests)}`,
+        result.targeted_tests.includes('tests/emitted-provenance.test.cjs'),
+        `expected emitted-provenance in targeted_tests for ${file}, got: ${JSON.stringify(result.targeted_tests)}`,
       );
       assert.ok(
         result.targeted_tests.includes('tests/golden-install-tree.test.cjs'),
@@ -682,13 +686,13 @@ describe('shipped install content (golden-parity drift guard, #2267)', () => {
     });
   }
 
-  test('docs/ change does NOT select golden-install-parity (negative case)', () => {
+  test('docs/ change does NOT select emitted-provenance (negative case)', () => {
     const result = scopeFor(['docs/usage.md']);
     assert.strictEqual(result.code_changed, false,
       `expected code_changed=false for docs-only change, got: ${JSON.stringify(result)}`);
     assert.ok(
-      !result.targeted_tests.includes('tests/golden-install-parity.test.cjs'),
-      `docs-only change must NOT select golden-install-parity, got: ${JSON.stringify(result.targeted_tests)}`,
+      !result.targeted_tests.includes('tests/emitted-provenance.test.cjs'),
+      `docs-only change must NOT select emitted-provenance, got: ${JSON.stringify(result.targeted_tests)}`,
     );
   });
 
@@ -696,15 +700,122 @@ describe('shipped install content (golden-parity drift guard, #2267)', () => {
     // The rule allowlists only 3 named scripts + scripts/changeset|lib/. A
     // sibling script that is code but NOT installed verbatim must NOT pull in
     // the install-tree snapshot — proving this is not a blanket 'scripts/'
-    // prefix that would re-run the golden on every script edit. Assert on
-    // golden-install-TREE (the rule's dedicated test), not parity: many scripts/
-    // paths legitimately select parity via the installer rule's
+    // prefix that would re-run the guard on every script edit. Assert on
+    // golden-install-TREE (the rule's dedicated test), not the emitted gates: many
+    // scripts/ paths legitimately select those via the installer rule's
     // path.includes('install') substring.
     const result = scopeFor(['scripts/build-hooks.js']);
     assert.ok(
       !result.targeted_tests.includes('tests/golden-install-tree.test.cjs'),
       `non-shipped script must NOT select golden-install-tree, got: ${JSON.stringify(result.targeted_tests)}`,
     );
+  });
+});
+
+describe('the two emitted gates always travel together (#2758, simplified by #2724)', () => {
+  // #2758: a shipped-content-only PR — the archetypal emitted ripple — must select
+  // BOTH tests/emitted-provenance.test.cjs and tests/emitted-attribution.test.cjs.
+  // Originally phrased as "gates travel with the golden" during the #2723 dual-run
+  // window; #2724 (ADR-2719 Phase 4) deleted tests/golden-install-parity.test.cjs,
+  // so there is no longer a third file for the gates to travel alongside — this
+  // now asserts the pairing directly, on the same rule table.
+  const { RULES } = require('../scripts/ci-test-scope.cjs');
+  const GATES = ['tests/emitted-provenance.test.cjs', 'tests/emitted-attribution.test.cjs'];
+
+  test('every RULES entry selecting one emitted gate selects both', () => {
+    const partial = RULES.filter(r => GATES.some(g => r.tests.includes(g)));
+    // Guards the guard: if this count ever drops to 0, the assertion below is
+    // vacuously true and would silently stop meaning anything.
+    assert.ok(
+      partial.length >= 3,
+      `expected at least 3 RULES entries selecting an emitted gate, found ${partial.length}: ` +
+      `${partial.map(r => r.name).join(', ')}`,
+    );
+    const offenders = partial.filter(r => !GATES.every(g => r.tests.includes(g)));
+    assert.deepStrictEqual(
+      offenders.map(r => r.name),
+      [],
+      `rule(s) select one emitted gate without the other: ${offenders.map(r => r.name).join(', ')}`,
+    );
+  });
+
+  test('a pure shipped-content path selects both emitted gates', () => {
+    // #2758 AC: "a pure shipped-content path (e.g. gsd-core/workflows/plan-phase.md)
+    // selects the differential." The archetypal emitted ripple.
+    const result = scopeFor(['gsd-core/workflows/plan-phase.md']);
+    assert.strictEqual(result.code_changed, true);
+    for (const g of GATES) {
+      assert.ok(
+        result.targeted_tests.includes(g),
+        `expected ${g} in targeted_tests for a shipped-content-only change, got: ${JSON.stringify(result.targeted_tests)}`,
+      );
+    }
+  });
+
+  test('a src/*.cts-only change selects both emitted gates (TS runtime sources rule)', () => {
+    const result = scopeFor(['src/milestone.cts']);
+    for (const g of GATES) {
+      assert.ok(
+        result.targeted_tests.includes(g),
+        `expected ${g} in targeted_tests for src/ change, got: ${JSON.stringify(result.targeted_tests)}`,
+      );
+    }
+  });
+
+  test('bin/install.js selects both emitted gates (installer and package layout rule)', () => {
+    const result = scopeFor(['bin/install.js']);
+    for (const g of GATES) {
+      assert.ok(
+        result.targeted_tests.includes(g),
+        `expected ${g} in targeted_tests for bin/install.js, got: ${JSON.stringify(result.targeted_tests)}`,
+      );
+    }
+  });
+
+  test('docs-only change still does NOT select the emitted gates (negative case)', () => {
+    const result = scopeFor(['docs/usage.md']);
+    for (const g of GATES) {
+      assert.ok(!result.targeted_tests.includes(g), `docs-only must NOT select ${g}, got: ${JSON.stringify(result.targeted_tests)}`);
+    }
+  });
+});
+
+describe('RULES totality guard: no rule names a test file absent from disk (#2758)', () => {
+  // #2758: Phase 4 (#2724) deletes tests/golden-install-parity.test.cjs. Without an
+  // independent guard, a rule still naming it would produce no signal at all —
+  // existingTests() (scripts/ci-test-scope.cjs) silently filters missing files out
+  // of targeted_tests, so the gate simply stops being selected while CI stays
+  // green. This exists independently of the fix above: it catches ANY rule naming
+  // ANY absent file, not only the two gate filenames this issue is about.
+  const { RULES, missingRuleTestFiles } = require('../scripts/ci-test-scope.cjs');
+
+  test('no RULES entry today references a test file absent from disk', () => {
+    assert.deepStrictEqual(
+      missingRuleTestFiles(RULES), [],
+      'RULES reference test file(s) that do not exist — see missingRuleTestFiles() in scripts/ci-test-scope.cjs',
+    );
+  });
+
+  test('the guard mechanism itself catches a phantom entry (hostile input)', () => {
+    // Runs the REAL checker function used by the module-load assertion in
+    // scripts/ci-test-scope.cjs — not a hand-copied reimplementation of it — against
+    // a synthetic rule table, proving the mechanism would have caught exactly the
+    // Phase-4 shape: a rule naming a file that no longer exists on disk.
+    const phantomFile = 'tests/does-not-exist-2758.test.cjs';
+    assert.ok(
+      !fs.existsSync(path.join(ROOT, phantomFile)),
+      'precondition: the phantom file must genuinely not exist for this test to discriminate',
+    );
+    const synthetic = [
+      { name: 'real', tests: ['tests/commands.test.cjs'] },
+      { name: 'phantom', tests: [phantomFile, 'tests/commands.test.cjs'] },
+    ];
+    assert.deepStrictEqual(missingRuleTestFiles(synthetic), [phantomFile]);
+  });
+
+  test('an all-real synthetic table reports nothing missing (negative case)', () => {
+    const synthetic = [{ name: 'real', tests: ['tests/commands.test.cjs', 'tests/ci-test-scope.test.cjs'] }];
+    assert.deepStrictEqual(missingRuleTestFiles(synthetic), []);
   });
 });
 
