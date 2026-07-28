@@ -318,6 +318,15 @@ function resolveBase(env = process.env) {
  * current registry, so the loop never asks the base ref for it, `baseline` silently omits
  * a family that genuinely existed, and the dropped-family check can never fire. Asking
  * the ref what it actually contains is the only way the "before" side is really "before".
+ *
+ * NOT called by the real-tree test's production path as of #2724 (ADR-2719 Phase 4) —
+ * `buildBaselineAtRef` + `resolveBaseline()` replaced it, since the fixture directory
+ * this reads no longer exists at any ref from the cutover commit forward. Kept
+ * (alongside `baselineManifestsAtRef`/`baselineSizesAtRef` below) because it still
+ * answers a real question for a REF THAT PREDATES THE CUTOVER — bisecting into the
+ * dual-run window (#2723) or earlier — and its own regression test below pins a real
+ * property (the baseline must reflect the ref, not the current registry) that would
+ * otherwise go untested.
  */
 function baselineFamilyNamesAtRef(base, { cwd = REPO_ROOT } = {}) {
   let out;
@@ -441,8 +450,14 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
         });
       } catch { /* best-effort cleanup; never mask the primary result/error */ }
     }
-    fs.rmSync(outFile, { force: true });
-    fs.rmSync(worktreeDir, { recursive: true, force: true });
+    // Same guarantee as the git cleanup above: an EBUSY/EPERM here must not replace
+    // whatever the `try` block was about to return or throw.
+    try {
+      fs.rmSync(outFile, { force: true });
+    } catch { /* best-effort cleanup; never mask the primary result/error */ }
+    try {
+      fs.rmSync(worktreeDir, { recursive: true, force: true });
+    } catch { /* best-effort cleanup; never mask the primary result/error */ }
   }
 }
 

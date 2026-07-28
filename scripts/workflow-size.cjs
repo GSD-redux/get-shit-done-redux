@@ -5,10 +5,13 @@
  *
  * Single source of truth for measuring workflow `.md` file sizes in bytes.
  *
- * Shared by `tests/workflow-size-budget.test.cjs` (the CI guard) and
- * `scripts/update-size-baseline.cjs` (the baseline generator) so the two can
- * never disagree on HOW a file is measured.  A divergence between the generator
- * and the guard would silently mis-record the baseline (issue #1074).
+ * Shared by `tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs`
+ * (the tier hard-cap guards), `tests/helpers/emitted-runtime.cjs`'s `currentSizes()`
+ * (the differential attribution check's size ratchet, ADR-2719 Phase 4), and
+ * `scripts/gen-emitted-baseline.cjs` (the baseline publisher) so none of them can
+ * disagree on HOW a file is measured (issue #1074). `scripts/update-size-baseline.cjs`,
+ * the original third consumer, was removed by #2724 along with the per-file baseline
+ * it generated.
  */
 
 const fs = require('fs');
