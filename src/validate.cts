@@ -47,7 +47,17 @@ const {
   PHASE_HEADING_BASELINE,
   extractPhaseToken,
   isSentinelPhaseId,
+  // #612 / #3309 re-homing: `checkBracketCoherence` (below) moved into this
+  // module when #3309 migrated `cmdValidateHealth` onto the rule table and
+  // deleted every local helper it used to sit beside in `verify.cts`. These
+  // four are the grammar owners it consumes, imported unchanged — nothing about
+  // the check is widened by the relocation.
+  BRACKET_ID_SRC,
+  PHASE_NUMBER_TOKEN_SOURCE,
+  BRACKET_MILESTONE_NUMERIC_SRC,
+  foldBracketId,
 } = phaseIdMod;
+import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 
 // ── Issue #26: regex constants (W005, W006-archived) ────────────────────────
 // Matches legacy numeric dirs (01-setup), milestone-prefixed dirs (02-01-setup),
@@ -281,6 +291,130 @@ export function buildNotStartedPhaseVariants(roadmapContent: string, convention?
     for (const variant of phaseVariants(um[1])) notStartedPhases.add(variant);
   }
   return notStartedPhases;
+}
+
+export interface BracketIncoherence {
+  kind: 'mismatch' | 'missing-bracket';
+  phaseId: string;
+  /** The milestone integer of the enclosing `## [CODE.MM] Name` section. */
+  sectionMilestone: string;
+  /** The milestone integer the phase heading itself carries (mismatch only). */
+  phaseMilestone: string;
+}
+
+/**
+ * Bracket-coherence check (#612). ADVISORY, and consumed ONLY under
+ * `phase_id_convention === 'bracket'`. Two sub-checks, both surfaced as W021:
+ *   (1) a phase whose in-bracket milestone differs from its enclosing section's;
+ *   (2) a phase heading not in bracket form under a repo that opted into bracket.
+ * Sentinel milestones are exempt — they have no real milestone to cohere with.
+ *
+ * Anchored to tokenizeHeadings(): the tokenizer strips fenced code blocks, so a
+ * bracket heading inside a ```markdown example cannot raise a warning, and it
+ * yields the heading LEVEL so section-vs-phase is structural rather than a
+ * hash-counting regex.
+ *
+ * SCOPE RULES, all three load-bearing:
+ *   - Only a genuine MILESTONE heading opens or closes a section. A `### Notes`
+ *     is not a section boundary; treating any non-phase heading as one meant a
+ *     single prose heading silently disabled both sub-checks for every phase
+ *     after it.
+ *   - A legacy `## v3.0` milestone heading CLOSES the bracket section, so a
+ *     phase under it is out of scope rather than compared against — and reported
+ *     against — a section it is not in.
+ *   - An M-NN or letter-suffixed phase heading (`### Phase 2-01:`, `### Phase 12A:`)
+ *     raises missing-bracket AND CONTINUES. Treating it as a section reset let a
+ *     single M-NN heading — the exact mid-migration content this epic targets —
+ *     silently disable the whole check.
+ *
+ * A bare `### 2026:` with no `Phase` label and no bracket is NOT a phase heading
+ * and raises nothing; the previous rule flagged year and version headings as
+ * phases needing migration.
+ *
+ * #3309 RE-HOMING NOTE: this function lived in `verify.cts` beside
+ * `checkMilestonePrefixMismatches`, its legacy-convention sibling, and was
+ * called inline from `cmdValidateHealth`'s W021 block. #3309 migrated
+ * `cmdValidateHealth` onto the rule table and relocated
+ * `checkMilestonePrefixMismatches`'s section walk into
+ * `planning-snapshot.cts`'s `roadmapDeclaredPhases` builder. This check follows
+ * its sibling: the body is byte-identical to the reviewed original, it moves
+ * into this pure no-I/O module (the owner of the other three ROADMAP-content
+ * scanners W006/W007 consume), `planning-snapshot.cts` calls it to produce the
+ * `roadmapBracketIncoherences` field, and `RULE_W021`
+ * (`health-diagnostic-rules/state-consistency.cts`) renders the messages. A
+ * `Rule.check(snapshot)` may not read raw `.planning/` text (ADR-3180 §8.1
+ * rule 2), so the read must happen in the snapshot layer either way.
+ */
+export function checkBracketCoherence(roadmapContent: string): BracketIncoherence[] {
+  const incoherences: BracketIncoherence[] = [];
+  // #3185: routed through the owner's predicate rather than reaching into its
+  // exported `SENTINEL_RANGES` array. `n` is an already-parsed, safe,
+  // non-negative milestone integer, so `String(n)` is a bare integer token and
+  // `isSentinelPhaseId`'s convention-less leading-int rule reduces to exactly
+  // `SENTINEL_RANGES.includes(n)` — same answer, one owner.
+  const isSentinel = (n: number) => isSentinelPhaseId(String(n));
+  const pad2 = (n: number) => (Number.isSafeInteger(n) ? String(n).padStart(2, '0') : 'unknown');
+
+  // A bracket PHASE heading: `### [CODE.MM] 05:` or `### [CODE.MM] Phase 5:`.
+  const bracketPhaseRe = new RegExp(`^\\[(${BRACKET_ID_SRC})\\][ \\t]*(?:Phase\\s+)?(${PHASE_NUMBER_TOKEN_SOURCE})\\s*:`, 'i');
+  // A NON-bracket phase heading — requires the literal `Phase` label, so a bare
+  // `2026:` year heading is not a phase. Token is the full phase-number grammar
+  // so M-NN and letter-suffixed ids are RECOGNIZED (and flagged), not skipped.
+  const legacyPhaseRe = new RegExp(`^Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE}|\\d+(?:-\\d+)+[A-Z]?(?:\\.\\d+)*)\\s*:`, 'i');
+  // A bracket MILESTONE section heading.
+  const bracketSectionRe = new RegExp(
+    `^\\[[A-Z][A-Z0-9_]*\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\]`,
+    'i',
+  );
+  // A legacy milestone section heading (`## v2.0 — Name`).
+  const legacyMilestoneRe = /^v\d+(?:\.\d+)*\b/i;
+
+  let sectionMilestone: number | null = null;
+  for (const heading of tokenizeHeadings(roadmapContent)) {
+    const text = heading.text.trim();
+    const bracketPhase = text.match(bracketPhaseRe);
+    const legacyPhase = bracketPhase ? null : text.match(legacyPhaseRe);
+    const isPhaseHeading = Boolean(bracketPhase || legacyPhase);
+
+    if (!isPhaseHeading && heading.level <= 3) {
+      const bracketSection = text.match(bracketSectionRe);
+      if (bracketSection) {
+        const mm = parseInt(bracketSection[1], 10);
+        sectionMilestone = Number.isSafeInteger(mm) ? mm : null;
+        continue;
+      }
+      // Only a MILESTONE heading closes the section. Any other heading (`### Notes`,
+      // `## Backlog`) leaves the scope exactly as it was.
+      if (legacyMilestoneRe.test(text.replace(/^\[[^\]]{0,200}\][ \t]*/, ''))) sectionMilestone = null;
+      continue;
+    }
+    if (!isPhaseHeading) continue;
+    if (sectionMilestone === null || isSentinel(sectionMilestone)) continue;
+
+    if (bracketPhase) {
+      const folded = foldBracketId(bracketPhase[1]);
+      const dot = folded.lastIndexOf('.');
+      const phaseMilestone = parseInt(folded.slice(dot + 1), 10);
+      if (!Number.isSafeInteger(phaseMilestone) || isSentinel(phaseMilestone)) continue;
+      if (phaseMilestone !== sectionMilestone) {
+        incoherences.push({
+          kind: 'mismatch',
+          phaseId: bracketPhase[2],
+          sectionMilestone: pad2(sectionMilestone),
+          phaseMilestone: pad2(phaseMilestone),
+        });
+      }
+      continue;
+    }
+
+    incoherences.push({
+      kind: 'missing-bracket',
+      phaseId: legacyPhase![1],
+      sectionMilestone: pad2(sectionMilestone),
+      phaseMilestone: pad2(sectionMilestone),
+    });
+  }
+  return incoherences;
 }
 
 /**
