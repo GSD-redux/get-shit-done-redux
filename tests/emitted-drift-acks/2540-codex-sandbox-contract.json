@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "paths": {
+    "new-milestone.md": "#2540 — workflow guidance distinguishing a sandbox violation from a missing agent, which this workflow had no wording for before. Size growth only; the emitted agents/*.toml deltas are attributed by rule since #2757.",
+    "new-project.md": "#2540 — same change: the sandbox-violation vs missing-agent distinction surfaced here. Size growth only."
+  }
+}
