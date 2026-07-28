@@ -708,6 +708,115 @@ describe('shipped install content (golden-parity drift guard, #2267)', () => {
   });
 });
 
+describe('differential attribution gates travel with golden-parity (#2758)', () => {
+  // #2758: the golden-parity rules ran tests/golden-install-parity.test.cjs on a
+  // shipped-content-only PR — the archetypal emitted ripple — but selected neither
+  // tests/emitted-provenance.test.cjs nor tests/emitted-attribution.test.cjs. Fix:
+  // every rule that selects the golden also selects both emitted gates, so the
+  // differential travels with the golden everywhere the golden travels (the
+  // ADR-2719 dual-run premise: both green, fixtures untouched, until Phase 4).
+  const { RULES } = require('../scripts/ci-test-scope.cjs');
+  const GOLDEN = 'tests/golden-install-parity.test.cjs';
+  const GATES = ['tests/emitted-provenance.test.cjs', 'tests/emitted-attribution.test.cjs'];
+
+  test('every RULES entry selecting golden-install-parity also selects both emitted gates', () => {
+    const goldenRules = RULES.filter(r => r.tests.includes(GOLDEN));
+    // Guards the guard: if this count ever drops to 0, the assertion below is
+    // vacuously true and would silently stop meaning anything.
+    assert.ok(
+      goldenRules.length >= 3,
+      `expected at least 3 RULES entries selecting ${GOLDEN}, found ${goldenRules.length}: ` +
+      `${goldenRules.map(r => r.name).join(', ')}`,
+    );
+    const offenders = goldenRules.filter(r => !GATES.every(g => r.tests.includes(g)));
+    assert.deepStrictEqual(
+      offenders.map(r => r.name),
+      [],
+      `rule(s) select ${GOLDEN} without both emitted gates: ${offenders.map(r => r.name).join(', ')}`,
+    );
+  });
+
+  test('a pure shipped-content path selects both emitted gates alongside the golden', () => {
+    // #2758 AC: "a pure shipped-content path (e.g. gsd-core/workflows/plan-phase.md)
+    // selects the differential." The archetypal emitted ripple.
+    const result = scopeFor(['gsd-core/workflows/plan-phase.md']);
+    assert.strictEqual(result.code_changed, true);
+    assert.ok(result.targeted_tests.includes(GOLDEN));
+    for (const g of GATES) {
+      assert.ok(
+        result.targeted_tests.includes(g),
+        `expected ${g} in targeted_tests for a shipped-content-only change, got: ${JSON.stringify(result.targeted_tests)}`,
+      );
+    }
+  });
+
+  test('a src/*.cts-only change selects both emitted gates (TS runtime sources rule)', () => {
+    const result = scopeFor(['src/milestone.cts']);
+    for (const g of GATES) {
+      assert.ok(
+        result.targeted_tests.includes(g),
+        `expected ${g} in targeted_tests for src/ change, got: ${JSON.stringify(result.targeted_tests)}`,
+      );
+    }
+  });
+
+  test('bin/install.js selects both emitted gates (installer and package layout rule)', () => {
+    const result = scopeFor(['bin/install.js']);
+    for (const g of GATES) {
+      assert.ok(
+        result.targeted_tests.includes(g),
+        `expected ${g} in targeted_tests for bin/install.js, got: ${JSON.stringify(result.targeted_tests)}`,
+      );
+    }
+  });
+
+  test('docs-only change still does NOT select the emitted gates (negative case)', () => {
+    const result = scopeFor(['docs/usage.md']);
+    for (const g of GATES) {
+      assert.ok(!result.targeted_tests.includes(g), `docs-only must NOT select ${g}, got: ${JSON.stringify(result.targeted_tests)}`);
+    }
+  });
+});
+
+describe('RULES totality guard: no rule names a test file absent from disk (#2758)', () => {
+  // #2758: Phase 4 (#2724) deletes tests/golden-install-parity.test.cjs. Without an
+  // independent guard, a rule still naming it would produce no signal at all —
+  // existingTests() (scripts/ci-test-scope.cjs) silently filters missing files out
+  // of targeted_tests, so the gate simply stops being selected while CI stays
+  // green. This exists independently of the fix above: it catches ANY rule naming
+  // ANY absent file, not only the two gate filenames this issue is about.
+  const { RULES, missingRuleTestFiles } = require('../scripts/ci-test-scope.cjs');
+
+  test('no RULES entry today references a test file absent from disk', () => {
+    assert.deepStrictEqual(
+      missingRuleTestFiles(RULES), [],
+      'RULES reference test file(s) that do not exist — see missingRuleTestFiles() in scripts/ci-test-scope.cjs',
+    );
+  });
+
+  test('the guard mechanism itself catches a phantom entry (hostile input)', () => {
+    // Runs the REAL checker function used by the module-load assertion in
+    // scripts/ci-test-scope.cjs — not a hand-copied reimplementation of it — against
+    // a synthetic rule table, proving the mechanism would have caught exactly the
+    // Phase-4 shape: a rule naming a file that no longer exists on disk.
+    const phantomFile = 'tests/does-not-exist-2758.test.cjs';
+    assert.ok(
+      !fs.existsSync(path.join(ROOT, phantomFile)),
+      'precondition: the phantom file must genuinely not exist for this test to discriminate',
+    );
+    const synthetic = [
+      { name: 'real', tests: ['tests/commands.test.cjs'] },
+      { name: 'phantom', tests: [phantomFile, 'tests/commands.test.cjs'] },
+    ];
+    assert.deepStrictEqual(missingRuleTestFiles(synthetic), [phantomFile]);
+  });
+
+  test('an all-real synthetic table reports nothing missing (negative case)', () => {
+    const synthetic = [{ name: 'real', tests: ['tests/commands.test.cjs', 'tests/ci-test-scope.test.cjs'] }];
+    assert.deepStrictEqual(missingRuleTestFiles(synthetic), []);
+  });
+});
+
 describe('code_changed=false implies clean output invariant', () => {
   // Fix 1: when code_changed is false, full_matrix, targeted_tests, windows_tests
   // must ALL be empty/false — even if a docs path coincidentally

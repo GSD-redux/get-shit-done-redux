@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const path = require('node:path');
 const { execFileSync } = require('child_process');
 const { existsSync, readdirSync, appendFileSync } = require('fs');
 
@@ -105,9 +106,8 @@ const RULES = [
     fullMatrix: true,
     tests: [
       'tests/check-env.test.cjs',
-      'tests/npm-integrity-gate.test.cjs',
+      'tests/npm-integrity-gate.test.cjs', // #2758: absorbs the former tests/bug-3588-npm-audit-clean.test.cjs (folded into it by consolidation epic #1969 B6 #1975; the stale filename here was a silent coverage hole this rule never actually re-selected)
       'tests/package-manifest.test.cjs',
-      'tests/bug-3588-npm-audit-clean.test.cjs',
     ],
   },
   {
@@ -116,9 +116,10 @@ const RULES = [
     // still trigger the migrated module's tests (otherwise CI silently skips them).
     match: path => path.startsWith('src/') || path === 'tsconfig.build.json',
     tests: [
-      'tests/semver-compare.test.cjs',
-      'tests/bug-10-semver-policy-consolidation.test.cjs',
+      'tests/semver-compare.test.cjs', // #2758: absorbs the former tests/bug-10-semver-policy-consolidation.test.cjs (folded into it by consolidation epic #1969 B3 #1972; the stale filename here was a silent coverage hole this rule never actually re-selected)
       'tests/golden-install-parity.test.cjs', // any src/installer change can alter emitted install artifacts → re-verify golden install parity (drift guard)
+      'tests/emitted-provenance.test.cjs', // #2758: the differential travels with the golden — ADR-2719 dual-run
+      'tests/emitted-attribution.test.cjs',
     ],
   },
   {
@@ -143,6 +144,8 @@ const RULES = [
       // changed test file.
       'tests/runtime-artifact-layout.test.cjs',
       'tests/golden-install-parity.test.cjs', // any src/installer change can alter emitted install artifacts → re-verify golden install parity (drift guard)
+      'tests/emitted-provenance.test.cjs', // #2758: the differential travels with the golden — ADR-2719 dual-run
+      'tests/emitted-attribution.test.cjs',
     ],
   },
   {
@@ -155,6 +158,10 @@ const RULES = [
     // shipped to next undetected). Union semantics: this ADDS the parity guard on
     // top of each path's existing content-specific tests. Targeted lane only (the
     // golden test skips win32 by design), no fullMatrix.
+    // #2758: the Phase 2/3 emitted differential (ADR-2719) travels alongside the
+    // golden here too — a PR editing only shipped content is the archetypal
+    // emitted ripple, and until this fix no rule selected the differential at
+    // all. Both green, fixtures untouched, is the dual-run premise.
     // NOTE: intentionally NOT a blanket 'gsd-core/' prefix, for two reasons:
     // (1) gsd-core/bin/** is tsc-compiled runtime output — EXCLUDED_PREFIXES-
     //     excluded from both manifests, and already covered by the 'installer and
@@ -174,6 +181,8 @@ const RULES = [
     tests: [
       'tests/golden-install-parity.test.cjs',
       'tests/golden-install-tree.test.cjs',
+      'tests/emitted-provenance.test.cjs',
+      'tests/emitted-attribution.test.cjs',
     ],
   },
   {
@@ -236,7 +245,13 @@ const RULES = [
       'tests/workflow-size-budget.test.cjs',
       'tests/workflow-guard-registration.test.cjs',
       'tests/commands.test.cjs',
-      'tests/bug-3683-workflow-colon-namespace-leak.test.cjs',
+      // #2758: was 'tests/bug-3683-workflow-colon-namespace-leak.test.cjs', deleted by
+      // consolidation epic #1969 (B6 #1975) and folded into slash-command-namespace.test.cjs
+      // ("folded:bug-3683-workflow-colon-namespace-leak" describe block). The stale filename
+      // here was itself an instance of this issue's defect class — silently dropped by
+      // existingTests() below, so gsd-core/workflows/ changes stopped re-running this
+      // regression's coverage with nothing signaling it.
+      'tests/slash-command-namespace.test.cjs',
     ],
   },
   {
@@ -290,6 +305,41 @@ const RULES = [
     ],
   },
  ];
+
+/**
+ * Every RULES[].tests entry (deduped, across every rule) that does NOT exist on
+ * disk. #2758: a rule naming a test file that no longer exists is not merely
+ * inert — existingTests() below silently drops it out of targeted_tests, with
+ * nothing in the CI output signaling why. Phase 4 (#2724) deletes
+ * tests/golden-install-parity.test.cjs; without this check, any rule still
+ * naming it would stop selecting the guard entirely and CI would stay green
+ * throughout. Pure and independent of which rule / which file: it catches ANY
+ * phantom entry, not only the two names this issue is about.
+ * Paths resolve relative to the repo root (this file's parent directory), not
+ * the caller's cwd, so the check behaves identically whether invoked as the CLI
+ * (`node scripts/ci-test-scope.cjs ...`, cwd == repo root by convention) or
+ * required directly by a test.
+ */
+function missingRuleTestFiles(rules) {
+  const referenced = new Set();
+  for (const rule of rules) {
+    for (const f of rule.tests) referenced.add(f);
+  }
+  return [...referenced].filter(f => !existsSync(path.join(__dirname, '..', f))).sort();
+}
+
+// Fail loudly at module load, mirroring the PROTECTED_WORKFLOWS check above —
+// this fires on EVERY invocation of the CLI (including the real `changes` job
+// in .github/workflows/test.yml), not only when a test suite happens to run.
+{
+  const missing = missingRuleTestFiles(RULES);
+  if (missing.length > 0) {
+    throw new Error(
+      `ci-test-scope: RULES reference test file(s) that do not exist on disk ` +
+      `(silent coverage hole — see #2758):\n  ${missing.join('\n  ')}`,
+    );
+  }
+}
 
 function usage() {
   return [
@@ -523,4 +573,8 @@ function main() {
   }
 }
 
-runMain(main);
+if (require.main === module) {
+  runMain(main);
+}
+
+module.exports = { RULES, missingRuleTestFiles, classify, isInertCi };
