@@ -111,6 +111,31 @@ const KIMI_ROOT_AGENT_SRC = 'src/runtime-artifact-layout.cts';
  * line of it. A change localized to those two functions and not reachable through the
  * three files below stays unattributable and falls to the drift-ack file, which is the
  * documented escape hatch for exactly that case.
+ *
+ * ── Known follow-up, NOT included here on purpose (#2757 review) ────────────
+ * The issue text also named `src/agent-tools-contract.cts` and
+ * `src/agent-install-check.cts` (both touched by PR #2566, "derive Codex agent sandbox
+ * from the tool"). Verified against THIS tree and excluded on the evidence:
+ *   - `src/agent-tools-contract.cts` does not exist on `next` — #2566 ADDS it (+119/-0).
+ *     A nonexistent path here would immediately fail the
+ *     "every declared transform path exists in the repo" hygiene test in
+ *     emitted-provenance.test.cjs, which exists precisely to catch a rule (or a
+ *     suggested transform, as here) that cites a file that doesn't back real content.
+ *   - `src/agent-install-check.cts` exists today and is READ-ONLY (`getAgentsDir`,
+ *     `checkAgentsInstalled` — no fs.writeFileSync, no content transform); #2566
+ *     nearly doubles it (+112/-1). Whether the addition becomes a real content-writer,
+ *     a larger read-only diagnostic surface, or a helper called BY an already-declared
+ *     file cannot be determined without reading #2566's actual diff, which review is
+ *     explicit should not be fetched here. Declaring it on a line-count guess risks
+ *     the exact false-attribution failure mode this whole table exists to prevent — a
+ *     rule that looks fixed while resolving to the wrong causal story.
+ * Interim safety net: if #2566 lands and either file becomes a real transform without
+ * this list being updated, the differential (Phase 3) will correctly flag the moved
+ * agent artifact as unattributable — that is the guard working, not a regression — and
+ * unblocks via `tests/emitted-drift-ack.json` until this list is verified and extended
+ * using the SAME method used for the three files above: build, install every runtime,
+ * diff the output against the raw repo source, confirm which file's absence/presence
+ * changes the bytes.
  */
 const AGENT_TRANSFORM_SRCS = [
   'src/runtime-artifact-conversion.cts',
