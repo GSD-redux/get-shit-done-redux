@@ -65,6 +65,29 @@ const TRACKED_PREFIXES = [
 const TRACKED_EXACT = new Set(['bin/install.js', 'package.json']);
 
 /**
+ * Paths CONTEXT.md documents whose ABSENCE is the healthy steady state (#2778).
+ *
+ * `TRACKED_PREFIXES` skips claims this gate *cannot* check. This is the narrower
+ * third case: a claim it must not check, because "does not exist" is the correct
+ * state rather than drift.
+ *
+ * `tests/emitted-drift-ack.json` is the acknowledgment file from ADR-2719 §3. Its
+ * whole design property is that it appears in the changed-files list ONLY when
+ * something rippled unexpectedly — "touching it IS the alarm". A permanently
+ * committed copy would signal nothing, which is exactly why the ADR rejected
+ * shipping an empty stub. So the file is absent on a healthy `next` and present
+ * only inside a PR that needs it, and asserting either way is wrong.
+ *
+ * Until #2778 this passed only by accident: CONTEXT.md's `RULESET.` entries are
+ * themselves backtick-wrapped and contain backticks, so the sequential pairing in
+ * `extractTrackedRefs` happened to leave this token outside a code span. Any edit
+ * that shifted the parity — such as #2778's own — exposed it. A gate that passes
+ * by luck is not passing; naming the exemption makes the intent explicit and
+ * survives the next edit.
+ */
+const INTENTIONALLY_ABSENT = new Set(['tests/emitted-drift-ack.json']);
+
+/**
  * Shape a backticked token must have to even be considered a path candidate:
  * one or more `/`-separated segments of word/dot/dash characters, with an
  * optional trailing `:<line>` suffix. Anything else inside backticks (CLI
@@ -75,6 +98,7 @@ const PATH_TOKEN_RE = /^[\w.-]+(?:\/[\w.-]+)*(?::\d+)?$/;
 
 /** Whether `token` (line-suffix already stripped) is one this gate checks. */
 function isTracked(token) {
+  if (INTENTIONALLY_ABSENT.has(token)) return false;
   return TRACKED_EXACT.has(token) || TRACKED_PREFIXES.some((prefix) => token.startsWith(prefix));
 }
 
