@@ -16,14 +16,14 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir } = phaseIdMod;
+const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone } = roadmapParserMod;
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, planningPaths } = planningWorkspace;
+const { planningDir, planningPaths, resolvePhaseIdConvention } = planningWorkspace;
 import { realClock } from './clock.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatter = require('./frontmatter.cjs');
@@ -1561,7 +1561,38 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
 // ROADMAP phase token against an on-disk phase directory — moved to the
 // phase-id owner module in #2562 so every consumer derives BOTH sides of a
 // phase comparison from the same function (see phase-id.cts). Imported at the
-// top of this file; call sites below are unchanged.
+// top of this file; call sites below are unchanged. #612 threads the optional
+// `convention` through that owner's `phaseKeyFromDir` (see phase-id.cts) rather
+// than re-deriving a bracket-aware key here.
+
+/**
+ * #612: is the asserted milestone bounded to a heading in this ROADMAP?
+ *
+ * The legacy rule matches STATE's milestone STRING (`v2.0`) inside a heading.
+ * The ADR-canonical bracket milestone heading is `## [GSD.02] Foundation` — a
+ * name, no version — so that rule finds nothing, the milestone reads as
+ * unbounded, and total_phases falls back to the on-disk directory count. Under
+ * the bracket convention the milestone integer in the bracket is matched against
+ * the `vN` of the milestone string instead (READING-B parity). Gated, and only
+ * consulted after the legacy rule has already failed, so no non-bracket repo
+ * changes answer.
+ */
+function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: string | null): boolean {
+  const versionedHeading = new RegExp(
+    `^#{1,3}\\s+(?!Phase\\s+\\S).*${escapeRegex(String(milestone).trim())}`,
+    'mi',
+  );
+  if (versionedHeading.test(roadmapRaw)) return true;
+  if (convention !== 'bracket') return false;
+  const vMatch = String(milestone).trim().match(/^v(\d+)/i);
+  const milestoneInt = vMatch ? parseInt(vMatch[1], 10) : NaN;
+  if (!Number.isSafeInteger(milestoneInt)) return false;
+  // Canonical spelling only — see the note in roadmap-parser's scoping branch.
+  // Accepting `0*N` here bounded a milestone whose phases were invisible, which
+  // un-suppressed a progress percent computed off an unscoped disk count.
+  const canonical = String(milestoneInt).padStart(2, '0');
+  return new RegExp(`^#{1,3}\\s+\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'mi').test(roadmapRaw);
+}
 
 /**
  * Extract the set of retired/folded phase keys from a ROADMAP milestone scope
@@ -1584,15 +1615,23 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
  * decimal, and project-code IDs are detected alike. Returns canonical keys
  * (see phaseKeyFromToken).
  */
-function extractRetiredPhaseNumbers(scope: string): Set<string> {
+function extractRetiredPhaseNumbers(scope: string, convention?: string | null): Set<string> {
   const retired = new Set<string>();
   const isChecklistOrHeading = /^\s*(?:[-*+]\s*\[[ xX]\]|#{1,6}\s)/;
+  // #612: the retirement filter has to widen with the counter it protects. The
+  // canonical #1514 gesture strikes the checklist BULLET and leaves the detail
+  // heading intact, so a bracket-form retirement went undetected and the phase
+  // stayed in the denominator forever — a shipped bracket milestone could never
+  // reach 100%. Same selection rule as the counter: a non-bracket repo compiles
+  // the bare `Phase\s+` this line spelled before.
+  const introSrc = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention);
+  const phaseRefRe = new RegExp(`^[\\s*_]*${introSrc}([\\w][\\w.-]*)`, 'i');
   for (const line of scope.split(/\r?\n/)) {
     if (!isChecklistOrHeading.test(line)) continue;
     const strikeSpan = /~~([^~]*?)~~/g;
     let s: RegExpExecArray | null;
     while ((s = strikeSpan.exec(line)) !== null) {
-      const phaseRef = /^[\s*_]*Phase\s+([\w][\w.-]*)/i.exec(s[1]);
+      const phaseRef = phaseRefRe.exec(s[1]);
       // Require a digit so struck prose like ~~Phase Overview~~ is ignored.
       if (phaseRef && /\d/.test(phaseRef[1])) retired.add(phaseKeyFromToken(phaseRef[1]));
     }
@@ -1658,6 +1697,11 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
   // block; consumed at the percent computation to mirror the cmdStateSync guard.
   let milestoneUnbounded = false;
 
+  // #612: resolved ONCE per call, federated workstream -> root, and shared by
+  // the heading counter, the retirement filter and the retired-directory skip so
+  // no two of them can split on different answers.
+  const phaseConvention = cwd ? resolvePhaseIdConvention(cwd) : null;
+
   if (cwd) {
     try {
       const phasesDir = planningPaths(cwd).phases;
@@ -1678,7 +1722,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             roadmapRaw = platformReadSync(roadmapPath);
             if (roadmapRaw !== null) {
               roadmapScope = extractCurrentMilestone(roadmapRaw, cwd);
-              retiredPhaseNums = extractRetiredPhaseNumbers(roadmapScope);
+              retiredPhaseNums = extractRetiredPhaseNumbers(roadmapScope, phaseConvention);
             }
           } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
@@ -1697,7 +1741,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             // artifact; drop it from the disk phase set so it counts toward
             // neither the denominator nor the numerator (mirrors the heading
             // exclusion below). Project-code-aware via phaseKeyFromDir.
-            if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir))) continue;
+            if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir, phaseConvention))) continue;
             // phase-id-owner: dir-name dedup grouping; diverges from extractPhaseToken/phaseKeyFromDir on project-code-prefixed and multi-segment milestone dirs. Kept local.
             const m = dir.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
             const key = m ? m[1].toLowerCase() : dir;
@@ -1735,17 +1779,33 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
           let roadmapPhaseCount = 0;
           if (roadmapScope !== null) {
             // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-            const phaseHeadingPattern = /#{2,4}\s*Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/gi;
+            const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, phaseConvention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
+            const bg = phaseConvention === 'bracket' ? 1 : 0;
             let m: RegExpExecArray | null;
             while ((m = phaseHeadingPattern.exec(roadmapScope)) !== null) {
               // Only count tokens that contain at least one digit — excludes
               // pure-word section headings (Overview, Details) while keeping
               // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
               // Also exclude 999.x backlog phases. Mirrors init.cts filter.
-              if (!/\d/.test(m[1]) || /^999\b/.test(m[1])) continue;
+              const bracketId = bg ? m[1] : undefined;
+              const token = m[1 + bg];
+              if (!/\d/.test(token)) continue;
+              // #612 READING-B: a bracket heading carries its sentinel in the
+              // bracket, so `### [GSD.999] 01:` is an icebox item even though its
+              // token is `01`. Legacy headings keep the /^999\b/ token rule.
+              // Composed, not replaced — see the note in roadmap.cts: a bracket
+              // sentinel OR the legacy 999 token rule excludes the heading.
+              if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+              // #612: under bracket the token rule composes as the full engine
+              // sentinel set {0, 999} so this counter agrees with roadmap analyze,
+              // which has always excluded both. The LEGACY path keeps its
+              // pre-existing 999-only rule — widening it there would move legacy
+              // totals — so the two stay split off the bracket path as they are today.
+              if (phaseConvention === 'bracket' && /^0\b/.test(token)) continue;
+              if (/^999\b/.test(token)) continue;
               // #1514: retired/folded phases are struck through in the ROADMAP;
               // exclude them from the denominator (they can never be completed).
-              if (retiredPhaseNums.has(phaseKeyFromToken(m[1]))) continue;
+              if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
               roadmapPhaseCount++;
             }
           }
@@ -1760,11 +1820,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             // downstream (mirrors the sync write-path guard).
             let milestoneBounded = true;
             if (milestone && roadmapRaw !== null) {
-              const versionedHeading = new RegExp(
-                `^#{1,3}\\s+(?!Phase\\s+\\S).*${escapeRegex(String(milestone).trim())}`,
-                'mi',
-              );
-              milestoneBounded = versionedHeading.test(roadmapRaw);
+              milestoneBounded = isMilestoneBounded(roadmapRaw, String(milestone), phaseConvention);
             }
             // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
             // at all — only Phase headings) from a MILESTONED-but-unbounded one
@@ -2875,12 +2931,13 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   let syncRoadmapScope: string | null = null;
   let syncRoadmapRaw: string | null = null;
   let syncRetiredPhaseNums = new Set<string>();
+  const syncConvention = resolvePhaseIdConvention(cwd);
   try {
     const roadmapRaw = platformReadSync(path.join(planningDir(cwd), 'ROADMAP.md'));
     if (roadmapRaw !== null) {
       syncRoadmapRaw = roadmapRaw;
       syncRoadmapScope = extractCurrentMilestone(roadmapRaw, cwd);
-      syncRetiredPhaseNums = extractRetiredPhaseNumbers(syncRoadmapScope);
+      syncRetiredPhaseNums = extractRetiredPhaseNumbers(syncRoadmapScope, syncConvention);
     }
   } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
@@ -2890,7 +2947,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     entries = fs.readdirSync(phasesDir, { withFileTypes: true })
       .filter(e => e.isDirectory())
       .map(e => e.name)
-      .filter(name => !(syncRetiredPhaseNums.size > 0 && syncRetiredPhaseNums.has(phaseKeyFromDir(name))))
+      .filter(name => !(syncRetiredPhaseNums.size > 0 && syncRetiredPhaseNums.has(phaseKeyFromDir(name, syncConvention))))
       .sort();
   } catch {
     output({ synced: true, changes: [], dry_run: !!verify }, raw, undefined);
@@ -2940,15 +2997,28 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   let roadmapPhaseCount = 0;
   if (syncRoadmapScope !== null) {
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    const phaseHeadingPattern = /#{2,4}\s*Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/gi;
+    // #612: the SAME selection as buildStateFrontmatter — the two counters must
+    // see the same phases or `state json` and `state sync` report different
+    // totals for one repo (#3242 Bug B).
+    const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, syncConvention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
+    const sbg = syncConvention === 'bracket' ? 1 : 0;
     let m: RegExpExecArray | null;
     while ((m = phaseHeadingPattern.exec(syncRoadmapScope)) !== null) {
       // Only count tokens that contain at least one digit — excludes
       // pure-word section headings (Overview, Details) while keeping
       // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-      if (!/\d/.test(m[1])) continue;
+      const bracketId = sbg ? m[1] : undefined;
+      const token = m[1 + sbg];
+      if (!/\d/.test(token)) continue;
+      // #612: bracket sentinel lives in the bracket (READING-B). The legacy
+      // /^999\b/ token filter its twin carries is deliberately NOT added here —
+      // that pre-existing asymmetry is out of scope and changing it would move
+      // legacy totals.
+      if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+      // #612: same composed {0, 999} rule as buildStateFrontmatter under bracket.
+      if (syncConvention === 'bracket' && /^0\b/.test(token)) continue;
       // #1514: retired/folded phases are struck through; exclude from total.
-      if (syncRetiredPhaseNums.has(phaseKeyFromToken(m[1]))) continue;
+      if (syncRetiredPhaseNums.has(phaseKeyFromToken(token))) continue;
       roadmapPhaseCount++;
     }
   }
@@ -2969,8 +3039,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   const versionStr = typeof fmVersion === 'string' && fmVersion.trim() ? fmVersion.trim() : null;
   let milestoneBounded = true;
   if (versionStr !== null && syncRoadmapRaw !== null) {
-    const versionedHeading = new RegExp(`^#{1,3}\\s+(?!Phase\\s+\\S).*${escapeRegex(versionStr)}`, 'mi');
-    milestoneBounded = versionedHeading.test(syncRoadmapRaw);
+    milestoneBounded = isMilestoneBounded(syncRoadmapRaw, versionStr, syncConvention);
   }
   let percent: number | null = null;
   if (!milestoneBounded) {

@@ -775,9 +775,18 @@ function phaseKeyFromToken(token: unknown): string {
 /**
  * Canonical key for a phase DIRECTORY name (`"05-schedule-8"` → `"05"`,
  * `"PROJ-5-x"` → `"05"`, `"30.1-follow-up"` → `"30.1"`).
+ *
+ * #612: `convention` is forwarded to `extractPhaseToken`, which needs that signal
+ * to read a bracket directory (`"GSD.02-05-delta"` → `"05"`) — a bracket dir is
+ * string-indistinguishable from the legacy letter-prefixed-decimal family, so the
+ * extractor refuses to guess. Optional and defaulted-absent, so every pre-#612
+ * call site resolves byte-identically to prior behaviour. Without it a bracket dir
+ * yields its whole name as the key and never matches the ROADMAP entry it names —
+ * #2562's own defect class reached from the other side: both sides of a comparison
+ * must be derived not merely by the same function but under the same convention.
  */
-function phaseKeyFromDir(dirName: string): string {
-  return phaseKeyFromToken(extractPhaseToken(dirName));
+function phaseKeyFromDir(dirName: string, convention?: string | null): string {
+  return phaseKeyFromToken(extractPhaseToken(dirName, convention));
 }
 
 /**
