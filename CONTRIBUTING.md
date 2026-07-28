@@ -780,6 +780,17 @@ its exact byte delta and needs the same acknowledgment; the outer tier hard caps
 `tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs` are unaffected
 and still apply.
 
+You do not need to memorize any of this. **The failure output names its own remedy** — it
+tells you the file to create, that it does not exist yet, which key to use, and prints a
+minimal valid document you can paste. Note the two key spaces, because the message says
+which one applies: an unattributable **hash** ripple is keyed on the emitted path
+(`skills/gsd-add-tests/SKILL.md`), while **growth** is keyed on the bare filename as it
+appears under `gsd-core/workflows/` or `agents/` (`explore.md`). When you remove the last
+entry from `tests/emitted-drift-ack.json`, delete the file too — its presence is the
+alarm, so an empty one signals nothing. Nothing here is regenerated: if you find yourself
+looking for a baseline file to re-run a generator over, that file was deleted by #2724 and
+is not coming back.
+
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
 the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the

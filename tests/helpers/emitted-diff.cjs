@@ -35,6 +35,17 @@ const { attributeEmittedPath } = require('./emitted-provenance.cjs');
 const ACK_VERSION = 1;
 
 /**
+ * The acknowledgment file, named ONCE (#2778).
+ *
+ * This string was previously typed by hand in `formatReport`'s unattributable branch, in
+ * `parseAck`'s default `source`, and again as `ACK_PATH` in emitted-runtime.cjs. Adding a
+ * fourth copy for the growth branch is the *generative fix divergence* class this repo
+ * records: parallel surfaces reading one shared value must not be able to drift. One
+ * definition consumed by every branch is cheaper than a parity test over four literals.
+ */
+const ACK_FILE = 'tests/emitted-drift-ack.json';
+
+/**
  * A brand-new workflow/agent file — absent from the baseline, present now — must
  * still stay under the Codex `project_doc_max_bytes` anchor (ADR-1610 Decision
  * point 3, `NEW_FILE_CAP` in the pre-#2724 tests/workflow-size-budget.test.cjs).
@@ -56,6 +67,64 @@ const ACK_VERSION = 1;
  * earlier than an existing file would need to. Documented narrowing, not a silent one.
  */
 const NEW_FILE_CAP = 32768;
+
+/**
+ * Render the minimal valid acknowledgment document for a set of entries (#2778).
+ *
+ * Built with `JSON.stringify` from `ACK_VERSION` rather than typed out, for two reasons: the
+ * printed document is guaranteed to be syntactically valid JSON, and it cannot fall out of
+ * step with the version `parseAck` enforces. A hand-typed `"version": 1` sitting beside a live
+ * `ACK_VERSION` is the drift this module warns about everywhere else.
+ *
+ * It teaches exactly ONE shape. `parseAck` is deliberately more liberal — it accepts a bare
+ * string as the reason and tolerates a missing `version` or `paths`. Be liberal in what you
+ * accept, conservative in what you send: advertising those tolerances would spread a quirk
+ * into hand-written contributor files and make the canonical form look optional.
+ *
+ * It takes ALL the entries at once and renders ONE document, which is not a convenience:
+ * a report can trip the hash branch and the size branch together (a feature PR that both
+ * ripples an emitted path and grows a workflow). Printing a complete document per branch
+ * made each look like "the file to create", so a contributor pasting the second over the
+ * first would silently lose the first acknowledgment — an ack-lost failure with no signal.
+ * One document, one file, one paste.
+ */
+function ackDocument(entries) {
+  const paths = {};
+  for (const { key, reason } of entries) paths[key] = { reason };
+  return JSON.stringify({ version: ACK_VERSION, paths });
+}
+
+/**
+ * Self-serve remediation, as data rather than prose scattered across branches (#2778).
+ *
+ * ADR-2719 §3 makes the acknowledgment a *conspicuous declaration a contributor makes
+ * deliberately*. That only works if the contributor can discover how to make it. Before this,
+ * the growth branch stated a requirement and withheld the means: it said "without an
+ * acknowledgment" without naming the file, saying the file does not exist yet, giving the
+ * schema, or saying which of the two key spaces applies — and it omitted the "do not
+ * regenerate" instruction too, so the likeliest guess was to go hunting for a baseline file
+ * #2724 deleted. Observed live on #2543.
+ *
+ * Exported as one frozen object rather than loose strings so the observable surface is
+ * deliberate (Hyrum), and so tests can assert on identity instead of prose — rewording the
+ * help text must not be a breaking change.
+ */
+const REMEDIATION = Object.freeze({
+  ackFile: ACK_FILE,
+  createIfAbsent: 'create the file if absent — it exists only when something needs acknowledging',
+  doNotRegenerate:
+    'Do NOT regenerate anything to silence this — there is nothing left to regenerate.',
+  /** The size ratchet keys on `entry.name` from readdirSync (emitted-runtime.cjs `currentSizes`). */
+  growthKeyRule: 'Key on the BARE FILENAME as it appears under gsd-core/workflows/ or agents/',
+  /** The hash pass keys on the emitted manifest path, which always carries a `/`. */
+  rippleKeyRule: 'Key on the EMITTED PATH exactly as printed above',
+  rippleReason: '<why this ripple is deliberate>',
+  growthReason: '<why this growth is deliberate>',
+  staleAckFix:
+    `Delete those entries from ${ACK_FILE}. If that leaves no entries, delete the file `
+    + 'itself — its PRESENCE is the alarm, so an empty one signals nothing.',
+  ackDocument,
+});
 
 /**
  * Does a changed repo path satisfy a provenance `sources` entry?
@@ -166,8 +235,14 @@ function diffEmitted({
   }
   if (errors.length) {
     return {
+      // `newFileCapExceeded` MUST be present here. formatReport reads
+      // `result.newFileCapExceeded.length` unconditionally, so omitting it made this
+      // early return throw a TypeError instead of rendering the errors it was built to
+      // report — and this is precisely the path taken when `git diff` failed or a
+      // manifest came back malformed, so the crash replaced the one message that would
+      // have explained the infrastructure problem (#2778).
       moved: 0, attributed: [], unattributable: [], acked: [], removed: [],
-      grown: [], shrunk: [], staleAcks: [], errors, ok: false,
+      grown: [], shrunk: [], newFileCapExceeded: [], staleAcks: [], errors, ok: false,
     };
   }
 
@@ -319,8 +394,87 @@ function diffEmitted({
 }
 
 /**
+ * The report as a typed intermediate representation, before any rendering (#2778).
+ *
+ * `formatReport`'s output is the human-facing deliverable ADR-2719 §1 sells the design
+ * on — but CONTRIBUTING.md ("Prohibited: Raw Text Matching on Test Outputs") is explicit
+ * that a human formatter must expose a structured surface for tests to assert on, so a
+ * reworded sentence is never a failing test and a passing test never depends on prose.
+ * `formatReport` is a pure rendering of this; assert on this.
+ *
+ * @returns {{ blocks: Array<{kind: string} & object>, ackable: Array<{key: string, reason: string}> }}
+ */
+function buildReport(result, { sampleLimit = 20 } = {}) {
+  const blocks = [];
+
+  if (result.errors.length) {
+    blocks.push({
+      kind: 'errors',
+      count: result.errors.length,
+      items: result.errors.slice(0, sampleLimit),
+    });
+  }
+
+  const unackedGrowth = result.grown.filter((g) => !g.acked);
+
+  if (result.unattributable.length) {
+    blocks.push({
+      kind: 'unattributable',
+      count: result.unattributable.length,
+      items: result.unattributable.slice(0, sampleLimit),
+      truncated: Math.max(0, result.unattributable.length - sampleLimit),
+      keyRule: REMEDIATION.rippleKeyRule,
+    });
+  }
+
+  if (unackedGrowth.length) {
+    blocks.push({
+      kind: 'unacked-growth',
+      count: unackedGrowth.length,
+      items: unackedGrowth.slice(0, sampleLimit),
+      keyRule: REMEDIATION.growthKeyRule,
+    });
+  }
+
+  if (result.newFileCapExceeded.length) {
+    // Deliberately carries NO ack affordance: the new-file cap is not ack-able, and the
+    // fix is extraction. Offering a document here would teach an entry that cannot clear
+    // the gate — worse than the silence it replaced.
+    blocks.push({
+      kind: 'new-file-cap',
+      count: result.newFileCapExceeded.length,
+      items: result.newFileCapExceeded.slice(0, sampleLimit),
+    });
+  }
+
+  if (result.staleAcks.length) {
+    blocks.push({
+      kind: 'stale-acks',
+      count: result.staleAcks.length,
+      items: result.staleAcks.slice(0, sampleLimit),
+      fix: REMEDIATION.staleAckFix,
+    });
+  }
+
+  // ONE ack set for the whole report, not one per branch. A report can trip the hash
+  // branch and the size branch at once, and two complete documents each reading as "the
+  // file to create" invites pasting the second over the first — losing an acknowledgment
+  // with no signal. Capped at `sampleLimit` per branch so the document stays consistent
+  // with the lists above it rather than naming rows the report chose not to print.
+  const ackable = [
+    ...result.unattributable.slice(0, sampleLimit)
+      .map((u) => ({ key: u.rel, reason: REMEDIATION.rippleReason })),
+    ...unackedGrowth.slice(0, sampleLimit)
+      .map((g) => ({ key: g.name, reason: REMEDIATION.growthReason })),
+  ];
+
+  return { blocks, ackable };
+}
+
+/**
  * Render a report as the failure message ADR-2719 §1 specifies — it sells the whole
- * design on this text, so it is a deliverable, not a detail.
+ * design on this text, so it is a deliverable, not a detail. Pure rendering of
+ * `buildReport`; tests assert on that IR, not on these sentences.
  */
 function formatReport(result, { sampleLimit = 20 } = {}) {
   const parts = [];
@@ -348,8 +502,7 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
       (result.unattributable.length > sampleLimit
         ? `\n  …and ${result.unattributable.length - sampleLimit} more`
         : '') +
-      '\n\nIf this ripple is intended, record it in tests/emitted-drift-ack.json naming each\n' +
-      'path and why. Do NOT regenerate anything to silence this.',
+      `\n\n${REMEDIATION.rippleKeyRule}.`,
     );
   }
 
@@ -358,7 +511,8 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
     const list = unackedGrowth.slice(0, sampleLimit)
       .map((g) => `  ${g.name} grew ${g.delta} bytes (${g.from} -> ${g.to})`);
     parts.push(
-      `${unackedGrowth.length} file(s) grew without an acknowledgment:\n${list.join('\n')}`,
+      `${unackedGrowth.length} file(s) grew without an acknowledgment:\n${list.join('\n')}\n\n` +
+      `${REMEDIATION.growthKeyRule}.`,
     );
   }
 
@@ -374,7 +528,20 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
     parts.push(
       `${result.staleAcks.length} stale acknowledgment(s) — the ripple they explained is gone, ` +
       'so they must be deleted (an ack that outlives its ripple pre-clears the next one):\n  ' +
-      result.staleAcks.slice(0, sampleLimit).join('\n  '),
+      result.staleAcks.slice(0, sampleLimit).join('\n  ') +
+      `\n\n${REMEDIATION.staleAckFix}`,
+    );
+  }
+
+  // The remedy, once, at the end — one file, one document, one paste.
+  const { ackable } = buildReport(result, { sampleLimit });
+  if (ackable.length) {
+    parts.push(
+      `To acknowledge, create ${REMEDIATION.ackFile}\n` +
+      `(${REMEDIATION.createIfAbsent})\n` +
+      'containing ONE document that names every path listed above and why:\n\n' +
+      `  ${REMEDIATION.ackDocument(ackable)}\n\n` +
+      REMEDIATION.doNotRegenerate,
     );
   }
 
@@ -383,9 +550,12 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
 
 module.exports = {
   ACK_VERSION,
+  ACK_FILE,
   NEW_FILE_CAP,
+  REMEDIATION,
   sourceSatisfiedBy,
   parseAck,
   diffEmitted,
+  buildReport,
   formatReport,
 };

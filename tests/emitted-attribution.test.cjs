@@ -60,10 +60,13 @@ const {
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
 const {
   ACK_VERSION,
+  ACK_FILE,
   NEW_FILE_CAP,
+  REMEDIATION,
   sourceSatisfiedBy,
   parseAck,
   diffEmitted,
+  buildReport,
   formatReport,
 } = require('./helpers/emitted-diff.cjs');
 
@@ -558,6 +561,289 @@ test('shrinkage is reported but needs no ack', () => {
   });
   assert.deepEqual(r.shrunk, [{ name: 'a.md', from: 9000, to: 8000, delta: 1000 }]);
   assert.ok(r.ok, 'shrinkage is not creep — gating it would punish what the ratchet wants');
+});
+
+// ─── The failure must name its own remedy (#2778, ADR-2719 §3) ───────────────
+//
+// A gate that states a requirement and withholds the means of satisfying it is not a
+// gate, it is a maintainer round-trip. ADR-2719 §3 makes the acknowledgment a
+// *conspicuous declaration a contributor makes deliberately* — which only works if the
+// contributor can discover how to make it. Observed live on #2543: real growth from a
+// legitimate feature change, a red lane, and no self-serve path out of it.
+//
+// These assert on `buildReport`'s typed IR, not on rendered prose — CONTRIBUTING.md
+// ("Prohibited: Raw Text Matching on Test Outputs") requires a human formatter to expose
+// a structured surface so a reworded sentence is never a failing test. Exactly two tests
+// below touch the rendered string, and only to prove the renderer emits the IR at all.
+//
+// They also use the bare `buildReport(r)` / `formatReport(r)` form, because that is what
+// the real-tree test at the bottom of this file calls: a row that only ever passed an
+// explicit `sampleLimit` would prove a property no shipping caller exercises.
+
+/** The growth-only shape: a size ratchet trip with NO unattributable hash movement. */
+const growthOnly = (extra = {}) => diffEmitted({
+  baseline: mf({}),
+  current: mf({}),
+  changedPaths: [],
+  sizeBaseline: { 'explore.md': 11127 },
+  sizeCurrent: { 'explore.md': 13230 },
+  ...extra,
+});
+
+/** The one block of `kind`, or undefined. */
+const blockOf = (report, kind) => report.blocks.find((b) => b.kind === kind);
+
+test('a growth-only failure carries the byte delta, the key rule, and an ack entry', () => {
+  // The pre-#2778 report stopped after the byte delta. The suite's only coverage of the
+  // remediation reached it through the UNATTRIBUTABLE branch, so a growth-only regression
+  // was invisible — which is why this fixture carries no hash movement at all.
+  const r = growthOnly();
+  assert.equal(r.unattributable.length, 0, 'this fixture must isolate the growth branch');
+  assert.ok(!r.ok);
+
+  const report = buildReport(r);
+  const growth = blockOf(report, 'unacked-growth');
+  assert.ok(growth, 'the growth branch must produce a block');
+  assert.equal(growth.count, 1);
+  assert.deepEqual(growth.items[0], {
+    name: 'explore.md', from: 11127, to: 13230, delta: 2103, acked: false,
+  });
+  assert.equal(growth.keyRule, REMEDIATION.growthKeyRule, 'growth keys on the bare filename');
+
+  assert.deepEqual(report.ackable, [
+    { key: 'explore.md', reason: REMEDIATION.growthReason },
+  ], 'the ack entry must be keyed on the file that actually grew');
+});
+
+test('the renderer emits the ack file, the document, and the do-not-regenerate line', () => {
+  // The one place rendered text is the object of the test: proving the IR above actually
+  // reaches the contributor. Everything it asserts is an identity comparison against the
+  // frozen surface, so rewording any sentence cannot fail this.
+  const msg = formatReport(growthOnly());
+  assert.ok(msg.includes('explore.md grew 2103 bytes (11127 -> 13230)'), 'the delta still leads');
+  assert.ok(msg.includes(REMEDIATION.ackFile), 'the message must name the ack file');
+  assert.ok(msg.includes(REMEDIATION.createIfAbsent), 'it must say the file may not exist yet');
+  assert.ok(msg.includes(REMEDIATION.growthKeyRule), 'it must state the bare-filename key rule');
+  assert.ok(msg.includes(REMEDIATION.doNotRegenerate), 'it must say not to regenerate');
+  assert.ok(
+    msg.includes(REMEDIATION.ackDocument([{ key: 'explore.md', reason: REMEDIATION.growthReason }])),
+    'the printed document must be the one the IR describes',
+  );
+});
+
+test('the document the report teaches is accepted by parseAck', () => {
+  // The divergence killer. A report that teaches a schema the parser rejects is worse
+  // than no report: the contributor follows it, is rejected anyway, and now distrusts the
+  // gate. This pins the taught shape to the accepted shape in one assertion.
+  const taught = REMEDIATION.ackDocument([{ key: 'explore.md', reason: 'a real reason' }]);
+  const { entries, errors } = parseAck(JSON.parse(taught));
+  assert.deepEqual(errors, [], 'the taught document must parse with zero errors');
+  assert.equal(entries.get('explore.md').reason, 'a real reason');
+
+  // And it must actually clear the gate it is offered to clear.
+  const r = growthOnly({ ack: JSON.parse(taught) });
+  assert.equal(r.grown[0].acked, true);
+  assert.deepEqual(r.staleAcks, []);
+  assert.ok(r.ok, 'following the printed instructions must turn the lane green');
+});
+
+test('the taught document derives its version from ACK_VERSION', () => {
+  // A hand-typed `"version": 1` beside a live ACK_VERSION is the generative-fix-divergence
+  // class: bump one, the other lies. Asserting the relationship — not the literal — is
+  // what makes the bump safe.
+  assert.equal(JSON.parse(REMEDIATION.ackDocument([{ key: 'x.md', reason: 'r' }])).version, ACK_VERSION);
+});
+
+test('the remediation surface is frozen and names the ack file once', () => {
+  assert.ok(Object.isFrozen(REMEDIATION), 'the exported surface must not be mutable');
+  assert.equal(REMEDIATION.ackFile, ACK_FILE, 'one definition, not a second literal');
+});
+
+test('a ripple and a growth in one report share ONE document', () => {
+  // The combination nobody writes down, and the most likely real shape: a feature PR that
+  // both grows a workflow AND ripples an emitted path.
+  //
+  // Caught in review: printing a complete document per branch made each read as "the file
+  // to create", so a contributor pasting the second over the first silently loses the
+  // first acknowledgment — an ack-lost failure with no signal. One document, one file.
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+    changedPaths: ['README.md'],
+    sizeBaseline: { 'explore.md': 11127 },
+    sizeCurrent: { 'explore.md': 13230 },
+  });
+  const report = buildReport(r);
+  assert.equal(blockOf(report, 'unattributable').keyRule, REMEDIATION.rippleKeyRule);
+  assert.equal(blockOf(report, 'unacked-growth').keyRule, REMEDIATION.growthKeyRule);
+
+  // Both key spaces, one ack set, in list order.
+  assert.deepEqual(report.ackable, [
+    { key: WORKFLOW_KEY, reason: REMEDIATION.rippleReason },
+    { key: 'explore.md', reason: REMEDIATION.growthReason },
+  ]);
+
+  // And the rendered document is genuinely one object holding both.
+  const doc = JSON.parse(REMEDIATION.ackDocument(report.ackable));
+  assert.deepEqual(Object.keys(doc.paths).sort(), [WORKFLOW_KEY, 'explore.md'].sort());
+  const { errors } = parseAck(doc);
+  assert.deepEqual(errors, [], 'the combined document must parse');
+
+  const msg = formatReport(r);
+  assert.equal(
+    msg.split('{"version"').length - 1, 1,
+    'exactly one document may be printed — two would invite pasting one over the other',
+  );
+});
+
+test('a stale ack names the file it lives in and the delete-the-file case', () => {
+  // Pre-#2778 this said acks "must be deleted" without naming the file they live in. It
+  // also never said what to do when the last entry goes: an empty-but-present ack file
+  // parses fine and is "legal", but it destroys the ADR-2719 §3 property that the file's
+  // PRESENCE is the alarm.
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'old' } } },
+  });
+  const stale = blockOf(buildReport(r), 'stale-acks');
+  assert.deepEqual(stale.items, [WORKFLOW_KEY]);
+  assert.equal(stale.fix, REMEDIATION.staleAckFix);
+  assert.match(stale.fix, /delete the file/, 'the last-entry case must be covered');
+
+  // A stale-only report has nothing to acknowledge — it must NOT offer a document.
+  assert.deepEqual(buildReport(r).ackable, [], 'deleting an ack is not acknowledging one');
+});
+
+test('growth and a stale ack in one report keep both remedies', () => {
+  // The contributor is adding one entry and removing another in the same file.
+  const r = growthOnly({ ack: { version: ACK_VERSION, paths: { 'gone.md': { reason: 'outlived' } } } });
+  assert.deepEqual(r.staleAcks, ['gone.md']);
+  assert.equal(r.grown[0].acked, false);
+
+  const report = buildReport(r);
+  assert.ok(blockOf(report, 'unacked-growth'), 'the growth still needs an ack');
+  assert.ok(blockOf(report, 'stale-acks'), 'the stale entry still needs deleting');
+  assert.deepEqual(report.ackable, [{ key: 'explore.md', reason: REMEDIATION.growthReason }],
+    'only the growth is ackable; the stale entry is removed, not added');
+});
+
+test('the validation early-return renders instead of throwing', () => {
+  // Found while building #2778. diffEmitted's input-validation early return omitted
+  // `newFileCapExceeded`, and formatReport reads `result.newFileCapExceeded.length`
+  // unconditionally — so this path threw `TypeError: Cannot read properties of
+  // undefined` instead of printing its errors.
+  //
+  // Worst possible place for it: this branch is what runs when `git diff` failed or a
+  // manifest came back malformed. The crash replaced the only message that would have
+  // named the infrastructure problem, and a TypeError in a test helper reads like a
+  // broken test rather than a broken environment.
+  for (const bad of [
+    { baseline: null, current: {}, changedPaths: [] },
+    { baseline: {}, current: null, changedPaths: [] },
+    { baseline: {}, current: {}, changedPaths: null },
+    { baseline: [], current: {}, changedPaths: [] },
+  ]) {
+    const r = diffEmitted(bad);
+    assert.ok(!r.ok);
+    assert.ok(r.errors.length > 0);
+    assert.deepEqual(r.newFileCapExceeded, [], 'every returned shape must carry every bucket');
+
+    const report = buildReport(r);
+    assert.equal(blockOf(report, 'errors').count, r.errors.length, 'the errors must render');
+    assert.deepEqual(report.ackable, [], 'a malformed input is not something to acknowledge');
+  }
+});
+
+test('a failed git diff renders as an error, never as "nothing changed"', () => {
+  // The comment on that validation branch says a failed `git diff` must never be read as
+  // an empty change set. That contract is only worth anything if the resulting report is
+  // renderable — which it was not until the bucket above was restored.
+  const r = diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: null });
+  assert.match(r.errors.join('\n'), /changedPaths must be an array/);
+  assert.match(formatReport(r), /changedPaths must be an array/);
+});
+
+test('a passing result produces no blocks and nothing to acknowledge', () => {
+  // Remediation must never leak into a green run — it is failure text, not advice.
+  const report = buildReport(diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: [] }));
+  assert.deepEqual(report.blocks, []);
+  assert.deepEqual(report.ackable, []);
+  assert.equal(formatReport(diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: [] })), '');
+});
+
+test('an acked growth produces no block and nothing to acknowledge', () => {
+  // The contributor already did the thing the remediation asks for; repeating it is noise.
+  const r = growthOnly({
+    ack: { version: ACK_VERSION, paths: { 'explore.md': { reason: 'new mode section' } } },
+  });
+  assert.ok(r.ok);
+  const report = buildReport(r);
+  assert.equal(blockOf(report, 'unacked-growth'), undefined, 'an acknowledged growth is not a failure');
+  assert.deepEqual(report.ackable, []);
+});
+
+test('shrinkage produces no block and nothing to acknowledge', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: { 'a.md': 9000 }, sizeCurrent: { 'a.md': 8000 },
+  });
+  assert.deepEqual(buildReport(r).blocks, [], 'shrinkage is reported in the result, never as failure');
+  assert.deepEqual(buildReport(r).ackable, []);
+});
+
+test('a mixed grown set offers an ack entry only for the unacked files', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: { 'kept.md': 100, 'loud.md': 100 },
+    sizeCurrent: { 'kept.md': 200, 'loud.md': 200 },
+    ack: { version: ACK_VERSION, paths: { 'kept.md': { reason: 'declared' } } },
+  });
+  const report = buildReport(r);
+  const growth = blockOf(report, 'unacked-growth');
+  assert.equal(growth.count, 1, 'only the unacked one is counted');
+  assert.deepEqual(growth.items.map((g) => g.name), ['loud.md']);
+  assert.deepEqual(report.ackable, [{ key: 'loud.md', reason: REMEDIATION.growthReason }],
+    'the document must key on the unacked file, not the acked one');
+});
+
+test('the ack set is capped at the sample limit at limit-1 / limit / limit+1', () => {
+  // CLAUDE.md's boundary rule. The document must not name rows the report chose not to
+  // print — a contributor cannot acknowledge a path they were never shown.
+  const build = (n) => {
+    const sizeBaseline = {}; const sizeCurrent = {};
+    for (let i = 0; i < n; i++) {
+      const k = `g${String(i).padStart(3, '0')}.md`;
+      sizeBaseline[k] = 100; sizeCurrent[k] = 200;
+    }
+    return diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: [], sizeBaseline, sizeCurrent });
+  };
+  for (const [n, expected] of [[19, 19], [20, 20], [21, 20]]) {
+    const report = buildReport(build(n), { sampleLimit: 20 });
+    assert.equal(blockOf(report, 'unacked-growth').count, n, `count reports all ${n}`);
+    assert.equal(report.ackable.length, expected, `the document names ${expected} at n=${n}`);
+    assert.ok(
+      formatReport(build(n), { sampleLimit: 20 }).includes(REMEDIATION.growthKeyRule),
+      `the key rule must survive n=${n}`,
+    );
+  }
+});
+
+test('the new-file cap block carries no ack affordance', () => {
+  // The cap is NOT ack-able — the fix is extraction. Offering a document here would teach
+  // a contributor to write an entry that cannot clear the gate, which is worse than the
+  // silence it replaced.
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
+  });
+  const report = buildReport(r);
+  const cap = blockOf(report, 'new-file-cap');
+  assert.equal(cap.count, 1);
+  assert.equal(cap.keyRule, undefined, 'the cap has no key rule because it has no ack');
+  assert.deepEqual(report.ackable, [], 'the cap must never offer an acknowledgment');
+  assert.ok(!formatReport(r).includes(REMEDIATION.ackFile), 'and must not point at the ack file');
 });
 
 // ─── New-file cap (ADR-1610 Decision point 3, revived after #2724) ───────────
