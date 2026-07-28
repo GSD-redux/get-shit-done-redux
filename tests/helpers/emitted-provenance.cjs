@@ -44,9 +44,22 @@ const path = require('node:path');
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const FIXTURES_DIR = path.join(REPO_ROOT, 'tests', 'fixtures', 'golden-install-parity');
 
-/** Number of runtime manifests the guard expects to cover. Asserted, so a glob that
- *  silently matches fewer files can never report a vacuous pass. */
-const EXPECTED_MANIFEST_COUNT = 19;
+const { MANIFEST_FAMILIES } = require('./install-shared.cjs');
+
+/**
+ * Number of runtime manifests the guard expects to cover. Asserted, so a glob that
+ * silently matches fewer files can never report a vacuous pass.
+ *
+ * DERIVED, not a literal (#2723). It was `19`, and that same literal was also asserted
+ * against the baseline built at the base ref — two trees that legitimately differ by one
+ * family whenever a PR adds or removes a runtime, which made every such PR unpassable at
+ * any value. Deriving it from the single `MANIFEST_FAMILIES` source keeps the
+ * anti-vacuity property here (this tree's glob must match this tree's registry) while
+ * leaving the cross-tree question to `reconcileFamilies`, which is set-based and
+ * direction-aware. The absolute floor that a shrunken universe cannot satisfy lives with
+ * the derivation as `MINIMUM_MANIFEST_FAMILIES`.
+ */
+const EXPECTED_MANIFEST_COUNT = MANIFEST_FAMILIES.length;
 
 // ─── Emitted roots ────────────────────────────────────────────────────────────
 // Longest-first: `skills/gsd` (hermes category dir) must win over `skills` for

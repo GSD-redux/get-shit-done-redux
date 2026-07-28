@@ -72,6 +72,42 @@ const RUNTIME_META = {
   zcode:        { localDir: '.zcode',             globalSuffix: '.zcode' },
 };
 
+/**
+ * The emitted manifest families, as (fixtureName -> install spec).
+ *
+ * NOT simply `Object.keys(RUNTIME_META)`: that has 18 entries while the fixture set has
+ * 19. The extra one is `claude-local` — claude is the reference host and the ONLY
+ * runtime with a distinct LOCAL "legacy flat-commands" layout (`commands/gsd-*.md` +
+ * `agents/gsd-*.md` at project scope), which `golden-install-parity.test.cjs` guards
+ * with a hand-coded test outside its RUNTIME_META loop (#2086).
+ *
+ * Enumerating from RUNTIME_META alone dropped that family from BOTH sides of the
+ * differential, so a same-count self-check (18 === 18) passed vacuously and a PR
+ * changing Claude's local-scope output would fail the golden while the attribution
+ * check reported ok.
+ *
+ * Lives HERE, beside RUNTIME_META, so the emitted-attribution helpers and the
+ * emitted-provenance table read ONE derivation rather than each carrying a literal.
+ * Two surfaces sharing a hand-maintained count is what produced the #2723 deadlock:
+ * a single constant was asserted against both the base ref and the PR head, which
+ * legitimately differ whenever a PR adds or removes a runtime.
+ */
+const MANIFEST_FAMILIES = [
+  ...Object.keys(RUNTIME_META).map((runtime) => ({ name: runtime, runtime, scope: 'global' })),
+  { name: 'claude-local', runtime: 'claude', scope: 'local' },
+];
+
+/**
+ * Absolute floor on the family set, independent of any derivation.
+ *
+ * A pure equality between "derived" and "recorded" cannot catch a universe that shrank
+ * on BOTH sides at once (drop a RUNTIME_META entry and delete its fixture together, and
+ * 18 === 18 passes over a smaller world). This floor is the one number that must not be
+ * derived — it ratchets, and lowering it is a deliberate, reviewable act. It never
+ * blocks ADDING a runtime, which is the asymmetry the old shared literal lacked.
+ */
+const MINIMUM_MANIFEST_FAMILIES = 19;
+
 // Runtimes that emit per-skill files under skills/ (not rules-based or commands-based)
 const SKILL_RUNTIMES = [
   'claude', 'opencode', 'kilo', 'codex', 'copilot', 'antigravity',
@@ -396,6 +432,8 @@ module.exports = {
   EXPECTED_SH_HOOKS,
   EXPECTED_ALL_HOOKS,
   RUNTIME_META,
+  MANIFEST_FAMILIES,
+  MINIMUM_MANIFEST_FAMILIES,
   SKILL_RUNTIMES,
   PKG_VERSION,
   VOLATILE_FILES,
