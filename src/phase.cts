@@ -62,6 +62,11 @@ import uatPredicate = require('./uat-predicate.cjs');
 const { evaluateUatPassed } = uatPredicate;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verification.cjs is an export= CommonJS module
 import verificationMod = require('./verification.cjs');
+// #2572: the artifact↔disk core behind the `verify-summary` verb. `verify.cts`
+// has no transitive import path back to `phase.cts`, so this edge introduces no
+// cycle (the reverse edge, `state.cts → verify.cjs`, would).
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- verify.cjs is an export= CommonJS module
+import verifyMod = require('./verify.cjs');
 const { readVerificationStatus } = verificationMod;
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
@@ -1755,6 +1760,50 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
      * actual completion GATE is readVerificationStatus below (a separate
      * mechanism). A readdirSync/readFileSync failure here just means fewer
      * warnings are surfaced this run, not a blocked or corrupted completion. */
+  }
+
+  // #2572: artifact↔disk advisory for the SUMMARYs of the phase being completed.
+  //
+  // A SUMMARY asserts "I created these files". Nothing checked that claim for
+  // phase summaries — the `verify-summary` verb has existed since the beginning
+  // but was only ever pointed at `.planning/research/SUMMARY.md`. An interrupted
+  // or over-reported phase therefore counted toward 100% silently.
+  //
+  // Joins the same ADVISORY channel as the pre-scan above: findings land in
+  // `warnings[]` (rendered by execute-phase.md's "If has_warnings is true"
+  // step), never in the completion GATE (readVerificationStatus below).
+  // Completion is never blocked.
+  //
+  // `checkCommits: false` — only the file-existence half is surfaced here, so
+  // the `git cat-file` probes would be spawned and their result discarded. The
+  // hash pattern is a loose `\b[0-9a-f]{7,40}\b` that matches any hex-shaped
+  // token in prose, too noisy to put in front of a user even as a warning.
+  //
+  // `Infinity` — report every referenced file, not the CLI verb's default first
+  // two, so a phase that lists twelve files and landed three says so. The verb
+  // keeps its 2-file default; only this caller opts out of the cap.
+  try {
+    const phaseDirRel = phaseInfo['directory'] as string;
+    // `summaries` arrives pre-sorted from the phase locator, so warning order is
+    // deterministic across platforms rather than readdir-dependent.
+    const summaryNames = (phaseInfo['summaries'] as string[] | undefined) || [];
+    for (const summaryName of summaryNames) {
+      const v = verifyMod.verifySummaryCore(
+        cwd,
+        `${phaseDirRel}/${summaryName}`,
+        Infinity,
+        { checkCommits: false },
+      );
+      const missing = v.checks.files_created.missing;
+      if (missing.length > 0) {
+        warnings.push(
+          `${summaryName}: references ${missing.length} file(s) not on disk: ${missing.join(', ')}`,
+        );
+      }
+    }
+  } catch {
+    /* best-effort, same posture as the #2245 pre-scan above: an unreadable
+     * SUMMARY means one fewer advisory this run, never a blocked completion. */
   }
 
   let nextPhaseNum: string | null = null;
