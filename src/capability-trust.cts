@@ -339,11 +339,96 @@ function isLocalHostValue(hostValue: string): boolean {
     hostname = '';
   }
   if (!hostname) {
-    hostname = hostValue.split(/[/:?#]/)[0] || '';
+    hostname = extractBareHost(hostValue);
   }
-  const lower = hostname.toLowerCase();
+  // WHATWG returns an IPv6 hostname bracketed; a bare config value may not be.
+  const lower = hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
   if (LOOPBACK_HOSTNAMES.has(lower)) return true;
-  return /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(lower);
+  if (isLoopbackIpv6(lower)) return true;
+  return isLoopbackIpv4(lower);
+}
+
+/**
+ * Pull the host out of a value `new URL()` could not parse — a scheme-less
+ * `host:port`, or one carrying a path/query/fragment.
+ *
+ * IPv6 needs explicit handling: splitting on `:` mangles `[::1]:8080` to `[`,
+ * which then matches nothing and silently reports a loopback destination as
+ * remote. A bracketed literal is taken through its closing bracket; an unbracketed
+ * value with two or more colons is treated as a bare IPv6 address rather than
+ * `host:port`, since a host:port has exactly one.
+ */
+function extractBareHost(hostValue: string): string {
+  let s = String(hostValue).trim();
+  const schemeEnd = s.indexOf('://');
+  if (schemeEnd >= 0) s = s.slice(schemeEnd + 3);
+  s = s.split(/[/?#]/)[0] || '';
+  if (s.startsWith('[')) {
+    const close = s.indexOf(']');
+    return close > 0 ? s.slice(1, close) : s;
+  }
+  const colons = (s.match(/:/g) || []).length;
+  if (colons >= 2) return s;
+  return colons === 1 ? s.slice(0, s.indexOf(':')) : s;
+}
+
+/**
+ * Render one declared argv member for the human consent prompt.
+ *
+ * A string prints as itself. Anything else prints in a form that makes its
+ * presence and shape visible rather than vanishing: an argv member the host
+ * still receives, but which the user was never shown, is a surface consented to
+ * unseen. Never throws — a circular or BigInt member must not break the prompt.
+ */
+function renderArgForHuman(arg: unknown): string {
+  if (typeof arg === 'string') return arg;
+  if (typeof arg === 'bigint') return `<${String(arg)}n>`;
+  try {
+    const json = JSON.stringify(arg);
+    return json === undefined ? `<${typeof arg}>` : `<${json}>`;
+  } catch {
+    return `<${typeof arg}>`;
+  }
+}
+
+/** `::1`, its expanded forms, and IPv4-mapped loopback (`::ffff:127.0.0.1`). */
+function isLoopbackIpv6(host: string): boolean {
+  if (!host.includes(':')) return false;
+  if (host === '::1') return true;
+  const mapped = /^::ffff:(.+)$/i.exec(host);
+  if (mapped) return isLoopbackIpv4(mapped[1]);
+  const groups = host.split(':').filter((g) => g !== '');
+  if (groups.length === 0) return false;
+  return groups.every((g, i) => (i === groups.length - 1 ? /^0*1$/.test(g) : /^0*$/.test(g)));
+}
+
+/**
+ * 127.0.0.0/8 under inet_aton semantics, which is what a browser, curl and the
+ * OS resolver all accept. `127.1`, `2130706433`, `0x7f000001` and `0177.0.0.1`
+ * are every bit as loopback as `127.0.0.1`; a disclosure that flags only the
+ * dotted-quad form understates a local destination for the other four.
+ */
+function isLoopbackIpv4(host: string): boolean {
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) return false;
+  const nums: number[] = [];
+  for (const part of parts) {
+    let n: number;
+    if (/^0[xX][0-9a-fA-F]+$/.test(part)) n = parseInt(part, 16);
+    else if (/^0[0-7]+$/.test(part)) n = parseInt(part, 8);
+    else if (/^\d+$/.test(part)) n = parseInt(part, 10);
+    else return false;
+    if (!Number.isFinite(n) || n < 0) return false;
+    nums.push(n);
+  }
+  // inet_aton: the final part absorbs every remaining octet.
+  let addr: number;
+  if (nums.length === 1) addr = nums[0];
+  else if (nums.length === 2) addr = ((nums[0] & 0xff) * 0x1000000) + (nums[1] & 0xffffff);
+  else if (nums.length === 3) addr = ((nums[0] & 0xff) * 0x1000000) + ((nums[1] & 0xff) * 0x10000) + (nums[2] & 0xffff);
+  else addr = ((nums[0] & 0xff) * 0x1000000) + ((nums[1] & 0xff) * 0x10000) + ((nums[2] & 0xff) * 0x100) + (nums[3] & 0xff);
+  if (!Number.isFinite(addr) || addr < 0 || addr > 0xffffffff) return false;
+  return Math.floor(addr / 0x1000000) === 127;
 }
 
 /**
@@ -534,15 +619,41 @@ function collectReviewerLaneSurfaces(
     const hostConfigKey = asString(invoke['hostConfigKey']);
     const promptChannel = asString(invoke['promptChannel']);
 
+    // An EMPTY (or wholly unrecognised) reviewer body declares no lane and must
+    // not be treated as one. Without this, `reviewer: {}` alone flips
+    // hasExecutable true and perturbs the disclosure signature — producing a
+    // re-consent prompt whose only content is "(no binary declared)". That is a
+    // prompt carrying no security information, which is exactly the
+    // click-through-training harm this design refuses for reviewsSection and
+    // timeoutFloorMs; refusing it there and permitting it here would be
+    // inconsistent.
+    //
+    // The test is deliberately BROAD — any one recognised field with a value is
+    // enough. Requiring specifically a binary, or specifically a slug, would let
+    // a lane declaring only the other slip through unconsented, which is the far
+    // worse failure.
+    const declaresSomething = Boolean(
+      slug || transport || handler || binary || hostConfigKey || promptChannel
+      || rawArgsDeclared.length > 0,
+    );
+    if (!declaresSomething) return [];
+
     // B2/B3/B4: resolvedHost/isLocalDestination are only meaningful for an openai-http lane — a
     // spawn lane has no destination concept, so both stay at their inapplicable defaults ('' /
     // false), mirroring McpServerSurface's existing empty-when-inapplicable convention (e.g.
     // `url: ''` for a stdio server). For openai-http, resolvedHost never ends up '' — it is either a
     // real resolved value or the explicit UNRESOLVED_HOST_MARKER (never a blank read as "no
     // destination").
+    // The shape test is deliberately WIDER than an exact transport match, and the
+    // human summary uses the same one. Disclosure runs BEFORE validation, so a
+    // mis-cased or unrecognised `transport` reaches here; keying only on the exact
+    // string would leave a lane that plainly declares a hostConfigKey with a BLANK
+    // destination, which reads as "no destination" — the precise thing B3 forbids.
+    const hasHttpShape = transport === 'openai-http' || (!binary && Boolean(hostConfigKey));
+
     let resolvedHost = '';
     let isLocalDestination = false;
-    if (transport === 'openai-http') {
+    if (hasHttpShape) {
       resolvedHost = UNRESOLVED_HOST_MARKER;
       if (typeof resolveHost === 'function') {
         let resolved: string | undefined;
@@ -1062,11 +1173,22 @@ function summarizeDisclosure(disclosure: Disclosure): string[] {
       // B1/B2/B3/B4: disclose binary+args for a spawn lane, or hostConfigKey+resolved destination
       // (flagged local when applicable, never omitted as "safe") for an openai-http lane — never
       // curl/the transport name alone, which would be true and useless (design B2).
-      if (l.transport === 'openai-http') {
+      // Branch on the DECLARED SHAPE, not on an exact transport string. A lane
+      // whose transport is mis-cased or unrecognised still has a hostConfigKey,
+      // and falling through to the spawn branch would print "(no binary
+      // declared)" for a lane that in fact egresses to a live remote host —
+      // understating the disclosure precisely when it matters. Disclosure runs
+      // BEFORE validation, so a non-canonical transport does reach this code.
+      if (l.transport === 'openai-http' || (!l.binary && l.hostConfigKey)) {
         const localTag = l.isLocalDestination ? ' [local]' : '';
         lines.push(`    - ${l.slug || '(slug?)'} -> [openai-http] ${l.hostConfigKey || '(hostConfigKey?)'} => ${l.resolvedHost}${localTag}`);
       } else {
-        const cmd = [l.binary, ...l.args].filter(Boolean).join(' ');
+        // Render the RAW declared args, not the string-filtered view. The raw
+        // array is what the host receives and what the consent signature binds,
+        // so a non-string member that is invisible here is a surface the user
+        // consented to without being shown — the opposite of the disclosure's
+        // whole purpose.
+        const cmd = [l.binary, ...l.rawArgs.map(renderArgForHuman)].filter(Boolean).join(' ');
         lines.push(`    - ${l.slug || '(slug?)'} -> ${cmd || '(no binary declared)'}`);
       }
       if (l.handler) lines.push(`        handler: ${l.handler}`);

@@ -869,3 +869,162 @@ describe('E. Property-based (fast-check)', () => {
     );
   });
 });
+
+// ─── F. Isolated-security-review regressions (#2796) ─────────────────────────
+//
+// Every test below corresponds to a finding an independent adversarial reviewer
+// REPRODUCED against the first cut of this phase. The 41 tests above all passed
+// while these defects were live, which is the point: each row here exists
+// because the matrix did not think to ask.
+describe('F. Isolated-security-review regressions', () => {
+  const asText = (disclosure) => {
+    const summary = trust.summarizeDisclosure(disclosure);
+    return Array.isArray(summary) ? summary.join('\n') : String(summary);
+  };
+  const httpLane = (extra) => ({
+    id: 'x',
+    reviewer: Object.assign({ slug: 'l', transport: 'openai-http', invoke: { hostConfigKey: 'k' } }, extra || {}),
+  });
+
+  // Finding B (MEDIUM). Non-string argv members are folded into the consent
+  // SIGNATURE but were dropped from the human-facing text, because the summary
+  // rendered the string-filtered `args` rather than the raw declared array. The
+  // host still receives them — so the user consented to a surface never shown.
+  test('nonStringArgvMembersAreVisibleInTheConsentSummary', () => {
+    const manifest = {
+      id: 'x',
+      reviewer: {
+        slug: 'my-lane',
+        transport: 'spawn',
+        invoke: {
+          binary: 'my-lane',
+          args: ['--json', 7, { mode: 'exfiltrate-everything' }, true, '--safe-looking-flag'],
+          promptChannel: 'stdin',
+        },
+      },
+    };
+    const text = asText(trust.discloseExecutableSurfaces(manifest));
+    assert.ok(text.includes('exfiltrate-everything'), `object arg must be visible, got: ${text}`);
+    assert.ok(/\b7\b/.test(text), `numeric arg must be visible, got: ${text}`);
+    assert.ok(text.includes('true'), `boolean arg must be visible, got: ${text}`);
+    assert.ok(text.includes('--safe-looking-flag'), 'string args must still render');
+  });
+
+  test('renderingHostileArgvMembersDoesNotThrow', () => {
+    const circular = {};
+    circular.self = circular;
+    for (const hostile of [circular, 10n, Symbol('s'), () => {}, undefined, null]) {
+      const manifest = {
+        id: 'x',
+        reviewer: { slug: 'l', transport: 'spawn', invoke: { binary: 'b', args: [hostile] } },
+      };
+      let text;
+      assert.doesNotThrow(() => { text = asText(trust.discloseExecutableSurfaces(manifest)); },
+        'the consent summary must not throw for a hostile argv member');
+      assert.ok(typeof text === 'string' && text.length > 0);
+    }
+  });
+
+  // Finding C (LOW). An empty reviewer body flipped hasExecutable true and
+  // perturbed the signature, producing a re-consent prompt whose only content was
+  // "(no binary declared)" — a prompt carrying no security information, which is
+  // the click-through-training harm this design refuses elsewhere.
+  test('emptyReviewerBodyIsNotALaneAndDoesNotPerturbTheSignature', () => {
+    const withEmpty = { id: 'x', role: 'reviewer', version: '1.0.0', reviewer: {} };
+    const laneFree = { id: 'x', role: 'reviewer', version: '1.0.0' };
+    const disclosure = trust.discloseExecutableSurfaces(withEmpty);
+    assert.deepEqual(disclosure.reviewerLanes, [], 'an empty body declares no lane');
+    assert.equal(disclosure.hasExecutable, false, 'an empty body must not require consent');
+    assert.equal(
+      trust.signatureForManifest(withEmpty), trust.signatureForManifest(laneFree),
+      'an empty reviewer body must not change the consent signature',
+    );
+  });
+
+  // The inverse of Finding C, and the more dangerous direction: the
+  // meaningfulness test must never let a real lane through unconsented.
+  test('aLaneDeclaringAnySingleFieldStillRequiresConsent', () => {
+    const singleFieldBodies = [
+      { slug: 's' },
+      { transport: 'spawn' },
+      { handler: 'antigravity' },
+      { invoke: { binary: 'b' } },
+      { invoke: { hostConfigKey: 'review.x_host' } },
+      { invoke: { promptChannel: 'stdin' } },
+      { invoke: { args: ['--x'] } },
+    ];
+    for (const reviewer of singleFieldBodies) {
+      const disclosure = trust.discloseExecutableSurfaces({ id: 'x', reviewer });
+      assert.equal(
+        disclosure.hasExecutable, true,
+        `a lane declaring ${JSON.stringify(reviewer)} must still require consent`,
+      );
+    }
+  });
+
+  // Finding D (LOW-MEDIUM). Disclosure runs BEFORE validation, so a mis-cased or
+  // unrecognised transport reaches this code. Keying the summary on an exact
+  // string sent a lane that plainly declares a hostConfigKey down the spawn
+  // branch, printing "(no binary declared)" for a lane egressing to a live host.
+  test('nonCanonicalTransportStillDisclosesTheDestination', () => {
+    const text = asText(trust.discloseExecutableSurfaces(
+      httpLane({ transport: 'OpenAI-HTTP', invoke: { hostConfigKey: 'review.x_host' } }),
+      undefined,
+      () => 'http://remote.example',
+    ));
+    assert.ok(text.includes('review.x_host'), `hostConfigKey must be disclosed, got: ${text}`);
+    assert.ok(text.includes('remote.example'), `resolved destination must be disclosed, got: ${text}`);
+    assert.ok(!text.includes('no binary declared'), `must not claim there is no binary, got: ${text}`);
+  });
+
+  test('nonCanonicalTransportWithoutResolverShowsTheUnresolvedMarkerNotABlank', () => {
+    const lane = trust.discloseExecutableSurfaces(
+      httpLane({ transport: 'OpenAI-HTTP', invoke: { hostConfigKey: 'review.x_host' } }),
+    ).reviewerLanes[0];
+    assert.notEqual(lane.resolvedHost, '', 'a blank destination reads as "no destination"');
+    assert.equal(lane.resolvedHost, trust.UNRESOLVED_HOST_MARKER);
+  });
+
+  test('spawnLaneKeepsDestinationFieldsInapplicable', () => {
+    const lane = trust.discloseExecutableSurfaces({
+      id: 'x', reviewer: { slug: 's', transport: 'spawn', invoke: { binary: 'b' } },
+    }).reviewerLanes[0];
+    assert.equal(lane.resolvedHost, '', 'a spawn lane has no destination concept');
+    assert.equal(lane.isLocalDestination, false);
+  });
+
+  // Finding F (MEDIUM). The [local] flag is design-load-bearing (B4), and it was
+  // dropped for every loopback form except the dotted quad and the bare hostname:
+  // bracketed IPv6 was mangled by splitting on its own colons, and legacy IPv4
+  // encodings were not recognised at all. A browser, curl and the OS resolver all
+  // accept every one of these as 127.0.0.0/8.
+  test('everyLoopbackEncodingIsFlaggedLocal', () => {
+    const loopbacks = [
+      'localhost', 'localhost:1234', 'http://localhost:8080',
+      '127.0.0.1', '127.0.0.1:1234', 'http://127.0.0.1:11434',
+      '127.1', '127.0.1', '2130706433', '0x7f000001', '0177.0.0.1',
+      '::1', '[::1]', '[::1]:8080', '::ffff:127.0.0.1',
+    ];
+    for (const host of loopbacks) {
+      const lane = trust.discloseExecutableSurfaces(httpLane(), undefined, () => host).reviewerLanes[0];
+      assert.equal(lane.isLocalDestination, true, `"${host}" is loopback and must be flagged local`);
+    }
+  });
+
+  // The dangerous direction: a REMOTE host must never be mislabelled local, which
+  // would understate the disclosure. Includes the userinfo-@ and fragment tricks
+  // that make a remote host superficially resemble a local one.
+  test('remoteHostsAreNeverMislabelledLocal', () => {
+    const remotes = [
+      'localhost.evil.com', 'notlocalhost.example', 'evil-localhost',
+      'http://evil.com#localhost', 'http://evil.com?x=localhost',
+      'http://user@localhost@evil.com', 'http://localhost@evil.com',
+      'http://127.0.0.1.evil.com', '192.168.1.5:8080', '8.8.8.8',
+      '128.0.0.1', '126.255.255.255',
+    ];
+    for (const host of remotes) {
+      const lane = trust.discloseExecutableSurfaces(httpLane(), undefined, () => host).reviewerLanes[0];
+      assert.equal(lane.isLocalDestination, false, `"${host}" is REMOTE and must not be flagged local`);
+    }
+  });
+});
