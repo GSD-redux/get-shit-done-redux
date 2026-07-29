@@ -171,7 +171,7 @@ if [ -z "$FILES_OVERRIDE" ]; then
       EXTRACTED=$(node -e "
         const fs = require('fs');
         const content = fs.readFileSync('$summary', 'utf-8');
-        const match = content.match(/^---\n([\s\S]*?)\n---/);
+        const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
         if (!match) { process.exit(0); }
         const yaml = match[1];
         const files = [];
@@ -549,7 +549,7 @@ if [ -f "${REVIEW_PATH}" ]; then
   HAS_STATUS=$(REVIEW_PATH="${REVIEW_PATH}" node -e "
     const fs = require('fs');
     const content = fs.readFileSync(process.env.REVIEW_PATH, 'utf-8');
-    const match = content.match(/^---\n([\s\S]*?)\n---/);
+    const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
     if (match && /status:/.test(match[1])) { console.log('valid'); } else { console.log('invalid'); }
   " 2>/dev/null)
   
@@ -622,7 +622,7 @@ Extract frontmatter between `---` delimiters first to avoid matching values in t
 FRONTMATTER=$(REVIEW_PATH="${REVIEW_PATH}" node -e "
   const fs = require('fs');
   const content = fs.readFileSync(process.env.REVIEW_PATH, 'utf-8');
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  const match = content.replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/);
   if (match) process.stdout.write(match[1]);
 " 2>/dev/null)
 
