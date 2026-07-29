@@ -153,9 +153,12 @@ Return to list_todos step.
 After any action that changes todo count:
 
 1. Re-run `gsd_run query init.todos` and extract the refreshed `todo_count` and `todos`.
-2. If STATE.md has "### Pending Todos", rebuild that section from the refreshed pending set; do not edit the old body incrementally.
-3. For each remaining todo, use its `created`, `area`, `title`, and `file` fields. Read the todo file's Problem/Solution only as needed to write one short unresolved need or next step.
-4. Render one physical line per pending todo using this exact shape:
+2. Validate the refreshed set before editing STATE.md. It is complete only when `todo_count` is a non-negative integer, `todos` is an array with exactly `todo_count` entries, and every entry contains non-empty `file`, `title`, and `area` fields.
+   - If `init.todos` fails, returns malformed JSON, or returns an incomplete set, leave the existing `### Pending Todos` section unchanged and report that the refresh was skipped.
+   - Only a successful response with `todo_count: 0` and an empty `todos` array may produce `None yet.`.
+3. If STATE.md has "### Pending Todos", rebuild that section from the validated pending set; do not edit the old body incrementally.
+4. For each remaining todo, use its `created`, `area`, `title`, and `file` fields. Read the todo file's Problem/Solution only as needed to write one short unresolved need or next step.
+5. Render one physical line per pending todo using this exact shape:
 
 ```markdown
 - [YYYY-MM-DD] [area] Title — [todo file](todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
@@ -165,6 +168,9 @@ Formatting rules:
 - Use the first 10 characters of `created` for `YYYY-MM-DD`; if unavailable, use the date prefix from `file`.
 - Build the link as `todos/pending/{file}` so it resolves from `.planning/STATE.md` to `.planning/todos/pending/{file}`; never write the absolute `path` from init context.
 - Start the final clause with `Needs` and keep it to one short sentence. Collapse embedded newlines to spaces.
+- Hard limit: the complete rendered bullet must be 240 characters or fewer.
+- If the draft exceeds 240 characters, shorten the title and `Needs ...` clause first, then abbreviate the area if necessary; keep the date and complete Markdown link unchanged.
+- Recount before writing and do not emit a bullet over 240 characters.
 - Never concatenate multiple todos onto one line.
 - If the refreshed `todo_count` is 0, replace the section body with `None yet.`.
 </step>

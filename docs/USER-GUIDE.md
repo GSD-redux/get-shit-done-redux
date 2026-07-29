@@ -324,7 +324,7 @@ The full context lives in `.planning/todos/pending/`. STATE.md keeps a compact, 
 - [2026-07-26] [auth] Add auth token refresh — [todo file](todos/pending/2026-07-26-add-auth-token-refresh.md) — Needs define retry behavior.
 ```
 
-Each pointer stays on one physical line. Capturing or completing a todo refreshes the whole Pending Todos section; when the list is empty, it reads `None yet.`. Browse and act on the full list with `/gsd-capture --list`.
+Each pointer stays on one physical line and is capped at 240 characters. Long display text is shortened while the complete todo link is preserved. Capturing or completing a todo refreshes the whole Pending Todos section only after the refreshed set is validated; an incomplete or failed refresh leaves the existing section unchanged. When a successful refresh confirms that the list is empty, it reads `None yet.`. Browse and act on the full list with `/gsd-capture --list`.
 
 ### Backlog Parking Lot
 

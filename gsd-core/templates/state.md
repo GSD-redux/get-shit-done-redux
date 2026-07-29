@@ -71,6 +71,9 @@ Recent decisions affecting current work:
 Canonical format:
 - [YYYY-MM-DD] [area] Title — [todo file](todos/pending/YYYY-MM-DD-slug.md) — Needs next step.
 Use a link relative to .planning/STATE.md and a short "Needs ..." clause. Never copy multiline todo content here.
+Hard limit: the complete rendered bullet must be 240 characters or fewer.
+If the draft exceeds 240 characters, shorten the title and `Needs ...` clause first, then abbreviate the area if necessary; keep the date and complete Markdown link unchanged.
+Recount before writing and do not emit a bullet over 240 characters.
 -->
 
 None yet.

@@ -1577,6 +1577,8 @@ Capture ideas, tasks, notes, and seeds to their appropriate destination. Default
 - [2026-07-26] [auth] Add auth token refresh — [todo file](todos/pending/2026-07-26-add-auth-token-refresh.md) — Needs define retry behavior.
 ```
 
+Each complete pointer is capped at 240 characters. Long display text is shortened without truncating the todo link. If the refreshed todo data fails validation or is incomplete, the existing Pending Todos section is preserved rather than rebuilt from a partial set.
+
 **Produces:** `.planning/todos/` (default), note files (--note), ROADMAP.md backlog section (--backlog), `.planning/seeds/SEED-NNN-slug.md` (--seed)
 
 ```bash
