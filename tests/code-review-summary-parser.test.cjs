@@ -277,6 +277,96 @@ describe('code-review frontmatter boundary extraction (#2694 CRLF)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Acceptance criterion 2 (#2694): a phase with a MIX of one CRLF SUMMARY.md and
+// one LF SUMMARY.md must yield the UNION of both artifacts' files — the CRLF
+// artifact's contribution must not be silently dropped. This replicates the
+// full shipped Tier-2 extractor (boundary + inner key_files parse) and runs it
+// across a mixed-ending phase, locking the silent-partial-masking behavior the
+// issue's triage named as the more serious half of the defect.
+// ---------------------------------------------------------------------------
+
+/**
+ * Replicates the FULL shipped Tier-2 file-scope extractor from
+ * gsd-core/workflows/code-review.md (compute_file_scope): normalize -> boundary
+ * -> inner key_files.created/modified parse. Returns the extracted file list
+ * for one SUMMARY.md document, exactly as the shipped `node -e` one-liner does.
+ */
+function extractTier2Files(summaryContent) {
+  const yaml = extractFrontmatterBoundary(summaryContent);
+  if (yaml === null) return [];
+  return parseFilesWithFixedLogic(yaml);
+}
+
+describe('code-review mixed CRLF/LF phase scope (#2694 criterion 2)', () => {
+  it('a phase with one CRLF SUMMARY.md and one LF SUMMARY.md yields the union of both', () => {
+    // Two plans in the same phase. Plan A is saved LF, plan B is saved CRLF
+    // (Windows checkout / CRLF-saving editor). Each contributes distinct files.
+    const planA_LF = [
+      '---',
+      'type: summary',
+      'key_files:',
+      '  modified:',
+      '    - src/alpha.ts',
+      '---',
+      '',
+      'Plan A body.',
+    ].join('\n') + '\n';
+
+    const planB_CRLF = [
+      '---',
+      'type: summary',
+      'key_files:',
+      '  created:',
+      '    - src/beta.ts',
+      '    - lib/gamma.js',
+      '---',
+      '',
+      'Plan B body.',
+    ].join('\r\n') + '\r\n';
+
+    // The shipped loop iterates each summary and accumulates into REVIEW_FILES.
+    const reviewFiles = [];
+    for (const doc of [planA_LF, planB_CRLF]) {
+      for (const f of extractTier2Files(doc)) reviewFiles.push(f);
+    }
+
+    // The union — NOT just plan A's files. Pre-fix, planB_CRLF contributed
+    // nothing (boundary returned null), so reviewFiles would have been only
+    // ['src/alpha.ts'] with no warning (the aggregate was non-zero, so the
+    // Tier-3 eq-zero fallback at code-review.md:217 never fired).
+    assert.deepStrictEqual(
+      reviewFiles.sort(),
+      ['lib/gamma.js', 'src/alpha.ts', 'src/beta.ts'],
+      'A mixed CRLF/LF phase must review the union of both artifacts. ' +
+        'If planB_CRLF dropped out, the fix regressed: ' + JSON.stringify(reviewFiles)
+    );
+  });
+
+  it('RED proof: with the buggy boundary, the CRLF artifact contributes nothing (silent partial)', () => {
+    // Same scenario, but using the BUGGY boundary replica to demonstrate the
+    // exact silent-partial masking the issue reported: the CRLF plan yields [],
+    // so the phase scope is just the LF plan's files, with zero warning.
+    const planA_LF = ['---', 'key_files:', '  modified:', '    - src/alpha.ts', '---', ''].join('\n') + '\n';
+    const planB_CRLF = ['---', 'key_files:', '  created:', '    - src/beta.ts', '---', ''].join('\r\n') + '\r\n';
+
+    const buggyFiles = [];
+    for (const doc of [planA_LF, planB_CRLF]) {
+      const yaml = extractFrontmatterBoundaryBuggy(doc);
+      if (yaml === null) continue; // buggy boundary returns null on CRLF -> skip
+      for (const f of parseFilesWithFixedLogic(yaml)) buggyFiles.push(f);
+    }
+
+    // The bug: only the LF plan's file survives; the CRLF plan's file is gone,
+    // and because the aggregate is non-zero (1), no fallback warning fired.
+    assert.deepStrictEqual(buggyFiles.sort(), ['src/alpha.ts']);
+    assert.ok(
+      !buggyFiles.includes('src/beta.ts'),
+      'The buggy boundary must have dropped the CRLF artifact file (RED demonstration).'
+    );
+  });
+});
+
 describe('shipped workflow frontmatter boundary is CRLF-safe (#2694 structural guard)', () => {
   // The two shipped workflow files whose inline `node -e` one-liners extract
   // frontmatter. Resolved relative to the repo root (the test runner's CWD is the
