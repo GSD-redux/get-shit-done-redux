@@ -27,4 +27,17 @@ test('broken-windows capability description specifies enforcement is opt-in', ()
     'workflow.windows_enforce',
     'ship:pre gate must be gated on workflow.windows_enforce config key'
   );
+
+  // Behavioral test for renderLedger
+  const bw = require('../gsd-core/bin/lib/broken-windows.cjs');
+  const rendered = bw.renderLedger(bw.emptyLedger());
+  assert.strictEqual(
+    rendered.includes('> Cross-phase defect register. `/gsd-ship` blocks while `open_count > 0`.'),
+    false,
+    'renderLedger must not contain unqualified blocking sentence'
+  );
+  assert.ok(
+    rendered.includes('With `workflow.windows_enforce` enabled, `/gsd-ship` blocks'),
+    'renderLedger must document opt-in enforcement'
+  );
 });

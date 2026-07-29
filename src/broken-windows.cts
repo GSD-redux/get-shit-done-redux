@@ -596,7 +596,7 @@ export function renderLedger(ledger: Ledger): string {
   const header = [
     '# Broken Windows Ledger',
     '',
-    '> Cross-phase defect register. `/gsd-ship` blocks while `open_count > 0`.',
+    '> Cross-phase defect register. With `workflow.windows_enforce` enabled, `/gsd-ship` blocks while `open_count > 0`.',
     '> Waive with `gsd-tools windows waive <id> "<reason>"` (reason required).',
     '> Mark fixed with `gsd-tools windows fixed <id>`.',
     '',
