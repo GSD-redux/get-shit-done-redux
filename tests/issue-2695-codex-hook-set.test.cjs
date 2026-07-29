@@ -122,6 +122,20 @@ describe('#2695: Codex upgrades refresh all four hook files to the current versi
             `installer stdout: ${result.stdout}\ninstaller stderr: ${result.stderr}`,
         );
       }
+      // The registry must be REFRESHED on upgrade, not merely present: assert it no
+      // longer carries the stale sentinel and now matches the shipped dist byte-for-byte
+      // (the raw-copy fallback must overwrite an existing dest, not skip it).
+      const registryDest = path.join(hooksDir, 'managed-hooks-registry.cjs');
+      const registryBytes = fs.readFileSync(registryDest, 'utf8');
+      assert.ok(
+        !registryBytes.includes(`stale registry ${OLDER_VERSION}`),
+        `registry must be refreshed on upgrade for --profile=${profile} (still carries the stale sentinel)`,
+      );
+      assert.deepStrictEqual(
+        fs.readFileSync(registryDest),
+        fs.readFileSync(path.join(HOOKS_DIST, 'managed-hooks-registry.cjs')),
+        `refreshed registry must match hooks/dist byte-for-byte for --profile=${profile}`,
+      );
       // Version stamps resolved (acceptance #2/#3).
       const workerStamp = readHookVersionLine(path.join(hooksDir, 'gsd-check-update-worker.js'));
       assert.strictEqual(
@@ -217,8 +231,41 @@ describe('#2695: re-running the installer is idempotent for the four-file set', 
   });
 });
 
+describe('#2695: the core profile enables the hook feature and wires SessionStart (intended)', () => {
+  // For the update-check/context-monitor hooks to actually fire, Codex needs both
+  // the feature flag in config.toml AND the hooks.json routing — copying inert
+  // files alone would leave `core` with scripts Codex never invokes. Entering the
+  // codex-toml branch for `core` (the #2695 gate change) synthesizes `[features]
+  // hooks = true` via ensureCodexHooksFeature, writes config.toml, and registers
+  // the hooks. This is the intended behavior of the fix, not a side effect — these
+  // assertions pin it so a future re-gating cannot silently regress it.
+  test('--profile=core writes config.toml enabling the hooks feature', (t) => {
+    const { configDir } = runCodexInstall({ profile: 'core' });
+    t.after(() => cleanup(configDir));
+
+    const configPath = path.join(configDir, 'config.toml');
+    assert.ok(fs.existsSync(configPath), 'core must write config.toml so the hooks feature is enabled');
+    const config = fs.readFileSync(configPath, 'utf8');
+    assert.ok(/^\s*hooks\s*=\s*true\s*$/m.test(config), 'config.toml must enable hooks = true for core');
+  });
+
+  test('--profile=core wires the SessionStart update-check hook in hooks.json', (t) => {
+    const { configDir } = runCodexInstall({ profile: 'core' });
+    t.after(() => cleanup(configDir));
+
+    const hooksJsonPath = path.join(configDir, 'hooks.json');
+    assert.ok(fs.existsSync(hooksJsonPath), 'core must write hooks.json');
+    const hooksJson = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
+    const sessionStartCmds = collectHookCommands(hooksJson, 'SessionStart');
+    assert.ok(
+      sessionStartCmds.some((c) => c.includes('gsd-check-update.js')),
+      `core must route SessionStart to gsd-check-update.js in hooks.json; got: ${JSON.stringify(sessionStartCmds)}`,
+    );
+  });
+});
+
 describe('#2695: the core profile still installs no agent files (negative space)', () => {
-  test('--profile=core delivers hooks but no gsd-*.md agents', (t) => {
+  test('--profile=core delivers hooks but no gsd-* agent files', (t) => {
     const { configDir } = runCodexInstall({ profile: 'core' });
     t.after(() => cleanup(configDir));
 
@@ -226,11 +273,24 @@ describe('#2695: the core profile still installs no agent files (negative space)
     for (const name of CODEX_HOOK_FILES) {
       assert.ok(fs.existsSync(path.join(hooksDirOf(configDir), name)), `${name} delivered for core`);
     }
-    // …but the full agent surface is still absent (core stays minimal).
+    // …but the full agent surface is still absent (core stays minimal). Codex agents
+    // are .toml ([agents.gsd-*] in config.toml + agents/gsd-*.toml), so check both
+    // extensions — a .md-only filter would miss a Codex agent-surface regression.
     const agentsDir = path.join(configDir, 'agents');
     if (fs.existsSync(agentsDir)) {
-      const gsdAgents = fs.readdirSync(agentsDir).filter((f) => f.startsWith('gsd-') && f.endsWith('.md'));
+      const gsdAgents = fs.readdirSync(agentsDir).filter(
+        (f) => f.startsWith('gsd-') && (f.endsWith('.md') || f.endsWith('.toml')),
+      );
       assert.deepStrictEqual(gsdAgents, [], 'core must not install the full agent surface');
+    }
+    // And config.toml must carry no agent role sections.
+    const configPath = path.join(configDir, 'config.toml');
+    if (fs.existsSync(configPath)) {
+      const config = fs.readFileSync(configPath, 'utf8');
+      assert.ok(
+        !/^\[agents\.gsd-/m.test(config),
+        'core config.toml must not declare [agents.gsd-*] roles (full agent surface stays a full-profile concern)',
+      );
     }
   });
 });
@@ -244,4 +304,20 @@ function readHookVersionLine(hookPath) {
   const content = fs.readFileSync(hookPath, 'utf8');
   const m = content.match(/^\/\/ gsd-hook-version:\s*(.+?)\s*$/m);
   return m ? m[1] : null;
+}
+
+/**
+ * Collect every hook command string registered under a given Codex hooks.json
+ * event key. Used so the SessionStart-wiring test asserts on the structured
+ * hook entries (commands), not on raw text matching against the whole file.
+ */
+function collectHookCommands(hooksJson, eventName) {
+  const entries = (hooksJson && hooksJson.hooks && Array.isArray(hooksJson.hooks[eventName]))
+    ? hooksJson.hooks[eventName]
+    : [];
+  return entries.flatMap((entry) =>
+    (entry && Array.isArray(entry.hooks) ? entry.hooks : [])
+      .map((h) => (h && typeof h.command === 'string' ? h.command : null))
+      .filter(Boolean),
+  );
 }
