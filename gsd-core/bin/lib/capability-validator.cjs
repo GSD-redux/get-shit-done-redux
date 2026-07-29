@@ -794,9 +794,25 @@ const VALID_DISPATCH_ISOLATION = new Set(['harness-worktree', 'orchestrator-work
 // slugs carry the shipped roster's snake forms (`lm_studio`, `llama_cpp`) and
 // name the config keys (`review.lm_studio_host`) that ADR-2782 D9 leaves
 // unchanged. Reusing KEBAB_RE here would reject two shipped lanes.
-const LANE_SLUG_RE = /^[a-z][a-z0-9_-]*$/;
+//
+// ⚠ DEFECT.GENERATIVE-FIX — this grammar is DUPLICATED, by necessity, from
+// `LANE_SLUG_RE` in src/review-lane-descriptor.cts (Phase 1, #2794). It cannot be
+// imported: that module compiles to gsd-core/bin/lib/review-lane-descriptor.cjs,
+// which is gitignored build output, and THIS file is a committed plain .cjs that
+// must load on a fresh worktree before `npm run build:lib` has ever run (see the
+// header). Two surfaces sharing one parser therefore require a parity assertion
+// that fails when they diverge — `laneSlugGrammarMatchesPhase1Descriptor` in
+// tests/reviewer-manifest-body.test.cjs.
+//
+// A LEADING DIGIT IS PERMITTED. Phase 1 allows it and a manifest validator that
+// did not would reject a slug the core descriptor accepts — a model-named lane
+// such as `4o-mini` — which is exactly the translation layer ADR-2782 exists to
+// delete. Keep the two grammars byte-identical.
+const LANE_SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
 // Flags are kebab even when the slug is snake: `lm_studio` → `--lm-studio`.
-const LANE_FLAG_RE = /^--[a-z][a-z0-9-]*$/;
+// Phase 1 declares flags but does not constrain their grammar, so this is the
+// first and only definition — no parity partner to track.
+const LANE_FLAG_RE = /^--[a-z0-9][a-z0-9-]*$/;
 
 const VALID_LANE_TRANSPORTS   = new Set(['spawn', 'openai-http']);
 const VALID_LANE_PROBE_KINDS  = new Set(['command-exists', 'command-capability', 'http-reachable']);

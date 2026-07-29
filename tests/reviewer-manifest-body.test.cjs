@@ -34,6 +34,7 @@ const fc = require('fast-check');
 const { cleanup } = require('./helpers.cjs');
 
 const {
+  LANE_SLUG_RE,
   validateReviewerBody,
   collectReviewerWarnings,
   validateCapability,
@@ -812,6 +813,40 @@ describe('F. Lane scalars', () => {
     assert.deepEqual(errs, [], `expected no errors (slug is not KEBAB_RE-checked), got: ${JSON.stringify(errs)}`);
   });
 
+  // DEFECT.GENERATIVE-FIX parity assertion. The slug grammar exists in TWO places
+  // and cannot be reduced to one: Phase 1 owns it in src/review-lane-descriptor.cts,
+  // but that module compiles to gitignored build output, and the manifest validator
+  // is a committed plain .cjs that must load on a fresh worktree before build:lib.
+  // A divergence here silently reintroduces the translation layer ADR-2782 exists
+  // to delete — a slug the core descriptor accepts would be rejected by the
+  // manifest validator, and only for lanes nobody has shipped yet, so no other
+  // test would notice. This caught a real divergence in review: the validator
+  // required a leading LETTER while the descriptor allows a leading digit, which
+  // would have rejected a model-named lane such as `4o-mini`.
+  test('laneSlugGrammarMatchesPhase1Descriptor', () => {
+    // Built artifact — present after `npm run build:lib`, which CI runs before tests.
+    const descriptor = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+    assert.ok(
+      descriptor.LANE_SLUG_RE instanceof RegExp,
+      'Phase 1 must export LANE_SLUG_RE; if it moved, this parity assertion needs updating, not deleting',
+    );
+    assert.equal(
+      String(LANE_SLUG_RE), String(descriptor.LANE_SLUG_RE),
+      'reviewer.slug grammar has diverged between the manifest validator and the Phase 1 core descriptor',
+    );
+
+    // Behavioural parity, not just source equality: the same inputs must get the
+    // same verdict from both surfaces.
+    for (const slug of ['gemini', 'lm_studio', 'llama_cpp', '4o-mini', '2b-local', 'kimi-code']) {
+      const lane = laneOverride((l) => { l.slug = slug; });
+      const accepted = validateReviewerBody({ id: 'x', reviewer: lane }).length === 0;
+      assert.equal(
+        accepted, descriptor.LANE_SLUG_RE.test(slug),
+        `slug "${slug}": manifest validator and core descriptor disagree`,
+      );
+    }
+  });
+
   test('slugRejectsUppercase', () => {
     const lane = laneOverride((l) => { l.slug = 'Lm-Studio'; });
     const errs = validateReviewerBody({ id: 'x', reviewer: lane });
@@ -1385,6 +1420,60 @@ describe('I. Integration — loadAndValidate(centralKeys, tmpCapDir)', () => {
       );
       assert.ok(capMap.has('lm-studio'));
     });
+  });
+
+  // ADR-2782 D4.3, LOAD-TIME half. The build-time generator only ever sees
+  // first-party in-repo manifests, so an unknown field on an INSTALLED
+  // third-party lane — the case D4.3 exists for — surfaced nowhere at runtime
+  // until the loader was wired to collect diagnostics. A global-scope overlay is
+  // used because project scope additionally requires a consent record; the
+  // subject here is the diagnostic channel, not the consent gate.
+  test('overlayLaneWithUnknownFieldIsAcceptedAndDiagnosed', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-reviewer-overlay-'));
+    try {
+      const capDir = path.join(home, '.gsd', 'capabilities', 'acme-reviewer');
+      fs.mkdirSync(capDir, { recursive: true });
+      fs.writeFileSync(path.join(capDir, 'capability.json'), JSON.stringify({
+        id: 'acme-reviewer',
+        role: 'reviewer',
+        version: '1.0.0',
+        title: 'Acme',
+        description: 'Third-party reviewer lane.',
+        tier: 'full',
+        requires: [],
+        engines: { gsd: '>=1.0.0' },
+        reviewer: Object.assign(validLane(), {
+          slug: 'acme',
+          flags: ['--acme'],
+          reviewsSection: 'Acme',
+          // The field a NEWER GSD would understand and this one does not.
+          futureFieldFromNewerGsd: true,
+        }),
+      }));
+
+      const { loadRegistry } = require('../gsd-core/bin/lib/capability-loader.cjs');
+      const registry = loadRegistry({
+        includeInstalled: true, cwd: process.cwd(), gsdHome: home, hostVersion: '1.8.0',
+      });
+
+      // Accepted, NOT skipped — an unknown field must never cost the user the lane.
+      assert.ok(
+        registry.capabilities && registry.capabilities['acme-reviewer'],
+        'a third-party lane with an unknown reviewer field must still be accepted',
+      );
+      const overlay = registry._overlay;
+      assert.ok(overlay, 'overlay meta must be attached when an overlay is composed');
+      assert.deepEqual(
+        overlay.warnings, [],
+        `an unknown field is a diagnostic, not a skip, got: ${JSON.stringify(overlay.warnings)}`,
+      );
+      assert.ok(
+        overlay.diagnostics.some((d) => d.includes('futureFieldFromNewerGsd')),
+        `expected a diagnostic naming the unknown field, got: ${JSON.stringify(overlay.diagnostics)}`,
+      );
+    } finally {
+      cleanup(home);
+    }
   });
 });
 
