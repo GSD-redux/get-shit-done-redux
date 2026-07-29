@@ -359,6 +359,7 @@ function parseExpectedFromTestBlock(block: string): string | null {
 interface CheckpointFrame {
   banner: string;
   instruction: string;
+  direction?: 'rtl';
 }
 
 const CHECKPOINT_BOX_WIDTH = 64; // total column width of the ╔══...╗ border, borders stay byte-identical
@@ -427,6 +428,7 @@ const CHECKPOINT_FRAMES: Record<string, CheckpointFrame> = {
   arabic: {
     banner: 'نقطة تحقق: المراجعة مطلوبة',
     instruction: 'اكتب `pass` أو صف المشكلة.',
+    direction: 'rtl',
   },
   vietnamese: {
     banner: 'ĐIỂM KIỂM TRA: Cần xác minh',
@@ -462,7 +464,9 @@ const CHECKPOINT_LANGUAGE_ALIASES: Record<string, string> = {
 
 function resolveCheckpointFrame(responseLanguage: string | undefined): CheckpointFrame {
   if (!responseLanguage) return CHECKPOINT_FRAMES.english;
-  const key = CHECKPOINT_LANGUAGE_ALIASES[responseLanguage.trim().toLowerCase()];
+  const key = CHECKPOINT_LANGUAGE_ALIASES[
+    responseLanguage.trim().normalize('NFC').toLowerCase()
+  ];
   return (key && CHECKPOINT_FRAMES[key]) || CHECKPOINT_FRAMES.english;
 }
 
@@ -489,10 +493,10 @@ function isWideCodePoint(codePoint: number): boolean {
   );
 }
 
-// Only non-spacing and enclosing marks occupy zero terminal cells. Spacing
-// combining marks (General_Category=Mc), such as Devanagari vowel signs, still
-// advance the cursor and must contribute one column.
-const ZERO_WIDTH_MARK_RE = /\p{gc=Mn}|\p{gc=Me}/u;
+// Non-spacing/enclosing marks and format controls occupy zero terminal cells.
+// Spacing combining marks (General_Category=Mc), such as Devanagari vowel
+// signs, still advance the cursor and must contribute one column.
+const ZERO_WIDTH_MARK_RE = /\p{gc=Mn}|\p{gc=Me}|\p{gc=Cf}/u;
 
 // Iterates by Unicode code point (not UTF-16 code unit) so astral characters
 // are measured once, not as two surrogate units.
@@ -516,11 +520,22 @@ function checkpointBoxLine(text: string): string {
   return `║${padded}║`;
 }
 
+const LTR_ISOLATE = '\u2066';
+const POP_DIRECTIONAL_ISOLATE = '\u2069';
+
+function isolateCheckpointFrameText(text: string, frame: CheckpointFrame): string {
+  return frame.direction === 'rtl'
+    ? `${LTR_ISOLATE}${text}${POP_DIRECTIONAL_ISOLATE}`
+    : text;
+}
+
 function buildCheckpoint(currentTest: { number: number; name: string; expected: string }, responseLanguage?: string): string {
   const frame = resolveCheckpointFrame(responseLanguage);
+  const banner = isolateCheckpointFrameText(frame.banner, frame);
+  const instruction = isolateCheckpointFrameText(frame.instruction, frame);
   return [
     '╔══════════════════════════════════════════════════════════════╗',
-    checkpointBoxLine(frame.banner),
+    checkpointBoxLine(banner),
     '╚══════════════════════════════════════════════════════════════╝',
     '',
     `**Test ${currentTest.number}: ${currentTest.name}**`,
@@ -528,7 +543,7 @@ function buildCheckpoint(currentTest: { number: number; name: string; expected: 
     currentTest.expected,
     '',
     '──────────────────────────────────────────────────────────────',
-    frame.instruction,
+    instruction,
     '──────────────────────────────────────────────────────────────',
   ].join('\n');
 }

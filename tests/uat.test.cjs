@@ -918,6 +918,7 @@ describe('uat render-checkpoint', () => {
         frame: {
           banner: 'نقطة تحقق: المراجعة مطلوبة',
           instruction: 'اكتب `pass` أو صف المشكلة.',
+          direction: 'rtl',
         },
       },
       {
@@ -946,6 +947,17 @@ describe('uat render-checkpoint', () => {
     }
   });
 
+  test('resolveCheckpointFrame: canonically equivalent aliases resolve after NFC normalization', () => {
+    assert.deepStrictEqual(
+      resolveCheckpointFrame('türkçe'.normalize('NFD')),
+      resolveCheckpointFrame('türkçe'),
+    );
+    assert.deepStrictEqual(
+      resolveCheckpointFrame('tiếng việt'.normalize('NFD')),
+      resolveCheckpointFrame('tiếng việt'),
+    );
+  });
+
   // Regression: #2402 review medium finding — checkpointBoxLine() padded using
   // JS string `.length` (UTF-16 code units), not display width. The property
   // below supplies an independent, category-labelled cell-width oracle rather
@@ -964,6 +976,9 @@ describe('uat render-checkpoint', () => {
         { text: '\u0301', width: 0 }, // Mn: COMBINING ACUTE ACCENT
         { text: '\u093c', width: 0 }, // Mn: DEVANAGARI SIGN NUKTA
         { text: '\u20dd', width: 0 }, // Me: COMBINING ENCLOSING CIRCLE
+        { text: '\u200d', width: 0 }, // Cf: ZERO WIDTH JOINER
+        { text: '\u2066', width: 0 }, // Cf: LEFT-TO-RIGHT ISOLATE
+        { text: '\u2069', width: 0 }, // Cf: POP DIRECTIONAL ISOLATE
       );
       const twoCell = fc.constantFrom(
         { text: '界', width: 2 },
@@ -972,16 +987,28 @@ describe('uat render-checkpoint', () => {
       );
 
       fc.assert(fc.property(
-        fc.array(fc.oneof(oneCell, zeroCell, twoCell), { maxLength: 24 }),
+        fc.array(fc.oneof(oneCell, zeroCell, twoCell), { maxLength: 35 }),
         (cells) => {
           const text = cells.map((cell) => cell.text).join('');
           const textWidth = cells.reduce((sum, cell) => sum + cell.width, 0);
+          const padding = ' '.repeat(Math.max(0, 60 - textWidth));
           assert.strictEqual(
             checkpointBoxLine(text),
-            `║  ${text}${' '.repeat(60 - textWidth)}║`,
+            `║  ${text}${padding}║`,
           );
         },
       ));
+    });
+
+    test('padding boundary: width limit-1, limit, and limit+1', () => {
+      for (const width of [59, 60, 61]) {
+        const text = 'a'.repeat(width);
+        assert.strictEqual(
+          checkpointBoxLine(text),
+          `║  ${text}${' '.repeat(Math.max(0, 60 - width))}║`,
+          `unexpected rendering at text width ${width}`,
+        );
+      }
     });
 
     test('exact rendered banner lines for Japanese/Chinese/Korean (regression pin)', () => {
@@ -1006,6 +1033,16 @@ describe('uat render-checkpoint', () => {
         buildCheckpoint(currentTest, 'Hindi').split('\n')[1],
         `║  चेकपॉइंट: सत्यापन आवश्यक${' '.repeat(40)}║`,
       );
+    });
+
+    test('exact rendered Arabic frame is isolated inside the LTR checkpoint layout', () => {
+      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+      const arabic = buildCheckpoint(currentTest, 'Arabic');
+      assert.strictEqual(
+        arabic.split('\n')[1],
+        `║  \u2066نقطة تحقق: المراجعة مطلوبة\u2069${' '.repeat(34)}║`,
+      );
+      assert.ok(arabic.includes('\u2066اكتب `pass` أو صف المشكلة.\u2069'));
     });
   });
 
