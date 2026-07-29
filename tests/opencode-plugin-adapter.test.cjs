@@ -458,6 +458,13 @@ async function buildLayoutWithSpawnTrace(t, { stubHooks, planningConfig }) {
   }
 
   const handlers = await mod.server({ directory: projectDir });
+  // Establish an active session — the context-monitor dispatch is gated on
+  // currentSessionId, which session.created populates. Without this the gate
+  // short-circuits on the first operand (null) and the toggle is never reached,
+  // making the "disabled" assertions pass vacuously and the "enabled" ones fail.
+  await handlers.event({
+    event: { type: 'session.created', properties: { info: { id: 's1', directory: projectDir } } },
+  });
   return { handlers, spawns, projectDir };
 }
 
@@ -521,6 +528,10 @@ test('#2697: context-monitor subprocess runs when config.json is unparseable (de
   fs.writeFileSync(path.join(projectDir, '.planning', 'config.json'), '{ not valid json');
 
   const handlers = await mod.server({ directory: projectDir });
+  // Establish an active session (the dispatch is gated on currentSessionId).
+  await handlers.event({
+    event: { type: 'session.created', properties: { info: { id: 's1', directory: projectDir } } },
+  });
   await handlers['tool.execute.after']({ tool: 'bash', args: { command: 'echo hi' } }, {});
   assert.ok(
     spawnTargetedMonitor(spawns),
