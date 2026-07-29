@@ -89,5 +89,27 @@
       "frontmatterDialect": "codex",
       "reviewerCli": true
     }
+  },
+  "reviewer": {
+    "slug": "codex",
+    "flags": ["--codex"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "codex" },
+    "invoke": {
+      "binary": "codex",
+      "args": ["exec", "--ephemeral", "--skip-git-repo-check", "-"],
+      "promptChannel": "stdin",
+      "outputChannel": "file-arg",
+      "outputArg": "-o",
+      "modelArg": "--model",
+      "effortChannel": "argv"
+    },
+    "timeoutFloorMs": 1200000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "Codex",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "handler": null
   }
 }

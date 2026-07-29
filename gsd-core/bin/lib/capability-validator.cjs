@@ -173,7 +173,10 @@ function validateConfigSliceEntry(capId, key, slice) {
 // ─── Per-capability validation ────────────────────────────────────────────────
 
 const KEBAB_RE = /^[a-z][a-z0-9-]*$/;
-const VALID_ROLES = new Set(['feature', 'runtime']);
+// ADR-2782 D3: a third role for reviewer lanes that are NOT install targets
+// (gemini, coderabbit, ollama, lm_studio, llama_cpp). A `role: "reviewer"`
+// capability carries a reviewer body, no runtime body, and no install surface.
+const VALID_ROLES = new Set(['feature', 'runtime', 'reviewer']);
 const VALID_TIERS = new Set(['core', 'standard', 'full']);
 const VALID_ON_ERROR = new Set(['skip', 'halt']);
 const RUNTIME_COMPAT_WILDCARD = '*';
@@ -321,7 +324,7 @@ function validateCapability(cap, folderId) {
   }
 
   if (!VALID_ROLES.has(cap.role)) {
-    errors.push('role must be one of: feature, runtime (got: ' + cap.role + ')');
+    errors.push('role must be one of: ' + [...VALID_ROLES].join(', ') + ' (got: ' + cap.role + ')');
   }
 
   if (typeof cap.title !== 'string' || cap.title.length === 0) {
@@ -354,8 +357,33 @@ function validateCapability(cap, folderId) {
 
   if (cap.role === 'feature') {
     errors.push(...validateFeatureBody(cap));
+    // ADR-2782 D1 admits the reviewer body on `runtime` and `reviewer` ONLY. A
+    // feature capability owns loop artefacts, not an external review CLI. This is
+    // an ERROR rather than an ignored field because declaring a body is an
+    // ASSERTION of lane-ness (D4's Postel boundary), and a manifest built for a
+    // GSD that admits it declares `engines.gsd` and is gated before reaching here.
+    if (cap.reviewer !== undefined) {
+      errors.push('role:feature capability must not have a "reviewer" body (admissible on role runtime or reviewer only)');
+    }
   } else if (cap.role === 'runtime') {
     errors.push(...validateRuntimeBody(cap));
+    // A host that is ALSO a reviewer keeps exactly one manifest (ADR-2782 D1).
+    errors.push(...validateReviewerBody(cap));
+  } else if (cap.role === 'reviewer') {
+    // ADR-2782 D3 — a lane that is not an install target. No runtime body, no
+    // install surface, no runtimeCompat (it surfaces through no host runtime).
+    if (cap.reviewer === undefined) {
+      errors.push('role:reviewer capability must have a "reviewer" body — the role asserts a lane');
+    }
+    if (cap.runtime !== undefined) {
+      errors.push('role:reviewer capability must not have a "runtime" body (it is not an install target)');
+    }
+    for (const field of FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER) {
+      if (cap[field] !== undefined) {
+        errors.push('role:reviewer capability must not have "' + field + '" (feature-only field)');
+      }
+    }
+    errors.push(...validateReviewerBody(cap));
   }
 
   return errors;
@@ -742,6 +770,85 @@ const VALID_EFFORT_SURFACES   = new Set(['argv', 'none']);
 // ADR-1239 Codex-binding amendment (#2584): how a host isolates concurrent
 // same-wave executors — a dispatch sub-field, not a top-level axis.
 const VALID_DISPATCH_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+
+// ─── Reviewer lane body (ADR-2782 D1/D2/D3/D7/D8) ────────────────────────────
+//
+// A reviewer lane is one external CLI or model endpoint that /gsd:review hands a
+// plan to. The body is admissible on `role: "runtime"` (a host that is ALSO a
+// reviewer) and on `role: "reviewer"` (a lane that is not an install target).
+//
+// The vocabulary below tracks src/review-lane-descriptor.cts (Phase 1, #2794)
+// field-for-field INCLUDING nesting, so no translation layer exists between the
+// core descriptor and the manifest. Four members were added by Phase 1's ADR
+// amendment, each forced by a lane that ships today: `promptChannel: 'none'`
+// (CodeRabbit is fed no prompt), `outputChannel: 'file-arg'` + `outputArg`
+// (Codex writes via -o and discards stdout, #1698), and `flags[]` (Antigravity
+// answers to both --antigravity and --agy).
+//
+// EVERY error message below enumerates its valid members. That is deliberate:
+// the prose reference lands in Phase 6 (#2800), so until then the validator's
+// own errors ARE the documentation — the same gap that left `hostBehaviors`
+// discoverable only by grepping a source line is not repeated here.
+
+// A slug is NOT a capability id. Ids are kebab (KEBAB_RE, which rejects "_");
+// slugs carry the shipped roster's snake forms (`lm_studio`, `llama_cpp`) and
+// name the config keys (`review.lm_studio_host`) that ADR-2782 D9 leaves
+// unchanged. Reusing KEBAB_RE here would reject two shipped lanes.
+//
+// ⚠ DEFECT.GENERATIVE-FIX — this grammar is DUPLICATED, by necessity, from
+// `LANE_SLUG_RE` in src/review-lane-descriptor.cts (Phase 1, #2794). It cannot be
+// imported: that module compiles to gsd-core/bin/lib/review-lane-descriptor.cjs,
+// which is gitignored build output, and THIS file is a committed plain .cjs that
+// must load on a fresh worktree before `npm run build:lib` has ever run (see the
+// header). Two surfaces sharing one parser therefore require a parity assertion
+// that fails when they diverge — `laneSlugGrammarMatchesPhase1Descriptor` in
+// tests/reviewer-manifest-body.test.cjs.
+//
+// A LEADING DIGIT IS PERMITTED. Phase 1 allows it and a manifest validator that
+// did not would reject a slug the core descriptor accepts — a model-named lane
+// such as `4o-mini` — which is exactly the translation layer ADR-2782 exists to
+// delete. Keep the two grammars byte-identical.
+const LANE_SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
+// Flags are kebab even when the slug is snake: `lm_studio` → `--lm-studio`.
+// Phase 1 declares flags but does not constrain their grammar, so this is the
+// first and only definition — no parity partner to track.
+const LANE_FLAG_RE = /^--[a-z0-9][a-z0-9-]*$/;
+
+const VALID_LANE_TRANSPORTS   = new Set(['spawn', 'openai-http']);
+const VALID_LANE_PROBE_KINDS  = new Set(['command-exists', 'command-capability', 'http-reachable']);
+const VALID_PROMPT_CHANNELS   = new Set(['stdin', 'argv', 'argv-file-ref', 'none']);
+const VALID_OUTPUT_CHANNELS   = new Set(['stdout', 'file-arg']);
+const VALID_LANE_EFFORT_CHANNELS = new Set(['none', 'argv', 'env']);
+const VALID_MODEL_DISCOVERY   = new Set(['none', 'first-from-models-endpoint']);
+const VALID_EMPTY_OUTPUT      = new Set(['stub-with-stderr', 'handler-owned']);
+const VALID_EVIDENCE_CLASSES  = new Set(['source-grounded', 'diff-only']);
+
+// ADR-2782 D6 — a CLOSED enum of FIRST-PARTY module names, never a path and
+// never third-party code. `null` is the default and covers 7 of the 11 shipped
+// lanes; it is checked separately because a Set cannot hold the "declared
+// absent" case distinctly from an unknown string.
+//
+// ADMISSION RULE for a new member — this enum is the pressure valve that keeps
+// the descriptor from becoming an ad-hoc interpreter, and it only works while
+// membership stays scarce. A new member requires EITHER >=2 lanes that share the
+// behaviour, OR a documented upstream defect that data provably cannot express.
+// Today: `openai-compatible` serves 3 lanes (healthy); `antigravity` serves 1,
+// justified solely by a documented upstream stdout bug. An enum that grows one
+// member per lane has stopped being a vocabulary and become a dispatch table for
+// bespoke code — at which point the descriptor is a plugin system wearing a
+// manifest, and that is a decision for an ADR, not for a downstream phase.
+const VALID_LANE_HANDLERS     = new Set(['antigravity', 'openai-compatible']);
+
+// D2 — `transport` selects the invoke sub-shape. A manifest carrying fields from
+// BOTH sub-shapes, or from NEITHER, has undefined meaning and fails validation.
+// The discriminator is explicit rather than inferred from field presence, which
+// is precisely the ambiguity these two sets exist to detect.
+const SPAWN_ONLY_INVOKE_FIELDS = ['binary', 'args', 'promptChannel', 'outputChannel', 'outputArg', 'modelArg'];
+const HTTP_ONLY_INVOKE_FIELDS  = ['hostConfigKey', 'path', 'modelDiscovery'];
+
+// Feature-only fields are as forbidden on a lane-only capability as on a runtime
+// one; a `role: "reviewer"` capability owns no artefacts and wires no loop point.
+const FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER = ['skills', 'agents', 'steps', 'contributions', 'gates', 'hooks', 'activationKey'];
 
 // GATE A: installSurface → allowed hooksSurface values (DEFECT.GENERATIVE-FIX: parity invariant)
 // Derived from the actual pairings in the 16 real runtime descriptors.
@@ -1430,6 +1537,503 @@ function validateRuntimeBody(cap) {
   return errors;
 }
 
+/**
+ * ADR-2782 D2/D7 — every declared reviewer field is a known key. Anything else
+ * inside the body is IGNORED WITH A WARNING (D4.3), never a validation error:
+ * a capability authored for a newer GSD must degrade to discovered-but-inactive
+ * rather than failing the build of a repo that merely reads it.
+ */
+const KNOWN_REVIEWER_FIELDS = new Set([
+  'slug', 'flags', 'transport', 'probe', 'invoke', 'timeoutFloorMs', 'emptyOutput',
+  'reviewsSection', 'evidenceClass', 'requiresBinaries', 'promptBudgetKey', 'handler',
+]);
+
+const KNOWN_PROBE_FIELDS = new Set(['kind', 'binary', 'needle', 'timeoutMs', 'hostConfigKey', 'path']);
+
+/** A bounded probe timeout must be a finite, positive INTEGER of milliseconds. */
+function isPositiveIntegerMs(v) {
+  return typeof v === 'number' && Number.isInteger(v) && v > 0;
+}
+
+/**
+ * Render any value for an error message WITHOUT ever throwing.
+ *
+ * `JSON.stringify` throws on a BigInt and on a circular structure, and a value
+ * carrying a throwing `toJSON` propagates that throw. Interpolating a rejected
+ * value into its own rejection message must never itself become the failure —
+ * these validators are contracted to RETURN errors, and #1461 OVL-1 records a
+ * validator that threw and would have crashed every consumer of loadRegistry.
+ *
+ * @param {*} v
+ * @returns {string}
+ */
+function describeValue(v) {
+  if (typeof v === 'bigint') return String(v) + 'n';
+  if (typeof v === 'symbol') return String(v);
+  if (typeof v === 'function') return '[function]';
+  try {
+    const json = JSON.stringify(v);
+    // stringify returns undefined for undefined and for non-serializable roots.
+    return json === undefined ? String(v) : json;
+  } catch {
+    // Circular structure, a nested BigInt, or a throwing toJSON.
+    try {
+      return Object.prototype.toString.call(v);
+    } catch {
+      return '[unserializable]';
+    }
+  }
+}
+
+/** Extract a message from an unknown thrown value without throwing again. */
+function safeErrorMessage(err) {
+  try {
+    if (err instanceof Error && typeof err.message === 'string') return err.message;
+    return describeValue(err);
+  } catch {
+    return '[unprintable error]';
+  }
+}
+
+/** House CodeQL barrier — inline literal guard at every key-derived read/write site. */
+function isReservedName(v) {
+  return v === '__proto__' || v === 'constructor' || v === 'prototype';
+}
+
+/**
+ * One closed-enum membership check, with the members always enumerated in the
+ * error.
+ *
+ * The enumeration is the point, not the deduplication. The prose reference for
+ * the reviewer body lands in Phase 6 (#2800), so until then these errors are the
+ * only documentation of the vocabulary — exactly the gap that left
+ * `hostBehaviors` discoverable solely by grepping a source line. Routing every
+ * enum through one helper makes "the error names the valid members" structural
+ * rather than a convention repeated at nine call sites, where it would drift.
+ *
+ * No reserved-name pre-check: a `VALID_*` set never contains `__proto__`,
+ * `constructor` or `prototype`, so membership alone already rejects them, and
+ * "must be one of: …" tells an author more than "is a reserved name". The
+ * literal guards stay where they do real work — the key-derived write sites.
+ *
+ * @param {string} ctx       Error-message prefix.
+ * @param {string} label     Dotted field path, e.g. "reviewer.transport".
+ * @param {*}      value     The declared value.
+ * @param {Set}    validSet  The closed vocabulary.
+ * @returns {string[]}
+ */
+function validateEnumField(ctx, label, value, validSet) {
+  if (validSet.has(value)) return [];
+  return [
+    ctx + ' ' + label + ' must be one of: ' + [...validSet].join(', ') +
+    ' (got: ' + describeValue(value) + ')',
+  ];
+}
+
+/**
+ * Collect NON-FATAL diagnostics for a reviewer body (ADR-2782 D4.3).
+ *
+ * Kept separate from validateReviewerBody so validateCapability's contract
+ * (`=> string[]` of ERRORS) is unchanged for its two existing callers. The
+ * build-time generator writes these to stderr; the overlay loader surfaces them
+ * through OverlayMeta.warnings. A warning written only to a build log nobody
+ * reads is not a warning (ADR-2782 D4, "Where warnings surface").
+ *
+ * @param {object} cap  A capability manifest.
+ * @returns {string[]}  Warning strings; empty when there is nothing to say.
+ */
+function collectReviewerWarnings(cap) {
+  // Same totality contract as validateReviewerBody, for the same reason: this is
+  // called from loadRegistry's accept path, and a diagnostic that throws must
+  // never cost the user a working lane.
+  try {
+    return collectReviewerWarningFields(cap);
+  } catch {
+    return [];
+  }
+}
+
+function collectReviewerWarningFields(cap) {
+  const warnings = [];
+  if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return warnings;
+  const r = cap.reviewer;
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) return warnings;
+
+  const capId = typeof cap.id === 'string' ? cap.id : '(unknown)';
+  for (const key of Object.keys(r)) {
+    if (isReservedName(key) || KNOWN_REVIEWER_FIELDS.has(key)) continue;
+    warnings.push(
+      '⚠ capability "' + capId + '" reviewer.' + key + ' is not a known reviewer field ' +
+      'in this GSD version — ignored. Known fields: ' + [...KNOWN_REVIEWER_FIELDS].join(', '),
+    );
+  }
+  return warnings;
+}
+
+/**
+ * Validate a `reviewer` lane body (ADR-2782 D1/D2/D3/D6/D7).
+ *
+ * TOTAL: returns an array of error strings for ANY input and never throws. The
+ * overlay loader contracts every validator to RETURN errors — #1461 OVL-1
+ * records a validator that THREW and would have crashed every consumer of
+ * loadRegistry. That contract is load-bearing, not stylistic.
+ *
+ * ABSENT-SAFE (D4.1): a capability with no `reviewer` key is simply not a lane.
+ * That is NEVER an error — 39 of 39 shipped capabilities are in this state, and
+ * a validator that errors here breaks the entire registry. `undefined` is the
+ * ONLY permissive case: `null`, `{}`, `[]`, `false` and `0` are all assertions
+ * of a body, and a malformed assertion is an error (Postel's Law with a
+ * boundary — liberal in what a manifest may OMIT, strict in what it ASSERTS).
+ *
+ * Totality is enforced STRUCTURALLY by the wrapper below, not by auditing every
+ * field read. Serialization is made safe via describeValue(), but that alone is
+ * not enough: a value carrying a throwing getter, or a Proxy with a throwing
+ * `get`/`ownKeys` trap, throws on the READ itself, before any message is built.
+ * A caller cannot be asked to re-derive today's reachability analysis — the
+ * contract says "any input", so the guarantee is absolute rather than argued.
+ *
+ * @param {object} cap  The parsed capability manifest.
+ * @returns {string[]}  Array of error strings; empty = valid.
+ */
+function validateReviewerBody(cap) {
+  try {
+    return validateReviewerBodyFields(cap);
+  } catch (err) {
+    // A malformed body must degrade to a validation ERROR, never to a crash of
+    // every consumer of loadRegistry (#1461 OVL-1).
+    return ['capability reviewer body could not be validated: ' + safeErrorMessage(err)];
+  }
+}
+
+function validateReviewerBodyFields(cap) {
+  const errors = [];
+  if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return errors;
+
+  const r = cap.reviewer;
+  if (r === undefined) return errors; // D4.1 — not a lane. Never an error.
+
+  const ctx = 'capability "' + (typeof cap.id === 'string' ? cap.id : '(unknown)') + '"';
+
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) {
+    const got = r === null ? 'null' : Array.isArray(r) ? 'array' : typeof r;
+    errors.push(
+      ctx + ' reviewer must be an object (got: ' + got + '). ' +
+      'Omit the key entirely to declare no lane — an explicit null is not an omission.',
+    );
+    return errors; // cannot validate fields of a non-object
+  }
+
+  // ── slug ───────────────────────────────────────────────────────────────────
+  // NOT a capability id: ids are kebab, slugs carry the roster's snake forms.
+  if (typeof r.slug !== 'string' || r.slug.length === 0) {
+    errors.push(ctx + ' reviewer.slug must be a non-empty string');
+  } else if (isReservedName(r.slug)) {
+    errors.push(ctx + ' reviewer.slug "' + r.slug + '" is a reserved name');
+  } else if (!LANE_SLUG_RE.test(r.slug)) {
+    errors.push(
+      ctx + ' reviewer.slug "' + r.slug + '" must match ' + String(LANE_SLUG_RE) +
+      ' (lower-case; "_" and "-" permitted — a slug is not a capability id and not a flag)',
+    );
+  }
+
+  // ── flags ──────────────────────────────────────────────────────────────────
+  if (!Array.isArray(r.flags)) {
+    errors.push(ctx + ' reviewer.flags must be an array of CLI flags');
+  } else if (r.flags.length === 0) {
+    errors.push(
+      ctx + ' reviewer.flags must declare at least one flag — a lane nobody can name ' +
+      'cannot be explicitly selected, so ADR-2782 D4\'s explicit-selection rule is unreachable for it',
+    );
+  } else {
+    const seen = new Set();
+    for (const flag of r.flags) {
+      if (typeof flag !== 'string' || !LANE_FLAG_RE.test(flag)) {
+        errors.push(
+          ctx + ' reviewer.flags entry ' + describeValue(flag) +
+          ' must match ' + String(LANE_FLAG_RE) + ' (e.g. "--lm-studio")',
+        );
+        continue;
+      }
+      if (seen.has(flag)) {
+        errors.push(ctx + ' reviewer.flags lists "' + flag + '" more than once');
+      }
+      seen.add(flag);
+    }
+  }
+
+  // ── transport (D2) — explicit discriminator, never inferred ────────────────
+  errors.push(...validateEnumField(ctx, 'reviewer.transport', r.transport, VALID_LANE_TRANSPORTS));
+
+  errors.push(...validateLaneProbe(ctx, r.probe));
+  errors.push(...validateLaneInvoke(ctx, r.transport, r.invoke));
+
+  // ── lane scalars ───────────────────────────────────────────────────────────
+  if (!isPositiveIntegerMs(r.timeoutFloorMs)) {
+    errors.push(
+      ctx + ' reviewer.timeoutFloorMs must be a positive integer of milliseconds ' +
+      '(got: ' + describeValue(r.timeoutFloorMs) + ')',
+    );
+  }
+
+  errors.push(...validateEnumField(ctx, 'reviewer.emptyOutput', r.emptyOutput, VALID_EMPTY_OUTPUT));
+
+  if (typeof r.reviewsSection !== 'string' || r.reviewsSection.length === 0) {
+    errors.push(ctx + ' reviewer.reviewsSection must be a non-empty string');
+  }
+
+  errors.push(...validateEnumField(ctx, 'reviewer.evidenceClass', r.evidenceClass, VALID_EVIDENCE_CLASSES));
+
+  if (!Array.isArray(r.requiresBinaries)) {
+    errors.push(
+      ctx + ' reviewer.requiresBinaries must be an array (use [] when the lane needs no ' +
+      'external tool on PATH). Note the name: the envelope\'s "requires" is capability ids',
+    );
+  } else {
+    for (const bin of r.requiresBinaries) {
+      if (typeof bin !== 'string' || bin.length === 0) {
+        errors.push(ctx + ' reviewer.requiresBinaries entry ' + describeValue(bin) + ' must be a non-empty string');
+      }
+    }
+  }
+
+  // `null` is the declared "no per-lane budget"; an empty string is not.
+  if (r.promptBudgetKey !== null && (typeof r.promptBudgetKey !== 'string' || r.promptBudgetKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.promptBudgetKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.promptBudgetKey) + ')',
+    );
+  }
+
+  // ── handler (D6) — closed first-party enum; null is the default ────────────
+  if (r.handler !== null && !VALID_LANE_HANDLERS.has(r.handler)) {
+    errors.push(
+      ctx + ' reviewer.handler must be null or one of: ' + [...VALID_LANE_HANDLERS].join(', ') +
+      ' (got: ' + describeValue(r.handler) + '). Handlers are first-party module NAMES, ' +
+      'never paths and never third-party code — a lane needing a shape the vocabulary lacks ' +
+      'files an issue naming the missing primitive (ADR-2782 D6)',
+    );
+  }
+
+  return errors;
+}
+
+/**
+ * ADR-2782 D7 — probe.kind is a closed enum WIDER than existence, and every
+ * probe that starts a process or a connection MUST be bounded.
+ *
+ * `command-exists` alone is structurally insufficient: `kimi` is claimed by both
+ * Kimi Code CLI and the legacy Python kimi-cli (a separate first-party runtime
+ * capability in this repo), so an existence-only probe registers the wrong tool.
+ * The unbounded form of that probe was a live instance of this repo's named
+ * Unbounded Subprocesses defect — it ran on EVERY /gsd:review invocation
+ * regardless of which flags were passed, so a binary waiting on a first-run auth
+ * prompt hung every future review, including reviews that never asked for it.
+ *
+ * @param {string} ctx    Error-message prefix.
+ * @param {*}      probe  The probe value.
+ * @returns {string[]}
+ */
+function validateLaneProbe(ctx, probe) {
+  const errors = [];
+
+  if (typeof probe !== 'object' || probe === null || Array.isArray(probe)) {
+    errors.push(ctx + ' reviewer.probe must be an object with a "kind" from: ' + [...VALID_LANE_PROBE_KINDS].join(', '));
+    return errors;
+  }
+
+  const kindErrors = validateEnumField(ctx, 'reviewer.probe.kind', probe.kind, VALID_LANE_PROBE_KINDS);
+  if (kindErrors.length > 0) {
+    errors.push(...kindErrors);
+    return errors; // sub-shape is meaningless without a known kind
+  }
+
+  for (const key of Object.keys(probe)) {
+    if (!isReservedName(key) && !KNOWN_PROBE_FIELDS.has(key)) {
+      errors.push(ctx + ' reviewer.probe.' + key + ' is not a known probe field');
+    }
+  }
+
+  const needsBound = probe.kind === 'command-capability' || probe.kind === 'http-reachable';
+
+  if (probe.kind === 'command-exists' || probe.kind === 'command-capability') {
+    if (typeof probe.binary !== 'string' || probe.binary.length === 0) {
+      errors.push(ctx + ' reviewer.probe.binary must be a non-empty string for kind "' + probe.kind + '"');
+    }
+  } else if (probe.binary !== undefined) {
+    errors.push(ctx + ' reviewer.probe.binary is not permitted for kind "' + probe.kind + '"');
+  }
+
+  if (probe.kind === 'command-capability') {
+    if (typeof probe.needle !== 'string' || probe.needle.length === 0) {
+      errors.push(ctx + ' reviewer.probe.needle must be a non-empty string for kind "command-capability"');
+    }
+  } else if (probe.needle !== undefined) {
+    errors.push(ctx + ' reviewer.probe.needle is not permitted for kind "' + probe.kind + '"');
+  }
+
+  if (probe.kind === 'http-reachable') {
+    if (typeof probe.hostConfigKey !== 'string' || probe.hostConfigKey.length === 0) {
+      errors.push(ctx + ' reviewer.probe.hostConfigKey must be a non-empty string for kind "http-reachable"');
+    }
+    if (typeof probe.path !== 'string' || probe.path.length === 0) {
+      errors.push(ctx + ' reviewer.probe.path must be a non-empty string for kind "http-reachable"');
+    }
+  } else {
+    if (probe.hostConfigKey !== undefined) {
+      errors.push(ctx + ' reviewer.probe.hostConfigKey is not permitted for kind "' + probe.kind + '"');
+    }
+    if (probe.path !== undefined) {
+      errors.push(ctx + ' reviewer.probe.path is not permitted for kind "' + probe.kind + '"');
+    }
+  }
+
+  if (needsBound) {
+    if (!isPositiveIntegerMs(probe.timeoutMs)) {
+      errors.push(
+        ctx + ' reviewer.probe.timeoutMs must be a positive integer of milliseconds for kind "' +
+        probe.kind + '" — an unbounded probe hangs every /gsd:review invocation ' +
+        '(got: ' + describeValue(probe.timeoutMs) + ')',
+      );
+    }
+  } else if (probe.timeoutMs !== undefined) {
+    errors.push(
+      ctx + ' reviewer.probe.timeoutMs is not permitted for kind "command-exists" — ' +
+      'no process is started, so there is nothing to bound',
+    );
+  }
+
+  return errors;
+}
+
+/**
+ * ADR-2782 D2 — the invoke sub-shape is selected by `transport`. A manifest
+ * declaring fields from BOTH sub-shapes, or from NEITHER, fails validation:
+ * inference from field presence leaves those two cases carrying undefined
+ * meaning, which is exactly what a closed vocabulary exists to prevent.
+ *
+ * @param {string} ctx        Error-message prefix.
+ * @param {*}      transport  The (already enum-checked) transport value.
+ * @param {*}      invoke     The invoke value.
+ * @returns {string[]}
+ */
+function validateLaneInvoke(ctx, transport, invoke) {
+  const errors = [];
+
+  if (typeof invoke !== 'object' || invoke === null || Array.isArray(invoke)) {
+    errors.push(ctx + ' reviewer.invoke must be an object');
+    return errors;
+  }
+
+  const hasSpawnField = SPAWN_ONLY_INVOKE_FIELDS.some((f) => invoke[f] !== undefined);
+  const hasHttpField = HTTP_ONLY_INVOKE_FIELDS.some((f) => invoke[f] !== undefined);
+
+  if (hasSpawnField && hasHttpField) {
+    errors.push(
+      ctx + ' reviewer.invoke mixes spawn-only fields (' + SPAWN_ONLY_INVOKE_FIELDS.join(', ') +
+      ') with openai-http-only fields (' + HTTP_ONLY_INVOKE_FIELDS.join(', ') +
+      ') — a lane is one transport or the other',
+    );
+  }
+
+  if (transport === 'spawn') {
+    for (const f of HTTP_ONLY_INVOKE_FIELDS) {
+      if (invoke[f] !== undefined) {
+        errors.push(ctx + ' reviewer.invoke.' + f + ' is not permitted for transport "spawn"');
+      }
+    }
+    errors.push(...validateSpawnInvoke(ctx, invoke));
+  } else if (transport === 'openai-http') {
+    for (const f of SPAWN_ONLY_INVOKE_FIELDS) {
+      if (invoke[f] !== undefined) {
+        errors.push(ctx + ' reviewer.invoke.' + f + ' is not permitted for transport "openai-http"');
+      }
+    }
+    errors.push(...validateHttpInvoke(ctx, invoke));
+  }
+  // transport already reported as invalid upstream — do not double-report here.
+
+  return errors;
+}
+
+function validateSpawnInvoke(ctx, invoke) {
+  const errors = [];
+
+  if (typeof invoke.binary !== 'string' || invoke.binary.length === 0) {
+    errors.push(ctx + ' reviewer.invoke.binary must be a non-empty string for transport "spawn"');
+  }
+
+  if (!Array.isArray(invoke.args)) {
+    errors.push(ctx + ' reviewer.invoke.args must be an array (use [] when the lane takes no arguments)');
+  } else {
+    for (const a of invoke.args) {
+      if (typeof a !== 'string') {
+        errors.push(ctx + ' reviewer.invoke.args entry ' + describeValue(a) + ' must be a string');
+      }
+    }
+  }
+
+  errors.push(...validateEnumField(ctx, 'reviewer.invoke.promptChannel', invoke.promptChannel, VALID_PROMPT_CHANNELS));
+
+  const outputChannelErrors = validateEnumField(ctx, 'reviewer.invoke.outputChannel', invoke.outputChannel, VALID_OUTPUT_CHANNELS);
+  if (outputChannelErrors.length > 0) {
+    errors.push(...outputChannelErrors);
+  } else if (invoke.outputChannel === 'file-arg') {
+    // Knowing the review lands in a file is useless without the argument naming it.
+    if (typeof invoke.outputArg !== 'string' || invoke.outputArg.length === 0) {
+      errors.push(
+        ctx + ' reviewer.invoke.outputArg is required (non-empty string) when outputChannel is "file-arg"',
+      );
+    }
+  } else if (invoke.outputArg !== undefined) {
+    // Forbidden rather than ignored: a manifest carrying an outputArg it does not
+    // use is data a later reader may honour.
+    errors.push(
+      ctx + ' reviewer.invoke.outputArg is only permitted when outputChannel is "file-arg" ' +
+      '(got outputChannel: ' + describeValue(invoke.outputChannel) + ')',
+    );
+  }
+
+  // `null` declares "this lane accepts no model override". An empty string does not.
+  if (invoke.modelArg !== null && (typeof invoke.modelArg !== 'string' || invoke.modelArg.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.invoke.modelArg must be a non-empty string or null ' +
+      '(got: ' + describeValue(invoke.modelArg) + ')',
+    );
+  }
+
+  errors.push(...validateEnumField(ctx, 'reviewer.invoke.effortChannel', invoke.effortChannel, VALID_LANE_EFFORT_CHANNELS));
+
+  return errors;
+}
+
+function validateHttpInvoke(ctx, invoke) {
+  const errors = [];
+
+  if (typeof invoke.hostConfigKey !== 'string' || invoke.hostConfigKey.length === 0) {
+    errors.push(
+      ctx + ' reviewer.invoke.hostConfigKey must be a non-empty dotted config key ' +
+      'for transport "openai-http" (it names the config key holding the base URL)',
+    );
+  }
+
+  if (typeof invoke.path !== 'string' || invoke.path.length === 0) {
+    errors.push(ctx + ' reviewer.invoke.path must be a non-empty string for transport "openai-http" (e.g. "/v1/chat/completions")');
+  }
+
+  errors.push(...validateEnumField(ctx, 'reviewer.invoke.modelDiscovery', invoke.modelDiscovery, VALID_MODEL_DISCOVERY));
+
+  // D2 fixes effortChannel to 'none' for this transport — an HTTP lane has no
+  // argv to carry an effort flag and no env of its own.
+  if (invoke.effortChannel !== 'none') {
+    errors.push(
+      ctx + ' reviewer.invoke.effortChannel must be "none" for transport "openai-http" ' +
+      '(got: ' + describeValue(invoke.effortChannel) + ')',
+    );
+  }
+
+  return errors;
+}
+
 // #1459 CONVERGENCE finding 1(b) — GENEROUS DoS backstop on a (possibly project-plantable) hook
 // fragment file. A real fragment is a few KiB of markdown; 8 MiB is wildly more than any legitimate
 // fragment. The bounded reader refuses a non-regular (FIFO/device/symlink-to-nonregular) or oversized
@@ -1991,10 +2595,19 @@ function validateCrossCapability(capMap, centralKeys) {
     }
   }
 
-  // Config key ownership: exclusive AND absent from central schema
+  // Config key ownership: exclusive AND absent from central schema.
+  //
+  // ADR-2782 D1/D9: the role filter was `role !== 'feature'`, which silently
+  // exempted every non-feature capability from ownership AND from the
+  // central-schema collision check — the reason reviewer config keys were
+  // stranded centrally. Ownership is a property of DECLARING a config slice, not
+  // of being a feature, so the filter is now purely on the slice's presence.
+  // Verified inert at introduction: no shipped capability declares `config` on a
+  // non-feature role, so this widening changes no existing key — it stops a
+  // latent silent drop and unblocks Phase 4 (#2797).
   const configKeyOwner = new Map(); // key → capId
   for (const [capId, cap] of capMap) {
-    if (cap.role !== 'feature' || typeof cap.config !== 'object' || cap.config === null) continue;
+    if (typeof cap.config !== 'object' || cap.config === null) continue;
     for (const key of Object.keys(cap.config)) {
       if (configKeyOwner.has(key)) {
         errors.push(
@@ -2012,6 +2625,78 @@ function validateCrossCapability(capMap, centralKeys) {
       }
     }
   }
+
+  // ── Reviewer lane uniqueness (ADR-2782 D8) ─────────────────────────────────
+  //
+  // slug, every flag, and reviewsSection are each unique across the MERGED
+  // first-party ∪ overlay set. reviewsSection uniqueness is not cosmetic: two
+  // lanes sharing a heading silently merge their output in REVIEWS.md, producing
+  // a review that appears to have consensus it does not have.
+  //
+  // This runs in validateCrossCapability rather than in the generator because
+  // BOTH callers reach it: the build-time generator over first-party, and
+  // capability-loader's loadRegistry over `acceptedMap` (first-party ∪ accepted
+  // overlays) per candidate. First-party is already in the map when an overlay
+  // candidate is added, so the OVERLAY is the collider that gets dropped —
+  // which is exactly D8's "first-party wins", with no provenance check here.
+  //
+  // Reviewer INSTANCES (review.reviewer_instances.<name>, ADR-1517) resolve
+  // THROUGH a lane and are not lanes; they never enter these sets.
+  const laneSlugClaims = new Map();     // slug           → capId[]
+  const laneFlagClaims = new Map();     // flag           → capId[]
+  const laneSectionClaims = new Map();  // reviewsSection → capId[]
+
+  // Claims are ACCUMULATED and reported after the sweep, never reported on the
+  // second claimant. Reporting pairwise-on-collision looks equivalent and is not:
+  // with three lanes on one key it names whichever pair happened to arrive first,
+  // so the message text depends on Map insertion order — which is readdir order
+  // at build time and candidate order at load time. A cross-platform CI lane
+  // would then disagree with a local run about the text of the same failure.
+  // Accumulating makes the output a pure function of the input set for ANY N.
+  const claim = (claims, key, capId) => {
+    if (typeof key !== 'string' || key.length === 0) return;
+    if (isReservedName(key)) return;
+    let claimants = claims.get(key);
+    if (claimants === undefined) {
+      claimants = [];
+      claims.set(key, claimants);
+    }
+    if (!claimants.includes(capId)) claimants.push(capId);
+  };
+
+  for (const [capId, cap] of capMap) {
+    const r = cap.reviewer;
+    // A capability with no lane contributes to no uniqueness set. A MALFORMED
+    // body was already reported by validateCapability — do not double-report.
+    if (typeof r !== 'object' || r === null || Array.isArray(r)) continue;
+    claim(laneSlugClaims, r.slug, capId);
+    claim(laneSectionClaims, r.reviewsSection, capId);
+    if (Array.isArray(r.flags)) {
+      // Flattened across arrays: Antigravity answers to --antigravity AND --agy,
+      // so uniqueness is per-flag, not per-lane.
+      for (const flag of r.flags) claim(laneFlagClaims, flag, capId);
+    }
+  }
+
+  // One error per colliding key naming EVERY claimant, ids sorted; the whole
+  // block is sorted before it is appended, so both the messages and their order
+  // are independent of how the capabilities were enumerated.
+  const laneCollisions = [];
+  for (const [claims, label] of [
+    [laneSlugClaims, 'slug'],
+    [laneFlagClaims, 'flag'],
+    [laneSectionClaims, 'reviewsSection'],
+  ]) {
+    for (const [key, claimants] of claims) {
+      if (claimants.length < 2) continue;
+      laneCollisions.push(
+        'reviewer ' + label + ' "' + key + '" is declared by ' +
+        [...claimants].sort().map((i) => '"' + i + '"').join(' and '),
+      );
+    }
+  }
+  laneCollisions.sort();
+  errors.push(...laneCollisions);
 
   // requires: all ids exist
   for (const [capId, cap] of capMap) {
@@ -2407,6 +3092,22 @@ module.exports = {
   VALID_ARTIFACT_KIND_NAMES,
   VALID_ARTIFACT_NESTINGS,
   FEATURE_FIELDS_FORBIDDEN_ON_RUNTIME,
+  // ADR-2782 D1/D2/D3/D6/D7/D8 — reviewer lane body
+  FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER,
+  LANE_SLUG_RE,
+  LANE_FLAG_RE,
+  VALID_LANE_TRANSPORTS,
+  VALID_LANE_PROBE_KINDS,
+  VALID_PROMPT_CHANNELS,
+  VALID_OUTPUT_CHANNELS,
+  VALID_LANE_EFFORT_CHANNELS,
+  VALID_MODEL_DISCOVERY,
+  VALID_EMPTY_OUTPUT,
+  VALID_EVIDENCE_CLASSES,
+  VALID_LANE_HANDLERS,
+  KNOWN_REVIEWER_FIELDS,
+  validateReviewerBody,
+  collectReviewerWarnings,
   VALID_INSTALL_SURFACES,
   VALID_PERMISSION_WRITERS,
   VALID_EXTENDED_HOOK_EVENTS,

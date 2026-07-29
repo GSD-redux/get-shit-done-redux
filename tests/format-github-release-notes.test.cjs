@@ -48,17 +48,17 @@ describe('classifyTitle', () => {
     );
   });
 
-  test('returns Enhancement for chore(#2): title', () => {
+  test('returns Internal for chore(#2): title (#2716)', () => {
     assert.equal(
       classifyTitle('* chore(#2): some chore by @trek-e in https://github.com/open-gsd/gsd-core/pull/5'),
-      'Enhancement'
+      'Internal'
     );
   });
 
-  test('returns Enhancement for docs: title', () => {
+  test('returns Internal for docs: title (#2716)', () => {
     assert.equal(
       classifyTitle('* docs: documentation update by @trek-e in https://github.com/open-gsd/gsd-core/pull/6'),
-      'Enhancement'
+      'Internal'
     );
   });
 
@@ -84,7 +84,7 @@ describe('classifyTitle', () => {
 const SAMPLE_BODY = `## What's Changed
 * feat(#39): milestone-prefixed phase IDs by @trek-e in https://github.com/open-gsd/gsd-core/pull/565
 * fix(#557): milestone erased on update by @trek-e in https://github.com/open-gsd/gsd-core/pull/563
-* chore(#2): update dependencies by @trek-e in https://github.com/open-gsd/gsd-core/pull/560
+* enhance(#2): smoother phase transitions by @trek-e in https://github.com/open-gsd/gsd-core/pull/560
 
 ## New Contributors
 * @someone made their first contribution in https://github.com/open-gsd/gsd-core/pull/123
@@ -216,5 +216,32 @@ describe('formatReleaseNotes', () => {
     assert.ok(firstIdx !== -1, 'first feature bullet should be present');
     assert.ok(secondIdx !== -1, 'second feature bullet should be present');
     assert.ok(firstIdx < secondIdx, 'first feature should appear before second feature');
+  });
+
+  test('#2716: a test:-titled PR is omitted from the rendered release notes entirely', () => {
+    const body = `## What's Changed
+* feat(#39): real feature by @trek-e in https://github.com/open-gsd/gsd-core/pull/565
+* test(#99): add regression coverage by @trek-e in https://github.com/open-gsd/gsd-core/pull/900
+
+## New Contributors
+
+**Full Changelog**: https://github.com/open-gsd/gsd-core/compare/v1.2.0...v1.3.0-rc.1
+`;
+    const out = formatReleaseNotes({
+      generatedBody: body,
+      version: '1.3.0-rc.1',
+      prerelease: true,
+      packageName: '@opengsd/gsd-core',
+    });
+    // The feature bullet must appear under ### Feature.
+    assert.ok(out.includes('feat(#39): real feature'), 'feature bullet must be present');
+    assert.ok(out.includes('### Feature'), 'Feature section must render');
+    // The test:-titled PR must NOT appear anywhere in the user-facing output.
+    assert.ok(
+      !out.includes('test(#99): add regression coverage'),
+      'a test:-titled PR must be omitted from the rendered release notes (#2716)',
+    );
+    // And there must be no user-facing "Enhancement" section here (only the feature).
+    assert.ok(!out.includes('### Enhancement'), 'no Enhancement section expected when the only non-feature is Internal');
   });
 });

@@ -110,5 +110,26 @@
       "skipCodexSkillsManifest": true,
       "reviewerCli": true
     }
+  },
+  "reviewer": {
+    "slug": "opencode",
+    "flags": ["--opencode"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "opencode" },
+    "invoke": {
+      "binary": "opencode",
+      "args": ["run", "--format", "json", "-"],
+      "promptChannel": "stdin",
+      "outputChannel": "stdout",
+      "modelArg": "--model",
+      "effortChannel": "argv"
+    },
+    "timeoutFloorMs": 660000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "OpenCode",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": ["jq"],
+    "promptBudgetKey": null,
+    "handler": null
   }
 }

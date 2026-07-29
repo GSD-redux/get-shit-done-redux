@@ -114,8 +114,15 @@ function buildMatrix(registry) {
   const extByCap = extensionsByCapability(registry);
   const featureTable = renderTable(caps, 'feature', extByCap);
   const runtimeTable = renderTable(caps, 'runtime', extByCap);
+  // ADR-2782 D3 added a third role. Rendering only feature+runtime silently
+  // DROPPED every role:"reviewer" capability from the catalogue — and because
+  // `--check` compares generated output against the committed file, both omitted
+  // them identically, so the drift guard reported "up to date" while five shipped
+  // capabilities were invisible. A guard blind to a whole role is not guarding.
+  const reviewerTable = renderTable(caps, 'reviewer', extByCap);
   const featureCount = caps.filter((c) => c.role === 'feature').length;
   const runtimeCount = caps.filter((c) => c.role === 'runtime').length;
+  const reviewerCount = caps.filter((c) => c.role === 'reviewer').length;
 
   return `# Capability matrix reference
 
@@ -179,6 +186,23 @@ typically register no loop hooks (their primary responsibility is surface
 emission), so their extension-point and hook-kind cells are \`—\`.
 
 ${runtimeTable}
+
+### Reviewer capabilities (role: reviewer) — ${reviewerCount}
+
+Reviewer capabilities declare a cross-AI **reviewer lane** — one external CLI or
+model endpoint \`/gsd:review\` hands a plan to (ADR-2782 D3). They are not install
+targets: they emit no skills, agents, hooks or surface files, so their
+extension-point and hook-kind cells are \`—\`. A host that is *also* a reviewer
+(Claude, Codex, Cursor, OpenCode, Qwen, Antigravity) keeps one manifest and
+appears under **runtime** above, carrying its lane alongside its runtime body;
+only lanes that GSD never installs into appear here.
+
+Because a lane receives the plan text, requirements, research findings and
+\`CONTEXT.md\` decisions, it is a disclosed executable surface and is consent-gated
+at install like any other — see
+[the trust model](../explanation/capability-trust-model.md).
+
+${reviewerTable}
 
 ---
 

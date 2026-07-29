@@ -29,7 +29,11 @@ Two developers computing "next ADR number" locally against `main` will independe
 
 ### Legacy *naming* is not `Legacy` *status*
 
-Files `0001-*` through `0012-*` (and `0174-*`) are preserved as immutable historical record of the old local-compute numbering. The duplicate `0010-*` and the three-way `0011-*` are documented residue of that convention — not patterns to imitate. **Do not renumber them.**
+Files `0001-*` through `0012-*` are preserved as immutable historical record of the old local-compute numbering. The duplicate `0010-*` and the three-way `0011-*` are documented residue of that convention — not patterns to imitate. **Do not renumber them.**
+
+> **This is the single authoritative statement of the legacy range.** `docs/contributor-standards.md` references it rather than restating it, so the two cannot drift.
+
+Two other zero-padded files look legacy but are not: `0174-retire-gsd-sdk-package-boundary.md` (issue #174) and `0656-research-module-seam.md` (issue #656) are **mis-padded modern ADRs** — modern, issue-numbered files whose four-digit padding is a mistake. They are NOT part of the legacy sequential set above and are not "old local-compute numbering" residue.
 
 This is a statement about **filenames only**. Many of those ADRs are `Accepted` and load-bearing today ([ADR-0002](0002-command-contract-validation-module.md), [ADR-0004](0004-worktree-workstream-seam-module.md), [ADR-0008](0008-installer-migration-module.md), [ADR-0009](0009-shell-command-projection-module.md)). An old filename says nothing about whether a decision still holds. The `Legacy` **status** in the table below is a separate claim — see the vocabulary.
 

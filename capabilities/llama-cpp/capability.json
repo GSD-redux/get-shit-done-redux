@@ -1,0 +1,36 @@
+{
+  "id": "llama-cpp",
+  "role": "reviewer",
+  "version": "1.8.0",
+  "title": "llama.cpp",
+  "description": "llama.cpp server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.llama_cpp_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`llama-cpp`, required by KEBAB_RE); `reviewer.slug` stays snake (`llama_cpp`) to match the shipped roster and the `review.llama_cpp_host` config key (ADR-2782's three-namespace trap).",
+  "tier": "full",
+  "requires": [],
+  "engines": {
+    "gsd": ">=1.8.0"
+  },
+  "reviewer": {
+    "slug": "llama_cpp",
+    "flags": ["--llama-cpp"],
+    "transport": "openai-http",
+    "probe": {
+      "kind": "http-reachable",
+      "hostConfigKey": "review.llama_cpp_host",
+      "path": "/v1/models",
+      "timeoutMs": 2000
+    },
+    "invoke": {
+      "hostConfigKey": "review.llama_cpp_host",
+      "path": "/v1/chat/completions",
+      "modelDiscovery": "first-from-models-endpoint",
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 120000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "llama.cpp",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": ["jq"],
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
+    "handler": "openai-compatible"
+  }
+}
