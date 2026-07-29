@@ -708,12 +708,7 @@ prepare_trimmed_prompt_for_reviewer() {
 
 # Resolve prompt budget for Ollama: per-reviewer override > global default > null
 OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.ollama --raw 2>/dev/null || echo "null")
-# #2797: the per-lane budget key is federated to the lane capability now, and a
-# federated key always resolves to its declared default rather than reporting
-# not-found. The declared default is the sentinel -1, NOT 0: 0 already means
-# "do not trim this lane" (see the guard in prepare_trimmed_prompt_for_reviewer),
-# so treating 0 as "unset" here would silently switch a user who deliberately
-# disabled trimming for this lane onto the global budget instead.
+# #2797: -1 = unset; 0 legitimately means "do not trim".
 if [ -z "$OLLAMA_REVIEWER_BUDGET" ] || [ "$OLLAMA_REVIEWER_BUDGET" = "null" ] || [ "$OLLAMA_REVIEWER_BUDGET" = "-1" ]; then
   OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
@@ -781,12 +776,7 @@ fi
 ```bash
 # Resolve prompt budget for LM Studio: per-reviewer override > global default > null
 LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.lm_studio --raw 2>/dev/null || echo "null")
-# #2797: the per-lane budget key is federated to the lane capability now, and a
-# federated key always resolves to its declared default rather than reporting
-# not-found. The declared default is the sentinel -1, NOT 0: 0 already means
-# "do not trim this lane" (see the guard in prepare_trimmed_prompt_for_reviewer),
-# so treating 0 as "unset" here would silently switch a user who deliberately
-# disabled trimming for this lane onto the global budget instead.
+# #2797: -1 = unset; 0 legitimately means "do not trim".
 if [ -z "$LM_STUDIO_REVIEWER_BUDGET" ] || [ "$LM_STUDIO_REVIEWER_BUDGET" = "null" ] || [ "$LM_STUDIO_REVIEWER_BUDGET" = "-1" ]; then
   LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
@@ -873,12 +863,7 @@ fi
 ```bash
 # Resolve prompt budget for llama.cpp: per-reviewer override > global default > null
 LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.llama_cpp --raw 2>/dev/null || echo "null")
-# #2797: the per-lane budget key is federated to the lane capability now, and a
-# federated key always resolves to its declared default rather than reporting
-# not-found. The declared default is the sentinel -1, NOT 0: 0 already means
-# "do not trim this lane" (see the guard in prepare_trimmed_prompt_for_reviewer),
-# so treating 0 as "unset" here would silently switch a user who deliberately
-# disabled trimming for this lane onto the global budget instead.
+# #2797: -1 = unset; 0 legitimately means "do not trim".
 if [ -z "$LLAMA_CPP_REVIEWER_BUDGET" ] || [ "$LLAMA_CPP_REVIEWER_BUDGET" = "null" ] || [ "$LLAMA_CPP_REVIEWER_BUDGET" = "-1" ]; then
   LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
