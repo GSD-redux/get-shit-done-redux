@@ -192,6 +192,50 @@ describe('reviewer config federation — end-to-end through the CLI (#2797)', ()
     assert.deepEqual(after, pre, 'reading must not rewrite the file');
   });
 
+  test('an unset per-lane budget resolves to the -1 sentinel, not 0', (t) => {
+    // 0 is a LEGITIMATE per-lane budget meaning "do not trim this lane" — the
+    // guard in prepare_trimmed_prompt_for_reviewer returns early on it. A
+    // federated key always resolves to its declared default, so if that default
+    // were 0, "unset" and "deliberately disabled" would be indistinguishable and
+    // the workflow's fallback-to-global branch could not tell them apart.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const get = runGsdTools(
+      'query config-get review.max_prompt_tokens_per_reviewer.ollama --raw', tmpDir,
+    );
+    assert.strictEqual((get.output || '').trim(), '-1',
+      'an unset per-lane budget must read back as the -1 sentinel');
+  });
+
+  test('an explicit per-lane budget of 0 survives federation', (t) => {
+    // The regression this guards: treating 0 as "unset" in the workflow fallback
+    // would silently switch a user who disabled trimming for one lane onto the
+    // global budget instead.
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    const set = runGsdTools('config-set review.max_prompt_tokens_per_reviewer.ollama 0', tmpDir);
+    assert.ok(set.success, `config-set must accept an explicit 0: ${set.error || ''}`);
+
+    const get = runGsdTools(
+      'query config-get review.max_prompt_tokens_per_reviewer.ollama --raw', tmpDir,
+    );
+    assert.strictEqual((get.output || '').trim(), '0',
+      'an explicit 0 must survive as 0, distinguishable from unset');
+  });
+
+  test('an explicit per-lane budget value round-trips', (t) => {
+    const tmpDir = createTempProject();
+    t.after(() => cleanup(tmpDir));
+
+    runGsdTools('config-set review.max_prompt_tokens_per_reviewer.ollama 6000', tmpDir);
+    const get = runGsdTools(
+      'query config-get review.max_prompt_tokens_per_reviewer.ollama --raw', tmpDir,
+    );
+    assert.strictEqual((get.output || '').trim(), '6000');
+  });
+
   test('a model key naming no declared lane is rejected by the CLI', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));

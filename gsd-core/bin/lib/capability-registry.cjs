@@ -2162,8 +2162,8 @@ const capabilities = {
       },
       "review.max_prompt_tokens_per_reviewer.llama_cpp": {
         "type": "number",
-        "default": 0,
-        "description": "Prompt-token budget for the llama.cpp reviewer lane."
+        "default": -1,
+        "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -2219,8 +2219,8 @@ const capabilities = {
       },
       "review.max_prompt_tokens_per_reviewer.lm_studio": {
         "type": "number",
-        "default": 0,
-        "description": "Prompt-token budget for the LM Studio reviewer lane."
+        "default": -1,
+        "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -2500,8 +2500,8 @@ const capabilities = {
       },
       "review.max_prompt_tokens_per_reviewer.ollama": {
         "type": "number",
-        "default": 0,
-        "description": "Prompt-token budget for the Ollama reviewer lane."
+        "default": -1,
+        "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
       }
     }
   },
@@ -4508,8 +4508,8 @@ const configSchema = {
   "review.max_prompt_tokens_per_reviewer.llama_cpp": {
     "owner": "llama-cpp",
     "type": "number",
-    "default": 0,
-    "description": "Prompt-token budget for the llama.cpp reviewer lane."
+    "default": -1,
+    "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "review.models.lm_studio": {
     "owner": "lm-studio",
@@ -4526,8 +4526,8 @@ const configSchema = {
   "review.max_prompt_tokens_per_reviewer.lm_studio": {
     "owner": "lm-studio",
     "type": "number",
-    "default": 0,
-    "description": "Prompt-token budget for the LM Studio reviewer lane."
+    "default": -1,
+    "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "mempalace.enabled": {
     "owner": "mempalace",
@@ -4615,8 +4615,8 @@ const configSchema = {
   "review.max_prompt_tokens_per_reviewer.ollama": {
     "owner": "ollama",
     "type": "number",
-    "default": 0,
-    "description": "Prompt-token budget for the Ollama reviewer lane."
+    "default": -1,
+    "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "review.models.opencode": {
     "owner": "opencode",

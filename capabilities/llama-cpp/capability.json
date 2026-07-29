@@ -50,8 +50,8 @@
     },
     "review.max_prompt_tokens_per_reviewer.llama_cpp": {
       "type": "number",
-      "default": 0,
-      "description": "Prompt-token budget for the llama.cpp reviewer lane."
+      "default": -1,
+      "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
     }
   }
 }

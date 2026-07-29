@@ -1,29 +1,8 @@
 {
   "version": 1,
   "paths": {
-    "gsd-core/bin/shared/config-schema.manifest.json": {
-      "reason": "#2797 / ADR-2782 D9 (config half). The central-schema half of the federation cutover: three exact keys (review.ollama_host, review.lm_studio_host, review.llama_cpp_host) and two dynamic patterns (^review\\.models\\..+$, ^review\\.max_prompt_tokens_per_reviewer\\..+$) are REMOVED here in the same commit that adds them as federated `config` slices on the lane capabilities. The exclusivity invariant fails the build on a key present in both, so the removal and the addition cannot be split across commits. review.max_prompt_tokens, review.default_reviewers and the reviewer_instances pattern deliberately stay — D9 keeps a key describing policy ACROSS lanes out of any single lane."
-    },
-    "scripts/gen-capability-registry.cjs": {
-      "reason": "#2797: adds loadCentralConfigPatterns() and threads it into validateCrossCapability. The exclusivity gate previously compared federated keys against manifest.validKeys ONLY, so a federated key claimed by a central dynamic PATTERN was invisible to it — and two of the four families this phase migrates were pattern-backed. Not cosmetic: isCentralConfigKey consults those same patterns and mergeFederatedConfig skips every key for which it returns true, so an overlapping slice is inert while the build stays green. The gate could not police the migration it exists to police."
-    },
-    "gsd-core/workflows/review.md": {
-      "reason": "#2797: the three per-lane prompt-budget fallback guards (ollama, lm_studio, llama_cpp) now treat a resolved 0 as unset, alongside empty and \"null\". A federated key always resolves to its declared default, and a number-typed slice must declare a numeric default — so an unset per-lane budget reads back as 0 rather than not-found. Without this a user who set only the GLOBAL review.max_prompt_tokens would silently lose trimming on those three lanes, because the fallback branch never fired. Guard-only; no lane's invocation shape moved."
-    },
     "review.md": {
-      "reason": "#2794 / ADR-2782 Phase 1. Three deliberate additions to gsd-core/workflows/review.md: (1) an explicit `<!-- reviewer-lane: <slug> -->` marker above each of the 11 invoke_reviewers legs, which is what makes a leg machine-identifiable for the DEFECT.GENERATIVE-FIX parity assertion — the legs are prose-labelled and five NON-lane bold labels in the same step share the bold-then-fence shape a heuristic matcher would key on, so inference was not an option; (2) the ADR-2782 D4 explicit-selection contract in the detect_clis prose, without which the selector correction is unobservable (review-reviewer-selection.cts has no production caller — the workflow narrates the policy and the reviewing agent executes it, so code and prose must move together); (3) the qwen leg's stderr sidecar, the last lane still discarding stderr to /dev/null (#2494/#2605 class). Growth is prose and comments only; no lane's observable command shape changed apart from the qwen redirect."
-    },
-    "hooks/gsd-check-update-worker.js": {
-      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs — so all three are now emitted into Codex installs alongside the parent. The diff is in bin/install.js (allowlist + copy-loop + profile gate), not in the hook sources themselves, so the hooks-built attribution rule flags the emitted worker/registry paths. This ripple is the intended fix."
-    },
-    "hooks/managed-hooks-registry.cjs": {
-      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so the registry is now emitted into Codex installs byte-for-byte. The diff is in bin/install.js (allowlist + raw-copy fallback + profile gate), not in the registry source, so the hooks-built attribution rule flags the emitted registry path. This ripple is the intended fix."
-    },
-    "code-review.md": {
-      "reason": "#2694: three inline node -e frontmatter-boundary one-liners now normalize \r\n -> \n before matching (content.replace(/\r\n/g,'\n').match(...)), so CRLF-saved SUMMARY.md/REVIEW.md artifacts are no longer silently dropped. The growth is the inserted .replace(/\r\n/g,'\n') at each of the 3 boundary sites; no observable command shape changed otherwise. This is the intended fix."
-    },
-    "code-review-fix.md": {
-      "reason": "#2694: six inline node -e frontmatter-boundary one-liners now normalize \r\n -> \n before matching (content.replace(/\r\n/g,'\n').match(...)), so CRLF-saved REVIEW.md/REVIEW-FIX.md artifacts are no longer silently dropped (status/depth/files_reviewed_list extraction). The growth is the inserted .replace(/\r\n/g,'\n') at each of the 6 boundary sites; no observable command shape changed otherwise. This is the intended fix."
+      "reason": "#2797 / ADR-2782 D9 (config half). Growth is comment-only: the three per-lane prompt-budget fallback guards (ollama, lm_studio, llama_cpp) gain an explanation of why they test for the -1 sentinel rather than 0. A federated config key always resolves to its declared default rather than reporting not-found, so an unset per-lane budget needs a sentinel that cannot collide with a legitimate value — and 0 is legitimate: it already means \"do not trim this lane\" (the early-return guard in prepare_trimmed_prompt_for_reviewer). Treating 0 as unset would have silently switched a user who deliberately disabled trimming for one lane onto the global budget. No lane's invocation shape changed."
     }
   }
 }
