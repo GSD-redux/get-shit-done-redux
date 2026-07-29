@@ -2,12 +2,13 @@
 
 # 🚀 Your first project
 
-**From an empty folder to a shipped pull request — in one guided loop.**
+**From an empty GitHub repository to a shipped pull request — in one guided loop.**
 
 ![level](https://img.shields.io/badge/level-beginner-3fb950?style=flat-square)
 ![time](https://img.shields.io/badge/time-30–45%20min-f0883e?style=flat-square)
 ![runtime](https://img.shields.io/badge/runtime-Claude%20Code-8957e5?style=flat-square)
-![prereq](https://img.shields.io/badge/prereq-Node%2018%2B-2f81f7?style=flat-square)
+![node](https://img.shields.io/badge/Node-22%2B-2f81f7?style=flat-square)
+![npm](https://img.shields.io/badge/npm-10%2B-cb3837?style=flat-square)
 
 </div>
 
@@ -128,19 +129,35 @@ loop, not a toolchain.
 
 | You need | Check with | "Good" looks like |
 |----------|------------|-------------------|
-| **Node.js 18+** | `node --version` | `v18.x.x` or higher |
+| **Node.js 22+** | `node --version` | `v22.x.x` or higher |
+| **npm 10+** | `npm --version` | `10.x.x` or higher |
 | **Claude Code** | `claude --version` | installed and opens |
-| **A terminal in an empty folder** | `pwd` | the project dir you want to use |
-| **Internet** | — | needed once, for the installer |
+| **Git** | `git --version` | installed |
+| **GitHub CLI** | `gh --version` and `gh auth status` | installed and authenticated |
+| **An empty GitHub repository cloned locally** | `git remote get-url origin` | your repository's GitHub URL |
+| **Internet** | — | available for installation and GitHub operations |
+
+If you do not already have an empty repository, create and clone one now. If
+`gh auth status` says you are not logged in, run `gh auth login` first.
+
+```bash
+gh repo create gsd-todo-tutorial --private --clone
+cd gsd-todo-tutorial
+git remote get-url origin
+```
 
 ```mermaid
 flowchart LR
-    A[node --version ≥ 18?] -->|no| A1[Install/upgrade Node] --> A
-    A -->|yes| B[Claude Code installed?]
-    B -->|no| B1[Install Claude Code] --> B
-    B -->|yes| C[In an empty project folder?]
-    C -->|no| C1[cd into one] --> C
-    C -->|yes| R([✅ Ready for Step 1])
+    A[node --version ≥ 22?] -->|no| A1[Install/upgrade Node] --> A
+    A -->|yes| B[npm --version ≥ 10?]
+    B -->|no| B1[Install/upgrade npm] --> B
+    B -->|yes| C[Claude Code installed?]
+    C -->|no| C1[Install Claude Code] --> C
+    C -->|yes| D[gh authenticated?]
+    D -->|no| D1[Run gh auth login] --> D
+    D -->|yes| E[origin points to GitHub?]
+    E -->|no| E1[Create or clone a repository] --> E
+    E -->|yes| R([✅ Ready for Step 1])
     classDef ok fill:#132a1a,stroke:#3fb950,color:#e6edf3;
     class R ok;
 ```
@@ -160,8 +177,7 @@ runtime? See [Install on your runtime](../how-to/install-on-your-runtime.md) for
 flag. You'll see a summary of what was installed, e.g.:
 
 ```text
-✓ Installed 71 skills to skills/
-✓ Installed 71 commands to commands/
+✓ Installed 71 commands to commands/ (gsd-<cmd>.md flat form)
 ✓ Installed agents
 ```
 
@@ -281,7 +297,7 @@ GSD asks about your **implementation preferences** — *how* to build, not just
   Create it silently on first add.
 ```
 
-It writes `.planning/phases/01-core-cli/CONTEXT.md`.
+It writes `.planning/phases/01-core-cli/01-CONTEXT.md`.
 
 👉 **Do this now:** open that file → find `## Implementation Decisions`. Those are
 your words, captured. The planner reads this next, so every decision here flows
@@ -308,7 +324,7 @@ sequenceDiagram
     You->>GSD: /gsd-plan-phase 1
     GSD->>You: Research before planning Phase 1?
     You->>GSD: Skip research
-    GSD->>PL: CONTEXT.md
+    GSD->>PL: 01-CONTEXT.md
     PL-->>GSD: atomic task plans
     GSD->>PC: verify each plan hits the goal
     PC-->>You: plans saved ✓
@@ -316,7 +332,7 @@ sequenceDiagram
 
 GSD asks **"Research before planning Phase 1?"** — choose **Skip research** (same
 as Step 3; this build is small and well-understood). A **planner** then turns
-`CONTEXT.md` into **atomic task plans**, and a **plan-checker** verifies each
+`01-CONTEXT.md` into **atomic task plans**, and a **plan-checker** verifies each
 before saving.
 
 <details>
@@ -379,7 +395,7 @@ node todo.js list        # → only "write tests"
 .planning/phases/01-core-cli/
   01-01-SUMMARY.md    ← what Executor A built + committed
   01-02-SUMMARY.md    ← what Executor B built + committed
-  VERIFICATION.md     ← requirement coverage: PASS
+  01-VERIFICATION.md  ← requirement coverage: PASS
 ```
 
 </details>
@@ -392,18 +408,30 @@ node todo.js list        # → only "write tests"
 /gsd-verify-work 1
 ```
 
-GSD extracts the phase's **success criteria** and walks each one:
+GSD reads the phase's `SUMMARY.md` files and turns their user-visible
+deliverables into checkpoints. It presents one checkpoint at a time; the first
+one looks like this (the test wording depends on what was built):
 
 ```text
-[1/3] Run `node todo.js add "buy milk"` without errors?   > yes
-[2/3] Does `list` show only incomplete items by default?  > yes
-[3/3] Does `done 1` complete item 1 and hide it?          > yes
-All 3 checks passed. Phase 1 verified.
+╔══════════════════════════════════════════════════════════════╗
+║  CHECKPOINT: Verification Required                           ║
+╚══════════════════════════════════════════════════════════════╝
+
+**Test 1: Add a to-do**
+
+Running `node todo.js add "buy milk"` creates a pending item without errors.
+
+──────────────────────────────────────────────────────────────
+Type `pass` or describe what's wrong.
+──────────────────────────────────────────────────────────────
 ```
+
+Type `pass` when reality matches, or describe what differs. GSD records the
+answer in `01-UAT.md` and then presents the next checkpoint.
 
 If a check **fails**, GSD diagnoses the root cause and writes a fix plan → re-run
 `/gsd-execute-phase 1`, then `/gsd-verify-work 1` again. (Result:
-`.planning/phases/01-core-cli/UAT.md`.)
+`.planning/phases/01-core-cli/01-UAT.md`.)
 
 > [!NOTE]
 > **Why a separate verify step?** "The code was written" and "the code works" are
@@ -422,10 +450,10 @@ Requirements Addressed · Verification · Key Decisions):
 
 ```text
 Pull request created: https://github.com/your-org/your-repo/pull/1
-Title: feat(phase-1): core CLI — add / list / done commands
+Title: Phase 01: core-cli
 ```
 
-That's the **full loop** — idea → merged PR — for one phase, start to finish. 🚀
+That's the **full loop** — idea → opened PR — for one phase, start to finish. 🚀
 
 ```mermaid
 flowchart LR
@@ -483,7 +511,7 @@ next? Let GSD detect it:
 
 ## 🎓 What next
 
-- [Install on your runtime](../how-to/install-on-your-runtime.md) — exact steps for all 15 runtimes
+- [Install on your runtime](../how-to/install-on-your-runtime.md) — exact steps for every supported runtime
 - [The phase loop](../explanation/the-phase-loop.md) — why it's shaped this way
 - [Context engineering](../explanation/context-engineering.md) — the theory behind fresh sub-agents
 - [Configure model profiles](../how-to/configure-model-profiles.md) — quality / balanced / budget tiers
