@@ -39,7 +39,7 @@ const COMMAND_MAX_OUTPUT_CHARS = 2000;
 const COMMAND_MAX_LENGTH = 4096;
 
 /** Predicate kinds this evaluator recognises (extensible — add to KIND_TABLE). */
-const EVALUATOR_KINDS = Object.freeze(['command-exit-zero']);
+const EVALUATOR_KINDS = Object.freeze(['command-exit-zero', 'artifact-frontmatter-equals']);
 
 /** Placeholders interpolated into a declared command, in addition to sh's own vars. */
 const INTERPOLATION_VAR_NAMES = Object.freeze(['PHASE_NUMBER', 'PHASE_DIR', 'PHASE_REQ_IDS']);
@@ -64,6 +64,8 @@ interface BoundedShellResult {
 
 interface PredicateDeps {
   runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number }): BoundedShellResult;
+  findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null;
+  readFrontmatter(filePath: string): Record<string, unknown>;
 }
 
 interface PredicateResult {
@@ -149,10 +151,75 @@ function evaluateCommandExitZero(
   };
 }
 
+// ─── Kind: artifact-frontmatter-equals ──────────────────────────────────────────
+
+function evaluateArtifactFrontmatterEquals(
+  predicate: Record<string, unknown>,
+  ctx: PredicateContext,
+  deps: PredicateDeps,
+): PredicateResult {
+  const artifactSuffix = predicate['artifact'];
+  if (!isNonEmptyString(artifactSuffix)) {
+    throw new Error('artifact-frontmatter-equals predicate requires a non-empty string "artifact"');
+  }
+  const field = predicate['field'];
+  if (!isNonEmptyString(field)) {
+    throw new Error('artifact-frontmatter-equals predicate requires a non-empty string "field"');
+  }
+  const expectedValue = predicate['equals'];
+  if (expectedValue === undefined) {
+    throw new Error('artifact-frontmatter-equals predicate requires an "equals" key');
+  }
+  if (!isNonEmptyString(ctx.phaseDir)) {
+    // If we're not inside a phase, we can't evaluate phase artifacts => fail open? No, fail closed per gate semantics.
+    return {
+      block: true,
+      message: `Cannot evaluate artifact ${artifactSuffix} because phaseDir is missing from context`,
+      details: { kind: 'artifact-frontmatter-equals', missingPhaseDir: true },
+    };
+  }
+
+  const filePath = deps.findPhaseArtifact(ctx.phaseDir, artifactSuffix);
+  if (!filePath) {
+    return {
+      block: true,
+      message: `Artifact matching ${artifactSuffix} not found in ${ctx.phaseDir}`,
+      details: { kind: 'artifact-frontmatter-equals', artifactNotFound: true },
+    };
+  }
+
+  let fm: Record<string, unknown>;
+  try {
+    fm = deps.readFrontmatter(filePath);
+  } catch (err: unknown) {
+    return {
+      block: true,
+      message: `Failed to read frontmatter from ${artifactSuffix}: ${(err as Error).message}`,
+      details: { kind: 'artifact-frontmatter-equals', frontmatterError: (err as Error).message },
+    };
+  }
+
+  const actualValue = fm[field];
+  if (actualValue === expectedValue) {
+    return {
+      block: false,
+      message: `Frontmatter field "${field}" matches expected value (${expectedValue})`,
+      details: { kind: 'artifact-frontmatter-equals', match: true },
+    };
+  }
+
+  return {
+    block: true,
+    message: `Frontmatter field "${field}" in ${artifactSuffix} is ${actualValue}, expected ${expectedValue}`,
+    details: { kind: 'artifact-frontmatter-equals', match: false, actual: actualValue, expected: expectedValue },
+  };
+}
+
 // ─── Kind dispatch table ──────────────────────────────────────────────────────
 
 const KIND_TABLE: Record<string, (p: Record<string, unknown>, ctx: PredicateContext, deps: PredicateDeps) => PredicateResult> = {
   'command-exit-zero': evaluateCommandExitZero,
+  'artifact-frontmatter-equals': evaluateArtifactFrontmatterEquals,
 };
 
 // ─── Public entry point ───────────────────────────────────────────────────────

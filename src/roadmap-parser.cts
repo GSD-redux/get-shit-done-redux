@@ -51,8 +51,46 @@ function stripShippedMilestones(content: string): string {
 /**
  * Extract the current milestone section from ROADMAP.md by positive lookup.
  */
+
+/**
+ * Strip deferred, backlog, or future sections from the roadmap string.
+ */
+function stripDeferredSections(content: string): string {
+  const headings = tokenizeHeadings(content);
+  let deferredDepth = 0;
+  let result = '';
+  let lastOffset = 0;
+  
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i];
+    if (deferredDepth > 0 && h.level > deferredDepth) {
+      continue;
+    }
+    
+    const isDeferred = /\b(?:deferred|backlog|future)\b/i.test(h.text);
+    
+    if (isDeferred) {
+      if (deferredDepth === 0) {
+        result += content.slice(lastOffset, h.offset);
+      }
+      deferredDepth = h.level;
+    } else {
+      if (deferredDepth > 0) {
+        lastOffset = h.offset;
+        deferredDepth = 0;
+      }
+    }
+  }
+  
+  if (deferredDepth === 0) {
+    result += content.slice(lastOffset);
+  }
+  
+  return result;
+}
+
 function extractCurrentMilestone(content: string, cwd?: string): string {
-  if (!cwd) return stripShippedMilestones(content);
+  if (!cwd) return stripDeferredSections(stripShippedMilestones(content));
 
   let version: string | null = null;
   try {
@@ -73,7 +111,7 @@ function extractCurrentMilestone(content: string, cwd?: string): string {
     }
   }
 
-  if (!version) return stripShippedMilestones(content);
+  if (!version) return stripDeferredSections(stripShippedMilestones(content));
 
   const escapedVersion = escapeRegex(version);
   const sectionPattern = new RegExp(
@@ -108,7 +146,7 @@ function extractCurrentMilestone(content: string, cwd?: string): string {
         return preamble + content.slice(detailsOpenIdx, detailsEnd);
       }
     }
-    return stripShippedMilestones(content);
+    return stripDeferredSections(stripShippedMilestones(content));
   }
 
   const allMatches = headingMatches;
@@ -133,7 +171,7 @@ function extractCurrentMilestone(content: string, cwd?: string): string {
       if (h.level > level) continue;
       // Mirrors old stopPattern: level-bounded, not a Phase heading, milestone marker
       if (/^Phase\s+\S/i.test(h.text)) continue;
-      if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
+      if (!/v\d+\.\d+|✅|📋|🚧|🔄|\b(?:deferred|backlog|future)\b/i.test(h.text)) continue;
       return h.offset;
     }
     return content.length;
@@ -186,9 +224,9 @@ function extractCurrentMilestone(content: string, cwd?: string): string {
     .replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
     .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
 
-  return detailsSection
+  return stripDeferredSections(detailsSection
     ? preamble + currentSection + '\n' + detailsSection
-    : preamble + currentSection;
+    : preamble + currentSection);
 }
 
 /**

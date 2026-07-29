@@ -957,6 +957,21 @@ function buildPredicateDeps() {
         timedOut: r.signal === 'SIGTERM',
       };
     },
+    findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null {
+      if (!fs.existsSync(phaseDir)) return null;
+      const files = fs.readdirSync(phaseDir);
+      for (const f of files) {
+        if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
+          return path.join(phaseDir, f);
+        }
+      }
+      return null;
+    },
+    readFrontmatter(filePath: string): Record<string, unknown> {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const { extractFrontmatter } = require('./frontmatter.cjs');
+      return extractFrontmatter(content, filePath) as Record<string, unknown>;
+    }
   };
 }
 
