@@ -193,6 +193,39 @@ const capabilities = {
         "hookPathStyle": "raw",
         "globalDirResolver": "antigravity"
       }
+    },
+    "reviewer": {
+      "slug": "antigravity",
+      "flags": [
+        "--antigravity",
+        "--agy"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "agy"
+      },
+      "invoke": {
+        "binary": "agy",
+        "args": [
+          "--print-timeout",
+          "540s",
+          "-p"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": "--model",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 600000,
+      "emptyOutput": "handler-owned",
+      "reviewsSection": "Antigravity",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": null,
+      "handler": "antigravity"
     }
   },
   "assumption-delta": {
@@ -539,6 +572,35 @@ const capabilities = {
         "hyphenNameAgentBody": true,
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "claude",
+      "flags": [
+        "--claude"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "claude"
+      },
+      "invoke": {
+        "binary": "claude",
+        "args": [
+          "-p",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": "--model",
+        "effortChannel": "argv"
+      },
+      "timeoutFloorMs": 1200000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Claude",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "claude-orchestration": {
@@ -874,6 +936,47 @@ const capabilities = {
       }
     }
   },
+  "coderabbit": {
+    "id": "coderabbit",
+    "role": "reviewer",
+    "version": "1.8.0",
+    "title": "CodeRabbit",
+    "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Reviews the working-tree diff (`coderabbit review --prompt-only`), not the source tree, and accepts neither a prompt nor a model flag; findings are down-weighted in consensus (evidenceClass: diff-only).",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.8.0"
+    },
+    "reviewer": {
+      "slug": "coderabbit",
+      "flags": [
+        "--coderabbit"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "coderabbit"
+      },
+      "invoke": {
+        "binary": "coderabbit",
+        "args": [
+          "review",
+          "--prompt-only"
+        ],
+        "promptChannel": "none",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 360000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "CodeRabbit",
+      "evidenceClass": "diff-only",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
+    }
+  },
   "codex": {
     "id": "codex",
     "role": "runtime",
@@ -967,6 +1070,38 @@ const capabilities = {
         "frontmatterDialect": "codex",
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "codex",
+      "flags": [
+        "--codex"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "codex"
+      },
+      "invoke": {
+        "binary": "codex",
+        "args": [
+          "exec",
+          "--ephemeral",
+          "--skip-git-repo-check",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "file-arg",
+        "outputArg": "-o",
+        "modelArg": "--model",
+        "effortChannel": "argv"
+      },
+      "timeoutFloorMs": 1200000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Codex",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "copilot": {
@@ -1186,6 +1321,39 @@ const capabilities = {
         ],
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "cursor",
+      "flags": [
+        "--cursor"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "cursor-agent"
+      },
+      "invoke": {
+        "binary": "cursor-agent",
+        "args": [
+          "-p",
+          "--mode",
+          "ask",
+          "--trust",
+          "--output-format",
+          "text"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Cursor",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "drift": {
@@ -1389,6 +1557,47 @@ const capabilities = {
         "onError": "skip"
       }
     ]
+  },
+  "gemini": {
+    "id": "gemini",
+    "role": "reviewer",
+    "version": "1.8.0",
+    "title": "Gemini CLI",
+    "description": "Google Gemini CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Spawned as `gemini -p - -m <model>` with the plan piped on stdin.",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.8.0"
+    },
+    "reviewer": {
+      "slug": "gemini",
+      "flags": [
+        "--gemini"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "gemini"
+      },
+      "invoke": {
+        "binary": "gemini",
+        "args": [
+          "-p",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": "-m",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Gemini",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
+    }
   },
   "graphify": {
     "id": "graphify",
@@ -1873,6 +2082,86 @@ const capabilities = {
       }
     }
   },
+  "llama-cpp": {
+    "id": "llama-cpp",
+    "role": "reviewer",
+    "version": "1.8.0",
+    "title": "llama.cpp",
+    "description": "llama.cpp server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.llama_cpp_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`llama-cpp`, required by KEBAB_RE); `reviewer.slug` stays snake (`llama_cpp`) to match the shipped roster and the `review.llama_cpp_host` config key (ADR-2782's three-namespace trap).",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.8.0"
+    },
+    "reviewer": {
+      "slug": "llama_cpp",
+      "flags": [
+        "--llama-cpp"
+      ],
+      "transport": "openai-http",
+      "probe": {
+        "kind": "http-reachable",
+        "hostConfigKey": "review.llama_cpp_host",
+        "path": "/v1/models",
+        "timeoutMs": 2000
+      },
+      "invoke": {
+        "hostConfigKey": "review.llama_cpp_host",
+        "path": "/v1/chat/completions",
+        "modelDiscovery": "first-from-models-endpoint",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 120000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "llama.cpp",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
+      "handler": "openai-compatible"
+    }
+  },
+  "lm-studio": {
+    "id": "lm-studio",
+    "role": "reviewer",
+    "version": "1.8.0",
+    "title": "LM Studio",
+    "description": "LM Studio local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.lm_studio_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`lm-studio`, required by KEBAB_RE); `reviewer.slug` stays snake (`lm_studio`) to match the shipped roster and the `review.lm_studio_host` config key (ADR-2782's three-namespace trap).",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.8.0"
+    },
+    "reviewer": {
+      "slug": "lm_studio",
+      "flags": [
+        "--lm-studio"
+      ],
+      "transport": "openai-http",
+      "probe": {
+        "kind": "http-reachable",
+        "hostConfigKey": "review.lm_studio_host",
+        "path": "/v1/models",
+        "timeoutMs": 2000
+      },
+      "invoke": {
+        "hostConfigKey": "review.lm_studio_host",
+        "path": "/v1/chat/completions",
+        "modelDiscovery": "first-from-models-endpoint",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 120000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "LM Studio",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
+      "handler": "openai-compatible"
+    }
+  },
   "mempalace": {
     "id": "mempalace",
     "role": "feature",
@@ -2097,6 +2386,46 @@ const capabilities = {
     "contributions": [],
     "gates": []
   },
+  "ollama": {
+    "id": "ollama",
+    "role": "reviewer",
+    "version": "1.8.0",
+    "title": "Ollama",
+    "description": "Ollama local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.ollama_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq.",
+    "tier": "full",
+    "requires": [],
+    "engines": {
+      "gsd": ">=1.8.0"
+    },
+    "reviewer": {
+      "slug": "ollama",
+      "flags": [
+        "--ollama"
+      ],
+      "transport": "openai-http",
+      "probe": {
+        "kind": "http-reachable",
+        "hostConfigKey": "review.ollama_host",
+        "path": "/v1/models",
+        "timeoutMs": 2000
+      },
+      "invoke": {
+        "hostConfigKey": "review.ollama_host",
+        "path": "/v1/chat/completions",
+        "modelDiscovery": "first-from-models-endpoint",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 120000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Ollama",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
+      "handler": "openai-compatible"
+    }
+  },
   "opencode": {
     "id": "opencode",
     "role": "runtime",
@@ -2211,6 +2540,39 @@ const capabilities = {
         "skipCodexSkillsManifest": true,
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "opencode",
+      "flags": [
+        "--opencode"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "opencode"
+      },
+      "invoke": {
+        "binary": "opencode",
+        "args": [
+          "run",
+          "--format",
+          "json",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": "--model",
+        "effortChannel": "argv"
+      },
+      "timeoutFloorMs": 660000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "OpenCode",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "pattern-mapper": {
@@ -2511,6 +2873,34 @@ const capabilities = {
         "hyphenNameAgentBody": true,
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "qwen",
+      "flags": [
+        "--qwen"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "qwen"
+      },
+      "invoke": {
+        "binary": "qwen",
+        "args": [
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Qwen",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "research": {
@@ -4227,6 +4617,39 @@ const runtimes = {
         "hookPathStyle": "raw",
         "globalDirResolver": "antigravity"
       }
+    },
+    "reviewer": {
+      "slug": "antigravity",
+      "flags": [
+        "--antigravity",
+        "--agy"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "agy"
+      },
+      "invoke": {
+        "binary": "agy",
+        "args": [
+          "--print-timeout",
+          "540s",
+          "-p"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": "--model",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 600000,
+      "emptyOutput": "handler-owned",
+      "reviewsSection": "Antigravity",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": null,
+      "handler": "antigravity"
     }
   },
   "augment": {
@@ -4444,6 +4867,35 @@ const runtimes = {
         "hyphenNameAgentBody": true,
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "claude",
+      "flags": [
+        "--claude"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "claude"
+      },
+      "invoke": {
+        "binary": "claude",
+        "args": [
+          "-p",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": "--model",
+        "effortChannel": "argv"
+      },
+      "timeoutFloorMs": 1200000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Claude",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "cline": {
@@ -4723,6 +5175,38 @@ const runtimes = {
         "frontmatterDialect": "codex",
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "codex",
+      "flags": [
+        "--codex"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "codex"
+      },
+      "invoke": {
+        "binary": "codex",
+        "args": [
+          "exec",
+          "--ephemeral",
+          "--skip-git-repo-check",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "file-arg",
+        "outputArg": "-o",
+        "modelArg": "--model",
+        "effortChannel": "argv"
+      },
+      "timeoutFloorMs": 1200000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Codex",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "copilot": {
@@ -4942,6 +5426,39 @@ const runtimes = {
         ],
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "cursor",
+      "flags": [
+        "--cursor"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "cursor-agent"
+      },
+      "invoke": {
+        "binary": "cursor-agent",
+        "args": [
+          "-p",
+          "--mode",
+          "ask",
+          "--trust",
+          "--output-format",
+          "text"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Cursor",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "hermes": {
@@ -5448,6 +5965,39 @@ const runtimes = {
         "skipCodexSkillsManifest": true,
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "opencode",
+      "flags": [
+        "--opencode"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "opencode"
+      },
+      "invoke": {
+        "binary": "opencode",
+        "args": [
+          "run",
+          "--format",
+          "json",
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": "--model",
+        "effortChannel": "argv"
+      },
+      "timeoutFloorMs": 660000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "OpenCode",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [
+        "jq"
+      ],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "pi": {
@@ -5617,6 +6167,34 @@ const runtimes = {
         "hyphenNameAgentBody": true,
         "reviewerCli": true
       }
+    },
+    "reviewer": {
+      "slug": "qwen",
+      "flags": [
+        "--qwen"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-exists",
+        "binary": "qwen"
+      },
+      "invoke": {
+        "binary": "qwen",
+        "args": [
+          "-"
+        ],
+        "promptChannel": "stdin",
+        "outputChannel": "stdout",
+        "modelArg": null,
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Qwen",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "handler": null
     }
   },
   "trae": {
@@ -6120,20 +6698,25 @@ const _requiresGraph = {
   "cline": [],
   "code-review": [],
   "codebuddy": [],
+  "coderabbit": [],
   "codex": [],
   "copilot": [],
   "cursor": [],
   "drift": [],
   "external-job": [],
   "gap-analysis": [],
+  "gemini": [],
   "graphify": [],
   "hermes": [],
   "intel": [],
   "kilo": [],
   "kimi": [],
   "kimi-code": [],
+  "llama-cpp": [],
+  "lm-studio": [],
   "mempalace": [],
   "nyquist": [],
+  "ollama": [],
   "opencode": [],
   "pattern-mapper": [
     "research"

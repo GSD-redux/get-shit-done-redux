@@ -99,5 +99,26 @@
       "hookPathStyle": "raw",
       "globalDirResolver": "antigravity"
     }
+  },
+  "reviewer": {
+    "slug": "antigravity",
+    "flags": ["--antigravity", "--agy"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "agy" },
+    "invoke": {
+      "binary": "agy",
+      "args": ["--print-timeout", "540s", "-p"],
+      "promptChannel": "argv-file-ref",
+      "outputChannel": "stdout",
+      "modelArg": "--model",
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 600000,
+    "emptyOutput": "handler-owned",
+    "reviewsSection": "Antigravity",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": ["jq"],
+    "promptBudgetKey": null,
+    "handler": "antigravity"
   }
 }

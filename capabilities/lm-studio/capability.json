@@ -1,0 +1,36 @@
+{
+  "id": "lm-studio",
+  "role": "reviewer",
+  "version": "1.8.0",
+  "title": "LM Studio",
+  "description": "LM Studio local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.lm_studio_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`lm-studio`, required by KEBAB_RE); `reviewer.slug` stays snake (`lm_studio`) to match the shipped roster and the `review.lm_studio_host` config key (ADR-2782's three-namespace trap).",
+  "tier": "full",
+  "requires": [],
+  "engines": {
+    "gsd": ">=1.8.0"
+  },
+  "reviewer": {
+    "slug": "lm_studio",
+    "flags": ["--lm-studio"],
+    "transport": "openai-http",
+    "probe": {
+      "kind": "http-reachable",
+      "hostConfigKey": "review.lm_studio_host",
+      "path": "/v1/models",
+      "timeoutMs": 2000
+    },
+    "invoke": {
+      "hostConfigKey": "review.lm_studio_host",
+      "path": "/v1/chat/completions",
+      "modelDiscovery": "first-from-models-endpoint",
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 120000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "LM Studio",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": ["jq"],
+    "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
+    "handler": "openai-compatible"
+  }
+}

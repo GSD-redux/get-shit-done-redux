@@ -104,5 +104,26 @@
       "hyphenNameAgentBody": true,
       "reviewerCli": true
     }
+  },
+  "reviewer": {
+    "slug": "claude",
+    "flags": ["--claude"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "claude" },
+    "invoke": {
+      "binary": "claude",
+      "args": ["-p", "-"],
+      "promptChannel": "stdin",
+      "outputChannel": "stdout",
+      "modelArg": "--model",
+      "effortChannel": "argv"
+    },
+    "timeoutFloorMs": 1200000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "Claude",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "handler": null
   }
 }
