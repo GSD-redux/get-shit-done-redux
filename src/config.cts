@@ -18,7 +18,7 @@ const { CONFIG_DEFAULTS } = configLoader;
 import { platformWriteSync, platformEnsureDir } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
-const { planningDir, withPlanningLock } = planningWorkspace;
+const { planningDir, planningRoot, withPlanningLock } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelProfiles = require('./model-profiles.cjs');
 const { VALID_PROFILES, getAgentToModelMapForProfile, formatAgentToModelMapAsTable } = modelProfiles;
@@ -969,6 +969,12 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
       emitResolvedDefault(kp, defaultValue, raw);
       return;
     } else {
+      // #2702: when a workstream is active and has no config.json of its own, fall
+      // back to the project ROOT config before the schema default, so a key the user
+      // configured at root is inherited rather than reported missing. (When no
+      // workstream is active, planningDir === planningRoot and this is the same file.)
+      const rootVal = resolveFromRootConfig(cwd, kp);
+      if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
       const sd = resolveSchemaDefault(cwd, kp);
       if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
       error('No config.json found at ' + configPath, ERROR_REASON.CONFIG_NO_FILE);
@@ -984,6 +990,9 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
   for (const key of keys) {
     if (current === undefined || current === null || typeof current !== 'object') {
       if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
+      // #2702: root-config inheritance before schema default (see above).
+      const rootVal = resolveFromRootConfig(cwd, kp);
+      if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
       const sd = resolveSchemaDefault(cwd, kp);
       if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
       error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
@@ -1004,6 +1013,9 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
 
   if (current === undefined) {
     if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
+    // #2702: root-config inheritance before schema default (see above).
+    const rootVal = resolveFromRootConfig(cwd, kp);
+    if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
     const sd = resolveSchemaDefault(cwd, kp);
     if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
     error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
@@ -1018,6 +1030,46 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
   }
 
   output(current, raw, String(current));
+}
+
+/**
+ * #2702: resolve a dot-notation key against the project ROOT config
+ * (`.planning/config.json`), ignoring any active workstream scope. Returns
+ * `{found:false}` when the root config is absent, unparseable, or does not
+ * contain the key. This is the inheritance rung `cmdConfigGet` was missing —
+ * when a workstream's own config doesn't set a key, the project root value
+ * must show through (workstream overrides root; it never fully replaces it),
+ * exactly as `loadConfigResolved`'s root+workstream merge already does for
+ * every other config consumer. No-op (found:false) when no workstream is
+ * active, because `planningDir === planningRoot` and the caller already read
+ * that file directly.
+ */
+function resolveFromRootConfig(cwd: string, kp: string): { found: boolean; value: unknown } {
+  // Only meaningful when a workstream redirects planningDir away from root.
+  const scoped = planningDir(cwd);
+  const root = planningRoot(cwd);
+  if (scoped === root) return { found: false, value: undefined };
+  const rootConfigPath = path.join(root, 'config.json');
+  let rootConfig: Record<string, unknown>;
+  try {
+    if (!fs.existsSync(rootConfigPath)) return { found: false, value: undefined };
+    rootConfig = JSON.parse(fs.readFileSync(rootConfigPath, 'utf-8')) as Record<string, unknown>;
+  } catch {
+    // Unparseable root config → don't inherit (do not let a corrupt root file
+    // change config-get's verdict). Fall through to schema default / error.
+    return { found: false, value: undefined };
+  }
+  let current: unknown = rootConfig;
+  for (const key of kp.split('.')) {
+    if (current === undefined || current === null || typeof current !== 'object') {
+      return { found: false, value: undefined };
+    }
+    current = Object.prototype.hasOwnProperty.call(current, key)
+      ? (current as Record<string, unknown>)[key]
+      : undefined;
+  }
+  if (current === undefined) return { found: false, value: undefined };
+  return { found: true, value: current };
 }
 
 /**
