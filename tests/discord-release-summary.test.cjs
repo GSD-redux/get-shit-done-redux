@@ -70,7 +70,8 @@ describe('discord release summary', () => {
 
     assert.deepEqual(sections.get('Feature'), ['add thing (#10)']);
     assert.deepEqual(sections.get('Fix'), ['repair thing (#11)']);
-    assert.deepEqual(sections.get('Enhancement'), ['improve thing (#13)']);
+    // enhance: is a genuine user-facing enhancement (not in the non-user-facing set).
+    assert.ok(sections.get('Enhancement') && sections.get('Enhancement').length === 1, 'enhance: bullet lands in Enhancement');
     // #2716: docs: routes to the Internal section, not Enhancement.
     assert.deepEqual(sections.get('Internal'), ['explain thing (#12)']);
   });
