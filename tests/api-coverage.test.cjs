@@ -165,6 +165,67 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
     assert.strictEqual(detectApiIntegration(splitLine).detected, false);
     assert.strictEqual(detectApiIntegration('integrates the api').detected, true);
   });
+  test('detectApiIntegration ignores negated prose describing absent external APIs', () => {
+    const negatedProse1 = 'No REST API integration is included in this phase.';
+    assert.strictEqual(detectApiIntegration(negatedProse1).detected, false, 'sentence-starter negation');
+
+    const negatedProse2 = 'This phase operates entirely offline without calling any external REST API.';
+    assert.strictEqual(detectApiIntegration(negatedProse2).detected, false, 'prepositional negation');
+    
+    // Contractions
+    assert.strictEqual(detectApiIntegration('We don\'t integrate any external API.').detected, false, "don't negation");
+    assert.strictEqual(detectApiIntegration('We can\'t integrate an external API yet.').detected, false, "can't negation");
+    assert.strictEqual(detectApiIntegration('We won\'t integrate the Stripe API.').detected, false, "won't negation");
+    assert.strictEqual(detectApiIntegration('never integrates with an external payment API').detected, false, 'never negation');
+    assert.strictEqual(detectApiIntegration('This phase integrates neither an API nor an SDK').detected, false, 'neither negation');
+
+    const positiveProse = 'This phase will integrate the GitHub REST API to manage pull requests.';
+    assert.strictEqual(detectApiIntegration(positiveProse).detected, true, 'positive integration prose must still trigger detection');
+  });
+
+  test('boundary coverage for NEGATION_LOOKBACK (60) and intervening words (3 vs 4)', () => {
+    // Distance boundary: 'no ' + padding + ' Stripe API'
+    // length of 'no ' is 3. We want the offset of 'Stripe' to be 60 for boundary60.
+    // 3 + 56 (padding) + 1 (space) = 60.
+    const padding56 = '-'.repeat(56);
+    const boundary60 = `no ${padding56} Stripe API`;
+    assert.strictEqual(detectApiIntegration(boundary60).detected, false, 'negation at exactly 60 chars lookback applies');
+    
+    // offset 61 -> 3 + 57 + 1 = 61.
+    const padding57 = '-'.repeat(57);
+    const boundary61 = `no ${padding57} Stripe API`;
+    assert.strictEqual(detectApiIntegration(boundary61).detected, true, 'negation at 61 chars is outside lookback window');
+
+    // Intervening word boundary
+    const wordBoundary3 = 'no one two three Stripe API'; // 3 intervening words
+    assert.strictEqual(detectApiIntegration(wordBoundary3).detected, false, '3 intervening words are negated');
+    
+    const wordBoundary4 = 'no one two three four Stripe API'; // 4 intervening words
+    assert.strictEqual(detectApiIntegration(wordBoundary4).detected, true, '4 intervening words bypasses negation');
+  });
+
+  test('property: negated/affirmative prose permutations (parsing contract for isNegated)', () => {
+    const negatorGen = fc.constantFrom(
+      'no', 'not', 'without', 'zero', 'neither', 'none', 'never', 'no longer',
+      'does not', 'doesn\'t', 'don\'t', 'cannot', 'can\'t', 'will not', 'won\'t'
+    );
+    const verbGen = fc.constantFrom(...DEFAULT_API_COVERAGE_TERMS.verbs);
+    const nounGen = fc.constantFrom(...DEFAULT_API_COVERAGE_TERMS.nouns);
+    const paddingGen = fc.string({ minLength: 1, maxLength: 5 }).map(s => s.replace(/[^a-z]/g, 'a') + ' ');
+
+    fc.assert(
+      fc.property(negatorGen, paddingGen, verbGen, nounGen, (negator, padding, verb, noun) => {
+        const affirmative = `We ${verb} ${padding} ${noun}`;
+        const positiveDetected = detectApiIntegration(affirmative).detected;
+        if (positiveDetected) {
+          const negated = `We ${negator} ${verb} ${padding} ${noun}`;
+          return detectApiIntegration(negated).detected === false;
+        }
+        return true;
+      }),
+      { numRuns: 100 }
+    );
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
