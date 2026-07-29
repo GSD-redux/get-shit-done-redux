@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "review.md": {
+      "reason": "#2794 / ADR-2782 Phase 1. Three deliberate additions to gsd-core/workflows/review.md: (1) an explicit `<!-- reviewer-lane: <slug> -->` marker above each of the 11 invoke_reviewers legs, which is what makes a leg machine-identifiable for the DEFECT.GENERATIVE-FIX parity assertion — the legs are prose-labelled and five NON-lane bold labels in the same step share the bold-then-fence shape a heuristic matcher would key on, so inference was not an option; (2) the ADR-2782 D4 explicit-selection contract in the detect_clis prose, without which the selector correction is unobservable (review-reviewer-selection.cts has no production caller — the workflow narrates the policy and the reviewing agent executes it, so code and prose must move together); (3) the qwen leg's stderr sidecar, the last lane still discarding stderr to /dev/null (#2494/#2605 class). Growth is prose and comments only; no lane's observable command shape changed apart from the qwen redirect."
+    }
+  }
+}
