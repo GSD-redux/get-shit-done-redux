@@ -3,7 +3,7 @@
  *
  * Manages `.planning/WINDOWS.md`: a cross-phase ledger of small defects (stubs,
  * TODOs, skipped tests, lint warnings, unrun verifies, unmet truths, deviations).
- * `/gsd-ship` blocks while any entry is `open`; an entry can be `waived` only
+ * When `workflow.windows_enforce` is true, `/gsd-ship` blocks while any entry is `open`; an entry can be `waived` only
  * with a recorded reason or `fixed`.
  *
  * LEAF MODULE — imports ONLY: node:fs, node:path. No other src/ imports.
