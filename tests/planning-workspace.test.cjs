@@ -594,42 +594,28 @@ describe('bug #1883 — findContextMdIn distinguishes a permission error from em
 
   // Helper: build a Node-style error with a `code`, matching what fs.readdirSync throws.
   function fsError(code) {
-    const err = new Error(`EACCES: permission denied, scandir '/denied'`);
+    const err = new Error(`${code}: operation failed, scandir '/denied'`);
     err.code = code;
     err.syscall = 'scandir';
     err.path = '/denied';
     return err;
   }
 
-  // Monkeypatch fs.readdirSync for the duration of one call, restored in finally —
-  // per repo rule: no chmod 0o000 (root bypasses mode bits → silent zero coverage).
-  function withReaddirThrowing(code, fn) {
-    const real = fs.readdirSync;
-    let restored = false;
-    fs.readdirSync = function mocked(...args) {
-      throw fsError(code);
-    };
-    try {
-      return fn();
-    } finally {
-      if (!restored) {
-        fs.readdirSync = real;
-        restored = true;
-      }
-    }
-  }
-
-  test('findContextMdIn re-throws a permission (EACCES) error instead of swallowing it as null', () => {
+  test('findContextMdIn re-throws a permission (EACCES) error instead of swallowing it as null', (t) => {
+    // No chmod 0o000 — root bypasses mode bits (silent zero coverage in root CI).
+    // t.mock auto-restores after the test.
+    t.mock.method(fs, 'readdirSync', () => { throw fsError('EACCES'); });
     assert.throws(
-      () => withReaddirThrowing('EACCES', () => findContextMdIn('/denied/phase-dir')),
+      () => findContextMdIn('/denied/phase-dir'),
       (err) => err.code === 'EACCES',
       'an unreadable dir must propagate EACCES, not return null as if empty',
     );
   });
 
-  test('findContextMdIn re-throws any non-ENOENT error (EIO)', () => {
+  test('findContextMdIn re-throws any non-ENOENT error (EIO)', (t) => {
+    t.mock.method(fs, 'readdirSync', () => { throw fsError('EIO'); });
     assert.throws(
-      () => withReaddirThrowing('EIO', () => findContextMdIn('/io-failure/phase-dir')),
+      () => findContextMdIn('/io-failure/phase-dir'),
       (err) => err.code === 'EIO',
       'every non-ENOENT error must propagate — the narrowed catch only keeps ENOENT',
     );
@@ -642,44 +628,29 @@ describe('bug #1883 — findContextMdIn distinguishes a permission error from em
       'an absent dir (ENOENT) must still return null — Hyrum: empty path unchanged');
   });
 
-  test('findContextMdIn finds bare CONTEXT.md', () => {
+  test('findContextMdIn finds bare CONTEXT.md', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1883-bare-'));
-    try {
-      fs.writeFileSync(path.join(tmp, 'CONTEXT.md'), '# bare\n');
-      assert.strictEqual(findContextMdIn(tmp), 'CONTEXT.md');
-    } finally {
-      for (const f of fs.readdirSync(tmp)) fs.unlinkSync(path.join(tmp, f));
-      fs.rmdirSync(tmp);
-    }
+    t.after(() => { cleanup(tmp); });
+    fs.writeFileSync(path.join(tmp, 'CONTEXT.md'), '# bare\n');
+    assert.strictEqual(findContextMdIn(tmp), 'CONTEXT.md');
   });
 
-  test('findContextMdIn finds padded NN-CONTEXT.md', () => {
+  test('findContextMdIn finds padded NN-CONTEXT.md', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1883-padded-'));
-    try {
-      fs.writeFileSync(path.join(tmp, '01-CONTEXT.md'), '# padded\n');
-      assert.strictEqual(findContextMdIn(tmp), '01-CONTEXT.md');
-    } finally {
-      for (const f of fs.readdirSync(tmp)) fs.unlinkSync(path.join(tmp, f));
-      fs.rmdirSync(tmp);
-    }
+    t.after(() => { cleanup(tmp); });
+    fs.writeFileSync(path.join(tmp, '01-CONTEXT.md'), '# padded\n');
+    assert.strictEqual(findContextMdIn(tmp), '01-CONTEXT.md');
   });
 
-  test('findContextMdIn matches against a pre-read files array without touching fs', () => {
+  test('findContextMdIn matches against a pre-read files array without touching fs', (t) => {
     // The array path never calls readdirSync — exercised by getPhaseFileStats,
     // countPhasePlansAndSummaries, runGapAnalysis. Must keep working untouched.
-    const orig = fs.readdirSync;
-    let called = false;
-    fs.readdirSync = function () { called = true; return []; };
-    try {
-      assert.strictEqual(findContextMdIn(['CONTEXT.md', 'PLAN.md']), 'CONTEXT.md',
-        'array path matches bare form');
-      assert.strictEqual(findContextMdIn(['02-CONTEXT.md']), '02-CONTEXT.md',
-        'array path matches padded form');
-      assert.strictEqual(findContextMdIn(['PLAN.md']), null,
-        'array path returns null when no match');
-      assert.strictEqual(called, false, 'array path must NOT call fs.readdirSync');
-    } finally {
-      fs.readdirSync = orig;
-    }
+    t.mock.method(fs, 'readdirSync', () => { throw new Error('array path must not call fs'); });
+    assert.strictEqual(findContextMdIn(['CONTEXT.md', 'PLAN.md']), 'CONTEXT.md',
+      'array path matches bare form');
+    assert.strictEqual(findContextMdIn(['02-CONTEXT.md']), '02-CONTEXT.md',
+      'array path matches padded form');
+    assert.strictEqual(findContextMdIn(['PLAN.md']), null,
+      'array path returns null when no match');
   });
 });
