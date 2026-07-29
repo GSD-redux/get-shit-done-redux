@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "paths": {
+    "add-todo.md": {
+      "reason": "#2618 adds the validated init.todos completeness gate and the bounded one-line Pending Todos rendering contract to the capture workflow. The validation, fail-safe preservation, and 240-character overflow instructions must be present at the section rewrite step; moving them to an eagerly @-imported reference would hide rather than reduce loaded context (ADR-1610 Decision 4). 11020 -> 12928 bytes (+1908), DEFAULT tier, cap 40960."
+    },
+    "check-todos.md": {
+      "reason": "#2618 keeps todo completion on the same validated refresh and bounded one-line rendering contract as capture, preventing a partial init.todos result from destructively rebuilding STATE.md. The independent completion path must carry the safety contract at its rewrite step; moving it to an eagerly @-imported reference would hide rather than reduce loaded context (ADR-1610 Decision 4). 9771 -> 11689 bytes (+1918), DEFAULT tier, cap 40960."
+    }
+  }
+}
