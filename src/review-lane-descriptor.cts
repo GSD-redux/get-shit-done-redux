@@ -28,25 +28,26 @@
  * (#2795) harvests this shape into the capability manifest without a translation
  * layer — INCLUDING `transport`'s placement at the lane level (see SpawnLane).
  *
- * Four vocabulary widenings were forced by surveying the eleven shipped legs.
- * Every one is additive and closed, and every one is listed here rather than
- * left for Phase 2 to discover, because an undisclosed divergence is exactly the
- * translation layer this module exists to avoid:
+ * Building this table against all eleven shipped legs surfaced four cases the
+ * ADR's original survey did not cover. Rather than diverge silently — which is
+ * exactly the translation layer this module exists to avoid — ADR-2782 was
+ * AMENDED in the same PR (see its Amendments section, 2026-07-29). All four are
+ * additive widenings of closed enums, each forced by a lane that exists today:
  *
  *   1. `promptChannel: 'none'` — CodeRabbit reviews the working-tree diff and is
- *      fed no prompt at all. D2 lists only stdin | argv | argv-file-ref.
+ *      fed no prompt at all.
  *   2. `outputChannel: 'file-arg'` — Codex writes the review via its own
- *      `-o/--output-last-message <FILE>` and discards stdout (#1698). D2 states
- *      stdout is the only member "today"; it already is not.
+ *      `-o/--output-last-message <FILE>` and discards stdout (#1698), because on
+ *      Windows it emits teardown noise to stdout after the final message.
  *   3. `outputArg` — the companion to (2): knowing the review lands in a file is
- *      useless without the argument that names the file. Absent from D2's table.
- *   4. `flags: string[]` where D1 shows a singular `flag` — Antigravity is
- *      selected by BOTH `--antigravity` and `--agy` (`review.md`, `COMMANDS.md`),
- *      which a single-valued field cannot express. Note this also widens D8's
- *      uniqueness invariant, which is stated over `reviewer.flag`: uniqueness is
- *      enforced here across the flattened set of all lanes' flags.
+ *      useless without the argument that names the file.
+ *   4. `flags: string[]` — Antigravity is selected by BOTH `--antigravity` and
+ *      `--agy`, which a single-valued field cannot express. This also flattens
+ *      D8's uniqueness invariant across every lane's flags.
  *
- * Phase 2 owns encoding all four in the manifest validator.
+ * Phase 2 (#2795) implements the manifest validator against the amended
+ * vocabulary, which is the point of amending rather than leaving it to be
+ * rediscovered.
  */
 
 /** ADR-2782 D2 — closed transport discriminator; selects the invoke sub-shape. */
