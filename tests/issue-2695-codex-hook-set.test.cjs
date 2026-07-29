@@ -257,9 +257,18 @@ describe('#2695: the core profile enables the hook feature and wires SessionStar
     assert.ok(fs.existsSync(hooksJsonPath), 'core must write hooks.json');
     const hooksJson = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
     const sessionStartCmds = collectHookCommands(hooksJson, 'SessionStart');
+    // The command points at the gsd-check-update hook script. Its extension is
+    // platform-specific — Windows routes through a .cmd shim, POSIX through .js —
+    // so assert on the basename prefix, not a hardcoded extension (Windows parity).
+    const routedToUpdateHook = sessionStartCmds.some((c) => {
+      const token = c.replace(/"/g, '').replace(/\\/g, '/');
+      const segs = token.split('/');
+      const last = segs[segs.length - 1];
+      return last.startsWith('gsd-check-update.');
+    });
     assert.ok(
-      sessionStartCmds.some((c) => c.includes('gsd-check-update.js')),
-      `core must route SessionStart to gsd-check-update.js in hooks.json; got: ${JSON.stringify(sessionStartCmds)}`,
+      routedToUpdateHook,
+      `core must route SessionStart to the gsd-check-update hook in hooks.json; got: ${JSON.stringify(sessionStartCmds)}`,
     );
   });
 });
