@@ -1871,10 +1871,22 @@ function cmdValidateHealth(
         // clause is additive instead: whichever presence message applies, any
         // sandbox findings are appended rather than dropped.
         const violations = agentStatus.sandbox_violations;
-        const sandboxSummary =
-          violations.length > 0
-            ? `sandbox weaker than declared tool contract: ${violations.map((v) => v.agent).join(', ')} (cannot write their declared outputs)`
-            : '';
+        // Both drift directions are reported, and they are NOT the same
+        // problem: a weaker sandbox breaks the agent, a stronger one grants
+        // privilege the contract no longer asks for (#2540 direction 3). A
+        // single "weaker than" summary would misdescribe half of them.
+        const weaker = violations.filter((v) => v.direction !== 'over-privileged');
+        const stronger = violations.filter((v) => v.direction === 'over-privileged');
+        const sandboxSummary = [
+          weaker.length > 0
+            ? `sandbox weaker than declared tool contract: ${weaker.map((v) => v.agent).join(', ')} (cannot write their declared outputs)`
+            : '',
+          stronger.length > 0
+            ? `sandbox grants write beyond the declared tool contract: ${stronger.map((v) => v.agent).join(', ')} (stale config — the contract declares no write tool)`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('; ');
         const sandboxClause = sandboxSummary ? `; agent ${sandboxSummary}` : '';
         const regenerateFix = `Re-run the GSD installer to regenerate agent configs: npx ${PACKAGE_NAME}@latest`;
 

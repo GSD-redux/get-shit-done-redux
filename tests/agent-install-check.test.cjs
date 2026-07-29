@@ -585,6 +585,65 @@ describe('#2540 regression: sandbox_mode weaker than declared tool contract is r
     }
   });
 
+  // ── Round-4 review: the over-privileged direction (#2540 direction 3) ──────
+  // The vector is install-time drift, not the map/contract mismatch the parity
+  // test already covers: install while an agent legitimately needs Write, then
+  // tighten its `tools:` to drop Write without re-running the installer. The
+  // stale .toml keeps workspace-write indefinitely and both `validate agents`
+  // and `validate health` reported clean.
+
+  test('#2540 round 4: workspace-write TOML for a contract with no write tool is a violation', () => {
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Grep, Glob'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('workspace-write'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex');
+    assert.strictEqual(result.sandbox_violations.length, 1, 'over-privileged drift must be reported');
+    assert.strictEqual(result.sandbox_violations[0].direction, 'over-privileged');
+    assert.strictEqual(result.sandbox_violations[0].sandbox_mode, 'workspace-write');
+    assert.strictEqual(result.sandbox_violations[0].declared_tools, 'Read, Grep, Glob');
+    assert.strictEqual(result.agents_installed, false, 'privilege drift fails the install check');
+  });
+
+  test('#2540 round 4: the two directions are labelled distinctly (they are not the same defect)', () => {
+    // A weaker sandbox breaks the agent; a stronger one grants privilege the
+    // contract no longer asks for. Collapsing them into one label would make
+    // the health report misdescribe half its findings.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+    assert.strictEqual(
+      agentInstallCheck.checkAgentsInstalled('codex').sandbox_violations[0].direction,
+      'under-privileged',
+    );
+  });
+
+  test('#2540 round 4: an absent contract is NOT read as "declares no write tool"', () => {
+    // The false-positive trap in the symmetric check: an unreadable or absent
+    // `tools:` yields [], which reads as "no write tool required" and would
+    // flag every workspace-write agent that simply has no contract.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), `---\nname: ${target}\n---\nbody`);
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('workspace-write'));
+
+    assert.deepStrictEqual(
+      agentInstallCheck.checkAgentsInstalled('codex').sandbox_violations,
+      [],
+      'no contract means no evidence about privilege — skip, do not guess',
+    );
+  });
+
+  test('#2540 round 4: a sandbox_mode outside the two-value vocabulary is left alone', () => {
+    // The check compares within a closed vocabulary rather than asserting
+    // inequality, so a hand-written mode it does not model produces silence
+    // rather than a guess. A general privilege audit needs a real TOML parser.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Grep'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('danger-full-access'));
+
+    assert.deepStrictEqual(
+      agentInstallCheck.checkAgentsInstalled('codex').sandbox_violations,
+      [],
+      'an unmodelled mode must not be reported as drift',
+    );
+  });
+
   test('#2540 review: a UTF-8 BOM before the frontmatter does not hide the contract from the validator', () => {
     fs.writeFileSync(
       path.join(agentsDir, `${target}.md`),

@@ -24,6 +24,13 @@ interface SandboxViolation {
   agent: string;
   sandbox_mode: string;
   declared_tools: string;
+  /**
+   * Which way the .toml disagrees with the contract. `under-privileged` = the
+   * sandbox is weaker than the tools require (the agent cannot write its
+   * declared outputs); `over-privileged` = the sandbox grants write to a
+   * contract that declares no write tool (#2540 direction 3).
+   */
+  direction: 'under-privileged' | 'over-privileged';
 }
 
 interface AgentsInstalledResult {
@@ -241,12 +248,21 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // or without a readable contract are skipped, keeping the check a no-op for
   // runtimes that do not emit TOML sandboxes.
   //
-  // The inverse direction (workspace-write on a contract declaring no write
-  // tools) is deliberately NOT checked here — see the PR discussion. Its
-  // realistic vector, a CODEX_AGENT_SANDBOX entry contradicting the contract,
-  // is closed at the repo gate by the map/contract parity test; detecting it
-  // in an arbitrary hand-edited .toml needs a real TOML parse, which is a
-  // follow-up rather than a rider on this fix.
+  // The inverse direction — workspace-write on a contract declaring no write
+  // tool — is checked symmetrically (#2540 direction 3, review round 4). It
+  // needs no new parsing: `_sandboxModeOf` is the same reader the read-only
+  // direction already trusts, and the comparison stays inside the two-value
+  // closed vocabulary, so a mode outside it (a hand-written
+  // `danger-full-access`, say) is left alone rather than guessed at. A real
+  // TOML parser is still the prerequisite for a *general* privilege audit;
+  // this is the narrow check against the derived value.
+  //
+  // The install-time drift it closes: install while an agent legitimately
+  // needs Write, later tighten its `tools:` to drop Write without re-running
+  // the installer, and the stale on-disk .toml keeps `workspace-write`
+  // indefinitely while `validate agents` and `validate health` both report
+  // clean. Nothing else re-derives the live TOML's privilege against the
+  // current contract in that direction.
   const sandboxViolations: SandboxViolation[] = [];
   for (const agent of expectedAgents) {
     const tomlPath = path.join(agentsDir, `${agent}.toml`);
@@ -273,11 +289,24 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
     const sandboxMode = _sandboxModeOf(toml);
     if (sandboxMode === null) continue;
     const declaredTools = _extractDeclaredTools(md);
-    if (toolsRequireWrite(declaredTools) && sandboxMode === 'read-only') {
+    // An absent or unreadable contract is not evidence about privilege: []
+    // would read as "declares no write tool" and flag every such agent as
+    // over-privileged. Skipping is behaviour-preserving for the read-only
+    // direction too — `toolsRequireWrite([])` was already false.
+    if (declaredTools.length === 0) continue;
+    const requiresWrite = toolsRequireWrite(declaredTools);
+    const direction =
+      requiresWrite && sandboxMode === 'read-only'
+        ? 'under-privileged'
+        : !requiresWrite && sandboxMode === 'workspace-write'
+          ? 'over-privileged'
+          : null;
+    if (direction) {
       sandboxViolations.push({
         agent,
         sandbox_mode: sandboxMode,
         declared_tools: declaredTools.join(', '),
+        direction,
       });
     }
   }
