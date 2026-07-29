@@ -8,6 +8,7 @@
 - **Materializes:** [ADR-58](58-runtime-install-policy-module.md) (the typed `InstallPlan` projection)
 - **Builds on:** [ADR-3660](3660-runtime-artifact-layout-module.md) (artifact layout), [ADR-894](894-capability-declaration-format.md) (the `role: runtime` body, already validated)
 - **Subsumed by:** [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (GSD as an Embeddable Orchestration Engine) — read it first; see the amendment below
+- **Amended by:** [ADR-2782](2782-reviewer-lane-capability-surface.md) (Reviewer Lane capability surface) — a `role: "runtime"` capability may now carry a `reviewer` body **alongside** its runtime body. The runtime body itself remains closed and unchanged, and no feature-only field becomes permissible on it. ADR-2782 D6 **upholds** this ADR's closed-vocabulary principle: the lane's `handler` is a closed enum of first-party names (the `ConverterName` construction of Decision 3), never an open escape hatch, so §Alternatives #2 stands unreversed.
 
 ## Amendment (2026-07-16): subsumed by ADR-1239 (EoS) — this ADR is the *declarative adapter*, not the whole architecture
 

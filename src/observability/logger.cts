@@ -42,9 +42,14 @@ function _safeStringify(value: unknown): string {
 }
 
 /**
- * Determine whether the audit file should be written to.
+ * Determine whether observability is opt-in enabled — via the GSD_AUDIT env var
+ * or config.audit.enabled. Exported (#2620) so the live dispatch seam can decide
+ * whether to inject the reference logger at all: when observability is off we
+ * inject nothing (the Hub stays byte-for-byte silent, preserving the default
+ * dispatch output contract, incl. --json-errors); when on, the caller injects
+ * createDefaultLogger and gets the stderr-on-error line + opt-in file audit.
  */
-function _isAuditEnabled(config: { audit?: { enabled?: boolean } } | undefined): boolean {
+function _isAuditEnabled(config?: { audit?: { enabled?: boolean } }): boolean {
   if (process.env['GSD_AUDIT'] === '1') return true;
   if (config && config.audit && config.audit.enabled === true) return true;
   return false;
@@ -163,4 +168,4 @@ function createDefaultLogger({ cwd = process.cwd(), config }: DefaultLoggerOptio
   };
 }
 
-export = { createDefaultLogger, createNoOpLogger };
+export = { createDefaultLogger, createNoOpLogger, isAuditEnabled: _isAuditEnabled };

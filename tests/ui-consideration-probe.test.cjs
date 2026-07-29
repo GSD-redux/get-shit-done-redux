@@ -83,6 +83,9 @@ describe('ui-consideration-probe: applicableCategories (FILT-01 relevance inters
     assert.deepEqual(uc.applicableCategories(['list-collection']).sort(),
       ['empty', 'error', 'loading', 'overflow', 'partial', 'populated', 'zero-one-many']);
   });
+  test('interactive-control raises loading + error + long-text — a control has in-flight and failure states, not just long-text (#2151)', () => {
+    assert.deepEqual(uc.applicableCategories(['interactive-control']).sort(), ['error', 'loading', 'long-text']);
+  });
   test('no element kinds raises nothing', () => {
     assert.deepEqual(uc.applicableCategories([]), []);
   });

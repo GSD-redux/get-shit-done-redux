@@ -13,6 +13,17 @@
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import commandRoutingHub = require('./command-routing-hub.cjs');
 const { createHub, ERROR_KINDS } = commandRoutingHub;
+// #2620 (ADR-0174 §6): the Hub defaults to a no-op logger and the live CLI
+// dispatch path never injected the reference DispatchLogger, so GSD_AUDIT and
+// config.audit.enabled were inert. Inject the reference logger ONLY when
+// observability is opt-in enabled; when off, inject nothing so the Hub stays
+// byte-for-byte silent (preserving the default dispatch output contract, incl.
+// --json-errors). Enabling stderr-on-error unconditionally by default is a
+// separate, blast-radius-bearing change (it adds a second stderr line to the
+// --json-errors envelope) — deferred as its own follow-up.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import observabilityLogger = require('./observability/logger.cjs');
+const { createDefaultLogger, isAuditEnabled } = observabilityLogger;
 // Phase 2 (#1646): import ERROR_REASON so the UnknownCommand translation can
 // pass `sdk_unknown_command` as the second arg to error(), preserving the
 // JSON-error envelope contract that capability routers' tests assert on.
@@ -134,6 +145,10 @@ function routeHubCommandFamily({
   const hub = createHub({
     cjsRegistry: { [family]: registryHandlers },
     manifest: { [family]: available },
+    // #2620: wire the reference logger onto the live dispatch path (ADR-0174 §6),
+    // but only when observability is opt-in enabled — otherwise leave it unset
+    // so the Hub falls back to the no-op logger and stays byte-for-byte silent.
+    logger: isAuditEnabled() ? createDefaultLogger({ cwd }) : undefined,
   });
 
   const result = hub.dispatch({

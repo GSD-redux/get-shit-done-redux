@@ -143,6 +143,48 @@ test('a reference to a nonexistent gsd-core/bin/lib/*.cjs path is skipped (gener
   assert.equal(res.status, 0, `generated bin/lib path must be skipped, not asserted missing: ${res.stderr}`);
 });
 
+test('an intentionally-absent documented path is skipped, not asserted missing', (t) => {
+  // #2778. `tests/emitted-drift-ack.json` (ADR-2719 §3) is absent on a healthy
+  // `next` BY DESIGN — it appears only inside a PR that needs it, which is what
+  // makes touching it the alarm. Asserting its existence turns the correct state
+  // into a drift finding. Under `tests/` it would otherwise be tracked, so this
+  // is a real exemption rather than a prefix accident.
+  const context = [
+    '# Context',
+    '',
+    'The escape hatch is a committed acknowledgment (`tests/emitted-drift-ack.json`).',
+    '',
+    `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
+    '',
+  ].join('\n');
+  const root = makeRepo(t, { contextBody: context });
+
+  const res = run(root, ['--check']);
+  assert.equal(
+    res.status, 0,
+    `an intentionally-absent path must be skipped, not asserted missing: ${res.stderr}`,
+  );
+});
+
+test('a sibling tests/ path that is merely missing is still caught', (t) => {
+  // The exemption must be exact, not a blanket hole under `tests/`. A different
+  // missing tests/ file must still fail, or #2778's fix would disarm the gate for
+  // the whole directory.
+  const context = [
+    '# Context',
+    '',
+    'See `tests/emitted-drift-ack-typo.json` for details.',
+    '',
+    `${allRuntimesSentence(17, REAL_RUNTIMES)}.`,
+    '',
+  ].join('\n');
+  const root = makeRepo(t, { contextBody: context });
+
+  const res = run(root, ['--check']);
+  assert.equal(res.status, 1, 'a genuinely missing tests/ path must still be a finding');
+  assert.match(`${res.stdout}${res.stderr}`, /emitted-drift-ack-typo\.json/);
+});
+
 test('a ~/-rooted path and a bare filename are both skipped', (t) => {
   const context = [
     '# Context',

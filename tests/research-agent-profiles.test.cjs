@@ -519,3 +519,108 @@ describe('research agents do not inject year into web searches (#2559)', () => {
 });
   });
 }
+
+// ---------------------------------------------------------------------------
+// In-repo value provenance rule (#1699)
+//
+// The claim-provenance block governed EXTERNAL facts only (npm registry, official
+// docs, Context7, package-name provenance). An in-repo discrete value could earn
+// [VERIFIED] from training memory or a bare grep, drift into RESEARCH.md, be lifted
+// into PLAN.md's <interfaces> by the planner, and fail at the executor's typecheck.
+// These assert the governed prose contract on the deployed agent definition.
+// ---------------------------------------------------------------------------
+
+describe('gsd-phase-researcher in-repo value provenance rule (#1699)', () => {
+  const agentPath = path.join(ROOT, 'agents', 'gsd-phase-researcher.md');
+  const read = () => fs.readFileSync(agentPath, 'utf-8');
+
+  test('names the in-repo discrete-value taxonomy the rule governs', () => {
+    const content = read();
+    for (const term of ['enum', 'error code', 'status constant', 'filesystem path']) {
+      assert.ok(
+        content.includes(term),
+        `agent must name "${term}" as a governed in-repo discrete value`
+      );
+    }
+  });
+
+  test('requires the source-of-truth file to be opened with Read this session', () => {
+    assert.match(
+      read(),
+      /opened the source-of-truth file with `Read` \*\*this session\*\*/,
+      'agent must require a same-session Read of the source-of-truth file'
+    );
+  });
+
+  test('requires both a path and a line range in the citation', () => {
+    const content = read();
+    assert.match(
+      content,
+      /Cite the path \*\*and line range\*\*/,
+      'agent must require path AND line range, not a bare path'
+    );
+    assert.match(
+      content,
+      /\[VERIFIED: src\/types\/order\.ts:14-22\]/,
+      'agent must carry a concrete path:line-range citation example'
+    );
+  });
+
+  test('states that a codebase grep alone does not earn the tag', () => {
+    assert.match(
+      read(),
+      /codebase `grep` is not sufficient on its own/,
+      'agent must exclude bare grep, which only proves a string occurs'
+    );
+  });
+
+  test('requires a verbatim quote and forbids paraphrase', () => {
+    const content = read();
+    assert.match(
+      content,
+      /quote the values \*\*verbatim\*\* in RESEARCH\.md beside the claim/,
+      'the quote must land in RESEARCH.md, the researcher\'s own output'
+    );
+    assert.ok(
+      content.includes('paraphrase is forbidden'),
+      'agent must forbid paraphrase of in-repo discrete values'
+    );
+  });
+
+  test('makes the quote the falsifiable artifact, not the citation (Goodhart guard)', () => {
+    assert.match(
+      read(),
+      /a citation with no quote beside it does not earn `\[VERIFIED\]`/,
+      'a precise-looking line range without a quote must not earn the tag'
+    );
+  });
+
+  test('routes an unquoted skeleton value to [ASSUMED]', () => {
+    assert.match(
+      read(),
+      /must also appear in that verbatim quote; a value that does not is `\[ASSUMED\]`/,
+      'values used in examples but absent from the quote must degrade to [ASSUMED]'
+    );
+  });
+
+  test('does not disturb the pre-existing package name provenance rule', () => {
+    const content = read();
+    assert.ok(
+      content.includes('**Package name provenance rule:**'),
+      'the sibling external-provenance rule must survive unchanged'
+    );
+    assert.ok(
+      content.includes('a slopsquatted package also passes `npm view`'),
+      'package-legitimacy reasoning must remain intact'
+    );
+  });
+
+  test('defines the rule once — no paraphrased restatement (META.RULE.brief-no-paraphrase)', () => {
+    const occurrences = read().split('In-repo value provenance rule').length - 1;
+    assert.equal(
+      occurrences,
+      1,
+      'the rule must be defined at exactly one site; a second copy is the prose-drift mode'
+    );
+  });
+});

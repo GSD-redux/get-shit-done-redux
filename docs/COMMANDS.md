@@ -237,6 +237,9 @@ Packages sourced from WebSearch are tagged `[ASSUMED]` (not `[VERIFIED]`) and tr
 
 See [Package Legitimacy Gate in the User Guide](USER-GUIDE.md#package-legitimacy-gate-v1421) for the full checkpoint format, verdict table, and troubleshooting.
 
+**In-repo value citation:**
+For any in-repo *discrete value* the researcher reports — an enum, a schema or type union, an error code, a status constant, or a filesystem path — a `[VERIFIED: …]` tag requires that it opened the source-of-truth file with `Read` during the run and cited the path **and line range** (`[VERIFIED: src/types/order.ts:14-22]`). The values are quoted verbatim in RESEARCH.md beside the claim, and any value used in a code example must also appear in that quote; anything else stays `[ASSUMED]`. A codebase `grep`, training memory, or a web search do not earn the tag on their own. This stops a plausible-but-drifted enum from reaching PLAN.md — where the planner lifts it into the plan's `<interfaces>` context block and the executor trusts it as ground truth — and surfacing only as a mid-execution deviation at typecheck.
+
 ```bash
 /gsd-plan-phase 1                              # Research + plan + verify phase 1
 /gsd-plan-phase 3 --skip-research              # Plan without research (familiar domain)
@@ -1467,7 +1470,11 @@ Reviewers are prompted to verify the plan's claims against the actual repository
 | `--llama-cpp` | Include llama.cpp server review |
 | `--all` | Include all available reviewers (CLI + local model servers) |
 
-**`jq` prerequisite (some lanes only):** `--ollama`, `--lm-studio`, `--llama-cpp`, `--opencode`, and `--agy` parse JSON that GSD does not produce itself — OpenAI-compatible `/v1/chat/completions` responses, OpenCode's JSONL event stream, and Antigravity's conversation cache — so they require [`jq`](https://jqlang.org/download/) on your `PATH`. If `jq` is missing, `/gsd-review` reports those five as unavailable and tells you to install it, rather than running them into an empty review. The other six lanes (`--gemini`, `--claude`, `--codex`, `--coderabbit`, `--qwen`, `--cursor`) need no `jq`. Reading your configured models, hosts, and token budgets never requires `jq`.
+**`jq` prerequisite (some lanes only):** `--ollama`, `--lm-studio`, `--llama-cpp`, `--opencode`, and `--agy` parse JSON that GSD does not produce itself — OpenAI-compatible `/v1/chat/completions` responses, OpenCode's JSONL event stream, and Antigravity's conversation cache — so they require [`jq`](https://jqlang.org/download/) on your `PATH`. If `jq` is missing, `/gsd-review` reports those five as unavailable and tells you to install it, rather than running them into an empty review — an info note when the lane was reached through `--all` or `review.default_reviewers`, an error when you named it with an explicit flag. The other six lanes (`--gemini`, `--claude`, `--codex`, `--coderabbit`, `--qwen`, `--cursor`) need no `jq`. Reading your configured models, hosts, and token budgets never requires `jq`.
+
+**Unavailable reviewers:** an explicit reviewer flag is an assertion. If you name a reviewer that cannot run on this host — its CLI is not installed, a prerequisite such as `jq` is missing, or its local server is unreachable — `/gsd-review` reports an **error** for that reviewer and does not proceed with a reduced set. This holds even when other named reviewers are available: `--gemini --qwen` on a host without `qwen` fails rather than silently becoming a Gemini-only review.
+
+Reviewers reached through `--all` or `review.default_reviewers` behave differently: an undetected reviewer there is reported as an info note and skipped. Use `--all` for "whatever is available on this host", and `review.default_reviewers` for a preferred subset that may vary by host.
 
 **Default reviewer behavior (no flags):**
 - If `review.default_reviewers` is **unset**, `/gsd-review` runs all detected reviewers (current default behavior).

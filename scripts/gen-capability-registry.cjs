@@ -71,6 +71,7 @@ const {
   validateArtifactKindEntry,
   validateArtifactLayout,
   validateRuntimeBody,
+  collectReviewerWarnings,
   materializeHookFragments,
   validateAgainstContract,
   validateConsumesGlobal,
@@ -340,9 +341,13 @@ function loadAndValidate(centralKeys, capabilitiesDir) {
   const resolvedCapDir = capabilitiesDir !== undefined ? capabilitiesDir : CAPABILITIES_DIR;
   const errors = [];
   const capMap = new Map();
+  // ADR-2782 D4 — non-fatal diagnostics (e.g. an unknown field inside a reviewer
+  // body). These NEVER fail the build; they surface on stderr so a forward-built
+  // manifest degrades visibly instead of silently.
+  const warnings = [];
 
   if (!fs.existsSync(resolvedCapDir)) {
-    return { capMap, errors };
+    return { capMap, errors, warnings };
   }
 
   // Compute wired points ONCE before iterating capabilities so the filesystem
@@ -365,6 +370,10 @@ function loadAndValidate(centralKeys, capabilitiesDir) {
       errors.push(folderId + '/capability.json: JSON parse error: ' + String(err.message));
       continue;
     }
+
+    // Collected BEFORE the error short-circuit below so a manifest that is both
+    // forward-built and invalid still reports why it looked unfamiliar.
+    for (const w of collectReviewerWarnings(cap)) warnings.push(folderId + '/capability.json: ' + w);
 
     const capErrors = validateCapability(cap, folderId);
     if (capErrors.length > 0) {
@@ -406,7 +415,7 @@ function loadAndValidate(centralKeys, capabilitiesDir) {
   const consumesErrors = validateConsumesGlobal(capMap);
   errors.push(...consumesErrors);
 
-  return { capMap, errors };
+  return { capMap, errors, warnings };
 }
 
 /**
@@ -446,6 +455,46 @@ function buildRegistry(capMap) {
     if (capId === '__proto__' || capId === 'constructor' || capId === 'prototype') continue;
     capabilities[capId] = cap;
 
+    // Federated config slice — harvested from ANY role that declares one.
+    //
+    // ADR-2782 D1/D9: this loop was nested inside the `role === 'feature'` branch,
+    // so a `role: "runtime"` capability's `config` was read by nothing and dropped
+    // in silence — the actual reason reviewer config keys are stranded in the
+    // central schema. (The often-cited reason, that the runtime body forbids
+    // feature-only fields, does not apply: `config` is NOT in
+    // FEATURE_FIELDS_FORBIDDEN_ON_RUNTIME.) Owning a config slice is a property of
+    // DECLARING one, not of being a feature. Verified inert at introduction — no
+    // shipped capability declares `config` on a non-feature role — so this changes
+    // no existing key; it stops a latent silent drop and unblocks Phase 4 (#2797).
+    for (const key of Object.keys(cap.config || {})) {
+      // S2b: inline literal guard at each write site (CodeQL barrier)
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
+      configKeys[key] = capId;
+
+      // Build configSchema entry — validate the slice first (throw on violation)
+      const slice = (cap.config || {})[key];
+      const sliceErrors = validateConfigSliceEntry(capId, key, slice);
+      if (sliceErrors.length > 0) {
+        throw new Error(
+          'configSchema validation failed during registry build:\n' +
+          sliceErrors.map((e) => '  ' + e).join('\n'),
+        );
+      }
+      // S2b: inline literal guard for configSchema write site
+      if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') {
+        configSchema[key] = {
+          owner: capId,
+          type: slice.type,
+          default: slice.default,
+          description: slice.description,
+        };
+        // Preserve values array for enum types if present
+        if (slice.type === 'enum' && Array.isArray(slice.values)) {
+          configSchema[key].values = slice.values;
+        }
+      }
+    }
+
     if (cap.role === 'feature') {
       for (const skill of (cap.skills || [])) {
         // S2b: inline literal guard at each write site (CodeQL barrier)
@@ -456,34 +505,6 @@ function buildRegistry(capMap) {
         // S2b: inline literal guard at each write site (CodeQL barrier)
         if (agent === '__proto__' || agent === 'constructor' || agent === 'prototype') continue;
         byAgent[agent] = capId;
-      }
-      for (const key of Object.keys(cap.config || {})) {
-        // S2b: inline literal guard at each write site (CodeQL barrier)
-        if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
-        configKeys[key] = capId;
-
-        // Build configSchema entry — validate the slice first (throw on violation)
-        const slice = (cap.config || {})[key];
-        const sliceErrors = validateConfigSliceEntry(capId, key, slice);
-        if (sliceErrors.length > 0) {
-          throw new Error(
-            'configSchema validation failed during registry build:\n' +
-            sliceErrors.map((e) => '  ' + e).join('\n'),
-          );
-        }
-        // S2b: inline literal guard for configSchema write site
-        if (key !== '__proto__' && key !== 'constructor' && key !== 'prototype') {
-          configSchema[key] = {
-            owner: capId,
-            type: slice.type,
-            default: slice.default,
-            description: slice.description,
-          };
-          // Preserve values array for enum types if present
-          if (slice.type === 'enum' && Array.isArray(slice.values)) {
-            configSchema[key].values = slice.values;
-          }
-        }
       }
 
       for (const step of (cap.steps || [])) {
@@ -741,7 +762,11 @@ function main() {
   if (flag === '--check') {
     // Fix #3: read the REAL central config keys so collision detection fires and is visible.
     const centralKeys = loadCentralConfigKeys();
-    const { capMap, errors } = loadAndValidate(centralKeys);
+    const { capMap, errors, warnings } = loadAndValidate(centralKeys);
+
+    // ADR-2782 D4 — non-fatal manifest diagnostics. Emitted BEFORE the hard-error
+    // exit so a forward-built manifest still explains itself on a failing build.
+    for (const w of warnings) process.stderr.write(w + '\n');
 
     // Separate pending-migration warnings from hard errors
     const { hardErrors, pendingMigrationWarnings } = classifyCrossErrors(errors);
@@ -778,7 +803,11 @@ function main() {
   } else if (flag === '--write') {
     // Fix #3: read the REAL central config keys so collision detection fires and is visible.
     const centralKeys = loadCentralConfigKeys();
-    const { capMap, errors } = loadAndValidate(centralKeys);
+    const { capMap, errors, warnings } = loadAndValidate(centralKeys);
+
+    // ADR-2782 D4 — non-fatal manifest diagnostics. Emitted BEFORE the hard-error
+    // exit so a forward-built manifest still explains itself on a failing build.
+    for (const w of warnings) process.stderr.write(w + '\n');
 
     // Separate pending-migration warnings from hard errors
     const { hardErrors, pendingMigrationWarnings } = classifyCrossErrors(errors);

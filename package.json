@@ -104,7 +104,7 @@
     "lint": "eslint . --cache --cache-location node_modules/.cache/eslint/",
     "lint:fix": "eslint . --fix",
     "lint:table-schema-drift": "node scripts/lint-table-schema-drift.cjs",
-    "lint:ci": "npm run lint && npm run lint:skill-deps && npm run lint:generated-sync && node scripts/lint-test-file-count.cjs && node scripts/lint-command-contract.cjs && node scripts/lint-pr-check-project-dir.cjs && npm run lint:legacy-name && node scripts/lint-regression-test-names.cjs && node scripts/lint-allow-test-rule-refs.cjs && node scripts/lint-resolution-provenance.cjs && node scripts/lint-portable-timeout.cjs && node scripts/validate-registry.cjs && node scripts/lint-table-schema-drift.cjs && node scripts/lint-fix-has-regression-test.cjs",
+    "lint:ci": "npm run lint && npm run lint:skill-deps && npm run lint:generated-sync && node scripts/lint-test-file-count.cjs && node scripts/lint-command-contract.cjs && node scripts/lint-pr-check-project-dir.cjs && npm run lint:legacy-name && node scripts/lint-regression-test-names.cjs && node scripts/lint-allow-test-rule-refs.cjs && node scripts/lint-resolution-provenance.cjs && node scripts/lint-emitted-drift-ack.cjs && node scripts/lint-portable-timeout.cjs && node scripts/validate-registry.cjs && node scripts/lint-table-schema-drift.cjs && node scripts/lint-fix-has-regression-test.cjs",
     "lint:allow-test-rule-refs": "node scripts/lint-allow-test-rule-refs.cjs",
     "lint:regression-names": "node scripts/lint-regression-test-names.cjs",
     "lint:descriptions": "node scripts/lint-descriptions.cjs",

@@ -47,6 +47,8 @@ const {
   currentManifests,
   currentSizes,
   readAckFile,
+  readAckFileAtRef,
+  ACK_REPO_PATH,
   baselineFamilyNamesAtRef,
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,
@@ -58,12 +60,16 @@ const {
 } = require('./helpers/emitted-runtime.cjs');
 
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
+const { validateAckText } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
   ACK_VERSION,
+  ACK_FILE,
   NEW_FILE_CAP,
+  REMEDIATION,
   sourceSatisfiedBy,
   parseAck,
   diffEmitted,
+  buildReport,
   formatReport,
 } = require('./helpers/emitted-diff.cjs');
 
@@ -391,6 +397,7 @@ test('an acked ripple passes and is echoed', () => {
     current: mf({ [WORKFLOW_KEY]: 'bbb' }),
     changedPaths: ['README.md'],
     ack,
+    baseAck: null,
   });
   assert.equal(r.unattributable.length, 0);
   assert.equal(r.acked.length, 1);
@@ -406,6 +413,7 @@ test('a stale ack entry fails', () => {
     current: mf({ [WORKFLOW_KEY]: 'aaa' }),
     changedPaths: [],
     ack,
+    baseAck: null,
   });
   assert.deepEqual(r.staleAcks, [WORKFLOW_KEY]);
   assert.ok(!r.ok);
@@ -419,6 +427,7 @@ test('an ack without a reason fails', () => {
       current: mf({ [WORKFLOW_KEY]: 'bbb' }),
       changedPaths: [],
       ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: bad } },
+      baseAck: null,
     });
     assert.ok(!r.ok, `${JSON.stringify(bad)} must be rejected`);
     assert.match(r.errors.join('\n'), /has no non-empty "reason"/);
@@ -449,8 +458,441 @@ test('a live ack and a stale ack together: only the stale one is named', () => {
     current: mf({ [WORKFLOW_KEY]: 'bbb', [SKILL_KEY]: 'ccc' }),
     changedPaths: [],
     ack,
+    baseAck: null,
   });
   assert.deepEqual(r.staleAcks, [SKILL_KEY], 'the live one must not be named');
+});
+
+// ─── Ack lifecycle: an ack is scoped to the diff that introduced it (#2789) ──
+//
+// Every other input to the law is base-relative — `baseline` vs `current`, `changedPaths`
+// from `git diff base...HEAD`. The ack set was the one absolute input, read only from
+// HEAD. That mismatch is what made a MERGED ack look identical to a never-explained one:
+// both present as "no delta consumed it", so merging an ack the PR lane had accepted
+// reddened `next` and every PR branching off it (#2768).
+//
+// `baseAck` closes it. An entry already present at the base is SPENT — its ripple is
+// absorbed, it is not this diff's to answer for, and it may no longer clear anything.
+
+test('an ack already present at the base is spent — not stale, and it does not fail', () => {
+  // The #2768 shape exactly: the ack merged, so the base carries it and no delta remains.
+  const ack = { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'deliberate growth' } } };
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack,
+    baseAck: ack,
+  });
+  assert.deepEqual(r.staleAcks, [], 'an absorbed ripple is the ack SUCCEEDING, not failing');
+  assert.deepEqual(r.spentAcks, [WORKFLOW_KEY], 'still surfaced, so it can be cleaned up');
+  assert.ok(r.ok);
+});
+
+test('a spent ack cannot pre-clear a NEW ripple on its own path', () => {
+  // ADR-2719's own named hazard. Today a leftover ack silently clears the next ripple;
+  // scoped to its diff it cannot, so the new ripple must be explained on its own terms.
+  const ack = { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'last time' } } };
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }), // a genuinely new, unexplained move
+    changedPaths: [],
+    ack,
+    baseAck: ack,
+  });
+  assert.equal(r.acked.length, 0, 'a spent ack must not absorb a new ripple');
+  assert.equal(r.unattributable.length, 1);
+  assert.ok(!r.ok);
+});
+
+test('re-arming a spent ack costs actual prose — not whitespace, not a decorative field', () => {
+  // Re-arming is legitimate; it is how a contributor says "this is a NEW ripple, and here
+  // is why". But the reason is the whole artifact a reviewer reads, so it must cost a
+  // real explanation. Both of these once re-armed an ack whose justification still
+  // described the PREVIOUS ripple, showing a reviewer nothing new in the ack file's diff.
+  const base = { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'the same words' } } };
+  const newRipple = {
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }), // genuinely new and unexplained
+    changedPaths: [],
+    baseAck: base,
+  };
+
+  const doubledSpace = diffEmitted({
+    ...newRipple,
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'the  same   words' } } },
+  });
+  assert.equal(doubledSpace.acked.length, 0, 'internal whitespace must not re-arm');
+  assert.ok(!doubledSpace.ok);
+
+  const decoratedField = diffEmitted({
+    ...newRipple,
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'the same words', runtime: 'claude' } } },
+  });
+  assert.equal(decoratedField.acked.length, 0, 'an unrelated field must not re-arm');
+  assert.ok(!decoratedField.ok);
+
+  // …while genuinely new prose still does.
+  const reworded = diffEmitted({
+    ...newRipple,
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'a different, specific explanation' } } },
+  });
+  assert.equal(reworded.acked.length, 1);
+  assert.ok(reworded.ok);
+});
+
+test('spent entries are reported sorted, and modelled in buildReport not just rendered', () => {
+  // Insertion order is deliberately REVERSE-sorted (`skills/…` before `gsd-core/…`), so
+  // the assertion bites: comparing against a sorted copy of the result would pass even
+  // with the sort deleted, and asserting on an already-ordered fixture proves nothing.
+  const both = {
+    version: ACK_VERSION,
+    paths: { [SKILL_KEY]: { reason: 'second' }, [WORKFLOW_KEY]: { reason: 'first' } },
+  };
+  assert.ok(SKILL_KEY > WORKFLOW_KEY, 'the fixture must be inserted out of order to be a real test');
+
+  const r = diffEmitted({
+    baseline: mf({ 'gsd-core/workflows/zzz.md': 'aaa' }),
+    current: mf({ 'gsd-core/workflows/zzz.md': 'bbb' }), // an unrelated failure to render under
+    changedPaths: [],
+    ack: both,
+    baseAck: both,
+  });
+  assert.deepEqual(r.spentAcks, [WORKFLOW_KEY, SKILL_KEY], 'spent entries must come back sorted');
+
+  const block = buildReport(r).blocks.find((b) => b.kind === 'spent-acks');
+  assert.ok(block, 'spent acks must be modelled in the IR, so tests need no raw text matching');
+  assert.equal(block.count, 2);
+  assert.deepEqual(block.items, r.spentAcks);
+});
+
+test('buildReport and formatReport agree about spent acks on a PASSING run', () => {
+  // `formatReport` is documented as a pure rendering of `buildReport`. The spent section
+  // is the one block whose emit-condition could drift, because a passing run must render
+  // nothing — so the IR must withhold it there too, or a JSON reporter built on the IR
+  // would report spent acks for a green run while the text reporter stayed silent.
+  const spent = { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'absorbed' } } };
+  const passing = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack: spent,
+    baseAck: spent,
+  });
+  assert.ok(passing.ok);
+  assert.deepEqual(passing.spentAcks, [WORKFLOW_KEY], 'the datum is still on the result object');
+  assert.equal(formatReport(passing), '');
+  assert.equal(
+    buildReport(passing).blocks.find((b) => b.kind === 'spent-acks'),
+    undefined,
+    'the IR must not carry a block the renderer suppresses',
+  );
+});
+
+test('ackDocument survives a __proto__ key instead of silently teaching an empty document', () => {
+  // `key` comes from repo/emitted paths. On a plain object `__proto__` sets the prototype
+  // rather than a property, so JSON.stringify would emit `"paths":{}` — remediation text
+  // that teaches the contributor to acknowledge nothing at all.
+  const doc = JSON.parse(REMEDIATION.ackDocument([
+    { key: '__proto__', reason: 'hostile key' },
+    { key: 'plan-phase.md', reason: 'ordinary key' },
+  ]));
+  assert.deepEqual(Object.keys(doc.paths).sort(), ['__proto__', 'plan-phase.md']);
+  assert.equal(doc.paths.__proto__.reason, 'hostile key');
+  assert.equal(({}).reason, undefined, 'Object.prototype must be untouched');
+});
+
+test('a clean run renders NOTHING, even when spent entries exist', () => {
+  // `formatReport` returning prose for an ok result reads as "something is wrong".
+  const spent = { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'absorbed' } } };
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack: spent,
+    baseAck: spent,
+  });
+  assert.ok(r.ok);
+  assert.deepEqual(r.spentAcks, [WORKFLOW_KEY]);
+  assert.equal(formatReport(r), '', 'a passing run must render an empty report');
+});
+
+test('an ack whose reason changed in this diff is live again', () => {
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'THIS ripple, freshly explained' } } },
+    baseAck: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'the previous one' } } },
+  });
+  assert.equal(r.acked.length, 1, 'rewriting the reason re-arms the ack for the new ripple');
+  assert.deepEqual(r.staleAcks, []);
+  assert.ok(r.ok);
+});
+
+test('an ack absent from the base is live and consumes its ripple', () => {
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'new in this PR' } } },
+    baseAck: { version: ACK_VERSION, paths: { [SKILL_KEY]: { reason: 'unrelated, already merged' } } },
+  });
+  assert.equal(r.acked.length, 1);
+  assert.deepEqual(r.staleAcks, []);
+  assert.ok(r.ok);
+});
+
+test('a LIVE ack that nothing consumes is still stale and still fails', () => {
+  // The softening must not reach the case the rule exists for: an ack written in THIS
+  // diff that never explained anything is an authoring mistake, and blame lands right.
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'explains nothing' } } },
+    baseAck: { version: ACK_VERSION, paths: { [SKILL_KEY]: { reason: 'unrelated' } } },
+  });
+  assert.deepEqual(r.staleAcks, [WORKFLOW_KEY]);
+  assert.deepEqual(r.spentAcks, []);
+  assert.ok(!r.ok);
+});
+
+test('an absent or unreadable base ack inherits NOTHING — the gate stays armed', () => {
+  // Omission is not evidence that an entry was already merged. Every unknown here fails
+  // toward the strict reading, so a base we could not read cannot excuse a stale ack.
+  // `undefined` is deliberately NOT in this list: a destructuring default fires on it, so
+  // it takes the OMITTED path and fails with "baseAck was not supplied" — a different
+  // rule, covered by its own test above. Including it here would look like coverage of
+  // the staleness path while asserting something else entirely.
+  for (const baseAck of [null, {}, { version: ACK_VERSION }, 'not-an-object', 42, []]) {
+    const r = diffEmitted({
+      baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+      current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+      changedPaths: [],
+      ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'x' } } },
+      baseAck,
+    });
+    assert.deepEqual(r.staleAcks, [WORKFLOW_KEY], `baseAck ${JSON.stringify(baseAck)} must inherit nothing`);
+    assert.ok(!r.ok);
+  }
+});
+
+// ─── Pre-merge lint parity (#2789) ───────────────────────────────────────────
+//
+// `scripts/lint-emitted-drift-ack.cjs` blocks a broken ack document from ever reaching
+// the base branch, where the base-side reader's (correct) loud failure would be
+// expensive. It cannot reuse `parseAck`: `scripts/` ships in the npm package and `tests/`
+// does not, so requiring across that line would be a MODULE_NOT_FOUND in the published
+// package. Two validators of one schema is exactly the divergence this repo requires a
+// parity assertion for — so the corpus below runs through BOTH and must get the same
+// verdict from each.
+
+test('the pre-merge lint and the gate parser agree on what is schema-valid', () => {
+  const corpus = [
+    // [label, raw text, expected schema-valid?]
+    ['absent-equivalent empty object', '{}', true],
+    ['versioned, no paths', '{"version":1}', true],
+    ['empty paths', '{"version":1,"paths":{}}', true],
+    ['one good entry', '{"version":1,"paths":{"a.md":{"reason":"why"}}}', true],
+    ['bare-string reason', '{"version":1,"paths":{"a.md":"why"}}', true],
+    ['no version key', '{"paths":{"a.md":{"reason":"why"}}}', true],
+    ['unknown extra field', '{"version":1,"paths":{"a.md":{"reason":"why","note":"x"}}}', true],
+    ['bad JSON', '{ not json', false],
+    ['array document', '[]', false],
+    ['scalar document', '42', false],
+    ['string document', '"nope"', false],
+    // NOT here: a document of literally `null`. `parseAck` uses null as its
+    // "absent == no acks" sentinel and reads it as legal, so it is schema-valid on both
+    // sides; the lint rejects it on POLICY instead. Covered in the entryless test below.
+    ['wrong version', '{"version":9,"paths":{}}', false],
+    ['paths is an array', '{"version":1,"paths":[]}', false],
+    ['paths is a scalar', '{"version":1,"paths":7}', false],
+    ['empty reason', '{"version":1,"paths":{"a.md":{"reason":""}}}', false],
+    ['whitespace reason', '{"version":1,"paths":{"a.md":{"reason":"   "}}}', false],
+    ['missing reason', '{"version":1,"paths":{"a.md":{}}}', false],
+    ['numeric reason', '{"version":1,"paths":{"a.md":42}}', false],
+  ];
+
+  for (const [label, raw, expectedValid] of corpus) {
+    const lint = validateAckText(raw);
+    const lintValid = lint.schemaErrors.length === 0;
+
+    // The gate's own parser, fed the same document the same way `readAckFile` would.
+    let gateValid;
+    try {
+      gateValid = parseAck(JSON.parse(raw)).errors.length === 0;
+    } catch {
+      gateValid = false; // unparseable JSON never reaches parseAck; readAckFile throws first
+    }
+
+    assert.equal(lintValid, expectedValid, `lint verdict for ${label}`);
+    assert.equal(
+      gateValid, lintValid,
+      `DIVERGENCE on ${label}: the pre-merge lint and parseAck disagree, so one of them `
+      + 'would let a document through that the other rejects',
+    );
+  }
+});
+
+test('the lint additionally rejects a present-but-entryless document the parser accepts', () => {
+  // This is policy, not schema, and the one place the two surfaces are MEANT to differ:
+  // `parseAck` must treat `{}` as "no acks" (legal) so an absent-equivalent document
+  // never fails the gate mid-run, while the lint refuses to let one be COMMITTED,
+  // because it acknowledges nothing and only confuses the next reader.
+  // `null` belongs here rather than in the schema corpus: it is the gate's own
+  // "absent == no acks" sentinel, so it is legal to PARSE and still wrong to COMMIT.
+  for (const raw of ['{}', '{"version":1}', '{"version":1,"paths":{}}', 'null']) {
+    const r = validateAckText(raw);
+    assert.deepEqual(r.schemaErrors, [], `${raw} must be schema-valid`);
+    assert.equal(r.policyErrors.length, 1, `${raw} must trip the delete-the-file policy`);
+    assert.ok(!r.ok);
+    assert.deepEqual(parseAck(JSON.parse(raw)).errors, [], `${raw} must stay legal for the gate`);
+  }
+});
+
+test('the lint passes on an absent file — the healthy steady state', () => {
+  const r = validateAckText(null);
+  assert.deepEqual(r.schemaErrors, []);
+  assert.deepEqual(r.policyErrors, []);
+  assert.ok(r.ok);
+});
+
+test('the lint rejects a present-but-empty file rather than reading it as absent', () => {
+  for (const raw of ['', '   ', '\n\t ']) {
+    const r = validateAckText(raw);
+    assert.equal(r.schemaErrors.length, 1, `${JSON.stringify(raw)} must be rejected`);
+    // Asserting the SPECIFIC message, not just the count: deleting the empty-file branch
+    // leaves `JSON.parse('')` throwing its own single error, so a bare count passes either
+    // way and the branch can be removed with no test failing.
+    assert.match(r.schemaErrors[0], /present but empty/, `${JSON.stringify(raw)} must name emptiness`);
+    assert.ok(!r.ok);
+  }
+});
+
+// ─── readAckFileAtRef: the base-side reader (#2789) ──────────────────────────
+//
+// This half never runs in the remote runner — the real-tree test skips there, because a
+// shallow clone has no `origin/*` to resolve. Without these, replacing the body with
+// `return null` would fail nothing while silently restoring the pre-#2789 gate. The git
+// runner is injected rather than monkeypatched: deterministic on every OS, and no
+// dependence on the host repo's actual refs.
+
+const fakeGit = (handlers) => (args) => {
+  if (args[0] === 'ls-tree') return handlers.lsTree ? handlers.lsTree() : `${ACK_REPO_PATH}\n`;
+  if (args[0] === 'show') return handlers.show ? handlers.show() : '{}';
+  throw new Error(`unexpected git call: ${args.join(' ')}`);
+};
+
+test('readAckFileAtRef: absent at the ref is the healthy steady state and returns null', () => {
+  // ls-tree exits 0 with EMPTY output when the path simply is not there.
+  const doc = readAckFileAtRef(SHA_A, { run: fakeGit({ lsTree: () => '\n' }) });
+  assert.equal(doc, null);
+});
+
+test('readAckFileAtRef: present and valid parses through', () => {
+  const payload = { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'r' } } };
+  const doc = readAckFileAtRef(SHA_A, {
+    run: fakeGit({ show: () => JSON.stringify(payload) }),
+  });
+  assert.deepEqual(doc, payload);
+});
+
+test('readAckFileAtRef: a READ FAILURE throws — it must never degrade to "inherit nothing"', () => {
+  // The whole point. Returning null here looks armed (every entry stays live) but a LIVE
+  // entry is precisely the one that CAN CONSUME a delta, so a genuinely new unexplained
+  // ripple would come back `acked` instead of `unattributable` — silently the entire
+  // pre-#2789 gate. Same law as resolveChangedPaths: a failed git read is an error.
+  const boom = () => { throw new Error('injected git failure'); };
+
+  assert.throws(
+    () => readAckFileAtRef(SHA_A, { run: fakeGit({ lsTree: boom }) }),
+    /could not list the ack/,
+  );
+  assert.throws(
+    () => readAckFileAtRef(SHA_A, { run: fakeGit({ show: boom }) }),
+    /exists at .* but could not be read/,
+  );
+});
+
+test('readAckFileAtRef: present but empty or unparseable throws, like the head-side reader', () => {
+  assert.throws(
+    () => readAckFileAtRef(SHA_A, { run: fakeGit({ show: () => '   \n' }) }),
+    /present at .* but empty/,
+  );
+  assert.throws(
+    () => readAckFileAtRef(SHA_A, { run: fakeGit({ show: () => '{ not json' }) }),
+    /is not valid JSON/,
+  );
+});
+
+test('readAckFileAtRef: refuses an option-shaped ref rather than handing it to git', () => {
+  // execFileSync's array form stops shell metacharacters but NOT git's option parsing:
+  // `git show` honors --output=<file>, which writes. The guard belongs with the argument,
+  // since this helper is exported and its callers are not the only possible ones.
+  const never = () => { throw new Error('git must not be invoked at all'); };
+  for (const bad of ['--output=/tmp/pwn', '-next', '--upload-pack=x', '', null, undefined, 42]) {
+    assert.throws(
+      () => readAckFileAtRef(bad, { run: fakeGit({ lsTree: never, show: never }) }),
+      /refusing to read the ack/,
+      `${JSON.stringify(bad)} must be refused`,
+    );
+  }
+});
+
+test('OMITTING baseAck while an ack is present is a loud error, never a silent pass', () => {
+  // This is what makes the production seam non-revertible in silence. Drop `baseAck:`
+  // from the real-tree call and the gate fails loudly here, instead of quietly restoring
+  // #2768 with every other test still green. Same discipline the module already applies
+  // to `changedPaths`: a missing input is an error, not an empty set.
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'x' } } },
+  });
+  assert.ok(!r.ok);
+  assert.match(r.errors.join('\n'), /baseAck was not supplied/);
+});
+
+test('with no ack ENTRIES, baseAck is not required — the healthy steady state stays quiet', () => {
+  // Absence of an ack file is the normal case for almost every PR. It must not be made
+  // to carry a new required argument it has no use for — and neither must a document
+  // that is present but declares nothing, which `parseAck` accepts as legal (see
+  // 'non-object ack JSON is rejected'). Only a real ENTRY can be spent or live, so only
+  // a real entry needs the base side.
+  for (const ack of [undefined, null, {}, { version: ACK_VERSION }, { paths: {} }]) {
+    const r = diffEmitted({
+      baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+      current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+      changedPaths: [WORKFLOW_SRC],
+      ack,
+    });
+    assert.deepEqual(r.errors, [], `ack ${JSON.stringify(ack)} must need no baseAck`);
+    assert.ok(r.ok);
+  }
+});
+
+test('a spent size-growth ack neither fails nor clears a further growth', () => {
+  const ack = { version: ACK_VERSION, paths: { 'plan-phase.md': { reason: 'grew once, deliberately' } } };
+  const shared = {
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack,
+    baseAck: ack,
+  };
+
+  // Absorbed: base and current agree on size, so there is no growth left to explain.
+  const settled = diffEmitted({ ...shared, sizeBaseline: { 'plan-phase.md': 5000 }, sizeCurrent: { 'plan-phase.md': 5000 } });
+  assert.deepEqual(settled.staleAcks, []);
+  assert.ok(settled.ok);
+
+  // A further growth is a NEW ripple: the spent ack must not silently absorb it.
+  const grewAgain = diffEmitted({ ...shared, sizeBaseline: { 'plan-phase.md': 5000 }, sizeCurrent: { 'plan-phase.md': 5400 } });
+  assert.equal(grewAgain.grown.length, 1);
+  assert.equal(grewAgain.grown[0].acked, false, 'a spent ack must not clear a further growth');
+  assert.ok(!grewAgain.ok);
 });
 
 test('non-object ack JSON is rejected, not treated as empty', () => {
@@ -504,6 +946,7 @@ test('a converter change fails without an ack and passes with one', () => {
   const withAck = diffEmitted({
     baseline: mf(base), current: mf(moved), changedPaths,
     ack: { version: ACK_VERSION, paths },
+    baseAck: null,
   });
   assert.equal(withAck.unattributable.length, 0);
   assert.equal(withAck.acked.length, 25);
@@ -529,6 +972,7 @@ test('growth is reported with its exact byte delta and needs an ack', () => {
   const withAck = diffEmitted({
     baseline: mf({}), current: mf({}), changedPaths: [], sizeBaseline, sizeCurrent,
     ack: { version: ACK_VERSION, paths: { 'verify-work.md': { reason: 'new UAT section' } } },
+    baseAck: null,
   });
   assert.equal(withAck.grown[0].acked, true);
   assert.ok(withAck.ok);
@@ -545,6 +989,7 @@ test('an ack consumed by size growth alone is not reported as stale', () => {
     sizeBaseline: { 'verify-work.md': 10000 },
     sizeCurrent: { 'verify-work.md': 11247 },
     ack: { version: ACK_VERSION, paths: { 'verify-work.md': { reason: 'new UAT section' } } },
+    baseAck: null,
   });
   assert.deepEqual(r.staleAcks, [], 'a growth-consumed ack is live, not stale');
   assert.equal(r.grown[0].acked, true);
@@ -558,6 +1003,296 @@ test('shrinkage is reported but needs no ack', () => {
   });
   assert.deepEqual(r.shrunk, [{ name: 'a.md', from: 9000, to: 8000, delta: 1000 }]);
   assert.ok(r.ok, 'shrinkage is not creep — gating it would punish what the ratchet wants');
+});
+
+// ─── The failure must name its own remedy (#2778, ADR-2719 §3) ───────────────
+//
+// A gate that states a requirement and withholds the means of satisfying it is not a
+// gate, it is a maintainer round-trip. ADR-2719 §3 makes the acknowledgment a
+// *conspicuous declaration a contributor makes deliberately* — which only works if the
+// contributor can discover how to make it. Observed live on #2543: real growth from a
+// legitimate feature change, a red lane, and no self-serve path out of it.
+//
+// These assert on `buildReport`'s typed IR, not on rendered prose — CONTRIBUTING.md
+// ("Prohibited: Raw Text Matching on Test Outputs") requires a human formatter to expose
+// a structured surface so a reworded sentence is never a failing test. Exactly two tests
+// below touch the rendered string, and only to prove the renderer emits the IR at all.
+//
+// They also use the bare `buildReport(r)` / `formatReport(r)` form, because that is what
+// the real-tree test at the bottom of this file calls: a row that only ever passed an
+// explicit `sampleLimit` would prove a property no shipping caller exercises.
+
+/** The growth-only shape: a size ratchet trip with NO unattributable hash movement. */
+const growthOnly = (extra = {}) => diffEmitted({
+  baseline: mf({}),
+  current: mf({}),
+  changedPaths: [],
+  sizeBaseline: { 'explore.md': 11127 },
+  sizeCurrent: { 'explore.md': 13230 },
+  // Sits BEFORE the spread so a row can still override it, while every row that passes
+  // an `ack` inline gets the explicit "nothing inherited from the base" reading rather
+  // than tripping `diffEmitted`'s required-baseAck error (#2789).
+  baseAck: null,
+  ...extra,
+});
+
+/** The one block of `kind`, or undefined. */
+const blockOf = (report, kind) => report.blocks.find((b) => b.kind === kind);
+
+test('a growth-only failure carries the byte delta, the key rule, and an ack entry', () => {
+  // The pre-#2778 report stopped after the byte delta. The suite's only coverage of the
+  // remediation reached it through the UNATTRIBUTABLE branch, so a growth-only regression
+  // was invisible — which is why this fixture carries no hash movement at all.
+  const r = growthOnly();
+  assert.equal(r.unattributable.length, 0, 'this fixture must isolate the growth branch');
+  assert.ok(!r.ok);
+
+  const report = buildReport(r);
+  const growth = blockOf(report, 'unacked-growth');
+  assert.ok(growth, 'the growth branch must produce a block');
+  assert.equal(growth.count, 1);
+  assert.deepEqual(growth.items[0], {
+    name: 'explore.md', from: 11127, to: 13230, delta: 2103, acked: false,
+  });
+  assert.equal(growth.keyRule, REMEDIATION.growthKeyRule, 'growth keys on the bare filename');
+
+  assert.deepEqual(report.ackable, [
+    { key: 'explore.md', reason: REMEDIATION.growthReason },
+  ], 'the ack entry must be keyed on the file that actually grew');
+});
+
+test('the renderer emits the ack file, the document, and the do-not-regenerate line', () => {
+  // The one place rendered text is the object of the test: proving the IR above actually
+  // reaches the contributor. Everything it asserts is an identity comparison against the
+  // frozen surface, so rewording any sentence cannot fail this.
+  const msg = formatReport(growthOnly());
+  assert.ok(msg.includes('explore.md grew 2103 bytes (11127 -> 13230)'), 'the delta still leads');
+  assert.ok(msg.includes(REMEDIATION.ackFile), 'the message must name the ack file');
+  assert.ok(msg.includes(REMEDIATION.createIfAbsent), 'it must say the file may not exist yet');
+  assert.ok(msg.includes(REMEDIATION.growthKeyRule), 'it must state the bare-filename key rule');
+  assert.ok(msg.includes(REMEDIATION.doNotRegenerate), 'it must say not to regenerate');
+  assert.ok(
+    msg.includes(REMEDIATION.ackDocument([{ key: 'explore.md', reason: REMEDIATION.growthReason }])),
+    'the printed document must be the one the IR describes',
+  );
+});
+
+test('the document the report teaches is accepted by parseAck', () => {
+  // The divergence killer. A report that teaches a schema the parser rejects is worse
+  // than no report: the contributor follows it, is rejected anyway, and now distrusts the
+  // gate. This pins the taught shape to the accepted shape in one assertion.
+  const taught = REMEDIATION.ackDocument([{ key: 'explore.md', reason: 'a real reason' }]);
+  const { entries, errors } = parseAck(JSON.parse(taught));
+  assert.deepEqual(errors, [], 'the taught document must parse with zero errors');
+  assert.equal(entries.get('explore.md').reason, 'a real reason');
+
+  // And it must actually clear the gate it is offered to clear.
+  const r = growthOnly({ ack: JSON.parse(taught) });
+  assert.equal(r.grown[0].acked, true);
+  assert.deepEqual(r.staleAcks, []);
+  assert.ok(r.ok, 'following the printed instructions must turn the lane green');
+});
+
+test('the taught document derives its version from ACK_VERSION', () => {
+  // A hand-typed `"version": 1` beside a live ACK_VERSION is the generative-fix-divergence
+  // class: bump one, the other lies. Asserting the relationship — not the literal — is
+  // what makes the bump safe.
+  assert.equal(JSON.parse(REMEDIATION.ackDocument([{ key: 'x.md', reason: 'r' }])).version, ACK_VERSION);
+});
+
+test('the remediation surface is frozen and names the ack file once', () => {
+  assert.ok(Object.isFrozen(REMEDIATION), 'the exported surface must not be mutable');
+  assert.equal(REMEDIATION.ackFile, ACK_FILE, 'one definition, not a second literal');
+});
+
+test('a ripple and a growth in one report share ONE document', () => {
+  // The combination nobody writes down, and the most likely real shape: a feature PR that
+  // both grows a workflow AND ripples an emitted path.
+  //
+  // Caught in review: printing a complete document per branch made each read as "the file
+  // to create", so a contributor pasting the second over the first silently loses the
+  // first acknowledgment — an ack-lost failure with no signal. One document, one file.
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'bbb' }),
+    changedPaths: ['README.md'],
+    sizeBaseline: { 'explore.md': 11127 },
+    sizeCurrent: { 'explore.md': 13230 },
+  });
+  const report = buildReport(r);
+  assert.equal(blockOf(report, 'unattributable').keyRule, REMEDIATION.rippleKeyRule);
+  assert.equal(blockOf(report, 'unacked-growth').keyRule, REMEDIATION.growthKeyRule);
+
+  // Both key spaces, one ack set, in list order.
+  assert.deepEqual(report.ackable, [
+    { key: WORKFLOW_KEY, reason: REMEDIATION.rippleReason },
+    { key: 'explore.md', reason: REMEDIATION.growthReason },
+  ]);
+
+  // And the rendered document is genuinely one object holding both.
+  const doc = JSON.parse(REMEDIATION.ackDocument(report.ackable));
+  assert.deepEqual(Object.keys(doc.paths).sort(), [WORKFLOW_KEY, 'explore.md'].sort());
+  const { errors } = parseAck(doc);
+  assert.deepEqual(errors, [], 'the combined document must parse');
+
+  const msg = formatReport(r);
+  assert.equal(
+    msg.split('{"version"').length - 1, 1,
+    'exactly one document may be printed — two would invite pasting one over the other',
+  );
+});
+
+test('a stale ack names the file it lives in and the delete-the-file case', () => {
+  // Pre-#2778 this said acks "must be deleted" without naming the file they live in. It
+  // also never said what to do when the last entry goes: an empty-but-present ack file
+  // parses fine and is "legal", but it destroys the ADR-2719 §3 property that the file's
+  // PRESENCE is the alarm.
+  const r = diffEmitted({
+    baseline: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    current: mf({ [WORKFLOW_KEY]: 'aaa' }),
+    changedPaths: [],
+    ack: { version: ACK_VERSION, paths: { [WORKFLOW_KEY]: { reason: 'old' } } },
+    baseAck: null,
+  });
+  const stale = blockOf(buildReport(r), 'stale-acks');
+  assert.deepEqual(stale.items, [WORKFLOW_KEY]);
+  assert.equal(stale.fix, REMEDIATION.staleAckFix);
+  assert.match(stale.fix, /delete the file/, 'the last-entry case must be covered');
+
+  // A stale-only report has nothing to acknowledge — it must NOT offer a document.
+  assert.deepEqual(buildReport(r).ackable, [], 'deleting an ack is not acknowledging one');
+});
+
+test('growth and a stale ack in one report keep both remedies', () => {
+  // The contributor is adding one entry and removing another in the same file.
+  const r = growthOnly({ ack: { version: ACK_VERSION, paths: { 'gone.md': { reason: 'outlived' } } } });
+  assert.deepEqual(r.staleAcks, ['gone.md']);
+  assert.equal(r.grown[0].acked, false);
+
+  const report = buildReport(r);
+  assert.ok(blockOf(report, 'unacked-growth'), 'the growth still needs an ack');
+  assert.ok(blockOf(report, 'stale-acks'), 'the stale entry still needs deleting');
+  assert.deepEqual(report.ackable, [{ key: 'explore.md', reason: REMEDIATION.growthReason }],
+    'only the growth is ackable; the stale entry is removed, not added');
+});
+
+test('the validation early-return renders instead of throwing', () => {
+  // Found while building #2778. diffEmitted's input-validation early return omitted
+  // `newFileCapExceeded`, and formatReport reads `result.newFileCapExceeded.length`
+  // unconditionally — so this path threw `TypeError: Cannot read properties of
+  // undefined` instead of printing its errors.
+  //
+  // Worst possible place for it: this branch is what runs when `git diff` failed or a
+  // manifest came back malformed. The crash replaced the only message that would have
+  // named the infrastructure problem, and a TypeError in a test helper reads like a
+  // broken test rather than a broken environment.
+  for (const bad of [
+    { baseline: null, current: {}, changedPaths: [] },
+    { baseline: {}, current: null, changedPaths: [] },
+    { baseline: {}, current: {}, changedPaths: null },
+    { baseline: [], current: {}, changedPaths: [] },
+  ]) {
+    const r = diffEmitted(bad);
+    assert.ok(!r.ok);
+    assert.ok(r.errors.length > 0);
+    assert.deepEqual(r.newFileCapExceeded, [], 'every returned shape must carry every bucket');
+
+    const report = buildReport(r);
+    assert.equal(blockOf(report, 'errors').count, r.errors.length, 'the errors must render');
+    assert.deepEqual(report.ackable, [], 'a malformed input is not something to acknowledge');
+  }
+});
+
+test('a failed git diff renders as an error, never as "nothing changed"', () => {
+  // The comment on that validation branch says a failed `git diff` must never be read as
+  // an empty change set. That contract is only worth anything if the resulting report is
+  // renderable — which it was not until the bucket above was restored.
+  const r = diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: null });
+  assert.match(r.errors.join('\n'), /changedPaths must be an array/);
+  assert.match(formatReport(r), /changedPaths must be an array/);
+});
+
+test('a passing result produces no blocks and nothing to acknowledge', () => {
+  // Remediation must never leak into a green run — it is failure text, not advice.
+  const report = buildReport(diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: [] }));
+  assert.deepEqual(report.blocks, []);
+  assert.deepEqual(report.ackable, []);
+  assert.equal(formatReport(diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: [] })), '');
+});
+
+test('an acked growth produces no block and nothing to acknowledge', () => {
+  // The contributor already did the thing the remediation asks for; repeating it is noise.
+  const r = growthOnly({
+    ack: { version: ACK_VERSION, paths: { 'explore.md': { reason: 'new mode section' } } },
+    baseAck: null,
+  });
+  assert.ok(r.ok);
+  const report = buildReport(r);
+  assert.equal(blockOf(report, 'unacked-growth'), undefined, 'an acknowledged growth is not a failure');
+  assert.deepEqual(report.ackable, []);
+});
+
+test('shrinkage produces no block and nothing to acknowledge', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: { 'a.md': 9000 }, sizeCurrent: { 'a.md': 8000 },
+  });
+  assert.deepEqual(buildReport(r).blocks, [], 'shrinkage is reported in the result, never as failure');
+  assert.deepEqual(buildReport(r).ackable, []);
+});
+
+test('a mixed grown set offers an ack entry only for the unacked files', () => {
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: { 'kept.md': 100, 'loud.md': 100 },
+    sizeCurrent: { 'kept.md': 200, 'loud.md': 200 },
+    ack: { version: ACK_VERSION, paths: { 'kept.md': { reason: 'declared' } } },
+    baseAck: null,
+  });
+  const report = buildReport(r);
+  const growth = blockOf(report, 'unacked-growth');
+  assert.equal(growth.count, 1, 'only the unacked one is counted');
+  assert.deepEqual(growth.items.map((g) => g.name), ['loud.md']);
+  assert.deepEqual(report.ackable, [{ key: 'loud.md', reason: REMEDIATION.growthReason }],
+    'the document must key on the unacked file, not the acked one');
+});
+
+test('the ack set is capped at the sample limit at limit-1 / limit / limit+1', () => {
+  // CLAUDE.md's boundary rule. The document must not name rows the report chose not to
+  // print — a contributor cannot acknowledge a path they were never shown.
+  const build = (n) => {
+    const sizeBaseline = {}; const sizeCurrent = {};
+    for (let i = 0; i < n; i++) {
+      const k = `g${String(i).padStart(3, '0')}.md`;
+      sizeBaseline[k] = 100; sizeCurrent[k] = 200;
+    }
+    return diffEmitted({ baseline: mf({}), current: mf({}), changedPaths: [], sizeBaseline, sizeCurrent });
+  };
+  for (const [n, expected] of [[19, 19], [20, 20], [21, 20]]) {
+    const report = buildReport(build(n), { sampleLimit: 20 });
+    assert.equal(blockOf(report, 'unacked-growth').count, n, `count reports all ${n}`);
+    assert.equal(report.ackable.length, expected, `the document names ${expected} at n=${n}`);
+    assert.ok(
+      formatReport(build(n), { sampleLimit: 20 }).includes(REMEDIATION.growthKeyRule),
+      `the key rule must survive n=${n}`,
+    );
+  }
+});
+
+test('the new-file cap block carries no ack affordance', () => {
+  // The cap is NOT ack-able — the fix is extraction. Offering a document here would teach
+  // a contributor to write an entry that cannot clear the gate, which is worse than the
+  // silence it replaced.
+  const r = diffEmitted({
+    baseline: mf({}), current: mf({}), changedPaths: [],
+    sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
+  });
+  const report = buildReport(r);
+  const cap = blockOf(report, 'new-file-cap');
+  assert.equal(cap.count, 1);
+  assert.equal(cap.keyRule, undefined, 'the cap has no key rule because it has no ack');
+  assert.deepEqual(report.ackable, [], 'the cap must never offer an acknowledgment');
+  assert.ok(!formatReport(r).includes(REMEDIATION.ackFile), 'and must not point at the ack file');
 });
 
 // ─── New-file cap (ADR-1610 Decision point 3, revived after #2724) ───────────
@@ -606,6 +1341,7 @@ test('the new-file cap is not ack-able (extraction, not acknowledgment, is the f
     baseline: mf({}), current: mf({}), changedPaths: [],
     sizeBaseline: {}, sizeCurrent: { 'new-workflow.md': NEW_FILE_CAP + 1 },
     ack: { version: ACK_VERSION, paths: { 'new-workflow.md': { reason: 'trying to bypass it' } } },
+    baseAck: null,
   });
   assert.equal(r.newFileCapExceeded.length, 1, 'an ack entry must not exempt the new-file cap');
   assert.ok(!r.ok);
@@ -961,6 +1697,7 @@ test('property: every moved key lands in exactly one bucket', () => {
           current: mf(current),
           changedPaths: changedKeys.map((k) => sources[k]),
           ack: { version: ACK_VERSION, paths: ackPaths },
+          baseAck: null,
         });
 
         if (r.errors.length) return false;
@@ -1473,6 +2210,15 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
   const ack = readAckFile();
   const current = currentManifests();
 
+  // Consult the base side ONLY when this tree actually has a document to classify.
+  // `readAckFileAtRef` throws on a base it cannot read, which is right — but reading it
+  // unconditionally would DEADLOCK the repo if `next` ever carried a corrupt ack (a bad
+  // merge leaving conflict markers in exactly the file class this epic exists over):
+  // every PR would go red, INCLUDING the PR that deletes the corrupt file and repairs
+  // base. A tree carrying no ack has nothing to inherit, so it needs no base read — which
+  // is precisely the shape of the repair PR, and it lands and unblocks everyone.
+  const baseAck = ack === null ? null : readAckFileAtRef(baseSha);
+
   // Reconcile the family SET across three independent signals, rather than asserting one
   // count against both sides. The baseline is built at the base ref and the current tree
   // at PR HEAD, so the two legitimately differ by a family whenever a PR adds or removes
@@ -1498,6 +2244,15 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
     current,
     changedPaths,
     ack,
+    // The base side of the ack lifecycle (#2789). Without it a MERGED ack is
+    // indistinguishable from one that never explained anything, which is what reddened
+    // `next` for five commits and every PR branching off it (#2768). Entries already
+    // present here are spent: inert, never stale, and unable to pre-clear a new ripple.
+    //
+    // Keyed on `baseSha`, not `base`: the baseline half is already validated against that
+    // exact sha, so both halves of the base side provably describe the SAME commit, and a
+    // ref that moved between `resolveBase()` and here cannot split them.
+    baseAck,
     sizeBaseline: resolvedBaseline.sizeBaseline,
     sizeCurrent: currentSizes(),
   });

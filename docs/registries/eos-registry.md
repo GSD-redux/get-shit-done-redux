@@ -8,7 +8,25 @@ _To add your integration, see the [registry README](./README.md)._
 
 | Name | What it is | Latest release | GSD compat | Discussion |
 |---|---|---|---|---|
+| [GSD Cursor Model Profiles](https://github.com/clezcoding/gsd-cursor) | Adds six researched Cursor runtime profiles \(max / hybrid / value / budget / frontier / openweight\) to GSD, writes current and legacy tier-map surfaces, routes all six GSD phases, validates local model availability, and restores prior managed settings on uninstall without modifying gsd-core. | ![release](https://img.shields.io/github/v/release/clezcoding/gsd-cursor?sort=semver&include_prereleases) | `>=1.0.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2578) |
 | [GSD for Oh My Pi](https://github.com/tchivs/gsd-omp) | Embeds GSD in Oh My Pi through OMP's native ExtensionAPI, programmatic slash commands, task isolation, lifecycle events, filesystem state, and managed agent and skill projection. | ![release](https://img.shields.io/github/v/release/tchivs/gsd-omp?sort=semver&include_prereleases) | `>=1.7.0` | [discuss](https://github.com/open-gsd/gsd-core/discussions/2342) |
+
+## GSD Cursor Model Profiles
+- **Repository:** https://github.com/clezcoding/gsd-cursor — [latest release](https://github.com/clezcoding/gsd-cursor/releases/latest)
+- **What it is:** Adds six researched Cursor runtime profiles \(max / hybrid / value / budget / frontier / openweight\) to GSD, writes current and legacy tier-map surfaces, routes all six GSD phases, validates local model availability, and restores prior managed settings on uninstall without modifying gsd-core.
+- **Author:** clezcoding
+- **Every interaction with GSD:** Interface points: model, state; profile: declarative-cli; protocol v1; axes: embeddingMode=declarative, commandSurface=prose-only, dispatch=Writes a Cursor model tier map and six phase-aware profile presets into the GSD config without dispatching tasks, modelMode=active, hookBus=none, stateIO=filesystem, transport=native-extension, runtime=node
+- **Install:**
+```sh
+npm install --global github:clezcoding/gsd-cursor#v1.1.0 && gsd-cursor install
+```
+- **Uninstall:**
+```sh
+gsd-cursor uninstall && npm uninstall --global gsd-cursor
+```
+- **GSD compatibility:** `>=1.0.0`, protocol v1
+- **License:** MIT
+- **Discussion / ranking:** https://github.com/open-gsd/gsd-core/discussions/2578
 
 ## GSD for Oh My Pi
 - **Repository:** https://github.com/tchivs/gsd-omp — [latest release](https://github.com/tchivs/gsd-omp/releases/latest)

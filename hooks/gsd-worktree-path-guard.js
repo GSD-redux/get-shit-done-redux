@@ -56,6 +56,13 @@ function nearestExistingDir(start) {
 // shape as canonicalizeRuntimeName in src/runtime-name-policy.cts).
 const KIMI_TOOL_NAMES = new Map([['WriteFile', 'Write'], ['StrReplaceFile', 'Edit'], ['ReadFile', 'Read'], ['Shell', 'Bash']]);
 function normalizeKimiPayload(data) {
+  // #2595 (review nit): `JSON.parse('null')` is null, and null/primitive
+  // payloads reached the `data.tool_name` read below and threw — falsifying
+  // this function's own "total over the inputs JSON can express" claim, which
+  // property (e) now tests directly. Harmless in practice (a null payload has
+  // nothing to guard, and the throw landed in the same fail-open catch as the
+  // exit-0 it now takes deliberately) but the claim should be true as stated.
+  if (data === null || typeof data !== 'object') return data;
   const raw = data.tool_name;
   if (typeof raw !== 'string') return data;
   const mapped = KIMI_TOOL_NAMES.get(raw.slice(raw.lastIndexOf(':') + 1));
@@ -66,18 +73,59 @@ function normalizeKimiPayload(data) {
   }
   const input = data.tool_input;
   if (input && typeof input === 'object') {
-    if (input.file_path === undefined && typeof input.path === 'string') {
+    // #2547 (review): Kimi's `path` is AUTHORITATIVE — it must win outright,
+    // not merely fill in when `file_path` happens to be absent. kimi-cli's file
+    // tools carry no `file_path` field at all (src/kimi_cli/tools/file/write.py,
+    // replace.py, @ 4a550ef — the SHA #2547 pins), and soul/toolset.py hands the
+    // model's raw json-parsed
+    // arguments to PreToolUse verbatim, doing typed validation only later inside
+    // tool.call() — after the hook has already decided. So a `file_path` in a
+    // Kimi payload is ALWAYS model-supplied, and under the old `=== undefined`
+    // condition it SHADOWED the field kimi-cli actually executes on. A payload
+    // pairing a cross-root `path` with a spurious `file_path: ""` left every
+    // guard reading an empty string and exiting 0, while the identical write
+    // without the extra key blocked — a bypass needing no crash at all. The same
+    // shadowing also preserved a NON-STRING `file_path` (`[]`), which threw
+    // inside gsd-worktree-path-guard's path.isAbsolute() and reached its outer
+    // `catch { process.exit(0) }`: the same crash-to-allow this fix closes
+    // elsewhere, reached through the guard's own read rather than through
+    // normalization. Overwriting can only ever narrow what a guard inspects to
+    // the path that will actually be written, so it cannot under-block.
+    if (typeof input.path === 'string') {
       input.file_path = input.path;
     }
     const edits = Array.isArray(input.edit) ? input.edit
       : (input.edit && typeof input.edit === 'object') ? [input.edit] : [];
     if (edits.length) {
-      if (input.old_string === undefined) {
-        input.old_string = edits.map((e) => String(e.old ?? '')).join('\n');
-      }
-      if (input.new_string === undefined) {
-        input.new_string = edits.map((e) => String(e.new ?? '')).join('\n');
-      }
+      // #2547: `e?.old`, not `e.old` — `??` guards the value, not the
+      // dereference, so a NULLISH entry (`edit: [null]`) threw a TypeError
+      // here. normalizeKimiPayload runs before any tool dispatch, so that throw
+      // reached each guard's outer `catch { process.exit(0) }` and silently
+      // downgraded a should-BLOCK call into an allow. (A string/number entry
+      // never threw — `('x').old` is a legal read yielding undefined.)
+      //
+      // The String() coercion is guarded for the same reason: `{"toString":
+      // null}` is valid JSON that throws "Cannot convert object to primitive
+      // value", which is the identical crash-to-allow with a different
+      // trigger. Degrading only the non-coercible entry to '' keeps
+      // stringification intact for every value that CAN coerce (numbers,
+      // arrays, plain objects), so nothing downstream — including
+      // gsd-prompt-guard's scan of new_string — loses content it saw before.
+      const editText = (v) => { try { return String(v ?? ''); } catch { return ''; } };
+      // #2595 (review Major 2): reconstruct UNCONDITIONALLY, mirroring the
+      // `path` decision above rather than merely filling in when the field
+      // happens to be absent. kimi-cli's StrReplaceFile schema is `path` +
+      // `edit` only (src/kimi_cli/tools/file/replace.py @ 4a550ef) — it carries
+      // no `old_string`/`new_string` at all, so either field appearing in a
+      // Kimi payload is ALWAYS model-supplied, exactly like `file_path`. Under
+      // the old `=== undefined` condition a model-supplied `new_string: ""`
+      // SHADOWED the reconstruction, leaving gsd-prompt-guard's injection scan
+      // reading '' and exiting at its `if (!content)` before it ever saw the
+      // real `edit[].new` — a one-key bypass of the very scan this fix's
+      // guarded coercion exists to keep fed. A `typeof` test would NOT close
+      // it: a benign non-empty string shadows just as effectively as ''.
+      input.old_string = edits.map((e) => editText(e?.old)).join('\n');
+      input.new_string = edits.map((e) => editText(e?.new)).join('\n');
     }
   }
   return data;
@@ -138,12 +186,37 @@ process.stdin.on('end', () => {
     }
     const wtTopRaw = wtTopResult.stdout.trim();
 
-    const rawFilePath = data.tool_input?.file_path || '';
+    // #2595 (review Major 3): read the field TYPED. `?.file_path || ''` let a
+    // non-string through — `[]` and `{}` are truthy, so they survived the
+    // `!rawFilePath` check and threw inside path.isAbsolute() below, landing in
+    // this script's outer `catch { process.exit(0) }`. That is the same
+    // crash-to-allow #2547 closes elsewhere, reached through the guard's own
+    // read rather than through normalization, and it is NOT closed by making
+    // `path` authoritative: normalization returns early for native Claude Code
+    // payloads (KIMI_TOOL_NAMES has no 'Edit' entry), so `{"tool_name":"Edit",
+    // "tool_input":{"file_path":[]}}` reached it untouched — this guard's
+    // original #260 surface. Same shape as hooks/gsd-windsurf-pre-write.js:75.
+    const rawFilePath = typeof data.tool_input?.file_path === 'string'
+      ? data.tool_input.file_path
+      : '';
     if (!rawFilePath) {
       process.exit(0);
     }
 
-    // Relative paths are always safe — they resolve relative to CWD inside the worktree
+    // Relative paths resolve against the tool's CWD, which is inside the worktree
+    // — so under the runtime this guard was written for they cannot leave it.
+    //
+    // #2595 (review Minor 5) — state the premise rather than leave it implicit,
+    // because THIS PR is what widened the guard's reach to Kimi. "Always safe"
+    // holds only while every runtime reaching here either rejects relative paths
+    // or resolves them against the worktree CWD. Claude Code's Edit/Write require
+    // an absolute file_path, so the original #260 surface satisfies it by
+    // construction. kimi-cli's StrReplaceFile takes `path` with no documented
+    // absoluteness guarantee, and its resolution behaviour is NOT verified here
+    // (no source available to this repo at 4a550ef beyond the schema). If it
+    // resolves relative paths against anything other than the tool CWD, a
+    // `../`-laden path exits 0 at this line and escapes the worktree. Stating a
+    // mechanism and an unverified premise — not asserting a live bypass.
     if (!path.isAbsolute(rawFilePath)) {
       process.exit(0);
     }

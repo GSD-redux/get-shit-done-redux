@@ -2,6 +2,7 @@
 
 - **Status:** Accepted — ratified 2026-07-17 (originally Proposed 2026-06-14); see "Ratification" below
 - **Date:** 2026-06-14
+- **Amended by:** [ADR-2782](2782-reviewer-lane-capability-surface.md) (Reviewer Lane capability surface) — **D5 gains a fourth executable-surface disclosure class**, the reviewer lane, which is the first disclosed surface that *receives* data rather than only executing: a lane is piped plan text, requirements, research findings, and `CONTEXT.md` decisions. D9's capability matrix gains a reviewer-lane column.
 
 > **Relationship to other ADRs.** This ADR **amends and extends ADR-857 Decisions 7 and 8** — it does not reverse them. ADR-857 D7 deferred third-party code-loading "to its own ADR"; D8 deferred third-party CLI support "to an external loader + trust/validation gate, no rework because runtimes are already descriptors." This *is* that ADR, and it *delivers* that gate. It builds on **ADR-894** (capability declaration format), **ADR-1016** (runtime capability descriptor), and **ADR-58** (InstallPlan seam). Tracked by [#1244](https://github.com/open-gsd/gsd-core/issues/1244). Target release: **1.6.0**.
 

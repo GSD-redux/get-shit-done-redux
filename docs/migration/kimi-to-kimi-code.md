@@ -8,7 +8,9 @@ Before the Phase 1 descriptor split (epic #2505), GSD conflated both products un
 
 - `gsd-tools query agent-skills <name>` returned **empty** (the Python kimi-cli agent YAMLs are inert on Kimi Code).
 - Every workflow that called a named GSD subagent (`gsd-planner`, `gsd-executor`, …) **failed at dispatch** (Kimi Code only recognizes `coder`, `explore`, `plan`).
-- Every GSD `PreToolUse` guard (`gsd-prompt-guard`, `gsd-read-guard`, `gsd-worktree-path-guard`, `gsd-read-injection-scanner`) was **silently dormant** (#2304) — the matcher was translated but the payload check wasn't, so the guards exited 0 on every Kimi-vocabulary tool call.
+- Every GSD guard hook (the `PreToolUse` guards `gsd-prompt-guard`, `gsd-read-guard`, `gsd-worktree-path-guard`, `gsd-workflow-guard`, and the `PostToolUse` scanner `gsd-read-injection-scanner`) was **silently dormant** (#2304) — the matcher was translated but the payload check wasn't, so the hooks exited 0 on every Kimi-vocabulary tool call.
+
+  > **Scope after the fix (#2547):** normalization makes each hook's *checks* run. It does not make all of them *enforceable* on Kimi. Only **PreToolUse** results are consulted by kimi-cli, so the enforceable blocks are the worktree cross-root write block and the workflow force-add block. `gsd-read-injection-scanner` is **PostToolUse**, whose results kimi-cli discards, so its prompt-injection block does not apply on Kimi regardless of what it emits.
 
 ## Which product am I on?
 
@@ -58,7 +60,12 @@ Phase 4 (epic #2505) added runtime-aware dispatch. Workflows now resolve the sub
 
 ## What about the dormant guards?
 
-Phase 0 (#2304 / PR #2518) fixed all seven Kimi-surface PreToolUse/PostToolUse guards. Re-installing via `--kimi-code --global` picks up the fix automatically — the normalized guard scripts are part of the standard install.
+Phase 0 (#2304 / PR #2518) made all seven Kimi-surface hooks read Kimi's payload shape, so their checks now run instead of exiting 0 on every call. Re-installing via `--kimi-code --global` picks up the fix automatically — the normalized guard scripts are part of the standard install.
+
+What that does and does not buy you (#2547):
+
+- **Enforceable on Kimi** — the `PreToolUse` blocks: the worktree cross-root write block (`gsd-worktree-path-guard`) and the workflow force-add block (`gsd-workflow-guard`). Kimi awaits `PreToolUse` results and honours a `block`.
+- **Not enforceable on Kimi** — `gsd-read-injection-scanner`'s prompt-injection block. It is a `PostToolUse` hook, and kimi-cli's dispatch never inspects `PostToolUse` results, so the block cannot take effect there no matter what the hook emits. On Kimi, treat the read-injection scanner as advisory-only and rely on the prompt-level untrusted-input boundary instead.
 
 ## Questions
 

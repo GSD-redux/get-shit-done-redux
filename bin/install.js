@@ -10406,6 +10406,45 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     return Array.isArray(scopeLayout) && scopeLayout.length > 0;
   })();
 
+  // #2624: write the .gsd-source marker. Extracted from its former late position so it can be
+  // called BEFORE staging reads the marker (see the call site below). Scoped to the Claude-global
+  // layout (issue #1477) — the only install path that ships the skills layout without a
+  // commands/gsd source tree, so findInstallSourceRoot's walk-up has nothing to find and
+  // /gsd-surface (list/status) throws without it. Points at the package's own commands/gsd
+  // source. Guarded on source presence so a half-published package never writes a dangling
+  // marker. Write failure is non-fatal (install proceeds; warn so /gsd-surface breakage is
+  // diagnosable) — the same contract the late write had.
+  function _writeGsdSourceMarker(runtime, targetDir, src, isGlobal) {
+    if (_hostBehaviors(runtime).sourceMarkerFile && isGlobal) {
+      const gsdSourceCommands = path.join(src, 'commands', 'gsd');
+      if (fs.existsSync(gsdSourceCommands)) {
+        try {
+          // ADR-1239 Phase B write-confinement: the descriptor-sourced marker filename
+          // must resolve under targetDir (parity with the other descriptor-driven writes).
+          const _markerPath = assertDestWithinConfigHome(targetDir, _hostBehaviors(runtime).sourceMarkerFile);
+          fs.writeFileSync(_markerPath, gsdSourceCommands + '\n', 'utf8');
+        } catch (err) {
+          // Non-fatal: install proceeds. But on the Claude-global layout walk-up
+          // also fails (no commands/gsd source tree), so a silent write failure
+          // still leaves /gsd-surface broken at runtime — warn so it's diagnosable.
+          console.warn(`  ${yellow}!${reset} Could not write .gsd-source marker (${err.message}); /gsd-surface list/status may fail`);
+        }
+      }
+    }
+  }
+
+  // #2624: write the .gsd-source marker BEFORE any staging reads it. The marker write
+  // formerly lived AFTER staging; on an upgrade the marker still held the PREVIOUS
+  // install's source path (e.g. an npx per-version cache dir that still exists on disk),
+  // so findInstallSourceRoot(configDir) — called inside installRuntimeArtifacts below —
+  // returned the stale path and every converted skill was generated from the OLD version's
+  // commands/gsd, silently installing prior-version content with a self-consistent manifest
+  // hash. Writing first closes the read-before-write hole for every findInstallSourceRoot
+  // consumer (skills, commands, /gsd-surface, capability-state). Placed here (before the
+  // _isSkillsRuntime branch) so it runs for every Claude-global install, matching the
+  // original write's sourceMarkerFile && isGlobal guard exactly.
+  _writeGsdSourceMarker(runtime, targetDir, src, isGlobal);
+
   if (_isSkillsRuntime) {
     // Layout-driven install for skills-based runtimes (full and minimal modes)
     const scope = isGlobal ? 'global' : 'local';
@@ -10694,35 +10733,11 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     failures.push('gsd-core');
   }
 
-  // Write the .gsd-source marker so runtime source resolution succeeds at
-  // runtime (#1477). The Claude-global skills layout ships gsd-core/{bin,
-  // contexts,references,templates,workflows} but NOT the commands/gsd source
-  // tree, and _runLegacyUninstallCleanup actively removes any commands/gsd/
-  // for that scope — so findInstallSourceRoot's walk-up has nothing to find
-  // and /gsd-surface (list/status) throws. This is the writer half of the
-  // marker that runtime-artifact-layout.cjs's finders already read (the reader
-  // landed in #1476). It points at the package's own commands/gsd source.
-  // Scoped to the Claude-global layout (issue #1477) — the only install path
-  // that ships the skills layout without a commands/gsd source tree; every
-  // other runtime/scope deploys commands/gsd, so its walk-up already resolves
-  // and needs no marker. Guarded on source presence so a half-published
-  // package never writes a dangling marker.
-  if (_hostBehaviors(runtime).sourceMarkerFile && isGlobal) {
-    const gsdSourceCommands = path.join(src, 'commands', 'gsd');
-    if (fs.existsSync(gsdSourceCommands)) {
-      try {
-        // ADR-1239 Phase B write-confinement: the descriptor-sourced marker filename
-        // must resolve under targetDir (parity with the other descriptor-driven writes).
-        const _markerPath = assertDestWithinConfigHome(targetDir, _hostBehaviors(runtime).sourceMarkerFile);
-        fs.writeFileSync(_markerPath, gsdSourceCommands + '\n', 'utf8');
-      } catch (err) {
-        // Non-fatal: install proceeds. But on the Claude-global layout walk-up
-        // also fails (no commands/gsd source tree), so a silent write failure
-        // still leaves /gsd-surface broken at runtime — warn so it's diagnosable.
-        console.warn(`  ${yellow}!${reset} Could not write .gsd-source marker (${err.message}); /gsd-surface list/status may fail`);
-      }
-    }
-  }
+  // #2624: the .gsd-source marker is now written by _writeGsdSourceMarker()
+  // BEFORE staging reads it (see the early call above the _isSkillsRuntime
+  // block). The former write lived here — AFTER staging — which on an upgrade
+  // let staging read a stale prior-version marker and silently install
+  // old-version skill content. Moved up; this site intentionally left empty.
 
   // #1629 critical fix: Windsurf workflow wrappers (convertClaudeCommandToWindsurfWorkflow)
   // delegate to command bodies at <targetDir>/gsd-core/commands/gsd/${stem}.md via a
@@ -11388,7 +11403,15 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     throw _earlyInstallErr;
   }
 
-  if (plan.installSurface === 'codex-toml' && !isMinimalMode(_effectiveInstallMode)) {
+  // #2695: this branch runs for BOTH `core` (minimal) and `full` profiles.
+  // Hooks are lightweight infrastructure (update-check + context monitor), not the
+  // "full agent surface" that `core` deliberately omits. The config.toml / agent
+  // generation below is still gated by its own inner `!isMinimalMode` guard, so
+  // `core` enters the branch to receive the hook-file copy + hooks.json wiring but
+  // does NOT get agent roles generated. Before #2695 the outer `!isMinimalMode`
+  // here skipped the whole branch for `core`, so the registered parent hook pointed
+  // at a worker/registry the same installer never delivered.
+  if (plan.installSurface === 'codex-toml') {
     // Capture pre-install snapshots before ANY GSD mutation
     // (#2760 fix 3). On post-write schema-validation failure OR any throw
     // during the mutation sequence (write failure, merge throw, etc.) we
@@ -11571,9 +11594,18 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 
     // Copy only the hook files that Codex actually registers via its hook configuration (#2153).
     // #772: added gsd-context-monitor.js for the new SubagentStart/Stop/PostToolUse events.
+    // #2695: the parent gsd-check-update.js spawn()s gsd-check-update-worker.js, which
+    //   require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so all four must be
+    //   installed/refreshed together for every profile, or Codex is wired to a dependency
+    //   chain the same installer never delivers.
     // We deliberately do *not* copy gsd-graphify-update.sh or hooks/lib/ for Codex
     // in this change (graphify auto-update support for Codex is out of scope for #3579).
-    const CODEX_HOOKS_TO_COPY = ['gsd-check-update.js', 'gsd-context-monitor.js'];
+    const CODEX_HOOKS_TO_COPY = [
+      'gsd-check-update.js',
+      'gsd-check-update-worker.js',
+      'managed-hooks-registry.cjs',
+      'gsd-context-monitor.js',
+    ];
     const codexHooksSrc = path.join(src, 'hooks', 'dist');
     if (fs.existsSync(codexHooksSrc)) {
       const codexHooksDest = path.join(targetDir, 'hooks');
@@ -11602,6 +11634,14 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           let content = fs.readFileSync(srcFile, 'utf8');
           content = content.replace(/\{\{GSD_VERSION\}\}/g, pkg.version);
           fs.writeFileSync(destFile, content);
+          try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
+        } else {
+          // #2695: raw byte-for-byte copy for allowlisted artifacts that carry
+          // no {{GSD_VERSION}} placeholder and no runtime path token (e.g.
+          // managed-hooks-registry.cjs, whose only `.claude` mention is inside a
+          // doc comment). Version/path transforms would be a no-op at best and a
+          // surprise at worst; the issue requires the registry copied verbatim.
+          fs.copyFileSync(srcFile, destFile);
           try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
         }
       }
