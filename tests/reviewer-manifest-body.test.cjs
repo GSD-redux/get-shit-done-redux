@@ -1480,17 +1480,121 @@ describe('I. Integration — loadAndValidate(centralKeys, tmpCapDir)', () => {
 // ─── J. Property-based (fast-check) ────────────────────────────────────────
 
 describe('J. Property-based (fast-check)', () => {
+  // The first version of this property used a bare `fc.anything()` as the whole
+  // reviewer value, and it was FALSE CONFIDENCE: at default constraints
+  // fc.anything() emits no BigInt, no circular reference, no getter and no
+  // Proxy — 20,000 sampled draws produced zero of each — which is precisely the
+  // value space that broke the contract. Worse, even enabling withBigInt is not
+  // enough under whole-value fuzzing, because the bug needs an exotic value in a
+  // SPECIFICALLY NAMED field and random key names essentially never land on one.
+  // So the generator is field-targeted, and the value space is widened by hand
+  // to include the shapes JSON cannot express but a JS caller can still pass.
+  const assertTotal = (cap, label) => {
+    let result;
+    try {
+      result = validateReviewerBody(cap);
+    } catch (err) {
+      assert.fail(`validateReviewerBody threw for ${label}: ${err && err.message}`);
+    }
+    assert.ok(Array.isArray(result), `must return an array for ${label}`);
+    assert.ok(result.every((e) => typeof e === 'string'), `every entry must be a string for ${label}`);
+  };
+
   test('validateReviewerBodyNeverThrowsOnArbitraryInput', () => {
+    // Whole-value fuzzing — the original property, kept as the broad sweep.
     fc.assert(
-      fc.property(fc.anything(), (reviewerValue) => {
-        const cap = { id: 'prop-test', reviewer: reviewerValue };
-        const result = validateReviewerBody(cap);
-        assert.ok(Array.isArray(result), 'validateReviewerBody must always return an array');
-        assert.ok(result.every((e) => typeof e === 'string'), 'every entry must be a string');
+      fc.property(fc.anything({ withBigInt: true }), (reviewerValue) => {
+        assertTotal({ id: 'prop-test', reviewer: reviewerValue }, 'whole-body fuzz');
         return true;
       }),
       { numRuns: 500 },
     );
+
+    // Field-targeted fuzzing — this is the variant that actually falsifies the
+    // pre-fix implementation, on roughly the first generated case.
+    const TARGET_FIELDS = [
+      'slug', 'flags', 'transport', 'probe', 'invoke', 'timeoutFloorMs',
+      'emptyOutput', 'reviewsSection', 'evidenceClass', 'requiresBinaries',
+      'promptBudgetKey', 'handler',
+    ];
+    fc.assert(
+      fc.property(
+        fc.constantFrom(...TARGET_FIELDS),
+        fc.anything({ withBigInt: true }),
+        (field, value) => {
+          const lane = laneOverride((l) => { l[field] = value; });
+          assertTotal({ id: 'prop-test', reviewer: lane }, `${field} = ${String(field)}`);
+          return true;
+        },
+      ),
+      { numRuns: 1000 },
+    );
+  });
+
+  // The shapes fast-check cannot generate but a JS caller can still hand us.
+  // These are enumerated rather than fuzzed because a generator that produced
+  // them would be reimplementing the enumeration anyway.
+  test('validateReviewerBodyNeverThrowsOnValuesJsonCannotExpress', () => {
+    const circular = () => { const o = {}; o.self = o; return o; };
+    const throwingGetter = () => {
+      const o = {};
+      Object.defineProperty(o, 'valueOf', { get() { throw new Error('boom'); } });
+      Object.defineProperty(o, 'toJSON', { get() { throw new Error('boom'); } });
+      return o;
+    };
+    const hostile = [
+      ['bigint', 10n],
+      ['circular', circular()],
+      ['throwing-getter', throwingGetter()],
+      ['symbol', Symbol('s')],
+      ['function', () => {}],
+      ['null-prototype', Object.create(null)],
+    ];
+
+    for (const field of ['slug', 'transport', 'timeoutFloorMs', 'handler', 'promptBudgetKey', 'probe', 'invoke']) {
+      for (const [name, value] of hostile) {
+        const lane = laneOverride((l) => { l[field] = value; });
+        assertTotal({ id: 'prop-test', reviewer: lane }, `${field} = ${name}`);
+      }
+    }
+
+    // Array-element positions, which take a different code path from scalars.
+    for (const field of ['flags', 'requiresBinaries']) {
+      for (const [name, value] of hostile) {
+        const lane = laneOverride((l) => { l[field] = [value]; });
+        assertTotal({ id: 'prop-test', reviewer: lane }, `${field}[0] = ${name}`);
+      }
+    }
+    const argsLane = laneOverride((l) => { l.invoke.args = [circular()]; });
+    assertTotal({ id: 'prop-test', reviewer: argsLane }, 'invoke.args[0] = circular');
+
+    // Read-time throws: a getter or Proxy trap fires BEFORE any message is built,
+    // so describeValue() alone cannot save these — only the structural wrapper can.
+    assertTotal(
+      Object.defineProperty({ reviewer: {} }, 'id', { get() { throw new Error('boom'); } }),
+      'throwing getter on cap.id',
+    );
+    const slugThrows = laneOverride(() => {});
+    Object.defineProperty(slugThrows, 'slug', { get() { throw new Error('boom'); } });
+    assertTotal({ id: 'x', reviewer: slugThrows }, 'throwing getter on reviewer.slug');
+    assertTotal({ id: 'x', reviewer: new Proxy({}, { get() { throw new Error('boom'); } }) }, 'Proxy get trap');
+    assertTotal({ id: 'x', reviewer: new Proxy({}, { ownKeys() { throw new Error('boom'); } }) }, 'Proxy ownKeys trap');
+
+    // collectReviewerWarnings carries the same contract — it runs on
+    // loadRegistry's ACCEPT path, so a throwing diagnostic would cost a user a
+    // lane that is otherwise perfectly valid.
+    for (const cap of [
+      Object.defineProperty({ reviewer: {} }, 'id', { get() { throw new Error('boom'); } }),
+      { id: 'x', reviewer: new Proxy({}, { ownKeys() { throw new Error('boom'); } }) },
+    ]) {
+      let warnings;
+      try {
+        warnings = collectReviewerWarnings(cap);
+      } catch (err) {
+        assert.fail(`collectReviewerWarnings threw: ${err && err.message}`);
+      }
+      assert.ok(Array.isArray(warnings), 'collectReviewerWarnings must always return an array');
+    }
   });
 
   test('uniquenessIsInvariantUnderMapOrder', () => {

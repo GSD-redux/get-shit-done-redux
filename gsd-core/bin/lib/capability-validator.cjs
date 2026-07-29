@@ -1555,6 +1555,46 @@ function isPositiveIntegerMs(v) {
   return typeof v === 'number' && Number.isInteger(v) && v > 0;
 }
 
+/**
+ * Render any value for an error message WITHOUT ever throwing.
+ *
+ * `JSON.stringify` throws on a BigInt and on a circular structure, and a value
+ * carrying a throwing `toJSON` propagates that throw. Interpolating a rejected
+ * value into its own rejection message must never itself become the failure —
+ * these validators are contracted to RETURN errors, and #1461 OVL-1 records a
+ * validator that threw and would have crashed every consumer of loadRegistry.
+ *
+ * @param {*} v
+ * @returns {string}
+ */
+function describeValue(v) {
+  if (typeof v === 'bigint') return String(v) + 'n';
+  if (typeof v === 'symbol') return String(v);
+  if (typeof v === 'function') return '[function]';
+  try {
+    const json = JSON.stringify(v);
+    // stringify returns undefined for undefined and for non-serializable roots.
+    return json === undefined ? String(v) : json;
+  } catch {
+    // Circular structure, a nested BigInt, or a throwing toJSON.
+    try {
+      return Object.prototype.toString.call(v);
+    } catch {
+      return '[unserializable]';
+    }
+  }
+}
+
+/** Extract a message from an unknown thrown value without throwing again. */
+function safeErrorMessage(err) {
+  try {
+    if (err instanceof Error && typeof err.message === 'string') return err.message;
+    return describeValue(err);
+  } catch {
+    return '[unprintable error]';
+  }
+}
+
 /** House CodeQL barrier — inline literal guard at every key-derived read/write site. */
 function isReservedName(v) {
   return v === '__proto__' || v === 'constructor' || v === 'prototype';
@@ -1586,7 +1626,7 @@ function validateEnumField(ctx, label, value, validSet) {
   if (validSet.has(value)) return [];
   return [
     ctx + ' ' + label + ' must be one of: ' + [...validSet].join(', ') +
-    ' (got: ' + JSON.stringify(value) + ')',
+    ' (got: ' + describeValue(value) + ')',
   ];
 }
 
@@ -1603,6 +1643,17 @@ function validateEnumField(ctx, label, value, validSet) {
  * @returns {string[]}  Warning strings; empty when there is nothing to say.
  */
 function collectReviewerWarnings(cap) {
+  // Same totality contract as validateReviewerBody, for the same reason: this is
+  // called from loadRegistry's accept path, and a diagnostic that throws must
+  // never cost the user a working lane.
+  try {
+    return collectReviewerWarningFields(cap);
+  } catch {
+    return [];
+  }
+}
+
+function collectReviewerWarningFields(cap) {
   const warnings = [];
   if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return warnings;
   const r = cap.reviewer;
@@ -1634,10 +1685,27 @@ function collectReviewerWarnings(cap) {
  * of a body, and a malformed assertion is an error (Postel's Law with a
  * boundary — liberal in what a manifest may OMIT, strict in what it ASSERTS).
  *
+ * Totality is enforced STRUCTURALLY by the wrapper below, not by auditing every
+ * field read. Serialization is made safe via describeValue(), but that alone is
+ * not enough: a value carrying a throwing getter, or a Proxy with a throwing
+ * `get`/`ownKeys` trap, throws on the READ itself, before any message is built.
+ * A caller cannot be asked to re-derive today's reachability analysis — the
+ * contract says "any input", so the guarantee is absolute rather than argued.
+ *
  * @param {object} cap  The parsed capability manifest.
  * @returns {string[]}  Array of error strings; empty = valid.
  */
 function validateReviewerBody(cap) {
+  try {
+    return validateReviewerBodyFields(cap);
+  } catch (err) {
+    // A malformed body must degrade to a validation ERROR, never to a crash of
+    // every consumer of loadRegistry (#1461 OVL-1).
+    return ['capability reviewer body could not be validated: ' + safeErrorMessage(err)];
+  }
+}
+
+function validateReviewerBodyFields(cap) {
   const errors = [];
   if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return errors;
 
@@ -1681,7 +1749,7 @@ function validateReviewerBody(cap) {
     for (const flag of r.flags) {
       if (typeof flag !== 'string' || !LANE_FLAG_RE.test(flag)) {
         errors.push(
-          ctx + ' reviewer.flags entry ' + JSON.stringify(flag) +
+          ctx + ' reviewer.flags entry ' + describeValue(flag) +
           ' must match ' + String(LANE_FLAG_RE) + ' (e.g. "--lm-studio")',
         );
         continue;
@@ -1703,7 +1771,7 @@ function validateReviewerBody(cap) {
   if (!isPositiveIntegerMs(r.timeoutFloorMs)) {
     errors.push(
       ctx + ' reviewer.timeoutFloorMs must be a positive integer of milliseconds ' +
-      '(got: ' + JSON.stringify(r.timeoutFloorMs) + ')',
+      '(got: ' + describeValue(r.timeoutFloorMs) + ')',
     );
   }
 
@@ -1723,7 +1791,7 @@ function validateReviewerBody(cap) {
   } else {
     for (const bin of r.requiresBinaries) {
       if (typeof bin !== 'string' || bin.length === 0) {
-        errors.push(ctx + ' reviewer.requiresBinaries entry ' + JSON.stringify(bin) + ' must be a non-empty string');
+        errors.push(ctx + ' reviewer.requiresBinaries entry ' + describeValue(bin) + ' must be a non-empty string');
       }
     }
   }
@@ -1732,7 +1800,7 @@ function validateReviewerBody(cap) {
   if (r.promptBudgetKey !== null && (typeof r.promptBudgetKey !== 'string' || r.promptBudgetKey.length === 0)) {
     errors.push(
       ctx + ' reviewer.promptBudgetKey must be a dotted config key or null ' +
-      '(got: ' + JSON.stringify(r.promptBudgetKey) + ')',
+      '(got: ' + describeValue(r.promptBudgetKey) + ')',
     );
   }
 
@@ -1740,7 +1808,7 @@ function validateReviewerBody(cap) {
   if (r.handler !== null && !VALID_LANE_HANDLERS.has(r.handler)) {
     errors.push(
       ctx + ' reviewer.handler must be null or one of: ' + [...VALID_LANE_HANDLERS].join(', ') +
-      ' (got: ' + JSON.stringify(r.handler) + '). Handlers are first-party module NAMES, ' +
+      ' (got: ' + describeValue(r.handler) + '). Handlers are first-party module NAMES, ' +
       'never paths and never third-party code — a lane needing a shape the vocabulary lacks ' +
       'files an issue naming the missing primitive (ADR-2782 D6)',
     );
@@ -1824,7 +1892,7 @@ function validateLaneProbe(ctx, probe) {
       errors.push(
         ctx + ' reviewer.probe.timeoutMs must be a positive integer of milliseconds for kind "' +
         probe.kind + '" — an unbounded probe hangs every /gsd:review invocation ' +
-        '(got: ' + JSON.stringify(probe.timeoutMs) + ')',
+        '(got: ' + describeValue(probe.timeoutMs) + ')',
       );
     }
   } else if (probe.timeoutMs !== undefined) {
@@ -1899,7 +1967,7 @@ function validateSpawnInvoke(ctx, invoke) {
   } else {
     for (const a of invoke.args) {
       if (typeof a !== 'string') {
-        errors.push(ctx + ' reviewer.invoke.args entry ' + JSON.stringify(a) + ' must be a string');
+        errors.push(ctx + ' reviewer.invoke.args entry ' + describeValue(a) + ' must be a string');
       }
     }
   }
@@ -1921,7 +1989,7 @@ function validateSpawnInvoke(ctx, invoke) {
     // use is data a later reader may honour.
     errors.push(
       ctx + ' reviewer.invoke.outputArg is only permitted when outputChannel is "file-arg" ' +
-      '(got outputChannel: ' + JSON.stringify(invoke.outputChannel) + ')',
+      '(got outputChannel: ' + describeValue(invoke.outputChannel) + ')',
     );
   }
 
@@ -1929,7 +1997,7 @@ function validateSpawnInvoke(ctx, invoke) {
   if (invoke.modelArg !== null && (typeof invoke.modelArg !== 'string' || invoke.modelArg.length === 0)) {
     errors.push(
       ctx + ' reviewer.invoke.modelArg must be a non-empty string or null ' +
-      '(got: ' + JSON.stringify(invoke.modelArg) + ')',
+      '(got: ' + describeValue(invoke.modelArg) + ')',
     );
   }
 
@@ -1959,7 +2027,7 @@ function validateHttpInvoke(ctx, invoke) {
   if (invoke.effortChannel !== 'none') {
     errors.push(
       ctx + ' reviewer.invoke.effortChannel must be "none" for transport "openai-http" ' +
-      '(got: ' + JSON.stringify(invoke.effortChannel) + ')',
+      '(got: ' + describeValue(invoke.effortChannel) + ')',
     );
   }
 
