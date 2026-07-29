@@ -22,7 +22,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { createTempProject, createTempDir, cleanup, runGsdTools } = require('./helpers.cjs');
 const configSchema = require('../gsd-core/bin/lib/config-schema.cjs');
 const capValidator = require('../gsd-core/bin/lib/capability-validator.cjs');
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
@@ -327,7 +327,38 @@ describe('exclusivity gate sees dynamic patterns (#2797)', () => {
       'the per-reviewer budget pattern must be removed — it is federated now');
   });
 
-  test('a missing or malformed manifest degrades to checked-less, never throws', () => {
+  test('an absent manifest returns no patterns — the legitimate case', () => {
     assert.deepEqual(gen.loadCentralConfigPatterns('/nonexistent/path.json'), []);
+  });
+
+  test('a MALFORMED manifest throws rather than silently reporting no patterns', (t) => {
+    // Fail-open here would defeat the gate this function exists to feed: with
+    // zero patterns, the pattern-collision check silently passes and an inert
+    // federated slice ships green. `loadCentralConfigKeys` reads the same file
+    // and throws on the same failure class — the two must not disagree about
+    // what a broken manifest means.
+    const dir = createTempDir('gsd-2797-badmanifest-');
+    t.after(() => cleanup(dir));
+
+    const bad = path.join(dir, 'broken.json');
+    fs.writeFileSync(bad, '{ "validKeys": [ this is not json');
+
+    assert.throws(
+      () => gen.loadCentralConfigPatterns(bad),
+      (err) => err && /malformed|JSON/i.test(String(err.message)),
+      'a broken manifest must fail closed, not return []',
+    );
+  });
+
+  test('an unreadable manifest path throws rather than returning no patterns', (t) => {
+    // A directory where a file is expected yields EISDIR, not ENOENT — the
+    // "absent" carve-out must not swallow it.
+    const dir = createTempDir('gsd-2797-dirmanifest-');
+    t.after(() => cleanup(dir));
+
+    assert.throws(
+      () => gen.loadCentralConfigPatterns(dir),
+      'reading a directory as the manifest must fail closed',
+    );
   });
 });

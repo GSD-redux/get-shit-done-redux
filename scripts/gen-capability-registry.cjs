@@ -140,20 +140,49 @@ function loadCentralConfigKeys(schemaPath = CONFIG_SCHEMA_PATH) {
  *
  * The patterns are read from the SAME manifest the runtime reads and compiled
  * with the same `source`, rather than re-implementing a matcher here, so the two
- * cannot drift. A malformed pattern is skipped rather than thrown on: this gate
- * must degrade to "checked less" instead of failing the whole registry build.
+ * cannot drift.
+ *
+ * Failure contract MATCHES `loadCentralConfigKeys` above deliberately — the two
+ * read the same file and must not disagree about what a broken one means:
+ *   - ENOENT → empty list. Legitimately absent.
+ *   - Any other read error, or a JSON parse error → prominent stderr + throw.
+ *
+ * An earlier revision swallowed the parse error and returned []. That is
+ * fail-OPEN on the gate this function exists to feed: with zero patterns,
+ * `validateCrossCapability`'s pattern-collision check silently passes and an
+ * inert federated slice ships green. It was masked in the one production call
+ * site only because `loadCentralConfigKeys` runs first against the same path and
+ * throws — a coincidence of ordering, not a guarantee, and this function is
+ * exported and called standalone.
+ *
+ * A single unparseable PATTERN is still skipped rather than fatal: that is a
+ * per-entry defect the central schema's own tests own, and skipping one pattern
+ * degrades to "checked less" rather than blocking every build.
  */
 function loadCentralConfigPatterns(schemaPath = CONFIG_SCHEMA_PATH) {
-  let manifest;
+  let raw;
   try {
-    manifest = JSON.parse(fs.readFileSync(schemaPath, 'utf8'));
+    raw = fs.readFileSync(schemaPath, 'utf8');
   } catch (err) {
     if (err && err.code === 'ENOENT') return [];
-    return [];
+    process.stderr.write(
+      '  ERROR  Failed to read config-schema manifest at ' + schemaPath + ': ' + err.message + '\n',
+    );
+    throw new ExitError(1, 'could not read config-schema manifest');
   }
-  const raw = Array.isArray(manifest.dynamicKeyPatterns) ? manifest.dynamicKeyPatterns : [];
+
+  let manifest;
+  try {
+    manifest = JSON.parse(raw);
+  } catch (err) {
+    process.stderr.write(
+      '  ERROR  Config-schema manifest at ' + schemaPath + ' is broken (JSON parse error): ' + err.message + '\n',
+    );
+    throw new ExitError(1, 'config-schema manifest JSON is malformed');
+  }
+  const declared = Array.isArray(manifest.dynamicKeyPatterns) ? manifest.dynamicKeyPatterns : [];
   const out = [];
-  for (const entry of raw) {
+  for (const entry of declared) {
     const src = entry && typeof entry.source === 'string' ? entry.source : null;
     if (!src) continue;
     try {
