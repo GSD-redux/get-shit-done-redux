@@ -610,3 +610,55 @@ discriminator selecting the invoke sub-shape; `probe.kind` and `handler` are unt
 absent-safe invariant (D4), the disclosure class (D5), and the config-ownership table (D9) are
 unaffected. Phase 2 (#2795) implements the manifest validator against the vocabulary **as amended
 here**, which is the point of amending rather than leaving it for Phase 2 to rediscover.
+
+### 2026-07-29 — three factual corrections from Phase 2 (#2795)
+
+Implementing the validator required reading the code each claim rests on. Three statements above
+did not survive that reading. None changes a decision; each would have misdirected a later phase,
+which is precisely why they are corrected here rather than worked around in code.
+
+**1. The cause of the stranded config keys was misattributed (Context (b), Scope of changes, D9).**
+
+The ADR attributes reviewer config keys living centrally to the runtime body forbidding feature-only
+fields. That is not the mechanism. `FEATURE_FIELDS_FORBIDDEN_ON_RUNTIME` is
+`['skills','agents','steps','contributions','gates','hooks','activationKey']` — **`config` is not in
+it**, and a `role: "runtime"` capability carrying a `config` slice passes validation today. The real
+cause is two *harvest* sites that never read it:
+
+- `gen-capability-registry.cjs` nested its config-harvest loop inside the `role === 'feature'`
+  branch, so a non-feature capability's `config` was silently dropped from `configKeys`/`configSchema`.
+- `validateCrossCapability` opened its config-key ownership loop with `if (cap.role !== 'feature') …
+  continue`, so a non-feature capability was exempt from both single-ownership **and** the
+  central-schema collision check.
+
+Phase 2 fixes both by filtering on the *presence of a `config` slice* rather than on the role.
+This matters for Phase 4 (#2797), which would otherwise have been designed against a constraint that
+does not exist — and it means the exclusivity invariant was, until now, unenforced for every
+non-feature capability rather than merely unused.
+
+**2. D3's profile-membership claim is inverted.**
+
+D3 states that a `role: "reviewer"` capability "receives profile membership from
+`deriveProfileMembership` (`gen-capability-registry.cjs:201-213`) like any other" and that the
+membership is inert. It receives **no** membership: that function skips any capability without a
+non-empty `skills` array, and a lane-only capability has none. The *intended outcome* — a reviewer
+capability installs nothing — holds exactly as D3 wanted, and `tier` remains required as the source
+of truth for the `requires`-closure. Only the stated mechanism was wrong, and a Phase 5a author
+following D3 would have gone looking for membership that is not there.
+
+**3. The specified capability folder names for two lanes would fail the build.**
+
+The Scope-of-changes section and #2798 both name `capabilities/lm_studio/` and
+`capabilities/llama_cpp/`. Both would be rejected: `id` must equal the folder name **and** match
+`KEBAB_RE` (`/^[a-z][a-z0-9-]*$/`), which does not admit `_`. Three namespaces are in play for one
+lane and they are deliberately not the same string:
+
+| | value | casing | fixed by |
+|---|---|---|---|
+| capability `id` / folder | `lm-studio` | kebab | the `id` conformance invariant |
+| `reviewer.slug` | `lm_studio` | snake | the shipped roster and `review.lm_studio_host`, which D9 leaves unchanged |
+| `reviewer.flags` | `--lm-studio` | kebab | the shipped flag |
+
+Phase 2 therefore validates `reviewer.slug` against its own pattern (`/^[a-z][a-z0-9_-]*$/`) rather
+than reusing `KEBAB_RE`, which would have rejected two shipped lanes. Phase 5a must create
+`capabilities/lm-studio/` and `capabilities/llama-cpp/`, each declaring the snake-case slug.
