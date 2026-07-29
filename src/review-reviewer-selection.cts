@@ -75,8 +75,14 @@ export function deriveReviewerSlugs(registry: ReviewerCapabilityRegistry): strin
   const capabilities = registry.capabilities || {};
   const slugs = new Set<string>();
   for (const [capId, cap] of Object.entries(capabilities)) {
-    const declaredSlug = cap?.reviewer?.slug;
-    if (typeof declaredSlug === 'string' && declaredSlug.length > 0) {
+    // Trim before the emptiness test: `length > 0` alone admits a whitespace-only
+    // slug ("   ") verbatim into the roster, where it can never match a real lane
+    // but still occupies a roster entry. Unreachable through the checked-in
+    // registry today, but this function is EXPORTED for reuse and carries no
+    // other validation, so it should not depend on its caller's hygiene.
+    const rawSlug = cap?.reviewer?.slug;
+    const declaredSlug = typeof rawSlug === 'string' ? rawSlug.trim() : '';
+    if (declaredSlug.length > 0) {
       slugs.add(declaredSlug);
       continue; // the body wins — never ALSO add this capability's alias below.
     }
@@ -87,10 +93,34 @@ export function deriveReviewerSlugs(registry: ReviewerCapabilityRegistry): strin
   return [...slugs].sort();
 }
 
-export const KNOWN_REVIEWER_SLUGS: ReadonlyArray<string> = deriveReviewerSlugs(
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('./capability-registry.cjs') as ReviewerCapabilityRegistry,
-);
+/**
+ * The roster, derived once at module load.
+ *
+ * GUARDED, because this runs at `require()` time: an uncaught throw here does not
+ * degrade reviewer selection, it breaks `require()` of this module for EVERY
+ * consumer. The sibling `capability-trust.cjs` already holds this line — its
+ * `discloseExecutableSurfaces` is documented "TOTAL: never throws, for any
+ * manifest shape" and wrapped accordingly — and this module handles the same
+ * class of registry-derived input, so it should not be the asymmetric one.
+ *
+ * A malformed registry yields an EMPTY roster rather than a crash. That is a
+ * visible degradation, not a silent one: under ADR-2782 D4 an explicitly
+ * requested reviewer that is unavailable is an ERROR, so `/gsd:review --claude`
+ * against an empty roster fails loudly instead of quietly reviewing with nobody.
+ *
+ * Unreachable through the checked-in registry today (it is generated, JSON-sourced
+ * and code-reviewed, so it cannot carry a getter or a Proxy). Guarded anyway —
+ * reachability analysis is not a contract, and the next caller should not have to
+ * redo it.
+ */
+export const KNOWN_REVIEWER_SLUGS: ReadonlyArray<string> = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return deriveReviewerSlugs(require('./capability-registry.cjs') as ReviewerCapabilityRegistry);
+  } catch {
+    return [];
+  }
+})();
 
 /** Instance names are lowercase slugs that must not shadow a built-in slug. */
 export const INSTANCE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;

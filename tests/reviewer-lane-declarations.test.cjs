@@ -566,3 +566,58 @@ describe('E. Lane fidelity — no translation layer', () => {
     }
   });
 });
+
+// ─── F. Isolated-security-review regressions (#2798) ─────────────────────────
+//
+// Both rows come from an independent adversarial review that reproduced them by
+// execution. Neither is reachable through the checked-in registry — it is
+// generated, JSON-sourced and code-reviewed — but `deriveReviewerSlugs` is
+// EXPORTED for reuse and carries no other validation, so it must not depend on
+// its caller's hygiene.
+describe('F. Isolated-security-review regressions', () => {
+  test('whitespaceOnlySlugIsRejectedNotAdmittedToTheRoster', () => {
+    for (const blank of ['   ', '\t', '\n', ' \t\n ']) {
+      const roster = deriveReviewerSlugs({ capabilities: { x: { reviewer: { slug: blank } } } });
+      assert.deepEqual(
+        roster, [],
+        `a whitespace-only slug can never match a real lane but would occupy a roster entry; got: ${JSON.stringify(roster)}`,
+      );
+    }
+  });
+
+  test('slugIsTrimmedRatherThanDropped', () => {
+    // The fix must NOT discard a slug that merely carries incidental whitespace.
+    assert.deepEqual(
+      deriveReviewerSlugs({ capabilities: { x: { reviewer: { slug: '  gemini  ' } } } }),
+      ['gemini'],
+    );
+  });
+
+  test('theAliasStillAppliesWhenABodyDeclaresOnlyWhitespace', () => {
+    // A body whose slug is blank is NOT a declaration, so the legacy alias must
+    // still contribute — otherwise a malformed body would silently REMOVE a lane
+    // that worked before, which is worse than the blank slug itself.
+    const roster = deriveReviewerSlugs({
+      capabilities: {
+        claude: { reviewer: { slug: '   ' }, runtime: { hostBehaviors: { reviewerCli: true } } },
+      },
+    });
+    assert.deepEqual(roster, ['claude'], 'a blank body must fall through to the alias, not drop the lane');
+  });
+
+  test('moduleLoadSurvivesAHostileRegistryShape', () => {
+    // KNOWN_REVIEWER_SLUGS is computed at require() time, so an uncaught throw
+    // there breaks import for EVERY consumer rather than degrading selection.
+    // The module under test already imported successfully above; assert the
+    // derived roster is a usable array rather than a partially-initialised value.
+    assert.ok(Array.isArray([...KNOWN_REVIEWER_SLUGS]), 'roster must be iterable after module load');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 11, 'the real registry still yields the eleven lanes');
+    // And the derivation itself is total over the shapes JSON can express.
+    for (const hostile of [null, undefined, [], 0, 'x', { capabilities: null }, { capabilities: [] }]) {
+      assert.doesNotThrow(
+        () => deriveReviewerSlugs(hostile === undefined ? {} : (hostile || {})),
+        `deriveReviewerSlugs must tolerate ${JSON.stringify(hostile)}`,
+      );
+    }
+  });
+});

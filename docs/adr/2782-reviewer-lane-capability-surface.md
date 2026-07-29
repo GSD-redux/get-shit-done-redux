@@ -330,6 +330,32 @@ Therefore, normatively:
 A host change is a change of *who receives the user's plans*. It is the most security-relevant
 mutation in this design, and it must not be reachable by editing a JSON file.
 
+> **Implementation note added by Phase 3 (#2796) — how rule 1 is actually satisfied.**
+>
+> The resolved host is **deliberately excluded from the disclosure signature**, and a reader
+> comparing rule 1 to `capability-trust.cts` must not mistake that for the rule being unimplemented.
+>
+> `signatureForManifest(manifest, stagedDir?)` is the single consent key that **both** the loader and
+> the lifecycle compute, explicitly so the two "can never drift". The loader has **no config
+> resolver** — `hostConfigKey` names a key in `.planning/config.json`, which is outside the SHA-pinned
+> bundle. Folding the resolved host into the signature would therefore make the loader and the
+> lifecycle compute *different* signatures for the same manifest, producing a permanent
+> false-mismatch loop that re-prompts forever.
+>
+> So the binding is split, and rule 1 still holds end to end:
+> - the **signature** binds the manifest-derived lane fields (`slug`, `transport`, `binary`, `args`,
+>   `hostConfigKey`, `promptChannel`, `handler`) — everything that is SHA-pinned;
+> - the **consent record** additionally stores the resolved host, which is what rule 1 requires;
+> - **Phase 5b re-resolves and compares at invocation** and blocks on mismatch, which is where rule 4
+>   already places the check.
+>
+> `reviewsSection` and `timeoutFloorMs` are excluded for a different reason: a cosmetic change must
+> not force re-consent, because a prompt carrying no security information is how users learn to click
+> through — the same failure this decision cites when rejecting a per-run egress prompt.
+>
+> *(Recorded here rather than in the PR that made the decision. A squash-merged PR body is not a
+> durable record: it is invisible to anyone reading the ADR later, which is exactly who needs this.)*
+
 **Stated honestly, and consistent with ADR-1244 D5's own acknowledgment that there is no sandbox:**
 even with the above, consent-at-install remains a weaker gate for a *standing egress channel* than
 for a hook. A user consents once; the lane thereafter receives every plan on every review run.

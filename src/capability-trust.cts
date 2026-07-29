@@ -990,6 +990,20 @@ function evaluateInstallTrust(args: InstallTrustArgs): InstallTrustVerdict {
  * recursion path — tracked via `seen`, added before recursing into children and removed once fully
  * processed) renders as the literal string `"[Circular]"`. Neither case is reachable for the golden
  * hooks/mods/mcp fixtures this phase's byte-identity tests pin down, so their output is unaffected.
+ *
+ * KNOWN LIMIT — signature collision on non-JSON numerics (#2796 isolated review, finding E).
+ * `NaN`, `Infinity`, `-Infinity` and `undefined` all render as `null` here, inheriting
+ * `JSON.stringify`'s own coercion. Two materially different manifests could therefore share a
+ * consent signature. This is NOT reachable through any production path: every manifest arrives via
+ * `readManifestBounded`'s strict `JSON.parse`, and the JSON grammar has no `NaN`/`Infinity`/
+ * `undefined` literal — such input throws before disclosure runs. `0` vs `-0` IS expressible in
+ * valid JSON and does collide, but is inert: `String(0) === String(-0)`, so a spawned process
+ * receives identical argv either way.
+ *
+ * Recorded here rather than only in the PR that found it: reachability rests entirely on the ingest
+ * path staying `JSON.parse`-only. Anyone who adds a loader that builds a manifest by other means
+ * (a JS config file, a deserializer, a test double promoted to production) re-opens this, and needs
+ * to see it at the point they would break it.
  */
 function stableJson(value: unknown, seen?: Set<unknown>): string {
   if (typeof value === 'bigint') return JSON.stringify(`${value.toString()}n`);
