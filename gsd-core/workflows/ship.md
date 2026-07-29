@@ -456,6 +456,21 @@ would otherwise trigger (GitHub honors `[ci skip]` / `[skip ci]`):
 ```bash
 gsd_run query commit "docs(${padded_phase}): ship phase ${PHASE_NUMBER} — PR #${PR_NUMBER} [ci skip]" --files .planning/STATE.md
 git push origin ${CURRENT_BRANCH} 2>&1 || echo "⚠ track_shipping: ship-note push failed — it is local-only; rerun: git push origin ${CURRENT_BRANCH}"
+
+# If the push succeeds, check if the [ci skip] trailer wedged the PR due to required status checks (#2783).
+# Self-heal by pushing an empty commit without the token if BLOCKED with zero checks.
+sleep 2
+MERGE_STATE=$(gh pr view ${PR_NUMBER} --json mergeStateStatus,statusCheckRollup -q 'if .statusCheckRollup == null then {status: .mergeStateStatus, checks: 0} else {status: .mergeStateStatus, checks: (.statusCheckRollup | length)} end' 2>/dev/null || echo '{"status":"UNKNOWN","checks":0}')
+STATUS=$(echo "$MERGE_STATE" | jq -r .status)
+CHECKS=$(echo "$MERGE_STATE" | jq -r .checks)
+
+if [ "$STATUS" = "BLOCKED" ] && [ "$CHECKS" = "0" ]; then
+  echo "⚠ PR is BLOCKED with zero checks. The [ci skip] trailer wedged the PR due to required checks."
+  echo "Pushing an empty commit to trigger the required pipelines..."
+  # The commit message must NOT contain the skip token anywhere (#2783 footgun).
+  git commit --allow-empty -m "chore: trigger CI (recover from ship-note skip-token)"
+  git push origin ${CURRENT_BRANCH} 2>&1
+fi
 ```
 </step>
 
