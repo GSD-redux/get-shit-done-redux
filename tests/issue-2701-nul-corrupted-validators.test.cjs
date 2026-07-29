@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { writeState } = require('./fixtures/index.cjs');
 
 // A structurally-complete PLAN.md that passes both validators when clean.
 function validPlanBody() {
@@ -135,9 +136,21 @@ describe('#2701: state validate rejects NUL-corrupted STATE.md', () => {
   test('STATE.md with an embedded NUL byte → valid:false', (t) => {
     const tmpDir = createTempProject();
     t.after(() => cleanup(tmpDir));
-    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
-    const body = fs.readFileSync(statePath, 'utf8');
-    const buf = Buffer.concat([Buffer.from(body, 'utf8').subarray(0, 50), Buffer.from([0x00]), Buffer.from(body, 'utf8').subarray(50)]);
+    // createTempProject() does NOT seed STATE.md; use writeState to create one,
+    // then corrupt it in place with a NUL byte (Buffer write so it survives).
+    const seed = [
+      '# Project',
+      '',
+      '## Status',
+      'executing',
+      '## Current Phase',
+      '01 of 01',
+      '## Total Plans in Phase',
+      '1',
+    ].join('\n');
+    const statePath = writeState(tmpDir, seed);
+    const body = Buffer.from(seed, 'utf8');
+    const buf = Buffer.concat([body.subarray(0, 50), Buffer.from([0x00]), body.subarray(50)]);
     fs.writeFileSync(statePath, buf);
 
     const out = parseResult(t, ['state', 'validate'], tmpDir);

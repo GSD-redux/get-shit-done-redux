@@ -811,6 +811,7 @@ function cmdVerifyPlanStructure(cwd: string, filePath: string, raw: boolean): vo
   if (!filePath) {
     error('file path required');
   }
+  if (filePath.includes('\0')) { error('file path contains null bytes'); }
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) {

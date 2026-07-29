@@ -714,6 +714,7 @@ function cmdFrontmatterMerge(cwd: string, filePath: string, data: string | undef
 
 function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: string | undefined, raw: boolean): void {
   if (!filePath || !schemaName) { error('file and schema required'); }
+  if (filePath.includes('\0')) { error('file path contains null bytes'); }
   const schema = FRONTMATTER_SCHEMAS[schemaName as string];
   if (!schema) { error(`Unknown schema: ${schemaName}. Available: ${Object.keys(FRONTMATTER_SCHEMAS).join(', ')}`); }
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
