@@ -84,7 +84,7 @@ describe('classifyTitle', () => {
 const SAMPLE_BODY = `## What's Changed
 * feat(#39): milestone-prefixed phase IDs by @trek-e in https://github.com/open-gsd/gsd-core/pull/565
 * fix(#557): milestone erased on update by @trek-e in https://github.com/open-gsd/gsd-core/pull/563
-* chore(#2): update dependencies by @trek-e in https://github.com/open-gsd/gsd-core/pull/560
+* enhance(#2): smoother phase transitions by @trek-e in https://github.com/open-gsd/gsd-core/pull/560
 
 ## New Contributors
 * @someone made their first contribution in https://github.com/open-gsd/gsd-core/pull/123
