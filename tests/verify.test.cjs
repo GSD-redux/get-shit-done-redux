@@ -2888,3 +2888,63 @@ describe('verifySummaryCore — reusable structured contract (#2572)', () => {
     );
   });
 });
+
+// ─── bug #1883: listMilestoneArchiveDirs must not swallow permission/I-O errors ──
+// The private helper catch-alled every readdirSync error into [], so an unreadable
+// milestones/ dir was silently reported as "no archives" (active-milestone
+// resolution / archived-phase filtering misbehaved). The narrowed catch re-throws
+// every non-ENOENT error and keeps [] only for genuine absence. Tested in-process
+// via the _listMilestoneArchiveDirs test seam (the validate command runs in a
+// subprocess, so an fs monkeypatch in the test process cannot reach it).
+describe('bug #1883 — listMilestoneArchiveDirs distinguishes a permission error from emptiness', () => {
+  const verifyLib = require('../gsd-core/bin/lib/verify.cjs');
+  const listMilestoneArchiveDirs = verifyLib._listMilestoneArchiveDirs;
+  const os = require('os');
+
+  function fsError(code, targetPath) {
+    const err = new Error(`${code}: operation failed, scandir '${targetPath}'`);
+    err.code = code;
+    err.syscall = 'scandir';
+    err.path = targetPath;
+    return err;
+  }
+
+  // Inject a readdirSync fault scoped to the milestones/ path under test.
+  // t.mock auto-restores after each test — no chmod 0o000 (root bypasses mode bits).
+  function injectMilestonesFault(t, code, targetPath) {
+    const originalReaddirSync = fs.readdirSync;
+    t.mock.method(fs, 'readdirSync', function (p, ...rest) {
+      if (typeof p === 'string' && p.endsWith(path.join('milestones'))) {
+        throw fsError(code, targetPath);
+      }
+      return originalReaddirSync.call(this, p, ...rest);
+    });
+  }
+
+  test('listMilestoneArchiveDirs re-throws a permission (EACCES) error instead of returning []', (t) => {
+    const planBase = path.join(os.tmpdir(), 'gsd-1883-eacces-' + process.pid);
+    injectMilestonesFault(t, 'EACCES', path.join(planBase, 'milestones'));
+    assert.throws(
+      () => listMilestoneArchiveDirs(planBase),
+      (err) => err.code === 'EACCES',
+      'an unreadable milestones/ dir must propagate EACCES, not return [] as if empty',
+    );
+  });
+
+  test('listMilestoneArchiveDirs re-throws any non-ENOENT error (EIO)', (t) => {
+    const planBase = path.join(os.tmpdir(), 'gsd-1883-eio-' + process.pid);
+    injectMilestonesFault(t, 'EIO', path.join(planBase, 'milestones'));
+    assert.throws(
+      () => listMilestoneArchiveDirs(planBase),
+      (err) => err.code === 'EIO',
+      'every non-ENOENT error must propagate',
+    );
+  });
+
+  test('listMilestoneArchiveDirs returns [] for an absent milestones/ dir (ENOENT) — empty path unchanged', () => {
+    const planBase = path.join(os.tmpdir(), 'gsd-1883-absent-' + process.pid);
+    // No milestones/ dir created → real OS readdirSync throws ENOENT.
+    assert.deepStrictEqual(listMilestoneArchiveDirs(planBase), [],
+      'an absent milestones/ dir (ENOENT) must still return [] — Hyrum: empty path unchanged');
+  });
+});
