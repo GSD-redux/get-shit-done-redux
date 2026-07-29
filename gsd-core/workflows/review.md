@@ -50,9 +50,11 @@ command -v jq >/dev/null 2>&1 && echo "jq:available" || echo "jq:missing"
 **jq-dependent reviewer lanes.** `jq` is a production prerequisite for the
 `ollama`, `lm_studio`, `llama_cpp`, `opencode`, and `antigravity` lanes only. If
 `detect_clis` reports `jq:missing`, treat those five as **undetected** — they
-follow the same "known-but-undetected" path as a missing CLI (info note, ignored;
-and if they were the only selected reviewers, fail with the actionable message
-below rather than producing an empty review). Tell the user to install jq:
+follow the same "known-but-undetected" path as a missing CLI. Which path that is
+depends on how the lane was selected (see the precedence rules below): reached
+through `review.default_reviewers` or `--all` it is an info note and the lane is
+ignored; named by an explicit flag it is an **error**, because the user asserted
+that lane. Tell the user to install jq:
 
 ```
 NOTE: jq is not on PATH — the ollama, lm_studio, llama_cpp, opencode, and
@@ -85,10 +87,22 @@ Reviewer-selection precedence:
 3. `review.default_reviewers`
 4. No key + no flags → all detected reviewers
 
+**Explicit reviewer flags are an assertion, not a preference (ADR-2782 D4).** A lane the user
+named on the command line and that cannot run is an **error**, surfaced and non-silent — even
+when other named lanes did run. Do not proceed with a thinner reviewer set and report success:
+`--gemini --qwen` on a host without `qwen` fails, it does not quietly become a Gemini-only
+review. This applies however the lane became unavailable — binary missing, prerequisite `jq`
+absent, or a local server not reachable.
+
+The asymmetry is deliberate: *not finding a lane nobody asked for is normal; failing to run a
+lane somebody asked for is an error.* A user who wants "whatever is available" has `--all`; a
+user who wants a preferred set has `review.default_reviewers`. Both stay lenient below.
+
 `review.default_reviewers` behavior:
 - Value must be a non-empty array of slug strings (configured via `gsd config-set review.default_reviewers '["gemini","codex"]'`)
 - Unknown slugs warn and are ignored
-- Known-but-undetected slugs emit an info note and are ignored
+- Known-but-undetected slugs emit an info note and are ignored — a configured default is a
+  preference evaluated across many hosts, so a subset being present is expected, not an error
 - If all configured reviewers are unavailable, fail with an actionable message
 
 **Reviewer instances (#1517, optional):** if `review.reviewer_instances` is configured,
@@ -303,6 +317,7 @@ For each selected CLI, invoke in sequence (not parallel — avoid rate limits):
 
 **Timeout guidance (#2194):** prompt-fed source-grounded reviews are slow — measured ~570s for Codex at `xhigh` effort and ~525s for headless Claude on a large plan set. Each of the Gemini / Claude / Codex blocks below MUST be invoked with a high Bash `timeout:` — at least `900000` (15 min), and `1200000` (20 min) for Codex `xhigh` or headless Claude — so a lane is not killed mid-review. On Claude Code, raise the host cap via `BASH_MAX_TIMEOUT_MS` if a review can exceed it. A silent empty output after a long run is a **timeout kill, not a crash** — the Codex `0xc0000142` misdiagnosis persisted because the empty-output branches below cannot distinguish the two; treat an empty result on a slow lane as a dropped lane and re-run with more time rather than diagnosing a CLI/sandbox failure. A cross-AI review that silently drops a lane is blind in one eye.
 
+<!-- reviewer-lane: gemini -->
 **Gemini:**
 ```bash
 # #2494: capture stderr to a .err sidecar (not /dev/null) and stub an empty
@@ -326,6 +341,7 @@ if [ ! -s {run_dir}/gsd-review-gemini.md ]; then
 fi
 ```
 
+<!-- reviewer-lane: claude -->
 **Claude (separate session):**
 ```bash
 # #2494: same guard as the Gemini block above — stderr to a .err sidecar
@@ -341,6 +357,7 @@ if [ ! -s {run_dir}/gsd-review-claude.md ]; then
 fi
 ```
 
+<!-- reviewer-lane: codex -->
 **Codex:**
 ```bash
 # No hook-trust bypass flag — see the #2479 note above. Capture stderr to a .err
@@ -362,6 +379,7 @@ if [ ! -s {run_dir}/gsd-review-codex.md ]; then
 fi
 ```
 
+<!-- reviewer-lane: coderabbit -->
 **CodeRabbit:**
 
 Note: CodeRabbit reviews the current git diff/working tree — it does not accept a prompt or model flag. It may take up to 5 minutes. Use `timeout: 360000` on the Bash tool call. The source-grounding requirement in the build_prompt Review Instructions applies only to the prompt-fed reviewers above; CodeRabbit is a diff-only reviewer and never receives it. Treat its output as a diff observation, not a grounded plan-level verdict.
@@ -378,6 +396,7 @@ if [ ! -s {run_dir}/gsd-review-coderabbit.md ]; then
 fi
 ```
 
+<!-- reviewer-lane: opencode -->
 **OpenCode (via GitHub Copilot):**
 
 OpenCode's default `build` agent is an agentic coder, not a prompt→completion API.
@@ -426,14 +445,22 @@ else
 fi
 ```
 
+<!-- reviewer-lane: qwen -->
 **Qwen Code:**
 ```bash
-cat {run_dir}/gsd-review-prompt.md | qwen - 2>/dev/null > {run_dir}/gsd-review-qwen.md
+# #2794: the last leg still sending stderr to /dev/null. Every other lane
+# captures it to a .err sidecar and appends it to the stub (#2494/#2605); qwen
+# wrote a bare "failed or returned empty output." with no diagnostic at all, so
+# a missing binary, an auth prompt, and a rate-limit were indistinguishable from
+# each other and from a clean empty review.
+cat {run_dir}/gsd-review-prompt.md | qwen - 2>{run_dir}/gsd-review-qwen.err > {run_dir}/gsd-review-qwen.md
 if [ ! -s {run_dir}/gsd-review-qwen.md ]; then
-  echo "Qwen review failed or returned empty output." > {run_dir}/gsd-review-qwen.md
+  echo "Qwen review failed or returned empty output. stderr:" > {run_dir}/gsd-review-qwen.md
+  cat {run_dir}/gsd-review-qwen.err >> {run_dir}/gsd-review-qwen.md 2>/dev/null
 fi
 ```
 
+<!-- reviewer-lane: cursor -->
 **Cursor:**
 ```bash
 # cursor-agent is a SEPARATE binary from the `cursor` IDE launcher; print mode (-p) takes the
@@ -453,6 +480,7 @@ if [ ! -s {run_dir}/gsd-review-cursor.md ]; then
 fi
 ```
 
+<!-- reviewer-lane: antigravity -->
 **Antigravity CLI:**
 
 **Maintainer note — why this block has three layers (last updated against agy 1.0.16):**
@@ -638,6 +666,7 @@ if [ -s {run_dir}/gsd-review-antigravity.md ] && \
 fi
 ```
 
+<!-- reviewer-lane: ollama -->
 **Ollama (local, OpenAI-compatible):**
 
 Read host and model from config. All three local backends share the same `/v1/chat/completions` endpoint — only host and model differ. Use `jq --rawfile` to safely encode the multi-line prompt as JSON without shell-escaping issues.
@@ -741,6 +770,7 @@ echo "Ollama review skipped: prompt budget (${OLLAMA_REVIEWER_BUDGET} tokens) to
 fi
 ```
 
+<!-- reviewer-lane: lm_studio -->
 **LM Studio (local, OpenAI-compatible):**
 ```bash
 # Resolve prompt budget for LM Studio: per-reviewer override > global default > null
@@ -826,6 +856,7 @@ echo "LM Studio review skipped: prompt budget (${LM_STUDIO_REVIEWER_BUDGET} toke
 fi
 ```
 
+<!-- reviewer-lane: llama_cpp -->
 **llama.cpp (local, OpenAI-compatible):**
 ```bash
 # Resolve prompt budget for llama.cpp: per-reviewer override > global default > null

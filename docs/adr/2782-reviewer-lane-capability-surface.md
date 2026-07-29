@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-28
+- **Amended:** 2026-07-29 by Phase 1 ([#2794](https://github.com/open-gsd/gsd-core/issues/2794)) — D1's `flag` becomes `flags[]`; D2's `promptChannel` gains `none`, `outputChannel` gains `file-arg` with a companion `outputArg`; D8's uniqueness invariant restated over the flattened flag set. All four are additive widenings of closed enums, each forced by a shipped lane the original survey did not cover. See **Amendments** at the end.
 - **Issue:** [#2782](https://github.com/open-gsd/gsd-core/issues/2782) (epic); Phase 0 tracked by [#2793](https://github.com/open-gsd/gsd-core/issues/2793)
 - **Amends:** [ADR-857](857-capability-system.md) (extension points as data — extends D7/D8 in the same "amend, not reverse" sense ADR-1244 D8 established) · [ADR-894](894-capability-declaration-format.md) (adds a role-typed body and a third role) · [ADR-1016](1016-runtime-capability-descriptor.md) (the runtime body is no longer the *only* body a `role: "runtime"` capability may carry; its closed-vocabulary principle is upheld, not relaxed — see D6) · [ADR-1244](1244-capability-ecosystem.md) (D5 gains a fourth executable-surface disclosure class; D9's matrix gains a lane column)
 - **Unchanged and explicitly out of scope:** [ADR-0011](0011-review-default-reviewers.md) (reviewer selection precedence) · [ADR-1517](1517-reviewer-instances-config-surface.md) (the `REVIEWS.md` contract and reviewer instances)
@@ -96,7 +97,7 @@ A reviewer lane is declared as data in a `reviewer` body:
 
   "reviewer": {
     "slug": "acme",
-    "flag": "--acme",
+    "flags": ["--acme"],
     "transport": "spawn",
     "probe": { "kind": "command-exists", "binary": "acme" },
     "invoke": {
@@ -146,8 +147,9 @@ context (b) describes.
 |---|---|---|
 | `invoke.binary` | required | **forbidden** |
 | `invoke.args` | required (array) | forbidden |
-| `invoke.promptChannel` | `stdin` \| `argv` \| `argv-file-ref` | forbidden |
-| `invoke.outputChannel` | `stdout` | forbidden |
+| `invoke.promptChannel` | `stdin` \| `argv` \| `argv-file-ref` \| `none` | forbidden |
+| `invoke.outputChannel` | `stdout` \| `file-arg` | forbidden |
+| `invoke.outputArg` | required iff `outputChannel: "file-arg"`, else forbidden | forbidden |
 | `invoke.hostConfigKey` | forbidden | required (dotted config key holding the base URL) |
 | `invoke.path` | forbidden | required (e.g. `/v1/chat/completions`) |
 | `invoke.modelDiscovery` | forbidden | closed enum: `none` \| `first-from-models-endpoint` |
@@ -166,11 +168,27 @@ the run directory. That instruction must also carry the **absolute repository ro
 argv-fed CLI does not reliably inherit the review's working directory — the existing `cursor` and
 `kimi-code` legs already do this by hand (`review.md:447-448`, `:550-552`).
 
-`outputChannel` has exactly one member (`stdout`) today. It is nonetheless a required, named,
-closed-enum field rather than an implicit assumption, because the alternative — a lane that writes
-its review to a file and prints nothing — is a shape a real CLI can take, and an unnamed assumption
-is the thing a later contributor silently violates. A one-member enum that must grow under review is
-the ADR-1016 pattern; an undocumented assumption is not.
+`outputChannel` is a required, named, closed-enum field rather than an implicit assumption, because
+the alternative — a lane that writes its review to a file and prints nothing — is a shape a real CLI
+can take, and an unnamed assumption is the thing a later contributor silently violates.
+
+**Amended 2026-07-29 (#2794):** this ADR originally recorded `outputChannel` as having "exactly one
+member (`stdout`) today" and described the file-writing lane as a shape a real CLI *could* take. It
+already does. `codex` captures its review through its own `-o/--output-last-message <FILE>` and
+discards stdout, because on Windows it writes process-teardown output to stdout *after* the final
+message, and a stdout redirect would append that noise to a non-empty file — slipping past the
+empty-output guard as a silently polluted review (#1698). The enum therefore ships with two members,
+and `file-arg` carries a companion `outputArg` naming the argument that takes the path: knowing the
+review lands in a file is useless without it.
+
+`promptChannel` likewise gains `none`. `coderabbit` is fed no prompt at all — it reviews the
+working-tree diff and accepts neither a prompt nor a model flag (`review.md:367`). The original
+three-member enum had no way to say "this lane receives nothing", which would have forced Phase 2 to
+either invent a sentinel or mis-declare the lane.
+
+Both were found by building Phase 1's descriptor table against all eleven shipped legs. That is the
+same evidence path that produced `openai-http` in the first place, and it is the process working:
+the vocabulary widens on a lane that exists, never on speculation.
 
 Three further declared fields carry per-lane divergence that would otherwise live only in prose:
 
@@ -415,8 +433,14 @@ degrades a lane rather than hanging a command.
 
 ### D8 — Uniqueness is a build-time conformance invariant
 
-Across the merged first-party ∪ overlay set, `reviewer.slug`, `reviewer.flag`, and
-`reviewer.reviewsSection` are each unique. A collision fails the build gate. `reviewsSection`
+Across the merged first-party ∪ overlay set, `reviewer.slug`, `reviewer.flags`, and
+`reviewer.reviewsSection` are each unique — for `flags`, over the **flattened** set of every lane's
+flags, since one lane may declare several. A collision fails the build gate.
+
+**Amended 2026-07-29 (#2794):** D1 originally declared a singular `flag`, and this invariant was
+stated over it. `antigravity` is selected by **both** `--antigravity` and `--agy`
+(`review.md`, `docs/COMMANDS.md`), which a single-valued field cannot express, so the field is
+`flags: string[]` and uniqueness flattens across lanes. `reviewsSection`
 uniqueness is not cosmetic: two lanes sharing a heading would silently merge their output in
 `REVIEWS.md`, producing a review that appears to have consensus it does not have.
 
@@ -556,3 +580,33 @@ Phase 1 parity assertion green across the entire migration.
    cases that genuinely are servers.
 8. **One `role: "reviewer"` for every lane**, splitting the six dual-purpose runtimes. Cleaner
    discriminator; rejected for churn (D3).
+
+## Amendments
+
+### 2026-07-29 — vocabulary widened by Phase 1 (#2794)
+
+Phase 1 built the core descriptor table against all eleven shipped legs, which is the first time
+every lane's contract was written down in one place. That surfaced four cases the original survey
+did not cover. All four are **additive widenings of closed enums**, none reverses a decision, and
+each is forced by a lane that exists today rather than by a hypothetical:
+
+| # | Decision | Was | Is | Forced by |
+|---|---|---|---|---|
+| 1 | D2 | `promptChannel: stdin \| argv \| argv-file-ref` | adds `none` | `coderabbit` is fed no prompt — it reviews the working-tree diff |
+| 2 | D2 | `outputChannel: stdout` ("exactly one member today") | adds `file-arg` | `codex` already writes via `-o/--output-last-message` and discards stdout (#1698) |
+| 3 | D2 | — | adds `outputArg`, required iff `file-arg` | knowing the review lands in a file is useless without the argument naming it |
+| 4 | D1, D8 | `flag: string` | `flags: string[]`, uniqueness flattened | `antigravity` is selected by both `--antigravity` and `--agy` |
+
+**Why this is the process working, not a design failure.** D2 already records that the original
+draft assumed one lane shape and that reading all twelve legs disproved it — `openai-http` exists
+because a survey produced evidence, not because anyone predicted it. These four are the same
+mechanism at the next level of detail: the vocabulary widens when a real lane does not fit, under
+review, and never on speculation. D6's escalation path ("file an issue naming the primitive the
+vocabulary lacks") is for third parties; a first-party phase that finds the gap while implementing
+amends the ADR directly, which is what happened here.
+
+**What this does not change.** No decision is reversed. `transport` remains a closed two-member
+discriminator selecting the invoke sub-shape; `probe.kind` and `handler` are untouched; the
+absent-safe invariant (D4), the disclosure class (D5), and the config-ownership table (D9) are
+unaffected. Phase 2 (#2795) implements the manifest validator against the vocabulary **as amended
+here**, which is the point of amending rather than leaving it for Phase 2 to rediscover.

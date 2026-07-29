@@ -241,12 +241,27 @@ export function resolveReviewerSelection(
 
   if (explicitFlags.size > 0) {
     source = 'explicit_flags';
+    // ADR-2782 D4: absent-safe governs DISCOVERY, never explicit selection.
+    // Not finding a lane nobody asked for is normal; failing to run a lane
+    // somebody asked for is an error. Every miss used to be an `info`, so a
+    // PARTIAL miss (`--gemini --qwen` with qwen absent) ran the review with a
+    // thinner reviewer set while present_results reported success — "a cross-AI
+    // review that silently drops a lane is blind in one eye" (review.md).
+    // A total miss already errored, but only as a side effect of the selected
+    // set being empty; the partial case had no signal at all.
+    const priorErrorCount = errors.length;
     selected = [...explicitFlags].filter((slug) => detected.has(slug));
-    const missing = [...explicitFlags].filter((slug) => !detected.has(slug));
-    if (missing.length > 0) {
-      infos.push(`explicit reviewers missing on host: ${missing.join(', ')}`);
+    // Sorted so the error order does not depend on flag order on the command line.
+    const missing = [...explicitFlags].filter((slug) => !detected.has(slug)).sort();
+    for (const slug of missing) {
+      errors.push(`explicit reviewer '${slug}' is not available on this host`);
     }
-    if (selected.length === 0 && errors.length === 0) {
+    // Guarded on the error count as it stood BEFORE this branch, so the
+    // aggregate message fires under exactly the conditions it did previously.
+    // Guarding on `errors.length` would let the per-slug errors just pushed
+    // suppress it, silently dropping a message this change did not intend to
+    // remove.
+    if (selected.length === 0 && priorErrorCount === 0) {
       errors.push('no selected reviewers are available for explicit flags');
     }
   } else if (allFlag) {
