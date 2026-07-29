@@ -139,6 +139,7 @@ describe('docs-init Codex project-local agent status', () => {
 
   test('reports an empty local Codex directory as unhealthy even with global agents', () => {
     fs.mkdirSync(path.join(tmpDir, '.codex', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.codex', 'gsd-file-manifest.json'), JSON.stringify({ files: {} }));
 
     const result = runGsdTools('docs-init --raw', tmpDir, { CODEX_HOME: globalHome });
     assert.ok(result.success, `docs-init failed: ${result.error}`);

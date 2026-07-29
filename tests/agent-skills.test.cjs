@@ -30,6 +30,7 @@ const TEST_ENV_BASE = {
   WT_SESSION: '',
   TMUX_PANE: '',
   ZELLIJ_SESSION_NAME: '',
+  GSD_WORKSTREAM: '',
   TTY: '',
   SSH_TTY: '',
 };
@@ -69,6 +70,13 @@ function writeConfig(tmpDir, obj) {
 function readConfig(tmpDir) {
   const configPath = path.join(tmpDir, '.planning', 'config.json');
   return JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+}
+
+function markLocalGsdInstall(tmpDir) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.codex', 'gsd-file-manifest.json'),
+    JSON.stringify({ files: {} }),
+  );
 }
 
 // Run agent-skills with --json for typed IR assertions
@@ -135,6 +143,7 @@ describe('agent-skills command', () => {
     fs.mkdirSync(agentsDir, { recursive: true });
     fs.mkdirSync(descendant, { recursive: true });
     fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), localPersona);
+    markLocalGsdInstall(tmpDir);
     writeConfig(tmpDir, { runtime: 'codex' });
 
     const r = runAgentSkillsJson(['agent-skills', 'gsd-executor'], descendant, {
@@ -147,18 +156,23 @@ describe('agent-skills command', () => {
     assert.strictEqual(r.ir.block, localPersona);
   });
 
-  test('GSD_RUNTIME takes precedence over a conflicting configured runtime for local Codex companions', () => {
+  test('workstream runtime selects the local Codex companion when root config differs', () => {
     const agentsDir = path.join(tmpDir, '.codex', 'agents');
     const localPersona = '# Local Codex executor\nUse the overridden runtime.\n';
     fs.mkdirSync(agentsDir, { recursive: true });
     fs.writeFileSync(path.join(agentsDir, 'gsd-executor.md'), localPersona);
+    markLocalGsdInstall(tmpDir);
     writeConfig(tmpDir, { runtime: 'claude' });
+    const workstreamDir = path.join(tmpDir, '.planning', 'workstreams', 'feature-x');
+    fs.mkdirSync(workstreamDir, { recursive: true });
+    fs.writeFileSync(path.join(workstreamDir, 'config.json'), JSON.stringify({ runtime: 'codex' }));
 
     const r = runAgentSkillsJson(['agent-skills', 'gsd-executor'], tmpDir, {
       HOME: tmpDir,
       USERPROFILE: tmpDir,
       CODEX_HOME: path.join(tmpDir, 'global-codex'),
-      GSD_RUNTIME: 'codex',
+      GSD_RUNTIME: '',
+      GSD_WORKSTREAM: 'feature-x',
     });
     assert.ok(r.success, `Command failed: ${r.error}`);
     assert.strictEqual(r.ir.block, localPersona);

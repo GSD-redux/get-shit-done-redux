@@ -31,6 +31,7 @@ const RUNTIME_HOMES_PATH = path.join(
 
 const agentInstallCheck = require(AGENT_INSTALL_CHECK_PATH);
 const { getGlobalConfigDir } = require(RUNTIME_HOMES_PATH);
+const { getDirName } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'runtime-name-policy.cjs'));
 
 // Get EXPECTED_AGENTS from model-profiles (same source of truth)
 const MODEL_PROFILES = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'model-profiles.cjs')).MODEL_PROFILES;
@@ -76,6 +77,20 @@ function createCompleteAgents(agentsDir) {
   }
 }
 
+function markLocalGsdInstall(configDir) {
+  fs.writeFileSync(
+    path.join(configDir, 'gsd-file-manifest.json'),
+    JSON.stringify({ files: {} }),
+  );
+}
+
+function createCompleteLocalGsdInstall(configDir) {
+  const agentsDir = path.join(configDir, 'agents');
+  createCompleteAgents(agentsDir);
+  markLocalGsdInstall(configDir);
+  return agentsDir;
+}
+
 // ─── 1. getAgentsDir behaviour ────────────────────────────────────────────────
 
 describe('getAgentsDir', () => {
@@ -110,13 +125,12 @@ describe('getAgentsDir', () => {
     assert.strictEqual(fromModule, fromClaude);
   });
 
-  test('Codex chooses an existing project-local agents directory before the global installation', (t) => {
+  test('a manifest-backed local runtime installation wins over global agents', (t) => {
     const projectRoot = createTempDir('gsd-local-codex-');
     const globalHome = createTempDir('gsd-global-codex-');
-    const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
+    const localAgentsDir = createCompleteLocalGsdInstall(path.join(projectRoot, '.codex'));
     t.after(() => cleanup(projectRoot));
     t.after(() => cleanup(globalHome));
-    createCompleteAgents(localAgentsDir);
     createCompleteAgents(path.join(globalHome, 'agents'));
     process.env['CODEX_HOME'] = globalHome;
 
@@ -127,9 +141,8 @@ describe('getAgentsDir', () => {
   test('GSD_AGENTS_DIR remains terminal when a local Codex installation exists', (t) => {
     const projectRoot = createTempDir('gsd-local-codex-');
     const overrideDir = path.join(projectRoot, 'override-agents');
-    const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
+    createCompleteLocalGsdInstall(path.join(projectRoot, '.codex'));
     t.after(() => cleanup(projectRoot));
-    createCompleteAgents(localAgentsDir);
     fs.mkdirSync(overrideDir, { recursive: true });
     process.env['GSD_AGENTS_DIR'] = overrideDir;
 
@@ -139,13 +152,14 @@ describe('getAgentsDir', () => {
     assert.deepStrictEqual(result.missing_agents, EXPECTED_AGENTS);
   });
 
-  test('an existing empty local Codex directory is authoritative over complete global agents', (t) => {
+  test('a manifest-backed empty local directory is authoritative over complete global agents', (t) => {
     const projectRoot = createTempDir('gsd-local-codex-');
     const globalHome = createTempDir('gsd-global-codex-');
     const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
     t.after(() => cleanup(projectRoot));
     t.after(() => cleanup(globalHome));
     fs.mkdirSync(localAgentsDir, { recursive: true });
+    markLocalGsdInstall(path.dirname(localAgentsDir));
     createCompleteAgents(path.join(globalHome, 'agents'));
     process.env['CODEX_HOME'] = globalHome;
 
@@ -184,10 +198,63 @@ describe('getAgentsDir', () => {
     assert.strictEqual(result.agents_installed, true);
   });
 
+  test('a project-native agents directory without a GSD manifest does not override global agents', (t) => {
+    const projectRoot = createTempDir('gsd-local-codex-');
+    const globalHome = createTempDir('gsd-global-codex-');
+    const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
+    t.after(() => cleanup(projectRoot));
+    t.after(() => cleanup(globalHome));
+    createCompleteAgents(localAgentsDir);
+    createCompleteAgents(path.join(globalHome, 'agents'));
+    process.env['CODEX_HOME'] = globalHome;
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex', projectRoot);
+    assert.strictEqual(result.agents_dir, path.join(globalHome, 'agents'));
+    assert.strictEqual(result.agents_installed, true);
+  });
+
+  test('a manifest-backed Cursor installation resolves from the project root', (t) => {
+    const projectRoot = createTempDir('gsd-local-cursor-');
+    const localAgentsDir = createCompleteLocalGsdInstall(path.join(projectRoot, getDirName('cursor')));
+    t.after(() => cleanup(projectRoot));
+
+    assert.strictEqual(agentInstallCheck.getAgentsDir('cursor', projectRoot), localAgentsDir);
+    assert.strictEqual(agentInstallCheck.checkAgentsInstalled('cursor', projectRoot).agents_installed, true);
+  });
+
+  test('a manifest-backed Cline installation resolves from the project root', (t) => {
+    const projectRoot = createTempDir('gsd-local-cline-');
+    const localAgentsDir = createCompleteLocalGsdInstall(projectRoot);
+    t.after(() => cleanup(projectRoot));
+
+    assert.strictEqual(agentInstallCheck.getAgentsDir('cline', projectRoot), localAgentsDir);
+    assert.strictEqual(agentInstallCheck.checkAgentsInstalled('cline', projectRoot).agents_installed, true);
+  });
+
+  test('a partial manifest-backed local installation remains selected and incomplete', (t) => {
+    const projectRoot = createTempDir('gsd-local-codex-');
+    const localConfigDir = path.join(projectRoot, '.codex');
+    const localAgentsDir = createCompleteLocalGsdInstall(localConfigDir);
+    const partialAgent = EXPECTED_AGENTS[0];
+    t.after(() => cleanup(projectRoot));
+    fs.writeFileSync(path.join(localAgentsDir, `${partialAgent}.md`), `# ${partialAgent}\n`);
+    fs.unlinkSync(path.join(localAgentsDir, `${partialAgent}.toml`));
+    fs.writeFileSync(
+      path.join(localConfigDir, 'gsd-file-manifest.json'),
+      JSON.stringify({ files: { [`agents/${partialAgent}.md`]: {}, [`agents/${partialAgent}.toml`]: {} } }),
+    );
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex', projectRoot);
+    assert.strictEqual(result.agents_dir, localAgentsDir);
+    assert.strictEqual(result.agents_installed, false);
+    assert.deepStrictEqual(result.missing_agents, []);
+    assert.deepStrictEqual(result.incomplete_agents, [partialAgent]);
+  });
+
   test('Claude and other runtimes ignore a supplied Codex-local candidate', (t) => {
     const projectRoot = createTempDir('gsd-local-codex-');
     t.after(() => cleanup(projectRoot));
-    createCompleteAgents(path.join(projectRoot, '.codex', 'agents'));
+    createCompleteLocalGsdInstall(path.join(projectRoot, '.codex'));
 
     assert.strictEqual(
       agentInstallCheck.getAgentsDir('claude', projectRoot),

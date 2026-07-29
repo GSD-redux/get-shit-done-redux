@@ -34,11 +34,13 @@ interface AgentsInstalledResult {
  *   2. For claude runtime: __dirname-relative path (agents/ sibling of gsd-core/)
  *      This is correct for both repo runs and real installs (the runtime config dir's
  *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
- *   3. For codex with an existing project-local install: <projectRoot>/<localConfigDir>/agents
+ *   3. For non-claude runtimes with a manifest-backed project-local install:
+ *      <projectRoot>/<localConfigDir>/agents (or <projectRoot>/agents when
+ *      the runtime's local install targets the project root)
  *   4. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
- * @param projectRoot - canonical project root for Codex local-install discovery
+ * @param projectRoot - canonical project root for local-install discovery
  */
 function getAgentsDir(runtime?: string, projectRoot?: string): string {
   if (process.env['GSD_AGENTS_DIR']) {
@@ -48,12 +50,29 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
   if (resolved === 'claude') {
     return path.join(__dirname, '..', '..', '..', 'agents');
   }
-  if (resolved === 'codex' && projectRoot) {
-    const localAgentsDir = path.join(projectRoot, getDirName(resolved), 'agents');
+  if (projectRoot) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { runtimes } = require('./capability-registry.cjs') as {
+      runtimes: Record<string, { runtime?: { configHome?: { kind?: string }; hostBehaviors?: { localTargetIsProjectRoot?: boolean } } }>;
+    };
+    const runtimeConfig = runtimes[resolved]?.runtime;
+    const localConfigDir = runtimeConfig?.configHome?.kind === 'none'
+      ? undefined
+      : runtimeConfig?.hostBehaviors?.localTargetIsProjectRoot
+        ? projectRoot
+        : path.join(projectRoot, getDirName(resolved));
+    if (!localConfigDir) {
+      return path.join(getGlobalConfigDir(resolved), 'agents');
+    }
+    const localAgentsDir = path.join(localConfigDir, 'agents');
+    const manifestPath = path.join(localConfigDir, 'gsd-file-manifest.json');
     try {
-      if (fs.statSync(localAgentsDir).isDirectory()) return localAgentsDir;
-    } catch {
-      // Missing or unreadable local candidate: use the global fallback.
+      if (fs.lstatSync(localAgentsDir).isDirectory() && fs.lstatSync(manifestPath).isFile()) {
+        return localAgentsDir;
+      }
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
     }
   }
   return path.join(getGlobalConfigDir(resolved), 'agents');
@@ -63,7 +82,7 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
  * Check which GSD agents are installed on disk.
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
- * @param projectRoot - canonical project root for Codex local-install discovery
+ * @param projectRoot - canonical project root for local-install discovery
  */
 function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsInstalledResult {
   const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');

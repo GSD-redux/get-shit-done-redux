@@ -2266,7 +2266,7 @@ function cmdAgentSkills(
   // documented "unconfigured → empty block" contract that agent-skills tests
   // pin.
   if (!block) {
-    const runtime = resolveRuntime(projectRoot);
+    const runtime = (config && (config['runtime'] as string)) || process.env['GSD_RUNTIME'] || 'claude';
     if (runtime !== 'claude') {
       const agentCheck = checkAgentsInstalled(runtime, projectRoot) as unknown as { agents_dir?: string } | null;
       const agentsDir = agentCheck?.agents_dir;

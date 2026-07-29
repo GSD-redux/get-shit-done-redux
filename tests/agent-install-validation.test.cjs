@@ -120,7 +120,7 @@ describe('init commands: agents_installed field (#1371)', () => {
     createCompleteCodexAgents(tmpDir);
     const canonicalRoot = fs.realpathSync(tmpDir);
     const localAgentsDir = path.join(canonicalRoot, '.codex', AGENTS_DIR_NAME);
-    createCompleteCodexAgents(globalHome);
+    _createAgentsDir(globalHome, EXPECTED_AGENTS);
 
     const result = runGsdTools('init plan-phase 1 --raw', tmpDir, { CODEX_HOME: globalHome });
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -244,6 +244,7 @@ describe('Codex project-local validation status', () => {
 
   test('an empty project-local Codex directory remains authoritative for validate agents and health', () => {
     fs.mkdirSync(path.join(tmpDir, '.codex', AGENTS_DIR_NAME), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.codex', 'gsd-file-manifest.json'), JSON.stringify({ files: {} }));
     const localAgentsDir = path.join(fs.realpathSync(tmpDir), '.codex', AGENTS_DIR_NAME);
     const env = { CODEX_HOME: globalHome };
 
