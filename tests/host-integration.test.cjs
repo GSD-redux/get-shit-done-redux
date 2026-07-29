@@ -1971,12 +1971,28 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
   // Any shape that reads RUNTIME as a branch condition. Line-based matching missed
   // multiline `&&`, [[ ]], case, `test`, and JS-template forms, so match the RUNTIME
   // test itself and then look for an isolation token within the following window.
+  //
+  // Operand ORDER is not fixed either: `[ "claude" != "$RUNTIME" ]` is the same gate
+  // written backwards, and hand-written left-only patterns let it through. Each
+  // comparison shape is therefore generated in both orders from a single template, so
+  // a new shape cannot be added in one order and forgotten in the other.
+  const RT = '"?\\$\\{?RUNTIME\\}?"?';   // $RUNTIME / "$RUNTIME" / "${RUNTIME}"
+  const JS_RT = 'RUNTIME';                // bare identifier inside a ${…} template
+  const QLIT = '["\'][a-z-]+["\']';       // "claude"
+  const LIT = '["\']?[a-z-]+["\']?';      // claude / "claude"  ([[ ]] permits bare)
+
+  /** One comparison shape → two regexes, operands in either order. */
+  const bothOrders = (tpl, a, b) => [
+    new RegExp(tpl.replace('%L', a).replace('%R', b)),
+    new RegExp(tpl.replace('%L', b).replace('%R', a)),
+  ];
+
   const RUNTIME_TESTS = [
-    /\[\s*"?\$\{?RUNTIME\}?"?\s*(!=|=|==)\s*["'][a-z-]+["']\s*\]/,          // [ "$RUNTIME" = "x" ]
-    /\[\[\s*"?\$\{?RUNTIME\}?"?\s*(!=|=|==)\s*["']?[a-z-]+["']?\s*\]\]/,   // [[ "$RUNTIME" == x ]]
-    /\btest\s+"?\$\{?RUNTIME\}?"?\s*(!=|=)\s*["'][a-z-]+["']/,               // test "$RUNTIME" = "x"
-    /\bcase\s+"?\$\{?RUNTIME\}?"?\s+in\b/,                                    // case "$RUNTIME" in
-    /\$\{\s*RUNTIME\s*(===|!==|==|!=)\s*["'][a-z-]+["']/,                       // ${RUNTIME === "x" ? ...}
+    ...bothOrders('\\[\\s*%L\\s*(?:!=|==?)\\s*%R\\s*\\]', RT, QLIT),        // [ "$RUNTIME" = "x" ]
+    ...bothOrders('\\[\\[\\s*%L\\s*(?:!=|==?)\\s*%R\\s*\\]\\]', RT, LIT),   // [[ "$RUNTIME" == x ]]
+    ...bothOrders('\\btest\\s+%L\\s*(?:!=|=)\\s*%R', RT, QLIT),             // test "$RUNTIME" = "x"
+    ...bothOrders('\\$\\{\\s*%L\\s*(?:===|!==|==|!=)\\s*%R', JS_RT, QLIT),  // ${RUNTIME === "x" ? ...}
+    /\bcase\s+"?\$\{?RUNTIME\}?"?\s+in\b/,                                  // case "$RUNTIME" in (no reversed form)
   ];
 
   const WINDOW = 400; // chars after the RUNTIME test to look for an isolation decision
@@ -2008,6 +2024,7 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
     for (const required of [
       'gsd-core/workflows/quick.md',
       'gsd-core/workflows/diagnose-issues.md',
+      'gsd-core/workflows/execute-plan.md',
       'gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md',
     ]) {
       assert.ok(rel.includes(required), `dispatch-site scan must cover ${required}; found ${rel.length} files`);
@@ -2031,6 +2048,16 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
         '${RUNTIME === "claude" ? \'isolation="worktree",\' : \'\'}',
       'test builtin':
         'if test "$RUNTIME" = "claude"; then\n  ISOLATION=harness-worktree\nfi',
+      // Reversed operands — the same gate written backwards. Every one of these
+      // evaded the original left-only patterns (#2728 review, Minor).
+      'reversed single bracket':
+        'if [ "claude" != "$RUNTIME" ] && [ "$USE_WORKTREES" != "false" ]; then',
+      'reversed double bracket':
+        'if [[ claude == "$RUNTIME" ]]; then\n  USE_WORKTREES=false\nfi',
+      'reversed test builtin':
+        'if test "claude" = "$RUNTIME"; then\n  ISOLATION=harness-worktree\nfi',
+      'reversed js template':
+        '${"claude" === RUNTIME ? \'isolation="worktree",\' : \'\'}',
     };
     for (const [name, snippet] of Object.entries(mutations)) {
       assert.equal(
@@ -2039,6 +2066,37 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
         `detector must flag the "${name}" reintroduction — otherwise the guard below proves nothing`,
       );
     }
+  });
+
+  test('the detector flags generated shell-comparison permutations (property)', () => {
+    // The mutation table above is 11 hand-picked cases; this generates the cross
+    // product of the axes an author actually varies — bracket form, operator,
+    // operand order, quoting, spacing, runtime id. A permutation the hand-written
+    // patterns miss shows up here rather than in production (#2728 review, Nit).
+    fc.assert(
+      fc.property(
+        fc.constantFrom('[', '[[', 'test'),
+        fc.constantFrom('=', '==', '!='),
+        fc.boolean(),                                    // reversed operands?
+        fc.constantFrom('"$RUNTIME"', '$RUNTIME', '"${RUNTIME}"'),
+        fc.constantFrom('claude', 'codex', 'kimi-code'),
+        fc.boolean(),                                    // quote the literal?
+        fc.constantFrom('', ' '),                        // extra padding
+        (form, op, reversed, rtTok, id, quoted, pad) => {
+          // `test` has no `==` form and never takes brackets; bare literals are
+          // only legal inside [[ ]].
+          if (form === 'test' && op === '==') return true;
+          const lit = quoted || form !== '[[' ? `"${id}"` : id;
+          const [l, r] = reversed ? [lit, rtTok] : [rtTok, lit];
+          const cond = `${l}${pad} ${op} ${pad}${r}`;
+          const snippet = form === 'test'
+            ? `if test ${cond}; then\n  ISOLATION=none\nfi`
+            : `if ${form} ${cond} ${form === '[[' ? ']]' : ']'}; then\n  ISOLATION=none\nfi`;
+          return isolationGateOffenders(snippet, 'prop').length >= 1;
+        },
+      ),
+      { numRuns: 300 },
+    );
   });
 
   test('a RUNTIME read with no isolation decision nearby is NOT flagged (no false positive)', () => {
