@@ -1267,21 +1267,41 @@ describe('H. Harvest widening — buildRegistry(capMap)', () => {
     );
   });
 
-  test('shippedRegistryOutputIsUnchangedByHarvestWidening', () => {
+  test('shippedRegistryConfigKeysAreOwnedByDeclaringCapabilities', () => {
+    // Phase 2 introduced the harvest widening (ownership follows DECLARING a
+    // config slice, not being a feature) and asserted it was INERT — no shipped
+    // non-feature capability owned a config key, so the widening changed nothing.
+    //
+    // #2797 (Phase 4) is what consumes it: the reviewer lanes now own their own
+    // config keys, and those lanes are `role: "reviewer"` (lane-only CLIs) or
+    // `role: "runtime"` (dual-purpose install targets). Asserting `role ===
+    // 'feature'` here would now be asserting the migration did not happen.
+    //
+    // The protection is kept, just restated: every key's owner must exist, and a
+    // `review.*` key must be owned by a capability that actually declares a
+    // reviewer lane — not by an arbitrary capability that happened to claim it.
     const { capMap, errors } = loadAndValidate(new Set());
     assert.deepEqual(errors, [], `expected the real shipped capability set to validate cleanly, got: ${JSON.stringify(errors)}`);
 
     const registry = buildRegistry(capMap);
+    let reviewKeys = 0;
     for (const [key, ownerId] of Object.entries(registry.configKeys)) {
       const owner = capMap.get(ownerId);
       assert.ok(owner, `configKeys owner "${ownerId}" for key "${key}" must exist in capMap`);
-      assert.equal(
-        owner.role,
-        'feature',
-        `harvest widening must not change the shipped set: config key "${key}" is owned by non-feature ` +
-        `capability "${ownerId}" (role: ${owner.role}) — today only feature-role capabilities own config keys`,
+      assert.ok(
+        ['feature', 'reviewer', 'runtime'].includes(owner.role),
+        `config key "${key}" is owned by capability "${ownerId}" with unexpected role "${owner.role}"`,
       );
+      if (key.startsWith('review.')) {
+        reviewKeys += 1;
+        assert.ok(
+          owner.reviewer && typeof owner.reviewer.slug === 'string',
+          `review config key "${key}" must be owned by a capability declaring a reviewer lane, ` +
+          `but "${ownerId}" declares none`,
+        );
+      }
     }
+    assert.ok(reviewKeys > 0, 'expected the federated reviewer config keys to be present (#2797)');
   });
 });
 

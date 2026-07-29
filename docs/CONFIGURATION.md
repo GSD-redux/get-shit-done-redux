@@ -237,7 +237,20 @@ API key fields accept a string value (the key itself). They can also be set to t
 | `review.models.gemini` | string | `null` | Model id for Gemini review (injected into -m), e.g. `"gemini-2.5-pro"` |
 | `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
 
-The `<cli>` slug is validated against `[a-zA-Z0-9_-]+`. Empty or path-containing slugs are rejected by `config-set`.
+**Ownership.** These keys are owned by their reviewer-lane capabilities rather than the central
+config schema — `review.models.ollama` belongs to the `ollama` capability, `review.ollama_host`
+to the same, and so on. Key names and existing `.planning/config.json` files are unchanged; only
+which schema validates them moved.
+
+One consequence follows: `<cli>` must now name a **declared reviewer lane**. Previously any slug
+matching `[a-zA-Z0-9_-]+` was accepted, so a typo or a key left over from a removed reviewer
+validated silently and was never read. Such a key is now rejected by `config-set`. The declared
+lanes are `gemini`, `claude`, `codex`, `opencode`, `agy` (the Antigravity lane — its key suffix is
+the CLI's own name, not the lane slug), `ollama`, `lm_studio` and `llama_cpp`.
+
+The same applies to `review.max_prompt_tokens_per_reviewer.<slug>`. `review.max_prompt_tokens`
+(the global default), `review.default_reviewers` and `review.reviewer_instances` describe policy
+across lanes rather than one lane's behavior, so they remain central and are unaffected.
 
 ### Reviewer defaults for `/gsd-review`
 
