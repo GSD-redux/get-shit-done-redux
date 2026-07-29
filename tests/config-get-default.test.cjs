@@ -1535,6 +1535,8 @@ describe('#2702: workstream config-get inherits from root config', () => {
     // GSD_PROJECT scopes planningDir to .planning/<project>/ but loadConfigResolved
     // gates root-reading on `if (ws)`, so a project-only read must NOT inherit root.
     // The fix gates on GSD_WORKSTREAM presence (not path inequality) to match.
+    // A --default is supplied so a non-inheriting read returns a clean sentinel
+    // ('not-inherited') rather than hitting the error/exit path.
     const projectPlanningDir = path.join(rootPlanningDir, 'myproj');
     fs.mkdirSync(projectPlanningDir, { recursive: true });
     fs.writeFileSync(path.join(projectPlanningDir, 'config.json'), JSON.stringify({ workflow: {} }));
@@ -1543,11 +1545,10 @@ describe('#2702: workstream config-get inherits from root config', () => {
     process.env.GSD_PROJECT = 'myproj';
     try {
       const out = captureFdWrite(1, () => {
-        config.cmdConfigGet(tmpDir, 'workflow.use_worktrees', true, undefined);
+        config.cmdConfigGet(tmpDir, 'workflow.use_worktrees', true, 'not-inherited');
       }).trim();
-      // No workstream → no root inheritance → the project-scoped config has no
-      // use_worktrees → schema default or empty, NOT the root 'true'.
-      assert.notEqual(out, 'true', 'GSD_PROJECT-only must not inherit root (matches loadConfigResolved)');
+      // No workstream → no root inheritance → returns the --default sentinel, NOT root 'true'.
+      assert.equal(out, 'not-inherited', 'GSD_PROJECT-only must not inherit root (matches loadConfigResolved)');
     } finally {
       if (saved === undefined) delete process.env.GSD_PROJECT;
       else process.env.GSD_PROJECT = saved;
