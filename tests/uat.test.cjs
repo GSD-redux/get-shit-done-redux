@@ -12,6 +12,8 @@ const fc = require('./helpers/fast-check-setup.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const {
   buildCheckpoint,
+  CHECKPOINT_FRAMES,
+  CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
   checkpointBoxLine,
 } = require('../gsd-core/bin/lib/uat.cjs');
@@ -947,6 +949,52 @@ describe('uat render-checkpoint', () => {
     }
   });
 
+  test('checkpoint frame and alias catalogs remain structurally complete', () => {
+    const english = CHECKPOINT_FRAMES.english;
+    assert.ok(english, 'English fallback frame must exist');
+
+    for (const [language, frame] of Object.entries(CHECKPOINT_FRAMES)) {
+      const expectedKeys = frame.direction
+        ? ['banner', 'direction', 'instruction']
+        : ['banner', 'instruction'];
+      assert.deepStrictEqual(
+        Object.keys(frame).sort(),
+        expectedKeys,
+        `${language} has an unexpected checkpoint-frame shape`,
+      );
+      assert.ok(frame.banner.trim(), `${language} banner must be non-empty`);
+      assert.ok(frame.instruction.trim(), `${language} instruction must be non-empty`);
+      if (frame.direction !== undefined) {
+        assert.strictEqual(frame.direction, 'rtl', `${language} has an unsupported direction`);
+      }
+      assert.strictEqual(
+        CHECKPOINT_LANGUAGE_ALIASES[language],
+        language,
+        `${language} must self-alias to its canonical frame`,
+      );
+      if (language !== 'english') {
+        assert.notDeepStrictEqual(frame, english, `${language} must not duplicate the English frame`);
+      }
+    }
+
+    for (const [alias, language] of Object.entries(CHECKPOINT_LANGUAGE_ALIASES)) {
+      const frame = CHECKPOINT_FRAMES[language];
+      assert.ok(frame, `${alias} targets missing checkpoint frame ${language}`);
+      assert.strictEqual(
+        resolveCheckpointFrame(alias),
+        frame,
+        `${alias} must resolve to its declared checkpoint frame`,
+      );
+      if (language !== 'english') {
+        assert.notDeepStrictEqual(
+          frame,
+          english,
+          `${alias} must not resolve to the English fallback`,
+        );
+      }
+    }
+  });
+
   test('resolveCheckpointFrame: canonically equivalent aliases resolve after NFC normalization', () => {
     assert.deepStrictEqual(
       resolveCheckpointFrame('türkçe'.normalize('NFD')),
@@ -1040,9 +1088,9 @@ describe('uat render-checkpoint', () => {
       const arabic = buildCheckpoint(currentTest, 'Arabic');
       assert.strictEqual(
         arabic.split('\n')[1],
-        `║  \u2066نقطة تحقق: المراجعة مطلوبة\u2069${' '.repeat(34)}║`,
+        `║  \u2067نقطة تحقق: المراجعة مطلوبة\u2069${' '.repeat(34)}║`,
       );
-      assert.ok(arabic.includes('\u2066اكتب `pass` أو صف المشكلة.\u2069'));
+      assert.ok(arabic.includes('\u2067اكتب `pass` أو صف المشكلة.\u2069'));
     });
   });
 

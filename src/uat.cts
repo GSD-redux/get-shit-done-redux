@@ -520,12 +520,12 @@ function checkpointBoxLine(text: string): string {
   return `║${padded}║`;
 }
 
-const LTR_ISOLATE = '\u2066';
+const RTL_ISOLATE = '\u2067';
 const POP_DIRECTIONAL_ISOLATE = '\u2069';
 
 function isolateCheckpointFrameText(text: string, frame: CheckpointFrame): string {
   return frame.direction === 'rtl'
-    ? `${LTR_ISOLATE}${text}${POP_DIRECTIONAL_ISOLATE}`
+    ? `${RTL_ISOLATE}${text}${POP_DIRECTIONAL_ISOLATE}`
     : text;
 }
 
@@ -1016,6 +1016,8 @@ export = {
   cmdRenderCheckpoint,
   parseCurrentTest,
   buildCheckpoint,
+  CHECKPOINT_FRAMES,
+  CHECKPOINT_LANGUAGE_ALIASES,
   resolveCheckpointFrame,
   checkpointBoxLine,
   parseDeferredItems,
