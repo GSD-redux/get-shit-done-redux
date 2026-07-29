@@ -967,6 +967,28 @@ function buildPredicateDeps() {
         timedOut: r.signal === 'SIGTERM',
       };
     },
+    findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null {
+      if (!fs.existsSync(phaseDir)) return null;
+      const directPath = path.join(phaseDir, artifactSuffix);
+      if (fs.existsSync(directPath) && fs.statSync(directPath).isFile()) return directPath;
+      const planningPath = path.join(phaseDir, '.planning', artifactSuffix);
+      if (fs.existsSync(planningPath) && fs.statSync(planningPath).isFile()) return planningPath;
+      try {
+        const files = fs.readdirSync(phaseDir);
+        for (const f of files) {
+          if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
+            const p = path.join(phaseDir, f);
+            if (fs.statSync(p).isFile()) return p;
+          }
+        }
+      } catch { /* ignore */ }
+      return null;
+    },
+    readFrontmatter(filePath: string): Record<string, unknown> {
+      const content = fs.readFileSync(filePath, 'utf8');
+      const { extractFrontmatter } = require('./frontmatter.cjs');
+      return extractFrontmatter(content, filePath) as Record<string, unknown>;
+    }
   };
 }
 
