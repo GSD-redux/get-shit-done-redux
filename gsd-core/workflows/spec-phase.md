@@ -302,7 +302,7 @@ For each Requirement gathered so far:
      **Dismiss (reason)**, or **Defer**). A manual-review nudge, not a hard block.
 
 **Soft gate (after resolving):**
-- All applicable edges resolved → proceed to Step 6.
+- All applicable edges resolved → proceed to Step 5.6.
 - Any `unresolved` → AskUserQuestion:
   - header: "Edge Coverage"
   - question: "[N] edge(s) are unresolved: [list]. What do you want to do?"

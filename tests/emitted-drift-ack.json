@@ -17,7 +17,7 @@
       "reason": "#2694: six inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved REVIEW.md/REVIEW-FIX.md artifacts are no longer silently dropped (status/depth/files_reviewed_list extraction). The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 6 boundary sites; no observable command shape changed otherwise. This is the intended fix."
     },
     "spec-phase.md": {
-      "reason": "#2733: the four gate-passed transitions in gsd-core/workflows/spec-phase.md were re-pointed from 'Jump to Step 6' to 'Jump to Step 5.5' so control reaches the mandatory Step 5.5 edge-completeness and Step 5.6 prohibition-completeness probes, which no path could reach before. The +8 bytes is exactly those four targets growing by 2 bytes each ('Step 6.' -> 'Step 5.5.'); it is the literal fix, not incidental prose growth, and cannot be avoided without leaving the probes unreachable."
+      "reason": "#2733: five transitions in gsd-core/workflows/spec-phase.md were re-pointed so control reaches the mandatory Step 5.5 edge-completeness and Step 5.6 prohibition-completeness probes, which no path could reach before. Four upstream gate-passed jumps went from 'Jump to Step 6' to 'Jump to Step 5.5', and Step 5.5's own terminal soft gate at :305 went from 'proceed to Step 6' to 'proceed to Step 5.6' so the common all-edges-resolved path stops skipping the prohibition probe. The +10 bytes is exactly those five targets growing by 2 bytes each ('Step 6' -> 'Step 5.5' / 'Step 5.6'); it is the literal fix, not incidental prose growth, and cannot be avoided without leaving a probe unreachable. Verified: 31987 -> 31997 bytes, DEFAULT tier, cap 40960."
     }
   }
 }

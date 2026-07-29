@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #2733) — spec-phase.md IS the deployed
+// allow-test-rule: source-text-is-the-product (see #2733) — spec-phase.md IS the deployed
 // workflow the runtime executes, so its control flow is the product under assertion, not an
 // implementation detail behind a typed seam. There is no structured artifact to assert on: the
 // jump instructions ARE prose the model follows.
@@ -8,6 +8,12 @@
 // four pre-existing gate-passed "Jump to Step 6" instructions were never re-pointed — so every
 // gate-passed path textually routed around both mandatory probes and NO jump in the file
 // reached Step 5.5 at all.
+//
+// A FIFTH occurrence survived the first pass and was caught in review: Step 5.5's own terminal
+// soft gate (":305") read "proceed to Step 6", so the COMMON path — all edges resolved — skipped
+// the prohibition probe outright. It was invisible to this guard because the transition matcher
+// keyed only on "Jump to Step"; see TRANSITION_RE. Its sibling at ":393" is byte-identical yet
+// CORRECT, because Step 6 genuinely follows Step 5.6 — position is the discriminator, not text.
 //
 // The two existing probe contract tests (edge-probe-spec-phase-contract.test.cjs,
 // prohibition-probe.spec-phase-contract.test.cjs) are structurally blind to this: both slice
@@ -26,11 +32,31 @@ const path = require('node:path');
 
 const SPEC_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'spec-phase.md');
 
-/** `## Step 5.5: Edge-Completeness Probe` → captures the id and the title. */
-const STEP_HEADING_RE = /^## Step ([0-9]+(?:\.[0-9]+)*)\s*:?\s*(.*)$/;
+/**
+ * `## Step 5.5: Edge-Completeness Probe` → captures the id and the title.
+ *
+ * The explicit `\r?` matters: `.` excludes line terminators, so on a CRLF checkout `(.*)`
+ * stops before the `\r` and an unanchored `$` then fails to match, silently yielding ZERO
+ * steps and vacuously passing every assertion below. `.gitattributes:2` forces `eol=lf` today,
+ * but this repo has a recurring CRLF-regex bug class, so the guard does not lean on it.
+ */
+const STEP_HEADING_RE = /^## Step ([0-9]+(?:\.[0-9]+)*)\s*:?\s*(.*?)\r?$/;
 
-/** A transition instruction the executing model is told to follow. */
-const JUMP_RE = /Jump to Step ([0-9]+(?:\.[0-9]+)*)/;
+/**
+ * A transition instruction the executing model is told to follow.
+ *
+ * This must cover EVERY phrasing the workflow uses to move control, not just `Jump to Step`.
+ * The original `Jump to Step`-only form was blind to Step 5.5's own soft gate at :305
+ * (`proceed to Step 6`), which is the same probe-skipping defect class this file guards —
+ * so the guard could not see the very case it claimed to hold. The verb alternation is what
+ * makes the docstring's promise ("a future spliced-in probe is covered without editing this
+ * test") true for a step whose exit is worded differently.
+ *
+ * Position, not phrasing, is what separates a correct transition from a violation: :305 and
+ * :393 are byte-identical `proceed to Step 6` lines and only differ in which step encloses
+ * them. That discrimination lives in the `jumpIsUpstreamOfProbe` guard below, not here.
+ */
+const TRANSITION_RE = /(?:jump|proceed|continue|go|return|skip)\s+to\s+Step\s+([0-9]+(?:\.[0-9]+)*)/i;
 
 /**
  * The max-rounds bypass: reached ONLY when the ambiguity gate never passed. Both probes are
@@ -76,11 +102,11 @@ function collectProbeSteps(steps) {
   return steps.filter(s => /probe/i.test(s.title));
 }
 
-/** Every `Jump to Step N` instruction, with the line it sits on. */
+/** Every control-transition instruction (any phrasing), with the line it sits on. */
 function collectJumps(lines) {
   const jumps = [];
   lines.forEach((line, idx) => {
-    const m = line.match(JUMP_RE);
+    const m = line.match(TRANSITION_RE);
     if (m) jumps.push({ target: m[1], line: idx + 1, text: line.trim() });
   });
   return jumps;
@@ -169,7 +195,7 @@ test('#2733 coupled: the max-rounds bypass is NOT redirected into a probe', () =
   const block = lines.slice(bypass.start - 1, bypass.end);
   const probeIds = new Set(probes.map(p => p.id));
   const redirected = block
-    .map((line, i) => ({ line: bypass.start + i, text: line.trim(), m: line.match(JUMP_RE) }))
+    .map((line, i) => ({ line: bypass.start + i, text: line.trim(), m: line.match(TRANSITION_RE) }))
     .filter(e => e.m && probeIds.has(e.m[1]));
 
   assert.deepEqual(
