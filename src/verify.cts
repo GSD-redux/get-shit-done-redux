@@ -1250,8 +1250,15 @@ function listMilestoneArchiveDirs(planBase: string): string[] {
       .sort((a, b) =>
         path.basename(a).localeCompare(path.basename(b), undefined, { numeric: true }),
       );
-  } catch {
-    return [];
+  } catch (err) {
+    // #1883: distinguish genuine absence from a permission/I-O failure. ENOENT
+    // (no milestones/ dir yet) keeps the long-standing [] contract that
+    // collectPhaseRoots / forEachArchivedPhaseToken depend on for "no archives";
+    // every other error (EACCES, EIO, …) must propagate — otherwise an unreadable
+    // milestones/ dir is silently reported as "no archives" and active-milestone
+    // resolution / archived-phase filtering misbehaves.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
   }
 }
 
@@ -2632,4 +2639,9 @@ export = {
   cmdValidateAgents,
   cmdVerifySchemaDrift,
   cmdVerifyCodebaseDrift,
+  // Test seam (#1883): listMilestoneArchiveDirs is private and exercised through
+  // the validate command, which runs in a subprocess — an fs monkeypatch in the
+  // test process cannot reach it. Exposed under a leading underscore so the
+  // permission-error path can be unit-tested directly (no chmod 0o000).
+  _listMilestoneArchiveDirs: listMilestoneArchiveDirs,
 };

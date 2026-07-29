@@ -45,7 +45,13 @@ const {
 } = require('./install-shared.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
-const ACK_PATH = path.join(REPO_ROOT, 'tests', 'emitted-drift-ack.json');
+/**
+ * Repo-relative and POSIX-separated on every platform: this form is what `git show
+ * <ref>:<path>` requires, and git speaks only forward slashes regardless of host OS.
+ * `ACK_PATH` derives from it so the two can never name different files.
+ */
+const ACK_REPO_PATH = 'tests/emitted-drift-ack.json';
+const ACK_PATH = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
 const FIXTURE_SUBDIR = 'tests/fixtures/golden-install-parity';
 
 /**
@@ -289,6 +295,78 @@ function resolveChangedPaths(base = 'origin/next') {
 /** Resolve `base` to a 40-hex sha, for the baseline cache-key discipline (ADR §5). */
 function resolveBaseSha(base = 'origin/next') {
   return git(['rev-parse', base]).trim();
+}
+
+/**
+ * The acknowledgment document AS IT EXISTS AT `base` — the base side of the ack
+ * lifecycle (#2789). An entry already present there is SPENT: its ripple is absorbed
+ * into the base, so it may no longer clear a delta and is never reported stale.
+ *
+ * ── Why "inherit nothing" is NOT a safe default ──────────────────────────────
+ * Absent at that ref is the healthy steady state and returns `null`. Every OTHER failure
+ * THROWS, and the distinction is load-bearing in the direction that is easy to get
+ * backwards. Returning `null` on a read error looks armed — nothing is inherited, so
+ * every entry stays live — but a LIVE entry's defining power is that it CONSUMES a
+ * delta. So `null` is armed on the staleness axis and DISARMED on the consumption axis,
+ * which is the axis a gate over shipped artifacts actually cares about: a genuinely new,
+ * unexplained ripple on a path carrying an already-merged ack would come back `acked`
+ * instead of `unattributable`. That is silently the whole pre-#2789 behavior, including
+ * the pre-clearing hazard this change exists to close.
+ *
+ * So this follows the same law as `resolveChangedPaths` above — a failed git read is an
+ * ERROR, not an empty set — and matches the head-side `readAckFile`, which already
+ * throws on a document that exists but will not parse. Being more forgiving about the
+ * base copy of the same file would be strictly worse: it is the copy we cannot see in
+ * the diff.
+ *
+ * `git show` alone cannot make the distinction — a bogus ref and an absent path produce
+ * the same "does not exist in" message — so absence is established with `ls-tree`, which
+ * exits 0 with empty output when the path is simply not there and non-zero on a real
+ * fault.
+ */
+function readAckFileAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
+  // `execFileSync`'s array form stops SHELL metacharacters but not git's own option
+  // parsing: a ref beginning with `-` is read as an option token, and `git show` honors
+  // diff options including `--output=<file>`, which writes. Today every caller passes a
+  // resolved 40-hex sha, but this function is exported and validated nothing itself —
+  // the guard belonged with the argument, not with the one caller that happens to be safe.
+  if (typeof base !== 'string' || base === '' || base.startsWith('-')) {
+    throw new Error(
+      `emitted-attribution: refusing to read the ack at ${JSON.stringify(base)} — a base ref `
+      + 'must be a non-empty string that does not begin with "-", which git would parse as an option.',
+    );
+  }
+
+  let listing;
+  try {
+    listing = run(['ls-tree', '--name-only', base, '--', ACK_REPO_PATH], { cwd });
+  } catch (err) {
+    throw new Error(
+      `emitted-attribution: could not list the ack at "${base}": ${err.message}. This is a `
+      + 'hard error on purpose — treating an unreadable base as "nothing inherited" would '
+      + 'leave every ack able to consume a delta, which is the pre-#2789 gate.',
+    );
+  }
+  if (listing.trim() === '') return null; // genuinely absent at that ref — the steady state
+
+  let raw;
+  try {
+    raw = run(['show', `${base}:${ACK_REPO_PATH}`], { cwd });
+  } catch (err) {
+    throw new Error(
+      `emitted-attribution: ${ACK_REPO_PATH} exists at "${base}" but could not be read: ${err.message}`,
+    );
+  }
+  if (raw.trim() === '') {
+    throw new Error(`emitted-attribution: ${ACK_REPO_PATH} is present at "${base}" but empty`);
+  }
+  try {
+    return JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `emitted-attribution: ${ACK_REPO_PATH} at "${base}" is not valid JSON: ${err.message}`,
+    );
+  }
 }
 
 /**
@@ -597,6 +675,8 @@ function readAckFile(ackPath = ACK_PATH) {
 module.exports = {
   REPO_ROOT,
   ACK_PATH,
+  ACK_REPO_PATH,
+  readAckFileAtRef,
   FIXTURE_SUBDIR,
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,

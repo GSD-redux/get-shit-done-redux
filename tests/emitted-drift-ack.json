@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "gsd-phase-researcher.md": {
-      "reason": "#1699 adds the in-repo value provenance rule to the claim-provenance section: an enum, schema/type-union, error code, status constant, or filesystem path earns [VERIFIED] only after a same-session Read, a path-and-line-range citation, and a verbatim quote in RESEARCH.md. Growth is inline prose in the agent body, deliberately NOT relocated into an eagerly @-imported reference, which ADR-1610 Decision 4 names as gaming the size proxy. 40866 -> 42020 bytes, LARGE tier, cap 49152."
-    }
-  }
-}
