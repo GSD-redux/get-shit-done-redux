@@ -424,19 +424,23 @@ function detectApiIntegration(text, terms) {
         if (verbRe && nounRe) {
             for (const clause of clauses) {
                 const verbs = collectTermMatches(verbRe, clause.text);
-                if (verbs.length === 0)
+                const validVerbs = verbs.filter(v => !isNegated(clause.text, v.start));
+                if (validVerbs.length === 0)
                     continue;
                 const nouns = collectTermMatches(nounRe, clause.text);
-                const nounTerms = new Set(nouns.map((t) => t.term));
+                const validNouns = new Set();
+                for (const n of nouns) {
+                    if (!isNegated(clause.text, n.start)) validNouns.add(n.term);
+                }
                 for (const u of extraNouns) {
                     if (u.start >= clause.start && u.end <= clause.start + clause.text.length) {
-                        nounTerms.add(u.term);
+                        if (!isNegated(masked, u.start)) validNouns.add(u.term);
                     }
                 }
-                if (nounTerms.size === 0)
+                if (validNouns.size === 0)
                     continue;
-                for (const vTerm of new Set(verbs.map((t) => t.term))) {
-                    for (const nTerm of nounTerms)
+                for (const vTerm of new Set(validVerbs.map((t) => t.term))) {
+                    for (const nTerm of validNouns)
                         emitPair(vTerm, nTerm, rawLine);
                 }
             }
@@ -461,6 +465,8 @@ function detectApiIntegration(text, terms) {
                 if (COMPOUND_MODIFIER_RE.test(svc))
                     continue;
                 if (isInternallyQualified(masked, clause.start + m.index))
+                    continue;
+                if (isNegated(masked, clause.start + m.index))
                     continue;
                 const noun = (m[2] || '').toLowerCase();
                 const key = `surface+${noun}`;
@@ -496,6 +502,13 @@ function isInternallyQualified(masked, offset) {
     if (from > 0 && m.index === 0 && /[A-Za-z0-9'-]/.test(masked[from - 1]))
         return false;
     return INTERNAL_DESCRIPTORS.has(m[1].toLowerCase());
+}
+
+const NEGATION_LOOKBACK = 60;
+function isNegated(masked, offset) {
+    const from = offset > NEGATION_LOOKBACK ? offset - NEGATION_LOOKBACK : 0;
+    const window = masked.slice(from, offset);
+    return /\b(no|not|without|zero)\b(?:\s+[A-Za-z0-9'-]+){0,3}\s*$/i.test(window);
 }
 /** Matches a declaration line such as
  *  `No external API integration: <reason>` (also `**bold**` and em-dash
