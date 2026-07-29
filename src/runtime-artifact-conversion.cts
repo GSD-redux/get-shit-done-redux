@@ -2066,8 +2066,8 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
   const color = extractFrontmatterField(frontmatter, 'color');
   // CONV-04 + CONV-05: Map tools, deduplicate, format as JSON array.
   // Parsed through the shared agent-tools-contract seam (#2540) — the former
-  // single-line `tools:` regex plus a naive split(',') read a block-list
-  // contract as the single literal "- Read", so convertCopilotToolName fell
+  // single-line `tools:` regex plus a naive split(',') collapsed a block-list
+  // contract into the single literal "- Read", so convertCopilotToolName fell
   // through to its lowercase default and every other tool was silently dropped.
   const claudeTools = toolsContract.parseToolsContract(frontmatter);
   const mappedTools = claudeTools.map(t => convertCopilotToolName(t));
