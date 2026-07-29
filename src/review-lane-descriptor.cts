@@ -24,18 +24,29 @@
  * Behaviour that data cannot express is delegated to a named `handler`
  * (ADR-2782 D6 closed enum) — never to conditionals inside the table.
  *
- * Field names and enum members track ADR-2782 D1/D2/D6/D7 verbatim so Phase 2
+ * Field names, nesting, and enum members track ADR-2782 D1/D2/D6/D7 so Phase 2
  * (#2795) harvests this shape into the capability manifest without a translation
- * layer.
+ * layer — INCLUDING `transport`'s placement at the lane level (see SpawnLane).
  *
- * Two D2 vocabulary widenings were forced by surveying the shipped legs, and are
- * annotated at their lanes below:
- *   - `promptChannel: 'none'` — CodeRabbit reviews the working-tree diff and is
- *     fed no prompt at all. D2 lists only stdin | argv | argv-file-ref.
- *   - `outputChannel: 'file-arg'` — Codex writes the review via its own
- *     `-o/--output-last-message <FILE>` and discards stdout (#1698). D2 states
- *     stdout is the only member "today"; it already is not.
- * Both are additive and closed. Phase 2 owns encoding them in the validator.
+ * Four vocabulary widenings were forced by surveying the eleven shipped legs.
+ * Every one is additive and closed, and every one is listed here rather than
+ * left for Phase 2 to discover, because an undisclosed divergence is exactly the
+ * translation layer this module exists to avoid:
+ *
+ *   1. `promptChannel: 'none'` — CodeRabbit reviews the working-tree diff and is
+ *      fed no prompt at all. D2 lists only stdin | argv | argv-file-ref.
+ *   2. `outputChannel: 'file-arg'` — Codex writes the review via its own
+ *      `-o/--output-last-message <FILE>` and discards stdout (#1698). D2 states
+ *      stdout is the only member "today"; it already is not.
+ *   3. `outputArg` — the companion to (2): knowing the review lands in a file is
+ *      useless without the argument that names the file. Absent from D2's table.
+ *   4. `flags: string[]` where D1 shows a singular `flag` — Antigravity is
+ *      selected by BOTH `--antigravity` and `--agy` (`review.md`, `COMMANDS.md`),
+ *      which a single-valued field cannot express. Note this also widens D8's
+ *      uniqueness invariant, which is stated over `reviewer.flag`: uniqueness is
+ *      enforced here across the flattened set of all lanes' flags.
+ *
+ * Phase 2 owns encoding all four in the manifest validator.
  */
 
 /** ADR-2782 D2 — closed transport discriminator; selects the invoke sub-shape. */
@@ -72,7 +83,6 @@ export type LaneProbe =
   | { kind: 'http-reachable'; hostConfigKey: string; path: string; timeoutMs: number };
 
 export interface SpawnInvoke {
-  transport: 'spawn';
   binary: string;
   args: ReadonlyArray<string>;
   promptChannel: PromptChannel;
@@ -85,7 +95,6 @@ export interface SpawnInvoke {
 }
 
 export interface HttpInvoke {
-  transport: 'openai-http';
   /** Dotted config key holding the base URL. */
   hostConfigKey: string;
   path: string;
@@ -95,12 +104,14 @@ export interface HttpInvoke {
 
 export type LaneInvoke = SpawnInvoke | HttpInvoke;
 
-export interface ReviewerLane {
+interface ReviewerLaneCommon {
   slug: string;
-  /** Every CLI flag that selects this lane. First entry is canonical. */
+  /**
+   * Every CLI flag that selects this lane. First entry is canonical.
+   * ADR-2782 D1 shows a singular `flag`; see the module header's widening (3).
+   */
   flags: ReadonlyArray<string>;
   probe: LaneProbe;
-  invoke: LaneInvoke;
   /** Outer wall-clock bound. An inner tool-native timeout lives in the handler (D6). */
   timeoutFloorMs: number;
   emptyOutput: EmptyOutputPolicy;
@@ -113,6 +124,27 @@ export interface ReviewerLane {
   promptBudgetKey: string | null;
   handler: LaneHandler;
 }
+
+/**
+ * `transport` sits at the LANE level, a sibling of `probe` and `invoke`, exactly
+ * as ADR-2782 D1's manifest example places it — not nested inside `invoke`.
+ * Nesting it would read more naturally as a TypeScript discriminated union, and
+ * that is precisely the convenience Phase 2 (#2795) would have to translate away
+ * when harvesting this shape into the capability manifest. The union is
+ * discriminated at the lane level instead, which costs nothing and keeps the two
+ * vocabularies identical.
+ */
+export interface SpawnLane extends ReviewerLaneCommon {
+  transport: 'spawn';
+  invoke: SpawnInvoke;
+}
+
+export interface HttpLane extends ReviewerLaneCommon {
+  transport: 'openai-http';
+  invoke: HttpInvoke;
+}
+
+export type ReviewerLane = SpawnLane | HttpLane;
 
 const SPAWN_STDIN_STDOUT = {
   promptChannel: 'stdin',
@@ -130,9 +162,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   {
     slug: 'gemini',
     flags: ['--gemini'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'gemini' },
     invoke: {
-      transport: 'spawn',
       binary: 'gemini',
       args: ['-p', '-'],
       ...SPAWN_STDIN_STDOUT,
@@ -152,9 +184,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // on a large plan set (review.md:304).
     slug: 'claude',
     flags: ['--claude'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'claude' },
     invoke: {
-      transport: 'spawn',
       binary: 'claude',
       args: ['-p', '-'],
       ...SPAWN_STDIN_STDOUT,
@@ -176,9 +208,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // non-empty file and slip past the empty-output guard (#1698).
     slug: 'codex',
     flags: ['--codex'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'codex' },
     invoke: {
-      transport: 'spawn',
       binary: 'codex',
       args: ['exec', '--ephemeral', '--skip-git-repo-check', '-'],
       promptChannel: 'stdin',
@@ -201,9 +233,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // deliberately down-weighted in the consensus step.
     slug: 'coderabbit',
     flags: ['--coderabbit'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'coderabbit' },
     invoke: {
-      transport: 'spawn',
       binary: 'coderabbit',
       args: ['review', '--prompt-only'],
       promptChannel: 'none',
@@ -225,9 +257,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // agent stops with no final message (#1936). Reconstruction needs jq.
     slug: 'opencode',
     flags: ['--opencode'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'opencode' },
     invoke: {
-      transport: 'spawn',
       binary: 'opencode',
       args: ['run', '--format', 'json', '-'],
       ...SPAWN_STDIN_STDOUT,
@@ -245,9 +277,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   {
     slug: 'qwen',
     flags: ['--qwen'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'qwen' },
     invoke: {
-      transport: 'spawn',
       binary: 'qwen',
       args: ['-'],
       ...SPAWN_STDIN_STDOUT,
@@ -268,9 +300,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // reference to stay clear of the 32,767-char Windows execFileSync ceiling.
     slug: 'cursor',
     flags: ['--cursor'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'cursor-agent' },
     invoke: {
-      transport: 'spawn',
       binary: 'cursor-agent',
       args: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text'],
       promptChannel: 'argv-file-ref',
@@ -293,9 +325,9 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     // bound only; the inner one lives in the handler (ADR-2782 D6).
     slug: 'antigravity',
     flags: ['--antigravity', '--agy'],
+    transport: 'spawn',
     probe: { kind: 'command-exists', binary: 'agy' },
     invoke: {
-      transport: 'spawn',
       binary: 'agy',
       args: ['--print-timeout', '540s', '-p'],
       promptChannel: 'argv-file-ref',
@@ -314,6 +346,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   {
     slug: 'ollama',
     flags: ['--ollama'],
+    transport: 'openai-http',
     probe: {
       kind: 'http-reachable',
       hostConfigKey: 'review.ollama_host',
@@ -321,7 +354,6 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       timeoutMs: 2_000,
     },
     invoke: {
-      transport: 'openai-http',
       hostConfigKey: 'review.ollama_host',
       path: '/v1/chat/completions',
       modelDiscovery: 'first-from-models-endpoint',
@@ -338,6 +370,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   {
     slug: 'lm_studio',
     flags: ['--lm-studio'],
+    transport: 'openai-http',
     probe: {
       kind: 'http-reachable',
       hostConfigKey: 'review.lm_studio_host',
@@ -345,7 +378,6 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       timeoutMs: 2_000,
     },
     invoke: {
-      transport: 'openai-http',
       hostConfigKey: 'review.lm_studio_host',
       path: '/v1/chat/completions',
       modelDiscovery: 'first-from-models-endpoint',
@@ -362,6 +394,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   {
     slug: 'llama_cpp',
     flags: ['--llama-cpp'],
+    transport: 'openai-http',
     probe: {
       kind: 'http-reachable',
       hostConfigKey: 'review.llama_cpp_host',
@@ -369,7 +402,6 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
       timeoutMs: 2_000,
     },
     invoke: {
-      transport: 'openai-http',
       hostConfigKey: 'review.llama_cpp_host',
       path: '/v1/chat/completions',
       modelDiscovery: 'first-from-models-endpoint',
@@ -396,6 +428,8 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
  * `Object.keys(...).sort()`.
  */
 export const PARITY_VIOLATION = Object.freeze({
+  MALFORMED_LANE: 'malformed_lane',
+  INVALID_SLUG: 'invalid_slug',
   ROSTER_SLUG_UNDECLARED: 'roster_slug_undeclared',
   DESCRIPTOR_LANE_NOT_IN_ROSTER: 'descriptor_lane_not_in_roster',
   LEG_MARKER_MISSING: 'leg_marker_missing',
@@ -440,6 +474,25 @@ export interface ParityInput {
  * each leg carries an explicit marker instead. Phase 5b iterates on these.
  */
 const LEG_MARKER_RE = /<!--\s*reviewer-lane:\s*([a-z0-9_-]+)\s*-->/g;
+
+/**
+ * The slug grammar, and the reason it is enforced rather than assumed.
+ *
+ * `LEG_MARKER_RE` can only capture `[a-z0-9_-]`. A lane whose slug falls outside
+ * that class is therefore UNMATCHABLE in the workflow: its marker can be present
+ * and correct and the scan will still never see it, so the lane reports
+ * `LEG_MARKER_MISSING` forever with no indication why. All eleven shipped slugs
+ * sit inside the class (`lm_studio`, `llama_cpp` use the underscore), so this
+ * never bites today — but Phase 2 (#2795) admits third-party overlay lanes, and
+ * a slug like `acme.reviewer` would silently vanish from a review.
+ *
+ * ADR-2782 does not specify a slug grammar. Rather than widen the marker regex —
+ * which would make an HTML comment scanned out of prose more ambiguous, not less
+ * — the grammar is pinned here and a violating slug is reported as
+ * `INVALID_SLUG`. A loud, named violation beats a silent miss; that is the whole
+ * design principle of this module.
+ */
+export const LANE_SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
 /**
  * A lane section heading in write_reviews.
@@ -504,27 +557,64 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
   };
 
   // --- D8 uniqueness within the descriptor itself ---
+  //
+  // Every field is validated before use rather than trusted. In Phase 1 the
+  // descriptor is a frozen in-source table and none of these guards can fire,
+  // but Phase 2 (#2795) feeds this same function manifest-derived data from
+  // third-party overlays — which is precisely where a malformed entry arrives.
+  // A checker that throws on bad input cannot report on it, and a parity gate
+  // that crashes is indistinguishable from one that was never run.
   const seenSlug = new Set<string>();
   const seenFlag = new Set<string>();
   const seenSection = new Set<string>();
-  for (const lane of descriptor) {
-    if (seenSlug.has(lane.slug)) add(PARITY_VIOLATION.DUPLICATE_SLUG, lane.slug);
-    seenSlug.add(lane.slug);
-    for (const flag of lane.flags) {
+
+  /** A lane that survived validation: slug is a string in the declared grammar. */
+  interface ValidatedLane {
+    slug: string;
+    reviewsSection: string | null;
+  }
+  const lanes: ValidatedLane[] = [];
+
+  // The declared parameter type says `ReviewerLane[]`, but this function is a
+  // trust boundary — narrow from `unknown` rather than believing the annotation.
+  const rawLanes: unknown[] = Array.isArray(descriptor) ? (descriptor as unknown[]) : [];
+  for (const raw of rawLanes) {
+    if (raw === null || typeof raw !== 'object') {
+      add(PARITY_VIOLATION.MALFORMED_LANE, String(raw));
+      continue;
+    }
+    const lane = raw as Record<string, unknown>;
+    const slug = lane.slug;
+    if (typeof slug !== 'string' || !LANE_SLUG_RE.test(slug)) {
+      add(PARITY_VIOLATION.INVALID_SLUG, String(slug));
+      continue;
+    }
+    const section = typeof lane.reviewsSection === 'string' ? lane.reviewsSection : null;
+    lanes.push({ slug, reviewsSection: section });
+
+    if (seenSlug.has(slug)) add(PARITY_VIOLATION.DUPLICATE_SLUG, slug);
+    seenSlug.add(slug);
+
+    const flags: unknown[] = Array.isArray(lane.flags) ? (lane.flags as unknown[]) : [];
+    for (const flag of flags) {
+      if (typeof flag !== 'string') continue;
       if (seenFlag.has(flag)) add(PARITY_VIOLATION.DUPLICATE_FLAG, flag);
       seenFlag.add(flag);
     }
+
     // Two lanes sharing a heading would silently MERGE their output in
     // REVIEWS.md, producing a review that appears to have consensus it does
     // not have (ADR-2782 D8).
-    if (seenSection.has(lane.reviewsSection)) {
-      add(PARITY_VIOLATION.DUPLICATE_SECTION, lane.reviewsSection);
+    if (section !== null) {
+      if (seenSection.has(section)) add(PARITY_VIOLATION.DUPLICATE_SECTION, section);
+      seenSection.add(section);
     }
-    seenSection.add(lane.reviewsSection);
   }
 
   // --- descriptor <-> roster ---
-  const rosterSet = new Set(roster);
+  const rosterSet = new Set(
+    (Array.isArray(roster) ? roster : []).filter((x): x is string => typeof x === 'string'),
+  );
   for (const slug of rosterSet) {
     if (!seenSlug.has(slug)) add(PARITY_VIOLATION.ROSTER_SLUG_UNDECLARED, slug);
   }
@@ -537,7 +627,7 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
     sliceStep(workflowText, INVOKE_STEP_RE),
     LEG_MARKER_RE,
   );
-  for (const lane of descriptor) {
+  for (const lane of lanes) {
     const n = markerCounts.get(lane.slug) ?? 0;
     if (n === 0) add(PARITY_VIOLATION.LEG_MARKER_MISSING, lane.slug);
     else if (n > 1) add(PARITY_VIOLATION.LEG_MARKER_DUPLICATED, lane.slug);
@@ -551,7 +641,8 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
     sliceStep(workflowText, WRITE_STEP_RE),
     SECTION_HEADING_RE,
   );
-  for (const lane of descriptor) {
+  for (const lane of lanes) {
+    if (lane.reviewsSection === null) continue;
     const n = sectionCounts.get(lane.reviewsSection) ?? 0;
     if (n === 0) add(PARITY_VIOLATION.SECTION_MISSING, lane.reviewsSection);
     else if (n > 1) add(PARITY_VIOLATION.SECTION_DUPLICATED, lane.reviewsSection);

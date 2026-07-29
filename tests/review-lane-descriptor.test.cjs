@@ -25,6 +25,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const {
   REVIEWER_LANES,
@@ -338,12 +339,287 @@ describe('reviewer lane parity — descriptor-internal uniqueness (ADR-2782 D8)'
   });
 });
 
+/**
+ * `checkReviewerLaneParity` parses markdown for lane markers and section
+ * headings, so CLAUDE.md's TEST RULES ("Parsers... must include at least one
+ * fast-check property test") applies.
+ *
+ * FIXTURE PROVENANCE (CONTRIBUTING.md #2371): the generators below are
+ * DOCUMENT-shaped, not writer-seeded. They emit arbitrary markdown — arbitrary
+ * noise lines, arbitrary heading levels, arbitrary bold labels, markers placed
+ * at arbitrary positions — rather than being built by calling the same regexes
+ * the checker uses. A generator seeded from the module's own matchers could only
+ * ever produce documents the matchers already recognize, which makes the
+ * document shape a constant and the property unfalsifiable.
+ *
+ * Deterministic per repo rules: seed pinned, run count bounded.
+ */
+describe('reviewer lane parity — properties', () => {
+  const FC = { seed: 20260729, numRuns: 200 };
+
+  /** Slugs inside the declared grammar — the only ones a marker can carry. */
+  const slugArb = fc.stringMatching(/^[a-z][a-z0-9_-]{0,12}$/);
+
+  /**
+   * Slugs OUTSIDE the grammar. These are unmatchable by LEG_MARKER_RE, so the
+   * contract is that they are reported as INVALID_SLUG rather than silently
+   * reported missing. Includes regex metacharacters and prototype-pollution
+   * shaped keys.
+   */
+  const badSlugArb = fc.constantFrom(
+    'a.b', 'a*b', 'a+b', '(a)', '[a]', 'a|b', 'A', '-lead', '_lead', '__proto__', '',
+  );
+
+  /**
+   * Slugs that ARE inside the grammar but collide with Object.prototype keys.
+   * `constructor` is all-lowercase, so it is a legitimate slug — the risk is
+   * prototype pollution in the counting maps, not validation.
+   */
+  const prototypeKeyArb = fc.constantFrom('constructor', 'tostring', 'valueof', 'hasownproperty');
+
+  /** Arbitrary markdown noise that must never be read as a marker or a lane heading. */
+  const noiseArb = fc.array(
+    fc.oneof(
+      fc.constant(''),
+      fc.constant('**Timeout guidance (#2194):**'),
+      fc.constant('```bash'),
+      fc.constant('```'),
+      fc.constant('# Cross-AI Plan Review — Phase {N}'),
+      fc.constant('## Consensus Summary'),
+      fc.constant('### Agreed Concerns'),
+      fc.constant('<!-- not-a-lane-marker: xyz -->'),
+      fc.stringMatching(/^[A-Za-z0-9 ,.()#*_-]{0,40}$/),
+    ),
+    { maxLength: 12 },
+  );
+
+  /** Build a review.md-shaped document declaring exactly `slugs`. */
+  function docFor(slugs, sections, noise, eol) {
+    const legs = slugs.map((s) => `<!-- reviewer-lane: ${s} -->\n**${s}:**`).join('\n');
+    const heads = sections.map((s) => `## ${s} Review`).join('\n\n');
+    const body = [
+      '<step name="invoke_reviewers">',
+      ...noise,
+      legs,
+      '</step>',
+      '<step name="write_reviews">',
+      ...noise,
+      heads,
+      '## Consensus Summary',
+      '</step>',
+    ].join('\n');
+    return body.split('\n').join(eol);
+  }
+
+  const laneSetArb = fc
+    .uniqueArray(slugArb, { minLength: 1, maxLength: 6 })
+    .map((slugs) =>
+      slugs.map((slug, i) => ({
+        slug,
+        flags: [`--${slug}`],
+        transport: 'spawn',
+        probe: { kind: 'command-exists', binary: slug },
+        invoke: {
+          binary: slug,
+          args: [],
+          promptChannel: 'stdin',
+          outputChannel: 'stdout',
+          modelArg: null,
+          effortChannel: 'none',
+        },
+        timeoutFloorMs: 1000,
+        emptyOutput: 'stub-with-stderr',
+        // Section names are index-tagged so they stay unique even when two slugs
+        // differ only by a character the heading grammar would not distinguish.
+        reviewsSection: `Sec${i}`,
+        evidenceClass: 'source-grounded',
+        requiresBinaries: [],
+        promptBudgetKey: null,
+        handler: null,
+      })),
+    );
+
+  test('never throws on arbitrary input, and ok always agrees with the violations', () => {
+    // Totality is a real requirement, not a nicety: Phase 2 (#2795) feeds this
+    // same function manifest-derived data from third-party overlays. A checker
+    // that throws on bad input cannot report on it, and a parity gate that
+    // crashes is indistinguishable from one that was never run.
+    fc.assert(
+      fc.property(
+        fc.anything(),
+        fc.anything(),
+        fc.anything(),
+        (descriptor, roster, workflowText) => {
+          let r;
+          try {
+            r = checkReviewerLaneParity({ descriptor, roster, workflowText });
+          } catch {
+            return false;
+          }
+          return (
+            Array.isArray(r.violations) && r.ok === (r.violations.length === 0)
+          );
+        },
+      ),
+      FC,
+    );
+  });
+
+  test('a slug outside the marker grammar is reported, never silently missing', () => {
+    // The silent-miss this prevents: LEG_MARKER_RE captures only [a-z0-9_-], so
+    // a slug like `acme.reviewer` can have a present, correct marker that the
+    // scan can never see — reporting LEG_MARKER_MISSING forever with no clue why.
+    fc.assert(
+      fc.property(badSlugArb, (bad) => {
+        const lane = { ...fakeLane('placeholder'), slug: bad };
+        const r = checkReviewerLaneParity({
+          descriptor: [lane],
+          roster: [bad],
+          workflowText: `<step name="invoke_reviewers">\n<!-- reviewer-lane: ${bad} -->\n</step>`,
+        });
+        const reasonsOut = r.violations.map((v) => v.reason);
+        return (
+          reasonsOut.includes(PARITY_VIOLATION.INVALID_SLUG) &&
+          !reasonsOut.includes(PARITY_VIOLATION.LEG_MARKER_MISSING)
+        );
+      }),
+      FC,
+    );
+  });
+
+  test('a prototype-key slug behaves like any other valid slug', () => {
+    // The counting layer uses Map/Set, not bare objects, so a slug named
+    // `constructor` cannot reach Object.prototype. Locking it: a bare-object
+    // counter would make this lane appear present when it is absent.
+    fc.assert(
+      fc.property(prototypeKeyArb, (name) => {
+        const lane = { ...fakeLane('placeholder'), slug: name, reviewsSection: 'Sec' };
+        const declared = checkReviewerLaneParity({
+          descriptor: [lane],
+          roster: [name],
+          workflowText:
+            `<step name="invoke_reviewers">\n<!-- reviewer-lane: ${name} -->\n</step>\n` +
+            '<step name="write_reviews">\n## Sec Review\n</step>',
+        });
+        const absent = checkReviewerLaneParity({
+          descriptor: [lane],
+          roster: [name],
+          workflowText: '<step name="invoke_reviewers">\n</step>',
+        });
+        return (
+          declared.ok &&
+          absent.violations.some(
+            (v) => v.reason === PARITY_VIOLATION.LEG_MARKER_MISSING && v.subject === name,
+          )
+        );
+      }),
+      FC,
+    );
+  });
+
+  test('a non-object lane entry is reported as malformed, not thrown on', () => {
+    fc.assert(
+      fc.property(
+        fc.constantFrom(0, 1, '', 'x', null, true, [], NaN),
+        (junk) => {
+          const r = checkReviewerLaneParity({
+            descriptor: [junk],
+            roster: [],
+            workflowText: '',
+          });
+          const reasonsOut = r.violations.map((v) => v.reason);
+          return (
+            reasonsOut.includes(PARITY_VIOLATION.MALFORMED_LANE) ||
+            reasonsOut.includes(PARITY_VIOLATION.INVALID_SLUG)
+          );
+        },
+      ),
+      FC,
+    );
+  });
+
+  test('a document declaring exactly the descriptor satisfies parity', () => {
+    fc.assert(
+      fc.property(laneSetArb, noiseArb, fc.constantFrom('\n', '\r\n'), (lanes, noise, eol) => {
+        const doc = docFor(
+          lanes.map((l) => l.slug),
+          lanes.map((l) => l.reviewsSection),
+          noise,
+          eol,
+        );
+        const r = checkReviewerLaneParity({
+          descriptor: lanes,
+          roster: lanes.map((l) => l.slug),
+          workflowText: doc,
+        });
+        return r.ok;
+      }),
+      FC,
+    );
+  });
+
+  test('removing one lane marker always yields exactly that lane missing', () => {
+    fc.assert(
+      fc.property(laneSetArb, noiseArb, fc.nat(), (lanes, noise, pick) => {
+        const victim = lanes[pick % lanes.length];
+        const kept = lanes.filter((l) => l.slug !== victim.slug);
+        const doc = docFor(
+          kept.map((l) => l.slug),
+          lanes.map((l) => l.reviewsSection),
+          noise,
+          '\n',
+        );
+        const r = checkReviewerLaneParity({
+          descriptor: lanes,
+          roster: lanes.map((l) => l.slug),
+          workflowText: doc,
+        });
+        const missing = r.violations.filter(
+          (v) => v.reason === PARITY_VIOLATION.LEG_MARKER_MISSING,
+        );
+        return missing.length === 1 && missing[0].subject === victim.slug;
+      }),
+      FC,
+    );
+  });
+
+  test('evaluation is deterministic across repeated calls', () => {
+    // Guards regex lastIndex leaking between invocations of a module-level /g.
+    fc.assert(
+      fc.property(laneSetArb, noiseArb, (lanes, noise) => {
+        const input = {
+          descriptor: lanes,
+          roster: lanes.map((l) => l.slug),
+          workflowText: docFor(
+            lanes.map((l) => l.slug),
+            lanes.map((l) => l.reviewsSection),
+            noise,
+            '\n',
+          ),
+        };
+        const a = checkReviewerLaneParity(input);
+        const b = checkReviewerLaneParity(input);
+        return JSON.stringify(a) === JSON.stringify(b);
+      }),
+      FC,
+    );
+  });
+});
+
 describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', () => {
-  test('every lane declares a closed transport', () => {
+  test('every lane declares a closed transport at the lane level', () => {
+    // ADR-2782 D1 places `transport` as a sibling of `probe` and `invoke`, not
+    // nested inside `invoke`. Locking the placement keeps Phase 2's manifest
+    // harvest free of a translation step.
     for (const lane of REVIEWER_LANES) {
       assert.ok(
-        ['spawn', 'openai-http'].includes(lane.invoke.transport),
-        `${lane.slug}: unexpected transport ${lane.invoke.transport}`,
+        ['spawn', 'openai-http'].includes(lane.transport),
+        `${lane.slug}: unexpected transport ${lane.transport}`,
+      );
+      assert.strictEqual(
+        lane.invoke.transport,
+        undefined,
+        `${lane.slug}: transport must not be duplicated inside invoke`,
       );
     }
   });
@@ -353,7 +629,7 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
     // undefined meaning, which is what a closed vocabulary exists to prevent.
     for (const lane of REVIEWER_LANES) {
       const i = lane.invoke;
-      if (i.transport === 'spawn') {
+      if (lane.transport === 'spawn') {
         assert.ok(i.binary, `${lane.slug}: spawn lane must declare a binary`);
         assert.ok(Array.isArray(i.args), `${lane.slug}: spawn lane must declare args`);
         assert.strictEqual(i.hostConfigKey, undefined, `${lane.slug}: spawn lane must not declare hostConfigKey`);
@@ -423,6 +699,18 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
     }
   });
 
+  test('flag uniqueness holds across the flattened multi-flag set', () => {
+    // ADR-2782 D8 states uniqueness over a singular `reviewer.flag`; this module
+    // widens that field to `flags[]` (Antigravity is --antigravity AND --agy), so
+    // the invariant is enforced over every lane's flattened flag set.
+    const all = REVIEWER_LANES.flatMap((l) => l.flags);
+    assert.deepStrictEqual([...new Set(all)].sort(), [...all].sort());
+    assert.ok(
+      REVIEWER_LANES.some((l) => l.flags.length > 1),
+      'expected at least one multi-flag lane, else the widening is untested',
+    );
+  });
+
   test('the violation reason enum is locked', () => {
     // Adding a reason is three coordinated changes: enum, emitting site, and
     // this assertion.
@@ -431,9 +719,11 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
       'DUPLICATE_FLAG',
       'DUPLICATE_SECTION',
       'DUPLICATE_SLUG',
+      'INVALID_SLUG',
       'LEG_MARKER_DUPLICATED',
       'LEG_MARKER_MISSING',
       'LEG_MARKER_UNDECLARED',
+      'MALFORMED_LANE',
       'ROSTER_SLUG_UNDECLARED',
       'SECTION_DUPLICATED',
       'SECTION_MISSING',
