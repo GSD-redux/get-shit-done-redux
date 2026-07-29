@@ -1545,6 +1545,36 @@ function isReservedName(v) {
 }
 
 /**
+ * One closed-enum membership check, with the members always enumerated in the
+ * error.
+ *
+ * The enumeration is the point, not the deduplication. The prose reference for
+ * the reviewer body lands in Phase 6 (#2800), so until then these errors are the
+ * only documentation of the vocabulary — exactly the gap that left
+ * `hostBehaviors` discoverable solely by grepping a source line. Routing every
+ * enum through one helper makes "the error names the valid members" structural
+ * rather than a convention repeated at nine call sites, where it would drift.
+ *
+ * No reserved-name pre-check: a `VALID_*` set never contains `__proto__`,
+ * `constructor` or `prototype`, so membership alone already rejects them, and
+ * "must be one of: …" tells an author more than "is a reserved name". The
+ * literal guards stay where they do real work — the key-derived write sites.
+ *
+ * @param {string} ctx       Error-message prefix.
+ * @param {string} label     Dotted field path, e.g. "reviewer.transport".
+ * @param {*}      value     The declared value.
+ * @param {Set}    validSet  The closed vocabulary.
+ * @returns {string[]}
+ */
+function validateEnumField(ctx, label, value, validSet) {
+  if (validSet.has(value)) return [];
+  return [
+    ctx + ' ' + label + ' must be one of: ' + [...validSet].join(', ') +
+    ' (got: ' + JSON.stringify(value) + ')',
+  ];
+}
+
+/**
  * Collect NON-FATAL diagnostics for a reviewer body (ADR-2782 D4.3).
  *
  * Kept separate from validateReviewerBody so validateCapability's contract
@@ -1648,14 +1678,7 @@ function validateReviewerBody(cap) {
   }
 
   // ── transport (D2) — explicit discriminator, never inferred ────────────────
-  if (isReservedName(r.transport)) {
-    errors.push(ctx + ' reviewer.transport "' + r.transport + '" is a reserved name');
-  } else if (!VALID_LANE_TRANSPORTS.has(r.transport)) {
-    errors.push(
-      ctx + ' reviewer.transport must be one of: ' + [...VALID_LANE_TRANSPORTS].join(', ') +
-      ' (got: ' + JSON.stringify(r.transport) + ')',
-    );
-  }
+  errors.push(...validateEnumField(ctx, 'reviewer.transport', r.transport, VALID_LANE_TRANSPORTS));
 
   errors.push(...validateLaneProbe(ctx, r.probe));
   errors.push(...validateLaneInvoke(ctx, r.transport, r.invoke));
@@ -1668,23 +1691,13 @@ function validateReviewerBody(cap) {
     );
   }
 
-  if (isReservedName(r.emptyOutput) || !VALID_EMPTY_OUTPUT.has(r.emptyOutput)) {
-    errors.push(
-      ctx + ' reviewer.emptyOutput must be one of: ' + [...VALID_EMPTY_OUTPUT].join(', ') +
-      ' (got: ' + JSON.stringify(r.emptyOutput) + ')',
-    );
-  }
+  errors.push(...validateEnumField(ctx, 'reviewer.emptyOutput', r.emptyOutput, VALID_EMPTY_OUTPUT));
 
   if (typeof r.reviewsSection !== 'string' || r.reviewsSection.length === 0) {
     errors.push(ctx + ' reviewer.reviewsSection must be a non-empty string');
   }
 
-  if (isReservedName(r.evidenceClass) || !VALID_EVIDENCE_CLASSES.has(r.evidenceClass)) {
-    errors.push(
-      ctx + ' reviewer.evidenceClass must be one of: ' + [...VALID_EVIDENCE_CLASSES].join(', ') +
-      ' (got: ' + JSON.stringify(r.evidenceClass) + ')',
-    );
-  }
+  errors.push(...validateEnumField(ctx, 'reviewer.evidenceClass', r.evidenceClass, VALID_EVIDENCE_CLASSES));
 
   if (!Array.isArray(r.requiresBinaries)) {
     errors.push(
@@ -1744,11 +1757,9 @@ function validateLaneProbe(ctx, probe) {
     return errors;
   }
 
-  if (isReservedName(probe.kind) || !VALID_LANE_PROBE_KINDS.has(probe.kind)) {
-    errors.push(
-      ctx + ' reviewer.probe.kind must be one of: ' + [...VALID_LANE_PROBE_KINDS].join(', ') +
-      ' (got: ' + JSON.stringify(probe.kind) + ')',
-    );
+  const kindErrors = validateEnumField(ctx, 'reviewer.probe.kind', probe.kind, VALID_LANE_PROBE_KINDS);
+  if (kindErrors.length > 0) {
+    errors.push(...kindErrors);
     return errors; // sub-shape is meaningless without a known kind
   }
 
@@ -1877,18 +1888,11 @@ function validateSpawnInvoke(ctx, invoke) {
     }
   }
 
-  if (isReservedName(invoke.promptChannel) || !VALID_PROMPT_CHANNELS.has(invoke.promptChannel)) {
-    errors.push(
-      ctx + ' reviewer.invoke.promptChannel must be one of: ' + [...VALID_PROMPT_CHANNELS].join(', ') +
-      ' (got: ' + JSON.stringify(invoke.promptChannel) + ')',
-    );
-  }
+  errors.push(...validateEnumField(ctx, 'reviewer.invoke.promptChannel', invoke.promptChannel, VALID_PROMPT_CHANNELS));
 
-  if (isReservedName(invoke.outputChannel) || !VALID_OUTPUT_CHANNELS.has(invoke.outputChannel)) {
-    errors.push(
-      ctx + ' reviewer.invoke.outputChannel must be one of: ' + [...VALID_OUTPUT_CHANNELS].join(', ') +
-      ' (got: ' + JSON.stringify(invoke.outputChannel) + ')',
-    );
+  const outputChannelErrors = validateEnumField(ctx, 'reviewer.invoke.outputChannel', invoke.outputChannel, VALID_OUTPUT_CHANNELS);
+  if (outputChannelErrors.length > 0) {
+    errors.push(...outputChannelErrors);
   } else if (invoke.outputChannel === 'file-arg') {
     // Knowing the review lands in a file is useless without the argument naming it.
     if (typeof invoke.outputArg !== 'string' || invoke.outputArg.length === 0) {
@@ -1913,12 +1917,7 @@ function validateSpawnInvoke(ctx, invoke) {
     );
   }
 
-  if (isReservedName(invoke.effortChannel) || !VALID_LANE_EFFORT_CHANNELS.has(invoke.effortChannel)) {
-    errors.push(
-      ctx + ' reviewer.invoke.effortChannel must be one of: ' + [...VALID_LANE_EFFORT_CHANNELS].join(', ') +
-      ' (got: ' + JSON.stringify(invoke.effortChannel) + ')',
-    );
-  }
+  errors.push(...validateEnumField(ctx, 'reviewer.invoke.effortChannel', invoke.effortChannel, VALID_LANE_EFFORT_CHANNELS));
 
   return errors;
 }
@@ -1937,12 +1936,7 @@ function validateHttpInvoke(ctx, invoke) {
     errors.push(ctx + ' reviewer.invoke.path must be a non-empty string for transport "openai-http" (e.g. "/v1/chat/completions")');
   }
 
-  if (isReservedName(invoke.modelDiscovery) || !VALID_MODEL_DISCOVERY.has(invoke.modelDiscovery)) {
-    errors.push(
-      ctx + ' reviewer.invoke.modelDiscovery must be one of: ' + [...VALID_MODEL_DISCOVERY].join(', ') +
-      ' (got: ' + JSON.stringify(invoke.modelDiscovery) + ')',
-    );
-  }
+  errors.push(...validateEnumField(ctx, 'reviewer.invoke.modelDiscovery', invoke.modelDiscovery, VALID_MODEL_DISCOVERY));
 
   // D2 fixes effortChannel to 'none' for this transport — an HTTP lane has no
   // argv to carry an effort flag and no env of its own.

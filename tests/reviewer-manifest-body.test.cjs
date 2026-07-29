@@ -413,12 +413,19 @@ describe('B. transport discriminator (D2)', () => {
   });
 
   test('reservedNameAsTransportIsRejected', () => {
-    const lane = laneOverride((l) => { l.transport = '__proto__'; });
-    const errs = validateReviewerBody({ id: 'x', reviewer: lane });
-    assert.ok(
-      errs.some((e) => e.includes('reviewer.transport "__proto__" is a reserved name')),
-      `expected a reserved-name error, got: ${JSON.stringify(errs)}`,
-    );
+    // A reserved JS name is rejected by closed-enum membership itself — a
+    // VALID_* set never contains __proto__/constructor/prototype, so no separate
+    // reserved-name branch is needed here and the enum error is the more useful
+    // one because it names the valid members. The inline literal guards stay
+    // where they do real work: the key-derived write sites.
+    for (const reserved of ['__proto__', 'constructor', 'prototype']) {
+      const lane = laneOverride((l) => { l.transport = reserved; });
+      const errs = validateReviewerBody({ id: 'x', reviewer: lane });
+      assert.ok(
+        errs.some((e) => e.includes('reviewer.transport must be one of: spawn, openai-http')),
+        `expected ${reserved} to be rejected by enum membership, got: ${JSON.stringify(errs)}`,
+      );
+    }
   });
 });
 
