@@ -2629,13 +2629,11 @@ function convertClaudeCommandToCursorSkill(content, skillName) {
   const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
   const adapter = getCursorSkillAdapterHeader(skillName);
 
-  // #2341: mark user-invocable:false so the skill is NOT shown in Cursor's '/'
-  // menu (it defaults to true). Cursor also writes a commands/ surface (#785),
-  // and surfacing both duplicated every /gsd-* entry. This mirrors the #789
-  // CodeBuddy de-dup: the commands/ surface is the sole '/' entry point; skills
-  // stay model-invocable background knowledge. (user-invocable:false hides from
-  // '/' while keeping model invocation — distinct from disable-model-invocation.)
-  return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\nuser-invocable: false\n---\n\n${adapter}\n\n${body.trimStart()}`;
+  // Cursor skills are both slash-invocable and model-invocable. Do not emit the
+  // unsupported `user-invocable` field: it is ignored by Cursor and previously
+  // hid the real cause of duplicate entries, the parallel commands/ surface
+  // retired in #2644.
+  return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
 }
 
 /**
@@ -10603,8 +10601,9 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
         }
       }
 
-      // Descriptor-driven commands/ output report (#785 — Cursor 1.6 slash commands).
-      // Gated by hostBehaviors.reportCommandsDir, not a hardcoded `isCursor` branch (#2089).
+      // Descriptor-driven commands/ output report (currently CodeBuddy).
+      // Cursor retired this parallel surface in #2644 because its skills are
+      // already slash-menu entries as well as model-invocable context.
       if (_hostBehaviors(runtime).reportCommandsDir) {
         const commandsDir = path.join(targetDir, 'commands');
         if (fs.existsSync(commandsDir)) {

@@ -28,6 +28,7 @@ import runtimeArtifactInstallPlan = require('./runtime-artifact-install-plan.cjs
 import runtimeNamePolicy = require('./runtime-name-policy.cjs');
 import installProfiles = require('./install-profiles.cjs');
 import installerMigrations = require('./installer-migrations.cjs');
+import retiredArtifactCleanup = require('./retired-artifact-cleanup.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { isPathConfined } from './external-descriptor-trust.cjs';
 
@@ -724,6 +725,11 @@ function installRuntimeArtifacts(
   resolveAttribution: ResolveAttribution = () => undefined,
   capabilityRegistry?: any,
 ): void {
+  // A removed descriptor kind is no longer visited by the layout loop, so it
+  // cannot prune its own previous output. Clean manifest-proven retired files
+  // before materializing the current layout (#2644).
+  retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(runtime, configDir);
+
   // Combined-family runtimes (OpenCode/Kilo, ADR-1239 / #2087): route through
   // the dedicated combined commands+skills+plugin orchestrator instead of the
   // generic layout-driven loop below, mirroring the bespoke install path that

@@ -1673,6 +1673,9 @@ test('shipped installer-migration checksums are locked to a committed baseline (
     // old path drops out of the manifest and uninstall can never remove it.
     '2026-07-20-pi-extension-cjs-to-js':
       'sha256:185fa926ae24d83cbdd95c31a9ad2cc8d123e176ad543669b3b0ed75e6ca6f4a',
+    // Migration 007: retire Cursor's duplicate commands/ surface (#2644).
+    '2026-07-29-cursor-retire-commands-surface':
+      'sha256:d0b2b812a3f752650f2518b48280f74a5937c80ec8412bac493382dfa3db083f',
   };
 
   const { DEFAULT_MIGRATIONS_DIR, migrationChecksum: computeChecksum } = require('../gsd-core/bin/lib/installer-migrations.cjs');
@@ -1783,6 +1786,76 @@ test('reconciles a drifted applied-migration checksum into install state on appl
     cleanup(configDir);
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// Cursor duplicate commands-surface retirement (#2644)
+// ---------------------------------------------------------------------------
+
+{
+  const cursorCommandsMigration = require('../gsd-core/bin/lib/installer-migrations/007-cursor-retire-commands-surface.cjs');
+
+  test('migration 007 plans only manifest-managed gsd-*.md command files', (t) => {
+    const configDir = createTempInstall();
+    t.after(() => cleanup(configDir));
+    writeFile(configDir, 'commands/gsd-help.md', '# help\n');
+    writeFile(configDir, 'commands/gsd-custom.md', '# custom\n');
+    writeFile(configDir, 'commands/not-gsd.md', '# other\n');
+
+    const actions = cursorCommandsMigration.plan({
+      configDir,
+      classifyArtifact(relPath) {
+        if (relPath === 'commands/gsd-help.md') return { classification: 'managed-pristine' };
+        return { classification: 'unknown' };
+      },
+    });
+
+    assert.deepEqual(actions.map((action) => [action.type, action.relPath]), [
+      ['remove-managed', 'commands/gsd-help.md'],
+    ]);
+  });
+
+  test('migration 007 backs up a modified managed command and preserves an unknown neighbor', (t) => {
+    const configDir = createTempInstall();
+    t.after(() => cleanup(configDir));
+    writeFile(configDir, 'commands/gsd-help.md', '# locally modified help\n');
+    writeFile(configDir, 'commands/gsd-custom.md', '# user command\n');
+    writeManifest(configDir, {
+      'commands/gsd-help.md': sha256('# original generated help\n'),
+    });
+
+    const result = runInstallerMigrations({
+      configDir, runtime: 'cursor', scope: 'global', migrations: [cursorCommandsMigration],
+      now: () => '2026-07-29T00:00:00.000Z',
+    });
+
+    assert.equal(result.plan.actions[0].type, 'backup-and-remove');
+    assert.ok(!fs.existsSync(path.join(configDir, 'commands', 'gsd-help.md')));
+    assert.ok(fs.existsSync(path.join(configDir, 'commands', 'gsd-custom.md')),
+      'unmanifested user command must be preserved');
+    const journal = JSON.parse(fs.readFileSync(path.join(configDir, result.journalRelPath), 'utf8'));
+    assert.equal(
+      fs.readFileSync(path.join(configDir, journal.actions[0].backupRelPath), 'utf8'),
+      '# locally modified help\n',
+    );
+  });
+
+  test('migration 007 is scoped to Cursor for both global and local installs', (t) => {
+    for (const scope of ['global', 'local']) {
+      const configDir = createTempInstall();
+      t.after(() => cleanup(configDir));
+      writeFile(configDir, 'commands/gsd-help.md', '# help\n');
+      writeManifest(configDir, { 'commands/gsd-help.md': sha256('# help\n') });
+      const result = runInstallerMigrations({
+        configDir, runtime: 'cursor', scope, migrations: [cursorCommandsMigration],
+        now: () => `2026-07-29T00:00:0${scope === 'global' ? '0' : '1'}.000Z`,
+      });
+      assert.ok(!fs.existsSync(path.join(configDir, 'commands', 'gsd-help.md')),
+        `${scope} Cursor install must retire the duplicate command`);
+      assert.deepEqual(result.appliedMigrationIds, ['2026-07-29-cursor-retire-commands-surface']);
+    }
+  });
+}
 
 
 // ────────────────────────────────────────────────────────────────────────

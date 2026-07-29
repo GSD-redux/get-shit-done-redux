@@ -1069,7 +1069,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.8.0",
     "title": "Cursor",
-    "description": "Cursor IDE — skills + converted commands artifact layout; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
+    "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -1096,14 +1096,6 @@ const capabilities = {
             "converter": "convertClaudeCommandToCursorSkill"
           },
           {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
-          },
-          {
             "kind": "agents",
             "destSubpath": "agents",
             "prefix": "gsd-",
@@ -1120,14 +1112,6 @@ const capabilities = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToCursorSkill"
-          },
-          {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
           },
           {
             "kind": "agents",
@@ -1173,7 +1157,13 @@ const capabilities = {
         "frontmatterDialect": "cursor",
         "hooksJsonSurface": true,
         "skipSharedHooksInstall": true,
-        "reportCommandsDir": true,
+        "retiredArtifacts": [
+          {
+            "destSubpath": "commands",
+            "prefix": "gsd-",
+            "suffix": ".md"
+          }
+        ],
         "skipUpdateBannerCommand": true,
         "skipSettingsUi": true,
         "managedHookEvents": [
@@ -4825,7 +4815,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.8.0",
     "title": "Cursor",
-    "description": "Cursor IDE — skills + converted commands artifact layout; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
+    "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -4852,14 +4842,6 @@ const runtimes = {
             "converter": "convertClaudeCommandToCursorSkill"
           },
           {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
-          },
-          {
             "kind": "agents",
             "destSubpath": "agents",
             "prefix": "gsd-",
@@ -4876,14 +4858,6 @@ const runtimes = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToCursorSkill"
-          },
-          {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
           },
           {
             "kind": "agents",
@@ -4929,7 +4903,13 @@ const runtimes = {
         "frontmatterDialect": "cursor",
         "hooksJsonSurface": true,
         "skipSharedHooksInstall": true,
-        "reportCommandsDir": true,
+        "retiredArtifacts": [
+          {
+            "destSubpath": "commands",
+            "prefix": "gsd-",
+            "suffix": ".md"
+          }
+        ],
         "skipUpdateBannerCommand": true,
         "skipSettingsUi": true,
         "managedHookEvents": [
