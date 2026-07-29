@@ -1530,4 +1530,27 @@ describe('#2702: workstream config-get inherits from root config', () => {
     // No writeWs — workstreams/alpha/config.json does not exist.
     assert.equal(runScoped('config-get', 'workflow.use_worktrees', '--raw'), 'true');
   });
+
+  test('GSD_PROJECT alone (no workstream) does not trigger root inheritance — matches loadConfigResolved', () => {
+    // GSD_PROJECT scopes planningDir to .planning/<project>/ but loadConfigResolved
+    // gates root-reading on `if (ws)`, so a project-only read must NOT inherit root.
+    // The fix gates on GSD_WORKSTREAM presence (not path inequality) to match.
+    const projectPlanningDir = path.join(rootPlanningDir, 'myproj');
+    fs.mkdirSync(projectPlanningDir, { recursive: true });
+    fs.writeFileSync(path.join(projectPlanningDir, 'config.json'), JSON.stringify({ workflow: {} }));
+    writeRoot({ workflow: { use_worktrees: true } });
+    const saved = process.env.GSD_PROJECT;
+    process.env.GSD_PROJECT = 'myproj';
+    try {
+      const out = captureFdWrite(1, () => {
+        config.cmdConfigGet(tmpDir, 'workflow.use_worktrees', true, undefined);
+      }).trim();
+      // No workstream → no root inheritance → the project-scoped config has no
+      // use_worktrees → schema default or empty, NOT the root 'true'.
+      assert.notEqual(out, 'true', 'GSD_PROJECT-only must not inherit root (matches loadConfigResolved)');
+    } finally {
+      if (saved === undefined) delete process.env.GSD_PROJECT;
+      else process.env.GSD_PROJECT = saved;
+    }
+  });
 });

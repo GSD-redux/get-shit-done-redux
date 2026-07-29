@@ -965,16 +965,15 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
   try {
     if (fs.existsSync(configPath)) {
       config = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
-    } else if (hasDefault) {
-      emitResolvedDefault(kp, defaultValue, raw);
-      return;
     } else {
       // #2702: when a workstream is active and has no config.json of its own, fall
-      // back to the project ROOT config before the schema default, so a key the user
-      // configured at root is inherited rather than reported missing. (When no
-      // workstream is active, planningDir === planningRoot and this is the same file.)
+      // back to the project ROOT config first — a key the user configured at root is
+      // a real, present value and must inherit (per #1893: a present key wins over
+      // --default). Only when root also misses do --default / schema default apply.
+      // (When no workstream is active, resolveFromRootConfig is a no-op: same file.)
       const rootVal = resolveFromRootConfig(cwd, kp);
       if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
+      if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
       const sd = resolveSchemaDefault(cwd, kp);
       if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
       error('No config.json found at ' + configPath, ERROR_REASON.CONFIG_NO_FILE);
@@ -989,10 +988,10 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
   let current: unknown = config;
   for (const key of keys) {
     if (current === undefined || current === null || typeof current !== 'object') {
-      if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
-      // #2702: root-config inheritance before schema default (see above).
+      // #2702: root-config inheritance before --default / schema default (see above).
       const rootVal = resolveFromRootConfig(cwd, kp);
       if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
+      if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
       const sd = resolveSchemaDefault(cwd, kp);
       if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
       error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
@@ -1012,10 +1011,10 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
   }
 
   if (current === undefined) {
-    if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
-    // #2702: root-config inheritance before schema default (see above).
+    // #2702: root-config inheritance before --default / schema default (see above).
     const rootVal = resolveFromRootConfig(cwd, kp);
     if (rootVal.found) { emitResolvedDefault(kp, rootVal.value, raw); return; }
+    if (hasDefault) { emitResolvedDefault(kp, defaultValue, raw); return; }
     const sd = resolveSchemaDefault(cwd, kp);
     if (sd.found) { emitResolvedDefault(kp, sd.value, raw); return; }
     error(`Key not found: ${kp}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
@@ -1045,10 +1044,15 @@ function cmdConfigGet(cwd: string, keyPath: string | undefined, raw: boolean, de
  * that file directly.
  */
 function resolveFromRootConfig(cwd: string, kp: string): { found: boolean; value: unknown } {
-  // Only meaningful when a workstream redirects planningDir away from root.
-  const scoped = planningDir(cwd);
+  // Only meaningful when a workstream is active (GSD_WORKSTREAM set) — that is what
+  // redirects planningDir away from root AND what loadConfigResolved gates root-reading
+  // on. Gating on `process.env.GSD_WORKSTREAM` (not on a planningDir !== planningRoot
+  // path inequality) avoids a false trigger under GSD_PROJECT alone, where planningDir
+  // diverges from planningRoot without a workstream and loadConfigResolved does NOT
+  // inherit root — matching the runtime's own `if (ws)` gate keeps the two surfaces
+  // from diverging on the project-scoped (non-workstream) case.
+  if (!process.env['GSD_WORKSTREAM']) return { found: false, value: undefined };
   const root = planningRoot(cwd);
-  if (scoped === root) return { found: false, value: undefined };
   const rootConfigPath = path.join(root, 'config.json');
   let rootConfig: Record<string, unknown>;
   try {
