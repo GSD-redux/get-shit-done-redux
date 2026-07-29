@@ -50,6 +50,21 @@ describe('enhancement #2618 — compact Pending Todos pointers', () => {
     return exemplars[0];
   }
 
+  function extractPointerLimit(content, surface) {
+    const matches = [
+      ...content.matchAll(
+        /Hard limit: the complete rendered bullet must be (\d+) characters or fewer\./g,
+      ),
+    ];
+
+    assert.equal(
+      matches.length,
+      1,
+      `${surface} must define exactly one Pending Todos pointer length limit`,
+    );
+    return Number(matches[0][1]);
+  }
+
   test('STATE.md template pins the canonical one-line pointer exemplar', () => {
     const template = readProductFile(productFiles.template);
 
@@ -84,6 +99,40 @@ describe('enhancement #2618 — compact Pending Todos pointers', () => {
     }
   });
 
+  test('all todo surfaces pin the same 240-character boundary', () => {
+    for (const [surface, filePath] of Object.entries({
+      'state template': productFiles.template,
+      'add-todo workflow': productFiles.addTodo,
+      'check-todos workflow': productFiles.checkTodos,
+    })) {
+      assert.equal(
+        extractPointerLimit(readProductFile(filePath), surface),
+        240,
+        `${surface} must cap each complete pointer at the approved boundary`,
+      );
+    }
+  });
+
+  test('both todo workflows shorten a single overflowing todo without breaking its link', () => {
+    for (const [surface, filePath] of Object.entries({
+      'add-todo workflow': productFiles.addTodo,
+      'check-todos workflow': productFiles.checkTodos,
+    })) {
+      const content = readProductFile(filePath);
+
+      assert.match(
+        content,
+        /If the draft exceeds 240 characters, shorten the title and `Needs \.\.\.` clause first, then abbreviate the area if necessary; keep the date and complete Markdown link unchanged\./,
+        `${surface} must define overflow handling for one pathological todo`,
+      );
+      assert.match(
+        content,
+        /Recount before writing and do not emit a bullet over 240 characters\./,
+        `${surface} must re-check the hard boundary before writing`,
+      );
+    }
+  });
+
   test('both todo workflows require one physical bullet per todo and an empty fallback', () => {
     for (const [surface, filePath] of Object.entries({
       'add-todo workflow': productFiles.addTodo,
@@ -105,6 +154,26 @@ describe('enhancement #2618 — compact Pending Todos pointers', () => {
         content,
         /If (?:the refreshed )?`?todo_count`? is 0,[^\n]*`None yet\.`/i,
         `${surface} must define the empty Pending Todos state`,
+      );
+    }
+  });
+
+  test('both todo workflows preserve STATE.md when the refreshed set is incomplete', () => {
+    for (const [surface, filePath] of Object.entries({
+      'add-todo workflow': productFiles.addTodo,
+      'check-todos workflow': productFiles.checkTodos,
+    })) {
+      const content = readProductFile(filePath);
+
+      assert.match(
+        content,
+        /If `init\.todos` fails, returns malformed JSON, or returns an incomplete set, leave the existing `### Pending Todos` section unchanged and report that the refresh was skipped\./,
+        `${surface} must fail safely instead of replacing STATE.md from partial data`,
+      );
+      assert.match(
+        content,
+        /Only a successful response with `todo_count: 0` and an empty `todos` array may produce `None yet\.`\./,
+        `${surface} must require positive proof before clearing Pending Todos`,
       );
     }
   });
