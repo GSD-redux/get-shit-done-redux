@@ -956,35 +956,17 @@ describe('#2624 .gsd-source marker is rewritten before staging reads it', () => 
   let savedExplicitConfigDir;
   let savedTestMode;
 
-  function silenceConsole(fn) {
-    const orig = { log: console.log, warn: console.warn, error: console.error };
-    console.log = () => {};
-    console.warn = () => {};
-    console.error = () => {};
-    try {
-      return fn();
-    } finally {
-      console.log = orig.log;
-      console.warn = orig.warn;
-      console.error = orig.error;
-    }
-  }
-
-  function runInstall(isGlobal, runtime) {
-    const origExit = process.exit;
-    let exitCalled = false;
-    process.exit = (code) => {
-      exitCalled = true;
+  // Run install() with process.exit and console output mocked via t.mock (auto-restored),
+  // per CONTRIBUTING.md test rules (no manual monkeypatch / try-finally in test bodies).
+  // process.exit during install is a hard failure — surface it, don't let it kill the runner.
+  function runInstall(t, isGlobal, runtime) {
+    t.mock.method(process, 'exit', (code) => {
       throw new Error(`process.exit(${code}) during install — should not happen`);
-    };
-    try {
-      return silenceConsole(() => install(isGlobal, runtime));
-    } catch (e) {
-      if (exitCalled) assert.fail(`install() called process.exit — unexpected: ${e.message}`);
-      throw e;
-    } finally {
-      process.exit = origExit;
-    }
+    });
+    t.mock.method(console, 'log', () => {});
+    t.mock.method(console, 'warn', () => {});
+    t.mock.method(console, 'error', () => {});
+    return install(isGlobal, runtime);
   }
 
   beforeEach(() => {
@@ -1042,7 +1024,7 @@ describe('#2624 .gsd-source marker is rewritten before staging reads it', () => 
       return result;
     });
 
-    runInstall(true /* isGlobal */, 'claude');
+    runInstall(t, true /* isGlobal */, 'claude');
 
     const markerPath = path.join(claudeDir, '.gsd-source');
     assert.ok(fs.existsSync(markerPath), 'marker must exist after install');
@@ -1058,11 +1040,11 @@ describe('#2624 .gsd-source marker is rewritten before staging reads it', () => 
       `Resolved: ${JSON.stringify(resolvedSources)}`);
   });
 
-  test('fresh claude-global install (no prior marker) still writes the correct marker', () => {
+  test('fresh claude-global install (no prior marker) still writes the correct marker', (t) => {
     const claudeDir = path.join(tmpRoot, '.claude');
     fs.mkdirSync(claudeDir, { recursive: true });
     // No pre-existing marker — fresh install (negative space, must stay correct).
-    runInstall(true /* isGlobal */, 'claude');
+    runInstall(t, true /* isGlobal */, 'claude');
 
     const markerPath = path.join(claudeDir, '.gsd-source');
     assert.ok(fs.existsSync(markerPath), 'fresh claude-global install must write the marker');
@@ -1074,7 +1056,7 @@ describe('#2624 .gsd-source marker is rewritten before staging reads it', () => 
     );
   });
 
-  test('claude-global install rewrites a marker pointing at a deleted (ghost) source', () => {
+  test('claude-global install rewrites a marker pointing at a deleted (ghost) source', (t) => {
     const claudeDir = path.join(tmpRoot, '.claude');
     fs.mkdirSync(claudeDir, { recursive: true });
     // A ghost path that does NOT exist on disk — findInstallSourceRoot ignores it and
@@ -1082,7 +1064,7 @@ describe('#2624 .gsd-source marker is rewritten before staging reads it', () => 
     const ghost = path.join(tmpRoot, 'gone', 'commands', 'gsd');
     fs.writeFileSync(path.join(claudeDir, '.gsd-source'), ghost + '\n', 'utf8');
 
-    runInstall(true /* isGlobal */, 'claude');
+    runInstall(t, true /* isGlobal */, 'claude');
 
     const markerPath = path.join(claudeDir, '.gsd-source');
     assert.ok(fs.existsSync(markerPath), 'marker must exist after install');
