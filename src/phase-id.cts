@@ -571,8 +571,9 @@ function extractPhaseToken(dirName: string, convention?: string): string {
   // terminated the scan is a 1-digit word (#2043's slug-word class — the
   // "24/7"/"80/20"/"30-Day" naming family: phase 10 named "24/7 Autonomy" →
   // dir "10-24-7[-autonomy]"), the absorbed run re-opens as slug and the token
-  // rewinds to the bare leading phase number, keeping the phase resolvable by
-  // bare-number lookup. A ≥2-digit-run terminator does NOT rewind: the
+  // rewinds by one absorbed continuation, keeping the phase resolvable without
+  // discarding an earlier, unambiguous continuation in a deeper token. A
+  // ≥2-digit-run terminator does NOT rewind: the
   // year-leading-slug shape after a genuine sub-phase ("14-06-2026-photos" →
   // "14-06") is locked by the #2232 metamorphic round-trip tests. The
   // firstLetterPrefixed family keeps its intentionally-preserved single-digit
@@ -583,7 +584,7 @@ function extractPhaseToken(dirName: string, convention?: string): string {
     scanStoppedAt !== -1 &&
     SINGLE_DIGIT_RUN_SEGMENT_RE.test(segments[scanStoppedAt])
   ) {
-    tokenSegments.length = 1;
+    tokenSegments.pop();
   }
 
   // A generated slug is lowercase. If the owner admitted a two-digit prefix

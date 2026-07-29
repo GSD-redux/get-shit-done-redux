@@ -203,6 +203,58 @@ describe('#2232 continuation-grammar parity — every consuming surface agrees',
       ),
     );
   });
+
+  test('property: prefixed deep tokens stay identical across imperative and regex readers', () => {
+    const prefixArb = fc.constantFrom('', 'CK-', 'M1-', 'v2-', 'APP1-', 'APP_1-', 'phase-');
+    const phaseArb = fc.integer({ min: 0, max: 999 }).map(String);
+    const continuationArb = fc.array(
+      fc.integer({ min: 0, max: 99 }).map((n) => String(n).padStart(2, '0')),
+      { minLength: 2, maxLength: 5 },
+    );
+
+    fc.assert(
+      fc.property(prefixArb, phaseArb, continuationArb, (prefix, phase, continuations) => {
+        const token = `${prefix}${phase}-${continuations.join('-')}`;
+        const dir = `${token}-feature`;
+        assert.strictEqual(
+          validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+          phaseId.extractPhaseToken(dir),
+          `prefixed/deep grammar diverged for ${dir}`,
+        );
+        assert.strictEqual(phaseId.extractPhaseToken(dir), token);
+      }),
+    );
+  });
+
+  test('property: a one-digit terminator rewinds only the final deep continuation', () => {
+    const prefixArb = fc.constantFrom('', 'CK-', 'M1-', 'v2-', 'APP1-', 'APP_1-', 'phase-');
+    const phaseArb = fc.integer({ min: 0, max: 999 }).map(String);
+    const continuationArb = fc.array(
+      fc.integer({ min: 0, max: 99 }).map((n) => String(n).padStart(2, '0')),
+      { minLength: 2, maxLength: 5 },
+    );
+    const terminatorArb = fc.integer({ min: 0, max: 9 }).map(String);
+
+    fc.assert(
+      fc.property(
+        prefixArb,
+        phaseArb,
+        continuationArb,
+        terminatorArb,
+        (prefix, phase, continuations, terminator) => {
+          const retained = continuations.slice(0, -1);
+          const expected = `${prefix}${phase}-${retained.join('-')}`;
+          const dir = `${prefix}${phase}-${continuations.join('-')}-${terminator}-feature`;
+          assert.strictEqual(phaseId.extractPhaseToken(dir), expected);
+          assert.strictEqual(
+            validate.PHASE_TOKEN_FROM_DIR_RE.exec(dir)?.[1],
+            expected,
+            `deep rewind grammar diverged for ${dir}`,
+          );
+        },
+      ),
+    );
+  });
 });
 
 // Surface 5 needs a real ROADMAP/STATE on disk, so it gets its own block.

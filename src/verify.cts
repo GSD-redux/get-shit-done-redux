@@ -40,7 +40,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum } = phaseIdMod;
+const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, stripProjectCodePrefix, comparePhaseNum } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -1269,7 +1269,7 @@ function forEachArchivedPhaseToken(planBase: string, onPhase: (token: string) =>
       for (const e of entries) {
         if (!e.isDirectory()) continue;
         const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-        if (m) onPhase(m[1]);
+        if (m) onPhase(stripProjectCodePrefix(m[1]));
       }
     } catch {
       /* archive dir absent/unreadable */
@@ -1319,7 +1319,7 @@ function collectDiskPhases(planBase: string): Set<string> {
       for (const e of entries) {
         if (e.isDirectory()) {
           const m = e.name.match(PHASE_TOKEN_FROM_DIR_RE);
-          if (m) diskPhases.add(m[1]);
+          if (m) diskPhases.add(stripProjectCodePrefix(m[1]));
         }
       }
     } catch {

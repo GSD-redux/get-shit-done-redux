@@ -1235,10 +1235,10 @@ describe('Drift item W006-archived — MILESTONE_ARCHIVE_DIR_RE and PHASE_TOKEN_
     assert.strictEqual(re.exec('64-auth-service')?.[1], '64');
     assert.strictEqual(re.exec('03B-feature')?.[1], '03B');
     assert.strictEqual(re.exec('999.1-foo')?.[1], '999.1');
-    assert.strictEqual(re.exec('CK-64-auth')?.[1], '64');
-    assert.strictEqual(re.exec('MANIFOLD-64-auth')?.[1], '64');
-    assert.strictEqual(re.exec('APP1-64-auth')?.[1], '64');
-    assert.strictEqual(re.exec('APP_1-64-auth')?.[1], '64');
+    assert.strictEqual(re.exec('CK-64-auth')?.[1], 'CK-64');
+    assert.strictEqual(re.exec('MANIFOLD-64-auth')?.[1], 'MANIFOLD-64');
+    assert.strictEqual(re.exec('APP1-64-auth')?.[1], 'APP1-64');
+    assert.strictEqual(re.exec('APP_1-64-auth')?.[1], 'APP_1-64');
   });
 
   test('PHASE_TOKEN_FROM_DIR_RE rejects a single-digit slug word after a phase number (#2043)', () => {
@@ -1251,11 +1251,11 @@ describe('Drift item W006-archived — MILESTONE_ARCHIVE_DIR_RE and PHASE_TOKEN_
     // Legit multi-segment (zero-padded) milestone-prefixed tokens are preserved.
     assert.strictEqual(re.exec('02-01-setup')?.[1], '02-01');
     // Single-digit letter-suffix phase ids ("1A"/"01A") and milestone-prefixed
-    // single-digit sub-phases ("M1-2" → "2") must still match (the fix tightens
+    // single-digit sub-phases ("M1-2") must still match (the fix tightens
     // only the continuation, not the first component).
     assert.strictEqual(re.exec('1A-foo')?.[1], '1A');
     assert.strictEqual(re.exec('01A-foo')?.[1], '01A');
-    assert.strictEqual(re.exec('M1-2-setup')?.[1], '2');
+    assert.strictEqual(re.exec('M1-2-setup')?.[1], 'M1-2');
   });
 });
 

@@ -47,8 +47,11 @@ export const phaseDirNameRe = new RegExp(
   `^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}\\d{2,}(?:-\\d+)*(?:\\.\\d+)*-[\\w-]+$`,
   'i',
 );
-// Extracts the full phase token from a directory name, including milestone-prefixed
-// multi-segment tokens like "02-01" from "02-01-setup" or "GSD-02-01-setup".
+// Extracts the full phase token from a directory name, including project-code and
+// milestone prefixes plus multi-segment tokens like "02-01" from "02-01-setup"
+// or "GSD-02-01" from "GSD-02-01-setup". The capture intentionally matches
+// extractPhaseToken() exactly; health-validation consumers strip the project code
+// only where their historical disk/roadmap comparison requires a numeric token.
 // #2043: a *continuation* sub-phase segment must be zero-padded, so a
 // single-digit slug word after a phase number (e.g. "46-6-rs-…", slug "6 Rs …") is
 // NOT absorbed — it captures "46", not "46-6". #2232: the continuation width is
@@ -66,8 +69,8 @@ export const phaseDirNameRe = new RegExp(
 const CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE =
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE.replaceAll('A-Z', 'A-Za-z');
 export const PHASE_TOKEN_FROM_DIR_RE = new RegExp(
-  `^${CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE}` +
-  `(\\d+[A-Za-z]?(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*(?:\\.\\d+)*)(?:-|$)`,
+  `^(${CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE}` +
+  `\\d+[A-Za-z]?(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*(?:\\.\\d+)*)(?:-|$)`,
 );
 export const MILESTONE_ARCHIVE_DIR_RE = /^v\d+.*-phases$/i;
 
