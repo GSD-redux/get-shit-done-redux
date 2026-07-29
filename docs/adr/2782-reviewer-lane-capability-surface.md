@@ -53,7 +53,7 @@ exclusivity invariant exists to prevent.
 
 **Net: adding a reviewer lane is a core patch.** It means editing the roster module or a runtime
 descriptor, hand-authoring a bash leg, hand-adding a `write_reviews` heading, adding central config
-keys, and updating five prose surfaces. #2718 was that patch in flight (PR #2776, closed in favour
+keys, and updating five prose surfaces. #2718 was that patch in flight (PR #2776, closed in favor
 of this design); #2781 is the documentation drift it produced. Cross-cutting fixes land per-leg:
 #2494 and #2605 were the same empty-output defect filed twice; #2475 (effort channel), #2589 (model
 lookup), #2295 (resolved-model recording), and #2272 (flag parity) are the same shape.
@@ -75,7 +75,7 @@ Three of twelve lanes are not spawned binaries at all. Timeout floors genuinely 
 leg carries a deliberate three-layer fallback for an upstream stdout bug.
 
 **Divergence between lanes is real and frequently correct.** The value of a descriptor is therefore
-*one place where divergence is declared*, not one behaviour imposed on every lane.
+*one place where divergence is declared*, not one behavior imposed on every lane.
 
 ## Decisions
 
@@ -110,7 +110,9 @@ A reviewer lane is declared as data in a `reviewer` body:
     "timeoutFloorMs": 900000,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Acme Review",
-    "requires": [],
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
     "handler": null
   },
 
@@ -160,7 +162,28 @@ exists to prevent.
 `promptChannel: "argv-file-ref"` exists because two lanes (`cursor`, `kimi-code`) take the prompt as
 an argv argument, and passing a full plan set inline would approach the 32 767-character Windows
 `execFileSync` ceiling. The file-reference form passes a short instruction naming a prompt file in
-the run directory.
+the run directory. That instruction must also carry the **absolute repository root**, because an
+argv-fed CLI does not reliably inherit the review's working directory — the existing `cursor` and
+`kimi-code` legs already do this by hand (`review.md:447-448`, `:550-552`).
+
+`outputChannel` has exactly one member (`stdout`) today. It is nonetheless a required, named,
+closed-enum field rather than an implicit assumption, because the alternative — a lane that writes
+its review to a file and prints nothing — is a shape a real CLI can take, and an unnamed assumption
+is the thing a later contributor silently violates. A one-member enum that must grow under review is
+the ADR-1016 pattern; an undocumented assumption is not.
+
+Three further declared fields carry per-lane divergence that would otherwise live only in prose:
+
+| Field | Values | Why it exists |
+|---|---|---|
+| `evidenceClass` | `source-grounded` \| `diff-only` | CodeRabbit reviews a diff, not the source tree, and its findings are deliberately down-weighted in synthesis (`review.md:367`). Today that caveat is a prose annotation a reader may miss; declaring it lets `write_reviews` render the caveat from data |
+| `requiresBinaries` | string[] | External tools the lane needs on `PATH` — `jq` for five lanes. A missing prerequisite reports the lane unavailable with an install hint rather than running it into an empty review |
+| `promptBudgetKey` | dotted config key \| `null` | Per-lane prompt trimming (`prepare_trimmed_prompt_for_reviewer`, `review.md:646-704`) is keyed per slug today; the key becomes the lane's own federated config (D9) |
+
+**Naming note:** the field is `requiresBinaries`, **not** `requires`. The envelope already carries a
+`requires` (capability-id dependencies, ADR-1244). Two fields named `requires` at different nesting
+depths with unrelated semantics is a defect waiting to happen; the collision was caught in review of
+this ADR and renamed here rather than left for a downstream phase to trip over.
 
 ### D3 — A third role, `role: "reviewer"`, for lanes that are not install targets
 
@@ -201,6 +224,35 @@ The asymmetry is deliberate and is Postel's Law applied with a boundary: liberal
 may **omit**, strict in what it **asserts**. Permissiveness about absence is forward compatibility;
 permissiveness about assertions would be an untyped escape hatch.
 
+#### Absent-safe governs discovery, never explicit selection
+
+Rules 1–5 describe what happens when the system is *looking for* lanes. They do **not** apply once a
+user has named one. If a user runs `/gsd:review --acme` and the `acme` lane is unavailable — because
+its capability was skipped under rule 2, because its `handler` failed closed under rule 4, because a
+prerequisite binary is missing, or because its egress destination changed (D5) — that is an
+**error**, surfaced and non-silent. It is not an informational note, and the run does not quietly
+proceed with a thinner reviewer set.
+
+This is called out because the current implementation does the opposite: an unavailable
+explicitly-requested reviewer is recorded as an `info` (`review-reviewer-selection.cts:246-248`).
+The workflow's own guidance already names why that is wrong — "a cross-AI review that silently drops
+a lane is blind in one eye" (`review.md:304`) — and a design whose whole premise is *more* lanes from
+*less* trusted sources must not inherit a silently-degrading selector. **Correcting this is Phase 1's
+responsibility**, because Phase 1 is where the selector is single-sourced.
+
+In one line: *not finding* a lane nobody asked for is normal; *failing to run* a lane somebody asked
+for is an error.
+
+#### Where warnings surface
+
+"Skipped with a warning" means nothing unless a human sees it. Warnings arising at **build time**
+(registry generation over first-party capabilities) are emitted by `gen-capability-registry.cjs` on
+stderr, and fail the build only where D8's uniqueness invariants are breached. Warnings arising at
+**load time** — an overlay skipped by `engines.gsd`, an unknown field, a `handler` that failed
+closed — surface on the `/gsd:review` run that would have used the lane, and in
+`gsd capability list`, which is where a user goes to ask why a capability is inactive. A warning
+written only to a build log nobody reads is not a warning.
+
 ### D5 — A fourth executable-surface disclosure class: the reviewer lane
 
 ADR-1244 D5 rule 2 requires that executable surfaces be disclosed and consented at install, and
@@ -214,31 +266,85 @@ manifest field. The trust work is therefore the gating requirement of this desig
 
 `discloseExecutableSurfaces` gains a reviewer-lane surface that discloses, by transport:
 
-- **`spawn`** — the **binary** that will be executed.
-- **`openai-http`** — the **destination host URL** resolved from `hostConfigKey`. Disclosing `curl`
-  would be technically true and practically meaningless; the destination is the disclosure that
-  matters. A `localhost` destination is still disclosed, distinguished from a remote one.
+- **`spawn`** — the **binary and its full declared `args`**, in both rendered and raw form, exactly
+  as MCP servers already disclose `argv`/`rawArgs` (`capability-trust.cts:688-690`).
+- **`openai-http`** — the **destination host URL** resolved from `hostConfigKey`, plus the
+  `hostConfigKey` itself. Disclosing `curl` would be technically true and practically meaningless;
+  the destination is the disclosure that matters. A `localhost` destination is still disclosed, and
+  is distinguished from a remote one.
 
 Both forms additionally disclose the **egress payload classes** — plan text, requirements, research
 findings, `CONTEXT.md` decisions — rather than an unhelpful "sends data to the tool".
 
+**Disclosing the binary without its `args` is insufficient, and this is not hypothetical.** A lane
+declaring `binary: "python3"` with innocuous `args` could, in a later version, change `args` to
+`["-c", "<arbitrary program>"]` without the binary changing at all. That is precisely the bug class
+#1459 already fixed for MCP servers, and a binary-only disclosure would reopen it. `args` is
+therefore disclosed **and** signature-bound.
+
 The lane folds into `disclosureSignature` / `signatureForManifest` as stable sorted JSON, exactly as
-`env`/`cwd` do for MCP servers (#1459), so that adding a lane, changing its binary, or changing its
-resolved host forces re-consent. `executableSetChanged` treats those as executable-set changes for
-the auto-update re-consent trigger (ADR-1244 D5 rule 4).
+`env`/`cwd` do for MCP servers (#1459). `executableSetChanged` treats **any** of the following as an
+executable-set change for the auto-update re-consent trigger (ADR-1244 D5 rule 4): adding or
+removing a lane, or changing its `binary`, `args`, `hostConfigKey`, `promptChannel`, or `handler`.
+
+#### The egress destination is re-verified at invocation, not only at install
+
+`hostConfigKey` is the one consent-bound value that does **not** live in the SHA-pinned bundle. It
+names a key in `.planning/config.json`, which is user- and CI-editable at any time with no
+re-install and no integrity check — unlike every existing consent-bound field (`command`, `args`,
+`env`, `cwd`, `url`), all of which come from the manifest itself (`capability-trust.cts:74-125`).
+
+Left unaddressed, this is a real hole: a lane consented against `http://localhost:8080` could be
+silently redirected to a remote host by a later config edit — including one arriving through an
+ordinary pull request touching `.planning/config.json` — and every subsequent review run would
+egress plans, requirements, research, and decisions to the new destination with no re-prompt.
+
+Therefore, normatively:
+
+1. The consent record binds the **resolved host**, not merely the config key.
+2. Before invoking an `openai-http` lane the runtime **re-resolves** `hostConfigKey` and compares the
+   result against the consented host.
+3. On mismatch the lane is **blocked, not silently redirected**; the user is told the destination
+   changed and must re-consent. A blocked lane reports like any other unavailable lane — it never
+   degrades to running against the new host.
+4. This check lives on the **invocation** path (Phase 5b), not only in the install path.
+
+A host change is a change of *who receives the user's plans*. It is the most security-relevant
+mutation in this design, and it must not be reachable by editing a JSON file.
 
 **Stated honestly, and consistent with ADR-1244 D5's own acknowledgment that there is no sandbox:**
-consent-at-install is a weaker gate for a *standing egress channel* than it is for a hook. A user
-consents once; the lane thereafter receives every plan on every review run. Disclosure makes the
-channel **visible and revocable** — it does not make it safe. A per-run egress prompt was considered
-and rejected as consent fatigue that trains users to approve blindly.
+even with the above, consent-at-install remains a weaker gate for a *standing egress channel* than
+for a hook. A user consents once; the lane thereafter receives every plan on every review run.
+Disclosure plus destination re-verification makes the channel **visible, pinned, and revocable** — it
+does not make it safe. A per-run egress prompt was considered and rejected as consent fatigue that
+trains users to approve blindly.
 
 ### D6 — `handler` is a closed enum of first-party names; third-party lanes are data-only
 
 Lane divergence is real (context above), so the descriptor must not promise uniformity. Where a lane
-needs genuinely imperative behaviour — the Antigravity three-layer fallback is the canary —
+needs genuinely imperative behavior — the Antigravity three-layer fallback is the canary —
 `reviewer.handler` names an imperative module **by closed first-party name**, rather than growing
 conditionals inside data.
+
+The enum ships with exactly these members. `null` is the default and covers eight of the twelve
+lanes:
+
+| `handler` | Lanes | What it owns that data cannot express |
+|---|---|---|
+| `null` | the other eight | Nothing — the declared vocabulary suffices |
+| `"antigravity"` | `antigravity` | The three-layer fallback for an upstream stdout bug; the **two-level timeout** (a 600 s external `timeout`/`gtimeout` cap wrapping a 540 s native `--print-timeout`, `review.md:560`); and the stale-response watermark guard that rejects a cached conversation from a prior run |
+| `"openai-compatible"` | `ollama`, `lm_studio`, `llama_cpp` | Model discovery against `/v1/models`, the JSON request/response shape, and the **served-model mismatch warning** raised when the responding model differs from the one requested (`review.md:794-797`) |
+
+Enumerating the members here is deliberate. A "closed enum" whose membership is left to the
+implementing phase is not closed, and three separate phases would each have invented a different
+list.
+
+**On `timeoutFloorMs` and the Antigravity two-level timeout.** The descriptor carries **one** scalar,
+`timeoutFloorMs` — the outer wall-clock bound every lane gets. A lane whose tool has its own
+*internal* timeout (Antigravity's `--print-timeout` is the only current case) expresses that inner
+bound in its **handler**, not in the descriptor. Adding a second declarative timeout field to serve
+one first-party lane would be speculative generality; the handler seam exists for exactly this. The
+delegation is stated here so a reader does not wonder where the measured 540 s went.
 
 This upholds rather than relaxes ADR-1016. That ADR's core principle is that "a runtime that needs a
 shape no existing primitive expresses is supported by adding a first-party primitive … never by
@@ -256,6 +362,23 @@ naming the primitive the vocabulary lacks; it is reviewed and added first-party.
 example of that path already functioning** — the `openai-http` transport exists precisely because a
 survey produced evidence that three real lanes did not fit, and the vocabulary widened on evidence
 rather than on speculation.
+
+**Two real CLIs that would NOT fit today**, named so the boundary is a known quantity rather than a
+surprise for the first third-party author who hits it:
+
+- **Aider** mutates the repository by default — it edits files and commits. The vocabulary has no way
+  to declare "this tool must be invoked read-only", and the existing lanes achieve that only by
+  *asking politely inside the prompt text* (`review.md:448`: "Do not edit any files"), which a
+  coding-agent CLI is under no obligation to honor. A repo-mutating reviewer is a materially
+  different safety posture from a read-only one, and the descriptor does not currently express it.
+- **Plandex** requires a stateful session (`plandex new`) before a review turn. D2's single
+  `binary` + `args` + prompt-channel shape describes one invocation; it cannot express a two-phase
+  setup-then-invoke sequence.
+
+Neither is a reason to reject this design — both are exactly the "file an issue naming the primitive"
+case, and both would likely be served by two future primitives: a declared invocation-safety posture,
+and a `setup` phase on the descriptor. They are recorded because an ADR claiming a closed vocabulary
+is sufficient, without naming what it excludes, is claiming more than it verified.
 
 Revisiting this to permit a third-party `handler` module confined to the capability install root
 (the ADR-1244 D7 model, which does allow third-party command modules) would genuinely deliver "any
@@ -314,6 +437,24 @@ migration is required. Per the config-key exclusivity invariant (`capability-man
 central-schema removal and the federated addition **must land in the same commit** or the build gate
 fails on a key present in both.
 
+Ownership is per-key and per-lane, so that no key is owned twice — Phase 4 implements this table
+rather than re-deriving it:
+
+| Key | Owner | Notes |
+|---|---|---|
+| `review.models.<slug>` | the lane whose `slug` it names | One key per lane; a lane with no model override declares none |
+| `review.ollama_host` | `ollama` | The `hostConfigKey` its own descriptor points at (D2) |
+| `review.lm_studio_host` | `lm_studio` | ditto |
+| `review.llama_cpp_host` | `llama_cpp` | ditto |
+| `review.max_prompt_tokens_per_reviewer.<slug>` | the lane whose `slug` it names | The lane's `promptBudgetKey` (D2) resolves to this |
+| `review.max_prompt_tokens` | **stays central** | A global default across all lanes; owned by no single lane, so federating it would be wrong |
+| `review.default_reviewers` | **stays central** | Selection policy over lanes (ADR-0011), not a property of any lane |
+| `review.reviewer_instances` | **stays central** | Instance→lane mapping (ADR-1517); an instance is not a lane (D8) |
+
+The last three rows matter as much as the first five: a key that describes *policy across* lanes must
+not be federated *into* one, and the exclusivity invariant would not catch that error — it only
+catches a key owned twice, not a key owned by the wrong side.
+
 `KNOWN_REVIEWER_SLUGS` derives from declared reviewer bodies. `hostBehaviors.reviewerCli` survives
 as a **derived legacy alias for one release** and is then removed. Where both a body and the alias
 are present, the body wins. The field is undocumented, so external users are unlikely — but
@@ -359,17 +500,27 @@ rather than a silent removal. **The removal is owned by a named phase** (#2801),
 Verified with `/adr-phase-coverage`: every deliverable is claimed by exactly one phase, every
 hand-off lands, and every user-facing capability has a phase that wires its entry point.
 
-| Phase | Issue | Deliverable |
-|---|---|---|
-| 0 | [#2793](https://github.com/open-gsd/gsd-core/issues/2793) | This ADR |
-| 1 | [#2794](https://github.com/open-gsd/gsd-core/issues/2794) | Core single-sourced invocation descriptor + `DEFECT.GENERATIVE-FIX` parity assertion — **closes #2690** |
-| 2 | [#2795](https://github.com/open-gsd/gsd-core/issues/2795) | Manifest `reviewer` body; registry harvest, validation, uniqueness; the D4 absent-safe invariant |
-| 3 | [#2796](https://github.com/open-gsd/gsd-core/issues/2796) | The fourth trust-disclosure class (D5) |
-| 4 | [#2797](https://github.com/open-gsd/gsd-core/issues/2797) | Federated config migration (D9), same-commit |
-| 5a | [#2798](https://github.com/open-gsd/gsd-core/issues/2798) | The **11 existing** lanes declare reviewer bodies; roster derives; hardcoded tail deleted |
-| 5b | [#2799](https://github.com/open-gsd/gsd-core/issues/2799) | `invoke_reviewers` / `write_reviews` iterate lanes; the **`kimi-code`** lane — **closes #2718** |
-| 6 | [#2800](https://github.com/open-gsd/gsd-core/issues/2800) | Docs, `hostBehaviors` documentation gap, capability matrix, locale parity gate — **closes #2781** |
-| 7 | [#2801](https://github.com/open-gsd/gsd-core/issues/2801) | Remove the `hostBehaviors.reviewerCli` alias (D9), the release *after* 5a |
+Every decision is mapped to the phase that delivers it, so no decision is left to be "handled
+somewhere".
+
+| Phase | Issue | Delivers | Deliverable |
+|---|---|---|---|
+| 0 | [#2793](https://github.com/open-gsd/gsd-core/issues/2793) | — | This ADR |
+| 1 | [#2794](https://github.com/open-gsd/gsd-core/issues/2794) | D4 (explicit-selection carve-out only) | Core single-sourced invocation descriptor + `DEFECT.GENERATIVE-FIX` parity assertion; corrects the silently-degrading selector — **closes #2690** |
+| 2 | [#2795](https://github.com/open-gsd/gsd-core/issues/2795) | **D1, D2, D3, D4, D7, D8** | Manifest `reviewer` body and the third role; `transport` and `probe.kind` closed enums; registry harvest, validation, uniqueness; the absent-safe invariant and its warning channel |
+| 3 | [#2796](https://github.com/open-gsd/gsd-core/issues/2796) | **D5** | The fourth trust-disclosure class: binary + `args` / host + `hostConfigKey`, egress payload classes, signature binding |
+| 4 | [#2797](https://github.com/open-gsd/gsd-core/issues/2797) | **D9** (config half) | Federated config migration per the ownership table, same-commit |
+| 5a | [#2798](https://github.com/open-gsd/gsd-core/issues/2798) | **D9** (roster half) | The **11 existing** lanes declare reviewer bodies; roster derives; hardcoded tail deleted |
+| 5b | [#2799](https://github.com/open-gsd/gsd-core/issues/2799) | **D6**, D5 (invocation-time host re-verification) | `invoke_reviewers` / `write_reviews` iterate lanes; the `antigravity` and `openai-compatible` **handler modules** ported from the existing bash legs; the **`kimi-code`** lane — **closes #2718** |
+| 6 | [#2800](https://github.com/open-gsd/gsd-core/issues/2800) | — | Docs, `hostBehaviors` documentation gap, capability matrix, locale parity gate — **closes #2781** |
+| 7 | [#2801](https://github.com/open-gsd/gsd-core/issues/2801) | D9 (alias removal) | Remove the `hostBehaviors.reviewerCli` alias, the release *after* 5a |
+
+Two mappings are worth calling out because a reader would otherwise assume the wrong phase. **D6's
+handler modules are code**, not data — porting Antigravity's ~100-line three-layer fallback and the
+three OpenAI-compatible lanes into named first-party modules is Phase 5b's work, delivered alongside
+the iteration that calls them. And **D5 splits across two phases**: the disclosure itself is Phase 3,
+but the invocation-time destination re-verification necessarily lands in Phase 5b, because that is
+where the invocation path is built.
 
 **Why `kimi-code` lands in 5b and not 5a.** 5a makes the roster derive from declared bodies, but 5b
 is what makes `invoke_reviewers` iterate them. The eleven existing lanes already have hand-authored
