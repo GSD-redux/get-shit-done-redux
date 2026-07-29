@@ -568,12 +568,14 @@ describe('#2705: legacy ADR range single-sourced and accurate', () => {
   test('exactly one doc restates the legacy range; the other references it', () => {
     const readme = fs.readFileSync(README, 'utf8');
     const standards = fs.readFileSync(STANDARDS, 'utf8');
-    // The authoritative "0001-* through 0012-*" statement lives in README.
-    assert.match(readme, /0001-\* through 0012-\*/, 'README must carry the authoritative legacy-range statement');
+    // The authoritative "0001-* through 0012-*" statement lives in README. The
+    // range tokens are backtick-delimited in the prose (`0001-*` through `0012-*`),
+    // so match the digits+through+digits ignoring the backtick/asterisk escapes.
+    assert.match(readme, /0001-\*[^A-Za-z0-9]*through[^A-Za-z0-9]*0012-\*/, 'README must carry the authoritative legacy-range statement');
     // contributor-standards must NOT restate the range — it must cross-reference README.
     assert.doesNotMatch(
       standards,
-      /0001-\* through 001[12]-\*/,
+      /0001-\*[^A-Za-z0-9]*through[^A-Za-z0-9]*001[12]-\*/,
       'contributor-standards.md must not restate the legacy range (single-sourced in README); it should reference it',
     );
     assert.match(
