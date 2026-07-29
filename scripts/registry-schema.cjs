@@ -286,7 +286,16 @@ function validateEosInteractions(interactions, addError) {
       // malformed key set either).
       if (missingRequiredKeys.length === 0 && unknownKeys.length === 0) {
         for (const key of actualKeys) {
-          const allowedValues = AXES[key] !== undefined ? AXES[key] : OPTIONAL_AXES[key];
+          // Inline literal guards — CodeQL barrier pattern. Reaching here already
+          // implies `key` is one of the nine literal axis names (the unknown-key
+          // gate above rejected everything else), so this is unreachable in
+          // practice; it is written inline anyway because CodeQL cannot follow
+          // that gate across the `.includes()` filter and would otherwise flag
+          // the bracket reads below as prototype-pollution sinks.
+          if (key === '__proto__') continue;
+          if (key === 'constructor') continue;
+          if (key === 'prototype') continue;
+          const allowedValues = Object.hasOwn(AXES, key) ? AXES[key] : OPTIONAL_AXES[key];
           const v = axes[key];
           if (allowedValues === AXES_FREE_STRING) {
             if (typeof v !== 'string' || v.trim() === '') {
