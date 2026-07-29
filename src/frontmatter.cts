@@ -12,6 +12,7 @@ import path from 'node:path';
 import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 import { platformReadSync as safeReadFile, platformWriteSync } from './shell-command-projection.cjs';
+import { textEncodingError } from './validate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
@@ -718,6 +719,11 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
+  // #2701: fail loud on NUL/binary corruption before schema checks. A structurally
+  // intact-but-NUL-corrupted file otherwise passes as valid:true and is then silently
+  // skipped by recursive/binary-skipping searchers, reading downstream as "absent."
+  const encErr = textEncodingError(content, filePath);
+  if (encErr) { output({ valid: false, errors: [encErr], schema: schemaName }, raw, 'invalid'); return; }
   // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
   // per file rather than per content digest (#1882, ADR-1411 wiring clause).
   const fm = extractFrontmatter(content, fullPath);

@@ -49,6 +49,7 @@ import {
 import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
+import { textEncodingError } from './validate.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2639,6 +2640,14 @@ function cmdStateValidate(cwd: string, raw: boolean): void {
   }
 
   const content = fs.readFileSync(statePath, 'utf-8');
+  // #2701: fail loud on NUL/binary corruption before drift checks. A corrupt
+  // STATE.md otherwise validates as clean and is silently skipped by recursive
+  // searchers downstream, reading as "absent" rather than "corrupt."
+  const encErr = textEncodingError(content, 'STATE.md');
+  if (encErr) {
+    output({ valid: false, warnings: [encErr], drift: {} }, raw, undefined);
+    return;
+  }
   const warnings: string[] = [];
   const drift: Record<string, unknown> = {};
 
