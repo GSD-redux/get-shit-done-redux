@@ -102,6 +102,29 @@ emission), so their extension-point and hook-kind cells are `—`.
 | `windsurf` | runtime | core | `>=1.6.0` | — | — | first-party |
 | `zcode` | runtime | core | `>=1.6.0` | — | — | first-party |
 
+### Reviewer capabilities (role: reviewer) — 5
+
+Reviewer capabilities declare a cross-AI **reviewer lane** — one external CLI or
+model endpoint `/gsd:review` hands a plan to (ADR-2782 D3). They are not install
+targets: they emit no skills, agents, hooks or surface files, so their
+extension-point and hook-kind cells are `—`. A host that is *also* a reviewer
+(Claude, Codex, Cursor, OpenCode, Qwen, Antigravity) keeps one manifest and
+appears under **runtime** above, carrying its lane alongside its runtime body;
+only lanes that GSD never installs into appear here.
+
+Because a lane receives the plan text, requirements, research findings and
+`CONTEXT.md` decisions, it is a disclosed executable surface and is consent-gated
+at install like any other — see
+[the trust model](../explanation/capability-trust-model.md).
+
+| id | role | tier | engines.gsd | extension points | hook kinds | source |
+|---|---|---|---|---|---|---|
+| `coderabbit` | reviewer | full | `>=1.8.0` | — | — | first-party |
+| `gemini` | reviewer | full | `>=1.8.0` | — | — | first-party |
+| `llama-cpp` | reviewer | full | `>=1.8.0` | — | — | first-party |
+| `lm-studio` | reviewer | full | `>=1.8.0` | — | — | first-party |
+| `ollama` | reviewer | full | `>=1.8.0` | — | — | first-party |
+
 ---
 
 ## Third-party capabilities

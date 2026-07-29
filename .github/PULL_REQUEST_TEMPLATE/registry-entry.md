@@ -43,7 +43,7 @@ Full schema and process: [docs/registries/README.md](../../docs/registries/READM
 
 - [ ] `id`, `name`, `type`, `repo`, `description`, `author`, `license`, `enginesGsd`, `install`, `uninstall`, `interactions`, `discussion` are all present and non-empty
 - [ ] **(Capability entries only)** `interactions.loopExtensionPoints` is a non-empty subset of the 12 Loop Extension Points, `interactions.hookKinds` ⊆ `{step, contribution, gate}`, and `interactions.configKeys` / `requires` / `runtimeCompat` / `produces` / `consumes` are present (empty arrays are fine where nothing applies)
-- [ ] **(EoS entries only)** `protocolVersion` is an integer ≥ 1, `interactions.interfacePoints` is a non-empty subset of the six interface points, `interactions.profile` is one of `programmatic-cli` / `declarative-cli` / `ide`, and `interactions.axes` has exactly the eight required axis keys
+- [ ] **(EoS entries only)** `protocolVersion` is an integer ≥ 1, `interactions.interfacePoints` is a non-empty subset of the six interface points, `interactions.profile` is one of `programmatic-cli` / `declarative-cli` / `ide`, and `interactions.axes` has exactly the eight required axis keys plus, optionally, `effortSurface` (`argv` / `none`)
 
 ## Ownership & non-endorsement
 

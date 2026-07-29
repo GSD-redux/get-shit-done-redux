@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-07-28
+- **Amended:** 2026-07-29 by Phase 1 ([#2794](https://github.com/open-gsd/gsd-core/issues/2794)) — D1's `flag` becomes `flags[]`; D2's `promptChannel` gains `none`, `outputChannel` gains `file-arg` with a companion `outputArg`; D8's uniqueness invariant restated over the flattened flag set. All four are additive widenings of closed enums, each forced by a shipped lane the original survey did not cover. See **Amendments** at the end.
 - **Issue:** [#2782](https://github.com/open-gsd/gsd-core/issues/2782) (epic); Phase 0 tracked by [#2793](https://github.com/open-gsd/gsd-core/issues/2793)
 - **Amends:** [ADR-857](857-capability-system.md) (extension points as data — extends D7/D8 in the same "amend, not reverse" sense ADR-1244 D8 established) · [ADR-894](894-capability-declaration-format.md) (adds a role-typed body and a third role) · [ADR-1016](1016-runtime-capability-descriptor.md) (the runtime body is no longer the *only* body a `role: "runtime"` capability may carry; its closed-vocabulary principle is upheld, not relaxed — see D6) · [ADR-1244](1244-capability-ecosystem.md) (D5 gains a fourth executable-surface disclosure class; D9's matrix gains a lane column)
 - **Unchanged and explicitly out of scope:** [ADR-0011](0011-review-default-reviewers.md) (reviewer selection precedence) · [ADR-1517](1517-reviewer-instances-config-surface.md) (the `REVIEWS.md` contract and reviewer instances)
@@ -96,7 +97,7 @@ A reviewer lane is declared as data in a `reviewer` body:
 
   "reviewer": {
     "slug": "acme",
-    "flag": "--acme",
+    "flags": ["--acme"],
     "transport": "spawn",
     "probe": { "kind": "command-exists", "binary": "acme" },
     "invoke": {
@@ -146,8 +147,9 @@ context (b) describes.
 |---|---|---|
 | `invoke.binary` | required | **forbidden** |
 | `invoke.args` | required (array) | forbidden |
-| `invoke.promptChannel` | `stdin` \| `argv` \| `argv-file-ref` | forbidden |
-| `invoke.outputChannel` | `stdout` | forbidden |
+| `invoke.promptChannel` | `stdin` \| `argv` \| `argv-file-ref` \| `none` | forbidden |
+| `invoke.outputChannel` | `stdout` \| `file-arg` | forbidden |
+| `invoke.outputArg` | required iff `outputChannel: "file-arg"`, else forbidden | forbidden |
 | `invoke.hostConfigKey` | forbidden | required (dotted config key holding the base URL) |
 | `invoke.path` | forbidden | required (e.g. `/v1/chat/completions`) |
 | `invoke.modelDiscovery` | forbidden | closed enum: `none` \| `first-from-models-endpoint` |
@@ -166,11 +168,27 @@ the run directory. That instruction must also carry the **absolute repository ro
 argv-fed CLI does not reliably inherit the review's working directory — the existing `cursor` and
 `kimi-code` legs already do this by hand (`review.md:447-448`, `:550-552`).
 
-`outputChannel` has exactly one member (`stdout`) today. It is nonetheless a required, named,
-closed-enum field rather than an implicit assumption, because the alternative — a lane that writes
-its review to a file and prints nothing — is a shape a real CLI can take, and an unnamed assumption
-is the thing a later contributor silently violates. A one-member enum that must grow under review is
-the ADR-1016 pattern; an undocumented assumption is not.
+`outputChannel` is a required, named, closed-enum field rather than an implicit assumption, because
+the alternative — a lane that writes its review to a file and prints nothing — is a shape a real CLI
+can take, and an unnamed assumption is the thing a later contributor silently violates.
+
+**Amended 2026-07-29 (#2794):** this ADR originally recorded `outputChannel` as having "exactly one
+member (`stdout`) today" and described the file-writing lane as a shape a real CLI *could* take. It
+already does. `codex` captures its review through its own `-o/--output-last-message <FILE>` and
+discards stdout, because on Windows it writes process-teardown output to stdout *after* the final
+message, and a stdout redirect would append that noise to a non-empty file — slipping past the
+empty-output guard as a silently polluted review (#1698). The enum therefore ships with two members,
+and `file-arg` carries a companion `outputArg` naming the argument that takes the path: knowing the
+review lands in a file is useless without it.
+
+`promptChannel` likewise gains `none`. `coderabbit` is fed no prompt at all — it reviews the
+working-tree diff and accepts neither a prompt nor a model flag (`review.md:367`). The original
+three-member enum had no way to say "this lane receives nothing", which would have forced Phase 2 to
+either invent a sentinel or mis-declare the lane.
+
+Both were found by building Phase 1's descriptor table against all eleven shipped legs. That is the
+same evidence path that produced `openai-http` in the first place, and it is the process working:
+the vocabulary widens on a lane that exists, never on speculation.
 
 Three further declared fields carry per-lane divergence that would otherwise live only in prose:
 
@@ -312,6 +330,32 @@ Therefore, normatively:
 A host change is a change of *who receives the user's plans*. It is the most security-relevant
 mutation in this design, and it must not be reachable by editing a JSON file.
 
+> **Implementation note added by Phase 3 (#2796) — how rule 1 is actually satisfied.**
+>
+> The resolved host is **deliberately excluded from the disclosure signature**, and a reader
+> comparing rule 1 to `capability-trust.cts` must not mistake that for the rule being unimplemented.
+>
+> `signatureForManifest(manifest, stagedDir?)` is the single consent key that **both** the loader and
+> the lifecycle compute, explicitly so the two "can never drift". The loader has **no config
+> resolver** — `hostConfigKey` names a key in `.planning/config.json`, which is outside the SHA-pinned
+> bundle. Folding the resolved host into the signature would therefore make the loader and the
+> lifecycle compute *different* signatures for the same manifest, producing a permanent
+> false-mismatch loop that re-prompts forever.
+>
+> So the binding is split, and rule 1 still holds end to end:
+> - the **signature** binds the manifest-derived lane fields (`slug`, `transport`, `binary`, `args`,
+>   `hostConfigKey`, `promptChannel`, `handler`) — everything that is SHA-pinned;
+> - the **consent record** additionally stores the resolved host, which is what rule 1 requires;
+> - **Phase 5b re-resolves and compares at invocation** and blocks on mismatch, which is where rule 4
+>   already places the check.
+>
+> `reviewsSection` and `timeoutFloorMs` are excluded for a different reason: a cosmetic change must
+> not force re-consent, because a prompt carrying no security information is how users learn to click
+> through — the same failure this decision cites when rejecting a per-run egress prompt.
+>
+> *(Recorded here rather than in the PR that made the decision. A squash-merged PR body is not a
+> durable record: it is invisible to anyone reading the ADR later, which is exactly who needs this.)*
+
 **Stated honestly, and consistent with ADR-1244 D5's own acknowledgment that there is no sandbox:**
 even with the above, consent-at-install remains a weaker gate for a *standing egress channel* than
 for a hook. A user consents once; the lane thereafter receives every plan on every review run.
@@ -415,8 +459,14 @@ degrades a lane rather than hanging a command.
 
 ### D8 — Uniqueness is a build-time conformance invariant
 
-Across the merged first-party ∪ overlay set, `reviewer.slug`, `reviewer.flag`, and
-`reviewer.reviewsSection` are each unique. A collision fails the build gate. `reviewsSection`
+Across the merged first-party ∪ overlay set, `reviewer.slug`, `reviewer.flags`, and
+`reviewer.reviewsSection` are each unique — for `flags`, over the **flattened** set of every lane's
+flags, since one lane may declare several. A collision fails the build gate.
+
+**Amended 2026-07-29 (#2794):** D1 originally declared a singular `flag`, and this invariant was
+stated over it. `antigravity` is selected by **both** `--antigravity` and `--agy`
+(`review.md`, `docs/COMMANDS.md`), which a single-valued field cannot express, so the field is
+`flags: string[]` and uniqueness flattens across lanes. `reviewsSection`
 uniqueness is not cosmetic: two lanes sharing a heading would silently merge their output in
 `REVIEWS.md`, producing a review that appears to have consensus it does not have.
 
@@ -556,3 +606,120 @@ Phase 1 parity assertion green across the entire migration.
    cases that genuinely are servers.
 8. **One `role: "reviewer"` for every lane**, splitting the six dual-purpose runtimes. Cleaner
    discriminator; rejected for churn (D3).
+
+## Amendments
+
+### 2026-07-29 — vocabulary widened by Phase 1 (#2794)
+
+Phase 1 built the core descriptor table against all eleven shipped legs, which is the first time
+every lane's contract was written down in one place. That surfaced four cases the original survey
+did not cover. All four are **additive widenings of closed enums**, none reverses a decision, and
+each is forced by a lane that exists today rather than by a hypothetical:
+
+| # | Decision | Was | Is | Forced by |
+|---|---|---|---|---|
+| 1 | D2 | `promptChannel: stdin \| argv \| argv-file-ref` | adds `none` | `coderabbit` is fed no prompt — it reviews the working-tree diff |
+| 2 | D2 | `outputChannel: stdout` ("exactly one member today") | adds `file-arg` | `codex` already writes via `-o/--output-last-message` and discards stdout (#1698) |
+| 3 | D2 | — | adds `outputArg`, required iff `file-arg` | knowing the review lands in a file is useless without the argument naming it |
+| 4 | D1, D8 | `flag: string` | `flags: string[]`, uniqueness flattened | `antigravity` is selected by both `--antigravity` and `--agy` |
+
+**Why this is the process working, not a design failure.** D2 already records that the original
+draft assumed one lane shape and that reading all twelve legs disproved it — `openai-http` exists
+because a survey produced evidence, not because anyone predicted it. These four are the same
+mechanism at the next level of detail: the vocabulary widens when a real lane does not fit, under
+review, and never on speculation. D6's escalation path ("file an issue naming the primitive the
+vocabulary lacks") is for third parties; a first-party phase that finds the gap while implementing
+amends the ADR directly, which is what happened here.
+
+**What this does not change.** No decision is reversed. `transport` remains a closed two-member
+discriminator selecting the invoke sub-shape; `probe.kind` and `handler` are untouched; the
+absent-safe invariant (D4), the disclosure class (D5), and the config-ownership table (D9) are
+unaffected. Phase 2 (#2795) implements the manifest validator against the vocabulary **as amended
+here**, which is the point of amending rather than leaving it for Phase 2 to rediscover.
+
+### 2026-07-29 — three factual corrections from Phase 2 (#2795)
+
+Implementing the validator required reading the code each claim rests on. Three statements above
+did not survive that reading. None changes a decision; each would have misdirected a later phase,
+which is precisely why they are corrected here rather than worked around in code.
+
+**1. The cause of the stranded config keys was misattributed (Context (b), Scope of changes, D9).**
+
+The ADR attributes reviewer config keys living centrally to the runtime body forbidding feature-only
+fields. That is not the mechanism. `FEATURE_FIELDS_FORBIDDEN_ON_RUNTIME` is
+`['skills','agents','steps','contributions','gates','hooks','activationKey']` — **`config` is not in
+it**, and a `role: "runtime"` capability carrying a `config` slice passes validation today. The real
+cause is two *harvest* sites that never read it:
+
+- `gen-capability-registry.cjs` nested its config-harvest loop inside the `role === 'feature'`
+  branch, so a non-feature capability's `config` was silently dropped from `configKeys`/`configSchema`.
+- `validateCrossCapability` opened its config-key ownership loop with `if (cap.role !== 'feature') …
+  continue`, so a non-feature capability was exempt from both single-ownership **and** the
+  central-schema collision check.
+
+Phase 2 fixes both by filtering on the *presence of a `config` slice* rather than on the role.
+This matters for Phase 4 (#2797), which would otherwise have been designed against a constraint that
+does not exist — and it means the exclusivity invariant was, until now, unenforced for every
+non-feature capability rather than merely unused.
+
+**2. D3's profile-membership claim is inverted.**
+
+D3 states that a `role: "reviewer"` capability "receives profile membership from
+`deriveProfileMembership` (`gen-capability-registry.cjs:201-213`) like any other" and that the
+membership is inert. It receives **no** membership: that function skips any capability without a
+non-empty `skills` array, and a lane-only capability has none. The *intended outcome* — a reviewer
+capability installs nothing — holds exactly as D3 wanted, and `tier` remains required as the source
+of truth for the `requires`-closure. Only the stated mechanism was wrong, and a Phase 5a author
+following D3 would have gone looking for membership that is not there.
+
+**3. The specified capability folder names for two lanes would fail the build.**
+
+The Scope-of-changes section and #2798 both name `capabilities/lm_studio/` and
+`capabilities/llama_cpp/`. Both would be rejected: `id` must equal the folder name **and** match
+`KEBAB_RE` (`/^[a-z][a-z0-9-]*$/`), which does not admit `_`. Three namespaces are in play for one
+lane and they are deliberately not the same string:
+
+| | value | casing | fixed by |
+|---|---|---|---|
+| capability `id` / folder | `lm-studio` | kebab | the `id` conformance invariant |
+| `reviewer.slug` | `lm_studio` | snake | the shipped roster and `review.lm_studio_host`, which D9 leaves unchanged |
+| `reviewer.flags` | `--lm-studio` | kebab | the shipped flag |
+
+Phase 2 therefore validates `reviewer.slug` against its own pattern rather than reusing `KEBAB_RE`,
+which would have rejected two shipped lanes. Phase 5a must create `capabilities/lm-studio/` and
+`capabilities/llama-cpp/`, each declaring the snake-case slug.
+
+*(Corrected 2026-07-29: this paragraph first recorded the pattern as `/^[a-z][a-z0-9_-]*$/`. Phase 2's
+own security review caught that as a divergence from Phase 1's exported `LANE_SLUG_RE`, which permits
+a leading digit — a model-named lane such as `4o-mini` would have been accepted by the core descriptor
+and rejected by the manifest validator, reintroducing exactly the translation layer this epic deletes.
+The shipped pattern is `/^[a-z0-9][a-z0-9_-]*$/`, and a parity assertion now fails if the two ever
+drift again.)*
+
+### 2026-07-29 — Phase 4 and Phase 5a are swapped (ordering correction from Phase 5a)
+
+**The phase table above runs Phase 4 (federated config) before Phase 5a (lane declarations), and
+#2798 states "Depends on Phases 2 and 4". That ordering is inverted, and it makes Phase 4
+unsatisfiable.**
+
+D9's ownership table assigns `review.ollama_host` to the `ollama` lane, `review.lm_studio_host` to
+`lm_studio`, and `review.llama_cpp_host` to `llama_cpp`. A federated `config` slice lives inside a
+`capabilities/<id>/capability.json` — and **those capability directories do not exist until Phase 5a
+creates them**. Verified before the swap: `capabilities/{ollama,lm_studio,llama_cpp,gemini,coderabbit}`
+were all absent, and only the six `reviewerCli`-flagged runtime capabilities existed.
+
+So in the stated order Phase 4 has nowhere to put three of its five key families, and its own "Done
+when" — *"`review.<host>_host` owned by lane capabilities"* — cannot be met. Shipping it unmet would
+be a failed deployment under `CI.GATE.acceptance-criteria-required`.
+
+5a's stated dependency on Phase 4 is likewise unfounded: declaring a `reviewer` body requires only the
+manifest vocabulary from Phase 2. **The real dependency graph is `Phase 2 → 5a → 4`**, with
+`5a → 5b → 6` unchanged. Nothing about either phase's *content* changes — only their order.
+
+**A second correction, to #2798's acceptance list.** It requires "`docs/INVENTORY.md` updated +
+`node scripts/gen-inventory-manifest.cjs --write` run **after** `build:lib`". That rests on a false
+premise: the inventory catalogs `bin/lib/*.cjs` **modules**, not capability directories —
+`antigravity`, `opencode` and `qwen` appear zero times in it, and `INVENTORY-MANIFEST.json`'s six
+families contain no `capabilities/` entry at all. `gen-inventory-manifest.cjs --check` passes with the
+five new capability directories added and no inventory edit. The item is vacuous for this phase, and
+inventing an edit to satisfy it would introduce drift rather than prevent it.

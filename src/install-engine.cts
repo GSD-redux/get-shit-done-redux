@@ -1282,6 +1282,12 @@ function installOpencodeFamilyArtifacts(
  * @param scope
  */
 function uninstallRuntimeArtifacts(runtime: string, configDir: string, scope: string): void {
+  // A retired descriptor kind is absent from the current uninstall plan, just
+  // as it is absent from the install plan. Sweep manifest-proven output from
+  // retired kinds before removing the current layout so a direct uninstall
+  // cannot leave stale runtime surfaces behind (#2644).
+  retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(runtime, configDir);
+
   // Legacy cleanup before layout-driven removal (scope-aware to avoid
   // removing Claude local commands/gsd/ which is the primary install dir).
   // Returns saved user artifacts so we can migrate AFTER layout removal

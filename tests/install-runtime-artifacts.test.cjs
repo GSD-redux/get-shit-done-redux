@@ -2562,6 +2562,30 @@ describe('fix-2644 — Cursor has one menu entry per GSD workflow', () => {
       'profile toggles must not leave or recreate the retired duplicate surface');
     assert.ok(fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')));
   });
+
+  test('uninstall also retires manifest-proven legacy commands', (t) => {
+    const configDir = createTempDir('gsd-fix2644-uninstall-');
+    t.after(() => cleanup(configDir));
+
+    const commandsDir = path.join(configDir, 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    const managedContent = '# old generated help\n';
+    fs.writeFileSync(path.join(commandsDir, 'gsd-help.md'), managedContent);
+    fs.writeFileSync(path.join(commandsDir, 'user-command.md'), '# user command\n');
+    fs.writeFileSync(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.8.0', timestamp: '2026-07-28T00:00:00.000Z', mode: 'full',
+      files: {
+        'commands/gsd-help.md': crypto.createHash('sha256').update(managedContent).digest('hex'),
+      },
+    }));
+
+    uninstallRuntimeArtifacts('cursor', configDir, 'global');
+
+    assert.ok(!fs.existsSync(path.join(commandsDir, 'gsd-help.md')),
+      'direct uninstall must remove a manifest-proven retired command');
+    assert.ok(fs.existsSync(path.join(commandsDir, 'user-command.md')),
+      'direct uninstall must preserve unknown user commands');
+  });
 });
 
 // ─── Uninstall contract ──────────────────────────────────────────────────────

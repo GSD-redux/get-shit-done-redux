@@ -8,9 +8,9 @@ const { runMain, ExitError } = require('../lib/cli-exit.cjs');
 const { classifyBucket } = require('./conventional-title.cjs');
 
 /**
- * Classify a What's-Changed bullet line into 'Feature', 'Fix', or 'Enhancement'.
+ * Classify a What's-Changed bullet line into 'Feature', 'Fix', 'Enhancement', or 'Internal'.
  * @param {string} bulletLine - Full bullet line including the leading `* ` or `- ` marker.
- * @returns {'Feature'|'Fix'|'Enhancement'}
+ * @returns {'Feature'|'Fix'|'Enhancement'|'Internal'}
  */
 function classifyTitle(bulletLine) {
   // Strip leading `* ` or `- ` marker
@@ -83,7 +83,11 @@ function formatReleaseNotes({ generatedBody, version, prerelease, packageName })
       const category = classifyTitle(trimmed);
       if (category === 'Feature') featureBullets.push(trimmed);
       else if (category === 'Fix') fixBullets.push(trimmed);
-      else enhancementBullets.push(trimmed);
+      else if (category === 'Internal') {
+        // #2716: non-user-facing work (test/chore/ci/docs/refactor/perf/revert)
+        // is omitted from the user-facing "What's Changed" section entirely.
+        continue;
+      } else enhancementBullets.push(trimmed);
       continue;
     }
 

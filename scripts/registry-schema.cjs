@@ -36,6 +36,11 @@
  *     (`{ namedDispatch, nested, maxDepth, background, subagentToolkit }`) —
  *     this registry accepts a free-form human summary string instead, so it
  *     carries the `AXES_FREE_STRING` sentinel rather than an enum array.
+ *     `OPTIONAL_AXES` adds one further, OPTIONAL key on top of those eight:
+ *     `effortSurface` (ADR-1239 amendment #2481). An entry may omit it
+ *     (every entry published before the amendment stays valid) or declare
+ *     it as `argv` | `none`, mirroring `HOST_INTEGRATION_AXES.effortSurface`
+ *     in `src/host-integration.cts`.
  *   - `CAPABILITY_REQUIRED` / `EOS_REQUIRED` mirror the required top-level
  *     fields for each entry type, including `enginesGsd` (ADR-1244 D1
  *     "Versioned capability manifest" — the `engines.gsd` semver-range gate,
@@ -88,6 +93,18 @@ const AXES = Object.freeze({
   stateIO: Object.freeze(['filesystem', 'sandboxed-storage', 'session-log-append']),
   transport: Object.freeze(['mcp', 'native-extension']),
   runtime: Object.freeze(['node', 'bun', 'sandboxed-web', 'python', 'go', 'rust', 'electron', 'other']),
+});
+
+// ─── ADR-1239 amendment #2481 — one additional, OPTIONAL negotiated axis ─────
+// `effortSurface` was added to the runtime-descriptor vocabulary AFTER the
+// original eight (`HOST_INTEGRATION_AXES.effortSurface` in
+// `src/host-integration.cts`). It is kept OPTIONAL here — not folded into
+// `AXES` — because registry entries mirror their upstream
+// `registry/eos-entry.json` byte-for-byte, and requiring it would
+// retroactively invalidate every entry published before the amendment.
+// Values must match `HOST_INTEGRATION_AXES.effortSurface` exactly.
+const OPTIONAL_AXES = Object.freeze({
+  effortSurface: Object.freeze(['argv', 'none']),
 });
 
 // ─── Required top-level fields ───────────────────────────────────────────────
@@ -246,15 +263,39 @@ function validateEosInteractions(interactions, addError) {
     if (typeof axes !== 'object' || axes === null || Array.isArray(axes)) {
       addError('interactions.axes', 'axes must be an object');
     } else {
-      const expectedKeys = Object.keys(AXES);
+      const requiredKeys = Object.keys(AXES);
+      const optionalKeys = Object.keys(OPTIONAL_AXES);
       const actualKeys = Object.keys(axes);
       const actualKeySet = new Set(actualKeys);
-      const keysMatch = expectedKeys.length === actualKeys.length && expectedKeys.every((k) => actualKeySet.has(k));
-      if (!keysMatch) {
-        addError('interactions.axes', 'axes key set must exactly match the eight negotiated axes');
-      } else {
-        for (const key of expectedKeys) {
-          const allowedValues = AXES[key];
+
+      // Every AXES key is mandatory; an extra key is tolerated ONLY when it is
+      // a recognized OPTIONAL_AXES key (currently just `effortSurface`) — any
+      // other extra key is still rejected as unknown.
+      const missingRequiredKeys = requiredKeys.filter((k) => !actualKeySet.has(k));
+      const unknownKeys = actualKeys.filter((k) => !requiredKeys.includes(k) && !optionalKeys.includes(k));
+
+      if (missingRequiredKeys.length > 0) {
+        addError('interactions.axes', `axes is missing required key(s): ${missingRequiredKeys.join(', ')}`);
+      }
+      if (unknownKeys.length > 0) {
+        addError('interactions.axes', `axes has unknown key(s): ${unknownKeys.join(', ')}`);
+      }
+
+      // Only validate individual values once the key set itself is sound —
+      // mirrors the original gate (values were never checked against a
+      // malformed key set either).
+      if (missingRequiredKeys.length === 0 && unknownKeys.length === 0) {
+        for (const key of actualKeys) {
+          // Inline literal guards — CodeQL barrier pattern. Reaching here already
+          // implies `key` is one of the nine literal axis names (the unknown-key
+          // gate above rejected everything else), so this is unreachable in
+          // practice; it is written inline anyway because CodeQL cannot follow
+          // that gate across the `.includes()` filter and would otherwise flag
+          // the bracket reads below as prototype-pollution sinks.
+          if (key === '__proto__') continue;
+          if (key === 'constructor') continue;
+          if (key === 'prototype') continue;
+          const allowedValues = Object.hasOwn(AXES, key) ? AXES[key] : OPTIONAL_AXES[key];
           const v = axes[key];
           if (allowedValues === AXES_FREE_STRING) {
             if (typeof v !== 'string' || v.trim() === '') {
@@ -496,7 +537,14 @@ function renderMarkdown(entries, opts) {
     lines.push(`- **Author:** ${mdInline(entry.author)}`);
 
     if (isEos) {
-      const axesSummary = Object.keys(AXES)
+      // Required AXES keys always render, in their fixed order; an OPTIONAL_AXES
+      // key (e.g. `effortSurface`) renders ONLY when the entry actually carries
+      // it — an entry that omits it must render byte-identical to before
+      // OPTIONAL_AXES existed (no `effortSurface=undefined` noise).
+      const presentOptionalKeys = Object.keys(OPTIONAL_AXES).filter(
+        (key) => interactions.axes && Object.hasOwn(interactions.axes, key),
+      );
+      const axesSummary = [...Object.keys(AXES), ...presentOptionalKeys]
         .map((key) => `${key}=${interactions.axes ? interactions.axes[key] : undefined}`)
         .join(', ');
       const summary =
@@ -556,6 +604,7 @@ module.exports = {
   INTERFACE_POINTS,
   PROFILES,
   AXES,
+  OPTIONAL_AXES,
   AXES_FREE_STRING,
   CAPABILITY_REQUIRED,
   EOS_REQUIRED,

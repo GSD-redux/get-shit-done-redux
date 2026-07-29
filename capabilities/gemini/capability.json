@@ -1,0 +1,33 @@
+{
+  "id": "gemini",
+  "role": "reviewer",
+  "version": "1.8.0",
+  "title": "Gemini CLI",
+  "description": "Google Gemini CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Spawned as `gemini -p - -m <model>` with the plan piped on stdin.",
+  "tier": "full",
+  "requires": [],
+  "engines": {
+    "gsd": ">=1.8.0"
+  },
+  "reviewer": {
+    "slug": "gemini",
+    "flags": ["--gemini"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "gemini" },
+    "invoke": {
+      "binary": "gemini",
+      "args": ["-p", "-"],
+      "promptChannel": "stdin",
+      "outputChannel": "stdout",
+      "modelArg": "-m",
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 900000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "Gemini",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "handler": null
+  }
+}

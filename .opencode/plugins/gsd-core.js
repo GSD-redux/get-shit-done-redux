@@ -239,6 +239,32 @@ function runHook(hookFile, payload, opts = {}) {
   return { stdout, exitCode, timedOut: result.signal === "SIGTERM" };
 }
 
+/**
+ * In-process check for whether context-usage warnings are disabled in project
+ * config. Mirrors the exact semantics of the same check inside
+ * hooks/gsd-context-monitor.js (introduced by #1073): an explicit
+ * `config.hooks.context_warnings === false` disables them; a missing or
+ * unparseable .planning/config.json keeps them enabled (the default).
+ *
+ * #2697: hoisting this check in-process lets the adapter SKIP the context-monitor
+ * spawn entirely when the user has opted out, instead of paying a full Node boot
+ * inside the child only to read the boolean and exit. Missing/unparseable config
+ * MUST behave identically to the hook (enabled) so the default path is unchanged.
+ *
+ * @param {string} cwd  project working directory (the plugin's currentCwd)
+ * @returns {boolean} true when context warnings are explicitly disabled
+ */
+function contextWarningsDisabled(cwd) {
+  try {
+    const configPath = path.join(cwd, '.planning', 'config.json');
+    const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return config.hooks?.context_warnings === false;
+  } catch {
+    // Missing or unparseable config → proceed with defaults (context warnings enabled).
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Hook output translation → OpenCode semantics
 // ---------------------------------------------------------------------------
@@ -587,7 +613,11 @@ const GsdCorePlugin = async ({ directory } = {}) => {
 
       // gsd-context-monitor.js — context usage warnings (Bash/Edit/Write/Task/...)
       // Only meaningful when a session_id is tracked (writes metrics sentinel).
-      if (currentSessionId) {
+      // #2697: skip the subprocess spawn entirely when context warnings are
+      // explicitly disabled in project config — the hook would exit early anyway,
+      // so hoisting the check in-process avoids paying a Node boot per tool call.
+      // Missing/unparseable config = enabled (default), so the spawn still runs.
+      if (currentSessionId && !contextWarningsDisabled(cwd)) {
         const payload = {
           hook_event_name: "PostToolUse",
           tool_name: claudeTool,
