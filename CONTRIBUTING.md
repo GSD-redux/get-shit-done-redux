@@ -217,7 +217,7 @@ then run `scripts/release-notes/format-github-release-notes.cjs --apply` to
 rewrite the body into the project's curated format: an **Install** block,
 followed by **What's Changed** grouped into **Feature** / **Enhancement** /
 **Fix** sections (classified by each PR's conventional-commit title prefix —
-`feat` → Feature, `fix` → Fix, everything else → Enhancement), then
+`feat` → Feature, `fix` → Fix, non-user-facing types `test`/`chore`/`ci`/`docs`/`refactor`/`perf`/`revert` → omitted from the user-facing notes, everything else → Enhancement), then
 **New Contributors** and the **Full Changelog** link.
 
 To re-format an existing release by hand (e.g. backfilling an older release):
