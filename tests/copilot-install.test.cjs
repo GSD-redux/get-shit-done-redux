@@ -602,6 +602,35 @@ Agent body.`;
     assert.ok(result.includes("tools: ['read', 'edit', 'execute', 'search']"), 'tools mapped and deduped');
   });
 
+  test('#2540 regression: a block-list tools: contract keeps every tool', () => {
+    // Pre-fix, the single-line `tools:` regex plus split(',') read the whole
+    // block list as the one literal "- Read": convertCopilotToolName did not
+    // recognise it, fell through to its .toLowerCase() default, and Write,
+    // Edit, Bash, Glob, Grep and Skill were silently dropped — the same
+    // functional break #2540 reports for Codex, live on Copilot. The shape is
+    // agents/gsd-nyquist-auditor.md's, this PR's own motivating agent.
+    const input = `---
+name: gsd-nyquist-auditor
+description: Fills Nyquist validation gaps
+tools:
+  - Read
+  - Write
+  - Edit
+  - Bash
+  - Glob
+  - Grep
+  - Skill
+color: purple
+---
+
+Agent body.`;
+
+    const result = convertClaudeAgentToCopilotAgent(input);
+    const toolsLine = result.split('\n').find(l => l.startsWith('tools:'));
+    assert.strictEqual(toolsLine, "tools: ['read', 'edit', 'execute', 'search', 'skill']");
+    assert.ok(!result.includes("'- read'"), 'the block-list marker must never reach the emitted contract');
+  });
+
   test('formats tools as JSON array', () => {
     const input = `---
 name: gsd-test

@@ -2064,10 +2064,12 @@ function convertClaudeAgentToCopilotAgent(content, isGlobal = false) {
   const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
   const description = extractFrontmatterField(frontmatter, 'description') || '';
   const color = extractFrontmatterField(frontmatter, 'color');
-  const toolsRaw = extractFrontmatterField(frontmatter, 'tools') || '';
-
-  // CONV-04 + CONV-05: Map tools, deduplicate, format as JSON array
-  const claudeTools = toolsRaw.split(',').map(t => t.trim()).filter(Boolean);
+  // CONV-04 + CONV-05: Map tools, deduplicate, format as JSON array.
+  // Parsed through the shared agent-tools-contract seam (#2540) — the former
+  // single-line `tools:` regex plus a naive split(',') read a block-list
+  // contract as the single literal "- Read", so convertCopilotToolName fell
+  // through to its lowercase default and every other tool was silently dropped.
+  const claudeTools = toolsContract.parseToolsContract(frontmatter);
   const mappedTools = claudeTools.map(t => convertCopilotToolName(t));
   const uniqueTools = [...new Set(mappedTools)];
   const toolsArray = uniqueTools.length > 0
@@ -2096,10 +2098,10 @@ function convertClaudeAgentToAntigravityAgent(content, isGlobal = false) {
   const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
   const description = extractFrontmatterField(frontmatter, 'description') || '';
   const color = extractFrontmatterField(frontmatter, 'color');
-  const toolsRaw = extractFrontmatterField(frontmatter, 'tools') || '';
-
-  // Map tools to Gemini equivalents (reuse existing convertGeminiToolName)
-  const claudeTools = toolsRaw.split(',').map(t => t.trim()).filter(Boolean);
+  // Map tools to Gemini equivalents (reuse existing convertGeminiToolName).
+  // Parsed through the shared agent-tools-contract seam (#2540) — same
+  // block-list defect as the Copilot converter above.
+  const claudeTools = toolsContract.parseToolsContract(frontmatter);
   const mappedTools = claudeTools.map(t => convertGeminiToolName(t)).filter(Boolean);
 
   // #2876: quote description for the same reason as the skill variant.

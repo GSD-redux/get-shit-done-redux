@@ -403,6 +403,41 @@ tools: Read, Write, Bash, Skill, WebFetch, SlashCommand
     assert.ok(!/\bskill\b/.test(toolsLine), 'no invalid skill tool in Antigravity frontmatter');
     assert.ok(!/\bslashcommand\b/.test(toolsLine), 'no invalid slashcommand tool in Antigravity frontmatter');
   });
+
+  test('#2540 regression: a block-list tools: contract keeps every tool (Antigravity)', () => {
+    // Same defect as the Copilot converter: the single-line `tools:` regex plus
+    // split(',') collapsed the whole block list to the one literal "- Read",
+    // convertGeminiToolName did not recognise it, and every other tool was
+    // silently dropped. Both converters now parse through the shared
+    // agent-tools-contract seam. Shape taken from agents/gsd-nyquist-auditor.md.
+    const input = `---
+name: gsd-nyquist-auditor
+description: Fills Nyquist validation gaps
+tools:
+  - Read
+  - Write
+  - Edit
+  - Bash
+  - Glob
+  - Grep
+  - Skill
+---
+
+<role>Audit.</role>`;
+
+    const result = convertClaudeAgentToAntigravityAgent(input);
+    const toolsLine = result.split('\n').find(l => l.startsWith('tools:')) || '';
+
+    for (const [claudeTool, geminiTool] of [
+      ['Read', 'read_file'], ['Write', 'write_file'], ['Edit', 'replace'],
+      ['Bash', 'run_shell_command'], ['Glob', 'glob'], ['Grep', 'search_file_content'],
+    ]) {
+      assert.ok(toolsLine.includes(geminiTool), `block-list ${claudeTool} must map to ${geminiTool}`);
+    }
+    assert.ok(!toolsLine.includes('- read'), 'the block-list marker must never reach the emitted contract');
+    // Skill stays excluded — the #1394 behaviour above is unchanged by this fix.
+    assert.ok(!/\bskill\b/.test(toolsLine), 'Skill remains excluded on the Gemini backend');
+  });
 });
 
 // ─── neutralizeAgentReferences (#766) ─────────────────────────────────────────
