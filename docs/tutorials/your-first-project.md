@@ -230,7 +230,7 @@ A Node.js CLI tool for managing to-do items. Users run `todo add "buy milk"`,
 No external dependencies — Node built-ins only.
 ```
 
-Then answer the **clarifying questions**, choose **No** when asked *"Research before planning each phase?"* (skip it for this small build), take the
+Then answer the **clarifying questions**, choose **No** when asked *"Research before planning each phase? (adds tokens/time)"* (skip it for this small build), take the
 **recommended defaults** for workflow settings, and wait for the **roadmapper**
 (~1 min). Type **Approve** on the proposed roadmap:
 
@@ -322,7 +322,7 @@ sequenceDiagram
     participant PL as Planner
     participant PC as Plan-checker
     You->>GSD: /gsd-plan-phase 1
-    GSD->>You: Research before planning Phase 1?
+    GSD->>You: Research before planning Phase 1: Core CLI?
     You->>GSD: Skip research
     GSD->>PL: 01-CONTEXT.md
     PL-->>GSD: atomic task plans
@@ -330,7 +330,7 @@ sequenceDiagram
     PC-->>You: plans saved ✓
 ```
 
-GSD asks **"Research before planning Phase 1?"** — choose **Skip research** (same
+GSD asks **"Research before planning Phase 1: Core CLI?"** — choose **Skip research** (same
 as Step 3; this build is small and well-understood). A **planner** then turns
 `01-CONTEXT.md` into **atomic task plans**, and a **plan-checker** verifies each
 before saving.
