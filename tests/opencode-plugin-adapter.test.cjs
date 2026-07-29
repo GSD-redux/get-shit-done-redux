@@ -431,6 +431,19 @@ test('installer copies plugin as .js, records it in the manifest, and removes it
  */
 async function buildLayoutWithSpawnTrace(t, { stubHooks, planningConfig }) {
   const cp = require('node:child_process');
+  const spawns = [];
+  const realSpawnSync = cp.spawnSync;
+  // IMPORTANT: the plugin destructures spawnSync at require-time
+  // (`const { spawnSync } = require("child_process")`), so the patch MUST be in
+  // place BEFORE buildInstalledLayout requires the copied plugin, or the plugin
+  // captures the original spawnSync and our trace records nothing.
+  cp.spawnSync = (...args) => {
+    spawns.push(args);
+    // Return an allow/no-op result so the adapter's handleHookResult path completes.
+    return { stdout: '', status: 0, signal: null };
+  };
+  t.after(() => { cp.spawnSync = realSpawnSync; });
+
   const { mod } = buildInstalledLayout(t, stubHooks || {});
 
   // Project dir is the cwd the plugin reads config from (currentCwd).
@@ -443,15 +456,6 @@ async function buildLayoutWithSpawnTrace(t, { stubHooks, planningConfig }) {
       JSON.stringify(planningConfig),
     );
   }
-
-  const spawns = [];
-  const realSpawnSync = cp.spawnSync;
-  cp.spawnSync = (...args) => {
-    spawns.push(args);
-    // Return an allow/no-op result so the adapter's handleHookResult path completes.
-    return { stdout: '', status: 0, signal: null };
-  };
-  t.after(() => { cp.spawnSync = realSpawnSync; });
 
   const handlers = await mod.server({ directory: projectDir });
   return { handlers, spawns, projectDir };
@@ -502,18 +506,19 @@ test('#2697: context-monitor subprocess runs when context_warnings explicitly tr
 });
 
 test('#2697: context-monitor subprocess runs when config.json is unparseable (defaults enabled)', async (t) => {
+  const cp = require('node:child_process');
+  const spawns = [];
+  const realSpawnSync = cp.spawnSync;
+  // Patch BEFORE requiring the plugin (it destructures spawnSync at require-time).
+  cp.spawnSync = (...args) => { spawns.push(args); return { stdout: '', status: 0, signal: null }; };
+  t.after(() => { cp.spawnSync = realSpawnSync; });
+
   const { mod } = buildInstalledLayout(t, { 'gsd-context-monitor.js': stubHook('') });
   const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-oc-proj-')));
   t.after(() => cleanup(projectDir));
   fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
   // Malformed JSON → the in-process check must treat it as "enabled" (Postel: conservative).
   fs.writeFileSync(path.join(projectDir, '.planning', 'config.json'), '{ not valid json');
-
-  const cp = require('node:child_process');
-  const spawns = [];
-  const realSpawnSync = cp.spawnSync;
-  cp.spawnSync = (...args) => { spawns.push(args); return { stdout: '', status: 0, signal: null }; };
-  t.after(() => { cp.spawnSync = realSpawnSync; });
 
   const handlers = await mod.server({ directory: projectDir });
   await handlers['tool.execute.after']({ tool: 'bash', args: { command: 'echo hi' } }, {});
