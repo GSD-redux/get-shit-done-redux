@@ -108,6 +108,43 @@ describe('registry-axes-parity: AXES/OPTIONAL_AXES vs HOST_INTEGRATION_AXES', ()
     assert.deepEqual(OPTIONAL_AXES.effortSurface, ['argv', 'none']);
     assert.deepEqual(OPTIONAL_AXES.effortSurface, HOST_INTEGRATION_AXES.effortSurface);
   });
+
+  // The enum-equality test above compares only keys the two vocabularies ALREADY
+  // share, so it is blind to the drift mode that actually produced #2810: a new
+  // canonical axis appears and the registry copy is never told. This test closes
+  // that hole — every canonical axis must be either modeled here or explicitly
+  // declared out of scope, so adding a canonical axis fails until someone
+  // decides which it is.
+  test('every HOST_INTEGRATION_AXES key is either modeled by the registry or explicitly declared out of scope', () => {
+    // Deliberately not modeled: both are `dispatch` sub-fields hoisted into the
+    // flat canonical map (CONTEXT.md's Host-Integration Interface entry lists
+    // dispatch as `{…, subagentToolkit, isolation}`). This registry collapses all
+    // of dispatch into one free-form human summary string, so they are covered by
+    // `AXES.dispatch` rather than carried as separate axes.
+    const NOT_MODELLED = Object.freeze(['subagentToolkit', 'isolation']);
+
+    const modelled = new Set([...Object.keys(AXES), ...Object.keys(OPTIONAL_AXES)]);
+    const unaccounted = Object.keys(HOST_INTEGRATION_AXES).filter(
+      (key) => !modelled.has(key) && !NOT_MODELLED.includes(key),
+    );
+
+    assert.deepEqual(
+      unaccounted,
+      [],
+      `HOST_INTEGRATION_AXES gained axis key(s) the EoS registry neither models nor excludes: ${unaccounted.join(', ')}. ` +
+        'Add each to AXES (required) or OPTIONAL_AXES (optional) in scripts/registry-schema.cjs, ' +
+        'or list it in this test\'s NOT_MODELLED allowlist with the reason it is out of scope.',
+    );
+
+    // Guard the allowlist itself: an entry that no longer exists canonically is
+    // stale and would silently widen the exemption for a future same-named axis.
+    for (const key of NOT_MODELLED) {
+      assert.ok(
+        Object.hasOwn(HOST_INTEGRATION_AXES, key),
+        `NOT_MODELLED lists "${key}", which is no longer a HOST_INTEGRATION_AXES key — remove it`,
+      );
+    }
+  });
 });
 
 // ─── Boundary coverage: axes key-count limit-1 / limit / limit+1 ──────────
