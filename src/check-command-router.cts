@@ -20,6 +20,9 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
 import { extractDecisions } from './decisions.cjs';
 import type { Decision } from './decisions.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import frontmatterMod = require('./frontmatter.cjs');
+const { extractFrontmatter } = frontmatterMod;
 import { stripFencedCode, collectSections } from './markdown-sectionizer.cjs';
 import { checkUiPresence } from './ui-safety-gate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -986,8 +989,8 @@ function buildPredicateDeps() {
     },
     readFrontmatter(filePath: string): Record<string, unknown> {
       const content = fs.readFileSync(filePath, 'utf8');
-      const { extractFrontmatter } = require('./frontmatter.cjs');
-      return extractFrontmatter(content, filePath) as Record<string, unknown>;
+      const parsed = extractFrontmatter(content, filePath) as Record<string, unknown>;
+      return parsed;
     }
   };
 }

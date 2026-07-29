@@ -180,30 +180,26 @@ function evaluateArtifactFrontmatterEquals(
     };
   }
 
-  let fm: Record<string, unknown>;
-  try {
-    fm = deps.readFrontmatter(filePath);
-  } catch (err: unknown) {
-    return {
-      block: true,
-      message: `Failed to read frontmatter from ${artifactSuffix}: ${(err as Error).message}`,
-      details: { kind: 'artifact-frontmatter-equals', frontmatterError: (err as Error).message },
-    };
-  }
+  const fm = deps.readFrontmatter(filePath);
 
   const actualValue = fm[field];
-  const matches = actualValue === expectedValue || (actualValue !== undefined && actualValue !== null && String(actualValue) === String(expectedValue));
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  const expectedStr = typeof expectedValue === 'object' ? JSON.stringify(expectedValue) : String(expectedValue);
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  const actualStr = typeof actualValue === 'object' ? JSON.stringify(actualValue) : String(actualValue);
+
+  const matches = actualValue === expectedValue || (actualValue !== undefined && actualValue !== null && actualStr === expectedStr);
   if (matches) {
     return {
       block: false,
-      message: `Frontmatter field "${field}" matches expected value (${expectedValue})`,
+      message: `Frontmatter field "${field}" matches expected value (${expectedStr})`,
       details: { kind: 'artifact-frontmatter-equals', match: true },
     };
   }
 
   return {
     block: true,
-    message: `Frontmatter field "${field}" in ${artifactSuffix} is ${actualValue}, expected ${expectedValue}`,
+    message: `Frontmatter field "${field}" in ${artifactSuffix} is ${actualStr}, expected ${expectedStr}`,
     details: { kind: 'artifact-frontmatter-equals', match: false, actual: actualValue, expected: expectedValue },
   };
 }

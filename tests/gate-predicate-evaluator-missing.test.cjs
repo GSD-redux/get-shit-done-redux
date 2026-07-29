@@ -66,6 +66,7 @@ test('evaluatePredicate with real buildPredicateDeps resolves project-level .pla
     const res = evaluatePredicate(pred, ctx, deps);
     assert.strictEqual(res.block, false, 'real buildPredicateDeps must find .planning/WINDOWS.md and pass on open_count: 0');
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    const { cleanup } = require('./helpers.cjs');
+    cleanup(tmpDir);
   }
 });
