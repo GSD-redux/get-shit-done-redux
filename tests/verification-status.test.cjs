@@ -21,7 +21,7 @@
  * Cross-platform (passes on Windows). Ref: DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE.
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -101,7 +101,7 @@ describe('verification-status', () => {
         result.next_command.includes('--gaps'),
         `next_command should include --gaps; got: ${result.next_command}`,
       );
-      assert.equal(result.next_command, '/gsd:plan-phase 03 --gaps');
+      assert.equal(result.next_command, '/gsd-plan-phase 03 --gaps');
     } finally {
       cleanup(baseDir);
     }
@@ -114,7 +114,9 @@ describe('verification-status', () => {
       writeVerificationMd(dir, '01-hn-VERIFICATION.md', 'human_needed');
       const result = readVerificationStatus(dir);
       assert.equal(result.status, 'human_needed');
-      assert.equal(result.next_command, '');
+      // #2617: human_needed now names the command the next_action describes.
+      // This fixture's dir is not phase-shaped, so no number is appended.
+      assert.equal(result.next_command, '/gsd-verify-work');
       assert.ok(result.next_action.length > 0);
     } finally {
       cleanup(dir);
@@ -129,7 +131,7 @@ describe('verification-status', () => {
       fs.writeFileSync(path.join(dir, 'README.md'), '# phase');
       const result = readVerificationStatus(dir);
       assert.equal(result.status, 'missing');
-      assert.equal(result.next_command, '/gsd:execute-phase');
+      assert.equal(result.next_command, '/gsd-execute-phase');
       assert.ok(result.next_action.includes('verify step never completed'));
     } finally {
       cleanup(dir);
@@ -143,7 +145,7 @@ describe('verification-status', () => {
       writeVerificationMd(dir, '01-u-VERIFICATION.md', 'bogus');
       const result = readVerificationStatus(dir);
       assert.equal(result.status, 'unknown');
-      assert.equal(result.next_command, '/gsd:execute-phase');
+      assert.equal(result.next_command, '/gsd-execute-phase');
       assert.ok(
         result.next_action.includes('bogus'),
         `next_action should mention the raw value; got: ${result.next_action}`,
@@ -295,7 +297,7 @@ describe('verification-status', () => {
     const nonexistent = path.join(os.tmpdir(), 'gsd-651-nonexistent-' + Date.now());
     const result = readVerificationStatus(nonexistent);
     assert.equal(result.status, 'missing', 'unreadable/nonexistent dir must return missing');
-    assert.equal(result.next_command, '/gsd:execute-phase');
+    assert.equal(result.next_command, '/gsd-execute-phase');
   });
 
   // Multiple *-VERIFICATION.md files → deterministic pick (first by sort)
@@ -335,7 +337,7 @@ describe('verification-status', () => {
       const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
       assert.equal(result.status, 'stale');
       assert.match(result.next_action, /stale/i);
-      assert.equal(result.next_command, '/gsd:verify-work 01');
+      assert.equal(result.next_command, '/gsd-verify-work 01');
     } finally {
       cleanup(baseDir);
     }
@@ -355,7 +357,7 @@ describe('verification-status', () => {
 
       const result = readVerificationStatus(dir);
       assert.equal(result.status, 'gaps_found');
-      assert.equal(result.next_command, '/gsd:plan-phase 01 --gaps');
+      assert.equal(result.next_command, '/gsd-plan-phase 01 --gaps');
     } finally {
       cleanup(baseDir);
     }
@@ -378,7 +380,7 @@ describe('verification-status', () => {
       // git times unavailable → mtime-fallback path (#2348).
       const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
       assert.equal(result.status, 'stale');
-      assert.equal(result.next_command, '/gsd:verify-work 01');
+      assert.equal(result.next_command, '/gsd-verify-work 01');
     } finally {
       cleanup(baseDir);
     }
@@ -462,7 +464,7 @@ describe('verification-status', () => {
 
       const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs });
       assert.equal(result.status, 'stale');
-      assert.equal(result.next_command, '/gsd:verify-work 02');
+      assert.equal(result.next_command, '/gsd-verify-work 02');
     } finally {
       cleanup(baseDir);
     }
@@ -527,7 +529,7 @@ describe('verification-status', () => {
         'stale',
         'a dirty summary edited after the verification must stale it via mtime, not be shadowed by an equal/earlier commit time',
       );
-      assert.equal(result.next_command, '/gsd:verify-work 02');
+      assert.equal(result.next_command, '/gsd-verify-work 02');
     } finally {
       cleanup(baseDir);
     }
@@ -645,7 +647,7 @@ describe('verification-status', () => {
           'stale',
           'summary committed after the verification must read stale on the real git clock, and the dash-named file must resolve through the `--` pathspec guard',
         );
-        assert.equal(result.next_command, '/gsd:verify-work 01');
+        assert.equal(result.next_command, '/gsd-verify-work 01');
       } finally {
         cleanup(repo);
       }
@@ -694,7 +696,7 @@ describe('verification-status', () => {
           'stale',
           'a committed-then-edited (dirty) summary must read stale via mtime, not be shadowed by its now-stale commit time',
         );
-        assert.equal(result.next_command, '/gsd:verify-work 01');
+        assert.equal(result.next_command, '/gsd-verify-work 01');
       } finally {
         cleanup(repo);
       }
@@ -798,4 +800,253 @@ describe('verification-status', () => {
     );
   });
 
+});
+
+// ─── #2617: next_command runtime projection ──────────────────────────────────
+//
+// Regression tests for #2617 — verification-status `next_command` bypassed the
+// runtime command-surface projection.
+//
+// `src/verification.cts` stored and synthesized hard-coded `/gsd:…` strings with
+// no runtime context, and `phase complete` relayed that raw field straight into
+// its verification-blocked error. On a Codex project the suggested next step was
+// `/gsd:execute-phase`, which Codex does not install — the surface there is
+// `$gsd-execute-phase`. The colon form is doubly wrong: `runtime-slash.cts`
+// documents that "the colon form is never emitted", so every runtime was getting
+// a deprecated shape. (The 11 `/gsd-…` assertions above were `/gsd:…` before this
+// fix — they are the failing-first record.)
+//
+// The fix keeps ONE routing seam and makes its emitted command runtime-aware:
+// the table stores bare command names and every return path projects through
+// `formatGsdSlash`, with callers passing `resolveRuntime(cwd)`.
+//
+// Coverage is the matrix the issue asked for — missing, unknown, gaps_found and
+// stale, against Codex (`$gsd-…`) and a slash-hyphen runtime (`/gsd-…`) — plus
+// the `phase complete` error path, not merely the router's return object.
+
+/** Codex installs `$gsd-<cmd>`; every other shipped runtime installs `/gsd-<cmd>`. */
+const RUNTIMES = [
+  { id: 'codex', prefix: '$gsd-' },
+  { id: 'cursor', prefix: '/gsd-' },
+];
+
+// NOTE: deliberately NOT file-scope beforeEach/afterEach. node:test applies
+// module-scope hooks to EVERY test in the file, so hooks added here for the
+// #2617 suites would also wrap the ~40 pre-existing tests above — making this
+// block a single point of failure for suites it has nothing to do with. Each
+// test allocates and releases its own phase dir instead.
+let projBaseDir;
+let projPhaseDir;
+
+/**
+ * Install the #2617 temp-phase-dir lifecycle INSIDE the calling describe.
+ * node:test scopes hooks to their enclosing describe, so this keeps them off the
+ * ~40 pre-existing tests in this file.
+ */
+function useProjectionPhaseDir() {
+  beforeEach(() => {
+    projBaseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2617-'));
+    projPhaseDir = path.join(projBaseDir, '01-example');
+    fs.mkdirSync(projPhaseDir, { recursive: true });
+  });
+  afterEach(() => cleanup(projBaseDir));
+}
+
+const verificationPath = () => path.join(projPhaseDir, '01-VERIFICATION.md');
+
+function writeStatus(status) {
+  fs.writeFileSync(verificationPath(), `---\nstatus: ${status}\n---\n\n# Verification\n`);
+}
+
+function removeVerification() {
+  try { fs.unlinkSync(verificationPath()); } catch { /* already absent */ }
+}
+
+/** Make the verification file older than a summary → the stale branch. */
+function makeStale() {
+  const summaryPath = path.join(projPhaseDir, '01-01-SUMMARY.md');
+  fs.writeFileSync(summaryPath, '# Summary\n');
+  fs.utimesSync(verificationPath(), new Date('2026-01-01T00:00:00Z'), new Date('2026-01-01T00:00:00Z'));
+  fs.utimesSync(summaryPath, new Date('2026-01-01T00:01:00Z'), new Date('2026-01-01T00:01:00Z'));
+}
+
+// git times unavailable → mtime-fallback path (#2348). Injected so the staleness
+// clock stays hermetic regardless of the tmpdir's repo state.
+const NO_GIT = { phaseCleanCommitTimesMs: () => new Map() };
+
+function read(runtime, extra = {}) {
+  return readVerificationStatus(projPhaseDir, { runtime, ...extra });
+}
+
+for (const { id, prefix } of RUNTIMES) {
+  describe(`#2617: next_command uses the ${id} command surface`, () => {
+    useProjectionPhaseDir();
+
+    test('missing verification', () => {
+      removeVerification();
+      assert.equal(read(id).next_command, `${prefix}execute-phase 01`);
+    });
+
+    test('unparseable/absent frontmatter status is also "missing"', () => {
+      fs.writeFileSync(verificationPath(), '# Verification\n\nNo frontmatter here.\n');
+      assert.equal(read(id).next_command, `${prefix}execute-phase 01`);
+    });
+
+    test('unknown status value', () => {
+      writeStatus('not-a-real-status');
+      const result = read(id);
+      assert.equal(result.status, 'unknown');
+      assert.equal(result.next_command, `${prefix}execute-phase 01`);
+    });
+
+    test('gaps_found carries the phase number and --gaps flag through the projection', () => {
+      writeStatus('gaps_found');
+      const result = read(id);
+      assert.equal(result.status, 'gaps_found');
+      assert.equal(result.next_command, `${prefix}plan-phase 01 --gaps`);
+    });
+
+    test('stale carries the phase number through the projection', () => {
+      writeStatus('passed');
+      makeStale();
+      const result = read(id, NO_GIT);
+      assert.equal(result.status, 'stale');
+      assert.equal(result.next_command, `${prefix}verify-work 01`);
+    });
+
+    test('passed has no next step and stays empty, not a bare prefix', () => {
+      // Boundary: projecting an empty command must not emit `$gsd-` / `/gsd-`.
+      writeStatus('passed');
+      assert.equal(read(id).next_command, '',
+        'passed has no next command and must project to the empty string');
+    });
+
+    test('human_needed names the verify-work command its next_action describes', () => {
+      // #2617 unification: the table used to return '' here while init.cts's
+      // parallel projector returned `verify-work <N>` for the same state — the
+      // two surfaces disagreed on whether a next command existed at all.
+      writeStatus('human_needed');
+      assert.equal(read(id).next_command, `${prefix}verify-work 01`);
+    });
+  });
+}
+
+describe('#2617: no verification output suggests the deprecated colon form', () => {
+  useProjectionPhaseDir();
+
+  test('across every state and runtime, and for the default runtime', () => {
+    const runtimeIds = [...RUNTIMES.map((r) => r.id), undefined];
+    let checked = 0;
+
+    for (const runtime of runtimeIds) {
+      const opts = runtime === undefined ? { ...NO_GIT } : { runtime, ...NO_GIT };
+
+      removeVerification();
+      const cases = [readVerificationStatus(projPhaseDir, opts)];
+
+      for (const status of ['not-a-real-status', 'gaps_found', 'passed', 'human_needed']) {
+        writeStatus(status);
+        cases.push(readVerificationStatus(projPhaseDir, opts));
+      }
+      writeStatus('passed');
+      makeStale();
+      cases.push(readVerificationStatus(projPhaseDir, opts));
+
+      for (const result of cases) {
+        assert.ok(
+          !result.next_command.includes('/gsd:'),
+          `deprecated colon form leaked for runtime=${String(runtime)}: ${result.next_command}`,
+        );
+        checked++;
+      }
+    }
+
+    // Non-vacuity: 3 runtimes x 6 states.
+    assert.equal(checked, 18, 'expected every runtime x state combination to be checked');
+  });
+
+  test('the default runtime yields the canonical hyphen form, not the colon form', () => {
+    removeVerification();
+    // No `runtime` option at all — the pre-fix default emitted `/gsd:execute-phase`.
+    assert.equal(readVerificationStatus(projPhaseDir).next_command, '/gsd-execute-phase 01');
+  });
+});
+
+describe('#2617: the phase-complete error path projects too', () => {
+  // The issue is explicit that fixing only the router is insufficient: the
+  // user-visible surface is `phase complete`, which relays next_command into its
+  // blocked-completion error. Driven through the real CLI so the assertion is on
+  // what a user actually sees.
+  const { runGsdTools, createTempGitProject } = require('./helpers.cjs');
+
+  for (const { id, prefix } of RUNTIMES) {
+    test(`phase complete on ${id} suggests ${prefix}execute-phase`, () => {
+      const projectDir = createTempGitProject();
+      try {
+        fs.writeFileSync(
+          path.join(projectDir, '.planning', 'config.json'),
+          JSON.stringify({ runtime: id }, null, 2),
+        );
+        const phase = path.join(projectDir, '.planning', 'phases', '01-example');
+        fs.mkdirSync(phase, { recursive: true });
+        // No *-VERIFICATION.md → the completion gate blocks with reason "missing".
+
+        const res = runGsdTools(['phase', 'complete', '01'], projectDir);
+        // The blocked-completion message goes to stderr, which runGsdTools
+        // surfaces as `error` (NOT `stderr`) on a clean non-zero exit. Reading
+        // the wrong field yields '' and makes every assertion below vacuous.
+        const text = `${res.output || ''}${res.error || ''}`;
+
+        assert.equal(res.success, false, 'completion must be blocked with no verification report');
+        assert.match(
+          text,
+          /verification is incomplete/i,
+          `expected the blocked-completion error, got: ${text}`,
+        );
+        // Unconditional — a conditional check here passes when the command is
+        // absent entirely, which is exactly how this path stayed untested.
+        assert.ok(
+          text.includes(`${prefix}execute-phase`),
+          `phase complete must suggest ${prefix}execute-phase on ${id}, got: ${text}`,
+        );
+        assert.ok(
+          !text.includes('/gsd:'),
+          `phase complete must not surface the deprecated colon form: ${text}`,
+        );
+      } finally {
+        cleanup(projectDir);
+      }
+    });
+
+    test(`phase complete on ${id} projects the gaps_found command too`, () => {
+      // Finding from review: the live-CLI check previously exercised only the
+      // `missing` state, so a regression in any other routed branch would show
+      // up in the router's return object but not in what a user actually reads.
+      const projectDir = createTempGitProject();
+      try {
+        fs.writeFileSync(
+          path.join(projectDir, '.planning', 'config.json'),
+          JSON.stringify({ runtime: id }, null, 2),
+        );
+        const phase = path.join(projectDir, '.planning', 'phases', '01-example');
+        fs.mkdirSync(phase, { recursive: true });
+        fs.writeFileSync(
+          path.join(phase, '01-VERIFICATION.md'),
+          '---\nstatus: gaps_found\n---\n\n# Verification\n',
+        );
+
+        const res = runGsdTools(['phase', 'complete', '01'], projectDir);
+        const text = `${res.output || ''}${res.error || ''}`;
+
+        assert.equal(res.success, false, 'gaps_found must block completion');
+        assert.ok(
+          text.includes(`${prefix}plan-phase 01 --gaps`),
+          `phase complete must suggest ${prefix}plan-phase 01 --gaps on ${id}, got: ${text}`,
+        );
+        assert.ok(!text.includes('/gsd:'), `deprecated colon form leaked: ${text}`);
+      } finally {
+        cleanup(projectDir);
+      }
+    });
+  }
 });

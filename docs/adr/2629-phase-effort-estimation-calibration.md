@@ -66,7 +66,7 @@ The effective ceiling is model-, task-, and distractor-dependent. **100k is a co
 ### 4. Calibration: median ratio, clamped, with a minimum sample count
 
 ```
-ratio_i  = actuals_i.tokens / estimate_i.tokens      (phases with BOTH fields)
+ratio_i  = actuals_i.tokens / estimate_i.raw_tokens  (per PLAN, with BOTH fields)
 factor   = clamp(median(ratio_i), 0.5, 3.0)          when n >= 3
 factor   = 1.0                                        when n <  3
 ```
@@ -74,6 +74,9 @@ factor   = 1.0                                        when n <  3
 - **Median, not mean** — one pathological phase (an aborted run, a mass rename) must not swing the projection for every later phase.
 - **Clamped to [0.5, 3.0]** — bounds the blast radius of a degenerate history; a factor outside that range indicates the estimator is wrong in kind, not in degree, and should be fixed rather than amplified.
 - **`n >= 3` before any correction applies** — below that, the sample says more about variance than about bias.
+- **The denominator is the RAW projection, not the emitted (already-corrected) figure** — amended #2632. Measuring `actual / calibrated` is self-defeating: once the correction works the observed ratio approaches 1, which drags the median back toward 1 and un-corrects the next estimate. Simulated over 10 phases against a true 2x miss it oscillates and settles near 1.41 instead of converging on 2.0. Plans therefore record `estimate.raw_tokens` alongside the calibrated `estimate.tokens`, and `calibrationBasis()` prefers it (falling back to `tokens` for plans written before #2632, where no factor had yet been applied).
+- **Samples are per PLAN, not per phase** — amended #2632. A phase holds several `<NN>-<PP>-PLAN.md` files; pairing at phase granularity cross-pairs one plan's projection with another's cost and discards the rest.
+- **The raw/calibrated distinction is enforced by the type system, not by convention** — amended #2671. `--calibrated` and `raw_tokens` fix the two known call sites but remain conventions the *next* caller must also remember, and the failure mode is silent: both states are positive integers of the same magnitude, so no runtime check can tell them apart. `src/phase-estimation.cts` therefore gives them distinct branded types, `RawTokens` and `CalibratedTokens`, so `applyCalibration(alreadyCalibrated, factor)` and `{ estimateTokens: estimate.tokens }` are compile errors under `npm run build:lib` rather than review findings. The brands erase at compile time — no `.cjs` behavior change, no wire-format change, and untyped `.cjs` callers are unaffected, which is why every runtime guard in the module stays in place. Compile fixtures live in `tests/fixtures/brand-typing/` and are driven through the TypeScript compiler API by `tests/phase-estimation.test.cjs`.
 
 Persisted to `.planning/estimation-calibration.json` with a `schema_version` field, written by `extract-learnings`, read at plan time. Versioned from the first write so the schema can migrate without a silent misread.
 

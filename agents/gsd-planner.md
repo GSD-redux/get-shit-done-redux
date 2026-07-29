@@ -288,30 +288,15 @@ See @~/.claude/gsd-core/references/planner-guidance.md for dependency graph buil
 
 <scope_estimation>
 
-## Context Budget Rules
+## Sizing and the Estimate Block
 
-Plans should complete within ~50% context (not 80%). No context anxiety, quality maintained start to finish, room for unexpected complexity.
+Full rules: @~/.claude/gsd-core/references/context-budget.md (Phase Sizing). Read before sizing.
 
-**Each plan: 2-3 tasks maximum.**
-
-| Context Weight | Tasks/Plan | Context/Task | Total |
-|----------------|------------|--------------|-------|
-| Light (CRUD, config) | 3 | ~10-15% | ~30-45% |
-| Medium (auth, payments) | 2 | ~20-30% | ~40-50% |
-| Heavy (migrations, multi-subsystem) | 1-2 | ~30-40% | ~30-50% |
-
-## Split Signals
-
-**ALWAYS split if:**
-- More than 3 tasks
-- Multiple subsystems (DB + API + UI = separate plans)
-- Any task with >5 file modifications
-- Checkpoint + implementation in same plan
-- Discovery + implementation in same plan
-
-**CONSIDER splitting:** >5 files total, natural semantic boundaries, context cost estimate exceeds 40% for a single plan. See `<planner_authority_limits>` for prohibited split reasons.
-
-See @~/.claude/gsd-core/references/planner-guidance.md for Granularity Calibration table (Coarse/Standard/Fine plans-per-phase).
+- **2-3 tasks per plan.** **ALWAYS split if:** >3 tasks, multiple subsystems, or any task touching >5 files.
+- **Emit `estimate`**: run `estimate-calibration`; `tokens` = raw projection x factor, `raw_tokens` = that
+  projection before the factor (calibration measures actual/raw), `confidence` verbatim — derived from
+  sample count, never self-rated.
+- **Over the smart-zone budget?** Re-slice: tracer + expansion slices. Advisory, never a block.
 
 </scope_estimation>
 
@@ -330,6 +315,12 @@ files_modified: []          # Files this plan touches
 autonomous: true            # false if plan has checkpoints
 requirements: []            # REQUIRED — Requirement IDs from ROADMAP this plan addresses. MUST NOT be empty.
 user_setup: []              # Human-required setup (omit if empty)
+
+estimate:                   # Projected execution cost (see Estimate Emission)
+  tokens: 60000             # calibrated projection
+  raw_tokens: 30000         # pre-factor projection
+  tasks: 3                  # task count the projection assumes
+  confidence: low           # low | med | high — DERIVED from sample count, never self-rated
 
 must_haves:
   truths: []                # Observable behaviors
@@ -412,6 +403,7 @@ Create `.planning/phases/XX-name/{padded_phase}-{plan}-SUMMARY.md` when done
 | `autonomous` | Yes | `true` if no checkpoints |
 | `requirements` | Yes | **MUST** list requirement IDs from ROADMAP. Every roadmap requirement ID MUST appear in at least one plan. |
 | `user_setup` | No | Human-required setup items |
+| `estimate` | No | Projected cost `{tokens, tasks, confidence}`. See Estimate Emission. |
 | `must_haves` | Yes | Goal-backward verification criteria |
 
 Wave numbers are pre-computed during planning. Execute-phase reads `wave` directly from frontmatter.

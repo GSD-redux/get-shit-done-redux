@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 2681
+---
+**The Claude-orchestration Workflow backend can now actually dispatch a wave** — every script `emitWorkflowScript` generated was rejected by the Workflow tool. It omitted the required `export const meta = {…}` first statement (fatal on its own), called `resumeFromRunId()` and `budget()` which are a tool input parameter and a read-only object rather than script functions, and passed `parallel(agent(…), agent(…))` where an array of thunks is required. Two further defects meant the script was never even reached: nothing resolved the Agent SDK version, so the gate ladder returned `agent_sdk_version_unknown` on every automated run while `capability state` still reported the capability active; and the runtime fallback diverged from the canonical `GSD_RUNTIME > config.runtime > 'claude'` chain, so any invocation without `--runtime` reported `runtime_not_claude`. The router now resolves the installed SDK version itself and defers to the canonical runtime resolver, and the emitted script is valid ES module syntax with `phase()` titles matching `meta.phases`. (#2590)

@@ -241,7 +241,7 @@ function beginPhaseCore(content, intent, deps) {
     // #1255: body-field replacements operate on body only (frontmatter stripped),
     // not on the full content. The YAML `status:` key matches `^Status:\s*`
     // before the body pipe-table row if full content is passed.
-    const existingFm = extractFrontmatter(content);
+    const existingFm = extractFrontmatter(content, deps.sourcePath);
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
     const reassemble = (b) => hasFrontmatter
@@ -523,7 +523,7 @@ function advancePlanCore(content, deps) {
     // not on the full content. The YAML `status:` key matches `^Status:\s*`
     // before the body field if full content is passed (codex Phase 2 review:
     // HIGH blocking finding — same pattern beginPhaseCore already handles).
-    const existingFm = extractFrontmatter(content);
+    const existingFm = extractFrontmatter(content, deps.sourcePath);
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
     const reassemble = (b) => hasFrontmatter
@@ -645,7 +645,7 @@ function completePhaseCore(content, intent, deps) {
     }
     // #1255: body-field replacements operate on body only (frontmatter stripped),
     // so the YAML `status:` / `current_phase:` keys cannot shadow the body fields.
-    const existingFm = extractFrontmatter(content);
+    const existingFm = extractFrontmatter(content, deps.sourcePath);
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
     const reassemble = (b) => hasFrontmatter
@@ -789,7 +789,7 @@ function plannedPhaseCore(content, intent, deps) {
         }
     }
     // #1255: body-field replacements operate on body only.
-    const existingFm = extractFrontmatter(content);
+    const existingFm = extractFrontmatter(content, deps.sourcePath);
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
     const reassemble = (b) => hasFrontmatter
@@ -880,7 +880,7 @@ function milestoneSwitchCore(content, intent, deps) {
         'progress',
         'Current Position',
     ];
-    const existingFm = extractFrontmatter(content);
+    const existingFm = extractFrontmatter(content, deps.sourcePath);
     const body = stripFrontmatter(content);
     const resolvedName = (intent.name && intent.name.trim()) || 'milestone';
     // ## Current Position reset body (mirrors state.cts:2371-2375).
@@ -1025,7 +1025,7 @@ function milestoneCompleteCore(content, intent, deps) {
         }
     }
     // #1255: body-field replacements operate on body only.
-    const existingFm = extractFrontmatter(content);
+    const existingFm = extractFrontmatter(content, deps.sourcePath);
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
     const reassemble = (b) => hasFrontmatter
@@ -1351,7 +1351,9 @@ function rebuildCore(content, _intent, deps) {
     let modified = content;
     // §2 Decision: re-derive derived sections, preserve others. Order is
     // oldest-section-first so log entries appear in body order.
-    modified = reconcileCurrentPosition(modified, timestamp, log);
+    // sourcePath threaded so `state rebuild --dry-run` names the file: that branch reads STATE.md
+    // directly rather than through readModifyWriteStateMd, so nothing upstream has named it yet.
+    modified = reconcileCurrentPosition(modified, timestamp, log, deps.sourcePath);
     modified = reconcileByPhaseTable(modified, deps, timestamp, log);
     modified = stripTemplatePlaceholders(modified, timestamp, log);
     modified = deduplicateSessionArchive(modified, timestamp, log);
@@ -1385,8 +1387,8 @@ function rebuildCore(content, _intent, deps) {
  * the key (Leaky-Abstractions guard — don't synthesize values the canonical
  * source doesn't have).
  */
-function reconcileCurrentPosition(content, timestamp, log) {
-    const fm = extractFrontmatter(content);
+function reconcileCurrentPosition(content, timestamp, log, sourcePath) {
+    const fm = extractFrontmatter(content, sourcePath);
     if (!fm || typeof fm !== 'object')
         return content;
     let modified = content;

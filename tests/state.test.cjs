@@ -3103,6 +3103,157 @@ Stopped At: Phase 3, Plan 1 — real current value
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Bug #2567: current-state field extraction must be scoped so historical body
+// prose in archive sections cannot overwrite frontmatter. Same divergence
+// class as #2444 (which scoped Stopped At to ## Session): the #2444 fix did
+// not propagate to Last Activity, Last Activity Description, Paused At, and
+// the other current-state fields. These pin the scoped-extraction contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('last_activity / paused_at frontmatter not overwritten by historical prose (bug #2567)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Extract the YAML frontmatter block (between the --- fences) so assertions
+  // target the frontmatter only, not field-shaped prose elsewhere in the body.
+  function frontmatterBlock(stateContent) {
+    const m = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    return m ? m[1] : '';
+  }
+
+  test('state sync does not let a stale archive "Last activity:" leak into the last_activity frontmatter', () => {
+    // The issue's repro: frontmatter holds the current value; the body has NO
+    // current Last Activity line (only frontmatter does), but an archive
+    // section further down contains a stale "Last activity:" line. Before the
+    // fix, buildStateFrontmatter extracted the stale body value and overwrote
+    // the correct frontmatter value on every sync. (state sync may also touch
+    // the body's Last Activity line via syncCore; the assertion is therefore
+    // on the frontmatter block specifically, and checks the stale value never
+    // lands there regardless of any date mutation.)
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'status: executing',
+        "last_activity: '2026-07-23'",
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 03',
+        '**Status:** In progress',
+        '',
+        '## Previous Notes',
+        '',
+        'Last activity: 2026-06-20 - some older task',
+        '',
+        '## Session',
+        '',
+        'Last Date: 2026-07-22',
+        'Stopped At: Phase 3, Plan 2 — current',
+        '',
+      ].join('\n')
+    );
+
+    const syncResult = runGsdTools('state sync', tmpDir);
+    assert.ok(syncResult.success, `state sync failed: ${syncResult.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterBlock(stateContent);
+
+    assert.ok(/last_activity:/.test(fm),
+      'last_activity must remain in frontmatter after sync');
+    assert.ok(!/last_activity:[^\n]*2026-06-20/.test(fm),
+      `stale archive value must not leak into frontmatter; frontmatter was:\n${fm}`);
+  });
+
+  test('state sync does not let a stale archive "Paused At:" leak into the paused_at frontmatter', () => {
+    // Paused At is a session field: scope to ## Session (same treatment as
+    // Stopped At under #2444). A stale Paused At in an archive section that
+    // appears BEFORE ## Session must not win over the current value.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'status: executing',
+        "paused_at: '2026-07-22'",
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 03',
+        '**Status:** In progress',
+        '',
+        '## Old Session Notes',
+        '',
+        'Paused At: 2026-06-15 - old pause',
+        '',
+        '## Session',
+        '',
+        'Last Date: 2026-07-22',
+        'Paused At: 2026-07-22',
+        '',
+      ].join('\n')
+    );
+
+    const syncResult = runGsdTools('state sync', tmpDir);
+    assert.ok(syncResult.success, `state sync failed: ${syncResult.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const fm = frontmatterBlock(stateContent);
+
+    assert.ok(!/paused_at:[^\n]*2026-06-15/.test(fm),
+      `stale archive paused_at must not leak into frontmatter; frontmatter was:\n${fm}`);
+    assert.ok(/paused_at:[^\n]*2026-07-22/.test(fm),
+      `paused_at must retain the ## Session value (2026-07-22); frontmatter was:\n${fm}`);
+  });
+
+  test('state json surfaces the preserved last_activity, not undefined, when the body preamble lacks the field', () => {
+    // Read-path guard for #2567 + the cmdStateJson preserve fix: when the body
+    // preamble has no Last Activity (only the frontmatter holds it and the
+    // body's sole copy is a stale archive line), `state json` must surface the
+    // preserved frontmatter value, not undefined. Uses `state json` directly
+    // (no preceding sync) so the frontmatter value is deterministic.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        "gsd_state_version: '1.0'",
+        'status: executing',
+        "last_activity: '2026-07-23'",
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 03',
+        '**Status:** In progress',
+        '',
+        '## Archive',
+        '',
+        'Last activity: 2026-06-20 - older',
+        '',
+      ].join('\n')
+    );
+
+    const jsonResult = runGsdTools('state json', tmpDir);
+    assert.ok(jsonResult.success, `state json failed: ${jsonResult.error}`);
+    const parsed = JSON.parse(jsonResult.output);
+
+    assert.strictEqual(parsed.last_activity, '2026-07-23',
+      `state json must surface the preserved frontmatter last_activity (2026-07-23) but got ${parsed.last_activity}`);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Bug #2445: stale phase dirs from closed milestone inflate phase counts
 // ─────────────────────────────────────────────────────────────────────────────
 

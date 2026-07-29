@@ -18,6 +18,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const cp = require('node:child_process');
 const { runGsdTools, parseFrontmatter } = require('./helpers.cjs');
 
 // Track temp files for cleanup
@@ -524,5 +525,49 @@ describe('#1778: thread workflow uses the 1.6 named-flag frontmatter.set form', 
       /frontmatter\.set\s+\S*\.planning\/threads\/\{SLUG\}\.md\s+--field\s+status\s+--value\s+in_progress\b/.test(src),
       'RESUME mode must invoke: frontmatter.set .planning/threads/{SLUG}.md --field status --value in_progress',
     );
+  });
+});
+
+// ─── #1882: the user-reachable surface actually distinguishes the two cases ───
+
+describe('frontmatter get — truncated vs absent frontmatter (#1882)', () => {
+  const TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  function runCapturingStderr(file) {
+    const r = cp.spawnSync(process.execPath, [TOOLS, 'frontmatter', 'get', file, '--raw'], {
+      encoding: 'utf8',
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    return { status: r.status, stdout: (r.stdout || '').trim(), stderr: (r.stderr || '').trim() };
+  }
+
+  // This is the wired keystone for #1882: the diagnostic is only "delivered" if it reaches
+  // the surface a user actually invokes. The assertion is a DIFFERENTIAL between two runs —
+  // whether stderr is empty — which is a behavioural claim, not a match against the message
+  // wording, so it stays inside CONTRIBUTING.md's ban on raw text matching.
+  test('a truncated file is reported while an absent-frontmatter file stays silent', () => {
+    const truncated = writeTempFile('---\nphase: 01\nplan: half-written\n');
+    const absent = writeTempFile('plain body with no frontmatter\n');
+
+    const bad = runCapturingStderr(truncated);
+    const good = runCapturingStderr(absent);
+
+    // The contract every one of the ~50 callers depends on is unchanged for both.
+    assert.strictEqual(bad.status, 0, 'truncated file must not change the exit code');
+    assert.strictEqual(good.status, 0);
+    assert.deepStrictEqual(JSON.parse(bad.stdout), {}, 'return value must be preserved');
+    assert.deepStrictEqual(JSON.parse(good.stdout), {});
+
+    // ...and the only difference is that corruption is no longer silent.
+    assert.notStrictEqual(bad.stderr, '', 'a truncated frontmatter must be reported');
+    assert.strictEqual(good.stderr, '', 'a file with no frontmatter is not corrupt');
+  });
+
+  test('a Markdown thematic break at byte 0 is not reported as corruption', () => {
+    const thematicBreak = writeTempFile('---\nSome heading text\n\nA paragraph, no more dashes.\n');
+    const r = runCapturingStderr(thematicBreak);
+    assert.strictEqual(r.status, 0);
+    assert.deepStrictEqual(JSON.parse(r.stdout), {});
+    assert.strictEqual(r.stderr, '', 'a horizontal rule is valid Markdown, not a truncated file');
   });
 });

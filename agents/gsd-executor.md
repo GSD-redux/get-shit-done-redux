@@ -638,7 +638,16 @@ This file is the canonical output of this step. The orchestrator reads `.plannin
 
 **Use template:** @~/.claude/gsd-core/templates/summary.md
 
-**Frontmatter:** phase, plan, subsystem, tags, dependency graph (requires/provides/affects), tech-stack (added/patterns), key-files (created/modified), decisions, metrics (duration, completed date), status (`status: complete` — required so the audit-open scanner recognises the summary as done).
+**Frontmatter:** phase, plan, subsystem, tags, dependency graph (requires/provides/affects), tech-stack (added/patterns), key-files (created/modified), decisions, metrics (duration, completed date), status (`status: complete` — required so the audit-open scanner recognises the summary as done), and `actuals` (#2632).
+
+**`actuals` (required when the plan carried an `estimate`):** record what the phase ACTUALLY cost, on the SAME scale the estimate used — `estimateTokens` (chars/4) over the realized diff, NOT a harness token count. Mixing scales measures the measurement methods, not the miss.
+```yaml
+actuals:
+  tokens: 74000    # chars/4 over the files you actually changed
+  tasks: 5         # tasks completed
+  commits: 7       # commits made
+```
+These pair with the plan's `estimate` to calibrate future estimates (ADR-2629). Do not round to look closer to the estimate — a flattering number corrupts every later projection.
 
 **Title:** `# Phase [X] Plan [Y]: [Name] Summary`
 
@@ -780,7 +789,7 @@ gsd_run query commit "docs({phase}-{plan}): complete [plan-name] plan" --files \
 Separate from per-task commits — captures execution results only.
 
 **Handling the SDK return envelope (#3678):** `gsd-tools query commit` returns
-one of three shapes:
+one of these shapes:
 
 - `{committed: true, hash, reason: 'committed'}` — commit succeeded; record
   the hash in the completion format.
@@ -793,6 +802,10 @@ one of three shapes:
   success path.** Record "skipped (.planning gitignored)" and move on.
 - `{committed: false, reason: 'nothing_to_commit' | 'commit_failed', ...}` —
   no-op / genuine failure; surface in the completion notes.
+- `{committed: false, reason: 'staging_failed' | 'staging_timeout', file, error}` —
+  `git add` itself failed (#2608), e.g. an unwritable index. Nothing committed,
+  index rolled back. Surface `file` + `error` (git's stderr); do not retry — a
+  retry hits the same cause.
 
 **Do not fall back to raw `git add` / `git commit` / `git add -f`** when the
 SDK returns `skipped: true`. The SDK's skip is the user's deliberate choice

@@ -13,12 +13,15 @@
  *
  * Subcommands:
  *   detect-backend [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch]
- *       Resolves whether the Workflow backend should activate. `--runtime`
- *       defaults to the GSD_RUNTIME env var (or 'unknown'). Reads the
+ *       Resolves whether the Workflow backend should activate. Both flags are
+ *       OPTIONAL (#2590): `--runtime` falls back to the canonical
+ *       `GSD_RUNTIME > config.runtime > 'claude'` chain, and
+ *       `--agent-sdk-version` to `GSD_AGENT_SDK_VERSION` then the installed
+ *       @anthropic-ai/claude-agent-sdk version. Reads the
  *       `claude_orchestration.*` keys from .planning/config.json. Emits
  *       { available, backend, reason }.
  *
- *   emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>]
+ *   emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]
  *       Reads a wave/plan manifest JSON file and emits the generated Workflow
  *       script + summary. The manifest shape matches emitWorkflowScript's input:
  *       { waves: [{ id, plans: [{ id, brief, files_modified: string[], use_worktree?: boolean }] }] }.
@@ -28,7 +31,7 @@
  *
  *   resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>]
  *       [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>]
- *       [--budget <n>]
+ *       [--budget <n>] [--executor-model <id>]
  *       #2285 — the single composed seam a PRE-wave dispatch-backend selector
  *       (`execute:wave:pre`) uses: resolves detect-backend + emit-workflow in
  *       ONE call. Emits { backend: 'inline'|'workflow', reason, script?, summary? }.
@@ -45,6 +48,10 @@ import io = require('./io.cjs');
 import core = require('./claude-orchestration.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoader = require('./config-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import runtimeSlash = require('./runtime-slash.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- model-resolver.cjs is an export= CommonJS module
+import modelResolver = require('./model-resolver.cjs');
 
 const { output } = io;
 const { detectWorkflowBackend, emitWorkflowScript, resolveWaveDispatch } = core;
@@ -62,8 +69,8 @@ function usage(error: (msg: string, reason?: string) => void): void {
   error(
     'Usage: gsd-tools claude-orchestration <detect-backend|emit-workflow|resolve-wave-dispatch> [...]\n' +
     '  detect-backend [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch]\n' +
-    '  emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>]\n' +
-    '  resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>] [--budget <n>]',
+    '  emit-workflow --waves <path> --run-id <id> [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]\n' +
+    '  resolve-wave-dispatch --waves <path> --run-id <id> [--runtime <id>] [--agent-sdk-version <ver>] [--no-nested-dispatch] [--phase-dir <dir>] [--budget <n>] [--executor-model <id>]',
   );
 }
 
@@ -99,16 +106,89 @@ function resolveFlatClaudeOrchestrationConfig(cwd: string): Record<string, unkno
 }
 
 /**
+ * Resolve the installed Agent SDK version (#2590).
+ *
+ * The `execute:wave:pre` fragment claimed the orchestrator "has no scriptable
+ * way to introspect the live Agent SDK version" and told callers to omit the
+ * flag — so gate 5 returned `agent_sdk_version_unknown` on every automated run
+ * and the Workflow backend never activated, while `capability state` still
+ * reported it `active: true`. That claim is true for BASH, but this router runs
+ * in Node: the installed package's own package.json is authoritative and
+ * requires no flag at all.
+ *
+ * Resolution is side-effect-free and fails closed to undefined (gate 5 then
+ * declines, exactly as before) rather than guessing a version.
+ */
+const AGENT_SDK_PKG = path.join('@anthropic-ai', 'claude-agent-sdk', 'package.json');
+function resolveInstalledAgentSdkVersion(cwd: string): string | undefined {
+  // Walk node_modules up the tree by hand rather than require.resolve: the SDK's
+  // `exports` map does not expose './package.json', so require.resolve throws
+  // ERR_PACKAGE_PATH_NOT_EXPORTED. Reading the file directly is exports-map
+  // independent and cannot execute package code.
+  for (const start of [cwd, __dirname]) {
+    let dir: string;
+    try { dir = path.resolve(start); } catch { continue; }
+    for (;;) {
+      try {
+        const pkgPath = path.join(dir, 'node_modules', AGENT_SDK_PKG);
+        if (fs.existsSync(pkgPath)) {
+          const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: unknown };
+          if (typeof parsed.version === 'string' && parsed.version.length > 0) return parsed.version;
+        }
+      } catch { /* unreadable/malformed — keep walking */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return undefined;
+}
+
+/**
  * Resolve `--runtime`/`--agent-sdk-version`/`--no-nested-dispatch` into the
  * `{ runtimeId, hostIntegration, agentSdkVersion }` triple both `detect-backend`
  * and `resolve-wave-dispatch` pass to the pure detection seam.
  */
-function resolveDetectionArgs(args: string[]): { runtimeId: string; hostIntegration: { dispatch: { nested: boolean; background: boolean } }; agentSdkVersion: string | undefined } {
-  const runtimeId = argValue(args, '--runtime') || process.env['GSD_RUNTIME'] || 'unknown';
-  const agentSdkVersion = argValue(args, '--agent-sdk-version');
+function resolveDetectionArgs(args: string[], cwd?: string): { runtimeId: string; hostIntegration: { dispatch: { nested: boolean; background: boolean } }; agentSdkVersion: string | undefined } {
+  // #2590: the old fallback chain was `--runtime > GSD_RUNTIME > 'unknown'`,
+  // diverging from the canonical `GSD_RUNTIME > config.runtime > 'claude'` used
+  // by runtime-slash.resolveRuntime — so ANY manual invocation without
+  // --runtime reported `runtime_not_claude` on a perfectly ordinary Claude
+  // project. Delegate to the canonical resolver instead of re-deriving it.
+  const runtimeId = argValue(args, '--runtime') || runtimeSlash.resolveRuntime(cwd || null);
+  // Explicit flag wins (lets a caller pin a version); then the environment;
+  // then the actually-installed SDK.
+  const agentSdkVersion = argValue(args, '--agent-sdk-version')
+    || process.env['GSD_AGENT_SDK_VERSION']
+    || resolveInstalledAgentSdkVersion(cwd || process.cwd());
   const noNested = args.includes('--no-nested-dispatch');
   const hostIntegration = noNested ? { dispatch: { nested: false, background: true } } : CAPABLE_HOST;
   return { runtimeId, hostIntegration, agentSdkVersion };
+}
+
+/**
+ * #2686 — resolve the `gsd-executor` model this dispatch should carry.
+ *
+ * Defaults from the project config rather than requiring a flag. The Workflow
+ * backend previously emitted no model at all, so `model_overrides` /
+ * `model_policy` / `model_profile` were silently inert on that path while the
+ * inline path honored them. Reading the same source the inline path reads is
+ * what makes the two backends agree by construction: an orchestrator that never
+ * learns about a new flag would otherwise silently keep the old bug.
+ *
+ * `--executor-model` exists only to pin/override. Resolution is side-effect-free
+ * and fails closed to `undefined` (emission then omits the key, i.e. exactly the
+ * pre-#2686 output) rather than guessing a model.
+ */
+function resolveExecutorModel(args: string[], cwd: string): string | undefined {
+  const pinned = argValue(args, '--executor-model');
+  if (pinned !== undefined) return pinned;
+  try {
+    const resolved = modelResolver.resolveModelInternal(cwd, 'gsd-executor') as unknown;
+    return typeof resolved === 'string' ? resolved : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Discriminated result for readWavesManifest — see doc comment below. */
@@ -146,7 +226,7 @@ function readWavesManifest(wavesPath: string, error: (msg: string, reason?: stri
  * SDK version come from flags (the orchestrator already knows these) or env.
  */
 function cmdDetectBackend(args: string[], cwd: string, raw: boolean): void {
-  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args);
+  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args, cwd);
   const flatConfig = resolveFlatClaudeOrchestrationConfig(cwd);
   const result = detectWorkflowBackend({ runtimeId, hostIntegration, config: flatConfig, agentSdkVersion });
   output(result, raw);
@@ -155,7 +235,7 @@ function cmdDetectBackend(args: string[], cwd: string, raw: boolean): void {
 /**
  * Emit a Workflow script from a wave/plan manifest file.
  */
-function cmdEmitWorkflow(args: string[], _cwd: string, raw: boolean, error: (msg: string, reason?: string) => void): void {
+function cmdEmitWorkflow(args: string[], cwd: string, raw: boolean, error: (msg: string, reason?: string) => void): void {
   const wavesPath = argValue(args, '--waves');
   const runId = argValue(args, '--run-id');
   const phaseDir = argValue(args, '--phase-dir') || '.planning/phases/current';
@@ -181,6 +261,7 @@ function cmdEmitWorkflow(args: string[], _cwd: string, raw: boolean, error: (msg
     runId,
     waves: read.waves as EmitInput['waves'],
     budgetTokens: budget,
+    executorModel: resolveExecutorModel(args, cwd),
   });
 
   if (!result.ok) {
@@ -214,7 +295,7 @@ function cmdResolveWaveDispatch(args: string[], cwd: string, raw: boolean, error
   const read = readWavesManifest(wavesPath, (msg) => error('resolve-wave-dispatch: ' + msg));
   if (!read.ok) return; // read/parse failure — error() already surfaced it loudly above
 
-  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args);
+  const { runtimeId, hostIntegration, agentSdkVersion } = resolveDetectionArgs(args, cwd);
   const flatConfig = resolveFlatClaudeOrchestrationConfig(cwd);
 
   const budgetTokens = budgetRaw !== undefined ? parseInt(budgetRaw, 10) : undefined;
@@ -229,6 +310,7 @@ function cmdResolveWaveDispatch(args: string[], cwd: string, raw: boolean, error
     runId,
     waves: read.waves as EmitInput['waves'],
     budgetTokens: budget,
+    executorModel: resolveExecutorModel(args, cwd),
   });
 
   output(result, raw);

@@ -2832,7 +2832,11 @@ describe('phase complete canonical verification gate (#1522)', () => {
     const errorPayload = JSON.parse(result.error);
     assert.equal(errorPayload.reason, 'phase_verification_incomplete');
     assert.match(errorPayload.message, /stale/i);
-    assert.match(errorPayload.message, /\/gsd:verify-work 0?1/);
+    // #2617: the blocked-completion message now projects next_command onto the
+    // runtime's installed surface. This project has no runtime configured, so it
+    // takes the `claude` default — the canonical `/gsd-` hyphen form. The colon
+    // form this previously asserted is the deprecated shape #2617 removed.
+    assert.match(errorPayload.message, /\/gsd-verify-work 0?1/);
     assert.equal(fs.readFileSync(roadmapPath, 'utf-8'), beforeRoadmap);
     assert.equal(fs.readFileSync(statePath, 'utf-8'), beforeState);
   });
@@ -9444,4 +9448,154 @@ describe('issue #2334: ghost-REQ-ID classification must probe write surfaces, no
       }
     },
   );
+});
+
+// ─── #2572: phase-SUMMARY artifact↔disk advisory at phase completion ─────────
+//
+// A SUMMARY asserts "I created these files". Until #2572 nothing checked that
+// claim for phase summaries — `verify-summary` existed but was only ever
+// pointed at `.planning/research/SUMMARY.md`, so an interrupted or
+// over-reported phase counted toward 100% silently.
+//
+// The advisory joins the existing `warnings[]` channel of `phase complete`
+// (rendered by execute-phase.md's "If has_warnings is true" step). It is
+// advisory ONLY: the completion GATE is readVerificationStatus, untouched here.
+
+function build2572SummaryArtifactFixture() {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2572-artifact-'));
+  const planDir = path.join(tmpDir, '.planning');
+  const dirtyDir = path.join(planDir, 'phases', '01-dirty');
+  const cleanDir = path.join(planDir, 'phases', '02-clean');
+  fs.mkdirSync(dirtyDir, { recursive: true });
+  fs.mkdirSync(cleanDir, { recursive: true });
+  fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+
+  // Only these two land on disk.
+  fs.writeFileSync(path.join(tmpDir, 'src/landed-one.ts'), 'x\n');
+  fs.writeFileSync(path.join(tmpDir, 'src/landed-two.ts'), 'x\n');
+
+  fs.writeFileSync(path.join(planDir, 'ROADMAP.md'), [
+    '# Roadmap', '',
+    '- [ ] Phase 01: Dirty',
+    '- [ ] Phase 02: Clean', '',
+    '### Phase 01: Dirty',
+    '**Goal:** Ship the dirty thing',
+    '**Plans:** 1 plans', '',
+    '### Phase 02: Clean',
+    '**Goal:** Ship the clean thing',
+    '**Plans:** 1 plans', '',
+    '## Progress', '',
+    '| Phase | Plans Complete | Status | Completed |',
+    '|-------|----------------|--------|-----------|',
+    '| 01. Dirty | 0/1 | Not started | - |',
+    '| 02. Clean | 0/1 | Not started | - |',
+    '',
+  ].join('\n'));
+
+  fs.writeFileSync(path.join(planDir, 'STATE.md'), [
+    '# State', '',
+    '**Current Phase:** 01',
+    '**Current Phase Name:** Dirty',
+    '**Status:** In progress',
+    '**Completed Phases:** 0',
+    '**Total Phases:** 2',
+    '**Progress:** 0%',
+    '',
+  ].join('\n'));
+
+  fs.writeFileSync(path.join(dirtyDir, '01-01-PLAN.md'), '# Plan\nDo the work.\n');
+  // Frontmatter uses the shipped template's YAML flow sequence on purpose: the
+  // bracket artifact it once produced must not surface as a phantom warning.
+  fs.writeFileSync(path.join(dirtyDir, '01-01-SUMMARY.md'), [
+    '---',
+    'phase: 01-dirty',
+    'key-files:',
+    '  created: [src/landed-one.ts, src/never-landed.ts]',
+    'status: complete',
+    '---', '',
+    '# Phase 1 Summary', '',
+    'Created `src/landed-one.ts` and `src/never-landed.ts`.',
+    '',
+  ].join('\n'));
+
+  fs.writeFileSync(path.join(cleanDir, '02-01-PLAN.md'), '# Plan\nDo the work.\n');
+  fs.writeFileSync(path.join(cleanDir, '02-01-SUMMARY.md'), [
+    '---',
+    'phase: 02-clean',
+    'key-files:',
+    '  created: [src/landed-two.ts]',
+    'status: complete',
+    '---', '',
+    '# Phase 2 Summary', '',
+    'Created `src/landed-two.ts`.',
+    '',
+  ].join('\n'));
+
+  return { tmpDir };
+}
+
+describe('#2572: phase complete warns when a SUMMARY claims files that never landed', () => {
+  test('#2572-1: a SUMMARY naming a file that is not on disk produces a warning at completion', () => {
+    const { tmpDir } = build2572SummaryArtifactFixture();
+    try {
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+      const parsed = JSON.parse(output);
+      const warnings = parsed.warnings || [];
+      assert.ok(
+        warnings.some((w) => w.includes('src/never-landed.ts')),
+        `#2572-1 FAILED: expected a warning naming src/never-landed.ts, got: ${JSON.stringify(warnings)}`,
+      );
+      assert.ok(
+        warnings.some((w) => w.includes('01-01-SUMMARY.md')),
+        `#2572-1 FAILED: the warning must name the SUMMARY it came from, got: ${JSON.stringify(warnings)}`,
+      );
+      assert.strictEqual(parsed.has_warnings, true, '#2572-1 FAILED: has_warnings must be true');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('#2572-2: the advisory is ADVISORY — completion still succeeds and reports the phase complete', () => {
+    const { tmpDir } = build2572SummaryArtifactFixture();
+    try {
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+      const parsed = JSON.parse(output);
+      assert.strictEqual(parsed.completed_phase, '1', '#2572-2 FAILED: completion must not be blocked by the advisory');
+      assert.strictEqual(parsed.state_updated, true, '#2572-2 FAILED: STATE.md must still be written');
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('#2572-3 (control): a phase whose SUMMARY files all exist emits NO artifact warning', () => {
+    const { tmpDir } = build2572SummaryArtifactFixture();
+    try {
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '2'], tmpDir);
+      const parsed = JSON.parse(output);
+      const warnings = parsed.warnings || [];
+      assert.ok(
+        !warnings.some((w) => /not on disk/.test(w)),
+        `#2572-3 FAILED: a clean phase must emit no artifact advisory. This is the ` +
+        `"absent for a clean one" half — and the fixture references a real '/'-bearing ` +
+        `path, so silence here is earned, not vacuous. Got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
+
+  test('#2572-4: the shipped template frontmatter flow sequence produces no phantom "[path" warning', () => {
+    const { tmpDir } = build2572SummaryArtifactFixture();
+    try {
+      const { output } = runVerifiedPhaseComplete(['phase', 'complete', '2'], tmpDir);
+      const warnings = JSON.parse(output).warnings || [];
+      assert.ok(
+        !warnings.some((w) => w.includes('[src/')),
+        `#2572-4 FAILED (#2685 Blocker 1): a YAML flow sequence in frontmatter must not ` +
+        `leak a bracket-prefixed candidate. Got: ${JSON.stringify(warnings)}`,
+      );
+    } finally {
+      cleanup(tmpDir);
+    }
+  });
 });

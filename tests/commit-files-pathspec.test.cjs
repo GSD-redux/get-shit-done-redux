@@ -211,11 +211,21 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     );
   });
 
-  test('#2523: out-of-repo --files path is rejected by git (nothing_to_commit), no index pollution', (t) => {
-    // An absolute path resolving OUTSIDE the project root: git add rejects it → the
-    // gated stagedPaths.push (on git-add exitCode) skips it → nothing_to_commit. No
+  test('#2523: out-of-repo --files path is rejected by git (staging_failed), no index pollution', (t) => {
+    // An absolute path resolving OUTSIDE the project root: git add rejects it. No
     // index pollution (#2523). Not "path_outside_repo" (that guard was removed for
-    // macOS symlink compatibility — the gated push + git's own rejection suffice).
+    // macOS symlink compatibility — git's own rejection suffices).
+    //
+    // #2608 changed the REASON this reports, deliberately. It used to be
+    // `nothing_to_commit`, because a failed `git add` was skipped and the empty
+    // stagedPaths list fell through to the empty-changeset branch. But "nothing to
+    // commit" is not what happened — the caller named a file and git refused it —
+    // and that misreport is the very class of defect #2608 closes. The result now
+    // carries `staging_failed` plus the offending path and git's own message
+    // ("… is outside repository at …"), which is strictly more actionable.
+    //
+    // #2523's two substantive invariants are unchanged and still asserted below:
+    // no commit is created, and the index is left clean.
     const outsideDir = path.join(tmpDir, '..', `gsd-2523-outside-${process.pid}-${Date.now()}`);
     fs.mkdirSync(outsideDir, { recursive: true });
     t.after(() => cleanup(outsideDir));
@@ -228,7 +238,9 @@ describe('commit --files: pathspec honors declared scope (#2112)', () => {
     );
     const parsed = JSON.parse(res.output);
     assert.strictEqual(parsed.committed, false, 'out-of-repo path must not commit');
-    assert.strictEqual(parsed.reason, 'nothing_to_commit', `out-of-repo: git rejects → nothing_to_commit: ${res.output}`);
+    assert.strictEqual(parsed.reason, 'staging_failed', `out-of-repo: git rejects → staging_failed (#2608): ${res.output}`);
+    assert.strictEqual(parsed.file, path.resolve(outsideFile), 'the rejected path must be named');
+    assert.match(parsed.error, /outside repository/, "git's own rejection message must be preserved (#2608)");
 
     // No new commit created (still at the single initial commit).
     const logCount = execSync('git rev-list --count HEAD', { cwd: tmpDir, encoding: 'utf-8' }).trim();

@@ -186,6 +186,27 @@ The body follows this structure:
 ```
 </step>
 
+<step name="calibrate_estimates">
+Rebuild the estimate-vs-actual calibration from every completed phase (#2632, ADR-2629).
+
+```bash
+gsd_run query estimate-calibrate
+```
+
+This pairs each phase's PLAN `estimate` with its SUMMARY `actuals`, writes
+`.planning/estimation-calibration.json`, and reports the resulting correction factor.
+The planner reads it on the next `/gsd:plan-phase`, so estimates improve for THIS project
+over time.
+
+Report the returned `factor`, `sample_count`, and `confidence` in the summary output.
+`applied: false` means fewer than 3 phases carry both an estimate and actuals — that is
+expected early and is not an error. The verb rebuilds from scratch each run, so it is safe
+to re-run and never accumulates duplicates.
+
+Phases missing either side are skipped rather than guessed: a fabricated sample would
+steer every future estimate.
+</step>
+
 <step name="update_state">
 Update STATE.md to reflect the learning extraction:
 

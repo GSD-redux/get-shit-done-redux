@@ -25,6 +25,7 @@
   ".kimi/hooks/gsd-windsurf-pre-write.js",
   ".kimi/hooks/gsd-workflow-guard.js",
   ".kimi/hooks/gsd-worktree-path-guard.js",
+  ".kimi/hooks/lib/cursor-workspace.js",
   ".kimi/hooks/lib/git-cmd.js",
   ".kimi/hooks/lib/gsd-graphify-rebuild.sh",
   ".kimi/hooks/managed-hooks-registry.cjs",

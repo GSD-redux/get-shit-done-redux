@@ -518,6 +518,7 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const deps: StateTransitionDeps = {
     clock: realClock,
     progressProvider: () => null,
+    sourcePath: statePath,
   };
 
   let resultData: Record<string, unknown> | undefined;
@@ -1298,6 +1299,39 @@ function matchSessionSection(body: string): string | null {
   return section ? section.body : null;
 }
 
+/**
+ * #2567: prevent a stale archive "Last activity:" line from overwriting a
+ * newer frontmatter value. `stateExtractField` matches the first body
+ * occurrence, which may be a historical line in an archive section. Unlike
+ * Stopped At / Paused At (which canonically live in `## Session`), Last
+ * Activity has no single canonical section — it appears in the preamble,
+ * `## Configuration`, and `## Current Position` across STATE.md layouts, so a
+ * section scope cannot reliably exclude archive copies. Guard the
+ * information-losing direction instead: when the body-derived date is OLDER
+ * than the existing frontmatter date, keep the existing value and its
+ * description. Applied at both the write seam (syncStateFrontmatter) and the
+ * read seam (cmdStateJson) so they agree. Date fields only — non-date values
+ * pass through unchanged.
+ */
+function preferNewerLastActivity(
+  existingFm: Record<string, unknown> | null,
+  derivedFm: Record<string, unknown>,
+): void {
+  if (!existingFm) return;
+  const exRaw = existingFm['last_activity'];
+  const derRaw = derivedFm['last_activity'];
+  if (typeof exRaw !== 'string' || typeof derRaw !== 'string') return;
+  const exDate = exRaw.slice(0, 10);
+  const derDate = derRaw.slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
+  if (derDate < exDate) {
+    derivedFm['last_activity'] = exRaw;
+    if (existingFm['last_activity_desc'] !== undefined) {
+      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
+    }
+  }
+}
+
 function parseProsePhaseField(value: string | null): { phase: string | null; name: string | null } {
   // #2121 Phase 2 (#2125): delegate to the canonical anchored parser so this
   // module holds no independent prose phase-id regex. Drives #2111 — the
@@ -1331,7 +1365,9 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   // Bug #3265: prefer YAML frontmatter for canonical scalar fields so that a
   // body table cell containing **Status:** Y cannot shadow the authoritative
   // frontmatter value.  Mirrors the fix in sdk/src/query/state.ts.
-  const fm = extractFrontmatter(content) as Record<string, unknown>;
+  // Pass statePath so a truncated STATE.md is named in the #1882 diagnostic rather than
+  // reported under a content digest — STATE.md is one of the artefacts epic #1879 is about.
+  const fm = extractFrontmatter(content, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(content);
 
   // Helper: return frontmatter scalar value when present and non-empty.
@@ -1520,8 +1556,8 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
   const proseLastActivity = parseProseLastActivityField(rawLastActivity);
   const lastActivity = proseLastActivity.date ?? rawLastActivity;
   const lastActivityDesc = stateExtractField(bodyContent, 'Last Activity Description') ?? proseLastActivity.description;
-  // Bug #2444: scope Stopped At extraction to the ## Session section so that
-  // historical "Stopped at:" prose elsewhere in the body (e.g. in a
+  // Bug #2444 / #2567: scope Stopped At AND Paused At extraction to the
+  // ## Session section so historical prose elsewhere in the body (e.g. in a
   // Session Continuity Archive section) never overwrites the current value.
   // Fall back to full-body search only when no ## Session section exists.
   // #1101: prefer the canonical `## Session` block, falling back to the bootstrap
@@ -1529,7 +1565,9 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
   const sessionSectionMatch = matchSessionSection(bodyContent);
   const sessionBodyScope = sessionSectionMatch ?? bodyContent;
   const stoppedAt = stateExtractField(sessionBodyScope, 'Stopped At') || stateExtractField(sessionBodyScope, 'Stopped at');
-  const pausedAt = stateExtractField(bodyContent, 'Paused At');
+  // #2567: Paused At is a session field — scope it to ## Session too so a
+  // stale "Paused At:" line in an archive section cannot overwrite the value.
+  const pausedAt = stateExtractField(sessionBodyScope, 'Paused At');
 
   let milestone: string | null = null;
   let milestoneName: string | null = null;
@@ -1731,7 +1769,12 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
 function syncStateFrontmatter(content: string, cwd: string | undefined): string {
   // Read existing frontmatter BEFORE stripping — it may contain values
   // that the body no longer has (e.g., Status field removed by an agent).
-  const existingFm = extractFrontmatter(content) as Record<string, unknown>;
+  // `cwd` already identifies the workspace this content came from, so the STATE.md path is
+  // derivable here without widening the signature (#1882).
+  const existingFm = extractFrontmatter(
+    content,
+    cwd ? planningPaths(cwd).state : undefined,
+  ) as Record<string, unknown>;
   const body = stripFrontmatter(content);
   const derivedFm = buildStateFrontmatter(body, cwd);
 
@@ -1821,6 +1864,10 @@ function syncStateFrontmatter(content: string, cwd: string | undefined): string 
       derivedFm[key] = existingFm[key];
     }
   }
+
+  // #2567: guard the information-losing direction — a stale archive
+  // "Last activity:" line must not overwrite a newer frontmatter value.
+  preferNewerLastActivity(existingFm, derivedFm);
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);
   return `---\n${yamlStr}\n---\n\n${body}`;
@@ -2096,7 +2143,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     const content = platformReadSync(statePath) || '';
     // Snapshot the existing progress block BEFORE the transform so we can
     // restore it when resync is false.
-    const preFm = resync ? null : extractFrontmatter(content) as Record<string, unknown>;
+    const preFm = resync ? null : extractFrontmatter(content, statePath) as Record<string, unknown>;
 
     // Bug #1230: delta heuristic — snapshot pre-transform body source fields so
     // we can detect whether THIS write changed them. syncStateFrontmatter
@@ -2109,7 +2156,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // Strip frontmatter before calling stateExtractField so the YAML `status:`
     // key in the frontmatter block cannot shadow the body field we are tracking.
     const preBody = stripFrontmatter(content);
-    const preFmSnapshot = extractFrontmatter(content) as Record<string, unknown>;
+    const preFmSnapshot = extractFrontmatter(content, statePath) as Record<string, unknown>;
     const preBodyStatus = stateExtractField(preBody, 'Status');
     // Bug #1230 / Change B: scope stopped_at delta to the ## Session section,
     // mirroring buildStateFrontmatter's sessionBodyScope logic (line ~1172).
@@ -2163,7 +2210,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // one policy source, not three drifting encodings. Behavior-identical to
     // the pre-#1796 inline block; this is the absorption ADR-1769 / CONTEXT.md
     // already claimed shipped.
-    const postFm = extractFrontmatter(synced) as Record<string, unknown>;
+    const postFm = extractFrontmatter(synced, statePath) as Record<string, unknown>;
     const preservation = applyStatePreservation({
       preFm, postFm, preFmSnapshot, resync,
       deriveProgressKeys: options?.deriveProgressKeys === true,
@@ -2191,7 +2238,7 @@ function cmdStateJson(cwd: string, raw: boolean): void {
   }
 
   const content = fs.readFileSync(statePath, 'utf-8');
-  const existingFm = extractFrontmatter(content) as Record<string, unknown>;
+  const existingFm = extractFrontmatter(content, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(content);
 
   // Always rebuild from body + disk so progress counters reflect current state.
@@ -2228,6 +2275,11 @@ function cmdStateJson(cwd: string, raw: boolean): void {
     built['progress'] = normalizeProgressNumbers(existingFm['progress']);
   }
 
+  // #2567: guard the information-losing direction — a stale archive
+  // "Last activity:" line must not surface as the current value. Mirrors the
+  // syncStateFrontmatter guard so the read path agrees with the write path.
+  preferNewerLastActivity(existingFm, built);
+
   output(built, raw, JSON.stringify(built, null, 2));
 }
 
@@ -2259,6 +2311,7 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   const deps: StateTransitionDeps = {
     clock: realClock,
     progressProvider: () => null, // beginPhase doesn't consult disk progress; syncStateFrontmatter's scan is authoritative
+    sourcePath: statePath,
   };
 
   let updated: string[] = [];
@@ -2520,6 +2573,7 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
   const deps: StateTransitionDeps = {
     clock: realClock,
     progressProvider: () => null,
+    sourcePath: statePath,
   };
 
   let updated: string[] = [];
@@ -2556,7 +2610,7 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
   // milestoneSwitch rebuilds frontmatter directly and must not run the
   // steady-state syncStateFrontmatter post-sync.
   const intent: StateTransitionIntent = { kind: 'milestoneSwitch', version, name: resolvedName };
-  const deps: StateTransitionDeps = { clock: realClock, progressProvider: () => null };
+  const deps: StateTransitionDeps = { clock: realClock, progressProvider: () => null, sourcePath: statePath };
 
   const lockPath = acquireStateLock(statePath);
   try {
@@ -2769,7 +2823,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   // set — leave Progress untouched (percent=null) rather than silently writing
   // fallback-derived wrong values. Projects without a milestone version (the common
   // sync-test shape) are unaffected: the gate only fires when a version is asserted.
-  const fmVersion = (extractFrontmatter(content) as Record<string, unknown>).milestone;
+  const fmVersion = (extractFrontmatter(content, statePath) as Record<string, unknown>).milestone;
   const versionStr = typeof fmVersion === 'string' && fmVersion.trim() ? fmVersion.trim() : null;
   let milestoneBounded = true;
   if (versionStr !== null && syncRoadmapRaw !== null) {
@@ -2833,7 +2887,7 @@ function cmdStatePrune(cwd: string, options: StatePruneOptions, raw: boolean): v
   // the explicit `Current Phase` field are unambiguous, so they stay document-wide;
   // the shared extractor is not narrowed for any other caller.
   const rawState = fs.readFileSync(statePath, 'utf-8');
-  const fm = extractFrontmatter(rawState) as Record<string, unknown>;
+  const fm = extractFrontmatter(rawState, statePath) as Record<string, unknown>;
   const body = stripFrontmatter(rawState);
   // Mirror buildStateFrontmatter's fmScalar: only string/number/boolean
   // frontmatter scalars are usable (an object/array `current_phase` is ignored,
@@ -2975,6 +3029,12 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
     progressProvider: () => null,
     clock: realClock,
     phaseInventoryProvider,
+    // Without this, `state rebuild --dry-run` reported a truncated STATE.md anonymously: the
+    // write path is named only because readModifyWriteStateMd parses with the path first, and
+    // the dry-run branch reads the file directly and never does. Dry-run is the read-only mode
+    // an operator reaches for first when they suspect corruption, so it is the one that most
+    // needs to name the file (#1882).
+    sourcePath: statePath,
   };
 
   const runRebuild = (content: string) => transitionCore(content, { kind: 'rebuild' }, deps);
@@ -3090,7 +3150,7 @@ function cmdStateCompletePhase(cwd: string, raw: boolean, overridePhase?: string
 
     // Bug #1255: operate on body only so the YAML frontmatter `status:` key
     // cannot shadow the body Status field (pipe-table or inline).
-    const existingFm = extractFrontmatter(content) as Record<string, unknown>;
+    const existingFm = extractFrontmatter(content, statePath) as Record<string, unknown>;
     const hasFrontmatter = Object.keys(existingFm).length > 0;
     let body = stripFrontmatter(content);
 

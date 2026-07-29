@@ -216,6 +216,8 @@ Research, plan, and verify a phase.
 | `--tdd` | TDD mode — planner applies `type: tdd` to eligible behavior-adding tasks so each begins with a failing test. Composable with `--mvp`: `--mvp --tdd` produces vertical slices where every behavior-adding task starts red-green. The leading `tracer` task also starts red under `--tdd`. |
 | `--granularity <coarse\|standard\|fine>` | Override the planning granularity for this invocation, ignoring config. Valid values: `coarse`, `standard`, `fine`. Takes precedence over `granularities.planning`, top-level `granularity`, and `planning.granularity` config. |
 
+**Smart-zone estimate report (#2631).** Every generated PLAN.md carries an optional `estimate` block (`{tokens, tasks, confidence}`). During the plan-check pass, `gsd-plan-checker` runs each plan's `estimate.tokens` through `estimate-check` against the configurable `workflow.smart_zone_tokens` budget (default `100000`) and reports the result; a plan above budget gets a concrete split recommendation. The report is **advisory and never blocks planning**, and it is skipped with `--skip-verify` since it runs inside the verification pass. `confidence` is derived from how many completed phases carry recorded actuals — `low` means fewer than three, so the figure is not yet calibrated for your project. See [ADR-2629](adr/2629-phase-effort-estimation-calibration.md).
+
 **Prerequisites:** `.planning/ROADMAP.md` exists
 **Produces:** `{phase}-RESEARCH.md`, `{phase}-{N}-PLAN.md`, `{phase}-VALIDATION.md`; `{phase}/SKELETON.md` when Walking Skeleton mode fires
 
@@ -234,6 +236,9 @@ When the researcher recommends external packages, it runs `slopcheck install <pk
 Packages sourced from WebSearch are tagged `[ASSUMED]` (not `[VERIFIED]`) and treated the same as `[SUS]` — they get a human checkpoint before install. If `slopcheck` cannot be installed, every recommended package is tagged `[ASSUMED]` and gated.
 
 See [Package Legitimacy Gate in the User Guide](USER-GUIDE.md#package-legitimacy-gate-v1421) for the full checkpoint format, verdict table, and troubleshooting.
+
+**In-repo value citation:**
+For any in-repo *discrete value* the researcher reports — an enum, a schema or type union, an error code, a status constant, or a filesystem path — a `[VERIFIED: …]` tag requires that it opened the source-of-truth file with `Read` during the run and cited the path **and line range** (`[VERIFIED: src/types/order.ts:14-22]`). The values are quoted verbatim in RESEARCH.md beside the claim, and any value used in a code example must also appear in that quote; anything else stays `[ASSUMED]`. A codebase `grep`, training memory, or a web search do not earn the tag on their own. This stops a plausible-but-drifted enum from reaching PLAN.md — where the planner lifts it into the plan's `<interfaces>` context block and the executor trusts it as ground truth — and surfacing only as a mid-execution deviation at typecheck.
 
 ```bash
 /gsd-plan-phase 1                              # Research + plan + verify phase 1
@@ -1350,6 +1355,20 @@ Update GSD with changelog preview, and optionally sync skills or reapply local p
 /gsd-update --next                  # Install from the @next RC dist-tag
 ```
 
+**Recovering your own files.** The update protects two different buckets, and
+they recover differently:
+
+| Bucket | What it holds | How it comes back |
+|---|---|---|
+| `gsd-local-patches/` | GSD-shipped files **you modified** | `/gsd-update --reapply` (three-way merge) |
+| `gsd-user-files-backup/` | Files **you added** inside GSD-managed directories | The update offers a restore before it finishes |
+
+When the backup is non-empty, the update lists what it saved, flags anything
+that may no longer be compatible with the release just installed, and asks
+whether to restore. Declining leaves the backup untouched — it is never
+deleted — so you can restore later with
+`gsd-tools restore-custom-files --config-dir <config-dir> --apply`.
+
 ---
 
 ## Code Quality Commands
@@ -1450,6 +1469,8 @@ Reviewers are prompted to verify the plan's claims against the actual repository
 | `--lm-studio` | Include LM Studio server review |
 | `--llama-cpp` | Include llama.cpp server review |
 | `--all` | Include all available reviewers (CLI + local model servers) |
+
+**`jq` prerequisite (some lanes only):** `--ollama`, `--lm-studio`, `--llama-cpp`, `--opencode`, and `--agy` parse JSON that GSD does not produce itself — OpenAI-compatible `/v1/chat/completions` responses, OpenCode's JSONL event stream, and Antigravity's conversation cache — so they require [`jq`](https://jqlang.org/download/) on your `PATH`. If `jq` is missing, `/gsd-review` reports those five as unavailable and tells you to install it, rather than running them into an empty review. The other six lanes (`--gemini`, `--claude`, `--codex`, `--coderabbit`, `--qwen`, `--cursor`) need no `jq`. Reading your configured models, hosts, and token budgets never requires `jq`.
 
 **Default reviewer behavior (no flags):**
 - If `review.default_reviewers` is **unset**, `/gsd-review` runs all detected reviewers (current default behavior).

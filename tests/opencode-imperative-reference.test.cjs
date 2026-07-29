@@ -6,9 +6,10 @@
  *
  * Proves opencode is driven through the PUBLIC Host-Integration Interface (the
  * imperative adapter), that its negotiated axes classify + negotiate correctly,
- * that negotiation fails CLOSED on a corrupted descriptor, that the Context7-
- * verified dispatch UPGRADE (background subagents, v1.15/v1.17) changes
- * `shouldFlattenDispatch`, and that the migration retired the hardcoded
+ * that negotiation fails CLOSED on a corrupted descriptor, that opencode's
+ * SYNCHRONOUS dispatch force-flattens (#2598 retracts #2087's background
+ * "upgrade" — the capability is behind an opt-in flag, not default-on), and that
+ * the migration retired the hardcoded
  * `runtime === 'opencode'` / `isOpencode` branches (folded into descriptor-driven
  * `runtime.hostBehaviors` + the combined-family engine install path).
  */
@@ -48,21 +49,34 @@ test('opencode axes classify as the programmatic-cli reference profile', () => {
   assert.equal(profileOf(OC_AXES), 'programmatic-cli');
 });
 
-// -- AC4: the Context7-verified UPGRADE (background dispatch) -----------------
+// -- AC4: dispatch is synchronous — the #2087 "upgrade" is retracted (#2598) --
 
-test('opencode descriptor declares background dispatch true/true (v1.15/v1.17 upgrade)', () => {
-  assert.equal(OC_AXES.dispatch.background, true, 'background subagents (v1.15 param, v1.17 default-on)');
-  assert.equal(OC_AXES.dispatch.backgroundDispatch, true);
+test('opencode descriptor declares background dispatch false/false (#2598)', () => {
+  // #2087 set these true, reading OpenCode v1.15/v1.17 as "background subagents
+  // enabled by default in all modes". That reading does not hold against current
+  // upstream `dev`, where the capability is opt-in:
+  //   experimentalBackgroundSubagents: enabledByExperimental("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS")
+  // `enabledByExperimental` falls back to the `experimental` flag and `bool()`
+  // defaults false, so the Task tool's `background` parameter is hidden from the
+  // model unless an operator opts in. Upstream #29638 (OPEN) confirms the session
+  // loop still `tasks.pop()`s one subtask at a time.
+  assert.equal(OC_AXES.dispatch.background, false,
+    'background subagents are behind an opt-in experimental flag, not default-on');
+  assert.equal(OC_AXES.dispatch.backgroundDispatch, false,
+    'concurrent dispatch cannot be relied on, so it must not be declared');
 });
 
-test('background UPGRADE changes shouldFlattenDispatch: false now (may background), true for the old axes', () => {
-  // Post-upgrade: opencode may run subagents concurrently → NOT force-flattened.
-  assert.equal(shouldFlattenDispatch(OC_AXES.dispatch), false,
-    'with background:true+backgroundDispatch:true, GSD must NOT force-flatten opencode dispatch');
-  // Pin the behavioral change: the pre-#2087 axes DID force-flatten.
-  const preUpgrade = { ...OC_AXES.dispatch, background: false, backgroundDispatch: 'undocumented' };
-  assert.equal(shouldFlattenDispatch(preUpgrade), true,
-    'pre-upgrade (background:false) opencode was force-flattened — this is the behavioral change #2087 lands');
+test('synchronous dispatch force-flattens; the retracted axes would not have', () => {
+  // Declaring a capability the host lacks is the failure mode #2598 closes:
+  // negotiation is built to fail CLOSED, so an unavailable concurrency
+  // capability must serialize rather than be trusted.
+  assert.equal(shouldFlattenDispatch(OC_AXES.dispatch), true,
+    'with background:false, GSD must force-flatten opencode dispatch (fail closed)');
+  // Pin the retracted contract so a silent re-flip is caught: had the #2087
+  // values been accurate, dispatch would NOT have been flattened.
+  const retracted = { ...OC_AXES.dispatch, background: true, backgroundDispatch: true };
+  assert.equal(shouldFlattenDispatch(retracted), false,
+    'the #2087 axes did not flatten — that is exactly the overstatement #2598 retracts');
 });
 
 test('opencode extension-event surface includes the #2087 additions (permission + session.error)', () => {

@@ -41,9 +41,16 @@ resolve the dispatch backend through the single composed CLI seam:
 gsd-tools claude-orchestration resolve-wave-dispatch \
   --waves "$WAVE_MANIFEST_PATH" --run-id "$PHASE_RUN_ID" \
   --runtime "$RUNTIME" \
-  ${AGENT_SDK_VERSION:+--agent-sdk-version "$AGENT_SDK_VERSION"} \
   --phase-dir "$PHASE_DIR" --raw
 ```
+
+`--agent-sdk-version` is no longer passed here (#2590). The router resolves the
+installed Agent SDK version itself; see **Agent SDK version** below. The former
+`${AGENT_SDK_VERSION:+--agent-sdk-version "$AGENT_SDK_VERSION"}` line was also
+**shell-dependent**: zsh does not word-split unquoted parameter expansions, so it
+collapsed to a SINGLE argv element there, `argValue()` never matched, and the run
+failed into `agent_sdk_version_unknown` — indistinguishable from genuinely
+unknown. Pass `--agent-sdk-version <ver>` explicitly only to pin a version.
 
 This composes `detectWorkflowBackend` (the gate ladder above) with
 `emitWorkflowScript` (the wave→plan mapping below) in ONE call — the pure
@@ -51,7 +58,7 @@ function backing it is `resolveWaveDispatch` in
 `gsd-core/bin/lib/claude-orchestration.cjs`. Response shape:
 `{ backend: 'inline'|'workflow', reason, script?, summary? }`.
 
-### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`, `$AGENT_SDK_VERSION`)
+### Manifest construction (`$WAVE_MANIFEST_PATH`, `$PHASE_RUN_ID`, `$PHASE_DIR`)
 
 These are NOT pre-existing execute-phase.md variables — the orchestrator builds
 them at this step, from data it already has in-context from `discover_and_group_plans`
@@ -116,15 +123,27 @@ them at this step, from data it already has in-context from `discover_and_group_
      #2285 finding 1). **Never** hardcode `true` — that would force worktree
      isolation on a plan the inline path explicitly keeps out of worktrees.
 
-4. **`$AGENT_SDK_VERSION`** — see below; OMIT when unknown (fails closed).
+4. **`$AGENT_SDK_VERSION`** — no longer built here; the router resolves it.
 
-**Agent SDK version:** the orchestrator has no scriptable (bash-computable) way
-to introspect the live Agent SDK version. When it can determine the version
-(e.g. from a host-exposed value it can read directly), pass
-`--agent-sdk-version`. When it cannot, OMIT the flag — `resolveWaveDispatch`'s
-gate 5 (`agent_sdk_version_unknown`) then fails closed to `inline` by design;
-this is not a bug, it is the same fail-closed posture documented above applied
-to a real absence of information.
+**Agent SDK version:** the orchestrator has no *bash-computable* way to
+introspect the live Agent SDK version — but the router runs in Node, so it
+resolves the version itself (#2590), in this order:
+
+1. an explicit `--agent-sdk-version <ver>` (pin a version),
+2. `GSD_AGENT_SDK_VERSION`,
+3. the **installed** `@anthropic-ai/claude-agent-sdk` package version, read from
+   its `package.json` on disk by walking `node_modules` up the tree. (Read
+   directly rather than via `require.resolve`: the SDK's `exports` map does not
+   expose `./package.json`, so `require.resolve` throws
+   `ERR_PACKAGE_PATH_NOT_EXPORTED`.)
+
+Previously nothing computed this at all, so gate 5 returned
+`agent_sdk_version_unknown` on **every** automated run and the Workflow backend
+could never activate — while `gsd-tools capability state` still reported the
+capability `active: true`. Fail-closed is preserved: when no version can be
+resolved, gate 5 still declines to `inline`. What changed is that a resolvable
+version is now actually found, so a genuinely-too-old SDK reports
+`agent_sdk_version_below_floor` — the truthful reason — instead of `unknown`.
 
 **If `backend == "workflow"`:** run the emitted `script` via the Workflow tool
 for THIS wave instead of the per-message `Agent()` loop in step 3. The script
@@ -142,8 +161,12 @@ worktree isolation applied PER PLAN from the manifest's `use_worktree` field
   gate (#2772 / #2285 finding 1).
 - **`files_modified` overlap → separate sequential stages** — the same overlap
   rule execute-phase already applies inline (step 1 of the wave loop).
-- **`resumeFromRunId`** — wired to the phase run id, so an interrupted phase
-  resumes without re-running completed plans.
+- **`resumeFromRunId`** — **pass `summary.resumeRunId` as the Workflow tool's
+  `resumeFromRunId` INPUT when you invoke the tool.** It is a tool parameter,
+  not a script function; the script deliberately does not call it (#2590 — doing
+  so threw "resumeFromRunId is not defined" and rejected the entire script).
+  Omitting it from the tool invocation silently regresses phase-resume to a
+  no-op: an interrupted phase re-runs completed plans.
 
 The orchestrator still runs steps 4–5.8 (wait for completion, worktree cleanup,
 post-merge gate, tracking update) exactly as it does for inline dispatch — the

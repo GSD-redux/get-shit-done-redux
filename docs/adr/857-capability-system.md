@@ -1,4 +1,4 @@
-# ADR-857: Capability system — five-step loop as core, features as plug-ins behind Loop Extension Points [Proposed]
+# ADR-857: Capability system — five-step loop as core, features as plug-ins behind Loop Extension Points [Accepted]
 
 - **Status:** Accepted — ratified 2026-07-17 (originally Proposed 2026-06-08); see "Ratification" below
 - **Date:** 2026-06-08

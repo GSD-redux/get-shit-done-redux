@@ -87,3 +87,51 @@ P3 is therefore narrowed to an honest convention rather than a forced generic:
 - The shared contract is documented, not forced: read verbs expose `warnings[]`; mutation verbs expose `warnings[]` + `errors[]`; `configured`/`reason` appear only on config-interpreting read verbs.
 
 Recurrence prevention does not depend on a shared envelope — it is delivered by P4's CI guard (a configured input resolving empty must carry a `reason`). (#1416)
+
+## Amendment — 2026-07-26: corrupt is not absent
+
+This ADR reasons exclusively about a **resolution miss** — ambient context is "off", the lookup finds nothing, resolution falls open to defaults. It is silent on the adjacent case: input that is *present but not usable*. That silence is why five engine read paths (#1879) could fold an unusable input into the very value that means "genuinely absent" without contradicting an Accepted ADR.
+
+The failure detection differs per site and is not one mechanism — naming them precisely, because the fix differs with them:
+
+| Site | How "not usable" is detected |
+|---|---|
+| `config-loader.cts` (#1880) | `SyntaxError` from `JSON.parse`, or an errno (`EACCES`) re-thrown by `platformReadSync` |
+| `roadmap-parser.cts` (#1881) | errno only — the parse is regex over text and cannot throw |
+| `frontmatter.cts` (#1882) | **neither** — no I/O and no throw site; an opening `---` with no closing fence is a *structural* check the function must make for itself |
+| `planning-workspace.cts` / `verify.cts` (#1883) | errno from `readdirSync` (`EACCES`/`EIO`) |
+| `planning-workspace.cts` (#1884) | an errno that was swallowed, then misclassified as a different condition |
+
+### What the two governing ADRs actually permit
+
+Read together rather than selectively, ADR-1411 and ADR-227 converge, and they do **not** license throwing as a cluster-wide answer:
+
+- **ADR-227's Decision** requires malformed input to be *"silently coerced to the contract's safe default … It MUST NOT be propagated. Throw only if the surrounding codebase treats throws as a normal-flow signal (it usually does not …)"*, and its rejection of throwing carves out only fields where a value is *"genuinely fatal (not just malformed) … a per-field decision, not the general rule."* Malformed is explicitly on the coerce side of that line.
+- **This ADR's own Decision** says: *"A resolver may fall back, but the fallback **must be a visible value, not a silent substitution**."*
+
+The gap in the five sites is therefore **not** that they fall back. It is that they fall back **invisibly**. Continuity is correct and stays; the silence is the defect.
+
+### The pattern — keep the fallback, make it visible
+
+Both mechanisms below preserve every current return value. Neither changes a return type, so no caller that treats "absent" and "unusable" identically breaks.
+
+- **In-band, where the result already carries provenance.** A read whose result is a provenance envelope names the cause in that envelope. `loadConfigResolved`'s `ConfigResolution { config, source, degraded }` is the first adopter (#1880): genuine absence keeps `degraded:false`; an unusable config sets `degraded:true` and adds a `reason`. `Resolution<T>` (`src/resolution.cts`) has **no** value for this case today — its documented vocabulary is `resolved` / `not_configured` / `configured_empty` / `configured_unresolved`, all of which describe a miss. #1880 introduces the unusable-input values and is responsible for documenting them alongside the existing four.
+- **Out-of-band, where the return is a bare value that cannot carry provenance.** A read that returns a bare sentinel or a plausible default keeps returning exactly that, and emits a **deduplicated `stderr` diagnostic** naming the file and the errno. This covers `getRoadmapPhaseInternal` (#1881), `findContextMdIn` / `listMilestoneArchiveDirs` (#1883), `getMilestoneInfo` (#1881) — whose fallback is a populated `{ version: 'v1.0', name: 'milestone' }` rather than an empty sentinel, and a plausible-looking default is *more* in need of a diagnostic than an empty one, not less — and `extractFrontmatter` (#1882), which returns `{}`. The repo's existing seam is `config-loader.cts`'s `_warnedUnknownConfigKeys` guard around `process.stderr.write`.
+
+  **This is unconditional, and that is a deliberate divergence from ADR-227.** ADR-227's Tradeoff proposes mitigating silent coercion with *"an opt-in debug log (`process.env.GSD_DEBUG`)"*; that env var has never been implemented, and an opt-in nobody sets is indistinguishable from the silence #1879 is about. This ADR's own Decision is the stronger rule and the one that governs here — degradation must be **visible**, not discoverable-on-request. The `_warnedUnknownConfigKeys` precedent is likewise unconditional. Appliers follow this ADR, not ADR-227's tradeoff, on that point.
+
+  **Dedup key.** Key the guard on the *resolved absolute path plus the errno*, not on the message text or the bare errno. Keying too coarsely suppresses a genuine second failure in a different file; keying on prose couples the guard to wording.
+
+**Throwing is not the cluster's answer.** It remains available only under ADR-227's genuinely-fatal carve-out, decided per call and justified in that PR — never inferred from the return shape. `withPlanningLock` (#1884) is the one site that qualifies, and it already throws; its defect is that it throws the *wrong* error after swallowing the real one.
+
+**Detection, not propagation, where there is no exception.** #1882 takes the out-of-band mechanism above like its siblings — the difference is only in how the condition is *found*. `extractFrontmatter` takes a `string`, does no I/O, and has no throw site, so there is nothing to catch: an opening `---` with no closing fence is a structural check the function must make for itself, and having made it, it distinguishes malformed-truncated from well-formed-and-empty and emits the same deduplicated diagnostic. The check has to be written; the signal shape is not a new one.
+
+**Wiring clause.** A `reason` that exists only inside an envelope no caller reads is not a delivered signal — it is an unreachable field. An in-band adopter MUST also expose the cause on the surface its callers actually use. `loadConfig`, the thin wrapper over `loadConfigResolved`, returns `.config` alone to roughly thirty call sites; adding `reason` to the envelope without a diagnostic on that path leaves every one of them exactly as blind as before.
+
+**Caller audit is mandatory per applier.** Implemented as specified, neither mechanism can break a caller — no return type changes. The audit exists to prove the applier *did* implement it as specified, which is a different claim. The concrete hazard: `src/state.cts` carries a comment recording that a defensive `try/catch` around `getMilestoneInfo` was **deliberately removed** under the #2245 audit because that function "never throws". An applier who reaches for a throw here — the intuitive fix, and the one this amendment rules out — silently breaks that invariant. Each applying PR records its caller audit for that reason.
+
+**CI ratchet.** `scripts/lint-resolution-provenance.cjs`'s `REGISTRY` currently holds one verb (`agent-skills`). The config-loader seam is not registered, so nothing today would catch a regression of #1880's contract. #1880 registers it.
+
+**Test methodology.** Assert the typed surface, not the diagnostic prose — `CONTRIBUTING.md`'s *Prohibited: Raw Text Matching on Test Outputs* applies to `stderr` as much as to `stdout`, and `tests/roadmap-parser.test.cjs` already states the local convention for this call surface. Where the mechanism's only observable is a diagnostic, the applier exposes the typed surface (a frozen reason enum, or the dedup set) and asserts on that.
+
+First appliers: #1880 (in-band), #1881 / #1882 / #1883 (out-of-band), #1884 (genuinely-fatal carve-out, already throwing) — epic #1879, Phase 0 = #2674.

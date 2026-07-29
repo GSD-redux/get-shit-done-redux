@@ -30,8 +30,8 @@ bloating this closed core.
 | id | name | applies to element kinds | consideration question |
 |----|------|--------------------------|------------------------|
 | empty | Empty / no data | form, list-collection, media | What is shown when there is no data — zero items, an unfilled form, or absent media? |
-| loading | Loading / in-flight | form, list-collection, media, nav | What is shown while data or content is still loading (skeleton, spinner, progressive reveal)? |
-| error | Error / failure | form, list-collection, media, nav | What is shown when the load or submit fails (message, retry affordance, partial fallback)? |
+| loading | Loading / in-flight | form, list-collection, media, nav, interactive-control | What is shown while data or content is still loading (skeleton, spinner, progressive reveal)? |
+| error | Error / failure | form, list-collection, media, nav, interactive-control | What is shown when the load or submit fails (message, retry affordance, partial fallback)? |
 | populated | Populated / happy path | list-collection, media | What does the normal populated (happy-path) state look like at a typical volume of content? |
 | partial | Partial / incomplete | form, list-collection | What is shown for partial or incomplete data — some fields or rows present, others missing? |
 | overflow | Overflow / truncation | list-collection, nav, static-content | What happens when content exceeds its container — scroll, clip, wrap, or truncate? |

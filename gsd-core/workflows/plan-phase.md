@@ -1292,7 +1292,7 @@ Skipping bounce step.
 **Read pass count:**
 ```bash
 BOUNCE_PASSES=$(gsd_run query config-get workflow.plan_bounce_passes 2>/dev/null || echo "2")
-BOUNCE_SCRIPT=$(gsd_run query config-get workflow.plan_bounce_script 2>/dev/null | jq -r '.' 2>/dev/null || true)
+BOUNCE_SCRIPT=$(gsd_run query config-get workflow.plan_bounce_script --raw 2>/dev/null || true)
 ```
 
 Display banner:

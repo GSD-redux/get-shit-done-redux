@@ -174,15 +174,12 @@ describe('autonomous verification deferral contract', () => {
     assert.ok(waitIdx !== -1, 'workflow must document the post-execution verification read');
     assert.ok(humanNeededIdx > waitIdx, 'human_needed branch must follow verification status read');
     assert.ok(promoteIdx > humanNeededIdx, 'human_needed branch must contain the promotion action');
-    assert.match(
-      section,
-      /VERIFY_STATUS=\$\(gsd_run query verification\.status "\$\{PHASE_DIR\}" 2>\/dev\/null \| jq -r '\.status\/\/empty'\)/,
-      'autonomous must route human validation through canonical verification.status',
-    );
-    assert.match(
-      section,
-      /jq -r '\.status\/\/empty'/,
-      'autonomous must parse the projected canonical status value',
+    // #2589: the verification read uses the native --pick flag (no jq dependency).
+    // String-based check (not a regex literal) so the assertion stays robust to
+    // shell metacharacters in the snippet and parses cleanly under espree.
+    assert.ok(
+      section.includes('VERIFY_STATUS=$(gsd_run query verification.status "${PHASE_DIR}" --pick status 2>/dev/null || true)'),
+      'autonomous must route human validation through canonical verification.status via the native --pick flag',
     );
     assert.doesNotMatch(
       section,

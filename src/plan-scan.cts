@@ -64,7 +64,7 @@ function isPlanSuperseded(planFullPath: string): boolean {
   } catch {
     return false;
   }
-  const status = extractFrontmatter(content)['status'];
+  const status = extractFrontmatter(content, planFullPath)['status'];
   return typeof status === 'string' && status.trim().toLowerCase() === 'superseded';
 }
 

@@ -165,22 +165,6 @@ interface PhaseCompletionProjection {
   verification_next_command: string;
 }
 
-function verificationNextCommand(
-  status: string,
-  phaseNumber: string,
-  slashRuntime: string,
-): string {
-  if (status === 'gaps_found') {
-    return `${formatGsdSlash('plan-phase', slashRuntime) as string} ${phaseNumber} --gaps`;
-  }
-  if (status === 'human_needed' || status === 'stale') {
-    return `${formatGsdSlash('verify-work', slashRuntime) as string} ${phaseNumber}`;
-  }
-  if (status === 'missing' || status === 'unknown') {
-    return `${formatGsdSlash('execute-phase', slashRuntime) as string} ${phaseNumber}`;
-  }
-  return '';
-}
 
 function projectCompletionStatus(
   implementationComplete: boolean,
@@ -201,8 +185,14 @@ function buildPhaseCompletionProjection(
 ): PhaseCompletionProjection {
   const implementationComplete = planCount > 0 && summaryCount >= planCount;
   const phaseFullDir = phaseDir ? path.join(cwd, phaseDir) : '';
+  // #2617: ONE verification-routing seam. init used to re-derive next_command
+  // from the status with its own projector, which had drifted from the router's
+  // table — it appended the phase number and answered `human_needed`; the table
+  // did neither. The router now owns both the content and the runtime
+  // projection, and init passes the phase number it already knows (its phaseDir
+  // is unresolved in some branches, where the router could not derive one).
   const verificationStatus = implementationComplete
-    ? readVerificationStatus(phaseFullDir)
+    ? readVerificationStatus(phaseFullDir, { runtime: slashRuntime, phaseNumber })
     : { status: 'not_required', next_action: '', next_command: '' };
   const projectedVerificationStatus = verificationStatus.status;
   const projectedVerificationAction = verificationStatus.next_action;
@@ -216,11 +206,7 @@ function buildPhaseCompletionProjection(
     phase_complete: phaseComplete,
     completion_status: projectCompletionStatus(implementationComplete, verificationPassed),
     verification_next_action: projectedVerificationAction,
-    verification_next_command: verificationNextCommand(
-      projectedVerificationStatus,
-      phaseNumber,
-      slashRuntime,
-    ),
+    verification_next_command: verificationStatus.next_command,
   };
 }
 
@@ -2550,8 +2536,9 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
       // with explicit '/' separators rather than path.join).
       relPath: string,
       content: string,
+      sourcePath?: string,
     ): boolean {
-      const frontmatter = extractFrontmatter(content);
+      const frontmatter = extractFrontmatter(content, sourcePath);
       const dirPart = relPath.replace(/\/SKILL\.md$/, '');
       const stem = dirPart.includes('/') ? dirPart.split('/').pop()! : dirPart;
       const name = (frontmatter['name'] as string) || stem;
@@ -2593,7 +2580,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
       const skillMdPath = path.join(rootPath, entry.name, 'SKILL.md');
       const content = platformReadSync(skillMdPath);
       if (content !== null) {
-        if (pushSkillEntry(`${entry.name}/SKILL.md`, content)) skillCount++;
+        if (pushSkillEntry(`${entry.name}/SKILL.md`, content, skillMdPath)) skillCount++;
       }
 
       // Nested layout: <entry>/skills/<stem>/SKILL.md
@@ -2618,7 +2605,7 @@ function buildSkillManifest(cwd: string, skillsDir: string | null = null): Skill
         // Use forward-slash separator explicitly so manifest paths are posix-style
         // on all platforms, matching the flat-layout behaviour above.
         const relPath = `${entry.name}/skills/${nested.name}/SKILL.md`;
-        if (pushSkillEntry(relPath, nestedContent)) skillCount++;
+        if (pushSkillEntry(relPath, nestedContent, nestedSkillMd)) skillCount++;
       }
     }
 

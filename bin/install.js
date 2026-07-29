@@ -325,7 +325,13 @@ const GSD_WINDSURF_HOOK_SCRIPTS = [
 
 // GSD-managed files under hooks/lib/ (helpers required by gsd-*.sh hooks).
 // git-cmd.js does not start with "gsd-" (shared classifier for #3129), gsd-graphify-rebuild.sh does.
-const GSD_HOOK_LIB_FILES = ['git-cmd.js', 'gsd-graphify-rebuild.sh'];
+// cursor-workspace.js (#2587) is required by the Cursor lifecycle hooks. Those
+// are staged individually by writeCursorHooksJson (Cursor sets
+// hostBehaviors.skipSharedHooksInstall, so it never reaches the bulk hooks/lib
+// copy below) — that function stages this helper alongside them. Listing it
+// here keeps uninstall and the manifest managing it for every OTHER runtime
+// that does receive hooks/lib.
+const GSD_HOOK_LIB_FILES = ['git-cmd.js', 'gsd-graphify-rebuild.sh', 'cursor-workspace.js'];
 
 const CODEX_AGENT_SANDBOX = {
   'gsd-executor': 'workspace-write',

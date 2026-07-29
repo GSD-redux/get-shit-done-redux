@@ -18,7 +18,7 @@ assumes a capability.
 negotiated capability set; see the [versioning policy](../explanation/interface-versioning-policy.md)
 for what a bump means.
 
-## The eight negotiated axes
+## The nine negotiated axes
 
 `HOST_INTEGRATION_AXES` is the closed vocabulary. Each axis takes a documented
 value (or the `undocumented` sentinel):
@@ -33,6 +33,7 @@ value (or the `undocumented` sentinel):
 | `stateIO` | `filesystem` \| `sandboxed-storage` \| `session-log-append` |
 | `transport` | `mcp` \| `native-extension` |
 | `runtime` | `node` \| `bun` \| `sandboxed-web` \| `python` \| `go` \| `rust` \| `electron` \| `other` |
+| `effortSurface` | `argv` \| `none` |
 
 ## Classification + negotiation
 
@@ -58,8 +59,8 @@ constructed fail-closed (they throw if a required host primitive is absent):
 
 The declarative + imperative adapters delegate install/uninstall in-process to
 the **same** `installRuntimeArtifacts` engine function `bin/install.js` uses, so
-adapter output is byte-identical to a first-party install (gated by
-`tests/golden-install-parity.test.cjs`).
+adapter output is byte-identical to a first-party install (gated by the
+differential attribution check, `tests/emitted-attribution.test.cjs`, ADR-2719).
 
 ## Profiles
 

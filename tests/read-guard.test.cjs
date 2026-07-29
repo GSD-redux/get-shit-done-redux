@@ -510,10 +510,20 @@ describe('bug #2520: read guard detects Claude Code without relying on CLAUDECOD
 // #2304 — Kimi tool vocabulary engages the read guard
 // ────────────────────────────────────────────────────────────────────────
 
-describe('#2304: Kimi tool vocabulary engages the read guard', () => {
+describe('#2304: Kimi tool vocabulary is normalized by the read guard', () => {
   // Payload shapes mirror kimi-cli's actual tool schemas
   // (src/kimi_cli/tools/file/{write,replace}.py): WriteFile takes
   // `path`/`content`, StrReplaceFile takes `path` + `edit: Edit | list[Edit]`.
+  //
+  // SCOPE (#2547 finding 3): these cases omit `session_id`, so what they prove
+  // is that normalizeKimiPayload maps the Kimi tool VOCABULARY through to the
+  // Write/Edit branch — not that the advisory fires on a live Kimi turn. Every
+  // real kimi-cli payload carries a non-empty `session_id` (hooks/events.py
+  // `_base()` sets it unconditionally; kimisoul.py calls `set_session_id()` at
+  // the top of every turn), and the guard treats any non-empty `session_id` as
+  // "this is Claude Code, skip". Do NOT read a green here as evidence of
+  // production behaviour — the '#2547' describe below pins what actually
+  // happens against the production shape.
   let tmpDir;
 
   beforeEach(() => { tmpDir = createTempDir('gsd-read-guard-2304-'); });
@@ -573,5 +583,78 @@ describe('#2304: Kimi tool vocabulary engages the read guard', () => {
 
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, '', 'ReadFile is not a write tool — guard must stay silent');
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #2547 finding 3 — the production Kimi payload shape (session_id present)
+// ────────────────────────────────────────────────────────────────────────
+
+describe('#2547: read guard against the production Kimi payload shape', () => {
+  // The #2304 cases above omit `session_id`. A live Kimi turn never does:
+  //   - src/kimi_cli/hooks/events.py `_base()` returns
+  //     {"hook_event_name", "session_id", "cwd"} — the field is unconditional;
+  //   - src/kimi_cli/soul/kimisoul.py calls `set_session_id(session.id)` at the
+  //     top of every turn, before tool dispatch, so the ContextVar holds a real
+  //     UUID (its `default=""` only applies outside a turn).
+  //
+  // The guard's Claude Code check treats ANY non-empty `data.session_id` as
+  // "Claude Code already enforces read-before-edit, skip" (#2520), so on Kimi
+  // the advisory is DORMANT. These tests pin that real behaviour, which is what
+  // makes the #2304 cases above trustworthy as vocabulary-only coverage.
+  //
+  // This is a CHARACTERIZATION of a known gap, not an endorsement of it.
+  // Redesigning the runtime discrimination is explicitly OUT OF SCOPE for
+  // #2547. If a later change makes the advisory fire on Kimi, these tests are
+  // SUPPOSED to fail — update them then, rather than deleting the coverage.
+  let tmpDir;
+
+  beforeEach(() => { tmpDir = createTempDir('gsd-read-guard-2547-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const LIVE_SESSION_ID = 'e7123e54-0977-45dd-848a-b9c8a45a5cd3';
+
+  for (const [label, toolInput, toolName] of [
+    ['StrReplaceFile', (p) => ({ path: p, edit: { old: 'const x = 1;', new: 'const x = 2;' } }), 'StrReplaceFile'],
+    ['WriteFile', (p) => ({ path: p, content: 'replacement\n' }), 'WriteFile'],
+    ['module-qualified WriteFile', (p) => ({ path: p, content: 'replacement\n' }), 'kimi_cli.tools.file:WriteFile'],
+  ]) {
+    test(`${label} with a populated session_id is dormant (known gap, #2547)`, () => {
+      const filePath = path.join(tmpDir, 'existing.js');
+      fs.writeFileSync(filePath, 'const x = 1;\n');
+
+      const result = runHook({
+        session_id: LIVE_SESSION_ID,
+        tool_name: toolName,
+        tool_input: toolInput(filePath),
+      });
+
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.stdout, '',
+        'The advisory is currently skipped on Kimi because the guard reads any ' +
+        'non-empty session_id as Claude Code. If this now emits, the runtime ' +
+        'discrimination changed — update this test and the #2304 block above.');
+    });
+  }
+
+  test('the ONLY difference is session_id — dropping it makes the same payload fire', () => {
+    // The false-green proof, asserted rather than described: one field flips the
+    // #2304 cases from firing to silent, and the live shape is the silent one.
+    const filePath = path.join(tmpDir, 'existing.js');
+    fs.writeFileSync(filePath, 'const x = 1;\n');
+    const toolInput = { path: filePath, edit: { old: 'const x = 1;', new: 'const x = 2;' } };
+
+    const withoutSession = runHook({ tool_name: 'StrReplaceFile', tool_input: toolInput });
+    const withSession = runHook({
+      session_id: LIVE_SESSION_ID,
+      tool_name: 'StrReplaceFile',
+      tool_input: toolInput,
+    });
+
+    assert.ok(withoutSession.stdout.length > 0,
+      'test-shape payload (no session_id) fires — this is what #2304 asserts');
+    assert.equal(withSession.stdout, '',
+      'production-shape payload (session_id present) is silent — so a green in ' +
+      'the #2304 block is evidence about vocabulary, not about production');
   });
 });

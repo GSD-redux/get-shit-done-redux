@@ -456,6 +456,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `edge-probe.cjs` | Spec-completeness edge probe (compiled from `src/edge-probe.cts`, gitignored) — the first adapter of the `probe-core` resolution model (ADR-550 Decision 7): shape classification, applicable-category relevance filter, edge proposal, and the `{explicit, backstop}` verification validators; delegates merge/rollup/CLI to `probe-core`; exports `classifyShape`, `applicableCategories`, `proposeEdges`, `analyzeCoverage`, `validateResolution`, `TAXONOMY` (#550) |
 | `eval-command-router.cjs` | Routes the `eval.score` verb (compiled from `src/eval-command-router.cts`, gitignored) — thin dispatcher into the eval scoring module (#1579) |
 | `eval.cjs` | Deterministic eval scoring (compiled from `src/eval.cts`, gitignored) — `computeEvalScore` (coverage*0.6 + infra*0.4, bands 80/60/40) + `cmdEvalScore` CLI domain guard; moves the gsd-eval-auditor's weighted arithmetic out of the prompt into code (#10 / #1579) |
+| `estimate-cli.cjs` | I/O seam over `phase-estimation.cjs` — the `estimate-check` and `estimate-calibration` query verbs; reads the `workflow.smart_zone_tokens` budget and `.planning/estimation-calibration.json`, both degrading to defaults rather than failing planning (#2630) |
 | `fallow-runner.cjs` | Fallow audit adapter for `/gsd-code-review`: binary resolution (`PATH` then `node_modules/.bin`), actionable missing-binary errors, and structural findings normalization |
 | `federated-config.cjs` | Defensive merge of capability-declared config slices into the loadConfig return value — ADR-857 phase 3b; exports `mergeFederatedConfig({ configSchema, isCentralKey, userConfig })` → `{ values, validKeys, warnings }`; live for migrated Capability keys that are atomically removed from the central config schema |
 | `frontmatter.cjs` | YAML frontmatter CRUD operations |
@@ -489,6 +490,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `package-identity.cjs` | Generated single source for GSD's published-package coordinates (npm name, bin name, repo slug, changelog URL, manual-install command), derived from package.json; read by the update worker, `check-latest-version`, and installer (#498) |
 | `package-legitimacy.cjs` | Registry-API package legitimacy verdicts (OK/SUS/SLOP) from npm/PyPI/crates, slopcheck optional |
 | `phase-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools phase` |
+| `phase-estimation.cjs` | Pure phase-effort estimation — `estimate`/`actuals` schema parse+render, smart-zone budget classification, and estimate-vs-actual calibration (median ratio, clamped, sample-gated). Confidence is derived from calibration sample count, never self-rated (ADR-2629) |
 | `phase-id.cjs` | Pure phase-id parsing/matching helpers — normalize, token match, milestone/phase-dir id parsing, phase-markdown regex builders (extracted from `core.cjs`, ADR-857) |
 | `phase-lifecycle.cjs` | Pure-computation phase lifecycle helpers extracted from the phase-lifecycle SDK handler |
 | `phase-locator.cjs` | Phase-directory search/location — active + archived phase-dir discovery, phase-id matching against the filesystem (extracted from `core.cjs`, ADR-857) |

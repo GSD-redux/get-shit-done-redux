@@ -139,4 +139,51 @@ describe('#2304: Kimi tool vocabulary engages the workflow guard', () => {
     assert.equal(r.exitCode, 0);
     assert.equal(r.stdout, '');
   });
+
+  // #2547 — normalizeKimiPayload rebuilt old_string/new_string with
+  // `String(e.old ?? '')`. `??` guards the value, not the dereference, so a
+  // NULLISH entry threw a TypeError at the top of the handler, before the Bash
+  // branch ran. The outer `catch { process.exit(0) }` swallowed it, so a Shell
+  // payload carrying a spurious malformed `edit` field walked straight past the
+  // force-add hard block. The `edit` field is never read on the Bash path — it
+  // only has to be present to trigger the crash, which is what makes this
+  // reachable from a command that has nothing to do with editing.
+  //
+  // The boundary is nullish specifically: `('x').old` is a legal property read
+  // yielding undefined, so a string entry never threw. The `null entry` case is
+  // the regression (exits 0 against pre-fix code); the rest are controls.
+  describe('#2547: a spurious malformed edit field does not disarm the force-add block', () => {
+    for (const [label, edit] of [
+      ['null entry (the #2547 bypass)', [null]],
+      // `{"toString": null}` is valid JSON whose coercion throws "Cannot
+      // convert object to primitive value" — the same crash-to-allow reached
+      // through String() rather than through the property read.
+      ['non-coercible old (the #2547 String() bypass)', [{ old: { toString: null }, new: 'x' }]],
+      ['non-coercible new (the #2547 String() bypass)', [{ old: 'x', new: { toString: null } }]],
+      ['string entry (control — never threw)', ['nope']],
+      ['bare null, not a list (control — normalizes to no edits)', null],
+    ]) {
+      test(`force-add still blocks with a spurious edit field (${label})`, () => {
+        const r = runHook({
+          tool_name: 'Shell',
+          tool_input: { command: 'git add -f secrets.env', edit },
+          cwd: repoDir,
+        });
+        assert.equal(r.exitCode, 2,
+          `a spurious malformed edit field (${label}) must not downgrade the force-add ` +
+          `block to a silent allow. Got exit ${r.exitCode}. stderr: ${r.stderr}`);
+        assert.equal(JSON.parse(r.stdout).code, 'WORKTREE_AGENT_FORCE_ADD_FORBIDDEN');
+      });
+    }
+
+    test('benign command with a malformed edit field still passes (no over-block)', () => {
+      const r = runHook({
+        tool_name: 'Shell',
+        tool_input: { command: 'git status', edit: [null] },
+        cwd: repoDir,
+      });
+      assert.equal(r.exitCode, 0, `benign command must stay allowed. stderr: ${r.stderr}`);
+      assert.equal(r.stdout, '');
+    });
+  });
 });

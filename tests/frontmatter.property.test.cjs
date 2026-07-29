@@ -293,3 +293,48 @@ describe('frontmatter: reconstructFrontmatter strict-YAML property (#1779)', () 
     );
   });
 });
+
+// (g)(h) #1882 added an optional `sourcePath` argument to extractFrontmatter, used only to
+//     name and deduplicate a diagnostic. These two properties are what protect the ~50 call
+//     sites: whatever the argument does, it must never reach the parsed result, and the
+//     LF/CRLF equivalence the parser already promised must survive the new branch.
+describe('frontmatter: extractFrontmatter sourcePath is parse-inert (#1882)', () => {
+  test('property: the optional path argument never changes the parsed result', (t) => {
+    const original = process.stderr.write;
+    t.after(() => { process.stderr.write = original; });
+    process.stderr.write = () => true;
+      fc.assert(
+        fc.property(
+          fc.oneof(
+            fc.string({ maxLength: 300 }),
+            fc.string({ unit: 'binary', maxLength: 300 }),
+          ),
+          fc.stringMatching(/^\/[a-z0-9/_-]{1,40}\.md$/),
+          (content, somePath) => {
+            assert.deepEqual(
+              extractFrontmatter(content, somePath),
+              extractFrontmatter(content),
+              'sourcePath must be inert with respect to the parsed value',
+            );
+          }
+        )
+      );
+  });
+
+  test('property: a document and its CRLF twin parse identically', (t) => {
+    const original = process.stderr.write;
+    t.after(() => { process.stderr.write = original; });
+    process.stderr.write = () => true;
+      fc.assert(
+        fc.property(fc.string({ maxLength: 300 }), (content) => {
+          const lf = content.replace(/\r\n/g, '\n');
+          const crlf = lf.replace(/\n/g, '\r\n');
+          assert.deepEqual(
+            extractFrontmatter(crlf),
+            extractFrontmatter(lf),
+            'CRLF and LF spellings of one document must parse the same',
+          );
+        })
+      );
+  });
+});

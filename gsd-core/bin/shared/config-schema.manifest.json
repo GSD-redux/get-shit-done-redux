@@ -19,6 +19,7 @@
     "workflow.auto_advance",
     "workflow.node_repair",
     "workflow.node_repair_budget",
+    "workflow.smart_zone_tokens",
     "workflow.human_verify_mode",
     "workflow.text_mode",
     "workflow.research_before_questions",

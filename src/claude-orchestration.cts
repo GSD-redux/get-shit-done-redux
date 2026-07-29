@@ -283,6 +283,14 @@ interface EmitInput {
   waves: Wave[];
   runId: string;
   budgetTokens?: number;
+  /**
+   * #2686 — the resolved `gsd-executor` model, threaded so this backend honors
+   * model_overrides / model_policy / model_profile exactly as the inline path
+   * does. Omitted from the emitted options when it is `"inherit"`, empty, or not
+   * a string (#2517: an empty model 404s on runtimes without native tier
+   * aliases). When absent the emitted script is byte-identical to pre-#2686.
+   */
+  executorModel?: string;
 }
 
 interface EmitOk {
@@ -352,15 +360,47 @@ function quoteString(s: string): string {
 }
 
 /**
+ * #2686 — the single decision of whether a resolved executor model is emittable,
+ * and what to emit. Shared by `agentOptions` (the emission) and the provenance
+ * comment (the claim about it) so the two can never disagree — a generated
+ * comment asserting something the generator does not actually do is the exact
+ * failure #2686 was filed for.
+ *
+ * Returns the model to emit, or `undefined` for "emit nothing":
+ *   - non-string        → malformed config; omit rather than throw, matching the
+ *                         defensive typeof guard `mapClaudeOverrideForRuntime`
+ *                         already carries in model-resolver for the same reason.
+ *   - empty/whitespace  → #2517: emitting `model: ""` 404s on runtimes without
+ *                         native tier aliases. Trimmed, so `" "` is also "none".
+ *   - "inherit"         → same rule; matched case-insensitively after trimming,
+ *                         since config is user-authored free text.
+ *
+ * NOTE it does NOT reject unscriptable characters — that is a hard input error,
+ * not a silent omission, and is rejected up front by `emitWorkflowScript` so the
+ * caller sees a reason instead of quietly losing their model routing.
+ */
+function emittableModel(executorModel: unknown): string | undefined {
+  if (typeof executorModel !== 'string') return undefined;
+  const trimmed = executorModel.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.toLowerCase() === 'inherit') return undefined;
+  return trimmed;
+}
+
+/**
  * Render the `agent()` options object for a single plan — `isolation: "worktree"`
  * ONLY when the plan's `use_worktree` is not explicitly `false` (#2772 / #2285
  * finding 1). This is the single place that decides worktree isolation for the
  * Workflow backend; it must never diverge from the inline path's per-plan gate.
  */
-function agentOptions(p: Plan): string {
-  return p.use_worktree === false
-    ? '{ agentType: "gsd-executor" }'
-    : '{ agentType: "gsd-executor", isolation: "worktree" }';
+function agentOptions(p: Plan, executorModel?: unknown): string {
+  const parts = ['agentType: "gsd-executor"'];
+  if (p.use_worktree !== false) parts.push('isolation: "worktree"');
+  // #2686: carry the resolved executor model so this backend honors
+  // model_overrides / model_policy / model_profile exactly as the inline path.
+  const model = emittableModel(executorModel);
+  if (model !== undefined) parts.push('model: ' + quoteString(model));
+  return '{ ' + parts.join(', ') + ' }';
 }
 
 /**
@@ -389,7 +429,7 @@ function emitWorkflowScript(input: EmitInput | null | undefined): EmitOk | EmitE
   if (input === null || input === undefined || typeof input !== 'object') {
     return { ok: false, reason: 'invalid_input' };
   }
-  const { phaseDir, waves, runId } = input;
+  const { phaseDir, waves, runId, executorModel } = input;
   // Identifiers/paths interpolated into the generated script must be free of any
   // character that could terminate a comment, break out of a string literal, or
   // smuggle control bytes — reject up front (security: #1143 review Finding 1).
@@ -399,9 +439,28 @@ function emitWorkflowScript(input: EmitInput | null | undefined): EmitOk | EmitE
   if (!isScriptableIdentifier(runId)) {
     return { ok: false, reason: 'runId must be a non-empty string without newlines/quotes/backslash/control chars' };
   }
+  // #2686 security: the resolved model is interpolated into BOTH an object
+  // literal (safe under quoteString) and a `//` provenance comment (NOT safe
+  // under quoteString — U+2028/U+2029 are LineTerminators that end a single-line
+  // comment in every engine, so a hostile model id would make the rest of the
+  // line live code). Reject the whole emission rather than silently dropping the
+  // model: an unscriptable id is malformed input, and `resolveWaveDispatch` maps
+  // an emit failure to the inline backend WITH a reason, so the user sees it.
+  // Only a STRING carrying such a character is rejected. A non-string is a
+  // malformed config rather than an injection attempt, and stays on the existing
+  // defensive path: `emittableModel` omits it and emission proceeds.
+  if (typeof executorModel === 'string' && UNSCRIPTABLE_CHAR_RE.test(executorModel)) {
+    return { ok: false, reason: 'executorModel must not contain newlines/quotes/backslash/control/line-separator chars' };
+  }
   if (!Array.isArray(waves) || waves.length === 0) {
     return { ok: false, reason: 'waves must be a non-empty array' };
   }
+  // Wave ids must be unique ACROSS waves, not just plan ids within one (#2590).
+  // Each wave emits a `phase("Wave <id>")` call plus a matching meta.phases
+  // entry, and the Workflow tool matches phase titles by exact string — two
+  // waves sharing an id would collapse into one progress group and misattribute
+  // every agent in the second wave to the first.
+  const seenWaveIds = new Set<string>();
   for (let i = 0; i < waves.length; i++) {
     const w = waves[i];
     if (w === null || typeof w !== 'object' || typeof w.id !== 'string') {
@@ -410,6 +469,10 @@ function emitWorkflowScript(input: EmitInput | null | undefined): EmitOk | EmitE
     if (!isScriptableIdentifier(w.id)) {
       return { ok: false, reason: 'waves[' + i + '].id must not contain newlines/quotes/backslash/control chars' };
     }
+    if (seenWaveIds.has(w.id)) {
+      return { ok: false, reason: 'duplicate wave id "' + w.id + '" — wave ids must be unique (phase titles must map 1:1)' };
+    }
+    seenWaveIds.add(w.id);
     if (!Array.isArray(w.plans) || w.plans.length === 0) {
       return { ok: false, reason: 'waves[' + i + '] must have a non-empty plans array' };
     }
@@ -442,15 +505,62 @@ function emitWorkflowScript(input: EmitInput | null | undefined): EmitOk | EmitE
     : null;
 
   const lines: string[] = [];
+  // `export const meta = {…}` MUST be the first statement in the script — the
+  // Workflow tool rejects the whole script otherwise (#2590). Leading comments
+  // are not statements, but the meta block is emitted first regardless so the
+  // contract holds under the strictest reading of "first statement".
+  //
+  // meta.phases must be a PURE LITERAL (no variables, calls, spreads, or
+  // template interpolation), and its titles are matched EXACTLY against the
+  // phase() calls emitted below.
+  lines.push('export const meta = {');
+  lines.push('  name: ' + quoteString('gsd-execute-' + runId) + ',');
+  lines.push('  description: ' + quoteString('GSD wave dispatch for ' + phaseDir) + ',');
+  lines.push('  phases: [');
+  for (const w of waves) {
+    lines.push('    { title: ' + quoteString('Wave ' + w.id) + ', detail: '
+      + quoteString(w.plans.length + ' plan(s)') + ' },');
+  }
+  lines.push('  ],');
+  lines.push('}');
+  lines.push('');
   lines.push('// GSD Workflow script — generated by the claude-orchestration capability (#1143)');
   lines.push('// phase: ' + phaseDir);
   lines.push('// BETA: preview-grade; on any failure the orchestrator falls back to inline dispatch.');
   lines.push('// Composes the SAME gsd-executor agent as the inline path, so artifacts (SUMMARY.md)');
   lines.push('// and commits are produced identically. Worktree isolation is per-plan (use_worktree)');
   lines.push('// and mirrors execute-phase.md step 2.5\'s submodule gate exactly (#2772 / #2285).');
-  lines.push('resumeFromRunId(' + quoteString(runId) + ')');
+  // #2686 / ADR-1411: state which model was applied — or that none resolved —
+  // so an opted-in user can SEE the routing decision instead of having to read
+  // the emitted options. A fallback must be a visible value, never silent.
+  //
+  // SECURITY: this is a `//` comment, and U+2028/U+2029 are ECMAScript
+  // LineTerminators that END a single-line comment in every engine — the ES2019
+  // change legalized them inside string LITERALS only, so `quoteString` alone is
+  // NOT sufficient here even though it is sufficient in the object literal
+  // above. An unscriptable model id would otherwise close the comment and make
+  // the remainder live top-level code. `emitWorkflowScript` rejects such ids
+  // before reaching this point (see the validation above), which is what makes
+  // interpolating here safe.
+  const provenanceModel = emittableModel(executorModel);
+  if (provenanceModel !== undefined) {
+    lines.push('// model: ' + quoteString(provenanceModel) + ' (resolved for gsd-executor, same source as the inline path)');
+  } else {
+    lines.push('// model: none applied — resolved to "inherit"/empty, so each agent inherits the');
+    lines.push('// orchestrator model (#2517: emitting an empty model 404s on some runtimes).');
+  }
+  lines.push('//');
+  // resumeFromRunId is a Workflow TOOL INPUT parameter, not a script function —
+  // calling it threw "resumeFromRunId is not defined" (#2590). The run id is
+  // carried in summary.resumeRunId for the caller to pass as that input.
+  lines.push('// resume: pass ' + quoteString(runId) + ' as the Workflow tool\'s resumeFromRunId input');
+  lines.push('// (it is a tool parameter, NOT a script function).');
   if (budgetTokens !== null) {
-    lines.push('budget(' + budgetTokens + ')');
+    // `budget` is a read-only object ({ total, spent(), remaining() }) supplied
+    // by the caller's token directive — a script cannot SET it, and `budget(n)`
+    // threw "budget is not a function" (#2590). Recorded as intent only.
+    lines.push('// budget: ' + budgetTokens + ' output tokens intended for this run; `budget` is');
+    lines.push('// read-only in a Workflow script — set it via the caller\'s token directive.');
   }
   lines.push('');
 
@@ -464,6 +574,8 @@ function emitWorkflowScript(input: EmitInput | null | undefined): EmitOk | EmitE
     totalPlans += wave.plans.length;
 
     lines.push('// Wave ' + wave.id);
+    // Title must match this wave's meta.phases entry EXACTLY.
+    lines.push('phase(' + quoteString('Wave ' + wave.id) + ')');
     for (let si = 0; si < stages.length; si++) {
       const stagePlanIds = stages[si];
       // Resolve back to plan objects for briefs (ids are unique within a wave — validated above).
@@ -471,21 +583,15 @@ function emitWorkflowScript(input: EmitInput | null | undefined): EmitOk | EmitE
       if (stages.length > 1) {
         lines.push('// Stage ' + si + (si > 0 ? ' (sequential — files_modified overlap)' : ''));
       }
-      if (stagePlans.length === 1) {
-        const p = stagePlans[0];
-        lines.push('parallel(');
-        lines.push('  agent(' + quoteString(p.brief) + ', ' + agentOptions(p) + ')');
-        lines.push(')');
-      } else {
-        lines.push('parallel(');
-        for (const p of stagePlans) {
-          lines.push('  agent(' + quoteString(p.brief) + ', ' + agentOptions(p) + '),');
-        }
-        // Replace trailing comma on the last agent line with nothing.
-        const lastIdx = lines.length - 1;
-        lines[lastIdx] = lines[lastIdx].replace(/,$/, '');
-        lines.push(')');
+      // parallel() takes an ARRAY OF THUNKS — `parallel(agent(…), agent(…))`
+      // threw "parallel() expects an array of functions" (#2590). Passing
+      // agent() results directly would also start every agent eagerly, before
+      // parallel() could bound concurrency.
+      lines.push('await parallel([');
+      for (const p of stagePlans) {
+        lines.push('  () => agent(' + quoteString(p.brief) + ', ' + agentOptions(p, executorModel) + '),');
       }
+      lines.push('])');
     }
     if (wi < waves.length - 1) lines.push('');
   }
@@ -519,6 +625,8 @@ interface ResolveWaveDispatchInput {
   waves: Wave[];
   runId: string;
   budgetTokens?: number;
+  /** #2686 — forwarded verbatim to `emitWorkflowScript`. */
+  executorModel?: string;
 }
 
 interface ResolveWaveDispatchInline {
@@ -581,6 +689,7 @@ function resolveWaveDispatch(input: ResolveWaveDispatchInput | null | undefined)
     waves: input.waves,
     runId: input.runId,
     budgetTokens: input.budgetTokens,
+    executorModel: input.executorModel,
   });
 
   if (!emitted.ok) {

@@ -488,3 +488,202 @@ describe('bug #3163: generate-claude-md uses AGENTS.md for Codex runtime', () =>
 });
   });
 }
+
+// ─── Bug #2565: generate-claude-profile runtime-aware target ─────────────
+// #2565 is the same divergence class as #3163 above, but in the sibling
+// handler cmdGenerateClaudeProfile (the /gsd-profile-user surface) instead
+// of cmdGenerateClaudeMd. The #3163 fix did not propagate here, so
+// generate-claude-profile kept writing .claude/CLAUDE.md on Codex installs.
+// These tests pin the parity contract: both handlers MUST resolve the
+// project instruction file through getProjectInstructionFile for non-claude
+// runtimes, and the final test asserts the two never diverge again
+// (the "generative fix divergence" guard from CLAUDE.md).
+describe('bug #2565: generate-claude-profile uses AGENTS.md for Codex runtime', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'PROJECT.md'),
+      '# Test Project\n\nA Codex-hosted project.\n',
+      'utf-8'
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function writeAnalysis() {
+    const analysisPath = path.join(tmpDir, '.planning', 'analysis.json');
+    fs.writeFileSync(
+      analysisPath,
+      JSON.stringify({
+        dimensions: { communication_style: { rating: 'terse-direct', confidence: 'HIGH' } },
+        data_source: 'test',
+      }),
+      'utf-8'
+    );
+    return analysisPath;
+  }
+
+  function writeConfig(obj) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'config.json'),
+      JSON.stringify(obj),
+      'utf-8'
+    );
+  }
+
+  test('project scope writes AGENTS.md when config.runtime is codex (stale claude_md_path overridden)', () => {
+    writeConfig({ runtime: 'codex', claude_md_path: './CLAUDE.md' });
+    const analysisPath = writeAnalysis();
+
+    const result = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath],
+      tmpDir,
+      { HOME: tmpDir }
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    const realTmpDir = fs.realpathSync(tmpDir);
+    const expectedAgentsPath = path.join(realTmpDir, 'AGENTS.md');
+
+    assert.strictEqual(parsed.claude_md_path, expectedAgentsPath,
+      `Expected output path to be AGENTS.md but got: ${parsed.claude_md_path}`);
+    assert.ok(fs.existsSync(expectedAgentsPath), 'AGENTS.md must exist after generation');
+    assert.ok(!fs.existsSync(path.join(realTmpDir, 'CLAUDE.md')),
+      'CLAUDE.md must not be created for Codex runtime');
+  });
+
+  test('project scope: GSD_RUNTIME=codex env var overrides config.runtime=claude', () => {
+    writeConfig({ runtime: 'claude', claude_md_path: './CLAUDE.md' });
+    const analysisPath = writeAnalysis();
+
+    const result = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath],
+      tmpDir,
+      { HOME: tmpDir, GSD_RUNTIME: 'codex' }
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    const realTmpDir = fs.realpathSync(tmpDir);
+    assert.strictEqual(parsed.claude_md_path, path.join(realTmpDir, 'AGENTS.md'),
+      `Expected AGENTS.md under GSD_RUNTIME=codex but got: ${parsed.claude_md_path}`);
+    assert.ok(!fs.existsSync(path.join(realTmpDir, 'CLAUDE.md')),
+      'CLAUDE.md must not be created when GSD_RUNTIME=codex');
+  });
+
+  test('project scope: --output flag overrides runtime detection when explicitly provided', () => {
+    writeConfig({ runtime: 'codex', claude_md_path: './CLAUDE.md' });
+    const analysisPath = writeAnalysis();
+
+    const result = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath, '--output', 'EXPLICIT-OUTPUT.md'],
+      tmpDir,
+      { HOME: tmpDir }
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    const realTmpDir = fs.realpathSync(tmpDir);
+    assert.strictEqual(parsed.claude_md_path, path.join(realTmpDir, 'EXPLICIT-OUTPUT.md'),
+      `Expected explicit --output honoured but got: ${parsed.claude_md_path}`);
+  });
+
+  test('project scope: claude runtime still writes .claude/CLAUDE.md', () => {
+    writeConfig({ runtime: 'claude', claude_md_path: './.claude/CLAUDE.md' });
+    const analysisPath = writeAnalysis();
+
+    const result = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath],
+      tmpDir,
+      { HOME: tmpDir }
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    const realTmpDir = fs.realpathSync(tmpDir);
+    assert.strictEqual(parsed.claude_md_path, path.join(realTmpDir, '.claude', 'CLAUDE.md'),
+      `Expected .claude/CLAUDE.md for claude runtime but got: ${parsed.claude_md_path}`);
+    assert.ok(fs.existsSync(path.join(realTmpDir, '.claude', 'CLAUDE.md')),
+      '.claude/CLAUDE.md must exist for claude runtime');
+    assert.ok(!fs.existsSync(path.join(realTmpDir, 'AGENTS.md')),
+      'AGENTS.md must not be created for claude runtime');
+  });
+
+  test('global scope: codex runtime writes to <CODEX_HOME>/AGENTS.md', () => {
+    writeConfig({ runtime: 'codex' });
+    const analysisPath = writeAnalysis();
+    const codexHome = path.join(tmpDir, 'codex-config');
+
+    const result = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath, '--global'],
+      tmpDir,
+      { HOME: tmpDir, CODEX_HOME: codexHome }
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    const expected = path.join(codexHome, 'AGENTS.md');
+    assert.strictEqual(parsed.claude_md_path, expected,
+      `Expected <CODEX_HOME>/AGENTS.md but got: ${parsed.claude_md_path}`);
+    assert.ok(fs.existsSync(expected), '<CODEX_HOME>/AGENTS.md must exist after generation');
+    assert.ok(!fs.existsSync(path.join(tmpDir, '.claude', 'CLAUDE.md')),
+      '~/.claude/CLAUDE.md must not be created for Codex global profile');
+  });
+
+  test('global scope: claude runtime writes to ~/.claude/CLAUDE.md (preserved, no env drift)', () => {
+    writeConfig({ runtime: 'claude' });
+    const analysisPath = writeAnalysis();
+
+    // #2659: set USERPROFILE alongside HOME so os.homedir() resolves to tmpDir
+    // on Windows too — Node's os.homedir() reads USERPROFILE on Windows and
+    // HOME on POSIX, so HOME alone leaves the real user profile in place on
+    // Windows and the path assertion fails cross-platform.
+    const result = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath, '--global'],
+      tmpDir,
+      { HOME: tmpDir, USERPROFILE: tmpDir }
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.claude_md_path, path.join(tmpDir, '.claude', 'CLAUDE.md'),
+      `Expected ~/.claude/CLAUDE.md for claude global but got: ${parsed.claude_md_path}`);
+    assert.ok(fs.existsSync(path.join(tmpDir, '.claude', 'CLAUDE.md')),
+      '~/.claude/CLAUDE.md must exist for claude global profile');
+  });
+
+  // Parity guard (CLAUDE.md "Generative Fix Divergence"): both
+  // generate-claude-md and generate-claude-profile MUST resolve the SAME
+  // project instruction path for the same runtime. Fails loudly if either
+  // handler re-diverges (the original #3163 -> #2565 drift).
+  test('parity: generate-claude-md and generate-claude-profile agree on project instruction path for codex', () => {
+    writeConfig({ runtime: 'codex' });
+    const analysisPath = writeAnalysis();
+
+    const mdResult = runGsdTools('generate-claude-md', tmpDir, { HOME: tmpDir });
+    assert.ok(mdResult.success, `generate-claude-md failed: ${mdResult.error}`);
+    const mdParsed = JSON.parse(mdResult.output);
+
+    // generate-claude-md created AGENTS.md; remove it so generate-claude-profile
+    // starts from the same empty-project state (independent parity read).
+    try { fs.unlinkSync(mdParsed.claude_md_path); } catch { /* already gone */ }
+
+    const profileResult = runGsdTools(
+      ['generate-claude-profile', '--analysis', analysisPath],
+      tmpDir,
+      { HOME: tmpDir }
+    );
+    assert.ok(profileResult.success, `generate-claude-profile failed: ${profileResult.error}`);
+    const profileParsed = JSON.parse(profileResult.output);
+
+    assert.strictEqual(profileParsed.claude_md_path, mdParsed.claude_md_path,
+      `Divergence: generate-claude-md targeted ${mdParsed.claude_md_path} but ` +
+      `generate-claude-profile targeted ${profileParsed.claude_md_path}. ` +
+      `Both handlers must share the runtime-aware instruction-file policy.`);
+  });
+});

@@ -63,21 +63,52 @@ const { MODEL_PROFILES } = modelProfilesMod;
 void stripShippedMilestones;
 void detectSchemaFiles;
 
-function cmdVerifySummary(
+interface SummaryVerification {
+  passed: boolean;
+  checks: {
+    summary_exists: boolean;
+    files_created: { checked: number; found: number; missing: string[] };
+    commits_exist: boolean;
+    self_check: string;
+  };
+  errors: string[];
+}
+
+/**
+ * Pure core of `verify-summary` (#2572).
+ *
+ * Same artifact↔git checks the CLI verb has always run, lifted out of the
+ * `output()` wrapper so other verbs can consume the structured
+ * `{ passed, checks, errors }` contract directly instead of shelling out and
+ * re-parsing JSON. `cmdVerifySummary` is now a thin adapter over this.
+ *
+ * Never throws and never writes to stdout: a missing SUMMARY, a non-repo, or an
+ * unresolvable commit all come back as structured `false`/`missing` values.
+ *
+ * Caveat for callers surfacing `commits_exist`: the hash pattern is a loose
+ * `\b[0-9a-f]{7,40}\b`, so any hex-shaped token in the prose counts as a
+ * candidate. That is cheap as an advisory signal and unacceptable as a gate.
+ *
+ * @param checkFileCount How many extracted candidates to probe. Defaults to 2 —
+ *   the value the CLI verb has always used. Pass `Infinity` to probe every
+ *   candidate (see `cmdPhaseComplete`, which reports on all of them).
+ * @param opts.checkCommits When `false`, the `git cat-file` probes are skipped
+ *   entirely and `commits_exist` comes back `false` meaning *not checked*.
+ *   Callers that do not surface `commits_exist` should pass `false` so this
+ *   stays a pure-filesystem check with no subprocess cost.
+ */
+function verifySummaryCore(
   cwd: string,
   summaryPath: string,
-  checkFileCount: number | undefined,
-  raw: boolean,
-): void {
-  if (!summaryPath) {
-    error('summary-path required');
-  }
-
+  checkFileCount?: number,
+  opts?: { checkCommits?: boolean },
+): SummaryVerification {
   const fullPath = path.join(cwd, summaryPath);
   const checkCount = checkFileCount || 2;
+  const checkCommits = opts?.checkCommits !== false;
 
   if (!fs.existsSync(fullPath)) {
-    const result = {
+    return {
       passed: false,
       checks: {
         summary_exists: false,
@@ -87,24 +118,74 @@ function cmdVerifySummary(
       },
       errors: ['SUMMARY.md not found'],
     };
-    output(result, raw, 'failed');
-    return;
   }
 
   const content = fs.readFileSync(fullPath, 'utf-8');
   const errors: string[] = [];
 
+  const projectRoot = path.resolve(cwd);
+
+  /**
+   * Is `candidate` plausibly a repo-relative file this check should probe?
+   *
+   * Deliberately narrowing. This is an ADVISORY, so the two error directions are
+   * not symmetric: a false positive tells a user their healthy project is
+   * missing a file that was never claimed, while a false negative just means one
+   * reference goes unprobed. Every rejection below is a noise class confirmed on
+   * #2685; when in doubt, skip rather than warn.
+   */
+  const isProbableProjectFile = (candidate: string): boolean => {
+    // Only repo-relative paths — a bare filename is too ambiguous to locate.
+    if (!candidate.includes('/')) return false;
+    // URLs, protocol-relative links, and any other scheme.
+    if (candidate.startsWith('http') || candidate.startsWith('//')) return false;
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return false;
+    // Globs name a set, not a file: `src/**/*.cts` is never "missing".
+    if (/[*?]/.test(candidate)) return false;
+    // Bare hostnames (`docs.example.com/guide.html`). A repo-relative path's
+    // first segment is a directory name, which in practice contains a dot only
+    // when it is a dotfile directory (`.github/`, `.changeset/`, `.planning/`)
+    // — i.e. the dot is at index 0. A dot anywhere later marks a hostname.
+    const firstSegment = candidate.split('/')[0] || '';
+    if (firstSegment.indexOf('.') > 0) return false;
+    // Containment guard: a `../`-bearing reference must not turn this advisory
+    // into a filesystem existence probe outside the project.
+    const resolved = path.resolve(projectRoot, candidate);
+    if (resolved !== projectRoot && !resolved.startsWith(projectRoot + path.sep)) return false;
+    return true;
+  };
+
+  // Pattern 2 excludes `[` and `]` from its path class (#2685 Blocker 1). All
+  // three SUMMARY templates prescribe a YAML flow sequence for `key-files`:
+  //
+  //     key-files:
+  //       created: [src/auth/login.ts, src/auth/session.ts]
+  //
+  // and the label matches `(?:Created|Modified|…):` case-insensitively. Without
+  // the bracket exclusion the class captures the literal `[` as part of the
+  // first path, yielding `[src/auth/login.ts` — a candidate that can never exist
+  // on disk. That fired on healthy projects built from GSD's own shipped
+  // template. The exclusion also stops a markdown list in the body from
+  // reintroducing the same artifact.
+  //
+  // Stripping frontmatter first was the other remedy offered on #2685. It is a
+  // verified no-op on top of this exclusion — measured identical extraction
+  // across all three shipped templates — because the exclusion already makes a
+  // flow-sequence line contribute nothing. Consequence worth naming: the
+  // `key-files` block, the most authoritative statement of what a phase created,
+  // is still not read. Recovering it needs a real frontmatter parse, which is
+  // deliberately left as a follow-up rather than smuggled in here.
   const mentionedFiles = new Set<string>();
   const patterns = [
     /`([^`]+\.[a-zA-Z]+)`/g,
-    /(?:Created|Modified|Added|Updated|Edited):\s*`?([^\s`]+\.[a-zA-Z]+)`?/gi,
+    /(?:Created|Modified|Added|Updated|Edited):\s*`?([^\s`[\]]+\.[a-zA-Z]+)`?/gi,
   ];
 
   for (const pattern of patterns) {
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(content)) !== null) {
       const filePath = m[1];
-      if (filePath && !filePath.startsWith('http') && filePath.includes('/')) {
+      if (filePath && isProbableProjectFile(filePath)) {
         mentionedFiles.add(filePath);
       }
     }
@@ -113,13 +194,13 @@ function cmdVerifySummary(
   const filesToCheck = Array.from(mentionedFiles).slice(0, checkCount);
   const missing: string[] = [];
   for (const file of filesToCheck) {
-    if (!fs.existsSync(path.join(cwd, file))) {
+    if (!fs.existsSync(path.resolve(projectRoot, file))) {
       missing.push(file);
     }
   }
 
   const commitHashPattern = /\b[0-9a-f]{7,40}\b/g;
-  const hashes = content.match(commitHashPattern) || [];
+  const hashes = checkCommits ? content.match(commitHashPattern) || [] : [];
   let commitsExist = false;
   if (hashes.length > 0) {
     for (const hash of hashes.slice(0, 3)) {
@@ -157,8 +238,21 @@ function cmdVerifySummary(
   };
 
   const passed = missing.length === 0 && selfCheck !== 'failed';
-  const result = { passed, checks, errors };
-  output(result, raw, passed ? 'passed' : 'failed');
+  return { passed, checks, errors };
+}
+
+/** CLI adapter over verifySummaryCore — arg guard + output shaping only. */
+function cmdVerifySummary(
+  cwd: string,
+  summaryPath: string,
+  checkFileCount: number | undefined,
+  raw: boolean,
+): void {
+  if (!summaryPath) {
+    error('summary-path required');
+  }
+  const result = verifySummaryCore(cwd, summaryPath, checkFileCount);
+  output(result, raw, result.passed ? 'passed' : 'failed');
 }
 
 /**
@@ -724,7 +818,7 @@ function cmdVerifyPlanStructure(cwd: string, filePath: string, raw: boolean): vo
     return;
   }
 
-  const fm = extractFrontmatter(content);
+  const fm = extractFrontmatter(content, fullPath);
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -1021,7 +1115,7 @@ function collectPromisedFilesAtOrAfterWave(phaseDir: string, minWave: number): S
     const planFullPath = path.join(phaseDir, planFile);
     const planContent = safeReadFile(planFullPath);
     if (!planContent) continue;
-    const fm = extractFrontmatter(planContent);
+    const fm = extractFrontmatter(planContent, planFullPath);
     const waveRaw = fm['wave'];
     const wave = typeof waveRaw === 'string' ? parseInt(waveRaw, 10) : (typeof waveRaw === 'number' ? waveRaw : NaN);
     if (isNaN(wave) || wave < minWave) continue;
@@ -1056,7 +1150,7 @@ function cmdVerifyKeyLinks(cwd: string, planFilePath: string, raw: boolean): voi
 
   // Derive the current plan's wave number and phase directory for wave-aware
   // missing-file handling (fix #1202).
-  const currentFm = extractFrontmatter(content);
+  const currentFm = extractFrontmatter(content, fullPath);
   const currentWaveRaw = currentFm['wave'];
   const currentWave = typeof currentWaveRaw === 'string'
     ? parseInt(currentWaveRaw, 10)
@@ -1364,8 +1458,9 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
         }
 
         for (const plan of plans) {
-          const content = fs.readFileSync(path.join(phasePath, plan), 'utf-8');
-          const fmData = extractFrontmatter(content);
+          const planFilePath = path.join(phasePath, plan);
+          const content = fs.readFileSync(planFilePath, 'utf-8');
+          const fmData = extractFrontmatter(content, planFilePath);
           if (!fmData['wave']) {
             warnings.push(`${phaseLabel}/${plan}: missing 'wave' in frontmatter`);
           }
@@ -2525,6 +2620,7 @@ export = {
   scanNegativeGrepCommentEcho,
   scanFileWideNegativeGateConflict,
   cmdVerifySummary,
+  verifySummaryCore,
   cmdVerifyPlanStructure,
   cmdVerifyPhaseCompleteness,
   cmdVerifyReferences,

@@ -116,16 +116,18 @@ gsd-tools claude-orchestration emit-workflow \
 
 The output is a generated Workflow script that maps GSD's model 1:1 onto Workflow primitives:
 
-- **waves → sequential `parallel()` barriers** (split into separate stages within a wave when `files_modified` overlap),
-- **plans → `agent(brief, { agentType: "gsd-executor", isolation: "worktree" })`** — the **same** executor agent and worktree isolation the inline path uses,
-- **`resumeFromRunId("<run-id>")`** wired to the phase run id,
-- **`budget(<tokens>)`** — a shared token pool across the whole phase (omit `--budget` to skip).
+- an `export const meta = { name, description, phases }` block as the **first statement** (the Workflow tool rejects any script without it),
+- **waves → a `phase("Wave <id>")` group and a sequential `await parallel([...])` barrier** (split into separate stages within a wave when `files_modified` overlap),
+- **plans → `() => agent(brief, { agentType: "gsd-executor", isolation: "worktree" })`** — the **same** executor agent and worktree isolation the inline path uses, each wrapped in a thunk because `parallel()` takes an **array of functions**,
+- the phase run id in **`summary.resumeRunId`**, and the intended token pool in **`summary.budgetTokens`**.
+
+`resumeFromRunId` and `budget` are **not** emitted as calls (#2590). `resumeFromRunId` is a Workflow **tool input**, and `budget` is a read-only object (`{ total, spent(), remaining() }`) fed by the caller's token directive — calling either from a script throws and the whole script is rejected.
 
 Because the script composes the same `gsd-executor` agent + worktree isolation + `SUMMARY.md` artifact as the inline path, the artifacts and commits it produces are identical — only the execution vehicle differs.
 
 ### Run the emitted script
 
-Feed the emitted script to Claude Code's Workflow tool (`/effort ultracode`, or an Agent SDK `Workflow` invocation). The orchestrator runs it; each `agent()` call spawns a `gsd-executor` in its own worktree, waves barrier between each other, and `resumeFromRunId` lets an interrupted phase resume without re-running completed plans.
+Feed the emitted script to Claude Code's Workflow tool (`/effort ultracode`, or an Agent SDK `Workflow` invocation), **passing `summary.resumeRunId` as the tool's `resumeFromRunId` input**. The orchestrator runs it; each `agent()` call spawns a `gsd-executor` in its own worktree, and waves barrier between each other. Omitting that input silently regresses phase-resume to a no-op — an interrupted phase re-runs completed plans.
 
 ---
 

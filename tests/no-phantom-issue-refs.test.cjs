@@ -1,9 +1,20 @@
 // allow-test-rule: runtime-contract-is-the-product (see #1073) — this guard asserts the
 // ABSENCE of phantom pre-migration issue references in repo text (docs, tests,
 // workflows). The file *content* is the product surface here (#1073): dangling
-// refs like #2551/#3182 that don't exist in open-gsd/gsd-core (highest real
-// issue is in the low thousands of the redux repo, not here) mislead triage and
-// manufacture phantom blockers. This test fails CI if such a ref is reintroduced.
+// refs that don't exist in open-gsd/gsd-core mislead triage and manufacture
+// phantom blockers. This test fails CI if such a ref is reintroduced.
+//
+// MAINTENANCE — this list ROTS and must be pruned (#2653).
+// GitHub numbers issues and pull requests from one shared counter, so every
+// entry below is phantom only until this repo's counter reaches it. Two of the
+// original three have already gone real:
+//   2551 -> merged PR "fix(#2366): scope parseCoverageMatrix to recognized coverage tables"
+//   2361 -> merged PR "docs(#2357): fix Registry Discussions category name and state its format"
+// While they remained listed this guard rejected legitimate citations of those
+// PRs — it fired on a build-artifact-drift fix that named PR 2551 as the
+// provenance of the drift, which is exactly the sort of accurate reference the
+// repo wants. Before adding a number, confirm it sits above the current
+// counter; once the counter passes an entry, delete it.
 
 'use strict';
 
@@ -17,9 +28,13 @@ const ROOT = path.resolve(__dirname, '..');
 
 // Phantom pre-migration (get-shit-done-redux) issue numbers with NO equivalent
 // in open-gsd/gsd-core. Matched only with a leading '#' or in an issues/ URL so
-// SSH key patterns like `id_ed25519` (which contain the digits "2551") are NOT
+// digit-bearing strings like an `id_ed25519` SSH key fingerprint are NOT
 // false-positives.
-const PHANTOM = ['2551', '3182', '2361'];
+//
+// Re-verified against the live repo on 2026-07-25, when the shared issue/PR
+// counter stood at 2654: 3182 is still a 404; 2551 and 2361 now resolve to
+// merged PRs and were removed (#2653).
+const PHANTOM = ['3182'];
 const REF_RE = new RegExp(
   '(?:#(?:' + PHANTOM.join('|') + ')\\b)|(?:issues/(?:' + PHANTOM.join('|') + ')\\b)',
 );

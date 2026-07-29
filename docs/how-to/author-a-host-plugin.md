@@ -27,8 +27,8 @@ from your axes):
 
 ## 2. Declare your host's integration axes
 
-Declare the eight negotiated axes (`embeddingMode`, `commandSurface`, `dispatch`,
-`modelMode`, `hookBus`, `stateIO`, `transport`, `runtime`) from your host's
+Declare the nine negotiated axes (`embeddingMode`, `commandSurface`, `dispatch`,
+`modelMode`, `hookBus`, `stateIO`, `transport`, `runtime`, `effortSurface`) from your host's
 **authoritative documentation** — never infer. Where the docs are silent, use the
 `undocumented` sentinel (the SDK degrades it fail-closed). See
 `docs/reference/host-integration-interface.md` for the closed vocabulary.

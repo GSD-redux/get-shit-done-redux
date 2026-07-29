@@ -27,12 +27,12 @@ Extract `commit_docs` and `config.response_language` from init JSON. Extract `de
 
 Resolve debugger model:
 ```bash
-debugger_model=$(gsd_run query resolve-model gsd-debugger 2>/dev/null | jq -r '.model' 2>/dev/null || true)
+debugger_model=$(gsd_run query resolve-model gsd-debugger --pick model 2>/dev/null || true)
 ```
 
 Read TDD mode from config:
 ```bash
-TDD_MODE=$(gsd_run query config-get workflow.tdd_mode 2>/dev/null | jq -r 'if type == "boolean" then tostring else . end' 2>/dev/null || echo "false")
+TDD_MODE=$(gsd_run query config-get workflow.tdd_mode --raw 2>/dev/null || echo "false")
 ```
 
 ## 1a. LIST subcommand
@@ -115,6 +115,10 @@ Print before spawning (runs in a subagent — no output until it returns, ~1–5
 ```
 
 Spawn session manager:
+
+<!-- #2517 model-omit-on-inherit -->
+
+> **Model omission (#2517).** Omit the `model` parameter entirely when the value it would carry (`debugger_model`) is `"inherit"` or empty. An empty value 404s on runtimes without native tier aliases — the default on non-Claude runtimes. Omitting it inherits the orchestrator's model. See @gsd-core/references/model-profile-resolution.md.
 
 ```
 Agent(

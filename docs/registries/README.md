@@ -118,7 +118,7 @@ Example:
 |---|---|---|
 | `interfacePoints` | yes, non-empty | Subset of the six ADR-1239 interface points it binds: `command`, `dispatch`, `model`, `hooks`, `state`, `artifact`. |
 | `profile` | yes | One of the three host-capability profiles: `programmatic-cli`, `declarative-cli`, `ide`. |
-| `axes` | yes | Object with **exactly** the eight ADR-1239 negotiated axes keys: `embeddingMode`, `commandSurface`, `dispatch`, `modelMode`, `hookBus`, `stateIO`, `transport`, `runtime`. |
+| `axes` | yes | Object with **exactly** the nine ADR-1239 negotiated axes keys: `embeddingMode`, `commandSurface`, `dispatch`, `modelMode`, `hookBus`, `stateIO`, `transport`, `runtime`, `effortSurface`. |
 
 `axes` value vocabulary:
 

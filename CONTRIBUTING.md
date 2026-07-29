@@ -7,29 +7,25 @@
 git clone https://github.com/open-gsd/gsd-core.git
 cd gsd-core
 
-# Install dependencies
-npm install
+# Activate the pinned Node version from .nvmrc
+nvm use
+
+# Validate your environment
+npm run check:env
+
+# Install dependencies (reproducible, lockfile-driven)
+npm ci
 
 # Run tests
 npm test
 ```
 
----
+`npm ci` is required over `npm install`. It installs exactly what `package-lock.json`
+specifies and fails fast if the lockfile is out of sync — this is intentional.
 
-## Bootstrap your environment
-
-For a step-by-step setup guide covering Node version managers, `npm ci`, the environment
-validator, daily commands, and troubleshooting, see:
-
-**[docs/contributing/bootstrap.md](docs/contributing/bootstrap.md)**
-
-Quick start:
-
-```bash
-nvm use           # activate the pinned Node version from .nvmrc
-npm run check:env # validate your environment
-npm ci            # install from lockfile
-```
+**[docs/contributing/bootstrap.md](docs/contributing/bootstrap.md)** is the source of truth
+for setup. See it for Node version managers other than nvm (fnm, asdf, mise), the
+environment validator, daily commands, and troubleshooting.
 
 ---
 
@@ -102,7 +98,7 @@ An ADR (Architecture Decision Record) documents a significant architectural deci
 
 **Do not compute a "next number" locally.** Any PR that uses the legacy `NNNN-*` sequential pattern for a *new* ADR or PRD will be asked to rename the file to the `<issue#>-<slug>.md` format before merge.
 
-**Example:** Issue #3485 was opened, approved, and its number became the prefix: `docs/adr/3485-adr-prd-naming-convention.md` on branch `docs/3485-adr-prd-naming-convention`.
+**Example:** Issue #2264 was opened, approved, and its number became the prefix: `docs/adr/2264-golden-parity-redesign.md`.
 
 **Rejection reasons:** Issue not approved before file was created, filename uses local-compute sequential number instead of issue#, multiple decisions bundled in one PR, file placed in wrong directory (`docs/adr/` vs `docs/prd/`).
 
@@ -203,7 +199,13 @@ This writes `.changeset/<adjective>-<noun>-<noun>.md`. Three random words → co
 
 Fragments are consolidated into `CHANGELOG.md` at release time by the release workflow. See [`.changeset/README.md`](.changeset/README.md) for the format spec and [#2975](https://github.com/open-gsd/gsd-core/issues/2975) for the rationale.
 
-**CI enforcement:** the `Changeset Required` workflow (`scripts/changeset/lint.cjs`) fails any PR that touches `bin/`, `gsd-core/`, `agents/`, `commands/`, `hooks/`, or `sdk/src/` without a `.changeset/*.md` fragment. The gate also **validates the content** of every changed fragment: a fragment whose frontmatter does not parse (e.g. a `pr: 0` placeholder that was never backfilled to the real PR number) fails the gate with `fail_invalid_fragment`, naming the offending file. This stops a malformed fragment from merging to `next` and only detonating later in the release job's CHANGELOG render.
+**CI enforcement:** the `Changeset Required` workflow (`scripts/changeset/lint.cjs`) fails any PR that touches `bin/`, `gsd-core/`, `src/`, `agents/`, `commands/`, `hooks/`, or `sdk/src/` without a `.changeset/*.md` fragment. (`src/` is the TypeScript source of truth compiled into `gsd-core/bin/lib/*.cjs`, so editing it is a user-facing change even though the generated `.cjs` is gitignored and never appears in the diff.)
+
+> **Running it locally.** The lint derives its changed-file set from `GITHUB_BASE_REF`, which only CI sets. `node scripts/changeset/lint.cjs` on a developer machine therefore does **not** evaluate your branch and can report success on a PR that CI will fail. Pass the base explicitly to reproduce the CI result:
+>
+> ```bash
+> GITHUB_BASE_REF=next node scripts/changeset/lint.cjs
+> ``` The gate also **validates the content** of every changed fragment: a fragment whose frontmatter does not parse (e.g. a `pr: 0` placeholder that was never backfilled to the real PR number) fails the gate with `fail_invalid_fragment`, naming the offending file. This stops a malformed fragment from merging to `next` and only detonating later in the release job's CHANGELOG render.
 
 **Opt-out:** PRs with no user-facing impact (test refactors, lint config changes, CI tweaks, formatting-only changes) can add the `no-changelog` label. The lint honors it. When unsure whether a change is user-facing, **add the fragment**.
 
@@ -761,6 +763,44 @@ npm run check:alias-drift
 
 This verifies generated alias artifacts are in sync with manifest source-of-truth.
 
+### Editing shipped content (gsd-core/workflows, references, templates, contexts, agents/, commands/gsd/)
+
+Editing the content of a copied shipped file — a `gsd-core/workflows/*.md`, an agent, a
+command definition — requires **zero manual fixture regeneration**. There is no
+committed path→hash manifest or per-file size baseline to update by hand; the
+differential attribution check (`tests/emitted-attribution.test.cjs`, ADR-2719) computes
+what your PR changed against `next` and requires every emitted-artifact hash that moved
+to be attributable to your diff. If it is not, the check fails and names the paths.
+
+Legitimate cases where emitted bytes move for a reason your diff cannot show directly —
+a converter change, for example — go through `tests/emitted-drift-ack.json` (name the
+path, say why); see `CONTEXT.md`'s `### Emitted Artifact Provenance` entry for the full
+model. Growth in a `gsd-core/workflows/*.md` or `agents/gsd-*.md` file is reported with
+its exact byte delta and needs the same acknowledgment; the outer tier hard caps in
+`tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs` are unaffected
+and still apply.
+
+You do not need to memorize any of this. **The failure output names its own remedy** — it
+tells you the file to create, that it does not exist yet, which key to use, and prints a
+minimal valid document you can paste. Note the two key spaces, because the message says
+which one applies: an unattributable **hash** ripple is keyed on the emitted path
+(`skills/gsd-add-tests/SKILL.md`), while **growth** is keyed on the bare filename as it
+appears under `gsd-core/workflows/` or `agents/` (`explore.md`). When you remove the last
+entry from `tests/emitted-drift-ack.json`, delete the file too — its presence is the
+alarm, so an empty one signals nothing. Nothing here is regenerated: if you find yourself
+looking for a baseline file to re-run a generator over, that file was deleted by #2724 and
+is not coming back.
+
+`npm run regen:derived` still exists for the artifacts that ARE committed and derived —
+`sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
+the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the
+one fixture family ADR-2719 §7 keeps committed, because it conflicts on 0 of 7 and its
+diffs are readable). Run it after a change to any of those, before committing:
+
+```bash
+npm run regen:derived
+```
+
 Optional local pre-commit hook entry (Git-native):
 
 ```bash
@@ -886,16 +926,16 @@ gsd-core/
                           the canonical example (the discuss-phase/modes split, #717). New modes for
                           discuss-phase land in
                           workflows/discuss-phase/modes/<mode>.md.
-                          Per-file sizes are pinned by a committed baseline
-                          (tests/workflow-size-baseline.json) plus loose tier
-                          hard caps, both in tests/workflow-size-budget.test.cjs.
-                          If you legitimately grow or shrink a workflow file,
-                          run `npm run size:baseline` to update the snapshot and
-                          justify any growth in your PR (or extract content
-                          lazily). The same guard covers agent files
-                          (agents/gsd-*.md). Full how-to + reference in
-                          docs/TESTING-SUITES.md (Workflow & agent size
-                          budget); see issue #1074.
+                          Per-file growth is caught by the differential
+                          attribution check (tests/emitted-attribution.test.cjs,
+                          ADR-2719) — it reports the exact byte delta and
+                          requires an entry in tests/emitted-drift-ack.json,
+                          no committed snapshot to regenerate. Loose tier
+                          hard caps remain in tests/workflow-size-budget.test.cjs.
+                          The same applies to agent files (agents/gsd-*.md,
+                          tests/agent-size-budget.test.cjs). Full how-to +
+                          reference in docs/TESTING-SUITES.md (Workflow &
+                          agent size budget); see issue #1074.
   references/           — Reference documentation (.md)
   templates/            — File templates
 agents/                 — Agent definitions (.md) — CANONICAL SOURCE

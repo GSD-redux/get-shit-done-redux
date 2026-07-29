@@ -1,7 +1,8 @@
 'use strict';
 
 /**
- * golden-parity-single-source.test.cjs — anti-divergence guard (#2266).
+ * golden-parity-single-source.test.cjs — anti-divergence guard (#2266, carried
+ * forward by #2724 / ADR-2719 Phase 4).
  *
  * tests/golden-install-parity.test.cjs and scripts/gen-golden-install-parity-zcode.cjs
  * used to each carry their OWN inline copy of buildParityManifest plus its 4
@@ -11,14 +12,20 @@
  * test harness's copy had — and shipped broken fixtures three times (#2086,
  * #2095, #2100). Phase 1 of the golden-install-parity redesign (#2266)
  * consolidated both call sites onto a single canonical implementation in
- * tests/helpers/install-shared.cjs.
+ * tests/helpers/install-shared.cjs. ADR-2264 Phase 1 (that consolidation) is
+ * explicitly RETAINED by ADR-2719 — #2724 deletes the two ORIGINAL consumers
+ * (golden-install-parity.test.cjs, gen-golden-install-parity-zcode.cjs), but
+ * their two REPLACEMENTS (tests/helpers/emitted-runtime.cjs's currentManifests
+ * and tests/helpers/emitted-provenance.cjs's loadManifests) import
+ * buildParityManifest the exact same way, so the divergence risk this guard
+ * exists for is unchanged — only the consumer names moved.
  *
  * This guard (mirrors the ADR-2121 anti-divergence pattern) enforces that
  * consolidation stays consolidated:
  *   1. install-shared.cjs actually exports a working buildParityManifest +
  *      the 4 exclusion constants with the expected shapes.
- *   2. Neither downstream consumer re-declares its own inline copy of the
- *      builder function or the exclusion constants.
+ *   2. No downstream consumer re-declares its own inline copy of the builder
+ *      function or the exclusion constants.
  */
 
 const { test } = require('node:test');
@@ -79,8 +86,8 @@ const FORBIDDEN_INLINE = [
 ];
 
 const CONSUMERS = [
-  { name: 'tests/golden-install-parity.test.cjs',       rel: ['tests', 'golden-install-parity.test.cjs'],     from: './helpers/install-shared.cjs' },
-  { name: 'scripts/gen-golden-install-parity-zcode.cjs', rel: ['scripts', 'gen-golden-install-parity-zcode.cjs'], from: 'tests/helpers/install-shared.cjs' },
+  { name: 'tests/helpers/emitted-runtime.cjs',    rel: ['tests', 'helpers', 'emitted-runtime.cjs'],    from: './install-shared.cjs' },
+  { name: 'tests/helpers/emitted-provenance.cjs', rel: ['tests', 'helpers', 'emitted-provenance.cjs'], from: './install-shared.cjs' },
 ];
 
 for (const consumer of CONSUMERS) {

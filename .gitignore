@@ -177,6 +177,7 @@ build/
 /gsd-core/bin/lib/phase-id.cjs
 /gsd-core/bin/lib/normalize-test-command.cjs
 /gsd-core/bin/lib/config-loader.cjs
+/gsd-core/bin/lib/unusable-input.cjs
 /gsd-core/bin/lib/model-resolver.cjs
 /gsd-core/bin/lib/loop-resolver.cjs
 /gsd-core/bin/lib/capability-state.cjs
@@ -184,6 +185,8 @@ build/
 /gsd-core/bin/lib/capability-activation.cjs
 /gsd-core/bin/lib/federated-config.cjs
 /gsd-core/bin/lib/phase-locator.cjs
+/gsd-core/bin/lib/phase-estimation.cjs
+/gsd-core/bin/lib/estimate-cli.cjs
 /gsd-core/bin/lib/roadmap-parser.cjs
 /gsd-core/bin/lib/drift.cjs
 /gsd-core/bin/lib/cjs-command-router-adapter.cjs

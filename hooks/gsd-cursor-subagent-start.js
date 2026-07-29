@@ -23,12 +23,16 @@
 'use strict';
 
 const fs = require('fs');
-const path = require('path');
 
 const MSG_PRESENT =
   'GSD: Subagent session started — review .planning/STATE.md for the current phase and any blockers before acting.';
 const MSG_ABSENT =
   'GSD: Subagent session started — no .planning/ workflow found.';
+
+// Workspace resolution is shared across the Cursor hooks (#2587) — see
+// hooks/lib/cursor-workspace.js. Staged next to these scripts by
+// writeCursorHooksJson so the require always resolves post-install.
+const { resolveStatePath } = require('./lib/cursor-workspace.js');
 
 let raw = '';
 const stdinTimeout = setTimeout(() => {
@@ -40,7 +44,7 @@ process.stdin.on('data', (chunk) => { raw += chunk; });
 process.stdin.on('end', () => {
   clearTimeout(stdinTimeout);
   try {
-    const statePath = path.join(process.cwd(), '.planning', 'STATE.md');
+    const statePath = resolveStatePath(raw);
     const statePresent = fs.existsSync(statePath);
     const msg = statePresent ? MSG_PRESENT : MSG_ABSENT;
     process.stdout.write(JSON.stringify({ additional_context: msg }));

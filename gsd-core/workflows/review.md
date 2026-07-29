@@ -26,18 +26,43 @@ command -v cursor-agent >/dev/null 2>&1 && echo "cursor:available" || echo "curs
 command -v agy >/dev/null 2>&1 && echo "antigravity:available" || echo "antigravity:missing"
 
 # Check local model servers (OpenAI-compatible HTTP API — no CLI binary required)
-OLLAMA_HOST=$(gsd_run query config-get review.ollama_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
 if [ -z "$OLLAMA_HOST" ] || [ "$OLLAMA_HOST" = "null" ]; then OLLAMA_HOST="http://localhost:11434"; fi
 curl -s --max-time 2 "${OLLAMA_HOST}/v1/models" >/dev/null 2>&1 && echo "ollama:available" || echo "ollama:missing"
 
-LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host --raw 2>/dev/null || echo "")
 if [ -z "$LM_STUDIO_HOST" ] || [ "$LM_STUDIO_HOST" = "null" ]; then LM_STUDIO_HOST="http://localhost:1234"; fi
 curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" >/dev/null 2>&1 && echo "lm_studio:available" || echo "lm_studio:missing"
 
-LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_HOST" ] || [ "$LLAMA_CPP_HOST" = "null" ]; then LLAMA_CPP_HOST="http://localhost:8080"; fi
 curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" >/dev/null 2>&1 && echo "llama_cpp:available" || echo "llama_cpp:missing"
+
+# jq prerequisite (#2589). The config/model/budget lookups in this workflow no
+# longer need jq — they use the native --raw/--pick flags. But the lanes listed
+# under "jq-dependent reviewer lanes" below parse structured JSON that gsd-tools
+# does not emit (OpenAI-compatible /v1/chat/completions responses, opencode's
+# JSONL event stream, agy's conversation cache), so they cannot run without jq.
+# Probe it here rather than letting each lane swallow exit 127 into empty output.
+command -v jq >/dev/null 2>&1 && echo "jq:available" || echo "jq:missing"
 ```
+
+**jq-dependent reviewer lanes.** `jq` is a production prerequisite for the
+`ollama`, `lm_studio`, `llama_cpp`, `opencode`, and `antigravity` lanes only. If
+`detect_clis` reports `jq:missing`, treat those five as **undetected** — they
+follow the same "known-but-undetected" path as a missing CLI (info note, ignored;
+and if they were the only selected reviewers, fail with the actionable message
+below rather than producing an empty review). Tell the user to install jq:
+
+```
+NOTE: jq is not on PATH — the ollama, lm_studio, llama_cpp, opencode, and
+antigravity reviewer lanes are unavailable. Install jq (https://jqlang.org/download/)
+or select a lane that does not require it (--gemini, --claude, --codex,
+--coderabbit, --qwen, --cursor).
+```
+
+The remaining lanes (`gemini`, `claude`, `codex`, `coderabbit`, `qwen`, `cursor`)
+do not require jq and must stay selectable on a jq-less host.
 
 Parse flags from `$ARGUMENTS`:
 - `--gemini` → include Gemini
@@ -241,31 +266,34 @@ Note: `INSTRUCTIONS_BLOCK_FILE`, `ROADMAP_SECTION_FILE`, and `PHASE_DIR` come fr
 Read model preferences from planning config. Null/missing values fall back to CLI defaults.
 
 ```bash
-# JSON scalars from gsd-tools.cjs query; use jq -r to strip JSON string quotes (install jq if missing)
-GEMINI_MODEL=$(gsd_run query config-get review.models.gemini 2>/dev/null | jq -r '.' 2>/dev/null || true)
-CLAUDE_MODEL=$(gsd_run query config-get review.models.claude 2>/dev/null | jq -r '.' 2>/dev/null || true)
-CODEX_MODEL=$(gsd_run query config-get review.models.codex 2>/dev/null | jq -r '.' 2>/dev/null || true)
-OPENCODE_MODEL=$(gsd_run query config-get review.models.opencode 2>/dev/null | jq -r '.' 2>/dev/null || true)
+# JSON scalars from gsd-tools.cjs query; --raw strips the JSON quotes natively
+# (no jq dependency — jq is absent on stock Windows/Git-Bash, #2589)
+GEMINI_MODEL=$(gsd_run query config-get review.models.gemini --raw 2>/dev/null || true)
+CLAUDE_MODEL=$(gsd_run query config-get review.models.claude --raw 2>/dev/null || true)
+CODEX_MODEL=$(gsd_run query config-get review.models.codex --raw 2>/dev/null || true)
+OPENCODE_MODEL=$(gsd_run query config-get review.models.opencode --raw 2>/dev/null || true)
 # review.models.agy, when set, is passed to agy as --model (escape hatch for a
 # pinned model that 404s server-side); otherwise agy uses its persisted default.
-AGY_MODEL=$(gsd_run query config-get review.models.agy 2>/dev/null | jq -r '.' 2>/dev/null || true)
+AGY_MODEL=$(gsd_run query config-get review.models.agy --raw 2>/dev/null || true)
 
 # Reasoning effort per reviewer (#2481). Empty unless the host's effortSurface
 # axis is `argv`. Pass --attempt N to walk ADR-443's escalation ladder.
-CLAUDE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host claude 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
-CODEX_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host codex 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
-OPENCODE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host opencode 2>/dev/null | jq -r '.effort_argv_string // ""' 2>/dev/null || true)
-
-# #1115: `--dangerously-bypass-hook-trust` only exists on codex-cli >= 0.137.0.
-# Capability-probe it so older installs don't fail with "unexpected argument"
-# (which, with stderr suppressed, produced a silent empty review). The codex
-# invocation works fine without the flag on older versions.
-if codex exec --help 2>/dev/null | grep -q -- '--dangerously-bypass-hook-trust'; then
-  CODEX_BYPASS_FLAG="--dangerously-bypass-hook-trust"
-else
-  CODEX_BYPASS_FLAG=""
-fi
+CLAUDE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host claude --pick effort_argv_string 2>/dev/null || true)
+CODEX_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host codex --pick effort_argv_string 2>/dev/null || true)
+OPENCODE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host opencode --pick effort_argv_string 2>/dev/null || true)
 ```
+
+**No hook-trust bypass (#2479):** the codex invocations below deliberately pass no
+hook-trust bypass flag and run no capability probe for one (#1115's former gate).
+That flag only bypasses *persisted* hook trust (a first-run condition) and flagless
+invocations work in steady state, while host-harness safety classifiers deny
+commands carrying it — and cited the probe itself as intent (#2479). An environment
+that genuinely hits an untrusted-hook prompt surfaces through the `.err` capture +
+empty-output guard below as a dropped lane with diagnosable stderr, not silent
+attrition. Do not reintroduce the flag (even spelled out in prose here — a
+regression test bans the literal file-wide) or the probe; the #1115 "unexpected
+argument" failure mode existed only because the flag was emitted, so with no flag
+there is nothing to version-gate.
 
 **Reviewer instances (#1517, optional):** when instances are configured, each selected
 instance invokes its base `cli` with its own `model`/`agent` (opaque argv, never
@@ -315,18 +343,18 @@ fi
 
 **Codex:**
 ```bash
-# $CODEX_BYPASS_FLAG is capability-gated above (#1115). Capture stderr to a .err
-# file (not /dev/null) so a non-zero exit — e.g. a flag the installed codex-cli
-# does not support — is diagnosable instead of a silent empty review.
+# No hook-trust bypass flag — see the #2479 note above. Capture stderr to a .err
+# file (not /dev/null) so a non-zero exit — e.g. an untrusted-hook prompt on a
+# first run — is diagnosable instead of a silent empty review (#1115).
 # Capture the review via codex's own `-o/--output-last-message <FILE>` (only the
 # final agent message) and discard stdout (#1698): on some platforms (Windows)
 # codex writes process-teardown output to stdout *after* the final message, and a
 # stdout redirect would append that noise to a non-empty file — slipping past the
 # `[ ! -s … ]` empty-output guard as a silently polluted review.
 if [ -n "$CODEX_MODEL" ] && [ "$CODEX_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_BYPASS_FLAG --model "$CODEX_MODEL" $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
+  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral --model "$CODEX_MODEL" $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
 else
-  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_BYPASS_FLAG $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
+  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
 fi
 if [ ! -s {run_dir}/gsd-review-codex.md ]; then
   echo "Codex review failed or returned empty output. stderr:" > {run_dir}/gsd-review-codex.md
@@ -339,7 +367,15 @@ fi
 Note: CodeRabbit reviews the current git diff/working tree — it does not accept a prompt or model flag. It may take up to 5 minutes. Use `timeout: 360000` on the Bash tool call. The source-grounding requirement in the build_prompt Review Instructions applies only to the prompt-fed reviewers above; CodeRabbit is a diff-only reviewer and never receives it. Treat its output as a diff observation, not a grounded plan-level verdict.
 
 ```bash
-coderabbit review --prompt-only 2>/dev/null > {run_dir}/gsd-review-coderabbit.md
+# #2605: same guard as every other leg (#2494/#2592). `2>/dev/null` with no
+# `[ ! -s … ]` stub left a zero-byte file when coderabbit was missing,
+# unauthenticated, or exited without stdout — write_reviews then rendered a
+# reviewer that "ran cleanly with nothing to report", silently dropping the lane.
+coderabbit review --prompt-only 2>{run_dir}/gsd-review-coderabbit.err > {run_dir}/gsd-review-coderabbit.md
+if [ ! -s {run_dir}/gsd-review-coderabbit.md ]; then
+  echo "CodeRabbit review failed or returned empty output. stderr:" > {run_dir}/gsd-review-coderabbit.md
+  cat {run_dir}/gsd-review-coderabbit.err >> {run_dir}/gsd-review-coderabbit.md 2>/dev/null
+fi
 ```
 
 **OpenCode (via GitHub Copilot):**
@@ -504,9 +540,9 @@ fi
 # #2176: grant the reviewer the repo under review. Without --add-dir, agy's
 # permission context never receives the cwd repo — the agent anchors on its own
 # ~/.gemini/antigravity-cli/scratch dir and reviews the plan text in isolation
-# (the exact failure the Review Instructions forbid). Capability-probed like the
-# Codex bypass flag so an older agy without --add-dir still runs; the prompt
-# anchor below keeps absolute-path reads possible on that fallback.
+# (the exact failure the Review Instructions forbid). Capability-probed so an
+# older agy without --add-dir still runs; the prompt anchor below keeps
+# absolute-path reads possible on that fallback.
 if agy --help 2>/dev/null | grep -q -- '--add-dir'; then
   set -- "$@" --add-dir "$_AGY_WS"
 fi
@@ -642,9 +678,9 @@ prepare_trimmed_prompt_for_reviewer() {
 }
 
 # Resolve prompt budget for Ollama: per-reviewer override > global default > null
-OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.ollama 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.ollama --raw 2>/dev/null || echo "null")
 if [ -z "$OLLAMA_REVIEWER_BUDGET" ] || [ "$OLLAMA_REVIEWER_BUDGET" = "null" ]; then
-  OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+  OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
 
 # Apply budget trim for Ollama if a budget is configured
@@ -668,31 +704,49 @@ if [ -n "$OLLAMA_REVIEWER_BUDGET" ] && [ "$OLLAMA_REVIEWER_BUDGET" != "null" ] &
 fi
 
 if [ "$OLLAMA_SKIP" != "1" ]; then
-OLLAMA_HOST=$(gsd_run query config-get review.ollama_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
 if [ -z "$OLLAMA_HOST" ] || [ "$OLLAMA_HOST" = "null" ]; then OLLAMA_HOST="http://localhost:11434"; fi
-OLLAMA_MODEL=$(gsd_run query config-get review.models.ollama 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+OLLAMA_MODEL=$(gsd_run query config-get review.models.ollama --raw 2>/dev/null || echo "")
 if [ -z "$OLLAMA_MODEL" ] || [ "$OLLAMA_MODEL" = "null" ]; then
   OLLAMA_MODEL=$(curl -s --max-time 2 "${OLLAMA_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "llama3"' 2>/dev/null || echo "llama3")
 fi
-jq -n --rawfile content "$OLLAMA_PROMPT_FILE" \
+# #2605: brought to parity with the LM Studio / llama.cpp legs below. Ollama
+# already emitted a non-empty stub, so it never silently vanished — but it was
+# the LEAST diagnosable leg: bare `-s` (which suppresses curl's error text as
+# well as the progress meter), stderr to /dev/null, and the response piped
+# straight into jq so the body — where an OpenAI-compatible server puts its error
+# JSON on an HTTP 4xx/5xx, with curl still exiting 0 — was discarded unread.
+OLLAMA_RESPONSE=$(jq -n --rawfile content "$OLLAMA_PROMPT_FILE" \
   --arg model "$OLLAMA_MODEL" \
   '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -s --max-time 120 -X POST "${OLLAMA_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>/dev/null | \
-  jq -r '.choices[0].message.content // "Ollama review failed or returned empty output."' \
-  > {run_dir}/gsd-review-ollama.md
-if [ ! -s {run_dir}/gsd-review-ollama.md ]; then
-  echo "Ollama review failed or returned empty output." > {run_dir}/gsd-review-ollama.md
+  curl -sS --max-time 120 -X POST "${OLLAMA_HOST}/v1/chat/completions" \
+    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-ollama.err)
+OLLAMA_CONTENT=$(echo "$OLLAMA_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+case "$OLLAMA_CONTENT" in
+  *[![:space:]]*) : ;;
+  *) OLLAMA_CONTENT="" ;;
+esac
+if [ -n "$OLLAMA_CONTENT" ]; then
+  printf '%s\n' "$OLLAMA_CONTENT" > {run_dir}/gsd-review-ollama.md
 fi
+if [ ! -s {run_dir}/gsd-review-ollama.md ]; then
+  echo "Warning: Ollama returned empty content — see {run_dir}/gsd-review-ollama.md" >&2
+  echo "Ollama review failed or returned empty output. stderr:" > {run_dir}/gsd-review-ollama.md
+  cat {run_dir}/gsd-review-ollama.err >> {run_dir}/gsd-review-ollama.md 2>/dev/null
+  echo "Raw response body:" >> {run_dir}/gsd-review-ollama.md
+  printf '%s\n' "$OLLAMA_RESPONSE" >> {run_dir}/gsd-review-ollama.md
+fi
+else
+echo "Ollama review skipped: prompt budget (${OLLAMA_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-ollama.md
 fi
 ```
 
 **LM Studio (local, OpenAI-compatible):**
 ```bash
 # Resolve prompt budget for LM Studio: per-reviewer override > global default > null
-LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.lm_studio 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.lm_studio --raw 2>/dev/null || echo "null")
 if [ -z "$LM_STUDIO_REVIEWER_BUDGET" ] || [ "$LM_STUDIO_REVIEWER_BUDGET" = "null" ]; then
-  LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+  LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
 
 # Apply budget trim for LM Studio if a budget is configured
@@ -716,36 +770,68 @@ if [ -n "$LM_STUDIO_REVIEWER_BUDGET" ] && [ "$LM_STUDIO_REVIEWER_BUDGET" != "nul
 fi
 
 if [ "$LM_STUDIO_SKIP" != "1" ]; then
-LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host --raw 2>/dev/null || echo "")
 if [ -z "$LM_STUDIO_HOST" ] || [ "$LM_STUDIO_HOST" = "null" ]; then LM_STUDIO_HOST="http://localhost:1234"; fi
-LM_STUDIO_MODEL=$(gsd_run query config-get review.models.lm_studio 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LM_STUDIO_MODEL=$(gsd_run query config-get review.models.lm_studio --raw 2>/dev/null || echo "")
 if [ -z "$LM_STUDIO_MODEL" ] || [ "$LM_STUDIO_MODEL" = "null" ]; then
   LM_STUDIO_MODEL=$(curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
 fi
+# #2605: same guard as the claude/gemini/codex legs above (#2494/#2592). Two
+# changes make a dropped lane diagnosable rather than silently omitted:
+#   1. `-sS` instead of `-s`. Plain `-s` silences curl's ERROR text too, so an
+#      unreachable endpoint produced no message anywhere. `-S` restores errors
+#      while keeping the progress meter off; they land in the .err sidecar.
+#   2. An `[ ! -s … ]` stub. Previously nothing was written when content was
+#      empty, so the file never existed, write_reviews omitted the section, and
+#      the result was indistinguishable from the reviewer never being selected.
+# The raw response body is appended too: an HTTP 4xx/5xx from an OpenAI-compatible
+# server exits 0 with the error JSON in the BODY, so stderr alone would be empty.
 LM_STUDIO_RESPONSE=$(jq -n --rawfile content "$LM_STUDIO_PROMPT_FILE" \
   --arg model "$LM_STUDIO_MODEL" \
   '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -s --max-time 120 -X POST "${LM_STUDIO_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>/dev/null)
+  curl -sS --max-time 120 -X POST "${LM_STUDIO_HOST}/v1/chat/completions" \
+    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-lm_studio.err)
 LM_STUDIO_ACTUAL_MODEL=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.model // ""' 2>/dev/null || echo "")
 if [ -n "$LM_STUDIO_ACTUAL_MODEL" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "null" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "$LM_STUDIO_MODEL" ]; then
   echo "Warning: LM Studio served model '$LM_STUDIO_ACTUAL_MODEL' but '$LM_STUDIO_MODEL' was requested. Review may be from a different model." >&2
 fi
 LM_STUDIO_CONTENT=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+# A whitespace-only reply must count as empty. `[ ! -s … ]` counts BYTES, so a
+# response of "   " would be written out and pass the guard as a "successful"
+# but vacuous review — the same indistinguishable-from-success outcome the guard
+# exists to prevent. Command substitution strips trailing newlines but not
+# spaces, so this case-glob is what actually closes it.
+case "$LM_STUDIO_CONTENT" in
+  *[![:space:]]*) : ;;
+  *) LM_STUDIO_CONTENT="" ;;
+esac
+# printf, not echo: `echo "$VAR"` swallows a value that is exactly `-n`/`-e`/`-E`
+# and would write 0 bytes, misclassifying a real reply as empty. Same idiom the
+# OpenCode leg already uses above.
 if [ -n "$LM_STUDIO_CONTENT" ]; then
-  echo "$LM_STUDIO_CONTENT" > {run_dir}/gsd-review-lm_studio.md
-else
-  echo "Warning: LM Studio returned empty content — skipping review." >&2
+  printf '%s\n' "$LM_STUDIO_CONTENT" > {run_dir}/gsd-review-lm_studio.md
 fi
+if [ ! -s {run_dir}/gsd-review-lm_studio.md ]; then
+  echo "Warning: LM Studio returned empty content — see {run_dir}/gsd-review-lm_studio.md" >&2
+  echo "LM Studio review failed or returned empty output. stderr:" > {run_dir}/gsd-review-lm_studio.md
+  cat {run_dir}/gsd-review-lm_studio.err >> {run_dir}/gsd-review-lm_studio.md 2>/dev/null
+  echo "Raw response body:" >> {run_dir}/gsd-review-lm_studio.md
+  printf '%s\n' "$LM_STUDIO_RESPONSE" >> {run_dir}/gsd-review-lm_studio.md
+fi
+else
+# A budget skip drops the lane just as silently as an empty response did: no
+# file, so write_reviews omits the section entirely. Leave the same diagnosable
+# stub so the skip is visible in the review output, not only on stderr (#2605).
+echo "LM Studio review skipped: prompt budget (${LM_STUDIO_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-lm_studio.md
 fi
 ```
 
 **llama.cpp (local, OpenAI-compatible):**
 ```bash
 # Resolve prompt budget for llama.cpp: per-reviewer override > global default > null
-LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.llama_cpp 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.llama_cpp --raw 2>/dev/null || echo "null")
 if [ -z "$LLAMA_CPP_REVIEWER_BUDGET" ] || [ "$LLAMA_CPP_REVIEWER_BUDGET" = "null" ]; then
-  LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens 2>/dev/null | jq -r '.' 2>/dev/null || echo "null")
+  LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
 fi
 
 # Apply budget trim for llama.cpp if a budget is configured
@@ -769,23 +855,40 @@ if [ -n "$LLAMA_CPP_REVIEWER_BUDGET" ] && [ "$LLAMA_CPP_REVIEWER_BUDGET" != "nul
 fi
 
 if [ "$LLAMA_CPP_SKIP" != "1" ]; then
-LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_HOST" ] || [ "$LLAMA_CPP_HOST" = "null" ]; then LLAMA_CPP_HOST="http://localhost:8080"; fi
-LLAMA_CPP_MODEL=$(gsd_run query config-get review.models.llama_cpp 2>/dev/null | jq -r '.' 2>/dev/null || echo "")
+LLAMA_CPP_MODEL=$(gsd_run query config-get review.models.llama_cpp --raw 2>/dev/null || echo "")
 if [ -z "$LLAMA_CPP_MODEL" ] || [ "$LLAMA_CPP_MODEL" = "null" ]; then
   LLAMA_CPP_MODEL=$(curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
 fi
-LLAMA_CPP_CONTENT=$(jq -n --rawfile content "$LLAMA_CPP_PROMPT_FILE" \
+# #2605: same guard as the LM Studio leg above. The response is captured to a
+# variable FIRST rather than piped straight into jq — piping discarded the raw
+# body, which is exactly where an OpenAI-compatible server puts its error JSON on
+# an HTTP 4xx/5xx (curl still exits 0), leaving nothing to diagnose.
+LLAMA_CPP_RESPONSE=$(jq -n --rawfile content "$LLAMA_CPP_PROMPT_FILE" \
   --arg model "$LLAMA_CPP_MODEL" \
   '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -s --max-time 120 -X POST "${LLAMA_CPP_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>/dev/null | \
-  jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+  curl -sS --max-time 120 -X POST "${LLAMA_CPP_HOST}/v1/chat/completions" \
+    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-llama_cpp.err)
+LLAMA_CPP_CONTENT=$(echo "$LLAMA_CPP_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
+# Whitespace-only reply counts as empty; printf not echo. See the LM Studio leg
+# above for why both are required.
+case "$LLAMA_CPP_CONTENT" in
+  *[![:space:]]*) : ;;
+  *) LLAMA_CPP_CONTENT="" ;;
+esac
 if [ -n "$LLAMA_CPP_CONTENT" ]; then
-  echo "$LLAMA_CPP_CONTENT" > {run_dir}/gsd-review-llama_cpp.md
-else
-  echo "Warning: llama.cpp returned empty content — skipping review." >&2
+  printf '%s\n' "$LLAMA_CPP_CONTENT" > {run_dir}/gsd-review-llama_cpp.md
 fi
+if [ ! -s {run_dir}/gsd-review-llama_cpp.md ]; then
+  echo "Warning: llama.cpp returned empty content — see {run_dir}/gsd-review-llama_cpp.md" >&2
+  echo "llama.cpp review failed or returned empty output. stderr:" > {run_dir}/gsd-review-llama_cpp.md
+  cat {run_dir}/gsd-review-llama_cpp.err >> {run_dir}/gsd-review-llama_cpp.md 2>/dev/null
+  echo "Raw response body:" >> {run_dir}/gsd-review-llama_cpp.md
+  printf '%s\n' "$LLAMA_CPP_RESPONSE" >> {run_dir}/gsd-review-llama_cpp.md
+fi
+else
+echo "llama.cpp review skipped: prompt budget (${LLAMA_CPP_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-llama_cpp.md
 fi
 ```
 

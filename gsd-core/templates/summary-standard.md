@@ -6,6 +6,10 @@ tags: [searchable tech]
 provides:
   - [bullet list of what was built/delivered]
 affects: [list of phase names or keywords]
+actuals:
+  tokens: [chars/4 over files actually changed]
+  tasks: [tasks completed]
+  commits: [commits made]
 tech-stack:
   added: [libraries/tools]
   patterns: [architectural/code patterns]

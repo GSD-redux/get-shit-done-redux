@@ -18,23 +18,23 @@ These apply to every PR — fix, enhancement, or feature. They are part of the m
 
 `CONTEXT.md` is the single source of truth for domain vocabulary. It defines:
 
-- **Domain terms** — canonical Module names, seam vocabulary, and Interface names (e.g. Dispatch Policy Module, Command Contract Validation Module, Planning Workspace Module)
+- **Domain modules and seams** — canonical Module names, seam vocabulary, and Interface names (e.g. Dispatch Policy Module, Command Contract Validation Module, Planning Workspace Module)
 - **Recurring PR mistakes** — CodeRabbit findings that recur; covers tests, shell guards, changesets, docs
 - **Workflow learnings** — patterns distilled from triage + PR cycles
 
 ### Format
 
-`CONTEXT.md` is written as flat named sections under `## Domain terms` (for Modules/seams) and `##` sections for recurring rules. Machine-oriented predicates use `KEY.SUBKEY=value` flat format in code blocks under `## AI Ops Memory`.
+`CONTEXT.md` is written as flat named sections under `## Glossary — Domain modules and seams` (for Modules/seams) and `##` sections for recurring rules. Machine-oriented predicates use `KEY.SUBKEY=value` flat format, grouped into the `##` section that owns the topic — `## Test rules and lint`, `## CodeRabbit + repo-process guards (machine-oriented predicates)`, or `## Workspace seams (machine-oriented predicates)`.
 
 Adding a new Module or seam:
 
-- Add a `### <Module Name>` entry under `## Domain terms`.
+- Add a `### <Module Name>` entry under `## Glossary — Domain modules and seams`.
 - Write one paragraph. State what the Module owns. Be concrete — list the Interface names and policy boundaries it covers.
 - Do not add synonyms; pick one name and use it everywhere.
 
 Extending an existing predicate:
 
-- Add a `KEY.SUBKEY=value` line inside the relevant `## AI Ops Memory` block.
+- Add a `KEY.SUBKEY=value` line inside the relevant predicate section — for a test or lint rule that is `## Test rules and lint`.
 - Do not create a new top-level section for a variation on an existing concept.
 
 When to add a new predicate vs extend an existing one:
@@ -96,11 +96,11 @@ docs/adr/<issue#>-<kebab-slug>.md    (new ADRs)
 docs/prd/<issue#>-<kebab-slug>.md    (new PRDs)
 ```
 
-Example: `docs/adr/3485-adr-prd-naming-convention.md`.
+Example: `docs/adr/2264-golden-parity-redesign.md`.
 
 **Why:** GitHub issue numbers are server-assigned and atomic — the reservation mechanism already exists because the issue-first rule requires it. Promoting the issue# to the artifact ID eliminates the entire collision class that the `NNNN-*` local-compute scheme created (see the `0010-*` × 2 and `0011-*` × 3 duplicates on disk).
 
-**Migration policy:** Legacy ADRs `0001-*` through `0011-*` keep their numbers as immutable historical record. The new convention applies to all ADRs and PRDs created on or after the merge of the implementing PR (#3485). Do not renumber legacy files.
+**Migration policy:** Legacy ADRs `0001-*` through `0011-*` keep their numbers as immutable historical record. The new convention applies to all ADRs and PRDs created on or after the merge of the implementing PR (#3485 — a pre-rename number from `get-shit-done-redux`; it does not resolve in `open-gsd/gsd-core`, whose issue numbering restarted at the rename). Do not renumber legacy files.
 
 For the end-to-end workflow — opening the issue, waiting for approval, creating the file, and submitting the PR — see **[CONTRIBUTING.md — "Proposing an ADR or PRD"](../CONTRIBUTING.md#proposing-an-adr-or-prd)**.
 

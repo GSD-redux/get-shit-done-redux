@@ -317,8 +317,8 @@ function cmdRequirementsReadyIds(cwd: string, args: string[], raw: boolean): voi
     siblingPlanFiles = [];
   }
 
-  const parseFrontmatterReqIds = (content: string): string[] => {
-    const fm = extractFrontmatter(content);
+  const parseFrontmatterReqIds = (content: string, sourcePath?: string): string[] => {
+    const fm = extractFrontmatter(content, sourcePath);
     const fmReq = fm.requirements;
     if (Array.isArray(fmReq)) return fmReq.map((r) => String(r).trim()).filter(Boolean);
     if (typeof fmReq === 'string') {
@@ -346,7 +346,7 @@ function cmdRequirementsReadyIds(cwd: string, args: string[], raw: boolean): voi
         continue;
       }
 
-      const siblingReqIds = parseFrontmatterReqIds(siblingContent);
+      const siblingReqIds = parseFrontmatterReqIds(siblingContent, siblingPath);
       const siblingDeclaresId = siblingReqIds.some((id) => id.toLowerCase() === reqId.toLowerCase());
       if (!siblingDeclaresId) continue;
 
@@ -594,7 +594,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       for (const s of summaries) {
         try {
           const content = fs.readFileSync(path.join(phasesDir, dir, s), 'utf-8');
-          const fm = extractFrontmatter(content);
+          const fm = extractFrontmatter(content, path.join(phasesDir, dir, s));
           const rawOneLiner = fm['one-liner'];
           const oneLiner = (typeof rawOneLiner === 'string' ? rawOneLiner : '') || extractOneLinerFromBody(content);
           if (oneLiner) {
@@ -734,7 +734,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         version,
         nextMilestoneCommand: formatGsdSlash('new-milestone', resolveRuntime(cwd)) as string,
       },
-      { clock: realClock, progressProvider: () => null },
+      { clock: realClock, progressProvider: () => null, sourcePath: statePath },
     );
     writeStateMd(statePath, result.content, cwd);
   }

@@ -21,8 +21,10 @@ Claude Code ships an orchestration primitive that sidesteps exactly this: the
 **Workflow tool** (the engine behind `/effort ultracode`, Agent SDK ≥ v0.3.149).
 A Workflow script *is* the orchestrator — it runs from the main loop and spawns
 subagents itself via `agent()`, `parallel()` (barrier), `pipeline()`, and
-`phase()`, with `isolation: 'worktree'`, a shared token `budget`, and
-`resumeFromRunId`.
+`phase()`, with `isolation: 'worktree'`. Two related capabilities are **tool
+inputs rather than script functions**: the token `budget` is a read-only object
+a script reads but cannot set, and `resumeFromRunId` is a parameter passed when
+invoking the tool.
 
 ## The capability
 
@@ -69,8 +71,9 @@ Workflow backend activates only when *every* gate passes; any miss degrades to
 | Plan (`use_worktree` not `false`) | `agent(brief, { agentType: 'gsd-executor', isolation: 'worktree' })` |
 | Plan (`use_worktree: false`) | `agent(brief, { agentType: 'gsd-executor' })` (no isolation) |
 | `files_modified` overlap | forces the plans into separate sequential stages |
-| Phase run id | `resumeFromRunId("<id>")` |
-| Phase token cap | `budget(<tokens>)` |
+| Wave | a `phase("Wave <id>")` group, matching a `meta.phases` entry |
+| Phase run id | `summary.resumeRunId` → pass as the Workflow tool's `resumeFromRunId` **input** |
+| Phase token cap | recorded in `summary.budgetTokens`; `budget` is read-only in a script |
 
 Because the emitted script composes the **same** `gsd-executor` agent the
 inline path uses, with worktree isolation applied **per plan** from the

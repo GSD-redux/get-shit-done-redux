@@ -2,7 +2,7 @@
  * ADR-22 Drift-Guard Decision Module
  *
  * Implements the authority ladder and severity classification table from
- * ADR-22 (docs/adr/0022-source-grounding-drift-guard.md).
+ * ADR-22 (docs/adr/22-plan-drift-guard.md).
  *
  * Design constraints:
  *   - Pure module: no I/O, no require() calls, no side effects.

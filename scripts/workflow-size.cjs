@@ -5,10 +5,13 @@
  *
  * Single source of truth for measuring workflow `.md` file sizes in bytes.
  *
- * Shared by `tests/workflow-size-budget.test.cjs` (the CI guard) and
- * `scripts/update-size-baseline.cjs` (the baseline generator) so the two can
- * never disagree on HOW a file is measured.  A divergence between the generator
- * and the guard would silently mis-record the baseline (issue #1074).
+ * Shared by `tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs`
+ * (the tier hard-cap guards), `tests/helpers/emitted-runtime.cjs`'s `currentSizes()`
+ * (the differential attribution check's size ratchet, ADR-2719 Phase 4), and
+ * `scripts/gen-emitted-baseline.cjs` (the baseline publisher) so none of them can
+ * disagree on HOW a file is measured (issue #1074). `scripts/update-size-baseline.cjs`,
+ * the original third consumer, was removed by #2724 along with the per-file baseline
+ * it generated.
  */
 
 const fs = require('fs');
@@ -19,11 +22,16 @@ const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 /**
  * Byte size of a file, counted as on an LF (Unix) checkout.
  *
- * The size budget is calibrated against `wc -c` on a Unix (LF) checkout, but
- * these `.md` files have no `eol=lf` in `.gitattributes`, so Windows checks
- * them out as CRLF.  Counting raw on-disk bytes there adds one byte per line,
- * a Windows-only false positive that diverges from the LF calibration basis
+ * The size budget is calibrated against `wc -c` on a Unix (LF) checkout.
+ * Counting raw on-disk bytes on a CRLF checkout adds one byte per line, a
+ * Windows-only false positive that diverges from the LF calibration basis
  * (issue #683).  Stripping CR yields the same LF byte count on every platform.
+ *
+ * `.gitattributes:2` (`* text=auto eol=lf`, added in #1088) now normalizes these
+ * files to LF on checkout everywhere, so the CRLF case should not arise from a
+ * normal clone — but this stays unconditional because it also covers a working
+ * tree produced some other way (an unpacked archive, an editor that rewrites
+ * line endings, a checkout predating that attribute).
  * This is still a raw byte count (not a trailing-newline-stripping line count).
  *
  * @param {string} filePath - Absolute or relative path to the file.

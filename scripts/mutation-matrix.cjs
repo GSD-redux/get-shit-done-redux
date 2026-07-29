@@ -145,6 +145,10 @@ const COVERED = {
     tests: [
       'tests/frontmatter.property.test.cjs',
       'tests/frontmatter.unit.test.cjs',
+      // #1882 added the unterminated-fence detection to frontmatter.cjs, and the tests that
+      // constrain it live here. Without this entry the mutants in that branch are covered by
+      // no test in the shard, so the module's score drops even though the behaviour is tested.
+      'tests/unusable-input.test.cjs',
     ],
     minScore: 62,
   },

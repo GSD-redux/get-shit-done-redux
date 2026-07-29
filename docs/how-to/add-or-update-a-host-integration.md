@@ -2,7 +2,7 @@
 
 This guide is for GSD maintainers adding a new host CLI, or updating an existing host's
 host-integration axes (ADR-1239 Phase A). It covers the **documentation-sourcing rule**, the
-eight `runtime.hostIntegration` axes, the `undocumented` sentinel, and how to validate.
+nine `runtime.hostIntegration` axes, the `undocumented` sentinel, and how to validate.
 
 The governing rule for this whole process: **every axis value must come from the host's own
 authoritative documentation. Never infer, guess, or assume.** Where the docs do not state an axis,
@@ -22,7 +22,7 @@ In order of preference:
 Capture the exact source (Context7 library id + query, or the doc URL) and a short verbatim quote
 for each value you determine. You will paste these into the matrix in step 4.
 
-## 2. Determine each of the eight axes from the docs
+## 2. Determine each of the nine axes from the docs
 
 Read the docs and map them to the closed vocabulary. Do not pick a value unless a source states it.
 
@@ -36,6 +36,7 @@ Read the docs and map them to the closed vocabulary. Do not pick a value unless 
 | `stateIO` | `filesystem`, `sandboxed-storage` (web IDE, no arbitrary FS), or `session-log-append`. |
 | `transport` | `mcp` (native MCP support) vs. `native-extension` (MCP needs a community extension). |
 | `runtime` | The plugin/extension runtime: `node`, `bun`, `sandboxed-web`, `python`, `go`, `rust`, `electron`, `other`. |
+| `effortSurface` | How reasoning effort reaches the host: `argv` (a flag on the host's own invocation) or `none` (no reasoning-effort mechanism). Added by #2481. There is deliberately **no** config-file member — do not invent one; use `undocumented` when the host's docs state no reasoning setting. |
 
 ## 3. Write the `runtime.hostIntegration` block
 
@@ -138,10 +139,12 @@ yields the same truth value**, so behavior is unchanged and only the brittle cou
    delegates to the *same* engine functions, so the output is byte-identical — that is the point: the
    host is now driven **through** the interface, not around it.
 
-5. **Prove parity, both scopes.** `tests/golden-install-parity.test.cjs` captures a byte-stable manifest
-   of every emitted file. Assert the host's install is unchanged for **global and local** scopes
-   (regenerate a baseline from `origin/next` first, then confirm the migrated tree matches it). Exclude
-   only genuinely volatile / platform-varying files (`settings.json`, `settings.local.json`, `.gsd-source`).
+5. **Prove parity, both scopes.** The differential attribution check
+   (`tests/emitted-attribution.test.cjs`, ADR-2719) compares the emitted manifest built
+   from your branch against `next`'s recorded state and requires every moved hash to be
+   attributable to a path your PR changed — no fixture to regenerate by hand. Confirm the
+   host's install is unchanged for **global and local** scopes. Exclude only genuinely
+   volatile / platform-varying files (`settings.json`, `settings.local.json`, `.gsd-source`).
 
 6. **Guard against regression.** Add a `*-imperative-reference.test.cjs` asserting the adapter classifies
    the host correctly, negotiation fails closed on a corrupted descriptor, and — with a source-grep behind

@@ -490,7 +490,7 @@ Skill(skill="gsd-code-review", args="${PHASE_NUM} --fix --auto")
 After execute, read canonical verification:
 
 ```bash
-VERIFY_STATUS=$(gsd_run query verification.status "${PHASE_DIR}" 2>/dev/null | jq -r '.status//empty')
+VERIFY_STATUS=$(gsd_run query verification.status "${PHASE_DIR}" --pick status 2>/dev/null || true)
 ```
 
 If `PHASE_DIR` is absent, re-fetch `init.phase-op ${PHASE_NUM}` and parse `phase_dir`.
@@ -548,7 +548,7 @@ Skill(skill="gsd-execute-phase", args="${PHASE_NUM} --no-transition")
 
 Re-read verification status:
 ```bash
-VERIFY_STATUS=$(gsd_run query verification.status "${PHASE_DIR}" 2>/dev/null | jq -r '.status//empty')
+VERIFY_STATUS=$(gsd_run query verification.status "${PHASE_DIR}" --pick status 2>/dev/null || true)
 ```
 
 If `passed` or `human_needed`: route normally.

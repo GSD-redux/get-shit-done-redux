@@ -56,6 +56,15 @@ const REGISTRY = [
     sourceFile: 'src/init.cts',
     testFile: 'tests/agent-skills.test.cjs',
   },
+  {
+    // Registered by #1880 (ADR-1411 amendment "corrupt is not absent"). Until
+    // this entry existed the config-loader seam carried the provenance contract
+    // with nothing guarding it, so a regression that collapsed configured_empty
+    // back into not_configured would have shipped silently.
+    verb: 'config-loader',
+    sourceFile: 'src/config-loader.cts',
+    testFile: 'tests/config-loader.test.cjs',
+  },
 ];
 
 // Markers that MUST appear in every registered verb's test file.

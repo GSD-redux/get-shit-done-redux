@@ -189,6 +189,17 @@ See [PLAN.md schema](plan-md.md) for the full field reference.
 | **Produced by** | `execute-phase` executor agent (written at the end of each plan's execution). |
 | **Consumed by** | `/gsd-progress` (phase status); `gsd-planner` (when a subsequent plan has a genuine dependency on prior plan output); `milestone-summary`. |
 
+**`actuals` frontmatter (#2632, [ADR-2629](../adr/2629-phase-effort-estimation-calibration.md)).** When the phase's PLAN carried an `estimate`, the executor records what it actually cost:
+
+```yaml
+actuals:
+  tokens: 74000    # estimateTokens scale (chars/4) over the realized diff
+  tasks: 5
+  commits: 7
+```
+
+`tokens` uses the **same scale as the estimate**, not a harness-reported token count — an executor subagent cannot read its own consumption, and a ratio between two different measurement methods would measure the methods rather than the miss. `/gsd:extract-learnings` pairs each phase's estimate with its actuals via `gsd_run query estimate-calibrate`, writes `.planning/estimation-calibration.json`, and the planner applies the resulting factor to subsequent estimates. Additive and optional: a summary without `actuals` simply contributes no calibration sample.
+
 ### `<NN>-VERIFICATION.md`
 
 | | |

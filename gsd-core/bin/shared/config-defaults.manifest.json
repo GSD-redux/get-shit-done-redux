@@ -33,6 +33,7 @@
     "_auto_chain_active": false,
     "node_repair": true,
     "node_repair_budget": 2,
+    "smart_zone_tokens": 100000,
     "ui_phase": true,
     "ui_safety_gate": true,
     "text_mode": false,

@@ -358,17 +358,24 @@ describe('emitWorkflowScript', () => {
     assert.deepStrictEqual(stages[0].slice().sort(), ['p1', 'p2']);
   });
 
-  test('resumeFromRunId wired to the provided runId (criterion 4)', () => {
+  test('runId carried for the caller, never CALLED as resumeFromRunId (criterion 4, #2590)', () => {
     const r = emitWorkflowScript(singleWaveManifest());
-    assert.ok(r.script.includes('resumeFromRunId'), 'references resumeFromRunId');
-    assert.ok(r.script.includes('run-abc-1143'), 'carries the run id');
+    // resumeFromRunId is a Workflow TOOL INPUT parameter, not a script function;
+    // emitting a call threw "resumeFromRunId is not defined" and rejected the
+    // whole script. The id reaches the caller via summary.resumeRunId.
+    assert.ok(!/^\s*resumeFromRunId\s*\(/m.test(r.script), 'must not CALL resumeFromRunId');
+    assert.ok(r.script.includes('run-abc-1143'), 'carries the run id for the caller');
     assert.strictEqual(r.summary.resumeRunId, 'run-abc-1143');
   });
 
-  test('shared budget pool emitted when budgetTokens provided', () => {
+  test('budgetTokens recorded as intent, never CALLED as budget() (#2590)', () => {
     const r = emitWorkflowScript({ ...singleWaveManifest(), budgetTokens: 500000 });
-    assert.ok(r.script.includes('budget('), 'emits budget() pool');
-    assert.ok(r.script.includes('500000'));
+    // `budget` is a read-only object { total, spent(), remaining() } supplied by
+    // the caller's token directive; `budget(500000)` threw "budget is not a
+    // function". The intent is recorded in a comment and in the summary.
+    assert.ok(!/^\s*budget\s*\(/m.test(r.script), 'must not CALL budget()');
+    assert.ok(r.script.includes('500000'), 'records the intended budget');
+    assert.strictEqual(r.summary.budgetTokens, 500000);
   });
 
   test('no budget() emitted when budgetTokens omitted', () => {
@@ -730,5 +737,285 @@ describe('inline-fallback parity', () => {
     assert.ok(r.script.includes('gsd-executor'), 'same executor agent as inline dispatch');
     assert.ok(r.script.includes('worktree'), 'same worktree isolation as inline dispatch');
     assert.ok(r.script.includes('SUMMARY.md'), 'same SUMMARY.md artifact as inline dispatch');
+  });
+});
+
+// ─── #2686 — executor-model threading ────────────────────────────────────────
+//
+// The Workflow backend emitted every agent() call with no model at all, so
+// model_overrides / model_policy / model_profile were silently inert on that
+// path while the inline path honored them — the invisible partial application
+// ADR-1411 prohibits. These pin the parity the generated script already claims.
+
+describe('#2686 — Workflow backend model threading', () => {
+  const {
+    resolveWaveDispatch: resolveWaveDispatch2686,
+  } = require('../gsd-core/bin/lib/claude-orchestration.cjs');
+  const modelResolver2686 = require('../gsd-core/bin/lib/model-resolver.cjs');
+  const { runGsdTools: runTools2686, createTempProject: mkProject2686, cleanup: rm2686 } =
+    require('./helpers.cjs');
+
+  const WAVES_2686 = [
+    { id: '1', plans: [
+      { id: '01', brief: 'Implement the auth module', files_modified: ['src/auth.ts'] },
+      { id: '02', brief: 'Add the config loader', files_modified: ['src/config.ts'] },
+    ] },
+  ];
+
+  const emit2686 = (extra) => emitWorkflowScript({
+    phaseDir: '.planning/phases/01-demo',
+    runId: 'wf_test2686',
+    waves: WAVES_2686,
+    ...extra,
+  });
+
+  // The emitted agent() options objects only. Scoped deliberately: the #2686
+  // provenance header legitimately contains the token "model:", so a whole-script
+  // regex would report a false positive on the omit path.
+  //
+  // Brace-and-string aware rather than /\{[^}]*\}/: a model value may legitimately
+  // contain a brace, and a naive class would truncate the object there and silently
+  // stop testing what it claims to test.
+  const optionsOf = (script) => {
+    const out = [];
+    const re = /\bagent\(/g;
+    let m;
+    while ((m = re.exec(script)) !== null) {
+      const open = script.indexOf('{', m.index);
+      if (open === -1) continue;
+      let i = open + 1;
+      let depth = 1;
+      let str = null;
+      while (i < script.length && depth > 0) {
+        const ch = script[i];
+        if (str) {
+          if (ch === '\\') i += 1;
+          else if (ch === str) str = null;
+        } else if (ch === '"' || ch === "'") str = ch;
+        else if (ch === '{') depth += 1;
+        else if (ch === '}') depth -= 1;
+        i += 1;
+      }
+      if (depth === 0) out.push(script.slice(open, i));
+    }
+    return out.filter((o) => o.includes('agentType'));
+  };
+
+  test('#2686: the Workflow backend dispatches the same model the inline path would use', () => {
+    const dir = mkProject2686('gsd-2686-');
+    try {
+      fs.writeFileSync(
+        path.join(dir, '.planning', 'config.json'),
+        JSON.stringify({ model_profile: 'balanced', model_overrides: { 'gsd-executor': 'opus' } }),
+      );
+      // The inline path reads exactly this. Deriving BOTH sides from the resolver
+      // (rather than hardcoding either) is what makes this a parity assertion.
+      const inlineModel = modelResolver2686.resolveModelInternal(dir, 'gsd-executor');
+      assert.equal(inlineModel, 'opus', 'precondition: the override must resolve');
+
+      const res = emit2686({ executorModel: inlineModel });
+      assert.ok(res.ok, `emit failed: ${res.reason}`);
+      const calls = res.script.match(/agent\([\s\S]*?\{[^}]*\}/g) || [];
+      assert.ok(calls.length >= 2, `expected >=2 agent() calls, got ${calls.length}`);
+      for (const call of calls) {
+        assert.match(
+          call,
+          /model:\s*"opus"/,
+          'every dispatched plan must carry the model the inline path resolved — ' +
+            'without it model_overrides/model_policy are silently inert on this backend (#2686).',
+        );
+      }
+    } finally {
+      rm2686(dir);
+    }
+  });
+
+  test('#2686: omits the model key when the resolved model is inherit or empty', () => {
+    // #2517: an empty/inherit model must be OMITTED, never emitted — emitting it
+    // 404s on runtimes without native tier aliases.
+    for (const value of ['inherit', 'INHERIT', '  inherit  ', ' ', '', undefined, null, 42, {}, []]) {
+      const res = emit2686({ executorModel: value });
+      assert.ok(res.ok, `emit failed for ${JSON.stringify(value)}: ${res.reason}`);
+      const opts = optionsOf(res.script);
+      assert.ok(opts.length >= 2, `expected per-plan options objects, got ${opts.length}`);
+      for (const o of opts) {
+        assert.doesNotMatch(
+          o,
+          /model:/,
+          `executorModel=${JSON.stringify(value)} must omit the model key entirely (#2517)`,
+        );
+      }
+    }
+  });
+
+  test('#2686: emits byte-identical output when no model resolves', () => {
+    // The compatibility contract: every existing caller and assertion is unaffected
+    // unless a model actually resolves.
+    const withNothing = emit2686({});
+    const withInherit = emit2686({ executorModel: 'inherit' });
+    const withEmpty = emit2686({ executorModel: '' });
+    assert.ok(withNothing.ok && withInherit.ok && withEmpty.ok);
+    assert.equal(withInherit.script, withNothing.script);
+    assert.equal(withEmpty.script, withNothing.script);
+  });
+
+  test('#2686: model threading does not disturb the per-plan worktree gate', () => {
+    // #2772 / #2285 finding 1 — agentOptions is "the single place that decides
+    // worktree isolation; it must never diverge from the inline path's per-plan gate."
+    const res = emitWorkflowScript({
+      phaseDir: '.planning/phases/01-demo',
+      runId: 'wf_test2686b',
+      executorModel: 'sonnet',
+      waves: [{ id: '1', plans: [
+        { id: '01', brief: 'plan without isolation', files_modified: ['a.ts'], use_worktree: false },
+        { id: '02', brief: 'plan with isolation', files_modified: ['b.ts'] },
+      ] }],
+    });
+    assert.ok(res.ok, `emit failed: ${res.reason}`);
+    const calls = res.script.match(/agent\([\s\S]*?\{[^}]*\}/g) || [];
+    assert.equal(calls.length, 2, 'per-plan options objects must remain one per plan');
+
+    const noWt = calls.find((c) => c.includes('plan without isolation'));
+    const wt = calls.find((c) => c.includes('plan with isolation'));
+    assert.ok(noWt && wt, 'both plans must be present');
+    assert.doesNotMatch(noWt, /isolation:/, 'use_worktree:false must still suppress isolation');
+    assert.match(noWt, /model:\s*"sonnet"/, 'model must still be threaded on the no-worktree plan');
+    assert.match(wt, /isolation:\s*"worktree"/, 'default plan must still get worktree isolation');
+    assert.match(wt, /model:\s*"sonnet"/, 'model must be threaded on the worktree plan');
+  });
+
+  test('#2686: a model id carrying a script-breaking character is rejected outright', () => {
+    // The model id is externally-supplied config (model_overrides / model_policy)
+    // reaching a CODE GENERATOR. It is interpolated into BOTH an object literal
+    // and a `//` provenance comment.
+    //
+    // quoteString (JSON.stringify) is sufficient for the object literal but NOT
+    // for the comment: U+2028 / U+2029 are ECMAScript LineTerminators that END a
+    // single-line comment in every engine — the ES2019 change legalized them
+    // inside string LITERALS only. A raw one would close the comment and make the
+    // rest of the line live top-level code. Hence: reject, do not merely quote.
+    const hostile = [
+      'evil\u2028process.exit(42);//',   // proven comment-terminator injection
+      'evil\u2029process.exit(42);//',
+      'a\nb', 'a\rb', 'a"b', 'a\\b', 'a\tb', 'a\u0000b', 'a\u007fb',
+    ];
+    for (const id of hostile) {
+      const res = emit2686({ executorModel: id });
+      assert.equal(
+        res.ok,
+        false,
+        `executorModel ${JSON.stringify(id)} must be REJECTED, not emitted — it can ` +
+          'terminate the provenance comment and execute as top-level code.',
+      );
+      assert.match(res.reason, /executorModel must not contain/);
+    }
+  });
+
+  test('#2686: the emitted provenance comment cannot become live code', () => {
+    // Execution-level proof, not a shape check: run the emitted header through a
+    // parser and confirm the model value never escapes its comment/literal. A
+    // previous version of this test asserted only that JSON.stringify was used,
+    // which passed against the vulnerable generator.
+    const good = emit2686({ executorModel: 'opus' });
+    assert.ok(good.ok);
+    const header = good.script.split('\n').filter((l) => l.startsWith('// model:'));
+    assert.equal(header.length, 1, 'exactly one provenance line');
+    for (const line of header) {
+      assert.doesNotMatch(line, /[\u2028\u2029\r\n]/, 'no LineTerminator may survive into the comment');
+    }
+    // Every emitted comment line must still be a comment after parsing: wrapping
+    // the header in a function body must produce no executable statement.
+    const commentBlock = good.script.split('\n').filter((l) => l.startsWith('//')).join('\n');
+    assert.doesNotThrow(() => new Function(commentBlock + '\nreturn 1;'));
+    assert.equal(new Function(commentBlock + '\nreturn 1;')(), 1);
+  });
+
+  test('#2686: resolveWaveDispatch forwards the executor model to emission', () => {
+    const res = resolveWaveDispatch2686({
+      runtimeId: 'claude',
+      hostIntegration: { dispatch: { nested: true, background: true } },
+      config: { 'claude_orchestration.enabled': true },
+      agentSdkVersion: '99.0.0',
+      phaseDir: '.planning/phases/01-demo',
+      runId: 'wf_test2686c',
+      waves: WAVES_2686,
+      executorModel: 'haiku',
+    });
+    assert.equal(res.backend, 'workflow', `expected workflow backend, got ${res.backend}: ${res.reason}`);
+    assert.match(
+      res.script,
+      /model:\s*"haiku"/,
+      'the #2285 composed seam the orchestrator actually calls must forward the model',
+    );
+  });
+
+  test('#2686: the CLI defaults the executor model from project config', () => {
+    const dir = mkProject2686('gsd-2686-cli-');
+    try {
+      fs.writeFileSync(
+        path.join(dir, '.planning', 'config.json'),
+        JSON.stringify({ model_profile: 'balanced', model_overrides: { 'gsd-executor': 'opus' } }),
+      );
+      const wavesPath = path.join(dir, 'waves.json');
+      fs.writeFileSync(wavesPath, JSON.stringify({ waves: WAVES_2686 }));
+
+      // No --executor-model: the router must resolve it from config, so the fix
+      // applies with NO caller change.
+      const dflt = runTools2686(
+        ['claude-orchestration', 'emit-workflow', '--waves', wavesPath, '--run-id', 'wf_cli1'],
+        dir,
+      );
+      assert.ok(dflt.success, `emit-workflow failed: ${dflt.error}`);
+      assert.match(JSON.parse(dflt.output).script, /model:\s*"opus"/);
+
+      // Explicit flag wins.
+      const pinned = runTools2686(
+        ['claude-orchestration', 'emit-workflow', '--waves', wavesPath, '--run-id', 'wf_cli2',
+          '--executor-model', 'haiku'],
+        dir,
+      );
+      assert.ok(pinned.success, `emit-workflow failed: ${pinned.error}`);
+      assert.match(JSON.parse(pinned.output).script, /model:\s*"haiku"/);
+    } finally {
+      rm2686(dir);
+    }
+  });
+
+  test('#2686: emitted options round-trip any resolved model (property)', () => {
+    // Three-way contract over ARBITRARY strings:
+    //   unscriptable char  → ok:false (rejected; it could terminate the // comment)
+    //   trims to empty or "inherit" (any case) → ok:true, model key OMITTED (#2517)
+    //   otherwise          → ok:true, model key emitted as the TRIMMED value
+    // Mirrors UNSCRIPTABLE_CHAR_RE in src/claude-orchestration.cts, which is not
+    // exported. The control-character class is the POINT of the check — these are
+    // exactly the bytes that must be rejected — so the rule is disabled here rather
+    // than the class weakened.
+    // eslint-disable-next-line no-control-regex
+    const UNSCRIPTABLE = /[\r\n"\\\x00-\x1f\x7f\u2028\u2029]/;
+    fc.assert(
+      fc.property(fc.string({ maxLength: 40 }), (model) => {
+        const res = emit2686({ executorModel: model });
+        if (UNSCRIPTABLE.test(model)) {
+          assert.equal(res.ok, false, `${JSON.stringify(model)} must be rejected`);
+          return;
+        }
+        assert.ok(res.ok, `${JSON.stringify(model)} should emit: ${res.reason}`);
+        const opts = optionsOf(res.script);
+        assert.ok(opts.length >= 2, `expected per-plan options, got ${opts.length}`);
+        const trimmed = model.trim();
+        const shouldEmit = trimmed.length > 0 && trimmed.toLowerCase() !== 'inherit';
+        for (const o of opts) {
+          if (shouldEmit) {
+            assert.ok(
+              o.includes('model: ' + JSON.stringify(trimmed)),
+              `expected model ${JSON.stringify(trimmed)} in ${o}`,
+            );
+          } else {
+            assert.doesNotMatch(o, /model:/);
+          }
+        }
+      }),
+      { numRuns: 300 },
+    );
   });
 });
