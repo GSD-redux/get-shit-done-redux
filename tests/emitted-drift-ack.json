@@ -3,6 +3,12 @@
   "paths": {
     "review.md": {
       "reason": "#2794 / ADR-2782 Phase 1. Three deliberate additions to gsd-core/workflows/review.md: (1) an explicit `<!-- reviewer-lane: <slug> -->` marker above each of the 11 invoke_reviewers legs, which is what makes a leg machine-identifiable for the DEFECT.GENERATIVE-FIX parity assertion — the legs are prose-labelled and five NON-lane bold labels in the same step share the bold-then-fence shape a heuristic matcher would key on, so inference was not an option; (2) the ADR-2782 D4 explicit-selection contract in the detect_clis prose, without which the selector correction is unobservable (review-reviewer-selection.cts has no production caller — the workflow narrates the policy and the reviewing agent executes it, so code and prose must move together); (3) the qwen leg's stderr sidecar, the last lane still discarding stderr to /dev/null (#2494/#2605 class). Growth is prose and comments only; no lane's observable command shape changed apart from the qwen redirect."
+    },
+    "hooks/gsd-check-update-worker.js": {
+      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs — so all three are now emitted into Codex installs alongside the parent. The diff is in bin/install.js (allowlist + copy-loop + profile gate), not in the hook sources themselves, so the hooks-built attribution rule flags the emitted worker/registry paths. This ripple is the intended fix."
+    },
+    "hooks/managed-hooks-registry.cjs": {
+      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so the registry is now emitted into Codex installs byte-for-byte. The diff is in bin/install.js (allowlist + raw-copy fallback + profile gate), not in the registry source, so the hooks-built attribution rule flags the emitted registry path. This ripple is the intended fix."
     }
   }
 }
