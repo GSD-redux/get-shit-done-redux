@@ -6,6 +6,8 @@
 - **Subsumes (generalizes):** Skill Surface Budget Module ([ADR-0011](0011-skill-surface-budget-module.md)), Runtime Install Policy Module ([ADR-58](58-runtime-install-policy-module.md)) — both remain **Accepted and live**; this ADR generalizes them, it does not replace them. See "Relation to ADR-0011 and ADR-58" below.
 - **Builds on:** CommandRoutingHub (ADR-0012), Runtime Artifact Layout Module (ADR-3660), generated-cjs single source (ADR-457)
 - **Amended:** 2026-06-12 — phase-6 boundary settled before the Migrate phase freezes it: the **verifier↔predicate contract** is classified as core verification substrate (not an off-by-default Feature Capability). See *Verification substrate vs. plug-in tier (the predicate boundary)* below. Prompted by @davesienkowski's boundary analysis on #857; coordinates with ADR-550 (spec-phase probe contract).
+- **Decisions 7 and 8 are extended by** [ADR-1244](1244-capability-ecosystem.md) (Capability Ecosystem) — amend, not reverse. D7 deferred third-party code-loading "to its own ADR" and D8 deferred third-party CLI support to "an external loader + trust/validation gate"; ADR-1244 is that ADR and delivers that gate. *(This marker is required by ADR-1244 D8, which states ADR-857 "is updated to mark D7 and D8 'extended by ADR-1244'". The marker was never actually added; recorded here 2026-07-28 while amending this ADR for ADR-2782.)*
+- **Amended by:** [ADR-2782](2782-reviewer-lane-capability-surface.md) (Reviewer Lane capability surface) — extends "extension points as data" to the cross-AI reviewer handoff: a reviewer lane becomes a declared capability body rather than a core patch.
 
 ## Ratification (2026-07-17): Proposed → Accepted
 
