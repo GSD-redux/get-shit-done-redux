@@ -32,10 +32,12 @@ test('advisor mode spawns the registered gsd-advisor-researcher subagent, not ge
     !src.includes('subagent_type="general-purpose"'),
     'advisor mode must NOT spawn subagent_type="general-purpose" (contradicts universal-anti-patterns rule 10, injected into the same context) (#2771)'
   );
-  // The manual "First, read @.../gsd-advisor-researcher.md" prompt line must be gone —
-  // spawning by type auto-loads the def; re-specifying it is a drift risk.
+  // The manual "read @.../gsd-advisor-researcher.md" prompt line must be gone —
+  // spawning by type auto-loads the def; re-specifying it is a drift risk. Deny the
+  // full class (any "read @" lead-in, case-insensitive) so a phrasing variant can't
+  // sneak the drift back in.
   assert.ok(
-    !/First, read @.*gsd-advisor-researcher\.md/.test(src),
+    !/read\s+@.*gsd-advisor-researcher\.md/i.test(src),
     'advisor mode must not manually instruct reading the agent def — spawning by type auto-loads it (#2771)'
   );
 });
