@@ -188,7 +188,7 @@ function resolveLanePlan(input) {
     }
     // D4 rule 4: an unknown handler FAILS CLOSED. A lane naming imperative code this GSD version does
     // not have cannot be run "mostly" — the handler is precisely the part data could not express.
-    const handler = (lane.handler ?? null);
+    const handler = lane.handler ?? null;
     if (handler !== null && !KNOWN_HANDLERS.has(handler)) {
         return fail(exports.LANE_UNAVAILABLE.UNKNOWN_HANDLER, `lane '${slug}' names handler '${String(handler)}', which this GSD version does not provide`);
     }

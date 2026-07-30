@@ -509,7 +509,7 @@ describe('E. Lane fidelity — no translation layer', () => {
       }
     }
 
-    assert.equal(REVIEWER_LANES.length, 11, 'expected exactly 11 declared descriptor lanes');
+    assert.equal(REVIEWER_LANES.length, 12, 'expected exactly 12 declared descriptor lanes');
     assert.equal(bySlug.size, 11, `expected exactly 11 capabilities declaring a reviewer body, got: ${bySlug.size}`);
 
     // Top-level scalar/array fields compared whole; the two fields that are

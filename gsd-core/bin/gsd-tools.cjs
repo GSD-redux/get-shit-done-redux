@@ -1200,12 +1200,41 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       } catch { return []; }
     };
 
+    /**
+     * Per-lane prompt budget (#2797 semantics, preserved exactly).
+     *
+     * `-1` is the UNSET sentinel and falls back to the central `review.max_prompt_tokens`, because
+     * `0` is a legitimate value meaning "do not trim this lane". Treating 0 as unset would silently
+     * switch a user who deliberately disabled trimming onto the global budget.
+     *
+     * Only the budget VALUE is resolved here. Assembly and trimming stay in `prompt-budget`, which
+     * already owns that machinery and is already tested; the workflow calls it and hands the
+     * trimmed file back via `--prompt-file`. Re-implementing it inside the runner would fork a
+     * tested surface for no gain.
+     */
+    const budgetFor = (lane) => {
+      if (!lane.promptBudgetKey) return null;
+      const per = configGet(lane.promptBudgetKey);
+      const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+      if (isNum(per) && per !== -1) return per;
+      const global = configGet('review.max_prompt_tokens');
+      return isNum(global) ? global : null;
+    };
+
     const plans = chosen.map((slug) => {
       const lane = laneBySlug.get(slug);
       if (!lane) return { slug, ok: false, reason: 'malformed_lane', detail: 'no such declared lane' };
       const r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effortFor(slug) });
       return r.ok
-        ? { slug, ok: true, section: lane.reviewsSection, transport: r.plan.transport, plan: r.plan }
+        ? {
+            slug,
+            ok: true,
+            section: lane.reviewsSection,
+            transport: r.plan.transport,
+            promptBudget: budgetFor(lane),
+            promptPath: r.plan.transport === 'spawn' ? r.plan.stdin : r.plan.promptPath,
+            plan: r.plan,
+          }
         : { slug, ok: false, reason: r.reason, detail: r.detail };
     });
 
@@ -1288,6 +1317,17 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       homeDir: os.homedir(),
       warn: (m) => process.stderr.write(`${m}\n`),
     };
+
+    // `--prompt-file` lets the caller substitute a budget-trimmed prompt. Applied to whichever
+    // channel this lane actually reads from, so one flag serves both transports.
+    const promptOverride = flag('--prompt-file');
+    if (promptOverride) {
+      if (entry.plan.transport === 'spawn') {
+        if (entry.plan.stdin) entry.plan.stdin = promptOverride;
+      } else {
+        entry.plan.promptPath = promptOverride;
+      }
+    }
 
     const result = await runner.runLane(entry.plan, deps, {
       consentedHost: undefined, // wired to the consent record by the consent-binding half of D5

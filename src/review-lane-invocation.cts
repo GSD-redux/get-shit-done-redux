@@ -277,7 +277,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
 
   // D4 rule 4: an unknown handler FAILS CLOSED. A lane naming imperative code this GSD version does
   // not have cannot be run "mostly" — the handler is precisely the part data could not express.
-  const handler = (lane.handler ?? null) as LaneHandler;
+  const handler: LaneHandler = lane.handler ?? null;
   if (handler !== null && !KNOWN_HANDLERS.has(handler)) {
     return fail(
       LANE_UNAVAILABLE.UNKNOWN_HANDLER,
@@ -349,7 +349,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
     );
   }
 
-  const inv = lane.invoke as Extract<ReviewerLane, { transport: 'spawn' }>['invoke'];
+  const inv = lane.invoke;
   const binary = typeof inv?.binary === 'string' ? inv.binary.trim() : '';
   if (!binary) {
     return fail(LANE_UNAVAILABLE.MALFORMED_LANE, `spawn lane '${slug}' declares no binary`);

@@ -124,7 +124,11 @@ async function probeLane(plan, deps) {
                 };
         }
         case 'http-reachable': {
-            const base = (0, review_lane_invocation_cjs_1.normalizeHost)(String(deps.configGet(probe.hostConfigKey) ?? '') ||
+            // Only a STRING config value names a host. `String(unknown)` would turn an object into the
+            // literal '[object Object]' and probe that as a URL — a nonsense destination reported as
+            // "unreachable" rather than as the misconfiguration it is.
+            const configured = deps.configGet(probe.hostConfigKey);
+            const base = (0, review_lane_invocation_cjs_1.normalizeHost)((typeof configured === 'string' ? configured : '') ||
                 (plan.transport === 'openai-http' ? plan.host : ''));
             if (!base) {
                 return { available: false, reason: review_lane_invocation_cjs_1.LANE_UNAVAILABLE.HOST_UNREACHABLE, detail: 'no host resolved' };

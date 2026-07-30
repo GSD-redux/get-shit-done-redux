@@ -173,8 +173,12 @@ export async function probeLane(
     }
 
     case 'http-reachable': {
+      // Only a STRING config value names a host. `String(unknown)` would turn an object into the
+      // literal '[object Object]' and probe that as a URL — a nonsense destination reported as
+      // "unreachable" rather than as the misconfiguration it is.
+      const configured = deps.configGet(probe.hostConfigKey);
       const base = normalizeHost(
-        String(deps.configGet(probe.hostConfigKey) ?? '') ||
+        (typeof configured === 'string' ? configured : '') ||
           (plan.transport === 'openai-http' ? plan.host : ''),
       );
       if (!base) {
