@@ -37,10 +37,10 @@ test('all installed brace-expansion copies are patched (>=1.1.18 / >=5.0.9) — 
   const versions = npmLs('brace-expansion');
   assert.ok(versions.length > 0, 'brace-expansion must be installed (devDependency) to guard');
   for (const v of versions) {
-    const [maj, min] = v.split('.').map(Number);
-    const ok = (maj === 1 && (min > 1 || (min === 1 && v.split('.')[2] >= 18))) // 1.x >= 1.1.18
-      || (maj === 5 && (min > 0 || v.split('.')[2] >= 9))                       // 5.x >= 5.0.9
-      || (maj > 5);                                                             // >5.x
+    const [maj, min, pat] = v.split('.').map(Number);
+    const ok = (maj === 1 && (min > 1 || (min === 1 && pat >= 18))) // 1.x >= 1.1.18
+      || (maj === 5 && (min > 0 || pat >= 9))                       // 5.x >= 5.0.9
+      || (maj > 5);                                                 // >5.x
     assert.ok(ok,
       `brace-expansion@${v} is within the vulnerable range (<=5.0.7) — lockfile regressed the #2765 patch bump. ` +
       'Re-apply: npm audit fix (non-breaking) to bump to 1.1.18 / 5.0.9.');
