@@ -22,7 +22,12 @@ INPUT=$(cat)
 # and its file tools name the field `path`, not `file_path` (kimi-cli
 # src/kimi_cli/tools/file/write.py + replace.py) — fall back to tool_input.path
 # when file_path is absent, mirroring normalizeKimiPayload in the JS guards.
-FILE=$(echo "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const i=JSON.parse(d).tool_input||{};process.stdout.write(i.file_path||(typeof i.path==='string'?i.path:'')||'')}catch{}})" 2>/dev/null)
+# #2752: `path` is AUTHORITATIVE (kimi-cli executes on it; it sends `path` only,
+# never `file_path`). `file_path` is model-controlled on Kimi, so consulting it
+# first let a model-supplied decoy suppress/fabricate the reminder. `path` wins,
+# `file_path` is the fallback (Claude Code emits `file_path` and no `path`, so the
+# fallback must remain). Mirrors the #2595 JS-guard fix.
+FILE=$(echo "$INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const i=JSON.parse(d).tool_input||{};process.stdout.write((typeof i.path==='string'&&i.path)||(typeof i.file_path==='string'&&i.file_path)||'')}catch{}})" 2>/dev/null)
 
 # Emit a structured JSON envelope (#2974). additionalContext carries the
 # user-visible reminder text; the typed `planning_modified` boolean and
