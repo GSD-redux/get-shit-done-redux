@@ -307,6 +307,7 @@ function resolveLanePlan(input) {
             binary,
             argv,
             stdin,
+            promptPath,
             outputTarget,
             reviewPath,
             errPath,

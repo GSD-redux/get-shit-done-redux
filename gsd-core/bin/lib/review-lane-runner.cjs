@@ -33,6 +33,9 @@ exports.writeReviewOrStub = writeReviewOrStub;
 exports.handleOpencodeOutput = handleOpencodeOutput;
 exports.antigravityWatermark = antigravityWatermark;
 exports.antigravityTranscriptFallback = antigravityTranscriptFallback;
+exports.antigravityPrompt = antigravityPrompt;
+exports.antigravityArgv = antigravityArgv;
+exports.antigravityDiagnostic = antigravityDiagnostic;
 exports.stampBlindReview = stampBlindReview;
 exports.runOpenAiCompatible = runOpenAiCompatible;
 exports.runLane = runLane;
@@ -340,6 +343,91 @@ function antigravityTranscriptFallback(workspace, mark, deps) {
     return latest;
 }
 /**
+ * Antigravity's prompt variant (#2176).
+ *
+ * Differs from the standard `argv-file-ref` text by one clause, and that clause is load-bearing:
+ * it REQUIRES the reviewer to self-report when it cannot read the repo. Without it a blind review
+ * is indistinguishable from a grounded one — the reviewer happily reviews the plan text in
+ * isolation and its verdict is counted at full weight in the consensus. `stampBlindReview` reads
+ * this self-report back out.
+ */
+function antigravityPrompt(promptPath, repoRoot) {
+    return (`Read the file at ${promptPath} in full and carry out the review request it contains. ` +
+        `The repository under review is at ${repoRoot} — resolve every relative file path in the ` +
+        `review request against that absolute root and verify claims against those files. ` +
+        `If you cannot read files under ${repoRoot}, begin your output with the exact line ` +
+        `REVIEWED-WITHOUT-REPO-ACCESS before the review. Output only the resulting markdown review. ` +
+        `Do not edit any files.`);
+}
+/**
+ * Antigravity's argv adjustments — the two things data cannot express for this lane.
+ *
+ * 1. `--add-dir <repo>`, CAPABILITY-PROBED. Without it agy's permission context never receives the
+ *    cwd repo: the agent anchors on its own `~/.gemini/antigravity-cli/scratch` dir and reviews the
+ *    plan text in isolation, which is exactly what the Review Instructions forbid (#2176). It is
+ *    probed rather than assumed because older agy builds reject the unknown flag outright, and a
+ *    lane that fails to start is worse than one that runs on the prompt anchor alone.
+ * 2. The self-report prompt variant above, swapped in for the standard file-ref text.
+ *
+ * Both are argv shape, so they belong here rather than in the descriptor: expressing "add this flag
+ * only if the binary's --help mentions it" as data would need a conditional, which is precisely
+ * what the named-handler seam exists to absorb (ADR-2782 D6).
+ */
+function antigravityArgv(argv, promptPath, repoRoot, deps) {
+    const standard = (0, review_lane_invocation_cjs_1.fileRefPrompt)(promptPath, repoRoot);
+    const out = argv.map((a) => (a === standard ? antigravityPrompt(promptPath, repoRoot) : a));
+    let supportsAddDir = false;
+    try {
+        const help = deps.spawn('agy', ['--help'], { timeoutMs: 5_000 });
+        supportsAddDir = `${help.stdout}\n${help.stderr}`.includes('--add-dir');
+    }
+    catch {
+        supportsAddDir = false;
+    }
+    if (!supportsAddDir)
+        return out;
+    // Insert before the trailing `-p <prompt>` pair so the prompt stays last, as the leg had it.
+    const pIdx = out.lastIndexOf('-p');
+    if (pIdx === -1)
+        return [...out, '--add-dir', repoRoot];
+    return [...out.slice(0, pIdx), '--add-dir', repoRoot, ...out.slice(pIdx)];
+}
+/**
+ * Layer 3's diagnostic: what `agy` itself logged, when both stdout and the transcript were empty.
+ *
+ * #2073 mode 2 is invisible without this. A pinned model that 404s server-side exits **0** with
+ * empty stdout AND an empty transcript — every signal the other two layers read says "clean run,
+ * nothing to report". The only evidence is in `agy`'s own log, so a bare generic stub would leave
+ * the user with a silently missing reviewer and nothing to diagnose.
+ *
+ * Mode 3 (a pre-session stall, which `--print-timeout` cannot bound because it cannot fire before a
+ * session exists) leaves no log line at all, so its tell is stated rather than searched for.
+ */
+function antigravityDiagnostic(deps) {
+    const lines = [
+        'Antigravity review failed or returned empty output.',
+    ];
+    const logPath = `${deps.homeDir}/.gemini/antigravity-cli/cli.log`;
+    if (deps.exists(logPath)) {
+        try {
+            const hits = deps
+                .readFile(logPath)
+                .split(/\r?\n/)
+                .filter((l) => /agent executor error|NOT_FOUND|Publisher model/i.test(l))
+                .slice(-3);
+            if (hits.length) {
+                lines.push("agy log hint (pinned model may be unavailable — run 'agy models' and set review.models.agy):", ...hits);
+            }
+        }
+        catch {
+            /* an unreadable log is not worth failing the lane over */
+        }
+    }
+    lines.push('If no agy run started, that is the pre-session-stall case: check whether a new ' +
+        '~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch.');
+    return lines.join('\n');
+}
+/**
  * Stamp a machine-readable marker when the reviewer plainly ran without repo access (#2176).
  *
  * BOTH tells are ANCHORED, and that anchoring is load-bearing: a grounded review that merely QUOTES
@@ -444,7 +532,10 @@ async function runLane(plan, deps, opts) {
 function runSpawnLane(plan, deps, repoRoot) {
     const input = plan.stdin && deps.exists(plan.stdin) ? deps.readFile(plan.stdin) : undefined;
     const mark = plan.handler === 'antigravity' ? antigravityWatermark(repoRoot, deps) : { convId: '', lines: 0 };
-    const out = deps.spawn(plan.binary, plan.argv, { input, timeoutMs: plan.timeoutMs });
+    const argv = plan.handler === 'antigravity'
+        ? antigravityArgv(plan.argv, plan.promptPath, repoRoot, deps)
+        : plan.argv;
+    const out = deps.spawn(plan.binary, argv, { input, timeoutMs: plan.timeoutMs });
     deps.writeFile(plan.errPath, out.stderr ?? '');
     // `file-arg` lanes write the review themselves and their stdout is deliberately discarded (#1698).
     let review = plan.outputTarget.kind === 'file'
@@ -464,13 +555,19 @@ function runSpawnLane(plan, deps, repoRoot) {
         }
     }
     if (plan.handler === 'antigravity') {
-        // A non-zero exit (external timeout = 124, crash) discards partial output so the transcript
-        // fallback and the diagnostic stub can take over.
+        // A non-zero exit (timeout kill, crash) discards partial output so the transcript fallback and
+        // the diagnostic stub can take over.
         if (out.status !== 0)
             review = '';
         if ((0, review_lane_invocation_cjs_1.isEmptyReview)(review))
             review = antigravityTranscriptFallback(repoRoot, mark, deps);
         review = stampBlindReview(review);
+        // Layer 3. `emptyOutput: 'handler-owned'` means the generic stub does not fire for this lane,
+        // so if nothing is written here the lane goes out empty — the #2073 failure itself.
+        if ((0, review_lane_invocation_cjs_1.isEmptyReview)(review)) {
+            deps.writeFile(plan.reviewPath, `${antigravityDiagnostic(deps)}\n`);
+            return { slug: plan.slug, ok: true, stubbed: true };
+        }
     }
     const { stubbed } = writeReviewOrStub(plan, review, deps, extra);
     return { slug: plan.slug, ok: true, stubbed };

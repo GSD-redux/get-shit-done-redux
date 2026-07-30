@@ -79,6 +79,11 @@ export interface SpawnPlan {
   argv: string[];
   /** Prompt delivered on stdin, or `null` for `argv`/`argv-file-ref`/`none` lanes. */
   stdin: string | null;
+  /**
+   * The assembled prompt file, regardless of how (or whether) this lane consumes it. Carried even
+   * for `promptChannel: 'none'` so a handler never has to re-derive the path from another field.
+   */
+  promptPath: string;
   outputTarget: OutputTarget;
   /** Canonical review path: `<runDir>/gsd-review-<slug>.md`. */
   reviewPath: string;
@@ -431,6 +436,7 @@ export function resolveLanePlan(input: ResolveInput): ResolveResult {
       binary,
       argv,
       stdin,
+      promptPath,
       outputTarget,
       reviewPath,
       errPath,
