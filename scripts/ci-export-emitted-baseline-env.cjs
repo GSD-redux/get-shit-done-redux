@@ -19,9 +19,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { validateBaseline } = require('../tests/helpers/emitted-baseline.cjs');
-const { resolveBase } = require('../tests/helpers/emitted-runtime.cjs');
-
 const REPO_ROOT = path.join(__dirname, '..');
 const CACHE_PATH = path.join(REPO_ROOT, '.gsd-cache', 'emitted-baseline.json');
 
@@ -40,8 +37,13 @@ const CACHE_PATH = path.join(REPO_ROOT, '.gsd-cache', 'emitted-baseline.json');
  * intact and lets everything else fall through to `resolveBaseline()`'s cache branch,
  * which degrades to the in-job build exactly as ADR-2719 §5 specifies.
  *
- * Freshness is judged by `validateBaseline` rather than a local sha comparison, so the
- * staleness rule has one definition and cannot drift between the two surfaces.
+ * This is a cheap PRECONDITION, not a second opinion. `validateBaseline`
+ * (`tests/helpers/emitted-baseline.cjs`) remains the sole authority on whether a
+ * baseline is usable, and still runs downstream on whatever this publishes; all this
+ * decides is whether an artifact is fit to travel through the pin door. Keeping the
+ * check self-contained matters for packaging: `scripts/` ships in the npm tarball and
+ * `tests/` does not (`package.json` `files`), so requiring the validator across that
+ * boundary would be MODULE_NOT_FOUND in a published install.
  *
  * IO is INJECTED (`readJson`) so every branch is unit-testable without touching the
  * filesystem — the same convention `tests/helpers/emitted-baseline.cjs` uses, and for
@@ -74,9 +76,16 @@ function decideBaselineExport({ cachePath, expectedSha, readJson }) {
     return { export: false, reason: `${cachePath}: absent (cache miss) — nothing to export` };
   }
 
-  const verdict = validateBaseline(doc, expectedSha, cachePath);
-  if (!verdict.ok) {
-    return { export: false, reason: verdict.errors.join('; ') };
+  // A document that parses but is not an object must never read as "no entries" and
+  // pass vacuously — same hazard validateBaseline guards downstream.
+  const built = (doc && typeof doc === 'object' && !Array.isArray(doc)) ? doc.sha : null;
+  if (typeof built !== 'string' || built !== expectedSha) {
+    return {
+      export: false,
+      reason: `${cachePath}: STALE for this run — built at ${JSON.stringify(built)}, ` +
+        `evaluating against ${expectedSha}. Left for the cache path, where a mismatch ` +
+        'degrades to the in-job build (ADR-2719 §5) instead of being a hard stop.',
+    };
   }
 
   return { export: true, reason: `${cachePath}: valid for ${expectedSha}` };
@@ -89,12 +98,13 @@ function readJsonOrNull(p) {
 function main() {
   const githubEnv = process.env.GITHUB_ENV;
 
-  // Same resolution the gate itself uses, so the sha this is validated against is the
-  // sha the gate will compare with. A divergent lookup here would recreate the bug.
-  const base = resolveBase();
+  // The SAME pin the gate resolves through — `GSD_EMITTED_BASE` is first in
+  // `baseRefCandidates()`, and the workflow sets it to the commit `ci-rebase-check`
+  // merged. Reading the pin rather than re-deriving a base is the point: a second,
+  // divergent lookup here is exactly what caused #2854.
   const decision = decideBaselineExport({
     cachePath: CACHE_PATH,
-    expectedSha: base ? base.sha : null,
+    expectedSha: process.env.GSD_EMITTED_BASE || null,
     readJson: readJsonOrNull,
   });
   if (!decision.export) {
