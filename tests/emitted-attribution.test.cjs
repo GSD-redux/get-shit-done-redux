@@ -80,6 +80,8 @@ const {
   resolveBaseline,
 } = require('./helpers/emitted-baseline.cjs');
 
+const { decideBaselineExport } = require('../scripts/ci-export-emitted-baseline-env.cjs');
+
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
 
@@ -1431,9 +1433,15 @@ test('baseline resolution precedence is explicit and reported', () => {
 
   // …and an explicitly-pointed-at stale baseline is a hard stop, not a fall-through:
   // the operator said "use this one".
+  //
+  // #2854: this fixture used to be named '/tmp/from-cache-restore.json', which asserted
+  // the exact conflation that broke CI — a CI cache restore is NOT an operator pin, and
+  // naming it one here documented the defect as intended behavior. The hard stop is a
+  // real guarantee for a HAND-SET path and is preserved; what changed is that CI no
+  // longer routes its restore through this door (see decideBaselineExport).
   const envStale = resolveBaseline({
     expectedSha: SHA_A,
-    env: { [BASELINE_ENV]: '/tmp/x.json' },
+    env: { [BASELINE_ENV]: '/tmp/operator-pinned-baseline.json' },
     cachePath: 'cache.json',
     readJson: () => goodBaseline(SHA_B),
     buildFallback: () => goodBaseline(SHA_A),
@@ -1448,6 +1456,143 @@ test('baseline resolution precedence is explicit and reported', () => {
   });
   assert.ok(viaBuild.ok);
   assert.equal(viaBuild.via, 'build');
+});
+
+// ── #2854: a CI cache restore is not an operator pin ─────────────────────────────
+//
+// ADR-2719 §5: "Cache miss falls back to an in-job build at `origin/next`." The PR lane
+// restores the baseline keyed on the PR's RECORDED base sha (`test.yml:198`) while the
+// gate resolves the base ref LIVE (`resolveBase()`), so the two drift whenever `next`
+// advances between a PR's last sync and its run. The restore was published straight to
+// GSD_EMITTED_BASELINE, where a mismatch is fatal — turning a recoverable cache into a
+// hard failure on diffs that touched nothing related. The export step is the boundary
+// that must be conservative in what it sends.
+
+const CI_CACHE_PATH = '/ci/.gsd-cache/emitted-baseline.json';
+
+test('#2854: a drifted CI cache restore falls through to the in-job build', () => {
+  const readJson = () => goodBaseline(SHA_B);        // restored under a drifted key
+
+  const decision = decideBaselineExport({ cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson });
+  assert.equal(decision.export, false, 'a drifted restore must not be published as an operator pin');
+  assert.match(decision.reason, /STALE|stale/, 'the refusal must name staleness, not just refuse');
+
+  // Composed with resolution — the defect only manifests end to end. Asserting the
+  // decision alone would have passed on the broken code too.
+  const r = resolveBaseline({
+    expectedSha: SHA_A,
+    env: decision.export ? { [BASELINE_ENV]: CI_CACHE_PATH } : {},
+    cachePath: CI_CACHE_PATH,
+    readJson,
+    buildFallback: () => goodBaseline(SHA_A),
+  });
+  assert.ok(r.ok, `must resolve via the in-job build; got errors: ${(r.errors || []).join('; ')}`);
+  assert.equal(r.via, 'build');
+  assert.equal(r.sha, SHA_A);
+});
+
+test('#2854: a current CI cache restore still exports (the fast path survives)', () => {
+  const decision = decideBaselineExport({
+    cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson: () => goodBaseline(SHA_A),
+  });
+  assert.equal(decision.export, true, 'a baseline valid for the sha under test must still be used');
+});
+
+test('#2854: an absent cache exports nothing', () => {
+  const decision = decideBaselineExport({
+    cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson: () => null,
+  });
+  assert.equal(decision.export, false);
+  assert.match(decision.reason, /absent/);
+});
+
+test('#2854: an unreadable cache exports nothing and does not throw', () => {
+  // Deterministic IO failure by injection — never chmod 0o000, which root bypasses.
+  const decision = decideBaselineExport({
+    cachePath: CI_CACHE_PATH,
+    expectedSha: SHA_A,
+    readJson: () => { throw new Error('EACCES: permission denied'); },
+  });
+  assert.equal(decision.export, false);
+  assert.match(decision.reason, /unreadable|EACCES/);
+});
+
+test('#2854: sha length boundary — 39, 40, 41 hex', () => {
+  const at = (sha) => decideBaselineExport({
+    cachePath: CI_CACHE_PATH, expectedSha: sha, readJson: () => goodBaseline(sha),
+  });
+
+  // limit-1 / limit / limit+1 on the 40-hex contract enforced by validateBaseline.
+  assert.equal(at('a'.repeat(39)).export, false, '39 hex is not a sha');
+  assert.equal(at('a'.repeat(40)).export, true, '40 hex is the contract');
+  assert.equal(at('a'.repeat(41)).export, false, '41 hex is not a sha');
+});
+
+test('#2854: malformed or missing sha fields export nothing', () => {
+  const withSha = (sha) => decideBaselineExport({
+    cachePath: CI_CACHE_PATH,
+    expectedSha: SHA_A,
+    readJson: () => ({ version: BASELINE_VERSION, sha, manifests: { fam: {} }, sizes: {} }),
+  });
+
+  for (const bad of [undefined, null, 42, 'A'.repeat(40), 'g'.repeat(40), '', SHA_A.slice(0, 8)]) {
+    assert.equal(withSha(bad).export, false, `sha ${JSON.stringify(bad)} must not export`);
+  }
+});
+
+test('#2854: valid JSON that is not an object exports nothing', () => {
+  // Parses fine, must never read as "no entries" and pass vacuously.
+  for (const doc of [0, 'str', [], true]) {
+    const decision = decideBaselineExport({
+      cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson: () => doc,
+    });
+    assert.equal(decision.export, false, `${JSON.stringify(doc)} must not export`);
+  }
+});
+
+test('#2854: an unresolvable expected sha exports nothing', () => {
+  // If the base ref could not be resolved, freshness is unprovable — refuse rather than
+  // publish a baseline whose validity nobody checked.
+  for (const expectedSha of [undefined, null, '']) {
+    const decision = decideBaselineExport({
+      cachePath: CI_CACHE_PATH, expectedSha, readJson: () => goodBaseline(SHA_A),
+    });
+    assert.equal(decision.export, false, `expectedSha ${JSON.stringify(expectedSha)} must not export`);
+  }
+});
+
+test('#2854: the export decision is exactly sha equality', () => {
+  const hex40 = fc.string({
+    unit: fc.constantFrom(...'0123456789abcdef'), minLength: 40, maxLength: 40,
+  });
+  fc.assert(fc.property(hex40, hex40, (built, expected) => {
+    const decision = decideBaselineExport({
+      cachePath: CI_CACHE_PATH, expectedSha: expected, readJson: () => goodBaseline(built),
+    });
+    return decision.export === (built === expected);
+  }), { numRuns: 200 });
+});
+
+test('#2854: the resolution summary names only sources actually attempted', () => {
+  // The caller's assertion message hardcoded "(tried env, <cache>, and an in-job build)"
+  // on every failure, including early returns that reached none of them.
+  const envOnly = resolveBaseline({
+    expectedSha: SHA_A,
+    env: { [BASELINE_ENV]: '/tmp/operator-pinned-baseline.json' },
+    cachePath: 'cache.json',
+    readJson: () => goodBaseline(SHA_B),
+    buildFallback: () => goodBaseline(SHA_A),
+  });
+  assert.ok(!envOnly.ok);
+  assert.deepEqual(envOnly.attempted, [`env:${BASELINE_ENV}`],
+    'an env hard stop reaches neither the cache nor the build — the summary must say so');
+
+  const allThree = resolveBaseline({
+    expectedSha: SHA_A, env: {}, cachePath: 'cache.json',
+    readJson: () => goodBaseline(SHA_B),
+    buildFallback: () => goodBaseline(SHA_A),
+  });
+  assert.deepEqual(allThree.attempted, ['cache:cache.json', 'build']);
 });
 
 test('base-ref candidates are ordered most-specific first and de-duplicated', () => {

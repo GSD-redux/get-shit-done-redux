@@ -22,11 +22,43 @@ const path = require('node:path');
 const REPO_ROOT = path.join(__dirname, '..');
 const CACHE_PATH = path.join(REPO_ROOT, '.gsd-cache', 'emitted-baseline.json');
 
+/**
+ * Decide whether a restored baseline may be published to `GSD_EMITTED_BASELINE`.
+ *
+ * IO is INJECTED (`readJson`) so every branch is unit-testable without touching the
+ * filesystem — the same convention `tests/helpers/emitted-baseline.cjs` uses, and for
+ * the same reason.
+ *
+ * @param {object}   opts
+ * @param {string}   opts.cachePath   restored artifact path
+ * @param {function} opts.readJson    (path) => parsed | null  (null when absent)
+ * @returns {{export: boolean, reason: string}}
+ */
+function decideBaselineExport({ cachePath, readJson }) {
+  let doc = null;
+  try {
+    doc = readJson(cachePath);
+  } catch (err) {
+    return { export: false, reason: `${cachePath}: unreadable — ${err.message}` };
+  }
+
+  if (doc === null || doc === undefined) {
+    return { export: false, reason: `${cachePath}: absent (cache miss) — nothing to export` };
+  }
+
+  return { export: true, reason: `${cachePath}: present` };
+}
+
+function readJsonOrNull(p) {
+  return fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf8')) : null;
+}
+
 function main() {
   const githubEnv = process.env.GITHUB_ENV;
 
-  if (!fs.existsSync(CACHE_PATH)) {
-    console.log(`ci-export-emitted-baseline-env: ${CACHE_PATH} absent (cache miss) — nothing to export`);
+  const decision = decideBaselineExport({ cachePath: CACHE_PATH, readJson: readJsonOrNull });
+  if (!decision.export) {
+    console.log(`ci-export-emitted-baseline-env: ${decision.reason}`);
     return 0;
   }
 
@@ -41,4 +73,8 @@ function main() {
   return 0;
 }
 
-process.exitCode = main();
+if (require.main === module) {
+  process.exitCode = main();
+}
+
+module.exports = { decideBaselineExport, CACHE_PATH };
