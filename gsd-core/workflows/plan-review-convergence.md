@@ -23,17 +23,6 @@ Extract from $ARGUMENTS: phase number, reviewer flags (the declared reviewer lan
 ```bash
 PHASE=$(echo "$ARGUMENTS" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
 
-# Reviewer flags are DERIVED from the declared lane roster (#2800/#2272), never hand-listed.
-# Three surfaces used to enumerate them independently and had drifted: --coderabbit was missing
-# from all three, --qwen/--cursor/--kimi-code from this one, and the old unanchored
-# `grep -q '\-\-agy'` matched INSIDE --antigravity, appending both for one user flag.
-# `--all` is a selection control, not a lane, so it stays literal.
-REVIEWER_FLAGS=""
-for REVIEW_FLAG in $(gsd_run review-lane flags) --all; do
-  if echo "$ARGUMENTS" | grep -qE "(^|[[:space:]])${REVIEW_FLAG}([[:space:]]|$)"; then
-    REVIEWER_FLAGS="$REVIEWER_FLAGS $REVIEW_FLAG"
-  fi
-done
 # #2315: do NOT default REVIEWER_FLAGS to --codex here. The default is resolved
 # against review.default_reviewers in step 1.5 (after the config gate) so a bare
 # invocation respects the configured reviewer lineup per ADR-0011 / ADR-0015.
@@ -66,6 +55,20 @@ Then re-run: /gsd:plan-review-convergence {PHASE}
 ```
 
 ```bash
+# Reviewer flags are DERIVED from the declared lane roster (#2800/#2272), never hand-listed.
+# Three surfaces used to enumerate them independently and had drifted: --coderabbit was missing
+# from all three, --qwen/--cursor/--kimi-code from this one, and the old unanchored
+# `grep -q '\-\-agy'` matched INSIDE --antigravity, appending both for one user flag.
+# `--all` is a selection control, not a lane, so it stays literal.
+# This block must stay AFTER the launcher preamble (below) because it calls `gsd_run` —
+# do not move it back above the preamble in a future edit.
+REVIEWER_FLAGS=""
+for REVIEW_FLAG in $(gsd_run review-lane flags) --all; do
+  if echo "$ARGUMENTS" | grep -qE "(^|[[:space:]])${REVIEW_FLAG}([[:space:]]|$)"; then
+    REVIEWER_FLAGS="$REVIEWER_FLAGS $REVIEW_FLAG"
+  fi
+done
+
 # #2315: Resolve reviewer selection when no explicit flag was given.
 # The pre-fix bug unconditionally set REVIEWER_FLAGS="--codex" in step 1, BEFORE
 # the config gate — silently overriding any configured review.default_reviewers
