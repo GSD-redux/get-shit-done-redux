@@ -611,3 +611,79 @@ describe('reviewer docs parity — the shipped repo', () => {
     }, /injected read failure/);
   });
 });
+
+describe('review-lane flags — emitted shape', () => {
+  const cp = require('node:child_process');
+  const TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+  const runFlags = (args = []) =>
+    cp.spawnSync(process.execPath, [TOOLS, 'review-lane', 'flags', ...args], { encoding: 'utf8' });
+
+  test('emitsEveryDeclaredFlagInDescriptorOrder', () => {
+    const r = runFlags();
+    assert.strictEqual(r.status, 0);
+    const lines = r.stdout.split('\n').filter(Boolean);
+    assert.deepStrictEqual(lines, REVIEWER_LANES.flatMap((l) => l.flags));
+  });
+
+  test('everyEmittedTokenIsAWellFormedFlag', () => {
+    const r = runFlags();
+    const lines = r.stdout.split('\n').filter(Boolean);
+    assert.ok(lines.length > 0, 'expected at least one emitted flag');
+    for (const line of lines) {
+      assert.match(line, /^--[a-z0-9][a-z0-9-]*$/);
+    }
+  });
+
+  test('emitsNoTokenContainingWhitespaceOrGlobCharacters', () => {
+    const r = runFlags();
+    const lines = r.stdout.split('\n').filter(Boolean);
+    const hostileChars = [' ', '\t', '*', '?', '[', ']', '$', '`', ';', '&', '|', '(', ')'];
+    for (const line of lines) {
+      for (const ch of hostileChars) {
+        assert.ok(!line.includes(ch), `expected ${JSON.stringify(line)} not to contain ${JSON.stringify(ch)}`);
+      }
+    }
+  });
+
+  test('honorsSelected', () => {
+    const r = runFlags(['--selected', 'antigravity']);
+    assert.strictEqual(r.status, 0);
+    const lines = r.stdout.split('\n').filter(Boolean);
+    assert.deepStrictEqual(lines, ['--antigravity', '--agy']);
+  });
+
+  test('dropsUnknownSlugsAndExitsZero', () => {
+    const r = runFlags(['--selected', 'nosuchlane']);
+    assert.strictEqual(r.status, 0);
+    assert.deepStrictEqual(r.stdout.split('\n').filter(Boolean), []);
+  });
+
+  test('emitsNoTrailingNewlineWhenEmpty', () => {
+    const r = runFlags(['--selected', 'nosuchlane']);
+    assert.strictEqual(r.stdout, '');
+  });
+
+  test('defaultsToEveryLaneWhenSelectedIsEmpty', () => {
+    const withEmpty = runFlags(['--selected', '']);
+    const withNone = runFlags();
+    assert.strictEqual(withEmpty.status, 0);
+    assert.strictEqual(withEmpty.stdout, withNone.stdout);
+  });
+
+  test('doesNotInterpolateHostileSelectors', () => {
+    const hostile = ';echo pwned;`id`;$(id)';
+    const r = runFlags(['--selected', hostile]);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '');
+    assert.ok(!r.stdout.includes('pwned'));
+    assert.ok(!r.stdout.includes('uid='));
+  });
+
+  test('anUnknownSubcommandErrorsWithoutAStackTrace', () => {
+    const r = cp.spawnSync(process.execPath, [TOOLS, 'review-lane', 'bogus'], { encoding: 'utf8' });
+    const combined = `${r.stdout || ''}${r.stderr || ''}`;
+    assert.match(combined, /flags/);
+    assert.ok(!combined.includes('at Object.'));
+    assert.ok(!combined.includes('    at '));
+  });
+});

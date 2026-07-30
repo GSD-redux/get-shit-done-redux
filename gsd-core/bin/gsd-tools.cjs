@@ -1201,7 +1201,13 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
         .map((s) => laneBySlug.get(s))
         .filter(Boolean)
         .flatMap((l) => (Array.isArray(l.flags) ? l.flags : []))
-        .filter((f) => typeof f === 'string' && f.length > 0);
+        // Shape-filtered, not merely non-empty. All three consumers read this through an
+        // UNQUOTED `$(gsd_run review-lane flags)` so the newline-separated output word-splits
+        // into loop items — which is the intent. Phase 2 (#2795) admits third-party overlay
+        // lanes into this same descriptor, so an overlay declaring `--foo bar` would inject a
+        // second loop item, and one declaring a glob character would expand against the cwd.
+        // Emitting only well-formed flags keeps that from reaching the shell at all.
+        .filter((f) => typeof f === 'string' && /^--[a-z0-9][a-z0-9-]*$/.test(f));
       process.stdout.write(rows.join('\n') + (rows.length ? '\n' : ''));
       return;
     }
