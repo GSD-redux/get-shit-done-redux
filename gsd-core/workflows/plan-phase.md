@@ -1400,28 +1400,20 @@ If `TEXT_MODE` is true, present as a plain-text numbered list (options already s
 
 ## 13a. Decision Coverage Gate
 
-After the requirements coverage gate passes, verify that every trackable
-decision captured by discuss-phase in CONTEXT.md `<decisions>` is referenced
-by at least one plan. This is the **translation gate** from issue #2492 —
-its job is to refuse to mark a phase planned when a discuss-phase decision
-silently dropped on the way into the plans.
+Verify every trackable decision in CONTEXT.md `<decisions>` is referenced by at
+least one plan. This **translation gate** (#2492) refuses to mark a phase planned
+when a discuss-phase decision silently dropped.
 
-**Skip if** `workflow.context_coverage_gate` is explicitly set to `false`
-(absent key = enabled). Also skip if no CONTEXT.md exists for this phase
-(nothing to translate) or if its `<decisions>` block is empty.
+**Skip if** `workflow.context_coverage_gate` is `false` (absent = enabled), or
+no CONTEXT.md exists for this phase, or its `<decisions>` block is empty.
 
 ```bash
 GATE_CFG=$(gsd_run query config-get workflow.context_coverage_gate 2>/dev/null || echo "true")
 if [ "$GATE_CFG" != "false" ]; then
-  # #2770: recompute CONTEXT_PATH HERE — the variable set in the step-1 init block
-  # does not survive into this separately-spawned Bash block, so consuming it above
-  # passed an empty arg and the gate silently green-skipped. Derive it from the phase
-  # dir (the canonical <phase>-CONTEXT.md convention).
+  # #2770: CONTEXT_PATH from step-1 init doesn't survive into this Bash block;
+  # recompute it. Only run when a CONTEXT.md exists (handler fails closed on an
+  # empty arg, so an unguarded empty glob would halt a context-less phase).
   CONTEXT_PATH=$(ls "${PHASE_DIR}"/*-CONTEXT.md 2>/dev/null | head -1)
-  # Only run the gate when a CONTEXT.md actually exists for this phase. A genuinely
-  # CONTEXT.md-less phase (e.g. the §4 "Continue without context" path) is the
-  # legitimate skip — do NOT invoke the gate with an empty path, which the handler
-  # now fails closed on (a caller error, not "no context").
   if [ -n "$CONTEXT_PATH" ]; then
     GATE_RESULT=$(gsd_run query check.decision-coverage-plan "${PHASE_DIR}" "${CONTEXT_PATH}")
     # BLOCKING: refuse to mark phase planned when a trackable decision is uncovered.
@@ -1438,20 +1430,13 @@ fi
 
 The handler returns JSON:
 ```json
-{
-  "passed": true,
-  "skipped": false,
-  "total":  2,
-  "covered": 2,
-  "uncovered": [ { "id": "D-01", "text": "...", "category": "..." } ],
-  "message": "..."
-}
+{ "passed": true, "skipped": false, "total": 2, "covered": 2,
+  "uncovered": [{ "id": "D-01", "text": "...", "category": "..." }], "message": "..." }
 ```
 
 **If `passed` is true (or `skipped` is true):** Display
-`✓ Decision coverage: {M}/{N} CONTEXT.md decisions covered by plans` (or
-`(skipped — gate disabled)` / `(skipped — no decisions)`) and proceed to
-step 13b.
+`✓ Decision coverage: {M}/{N} decisions covered` (or `(skipped)`) and proceed
+to step 13b.
 
 **If `passed` is false:** Display the handler's `message` block. It already
 names each uncovered decision (`D-NN | category | text`) and tells the user

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "plan-phase.md": {
+      "reason": "#2770: decision-coverage gate recomputes CONTEXT_PATH in-block + guards the empty-glob case (handler now fails closed on empty arg). Net growth kept under the ADR-857 size cap by condensing adjacent §13a prose/JSON; the residual +89 bytes are the irreducible glob+guard logic."
+    }
+  }
+}

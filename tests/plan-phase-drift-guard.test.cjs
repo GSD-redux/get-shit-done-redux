@@ -1614,7 +1614,9 @@ describe('plan-phase decision-coverage gate (#2492)', () => {
     const gateIdx = md.indexOf('check.decision-coverage-plan');
     assert.ok(gateIdx !== -1, 'check.decision-coverage-plan invocation must exist');
 
-    const snippet = md.slice(Math.max(0, gateIdx - 400), gateIdx + 400);
+    // The gate invocation is now nested inside the empty-glob guard, so slice a wide
+    // window around it to capture both the recompute and the guard.
+    const snippet = md.slice(Math.max(0, gateIdx - 600), gateIdx + 400);
     assert.ok(
       snippet.includes('CONTEXT_PATH=$(ls "${PHASE_DIR}"/*-CONTEXT.md'),
       'Gate must recompute CONTEXT_PATH in-block from the phase-dir glob (not rely on the init-block variable) (#2770)',
