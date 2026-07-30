@@ -117,7 +117,11 @@ function findBareCommandPositionCalls() {
   for (const scanDir of SCAN_DIRS) {
     const abs = path.join(ROOT, scanDir);
     for (const file of collectMdFiles(abs)) {
-      const rel = path.relative(ROOT, file);
+      // Normalize to forward slashes so the file:line PROSE_ALLOWLIST keys match
+      // identically on every OS — path.relative() returns backslash separators on
+      // Windows, which would defeat the allowlist lookup and false-flag the 6
+      // descriptive mentions (#2751 Windows CI failure).
+      const rel = path.relative(ROOT, file).split(path.sep).join('/');
       const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/);
       for (let i = 0; i < lines.length; i += 1) {
         const line = lines[i];
