@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "hooks/package.json": {
-      "reason": "#2717: cursor/windsurf/codex installs now emit a {\"type\":\"commonjs\"} marker into hooks/package.json alongside their staged .js hook scripts (it was missing because those three runtimes bypass installSharedHooksBundle — the only other writer of this marker — via skipSharedHooksInstall / the !isCodex gate). The diff is in bin/install.js (codex marker write + generic uninstall cleanup) and src/runtime-hooks-surface.cts (cursor/windsurf write+remove via the new ensureCommonJsMarker helper), not in the marker content itself, so the hooks-built attribution rule flags the emitted hooks/package.json path. This ripple is the intended fix."
-    }
-  }
-}
