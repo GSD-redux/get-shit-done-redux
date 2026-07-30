@@ -313,6 +313,15 @@ interface TranscriptEntry {
  * `takeWatermark` must therefore be called before `runAntigravity`; the plan's outer timeout is the
  * external wall-clock cap that `--print-timeout` cannot provide (it cannot fire before a session
  * exists — a process can stall pre-session and outlive its own native timeout, #2073 mode 3).
+ *
+ * KNOWN LIMIT — the watermark is sequential, not concurrent. `last_conversations.json` is keyed by
+ * WORKSPACE, so two `/gsd:review` runs against the same repo at the same time resolve the same
+ * conversation id and share one transcript. The fallback then takes "the latest DONE
+ * PLANNER_RESPONSE after the watermark" with nothing to tell the two runs apart, so one run could
+ * read the other's response. This cannot be closed here: `agy` exposes no per-invocation id to
+ * filter on, and the transcript carries none. It is stated rather than silently tolerated because
+ * the guarantee this function advertises ("never stale") holds only for sequential use, and a
+ * future reader deserves to know which half is actually guaranteed.
  */
 export function antigravityWatermark(
   workspace: string,

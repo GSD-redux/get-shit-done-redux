@@ -253,10 +253,18 @@ describe('reviewer lane invocation — absent-safe and hostile input (ADR-2782 D
   });
 
   test('a prototype-key slug does not pollute the expansion table', () => {
-    for (const name of ['__proto__', 'constructor', 'prototype']) {
+    // `__proto__` is now rejected outright by the slug grammar (leading `_` is outside
+    // `[a-z0-9]`), which is a stronger guarantee than tolerating it. `constructor` and `prototype`
+    // ARE valid slugs, so they must resolve normally and still reach no prototype.
+    const proto = bad({ ...REVIEWER_LANES[0], slug: '__proto__' });
+    assert.equal(proto.ok, false);
+    assert.equal(proto.reason, LANE_UNAVAILABLE.MALFORMED_LANE);
+
+    for (const name of ['constructor', 'prototype']) {
       const r = bad({ ...REVIEWER_LANES[0], slug: name });
-      assert.equal(r.ok, true);
+      assert.equal(r.ok, true, `${name} is a grammatically valid slug`);
       assert.equal(r.plan.slug, name);
+      assert.equal(r.plan.reviewPath, `${RUN}/gsd-review-${name}.md`);
       assert.equal({}.polluted, undefined);
     }
   });
@@ -265,6 +273,36 @@ describe('reviewer lane invocation — absent-safe and hostile input (ADR-2782 D
     const lane = REVIEWER_LANES.find((l) => l.transport === 'openai-http');
     const r = bad({ ...lane, invoke: { ...lane.invoke, defaultHost: '' } });
     assert.equal(r.reason, LANE_UNAVAILABLE.MALFORMED_LANE);
+  });
+
+  test('an openai-http lane with no invoke object is malformed, not a crash', () => {
+    // Found by adversarial review. The spawn branch guarded with `inv?.binary`; the http branch
+    // dereferenced `inv.hostConfigKey` directly and THREW, breaking this module's documented
+    // totality. A throw here is worse than it looks: the CLI seam resolves every selected lane in
+    // one `.map`, so one malformed overlay manifest would abort the entire review.
+    for (const missing of [undefined, null, 42, 'x', []]) {
+      const r = bad({ ...REVIEWER_LANES.find((l) => l.transport === 'openai-http'), invoke: missing });
+      assert.equal(r.ok, false, `invoke=${JSON.stringify(missing)} must not resolve`);
+      assert.equal(r.reason, LANE_UNAVAILABLE.MALFORMED_LANE);
+    }
+  });
+
+  test('a slug outside the declared grammar cannot reach an artifact path', () => {
+    // Found by adversarial review. The slug is concatenated into reviewPath/errPath, so a lane
+    // declaring `../../../tmp/evil` produced a path OUTSIDE the run dir that writeReviewOrStub
+    // would write to. The grammar is checked upstream by the parity gate and the capability
+    // validator, but neither runs on this path — and this module is the overlay-manifest trust
+    // boundary, so it enforces its own precondition rather than inheriting one.
+    const spawnLane = REVIEWER_LANES.find((l) => l.transport === 'spawn');
+    for (const slug of ['../../../tmp/evil', 'a/b', 'a\\b', 'UPPER', '.hidden', '-lead', 'a b']) {
+      const r = bad({ ...spawnLane, slug });
+      assert.equal(r.ok, false, `slug ${JSON.stringify(slug)} must be rejected`);
+      assert.equal(r.reason, LANE_UNAVAILABLE.MALFORMED_LANE);
+    }
+    // Every shipped slug must still pass — including the snake-case ones.
+    for (const lane of REVIEWER_LANES) {
+      assert.equal(resolve(lane.slug).ok, true, `${lane.slug} must remain valid`);
+    }
   });
 
   test('the unavailability reason enum is locked', () => {
@@ -336,6 +374,17 @@ describe('reviewer lane invocation — host normalization (D5 comparison input)'
   test('an unparseable host is compared verbatim, never silently rewritten', () => {
     assert.equal(normalizeHost('not a url'), 'not a url');
     assert.equal(normalizeHost(''), '');
+  });
+
+  test('a scheme-less host is not rewritten into a fake URL', () => {
+    // Found by adversarial review. `new URL('localhost:11434')` PARSES — protocol `localhost:`,
+    // empty hostname — so a plausible but scheme-less config value was being rewritten to
+    // `localhost://11434` and then both compared and requested as if it were a real destination.
+    // No hostname means it is not a URL; return it verbatim so it fails visibly.
+    assert.equal(normalizeHost('localhost:11434'), 'localhost:11434');
+    assert.equal(normalizeHost('example.com:8080'), 'example.com:8080');
+    // A real URL still normalizes.
+    assert.equal(normalizeHost('http://LocalHost:8080/'), 'http://localhost:8080');
   });
 });
 

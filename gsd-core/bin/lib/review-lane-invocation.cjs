@@ -28,6 +28,7 @@ exports.normalizeHost = normalizeHost;
 exports.isEmptyReview = isEmptyReview;
 exports.fileRefPrompt = fileRefPrompt;
 exports.resolveLanePlan = resolveLanePlan;
+const review_lane_descriptor_cjs_1 = require("./review-lane-descriptor.cjs");
 /* ------------------------------------------------------------------ *
  * Unavailability — a frozen enum, because the reason is the product
  * ------------------------------------------------------------------ */
@@ -104,6 +105,12 @@ function normalizeHost(raw) {
     catch {
         return trimmed.replace(/\/+$/, '');
     }
+    // `new URL('localhost:11434')` PARSES — protocol `localhost:`, empty hostname — so a plausible
+    // but scheme-less config value would otherwise be rewritten to `localhost://11434` and compared
+    // (and requested) as though it were a real destination. No hostname means this is not a URL;
+    // return it verbatim so it fails visibly rather than silently becoming something else.
+    if (!u.hostname)
+        return trimmed.replace(/\/+$/, '');
     const scheme = u.protocol.toLowerCase();
     const isDefaultPort = (scheme === 'http:' && u.port === '80') || (scheme === 'https:' && u.port === '443');
     const port = isDefaultPort ? '' : u.port;
@@ -186,6 +193,14 @@ function resolveLanePlan(input) {
     if (!slug) {
         return fail(exports.LANE_UNAVAILABLE.MALFORMED_LANE, 'lane declares no slug');
     }
+    // The slug is CONCATENATED into artifact paths below, so the grammar is enforced here rather
+    // than trusted from upstream. `checkReviewerLaneParity` and the capability validator both check
+    // it too, but neither runs on this path — and this module's whole premise is that it is the
+    // trust boundary for third-party overlay manifests. A slug of `../../../tmp/evil` would
+    // otherwise produce a reviewPath outside the run dir that `writeReviewOrStub` happily writes to.
+    if (!review_lane_descriptor_cjs_1.LANE_SLUG_RE.test(slug)) {
+        return fail(exports.LANE_UNAVAILABLE.MALFORMED_LANE, `lane slug '${slug}' is outside the declared grammar ${String(review_lane_descriptor_cjs_1.LANE_SLUG_RE)}`);
+    }
     // D4 rule 4: an unknown handler FAILS CLOSED. A lane naming imperative code this GSD version does
     // not have cannot be run "mostly" — the handler is precisely the part data could not express.
     const handler = lane.handler ?? null;
@@ -202,10 +217,22 @@ function resolveLanePlan(input) {
         : [];
     const model = configString(typeof lane.modelConfigKey === 'string' ? input.configGet(lane.modelConfigKey) : undefined);
     if (lane.transport === 'openai-http') {
-        const inv = lane.invoke;
+        const rawInvoke = lane.invoke;
+        // The spawn branch below guards with `inv?.binary`; this one must too. Without it a lane
+        // declaring `transport: 'openai-http'` and no `invoke` THROWS, which breaks this module's
+        // documented totality — and a throw here is worse than it looks: the CLI seam resolves every
+        // selected lane in one `.map`, so one malformed overlay manifest would abort the whole review
+        // rather than dropping its own lane.
+        if (rawInvoke === null || typeof rawInvoke !== 'object' || Array.isArray(rawInvoke)) {
+            return fail(exports.LANE_UNAVAILABLE.MALFORMED_LANE, `openai-http lane '${slug}' declares no invoke object`);
+        }
+        const inv = rawInvoke;
         const hostConfigKey = typeof inv.hostConfigKey === 'string' ? inv.hostConfigKey : '';
         const configured = hostConfigKey ? configString(input.configGet(hostConfigKey)) : null;
-        const host = normalizeHost(configured ?? String(inv.defaultHost ?? ''));
+        // Only a STRING declares a host. Coercing an object would produce the literal
+        // '[object Object]' and normalize THAT as the lane's egress destination.
+        const declaredDefault = typeof inv.defaultHost === 'string' ? inv.defaultHost : '';
+        const host = normalizeHost(configured ?? declaredDefault);
         if (!host) {
             return fail(exports.LANE_UNAVAILABLE.MALFORMED_LANE, `lane '${slug}' resolves no host: '${hostConfigKey}' is unset and it declares no defaultHost`);
         }

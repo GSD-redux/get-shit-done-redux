@@ -1224,7 +1224,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const plans = chosen.map((slug) => {
       const lane = laneBySlug.get(slug);
       if (!lane) return { slug, ok: false, reason: 'malformed_lane', detail: 'no such declared lane' };
-      const r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effortFor(slug) });
+      // Per-lane isolation. resolveLanePlan is documented total, but this map is the seam where a
+      // single throw would take down EVERY selected lane rather than the one that is malformed —
+      // and "a cross-AI review that silently drops a lane" is the failure this epic exists to end,
+      // so losing all of them to one bad manifest is strictly worse. Belt and braces on purpose.
+      let r;
+      try {
+        r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effortFor(slug) });
+      } catch (e) {
+        return { slug, ok: false, reason: 'malformed_lane', detail: `resolver threw: ${e && e.message ? e.message : String(e)}` };
+      }
       return r.ok
         ? {
             slug,
@@ -1352,6 +1361,18 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     if (instanceModel) {
       const lane = laneBySlug.get(entry.slug);
       const key = lane && lane.modelConfigKey;
+      // A lane that declares NO model key accepts no model override at all (`cursor`, `qwen`,
+      // `coderabbit`). `review.reviewer_instances` validates that `cli` is a known slug but never
+      // that the slug accepts a model, so a user can configure {"cli":"cursor","model":"gpt-5"},
+      // get a clean config-set and a clean run, and never learn their model was ignored. Say so —
+      // a review silently produced by a different model than the one configured is exactly the
+      // "looked like it worked" failure this epic exists to end.
+      if (!key) {
+        process.stderr.write(
+          `reviewer instance model '${instanceModel}' ignored: lane '${entry.slug}' accepts no ` +
+          `model override (it declares no modelConfigKey). The review will use the CLI's own default.\n`,
+        );
+      }
       const overridden = resolveLanePlan({
         lane,
         configGet: (k) => (key && k === key ? instanceModel : configGet(k)),
