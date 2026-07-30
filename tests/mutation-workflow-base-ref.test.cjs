@@ -55,12 +55,44 @@ const THREE_DOT_WORKFLOWS = [
 // Bounded: git subprocesses in tests must never hang a CI lane.
 const GIT_TIMEOUT_MS = 30_000;
 
+/**
+ * Environment for every git call below, with EVERY `GIT_*` variable stripped.
+ *
+ * Without this the helper inherits the runner's environment. A leaked
+ * `GIT_INDEX_FILE` makes `git add` in this temp repo write into a DIFFERENT
+ * repository's index; a leaked `GIT_OBJECT_DIRECTORY` /
+ * `GIT_ALTERNATE_OBJECT_DIRECTORIES` sends the blob to a different object store;
+ * a leaked `GIT_DIR` / `GIT_WORK_TREE` redirects the operation wholesale. In
+ * each case `git commit` then cannot resolve a blob it just staged, and git
+ * reports exactly:
+ *
+ *   error: invalid object 100644 <sha> for 'base-N.txt'
+ *   error: Error building trees
+ *
+ * That failure was previously attributed to `git add .` rehashing O(n²) blobs
+ * "before the object write had landed" (see the loop comment below) and worked
+ * around by staging one path per iteration. That reduced the churn but not the
+ * cause: sequential execFileSync calls cannot race each other's object writes,
+ * and the failure persisted — reappearing at a lower commit index on PR branches
+ * while `next` stayed green. Making the environment hermetic addresses the
+ * mechanism rather than the symptom; the single-path staging below is kept
+ * because it is genuinely less work.
+ */
+function gitEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_')) delete env[key];
+  }
+  return env;
+}
+
 function git(cwd, args) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: gitEnv(),
   });
 }
 
