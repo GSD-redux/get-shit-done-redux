@@ -23,18 +23,19 @@
     },
     "invoke": {
       "hostConfigKey": "review.lm_studio_host",
+      "defaultHost": "http://localhost:1234",
       "path": "/v1/chat/completions",
       "modelDiscovery": "first-from-models-endpoint",
+      "fallbackModel": "local-model",
       "effortChannel": "none"
     },
     "timeoutFloorMs": 120000,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "LM Studio",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": [
-      "jq"
-    ],
+    "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
+    "modelConfigKey": "review.models.lm_studio",
     "handler": "openai-compatible"
   },
   "config": {

@@ -1130,6 +1130,333 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           output({ ok: true, row: mutation.row, variant: mutation.variant }, raw, mutation.row);
   }
 
+  /**
+   * ADR-2782 Phase 5b (#2799) — the seam that lets `invoke_reviewers` iterate declared lanes.
+   *
+   * Replaces ~640 lines of hand-authored per-CLI bash with three subcommands:
+   *   plan    --selected a,b   → resolved lanes (slug, section, availability) as JSON
+   *   invoke  --slug X         → probe + run one lane, writing its review/stub into the run dir
+   *   sections --selected a,b  → ordered `slug<TAB>reviewsSection`, for write_reviews
+   *
+   * Lanes run SEQUENTIALLY (the workflow loops and calls `invoke` once per lane) because the
+   * original legs did — parallel invocation trips provider rate limits.
+   */
+  async function routeReviewLane({ args, cwd, raw, error }) {
+    const cp = require('node:child_process');
+    const fsx = require('node:fs');
+    const os = require('node:os');
+    const { REVIEWER_LANES } = require('./lib/review-lane-descriptor.cjs');
+    const { resolveLanePlan } = require('./lib/review-lane-invocation.cjs');
+    const runner = require('./lib/review-lane-runner.cjs');
+    const cfgLoader = require('./lib/config-loader.cjs');
+
+    const flag = (name) => {
+      const i = args.indexOf(name);
+      return i !== -1 && args[i + 1] && !String(args[i + 1]).startsWith('--') ? args[i + 1] : null;
+    };
+    const sub = args[1];
+    const runDir = flag('--run-dir') || '.';
+    const repoRoot = flag('--repo-root') || cwd;
+
+    // Resolved config, read ONCE. Reading in-process (rather than shelling out to config-get per
+    // key, as the legs did) is what removes the stringly `"null"` sentinel the bash had to test for.
+    // `loadConfigResolved` returns a PROVENANCE WRAPPER (`{config, source, degraded, reason}`),
+    // not the config — using the wrapper directly silently resolves every key to undefined, which
+    // reads exactly like "nothing configured" and drops every model override without an error.
+    let resolved = {};
+    try { resolved = (cfgLoader.loadConfigResolved(cwd) || {}).config || {}; } catch { resolved = {}; }
+    const configGet = (key) => {
+      let cur = resolved;
+      for (const part of String(key).split('.')) {
+        if (cur === null || typeof cur !== 'object') return undefined;
+        cur = Object.prototype.hasOwnProperty.call(cur, part) ? cur[part] : undefined;
+      }
+      return cur;
+    };
+
+    const selected = (flag('--selected') || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    const laneBySlug = new Map(REVIEWER_LANES.map((l) => [l.slug, l]));
+    const chosen = selected.length ? selected : REVIEWER_LANES.map((l) => l.slug);
+
+    if (sub === 'sections') {
+      const rows = chosen
+        .map((s) => laneBySlug.get(s))
+        .filter(Boolean)
+        .map((l) => `${l.slug}\t${l.reviewsSection}`);
+      process.stdout.write(rows.join('\n') + (rows.length ? '\n' : ''));
+      return;
+    }
+
+    // Effort argv is resolved per lane by the host's own execution policy, exactly as the legs did
+    // via `resolve-execution … --pick effort_argv_string`. A lane whose slug is not a known host
+    // simply gets none.
+    // Resolved through the SAME `resolve-execution` surface the bash legs used
+    // (`--host <slug> --pick effort_argv_string`), so the host's negotiated effortSurface still
+    // decides whether an argument is emitted and the catalog still owns the syntax (ADR-1239 #2481,
+    // ADR-443's escalation ladder). `cmdResolveExecution` writes to stdout and exits, so it cannot
+    // be called in-process for a value — this spawns the same bounded query the legs did, once per
+    // selected lane. A lane whose slug is not a known host resolves to no effort argument at all.
+    const effortFor = (slug) => {
+      try {
+        const r = cp.spawnSync(
+          process.execPath,
+          [__filename, 'query', 'resolve-execution', 'gsd-plan-checker',
+            // NOT `--raw`: that prints the resolved EFFORT ('low'), ignoring --pick. The picked
+            // field is what carries the host-specific syntax ('--effort low' for claude,
+            // '-c model_reasoning_effort=low' for codex), which is the whole point of asking.
+            '--host', slug, '--pick', 'effort_argv_string'],
+          { cwd, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
+        );
+        if (r.status !== 0) return [];
+        const s = String(r.stdout || '').trim();
+        return s ? s.split(/\s+/).filter(Boolean) : [];
+      } catch { return []; }
+    };
+
+    /**
+     * Per-lane prompt budget (#2797 semantics, preserved exactly).
+     *
+     * `-1` is the UNSET sentinel and falls back to the central `review.max_prompt_tokens`, because
+     * `0` is a legitimate value meaning "do not trim this lane". Treating 0 as unset would silently
+     * switch a user who deliberately disabled trimming onto the global budget.
+     *
+     * Only the budget VALUE is resolved here. Assembly and trimming stay in `prompt-budget`, which
+     * already owns that machinery and is already tested; the workflow calls it and hands the
+     * trimmed file back via `--prompt-file`. Re-implementing it inside the runner would fork a
+     * tested surface for no gain.
+     */
+    const budgetFor = (lane) => {
+      if (!lane.promptBudgetKey) return null;
+      const per = configGet(lane.promptBudgetKey);
+      const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+      if (isNum(per) && per !== -1) return per;
+      const global = configGet('review.max_prompt_tokens');
+      return isNum(global) ? global : null;
+    };
+
+    const plans = chosen.map((slug) => {
+      const lane = laneBySlug.get(slug);
+      if (!lane) return { slug, ok: false, reason: 'malformed_lane', detail: 'no such declared lane' };
+      // Per-lane isolation. resolveLanePlan is documented total, but this map is the seam where a
+      // single throw would take down EVERY selected lane rather than the one that is malformed —
+      // and "a cross-AI review that silently drops a lane" is the failure this epic exists to end,
+      // so losing all of them to one bad manifest is strictly worse. Belt and braces on purpose.
+      let r;
+      try {
+        r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effortFor(slug) });
+      } catch (e) {
+        return { slug, ok: false, reason: 'malformed_lane', detail: `resolver threw: ${e && e.message ? e.message : String(e)}` };
+      }
+      return r.ok
+        ? {
+            slug,
+            ok: true,
+            section: lane.reviewsSection,
+            transport: r.plan.transport,
+            promptBudget: budgetFor(lane),
+            promptPath: r.plan.transport === 'spawn' ? r.plan.stdin : r.plan.promptPath,
+            plan: r.plan,
+          }
+        : { slug, ok: false, reason: r.reason, detail: r.detail };
+    });
+
+    if (sub === 'plan') {
+      output(plans.map(({ plan, ...rest }) => rest), raw);
+      return;
+    }
+
+    if (sub !== 'invoke') {
+      error("Usage: review-lane <plan|invoke|sections> [--selected a,b] [--run-dir D] [--repo-root R]");
+      return;
+    }
+
+    const slug = flag('--slug');
+    if (!slug) { error('review-lane invoke requires --slug'); return; }
+    const entry = plans.find((p) => p.slug === slug);
+    if (!entry || !entry.ok) {
+      output({ slug, ok: false, reason: entry ? entry.reason : 'malformed_lane', detail: entry ? entry.detail : 'unknown lane' }, raw);
+      return;
+    }
+
+    // EVERY spawn bounded — `DEFECT.UNBOUNDED-SUBPROCESS` (CONTEXT.md:772). A frozen sync spawn
+    // cannot be interrupted by --test-force-exit and hangs a whole CI chunk to its 10-minute kill.
+    const deps = {
+      spawn: (binary, argv, opts) => {
+        const r = cp.spawnSync(binary, argv, {
+          input: opts.input,
+          encoding: 'utf8',
+          timeout: opts.timeoutMs,
+          killSignal: 'SIGKILL',
+          maxBuffer: 64 * 1024 * 1024,
+          shell: false, // argv array only — never a shell string (no interpolation of config values)
+        });
+        return {
+          status: r.status,
+          stdout: r.stdout || '',
+          stderr: r.stderr || '',
+          errorCode: r.error && r.error.code ? r.error.code : undefined,
+        };
+      },
+      httpJson: async (url, opts) => {
+        try {
+          const res = await fetch(url, {
+            method: opts.method,
+            headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+            body: opts.body,
+            signal: AbortSignal.timeout(opts.timeoutMs),
+          });
+          return { ok: res.ok, status: res.status, body: await res.text() };
+        } catch (e) {
+          return { ok: false, status: 0, body: '', error: e && e.message ? e.message : String(e) };
+        }
+      },
+      readFile: (p) => fsx.readFileSync(p, 'utf8'),
+      writeFile: (p, c) => fsx.writeFileSync(p, c, 'utf8'),
+      exists: (p) => fsx.existsSync(p),
+      // PATH scan rather than spawning `command -v` / `where`. Two reasons: it spawns nothing at
+      // all (a probe that costs a process is a probe you avoid running, which is how the original
+      // Kimi probe ended up unbounded), and `shell: true` with an args array is deprecated in
+      // Node 26 (DEP0190) because the arguments are concatenated rather than escaped.
+      hasBinary: (name) => {
+        if (!name || name.includes('/') || name.includes('\\')) {
+          try { return fsx.statSync(name).isFile(); } catch { return false; }
+        }
+        const exts = process.platform === 'win32'
+          ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+          : [''];
+        for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+          for (const ext of exts) {
+            const candidate = path.join(dir, name + ext);
+            try {
+              const st = fsx.statSync(candidate);
+              if (st.isFile()) return true;
+            } catch { /* next candidate */ }
+          }
+        }
+        return false;
+      },
+      configGet,
+      homeDir: os.homedir(),
+      warn: (m) => process.stderr.write(`${m}\n`),
+    };
+
+    // ADR-1517 reviewer instances resolve THROUGH a lane rather than being lanes themselves
+    // (ADR-2782 D8), so they reuse this seam with three substitutions instead of duplicating the
+    // lane's invocation. Everything the lane declares — probe, channels, timeout, empty-output
+    // policy, handler — then applies to the instance unchanged, which is the whole reason to route
+    // them here: a cross-cutting fix reaches instances for free.
+    const asIdentity = flag('--as');
+    const instanceModel = flag('--model');
+    const instanceAgent = flag('--agent');
+
+    if (asIdentity) {
+      // Write under the INSTANCE name so two instances of one adapter never overwrite each other.
+      const safe = String(asIdentity).replace(/[^A-Za-z0-9._-]/g, '-');
+      entry.plan.reviewPath = `${runDir.replace(/\/+$/, '')}/gsd-review-${safe}.md`;
+      entry.plan.errPath = `${runDir.replace(/\/+$/, '')}/gsd-review-${safe}.err`;
+      if (entry.plan.transport === 'spawn' && entry.plan.outputTarget.kind === 'file') {
+        // A file-arg lane names its output inside argv; retarget both together or the runner reads
+        // the lane's file while the tool writes the instance's.
+        const old = entry.plan.outputTarget.path;
+        entry.plan.argv = entry.plan.argv.map((a) => (a === old ? entry.plan.reviewPath : a));
+        entry.plan.outputTarget = { kind: 'file', path: entry.plan.reviewPath };
+      }
+    }
+
+    // The instance's own model replaces whatever the lane resolved from config. Opaque
+    // pass-through: it reaches the tool as one argv element and is never shell-interpolated.
+    //
+    // Done by RE-RESOLVING with an overridden config rather than by patching argv afterwards. A
+    // post-hoc splice has to guess where the flag belongs when the lane resolved no model at all
+    // (the placeholder expanded to nothing, so there is no position to find), and guessing puts it
+    // before a subcommand — `opencode --model M run …`, the same defect the argv template exists to
+    // prevent. Re-resolving lets the lane's own `{{model}}` placeholder decide the position.
+    if (instanceModel) {
+      const lane = laneBySlug.get(entry.slug);
+      const key = lane && lane.modelConfigKey;
+      // A lane that declares NO model key accepts no model override at all (`cursor`, `qwen`,
+      // `coderabbit`). `review.reviewer_instances` validates that `cli` is a known slug but never
+      // that the slug accepts a model, so a user can configure {"cli":"cursor","model":"gpt-5"},
+      // get a clean config-set and a clean run, and never learn their model was ignored. Say so —
+      // a review silently produced by a different model than the one configured is exactly the
+      // "looked like it worked" failure this epic exists to end.
+      if (!key) {
+        process.stderr.write(
+          `reviewer instance model '${instanceModel}' ignored: lane '${entry.slug}' accepts no ` +
+          `model override (it declares no modelConfigKey). The review will use the CLI's own default.\n`,
+        );
+      }
+      const overridden = resolveLanePlan({
+        lane,
+        configGet: (k) => (key && k === key ? instanceModel : configGet(k)),
+        runDir,
+        repoRoot,
+        effortArgs: effortFor(entry.slug),
+      });
+      if (overridden.ok) {
+        // Preserve any instance retargeting already applied above.
+        const { reviewPath, errPath } = entry.plan;
+        entry.plan = overridden.plan;
+        if (asIdentity) {
+          entry.plan.reviewPath = reviewPath;
+          entry.plan.errPath = errPath;
+          if (entry.plan.transport === 'spawn' && entry.plan.outputTarget.kind === 'file') {
+            const old = entry.plan.outputTarget.path;
+            entry.plan.argv = entry.plan.argv.map((a) => (a === old ? reviewPath : a));
+            entry.plan.outputTarget = { kind: 'file', path: reviewPath };
+          }
+        }
+      }
+    }
+
+    // `--agent` is OpenCode's native subagent flag and is honoured only by adapters that have the
+    // concept; ignored elsewhere rather than passed to a tool that would reject it.
+    if (instanceAgent && entry.slug === 'opencode' && entry.plan.transport === 'spawn') {
+      const runIdx = entry.plan.argv.indexOf('run');
+      const insertAt = runIdx === -1 ? 0 : runIdx + 1;
+      entry.plan.argv = [
+        ...entry.plan.argv.slice(0, insertAt),
+        '--agent',
+        instanceAgent,
+        ...entry.plan.argv.slice(insertAt),
+      ];
+    }
+
+    // `--prompt-file` lets the caller substitute a budget-trimmed prompt. Applied to whichever
+    // channel this lane actually reads from, so one flag serves both transports.
+    const promptOverride = flag('--prompt-file');
+    if (promptOverride) {
+      if (entry.plan.transport === 'spawn') {
+        if (entry.plan.stdin) entry.plan.stdin = promptOverride;
+      } else {
+        entry.plan.promptPath = promptOverride;
+      }
+    }
+
+    // ADR-2782 D5 rule 4: re-resolve the consented destination at INVOCATION. `undefined` (no
+    // consent record, or a record predating rule 1) means "nothing to compare" and ALLOWS — a
+    // first-party lane ships inside the SHA-pinned distribution and is never consent-gated, so
+    // denying on absence would break every existing local-model user.
+    let consentedHost;
+    if (entry.plan.transport === 'openai-http') {
+      try {
+        const consent = require('./lib/capability-consent.cjs');
+        const projectRoot = require('./lib/project-root.cjs').consentProjectRoot(cwd);
+        // The capability id is kebab; the lane slug may be snake (lm_studio / lm-studio).
+        const capId = String(entry.slug).replace(/_/g, '-');
+        consentedHost = consent.readConsentedReviewerHost({ projectRoot, id: capId });
+      } catch { consentedHost = undefined; }
+    }
+
+    const result = await runner.runLane(entry.plan, deps, {
+      consentedHost,
+      explicitlyRequested: args.includes('--explicit'),
+      repoRoot,
+    });
+    output(result, raw);
+  }
+
   function routeNormalizeTestCommand({ args, cwd, raw, error }) {
     // #1857: rewrite a resolved test command to a one-shot form so a
           // watch-mode runner (vitest/jest) cannot hang a verification gate. Shared
@@ -2589,6 +2916,7 @@ const HOST_COMMAND_ROUTERS = {
     'restore-custom-files': routeRestoreCustomFiles,
     'from-gsd2': routeFromGsd2,
     'prompt-budget': routePromptBudget,
+    'review-lane': routeReviewLane,
     'update-context': routeUpdateContext,
     'classify-confidence': routeClassifyConfidence,
     'package-legitimacy': routePackageLegitimacy,

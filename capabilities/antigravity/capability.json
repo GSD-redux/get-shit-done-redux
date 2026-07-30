@@ -116,7 +116,9 @@
       "args": [
         "--print-timeout",
         "540s",
-        "-p"
+        "{{model}}",
+        "-p",
+        "{{prompt}}"
       ],
       "promptChannel": "argv-file-ref",
       "outputChannel": "stdout",
@@ -127,10 +129,9 @@
     "emptyOutput": "handler-owned",
     "reviewsSection": "Antigravity",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": [
-      "jq"
-    ],
+    "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.agy",
     "handler": "antigravity"
   },
   "config": {

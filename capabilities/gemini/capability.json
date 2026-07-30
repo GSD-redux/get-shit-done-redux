@@ -22,6 +22,7 @@
     "invoke": {
       "binary": "gemini",
       "args": [
+        "{{model}}",
         "-p",
         "-"
       ],
@@ -36,6 +37,7 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.gemini",
     "handler": null
   },
   "config": {

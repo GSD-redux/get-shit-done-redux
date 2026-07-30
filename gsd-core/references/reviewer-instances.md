@@ -58,32 +58,39 @@ cannot diverge (`DEFECT.GENERATIVE-FIX`; parity-locked in
 
 ## Invocation
 
-For each selected INSTANCE, invoke its base `cli` using the instance's own `model`/`agent` —
-NOT the global `review.models.<cli>`. Each instance writes to its OWN per-instance output file
-under the run-scoped `{run_dir}` (`RUN_DIR` from `gather_context`, #2358 — never a bare
-`{phase}`-keyed `/tmp` path) and runs as a distinct reviewer identity.
+An instance resolves **through** a lane; it is not a lane itself (ADR-2782 D8). It takes no part in
+the roster, the flag set, or lane uniqueness — which is why an instance heading
+(`## OpenCode Review (opencode-deepseek)`) must never be read as a lane section.
 
-For an OpenCode-backed instance (the motivating adapter):
+Since Phase 5b (#2799) `invoke_reviewers` iterates declared lanes rather than hand-authored per-CLI
+blocks, so an instance is invoked through the same single seam as its base lane, with two
+substitutions:
 
 ```bash
-# $INSTANCE_MODEL / $INSTANCE_AGENT come from the instance spec; $INSTANCE_NAME is the
-# reviewer identity (e.g. opencode-deepseek). --agent is OpenCode's native subagent flag;
-# omit it when the instance has no agent. {run_dir} is the run-scoped mktemp directory
-# created once in gather_context (#2358) — same directory every other reviewer block uses.
-if [ -n "$INSTANCE_AGENT" ] && [ "$INSTANCE_AGENT" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | opencode run --model "$INSTANCE_MODEL" --agent "$INSTANCE_AGENT" - 2>/dev/null > {run_dir}/gsd-review-${INSTANCE_NAME}.md
-else
-  cat {run_dir}/gsd-review-prompt.md | opencode run --model "$INSTANCE_MODEL" - 2>/dev/null > {run_dir}/gsd-review-${INSTANCE_NAME}.md
-fi
-if [ ! -s {run_dir}/gsd-review-${INSTANCE_NAME}.md ]; then
-  echo "OpenCode review ($INSTANCE_NAME) failed or returned empty output." > {run_dir}/gsd-review-${INSTANCE_NAME}.md
-fi
+# $INSTANCE_NAME is the reviewer identity (e.g. opencode-deepseek); $INSTANCE_MODEL / $INSTANCE_AGENT
+# come from the instance spec. --run-dir is the run-scoped mktemp directory created once in
+# gather_context (#2358) — the same directory every lane uses.
+#
+# The instance's OWN model replaces the lane's configured model, and the output lands under the
+# INSTANCE name so two instances of one adapter never overwrite each other.
+gsd_run query review-lane invoke \
+  --slug "$INSTANCE_CLI" \
+  --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" \
+  --model "$INSTANCE_MODEL" ${INSTANCE_AGENT:+--agent "$INSTANCE_AGENT"} \
+  --as "$INSTANCE_NAME"
 ```
 
-For an instance backed by a DIFFERENT cli, reuse that cli's invocation block with two
-substitutions: use the instance's `model` in place of the global `review.models.<cli>` value,
-and write to `{run_dir}/gsd-review-${INSTANCE_NAME}.md`. Only `opencode` honours an
-`agent` field in v1; ignore `agent` for other adapters.
+`--as` is what makes the run write `{run_dir}/gsd-review-${INSTANCE_NAME}.md` instead of the lane's
+own `{run_dir}/gsd-review-<slug>.md`.
+
+Everything the lane declares — probe, prompt channel, output channel, timeout floor, empty-output
+policy, handler — applies unchanged to an instance. That is the point of routing instances through
+the lane rather than duplicating its invocation: a cross-cutting fix reaches instances for free,
+where the previous per-adapter block had to be copied and kept in sync by hand.
+
+Only `opencode` honours an `agent` field in v1; it is ignored by other adapters. `model` and `agent`
+are opaque pass-through strings and are NEVER interpolated into a shell string — the runner spawns
+with an argv array and `shell: false`.
 
 ---
 

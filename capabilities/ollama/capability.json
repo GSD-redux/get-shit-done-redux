@@ -23,18 +23,19 @@
     },
     "invoke": {
       "hostConfigKey": "review.ollama_host",
+      "defaultHost": "http://localhost:11434",
       "path": "/v1/chat/completions",
       "modelDiscovery": "first-from-models-endpoint",
+      "fallbackModel": "llama3",
       "effortChannel": "none"
     },
     "timeoutFloorMs": 120000,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Ollama",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": [
-      "jq"
-    ],
+    "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
+    "modelConfigKey": "review.models.ollama",
     "handler": "openai-compatible"
   },
   "config": {
