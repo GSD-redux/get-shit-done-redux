@@ -60,28 +60,35 @@ describe('Cursor CLI reviewer in /gsd-review (#1960)', () => {
       );
     });
 
-    test('invocation uses cursor-agent single binary with -p flag', () => {
-      const c = fs.readFileSync(reviewPath, 'utf-8');
-      assert.ok(
-        c.includes('cursor-agent -p'),
-        'review.md should invoke cursor via "cursor-agent -p" (single binary, not two-token "cursor agent")'
-      );
+    // Phase 5b (#2799) moved the invocation out of review.md's bash and into the declared lane.
+    // These four assertions follow it: the descriptor and the resolved plan ARE the deployed
+    // contract now, and asserting on them is strictly stronger than matching fence text.
+    test('invocation uses the cursor-agent single binary, not two-token "cursor agent"', () => {
+      const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+      const lane = REVIEWER_LANES.find((l) => l.slug === 'cursor');
+      assert.equal(lane.invoke.binary, 'cursor-agent');
+      assert.ok(lane.invoke.args.includes('-p'));
     });
 
     test('invocation includes --output-format text', () => {
-      const c = fs.readFileSync(reviewPath, 'utf-8');
-      assert.ok(
-        c.includes('--output-format text'),
-        'review.md cursor-agent invocation should include "--output-format text"'
-      );
+      const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+      const lane = REVIEWER_LANES.find((l) => l.slug === 'cursor');
+      const i = lane.invoke.args.indexOf('--output-format');
+      assert.ok(i !== -1);
+      assert.equal(lane.invoke.args[i + 1], 'text');
     });
 
-    test('invocation passes prompt as a file-path argument (not via stdin pipe)', () => {
-      const c = fs.readFileSync(reviewPath, 'utf-8');
-      assert.ok(
-        c.includes('Read the file at {run_dir}/gsd-review-prompt.md'),
-        'review.md cursor-agent invocation should pass prompt by referencing the file path as an argument'
-      );
+    test('the prompt is a file-path ARGUMENT, never piped on stdin', () => {
+      // Print mode takes the prompt as an argument, and a full plan set inline would approach the
+      // 32,767-char Windows execFileSync ceiling — hence the file reference.
+      const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+      const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+      const lane = REVIEWER_LANES.find((l) => l.slug === 'cursor');
+      assert.equal(lane.invoke.promptChannel, 'argv-file-ref');
+      const r = resolveLanePlan({ lane, configGet: () => undefined, runDir: '/rd', repoRoot: '/repo' });
+      assert.equal(r.ok, true);
+      assert.equal(r.plan.stdin, null, 'nothing may be fed on stdin');
+      assert.ok(r.plan.argv[r.plan.argv.length - 1].includes('/rd/gsd-review-prompt.md'));
     });
 
     test('does NOT use broken two-token "cursor agent " form', () => {
@@ -104,11 +111,18 @@ describe('Cursor CLI reviewer in /gsd-review (#1960)', () => {
       );
     });
 
-    test('contains Cursor Review section in REVIEWS.md template', () => {
-      const c = fs.readFileSync(reviewPath, 'utf-8');
-      assert.ok(
-        c.includes('Cursor Review'),
-        'review.md should include a "Cursor Review" section in the REVIEWS.md template'
+    test('the lane declares its REVIEWS.md section', () => {
+      // The heading used to be a literal in review.md's write_reviews template. Phase 5b renders
+      // sections from each lane's declared `reviewsSection`, so THAT is the contract now — and
+      // uniqueness across lanes is enforced by the parity gate (ADR-2782 D8), which a hardcoded
+      // list never was.
+      const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+      const lane = REVIEWER_LANES.find((l) => l.slug === 'cursor');
+      assert.equal(lane.reviewsSection, 'Cursor');
+      const sections = REVIEWER_LANES.map((l) => l.reviewsSection);
+      assert.equal(
+        sections.filter((x) => x === 'Cursor').length, 1,
+        'two lanes sharing a heading would silently merge their output in REVIEWS.md',
       );
     });
 

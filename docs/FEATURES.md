@@ -1244,7 +1244,9 @@ When verification returns `human_needed`, items are persisted as a trackable HUM
 
 **Command:** `/gsd-review --phase N [--gemini] [--claude] [--codex] [--coderabbit] [--opencode] [--qwen] [--cursor] [--agy] [--ollama] [--lm-studio] [--llama-cpp] [--all]`
 
-**Purpose:** Invoke external AI CLIs (Gemini, Claude, Codex, CodeRabbit, OpenCode, Qwen Code, Cursor, Antigravity) to independently review phase plans. Produces structured REVIEWS.md with per-reviewer feedback.
+**Purpose:** Invoke external AI CLIs (Gemini, Claude, Codex, CodeRabbit, OpenCode, Qwen Code, Cursor, Antigravity, Kimi Code) and local OpenAI-compatible servers (Ollama, LM Studio, llama.cpp) to independently review phase plans. Produces structured REVIEWS.md with per-reviewer feedback.
+
+Each reviewer is a **declared lane**: its binary, prompt and output channels, timeout, availability probe, and empty-output policy come from a capability manifest rather than hand-written per-CLI logic, so a reviewer can be shipped as an installable capability instead of a core change.
 
 **Requirements:**
 - REQ-REVIEW-01: System MUST detect available AI CLIs on the system

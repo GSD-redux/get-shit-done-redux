@@ -393,16 +393,42 @@ describe('#2481 review workflow resolves effort per reviewer', () => {
     'utf8',
   );
 
-  test('review.md invokes resolve-execution — the grep ADR-443 said returned zero hits', () => {
+  test('shipped orchestration invokes resolve-execution — the grep ADR-443 said returned zero hits', () => {
+    // Phase 5b (#2799) moved the call out of review.md's per-lane bash and into the review-lane
+    // route, which resolves effort once per selected lane through the SAME surface. ADR-443's
+    // invariant is about shipped orchestration calling resolve-execution at all, not about which
+    // file it lives in — so the assertion follows the call rather than pinning the old location.
+    const toolsSrc = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs'), 'utf-8',
+    );
     assert.ok(
-      reviewMd.includes('resolve-execution'),
+      toolsSrc.includes('resolve-execution'),
       'ADR-443 blocks on no shipped orchestration calling resolve-execution',
     );
   });
 
-  test('each argv reviewer receives its effort variable on the command line', () => {
-    for (const [cli, varName] of [['claude', 'CLAUDE_EFFORT_ARGS'], ['codex', 'CODEX_EFFORT_ARGS'], ['opencode', 'OPENCODE_EFFORT_ARGS']]) {
-      assert.ok(reviewMd.includes(`$${varName}`), `${cli} invocation must carry $${varName}`);
+  test('each argv-effort reviewer places effort in its resolved command line', () => {
+    // Stronger than the old shell-variable check: this asserts the effort actually lands in the
+    // argv AT THE POSITION the lane declares, which a `$VAR` substring never proved. Lanes whose
+    // effortChannel is not `argv` must receive nothing.
+    const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+    const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+    const EFFORT = ['--effort', 'high'];
+    for (const lane of REVIEWER_LANES.filter((l) => l.transport === 'spawn')) {
+      const r = resolveLanePlan({
+        lane, configGet: () => undefined, runDir: '/run', repoRoot: '/repo', effortArgs: EFFORT,
+      });
+      assert.equal(r.ok, true, `${lane.slug} failed to resolve`);
+      const carries = r.plan.argv.includes('--effort');
+      assert.equal(
+        carries, lane.invoke.effortChannel === 'argv',
+        `${lane.slug}: effortChannel=${lane.invoke.effortChannel} but argv ${carries ? 'carries' : 'omits'} effort`,
+      );
     }
+    // The three lanes ADR-1239 #2481 named must still be the argv-effort set.
+    const argvEffort = REVIEWER_LANES
+      .filter((l) => l.transport === 'spawn' && l.invoke.effortChannel === 'argv')
+      .map((l) => l.slug).sort();
+    assert.deepStrictEqual(argvEffort, ['claude', 'codex', 'opencode']);
   });
 });

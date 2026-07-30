@@ -1,9 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "review.md": {
-      "reason": "#2797 / ADR-2782 D9 (config half). Growth is comment-only: the three per-lane prompt-budget fallback guards (ollama, lm_studio, llama_cpp) gain an explanation of why they test for the -1 sentinel rather than 0. A federated config key always resolves to its declared default rather than reporting not-found, so an unset per-lane budget needs a sentinel that cannot collide with a legitimate value — and 0 is legitimate: it already means \"do not trim this lane\" (the early-return guard in prepare_trimmed_prompt_for_reviewer). Treating 0 as unset would have silently switched a user who deliberately disabled trimming for one lane onto the global budget. No lane's invocation shape changed."
-    },
     "spec-phase.md": {
       "reason": "#2733: five transitions in gsd-core/workflows/spec-phase.md were re-pointed so control reaches the mandatory Step 5.5 edge-completeness and Step 5.6 prohibition-completeness probes, which no path could reach before. Four upstream gate-passed jumps went from 'Jump to Step 6' to 'Jump to Step 5.5', and Step 5.5's own terminal soft gate at :305 went from 'proceed to Step 6' to 'proceed to Step 5.6' so the common all-edges-resolved path stops skipping the prohibition probe. The +10 bytes is exactly those five targets growing by 2 bytes each ('Step 6' -> 'Step 5.5' / 'Step 5.6'); it is the literal fix, not incidental prose growth, and cannot be avoided without leaving a probe unreachable. Verified: 31987 -> 31997 bytes, DEFAULT tier, cap 40960."
     }

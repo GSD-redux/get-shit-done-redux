@@ -420,6 +420,8 @@
       "research-store.cjs",
       "resolution.cjs",
       "review-lane-descriptor.cjs",
+      "review-lane-invocation.cjs",
+      "review-lane-runner.cjs",
       "review-reviewer-selection.cjs",
       "roadmap-command-router.cjs",
       "roadmap-parser.cjs",

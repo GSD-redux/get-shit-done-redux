@@ -107,7 +107,10 @@
       "args": [
         "exec",
         "--ephemeral",
+        "{{model}}",
+        "{{effort}}",
         "--skip-git-repo-check",
+        "{{output}}",
         "-"
       ],
       "promptChannel": "stdin",
@@ -122,6 +125,7 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.codex",
     "handler": null
   },
   "config": {

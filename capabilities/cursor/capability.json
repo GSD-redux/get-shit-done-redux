@@ -123,12 +123,25 @@
   },
   "reviewer": {
     "slug": "cursor",
-    "flags": ["--cursor"],
+    "flags": [
+      "--cursor"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "cursor-agent" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "cursor-agent"
+    },
     "invoke": {
       "binary": "cursor-agent",
-      "args": ["-p", "--mode", "ask", "--trust", "--output-format", "text"],
+      "args": [
+        "-p",
+        "--mode",
+        "ask",
+        "--trust",
+        "--output-format",
+        "text",
+        "{{prompt}}"
+      ],
       "promptChannel": "argv-file-ref",
       "outputChannel": "stdout",
       "modelArg": null,
@@ -140,6 +153,7 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": null,
     "handler": null
   }
 }
