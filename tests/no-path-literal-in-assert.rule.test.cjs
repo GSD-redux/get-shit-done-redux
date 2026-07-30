@@ -247,6 +247,19 @@ describe('no-path-literal-in-assert invalid cases', () => {
       ],
     });
   });
+
+  test('invalid (#2764): path.resolve(...).match(/a\\/b/) — regex with a slash', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(path.resolve(x).match(/a\\/b/));`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
 });
 
 // ─── VALID cases (no violation expected) ─────────────────────────────────────
@@ -437,6 +450,30 @@ describe('no-path-literal-in-assert valid cases', () => {
       valid: [
         {
           code: `assert.ok(path.relative(ROOT, f).includes('foo'));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid (#2764): path receiver .match(regex-with-no-slash)', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `assert.ok(path.resolve(x).match(/^home/));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid (#2764): membership inside a Windows-excluded platform guard', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `if (process.platform !== 'win32') { assert.ok(path.relative(ROOT, f).includes('a/b')); }`,
           filename: 'tests/foo.test.cjs',
         },
       ],

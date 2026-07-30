@@ -44,6 +44,14 @@
  *     path really does contain forward-slashes even on Windows), wrapping with
  *     `String(<x>).replace(/\\\\/g, '/')` is the correct suppression; on POSIX
  *     systems where `\\` never appears, the replace is a no-op and has zero cost.
+ *
+ * (d) #2764 membership/substring shape — `.includes/.indexOf/.startsWith/.endsWith`
+ *     (string-literal arg) and `.match` (regex-literal arg) over a receiver that
+ *     traces to a path-returning call (directly or via `.map()` hops). For `.match`,
+ *     ANY regex literal whose source contains a `/` is treated as a POSIX-path
+ *     membership check; a non-path regex containing `/` on a path-returning receiver
+ *     (e.g. `.match(/https:\/\//)`) will also fire. The rule is scoped to the
+ *     `tests/` test-file glob, so every such call is a test assertion shape.
  */
 
 const {
@@ -103,7 +111,8 @@ const rule = {
 
     // True when `receiverNode` is (or traces to) a path-returning call, respecting
     // POSIX-normalizer suppression. Traces: String() cast → non-normalizer method
-    // chain peel → ONE .map(arrow-or-fn returning a path call) hop.
+    // chain peel → .map(callback-returning-a-path-call) hops (recursively — nested
+    // .map() is also traced, since each recursion descends into a smaller subtree).
     function receiverIsPathReturning(receiverNode) {
       if (!receiverNode) return false;
       // Suppressed if the receiver is already a valid POSIX normalizer.
