@@ -37,6 +37,14 @@ test('discuss-phase auto_advance fallback ends the workflow, not routes back to 
   const src = read('gsd-core/workflows/discuss-phase.md');
   const step = src.slice(src.indexOf('<step name="auto_advance">'), src.indexOf('</step>', src.indexOf('<step name="auto_advance">')));
   assert.ok(!/route to `confirm_creation`/.test(step), 'auto_advance fallback must not route back to confirm_creation (it already ran earlier in the step order — circular) (#2772)');
+  assert.ok(/end here|workflow is complete/i.test(step), 'auto_advance fallback must explicitly END the workflow (positive anchor — a re-phrased regression should not slip past) (#2772)');
+});
+
+test('discuss-phase-assumptions auto_advance fallback also ends the workflow (sibling of #2772.3)', () => {
+  const src = read('gsd-core/workflows/discuss-phase-assumptions.md');
+  const step = src.slice(src.indexOf('<step name="auto_advance">'), src.indexOf('</step>', src.indexOf('<step name="auto_advance">')));
+  assert.ok(!/Route to confirm_creation step/.test(step), 'assumptions auto_advance fallback must not route back to confirm_creation (same circularity as the parent) (#2772)');
+  assert.ok(/end here|workflow is complete/i.test(step), 'assumptions auto_advance fallback must explicitly END the workflow (#2772)');
 });
 
 test('discuss-phase-assumptions answer_validation matches the parent canonical content (#2772.4)', () => {
