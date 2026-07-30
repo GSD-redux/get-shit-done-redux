@@ -171,7 +171,7 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
 
     const negatedProse2 = 'This phase operates entirely offline without calling any external REST API.';
     assert.strictEqual(detectApiIntegration(negatedProse2).detected, false, 'prepositional negation');
-    
+
     // Contractions
     assert.strictEqual(detectApiIntegration('We don\'t integrate any external API.').detected, false, "don't negation");
     assert.strictEqual(detectApiIntegration('We can\'t integrate an external API yet.').detected, false, "can't negation");
@@ -190,7 +190,7 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
     const padding56 = '-'.repeat(56);
     const boundary60 = `no ${padding56} Stripe API`;
     assert.strictEqual(detectApiIntegration(boundary60).detected, false, 'negation at exactly 60 chars lookback applies');
-    
+
     // offset 61 -> 3 + 57 + 1 = 61.
     const padding57 = '-'.repeat(57);
     const boundary61 = `no ${padding57} Stripe API`;
@@ -199,9 +199,23 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
     // Intervening word boundary
     const wordBoundary3 = 'no one two three Stripe API'; // 3 intervening words
     assert.strictEqual(detectApiIntegration(wordBoundary3).detected, false, '3 intervening words are negated');
-    
+
     const wordBoundary4 = 'no one two three four Stripe API'; // 4 intervening words
     assert.strictEqual(detectApiIntegration(wordBoundary4).detected, true, '4 intervening words bypasses negation');
+  });
+
+  test('negation does not cross a clause boundary and suppress a later positive signal', () => {
+    for (const scope of [
+      'No retries. We integrate Stripe API.',
+      'We do not log PII; this phase integrates the GitHub API.',
+      'No caching, then connect the app to the Stripe API.',
+    ]) {
+      assert.strictEqual(
+        detectApiIntegration(scope).detected,
+        true,
+        `unrelated negation must not suppress a positive integration clause: ${scope}`,
+      );
+    }
   });
 
   test('property: negated/affirmative prose permutations (parsing contract for isNegated)', () => {

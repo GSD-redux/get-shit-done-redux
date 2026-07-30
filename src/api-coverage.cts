@@ -484,16 +484,16 @@ export function detectApiIntegration(
     if (verbRe && nounRe) {
       for (const clause of clauses) {
         const verbs = collectTermMatches(verbRe, clause.text);
-        const validVerbs = verbs.filter(v => !isNegated(masked, clause.start + v.start));
+        const validVerbs = verbs.filter(v => !isNegated(masked, clause.start + v.start, clause.start));
         if (validVerbs.length === 0) continue;
         const nouns = collectTermMatches(nounRe, clause.text);
         const validNouns = new Set<string>();
         for (const n of nouns) {
-          if (!isNegated(masked, clause.start + n.start)) validNouns.add(n.term);
+          if (!isNegated(masked, clause.start + n.start, clause.start)) validNouns.add(n.term);
         }
         for (const u of extraNouns) {
           if (u.start >= clause.start && u.end <= clause.start + clause.text.length) {
-            if (!isNegated(masked, u.start)) validNouns.add(u.term);
+            if (!isNegated(masked, u.start, clause.start)) validNouns.add(u.term);
           }
         }
         if (validNouns.size === 0) continue;
@@ -520,7 +520,7 @@ export function detectApiIntegration(
         if (SURFACE_DESCRIPTOR_WORDS.has(svcLower)) continue;
         if (COMPOUND_MODIFIER_RE.test(svc)) continue;
         if (isInternallyQualified(masked, clause.start + m.index)) continue;
-        if (isNegated(masked, clause.start + m.index)) continue;
+        if (isNegated(masked, clause.start + m.index, clause.start)) continue;
         const noun = (m[2] || '').toLowerCase();
         const key = `surface+${noun}`;
         if (seen.has(key)) continue;
@@ -558,11 +558,14 @@ function isInternallyQualified(masked: string, offset: number): boolean {
 }
 
 const NEGATION_LOOKBACK = 60;
-function isNegated(masked: string, offset: number): boolean {
-  const from = offset > NEGATION_LOOKBACK ? offset - NEGATION_LOOKBACK : 0;
+function isNegated(masked: string, offset: number, clauseStart: number): boolean {
+  const from = Math.max(clauseStart, offset - NEGATION_LOOKBACK, 0);
   const window = masked.slice(from, offset);
   // Match a negation followed by at most 3 intervening words (using (?:\W+\w+){0,3})
   // and then only non-word characters up to the end of the window (where the API reference is).
+  // Deliberate limitation: this lexical proximity check cannot interpret
+  // semantic double negation without a real parser; ambiguous cases retain the
+  // detector's documented fail-closed bias.
   return /\b(no|not|without|zero|neither|nor|never|none|no longer|does not|cannot|will not|don't|can't|won't|doesn't|didn't|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|shouldn't|wouldn't|couldn't|mightn't|mustn't)\b(?:\W+\w+){0,3}\W*$/i.test(window);
 }
 
