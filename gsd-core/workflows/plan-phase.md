@@ -1413,6 +1413,11 @@ silently dropped on the way into the plans.
 ```bash
 GATE_CFG=$(gsd_run query config-get workflow.context_coverage_gate 2>/dev/null || echo "true")
 if [ "$GATE_CFG" != "false" ]; then
+  # #2770: recompute CONTEXT_PATH HERE — the variable set in the step-1 init block
+  # does not survive into this separately-spawned Bash block, so consuming it above
+  # passed an empty arg and the gate silently green-skipped. Derive it from the phase
+  # dir (the canonical <phase>-CONTEXT.md convention).
+  CONTEXT_PATH=$(ls "${PHASE_DIR}"/*-CONTEXT.md 2>/dev/null | head -1)
   GATE_RESULT=$(gsd_run query check.decision-coverage-plan "${PHASE_DIR}" "${CONTEXT_PATH}")
   # BLOCKING: refuse to mark phase planned when a trackable decision is uncovered.
   # `passed: true` covers both real-pass and skipped cases (gate disabled / no CONTEXT.md /
