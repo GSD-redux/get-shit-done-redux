@@ -89,7 +89,9 @@
     },
     "orchestratorExec": {
       "command": "opencode",
-      "args": ["run"],
+      "args": [
+        "run"
+      ],
       "cwdFlag": "--dir",
       "promptFlag": null
     },
@@ -109,6 +111,46 @@
       "skipUpdateBannerCommand": true,
       "skipCodexSkillsManifest": true,
       "reviewerCli": true
+    }
+  },
+  "reviewer": {
+    "slug": "opencode",
+    "flags": [
+      "--opencode"
+    ],
+    "transport": "spawn",
+    "probe": {
+      "kind": "command-exists",
+      "binary": "opencode"
+    },
+    "invoke": {
+      "binary": "opencode",
+      "args": [
+        "run",
+        "--format",
+        "json",
+        "-"
+      ],
+      "promptChannel": "stdin",
+      "outputChannel": "stdout",
+      "modelArg": "--model",
+      "effortChannel": "argv"
+    },
+    "timeoutFloorMs": 660000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "OpenCode",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [
+      "jq"
+    ],
+    "promptBudgetKey": null,
+    "handler": null
+  },
+  "config": {
+    "review.models.opencode": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the OpenCode reviewer lane."
     }
   }
 }

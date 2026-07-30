@@ -152,3 +152,36 @@ export function buildNotStartedPhaseVariants(roadmapContent: string): Set<string
   }
   return notStartedPhases;
 }
+
+/**
+ * Detect binary corruption (embedded NUL bytes) in a text artifact's bytes.
+ *
+ * #2701: the plan/summary/verification/state validators must FAIL LOUD on a
+ * NUL-corrupted file instead of reporting `valid: true`. A NUL byte is the
+ * unambiguous signal — UTF-8 text never contains 0x00 — and a file carrying one
+ * is binary-classified by `file(1)`, then silently OMITTED from recursive /
+ * binary-skipping search results (`rg -l`, `grep -rI`, exit 0), so the corruption
+ * reads downstream as "file absent" rather than "file corrupt." The error message
+ * names that consequence so the next investigator is not misdirected.
+ *
+ * This is a pure, opt-in check called explicitly by each validator at its own
+ * entry point. It is deliberately NOT placed inside the shared `platformReadSync`
+ * read primitive (which dozens of best-effort, tolerant reads flow through and
+ * which must not start hard-failing on encoding). It does NOT strip, sanitize, or
+ * repair the NUL bytes — corruption is a signal of an upstream authoring-tool bug
+ * and must stay visible.
+ *
+ * @param buf   the file bytes (Buffer or string; a string is searched char-wise)
+ * @param relPath  a path/label for the diagnostic message
+ * @returns an error string when NUL is found, or `null` when the bytes are clean text
+ */
+export function textEncodingError(buf: Buffer | string, relPath: string): string | null {
+  const nul = typeof buf === 'string' ? buf.indexOf('\0') : buf.indexOf(0x00);
+  if (nul === -1) return null;
+  return (
+    `${relPath}: file contains NUL bytes (first at offset ${nul}). ` +
+    'Artifact files must be UTF-8 text. A NUL-corrupted file is binary-classified ' +
+    'and silently skipped by recursive / binary-skipping search tools (rg, grep -I), ' +
+    'so downstream verification reports its contents as missing rather than corrupt.'
+  );
+}

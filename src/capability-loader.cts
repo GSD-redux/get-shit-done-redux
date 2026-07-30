@@ -60,6 +60,14 @@ interface ValidatorModule {
   validateAgainstContract: (cap: unknown, capId: string) => string[];
   validateConsumesGlobal: (capMap: Map<string, unknown>) => string[];
   validateCrossCapability: (capMap: Map<string, unknown>, centralKeys: Set<string>) => string[];
+  /**
+   * ADR-2782 D4.3 — NON-FATAL diagnostics for an ACCEPTED capability (e.g. an
+   * unknown field inside a `reviewer` body, which is ignored with a warning
+   * rather than failing validation so a manifest built for a newer GSD degrades
+   * visibly instead of being rejected). Returns warnings; never throws.
+   * Optional so an older built validator without it still loads.
+   */
+  collectReviewerWarnings?: (cap: unknown) => string[];
 }
 interface SemverModule {
   semverSatisfies: (version: unknown, range: unknown) => boolean;
@@ -138,6 +146,15 @@ export interface BlockedGate {
 export interface OverlayMeta {
   /** Capabilities skipped at load, with the reason (surfaced to the user). */
   warnings: OverlaySkip[];
+  /**
+   * ADR-2782 D4.3 — non-fatal diagnostics for capabilities that were ACCEPTED.
+   * Distinct from `warnings`, which records capabilities that were SKIPPED: a
+   * consumer that treats every `warnings` entry as "inactive" would mislabel an
+   * active capability if these were folded in. Today this carries unknown-field
+   * notices from a `reviewer` body built for a newer GSD — the case D4.3 exists
+   * for, which validates cleanly and so would otherwise surface nowhere at all.
+   */
+  diagnostics: string[];
   /** Skipped capabilities that declared a gate — the loop must fail CLOSED for these. */
   incompatibleGateCapIds: string[];
   /**
@@ -508,6 +525,8 @@ export function loadRegistry(options: LoadRegistryOptions = {}): Registry {
   const gsdHome = options.gsdHome || process.env['GSD_HOME'] || os.homedir();
 
   const warnings: OverlaySkip[] = [];
+  // ADR-2782 D4.3 — non-fatal notices for capabilities that are ACCEPTED (see OverlayMeta).
+  const diagnostics: string[] = [];
   const incompatibleGateCapIds: string[] = [];
   const blockedGates: BlockedGate[] = [];
   const commandRoots: Record<string, string> = {};
@@ -790,6 +809,25 @@ export function loadRegistry(options: LoadRegistryOptions = {}): Registry {
       }
 
       // Accepted.
+      //
+      // ADR-2782 D4.3: an unknown field inside a `reviewer` body is IGNORED WITH A
+      // WARNING rather than failing validation, so a lane built for a newer GSD
+      // degrades to accepted-but-partially-understood instead of being rejected.
+      // That case validates cleanly, so without this call it would surface
+      // nowhere at runtime — the build-time generator only ever sees first-party
+      // in-repo manifests, never an installed third-party overlay. Guarded on
+      // presence so an older built validator without the function still loads,
+      // and wrapped because the never-crash contract (ADR-1244 D2) outranks a
+      // diagnostic: a throwing collector must not cost the user a working lane.
+      if (typeof validator.collectReviewerWarnings === 'function') {
+        try {
+          for (const w of validator.collectReviewerWarnings(cap) || []) {
+            diagnostics.push(`${root.scope}:${id}: ${w}`);
+          }
+        } catch {
+          // A diagnostic that cannot be produced is not worth failing an install over.
+        }
+      }
       overlayCaps.push(cap);
       acceptedIds.add(id);
       for (const s of skills) claimedSkills.add(s);
@@ -818,7 +856,7 @@ export function loadRegistry(options: LoadRegistryOptions = {}): Registry {
     }
   }
 
-  const meta: OverlayMeta = { warnings, incompatibleGateCapIds, blockedGates, commandRoots };
+  const meta: OverlayMeta = { warnings, diagnostics, incompatibleGateCapIds, blockedGates, commandRoots };
 
   if (overlayCaps.length === 0) {
     // Nothing to compose. Return the frozen registry unchanged when there is

@@ -1376,3 +1376,182 @@ test('runCli treats jsonErrors=false as an explicit human-formatter path', (t) =
 });
   });
 }
+
+// ─── #2702: workstream-scoped config-get inherits from root config ──────────
+//
+// When GSD_WORKSTREAM is set, planningDir(cwd) points at .planning/workstreams/<ws>/.
+// cmdConfigGet used to read ONLY that file, so a key configured at the project root
+// (.planning/config.json) but absent from the workstream's own config was reported
+// "Key not found" — silently inverting boolean workflow guards. The fix adds a
+// root-config inheritance rung: workstream overrides root, but root fills gaps.
+
+describe('#2702: workstream config-get inherits from root config', () => {
+  let tmpDir;
+  let rootPlanningDir;
+  let wsPlanningDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-config-ws-2702-'));
+    rootPlanningDir = path.join(tmpDir, '.planning');
+    wsPlanningDir = path.join(rootPlanningDir, 'workstreams', 'alpha');
+    fs.mkdirSync(wsPlanningDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Run cmdConfigGet with GSD_WORKSTREAM scoped to 'alpha' (so planningDir → ws dir).
+  function runScoped(...args) {
+    const { keyPath, raw, defaultValue } = parseConfigGetArgs(args);
+    const saved = process.env.GSD_WORKSTREAM;
+    process.env.GSD_WORKSTREAM = 'alpha';
+    let out;
+    try {
+      out = captureFdWrite(1, () => {
+        config.cmdConfigGet(tmpDir, keyPath, raw, defaultValue);
+      });
+    } finally {
+      if (saved === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = saved;
+    }
+    return out.trim();
+  }
+
+  function runScopedExpectError(...args) {
+    const { keyPath, raw, defaultValue } = parseConfigGetArgs(args);
+    const saved = process.env.GSD_WORKSTREAM;
+    process.env.GSD_WORKSTREAM = 'alpha';
+    const origExit = process.exit;
+    const origWriteSync = fs.writeSync;
+    io.setJsonErrorMode(true);
+    let exitCode;
+    let stderr = '';
+    fs.writeSync = (fd, ...rest) => {
+      if (fd !== 2) return origWriteSync.call(fs, fd, ...rest);
+      stderr += String(rest[0]);
+      return Buffer.byteLength(String(rest[0]));
+    };
+    process.exit = (code) => { exitCode = code; throw new _ExitSignal(code); };
+    try {
+      config.cmdConfigGet(tmpDir, keyPath, raw, defaultValue);
+    } catch (e) {
+      if (!(e instanceof _ExitSignal)) throw e;
+    } finally {
+      process.exit = origExit;
+      fs.writeSync = origWriteSync;
+      io.setJsonErrorMode(false);
+      if (saved === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = saved;
+    }
+    const parts = stderr.split('\n').filter(Boolean);
+    let payload = {};
+    try { payload = JSON.parse(parts[parts.length - 1]); } catch { /* human mode */ }
+    return { status: exitCode, reason: payload.reason };
+  }
+
+  function writeRoot(obj) {
+    fs.writeFileSync(path.join(rootPlanningDir, 'config.json'), JSON.stringify(obj));
+  }
+  function writeWs(obj) {
+    fs.writeFileSync(path.join(wsPlanningDir, 'config.json'), JSON.stringify(obj));
+  }
+
+  test('inherits a fail-closed key (workflow.use_worktrees) from root when workstream omits it', () => {
+    writeRoot({ workflow: { use_worktrees: true } });
+    // workstream config exists but does NOT set the key
+    writeWs({ workflow: {} });
+    assert.equal(runScoped('config-get', 'workflow.use_worktrees', '--raw'), 'true');
+  });
+
+  test('inherits a fail-open key (workflow.plan_review_convergence) from root', () => {
+    writeRoot({ workflow: { plan_review_convergence: true } });
+    writeWs({ workflow: {} });
+    assert.equal(runScoped('config-get', 'workflow.plan_review_convergence', '--raw'), 'true');
+  });
+
+  test('inherits a core key (workflow.verifier) from root', () => {
+    writeRoot({ workflow: { verifier: true } });
+    writeWs({ workflow: {} });
+    assert.equal(runScoped('config-get', 'workflow.verifier', '--raw'), 'true');
+  });
+
+  test('workstream config overrides root value for a key it sets', () => {
+    writeRoot({ workflow: { use_worktrees: true } });
+    writeWs({ workflow: { use_worktrees: false } });
+    assert.equal(runScoped('config-get', 'workflow.use_worktrees', '--raw'), 'false');
+  });
+
+  test('still errors on a key absent from workstream, root, and schema', () => {
+    writeWs({ workflow: {} });
+    writeRoot({ workflow: {} });
+    const { status, reason } = runScopedExpectError('config-get', 'workflow.totally_absent', '--raw');
+    assert.notEqual(status, 0, 'a key absent everywhere must error');
+    assert.equal(reason, io.ERROR_REASON.CONFIG_KEY_NOT_FOUND);
+  });
+
+  test('--default is ignored when the key is inherited from root', () => {
+    writeRoot({ workflow: { use_worktrees: true } });
+    writeWs({ workflow: {} });
+    assert.equal(
+      runScoped('config-get', 'workflow.use_worktrees', '--default', 'false', '--raw'),
+      'true',
+    );
+  });
+
+  test('inherits a nested fail-closed key (workflow.context_coverage_gate) from root', () => {
+    writeRoot({ workflow: { context_coverage_gate: false } });
+    writeWs({ workflow: {} });
+    assert.equal(runScoped('config-get', 'workflow.context_coverage_gate', '--raw'), 'false');
+  });
+
+  test('scoped and unscoped reads return the same string form when workstream does not override', () => {
+    writeRoot({ workflow: { use_worktrees: true } });
+    writeWs({ workflow: {} });
+    const scoped = runScoped('config-get', 'workflow.use_worktrees', '--raw');
+    // Unscoped read: no GSD_WORKSTREAM — reads root directly.
+    const unscoped = captureFdWrite(1, () => {
+      config.cmdConfigGet(tmpDir, 'workflow.use_worktrees', true, undefined);
+    }).trim();
+    assert.equal(scoped, unscoped, 'scoped (inherited) and unscoped reads must agree');
+    assert.equal(scoped, 'true');
+  });
+
+  test('unscoped config-get still reads root value (no regression when not scoped)', () => {
+    writeRoot({ workflow: { use_worktrees: true } });
+    const out = captureFdWrite(1, () => {
+      config.cmdConfigGet(tmpDir, 'workflow.use_worktrees', true, undefined);
+    }).trim();
+    assert.equal(out, 'true');
+  });
+
+  test('inherits from root even when the workstream has no config.json at all', () => {
+    writeRoot({ workflow: { use_worktrees: true } });
+    // No writeWs — workstreams/alpha/config.json does not exist.
+    assert.equal(runScoped('config-get', 'workflow.use_worktrees', '--raw'), 'true');
+  });
+
+  test('GSD_PROJECT alone (no workstream) does not trigger root inheritance — matches loadConfigResolved', () => {
+    // GSD_PROJECT scopes planningDir to .planning/<project>/ but loadConfigResolved
+    // gates root-reading on `if (ws)`, so a project-only read must NOT inherit root.
+    // The fix gates on GSD_WORKSTREAM presence (not path inequality) to match.
+    // A --default is supplied so a non-inheriting read returns a clean sentinel
+    // ('not-inherited') rather than hitting the error/exit path.
+    const projectPlanningDir = path.join(rootPlanningDir, 'myproj');
+    fs.mkdirSync(projectPlanningDir, { recursive: true });
+    fs.writeFileSync(path.join(projectPlanningDir, 'config.json'), JSON.stringify({ workflow: {} }));
+    writeRoot({ workflow: { use_worktrees: true } });
+    const saved = process.env.GSD_PROJECT;
+    process.env.GSD_PROJECT = 'myproj';
+    try {
+      const out = captureFdWrite(1, () => {
+        config.cmdConfigGet(tmpDir, 'workflow.use_worktrees', true, 'not-inherited');
+      }).trim();
+      // No workstream → no root inheritance → returns the --default sentinel, NOT root 'true'.
+      assert.equal(out, 'not-inherited', 'GSD_PROJECT-only must not inherit root (matches loadConfigResolved)');
+    } finally {
+      if (saved === undefined) delete process.env.GSD_PROJECT;
+      else process.env.GSD_PROJECT = saved;
+    }
+  });
+});

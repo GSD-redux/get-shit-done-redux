@@ -350,7 +350,11 @@ describe('Bug #2986: M2 -- DYNAMIC_KEY_PATTERNS.some semantic, not .every', () =
   // dynamic path is the only way to reach `true`.
   const patternRepresentatives = [
     { key: 'agent_skills.gsd-planner',                           topLevel: 'agent_skills' },
-    { key: 'review.models.claude',                               topLevel: 'review' },
+    // #2797: `review.models.<slug>` was the `review` representative until that
+    // pattern was federated to the lane capabilities and removed from the central
+    // schema. `reviewer_instances` is the surviving `review` dynamic pattern —
+    // an instance is not a lane (ADR-2782 D8), so it stays central.
+    { key: 'review.reviewer_instances.myinstance.cli',           topLevel: 'review' },
     { key: 'features.some_dynamic_feature',                      topLevel: 'features' },
     { key: 'claude_md_assembly.blocks.intro',                    topLevel: 'claude_md_assembly' },
     { key: 'model_profile_overrides.codex.opus',                 topLevel: 'model_profile_overrides' },

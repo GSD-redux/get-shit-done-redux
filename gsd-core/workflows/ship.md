@@ -139,14 +139,14 @@ Verify the work is ready to ship:
      ```
      ⚠ Broken-windows ship gate: WINDOWS.md has {WINDOWS_OPEN_COUNT} open window(s).
      Resolve each entry before shipping, or explicitly waive with a recorded reason:
-       gsd-tools windows fixed <id>      # defect resolved
-       gsd-tools windows waive <id> "<reason>"   # justified deferral (reason required)
+       gsd_run windows fixed <id>      # defect resolved
+       gsd_run windows waive <id> "<reason>"   # justified deferral (reason required)
      Then re-run /gsd:ship.
      ```
    - **`WINDOWS_OPEN_COUNT` is `"?"`, empty, or non-numeric** → **fail closed and block** with `WINDOWS_SHIP_GATE_READ_FAILED` (the gate is strict equality to `0`; never ship on an unreadable ledger):
      ```
      ⚠ Broken-windows ship gate: could not read open_count from .planning/WINDOWS.md.
-     Inspect the file or run `gsd-tools windows status --raw` to diagnose. The ledger
+     Inspect the file or run `gsd_run windows status --raw` to diagnose. The ledger
      may be malformed; fix it before shipping (an unparseable ledger is a broken window).
      ```
 

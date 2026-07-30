@@ -15,8 +15,9 @@
 
 GSD 1.6.0 opens the capability platform to third-party authors with **full
 artifact parity**: a third-party capability may ship the same executable
-surfaces that GSD Core ships — hooks, MCP servers, command modules. This is a
-deliberate product choice, and it carries real security weight.
+surfaces that GSD Core ships — hooks, MCP servers, command modules, and
+reviewer lanes. This is a deliberate product choice, and it carries real
+security weight.
 
 Full parity means a third-party capability, once installed, can execute code
 the next time a relevant loop event fires. There is no "first use" gate.
@@ -58,9 +59,9 @@ contains.
 
 GSD's response: auto-update is **off by default** for third-party capabilities.
 When it is enabled, a change to the *executable set* (the set of hooks, MCP
-servers, or command modules the capability declares) triggers a re-consent
-prompt before the update applies. Updating a non-executable capability
-(documentation, agents, skills) does not require re-consent.
+servers, command modules, or reviewer lanes the capability declares) triggers a
+re-consent prompt before the update applies. Updating a non-executable
+capability (documentation, agents, skills) does not require re-consent.
 
 VS Code also has no signature check on VSIX packages. GSD requires an
 `integrity` SHA-512 pin in the ledger, verified before extraction.
@@ -75,11 +76,57 @@ recommendation for sensitive environments is `--ignore-scripts`.
 
 GSD takes a stronger position: **install never executes capability code**,
 full stop. Installation is a copy-only staging operation. There is no
-`postinstall`-equivalent. A capability's hooks, MCP server, and command
-modules are not invoked during install; they are first invoked when the loop
-fires after install. This means a malicious payload in an executable surface
-cannot be triggered by the act of downloading it — the user has a window
-between install and first use to verify what they consented to.
+`postinstall`-equivalent. A capability's hooks, MCP server, command
+modules, and reviewer lanes are not invoked during install; they are first
+invoked when the loop fires after install. This means a malicious payload in an
+executable surface cannot be triggered by the act of downloading it — the user
+has a window between install and first use to verify what they consented to.
+
+### The reviewer lane: the one surface that *receives* data
+
+Three of the four disclosure classes are about code the capability gets to
+**run**. A reviewer lane — one external CLI or model endpoint that `/gsd:review`
+hands a plan to — is different in kind, and the difference is the reason it is
+disclosed at all.
+
+A lane is piped the plan text, the requirements, the research findings, and the
+`CONTEXT.md` decisions, and its output is read back into `REVIEWS.md`. That is an
+**egress channel for the most sensitive artifacts GSD produces**. Making lanes
+pluggable without a disclosure class would have opened a data-exfiltration path
+behind a manifest field, which is why the trust work gates the feature rather
+than following it.
+
+What is disclosed depends on how the lane is reached:
+
+- A **spawned** lane discloses its binary **and its full declared arguments**, in
+  both rendered and raw form. Disclosing the binary alone would be insufficient,
+  and not hypothetically: a lane declaring `python3` with innocuous arguments
+  could later change them to `["-c", "<arbitrary program>"]` without the binary
+  changing at all. Arguments are therefore signature-bound, exactly as they are
+  for MCP servers.
+- An **OpenAI-compatible HTTP** lane has no binary, so it discloses the
+  **destination host** and the config key that names it. Disclosing `curl` would
+  be technically true and practically meaningless; the destination is the
+  disclosure that matters. A `localhost` destination is still disclosed, and is
+  distinguished from a remote one — a lane pointed at a local port is an egress
+  channel too, and the port may not be what the user assumes.
+
+Both forms additionally name the **egress payload classes**, rather than an
+unhelpful "sends data to the tool".
+
+**Stated honestly:** consent-at-install is a weaker gate for a *standing* egress
+channel than it is for a hook. A user consents once; the lane thereafter receives
+every plan on every review run. Disclosure makes the channel visible, pinned and
+revocable — it does not make it safe. A per-run egress prompt was considered and
+rejected as consent fatigue that trains users to approve blindly.
+
+One consequence is worth naming because it does not follow the pattern of the
+other three classes. A lane's destination host lives in `.planning/config.json`,
+which is user- and CI-editable at any time with no re-install and no integrity
+check — unlike every other consent-bound value, all of which come from the
+SHA-pinned manifest. Consent therefore binds the **resolved host**, not merely
+the config key, so that a later edit redirecting a consented lane to a different
+destination is detectable rather than silent.
 
 SLSA provenance (the `provenance` field in `capability.json`) provides a
 machine-checkable link from a capability bundle back to a specific commit in a

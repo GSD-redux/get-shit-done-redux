@@ -123,7 +123,7 @@ All JSON files include a `_meta` object with `updated_at` (ISO timestamp) and `v
 }
 ```
 
-**exports constraint:** Array of ACTUAL exported symbol names extracted from `module.exports` or `export` statements. MUST be real identifiers (e.g., `"configLoad"`, `"stateUpdate"`), NOT descriptions (e.g., `"config operations"`). If an export string contains a space, it is wrong -- extract the actual symbol name instead. Use `gsd-tools intel extract-exports <file>` to get accurate exports.
+**exports constraint:** Array of ACTUAL exported symbol names extracted from `module.exports` or `export` statements. MUST be real identifiers (e.g., `"configLoad"`, `"stateUpdate"`), NOT descriptions (e.g., `"config operations"`). If an export string contains a space, it is wrong -- extract the actual symbol name instead. Use `gsd_run intel extract-exports <file>` to get accurate exports.
 
 Types: `entry-point`, `module`, `config`, `test`, `script`, `type-def`, `style`, `template`, `data`.
 
@@ -255,7 +255,7 @@ gsd_run intel patch-meta .planning/intel/arch-decisions.json
 
 ### Step 6.5: Self-Check
 
-Run: `gsd-tools intel validate`
+Run: `gsd_run intel validate`
 
 Review the output:
 
@@ -267,7 +267,7 @@ This step is MANDATORY -- do not skip it.
 
 ### Step 7: Snapshot
 
-Run: `gsd-tools intel snapshot`
+Run: `gsd_run intel snapshot`
 
 This writes `.last-refresh.json` with accurate timestamps and hashes. Do NOT write `.last-refresh.json` manually.
 </execution_flow>
