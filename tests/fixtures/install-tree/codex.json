@@ -437,6 +437,7 @@
   "hooks/gsd-check-update.js",
   "hooks/gsd-context-monitor.js",
   "hooks/managed-hooks-registry.cjs",
+  "hooks/package.json",
   "scripts/changeset/README.md",
   "scripts/changeset/cli.cjs",
   "scripts/changeset/github-release-notes.cjs",
