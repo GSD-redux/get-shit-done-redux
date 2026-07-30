@@ -1,4 +1,4 @@
-// allow-test-rule: source-text-is-the-product
+// allow-test-rule: source-text-is-the-product (#2751)
 'use strict';
 
 // Regression guard for #2751: agents/*.md and gsd-core/workflows/*.md must not
