@@ -8501,6 +8501,17 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         console.log(`  ${green}✓${reset} Removed ${removedLibFiles} hooks/lib/ helper(s)`);
       }
     }
+
+    // #2717: remove the CommonJS marker GSD wrote into hooks/ for runtimes that
+    // stage .js hooks via dedicated paths (cursor/windsurf/codex) — but ONLY if
+    // it still carries GSD's exact content (a user-authored package.json is
+    // never deleted). Safe no-op for runtimes whose marker lives at the config
+    // root (the shared-bundle path) or that never received one.
+    try {
+      if (hooksSurface.removeCommonJsMarkerIfGsdOwned(hooksDir)) {
+        console.log(`  ${green}✓${reset} Removed GSD hooks/package.json (CommonJS marker)`);
+      }
+    } catch { /* best-effort */ }
   }
 
   // 4z. Remove the native plugin adapter (#1914, extended to Kilo by #2093).
@@ -11646,6 +11657,17 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
         }
       }
       console.log(`  ${green}✓${reset} Installed hooks (Codex)`);
+      // #2717: write the CommonJS marker into hooks/ alongside the staged .js
+      // scripts. Codex is excluded from installSharedHooksBundle by the
+      // !isCodex gate, so it never received the marker the shared-bundle path
+      // writes for the other runtimes. Without it, a ~/.codex/package.json
+      // declaring {"type":"module"} makes Node load gsd-check-update.js /
+      // gsd-context-monitor.js as ESM and their require() calls fail silently.
+      // Reuses the same helper the Cursor/Windsurf writers call so the marker
+      // content + user-file-preservation contract is identical everywhere.
+      if (hooksSurface.ensureCommonJsMarker(codexHooksDest)) {
+        console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
+      }
     }
 
     // Add Codex hooks (SessionStart for update checking) — requires codex_hooks feature flag
