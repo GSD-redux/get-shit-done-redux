@@ -809,6 +809,7 @@ export const DOCS_PARITY_VIOLATION = Object.freeze({
   DOC_TITLE_MISSING: 'doc_title_missing',
   SIGNATURE_FLAG_MISSING: 'signature_flag_missing',
   DOC_UNREADABLE: 'doc_unreadable',
+  TABLE_ROW_MISSING: 'table_row_missing',
 } as const);
 
 export type DocsParityViolationReason =
@@ -881,6 +882,32 @@ function flagIsDocumented(text: string, flag: string): boolean {
 const BRACKETED_FLAG_RE = /\[(--[a-z0-9][a-z0-9-]*)\]/g;
 
 /**
+ * Declared flags that appear in the FIRST cell of a markdown table row.
+ *
+ * The distinction is load-bearing, not cosmetic. `docs/COMMANDS.md` and every locale mirror carry
+ * BOTH a per-lane reviewer table (flag in cell 1) and a forwarding row that lists all 13 flags in
+ * cell 3. A file-scoped check is therefore satisfied by the forwarding row alone, so deleting a
+ * lane's actual table row — the exact #2781 regression — passes. Keying on cell 1 separates the
+ * two: `| `--agy` / `--antigravity` | … |` is one lane row declaring two flags, while
+ * `| Reviewer flags | No | … `--gemini`, `--claude` … |` is not a lane row at all.
+ */
+function flagsInFirstTableCell(lines: string[], declared: ReadonlySet<string>): Set<string> {
+  const found = new Set<string>();
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) continue;
+    const cells = trimmed.split('|');
+    // split('|') on "| a | b |" yields ['', ' a ', ' b ', ''] — cell 1 is index 1.
+    if (cells.length < 2) continue;
+    const firstCell = cells[1];
+    for (const flag of declared) {
+      if (flagIsDocumented(firstCell, flag)) found.add(flag);
+    }
+  }
+  return found;
+}
+
+/**
  * The `**Command:** ... /gsd-review ... [--flag]` signature line, if the doc carries one.
  *
  * Anchored on `/gsd-review` plus a bracketed flag rather than on the bolded label, because the
@@ -909,6 +936,10 @@ function findSignatureLine(lines: string[]): number {
  *  3. **title** — every declared `reviewsSection` appears in the Purpose paragraph. This is the
  *     arm that catches the class #2800 names: the `Command:` line updated and the `Purpose:` line
  *     one row below not.
+ *  4. **table row** — a doc carrying a per-lane table must carry a row for EVERY lane, keyed on
+ *     the FIRST cell. Without this the file-wide flag arm is satisfied by the forwarding row that
+ *     lists all flags in cell 3, and deleting a lane's own row — the #2781 regression itself —
+ *     goes undetected.
  *
  * A doc carrying no `/gsd-review` surface is **skipped, not failed** — a partial mirror that never
  * claimed to document the command is not drift.
@@ -987,6 +1018,8 @@ export function checkReviewerDocsParity(input: DocsParityInput): DocsParityResul
       continue;
     }
 
+    const lines = text.split('\n');
+
     // --- arm 1: every declared flag is documented somewhere in the doc ---
     for (const flag of declaredFlagSet) {
       if (!flagIsDocumented(text, flag)) {
@@ -994,7 +1027,19 @@ export function checkReviewerDocsParity(input: DocsParityInput): DocsParityResul
       }
     }
 
-    const lines = text.split('\n');
+    // --- arm 4: a doc that carries a per-lane table must carry a row for EVERY lane ---
+    //
+    // Only applies when the doc actually has a lane table (>=1 declared flag in a first cell);
+    // FEATURES-shaped docs carry a signature line instead and are covered by arms 2 and 3.
+    const rowFlags = flagsInFirstTableCell(lines, declaredFlagSet);
+    if (rowFlags.size > 0) {
+      for (const flag of declaredFlagSet) {
+        if (!rowFlags.has(flag)) {
+          add(DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING, label, flag);
+        }
+      }
+    }
+
     const sigIdx = findSignatureLine(lines);
     if (sigIdx === -1) continue; // COMMANDS.md-shaped docs carry a table, not a signature.
 

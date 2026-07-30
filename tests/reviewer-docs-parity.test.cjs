@@ -239,6 +239,83 @@ describe('reviewer docs parity — title arm', () => {
   });
 });
 
+describe('reviewer docs parity — table row arm', () => {
+  test('deletingALaneTableRowIsCaughtEvenWhenAForwardingRowListsEveryFlag', () => {
+    // Regression fixture for #2781: `docs/COMMANDS.md` and its locale mirrors carry a forwarding
+    // row that lists every flag in its THIRD cell, satisfying the file-wide flag arm on its own.
+    // The actual per-lane table row is what documents a lane, and deleting it — here `--kimi-code`
+    // — is exactly the regression this arm exists to catch.
+    const laneRows = REVIEWER_LANES.filter((l) => l.slug !== 'kimi-code').map(
+      (l) => `| ${l.flags.map((f) => `\`${f}\``).join(' / ')} | ${l.reviewsSection} review |`,
+    );
+    const doc = [
+      '### `/gsd-review`',
+      '',
+      '| Flag | Description | Notes |',
+      '| --- | --- | --- |',
+      `| Reviewer flags | No | ${backtickAll(ALL_FLAGS)} |`,
+      ...laneRows,
+      '',
+    ].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    const tableRowViolations = r.violations.filter(
+      (v) => v.reason === DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING,
+    );
+    assert.deepStrictEqual(tableRowViolations, [
+      { reason: DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING, doc: 'd', subject: '--kimi-code' },
+    ]);
+  });
+
+  test('aDualFlagLaneRowSatisfiesBothItsFlags', () => {
+    // A single row can declare TWO flags in its first cell — `--agy` / `--antigravity` — and must
+    // satisfy both without a second, separate row.
+    const laneRows = REVIEWER_LANES.map(
+      (l) => `| ${l.flags.map((f) => `\`${f}\``).join(' / ')} | ${l.reviewsSection} review |`,
+    );
+    const doc = [
+      '### `/gsd-review`',
+      '',
+      '| Flag | Description |',
+      '| --- | --- |',
+      ...laneRows,
+      '',
+    ].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    assert.ok(
+      !r.violations.some((v) => v.reason === DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING),
+      'a two-flag first cell must satisfy both flags, including antigravity/agy',
+    );
+  });
+
+  test('aForwardingRowAloneDoesNotSatisfyTheTableArm', () => {
+    const doc = [
+      '### `/gsd-review`',
+      '',
+      '| Flag | Description | Notes |',
+      '| --- | --- | --- |',
+      `| Reviewer flags | No | ${backtickAll(ALL_FLAGS)} |`,
+      '',
+    ].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    // The forwarding row's flags sit in cell 3, never cell 1, so the doc has NO per-lane table at
+    // all (rowFlags.size === 0) and arm 4 must not fire. Pinned as zero violations of this reason
+    // rather than "no violations at all": if the guard were dropped and the arm fired
+    // unconditionally, every one of the 13 declared flags would report TABLE_ROW_MISSING (none of
+    // them sit in a first cell here), so this assertion would immediately fail.
+    const tableRowViolations = r.violations.filter(
+      (v) => v.reason === DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING,
+    );
+    assert.deepStrictEqual(tableRowViolations, []);
+  });
+
+  test('aFeaturesShapedDocIsUnaffectedByTheTableArm', () => {
+    const doc = featuresDoc();
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    assert.strictEqual(r.ok, true);
+    assert.ok(!r.violations.some((v) => v.reason === DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING));
+  });
+});
+
 describe('reviewer docs parity — combination', () => {
   test('a clean doc does not mask a dirty one', () => {
     const clean = commandsDoc(ALL_FLAGS);
@@ -472,6 +549,7 @@ describe('reviewer docs parity — independence and properties', () => {
       'DOC_UNREADABLE',
       'MALFORMED_LANE',
       'SIGNATURE_FLAG_MISSING',
+      'TABLE_ROW_MISSING',
     ]);
     assert.ok(Object.isFrozen(DOCS_PARITY_VIOLATION));
   });
