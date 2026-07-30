@@ -14,6 +14,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const { RuleTester } = require('eslint');
+const fc = require('fast-check');
 
 const noSourceGrep = require('../eslint-rules/no-source-grep.cjs');
 const noMagicSleepInTests = require('../eslint-rules/no-magic-sleep-in-tests.cjs');
@@ -1451,5 +1452,140 @@ describe('no-adhoc-markdown-parsing rule', () => {
       ],
       invalid: [],
     });
+  });
+
+  // ── property test: negated-pipe-class scanner (hasQualifyingNegatedPipeClass) ──
+  test('property: single-pass negated-class scanner verdict matches an independent reference implementation', () => {
+    // hasQualifyingNegatedPipeClass is a closure private to the rule's
+    // `create(context)` — it cannot be called directly, so it is exercised
+    // through the public surface: `new RegExp(<string literal>)` feeds
+    // `arg.value` through UNCHANGED as the "effective regex source" (see
+    // getNewRegExpSource), so any generated string, however malformed as a
+    // real regex, reaches the scanner byte-for-byte via JSON.stringify(...).
+    // A guaranteed literal `\|` is prepended so isTableRegexSource's OTHER
+    // gate (`src.includes('\\|')`) is always satisfied — the property is then
+    // solely a probe of the negated-class scanner's own verdict, matching the
+    // instruction to test the scanner in isolation.
+    //
+    // Reference implementation (independent tokenizer, NOT a copy of the
+    // scanner under test): tokenize `src` once into {esc, text} units,
+    // tracking escapes; then walk the tokens with a MONOTONIC cursor: on
+    // finding a `[` char-token immediately followed by a `^` char-token,
+    // consume forward to the first unescaped `]` (or to the end if there is
+    // none) as a single committed unit, decide qualification for that unit,
+    // and resume scanning strictly AFTER whatever was consumed — a class
+    // candidate found INSIDE an already-consumed (opened) class body is
+    // never separately reconsidered. Qualifies iff the collected body
+    // contains a pipe (bare `|` or escaped `\|`) AND every other member is
+    // one of the escapes `\n`, `\r`, `\t`.
+    function referenceHasQualifyingNegatedPipeClass(src) {
+      const tokens = [];
+      let i = 0;
+      while (i < src.length) {
+        if (src[i] === '\\') {
+          const next = i + 1 < src.length ? src[i + 1] : '';
+          tokens.push({ esc: true, text: next });
+          i += 2;
+        }
+        else {
+          tokens.push({ esc: false, text: src[i] });
+          i += 1;
+        }
+      }
+      let t = 0;
+      while (t < tokens.length) {
+        const opensClass = !tokens[t].esc && tokens[t].text === '['
+          && t + 1 < tokens.length && !tokens[t + 1].esc && tokens[t + 1].text === '^';
+        if (!opensClass) {
+          t += 1;
+          continue;
+        }
+        let u = t + 2;
+        const members = [];
+        let closed = false;
+        while (u < tokens.length) {
+          const tok = tokens[u];
+          if (!tok.esc && tok.text === ']') {
+            closed = true;
+            u += 1;
+            break;
+          }
+          members.push(tok);
+          u += 1;
+        }
+        if (closed) {
+          let hasPipe = false;
+          let isPure = true;
+          for (const m of members) {
+            if (!m.esc && m.text === '|') {
+              hasPipe = true;
+              continue;
+            }
+            if (m.esc && m.text === '|') {
+              hasPipe = true;
+              continue;
+            }
+            if (m.esc && (m.text === 'n' || m.text === 'r' || m.text === 't')) continue;
+            isPure = false;
+          }
+          if (hasPipe && isPure) return true;
+        }
+        // Monotonic advance: whether this candidate qualified, failed, or
+        // ran off the end unclosed, never re-enter the bytes just consumed.
+        t = closed ? u : tokens.length;
+      }
+      return false;
+    }
+
+    // Composed of random characters PLUS randomly inserted `[^...]` classes
+    // with and without pipes (some closed, some not; some qualifying, some
+    // not) so both the "flagged" and "not flagged" verdicts are well
+    // exercised — a purely uniform character soup almost never assembles a
+    // well-formed `[^...|...]` class by chance.
+    const pipeMemberArb = fc.constantFrom('|', '\\|');
+    const pureFillerArb = fc.constantFrom('\\n', '\\r', '\\t');
+    const impureFillerArb = fc.constantFrom('a', 'Z', '1', '\\s', '\\d', '\\w', '\\\\', '-', ' ', '\\]', '\\[');
+    const classMemberArb = fc.oneof(pipeMemberArb, pureFillerArb, impureFillerArb);
+    const classBodyArb = fc.array(classMemberArb, { minLength: 1, maxLength: 3 }).map((members) => members.join(''));
+    const classChunkArb = fc
+      .record({ body: classBodyArb, closed: fc.boolean() })
+      .map(({ body, closed }) => '[^' + body + (closed ? ']' : ''));
+    const noiseCharArb = fc.constantFrom('[', ']', '^', 'x', 'y', '0', '9', ' ', '.', '-', '(', ')');
+    const escapeChunkArb = fc
+      .tuple(fc.constant('\\'), fc.constantFrom('n', 'r', 't', '|', 's', 'd', '\\', '[', ']', '^', 'a'))
+      .map(([bs, c]) => bs + c);
+    const chunkArb = fc.oneof(
+      { weight: 5, arbitrary: classChunkArb },
+      { weight: 2, arbitrary: escapeChunkArb },
+      { weight: 2, arbitrary: noiseCharArb },
+    );
+    const srcArb = fc.array(chunkArb, { minLength: 0, maxLength: 5 }).map((chunks) => chunks.join(''));
+
+    fc.assert(
+      fc.property(srcArb, (fuzzed) => {
+        const src = '\\|' + fuzzed;
+        const expected = referenceHasQualifyingNegatedPipeClass(src);
+        const code = `const re = new RegExp(${JSON.stringify(src)});`;
+        if (expected) {
+          ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+            valid: [],
+            invalid: [
+              {
+                code,
+                filename: 'src/some-module.cts',
+                errors: [{ messageId: 'tableRegex' }],
+              },
+            ],
+          });
+        }
+        else {
+          ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+            valid: [{ code, filename: 'src/some-module.cts' }],
+            invalid: [],
+          });
+        }
+      }),
+      { numRuns: 200, seed: 2880 },
+    );
   });
 });

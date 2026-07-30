@@ -225,3 +225,87 @@ describe('property: bounded mutation (#2880, ADR-2143 §4)', () => {
     );
   });
 });
+
+describe('property: fieldNameMatchesRawCell case-fold semantics, via stateExtractField (FIX A)', () => {
+  test('match verdict agrees with an explicit ECMAScript non-unicode Canonicalize reference predicate', () => {
+    // Independent, obviously-correct reference for "are these two code units
+    // the same character under a non-`u`-flag `/i` RegExp": NOT
+    // `.toLowerCase()`, which incorrectly folds some non-ASCII characters
+    // (e.g. KELVIN SIGN U+212A) onto their ASCII counterparts ("k"), and
+    // also incorrectly folds multi-character uppercase mappings (e.g. "ß"
+    // toUpperCase()'s "SS") onto a two-character string. Per ECMAScript's
+    // non-unicode Canonicalize, a fold is REJECTED (the original character
+    // is kept as-is) whenever `ch.toUpperCase()` is not exactly one
+    // character, OR the original is non-ASCII (>= 128) while the uppercased
+    // result is ASCII (< 128).
+    function canonChar(ch) {
+      const upper = ch.toUpperCase();
+      if (upper.length !== 1) return ch;
+      if (ch.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128) return ch;
+      return upper;
+    }
+    function canonStringEqual(a, b) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i++) {
+        if (canonChar(a[i]) !== canonChar(b[i])) return false;
+      }
+      return true;
+    }
+    // Reference predicate for the whole field-name/cell match, stated
+    // independently of (and structured differently from) the scanner under
+    // test: `fieldName` matches `rawCell` iff `fieldName` occurs as a literal
+    // (Canonicalize-compared) substring of `rawCell` at SOME offset `j`, with
+    // everything BEFORE `j` and everything AFTER the occurrence consisting
+    // exclusively of ' '/'\t'. This is a full, unbounded substring scan with
+    // no "leading run" shortcut.
+    function referenceFieldMatchesCell(fieldName, rawCell) {
+      const n = fieldName.length;
+      for (let j = 0; j + n <= rawCell.length; j++) {
+        const before = rawCell.slice(0, j);
+        const after = rawCell.slice(j + n);
+        if (!/^[ \t]*$/.test(before)) continue;
+        if (!/^[ \t]*$/.test(after)) continue;
+        if (canonStringEqual(rawCell.slice(j, j + n), fieldName)) return true;
+      }
+      return false;
+    }
+
+    const padArb = fc.array(fc.constantFrom(' ', '\t'), { minLength: 0, maxLength: 3 }).map((chars) => chars.join(''));
+    // Deliberately includes the KELVIN SIGN (U+212A) and other non-ASCII
+    // characters whose `.toLowerCase()`/`.toUpperCase()` folds onto an ASCII
+    // character — exactly the class of character FIX A addresses.
+    const coreCharArb = fc.constantFrom('a', 'b', 'K', 'k', 'P', 'p', 'H', 'A', '\u212A', '\u1E9E', '\u00DF', '1', '_');
+    const coreArb = fc.array(coreCharArb, { minLength: 1, maxLength: 5 }).map((chars) => chars.join(''));
+    const fieldNameArb = fc
+      .record({ pre: padArb, core: coreArb, post: padArb })
+      .map(({ pre, core, post }) => pre + core + post);
+
+    fc.assert(
+      fc.property(
+        fieldNameArb,
+        fc.boolean(),
+        fc.constantFrom('same', 'upper', 'lower'),
+        padArb,
+        padArb,
+        coreArb,
+        (fieldName, deriveFromFieldName, caseMode, cellPre, cellPost, randomCore) => {
+          const fieldCore = fieldName.replace(/^[ \t]+|[ \t]+$/g, '');
+          let derivedCore = fieldCore;
+          if (caseMode === 'upper') derivedCore = fieldCore.toUpperCase();
+          else if (caseMode === 'lower') derivedCore = fieldCore.toLowerCase();
+          const cellCore = deriveFromFieldName ? derivedCore : randomCore;
+          const cellContent = cellPre + cellCore + cellPost;
+          // The template fixes exactly one literal space on each side of
+          // cellContent, so rawCell (as locateFieldRow computes it) is
+          // ` ${cellContent} ` byte-for-byte.
+          const doc = `| ${cellContent} | value |`;
+          const rawCell = ` ${cellContent} `;
+          const expected = referenceFieldMatchesCell(fieldName, rawCell);
+          const result = stateExtractField(doc, fieldName);
+          assert.equal(result, expected ? 'value' : null);
+        },
+      ),
+      { seed: 28801, numRuns: 300 },
+    );
+  });
+});

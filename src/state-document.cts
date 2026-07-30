@@ -50,6 +50,54 @@ function countLeading(str: string): number {
 }
 
 /**
+ * Canonicalize one UTF-16 code unit per the ECMAScript non-unicode
+ * `Canonicalize` abstract operation, which governs how a case-insensitive
+ * (`/i`, no `u` flag) RegExp compares characters: take `ch.toUpperCase()`.
+ * The uppercasing is REJECTED (the original character is kept as-is) in
+ * either of two cases: (1) `ch.toUpperCase()` does not produce exactly one
+ * character (e.g. "ß" -> "SS" — a multi-character case-fold can never be a
+ * per-character regex match, so Canonicalize leaves it alone), or (2) it
+ * produces exactly one character but the original character's code point is
+ * >= 128 while the uppercased character's code point is < 128 (this is what
+ * stops a non-ASCII character from folding onto an ASCII one under `/i` —
+ * e.g. KELVIN SIGN U+212A uppercases to ASCII "K" (U+004B), so this rule
+ * rejects the fold and keeps U+212A, meaning `/k/i`/`/K/i` do NOT match
+ * U+212A). Otherwise, the uppercased character is used. Plain
+ * `.toLowerCase()`/`.toUpperCase()` folds both of these cases, which is
+ * exactly why they diverge from real regex `/i` semantics.
+ */
+function canonicalizeCharForCaselessCompare(ch: string): string {
+  const upper = ch.toUpperCase();
+  if (upper.length !== 1) {
+    return ch;
+  }
+  if (ch.charCodeAt(0) >= 128 && upper.charCodeAt(0) < 128) {
+    return ch;
+  }
+  return upper;
+}
+
+/**
+ * Canonicalize a whole string, one UTF-16 code unit at a time, per the
+ * ECMAScript non-unicode `Canonicalize` rule (see
+ * canonicalizeCharForCaselessCompare) so that two strings compare equal
+ * under this function iff a non-`u`-flag `/i` RegExp would treat them as
+ * the same literal text. This is the correct replacement for
+ * `.toLowerCase()` when replicating a non-`u` `/i` regex: `.toLowerCase()`
+ * folds some non-ASCII characters (e.g. KELVIN SIGN U+212A) onto their
+ * ASCII counterparts, which real `/i` regex semantics do not. Iteration is
+ * by UTF-16 code unit (not code point) to match how a non-`u` regex engine
+ * itself operates on surrogate halves individually.
+ */
+function canonicalizeForCaselessCompare(str: string): string {
+  let result = '';
+  for (let i = 0; i < str.length; i++) {
+    result += canonicalizeCharForCaselessCompare(str[i]);
+  }
+  return result;
+}
+
+/**
  * Return true when the caller's raw (untrimmed) `fieldName` may be considered
  * to match a row's raw (untrimmed) field cell text. Faithfully replicates the
  * backtracking of the regex this function replaced: `^(\|[ \t]*)(FieldName)
@@ -69,6 +117,14 @@ function countLeading(str: string): number {
  * padding is a different run of `[ \t]` characters than the cell's (e.g.
  * `fieldName` padded with spaces against a cell padded with tabs) — caught by
  * differential fuzzing against the regex this replaces.
+ *
+ * The case-insensitive comparison itself is done via
+ * canonicalizeForCaselessCompare, NOT `.toLowerCase()`: the replaced regex
+ * used `/i` WITHOUT the `u` flag, whose case-folding is the ECMAScript
+ * non-unicode `Canonicalize` operation. `.toLowerCase()` folds some non-ASCII
+ * characters onto ASCII ones (e.g. KELVIN SIGN U+212A -> "k") that `/i`
+ * (no `u`) does NOT fold, so `.toLowerCase()` alone would NOT faithfully
+ * replicate the old regex's semantics; canonicalizeForCaselessCompare does.
  */
 function fieldNameMatchesRawCell(fieldName: string, rawCell: string): boolean {
   const n = fieldName.length;
@@ -77,9 +133,9 @@ function fieldNameMatchesRawCell(fieldName: string, rawCell: string): boolean {
     return false;
   const leadingRun = countLeading(rawCell);
   const maxOffset = Math.min(leadingRun, cellLength - n);
-  const lowerFieldName = fieldName.toLowerCase();
+  const canonicalFieldName = canonicalizeForCaselessCompare(fieldName);
   for (let j = 0; j <= maxOffset; j++) {
-    if (rawCell.slice(j, j + n).toLowerCase() !== lowerFieldName)
+    if (canonicalizeForCaselessCompare(rawCell.slice(j, j + n)) !== canonicalFieldName)
       continue;
     if (/^[ \t]*$/.test(rawCell.slice(j + n)))
       return true;
@@ -131,14 +187,16 @@ function locateFieldRow(content: string, fieldName: string): { valueStart: numbe
       if (pipeCount === 3 && trimmedEnd.endsWith('|')) {
         const cells = splitTableRow(line);
         if (cells.length === 2 && !isTableSeparatorRow(cells[0])) {
-          const p2 = line.indexOf('|', line.indexOf('|') + 1);
-          const rawCell = line.slice(1, p2);
+          // Line has exactly 3 pipes (enforced above): opening pipe, the
+          // field/value separator pipe, and the row-closing pipe.
+          const fieldValueSeparatorPipe = line.indexOf('|', line.indexOf('|') + 1);
+          const rawCell = line.slice(1, fieldValueSeparatorPipe);
           if (fieldNameMatchesRawCell(fieldName, rawCell)) {
-            const p3 = line.indexOf('|', p2 + 1);
-            let valueStart = lineStart + p2 + 1;
+            const rowClosingPipe = line.indexOf('|', fieldValueSeparatorPipe + 1);
+            let valueStart = lineStart + fieldValueSeparatorPipe + 1;
             while (content[valueStart] === ' ' || content[valueStart] === '\t')
               valueStart++;
-            let valueEnd = lineStart + p3;
+            let valueEnd = lineStart + rowClosingPipe;
             while (valueEnd - 1 >= valueStart && (content[valueEnd - 1] === ' ' || content[valueEnd - 1] === '\t'))
               valueEnd--;
             return { valueStart, valueEnd, rawValue: content.slice(valueStart, valueEnd) };

@@ -182,13 +182,9 @@ const rule = {
     // NOT flagged, and a negated class that does not exclude a pipe at all
     // (`[^\n]`, `[^a-z]`) is still NOT a cell scan.
     //
-    // Implemented as a single-pass scanner (not a regex) because the
-    // straightforward regex encoding of this fingerprint,
-    // /\[\^[^\]]*\\?\|[^\]]*\]/, is quadratic on failure (two unbounded
-    // [^\]]* runs around an optional) — O(n^2) against every regex-literal
-    // source linted, measured at ~23s for a 256000-char adversarial input.
-    // The scanner below advances its cursor monotonically and never
-    // re-examines a byte once consumed.
+    // Implemented as a single-pass scanner (not a regex) — see
+    // hasQualifyingNegatedPipeClass below for why the regex encoding of this
+    // fingerprint was rejected (quadratic-on-failure blowup).
     function isTableRegexSource(src) {
       // Must contain an escaped pipe
       if (!src.includes('\\|')) return false;
