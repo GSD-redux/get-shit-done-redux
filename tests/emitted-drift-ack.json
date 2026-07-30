@@ -1,8 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "review.md": {
-      "reason": "#2797 / ADR-2782 D9 (config half). Growth is comment-only: the three per-lane prompt-budget fallback guards (ollama, lm_studio, llama_cpp) gain an explanation of why they test for the -1 sentinel rather than 0. A federated config key always resolves to its declared default rather than reporting not-found, so an unset per-lane budget needs a sentinel that cannot collide with a legitimate value — and 0 is legitimate: it already means \"do not trim this lane\" (the early-return guard in prepare_trimmed_prompt_for_reviewer). Treating 0 as unset would have silently switched a user who deliberately disabled trimming for one lane onto the global budget. No lane's invocation shape changed."
-    }
-  }
-}
