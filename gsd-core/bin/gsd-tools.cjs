@@ -1318,6 +1318,76 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       warn: (m) => process.stderr.write(`${m}\n`),
     };
 
+    // ADR-1517 reviewer instances resolve THROUGH a lane rather than being lanes themselves
+    // (ADR-2782 D8), so they reuse this seam with three substitutions instead of duplicating the
+    // lane's invocation. Everything the lane declares — probe, channels, timeout, empty-output
+    // policy, handler — then applies to the instance unchanged, which is the whole reason to route
+    // them here: a cross-cutting fix reaches instances for free.
+    const asIdentity = flag('--as');
+    const instanceModel = flag('--model');
+    const instanceAgent = flag('--agent');
+
+    if (asIdentity) {
+      // Write under the INSTANCE name so two instances of one adapter never overwrite each other.
+      const safe = String(asIdentity).replace(/[^A-Za-z0-9._-]/g, '-');
+      entry.plan.reviewPath = `${runDir.replace(/\/+$/, '')}/gsd-review-${safe}.md`;
+      entry.plan.errPath = `${runDir.replace(/\/+$/, '')}/gsd-review-${safe}.err`;
+      if (entry.plan.transport === 'spawn' && entry.plan.outputTarget.kind === 'file') {
+        // A file-arg lane names its output inside argv; retarget both together or the runner reads
+        // the lane's file while the tool writes the instance's.
+        const old = entry.plan.outputTarget.path;
+        entry.plan.argv = entry.plan.argv.map((a) => (a === old ? entry.plan.reviewPath : a));
+        entry.plan.outputTarget = { kind: 'file', path: entry.plan.reviewPath };
+      }
+    }
+
+    // The instance's own model replaces whatever the lane resolved from config. Opaque
+    // pass-through: it reaches the tool as one argv element and is never shell-interpolated.
+    //
+    // Done by RE-RESOLVING with an overridden config rather than by patching argv afterwards. A
+    // post-hoc splice has to guess where the flag belongs when the lane resolved no model at all
+    // (the placeholder expanded to nothing, so there is no position to find), and guessing puts it
+    // before a subcommand — `opencode --model M run …`, the same defect the argv template exists to
+    // prevent. Re-resolving lets the lane's own `{{model}}` placeholder decide the position.
+    if (instanceModel) {
+      const lane = laneBySlug.get(entry.slug);
+      const key = lane && lane.modelConfigKey;
+      const overridden = resolveLanePlan({
+        lane,
+        configGet: (k) => (key && k === key ? instanceModel : configGet(k)),
+        runDir,
+        repoRoot,
+        effortArgs: effortFor(entry.slug),
+      });
+      if (overridden.ok) {
+        // Preserve any instance retargeting already applied above.
+        const { reviewPath, errPath } = entry.plan;
+        entry.plan = overridden.plan;
+        if (asIdentity) {
+          entry.plan.reviewPath = reviewPath;
+          entry.plan.errPath = errPath;
+          if (entry.plan.transport === 'spawn' && entry.plan.outputTarget.kind === 'file') {
+            const old = entry.plan.outputTarget.path;
+            entry.plan.argv = entry.plan.argv.map((a) => (a === old ? reviewPath : a));
+            entry.plan.outputTarget = { kind: 'file', path: reviewPath };
+          }
+        }
+      }
+    }
+
+    // `--agent` is OpenCode's native subagent flag and is honoured only by adapters that have the
+    // concept; ignored elsewhere rather than passed to a tool that would reject it.
+    if (instanceAgent && entry.slug === 'opencode' && entry.plan.transport === 'spawn') {
+      const runIdx = entry.plan.argv.indexOf('run');
+      const insertAt = runIdx === -1 ? 0 : runIdx + 1;
+      entry.plan.argv = [
+        ...entry.plan.argv.slice(0, insertAt),
+        '--agent',
+        instanceAgent,
+        ...entry.plan.argv.slice(insertAt),
+      ];
+    }
+
     // `--prompt-file` lets the caller substitute a budget-trimmed prompt. Applied to whichever
     // channel this lane actually reads from, so one flag serves both transports.
     const promptOverride = flag('--prompt-file');

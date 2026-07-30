@@ -4,8 +4,8 @@
  * These tests pinned the three real failure modes of agy 1.0.16 against the hand-authored bash
  * block in `gsd-core/workflows/review.md`. Phase 5b (#2799) deleted that block: the lane is now
  * declared data plus a named first-party handler, so the assertions move to those surfaces — and
- * the `allow-test-rule: source-text-is-the-product` exemption this file used to carry is no longer
- * needed, because nothing here reads a source file any more.
+ * the source-text exemption this file used to carry is no longer needed, because nothing here reads
+ * a source file any more.
  *
  * The move is an upgrade, not a translation. The old tests could only prove that certain TEXT
  * appeared in a markdown fence; these prove the resolved invocation and the handler's actual

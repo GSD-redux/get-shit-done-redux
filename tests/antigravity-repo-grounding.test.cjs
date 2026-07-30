@@ -9,8 +9,8 @@
  * Phase 5b (#2799) deleted that bash. Both fixes now live in the named `antigravity` handler, which
  * is where they belong: "add this flag only when the binary's --help mentions it" is a conditional,
  * and conditionals escape to a handler rather than accreting inside the descriptor (ADR-2782 D6).
- * These tests moved with them, so this file no longer reads any source text and the
- * `allow-test-rule` exemption it used to carry is gone.
+ * These tests moved with them, so this file no longer reads any source text and the source-text
+ * exemption it used to carry is gone.
  */
 
 const { test, describe } = require('node:test');
