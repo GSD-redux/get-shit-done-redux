@@ -79,7 +79,6 @@ const {
   resolveBaseline,
 } = require('./helpers/emitted-baseline.cjs');
 
-const { decideBaselineExport } = require('../scripts/ci-export-emitted-baseline-env.cjs');
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -1437,7 +1436,7 @@ test('baseline resolution precedence is explicit and reported', () => {
   // the exact conflation that broke CI — a CI cache restore is NOT an operator pin, and
   // naming it one here documented the defect as intended behavior. The hard stop is a
   // real guarantee for a HAND-SET path and is preserved; what changed is that CI no
-  // longer routes its restore through this door (see decideBaselineExport).
+  // longer routes its restore through this door at all.
   const envStale = resolveBaseline({
     expectedSha: SHA_A,
     env: { [BASELINE_ENV]: '/tmp/operator-pinned-baseline.json' },
@@ -1467,108 +1466,89 @@ test('baseline resolution precedence is explicit and reported', () => {
 // hard failure on diffs that touched nothing related. The export step is the boundary
 // that must be conservative in what it sends.
 
-const CI_CACHE_PATH = '/ci/.gsd-cache/emitted-baseline.json';
+const CI_CACHE_PATH = '.gsd-cache/emitted-baseline.json';
 
-test('#2854: a drifted CI cache restore falls through to the in-job build', () => {
-  const readJson = () => goodBaseline(SHA_B);        // restored under a drifted key
+/** Resolve exactly as CI does: cache restored to the DEFAULT path, nothing announced. */
+const resolveAsCI = (doc, expectedSha = SHA_A) => resolveBaseline({
+  expectedSha,
+  env: {},                                   // no operator pin — this is the whole point
+  cachePath: CI_CACHE_PATH,
+  readJson: typeof doc === 'function' ? doc : () => doc,
+  buildFallback: () => goodBaseline(expectedSha),
+});
 
-  const decision = decideBaselineExport({ cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson });
-  assert.equal(decision.export, false, 'a drifted restore must not be published as an operator pin');
-  assert.match(decision.reason, /STALE|stale/, 'the refusal must name staleness, not just refuse');
-
-  // Composed with resolution — the defect only manifests end to end. Asserting the
-  // decision alone would have passed on the broken code too.
-  const r = resolveBaseline({
-    expectedSha: SHA_A,
-    env: decision.export ? { [BASELINE_ENV]: CI_CACHE_PATH } : {},
-    cachePath: CI_CACHE_PATH,
-    readJson,
-    buildFallback: () => goodBaseline(SHA_A),
-  });
-  assert.ok(r.ok, `must resolve via the in-job build; got errors: ${(r.errors || []).join('; ')}`);
+test('#2854: a drifted cache restore degrades to the in-job build', () => {
+  const r = resolveAsCI(goodBaseline(SHA_B));    // restored under a drifted key
+  assert.ok(r.ok, `must resolve via the in-job build; got: ${(r.errors || []).join('; ')}`);
   assert.equal(r.via, 'build');
   assert.equal(r.sha, SHA_A);
+  assert.deepEqual(r.attempted, [`cache:${CI_CACHE_PATH}`, 'build'],
+    'the cache must be tried and rejected before the build, and the trail must say so');
 });
 
-test('#2854: a current CI cache restore still exports (the fast path survives)', () => {
-  const decision = decideBaselineExport({
-    cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson: () => goodBaseline(SHA_A),
-  });
-  assert.equal(decision.export, true, 'a baseline valid for the sha under test must still be used');
+test('#2854: a current cache restore is used directly (the fast path survives)', () => {
+  const r = resolveAsCI(goodBaseline(SHA_A));
+  assert.ok(r.ok);
+  assert.equal(r.via, `cache:${CI_CACHE_PATH}`, 'a valid cache must not pay for a rebuild');
 });
 
-test('#2854: an absent cache exports nothing', () => {
-  const decision = decideBaselineExport({
-    cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson: () => null,
-  });
-  assert.equal(decision.export, false);
-  assert.match(decision.reason, /absent/);
-});
+test('#2854: every recoverable malformation degrades rather than failing the run', () => {
+  // The blocker an isolated reviewer caught: an earlier revision gated only on sha
+  // equality, so a doc with the RIGHT sha but a wrong schema version or broken
+  // manifests was announced as an operator pin and hard-stopped downstream —
+  // reproducing this bug's own class, triggered by malformation instead of staleness.
+  // Routing through the cache path makes every one of these recoverable by construction.
+  const cases = {
+    'stale sha': goodBaseline(SHA_B),
+    'wrong schema version': { version: BASELINE_VERSION + 998, sha: SHA_A, manifests: { c: {} }, sizes: {} },
+    'manifests is an array': { version: BASELINE_VERSION, sha: SHA_A, manifests: [], sizes: {} },
+    'manifests absent': { version: BASELINE_VERSION, sha: SHA_A },
+    'sha absent': { version: BASELINE_VERSION, manifests: { c: {} }, sizes: {} },
+    'sha not 40-hex': { version: BASELINE_VERSION, sha: 'g'.repeat(40), manifests: { c: {} }, sizes: {} },
+    'absent file': null,
+  };
 
-test('#2854: an unreadable cache exports nothing and does not throw', () => {
-  // Deterministic IO failure by injection — never chmod 0o000, which root bypasses.
-  const decision = decideBaselineExport({
-    cachePath: CI_CACHE_PATH,
-    expectedSha: SHA_A,
-    readJson: () => { throw new Error('EACCES: permission denied'); },
-  });
-  assert.equal(decision.export, false);
-  assert.match(decision.reason, /unreadable|EACCES/);
+  for (const [name, doc] of Object.entries(cases)) {
+    const r = resolveAsCI(doc);
+    assert.ok(r.ok, `${name}: must degrade to the build, not fail — got ${(r.errors || []).join('; ')}`);
+    assert.equal(r.via, 'build', `${name}: must reach the in-job build`);
+  }
 });
 
 test('#2854: sha length boundary — 39, 40, 41 hex', () => {
-  const at = (sha) => decideBaselineExport({
-    cachePath: CI_CACHE_PATH, expectedSha: sha, readJson: () => goodBaseline(sha),
-  });
-
-  // limit-1 / limit / limit+1 on the 40-hex contract enforced by validateBaseline.
-  assert.equal(at('a'.repeat(39)).export, false, '39 hex is not a sha');
-  assert.equal(at('a'.repeat(40)).export, true, '40 hex is the contract');
-  assert.equal(at('a'.repeat(41)).export, false, '41 hex is not a sha');
-});
-
-test('#2854: malformed or missing sha fields export nothing', () => {
-  const withSha = (sha) => decideBaselineExport({
-    cachePath: CI_CACHE_PATH,
-    expectedSha: SHA_A,
-    readJson: () => ({ version: BASELINE_VERSION, sha, manifests: { fam: {} }, sizes: {} }),
-  });
-
-  for (const bad of [undefined, null, 42, 'A'.repeat(40), 'g'.repeat(40), '', SHA_A.slice(0, 8)]) {
-    assert.equal(withSha(bad).export, false, `sha ${JSON.stringify(bad)} must not export`);
+  // limit-1 / limit / limit+1 on the 40-hex contract validateBaseline enforces.
+  for (const len of [39, 41]) {
+    const r = resolveAsCI({ version: BASELINE_VERSION, sha: 'a'.repeat(len), manifests: { c: {} }, sizes: {} });
+    assert.equal(r.via, 'build', `${len} hex is not a sha — must not be used as the baseline`);
   }
+  const exact = resolveAsCI(goodBaseline(SHA_A));
+  assert.equal(exact.via, `cache:${CI_CACHE_PATH}`, '40 hex matching is the contract');
 });
 
-test('#2854: valid JSON that is not an object exports nothing', () => {
-  // Parses fine, must never read as "no entries" and pass vacuously.
+test('#2854: valid JSON that is not an object degrades rather than passing vacuously', () => {
   for (const doc of [0, 'str', [], true]) {
-    const decision = decideBaselineExport({
-      cachePath: CI_CACHE_PATH, expectedSha: SHA_A, readJson: () => doc,
-    });
-    assert.equal(decision.export, false, `${JSON.stringify(doc)} must not export`);
+    const r = resolveAsCI(doc);
+    assert.ok(r.ok, `${JSON.stringify(doc)}: must degrade to the build`);
+    assert.equal(r.via, 'build', `${JSON.stringify(doc)} must never read as a usable baseline`);
   }
 });
 
-test('#2854: an unresolvable expected sha exports nothing', () => {
-  // If the base ref could not be resolved, freshness is unprovable — refuse rather than
-  // publish a baseline whose validity nobody checked.
-  for (const expectedSha of [undefined, null, '']) {
-    const decision = decideBaselineExport({
-      cachePath: CI_CACHE_PATH, expectedSha, readJson: () => goodBaseline(SHA_A),
-    });
-    assert.equal(decision.export, false, `expectedSha ${JSON.stringify(expectedSha)} must not export`);
-  }
+test('#2854: an unreadable cache degrades and does not throw', () => {
+  // Deterministic IO failure by injection — never chmod 0o000, which root bypasses.
+  const r = resolveAsCI(() => { throw new Error('EACCES: permission denied'); });
+  assert.ok(r.ok);
+  assert.equal(r.via, 'build');
 });
 
-test('#2854: the export decision is exactly sha equality', () => {
+test('#2854: the cache is used exactly when it is valid for the sha under test', () => {
   const hex40 = fc.string({
     unit: fc.constantFrom(...'0123456789abcdef'), minLength: 40, maxLength: 40,
   });
   fc.assert(fc.property(hex40, hex40, (built, expected) => {
-    const decision = decideBaselineExport({
-      cachePath: CI_CACHE_PATH, expectedSha: expected, readJson: () => goodBaseline(built),
-    });
-    return decision.export === (built === expected);
+    const r = resolveAsCI(goodBaseline(built), expected);
+    // Always resolves; the only question is whether it paid for a rebuild.
+    if (!r.ok) return false;
+    return (r.via === `cache:${CI_CACHE_PATH}`) === (built === expected);
   }), { numRuns: 200 });
 });
 
@@ -1612,6 +1592,22 @@ test('#2854: an explicit base pin outranks the live branch tip', () => {
   const pinned = 'c'.repeat(40);
   assert.equal(baseRefCandidates({ GSD_EMITTED_BASE: pinned, GITHUB_BASE_REF: 'next' })[0], pinned,
     'an explicit pin must be tried before origin/next');
+});
+
+test('#2854: an EMPTY base pin is ignored, not treated as a candidate', () => {
+  // The pin is job-level env, so on push/workflow_dispatch — where there is no
+  // pull_request — `${{ github.event.pull_request.base.sha }}` renders as an empty
+  // string rather than being unset. baseRefCandidates' truthy check already excludes
+  // it, but nothing asserted that, so narrowing the check to `!== undefined` would
+  // silently push '' as the first candidate and have `git rev-parse ''` decide the
+  // baseline. Pinned here because the workflow now guarantees this input shape.
+  assert.deepEqual(
+    baseRefCandidates({ GSD_EMITTED_BASE: '', GITHUB_BASE_REF: 'next' }),
+    baseRefCandidates({ GITHUB_BASE_REF: 'next' }),
+    'an empty pin must behave exactly as an absent one',
+  );
+  assert.ok(!baseRefCandidates({ GSD_EMITTED_BASE: '', GITHUB_BASE_REF: 'next' }).includes(''),
+    'the empty string must never become a base-ref candidate');
 });
 
 test('#2854: the resolution summary names only sources actually attempted', () => {

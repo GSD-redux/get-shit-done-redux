@@ -30,13 +30,17 @@
  * Operator pin: an explicit "use THIS baseline artifact" override.
  *
  * #2854: this was previously described as "the env var a CI cache-restore step points
- * at", which is what broke — a value arriving here is treated as intentional, so a
- * mismatch is a HARD STOP rather than a fall-through (see `resolveBaseline` below).
- * That is correct for a human who pinned a path on purpose, and wrong for a cache
- * restore, which is recoverable by definition. CI therefore validates a restored
- * artifact before publishing it here (`scripts/ci-export-emitted-baseline-env.cjs`);
- * anything it refuses is left to be found via `DEFAULT_CACHE_PATH`, where staleness
- * degrades to the in-job build as ADR-2719 §5 specifies.
+ * at", and CI did exactly that. That is what broke — a value arriving here is treated
+ * as intentional, so ANY rejection is a hard stop rather than a fall-through (see
+ * `resolveBaseline` below). Correct for a human who pinned a path on purpose; wrong
+ * for a cache restore, which is recoverable by definition.
+ *
+ * CI no longer publishes anything here. Its restore lands on `DEFAULT_CACHE_PATH`,
+ * which `resolveBaseline` reads anyway, so a stale, malformed, or wrong-version
+ * artifact degrades to the in-job build as ADR-2719 §5 specifies. Announcing the same
+ * file through this door could only ever convert recoverable into fatal.
+ *
+ * Keep it that way: anything that sets this variable is asserting "use THIS, or stop".
  */
 const BASELINE_ENV = 'GSD_EMITTED_BASELINE';
 
@@ -165,9 +169,9 @@ function resolveBaseline({
       // An EXPLICITLY pointed-at baseline that is stale or malformed is a hard stop, not
       // a reason to quietly fall through to a different one — the operator said "use this".
       //
-      // #2854: this is a guarantee about a HAND-SET path. CI must therefore never publish
-      // an unvalidated cache restore here — see scripts/ci-export-emitted-baseline-env.cjs,
-      // which exports only a baseline already valid for the sha under test.
+      // #2854: this is a guarantee about a HAND-SET path, and it is why CI must not
+      // publish its cache restore here. It used to, so a restore that was merely stale
+      // or malformed died here instead of degrading one branch below.
       return { ok: false, via: `env:${BASELINE_ENV}`, attempted, errors: attempts };
     }
   }
