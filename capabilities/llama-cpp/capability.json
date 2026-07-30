@@ -23,18 +23,19 @@
     },
     "invoke": {
       "hostConfigKey": "review.llama_cpp_host",
+      "defaultHost": "http://localhost:8080",
       "path": "/v1/chat/completions",
       "modelDiscovery": "first-from-models-endpoint",
+      "fallbackModel": "local-model",
       "effortChannel": "none"
     },
     "timeoutFloorMs": 120000,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "llama.cpp",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": [
-      "jq"
-    ],
+    "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
+    "modelConfigKey": "review.models.llama_cpp",
     "handler": "openai-compatible"
   },
   "config": {

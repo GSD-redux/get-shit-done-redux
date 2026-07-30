@@ -127,6 +127,8 @@
       "binary": "opencode",
       "args": [
         "run",
+        "{{model}}",
+        "{{effort}}",
         "--format",
         "json",
         "-"
@@ -140,11 +142,10 @@
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "OpenCode",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": [
-      "jq"
-    ],
+    "requiresBinaries": [],
     "promptBudgetKey": null,
-    "handler": null
+    "modelConfigKey": "review.models.opencode",
+    "handler": "opencode"
   },
   "config": {
     "review.models.opencode": {

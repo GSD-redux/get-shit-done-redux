@@ -118,6 +118,8 @@
     "invoke": {
       "binary": "claude",
       "args": [
+        "{{model}}",
+        "{{effort}}",
         "-p",
         "-"
       ],
@@ -132,6 +134,7 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.claude",
     "handler": null
   },
   "config": {

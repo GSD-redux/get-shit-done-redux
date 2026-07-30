@@ -46,7 +46,7 @@ export interface RunnerDeps {
   spawn: (binary: string, argv: string[], opts: { input?: string; timeoutMs: number }) => SpawnOutcome;
   /** Bounded HTTP POST/GET returning the RAW body — never pre-parsed, so errors stay diagnosable. */
   httpJson: (url: string, opts: { method: 'GET' | 'POST'; body?: string; timeoutMs: number }) =>
-    { ok: boolean; status: number; body: string; error?: string };
+    Promise<{ ok: boolean; status: number; body: string; error?: string }>;
   readFile: (p: string) => string;
   writeFile: (p: string, content: string) => void;
   exists: (p: string) => boolean;
@@ -113,10 +113,10 @@ export function checkEgressHost(consentedHost: unknown, currentHost: string): Eg
  * Probe (D7) — every probe bounded, and only for a SELECTED lane
  * ------------------------------------------------------------------ */
 
-export function probeLane(
+export async function probeLane(
   plan: LanePlan,
   deps: RunnerDeps,
-): { available: true } | { available: false; reason: LaneUnavailableReason; detail: string } {
+): Promise<{ available: true } | { available: false; reason: LaneUnavailableReason; detail: string }> {
   // Prerequisites first: a missing `jq`-style helper is a clearer failure than whatever the tool
   // does without it, and reporting it costs nothing.
   for (const bin of plan.requiresBinaries) {
@@ -180,7 +180,7 @@ export function probeLane(
       if (!base) {
         return { available: false, reason: LANE_UNAVAILABLE.HOST_UNREACHABLE, detail: 'no host resolved' };
       }
-      const r = deps.httpJson(`${base}${probe.path}`, { method: 'GET', timeoutMs: probe.timeoutMs });
+      const r = await deps.httpJson(`${base}${probe.path}`, { method: 'GET', timeoutMs: probe.timeoutMs });
       return r.ok
         ? { available: true }
         : {
@@ -427,14 +427,14 @@ export function stampBlindReview(review: string): string {
  * with an HTTP 4xx/5xx and the JSON in the BODY. The bash piped the response straight into `jq`,
  * which discarded exactly that evidence; the stub appends it now.
  */
-export function runOpenAiCompatible(
+export async function runOpenAiCompatible(
   plan: HttpPlan,
   promptText: string,
   deps: RunnerDeps,
-): { review: string; rawBody: string } {
+): Promise<{ review: string; rawBody: string }> {
   let model = plan.model;
   if (!model && plan.modelsUrl) {
-    const listed = deps.httpJson(plan.modelsUrl, { method: 'GET', timeoutMs: 2_000 });
+    const listed = await deps.httpJson(plan.modelsUrl, { method: 'GET', timeoutMs: 2_000 });
     if (listed.ok) {
       try {
         const parsed = JSON.parse(listed.body) as { data?: Array<{ id?: unknown }> };
@@ -448,7 +448,7 @@ export function runOpenAiCompatible(
   if (!model) model = plan.fallbackModel;
 
   const body = JSON.stringify({ model, messages: [{ role: 'user', content: promptText }] });
-  const res = deps.httpJson(plan.url, { method: 'POST', body, timeoutMs: plan.timeoutMs });
+  const res = await deps.httpJson(plan.url, { method: 'POST', body, timeoutMs: plan.timeoutMs });
   if (!res.ok && !res.body) {
     return { review: '', rawBody: res.error ?? `HTTP ${res.status}` };
   }
@@ -484,11 +484,11 @@ export function runOpenAiCompatible(
  * Order is deliberate: egress re-verification happens BEFORE the probe and before any spawn, so a
  * lane whose destination changed never receives the plan text even once.
  */
-export function runLane(
+export async function runLane(
   plan: LanePlan,
   deps: RunnerDeps,
   opts: { consentedHost?: unknown; explicitlyRequested?: boolean; repoRoot: string },
-): LaneRunResult {
+): Promise<LaneRunResult> {
   const base = { slug: plan.slug, stubbed: false };
 
   if (plan.transport === 'openai-http') {
@@ -503,7 +503,7 @@ export function runLane(
     }
   }
 
-  const probed = probeLane(plan, deps);
+  const probed = await probeLane(plan, deps);
   if (!probed.available) {
     // D4's carve-out: not finding a lane nobody asked for is normal; failing to run a lane somebody
     // asked for is an ERROR. Both are visible; only the second is fatal to the run.
@@ -557,9 +557,9 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
   return { slug: plan.slug, ok: true, stubbed };
 }
 
-function runHttpLane(plan: HttpPlan, deps: RunnerDeps): LaneRunResult {
+async function runHttpLane(plan: HttpPlan, deps: RunnerDeps): Promise<LaneRunResult> {
   const promptText = deps.exists(plan.promptPath) ? deps.readFile(plan.promptPath) : '';
-  const { review, rawBody } = runOpenAiCompatible(plan, promptText, deps);
+  const { review, rawBody } = await runOpenAiCompatible(plan, promptText, deps);
   deps.writeFile(plan.errPath, '');
   const { stubbed } = writeReviewOrStub(plan, review, deps, rawBody);
   return { slug: plan.slug, ok: true, stubbed };

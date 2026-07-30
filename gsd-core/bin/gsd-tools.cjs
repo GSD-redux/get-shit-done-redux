@@ -1130,6 +1130,173 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           output({ ok: true, row: mutation.row, variant: mutation.variant }, raw, mutation.row);
   }
 
+  /**
+   * ADR-2782 Phase 5b (#2799) — the seam that lets `invoke_reviewers` iterate declared lanes.
+   *
+   * Replaces ~640 lines of hand-authored per-CLI bash with three subcommands:
+   *   plan    --selected a,b   → resolved lanes (slug, section, availability) as JSON
+   *   invoke  --slug X         → probe + run one lane, writing its review/stub into the run dir
+   *   sections --selected a,b  → ordered `slug<TAB>reviewsSection`, for write_reviews
+   *
+   * Lanes run SEQUENTIALLY (the workflow loops and calls `invoke` once per lane) because the
+   * original legs did — parallel invocation trips provider rate limits.
+   */
+  async function routeReviewLane({ args, cwd, raw, error }) {
+    const cp = require('node:child_process');
+    const fsx = require('node:fs');
+    const os = require('node:os');
+    const { REVIEWER_LANES } = require('./lib/review-lane-descriptor.cjs');
+    const { resolveLanePlan } = require('./lib/review-lane-invocation.cjs');
+    const runner = require('./lib/review-lane-runner.cjs');
+    const cfgLoader = require('./lib/config-loader.cjs');
+
+    const flag = (name) => {
+      const i = args.indexOf(name);
+      return i !== -1 && args[i + 1] && !String(args[i + 1]).startsWith('--') ? args[i + 1] : null;
+    };
+    const sub = args[1];
+    const runDir = flag('--run-dir') || '.';
+    const repoRoot = flag('--repo-root') || cwd;
+
+    // Resolved config, read ONCE. Reading in-process (rather than shelling out to config-get per
+    // key, as the legs did) is what removes the stringly `"null"` sentinel the bash had to test for.
+    // `loadConfigResolved` returns a PROVENANCE WRAPPER (`{config, source, degraded, reason}`),
+    // not the config — using the wrapper directly silently resolves every key to undefined, which
+    // reads exactly like "nothing configured" and drops every model override without an error.
+    let resolved = {};
+    try { resolved = (cfgLoader.loadConfigResolved(cwd) || {}).config || {}; } catch { resolved = {}; }
+    const configGet = (key) => {
+      let cur = resolved;
+      for (const part of String(key).split('.')) {
+        if (cur === null || typeof cur !== 'object') return undefined;
+        cur = Object.prototype.hasOwnProperty.call(cur, part) ? cur[part] : undefined;
+      }
+      return cur;
+    };
+
+    const selected = (flag('--selected') || '')
+      .split(',').map((s) => s.trim()).filter(Boolean);
+    const laneBySlug = new Map(REVIEWER_LANES.map((l) => [l.slug, l]));
+    const chosen = selected.length ? selected : REVIEWER_LANES.map((l) => l.slug);
+
+    if (sub === 'sections') {
+      const rows = chosen
+        .map((s) => laneBySlug.get(s))
+        .filter(Boolean)
+        .map((l) => `${l.slug}\t${l.reviewsSection}`);
+      process.stdout.write(rows.join('\n') + (rows.length ? '\n' : ''));
+      return;
+    }
+
+    // Effort argv is resolved per lane by the host's own execution policy, exactly as the legs did
+    // via `resolve-execution … --pick effort_argv_string`. A lane whose slug is not a known host
+    // simply gets none.
+    const effortFor = (slug) => {
+      try {
+        const { resolveExecution } = require('./lib/model-resolver.cjs');
+        const r = resolveExecution ? resolveExecution('gsd-plan-checker', { host: slug, cwd }) : null;
+        const s = r && r.effort_argv_string ? String(r.effort_argv_string) : '';
+        return s ? s.split(/\s+/).filter(Boolean) : [];
+      } catch { return []; }
+    };
+
+    const plans = chosen.map((slug) => {
+      const lane = laneBySlug.get(slug);
+      if (!lane) return { slug, ok: false, reason: 'malformed_lane', detail: 'no such declared lane' };
+      const r = resolveLanePlan({ lane, configGet, runDir, repoRoot, effortArgs: effortFor(slug) });
+      return r.ok
+        ? { slug, ok: true, section: lane.reviewsSection, transport: r.plan.transport, plan: r.plan }
+        : { slug, ok: false, reason: r.reason, detail: r.detail };
+    });
+
+    if (sub === 'plan') {
+      output(plans.map(({ plan, ...rest }) => rest), raw);
+      return;
+    }
+
+    if (sub !== 'invoke') {
+      error("Usage: review-lane <plan|invoke|sections> [--selected a,b] [--run-dir D] [--repo-root R]");
+      return;
+    }
+
+    const slug = flag('--slug');
+    if (!slug) { error('review-lane invoke requires --slug'); return; }
+    const entry = plans.find((p) => p.slug === slug);
+    if (!entry || !entry.ok) {
+      output({ slug, ok: false, reason: entry ? entry.reason : 'malformed_lane', detail: entry ? entry.detail : 'unknown lane' }, raw);
+      return;
+    }
+
+    // EVERY spawn bounded — `DEFECT.UNBOUNDED-SUBPROCESS` (CONTEXT.md:772). A frozen sync spawn
+    // cannot be interrupted by --test-force-exit and hangs a whole CI chunk to its 10-minute kill.
+    const deps = {
+      spawn: (binary, argv, opts) => {
+        const r = cp.spawnSync(binary, argv, {
+          input: opts.input,
+          encoding: 'utf8',
+          timeout: opts.timeoutMs,
+          killSignal: 'SIGKILL',
+          maxBuffer: 64 * 1024 * 1024,
+          shell: false, // argv array only — never a shell string (no interpolation of config values)
+        });
+        return {
+          status: r.status,
+          stdout: r.stdout || '',
+          stderr: r.stderr || '',
+          errorCode: r.error && r.error.code ? r.error.code : undefined,
+        };
+      },
+      httpJson: async (url, opts) => {
+        try {
+          const res = await fetch(url, {
+            method: opts.method,
+            headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+            body: opts.body,
+            signal: AbortSignal.timeout(opts.timeoutMs),
+          });
+          return { ok: res.ok, status: res.status, body: await res.text() };
+        } catch (e) {
+          return { ok: false, status: 0, body: '', error: e && e.message ? e.message : String(e) };
+        }
+      },
+      readFile: (p) => fsx.readFileSync(p, 'utf8'),
+      writeFile: (p, c) => fsx.writeFileSync(p, c, 'utf8'),
+      exists: (p) => fsx.existsSync(p),
+      // PATH scan rather than spawning `command -v` / `where`. Two reasons: it spawns nothing at
+      // all (a probe that costs a process is a probe you avoid running, which is how the original
+      // Kimi probe ended up unbounded), and `shell: true` with an args array is deprecated in
+      // Node 26 (DEP0190) because the arguments are concatenated rather than escaped.
+      hasBinary: (name) => {
+        if (!name || name.includes('/') || name.includes('\\')) {
+          try { return fsx.statSync(name).isFile(); } catch { return false; }
+        }
+        const exts = process.platform === 'win32'
+          ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+          : [''];
+        for (const dir of (process.env.PATH || '').split(path.delimiter).filter(Boolean)) {
+          for (const ext of exts) {
+            const candidate = path.join(dir, name + ext);
+            try {
+              const st = fsx.statSync(candidate);
+              if (st.isFile()) return true;
+            } catch { /* next candidate */ }
+          }
+        }
+        return false;
+      },
+      configGet,
+      homeDir: os.homedir(),
+      warn: (m) => process.stderr.write(`${m}\n`),
+    };
+
+    const result = await runner.runLane(entry.plan, deps, {
+      consentedHost: undefined, // wired to the consent record by the consent-binding half of D5
+      explicitlyRequested: args.includes('--explicit'),
+      repoRoot,
+    });
+    output(result, raw);
+  }
+
   function routeNormalizeTestCommand({ args, cwd, raw, error }) {
     // #1857: rewrite a resolved test command to a one-shot form so a
           // watch-mode runner (vitest/jest) cannot hang a verification gate. Shared
@@ -2589,6 +2756,7 @@ const HOST_COMMAND_ROUTERS = {
     'restore-custom-files': routeRestoreCustomFiles,
     'from-gsd2': routeFromGsd2,
     'prompt-budget': routePromptBudget,
+    'review-lane': routeReviewLane,
     'update-context': routeUpdateContext,
     'classify-confidence': routeClassifyConfidence,
     'package-legitimacy': routePackageLegitimacy,

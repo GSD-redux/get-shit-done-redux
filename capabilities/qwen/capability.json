@@ -106,12 +106,19 @@
   },
   "reviewer": {
     "slug": "qwen",
-    "flags": ["--qwen"],
+    "flags": [
+      "--qwen"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "qwen" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "qwen"
+    },
     "invoke": {
       "binary": "qwen",
-      "args": ["-"],
+      "args": [
+        "-"
+      ],
       "promptChannel": "stdin",
       "outputChannel": "stdout",
       "modelArg": null,
@@ -123,6 +130,7 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": null,
     "handler": null
   }
 }

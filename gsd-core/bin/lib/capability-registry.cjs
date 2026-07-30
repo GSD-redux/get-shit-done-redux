@@ -210,7 +210,9 @@ const capabilities = {
         "args": [
           "--print-timeout",
           "540s",
-          "-p"
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -221,10 +223,9 @@ const capabilities = {
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
     "config": {
@@ -593,6 +594,8 @@ const capabilities = {
       "invoke": {
         "binary": "claude",
         "args": [
+          "{{model}}",
+          "{{effort}}",
           "-p",
           "-"
         ],
@@ -607,6 +610,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.claude",
       "handler": null
     },
     "config": {
@@ -988,6 +992,7 @@ const capabilities = {
       "evidenceClass": "diff-only",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -1100,7 +1105,10 @@ const capabilities = {
         "args": [
           "exec",
           "--ephemeral",
+          "{{model}}",
+          "{{effort}}",
           "--skip-git-repo-check",
+          "{{output}}",
           "-"
         ],
         "promptChannel": "stdin",
@@ -1115,6 +1123,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.codex",
       "handler": null
     },
     "config": {
@@ -1361,7 +1370,8 @@ const capabilities = {
           "ask",
           "--trust",
           "--output-format",
-          "text"
+          "text",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -1374,6 +1384,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -1603,6 +1614,7 @@ const capabilities = {
       "invoke": {
         "binary": "gemini",
         "args": [
+          "{{model}}",
           "-p",
           "-"
         ],
@@ -1617,6 +1629,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.gemini",
       "handler": null
     },
     "config": {
@@ -2108,6 +2121,46 @@ const capabilities = {
         "skipSharedHooksInstall": true,
         "namedSubagentsSupported": false
       }
+    },
+    "reviewer": {
+      "slug": "kimi-code",
+      "flags": [
+        "--kimi-code"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-capability",
+        "binary": "kimi",
+        "needle": "--output-format",
+        "timeoutMs": 5000
+      },
+      "invoke": {
+        "binary": "kimi",
+        "args": [
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": "-m",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Kimi Code",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "modelConfigKey": "review.models.kimi-code",
+      "handler": null
+    },
+    "config": {
+      "review.models.kimi-code": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Kimi Code reviewer lane."
+      }
     }
   },
   "llama-cpp": {
@@ -2135,18 +2188,19 @@ const capabilities = {
       },
       "invoke": {
         "hostConfigKey": "review.llama_cpp_host",
+        "defaultHost": "http://localhost:8080",
         "path": "/v1/chat/completions",
         "modelDiscovery": "first-from-models-endpoint",
+        "fallbackModel": "local-model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "llama.cpp",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
+      "modelConfigKey": "review.models.llama_cpp",
       "handler": "openai-compatible"
     },
     "config": {
@@ -2192,18 +2246,19 @@ const capabilities = {
       },
       "invoke": {
         "hostConfigKey": "review.lm_studio_host",
+        "defaultHost": "http://localhost:1234",
         "path": "/v1/chat/completions",
         "modelDiscovery": "first-from-models-endpoint",
+        "fallbackModel": "local-model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "LM Studio",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
+      "modelConfigKey": "review.models.lm_studio",
       "handler": "openai-compatible"
     },
     "config": {
@@ -2473,18 +2528,19 @@ const capabilities = {
       },
       "invoke": {
         "hostConfigKey": "review.ollama_host",
+        "defaultHost": "http://localhost:11434",
         "path": "/v1/chat/completions",
         "modelDiscovery": "first-from-models-endpoint",
+        "fallbackModel": "llama3",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Ollama",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
+      "modelConfigKey": "review.models.ollama",
       "handler": "openai-compatible"
     },
     "config": {
@@ -2634,6 +2690,8 @@ const capabilities = {
         "binary": "opencode",
         "args": [
           "run",
+          "{{model}}",
+          "{{effort}}",
           "--format",
           "json",
           "-"
@@ -2647,11 +2705,10 @@ const capabilities = {
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
-      "handler": null
+      "modelConfigKey": "review.models.opencode",
+      "handler": "opencode"
     },
     "config": {
       "review.models.opencode": {
@@ -2986,6 +3043,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -4291,6 +4349,7 @@ const configKeys = {
   "review.models.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
+  "review.models.kimi-code": "kimi-code",
   "review.models.llama_cpp": "llama-cpp",
   "review.llama_cpp_host": "llama-cpp",
   "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
@@ -4492,6 +4551,12 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the intel code-intelligence command."
+  },
+  "review.models.kimi-code": {
+    "owner": "kimi-code",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Kimi Code reviewer lane."
   },
   "review.models.llama_cpp": {
     "owner": "llama-cpp",
@@ -4818,7 +4883,9 @@ const runtimes = {
         "args": [
           "--print-timeout",
           "540s",
-          "-p"
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -4829,10 +4896,9 @@ const runtimes = {
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
     },
     "config": {
@@ -5072,6 +5138,8 @@ const runtimes = {
       "invoke": {
         "binary": "claude",
         "args": [
+          "{{model}}",
+          "{{effort}}",
           "-p",
           "-"
         ],
@@ -5086,6 +5154,7 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.claude",
       "handler": null
     },
     "config": {
@@ -5389,7 +5458,10 @@ const runtimes = {
         "args": [
           "exec",
           "--ephemeral",
+          "{{model}}",
+          "{{effort}}",
           "--skip-git-repo-check",
+          "{{output}}",
           "-"
         ],
         "promptChannel": "stdin",
@@ -5404,6 +5476,7 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.codex",
       "handler": null
     },
     "config": {
@@ -5650,7 +5723,8 @@ const runtimes = {
           "ask",
           "--trust",
           "--output-format",
-          "text"
+          "text",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -5663,6 +5737,7 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -6054,6 +6129,46 @@ const runtimes = {
         "skipSharedHooksInstall": true,
         "namedSubagentsSupported": false
       }
+    },
+    "reviewer": {
+      "slug": "kimi-code",
+      "flags": [
+        "--kimi-code"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-capability",
+        "binary": "kimi",
+        "needle": "--output-format",
+        "timeoutMs": 5000
+      },
+      "invoke": {
+        "binary": "kimi",
+        "args": [
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": "-m",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Kimi Code",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "modelConfigKey": "review.models.kimi-code",
+      "handler": null
+    },
+    "config": {
+      "review.models.kimi-code": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Kimi Code reviewer lane."
+      }
     }
   },
   "opencode": {
@@ -6185,6 +6300,8 @@ const runtimes = {
         "binary": "opencode",
         "args": [
           "run",
+          "{{model}}",
+          "{{effort}}",
           "--format",
           "json",
           "-"
@@ -6198,11 +6315,10 @@ const runtimes = {
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
-      "handler": null
+      "modelConfigKey": "review.models.opencode",
+      "handler": "opencode"
     },
     "config": {
       "review.models.opencode": {
@@ -6406,6 +6522,7 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
