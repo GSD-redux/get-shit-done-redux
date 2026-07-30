@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "ship.md": {
+      "reason": "#2783: ship note protocol gains handling for wedged PRs — a PR that cannot merge must be reported rather than silently skipped. Growth is the added protocol branch and its example; no existing step changed shape."
+    }
+  }
+}
