@@ -149,13 +149,13 @@ describe('explore research-pass claim disposition (#2229)', () => {
     const spawn = content.slice(content.indexOf('Agent('), content.indexOf('subagent_type="gsd-phase-researcher"'));
     assert.match(
       spawn + content.slice(content.indexOf('subagent_type="gsd-phase-researcher"'), content.indexOf('subagent_type="gsd-phase-researcher"') + 200),
-      /model="\{researcher_model\}"/,
+      /model="\{RESEARCHER_MODEL\}"/,
       'omitting model= makes the agent inherit the orchestrator model rather than ' +
         'the catalog-resolved tier, which is what left the floor unenforceable'
     );
     assert.match(
       content,
-      /omit `model=` entirely when `researcher_model` is `inherit` or empty/i,
+      /omit `model=` entirely when `RESEARCHER_MODEL` is `inherit` or empty/i,
       '#2517 requires the omit-on-inherit/empty rule to ride with any model= binding'
     );
   });
@@ -164,8 +164,8 @@ describe('explore research-pass claim disposition (#2229)', () => {
     const content = readWorkflow().replace(/\s+/g, ' ');
     assert.match(
       content,
-      /researcher_profile[^.]*\bbudget\b/,
-      'the floor must key on the resolved researcher_profile being `budget`'
+      /RESEARCHER_PROFILE[^.]*\bbudget\b/,
+      'the floor must key on the resolved RESEARCHER_PROFILE being `budget`'
     );
     assert.match(
       content,

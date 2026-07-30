@@ -8,6 +8,7 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 @~/.claude/gsd-core/references/questioning.md
 @~/.claude/gsd-core/references/domain-probes.md
+@~/.claude/gsd-core/references/gsd-run-resolver.md
 </required_reading>
 
 <available_agent_types>
@@ -64,26 +65,27 @@ If yes, spawn a research agent:
 
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
-Resolve the researcher's model **and its tier** before dispatching — the tier is what arms the
-tier-floor guard below, so it must be a real value, not an assumption:
+Resolve the researcher's model **and its tier** before dispatching. The tier is what arms the
+tier-floor guard below, so it must be a real resolved value, not an assumption. `--pick profile`
+returns the tier (`quality` | `balanced` | `budget`); `--raw` would drop it:
 
 ```bash
 RESEARCHER_MODEL=$(gsd_run query resolve-model gsd-phase-researcher --pick model 2>/dev/null || true)
 RESEARCHER_PROFILE=$(gsd_run query resolve-model gsd-phase-researcher --pick profile 2>/dev/null || true)
 ```
 
-Parse into: `researcher_model`, `researcher_profile`.
-
 Print: `◆ Spawning explorer... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)`
 ```
 Agent(
   prompt="Quick research: {specific_question}. Return 3-5 key findings, no more than 200 words. For EACH finding, first try to REFUTE it against a primary source, then label it [admit: <source>] (survives refute AND grounded), [refute: <source>] (a source contradicts it), or [abstain: <why>] (unverifiable, or a source conflicts with a strong prior). Every finding MUST carry exactly one of those three tags.",
   subagent_type="gsd-phase-researcher",
-  model="{researcher_model}"
+  model="{RESEARCHER_MODEL}"
 )
 ```
 
-**Omit `model=` entirely when `researcher_model` is `inherit` or empty** (#2517) — passing either
+<!-- #2517 model-omit-on-inherit -->
+
+**Omit `model=` entirely when `RESEARCHER_MODEL` is `inherit` or empty** (#2517) — passing either
 value through as an argument 404s on runtimes without native tier aliases. Every opus-tier agent
 resolves to the literal `inherit`, so omission is the normal case, not an error path. See
 @gsd-core/references/model-profile-resolution.md.
@@ -117,7 +119,7 @@ authoritative on its own — it can only ever produce an abstain, never a refute
 
 Two guards ride with it:
 - **Conflict-abstention** — a source-vs-prior conflict routes to the ledger, never a silent pick-a-side.
-- **Tier floor** — when `researcher_profile` (bound above) is `budget`, present every would-be
+- **Tier floor** — when `RESEARCHER_PROFILE` (bound above) is `budget`, present every would-be
   **admit** as an **abstain** instead. The budget tier for `gsd-phase-researcher` is `haiku`
   (`bin/shared/model-catalog.json`), which over-defers to whatever source it was handed, so a
   confident "grounded" label from that tier is not worth what it claims. `refute` and `abstain` are
