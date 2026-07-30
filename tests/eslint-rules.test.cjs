@@ -1386,4 +1386,68 @@ describe('no-adhoc-markdown-parsing rule', () => {
       invalid: [],
     });
   });
+
+  // ── TABLE-REGEX narrowing: negated class excluding pipe + something ELSE
+  //    is a different (non-table) idiom, not flagged (#2880 FIX 4) ───────────
+
+  test('valid: [^\\s|] (pipe excluded alongside \\s, not a pure line-terminator class) is NOT flagged', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code: String.raw`const re = /[^\s|]+\|cmd/;`,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid: [^"|] (pipe excluded alongside a quote) is NOT flagged', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code: String.raw`const re = /\|[^"|]*\|/;`,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('invalid: [^|\\r\\n] (pipe plus only line-terminator escapes) IS flagged', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const rowRe = /\|[^|\r\n]*\|/;`,
+          filename: 'src/some-module.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('performance: a 256000-char adversarial regex-literal source does not hang the rule (ReDoS regression)', () => {
+    // The previous regex-based fingerprint, /\[\^[^\]]*\\?\|[^\]]*\]/, was
+    // quadratic on failure — an unclosed negated class of this size took
+    // ~23s. The single-pass scanner must stay linear. The adversarial text is
+    // embedded directly inside a single string-literal argument to
+    // `new RegExp(...)` (not built via `+` at the source-code level under
+    // test) so `getNewRegExpSource` actually resolves it and the scanner
+    // walks the full 256000-char unclosed negated class.
+    const bigPipeRun = '|'.repeat(256000);
+    const code = `const re = new RegExp('\\\\|[^${bigPipeRun}');`;
+    const start = Date.now();
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code,
+          filename: 'src/some-module.cts',
+        },
+      ],
+      invalid: [],
+    });
+    const elapsed = Date.now() - start;
+    assert.ok(elapsed < 1000, `expected linear-time scan, took ${elapsed}ms`);
+  });
 });

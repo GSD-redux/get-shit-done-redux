@@ -44,6 +44,49 @@ function isTableSeparatorRow(firstCell: string): boolean {
   return /^[\s\-:]+$/.test(firstCell.trim());
 }
 
+function countLeading(str: string): number {
+  const match = /^[ \t]*/.exec(str);
+  return match ? match[0].length : 0;
+}
+
+/**
+ * Return true when the caller's raw (untrimmed) `fieldName` may be considered
+ * to match a row's raw (untrimmed) field cell text. Faithfully replicates the
+ * backtracking of the regex this function replaced: `^(\|[ \t]*)(FieldName)
+ * ([ \t]*\|...)`. Group 1 (`\|[ \t]*`, greedy but backtrackable) can hand any
+ * PREFIX of the cell's leading `[ \t]` run over to group 2 (the literal,
+ * case-insensitive `fieldName` text) — so `fieldName` is tried at every offset
+ * `j` from 0 up to the length of that leading run. For a given `j` to be a
+ * genuine match, two things must hold: `rawCell.slice(j, j + fieldName.length)`
+ * must equal `fieldName` case-insensitively (group 2), AND everything left
+ * over after it — `rawCell.slice(j + fieldName.length)` — must be entirely
+ * `[ \t]` characters, because group 3 (`[ \t]*\|`) must consume that leftover
+ * as whitespace before it can reach the delimiter pipe.
+ *
+ * A simple count-of-leading/trailing-whitespace comparison is NOT equivalent:
+ * it ignores that group 2 is a literal-character match, not a whitespace-
+ * class match, so it can produce false positives whenever `fieldName`'s own
+ * padding is a different run of `[ \t]` characters than the cell's (e.g.
+ * `fieldName` padded with spaces against a cell padded with tabs) — caught by
+ * differential fuzzing against the regex this replaces.
+ */
+function fieldNameMatchesRawCell(fieldName: string, rawCell: string): boolean {
+  const n = fieldName.length;
+  const cellLength = rawCell.length;
+  if (n > cellLength)
+    return false;
+  const leadingRun = countLeading(rawCell);
+  const maxOffset = Math.min(leadingRun, cellLength - n);
+  const lowerFieldName = fieldName.toLowerCase();
+  for (let j = 0; j <= maxOffset; j++) {
+    if (rawCell.slice(j, j + n).toLowerCase() !== lowerFieldName)
+      continue;
+    if (/^[ \t]*$/.test(rawCell.slice(j + n)))
+      return true;
+  }
+  return false;
+}
+
 /**
  * Locate the value cell of a pipe-table row `| FieldName | value |` for the
  * given field name, by scanning `content` line by line (no whole-document
@@ -52,39 +95,60 @@ function isTableSeparatorRow(firstCell: string): boolean {
  * this is what makes a 3-column row or an unescaped-pipe-bearing value cell
  * fail to match, mirroring the previous regex's behaviour. Separator rows
  * (`| --- | --- |`) are skipped, not matched. The match is case-insensitive.
- * Returns the byte range of the value cell (after trimming surrounding
- * space/tab) so the caller can splice it directly.
+ * A line terminator is `\r\n`, a lone `\r`, or a lone `\n` — matching the `m`
+ * flag semantics of the regex this function replaced. Returns the byte range
+ * of the value cell (after trimming surrounding space/tab) so the caller can
+ * splice it directly.
  */
 function locateFieldRow(content: string, fieldName: string): { valueStart: number; valueEnd: number; rawValue: string } | null {
-  const normalizedFieldName = fieldName.trim().toLowerCase();
   let lineStart = 0;
   while (lineStart <= content.length) {
-    const newlineIndex = content.indexOf('\n', lineStart);
-    const lineEnd = newlineIndex === -1 ? content.length : newlineIndex;
-    let line = content.slice(lineStart, lineEnd);
-    if (line.endsWith('\r'))
-      line = line.slice(0, -1);
+    // A line terminator is `\r\n`, a lone `\r`, or a lone `\n` (JS treats a
+    // bare `\r` as a line terminator too — the regex this replaced used the
+    // `m` flag, which honors all three). Scan for whichever of `\r`/`\n`
+    // occurs first; if it's `\r` immediately followed by `\n`, the terminator
+    // is 2 chars wide, otherwise 1.
+    let terminatorIndex = -1;
+    let terminatorLength = 0;
+    for (let i = lineStart; i < content.length; i++) {
+      const ch = content[i];
+      if (ch === '\n') {
+        terminatorIndex = i;
+        terminatorLength = 1;
+        break;
+      }
+      if (ch === '\r') {
+        terminatorIndex = i;
+        terminatorLength = content[i + 1] === '\n' ? 2 : 1;
+        break;
+      }
+    }
+    const lineEnd = terminatorIndex === -1 ? content.length : terminatorIndex;
+    const line = content.slice(lineStart, lineEnd);
     if (line.startsWith('|')) {
       const pipeCount = (line.match(/\|/g) || []).length;
       const trimmedEnd = line.replace(/[ \t]+$/, '');
       if (pipeCount === 3 && trimmedEnd.endsWith('|')) {
         const cells = splitTableRow(line);
-        if (cells.length === 2 && !isTableSeparatorRow(cells[0]) && cells[0].trim().toLowerCase() === normalizedFieldName) {
+        if (cells.length === 2 && !isTableSeparatorRow(cells[0])) {
           const p2 = line.indexOf('|', line.indexOf('|') + 1);
-          const p3 = line.indexOf('|', p2 + 1);
-          let valueStart = lineStart + p2 + 1;
-          while (content[valueStart] === ' ' || content[valueStart] === '\t')
-            valueStart++;
-          let valueEnd = lineStart + p3;
-          while (valueEnd - 1 >= valueStart && (content[valueEnd - 1] === ' ' || content[valueEnd - 1] === '\t'))
-            valueEnd--;
-          return { valueStart, valueEnd, rawValue: content.slice(valueStart, valueEnd) };
+          const rawCell = line.slice(1, p2);
+          if (fieldNameMatchesRawCell(fieldName, rawCell)) {
+            const p3 = line.indexOf('|', p2 + 1);
+            let valueStart = lineStart + p2 + 1;
+            while (content[valueStart] === ' ' || content[valueStart] === '\t')
+              valueStart++;
+            let valueEnd = lineStart + p3;
+            while (valueEnd - 1 >= valueStart && (content[valueEnd - 1] === ' ' || content[valueEnd - 1] === '\t'))
+              valueEnd--;
+            return { valueStart, valueEnd, rawValue: content.slice(valueStart, valueEnd) };
+          }
         }
       }
     }
-    if (newlineIndex === -1)
+    if (terminatorIndex === -1)
       break;
-    lineStart = newlineIndex + 1;
+    lineStart = terminatorIndex + terminatorLength;
   }
   return null;
 }

@@ -123,6 +123,13 @@ describe('stateReplaceField — CRLF (#2880)', () => {
     const result = stateReplaceField(input, 'Status', 'new');
     assert.equal(result, expected);
   });
+
+  test('replaces a row terminated by a lone carriage return', () => {
+    const input = ['| Phase | 3 |', '| Other | 9 |'].join('\r');
+    const expected = ['| Phase | 5 |', '| Other | 9 |'].join('\r');
+    const result = stateReplaceField(input, 'Phase', 5);
+    assert.equal(result, expected);
+  });
 });
 
 describe('stateExtractField (#2880)', () => {
@@ -145,6 +152,16 @@ describe('stateExtractField (#2880)', () => {
     const input = '| Current Phase | 3 |';
     const replaced = stateReplaceField(input, 'Current Phase', '7');
     assert.equal(stateExtractField(replaced, 'Current Phase'), '7');
+  });
+
+  test('matches a row terminated by a lone carriage return', () => {
+    const input = ['| Phase | 3 |', '| Other | 9 |'].join('\r');
+    assert.equal(stateExtractField(input, 'Phase'), '3');
+  });
+
+  test('does not match when the field name has more padding than the cell', () => {
+    const input = '| Phase | 3 |';
+    assert.equal(stateExtractField(input, '  Phase  '), null);
   });
 });
 
