@@ -119,6 +119,15 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
+      # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
+      # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
+      # `origin/next`, which `fetch-depth: 0` leaves at the LIVE tip. Whenever `next`
+      # advanced mid-flight the gate compared a tree built on base.sha against a
+      # baseline at a newer commit — so the correctly-keyed cache was rejected as
+      # "stale" and the run hard-failed on diffs that touched nothing related.
+      # This must stay equal to CI_REBASE_BASE_SHA; a test asserts that parity.
+      GSD_EMITTED_BASE: ${{ github.event.pull_request.base.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -188,21 +197,22 @@ jobs:
 
       # #2724 (ADR-2719 §5): the differential attribution check's baseline is cached,
       # not committed. This restores what the push-to-next job published, keyed on
-      # the PR's base sha — the "next sha the PR was merged with" the ADR requires.
-      # A miss is NOT a failure here: resolveBaseline() degrades to an in-job build.
+      # the PR's base sha — the "next sha the PR was merged with" the ADR requires,
+      # and the same commit `ci-rebase-check` merged into this tree.
+      #
+      # #2854: the restore lands on resolveBaseline()'s DEFAULT_CACHE_PATH, so it is
+      # found without being announced. There used to be a step that published this
+      # path to GSD_EMITTED_BASELINE — an OPERATOR PIN, where any rejection is a hard
+      # stop rather than a fall-through. That converted every recoverable condition
+      # (stale, malformed, wrong schema version) into a fatal CI failure on diffs that
+      # touched nothing related. Restoring to the default path and saying nothing lets
+      # a bad artifact degrade to the in-job build, which is what ADR-2719 §5 specifies.
       - name: Restore emitted-baseline cache
         if: github.event_name == 'pull_request'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: .gsd-cache/emitted-baseline.json
           key: emitted-baseline-${{ github.event.pull_request.base.sha }}
-
-      - name: Export GSD_EMITTED_BASELINE when the cache restored
-        if: github.event_name == 'pull_request'
-        # No `shell:` override — H1 shell policy requires each job's native shell
-        # (pwsh on Windows, zsh on macOS test-full, bash on Linux). A bare `node`
-        # invocation has no shell-specific syntax, so it is valid under all three.
-        run: node scripts/ci-export-emitted-baseline-env.cjs
 
       - name: Prepare scoped test list
         if: matrix.scope != 'full'
@@ -275,6 +285,10 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2854: same pin as the other rebase-merged lanes. This lane runs a targeted
+      # list that can include the emitted gate, and the invariant is easier to keep
+      # with no exceptions: if a job merges a pinned base, the gate uses that base.
+      GSD_EMITTED_BASE: ${{ github.event.pull_request.base.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
@@ -342,6 +356,15 @@ jobs:
     timeout-minutes: 20
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
+      # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
+      # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
+      # `origin/next`, which `fetch-depth: 0` leaves at the LIVE tip. Whenever `next`
+      # advanced mid-flight the gate compared a tree built on base.sha against a
+      # baseline at a newer commit — so the correctly-keyed cache was rejected as
+      # "stale" and the run hard-failed on diffs that touched nothing related.
+      # This must stay equal to CI_REBASE_BASE_SHA; a test asserts that parity.
+      GSD_EMITTED_BASE: ${{ github.event.pull_request.base.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -438,13 +461,6 @@ jobs:
         with:
           path: .gsd-cache/emitted-baseline.json
           key: emitted-baseline-${{ github.event.pull_request.base.sha }}
-
-      - name: Export GSD_EMITTED_BASELINE when the cache restored
-        if: github.event_name == 'pull_request'
-        # No `shell:` override — H1 shell policy requires each job's native shell
-        # (pwsh on Windows, zsh on macOS test-full, bash on Linux). A bare `node`
-        # invocation has no shell-specific syntax, so it is valid under all three.
-        run: node scripts/ci-export-emitted-baseline-env.cjs
 
       # The heavy unit suite is split across the 3 shards — each runs a
       # deterministic cost-balanced third of the sorted unit-file list (#2472). The

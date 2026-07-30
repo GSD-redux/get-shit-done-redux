@@ -26,7 +26,22 @@
  * unit-testable without touching the filesystem or spawning 19 installers.
  */
 
-/** Env var a CI cache-restore step points at the recovered baseline artifact. */
+/**
+ * Operator pin: an explicit "use THIS baseline artifact" override.
+ *
+ * #2854: this was previously described as "the env var a CI cache-restore step points
+ * at", and CI did exactly that. That is what broke — a value arriving here is treated
+ * as intentional, so ANY rejection is a hard stop rather than a fall-through (see
+ * `resolveBaseline` below). Correct for a human who pinned a path on purpose; wrong
+ * for a cache restore, which is recoverable by definition.
+ *
+ * CI no longer publishes anything here. Its restore lands on `DEFAULT_CACHE_PATH`,
+ * which `resolveBaseline` reads anyway, so a stale, malformed, or wrong-version
+ * artifact degrades to the in-job build as ADR-2719 §5 specifies. Announcing the same
+ * file through this door could only ever convert recoverable into fatal.
+ *
+ * Keep it that way: anything that sets this variable is asserting "use THIS, or stop".
+ */
 const BASELINE_ENV = 'GSD_EMITTED_BASELINE';
 
 /** Default on-disk cache location, relative to the repo root. */
@@ -94,10 +109,14 @@ function validateBaseline(doc, expectedSha, source) {
  * Resolve the baseline through the documented precedence, reporting WHICH step supplied
  * it so a failure message can say where the answer came from.
  *
- *   1. `GSD_EMITTED_BASELINE` — explicit path (CI cache restore writes here)
- *   2. the on-disk cache, validated against the expected sha
+ *   1. `GSD_EMITTED_BASELINE` — an operator pin; a mismatch here is a HARD STOP
+ *   2. the on-disk cache, validated against the expected sha — a mismatch RECOVERS
  *   3. an in-job build at `origin/next` (slow fallback)
  *   4. none → explicit failure (NEVER a silent pass)
+ *
+ * #2854: steps 1 and 2 differ only in what a mismatch means, so which door a given
+ * artifact arrives through decides whether the run recovers or dies. CI publishes to
+ * step 1 only after validating, so an unvalidated restore lands on step 2 and degrades.
  *
  * @param {object}   opts
  * @param {string}   opts.expectedSha    `next` sha under test
@@ -105,8 +124,11 @@ function validateBaseline(doc, expectedSha, source) {
  * @param {string}   [opts.cachePath]
  * @param {function} opts.readJson       (path) => parsed | null  (null when absent)
  * @param {function} [opts.buildFallback] () => artifact | null   (the slow path)
- * @returns {{ok: true, via: string, baseline: object, sizeBaseline: object|null, sha: string}
- *          |{ok: false, via: string, errors: string[]}}
+ * @returns {{ok: true, via: string, attempted: string[], baseline: object,
+ *            sizeBaseline: object|null, sha: string}
+ *          |{ok: false, via: string, attempted: string[], errors: string[]}}
+ *          `attempted` lists the sources actually REACHED, in order — callers render it
+ *          instead of assuming all three ran.
  */
 function resolveBaseline({
   expectedSha,
@@ -116,13 +138,21 @@ function resolveBaseline({
   buildFallback = null,
 } = {}) {
   if (typeof readJson !== 'function') {
-    return { ok: false, via: 'none', errors: ['resolveBaseline: readJson must be supplied'] };
+    return {
+      ok: false, via: 'none', attempted: [],
+      errors: ['resolveBaseline: readJson must be supplied'],
+    };
   }
 
   const attempts = [];
+  // #2854: the sources actually REACHED, in order. The caller renders this in its
+  // failure message; hardcoding "tried env, cache, and an in-job build" there claimed
+  // three attempts on every early return, including ones that reached only the first.
+  const attempted = [];
 
   const envPath = env && env[BASELINE_ENV];
   if (envPath) {
+    attempted.push(`env:${BASELINE_ENV}`);
     let doc = null;
     let readError = null;
     try {
@@ -134,14 +164,19 @@ function resolveBaseline({
       attempts.push(readError);
     } else {
       const v = validateBaseline(doc, expectedSha, `${BASELINE_ENV}=${envPath}`);
-      if (v.ok) return { ok: true, via: `env:${BASELINE_ENV}`, ...v };
+      if (v.ok) return { ok: true, via: `env:${BASELINE_ENV}`, attempted, ...v };
       attempts.push(...v.errors);
       // An EXPLICITLY pointed-at baseline that is stale or malformed is a hard stop, not
       // a reason to quietly fall through to a different one — the operator said "use this".
-      return { ok: false, via: `env:${BASELINE_ENV}`, errors: attempts };
+      //
+      // #2854: this is a guarantee about a HAND-SET path, and it is why CI must not
+      // publish its cache restore here. It used to, so a restore that was merely stale
+      // or malformed died here instead of degrading one branch below.
+      return { ok: false, via: `env:${BASELINE_ENV}`, attempted, errors: attempts };
     }
   }
 
+  attempted.push(`cache:${cachePath}`);
   let cacheDoc = null;
   let cacheErr = null;
   try {
@@ -153,7 +188,7 @@ function resolveBaseline({
     attempts.push(cacheErr);
   } else if (cacheDoc !== null && cacheDoc !== undefined) {
     const v = validateBaseline(cacheDoc, expectedSha, cachePath);
-    if (v.ok) return { ok: true, via: `cache:${cachePath}`, ...v };
+    if (v.ok) return { ok: true, via: `cache:${cachePath}`, attempted, ...v };
     // A stale CACHE is recoverable: fall through to the build fallback, but keep the
     // reason so the final message explains why the slow path ran.
     attempts.push(...v.errors);
@@ -162,17 +197,18 @@ function resolveBaseline({
   }
 
   if (typeof buildFallback === 'function') {
+    attempted.push('build');
     let built = null;
     try {
       built = buildFallback();
     } catch (err) {
       attempts.push(`in-job build at origin/next failed: ${err.message}`);
-      return { ok: false, via: 'build', errors: attempts };
+      return { ok: false, via: 'build', attempted, errors: attempts };
     }
     const v = validateBaseline(built, expectedSha, 'in-job build at origin/next');
-    if (v.ok) return { ok: true, via: 'build', ...v };
+    if (v.ok) return { ok: true, via: 'build', attempted, ...v };
     attempts.push(...v.errors);
-    return { ok: false, via: 'build', errors: attempts };
+    return { ok: false, via: 'build', attempted, errors: attempts };
   }
 
   attempts.push(
@@ -180,7 +216,7 @@ function resolveBaseline({
     'failure on purpose: a skipped propagation gate is worth less than a slow one ' +
     '(ADR-2719 §6), and in node:test a bare `return` is a PASS, not a skip.',
   );
-  return { ok: false, via: 'none', errors: attempts };
+  return { ok: false, via: 'none', attempted, errors: attempts };
 }
 
 module.exports = {
