@@ -520,7 +520,10 @@ describe('reviewer docs parity — independence and properties', () => {
   test('ok always agrees with violations and the function never throws', () => {
     fc.assert(
       fc.property(
-        fc.dictionary(fc.string(), fc.anything()),
+        // Widened from the default (~10 chars) so the generator can occasionally reach
+        // pathologically long keys/values, not just short ones — see the dedicated
+        // pathological-length case below for the deterministic ~100k-char regression guard.
+        fc.dictionary(fc.string({ maxLength: 5000 }), fc.anything()),
         fc.anything(),
         (docs, descriptor) => {
           let r;
@@ -539,6 +542,28 @@ describe('reviewer docs parity — independence and properties', () => {
       ),
       FC,
     );
+  });
+
+  // #2800 review finding: the "never throws" property above uses generators that top out
+  // around 5,000 chars, so it could never structurally reach the ~100k-char threshold that,
+  // until fixed, made the implementation throw `SyntaxError` from `new RegExp` (the fix
+  // switched to literal `String.includes`). This case pins that specific regression with a
+  // deterministic, explicit pathologically-long descriptor rather than relying on the property
+  // generator to stumble into it.
+  test('neverThrowsOnPathologicallyLongDeclaredStrings', () => {
+    const pathologicalLane = {
+      slug: 'pathological',
+      flags: ['--' + 'a'.repeat(200000)],
+      reviewsSection: 'T'.repeat(200000),
+    };
+    const doc = '/gsd-review some prose mentioning the command.';
+    let result;
+    assert.doesNotThrow(() => {
+      result = checkReviewerDocsParity({ descriptor: [pathologicalLane], docs: { d: doc } });
+    });
+    assert.strictEqual(typeof result.ok, 'boolean');
+    assert.ok(Array.isArray(result.violations));
+    assert.ok(Array.isArray(result.skipped));
   });
 
   test('the reason enum is locked', () => {
@@ -590,13 +615,23 @@ describe('reviewer docs parity — the shipped repo', () => {
       `shipped docs must satisfy reviewer docs parity; got: ${JSON.stringify(r.violations)}`,
     );
     assert.strictEqual(r.ok, true);
-    assert.ok(
-      r.skipped.includes('docs/pt-BR/FEATURES.md'),
-      'docs/pt-BR/FEATURES.md is a 77-line stub with no /gsd-review section and must be reported as skipped',
+    // Bounded, not merely `.includes(...)`: an unbounded skipped set is exactly how a doc
+    // silently drops out of coverage — if a real shipped doc lost its `/gsd-review` marker
+    // (accidentally or via a bad edit), `checkReviewerDocsParity` would add it to `skipped`
+    // instead of gating it, and an `.includes()`-only assertion would still pass green with
+    // that doc no longer checked at all. Asserting the exact set closes that gap.
+    assert.deepStrictEqual(
+      r.skipped.slice().sort(),
+      ['docs/pt-BR/FEATURES.md'].sort(),
+      'the skipped set must be EXACTLY this one known stub (a 77-line doc with no /gsd-review ' +
+        'section) — any other entry means a real doc silently dropped out of coverage',
     );
   });
 
   test('an unreadable doc fails loudly', (t) => {
+    // Exercises the REAL doc-loading path (`loadShippedDocs`, the same helper the integration
+    // test above drives) rather than invoking the monkeypatched mock directly — calling the mock
+    // proves nothing about the actual reader and would pass regardless of behavior.
     const original = fs.readFileSync;
     t.after(() => {
       fs.readFileSync = original;
@@ -607,7 +642,7 @@ describe('reviewer docs parity — the shipped repo', () => {
       return original(p, ...rest);
     };
     assert.throws(() => {
-      fs.readFileSync(targetPath, 'utf-8');
+      loadShippedDocs();
     }, /injected read failure/);
   });
 });
