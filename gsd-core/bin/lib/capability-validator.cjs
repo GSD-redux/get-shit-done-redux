@@ -1816,11 +1816,13 @@ function validateReviewerBodyFields(cap) {
     }
   }
 
-  // `null` is the declared "this lane accepts no model override"; an empty string is not.
-  // Required rather than optional: an ABSENT key would be indistinguishable from a lane that
-  // simply forgot to declare one, and the failure mode is silent (a configured model ignored),
-  // which is the exact defect this field was added to fix.
-  if (r.modelConfigKey !== null && (typeof r.modelConfigKey !== 'string' || r.modelConfigKey.length === 0)) {
+  // OPTIONAL, and that is required by D4 rather than a convenience: `modelConfigKey` did not exist
+  // before Phase 5b, so demanding it would fail validation on every reviewer manifest authored
+  // against an earlier GSD — exactly the forward/backward-compatibility break D4 rule 2 forbids.
+  // Absent is read as `null` (this lane accepts no model override). `null` is explicit; an empty
+  // string is neither, and is rejected.
+  if (r.modelConfigKey !== undefined && r.modelConfigKey !== null &&
+      (typeof r.modelConfigKey !== 'string' || r.modelConfigKey.length === 0)) {
     errors.push(
       ctx + ' reviewer.modelConfigKey must be a dotted config key or null ' +
       '(got: ' + describeValue(r.modelConfigKey) + ')',

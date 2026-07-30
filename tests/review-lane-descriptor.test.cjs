@@ -195,63 +195,40 @@ describe('reviewer lane parity — anti-parity: no bespoke leg may return', () =
 });
 
 describe('reviewer lane parity — not-corruption (must NOT fire)', () => {
-  test('ADR-1517 instance sections are exempt from lane parity', () => {
-    // `## OpenCode Review (opencode-deepseek)` and `(opencode-mimo)` are already
-    // in the shipped file. ADR-2782 D8: reviewer instances are not lanes. A
-    // naive `## … Review` matcher fails against these on day one.
-    const r = check();
-    assert.deepStrictEqual(r.violations, []);
-
-    const withNewInstance = WORKFLOW_TEXT.replace(
-      '## Qwen Review',
-      '## Qwen Review (qwen-turbo)\n\n{x}\n\n---\n\n## Qwen Review',
-    );
-    assert.deepStrictEqual(
-      checkReviewerLaneParity({
-        descriptor: REVIEWER_LANES,
-        roster: KNOWN_REVIEWER_SLUGS,
-        workflowText: withNewInstance,
-      }).violations,
-      [],
-      'adding a reviewer instance section must not trip lane parity',
-    );
+  // Phase 5b deleted the section-heading and leg-marker matchers these cases were written against.
+  // The invariant they protected still matters and is asserted here against the surfaces that
+  // replaced them: nothing in REVIEWS.md prose may promote itself into the lane roster.
+  test('the shipped repo is clean', () => {
+    assert.deepStrictEqual(check().violations, []);
   });
 
-  test('the h1 title and non-lane headings are not read as lane sections', () => {
-    // `# Cross-AI Plan Review — Phase {N}` contains "Review" but is h1;
-    // `## Consensus Summary` is h2 but has no ` Review` suffix.
-    const r = check();
-    assert.deepStrictEqual(r.violations, []);
+  test('an ADR-1517 instance heading never becomes a lane', () => {
+    // `## OpenCode Review (opencode-deepseek)` is an INSTANCE resolving through a lane, not a lane
+    // (ADR-2782 D8). Instances take no part in the roster, the flag set, or uniqueness.
+    const withNewInstance = WORKFLOW_TEXT.replace(
+      '## Consensus Summary',
+      '## Qwen Review (qwen-turbo)\n\n{x}\n\n---\n\n## Consensus Summary',
+    );
+    assert.deepStrictEqual(check({ workflowText: withNewInstance }).violations, []);
+  });
 
+  test('extra non-lane headings are inert', () => {
     const withExtras = WORKFLOW_TEXT.replace(
       '## Consensus Summary',
       '## Another Summary\n\n---\n\n## Consensus Summary',
     );
-    assert.deepStrictEqual(
-      checkReviewerLaneParity({
-        descriptor: REVIEWER_LANES,
-        roster: KNOWN_REVIEWER_SLUGS,
-        workflowText: withExtras,
-      }).violations,
-      [],
-    );
+    assert.deepStrictEqual(check({ workflowText: withExtras }).violations, []);
   });
 
   test('bold prose in invoke_reviewers is not read as a leg', () => {
-    // Five non-lane bold labels share the bold-then-fence shape a heuristic
-    // matcher would key on. Adding another must not register a lane.
+    // Non-lane bold labels share the bold-then-fence shape a heuristic matcher would key on.
+    // Adding another must not register a lane — the anti-parity check keys on the explicit marker
+    // only, never on prose shape.
     const withProse = WORKFLOW_TEXT.replace(
-      '<!-- reviewer-lane: qwen -->',
-      '**Some new maintainer note (#9999):**\n\n```bash\necho hi\n```\n\n<!-- reviewer-lane: qwen -->',
+      '<step name="invoke_reviewers">',
+      '<step name="invoke_reviewers">\n**Some new maintainer note (#9999):**\n\n```bash\necho hi\n```\n',
     );
-    assert.deepStrictEqual(
-      checkReviewerLaneParity({
-        descriptor: REVIEWER_LANES,
-        roster: KNOWN_REVIEWER_SLUGS,
-        workflowText: withProse,
-      }).violations,
-      [],
-    );
+    assert.deepStrictEqual(check({ workflowText: withProse }).violations, []);
   });
 });
 
@@ -298,9 +275,17 @@ describe('reviewer lane parity — cross-platform and hostile input', () => {
   });
 
   test('non-string workflow text is coerced, never thrown on', () => {
-    for (const bad of [undefined, null]) {
+    // Totality is the invariant. Since Phase 5b the workflow no longer names lanes, so an absent
+    // one legitimately yields NO anti-parity violation — the read-failure guard moved to the
+    // registry arm, which is covered in the registry describe above.
+    for (const bad of [undefined, null, 42, {}, []]) {
       const r = check({ workflowText: bad });
-      assert.strictEqual(r.ok, false, `expected violations for ${String(bad)}`);
+      assert.equal(typeof r.ok, 'boolean');
+      assert.ok(Array.isArray(r.violations));
+      assert.deepStrictEqual(
+        r.violations.filter((v) => v.reason === PARITY_VIOLATION.BESPOKE_LEG_PRESENT),
+        [],
+      );
     }
   });
 
@@ -395,7 +380,9 @@ describe('reviewer lane parity — properties', () => {
 
   /** Build a review.md-shaped document declaring exactly `slugs`. */
   function docFor(slugs, sections, noise, eol) {
-    const legs = slugs.map((s) => `<!-- reviewer-lane: ${s} -->\n**${s}:**`).join('\n');
+    // No leg markers: Phase 5b's workflow iterates lanes, and a marker is now the violation.
+    // `slugs` is retained so callers keep their existing shape.
+    const legs = slugs.map((s) => `**${s}:**`).join('\n');
     const heads = sections.map((s) => `## ${s} Review`).join('\n\n');
     const body = [
       '<step name="invoke_reviewers">',
@@ -658,13 +645,15 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
   });
 
   test('handler is a closed first-party enum', () => {
-    const allowed = [null, 'antigravity', 'openai-compatible'];
+    const allowed = [null, 'antigravity', 'openai-compatible', 'opencode'];
     for (const lane of REVIEWER_LANES) {
       assert.ok(allowed.includes(lane.handler), `${lane.slug}: unexpected handler ${lane.handler}`);
     }
     assert.deepStrictEqual(
       REVIEWER_LANES.filter((l) => l.handler !== null).map((l) => l.slug).sort(),
-      ['antigravity', 'llama_cpp', 'lm_studio', 'ollama'],
+      // `opencode` joined in Phase 5b: its review is reconstructed from assistant text parts of a
+      // --format json stream, which data cannot express (#1936).
+      ['antigravity', 'llama_cpp', 'lm_studio', 'ollama', 'opencode'],
     );
   });
 
@@ -715,7 +704,6 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
       'DUPLICATE_FLAG',
       'DUPLICATE_SECTION',
       'DUPLICATE_SLUG',
-      'DESCRIPTOR_LANE_NOT_IN_REGISTRY',
       'INVALID_SLUG',
       'MALFORMED_LANE',
       'REGISTRY_LANE_UNDECLARED',
