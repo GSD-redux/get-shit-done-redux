@@ -397,6 +397,80 @@ describe('reviewer docs parity — not-corruption (must NOT fire)', () => {
   });
 });
 
+describe('reviewer docs parity — HTML comment stripping (CodeQL js/incomplete-multi-character-sanitization)', () => {
+  // stripNonProse's single-line-comment branch used to run `working.replace(/<!--[\s\S]*?-->/g,
+  // '')` exactly ONCE per line. A single `.replace(/g, '')` pass only removes matches found in the
+  // ORIGINAL string; it never rescans the text IT JUST PRODUCED. So when removing one self-
+  // contained `<!--...-->` span joins the fragments on either side of it into a brand-new,
+  // complete `<!--...-->` span, that new span survives the pass verbatim — including whatever
+  // reviewer-flag row is wrapped inside it — and the row is (wrongly) counted as documented. This
+  // is the classic "<scr<script>ipt>" class of defect (CodeQL js/incomplete-multi-character-
+  // sanitization) applied to HTML comments instead of script tags. The fix iterates the same
+  // regex to a fixed point, then treats anything still starting with a bare `<!--` as an
+  // unterminated opener carried forward via `inComment`.
+  const NON_KIMI_ROWS = ALL_FLAGS.filter((f) => f !== '--kimi-code').map((f) => `| \`${f}\` | d |`);
+
+  test('aNestedCommentCannotSmuggleAFlagPastTheStrip', () => {
+    // `<!-` + `<!--DUMMY-->` + `-| `--kimi-code`  | d  |-->`: one pass strips the self-contained
+    // `<!--DUMMY-->` in the middle, which joins the leftover `<!-` and `-` into a brand-new
+    // `<!--` opener immediately followed by the kimi-code row and a real `-->` closer. A
+    // single-pass strip leaves that whole new span — row included — untouched in the output, so
+    // the row reads as documented. Regressed exactly here: verified against the pre-fix
+    // single-pass implementation, only `TABLE_ROW_MISSING` fired and `DOC_FLAG_MISSING` did not.
+    const joinLine = '<!-<!--DUMMY-->-| `--kimi-code` | d |-->';
+    const doc = ['### `/gsd-review`', '', ...NON_KIMI_ROWS, '', joinLine, ''].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    const kimi = r.violations.filter((v) => v.subject === '--kimi-code');
+    assert.ok(
+      kimi.some((v) => v.reason === DOCS_PARITY_VIOLATION.DOC_FLAG_MISSING)
+        || kimi.some((v) => v.reason === DOCS_PARITY_VIOLATION.TABLE_ROW_MISSING),
+      '--kimi-code must still be reported missing once the join-trick comment is fully stripped',
+    );
+  });
+
+  test('anUnterminatedCommentOpenerSwallowsTheRestOfTheDocument', () => {
+    const doc = [
+      '### `/gsd-review`',
+      '',
+      ...NON_KIMI_ROWS,
+      '',
+      '<!-- open, never closed',
+      '| `--kimi-code` | d |',
+      '',
+    ].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    const kimi = r.violations.filter((v) => v.subject === '--kimi-code');
+    assert.ok(kimi.length > 0, '--kimi-code sits inside an open comment and must be reported missing');
+  });
+
+  test('aCommentClosedOnALaterLineResumesCorrectly', () => {
+    // Pins that the fix does not over-strip: prose AFTER a comment's real close is real prose
+    // again, not swallowed along with the comment.
+    const doc = [
+      '### `/gsd-review`',
+      '',
+      ...NON_KIMI_ROWS,
+      '',
+      '<!-- opening',
+      'hidden line',
+      '-->',
+      '| `--kimi-code` | d |',
+      '',
+    ].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    const kimi = r.violations.filter((v) => v.subject === '--kimi-code');
+    assert.deepStrictEqual(kimi, [], 'content after a real comment close must not be treated as commented out');
+  });
+
+  test('multipleIndependentCommentsOnOneLineAreAllStripped', () => {
+    const line = 'A <!-- first --> B <!-- | `--kimi-code` | d | -->';
+    const doc = ['### `/gsd-review`', '', ...NON_KIMI_ROWS, '', line, ''].join('\n');
+    const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: { d: doc } });
+    const kimi = r.violations.filter((v) => v.subject === '--kimi-code');
+    assert.ok(kimi.length > 0, 'both independent comment spans on one line must be stripped');
+  });
+});
+
 describe('reviewer docs parity — hostile and malformed input', () => {
   test('an empty docs map is not a clean bill of health', () => {
     const r = checkReviewerDocsParity({ descriptor: REVIEWER_LANES, docs: {} });
