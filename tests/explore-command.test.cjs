@@ -125,11 +125,79 @@ describe('explore research-pass claim disposition (#2229)', () => {
     );
   });
 
-  test('tier-floor guard: the grounded pass is constrained off the lowest model tier', () => {
-    const content = readWorkflow().toLowerCase();
+  // The tier floor is only real if the orchestrator can OBSERVE its tier. Asserting
+  // that the guard's prose exists is the vacuous version of this test — it passed
+  // while the Agent() spawn bound no model and no profile, so nothing could ever
+  // evaluate "am I on the lowest tier?". These assert the mechanism instead.
+  test('tier-floor guard: the workflow RESOLVES the researcher tier, not just describes a floor', () => {
+    const content = readWorkflow();
+    assert.match(
+      content,
+      /resolve-model\s+gsd-phase-researcher\s+--pick\s+profile/,
+      'the tier floor needs the resolved profile as its trigger; without a ' +
+        '`resolve-model … --pick profile` binding the guard has no operative input'
+    );
+    assert.match(
+      content,
+      /resolve-model\s+gsd-phase-researcher\s+--pick\s+model/,
+      'the spawn must bind the researcher model per model-profile-resolution.md'
+    );
+  });
+
+  test('tier-floor guard: the Agent() spawn passes the bound model', () => {
+    const content = readWorkflow();
+    const spawn = content.slice(content.indexOf('Agent('), content.indexOf('subagent_type="gsd-phase-researcher"'));
+    assert.match(
+      spawn + content.slice(content.indexOf('subagent_type="gsd-phase-researcher"'), content.indexOf('subagent_type="gsd-phase-researcher"') + 200),
+      /model="\{researcher_model\}"/,
+      'omitting model= makes the agent inherit the orchestrator model rather than ' +
+        'the catalog-resolved tier, which is what left the floor unenforceable'
+    );
+    assert.match(
+      content,
+      /omit `model=` entirely when `researcher_model` is `inherit` or empty/i,
+      '#2517 requires the omit-on-inherit/empty rule to ride with any model= binding'
+    );
+  });
+
+  test('tier-floor guard: the floor keys on the budget profile and spares refute/abstain', () => {
+    const content = readWorkflow().replace(/\s+/g, ' ');
+    assert.match(
+      content,
+      /researcher_profile[^.]*\bbudget\b/,
+      'the floor must key on the resolved researcher_profile being `budget`'
+    );
+    assert.match(
+      content,
+      /`refute` and `abstain` are unaffected/,
+      'the floor suppresses unearned confidence only — it must not also suppress corrections'
+    );
+  });
+
+  test('an untagged finding has a defined destination, not a silent drop', () => {
+    const content = readWorkflow().toLowerCase().replace(/\s+/g, ' ');
     assert.ok(
-      content.includes('tier') && (content.includes('lowest') || content.includes('budget') || content.includes('haiku')),
-      'a tier floor must keep the grounded disposition off the lowest model tier'
+      content.includes('untagged'),
+      'a finding returned with no disposition tag must have a defined fallback'
+    );
+    assert.ok(
+      /untagged[^.]*abstain|abstain[^.]*untagged/.test(content),
+      'the untagged fallback must resolve to abstain (ledger), never flat prose'
+    );
+  });
+
+  test('refute and abstain are distinguishable by a stated decision procedure', () => {
+    // Whitespace-collapsed: these are multi-word prose claims and markdown wraps
+    // lines, so a literal-space regex would break the moment a paragraph re-flows.
+    const content = readWorkflow().toLowerCase().replace(/\s+/g, ' ');
+    assert.ok(
+      content.includes('authoritative'),
+      'refute vs abstain needs a discriminator; source authority for the claim is it'
+    );
+    assert.ok(
+      /strong prior[^.]*never authoritative|never authoritative[^.]*prior/.test(content),
+      'a "strong prior" must be stated as never authoritative alone, or it can be ' +
+        'read as grounds for a refute'
     );
   });
 

@@ -64,13 +64,29 @@ If yes, spawn a research agent:
 
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
+Resolve the researcher's model **and its tier** before dispatching — the tier is what arms the
+tier-floor guard below, so it must be a real value, not an assumption:
+
+```bash
+RESEARCHER_MODEL=$(gsd_run query resolve-model gsd-phase-researcher --pick model 2>/dev/null || true)
+RESEARCHER_PROFILE=$(gsd_run query resolve-model gsd-phase-researcher --pick profile 2>/dev/null || true)
+```
+
+Parse into: `researcher_model`, `researcher_profile`.
+
 Print: `◆ Spawning explorer... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)`
 ```
 Agent(
-  prompt="Quick research: {specific_question}. Return 3-5 key findings, no more than 200 words. For EACH finding, first try to REFUTE it against a primary source, then label it [admit: <source>] (survives refute AND grounded), [refute: <source>] (a source contradicts it), or [abstain: <why>] (unverifiable, or a source conflicts with a strong prior).",
-  subagent_type="gsd-phase-researcher"
+  prompt="Quick research: {specific_question}. Return 3-5 key findings, no more than 200 words. For EACH finding, first try to REFUTE it against a primary source, then label it [admit: <source>] (survives refute AND grounded), [refute: <source>] (a source contradicts it), or [abstain: <why>] (unverifiable, or a source conflicts with a strong prior). Every finding MUST carry exactly one of those three tags.",
+  subagent_type="gsd-phase-researcher",
+  model="{researcher_model}"
 )
 ```
+
+**Omit `model=` entirely when `researcher_model` is `inherit` or empty** (#2517) — passing either
+value through as an argument 404s on runtimes without native tier aliases. Every opus-tier agent
+resolves to the literal `inherit`, so omission is the normal case, not an error path. See
+@gsd-core/references/model-profile-resolution.md.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
@@ -82,9 +98,36 @@ Agent(
 - **Refute** — a primary source contradicts it → drop or correct it, **with the source**.
 - **Abstain** — unverifiable / no primary support, **or** a source conflicts with a strong prior (a **source-vs-prior** conflict) → put it in the **Unresolved ledger**, **never smoothed into the narrative**.
 
+**Refute vs abstain — the deciding question is what the source settles, not how surprising it is.**
+Both can be triggered by the same event (a source disagreeing with the claim), so decide by asking
+whether the source is *authoritative for this claim*:
+
+| Situation | Disposition |
+|---|---|
+| A primary source **for this claim's subject** states the opposite. The claim is simply wrong. | **Refute** — correct it, cite the source. |
+| A source disagrees, but it is not authoritative for this claim (wrong version, adjacent subject, secondary/derivative), **or** two comparable sources disagree with each other. | **Abstain** — ledger it. |
+| A source agrees but you could not reach a primary one at all. | **Abstain** — ledger it. |
+
+Worked example: the claim is "Node 20+ required" and a source says "Node 22+ required." If that
+source is the project's own `package.json` `engines` field or its published install docs, it is
+authoritative → **refute**, and state 22+. If it is a blog post, a different package's docs, or a
+release note for a version the claim did not name, it is not authoritative → **abstain**, and put
+both readings in the ledger. "Strong prior" means your own pre-existing belief, which is never
+authoritative on its own — it can only ever produce an abstain, never a refute.
+
 Two guards ride with it:
 - **Conflict-abstention** — a source-vs-prior conflict routes to the ledger, never a silent pick-a-side.
-- **Tier floor** — the grounded (admit) pass must not run on the lowest model tier (for `gsd-phase-researcher` the budget tier is `haiku`, which over-defers to wrong sources); on the lowest tier, present a would-be admit as an **abstain** rather than a confident assertion.
+- **Tier floor** — when `researcher_profile` (bound above) is `budget`, present every would-be
+  **admit** as an **abstain** instead. The budget tier for `gsd-phase-researcher` is `haiku`
+  (`bin/shared/model-catalog.json`), which over-defers to whatever source it was handed, so a
+  confident "grounded" label from that tier is not worth what it claims. `refute` and `abstain` are
+  unaffected — the floor suppresses unearned confidence, it does not suppress corrections.
+- **Untagged findings** — a finding returned with **no** `[admit:/refute:/abstain:]` tag is treated
+  as an **abstain** and goes to the ledger with the reason `untagged — disposition not reported`.
+  It is never stated as flat prose and never silently dropped. This is the instruction-following
+  slip case: an untagged finding is precisely one whose grounding is unknown, which is the
+  definition of abstain, so no third bucket is needed. Distinguish it in the ledger anyway, because
+  "the researcher did not answer" is a different signal from "the researcher could not verify."
 
 Share the admitted claims **and** the Unresolved ledger side by side, then continue the conversation:
 
@@ -92,9 +135,16 @@ Share the admitted claims **and** the Unresolved ledger side by side, then conti
 **Research (admitted — with sources):**
 - {claim} — {source}
 
+**Corrected (a primary source disagreed):**
+- {corrected claim} — {source}
+
 **Unresolved (could not stand behind):**
-- {claim} — {unverifiable | source-vs-prior conflict}
+- {claim} — {unverifiable | source-vs-prior conflict | non-authoritative source | tier-floor: unearned confidence | untagged — disposition not reported}
 ```
+
+Suppress any section with no entries — an empty heading reads as a claim that nothing fell into it.
+If **every** finding landed in Unresolved, say so in one line rather than presenting an empty
+admitted section: that outcome is itself the useful signal.
 
 This is the claims-side analogue of the **#1154** honest verifier (abstain-and-flag on the non-inferable; ADR-550 D4 — *never a silent pass*). Here it is a **prompt-level** judgment on this ideation surface, reusing the #1154 *pattern* — it does **not** call the verify-time `probe-core` disposition, which sits on the verifier↔predicate rail (ADR-857) and is out of altitude for an ideation flow.
 
