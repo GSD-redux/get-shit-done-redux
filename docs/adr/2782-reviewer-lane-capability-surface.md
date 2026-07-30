@@ -723,3 +723,48 @@ premise: the inventory catalogs `bin/lib/*.cjs` **modules**, not capability dire
 families contain no `capabilities/` entry at all. `gen-inventory-manifest.cjs --check` passes with the
 five new capability directories added and no inventory edit. The item is vacuous for this phase, and
 inventing an edit to satisfy it would introduce drift rather than prevent it.
+
+### 2026-07-30 — vocabulary widened by Phase 5b (#2799)
+
+Phase 5b is the cutover: it deletes the ~640 lines of hand-authored bash and runs every lane from
+the declaration. Building the resolver against all twelve legs — the first time each leg's *runtime*
+contract, not just its shape, had to be reproduced — surfaced five gaps. All five are additive, each
+is forced by a lane that ships today, and none reverses a decision. This is the same mechanism D2
+and the Phase 1 amendment record, at the next level of detail.
+
+| # | Decision | Was | Is | Forced by |
+|---|---|---|---|---|
+| 1 | D6 | `handler: null \| antigravity \| openai-compatible` | adds `opencode` | `opencode`'s review is RECONSTRUCTED from assistant `text` parts of a `--format json` stream; a plain stdout copy writes the raw JSON envelope into `REVIEWS.md` (#1936). Admitted under the enum's own second arm — a documented upstream defect data cannot express — exactly as `antigravity` was |
+| 2 | D1 | model key implicit as `review.models.<slug>` | adds `reviewer.modelConfigKey` | `antigravity`'s slug is `antigravity` but its shipped key is `review.models.agy`. Resolving by slug misses it and silently ignores a configured model, disabling the pinned-model escape hatch #2073 added |
+| 3 | D2 | `invoke.args` a fixed array | an **argv template** over a closed four-member placeholder set (`{{model}}`, `{{effort}}`, `{{output}}`, `{{prompt}}`) | The injected pieces do not all go in the same place: `codex` injects the model *after* its `exec` subcommand and the output file later still, while five lanes end with a bare `-` that must stay last. Positional splicing produced `codex --model M -o F exec --ephemeral …`, which is not a valid invocation |
+| 4 | D2 | `openai-http` invoke had no default | adds `invoke.defaultHost` and `invoke.fallbackModel` | Phase 4 federated every `review.*_host` with a default of `""`, so the real fallback (`http://localhost:11434`, `llama3`, …) existed only inside the bash leg. A data-driven lane would POST to a garbage URL |
+| 5 | D7 | — | `kimi-code` lands with a `command-capability` probe | Net-new lane, per the phase table. `kimi` is claimed by both Kimi Code CLI and the legacy Python kimi-cli (analysis from closed PR #2776, credit @drungrin) |
+
+**`modelConfigKey` is OPTIONAL, and that is D4 rule 2 rather than a convenience.** It did not exist
+before this phase, so requiring it would fail validation on every reviewer manifest authored against
+an earlier GSD. Absent reads as `null`.
+
+**D5 rule 1 was recorded as delivered by Phase 3 and was not implemented.** The implementation note
+added to D5 on 2026-07-29 states that "the **consent record** additionally stores the resolved host".
+It did not: `ConsentRecord` carried no host field, `recordProjectConsent` accepted none, and nothing
+in the tree bound one — so this phase's rule-4 comparison had no baseline to compare against. Phase
+5b implements it, as an **optional** `reviewerHost` that `isValidConsentRecord` does not require, so
+no record already on disk is invalidated and no re-consent storm fires (D4 rule 5). It stays out of
+`disclosureSignature` for the reason that note gives. Recorded here because the ADR asserting a rule
+was delivered is precisely what would stop a later phase from checking.
+
+**Three runtime dependencies leave the review path**, and two of them were platform holes rather than
+mere overhead: `jq` (absent on stock Windows/Git-Bash, #2589 — it gated five lanes), `curl`, and the
+external `timeout`/`gtimeout` the Antigravity leg probed for. **Stock macOS ships neither killer**, so
+D7's "where no bounding mechanism is available the probe is skipped" carve-out was, in practice, that
+lane running unbounded on every stock Mac. `spawnSync`'s native timeout is always available, so the
+bound is now unconditional and that carve-out is obsolete.
+
+**The `DEFECT.GENERATIVE-FIX` parity gate is re-pointed.** Phase 1's assertion required a literal
+`<!-- reviewer-lane: <slug> -->` per lane inside `invoke_reviewers` and a literal
+`## <Section> Review` per lane inside `write_reviews` — the exact text this phase deletes. Those two
+families could not be kept without keeping the hand-maintained per-lane blocks the epic exists to
+remove, so they are replaced by **descriptor ↔ registry** parity in both directions (the registry is
+what the runtime iterates once lanes are data) plus an **anti-parity** assertion that fires if a
+bespoke leg is ever re-added. That also gives #2781/Phase 6 the mechanical single source its docs and
+locale gate needs, which per-leg text could never provide.
