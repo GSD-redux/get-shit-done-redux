@@ -1437,7 +1437,11 @@ describe('no-adhoc-markdown-parsing rule', () => {
     // walks the full 256000-char unclosed negated class.
     const bigPipeRun = '|'.repeat(256000);
     const code = `const re = new RegExp('\\\\|[^${bigPipeRun}');`;
-    const start = Date.now();
+    // The 256000-char input is the regression guard for the O(n^2) scan fixed
+    // in #2880: the pre-fix regex took ~23s on this input. There is deliberately
+    // no elapsed-time assertion (banned by local/no-elapsed-assertion and flaky
+    // by nature) — if the quadratic path is ever reintroduced this test stops
+    // completing, which surfaces as a suite timeout rather than a silent pass.
     ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
       valid: [
         {
@@ -1447,7 +1451,5 @@ describe('no-adhoc-markdown-parsing rule', () => {
       ],
       invalid: [],
     });
-    const elapsed = Date.now() - start;
-    assert.ok(elapsed < 1000, `expected linear-time scan, took ${elapsed}ms`);
   });
 });
