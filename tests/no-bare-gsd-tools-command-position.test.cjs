@@ -17,6 +17,15 @@
 // mentions that NAME the command without instructing literal invocation. Any
 // site NOT in the allowlist is a new operative bare call and fails the gate.
 //
+// Verb coverage is derived LIVE from the gsd-tools host-command router
+// (`gsd-core/bin/gsd-tools.cjs`) by reading the `'verb': routeHandler` / `verb:
+// routeHandler` entries. This is deliberate — the original #2751 guard used a
+// hand-maintained 6-verb list that silently false-passed `verify-summary` (the
+// `verify` branch matched the prefix, then died on the hyphen), and missed
+// `windows`, `worktree`, `smart-entry`, and `quick-tasks-append` entirely.
+// Deriving the set from the router means a new verb registered there is covered
+// here the moment it lands — no second list to keep in sync.
+//
 // Source-text guard: the deployed contract IS the markdown text the runtime
 // loads. Scans FULL file text (the real hits lived in inline prose/table cells,
 // not fenced bash blocks).
@@ -27,12 +36,39 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..');
+const ROUTER_PATH = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
 const SCAN_DIRS = ['agents', path.join('gsd-core', 'workflows')];
 
-const VERBS = ['query', 'check', 'verify', 'intel', 'loop', 'graphify'];
+// Derive the verb set the bare-call guard matches against. Most top-level
+// verbs live in the host-command router table as `'verb': routeHandler` entries
+// (~70); this reads those dynamically so new router verbs are covered the moment
+// they land. A handful of verbs are dispatched as FAMILIES (their own
+// `command === 'verb'` arm, not a route-table entry): `query` (line ~2876),
+// `intel`, `verify`, and `graphify`. These are stable, documented families, so
+// they are supplemented explicitly here rather than parsed from the help string
+// (whose prose mixes real verbs with English words like "for"/"output"/"working",
+// producing noise). If a family verb is ever promoted into the route table the
+// union dedupes harmlessly; if a NEW family verb is added it must be added here.
+//
+// Sorted longest-first so a hyphenated verb (`verify-summary`) is preferred over
+// its prefix (`verify`) — the exact ordering bug that let `verify-summary` slip
+// past a fixed 6-verb list during the first #2751 pass.
+const FAMILY_DISPATCHED_VERBS = ['query', 'intel', 'verify', 'graphify'];
+function readRouterVerbs() {
+  const src = fs.readFileSync(ROUTER_PATH, 'utf8');
+  const re = /(?:'([a-z][a-z-]*)'|([a-z][a-z-]*))\s*:\s*route[A-Z]\w*/g;
+  const verbs = new Set(FAMILY_DISPATCHED_VERBS);
+  let m;
+  while ((m = re.exec(src)) !== null) verbs.add(m[1] || m[2]);
+  return [...verbs].sort((a, b) => b.length - a.length);
+}
 
-// Operative shape: `gsd-tools <verb>` followed by a space and a command argument
-// (the verb is NOT the close of a code span — there is a real arg after it).
+const VERBS = readRouterVerbs();
+
+// Operative shape: `gsd-tools <known-verb>` followed by whitespace and a real
+// argument (the verb is NOT the close of a code span — there is a real arg
+// after it). Restricting to KNOWN verbs (vs any `[a-z-]+` token) avoids
+// false-flagging English prose like "gsd-tools through the ...".
 const BARE_COMMAND_RE = new RegExp(
   String.raw`(?:^|[^./A-Za-z0-9_-])gsd-tools\s+(` + VERBS.join('|') + String.raw`)\s+[^\s` + '`' + String.raw`]`
 );
@@ -50,10 +86,16 @@ const PROSE_ALLOWLIST = [
   { file: 'agents/gsd-phase-researcher.md', line: 33, reason: 'package-legitimacy provenance rule names the command as the source of an OK verdict; descriptive' },
   { file: 'agents/gsd-roadmapper.md', line: 624, reason: 'parenthetical "e.g." naming SDK queries a user *could* run; not an agent instruction' },
   { file: 'agents/gsd-intel-updater.md', line: 40, reason: 'cross-platform note names the `gsd-tools intel <subcommand>` CLI surface descriptively ("CLI invocations go through..."); not an agent instruction' },
+  { file: 'gsd-core/workflows/execute-plan.md', line: 387, reason: 'describes the downstream SDK validation step (`validated downstream by ...`); names the mechanism, does not instruct the agent to type it' },
+  { file: 'agents/gsd-research-synthesizer.md', line: 65, reason: 'a code comment inside a fenced block explaining what the commit step loads (`# Planning config loaded via gsd-tools query ...`); descriptive, not an invocation — and explicitly names gsd-tools.cjs as the alternative' },
 ];
 
-// Resolver-snippet definition lines / probes that must never be flagged.
-const EXCLUSION_RE = /gsd-tools\.cjs|command -v gsd-tools|\bGSD_TOOLS=|_GSD_SHIM_NAME/;
+// Resolver-snippet definition lines / probes that must never be flagged. A line
+// is a resolver/probe definition when it assigns the shim name, probes PATH, or
+// assigns GSD_TOOLS / defines the gsd_run function — NOT merely when it contains
+// the substring `gsd-tools.cjs` (which would blanket-exempt any prose that
+// happens to name the file).
+const EXCLUSION_RE = /_GSD_SHIM_NAME\s*=|command -v gsd-tools|\bGSD_TOOLS\s*=|gsd_run\s*\(\)\s*\{/;
 
 function collectMdFiles(dir) {
   const results = [];
@@ -91,6 +133,22 @@ function findBareCommandPositionCalls() {
   }
   return offenders;
 }
+
+test('verb set was derived from the router (guards against a silent extraction regression)', () => {
+  // If the router is refactored so the `routeHandler` pattern no longer matches,
+  // VERBS would be empty and the bare-call guard below would false-pass
+  // everything. Sanity-bound it: a healthy router exposes many host verbs.
+  assert.ok(
+    VERBS.length > 40,
+    `Expected to derive >40 verbs from ${path.relative(ROOT, ROUTER_PATH)}, got ${VERBS.length}. ` +
+      'If the router table changed shape, update readRouterVerbs() so the guard keeps coverage.'
+  );
+  // Longest-first ordering is what lets verify-summary win over verify.
+  const sample = ['verify-summary', 'verify', 'query', 'intel', 'graphify', 'windows', 'worktree', 'smart-entry', 'commit', 'check'];
+  for (const v of sample) {
+    assert.ok(VERBS.includes(v), `expected verb '${v}' in derived set (router/family drift?)`);
+  }
+});
 
 test('no command-position bare gsd-tools <verb> survives in agents/ or workflows/ (#2751)', () => {
   const offenders = findBareCommandPositionCalls();
