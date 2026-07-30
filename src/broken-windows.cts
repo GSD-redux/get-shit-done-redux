@@ -1,10 +1,10 @@
 /**
- * Broken-windows ledger — enforced cross-phase defect register (issue #1950).
+ * Broken-windows ledger — optionally enforced cross-phase defect register (issue #1950).
  *
  * Manages `.planning/WINDOWS.md`: a cross-phase ledger of small defects (stubs,
  * TODOs, skipped tests, lint warnings, unrun verifies, unmet truths, deviations).
- * When `workflow.windows_enforce` is true, `/gsd-ship` blocks while any entry is `open`; an entry can be `waived` only
- * with a recorded reason or `fixed`.
+ * When `workflow.windows_enforce` is true, `/gsd-ship` blocks while any entry is
+ * `open`; an entry can be `waived` only with a recorded reason or `fixed`.
  *
  * LEAF MODULE — imports ONLY: node:fs, node:path. No other src/ imports.
  *
