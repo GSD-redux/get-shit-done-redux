@@ -65,8 +65,21 @@ export type EffortChannel = 'none' | 'argv' | 'env';
 /** ADR-2782 D2 — CodeRabbit reviews a diff, not the source tree (`review.md:367`). */
 export type EvidenceClass = 'source-grounded' | 'diff-only';
 
-/** ADR-2782 D6 — closed enum of first-party imperative modules. Ported in Phase 5b. */
-export type LaneHandler = null | 'antigravity' | 'openai-compatible';
+/**
+ * ADR-2782 D6 — closed enum of first-party imperative modules. Ported in Phase 5b.
+ *
+ * `'opencode'` was added by Phase 5b (#2799) as an additive widening, forced by a lane that ships
+ * today. Phase 1 declared `opencode.handler = null`, but the lane's review is RECONSTRUCTED from
+ * assistant `text` parts of a `--format json` stream — `--format json` is the primary invocation,
+ * not a fallback, because the default formatter drops the text when the agent ends its turn with no
+ * final message (#1936). A data-driven `outputChannel: 'stdout'` copy would write the raw JSON
+ * envelope into REVIEWS.md as the review, straight back into #1936.
+ *
+ * The alternative — an `outputChannel: 'json-parts'` member — was rejected: it pushes a parsing
+ * language into the descriptor and would want a selector expression next. D6's whole point is that
+ * divergence escapes to NAMED FIRST-PARTY CODE rather than accreting inside data.
+ */
+export type LaneHandler = null | 'antigravity' | 'openai-compatible' | 'opencode';
 
 /**
  * What a lane does when it produces no usable output.
@@ -83,8 +96,38 @@ export type LaneProbe =
   | { kind: 'command-capability'; binary: string; needle: string; timeoutMs: number }
   | { kind: 'http-reachable'; hostConfigKey: string; path: string; timeoutMs: number };
 
+/**
+ * Argv placeholders (Phase 5b, #2799).
+ *
+ * `args` is an argv TEMPLATE, not a prefix. The injected pieces — model, effort, output file,
+ * argv-borne prompt — do not all go in the same place, and no positional rule expresses that:
+ * `codex` injects the model in the MIDDLE (after the `exec --ephemeral` subcommand) and the output
+ * file later still, while `gemini` injects the model first and five lanes end with a bare `-` that
+ * must stay last. Splicing by position silently produced
+ * `codex --model M -o F exec --ephemeral …`, which is not a valid codex invocation.
+ *
+ * So each lane declares WHERE each piece goes. A placeholder expands to zero or more argv elements
+ * and vanishes when it has nothing to contribute (no model configured, no effort channel, prompt on
+ * stdin), which is what lets one template serve the configured and unconfigured cases.
+ *
+ * This is a closed four-member vocabulary with no expressions, no nesting and no conditionals — a
+ * placeholder set, deliberately not a template language. The moment it needs a conditional, the
+ * lane wants a `handler` instead (D6).
+ */
+export const ARGV_PLACEHOLDER = Object.freeze({
+  /** `modelArg` + the resolved model, or nothing. */
+  MODEL: '{{model}}',
+  /** The host's effort argv, or nothing unless `effortChannel` is `argv`. */
+  EFFORT: '{{effort}}',
+  /** `outputArg` + the review path, or nothing unless `outputChannel` is `file-arg`. */
+  OUTPUT: '{{output}}',
+  /** The argv-borne prompt, or nothing unless `promptChannel` is `argv`/`argv-file-ref`. */
+  PROMPT: '{{prompt}}',
+} as const);
+
 export interface SpawnInvoke {
   binary: string;
+  /** Argv template — see `ARGV_PLACEHOLDER`. Order here is the order the tool receives. */
   args: ReadonlyArray<string>;
   promptChannel: PromptChannel;
   outputChannel: OutputChannel;
@@ -98,8 +141,19 @@ export interface SpawnInvoke {
 export interface HttpInvoke {
   /** Dotted config key holding the base URL. */
   hostConfigKey: string;
+  /**
+   * Base URL used when `hostConfigKey` resolves to empty.
+   *
+   * Added by Phase 5b (#2799). Phase 4 federated every `*_host` key with a default of `""`, so the
+   * REAL fallback (`http://localhost:11434` and friends) only ever existed inside the bash leg. A
+   * data-driven lane with an empty host and no declared default would POST to a garbage URL, so
+   * the fallback has to be declared somewhere — and the lane is the only thing that knows it.
+   */
+  defaultHost: string;
   path: string;
   modelDiscovery: 'none' | 'first-from-models-endpoint';
+  /** Model used when neither config nor discovery yields one. */
+  fallbackModel: string;
   effortChannel: 'none';
 }
 
@@ -123,6 +177,20 @@ interface ReviewerLaneCommon {
   requiresBinaries: ReadonlyArray<string>;
   /** Dotted config key for per-lane prompt trimming, or null. */
   promptBudgetKey: string | null;
+  /**
+   * Dotted config key holding this lane's model override, or null when the lane accepts none.
+   *
+   * Added by Phase 5b (#2799). Phase 1 left the model key IMPLICIT (`review.models.<slug>`), and
+   * that convention is wrong for a lane that ships today: `antigravity`'s slug is `antigravity` but
+   * its key is `review.models.agy` (`review.md:291`, and Phase 4 federated it under that exact
+   * name). Resolving by slug would look up `review.models.antigravity`, miss, and silently ignore a
+   * configured model — the pinned-model escape hatch #2073 added precisely so a 404ing default can
+   * be overridden.
+   *
+   * Declared rather than derived, for the same reason `promptBudgetKey` is: the key is data about
+   * the lane, and a naming convention that one shipped lane already breaks is not a contract.
+   */
+  modelConfigKey: string | null;
   handler: LaneHandler;
 }
 
@@ -153,11 +221,10 @@ const SPAWN_STDIN_STDOUT = {
 } as const;
 
 /**
- * The eleven lanes shipped today, in `write_reviews` order.
+ * The twelve declared lanes, in `write_reviews` order.
  *
- * `kimi-code` is deliberately absent: it is net-new with no leg, and ADR-2782
- * lands it in Phase 5b alongside the iteration that can invoke it. Declaring it
- * here would make it selectable but not invocable.
+ * `kimi-code` joined in Phase 5b (#2799, closes #2718) — ADR-2782's phase table lands it here
+ * rather than in 5a precisely so it arrives together with the iteration that can invoke it.
  */
 export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   {
@@ -167,7 +234,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'gemini' },
     invoke: {
       binary: 'gemini',
-      args: ['-p', '-'],
+      args: ['{{model}}', '-p', '-'],
       ...SPAWN_STDIN_STDOUT,
       modelArg: '-m',
       effortChannel: 'none',
@@ -178,6 +245,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'source-grounded',
     requiresBinaries: [],
     promptBudgetKey: null,
+    modelConfigKey: 'review.models.gemini',
     handler: null,
   },
   {
@@ -189,7 +257,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'claude' },
     invoke: {
       binary: 'claude',
-      args: ['-p', '-'],
+      args: ['{{model}}', '{{effort}}', '-p', '-'],
       ...SPAWN_STDIN_STDOUT,
       modelArg: '--model',
       effortChannel: 'argv',
@@ -200,6 +268,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'source-grounded',
     requiresBinaries: [],
     promptBudgetKey: null,
+    modelConfigKey: 'review.models.claude',
     handler: null,
   },
   {
@@ -213,7 +282,8 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'codex' },
     invoke: {
       binary: 'codex',
-      args: ['exec', '--ephemeral', '--skip-git-repo-check', '-'],
+      // Leg order exactly: codex exec --ephemeral --model M $EFFORT --skip-git-repo-check -o F -
+      args: ['exec', '--ephemeral', '{{model}}', '{{effort}}', '--skip-git-repo-check', '{{output}}', '-'],
       promptChannel: 'stdin',
       outputChannel: 'file-arg',
       outputArg: '-o',
@@ -226,6 +296,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'source-grounded',
     requiresBinaries: [],
     promptBudgetKey: null,
+    modelConfigKey: 'review.models.codex',
     handler: null,
   },
   {
@@ -250,6 +321,8 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'diff-only',
     requiresBinaries: [],
     promptBudgetKey: null,
+    // Accepts no model flag at all (review.md:367) — not merely "none configured".
+    modelConfigKey: null,
     handler: null,
   },
   {
@@ -262,7 +335,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'opencode' },
     invoke: {
       binary: 'opencode',
-      args: ['run', '--format', 'json', '-'],
+      args: ['run', '{{model}}', '{{effort}}', '--format', 'json', '-'],
       ...SPAWN_STDIN_STDOUT,
       modelArg: '--model',
       effortChannel: 'argv',
@@ -271,9 +344,14 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'OpenCode',
     evidenceClass: 'source-grounded',
-    requiresBinaries: ['jq'],
+    // Phase 5b: the handler reconstructs from the JSON stream with JSON.parse, so `jq` — absent on
+    // stock Windows/Git-Bash (#2589) — is no longer a prerequisite for this lane.
+    requiresBinaries: [],
     promptBudgetKey: null,
-    handler: null,
+    modelConfigKey: 'review.models.opencode',
+    // Phase 5b (#2799): was `null`. The review is REBUILT from assistant `text` parts; a plain
+    // stdout copy would write the raw JSON envelope as the review (#1936). See LaneHandler.
+    handler: 'opencode',
   },
   {
     slug: 'qwen',
@@ -293,6 +371,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'source-grounded',
     requiresBinaries: [],
     promptBudgetKey: null,
+    modelConfigKey: null,
     handler: null,
   },
   {
@@ -305,7 +384,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'cursor-agent' },
     invoke: {
       binary: 'cursor-agent',
-      args: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text'],
+      args: ['-p', '--mode', 'ask', '--trust', '--output-format', 'text', '{{prompt}}'],
       promptChannel: 'argv-file-ref',
       outputChannel: 'stdout',
       modelArg: null,
@@ -317,6 +396,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     evidenceClass: 'source-grounded',
     requiresBinaries: [],
     promptBudgetKey: null,
+    modelConfigKey: null,
     handler: null,
   },
   {
@@ -330,7 +410,7 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     probe: { kind: 'command-exists', binary: 'agy' },
     invoke: {
       binary: 'agy',
-      args: ['--print-timeout', '540s', '-p'],
+      args: ['--print-timeout', '540s', '{{model}}', '-p', '{{prompt}}'],
       promptChannel: 'argv-file-ref',
       outputChannel: 'stdout',
       modelArg: '--model',
@@ -340,8 +420,12 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     emptyOutput: 'handler-owned',
     reviewsSection: 'Antigravity',
     evidenceClass: 'source-grounded',
-    requiresBinaries: ['jq'],
+    // Phase 5b: the handler reads the transcript with JSON.parse per line, not `jq`.
+    requiresBinaries: [],
     promptBudgetKey: null,
+    // NOT `review.models.antigravity` — the shipped key is `review.models.agy` (review.md:291) and
+    // Phase 4 federated it under that name. This lane is why the key is declared, not derived.
+    modelConfigKey: 'review.models.agy',
     handler: 'antigravity',
   },
   {
@@ -356,16 +440,21 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     },
     invoke: {
       hostConfigKey: 'review.ollama_host',
+      defaultHost: 'http://localhost:11434',
       path: '/v1/chat/completions',
       modelDiscovery: 'first-from-models-endpoint',
+      fallbackModel: 'llama3',
       effortChannel: 'none',
     },
     timeoutFloorMs: 120_000,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'Ollama',
     evidenceClass: 'source-grounded',
-    requiresBinaries: ['jq'],
+    // Phase 5b: the openai-compatible handler speaks HTTP directly and parses with JSON.parse, so
+    // neither `jq` nor `curl` is a prerequisite any more (#2589's stated Windows hazard).
+    requiresBinaries: [],
     promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.ollama',
+    modelConfigKey: 'review.models.ollama',
     handler: 'openai-compatible',
   },
   {
@@ -380,16 +469,19 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     },
     invoke: {
       hostConfigKey: 'review.lm_studio_host',
+      defaultHost: 'http://localhost:1234',
       path: '/v1/chat/completions',
       modelDiscovery: 'first-from-models-endpoint',
+      fallbackModel: 'local-model',
       effortChannel: 'none',
     },
     timeoutFloorMs: 120_000,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'LM Studio',
     evidenceClass: 'source-grounded',
-    requiresBinaries: ['jq'],
+    requiresBinaries: [],
     promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.lm_studio',
+    modelConfigKey: 'review.models.lm_studio',
     handler: 'openai-compatible',
   },
   {
@@ -404,17 +496,65 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
     },
     invoke: {
       hostConfigKey: 'review.llama_cpp_host',
+      defaultHost: 'http://localhost:8080',
       path: '/v1/chat/completions',
       modelDiscovery: 'first-from-models-endpoint',
+      fallbackModel: 'local-model',
       effortChannel: 'none',
     },
     timeoutFloorMs: 120_000,
     emptyOutput: 'stub-with-stderr',
     reviewsSection: 'llama.cpp',
     evidenceClass: 'source-grounded',
-    requiresBinaries: ['jq'],
+    requiresBinaries: [],
     promptBudgetKey: 'review.max_prompt_tokens_per_reviewer.llama_cpp',
+    modelConfigKey: 'review.models.llama_cpp',
     handler: 'openai-compatible',
+  },
+  {
+    // Phase 5b (#2799) — closes #2718. Net-new in this phase BY DESIGN (ADR-2782's phase table):
+    // declaring it in 5a would have made it selectable but not invocable, producing an empty
+    // section for the whole 5a → 5b window.
+    //
+    // The probe is `command-capability`, not `command-exists`, and that is the entire reason D7's
+    // vocabulary ships wider than existence: `kimi` is claimed by BOTH the Kimi Code CLI (Node) and
+    // the legacy Python kimi-cli, which is a separate first-party runtime capability in this repo.
+    // An existence-only probe registers the wrong tool. The needle `--output-format` appears in
+    // Kimi Code's `--help` and is absent from the legacy CLI (whose headless flags are `--print` /
+    // `--work-dir`). Verified in both directions against Kimi Code CLI 0.29.2 and a stub legacy
+    // binary in closed PR #2776 — analysis carried forward with credit to @drungrin.
+    //
+    // The original probe there was an UNBOUNDED `kimi --help | grep` that ran on EVERY /gsd:review
+    // regardless of flags: a live instance of this repo's named Unbounded Subprocesses defect, and
+    // the review blocker. Here the bound is declared (`timeoutMs`) and the runner enforces it, and
+    // the probe runs only for a SELECTED lane.
+    slug: 'kimi-code',
+    flags: ['--kimi-code'],
+    transport: 'spawn',
+    probe: {
+      kind: 'command-capability',
+      binary: 'kimi',
+      needle: '--output-format',
+      timeoutMs: 5_000,
+    },
+    invoke: {
+      // Print mode takes the prompt as an ARGUMENT, so the full plan set goes by file reference to
+      // stay clear of the 32,767-char Windows execFileSync ceiling — same shape as cursor.
+      binary: 'kimi',
+      args: ['{{model}}', '-p', '{{prompt}}'],
+      promptChannel: 'argv-file-ref',
+      outputChannel: 'stdout',
+      modelArg: '-m',
+      effortChannel: 'none',
+    },
+    timeoutFloorMs: 900_000,
+    emptyOutput: 'stub-with-stderr',
+    reviewsSection: 'Kimi Code',
+    evidenceClass: 'source-grounded',
+    requiresBinaries: [],
+    promptBudgetKey: null,
+    modelConfigKey: 'review.models.kimi-code',
+    handler: null,
   },
 ].map((lane) => Object.freeze(lane)) as ReviewerLane[]);
 
@@ -433,12 +573,9 @@ export const PARITY_VIOLATION = Object.freeze({
   INVALID_SLUG: 'invalid_slug',
   ROSTER_SLUG_UNDECLARED: 'roster_slug_undeclared',
   DESCRIPTOR_LANE_NOT_IN_ROSTER: 'descriptor_lane_not_in_roster',
-  LEG_MARKER_MISSING: 'leg_marker_missing',
-  LEG_MARKER_DUPLICATED: 'leg_marker_duplicated',
-  LEG_MARKER_UNDECLARED: 'leg_marker_undeclared',
-  SECTION_MISSING: 'section_missing',
-  SECTION_DUPLICATED: 'section_duplicated',
-  SECTION_UNDECLARED: 'section_undeclared',
+  REGISTRY_LANE_UNDECLARED: 'registry_lane_undeclared',
+  DESCRIPTOR_LANE_NOT_IN_REGISTRY: 'descriptor_lane_not_in_registry',
+  BESPOKE_LEG_PRESENT: 'bespoke_leg_present',
   DUPLICATE_SLUG: 'duplicate_slug',
   DUPLICATE_FLAG: 'duplicate_flag',
   DUPLICATE_SECTION: 'duplicate_section',
@@ -460,19 +597,27 @@ export interface ParityResult {
 export interface ParityInput {
   descriptor: ReadonlyArray<ReviewerLane>;
   roster: ReadonlyArray<string>;
+  /**
+   * Reviewer slugs declared by `reviewer` bodies in the GENERATED capability registry.
+   *
+   * Phase 5b (#2799). Once `invoke_reviewers` iterates lanes, the registry — not the workflow text —
+   * is what actually decides which lanes exist at runtime, so this is the surface parity has to
+   * bind. A missing or malformed value degrades to violations rather than silence, exactly as
+   * `workflowText` does: a checker that cannot tell "no registry" from "registry agrees" is worse
+   * than no checker.
+   */
+  registry: ReadonlyArray<string>;
   /** Full text of gsd-core/workflows/review.md. */
   workflowText: string;
 }
 
 /**
- * The machine-readable marker that makes an `invoke_reviewers` leg identifiable.
+ * The marker that used to make a hand-authored `invoke_reviewers` leg identifiable.
  *
- * The legs are prose-labelled (`**Qwen Code:**`, `**LM Studio (local,
- * OpenAI-compatible):**`), and five NON-lane bold labels in the same step have
- * the identical bold-then-fence shape (`**Timeout guidance (#2194):**`,
- * `**No hook-trust bypass (#2479):**`, `**Maintainer note — …:**`). Inferring
- * legs from prose shape would be a heuristic asserting what it cannot prove, so
- * each leg carries an explicit marker instead. Phase 5b iterates on these.
+ * Phase 5b (#2799) deleted every bespoke leg, so this regex flipped polarity: matching one is now
+ * the VIOLATION (`BESPOKE_LEG_PRESENT`) rather than the requirement. It is retained precisely
+ * because deleting it would leave nothing stopping a future contributor from quietly re-adding a
+ * per-CLI block — which is the drift (#2718 → #2781) this whole epic exists to end.
  */
 const LEG_MARKER_RE = /<!--\s*reviewer-lane:\s*([a-z0-9_-]+)\s*-->/g;
 
@@ -495,23 +640,8 @@ const LEG_MARKER_RE = /<!--\s*reviewer-lane:\s*([a-z0-9_-]+)\s*-->/g;
  */
 export const LANE_SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
 
-/**
- * A lane section heading in write_reviews.
- *
- * Anchored at h2 with an exact ` Review` suffix and NO parenthetical, because:
- *   - `## OpenCode Review (opencode-deepseek)` is an ADR-1517 reviewer INSTANCE,
- *     and ADR-2782 D8 states instances are not lanes — two such headings are
- *     already in the file, so a naive matcher fails on day one;
- *   - `## Consensus Summary` has no ` Review` suffix;
- *   - `# Cross-AI Plan Review — Phase {N}` is h1, not h2.
- * `[^()\n]+` excludes the parenthetical form rather than stripping it, so an
- * instance heading never resolves to a lane.
- */
-const SECTION_HEADING_RE = /^##[ \t]+([^()\n\r]+?) Review[ \t]*$/gm;
-
-/** Bounds of the step a marker must appear inside. */
+/** Bounds of the step a bespoke leg marker could appear inside. */
 const INVOKE_STEP_RE = /<step name="invoke_reviewers">([\s\S]*?)<\/step>/;
-const WRITE_STEP_RE = /<step name="write_reviews">([\s\S]*?)<\/step>/;
 
 function sliceStep(workflowText: string, re: RegExp): string {
   const m = workflowText.match(re);
@@ -532,21 +662,32 @@ function countOccurrences(haystack: string, re: RegExp): Map<string, number> {
 }
 
 /**
- * Bidirectional parity across four surfaces: the descriptor, the roster
- * (`KNOWN_REVIEWER_SLUGS`), the `invoke_reviewers` legs, and the `write_reviews`
- * sections.
+ * Bidirectional parity across three surfaces: the descriptor, the roster
+ * (`KNOWN_REVIEWER_SLUGS`), and the generated capability **registry** — plus one anti-parity
+ * assertion against the workflow.
  *
- * Bidirectional is the point. A forward-only check ("does each declared lane
- * resolve?") misses the failure this exists to catch: #2718 added a lane leg and
- * #2781 was the documentation drift that followed. An undeclared leg must fail.
+ * **Re-pointed by Phase 5b (#2799).** Through Phase 5a this function also required a literal
+ * `<!-- reviewer-lane: <slug> -->` per lane inside `invoke_reviewers` and a literal
+ * `## <Section> Review` per lane inside `write_reviews`. Phase 5b deletes exactly that text: the
+ * workflow now iterates declared lanes and renders sections from `reviewsSection`, so there is no
+ * per-lane text left to scan. Those two families could not be kept without keeping the
+ * hand-maintained per-lane blocks this epic exists to delete.
  *
- * Pure and total: never reads the filesystem, never throws. Empty or malformed
- * `workflowText` degrades to violations, so a caller cannot mistake a read
- * failure for a clean bill of health.
+ * What replaced them is the parity that is actually load-bearing once lanes are data: the registry
+ * is what decides which lanes exist at runtime, so `descriptor ↔ registry` is checked in both
+ * directions. That is also the mechanical single source #2781/Phase 6 needs for its docs and locale
+ * gate, which per-leg text could never provide.
  *
- * CRLF-insensitive: `\r` is stripped before matching, because a Windows
- * autocrlf checkout would otherwise leave every marker and heading unmatched
- * and report the whole roster missing.
+ * Bidirectional is still the point. A forward-only check ("does each declared lane resolve?")
+ * misses the failure this exists to catch: #2718 added a lane and #2781 was the documentation drift
+ * that followed. A registry lane nobody declared must fail, and so must a re-added bespoke leg.
+ *
+ * Pure and total: never reads the filesystem, never throws. Empty or malformed `workflowText` /
+ * `registry` degrades to violations, so a caller cannot mistake a read failure for a clean bill of
+ * health.
+ *
+ * CRLF-insensitive: `\r` is stripped before matching, because a Windows autocrlf checkout would
+ * otherwise leave every marker unmatched.
  */
 export function checkReviewerLaneParity(input: ParityInput): ParityResult {
   const { descriptor, roster } = input;
@@ -569,13 +710,6 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
   const seenFlag = new Set<string>();
   const seenSection = new Set<string>();
 
-  /** A lane that survived validation: slug is a string in the declared grammar. */
-  interface ValidatedLane {
-    slug: string;
-    reviewsSection: string | null;
-  }
-  const lanes: ValidatedLane[] = [];
-
   // The declared parameter type says `ReviewerLane[]`, but this function is a
   // trust boundary — narrow from `unknown` rather than believing the annotation.
   const rawLanes: unknown[] = Array.isArray(descriptor) ? (descriptor as unknown[]) : [];
@@ -591,7 +725,6 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
       continue;
     }
     const section = typeof lane.reviewsSection === 'string' ? lane.reviewsSection : null;
-    lanes.push({ slug, reviewsSection: section });
 
     if (seenSlug.has(slug)) add(PARITY_VIOLATION.DUPLICATE_SLUG, slug);
     seenSlug.add(slug);
@@ -623,33 +756,32 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
     if (!rosterSet.has(slug)) add(PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_ROSTER, slug);
   }
 
-  // --- descriptor <-> invoke_reviewers legs ---
-  const markerCounts = countOccurrences(
-    sliceStep(workflowText, INVOKE_STEP_RE),
-    LEG_MARKER_RE,
+  // --- descriptor <-> registry ---
+  //
+  // The registry is what decides which lanes exist at runtime once the workflow iterates, so this
+  // replaces the per-leg text checks Phase 5b deleted. A non-array degrades to an empty set, which
+  // then reports every descriptor lane as missing — loud, not silent.
+  const registrySet = new Set(
+    (Array.isArray(input.registry) ? input.registry : []).filter(
+      (x): x is string => typeof x === 'string',
+    ),
   );
-  for (const lane of lanes) {
-    const n = markerCounts.get(lane.slug) ?? 0;
-    if (n === 0) add(PARITY_VIOLATION.LEG_MARKER_MISSING, lane.slug);
-    else if (n > 1) add(PARITY_VIOLATION.LEG_MARKER_DUPLICATED, lane.slug);
+  for (const slug of registrySet) {
+    if (!seenSlug.has(slug)) add(PARITY_VIOLATION.REGISTRY_LANE_UNDECLARED, slug);
   }
-  for (const slug of markerCounts.keys()) {
-    if (!seenSlug.has(slug)) add(PARITY_VIOLATION.LEG_MARKER_UNDECLARED, slug);
+  for (const slug of seenSlug) {
+    if (!registrySet.has(slug)) add(PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_REGISTRY, slug);
   }
 
-  // --- descriptor <-> write_reviews sections ---
-  const sectionCounts = countOccurrences(
-    sliceStep(workflowText, WRITE_STEP_RE),
-    SECTION_HEADING_RE,
-  );
-  for (const lane of lanes) {
-    if (lane.reviewsSection === null) continue;
-    const n = sectionCounts.get(lane.reviewsSection) ?? 0;
-    if (n === 0) add(PARITY_VIOLATION.SECTION_MISSING, lane.reviewsSection);
-    else if (n > 1) add(PARITY_VIOLATION.SECTION_DUPLICATED, lane.reviewsSection);
-  }
-  for (const section of sectionCounts.keys()) {
-    if (!seenSection.has(section)) add(PARITY_VIOLATION.SECTION_UNDECLARED, section);
+  // --- anti-parity: no bespoke leg may return ---
+  //
+  // Phase 5b deleted every hand-authored per-CLI block. Nothing in the type system stops a future
+  // contributor from adding one back, and a re-added block is invisible to every other check here
+  // (it would still be declared, still be in the roster, still be in the registry). Matching a leg
+  // marker is therefore now the violation.
+  const markerSlugs = countOccurrences(sliceStep(workflowText, INVOKE_STEP_RE), LEG_MARKER_RE);
+  for (const slug of markerSlugs.keys()) {
+    add(PARITY_VIOLATION.BESPOKE_LEG_PRESENT, slug);
   }
 
   return { ok: violations.length === 0, violations };
