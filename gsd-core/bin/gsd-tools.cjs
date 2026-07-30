@@ -1329,8 +1329,23 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       }
     }
 
+    // ADR-2782 D5 rule 4: re-resolve the consented destination at INVOCATION. `undefined` (no
+    // consent record, or a record predating rule 1) means "nothing to compare" and ALLOWS — a
+    // first-party lane ships inside the SHA-pinned distribution and is never consent-gated, so
+    // denying on absence would break every existing local-model user.
+    let consentedHost;
+    if (entry.plan.transport === 'openai-http') {
+      try {
+        const consent = require('./lib/capability-consent.cjs');
+        const projectRoot = require('./lib/project-root.cjs').consentProjectRoot(cwd);
+        // The capability id is kebab; the lane slug may be snake (lm_studio / lm-studio).
+        const capId = String(entry.slug).replace(/_/g, '-');
+        consentedHost = consent.readConsentedReviewerHost({ projectRoot, id: capId });
+      } catch { consentedHost = undefined; }
+    }
+
     const result = await runner.runLane(entry.plan, deps, {
-      consentedHost: undefined, // wired to the consent record by the consent-binding half of D5
+      consentedHost,
       explicitlyRequested: args.includes('--explicit'),
       repoRoot,
     });
