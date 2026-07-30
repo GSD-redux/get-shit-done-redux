@@ -438,6 +438,43 @@ tools:
     // Skill stays excluded — the #1394 behaviour above is unchanged by this fix.
     assert.ok(!/\bskill\b/.test(toolsLine), 'Skill remains excluded on the Gemini backend');
   });
+
+  test('#2540 regression: every tools: shape yields the same Kilo permission block', () => {
+    // The OpenCode and Kilo converters were the last `tools:` consumers still
+    // running their own line-oriented parse (#2540 review). Kilo's agent path
+    // did `trimmed.substring(6).split(',')`, which on the bracketed flow form
+    // produced the literal names "[Read" and "Write]" — neither maps to a Kilo
+    // permission, so an agent declaring `tools: [Read, Write]` emitted a block
+    // with read AND edit set to `deny`. Verified against the pre-fix build:
+    // flow -> "read: deny | edit: deny"; all three shapes now agree.
+    //
+    // This asserts the invariant the seam exists to guarantee — the DECLARED
+    // CONTRACT, not its YAML spelling, decides the emitted permissions — so it
+    // fails again if any converter re-grows a private parser.
+    const agent = (toolsBlock) => `---
+name: probe-agent
+description: Shape-equivalence probe
+${toolsBlock}
+---
+
+<role>Probe.</role>`;
+
+    const permissions = (md) => convertClaudeToKiloFrontmatter(md, { isAgent: true })
+      .split('\n')
+      .filter((l) => /^ {2}(read|edit):/.test(l))
+      .join(' | ');
+
+    const inline = permissions(agent('tools: Read, Write'));
+    const block = permissions(agent('tools:\n  - Read\n  - Write'));
+    const flow = permissions(agent('tools: [Read, Write]'));
+
+    // Pin the value, not just the agreement: three identically-wrong blocks
+    // would satisfy an equality-only assertion.
+    assert.match(inline, /read: allow/, 'inline form must allow read');
+    assert.match(inline, /edit: allow/, 'inline form must allow edit (Write)');
+    assert.strictEqual(block, inline, 'block-list form must match the inline form');
+    assert.strictEqual(flow, inline, 'bracketed flow form must match the inline form');
+  });
 });
 
 // ─── neutralizeAgentReferences (#766) ─────────────────────────────────────────

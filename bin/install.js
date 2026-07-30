@@ -7215,6 +7215,10 @@ function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOve
   let inAllowedTools = false;
   let inSkippedArray = false;
   const allowedTools = [];
+  // Read once through the shared agent-tools-contract seam (#2540 review) so
+  // this converter cannot disagree with the other `tools:` consumers about a
+  // given shape. Agents strip the field, so this only feeds the command path.
+  const contractTools = gsdParseToolsContract(frontmatter);
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -7230,7 +7234,7 @@ function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOve
       continue;
     }
 
-    // Detect inline tools: field (comma-separated string)
+    // Detect the tools: field (read via contractTools, above)
     if (trimmed.startsWith('tools:')) {
       if (isAgent) {
         // Agents: strip tools entirely (not supported in OpenCode agent frontmatter)
@@ -7239,9 +7243,7 @@ function convertClaudeToOpencodeFrontmatter(content, { isAgent = false, modelOve
       }
       const toolsValue = trimmed.substring(6).trim();
       if (toolsValue) {
-        // Parse comma-separated tools
-        const tools = toolsValue.split(',').map(t => t.trim()).filter(t => t);
-        allowedTools.push(...tools);
+        allowedTools.push(...contractTools);
       }
       continue;
     }
@@ -7384,6 +7386,11 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
   let inSkippedArray = false;
   const allowedTools = [];
   const agentTools = [];
+  // The `tools:` contract is read once through the shared agent-tools-contract
+  // seam (#2540 review) rather than re-parsed by the line loop below, so the
+  // inline, block-list and bracketed-flow shapes cannot diverge between this
+  // converter and the sandbox derivation / semantic validator.
+  const contractTools = gsdParseToolsContract(frontmatter);
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -7399,9 +7406,10 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
       continue;
     }
 
+    // Block-list continuation lines are consumed, not parsed: the contract
+    // itself came from the shared seam once, above (#2540 review).
     if (isAgent && inAgentTools) {
       if (trimmed.startsWith('- ')) {
-        agentTools.push(trimmed.substring(2).trim());
         continue;
       }
       if (trimmed && !trimmed.startsWith('-')) {
@@ -7409,23 +7417,19 @@ function convertClaudeToKiloFrontmatter(content, { isAgent = false, modelOverrid
       }
     }
 
-    // Detect inline tools: field (comma-separated string)
+    // Detect the tools: field. Both shapes (inline comma-separated and block
+    // list) are read by contractTools through the agent-tools-contract seam.
     if (trimmed.startsWith('tools:')) {
+      const toolsValue = trimmed.substring(6).trim();
       if (isAgent) {
-        const toolsValue = trimmed.substring(6).trim();
-        if (toolsValue) {
-          const tools = toolsValue.split(',').map(t => t.trim()).filter(t => t);
-          agentTools.push(...tools);
-        } else {
+        agentTools.push(...contractTools);
+        if (!toolsValue) {
           inAgentTools = true;
         }
         continue;
       }
-      const toolsValue = trimmed.substring(6).trim();
       if (toolsValue) {
-        // Parse comma-separated tools
-        const tools = toolsValue.split(',').map(t => t.trim()).filter(t => t);
-        allowedTools.push(...tools);
+        allowedTools.push(...contractTools);
       }
       continue;
     }
