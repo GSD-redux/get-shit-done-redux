@@ -237,6 +237,40 @@ describe('parseStateMd', () => {
     assert.equal(parseStateMd(crlf(lf)).status, null);
     assert.equal(parseStateMd(crlf(lf)).milestone, null);
   });
+
+  // #2754 (Generative-Fix Divergence guard, CLAUDE.md "parallel surfaces sharing a
+  // parser"): parseStateMd and the canonical extractFrontmatter both derive GSD
+  // state from the same STATE.md frontmatter, and they diverged once already (this
+  // very CRLF bug). Pin the overlap so a future divergence on a scalar shape or
+  // line ending is caught here, not in a live Windows report.
+  const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+
+  test('parseStateMd frontmatter-derived fields agree with extractFrontmatter (LF + CRLF, #2754)', () => {
+    const lf = [
+      '---',
+      'status: executing',
+      'milestone: v1.9',
+      'milestone_name: Code Quality',
+      'active_phase: 4',
+      'next_action: execute',
+      '---',
+      '',
+      '# State',
+      'Phase: 1 of 5 (fix-graphiti-deployment)',
+    ].join('\n');
+
+    for (const [label, content] of [['LF', lf], ['CRLF', crlf(lf)]]) {
+      const fm = extractFrontmatter(content);
+      const st = parseStateMd(content);
+      // extractFrontmatter yields the raw frontmatter object; parseStateMd projects
+      // a subset onto its own keys. Assert the projection matches the raw values.
+      assert.equal(st.status, fm.status, `status mismatch (${label})`);
+      assert.equal(st.milestone, fm.milestone, `milestone mismatch (${label})`);
+      assert.equal(st.milestoneName, fm.milestone_name, `milestone_name mismatch (${label})`);
+      assert.equal(st.activePhase, String(fm.active_phase), `active_phase mismatch (${label})`);
+      assert.equal(st.nextAction, fm.next_action, `next_action mismatch (${label})`);
+    }
+  });
 });
 
 // ─── formatGsdState ─────────────────────────────────────────────────────────
