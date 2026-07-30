@@ -1,21 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "review.md": {
-      "reason": "#2794 / ADR-2782 Phase 1. Three deliberate additions to gsd-core/workflows/review.md: (1) an explicit `<!-- reviewer-lane: <slug> -->` marker above each of the 11 invoke_reviewers legs, which is what makes a leg machine-identifiable for the DEFECT.GENERATIVE-FIX parity assertion — the legs are prose-labelled and five NON-lane bold labels in the same step share the bold-then-fence shape a heuristic matcher would key on, so inference was not an option; (2) the ADR-2782 D4 explicit-selection contract in the detect_clis prose, without which the selector correction is unobservable (review-reviewer-selection.cts has no production caller — the workflow narrates the policy and the reviewing agent executes it, so code and prose must move together); (3) the qwen leg's stderr sidecar, the last lane still discarding stderr to /dev/null (#2494/#2605 class). Growth is prose and comments only; no lane's observable command shape changed apart from the qwen redirect."
-    },
-    "hooks/gsd-check-update-worker.js": {
-      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs — so all three are now emitted into Codex installs alongside the parent. The diff is in bin/install.js (allowlist + copy-loop + profile gate), not in the hook sources themselves, so the hooks-built attribution rule flags the emitted worker/registry paths. This ripple is the intended fix."
-    },
-    "hooks/managed-hooks-registry.cjs": {
-      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so the registry is now emitted into Codex installs byte-for-byte. The diff is in bin/install.js (allowlist + raw-copy fallback + profile gate), not in the registry source, so the hooks-built attribution rule flags the emitted registry path. This ripple is the intended fix."
-    },
-    "code-review.md": {
-      "reason": "#2694: three inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved SUMMARY.md/REVIEW.md artifacts are no longer silently dropped. The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 3 boundary sites; no observable command shape changed otherwise. This is the intended fix."
-    },
-    "code-review-fix.md": {
-      "reason": "#2694: six inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved REVIEW.md/REVIEW-FIX.md artifacts are no longer silently dropped (status/depth/files_reviewed_list extraction). The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 6 boundary sites; no observable command shape changed otherwise. This is the intended fix."
-    },
     "spec-phase.md": {
       "reason": "#2733: five transitions in gsd-core/workflows/spec-phase.md were re-pointed so control reaches the mandatory Step 5.5 edge-completeness and Step 5.6 prohibition-completeness probes, which no path could reach before. Four upstream gate-passed jumps went from 'Jump to Step 6' to 'Jump to Step 5.5', and Step 5.5's own terminal soft gate at :305 went from 'proceed to Step 6' to 'proceed to Step 5.6' so the common all-edges-resolved path stops skipping the prohibition probe. The +10 bytes is exactly those five targets growing by 2 bytes each ('Step 6' -> 'Step 5.5' / 'Step 5.6'); it is the literal fix, not incidental prose growth, and cannot be avoided without leaving a probe unreachable. Verified: 31987 -> 31997 bytes, DEFAULT tier, cap 40960."
     }
