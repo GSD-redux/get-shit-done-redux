@@ -19,7 +19,7 @@ function npmLs(pkg) {
   // `npm ls <pkg> --json --all` lists every installed copy with its version. Collect
   // the version of every node whose key is `pkg` (not the parent packages).
   const out = execFileSync('npm', ['ls', pkg, '--json', '--all'], {
-    cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    cwd: ROOT, encoding: 'utf8', shell: true, stdio: ['ignore', 'pipe', 'ignore'],
   });
   const versions = [];
   const walk = (node) => {
