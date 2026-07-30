@@ -109,6 +109,16 @@ export interface BuildWorkstreamInventoryInputs {
    * 0 disables scoping and preserves the legacy `roadmapPhaseCount` behavior.
    */
   currentMilestonePhaseCount?: number;
+  /**
+   * #2562: whether milestone scoping is active, stated by the caller rather than
+   * inferred from `currentMilestonePhaseCount > 0`. The two are not equivalent:
+   * a current milestone that is declared but not yet populated is scoped AND has
+   * zero phases, and inferring from the count alone reads it as "unscoped" —
+   * which silently falls back to counting the project's entire phase history as
+   * the current milestone's, reporting 100% for a milestone with no work done.
+   * Defaults to the count-derived value so pre-#2562 callers are unaffected.
+   */
+  milestoneScoped?: boolean;
 }
 
 export interface WorkstreamInventory {
@@ -145,12 +155,14 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     filesExist,
     milestoneShipped,
     currentMilestonePhaseCount = 0,
+    milestoneScoped,
   } = inputs;
 
-  // #2562: milestone scoping is active when the current milestone declares a
-  // known phase count. When active, prior-milestone phase directories are
-  // excluded from the completion rollup and the denominator.
-  const scoped = currentMilestonePhaseCount > 0;
+  // #2562: when scoping is active, prior-milestone phase directories are
+  // excluded from the completion rollup and the denominator. The caller states
+  // this; the count-derived default is the pre-#2562 fallback for callers that
+  // do not, and cannot represent a scoped-but-empty current milestone.
+  const scoped = milestoneScoped ?? currentMilestonePhaseCount > 0;
 
   // Index counts by directory for O(1) lookup during sort/iteration
   const countsMap = new Map<string, PhaseFilesCount>();

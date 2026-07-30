@@ -571,6 +571,18 @@ type MilestonePhaseFilter = ((dirName: string) => boolean) & {
    * current-milestone denominator.
    */
   versionScoped: boolean;
+  /**
+   * #2562: true when `versionOverride`'s milestone section was LOCATED in the
+   * ROADMAP, independent of whether it turned out to declare any phases.
+   * `versionScoped` cannot answer that question — a located-but-empty section
+   * falls through to the zero-count pass-all filter below, which resets
+   * `versionScoped` to false, making "milestone absent" and "milestone present
+   * but not yet populated" indistinguishable. They are not the same state: the
+   * second is a real, empty current milestone, and a caller that treats it as
+   * "unscoped" silently reports the project's whole phase history as if it were
+   * the current milestone's.
+   */
+  versionSectionFound: boolean;
 };
 
 /**
@@ -596,6 +608,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   const milestonePhaseNums = new Set<string>();
   let missingExplicitVersion = false;
   let versionScoped = false;
+  let versionSectionFound = false;
   try {
     const roadmapPath = path.join(planningDir(cwd, ws), 'ROADMAP.md');
     const roadmapContent = platformReadSync(roadmapPath);
@@ -638,6 +651,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
         }
       } else {
         versionScoped = true;
+        versionSectionFound = true;
         const sectionStart = sectionMatch.index!;
         const headingLevel = (sectionMatch[1].match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
         const afterHeading = sectionStart + sectionMatch[0].length;
@@ -693,6 +707,10 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     passAll.phaseCount = 0;
     passAll.missingExplicitVersion = missingExplicitVersion;
     passAll.versionScoped = false;
+    // #2562: preserved through the pass-all degrade precisely BECAUSE
+    // `versionScoped` is reset here — this is the only surviving evidence that
+    // the current milestone exists in the ROADMAP and simply has no phases yet.
+    passAll.versionSectionFound = versionSectionFound;
     return passAll;
   }
 
@@ -737,6 +755,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   (isDirInMilestone as MilestonePhaseFilter).phaseCount = milestonePhaseNums.size;
   (isDirInMilestone as MilestonePhaseFilter).missingExplicitVersion = missingExplicitVersion;
   (isDirInMilestone as MilestonePhaseFilter).versionScoped = versionScoped;
+  (isDirInMilestone as MilestonePhaseFilter).versionSectionFound = versionSectionFound;
   return isDirInMilestone as MilestonePhaseFilter;
 }
 

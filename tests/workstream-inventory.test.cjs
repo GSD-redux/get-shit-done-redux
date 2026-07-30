@@ -735,4 +735,142 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
     assert.equal(inv.roadmap_phase_count, 1, 'root-only phase 9 must not join the denominator');
     assert.equal(inv.progress_percent, 0);
   });
+
+  // ─── The declared-but-empty current milestone ──────────────────────────────
+  //
+  // STATE.md's `milestone:` field updates the moment `/gsd-new-milestone` writes
+  // the heading; the Progress table and phase sections land later. In that
+  // window nothing attributes a phase to the current milestone. Scoping used to
+  // switch OFF there, and the fallback counted the project's ENTIRE phase
+  // history as both numerator and denominator — so a milestone with no work
+  // done reported 100% off its predecessors'. #2562's own symptom, other route.
+  //
+  // Three ROADMAP shapes reach it and each needs its own witness; the fourth is
+  // the legacy shape that must NOT be caught.
+  const V3_STATE = 'milestone: v3.0\nstatus: executing\n';
+  const PRIOR_ROWS = [
+    '| 1. Alpha | v1.0 | 1/1 | Complete | - |',
+    '| 2. Beta | v2.0 | 1/1 | Complete | - |',
+  ];
+
+  function seedTwoShippedPhases(name, roadmap) {
+    const wsDir = seedWorkstream(tmpDir, { name });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V3_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmap);
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '2-beta', { plans: 1, summaries: 1, verification: 'passed' });
+    return wsDir;
+  }
+
+  // The common shape: `## v3.0` exists but has no phases under it yet. The
+  // milestone filter DOES locate the section (setting versionScoped), then the
+  // zero-phase pass-all degrade resets versionScoped to false — erasing the only
+  // evidence that the milestone exists. versionSectionFound survives that reset.
+  test('a located-but-empty current milestone reports 0%, not its predecessors\' 100%', () => {
+    const wsDir = seedTwoShippedPhases('ws-empty-section', [
+      '# Roadmap', '',
+      '## v1.0', '', '### Phase 1: Alpha', '',
+      '## v2.0', '', '### Phase 2: Beta', '',
+      '## v3.0 — Next', '',
+      roadmapWithRows(PRIOR_ROWS),
+    ].join('\n'));
+    assert.ok(fs.existsSync(wsDir));
+
+    const inv = inspectWorkstream(tmpDir, 'ws-empty-section', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.completed_phases, 0, 'v1.0/v2.0 phases must not count toward v3.0');
+    assert.equal(inv.roadmap_phase_count, 0, 'v3.0 declares no phases');
+    assert.equal(inv.progress_percent, 0, 'an unstarted milestone must never report 100%');
+  });
+
+  // No v3.0 section at all, but the ROADMAP versions its other milestones — so
+  // the filter reports missingExplicitVersion rather than a located section.
+  test('a current milestone absent from a versioned roadmap reports 0%', () => {
+    seedTwoShippedPhases('ws-absent-section', [
+      '# Roadmap', '',
+      '## v1.0', '', '### Phase 1: Alpha', '',
+      '## v2.0', '', '### Phase 2: Beta', '',
+      roadmapWithRows(PRIOR_ROWS),
+    ].join('\n'));
+
+    const inv = inspectWorkstream(tmpDir, 'ws-absent-section', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.completed_phases, 0);
+    assert.equal(inv.progress_percent, 0);
+  });
+
+  // Unversioned phase headings, but the Progress table attributes every row to
+  // another milestone. Neither filter flag fires; the table is the only witness.
+  test('a progress table attributing every row elsewhere reports 0%', () => {
+    seedTwoShippedPhases('ws-rows-elsewhere', [
+      '# Roadmap', '',
+      '### Phase 1: Alpha', '', '### Phase 2: Beta', '',
+      roadmapWithRows(PRIOR_ROWS),
+    ].join('\n'));
+
+    const inv = inspectWorkstream(tmpDir, 'ws-rows-elsewhere', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.completed_phases, 0);
+    assert.equal(inv.progress_percent, 0);
+  });
+
+  // The boundary. A free-form ROADMAP attributes no versions at all: its rows
+  // parse unattributed, land in the current milestone, and must keep reporting
+  // 100%. readCurrentMilestoneVersion hands back a non-null version for nearly
+  // every project, so scoping on `currentVersion` alone would zero these out.
+  test('a legacy roadmap with no version attribution keeps its whole-roadmap count', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-legacy-freeform' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V3_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      '# Roadmap', '', '### Phase 1: Alpha', '', '### Phase 2: Beta', '',
+      '## Progress', '',
+      '| Phase | Plans Complete | Status |',
+      '| --- | --- | --- |',
+      '| 1. Alpha | 1/1 | Complete |',
+      '| 2. Beta | 1/1 | Complete |', '',
+    ].join('\n'));
+    writePhase(wsDir, '1-alpha', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '2-beta', { plans: 1, summaries: 1, verification: 'passed' });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-legacy-freeform', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.completed_phases, 2, 'unattributed phases belong to the current milestone');
+    assert.equal(inv.progress_percent, 100, 'legacy free-form projects must not regress to 0%');
+  });
+
+  // Degrade direction: over-inclusive, never under. A phase scaffolded before
+  // the ROADMAP caught up is claimed by NO milestone, so the empty current one
+  // adopts it rather than dropping it from both sides of the rollup — hiding
+  // real work would be the same class of defect as inventing it.
+  test('a phase scaffolded before the roadmap catches up joins the empty milestone', () => {
+    const wsDir = seedTwoShippedPhases('ws-scaffold-first', [
+      '# Roadmap', '',
+      '## v1.0', '', '### Phase 1: Alpha', '',
+      '## v2.0', '', '### Phase 2: Beta', '',
+      '## v3.0 — Next', '',
+      roadmapWithRows(PRIOR_ROWS),
+    ].join('\n'));
+    writePhase(wsDir, '3-gamma', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-scaffold-first', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.roadmap_phase_count, 1, 'the unclaimed phase 3 is v3.0\'s, and its only one');
+    assert.equal(inv.completed_phases, 0, 'it is started, not finished');
+    assert.equal(inv.progress_percent, 0);
+  });
+
+  // The invariant throw at the builder fires on `completedPhases > denominator`.
+  // A scoped milestone with a zero denominator sits one bad exclusion away from
+  // crashing `workstream list` on every freshly-declared milestone — a worse
+  // failure than a wrong percentage. Pin that it stays a number.
+  test('a zero-denominator scoped milestone does not trip the rollup invariant', () => {
+    seedTwoShippedPhases('ws-zero-denominator', [
+      '# Roadmap', '', '## v3.0 — Next', '', roadmapWithRows(PRIOR_ROWS),
+    ].join('\n'));
+
+    assert.doesNotThrow(() => inspectWorkstream(tmpDir, 'ws-zero-denominator', { active: null }));
+    const inv = inspectWorkstream(tmpDir, 'ws-zero-denominator', { active: null });
+    assert.equal(inv.progress_percent, 0);
+    assert.equal(inv.phases.length, 2, 'the phases themselves stay listed, they just do not count');
+  });
 });

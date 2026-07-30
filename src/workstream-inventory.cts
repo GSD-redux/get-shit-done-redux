@@ -293,18 +293,67 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   const headingFilter = getMilestonePhaseFilter(cwd, currentVersion, null, name);
   const headingScoped = headingFilter.versionScoped && headingFilter.phaseCount > 0;
 
+  // Phase keys the ROADMAP attributes to some OTHER milestone. A row carrying an
+  // explicit version that is not the current one is a positive claim by a prior
+  // (or future) milestone — the only reliable evidence that a phase does NOT
+  // belong to the current one.
+  const claimedElsewhere = new Set<string>();
+  for (const row of progressRows) {
+    if (row.version !== null && row.version !== currentVersion) claimedElsewhere.add(row.key);
+  }
+
+  // #2562: the current milestone is DECLARED but nothing attributes a phase to
+  // it yet — the window right after `/gsd-new-milestone`, where STATE.md's
+  // `milestone:` field updates the moment the heading lands but the Progress
+  // table and phase sections have not caught up.
+  //
+  // Treating that as "unscoped" was a hole in the original fix: scoping switched
+  // off entirely and the fallback below counted the project's ENTIRE phase
+  // history as both numerator and denominator, so a workstream whose current
+  // milestone had zero phases done reported 100% off its predecessors' work.
+  // That is the very symptom #2562 reports, reached by a different route.
+  //
+  // Three independent signals witness it; ANY of them is enough, and each covers
+  // a ROADMAP shape the others miss:
+  //   - `versionSectionFound` — the milestone's own section exists but declares
+  //     no phases (heading-only ROADMAPs, and the common `## v3.0` stub).
+  //   - `missingExplicitVersion` — the ROADMAP versions its milestones but has
+  //     no section for this one at all.
+  //   - a Progress table that attributes every row elsewhere (`claimedElsewhere`
+  //     non-empty while `currentMilestoneKeys` is empty).
+  // A ROADMAP that attributes NO versions anywhere matches none of them: its
+  // rows parse with `version: null`, land in `currentMilestoneKeys`, and never
+  // reach here. That is deliberate — for a free-form legacy project the
+  // whole-roadmap count IS the current milestone, and `readCurrentMilestoneVersion`
+  // hands back a non-null version for almost every project, so keying off
+  // `currentVersion` alone would regress every one of them to 0%.
+  const currentMilestoneDeclaredEmpty =
+    currentVersion !== null &&
+    currentMilestoneKeys.size === 0 &&
+    !headingScoped &&
+    (headingFilter.versionSectionFound || headingFilter.missingExplicitVersion || claimedElsewhere.size > 0);
+
   // A dir-only phase joins the current milestone when the roadmap names it, or
   // when it is a sub-phase (`30.1-…`) of a phase the roadmap names — sub-phases
   // inserted mid-milestone rarely get a row of their own. Membership feeds BOTH
   // the numerator and (via `milestoneKeys` below) the denominator, so a member
   // can never exceed the denominator that counts it.
-  const scoped = currentMilestoneKeys.size > 0 || headingScoped;
+  const scoped = currentMilestoneKeys.size > 0 || headingScoped || currentMilestoneDeclaredEmpty;
   const isDirInCurrentMilestone = (dir: string): boolean => {
     if (!scoped) return true;
     const key = phaseKeyFromDir(dir);
     if (currentMilestoneKeys.has(key)) return true;
     const parent = parentPhaseKey(key);
     if (parent !== null && currentMilestoneKeys.has(parent)) return true;
+    // An empty current milestone has no roadmap declarations to match against,
+    // so membership inverts: a directory belongs UNLESS another milestone claims
+    // it. A phase scaffolded before the roadmap caught up would otherwise vanish
+    // from both sides of the rollup — under-reporting, the direction this
+    // codebase never degrades in.
+    if (currentMilestoneDeclaredEmpty) {
+      const parentKey = parentPhaseKey(key);
+      return !claimedElsewhere.has(key) && (parentKey === null || !claimedElsewhere.has(parentKey));
+    }
     return headingScoped && headingFilter(dir);
   };
 
@@ -358,6 +407,10 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
     phaseFilesCounts,
     roadmapPhaseCount: fallbackPhaseCount,
     currentMilestonePhaseCount,
+    // Stated, not inferred from the count: a declared-but-empty current
+    // milestone is legitimately scoped AND legitimately zero-phase, and the
+    // builder cannot tell those apart from `currentMilestonePhaseCount` alone.
+    milestoneScoped: scoped,
     stateProjection: readStateProjection(p.state),
     filesExist: {
       roadmap: fs.existsSync(p.roadmap),
