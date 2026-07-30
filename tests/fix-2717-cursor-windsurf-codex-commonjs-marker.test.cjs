@@ -60,45 +60,50 @@ describe('#2717 CommonJS marker for staged .js hooks', () => {
     });
   }
 
-  test('cursor: a require()-using hook loads under an ESM-typed config root after install', (t) => {
-    // Reproduces the exact failure mode in the issue: a config-root package.json
-    // declaring {"type":"module"}. Pre-fix, Node walked up from the .js hook,
-    // found this file, and loaded the hook as ESM → require() threw. Post-fix,
-    // the GSD-written hooks/package.json is nearer and wins.
-    const { configDir, root } = runMinimalInstall({ runtime: 'cursor', scope: 'global' });
+  // Reproduces the exact failure mode in the issue: a config-root package.json
+  // declaring {"type":"module"}. Pre-fix, Node walked up from the .js hook,
+  // found this file, and loaded the hook as ESM → require() threw. Post-fix,
+  // the GSD-written hooks/package.json is nearer and wins. The hook may exit
+  // non-zero for benign reasons (no STATE.md, no config, etc.) — the ONLY
+  // failure we gate on is the ESM/require error on stderr.
+  function assertHookLoadsUnderEsmRoot(t, runtime, hookFile, stdinPayload) {
+    const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
     t.after(() => cleanup(root));
 
     // Plant the hostile ESM-typed package.json at the config root.
     fs.writeFileSync(path.join(configDir, 'package.json'), '{"type":"module"}\n');
 
-    const hookPath = path.join(configDir, 'hooks', 'gsd-cursor-session-start.js');
-    assert.ok(fs.existsSync(hookPath), 'cursor sessionStart hook must be staged');
+    const hookPath = path.join(configDir, 'hooks', hookFile);
+    assert.ok(fs.existsSync(hookPath), `${runtime} hook ${hookFile} must be staged`);
 
-    // The hook must load WITHOUT throwing "require is not defined". It reads
-    // workspace_roots from stdin (cursor protocol); give it an empty payload so
-    // it runs its main path and returns. A non-zero exit or an ESM error on
-    // stderr is the failure signal.
     let stderr = '';
-    let threw = false;
     try {
       execFileSync(process.execPath, [hookPath], {
         cwd: root,
-        input: JSON.stringify({ workspace_roots: [] }),
+        input: stdinPayload,
         encoding: 'utf8',
         timeout: 20000,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (e) {
-      // The hook may exit non-zero for benign reasons (e.g. no STATE.md to
-      // report). The ONLY failure we care about is the ESM/require error.
-      threw = true;
+      // Non-zero exit is allowed (benign); capture stderr for the ESM check.
       stderr = String(e.stderr || '');
     }
     assert.ok(
       !/require is not defined/i.test(stderr),
-      `cursor hook must load as CommonJS under an ESM-typed config root; got ESM error:\n${stderr}`,
+      `${runtime} hook ${hookFile} must load as CommonJS under an ESM-typed config root; got ESM error:\n${stderr}`,
     );
-    // threw is allowed (benign non-zero exit); the assertion above is the gate.
+  }
+
+  test('cursor: a require()-using hook loads under an ESM-typed config root after install', (t) => {
+    assertHookLoadsUnderEsmRoot(t, 'cursor', 'gsd-cursor-session-start.js', JSON.stringify({ workspace_roots: [] }));
+  });
+
+  test('codex: a require()-using hook loads under an ESM-typed config root after install', (t) => {
+    // codex is the !isCodex-gated path most likely to regress (its marker write
+    // lives in bin/install.js, not the surface). gsd-check-update.js uses
+    // require() at module load, so it surfaces the ESM failure immediately.
+    assertHookLoadsUnderEsmRoot(t, 'codex', 'gsd-check-update.js', '');
   });
 
   test('uninstall path: removeCommonJsMarkerIfGsdOwned removes only GSD-owned markers', (t) => {
