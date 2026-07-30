@@ -1,4 +1,4 @@
-# ADR-2008: Generic gate-predicate evaluator (`command-exit-zero`)
+# ADR-2008: Generic gate-predicate evaluator
 
 | | |
 |---|---|

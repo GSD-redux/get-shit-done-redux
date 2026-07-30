@@ -24,6 +24,7 @@ import type { Decision } from './decisions.cjs';
 import frontmatterMod = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatterMod;
 import { stripFencedCode, collectSections } from './markdown-sectionizer.cjs';
+import { validatePath } from './security.cjs';
 import { checkUiPresence } from './ui-safety-gate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verifyModule = require('./verify.cjs');
@@ -972,16 +973,29 @@ function buildPredicateDeps() {
     },
     findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null {
       if (!fs.existsSync(phaseDir)) return null;
-      const directPath = path.join(phaseDir, artifactSuffix);
-      if (fs.existsSync(directPath) && fs.statSync(directPath).isFile()) return directPath;
-      const planningPath = path.join(phaseDir, '.planning', artifactSuffix);
-      if (fs.existsSync(planningPath) && fs.statSync(planningPath).isFile()) return planningPath;
+      if (
+        artifactSuffix === '.' ||
+        artifactSuffix === '..' ||
+        artifactSuffix.includes('\0') ||
+        path.basename(artifactSuffix) !== artifactSuffix ||
+        path.win32.basename(artifactSuffix) !== artifactSuffix
+      ) {
+        return null;
+      }
+      const directPath = validatePath(artifactSuffix, phaseDir);
+      if (directPath.safe && fs.existsSync(directPath.resolved) && fs.statSync(directPath.resolved).isFile()) {
+        return directPath.resolved;
+      }
+      const planningPath = validatePath(path.join('.planning', artifactSuffix), phaseDir);
+      if (planningPath.safe && fs.existsSync(planningPath.resolved) && fs.statSync(planningPath.resolved).isFile()) {
+        return planningPath.resolved;
+      }
       try {
         const files = fs.readdirSync(phaseDir);
         for (const f of files) {
           if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
-            const p = path.join(phaseDir, f);
-            if (fs.statSync(p).isFile()) return p;
+            const candidate = validatePath(f, phaseDir);
+            if (candidate.safe && fs.statSync(candidate.resolved).isFile()) return candidate.resolved;
           }
         }
       } catch { /* ignore */ }

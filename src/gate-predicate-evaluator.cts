@@ -17,11 +17,10 @@
  * non-zero check-command exit, which the workflow's two-step gate contract treats
  * as a step-1 command failure (routed per the gate's `onError`).
  *
- * Built-in kind (v1): `command-exit-zero` — run a declared command in a bounded
- * `sh -c` subprocess at the project root, inheriting the process env; exit 0 =>
- * pass, non-zero => block, timeout => block. The production runBoundedShell
- * binding is shell-command-projection.execTool (bounded spawnSync). See ADR-2008
- * for the full sandbox contract.
+ * Built-in kinds: `command-exit-zero` runs a declared command in a bounded
+ * `sh -c` subprocess; `artifact-frontmatter-equals` compares a declared value
+ * with frontmatter read through injected artifact dependencies. See ADR-2008
+ * for the full contracts.
  *
  * This is a leaf pure module: no fs, no child_process, no config — the subprocess
  * seam is injected so the evaluator is trivially testable without spawning.
@@ -239,6 +238,14 @@ function evaluatePredicate(predicate: unknown, context: unknown, deps: unknown):
   const kind = pred['kind'];
   if (typeof kind !== 'string' || kind.length === 0) {
     throw new Error('predicate.kind must be a non-empty string');
+  }
+  if (kind === 'artifact-frontmatter-equals') {
+    if (typeof d.findPhaseArtifact !== 'function') {
+      throw new Error('predicate deps require a "findPhaseArtifact" function');
+    }
+    if (typeof d.readFrontmatter !== 'function') {
+      throw new Error('predicate deps require a "readFrontmatter" function');
+    }
   }
 
   const handler = KIND_TABLE[kind];
