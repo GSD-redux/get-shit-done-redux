@@ -1572,6 +1572,48 @@ test('#2854: the export decision is exactly sha equality', () => {
   }), { numRuns: 200 });
 });
 
+test('#2854: the gate is pinned to the SAME base the tree was merged with', () => {
+  // The deepest half of this bug. "Rebase check" merges `pull_request.base.sha`,
+  // pinned by #2472 so all 12 matrix jobs agree on one tree. But resolveBase()
+  // otherwise falls through to `origin/next`, which `fetch-depth: 0` leaves at the
+  // LIVE tip. When `next` advanced mid-flight the gate compared a tree built on
+  // base.sha against a baseline at a NEWER commit — so the correctly-keyed cache
+  // was rejected as "stale" and the run died. Worse than dying would be surviving:
+  // a baseline at the wrong commit attributes other people's merges to this PR.
+  //
+  // Two surfaces read one value, which is the generative-divergence shape this repo
+  // has been bitten by before, so the parity is asserted rather than assumed.
+  const yaml = require('js-yaml');
+  const wf = yaml.load(fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/test.yml'), 'utf8'));
+
+  const jobsUnderTest = Object.entries(wf.jobs).filter(([, job]) =>
+    (job.steps || []).some((s) => typeof s.run === 'string' && s.run.includes('ci-rebase-check.cjs')));
+
+  assert.ok(jobsUnderTest.length >= 2,
+    `expected the rebase-pinned jobs to be found, got ${jobsUnderTest.length}`);
+
+  for (const [name, job] of jobsUnderTest) {
+    const rebaseStep = job.steps.find((s) => typeof s.run === 'string' && s.run.includes('ci-rebase-check.cjs'));
+    const mergedBase = (rebaseStep.env || {}).CI_REBASE_BASE_SHA;
+    const gateBase = (job.env || {}).GSD_EMITTED_BASE;
+
+    assert.ok(mergedBase, `job ${name}: rebase step must pin CI_REBASE_BASE_SHA`);
+    assert.equal(gateBase, mergedBase,
+      `job ${name}: the emitted gate's base (GSD_EMITTED_BASE=${JSON.stringify(gateBase)}) must equal ` +
+      `the commit the tree was merged with (CI_REBASE_BASE_SHA=${JSON.stringify(mergedBase)}). ` +
+      'Diverging them makes the differential compare a tree against a baseline from a ' +
+      'different commit, which mis-attributes unrelated merges to this PR.');
+  }
+});
+
+test('#2854: an explicit base pin outranks the live branch tip', () => {
+  // The mechanism the workflow pin relies on: GSD_EMITTED_BASE must win over
+  // origin/<base>, or setting it in CI would change nothing.
+  const pinned = 'c'.repeat(40);
+  assert.equal(baseRefCandidates({ GSD_EMITTED_BASE: pinned, GITHUB_BASE_REF: 'next' })[0], pinned,
+    'an explicit pin must be tried before origin/next');
+});
+
 test('#2854: the resolution summary names only sources actually attempted', () => {
   // The caller's assertion message hardcoded "(tried env, <cache>, and an in-job build)"
   // on every failure, including early returns that reached none of them.
