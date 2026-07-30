@@ -913,8 +913,26 @@ function stripNonProse(text: string): string {
       }
       continue;
     }
-    // Single-line comment: drop the commented span only.
-    working = working.replace(/<!--[\s\S]*?-->/g, '');
+    // Single-line comments: strip to a FIXED POINT, then honor any unterminated opener.
+    //
+    // One pass is not enough. `<!--<!---->-->` strips the inner span and leaves a live `<!--`
+    // behind, so a commented-out row could survive and be counted as documented — the exact
+    // false pass this helper exists to prevent. (CodeQL flags the single-pass form as
+    // js/incomplete-multi-character-sanitization; here the consequence is a wrong verdict rather
+    // than an injection, but the fix is the same.) Iterating to a fixed point terminates because
+    // every pass strictly shortens the string.
+    let previous: string;
+    do {
+      previous = working;
+      working = working.replace(/<!--[\s\S]*?-->/g, '');
+    } while (working !== previous);
+    // Whatever `<!--` remains after that is unterminated, so it opens a multi-line comment that
+    // the `inComment` branch above will close on a later line.
+    const danglingOpen = working.indexOf('<!--');
+    if (danglingOpen !== -1) {
+      inComment = true;
+      working = working.slice(0, danglingOpen);
+    }
     out.push(working);
   }
   return out.join('\n');
