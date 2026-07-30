@@ -36,7 +36,8 @@ interface AgentsInstalledResult {
  *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
  *   3. For non-claude runtimes with a manifest-backed project-local install:
  *      <projectRoot>/<localConfigDir>/agents (or <projectRoot>/agents when
- *      the runtime's local install targets the project root)
+ *      the runtime's local install targets the project root). Symlinked local
+ *      agent directories are ignored.
  *   4. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
@@ -70,9 +71,8 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
       if (fs.lstatSync(localAgentsDir).isDirectory() && fs.lstatSync(manifestPath).isFile()) {
         return localAgentsDir;
       }
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+    } catch {
+      // Local discovery is best-effort; any probe failure preserves global fallback.
     }
   }
   return path.join(getGlobalConfigDir(resolved), 'agents');

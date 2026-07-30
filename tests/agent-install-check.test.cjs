@@ -198,6 +198,57 @@ describe('getAgentsDir', () => {
     assert.strictEqual(result.agents_installed, true);
   });
 
+  test('Codex falls back to global agents when the local candidate cannot be inspected', (t) => {
+    const projectRoot = createTempDir('gsd-local-codex-');
+    const globalHome = createTempDir('gsd-global-codex-');
+    const localAgentsDir = path.join(projectRoot, '.codex', 'agents');
+    const realLstatSync = fs.lstatSync;
+    t.after(() => cleanup(projectRoot));
+    t.after(() => cleanup(globalHome));
+    fs.mkdirSync(localAgentsDir, { recursive: true });
+    markLocalGsdInstall(path.dirname(localAgentsDir));
+    createCompleteAgents(path.join(globalHome, 'agents'));
+    process.env['CODEX_HOME'] = globalHome;
+    t.mock.method(fs, 'lstatSync', function injectedLocalProbeFailure(target, ...args) {
+      if (target === localAgentsDir) {
+        throw Object.assign(new Error('injected EACCES'), { code: 'EACCES' });
+      }
+      return realLstatSync.call(fs, target, ...args);
+    });
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex', projectRoot);
+    assert.strictEqual(result.agents_dir, path.join(globalHome, 'agents'));
+    assert.strictEqual(result.agents_installed, true);
+  });
+
+  test('Codex does not follow a symlinked local agents directory', (t) => {
+    const projectRoot = createTempDir('gsd-local-codex-');
+    const globalHome = createTempDir('gsd-global-codex-');
+    const localConfigDir = path.join(projectRoot, '.codex');
+    const localAgentsDir = path.join(localConfigDir, 'agents');
+    const symlinkTarget = path.join(projectRoot, 'shared-agents');
+    t.after(() => cleanup(projectRoot));
+    t.after(() => cleanup(globalHome));
+    createCompleteAgents(symlinkTarget);
+    fs.mkdirSync(localConfigDir, { recursive: true });
+    markLocalGsdInstall(localConfigDir);
+    createCompleteAgents(path.join(globalHome, 'agents'));
+    process.env['CODEX_HOME'] = globalHome;
+    try {
+      fs.symlinkSync(symlinkTarget, localAgentsDir, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'ENOTSUP'].includes(error.code)) {
+        t.skip('symlink creation is not available on this platform');
+        return;
+      }
+      throw error;
+    }
+
+    const result = agentInstallCheck.checkAgentsInstalled('codex', projectRoot);
+    assert.strictEqual(result.agents_dir, path.join(globalHome, 'agents'));
+    assert.strictEqual(result.agents_installed, true);
+  });
+
   test('a project-native agents directory without a GSD manifest does not override global agents', (t) => {
     const projectRoot = createTempDir('gsd-local-codex-');
     const globalHome = createTempDir('gsd-global-codex-');
