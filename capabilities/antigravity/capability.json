@@ -102,12 +102,22 @@
   },
   "reviewer": {
     "slug": "antigravity",
-    "flags": ["--antigravity", "--agy"],
+    "flags": [
+      "--antigravity",
+      "--agy"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "agy" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "agy"
+    },
     "invoke": {
       "binary": "agy",
-      "args": ["--print-timeout", "540s", "-p"],
+      "args": [
+        "--print-timeout",
+        "540s",
+        "-p"
+      ],
       "promptChannel": "argv-file-ref",
       "outputChannel": "stdout",
       "modelArg": "--model",
@@ -117,8 +127,17 @@
     "emptyOutput": "handler-owned",
     "reviewsSection": "Antigravity",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [
+      "jq"
+    ],
     "promptBudgetKey": null,
     "handler": "antigravity"
+  },
+  "config": {
+    "review.models.agy": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+    }
   }
 }

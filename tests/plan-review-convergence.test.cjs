@@ -968,28 +968,33 @@ describe('plan-review-convergence local model reviewer flags (#2306-local)', () 
 describe('plan-review-convergence local model config schema registration (#2306-local)', () => {
   // After Cycle 5 (#3536), config-schema.cjs is a thin adapter sourcing from
   // the manifest. Use the runtime Set instead of text-parsing the source file.
-  const { VALID_CONFIG_KEYS } = require('../gsd-core/bin/lib/config-schema.cjs');
+  //
+  // #2797 (ADR-2782 D9): these three host keys are no longer in VALID_CONFIG_KEYS
+  // — they are federated to their reviewer-lane capabilities (`ollama`,
+  // `lm-studio`, `llama-cpp`), and the exclusivity invariant forbids a key living
+  // in both places. What #2306-local actually protects is that `gsd config-set`
+  // ACCEPTS these keys, so that is what is asserted now, via isValidConfigKey —
+  // the predicate config-set itself uses, which spans both the central schema and
+  // federated capability slices. Asserting central membership would now be
+  // asserting the migration did not happen.
+  const { isValidConfigKey, isCapabilityConfigKey } =
+    require('../gsd-core/bin/lib/config-schema.cjs');
 
-  test('review.ollama_host is registered in config-schema.cjs', () => {
-    assert.ok(
-      VALID_CONFIG_KEYS.has('review.ollama_host'),
-      "review.ollama_host must be in VALID_CONFIG_KEYS so gsd config-set accepts it"
-    );
-  });
+  for (const key of ['review.ollama_host', 'review.lm_studio_host', 'review.llama_cpp_host']) {
+    test(`${key} is accepted by config-set`, () => {
+      assert.ok(
+        isValidConfigKey(key),
+        `${key} must be a valid config key so gsd config-set accepts it`
+      );
+    });
 
-  test('review.lm_studio_host is registered in config-schema.cjs', () => {
-    assert.ok(
-      VALID_CONFIG_KEYS.has('review.lm_studio_host'),
-      "review.lm_studio_host must be in VALID_CONFIG_KEYS so gsd config-set accepts it"
-    );
-  });
-
-  test('review.llama_cpp_host is registered in config-schema.cjs', () => {
-    assert.ok(
-      VALID_CONFIG_KEYS.has('review.llama_cpp_host'),
-      "review.llama_cpp_host must be in VALID_CONFIG_KEYS so gsd config-set accepts it"
-    );
-  });
+    test(`${key} is owned by its reviewer-lane capability (#2797)`, () => {
+      assert.ok(
+        isCapabilityConfigKey(key),
+        `${key} must be federated to its lane capability, not stranded centrally`
+      );
+    });
+  }
 });
 
 // ─── Workflow: source-grounding pass (#22) ───────────────────────────────────

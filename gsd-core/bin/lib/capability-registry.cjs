@@ -226,6 +226,13 @@ const capabilities = {
       ],
       "promptBudgetKey": null,
       "handler": "antigravity"
+    },
+    "config": {
+      "review.models.agy": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      }
     }
   },
   "assumption-delta": {
@@ -601,6 +608,13 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Claude reviewer lane."
+      }
     }
   },
   "claude-orchestration": {
@@ -1102,6 +1116,13 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Codex reviewer lane."
+      }
     }
   },
   "copilot": {
@@ -1597,6 +1618,13 @@ const capabilities = {
       "requiresBinaries": [],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.gemini": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Gemini reviewer lane."
+      }
     }
   },
   "graphify": {
@@ -2120,6 +2148,23 @@ const capabilities = {
       ],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
       "handler": "openai-compatible"
+    },
+    "config": {
+      "review.models.llama_cpp": {
+        "type": "string",
+        "default": "",
+        "description": "Model requested from the llama.cpp reviewer lane; empty discovers the first model from /v1/models."
+      },
+      "review.llama_cpp_host": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the llama.cpp OpenAI-compatible server."
+      },
+      "review.max_prompt_tokens_per_reviewer.llama_cpp": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "lm-studio": {
@@ -2160,6 +2205,23 @@ const capabilities = {
       ],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
       "handler": "openai-compatible"
+    },
+    "config": {
+      "review.models.lm_studio": {
+        "type": "string",
+        "default": "",
+        "description": "Model requested from the LM Studio reviewer lane; empty discovers the first model from /v1/models."
+      },
+      "review.lm_studio_host": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the LM Studio OpenAI-compatible server."
+      },
+      "review.max_prompt_tokens_per_reviewer.lm_studio": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "mempalace": {
@@ -2424,6 +2486,23 @@ const capabilities = {
       ],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
       "handler": "openai-compatible"
+    },
+    "config": {
+      "review.models.ollama": {
+        "type": "string",
+        "default": "",
+        "description": "Model requested from the Ollama reviewer lane; empty discovers the first model from /v1/models."
+      },
+      "review.ollama_host": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the Ollama OpenAI-compatible server."
+      },
+      "review.max_prompt_tokens_per_reviewer.ollama": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "opencode": {
@@ -2573,6 +2652,13 @@ const capabilities = {
       ],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the OpenCode reviewer lane."
+      }
     }
   },
   "pattern-mapper": {
@@ -4182,13 +4268,16 @@ const byLoopPoint = {
 const configKeys = {
   "workflow.ai_integration_phase": "ai-integration",
   "workflow.api_coverage_gate": "ai-integration",
+  "review.models.agy": "antigravity",
   "workflow.assumption_delta": "assumption-delta",
   "workflow.windows_enforce": "broken-windows",
+  "review.models.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "review.models.codex": "codex",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -4199,8 +4288,15 @@ const configKeys = {
   "external_job.submit_timeout_ms": "external-job",
   "external_job.poll_timeout_ms": "external-job",
   "workflow.post_planning_gaps": "gap-analysis",
+  "review.models.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
+  "review.models.llama_cpp": "llama-cpp",
+  "review.llama_cpp_host": "llama-cpp",
+  "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
+  "review.models.lm_studio": "lm-studio",
+  "review.lm_studio_host": "lm-studio",
+  "review.max_prompt_tokens_per_reviewer.lm_studio": "lm-studio",
   "mempalace.enabled": "mempalace",
   "mempalace.memory_mode": "mempalace",
   "mempalace.wing": "mempalace",
@@ -4212,6 +4308,10 @@ const configKeys = {
   "mempalace.diary_journal": "mempalace",
   "mempalace.auto_capture_hooks": "mempalace",
   "workflow.nyquist_validation": "nyquist",
+  "review.models.ollama": "ollama",
+  "review.ollama_host": "ollama",
+  "review.max_prompt_tokens_per_reviewer.ollama": "ollama",
+  "review.models.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
   "workflow.research": "research",
@@ -4238,6 +4338,12 @@ const configSchema = {
     "default": true,
     "description": "Require an explicit API-coverage decision (full-by-default, opt-out-not-opt-in) before a phase that integrates an external API/SDK/service can seal. At plan:pre the planner is prompted to enumerate the API surface into COVERAGE.md; at verify:pre a blocking gate fails the seal unless the matrix exists with every non-integrated capability an explicit, reasoned opt-out. Independent of ai_integration_phase (applies to any external-API integration, not only AI)."
   },
+  "review.models.agy": {
+    "owner": "antigravity",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+  },
   "workflow.assumption_delta": {
     "owner": "assumption-delta",
     "type": "boolean",
@@ -4249,6 +4355,12 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the blocking ship:pre gate for the broken-windows ledger. When true (opt-in), /gsd-ship blocks while .planning/WINDOWS.md has any open entry. When false (default), windows are still tracked (the executor and verifier still populate WINDOWS.md via gsd-tools windows append) but ship does not block — teams can adopt tracking before enforcement. Issue #1950."
+  },
+  "review.models.claude": {
+    "owner": "claude",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Claude reviewer lane."
   },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
@@ -4289,6 +4401,12 @@ const configSchema = {
       "standard",
       "deep"
     ]
+  },
+  "review.models.codex": {
+    "owner": "codex",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Codex reviewer lane."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -4357,6 +4475,12 @@ const configSchema = {
     "default": true,
     "description": "Run the post-planning gap analysis report after plans are generated."
   },
+  "review.models.gemini": {
+    "owner": "gemini",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Gemini reviewer lane."
+  },
   "graphify.enabled": {
     "owner": "graphify",
     "type": "boolean",
@@ -4368,6 +4492,42 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the intel code-intelligence command."
+  },
+  "review.models.llama_cpp": {
+    "owner": "llama-cpp",
+    "type": "string",
+    "default": "",
+    "description": "Model requested from the llama.cpp reviewer lane; empty discovers the first model from /v1/models."
+  },
+  "review.llama_cpp_host": {
+    "owner": "llama-cpp",
+    "type": "string",
+    "default": "",
+    "description": "Base URL of the llama.cpp OpenAI-compatible server."
+  },
+  "review.max_prompt_tokens_per_reviewer.llama_cpp": {
+    "owner": "llama-cpp",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.models.lm_studio": {
+    "owner": "lm-studio",
+    "type": "string",
+    "default": "",
+    "description": "Model requested from the LM Studio reviewer lane; empty discovers the first model from /v1/models."
+  },
+  "review.lm_studio_host": {
+    "owner": "lm-studio",
+    "type": "string",
+    "default": "",
+    "description": "Base URL of the LM Studio OpenAI-compatible server."
+  },
+  "review.max_prompt_tokens_per_reviewer.lm_studio": {
+    "owner": "lm-studio",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "mempalace.enabled": {
     "owner": "mempalace",
@@ -4439,6 +4599,30 @@ const configSchema = {
     "type": "boolean",
     "default": true,
     "description": "Enable Nyquist validation coverage auditing."
+  },
+  "review.models.ollama": {
+    "owner": "ollama",
+    "type": "string",
+    "default": "",
+    "description": "Model requested from the Ollama reviewer lane; empty discovers the first model from /v1/models."
+  },
+  "review.ollama_host": {
+    "owner": "ollama",
+    "type": "string",
+    "default": "",
+    "description": "Base URL of the Ollama OpenAI-compatible server."
+  },
+  "review.max_prompt_tokens_per_reviewer.ollama": {
+    "owner": "ollama",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.models.opencode": {
+    "owner": "opencode",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the OpenCode reviewer lane."
   },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
@@ -4650,6 +4834,13 @@ const runtimes = {
       ],
       "promptBudgetKey": null,
       "handler": "antigravity"
+    },
+    "config": {
+      "review.models.agy": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      }
     }
   },
   "augment": {
@@ -4896,6 +5087,13 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Claude reviewer lane."
+      }
     }
   },
   "cline": {
@@ -5207,6 +5405,13 @@ const runtimes = {
       "requiresBinaries": [],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Codex reviewer lane."
+      }
     }
   },
   "copilot": {
@@ -5998,6 +6203,13 @@ const runtimes = {
       ],
       "promptBudgetKey": null,
       "handler": null
+    },
+    "config": {
+      "review.models.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the OpenCode reviewer lane."
+      }
     }
   },
   "pi": {

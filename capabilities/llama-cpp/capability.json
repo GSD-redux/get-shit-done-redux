@@ -11,7 +11,9 @@
   },
   "reviewer": {
     "slug": "llama_cpp",
-    "flags": ["--llama-cpp"],
+    "flags": [
+      "--llama-cpp"
+    ],
     "transport": "openai-http",
     "probe": {
       "kind": "http-reachable",
@@ -29,8 +31,27 @@
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "llama.cpp",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [
+      "jq"
+    ],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
     "handler": "openai-compatible"
+  },
+  "config": {
+    "review.models.llama_cpp": {
+      "type": "string",
+      "default": "",
+      "description": "Model requested from the llama.cpp reviewer lane; empty discovers the first model from /v1/models."
+    },
+    "review.llama_cpp_host": {
+      "type": "string",
+      "default": "",
+      "description": "Base URL of the llama.cpp OpenAI-compatible server."
+    },
+    "review.max_prompt_tokens_per_reviewer.llama_cpp": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    }
   }
 }

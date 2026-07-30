@@ -994,7 +994,7 @@ Use `date` from init:
 | ${quick_id} | ${DESCRIPTION} | ${date} | ${commit_hash} | [${quick_id}-${slug}](./quick/${quick_id}-${slug}/) |
 ```
 
-For a schema-safe append outside this workflow (e.g. from fast.md), `gsd-tools quick-tasks-append --task <text>` performs the equivalent write via the shared, schema-backed `appendQuickTaskRow` helper (#2133, ADR-2143 §3/§7).
+For a schema-safe append outside this workflow (e.g. from fast.md), `gsd_run quick-tasks-append --task <text>` performs the equivalent write via the shared, schema-backed `appendQuickTaskRow` helper (#2133, ADR-2143 §3/§7).
 
 **7d. Update "Last activity" line:**
 

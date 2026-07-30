@@ -2552,7 +2552,7 @@ const TIER_RANK = { core: 0, standard: 1, full: 2 };
  * @param {Set<string>}         centralKeys  Set of keys in the central config-schema
  * @returns {string[]}          Array of error strings; empty = all pass.
  */
-function validateCrossCapability(capMap, centralKeys) {
+function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
   const errors = [];
 
   // Ownership: one owner per skill stem + agent name
@@ -2621,6 +2621,27 @@ function validateCrossCapability(capMap, centralKeys) {
           'config key "' + key + '" is declared in capability "' + capId +
           '" AND exists in the central config-schema — migration mid-flight: ' +
           'remove from central config-schema before adding to the capability',
+        );
+      }
+      // #2797: exact-key membership is not the whole central schema. A key may
+      // also be claimed by a central DYNAMIC PATTERN, and until now that
+      // collision was invisible here — `centralKeys` is built from
+      // `manifest.validKeys` alone.
+      //
+      // Why that mattered enough to fix rather than note: `isCentralConfigKey`
+      // DOES consult the patterns, and `mergeFederatedConfig` skips every key
+      // for which it returns true. So a federated slice overlapping a central
+      // pattern is INERT — it carries no traffic — while the build stays green.
+      // Two of the four key families Phase 4 migrates (`review.models.<slug>`
+      // and `review.max_prompt_tokens_per_reviewer.<slug>`) were pattern-backed,
+      // so the invariant was blind to exactly the migration it exists to police.
+      const collidingPattern = centralPatterns.find((p) => p.test(key));
+      if (collidingPattern) {
+        errors.push(
+          'config key "' + key + '" is declared in capability "' + capId +
+          '" AND is matched by central config-schema pattern /' + collidingPattern.source +
+          '/ — the federated slice would be inert (mergeFederatedConfig skips central keys): ' +
+          'remove the pattern from the central config-schema in the SAME commit',
         );
       }
     }
