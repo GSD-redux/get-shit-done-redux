@@ -781,3 +781,197 @@ describe('#2232 continuation cap — properties', () => {
     );
   });
 });
+
+// ─── #2736 prose name-precedence property tests (fast-check) ─────────────────
+
+// #2821's only behavioral delta in parsePhaseFromProse is that a GENUINE
+// (non-status) em-dash name now takes precedence over a parenthetical name;
+// phase-token extraction and totality were unchanged by that commit.
+//
+// P1 and P9 are the delta guards: both fail against the pre-#2821 paren-first
+// parser (verified by the standalone mutation check against
+// parsePhaseFromProseOLD), because they each require the dash name to win
+// over a co-present parenthetical — P9 additionally exercises the
+// paren-stripped separator search, since the losing parenthetical itself
+// contains an em-dash.
+//
+// P2, P3, P4 are characterization tests: they pin currently-true precedence
+// contracts (status tails and em-dash-inside-parens both lose to a
+// parenthetical name) that the pre-#2821 parser ALSO satisfied, so they guard
+// against future regressions rather than proving the #2821 delta.
+//
+// P5-P8 pin totality and phase-token extraction, neither of which #2821
+// changed.
+
+const phaseToken = fc
+  .tuple(
+    digitRun(1, 3),
+    fc.option(fc.constantFrom(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), { nil: '' }),
+    fc.array(digitRun(1, 2), { maxLength: 2 }),
+  )
+  .map(([lead, letter, decimals]) => `${lead}${letter}${decimals.map((d) => `.${d}`).join('')}`);
+
+const STATUSY =
+  /^(?:completed?|executing|not started|planning|planned|ready(?:\s+to\s+\S.{0,50})?|done|in progress|blocked|paused|verifying)$/i;
+
+const genuineName = fc
+  .string({
+    unit: fc.constantFrom(
+      'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+      'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+      ' ', 'A', 'B', 'C',
+    ),
+    minLength: 1,
+    maxLength: 40,
+  })
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0 && !STATUSY.test(s) && !/^milestone\s*:/i.test(s) && !/^[A-Z][A-Z0-9_-]*$/.test(s));
+
+const asideText = fc
+  .string({
+    unit: fc.constantFrom(...'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_'),
+    minLength: 1,
+    maxLength: 30,
+  })
+  .map((s) => s.trim())
+  .filter((s) => s.length > 0);
+
+const statusTail = fc.constantFrom(
+  'COMPLETE', 'COMPLETED', 'EXECUTING', 'READY', 'DONE', 'IN PROGRESS',
+  'BLOCKED', 'PAUSED', 'VERIFYING', 'PLANNING', 'PLANNED', 'NOT STARTED',
+);
+
+const capsToken = fc.string({
+  unit: fc.constantFrom(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'),
+  minLength: 2,
+  maxLength: 12,
+});
+
+describe('#2736 prose name precedence — properties', () => {
+  test('P1 dash name beats a trailing parenthetical aside', () => {
+    fc.assert(
+      fc.property(phaseToken, genuineName, asideText, (tok, name, aside) => {
+        const p = phaseId.parsePhaseFromProse(`${tok} — ${name} (${aside})`);
+        return p.phase === tok && p.name === name;
+      }),
+    );
+  });
+
+  test('P2 a status-keyword tail never displaces a parenthetical name', () => {
+    fc.assert(
+      fc.property(phaseToken, genuineName, statusTail, (tok, name, status) => {
+        const p = phaseId.parsePhaseFromProse(`${tok} (${name}) — ${status}`);
+        return p.phase === tok && p.name === name;
+      }),
+    );
+  });
+
+  test('P3 an em-dash inside parens is not mistaken for the separator', () => {
+    fc.assert(
+      fc.property(phaseToken, genuineName, genuineName, statusTail, (tok, a, b, status) => {
+        const p = phaseId.parsePhaseFromProse(`${tok} (${a} — ${b}) — ${status}`);
+        return p.phase === tok && p.name === `${a} — ${b}`;
+      }),
+    );
+  });
+
+  test('P4 a lone ALL-CAPS tail loses to a parenthetical name', () => {
+    fc.assert(
+      fc.property(phaseToken, genuineName, capsToken, (tok, name, caps) => {
+        const p = phaseId.parsePhaseFromProse(`${tok} (${name}) — ${caps}`);
+        return p.phase === tok && p.name === name;
+      }),
+    );
+  });
+
+  test('P5 parsePhaseFromProse is total over arbitrary input', () => {
+    fc.assert(
+      fc.property(fc.string({ maxLength: 300 }), (s) => {
+        const p = phaseId.parsePhaseFromProse(s);
+        return (
+          p !== null &&
+          typeof p === 'object' &&
+          (p.phase === null || typeof p.phase === 'string') &&
+          (p.name === null || typeof p.name === 'string')
+        );
+      }),
+    );
+  });
+
+  test('P6 pathological paren/em-dash runs stay total', () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 400 }), (n) => {
+        const p = phaseId.parsePhaseFromProse(`3 ${'('.repeat(n)}${'—'.repeat(n)}`);
+        return p.phase === '3' && (p.name === null || typeof p.name === 'string');
+      }),
+    );
+  });
+
+  test('P7 the phase token round-trips out of first-party prose shapes', () => {
+    fc.assert(
+      fc.property(phaseToken, genuineName, (tok, name) =>
+        phaseId.parsePhaseFromProse(`${tok} (${name})`).phase === tok &&
+        phaseId.parsePhaseFromProse(`Phase ${tok} — ${name}`).phase === tok &&
+        phaseId.parsePhaseFromProse(`${tok}`).phase === tok,
+      ),
+    );
+  });
+
+  test('P8 a milestone-prefixed token still yields the bare phase', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ unit: fc.constantFrom(...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'), minLength: 1, maxLength: 3 }),
+        phaseToken,
+        genuineName,
+        (ms, tok, name) => phaseId.parsePhaseFromProse(`${ms}1-${tok} (${name})`).phase === tok,
+      ),
+    );
+  });
+
+  test('P9 a genuine dash name wins over a paren containing an em-dash', () => {
+    fc.assert(
+      fc.property(phaseToken, genuineName, genuineName, genuineName, (tok, a, b, name) => {
+        const p = phaseId.parsePhaseFromProse(`${tok} (${a} — ${b}) — ${name}`);
+        return p.phase === tok && p.name === name;
+      }),
+    );
+  });
+
+  // The STATUSY regex above is a test-local mirror of the private, unexported
+  // STATUSY_TAIL_RE in src/phase-id.cts — it is not imported, only
+  // reimplemented. If a future edit to the implementation's status
+  // vocabulary drifts from this mirror, the properties above that rely on
+  // STATUSY (P2, genuineName's exclusion filter, etc.) would silently weaken
+  // rather than fail. This test pins the mirror to OBSERVABLE parser
+  // behavior instead of source text, so a divergence fails loudly here.
+  test('the test-local STATUSY mirror still agrees with the parser (divergence guard)', () => {
+    const statusVocab = [
+      'complete', 'completed', 'executing', 'not started', 'planning',
+      'planned', 'ready', 'done', 'in progress', 'blocked', 'paused',
+      'verifying',
+    ];
+
+    for (const w of statusVocab) {
+      assert.equal(
+        phaseId.parsePhaseFromProse(`3 (Real Name) — ${w}`).name,
+        'Real Name',
+        `expected status word "${w}" to lose to the parenthetical name`,
+      );
+      const upper = w.toUpperCase();
+      assert.equal(
+        phaseId.parsePhaseFromProse(`3 (Real Name) — ${upper}`).name,
+        'Real Name',
+        `expected status word "${upper}" to lose to the parenthetical name`,
+      );
+    }
+
+    const nonStatusNames = ['Foundation', 'Native Hotkey', 'setup work'];
+    for (const n of nonStatusNames) {
+      assert.equal(
+        phaseId.parsePhaseFromProse(`3 — ${n} (aside)`).name,
+        n,
+        `expected non-status name "${n}" to win as the dash name over the parenthetical aside`,
+      );
+    }
+  });
+});
