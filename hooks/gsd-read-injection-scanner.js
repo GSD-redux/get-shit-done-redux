@@ -110,7 +110,18 @@ function isExcludedPath(filePath) {
 // tool_name arrives as 'ReadFile' (possibly module-qualified) and tool_input
 // carries `path` (kimi-cli src/kimi_cli/tools/file/read.py Params), not
 // `file_path`. Without normalization the SCANNED_TOOLS check below never
-// matches on Kimi and the scanner is silently dormant (#2304). This block is
+// matches on Kimi and the scanner is silently dormant (#2304).
+//
+// SCOPE ON KIMI (#2547): normalization makes this scanner's CHECKS run on
+// Kimi. It does NOT make its block effective there. This is a PostToolUse
+// hook, and kimi-cli's dispatch never inspects PostToolUse hook results —
+// src/kimi_cli/soul/toolset.py fires them via asyncio.create_task() and
+// returns the ToolResult without awaiting, whereas PreToolUse results are
+// awaited and honoured. So `security.injection_blocking` cannot take effect
+// on Kimi regardless of the shape emitted below; reshaping the output would
+// not change that. Blocking prompt injection on Kimi needs a PreToolUse
+// mechanism, or an upstream kimi-cli change. Do not describe this hook as
+// "engaged" or "blocking" on Kimi. This block is
 // kept byte-identical with the copies in gsd-prompt-guard.js,
 // gsd-read-guard.js, and gsd-worktree-path-guard.js — a parity test binds
 // them (tests/kimi-guard-normalization-parity.test.cjs). Inlined per guard
@@ -122,6 +133,13 @@ function isExcludedPath(filePath) {
 // shape as canonicalizeRuntimeName in src/runtime-name-policy.cts).
 const KIMI_TOOL_NAMES = new Map([['WriteFile', 'Write'], ['StrReplaceFile', 'Edit'], ['ReadFile', 'Read'], ['Shell', 'Bash']]);
 function normalizeKimiPayload(data) {
+  // #2595 (review nit): `JSON.parse('null')` is null, and null/primitive
+  // payloads reached the `data.tool_name` read below and threw — falsifying
+  // this function's own "total over the inputs JSON can express" claim, which
+  // property (e) now tests directly. Harmless in practice (a null payload has
+  // nothing to guard, and the throw landed in the same fail-open catch as the
+  // exit-0 it now takes deliberately) but the claim should be true as stated.
+  if (data === null || typeof data !== 'object') return data;
   const raw = data.tool_name;
   if (typeof raw !== 'string') return data;
   const mapped = KIMI_TOOL_NAMES.get(raw.slice(raw.lastIndexOf(':') + 1));
@@ -132,18 +150,59 @@ function normalizeKimiPayload(data) {
   }
   const input = data.tool_input;
   if (input && typeof input === 'object') {
-    if (input.file_path === undefined && typeof input.path === 'string') {
+    // #2547 (review): Kimi's `path` is AUTHORITATIVE — it must win outright,
+    // not merely fill in when `file_path` happens to be absent. kimi-cli's file
+    // tools carry no `file_path` field at all (src/kimi_cli/tools/file/write.py,
+    // replace.py, @ 4a550ef — the SHA #2547 pins), and soul/toolset.py hands the
+    // model's raw json-parsed
+    // arguments to PreToolUse verbatim, doing typed validation only later inside
+    // tool.call() — after the hook has already decided. So a `file_path` in a
+    // Kimi payload is ALWAYS model-supplied, and under the old `=== undefined`
+    // condition it SHADOWED the field kimi-cli actually executes on. A payload
+    // pairing a cross-root `path` with a spurious `file_path: ""` left every
+    // guard reading an empty string and exiting 0, while the identical write
+    // without the extra key blocked — a bypass needing no crash at all. The same
+    // shadowing also preserved a NON-STRING `file_path` (`[]`), which threw
+    // inside gsd-worktree-path-guard's path.isAbsolute() and reached its outer
+    // `catch { process.exit(0) }`: the same crash-to-allow this fix closes
+    // elsewhere, reached through the guard's own read rather than through
+    // normalization. Overwriting can only ever narrow what a guard inspects to
+    // the path that will actually be written, so it cannot under-block.
+    if (typeof input.path === 'string') {
       input.file_path = input.path;
     }
     const edits = Array.isArray(input.edit) ? input.edit
       : (input.edit && typeof input.edit === 'object') ? [input.edit] : [];
     if (edits.length) {
-      if (input.old_string === undefined) {
-        input.old_string = edits.map((e) => String(e.old ?? '')).join('\n');
-      }
-      if (input.new_string === undefined) {
-        input.new_string = edits.map((e) => String(e.new ?? '')).join('\n');
-      }
+      // #2547: `e?.old`, not `e.old` — `??` guards the value, not the
+      // dereference, so a NULLISH entry (`edit: [null]`) threw a TypeError
+      // here. normalizeKimiPayload runs before any tool dispatch, so that throw
+      // reached each guard's outer `catch { process.exit(0) }` and silently
+      // downgraded a should-BLOCK call into an allow. (A string/number entry
+      // never threw — `('x').old` is a legal read yielding undefined.)
+      //
+      // The String() coercion is guarded for the same reason: `{"toString":
+      // null}` is valid JSON that throws "Cannot convert object to primitive
+      // value", which is the identical crash-to-allow with a different
+      // trigger. Degrading only the non-coercible entry to '' keeps
+      // stringification intact for every value that CAN coerce (numbers,
+      // arrays, plain objects), so nothing downstream — including
+      // gsd-prompt-guard's scan of new_string — loses content it saw before.
+      const editText = (v) => { try { return String(v ?? ''); } catch { return ''; } };
+      // #2595 (review Major 2): reconstruct UNCONDITIONALLY, mirroring the
+      // `path` decision above rather than merely filling in when the field
+      // happens to be absent. kimi-cli's StrReplaceFile schema is `path` +
+      // `edit` only (src/kimi_cli/tools/file/replace.py @ 4a550ef) — it carries
+      // no `old_string`/`new_string` at all, so either field appearing in a
+      // Kimi payload is ALWAYS model-supplied, exactly like `file_path`. Under
+      // the old `=== undefined` condition a model-supplied `new_string: ""`
+      // SHADOWED the reconstruction, leaving gsd-prompt-guard's injection scan
+      // reading '' and exiting at its `if (!content)` before it ever saw the
+      // real `edit[].new` — a one-key bypass of the very scan this fix's
+      // guarded coercion exists to keep fed. A `typeof` test would NOT close
+      // it: a benign non-empty string shadows just as effectively as ''.
+      input.old_string = edits.map((e) => editText(e?.old)).join('\n');
+      input.new_string = edits.map((e) => editText(e?.new)).join('\n');
     }
   }
   return data;
@@ -167,7 +226,11 @@ process.stdin.on('end', () => {
     // Source label + path-exclusion (path-exclusion applies to file reads only)
     let source;
     if (toolName === 'Read') {
-      source = data.tool_input?.file_path || '';
+      // #2595 (review Major 3, sibling sweep): typed read — a non-string
+      // threw inside isExcludedPath()'s .replace() into the outer catch.
+      source = typeof data.tool_input?.file_path === 'string'
+        ? data.tool_input.file_path
+        : '';
       if (!source) process.exit(0);
       if (isExcludedPath(source)) process.exit(0);
     } else if (toolName === 'WebFetch') {

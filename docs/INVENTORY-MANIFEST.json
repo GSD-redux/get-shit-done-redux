@@ -419,6 +419,7 @@
       "research-provider.cjs",
       "research-store.cjs",
       "resolution.cjs",
+      "review-lane-descriptor.cjs",
       "review-reviewer-selection.cjs",
       "roadmap-command-router.cjs",
       "roadmap-parser.cjs",

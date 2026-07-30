@@ -127,6 +127,8 @@ node gsd-tools.cjs phase insert <after> <description>
 node gsd-tools.cjs phase remove <phase> [--force]
 
 # Mark phase complete, update state + roadmap
+# Also emits advisory `warnings[]` when a phase SUMMARY references a file that
+# is not on disk — see "Phase SUMMARY artifact check" below.
 node gsd-tools.cjs phase complete <phase>
 
 # Evaluate HUMAN-UAT results for a phase (markdown-aware; ignores false-positive contexts)
@@ -139,6 +141,31 @@ node gsd-tools.cjs phase-plan-index <phase>
 # List phases with filtering
 node gsd-tools.cjs phases list [--type planned|executed|all] [--phase N] [--include-archived]
 ```
+
+### Phase SUMMARY artifact check
+
+A phase `SUMMARY.md` asserts which files the phase created or modified. On
+`phase complete`, each SUMMARY in the phase is scanned for referenced file paths
+and any path that is not on disk is reported in the command's existing
+`warnings[]` array — the case where a summary reports work that never landed.
+
+**Advisory only.** Findings never block completion; the completion gate is the
+phase's `VERIFICATION.md` status, which this does not touch. `/gsd-execute-phase`
+surfaces the warnings before advancing.
+
+Scope and limits, so the output is not read as more than it is:
+
+- Paths are recovered heuristically from the SUMMARY body — backticked paths and
+  `Created:`/`Modified:`-style lines. Globs, URLs, bare hostnames, and paths
+  resolving outside the project are skipped rather than reported.
+- The `key-files:` frontmatter block is **not** read. Its YAML flow-sequence form
+  (`created: [a.ts, b.ts]`) is not matched by the prose scan, so a summary whose
+  only file claims live there produces no findings.
+- Commit hashes in the SUMMARY are **not** resolved here. The pattern matches any
+  hex-shaped token in prose, which is too loose to surface.
+
+Every path the scan does recover is checked — there is no cap. The standalone
+`verify-summary` verb keeps its historical default of checking the first two.
 
 ---
 

@@ -34,12 +34,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('fast-check');
 
-const { cleanup } = require('./helpers.cjs');
 const {
   EXPECTED_MANIFEST_COUNT,
   PROVENANCE_RULES,
   COMMANDS_SRC,
   CLINE_BODY_SRC,
+  HOOKS_WINDOWS_SHIM_SRC,
   KIMI_ROOT_AGENT_SRC,
   AGENT_TRANSFORM_SRCS,
   stripSkillPrefix,
@@ -100,9 +100,10 @@ test('every attributed source exists in the repo (identity/rewrite/derived rules
   // points at the wrong place. A source path that does not exist is proof the rule
   // is wrong, and it is how the three real bugs in this table were found.
   const missing = [];
+  const missingTransforms = [];
   for (const { runtime, file, keys } of manifests()) {
     for (const rel of keys) {
-      const { ruleId, kind, sources } = attributeEmittedPath(rel, runtime);
+      const { ruleId, kind, sources, transforms } = attributeEmittedPath(rel, runtime);
       if (kind === 'synthesized') {
         assert.equal(sources.length, 0, `synthesized rule "${ruleId}" must have no sources`);
         continue;
@@ -116,9 +117,23 @@ test('every attributed source exists in the repo (identity/rewrite/derived rules
         const full = path.join(REPO_ROOT, src);
         if (!fs.existsSync(full)) missing.push(`${file}: ${rel} -> ${src} (rule ${ruleId})`);
       }
+      // Same existence gate for `transforms` (#2757/#2767). This is what actually
+      // exercises a FUNCTION-valued transforms field (e.g. hooks-built's `.cmd`
+      // special-case) against every REAL emitted key on the platform that emits
+      // it — the static "every declared transform path exists" test below cannot
+      // do this for a function, since it never invokes it.
+      for (const t of transforms) {
+        const full = path.join(REPO_ROOT, t);
+        if (!fs.existsSync(full)) missingTransforms.push(`${file}: ${rel} -> ${t} (rule ${ruleId})`);
+      }
     }
   }
   assert.deepEqual(missing, [], `attributed sources that do not exist:\n  ${missing.slice(0, 10).join('\n  ')}`);
+  assert.deepEqual(
+    missingTransforms,
+    [],
+    `attributed transforms that do not exist:\n  ${missingTransforms.slice(0, 10).join('\n  ')}`,
+  );
 });
 
 // ─── Spot-checks: known emitted/source pairs (#2722 "add spot-check tests") ──
@@ -251,6 +266,57 @@ test('spot-check: hooks attribute to repo source, not the dist build artifact', 
   assert.deepEqual(reg.sources, [CLINE_BODY_SRC]);
 });
 
+test('spot-check: Windows-only .cmd shim is code-derived from its generator, not from the .js hook it wraps (#3426/#2767)', () => {
+  // Regression coverage for the windows-latest-only CI failure: the shim is emitted
+  // ONLY when the installer actually runs on win32 (ensureCodexHooksJsonSessionStart /
+  // ensureCodexHooksJsonEvent), so this drives attributeEmittedPath directly rather
+  // than through `manifests()` — that keeps the test meaningful on every OS this
+  // suite runs on, not just the one CI lane that happens to emit the key for real.
+  //
+  // Verified empirically: zero `.cmd` files are tracked anywhere in the repo
+  // (`git ls-files | grep '\\.cmd$'` is empty), so the original generic `hooks-built`
+  // attribution (source = the emitted path itself) resolved every `.cmd` shim to a
+  // file that exists on no platform — exactly the false-attribution class "every
+  // attributed source exists" exists to catch, and it only fired on windows-latest
+  // because that is the only lane where the key is ever actually emitted.
+  //
+  // A SECOND false-attribution then replaced the first (caught by isolated review,
+  // #2767): pointing `sources` at `hooks/<name>.js` asserts the wrapped script's
+  // BYTES flow into the `.cmd` bytes. Traced against buildCodexHookWindowsShimIR
+  // (src/runtime-hooks-surface.cts), they do not — the `.cmd` bytes are
+  // `@ECHO OFF\r\n@SETLOCAL\r\n@<runner> <script> %*\r\n`, built from the install-time
+  // interpreter token and the absolute install path, plus a hardcoded literal
+  // filename baked into that same source file. Only the `.js` file's NAME flows in;
+  // its content never does. `sources` must therefore point at the SAME file as
+  // `transforms` (HOOKS_WINDOWS_SHIM_SRC) — the `code-derived` shape used elsewhere
+  // in this table — not at the wrapped script.
+  for (const name of ['gsd-check-update', 'gsd-context-monitor']) {
+    const got = attributeEmittedPath(`hooks/${name}.cmd`, 'codex');
+    assert.equal(got.ruleId, 'hooks-built');
+    assert.deepEqual(got.sources, [HOOKS_WINDOWS_SHIM_SRC]);
+    assert.ok(
+      !got.sources.includes(`hooks/${name}.cmd`),
+      'a .cmd shim must never attribute to itself — no .cmd file is ever tracked in the repo',
+    );
+    assert.ok(
+      !got.sources.includes(`hooks/${name}.js`),
+      'a .cmd shim must not attribute to the wrapped .js script — its CONTENT never flows into the .cmd bytes, only its NAME (a literal inside HOOKS_WINDOWS_SHIM_SRC) does',
+    );
+    assert.deepEqual(got.transforms, [HOOKS_WINDOWS_SHIM_SRC]);
+    assert.ok(
+      fs.existsSync(path.join(REPO_ROOT, HOOKS_WINDOWS_SHIM_SRC)),
+      'the declared source/transform path must exist',
+    );
+  }
+
+  // A plain (non-.cmd) hook is unaffected: still a straight identity-shaped copy
+  // sourced from the repo hook it was built from, still no transform (the shim
+  // generator cannot move a plain hook's bytes).
+  const plain = attributeEmittedPath('hooks/gsd-statusline.js', 'claude');
+  assert.deepEqual(plain.sources, ['hooks/gsd-statusline.js']);
+  assert.deepEqual(plain.transforms, []);
+});
+
 test('spot-check: cline rules are code-derived (attributable), not exempt', () => {
   for (const rel of ['.clinerules/gsd.md', '.clinerules/hooks/PreToolUse']) {
     const got = attributeEmittedPath(rel, 'cline');
@@ -298,6 +364,38 @@ test('a rule with no transforms field still returns an empty array, never undefi
   assert.deepEqual(got.transforms, [], 'absence of transforms must be a stable empty array, not undefined');
 });
 
+test('a FUNCTION-valued transforms field is invoked with (match, ctx) and its array is returned', () => {
+  // hooks-built's `.cmd` special-case exercises this in production, but this test
+  // pins the general contract with an injected rule so it does not depend on
+  // hooks-built's specific pattern surviving a future refactor.
+  const rules = [{
+    id: 'fn-transforms-probe',
+    kind: 'derived',
+    roots: ['probe'],
+    pattern: /^(.+)$/,
+    sources: (m) => [`probe/${m[1]}`],
+    transforms: (m, ctx) => [`transform-for-${m[1]}-on-${ctx.runtime}`],
+  }];
+  const got = attributeEmittedPath('probe/thing.txt', 'claude', rules);
+  assert.deepEqual(got.transforms, ['transform-for-thing.txt-on-claude']);
+});
+
+test('a FUNCTION-valued transforms field that returns a non-array throws, naming the rule', () => {
+  const rules = [{
+    id: 'bad-fn-transforms',
+    kind: 'derived',
+    roots: ['probe'],
+    pattern: /^(.+)$/,
+    sources: (m) => [`probe/${m[1]}`],
+    transforms: () => 'not-an-array',
+  }];
+  assert.throws(
+    () => attributeEmittedPath('probe/thing.txt', 'claude', rules),
+    (err) => err.message.includes('bad-fn-transforms') && err.message.includes('array'),
+    'a malformed transforms() return value must fail loud and name the rule',
+  );
+});
+
 test('every declared transform path exists in the repo', () => {
   // Same philosophy as "every attributed source exists in the repo": a transform path
   // that does not exist is proof the rule (or the design's own suggested files) is
@@ -305,6 +403,11 @@ test('every declared transform path exists in the repo', () => {
   // design: it does not exist in this tree.
   const missing = [];
   for (const rule of PROVENANCE_RULES) {
+    // Function-valued transforms (#2767, e.g. hooks-built's `.cmd` special-case) vary
+    // per match and can't be enumerated statically without one — they are checked
+    // against every REAL emitted key instead, by "every attributed source exists in
+    // the repo" above (which now also asserts transform-path existence).
+    if (typeof rule.transforms === 'function') continue;
     for (const t of rule.transforms || []) {
       if (!fs.existsSync(path.join(REPO_ROOT, t))) missing.push(`${rule.id}: ${t}`);
     }
@@ -327,6 +430,21 @@ test('assertNoIdentityTransforms rejects an identity rule declaring transforms, 
     () => assertNoIdentityTransforms(corrupted),
     (err) => err.message.includes('scripts-verbatim') && err.message.includes('identity'),
     'the offending rule id must be named',
+  );
+});
+
+test('assertNoIdentityTransforms rejects a FUNCTION-valued transforms on an identity rule (#2767)', () => {
+  // hooks-built's `.cmd` special-case (this PR) proved `transforms` can legally be a
+  // function on a `derived` rule. This pins the other half: the function form must be
+  // rejected on `identity` exactly like the array form is — an identity copy's bytes
+  // can only move when its source moves, regardless of which shape declares otherwise.
+  const corrupted = PROVENANCE_RULES.map((r) => (
+    r.id === 'scripts-verbatim' ? { ...r, transforms: () => ['scripts/build-hooks.js'] } : r
+  ));
+  assert.throws(
+    () => assertNoIdentityTransforms(corrupted),
+    (err) => err.message.includes('scripts-verbatim') && err.message.includes('identity'),
+    'a function-valued transforms on an identity rule must be named and rejected',
   );
 });
 
@@ -578,52 +696,59 @@ test('partial failure names only the offending key (limit+1)', () => {
 
 // ─── Hostile input ───────────────────────────────────────────────────────────
 
-test('non-object manifest JSON is rejected, not silently treated as empty', () => {
-  const tmp = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-prov-'));
-  try {
-    // Each of these parses cleanly but has no keys — treating them as "no paths"
-    // would let the entire guard pass vacuously on a corrupt fixture.
-    for (const [name, body] of [
-      ['zero.json', '0'],
-      ['str.json', '"a string"'],
-      ['arr.json', '[]'],
-      ['null.json', 'null'],
-      ['bool.json', 'true'],
-    ]) {
-      fs.writeFileSync(path.join(tmp, name), body);
-      assert.throws(
-        () => loadManifests(tmp),
-        (err) => err.message.includes(name) && err.message.includes('path->hash'),
-        `${name} must be rejected with a message naming the file`,
-      );
-      fs.unlinkSync(path.join(tmp, name));
-    }
+// #2724 (ADR-2719 Phase 4): loadManifests() used to read committed fixture JSON off
+// disk (`fs.readFileSync` over `tests/fixtures/golden-install-parity/*.json`), which
+// is what made these two hostile-input tests injectable — write a bad file, point
+// the loader at the temp dir. That fixture directory is deleted; loadManifests()
+// now builds every manifest for real (install + hash), so the injection seam moved
+// to loadManifests()'s own {families, install, build, clean} parameters instead.
 
-    // Present but empty.
-    fs.writeFileSync(path.join(tmp, 'empty.json'), '');
-    assert.throws(() => loadManifests(tmp), /empty\.json is empty/);
-    fs.unlinkSync(path.join(tmp, 'empty.json'));
+const FAKE_FAMILY = [{ name: 'fake', runtime: 'fake', scope: 'global' }];
+const fakeInstall = () => ({ configDir: '/fake/config', root: '/fake/root' });
 
-    // Valid JSON object is accepted.
-    fs.writeFileSync(path.join(tmp, 'ok.json'), '{"scripts/lib/cli-exit.cjs":"deadbeef"}');
-    assert.equal(loadManifests(tmp).length, 1);
-  } finally {
-    cleanup(tmp);
+test('a non-object build result is rejected, not silently treated as empty', () => {
+  // Each of these "parses" cleanly but has no keys — treating them as "no paths"
+  // would let the entire guard pass vacuously on a corrupt build.
+  for (const bad of [0, 'a string', [], null, true]) {
+    let cleaned = false;
+    assert.throws(
+      () => loadManifests({
+        families: FAKE_FAMILY,
+        install: fakeInstall,
+        build: () => bad,
+        clean: () => { cleaned = true; },
+      }),
+      (err) => err.message.includes('fake') && err.message.includes('path->hash'),
+      `${JSON.stringify(bad)} must be rejected with a message naming the family`,
+    );
+    assert.ok(cleaned, 'clean() must still run when build() returns a bad value');
   }
+
+  // A valid object is accepted.
+  const result = loadManifests({
+    families: FAKE_FAMILY,
+    install: fakeInstall,
+    build: () => ({ 'scripts/lib/cli-exit.cjs': 'deadbeef' }),
+    clean: () => {},
+  });
+  assert.equal(result.length, 1);
+  assert.deepEqual(result[0], { file: 'fake.json', runtime: 'fake', keys: ['scripts/lib/cli-exit.cjs'] });
 });
 
-test('unreadable fixture surfaces an error', () => {
-  // Deterministic fs monkeypatch restored in `finally` — NEVER chmod 0o000, which
-  // root bypasses (the test would silently pass with zero coverage in root CI).
-  const orig = fs.readFileSync;
-  try {
-    fs.readFileSync = () => { throw new Error('injected read failure'); };
-    assert.throws(() => loadManifests(), /injected read failure/);
-  } finally {
-    fs.readFileSync = orig;
-  }
-  // Restoration is real, not assumed.
-  assert.equal(loadManifests().length, EXPECTED_MANIFEST_COUNT);
+test('a build failure surfaces an error, and clean() still runs', () => {
+  let cleaned = false;
+  assert.throws(
+    () => loadManifests({
+      families: FAKE_FAMILY,
+      install: fakeInstall,
+      build: () => { throw new Error('injected build failure'); },
+      clean: () => { cleaned = true; },
+    }),
+    /injected build failure/,
+  );
+  // The `finally` around build() must run clean() even when build() throws —
+  // an install left behind on every hostile build is a real resource leak.
+  assert.ok(cleaned, 'clean() must run even when build() throws');
 });
 
 // ─── Table invariants ────────────────────────────────────────────────────────

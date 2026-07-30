@@ -102,6 +102,12 @@ ALLOWLIST=(
   # exec command strings (execFileSync('npm', ['install'])) as test DATA the rule
   # must lint — not attack vectors. ADR-1703 Phase 4 (#1726).
   'tests/no-bare-npm-exec.rule.test.cjs'
+  # #2547 — the Kimi field-shadowing regression proves gsd-prompt-guard still
+  # SCANS the reconstructed edit[].new content when a model-supplied new_string
+  # tries to shadow it. The fixture must be a real injection phrase or the test
+  # asserts nothing: it is the payload the guard is required to catch, carried
+  # as test DATA. Same class as the read-injection-scanner suites above.
+  'tests/kimi-payload-field-shadowing.security.test.cjs'
 )
 
 is_allowlisted() {

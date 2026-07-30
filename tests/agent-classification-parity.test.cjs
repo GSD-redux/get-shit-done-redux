@@ -366,4 +366,89 @@ describe('agent-classification-parity: AGENTS.md section structure is the single
     );
   });
 
+  /**
+   * Test 4 — AGENTS.md **Tools** rows match agent frontmatter verbatim (#2526).
+   *
+   * Same defect class as #2526 itself, one layer out: there, an agent's body
+   * documented a capability its `tools:` allowlist withheld; here, the role
+   * card documents a tool set its frontmatter disagrees with. When the review
+   * that found it was written, 26 of 34 rows had drifted: 22 omitted `Skill`
+   * and 7 omitted `Edit`; 8 omitted MCP grants entirely (7 of them writing
+   * "mcp (context7)" for what was up to eight distinct servers, and
+   * gsd-executor naming none at all); and one still read `Task`, a tool that
+   * no longer exists. Nothing asserted the two agreed, so the drift was free.
+   *
+   * The row must equal the frontmatter value verbatim rather than as a set:
+   * a set comparison would accept the "mcp (context7)" shorthand class of
+   * under-documentation this test exists to stop, and an exact string is what
+   * makes the check cheap to satisfy — copy the line.
+   *
+   * The row-count assertion is the discovery guard (mirroring #2526's own):
+   * without it, deleting a **Tools** row would silently retire its assertion
+   * while the remaining rows kept the test green.
+   */
+  test('AGENTS.md **Tools** rows match each agent\'s tools: frontmatter (#2526)', () => {
+    const { parseFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+    const TOOLS_ROW = /^\|\s*\*\*Tools\*\*\s*\|\s*(.*?)\s*\|\s*$/;
+    const H3 = /^###\s+(gsd-[\w-]+)\s*$/;
+
+    // /\r?\n/, not '\n': Windows autocrlf yields CRLF, and a trailing \r would
+    // survive into the row's last cell and fail every comparison (local/no-crlf-fragile-split).
+    const lines = rawAgentsMd.split(/\r?\n/);
+    const sections = [];
+    lines.forEach((line, i) => {
+      const m = H3.exec(line);
+      if (m) sections.push({ slug: m[1], start: i });
+    });
+    sections.forEach((s, i) => {
+      s.end = i + 1 < sections.length ? sections[i + 1].start : lines.length;
+    });
+
+    const mismatches = [];
+    const missingRow = [];
+
+    for (const section of sections) {
+      const agentPath = path.join(AGENTS_DIR, `${section.slug}.md`);
+      if (!fs.existsSync(agentPath)) continue; // phantom headings are test 3's job
+
+      const fm = parseFrontmatter(fs.readFileSync(agentPath, 'utf8')) || {};
+      // No `tools:` key at all means "inherits everything" — there is no
+      // declared set for the row to agree with, so nothing to assert.
+      if (fm.tools === undefined || fm.tools === null) continue;
+      const declared = Array.isArray(fm.tools) ? fm.tools.join(', ') : String(fm.tools);
+
+      let row = null;
+      for (let i = section.start; i < section.end; i += 1) {
+        const m = TOOLS_ROW.exec(lines[i]);
+        if (m) { row = { value: m[1], line: i + 1 }; break; }
+      }
+
+      if (row === null) { missingRow.push(section.slug); continue; }
+      if (row.value !== declared) {
+        mismatches.push(
+          `  ${section.slug} (docs/AGENTS.md:${row.line})\n` +
+          `    doc:         ${row.value}\n` +
+          `    frontmatter: ${declared}`,
+        );
+      }
+    }
+
+    assert.deepStrictEqual(
+      missingRow,
+      [],
+      'AGENTS.md sections with a granted tools: frontmatter but no "| **Tools** |" row — ' +
+      'the row cannot be allowed to vanish, or its parity assertion vanishes with it: ' +
+      JSON.stringify(missingRow),
+    );
+
+    assert.strictEqual(
+      mismatches.length,
+      0,
+      'docs/AGENTS.md **Tools** rows disagree with the agents\' tools: frontmatter.\n' +
+      'The role card documents a tool set the agent does not have (or omits one it does) — ' +
+      'the #2526 drift class at the doc layer. Copy the frontmatter value verbatim:\n' +
+      mismatches.join('\n'),
+    );
+  });
+
 });

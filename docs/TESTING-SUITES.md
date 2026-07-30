@@ -70,107 +70,69 @@ both ship in the installed runtime and are loaded into context — workflows on
 every command, agents on every subagent dispatch — so their byte size is a real
 cost. Two sibling guards (`tests/workflow-size-budget.test.cjs` and
 `tests/agent-size-budget.test.cjs`) keep that cost from creeping up invisibly,
-sharing one byte-counter (`measureMdFiles`) and one `npm run size:baseline`
-command that regenerates **both** snapshots. Each is an **anti-creep ratchet**,
-sibling to the regression-name ratchet above — three layers (workflows), ordered
-from day-to-day to last-resort:
+sharing one byte-counter (`measureMdFiles`). Growth is caught by two independent
+layers:
 
 | Layer | What it does | Where |
 |---|---|---|
-| **Per-file baseline** (primary) | Pins every workflow's *exact* current size in a committed snapshot. Any growth, shrink, add, or removal fails until the snapshot is regenerated — so sub-ceiling creep is caught by name and delta, not just at the tier's single largest file. | `tests/workflow-size-baseline.json` |
-| **Loose tier hard caps** (backstop) | Absolute outer red lines per tier — `XL ≤ 98304`, `LARGE ≤ 61440`, `DEFAULT ≤ 40960` bytes. Unlike the old tighten-only ceiling, a cap is **never raised** when a file approaches it: crossing it means *extract*, not bump. | `XL/LARGE/DEFAULT_CAP` |
-| **New-file cap** | A workflow not yet in the baseline must stay under `32768` bytes (the Codex `project_doc_max_bytes` anchor) unless explicitly tiered into `XL_WORKFLOWS`/`LARGE_WORKFLOWS` in the same PR. Keeps net-new orchestrators from being born oversized. | `NEW_FILE_CAP` |
+| **Differential attribution size ratchet** (primary, #2724 / ADR-2719 §4) | The same computed-attribution check that replaced the golden-install-parity fixtures also reports growth in any `gsd-core/workflows/*.md` or `agents/gsd-*.md` file, with the exact byte delta, comparing PR HEAD against `next`. Unacknowledged growth is a hard failure; shrinkage needs no acknowledgment. No committed snapshot — nothing to regenerate by hand. | `tests/emitted-attribution.test.cjs` (real-tree test) via `tests/helpers/emitted-diff.cjs` |
+| **Loose tier hard caps** (backstop) | Absolute outer red lines per tier — workflows: `XL ≤ 98304`, `LARGE ≤ 61440`, `DEFAULT ≤ 40960` bytes; agents: `XL ≤ 57344`, `LARGE ≤ 49152`, `DEFAULT ≤ 24576` bytes. A cap is **never raised** when a file approaches it: crossing it means *extract*, not bump. Independent of the ratchet above — unaffected by #2724. | `XL/LARGE/DEFAULT_CAP` in each guard file |
 
 `discuss-phase.md` additionally has a thin-dispatcher target of `< 32000` bytes
-(the discuss-phase progressive-disclosure split, #717).
-
-**Agents** (`tests/agent-size-budget.test.cjs`) use the same per-agent baseline
-(`tests/agent-size-baseline.json`) + loose tier hard caps — `XL ≤ 57344` /
-`LARGE ≤ 49152` / `DEFAULT ≤ 24576` bytes. There is no new-agent cap: a net-new
-agent is DEFAULT-tier and already bounded by the DEFAULT cap. (This is distinct
-from the separate 45 KB-*char* extraction-evidence threshold on `gsd-planner`
-enforced by `tests/planner-decomposition.test.cjs` — that one proves mode
-sections were extracted; this one bounds total agent bytes.)
+(the discuss-phase progressive-disclosure split, #717). A net-new agent is
+DEFAULT-tier and already bounded by the DEFAULT cap — no separate new-agent cap
+is needed. (This tier-cap machinery is distinct from the separate 45 KB-*char*
+extraction-evidence threshold on `gsd-planner` enforced by
+`tests/planner-decomposition.test.cjs` — that one proves mode sections were
+extracted; this one bounds total agent bytes.)
 
 ### How-to: a workflow or agent grew and CI is red
 
-The baseline guard reports the file and the byte delta (the same flow for both
-the workflow and agent guards). To resolve:
+The differential attribution check reports the file and the byte delta. To resolve:
 
-1. **Regenerate the snapshot** and inspect the one-line diff:
-   ```bash
-   npm run size:baseline
-   git diff tests/workflow-size-baseline.json
-   ```
-2. **Justify the growth in your PR** (a sentence in the description is enough) —
-   the committed baseline diff is the review record that the larger size was a
-   deliberate, seen decision, not silent drift.
-3. **Or shrink it instead of baselining.** Prefer extraction when the growth is
-   incidental: for a workflow, move per-mode bodies to `workflows/<name>/modes/`,
-   templates to `workflows/<name>/templates/`, and shared prose to
-   `gsd-core/references/`; for an agent, lift shared boilerplate into
-   `gsd-core/references/` and `@`-reference it — then load it **LAZILY**. Do *not* convert them to eager `@-required_reading`
-   includes: that shrinks the file's bytes without shrinking loaded context, so
-   it games the guard while making the real cost worse. See
-   `workflows/discuss-phase/` for the progressive-disclosure pattern.
+1. **Justify the growth in your PR** (a sentence in the description is enough) —
+   the acknowledgment entry (below) is the review record that the larger size
+   was a deliberate, seen decision, not silent drift.
+2. **Add an acknowledgment entry** in `tests/emitted-drift-ack.json` naming the
+   file and the reason, per `CONTEXT.md`'s `### Emitted Artifact Provenance`
+   entry. This is deliberately a committed file, not a flag — the entry appears
+   in your PR diff, so touching it *is* the visible signal.
+3. **Or shrink it instead of acknowledging.** Prefer extraction when the growth
+   is incidental: for a workflow, move per-mode bodies to
+   `workflows/<name>/modes/`, templates to `workflows/<name>/templates/`, and
+   shared prose to `gsd-core/references/`; for an agent, lift shared boilerplate
+   into `gsd-core/references/` and `@`-reference it — then load it **LAZILY**. Do
+   *not* convert them to eager `@-required_reading` includes: that shrinks the
+   file's bytes without shrinking loaded context, so it games the guard while
+   making the real cost worse. See `workflows/discuss-phase/` for the
+   progressive-disclosure pattern.
 
-If a hard cap (not the baseline) is what failed, regeneration will **not** help —
-that is the signal to extract, per step 3.
-
-### How-to: the baselines or golden fixtures conflict on merge
-
-`tests/workflow-size-baseline.json`, `tests/agent-size-baseline.json` and
-`tests/fixtures/golden-install-parity/*.json` are **Emitted Artifact Provenance**
-files (`CONTEXT.md` → `RULESET.EMITTED_ATTRIBUTION`): pure functions of the source
-tree. Their correct merge is always *recompute*, which git's ours/theirs interface
-cannot express — so a conflict here is never something to hand-resolve.
-
-Register the merge driver once per clone:
-
-```bash
-npm run setup:merge-driver
-```
-
-Afterwards a conflicting merge, rebase or cherry-pick keeps your branch's copy and
-prints a one-line notice. Recompute the artifacts before committing:
-
-```bash
-npm run regen:derived
-```
-
-That one command runs every generator in dependency order (`gen:golden` last,
-because it hashes installed output). On an unmodified tree it produces no diff.
-
-Two things it deliberately does **not** do:
-
-- **It does not clear GitHub's `CONFLICTING` label.** Merge drivers live in
-  `.git/config`, so forks do not have one and github.com's own merge never runs a
-  custom driver. The driver removes the labour, not the label.
-- **It does not regenerate during the merge.** At the moment git invokes a merge
-  driver, neither the working tree nor the index reflects the merge yet — so
-  regenerating there would compute the artifact from the *pre-merge* tree and write
-  a confidently wrong answer. Running `regen:derived` afterwards is what makes it
-  correct.
-
-This driver is a bridge introduced by [#2721](https://github.com/open-gsd/gsd-core/issues/2721)
-and retired by [#2724](https://github.com/open-gsd/gsd-core/issues/2724), which
-replaces these committed artifacts with a computed attribution check (ADR-2719).
-`tests/fixtures/install-tree/*.json` is deliberately excluded and keeps normal merge
-semantics — its diffs are readable and it must stay an absolute "the installer
-stopped shipping X" failure.
+If a hard cap (not the ratchet) is what failed, an acknowledgment will **not**
+help — that is the signal to extract, per step 3.
 
 ### Reference
 
 | Artifact | Role |
 |---|---|
-| `scripts/workflow-size.cjs` | Single source of truth — LF-normalized byte counter (`lfByteCount`) + generic `measureMdFiles(dir, predicate)` (backs both workflows and agents) + workflow enumeration (`listWorkflowStems`, `measureWorkflows`). Imported by **both** the guards and the generator so they can never measure differently. |
-| `scripts/update-size-baseline.cjs` (`npm run size:baseline`) | Regenerates **both** `tests/workflow-size-baseline.json` and `tests/agent-size-baseline.json` — sorted keys, trailing newline, idempotent. |
-| `npm run regen:derived` | Runs every generator in dependency order (build → registry → ADR index → capability matrix → inventory manifest → manifest versions → size baselines → golden fixtures). Use it instead of remembering which generator owns which artifact. |
-| `scripts/git-merge-regen-driver.cjs` (`npm run setup:merge-driver`) | Registers the `gsd-regen` merge driver in this clone. Keeps your branch's copy of a conflicting generated artifact and points you at `regen:derived`. Bridge for #2721; retired by #2724. |
-| `tests/workflow-size-baseline.json` | The committed per-workflow snapshot (one entry per workflow). |
-| `tests/agent-size-baseline.json` | The committed per-agent snapshot (one entry per `gsd-*` agent). |
-| `tests/workflow-size-budget.test.cjs` | The three workflow guards above, plus the `discuss-phase` progressive-disclosure checks. |
-| `tests/agent-size-budget.test.cjs` | The per-agent baseline + tier hard-cap guards (the agent analog). |
+| `scripts/workflow-size.cjs` | Single source of truth — LF-normalized byte counter (`lfByteCount`) + generic `measureMdFiles(dir, predicate)` (backs both workflows and agents) + workflow enumeration (`listWorkflowStems`, `measureWorkflows`). Imported by both guards and by `tests/helpers/emitted-runtime.cjs`'s `currentSizes()` so they can never measure differently. |
+| `tests/emitted-attribution.test.cjs` + `tests/helpers/emitted-diff.cjs` | The differential attribution check and its size ratchet (ADR-2719). The sole mechanism for both emitted-content propagation AND per-file size growth as of #2724. |
+| `tests/emitted-drift-ack.json` | Committed acknowledgment file for unattributable emitted-content ripples and for size growth. Absent = no acks; its presence is the alarm. |
+| `npm run regen:derived` | Runs every remaining generator in dependency order (build → registry → ADR index → capability matrix → inventory manifest → manifest versions → `tests/fixtures/install-tree/*.json`). |
+| `tests/workflow-size-budget.test.cjs` | The workflow tier hard-cap guards, plus the `discuss-phase` progressive-disclosure checks. |
+| `tests/agent-size-budget.test.cjs` | The agent tier hard-cap guards (the agent analog). |
+
+`tests/workflow-size-baseline.json`, `tests/agent-size-baseline.json`,
+`tests/fixtures/golden-install-parity/*.json`, `scripts/update-size-baseline.cjs`
+(`npm run size:baseline`), and `scripts/git-merge-regen-driver.cjs`
+(`npm run setup:merge-driver`) are all removed by
+[#2724](https://github.com/open-gsd/gsd-core/issues/2724): they were pure
+functions of the source tree, conflicted on every merge that touched them, and
+their functions are now served by the differential attribution check above.
+`tests/fixtures/install-tree/*.json` is the one artifact family that stays
+committed and normally-merged (ADR-2719 §7) — it conflicts on 0 of 7, its diffs
+are readable, and it preserves "the installer stopped shipping X" as a hard
+absolute failure with no attribution reasoning involved. Regenerate it with
+`npm run gen:install-tree` (folded into `npm run regen:derived`).
 
 ## Running suites locally
 

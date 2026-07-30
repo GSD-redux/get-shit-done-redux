@@ -629,3 +629,56 @@ describe('bug #3631 — SDK family routers forward --raw to output()', () => {
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// Regression for #2620 — the live adapter must inject a real DispatchLogger
+// (ADR-0174 §6: "DispatchLogger is injected; the Hub emits DispatchEvent on
+// every dispatch path"). Before the fix, routeHubCommandFamily built the Hub
+// with no logger, so it fell back to createNoOpLogger and GSD_AUDIT was inert.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe, test } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { routeHubCommandFamily } = require('../gsd-core/bin/lib/cjs-command-router-adapter.cjs');
+  const { createTempDir, cleanup } = require('./helpers.cjs');
+
+  describe('cjs-command-router-adapter — observability logger wiring (#2620)', () => {
+    test('a dispatch through the live adapter writes the opt-in audit trail when GSD_AUDIT=1', (t) => {
+      const tmp = createTempDir('gsd-obs-wire-');
+      const prev = process.env.GSD_AUDIT;
+      t.after(() => {
+        if (prev === undefined) delete process.env.GSD_AUDIT;
+        else process.env.GSD_AUDIT = prev;
+        cleanup(tmp);
+      });
+      process.env.GSD_AUDIT = '1';
+
+      routeHubCommandFamily({
+        family: 'unit',
+        args: ['unit', 'ok'],
+        subcommands: ['ok'],
+        handlers: { ok: () => {} },
+        unknownMessage: (subcommand, available) => `Unknown ${subcommand}. Available: ${available.join(', ')}`,
+        error: () => {},
+        cwd: tmp,
+        raw: false,
+      });
+
+      const auditPath = path.join(tmp, '.planning', '.gsd-trace.jsonl');
+      assert.ok(
+        fs.existsSync(auditPath),
+        'GSD_AUDIT=1 must produce .planning/.gsd-trace.jsonl — the adapter must build the Hub with a real DispatchLogger (ADR-0174 §6), not createNoOpLogger'
+      );
+      const lines = fs.readFileSync(auditPath, 'utf8').trim().split(/\r?\n/).filter(Boolean);
+      assert.ok(lines.length > 0, 'at least one dispatch event must be recorded');
+      assert.equal(lines.length, 1, 'exactly one dispatch event must be recorded');
+      const event = JSON.parse(lines[0]);
+      assert.equal(event.result.kind, 'ok', 'a successful dispatch is recorded with result.kind === "ok"');
+      assert.ok(typeof event.command === 'string' && event.command.length > 0, 'event carries the dispatched command');
+      assert.ok(typeof event.traceId === 'string' && event.traceId.length > 0, 'event carries a traceId');
+      assert.ok(typeof event.timestamp === 'string' && event.timestamp.length > 0, 'event carries an ISO timestamp');
+    });
+  });
+}

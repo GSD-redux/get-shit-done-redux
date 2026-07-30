@@ -104,46 +104,6 @@ This gate runs unconditionally on every audit. The .gitignore ensures screenshot
 
 </gitignore_gate>
 
-<playwright_mcp_approach>
-
-## Automated Screenshot Capture via Playwright-MCP (preferred when available)
-
-Before attempting the CLI screenshot approach, check whether `mcp__playwright__*`
-tools are available in this session. If they are, use them instead of the CLI approach:
-
-```
-# Preferred: Playwright-MCP automated verification
-# 1. Navigate to the component URL
-mcp__playwright__navigate(url="http://localhost:3000")
-
-# 2. Take desktop screenshot
-mcp__playwright__screenshot(name="desktop", width=1440, height=900)
-
-# 3. Take mobile screenshot
-mcp__playwright__screenshot(name="mobile", width=375, height=812)
-
-# 4. For specific components listed in UI-SPEC.md, navigate to each
-#    component route and capture targeted screenshots for comparison
-#    against the spec's stated dimensions, colors, and layout.
-
-# 5. Compare screenshots against UI-SPEC.md requirements:
-#    - Dimensions: Is component X width 70vw as specified?
-#    - Color: Is the accent color applied only on declared elements?
-#    - Layout: Are spacing values within the declared spacing scale?
-#    Report any visual discrepancies as automated findings.
-```
-
-**When Playwright-MCP is available:**
-- Use it for all screenshot capture (skip the CLI approach below)
-- Each UI checkpoint from UI-SPEC.md can be verified automatically
-- Discrepancies are reported as pillar findings with screenshot evidence
-- Items requiring subjective judgment are flagged as `needs_human_review: true`
-
-**When Playwright-MCP is NOT available:** fall back to the CLI screenshot approach
-below. Behavior is unchanged from the standard code-only audit path.
-
-</playwright_mcp_approach>
-
 <screenshot_approach>
 
 ## Screenshot Capture (CLI only — no MCP, no persistent browser)

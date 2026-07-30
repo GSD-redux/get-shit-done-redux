@@ -98,7 +98,7 @@ An ADR (Architecture Decision Record) documents a significant architectural deci
 
 **Do not compute a "next number" locally.** Any PR that uses the legacy `NNNN-*` sequential pattern for a *new* ADR or PRD will be asked to rename the file to the `<issue#>-<slug>.md` format before merge.
 
-**Example:** Issue #3485 was opened, approved, and its number became the prefix: `docs/adr/3485-adr-prd-naming-convention.md` on branch `docs/3485-adr-prd-naming-convention`.
+**Example:** Issue #2264 was opened, approved, and its number became the prefix: `docs/adr/2264-golden-parity-redesign.md`.
 
 **Rejection reasons:** Issue not approved before file was created, filename uses local-compute sequential number instead of issue#, multiple decisions bundled in one PR, file placed in wrong directory (`docs/adr/` vs `docs/prd/`).
 
@@ -217,7 +217,7 @@ then run `scripts/release-notes/format-github-release-notes.cjs --apply` to
 rewrite the body into the project's curated format: an **Install** block,
 followed by **What's Changed** grouped into **Feature** / **Enhancement** /
 **Fix** sections (classified by each PR's conventional-commit title prefix —
-`feat` → Feature, `fix` → Fix, everything else → Enhancement), then
+`feat` → Feature, `fix` → Fix, non-user-facing types `test`/`chore`/`ci`/`docs`/`refactor`/`perf`/`revert` → omitted from the user-facing notes, everything else → Enhancement), then
 **New Contributors** and the **Full Changelog** link.
 
 To re-format an existing release by hand (e.g. backfilling an older release):
@@ -763,26 +763,43 @@ npm run check:alias-drift
 
 This verifies generated alias artifacts are in sync with manifest source-of-truth.
 
-### Generated artifacts that conflict on every merge
+### Editing shipped content (gsd-core/workflows, references, templates, contexts, agents/, commands/gsd/)
 
-If your PR conflicts on `tests/fixtures/golden-install-parity/*.json`,
-`tests/workflow-size-baseline.json`, or `tests/agent-size-baseline.json`, **do not
-hand-resolve them.** They are pure functions of the source tree, so neither "ours"
-nor "theirs" is correct — the only correct value is recomputed.
+Editing the content of a copied shipped file — a `gsd-core/workflows/*.md`, an agent, a
+command definition — requires **zero manual fixture regeneration**. There is no
+committed path→hash manifest or per-file size baseline to update by hand; the
+differential attribution check (`tests/emitted-attribution.test.cjs`, ADR-2719) computes
+what your PR changed against `next` and requires every emitted-artifact hash that moved
+to be attributable to your diff. If it is not, the check fails and names the paths.
+
+Legitimate cases where emitted bytes move for a reason your diff cannot show directly —
+a converter change, for example — go through `tests/emitted-drift-ack.json` (name the
+path, say why); see `CONTEXT.md`'s `### Emitted Artifact Provenance` entry for the full
+model. Growth in a `gsd-core/workflows/*.md` or `agents/gsd-*.md` file is reported with
+its exact byte delta and needs the same acknowledgment; the outer tier hard caps in
+`tests/workflow-size-budget.test.cjs` / `tests/agent-size-budget.test.cjs` are unaffected
+and still apply.
+
+You do not need to memorize any of this. **The failure output names its own remedy** — it
+tells you the file to create, that it does not exist yet, which key to use, and prints a
+minimal valid document you can paste. Note the two key spaces, because the message says
+which one applies: an unattributable **hash** ripple is keyed on the emitted path
+(`skills/gsd-add-tests/SKILL.md`), while **growth** is keyed on the bare filename as it
+appears under `gsd-core/workflows/` or `agents/` (`explore.md`). When you remove the last
+entry from `tests/emitted-drift-ack.json`, delete the file too — its presence is the
+alarm, so an empty one signals nothing. Nothing here is regenerated: if you find yourself
+looking for a baseline file to re-run a generator over, that file was deleted by #2724 and
+is not coming back.
+
+`npm run regen:derived` still exists for the artifacts that ARE committed and derived —
+`sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
+the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the
+one fixture family ADR-2719 §7 keeps committed, because it conflicts on 0 of 7 and its
+diffs are readable). Run it after a change to any of those, before committing:
 
 ```bash
-npm run setup:merge-driver   # once per clone: conflicts resolve to your copy
-npm run regen:derived        # then recompute, before committing
+npm run regen:derived
 ```
-
-`regen:derived` replaces the seven separate invocations this used to take (`npm run
-build` plus six more), and runs them in dependency order — `gen:golden` last, because it
-hashes installed output. It covers twelve generators: the eleven that produce committed
-artifacts, plus `sync-manifest-versions`, which `npm run lint:generated-sync` also checks —
-without it, the command that claims to regenerate everything could still leave that gate red.
-Full guide, including what the driver deliberately does not do:
-[docs/TESTING-SUITES.md](docs/TESTING-SUITES.md) → "the baselines or golden fixtures
-conflict on merge".
 
 Optional local pre-commit hook entry (Git-native):
 
@@ -893,7 +910,7 @@ Defensive normalization at trust boundaries must validate both the value's type 
 
 - **CommonJS** (`.cjs`) — the project uses `require()`, not ESM `import`
 - **No external dependencies in core** — `gsd-tools.cjs` and all lib files use only Node.js built-ins
-- **Conventional commits** — `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `ci:`. The full grammar is `<type>(<scope>): <subject>` (enforced by `hooks/gsd-validate-commit.sh`; subject ≤72 chars, lowercase, imperative mood, no trailing period). When the work resolves a tracked issue, put the issue number in the scope: `fix(#1520): randomize mktemp temp paths on BSD/macOS`. The same convention applies to PR titles — release notes are grouped by the title's type prefix (`feat` → Feature, `fix` → Fix, everything else → Enhancement).
+- **Conventional commits** — `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `ci:`. The full grammar is `<type>(<scope>): <subject>` (enforced by `hooks/gsd-validate-commit.sh`; subject ≤72 chars, lowercase, imperative mood, no trailing period). When the work resolves a tracked issue, put the issue number in the scope: `fix(#1520): randomize mktemp temp paths on BSD/macOS`. The same convention applies to PR titles — release notes are grouped by the title's type prefix (`feat` → Feature, `fix` → Fix, non-user-facing types omitted, everything else → Enhancement).
 
 ## File Structure
 
@@ -909,16 +926,16 @@ gsd-core/
                           the canonical example (the discuss-phase/modes split, #717). New modes for
                           discuss-phase land in
                           workflows/discuss-phase/modes/<mode>.md.
-                          Per-file sizes are pinned by a committed baseline
-                          (tests/workflow-size-baseline.json) plus loose tier
-                          hard caps, both in tests/workflow-size-budget.test.cjs.
-                          If you legitimately grow or shrink a workflow file,
-                          run `npm run size:baseline` to update the snapshot and
-                          justify any growth in your PR (or extract content
-                          lazily). The same guard covers agent files
-                          (agents/gsd-*.md). Full how-to + reference in
-                          docs/TESTING-SUITES.md (Workflow & agent size
-                          budget); see issue #1074.
+                          Per-file growth is caught by the differential
+                          attribution check (tests/emitted-attribution.test.cjs,
+                          ADR-2719) — it reports the exact byte delta and
+                          requires an entry in tests/emitted-drift-ack.json,
+                          no committed snapshot to regenerate. Loose tier
+                          hard caps remain in tests/workflow-size-budget.test.cjs.
+                          The same applies to agent files (agents/gsd-*.md,
+                          tests/agent-size-budget.test.cjs). Full how-to +
+                          reference in docs/TESTING-SUITES.md (Workflow &
+                          agent size budget); see issue #1074.
   references/           — Reference documentation (.md)
   templates/            — File templates
 agents/                 — Agent definitions (.md) — CANONICAL SOURCE

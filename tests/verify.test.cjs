@@ -2664,3 +2664,287 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
 });
   });
 }
+
+// ─── #2572: verify-summary pure core, callable without the CLI wrapper ───────
+
+describe('verifySummaryCore — reusable structured contract (#2572)', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { after } = require('node:test');
+  const { execSync } = require('node:child_process');
+  const { cleanup } = require('./helpers.cjs');
+  const { verifySummaryCore } = require('../gsd-core/bin/lib/verify.cjs');
+
+  const dirs = [];
+  after(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  function repo(summaryBody, extraFiles = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2572-'));
+    dirs.push(dir);
+    execSync('git init -q', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.email "t@t.com"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config user.name "T"', { cwd: dir, stdio: 'pipe' });
+    execSync('git config commit.gpgsign false', { cwd: dir, stdio: 'pipe' });
+    for (const [rel, body] of Object.entries(extraFiles)) {
+      fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), body);
+    }
+    fs.writeFileSync(path.join(dir, 'SUMMARY.md'), summaryBody);
+    execSync('git add -A && git commit -q -m seed', { cwd: dir, stdio: 'pipe' });
+    return dir;
+  }
+
+  test('returns the structured contract without writing to stdout', () => {
+    const dir = repo('# Summary\n\nCreated: `src/a.ts`\n', { 'src/a.ts': 'x\n' });
+    const r = verifySummaryCore(dir, 'SUMMARY.md', 2);
+    assert.strictEqual(typeof r, 'object');
+    assert.deepStrictEqual(Object.keys(r).sort(), ['checks', 'errors', 'passed']);
+    assert.strictEqual(r.checks.summary_exists, true);
+    assert.strictEqual(r.passed, true);
+  });
+
+  test('reports a missing referenced file as a structured check, not a throw', () => {
+    const dir = repo('# Summary\n\nCreated: `src/gone.ts`\n');
+    const r = verifySummaryCore(dir, 'SUMMARY.md', 2);
+    assert.strictEqual(r.passed, false);
+    assert.ok(r.checks.files_created.missing.includes('src/gone.ts'),
+      `expected src/gone.ts in missing, got ${JSON.stringify(r.checks.files_created)}`);
+  });
+
+  test('absent SUMMARY yields summary_exists false — never throws', () => {
+    const dir = repo('# Summary\n');
+    let r;
+    assert.doesNotThrow(() => { r = verifySummaryCore(dir, 'nope/SUMMARY.md', 2); });
+    assert.strictEqual(r.checks.summary_exists, false);
+    assert.strictEqual(r.passed, false);
+  });
+
+  test('unresolvable commit hash is reported via commits_exist', () => {
+    const dir = repo('# Summary\n\nCommit: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n');
+    const r = verifySummaryCore(dir, 'SUMMARY.md', 2);
+    assert.strictEqual(r.checks.commits_exist, false);
+    assert.ok(r.errors.some((e) => /commit/i.test(e)), `expected a commit error, got ${JSON.stringify(r.errors)}`);
+  });
+
+  // ── Blocker 1 (#2685 review): frontmatter must be stripped before extraction ──
+  //
+  // All three SUMMARY templates prescribe a YAML flow sequence for key-files:
+  //   key-files:
+  //     created: [src/auth/login.ts, src/auth/session.ts]
+  // The prose pattern would otherwise capture the literal '[' as part of the
+  // first path, producing a candidate that can never exist on disk — firing on
+  // a healthy project built from GSD's own shipped template.
+
+  test('#2685 B1: a template-shaped frontmatter flow sequence yields no phantom "[path" candidate', () => {
+    const body = [
+      '---',
+      'phase: 04-auth',
+      'key-files:',
+      '  created: [src/auth/login.ts, src/auth/session.ts]',
+      '  modified: [src/auth/session.ts]',
+      'status: complete',
+      '---',
+      '',
+      '# Phase 4 Summary',
+      '',
+      'Built the login flow in `src/auth/login.ts`.',
+      '',
+    ].join('\n');
+    const dir = repo(body, { 'src/auth/login.ts': 'x\n', 'src/auth/session.ts': 'x\n' });
+    const r = verifySummaryCore(dir, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.deepStrictEqual(
+      r.checks.files_created.missing, [],
+      `#2685 B1 FAILED: every named file exists on disk, so nothing may be reported missing. ` +
+      `Got: ${JSON.stringify(r.checks.files_created)}`,
+    );
+    assert.ok(
+      !r.checks.files_created.missing.some((f) => f.includes('[')),
+      'a bracket-prefixed candidate must never reach the missing list',
+    );
+  });
+
+  test('#2685 B1: the check is still ABSENT for a clean phase and PRESENT for a dirty one', () => {
+    const clean = repo('# Summary\n\nBuilt `src/kept.ts` here.\n', { 'src/kept.ts': 'x\n' });
+    const rc = verifySummaryCore(clean, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.strictEqual(rc.checks.files_created.checked, 1, 'the clean fixture must actually extract a candidate (not vacuously pass)');
+    assert.deepStrictEqual(rc.checks.files_created.missing, [], 'clean phase must not warn');
+
+    const dirty = repo('# Summary\n\nBuilt `src/kept.ts` and `src/never-landed.ts`.\n', { 'src/kept.ts': 'x\n' });
+    const rd = verifySummaryCore(dirty, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.deepStrictEqual(
+      rd.checks.files_created.missing, ['src/never-landed.ts'],
+      `dirty phase must name exactly the file that never landed, got ${JSON.stringify(rd.checks.files_created.missing)}`,
+    );
+  });
+
+  // ── Major 1: checkCount is the single most behavior-defining constant here ──
+
+  test('#2685 M1: checkCount boundary — 1, 2, 3 extractable paths against the default cap', () => {
+    const mk = (n) => repo('# Summary\n\n' + Array.from({ length: n }, (_, i) => `- \`src/m${i}.ts\``).join('\n') + '\n');
+    assert.strictEqual(verifySummaryCore(mk(1), 'SUMMARY.md', undefined, { checkCommits: false }).checks.files_created.checked, 1);
+    assert.strictEqual(verifySummaryCore(mk(2), 'SUMMARY.md', undefined, { checkCommits: false }).checks.files_created.checked, 2);
+    assert.strictEqual(
+      verifySummaryCore(mk(3), 'SUMMARY.md', undefined, { checkCommits: false }).checks.files_created.checked, 2,
+      'the CLI default must remain capped at 2 — unchanged from before #2572',
+    );
+    assert.strictEqual(
+      verifySummaryCore(mk(3), 'SUMMARY.md', Infinity, { checkCommits: false }).checks.files_created.checked, 3,
+      'Infinity must lift the cap so an interrupted phase reports every missing file',
+    );
+  });
+
+  test('#2685 M1: an interrupted phase listing 12 files of which 9 are missing reports all 9', () => {
+    const refs = Array.from({ length: 12 }, (_, i) => `src/f${i}.ts`);
+    const present = Object.fromEntries(refs.slice(0, 3).map((f) => [f, 'x\n']));
+    const dir = repo('# Summary\n\n' + refs.map((f) => `- built \`${f}\``).join('\n') + '\n', present);
+
+    const capped = verifySummaryCore(dir, 'SUMMARY.md', undefined, { checkCommits: false });
+    assert.strictEqual(
+      capped.checks.files_created.missing.length, 0,
+      'precondition: at the 2-file default this real defect is invisible — that is exactly Major 1',
+    );
+
+    const all = verifySummaryCore(dir, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.strictEqual(all.checks.files_created.missing.length, 9,
+      `expected all 9 missing, got ${JSON.stringify(all.checks.files_created.missing)}`);
+  });
+
+  // ── Major 3: the advisory path must spawn no git subprocesses ──
+
+  test('#2685 M3: checkCommits:false skips hash resolution entirely', () => {
+    const body = '# Summary\n\n## Task Commits\n- deadbeefdeadbeefdeadbeefdeadbeefdeadbeef initial\n';
+    const dir = repo(body);
+    const r = verifySummaryCore(dir, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.strictEqual(r.checks.commits_exist, false, 'commits_exist is false meaning NOT CHECKED');
+    assert.deepStrictEqual(
+      r.errors.filter((e) => /commit/i.test(e)), [],
+      'with commit checking off, an unresolvable hash must not manufacture an error',
+    );
+  });
+
+  // ── Major 4 residue: confirmed false-positive classes stay filtered ──
+
+  test('#2685 M4: globs, bare hostnames, and traversal references are never probed', () => {
+    const body = [
+      '# Summary',
+      '',
+      // Each noise class is BACKTICKED on purpose: pattern 1 extracts any
+      // backticked `<something>.<ext>`, so these genuinely reach the candidate
+      // filter. An un-backticked fixture would pass vacuously.
+      'Touched `src/**/*.ts` across the tree.',
+      'See `docs.example.com/guide.html` for background.',
+      'Also `../../../../etc/passwd` and `https://example.com/x.html`.',
+      'Real file: `src/real.ts`.',
+      '',
+    ].join('\n');
+    const dir = repo(body, { 'src/real.ts': 'x\n' });
+    const r = verifySummaryCore(dir, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.strictEqual(
+      r.checks.files_created.checked, 1,
+      `only src/real.ts is a probeable candidate, got checked=${r.checks.files_created.checked}`,
+    );
+    assert.deepStrictEqual(r.checks.files_created.missing, [], 'no noise class may be reported missing');
+  });
+
+  test('#2685 minor: a dotfile directory is still a valid first segment', () => {
+    const dir = repo('# Summary\n\nAdded `.github/workflows/ci.yml`.\n', { '.github/workflows/ci.yml': 'x\n' });
+    const r = verifySummaryCore(dir, 'SUMMARY.md', Infinity, { checkCommits: false });
+    assert.strictEqual(r.checks.files_created.checked, 1,
+      '.github/... must not be mistaken for a hostname');
+    assert.deepStrictEqual(r.checks.files_created.missing, []);
+  });
+
+  // ── Minor: property coverage over the extractor (it is a parser) ──
+
+  test('#2685 property: no synthesized SUMMARY body yields a malformed candidate', () => {
+    const fc = require('./helpers/fast-check-setup.cjs');
+    const dir = repo('# seed\n');
+    const summaryPath = path.join(dir, 'SUMMARY.md');
+    fc.assert(
+      fc.property(fc.string(), fc.array(fc.string(), { maxLength: 8 }), (prose, paths) => {
+        const body = [
+          '---',
+          'key-files:',
+          `  created: [${paths.join(', ')}]`,
+          '---',
+          '',
+          prose,
+          ...paths.map((p) => `- built \`${p}\``),
+        ].join('\n');
+        fs.writeFileSync(summaryPath, body);
+        const r = verifySummaryCore(dir, 'SUMMARY.md', Infinity, { checkCommits: false });
+        for (const c of r.checks.files_created.missing) {
+          assert.ok(!c.includes('['), `bracket artifact leaked: ${JSON.stringify(c)}`);
+          assert.ok(!c.includes('*') && !c.includes('?'), `glob leaked: ${JSON.stringify(c)}`);
+          assert.ok(
+            path.resolve(dir, c).startsWith(path.resolve(dir) + path.sep),
+            `candidate escaped the project root: ${JSON.stringify(c)}`,
+          );
+        }
+        return true;
+      }),
+      { numRuns: 200 },
+    );
+  });
+});
+
+// ─── bug #1883: listMilestoneArchiveDirs must not swallow permission/I-O errors ──
+// The private helper catch-alled every readdirSync error into [], so an unreadable
+// milestones/ dir was silently reported as "no archives" (active-milestone
+// resolution / archived-phase filtering misbehaved). The narrowed catch re-throws
+// every non-ENOENT error and keeps [] only for genuine absence. Tested in-process
+// via the _listMilestoneArchiveDirs test seam (the validate command runs in a
+// subprocess, so an fs monkeypatch in the test process cannot reach it).
+describe('bug #1883 — listMilestoneArchiveDirs distinguishes a permission error from emptiness', () => {
+  const verifyLib = require('../gsd-core/bin/lib/verify.cjs');
+  const listMilestoneArchiveDirs = verifyLib._listMilestoneArchiveDirs;
+  const os = require('os');
+
+  function fsError(code, targetPath) {
+    const err = new Error(`${code}: operation failed, scandir '${targetPath}'`);
+    err.code = code;
+    err.syscall = 'scandir';
+    err.path = targetPath;
+    return err;
+  }
+
+  // Inject a readdirSync fault scoped to the milestones/ path under test.
+  // t.mock auto-restores after each test — no chmod 0o000 (root bypasses mode bits).
+  function injectMilestonesFault(t, code, targetPath) {
+    const originalReaddirSync = fs.readdirSync;
+    t.mock.method(fs, 'readdirSync', function (p, ...rest) {
+      if (typeof p === 'string' && p.endsWith(path.join('milestones'))) {
+        throw fsError(code, targetPath);
+      }
+      return originalReaddirSync.call(this, p, ...rest);
+    });
+  }
+
+  test('listMilestoneArchiveDirs re-throws a permission (EACCES) error instead of returning []', (t) => {
+    const planBase = path.join(os.tmpdir(), 'gsd-1883-eacces-' + process.pid);
+    injectMilestonesFault(t, 'EACCES', path.join(planBase, 'milestones'));
+    assert.throws(
+      () => listMilestoneArchiveDirs(planBase),
+      (err) => err.code === 'EACCES',
+      'an unreadable milestones/ dir must propagate EACCES, not return [] as if empty',
+    );
+  });
+
+  test('listMilestoneArchiveDirs re-throws any non-ENOENT error (EIO)', (t) => {
+    const planBase = path.join(os.tmpdir(), 'gsd-1883-eio-' + process.pid);
+    injectMilestonesFault(t, 'EIO', path.join(planBase, 'milestones'));
+    assert.throws(
+      () => listMilestoneArchiveDirs(planBase),
+      (err) => err.code === 'EIO',
+      'every non-ENOENT error must propagate',
+    );
+  });
+
+  test('listMilestoneArchiveDirs returns [] for an absent milestones/ dir (ENOENT) — empty path unchanged', () => {
+    const planBase = path.join(os.tmpdir(), 'gsd-1883-absent-' + process.pid);
+    // No milestones/ dir created → real OS readdirSync throws ENOENT.
+    assert.deepStrictEqual(listMilestoneArchiveDirs(planBase), [],
+      'an absent milestones/ dir (ENOENT) must still return [] — Hyrum: empty path unchanged');
+  });
+});

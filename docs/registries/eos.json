@@ -1,5 +1,36 @@
 [
   {
+    "id": "gsd-cursor",
+    "name": "GSD Cursor Model Profiles",
+    "type": "eos",
+    "repo": "clezcoding/gsd-cursor",
+    "description": "Adds six researched Cursor runtime profiles (max / hybrid / value / budget / frontier / openweight) to GSD, writes current and legacy tier-map surfaces, routes all six GSD phases, validates local model availability, and restores prior managed settings on uninstall without modifying gsd-core.",
+    "author": "clezcoding",
+    "license": "MIT",
+    "enginesGsd": ">=1.0.0",
+    "protocolVersion": 1,
+    "install": "npm install --global github:clezcoding/gsd-cursor#v1.1.0 && gsd-cursor install",
+    "uninstall": "gsd-cursor uninstall && npm uninstall --global gsd-cursor",
+    "interactions": {
+      "interfacePoints": [
+        "model",
+        "state"
+      ],
+      "profile": "declarative-cli",
+      "axes": {
+        "embeddingMode": "declarative",
+        "commandSurface": "prose-only",
+        "dispatch": "Writes a Cursor model tier map and six phase-aware profile presets into the GSD config without dispatching tasks",
+        "modelMode": "active",
+        "hookBus": "none",
+        "stateIO": "filesystem",
+        "transport": "native-extension",
+        "runtime": "node"
+      }
+    },
+    "discussion": "https://github.com/open-gsd/gsd-core/discussions/2578"
+  },
+  {
     "id": "gsd-omp",
     "name": "GSD for Oh My Pi",
     "type": "eos",

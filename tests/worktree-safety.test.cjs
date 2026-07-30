@@ -3666,6 +3666,214 @@ describe('bug #260: gsd-worktree-path-guard.js', () => {
     });
   });
 
+  // 5b. #2547 — a malformed Kimi edit list must not downgrade the block to an allow
+  describe('#2547: malformed Kimi edit list does not bypass the cross-root block', () => {
+    // normalizeKimiPayload rebuilt old_string/new_string with `String(e.old ?? '')`.
+    // `??` guards the value, not the dereference, so a NULLISH entry threw a
+    // TypeError before any tool dispatch — and the guard's outer
+    // `catch { process.exit(0) }` turned that crash into a silent ALLOW on the one
+    // path this guard exists to BLOCK (#260).
+    //
+    // The boundary is nullish specifically, not "non-object": `('x').old` and
+    // `(7).old` are legal property reads that yield undefined, so string/number
+    // entries never threw. They are kept below as controls proving `e?.old` did
+    // not change their behaviour; the nullish cases are the actual regression and
+    // are the ones that exit 0 (bypass) against pre-fix code.
+    const crossRootTarget = () => path.join(mainRepo, 'src', 'index.ts');
+
+    test('well-formed Kimi edit list blocks the cross-root write (positive control)', () => {
+      const result = runHook(worktreeDir, {
+        cwd: worktreeDir,
+        tool_name: 'StrReplaceFile',
+        tool_input: { path: crossRootTarget(), edit: [{ old: 'orig', new: 'pwned' }] },
+      });
+      assert.strictEqual(result.status, 2,
+        `expected exit 2 (block), got ${result.status}. stderr: ${result.stderr}`);
+      assert.strictEqual(JSON.parse(result.stdout).decision, 'block');
+    });
+
+    for (const [label, edit] of [
+      ['null entry (the #2547 bypass)', [null]],
+      ['null alongside a well-formed entry (the #2547 bypass)', [{ old: 'a', new: 'b' }, null]],
+      // `{"toString": null}` is valid JSON whose coercion throws "Cannot
+      // convert object to primitive value" — the same crash-to-allow reached
+      // through String() rather than through the property read.
+      ['non-coercible old (the #2547 String() bypass)', [{ old: { toString: null }, new: 'x' }]],
+      ['non-coercible new (the #2547 String() bypass)', [{ old: 'x', new: { toString: null } }]],
+      ['string entry (control — never threw)', ['nope']],
+      ['number entry (control — never threw)', [7]],
+    ]) {
+      test(`${label} in the edit list still blocks the cross-root write`, () => {
+        const result = runHook(worktreeDir, {
+          cwd: worktreeDir,
+          tool_name: 'StrReplaceFile',
+          tool_input: { path: crossRootTarget(), edit },
+        });
+        assert.strictEqual(result.status, 2,
+          `a malformed edit list (${label}) must not downgrade the #260 block to a silent ` +
+          `allow. Got exit ${result.status}. stderr: ${result.stderr}`);
+        assert.strictEqual(JSON.parse(result.stdout).decision, 'block');
+      });
+    }
+
+    test('malformed edit list inside the worktree still exits 0 (no over-block)', () => {
+      const result = runHook(worktreeDir, {
+        cwd: worktreeDir,
+        tool_name: 'StrReplaceFile',
+        tool_input: { path: path.join(worktreeDir, 'src', 'index.ts'), edit: [null] },
+      });
+      assert.strictEqual(result.status, 0,
+        `an in-worktree write must stay allowed. Got exit ${result.status}. stderr: ${result.stderr}`);
+      assert.strictEqual(result.stdout, '');
+    });
+  });
+
+  // 5c. #2547 (review BLOCKER) — a model-supplied `file_path` must not shadow
+  // Kimi's authoritative `path`. This vector needs NO crash: normalizeKimiPayload
+  // copied `path` into `file_path` only when `file_path === undefined`, so any
+  // `file_path` the model chose to include won, and this guard's block logic
+  // reads `file_path` alone. kimi-cli executes on `path`, so the guard inspected
+  // one file while the write landed on another.
+  //
+  // Reachability is not speculative: soul/toolset.py json-parses the model's raw
+  // tool arguments and passes that dict verbatim as tool_input to PreToolUse,
+  // performing typed validation only later inside tool.call() — so the model
+  // controls extra keys in tool_input at the moment the hook decides.
+  describe('#2547: a spurious file_path does not shadow Kimi\'s authoritative path', () => {
+    const crossRootTarget = () => path.join(mainRepo, 'src', 'index.ts');
+    const inWorktreeTarget = () => path.join(worktreeDir, 'src', 'index.ts');
+
+    // Each case pairs a cross-root `path` with a `file_path` the model supplied.
+    // All three exited 0 (bypass) before the fix.
+    for (const [label, filePath] of [
+      ['empty-string file_path (the #2547 review BLOCKER)', ''],
+      ['in-worktree decoy file_path', null], // resolved below — needs worktreeDir
+      // A NON-STRING file_path additionally threw inside path.isAbsolute() and
+      // reached the outer `catch { process.exit(0) }` — crash-to-allow through
+      // the guard's own read rather than through normalization.
+      ['non-string file_path (array)', []],
+      ['non-string file_path (object)', {}],
+    ]) {
+      test(`${label} still blocks the cross-root write`, () => {
+        const result = runHook(worktreeDir, {
+          cwd: worktreeDir,
+          tool_name: 'StrReplaceFile',
+          tool_input: {
+            path: crossRootTarget(),
+            file_path: filePath === null ? inWorktreeTarget() : filePath,
+            edit: [{ old: 'orig', new: 'pwned' }],
+          },
+        });
+        assert.strictEqual(result.status, 2,
+          `a model-supplied file_path (${label}) must not shadow Kimi's authoritative ` +
+          `path and downgrade the #260 block to a silent allow. Got exit ${result.status}. ` +
+          `stderr: ${result.stderr}`);
+        assert.strictEqual(JSON.parse(result.stdout).decision, 'block');
+      });
+    }
+
+    // Negative control: the same shadowing shape pointed INSIDE the worktree must
+    // still be allowed, so the fix narrows what the guard inspects without
+    // over-blocking.
+    test('a spurious file_path on an in-worktree write still exits 0 (no over-block)', () => {
+      const result = runHook(worktreeDir, {
+        cwd: worktreeDir,
+        tool_name: 'StrReplaceFile',
+        tool_input: {
+          path: inWorktreeTarget(),
+          file_path: crossRootTarget(),
+          edit: [{ old: 'orig', new: 'ok' }],
+        },
+      });
+      assert.strictEqual(result.status, 0,
+        `an in-worktree write must stay allowed even when a decoy file_path points ` +
+        `cross-root — the guard follows the path kimi-cli executes on. ` +
+        `Got exit ${result.status}. stderr: ${result.stderr}`);
+      assert.strictEqual(result.stdout, '');
+    });
+
+    // Control: a NATIVE Claude payload has no `path` field, so the overwrite must
+    // not fire and file_path must keep governing. Guards against a fix that
+    // silently changed the non-Kimi contract.
+    test('native Claude payload (no path field) still blocks on file_path alone', () => {
+      const result = runHook(worktreeDir, {
+        cwd: worktreeDir,
+        tool_name: 'Edit',
+        tool_input: { file_path: crossRootTarget() },
+      });
+      assert.strictEqual(result.status, 2,
+        `a native Claude Edit must still block on file_path. Got exit ${result.status}. ` +
+        `stderr: ${result.stderr}`);
+      assert.strictEqual(JSON.parse(result.stdout).decision, 'block');
+    });
+  });
+
+  // 5d. #2595 (review Major 3) — the non-string `file_path` crash-to-allow, read
+  // WITHOUT a string `path` to mask it.
+  //
+  // The 5c cases above pair a non-string file_path with a valid cross-root
+  // `path`, so they pass because the authoritative-path overwrite replaces the
+  // bad value before the read. That is real coverage of the SHADOWING fix, but
+  // the review was right that it is not coverage of the crash: drop the `path`
+  // key and the identical payload took `data.tool_input?.file_path || ''` ->
+  // `[]` (truthy, survives the `!rawFilePath` early-out) -> `path.isAbsolute([])`
+  // -> TypeError -> outer `catch { process.exit(0) }`.
+  //
+  // READ THE ASSERTION HONESTLY: these expect exit 0, and pre-fix code ALSO
+  // exits 0 — via the catch instead of via the early-out. There is no black-box
+  // signature that separates them, so these cases document the fail-open and
+  // guard against a future change that makes a malformed payload BLOCK; they do
+  // not detect a revert. The gate that fails on a revert is the source-level
+  // invariant in tests/kimi-guard-typed-payload-reads.test.cjs. Asserting exit 0
+  // here and calling it regression coverage would repeat, one level up, exactly
+  // the false-green the review flagged in 5c.
+  describe('#2595: a non-string file_path with no path key fails open explicitly', () => {
+    for (const [label, filePath] of [
+      ['array', []],
+      ['object', {}],
+      ['number', 42],
+      ['boolean', true],
+    ]) {
+      test(`native Claude Edit with a ${label} file_path exits 0 without crashing`, () => {
+        const result = runHook(worktreeDir, {
+          cwd: worktreeDir,
+          tool_name: 'Edit',
+          tool_input: { file_path: filePath },
+        });
+        assert.strictEqual(result.status, 0,
+          `a malformed file_path has no path to check and must fail open quietly, ` +
+          `not block. Got exit ${result.status}. stderr: ${result.stderr}`);
+        assert.strictEqual(result.stdout, '');
+      });
+
+      test(`Kimi payload with a ${label} file_path and no path key exits 0`, () => {
+        const result = runHook(worktreeDir, {
+          cwd: worktreeDir,
+          tool_name: 'StrReplaceFile',
+          tool_input: { file_path: filePath, edit: [{ old: 'orig', new: 'pwned' }] },
+        });
+        assert.strictEqual(result.status, 0,
+          `with no string path to normalize from, there is nothing to check. ` +
+          `Got exit ${result.status}. stderr: ${result.stderr}`);
+        assert.strictEqual(result.stdout, '');
+      });
+    }
+
+    // Control: the SAME payload shape with a string cross-root file_path must
+    // still block, proving the typed read did not narrow the guard's reach.
+    test('control: a string cross-root file_path with no path key still blocks', () => {
+      const result = runHook(worktreeDir, {
+        cwd: worktreeDir,
+        tool_name: 'Edit',
+        tool_input: { file_path: path.join(mainRepo, 'src', 'index.ts') },
+      });
+      assert.strictEqual(result.status, 2,
+        `typing the read must not stop the guard seeing legitimate string paths. ` +
+        `Got exit ${result.status}. stderr: ${result.stderr}`);
+      assert.strictEqual(JSON.parse(result.stdout).decision, 'block');
+    });
+  });
+
   // 6. Sibling directory path is BLOCKED (validates the '/' boundary check AND prefix-overlap)
   describe('sibling path is blocked', () => {
     test('path that shares prefix with worktree root but is a sibling exits 2', () => {

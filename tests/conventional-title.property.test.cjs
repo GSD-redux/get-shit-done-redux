@@ -71,7 +71,7 @@ describe('classifyBucket — properties', () => {
     fc.assert(
       fc.property(fc.string(), (title) => {
         const bucket = classifyBucket(title);
-        assert.ok(['Feature', 'Fix', 'Enhancement'].includes(bucket));
+        assert.ok(['Feature', 'Fix', 'Enhancement', 'Internal'].includes(bucket));
       })
     );
   });

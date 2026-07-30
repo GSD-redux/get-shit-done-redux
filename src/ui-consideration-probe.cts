@@ -98,8 +98,8 @@ export function classifyElement(text: string): UIElementKind[] {
  */
 export const UI_TAXONOMY: TaxonomyEntry[] = [
   { id: 'empty', name: 'Empty / no data', elements: ['form', 'list-collection', 'media'], consideration: 'What is shown when there is no data — zero items, an unfilled form, or absent media?' },
-  { id: 'loading', name: 'Loading / in-flight', elements: ['form', 'list-collection', 'media', 'nav'], consideration: 'What is shown while data or content is still loading (skeleton, spinner, progressive reveal)?' },
-  { id: 'error', name: 'Error / failure', elements: ['form', 'list-collection', 'media', 'nav'], consideration: 'What is shown when the load or submit fails (message, retry affordance, partial fallback)?' },
+  { id: 'loading', name: 'Loading / in-flight', elements: ['form', 'list-collection', 'media', 'nav', 'interactive-control'], consideration: 'What is shown while data or content is still loading (skeleton, spinner, progressive reveal)?' },
+  { id: 'error', name: 'Error / failure', elements: ['form', 'list-collection', 'media', 'nav', 'interactive-control'], consideration: 'What is shown when the load or submit fails (message, retry affordance, partial fallback)?' },
   { id: 'populated', name: 'Populated / happy path', elements: ['list-collection', 'media'], consideration: 'What does the normal populated (happy-path) state look like at a typical volume of content?' },
   { id: 'partial', name: 'Partial / incomplete', elements: ['form', 'list-collection'], consideration: 'What is shown for partial or incomplete data — some fields or rows present, others missing?' },
   { id: 'overflow', name: 'Overflow / truncation', elements: ['list-collection', 'nav', 'static-content'], consideration: 'What happens when content exceeds its container — scroll, clip, wrap, or truncate?' },

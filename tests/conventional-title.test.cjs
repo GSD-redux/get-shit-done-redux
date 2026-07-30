@@ -39,8 +39,8 @@ describe('classifyBucket', () => {
     assert.equal(classifyBucket('fix: another fix'), 'Fix');
   });
 
-  test('chore(#N): -> Enhancement (catch-all)', () => {
-    assert.equal(classifyBucket('chore(#2): some chore'), 'Enhancement');
+  test('chore(#N): -> Internal (#2716 — non-user-facing type)', () => {
+    assert.equal(classifyBucket('chore(#2): some chore'), 'Internal');
   });
 
   test('untyped title -> Enhancement (catch-all)', () => {
@@ -146,5 +146,36 @@ describe('evaluatePrTitle — rejected titles', () => {
     const r = evaluatePrTitle({ title: 'fix(core): no ref' });
     assert.equal(typeof r.message, 'string');
     assert.ok(r.message.length > 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #2716: non-user-facing conventional types (test/chore/ci/docs/refactor/perf/
+// revert) classify to 'Internal', NOT 'Enhancement' — they must not render under
+// the user-facing Enhancement heading in release notes. Untyped and anchor-
+// defeated titles stay in the visible Enhancement fallback (safety net).
+// ---------------------------------------------------------------------------
+
+describe('classifyBucket #2716: non-user-facing types → Internal', () => {
+  for (const type of ['test', 'chore', 'ci', 'docs', 'refactor', 'perf', 'revert']) {
+    test(`${type}(#N): → Internal (not Enhancement)`, () => {
+      assert.equal(classifyBucket(`${type}(#100): some internal work`), 'Internal');
+    });
+    test(`${type}: (no scope) → Internal`, () => {
+      assert.equal(classifyBucket(`${type}: some internal work`), 'Internal');
+    });
+  }
+
+  test('feat/fix classification is unchanged', () => {
+    assert.equal(classifyBucket('feat(#5): new thing'), 'Feature');
+    assert.equal(classifyBucket('fix(#6): fix thing'), 'Fix');
+  });
+
+  test('untyped title stays in Enhancement (safety net)', () => {
+    assert.equal(classifyBucket('Main changes'), 'Enhancement');
+  });
+
+  test('[security] fix(...) stays in Enhancement (anchor-defeated safety net)', () => {
+    assert.equal(classifyBucket('[security] fix(config): the case'), 'Enhancement');
   });
 });

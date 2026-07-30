@@ -329,6 +329,7 @@
   "gsd-core/workflows/verify-work.md",
   "hooks/gsd-windsurf-pre-command.js",
   "hooks/gsd-windsurf-pre-write.js",
+  "hooks/package.json",
   "scripts/changeset/README.md",
   "scripts/changeset/cli.cjs",
   "scripts/changeset/github-release-notes.cjs",
