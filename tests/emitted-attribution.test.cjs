@@ -76,7 +76,6 @@ const {
 const {
   BASELINE_ENV,
   BASELINE_VERSION,
-  DEFAULT_CACHE_PATH,
   resolveBaseline,
 } = require('./helpers/emitted-baseline.cjs');
 
@@ -2345,8 +2344,12 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
   });
   assert.ok(
     resolvedBaseline.ok,
-    `no usable emitted baseline for ${base}@${baseSha.slice(0, 12)} (tried env, ` +
-    `${DEFAULT_CACHE_PATH}, and an in-job build):\n  ${(resolvedBaseline.errors || []).join('\n  ')}`,
+    // #2854: report the sources actually reached, not a hardcoded list of all three. An
+    // early return could claim it "tried an in-job build" it never called, which sent
+    // contributors hunting a rebuild that had not run.
+    `no usable emitted baseline for ${base}@${baseSha.slice(0, 12)} (tried ` +
+    `${(resolvedBaseline.attempted || []).join(', ') || 'nothing'}):` +
+    `\n  ${(resolvedBaseline.errors || []).join('\n  ')}`,
   );
   const baseline = resolvedBaseline.baseline;
   assert.ok(baseline && Object.keys(baseline).length > 0, `resolved baseline via ${resolvedBaseline.via} has no families`);
