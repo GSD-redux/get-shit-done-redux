@@ -103,5 +103,26 @@
       "hyphenNameAgentBody": true,
       "reviewerCli": true
     }
+  },
+  "reviewer": {
+    "slug": "qwen",
+    "flags": ["--qwen"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "qwen" },
+    "invoke": {
+      "binary": "qwen",
+      "args": ["-"],
+      "promptChannel": "stdin",
+      "outputChannel": "stdout",
+      "modelArg": null,
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 900000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "Qwen",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "handler": null
   }
 }

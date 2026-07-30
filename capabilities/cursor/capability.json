@@ -120,5 +120,26 @@
       ],
       "reviewerCli": true
     }
+  },
+  "reviewer": {
+    "slug": "cursor",
+    "flags": ["--cursor"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "cursor-agent" },
+    "invoke": {
+      "binary": "cursor-agent",
+      "args": ["-p", "--mode", "ask", "--trust", "--output-format", "text"],
+      "promptChannel": "argv-file-ref",
+      "outputChannel": "stdout",
+      "modelArg": null,
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 900000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "Cursor",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "handler": null
   }
 }

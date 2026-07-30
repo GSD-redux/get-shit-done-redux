@@ -76,9 +76,9 @@ const {
 const {
   BASELINE_ENV,
   BASELINE_VERSION,
-  DEFAULT_CACHE_PATH,
   resolveBaseline,
 } = require('./helpers/emitted-baseline.cjs');
+
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -1431,9 +1431,15 @@ test('baseline resolution precedence is explicit and reported', () => {
 
   // …and an explicitly-pointed-at stale baseline is a hard stop, not a fall-through:
   // the operator said "use this one".
+  //
+  // #2854: this fixture used to be named '/tmp/from-cache-restore.json', which asserted
+  // the exact conflation that broke CI — a CI cache restore is NOT an operator pin, and
+  // naming it one here documented the defect as intended behavior. The hard stop is a
+  // real guarantee for a HAND-SET path and is preserved; what changed is that CI no
+  // longer routes its restore through this door at all.
   const envStale = resolveBaseline({
     expectedSha: SHA_A,
-    env: { [BASELINE_ENV]: '/tmp/x.json' },
+    env: { [BASELINE_ENV]: '/tmp/operator-pinned-baseline.json' },
     cachePath: 'cache.json',
     readJson: () => goodBaseline(SHA_B),
     buildFallback: () => goodBaseline(SHA_A),
@@ -1448,6 +1454,182 @@ test('baseline resolution precedence is explicit and reported', () => {
   });
   assert.ok(viaBuild.ok);
   assert.equal(viaBuild.via, 'build');
+});
+
+// ── #2854: a CI cache restore is not an operator pin ─────────────────────────────
+//
+// ADR-2719 §5: "Cache miss falls back to an in-job build at `origin/next`." The PR lane
+// restores the baseline keyed on the PR's RECORDED base sha (`test.yml:198`) while the
+// gate resolves the base ref LIVE (`resolveBase()`), so the two drift whenever `next`
+// advances between a PR's last sync and its run. The restore was published straight to
+// GSD_EMITTED_BASELINE, where a mismatch is fatal — turning a recoverable cache into a
+// hard failure on diffs that touched nothing related. The export step is the boundary
+// that must be conservative in what it sends.
+
+const CI_CACHE_PATH = '.gsd-cache/emitted-baseline.json';
+
+/** Resolve exactly as CI does: cache restored to the DEFAULT path, nothing announced. */
+const resolveAsCI = (doc, expectedSha = SHA_A) => resolveBaseline({
+  expectedSha,
+  env: {},                                   // no operator pin — this is the whole point
+  cachePath: CI_CACHE_PATH,
+  readJson: typeof doc === 'function' ? doc : () => doc,
+  buildFallback: () => goodBaseline(expectedSha),
+});
+
+test('#2854: a drifted cache restore degrades to the in-job build', () => {
+  const r = resolveAsCI(goodBaseline(SHA_B));    // restored under a drifted key
+  assert.ok(r.ok, `must resolve via the in-job build; got: ${(r.errors || []).join('; ')}`);
+  assert.equal(r.via, 'build');
+  assert.equal(r.sha, SHA_A);
+  assert.deepEqual(r.attempted, [`cache:${CI_CACHE_PATH}`, 'build'],
+    'the cache must be tried and rejected before the build, and the trail must say so');
+});
+
+test('#2854: a current cache restore is used directly (the fast path survives)', () => {
+  const r = resolveAsCI(goodBaseline(SHA_A));
+  assert.ok(r.ok);
+  assert.equal(r.via, `cache:${CI_CACHE_PATH}`, 'a valid cache must not pay for a rebuild');
+});
+
+test('#2854: every recoverable malformation degrades rather than failing the run', () => {
+  // The blocker an isolated reviewer caught: an earlier revision gated only on sha
+  // equality, so a doc with the RIGHT sha but a wrong schema version or broken
+  // manifests was announced as an operator pin and hard-stopped downstream —
+  // reproducing this bug's own class, triggered by malformation instead of staleness.
+  // Routing through the cache path makes every one of these recoverable by construction.
+  const cases = {
+    'stale sha': goodBaseline(SHA_B),
+    'wrong schema version': { version: BASELINE_VERSION + 998, sha: SHA_A, manifests: { c: {} }, sizes: {} },
+    'manifests is an array': { version: BASELINE_VERSION, sha: SHA_A, manifests: [], sizes: {} },
+    'manifests absent': { version: BASELINE_VERSION, sha: SHA_A },
+    'sha absent': { version: BASELINE_VERSION, manifests: { c: {} }, sizes: {} },
+    'sha not 40-hex': { version: BASELINE_VERSION, sha: 'g'.repeat(40), manifests: { c: {} }, sizes: {} },
+    'absent file': null,
+  };
+
+  for (const [name, doc] of Object.entries(cases)) {
+    const r = resolveAsCI(doc);
+    assert.ok(r.ok, `${name}: must degrade to the build, not fail — got ${(r.errors || []).join('; ')}`);
+    assert.equal(r.via, 'build', `${name}: must reach the in-job build`);
+  }
+});
+
+test('#2854: sha length boundary — 39, 40, 41 hex', () => {
+  // limit-1 / limit / limit+1 on the 40-hex contract validateBaseline enforces.
+  for (const len of [39, 41]) {
+    const r = resolveAsCI({ version: BASELINE_VERSION, sha: 'a'.repeat(len), manifests: { c: {} }, sizes: {} });
+    assert.equal(r.via, 'build', `${len} hex is not a sha — must not be used as the baseline`);
+  }
+  const exact = resolveAsCI(goodBaseline(SHA_A));
+  assert.equal(exact.via, `cache:${CI_CACHE_PATH}`, '40 hex matching is the contract');
+});
+
+test('#2854: valid JSON that is not an object degrades rather than passing vacuously', () => {
+  for (const doc of [0, 'str', [], true]) {
+    const r = resolveAsCI(doc);
+    assert.ok(r.ok, `${JSON.stringify(doc)}: must degrade to the build`);
+    assert.equal(r.via, 'build', `${JSON.stringify(doc)} must never read as a usable baseline`);
+  }
+});
+
+test('#2854: an unreadable cache degrades and does not throw', () => {
+  // Deterministic IO failure by injection — never chmod 0o000, which root bypasses.
+  const r = resolveAsCI(() => { throw new Error('EACCES: permission denied'); });
+  assert.ok(r.ok);
+  assert.equal(r.via, 'build');
+});
+
+test('#2854: the cache is used exactly when it is valid for the sha under test', () => {
+  const hex40 = fc.string({
+    unit: fc.constantFrom(...'0123456789abcdef'), minLength: 40, maxLength: 40,
+  });
+  fc.assert(fc.property(hex40, hex40, (built, expected) => {
+    const r = resolveAsCI(goodBaseline(built), expected);
+    // Always resolves; the only question is whether it paid for a rebuild.
+    if (!r.ok) return false;
+    return (r.via === `cache:${CI_CACHE_PATH}`) === (built === expected);
+  }), { numRuns: 200 });
+});
+
+test('#2854: the gate is pinned to the SAME base the tree was merged with', () => {
+  // The deepest half of this bug. "Rebase check" merges `pull_request.base.sha`,
+  // pinned by #2472 so all 12 matrix jobs agree on one tree. But resolveBase()
+  // otherwise falls through to `origin/next`, which `fetch-depth: 0` leaves at the
+  // LIVE tip. When `next` advanced mid-flight the gate compared a tree built on
+  // base.sha against a baseline at a NEWER commit — so the correctly-keyed cache
+  // was rejected as "stale" and the run died. Worse than dying would be surviving:
+  // a baseline at the wrong commit attributes other people's merges to this PR.
+  //
+  // Two surfaces read one value, which is the generative-divergence shape this repo
+  // has been bitten by before, so the parity is asserted rather than assumed.
+  const yaml = require('js-yaml');
+  const wf = yaml.load(fs.readFileSync(path.join(REPO_ROOT, '.github/workflows/test.yml'), 'utf8'));
+
+  const jobsUnderTest = Object.entries(wf.jobs).filter(([, job]) =>
+    (job.steps || []).some((s) => typeof s.run === 'string' && s.run.includes('ci-rebase-check.cjs')));
+
+  assert.ok(jobsUnderTest.length >= 2,
+    `expected the rebase-pinned jobs to be found, got ${jobsUnderTest.length}`);
+
+  for (const [name, job] of jobsUnderTest) {
+    const rebaseStep = job.steps.find((s) => typeof s.run === 'string' && s.run.includes('ci-rebase-check.cjs'));
+    const mergedBase = (rebaseStep.env || {}).CI_REBASE_BASE_SHA;
+    const gateBase = (job.env || {}).GSD_EMITTED_BASE;
+
+    assert.ok(mergedBase, `job ${name}: rebase step must pin CI_REBASE_BASE_SHA`);
+    assert.equal(gateBase, mergedBase,
+      `job ${name}: the emitted gate's base (GSD_EMITTED_BASE=${JSON.stringify(gateBase)}) must equal ` +
+      `the commit the tree was merged with (CI_REBASE_BASE_SHA=${JSON.stringify(mergedBase)}). ` +
+      'Diverging them makes the differential compare a tree against a baseline from a ' +
+      'different commit, which mis-attributes unrelated merges to this PR.');
+  }
+});
+
+test('#2854: an explicit base pin outranks the live branch tip', () => {
+  // The mechanism the workflow pin relies on: GSD_EMITTED_BASE must win over
+  // origin/<base>, or setting it in CI would change nothing.
+  const pinned = 'c'.repeat(40);
+  assert.equal(baseRefCandidates({ GSD_EMITTED_BASE: pinned, GITHUB_BASE_REF: 'next' })[0], pinned,
+    'an explicit pin must be tried before origin/next');
+});
+
+test('#2854: an EMPTY base pin is ignored, not treated as a candidate', () => {
+  // The pin is job-level env, so on push/workflow_dispatch — where there is no
+  // pull_request — `${{ github.event.pull_request.base.sha }}` renders as an empty
+  // string rather than being unset. baseRefCandidates' truthy check already excludes
+  // it, but nothing asserted that, so narrowing the check to `!== undefined` would
+  // silently push '' as the first candidate and have `git rev-parse ''` decide the
+  // baseline. Pinned here because the workflow now guarantees this input shape.
+  assert.deepEqual(
+    baseRefCandidates({ GSD_EMITTED_BASE: '', GITHUB_BASE_REF: 'next' }),
+    baseRefCandidates({ GITHUB_BASE_REF: 'next' }),
+    'an empty pin must behave exactly as an absent one',
+  );
+  assert.ok(!baseRefCandidates({ GSD_EMITTED_BASE: '', GITHUB_BASE_REF: 'next' }).includes(''),
+    'the empty string must never become a base-ref candidate');
+});
+
+test('#2854: the resolution summary names only sources actually attempted', () => {
+  // The caller's assertion message hardcoded "(tried env, <cache>, and an in-job build)"
+  // on every failure, including early returns that reached none of them.
+  const envOnly = resolveBaseline({
+    expectedSha: SHA_A,
+    env: { [BASELINE_ENV]: '/tmp/operator-pinned-baseline.json' },
+    cachePath: 'cache.json',
+    readJson: () => goodBaseline(SHA_B),
+    buildFallback: () => goodBaseline(SHA_A),
+  });
+  assert.ok(!envOnly.ok);
+  assert.deepEqual(envOnly.attempted, [`env:${BASELINE_ENV}`],
+    'an env hard stop reaches neither the cache nor the build — the summary must say so');
+
+  const allThree = resolveBaseline({
+    expectedSha: SHA_A, env: {}, cachePath: 'cache.json',
+    readJson: () => goodBaseline(SHA_B),
+    buildFallback: () => goodBaseline(SHA_A),
+  });
+  assert.deepEqual(allThree.attempted, ['cache:cache.json', 'build']);
 });
 
 test('base-ref candidates are ordered most-specific first and de-duplicated', () => {
@@ -2200,8 +2382,12 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
   });
   assert.ok(
     resolvedBaseline.ok,
-    `no usable emitted baseline for ${base}@${baseSha.slice(0, 12)} (tried env, ` +
-    `${DEFAULT_CACHE_PATH}, and an in-job build):\n  ${(resolvedBaseline.errors || []).join('\n  ')}`,
+    // #2854: report the sources actually reached, not a hardcoded list of all three. An
+    // early return could claim it "tried an in-job build" it never called, which sent
+    // contributors hunting a rebuild that had not run.
+    `no usable emitted baseline for ${base}@${baseSha.slice(0, 12)} (tried ` +
+    `${(resolvedBaseline.attempted || []).join(', ') || 'nothing'}):` +
+    `\n  ${(resolvedBaseline.errors || []).join('\n  ')}`,
   );
   const baseline = resolvedBaseline.baseline;
   assert.ok(baseline && Object.keys(baseline).length > 0, `resolved baseline via ${resolvedBaseline.via} has no families`);

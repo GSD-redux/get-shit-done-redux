@@ -11,7 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { phaseVariants, buildRoadmapPhaseVariants, buildNotStartedPhaseVariants } from './validate.cjs';
 import { realClock } from './clock.cjs';
-import { phaseDirNameRe, PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE, canonicalPlanStem } from './validate.cjs';
+import { phaseDirNameRe, PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE, canonicalPlanStem, textEncodingError } from './validate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -811,10 +811,20 @@ function cmdVerifyPlanStructure(cwd: string, filePath: string, raw: boolean): vo
   if (!filePath) {
     error('file path required');
   }
+  if (filePath.includes('\0')) { error('file path contains null bytes'); }
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) {
     output({ error: 'File not found', path: filePath }, raw);
+    return;
+  }
+
+  // #2701: fail loud on NUL/binary corruption before structure checks. A
+  // structurally intact-but-NUL-corrupted plan otherwise passes as valid and is
+  // silently skipped by recursive/binary-skipping searchers downstream.
+  const encErr = textEncodingError(content, filePath);
+  if (encErr) {
+    output({ valid: false, errors: [encErr] }, raw);
     return;
   }
 

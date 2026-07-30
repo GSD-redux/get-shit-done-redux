@@ -416,3 +416,142 @@ test('installer copies plugin as .js, records it in the manifest, and removes it
   assert.ok(!fs.existsSync(pluginPath), 'plugin must be removed on uninstall');
   assert.ok(!fs.existsSync(path.join(cfg, 'plugins')), 'empty plugins/ dir must be pruned');
 });
+
+// ---------------------------------------------------------------------------
+// #2697: context-monitor subprocess is skipped in-process when context_warnings
+// is disabled, instead of paying a full Node boot inside the child only to exit.
+// The plugin destructures spawnSync at require-time, so we intercept by
+// monkeypatching require('child_process').spawnSync BEFORE loading the copied
+// plugin, recording every spawn's argv. Restore in t.after.
+// ---------------------------------------------------------------------------
+
+/**
+ * Build an installed layout, intercept spawnSync, and return { handlers, spawns, projectDir }.
+ * `planningConfig` (object|null) is written to <projectDir>/.planning/config.json; null = absent.
+ */
+async function buildLayoutWithSpawnTrace(t, { stubHooks, planningConfig }) {
+  const cp = require('node:child_process');
+  const spawns = [];
+  const realSpawnSync = cp.spawnSync;
+  // IMPORTANT: the plugin destructures spawnSync at require-time
+  // (`const { spawnSync } = require("child_process")`), so the patch MUST be in
+  // place BEFORE buildInstalledLayout requires the copied plugin, or the plugin
+  // captures the original spawnSync and our trace records nothing.
+  cp.spawnSync = (...args) => {
+    spawns.push(args);
+    // Return an allow/no-op result so the adapter's handleHookResult path completes.
+    return { stdout: '', status: 0, signal: null };
+  };
+  t.after(() => { cp.spawnSync = realSpawnSync; });
+
+  const { mod } = buildInstalledLayout(t, stubHooks || {});
+
+  // Project dir is the cwd the plugin reads config from (currentCwd).
+  const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-oc-proj-')));
+  t.after(() => cleanup(projectDir));
+  if (planningConfig !== null) {
+    fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, '.planning', 'config.json'),
+      JSON.stringify(planningConfig),
+    );
+  }
+
+  const handlers = await mod.server({ directory: projectDir });
+  // Establish an active session — the context-monitor dispatch is gated on
+  // currentSessionId, which session.created populates. Without this the gate
+  // short-circuits on the first operand (null) and the toggle is never reached,
+  // making the "disabled" assertions pass vacuously and the "enabled" ones fail.
+  await handlers.event({
+    event: { type: 'session.created', properties: { info: { id: 's1', directory: projectDir } } },
+  });
+  return { handlers, spawns, projectDir };
+}
+
+function spawnTargetedMonitor(spawns) {
+  return spawns.some((a) => {
+    const argv = a[1];
+    return Array.isArray(argv) && argv.some((s) => String(s).includes('gsd-context-monitor.js'));
+  });
+}
+
+test('#2697: context-monitor subprocess is skipped when context_warnings is disabled', async (t) => {
+  const { handlers, spawns } = await buildLayoutWithSpawnTrace(t, {
+    stubHooks: { 'gsd-context-monitor.js': stubHook('') },
+    planningConfig: { hooks: { context_warnings: false } },
+  });
+  // Bash is a non-Read tool → reaches the context-monitor dispatch.
+  await handlers['tool.execute.after']({ tool: 'bash', args: { command: 'echo hi' } }, {});
+  assert.ok(
+    !spawnTargetedMonitor(spawns),
+    `context-monitor spawn must be skipped when context_warnings:false; spawn argvs: ${JSON.stringify(spawns)}`,
+  );
+});
+
+test('#2697: context-monitor subprocess still runs when config is absent (default enabled)', async (t) => {
+  const { handlers, spawns } = await buildLayoutWithSpawnTrace(t, {
+    stubHooks: { 'gsd-context-monitor.js': stubHook('') },
+    planningConfig: null,
+  });
+  await handlers['tool.execute.after']({ tool: 'bash', args: { command: 'echo hi' } }, {});
+  assert.ok(
+    spawnTargetedMonitor(spawns),
+    'context-monitor spawn must still occur when the config toggle is absent (default = enabled)',
+  );
+});
+
+test('#2697: context-monitor subprocess runs when context_warnings explicitly true', async (t) => {
+  const { handlers, spawns } = await buildLayoutWithSpawnTrace(t, {
+    stubHooks: { 'gsd-context-monitor.js': stubHook('') },
+    planningConfig: { hooks: { context_warnings: true } },
+  });
+  await handlers['tool.execute.after']({ tool: 'bash', args: { command: 'echo hi' } }, {});
+  assert.ok(
+    spawnTargetedMonitor(spawns),
+    'context-monitor spawn must occur when context_warnings is explicitly true',
+  );
+});
+
+test('#2697: context-monitor subprocess runs when config.json is unparseable (defaults enabled)', async (t) => {
+  const cp = require('node:child_process');
+  const spawns = [];
+  const realSpawnSync = cp.spawnSync;
+  // Patch BEFORE requiring the plugin (it destructures spawnSync at require-time).
+  cp.spawnSync = (...args) => { spawns.push(args); return { stdout: '', status: 0, signal: null }; };
+  t.after(() => { cp.spawnSync = realSpawnSync; });
+
+  const { mod } = buildInstalledLayout(t, { 'gsd-context-monitor.js': stubHook('') });
+  const projectDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-oc-proj-')));
+  t.after(() => cleanup(projectDir));
+  fs.mkdirSync(path.join(projectDir, '.planning'), { recursive: true });
+  // Malformed JSON → the in-process check must treat it as "enabled" (Postel: conservative).
+  fs.writeFileSync(path.join(projectDir, '.planning', 'config.json'), '{ not valid json');
+
+  const handlers = await mod.server({ directory: projectDir });
+  // Establish an active session (the dispatch is gated on currentSessionId).
+  await handlers.event({
+    event: { type: 'session.created', properties: { info: { id: 's1', directory: projectDir } } },
+  });
+  await handlers['tool.execute.after']({ tool: 'bash', args: { command: 'echo hi' } }, {});
+  assert.ok(
+    spawnTargetedMonitor(spawns),
+    'context-monitor spawn must occur when config.json is unparseable (defaults = enabled)',
+  );
+});
+
+test('#2697: context-monitor skipped for Write when context_warnings disabled (not Bash-specific)', async (t) => {
+  const { handlers, spawns } = await buildLayoutWithSpawnTrace(t, {
+    stubHooks: { 'gsd-context-monitor.js': stubHook('') },
+    planningConfig: { hooks: { context_warnings: false } },
+  });
+  // Write reaches context-monitor dispatch (non-Read); the guard hooks run before it
+  // via tool.execute.before, not here, so the after-handler only hits the monitor.
+  await handlers['tool.execute.after'](
+    { tool: 'write', args: { filePath: '/proj/a.md', content: 'x' } },
+    {},
+  );
+  assert.ok(
+    !spawnTargetedMonitor(spawns),
+    `context-monitor spawn must be skipped for Write when context_warnings:false; spawn argvs: ${JSON.stringify(spawns)}`,
+  );
+});

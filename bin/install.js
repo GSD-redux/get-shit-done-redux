@@ -8501,6 +8501,17 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         console.log(`  ${green}✓${reset} Removed ${removedLibFiles} hooks/lib/ helper(s)`);
       }
     }
+
+    // #2717: remove the CommonJS marker GSD wrote into hooks/ for runtimes that
+    // stage .js hooks via dedicated paths (cursor/windsurf/codex) — but ONLY if
+    // it still carries GSD's exact content (a user-authored package.json is
+    // never deleted). Safe no-op for runtimes whose marker lives at the config
+    // root (the shared-bundle path) or that never received one.
+    try {
+      if (hooksSurface.removeCommonJsMarkerIfGsdOwned(hooksDir)) {
+        console.log(`  ${green}✓${reset} Removed GSD hooks/package.json (CommonJS marker)`);
+      }
+    } catch { /* best-effort */ }
   }
 
   // 4z. Remove the native plugin adapter (#1914, extended to Kilo by #2093).
@@ -11403,7 +11414,15 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     throw _earlyInstallErr;
   }
 
-  if (plan.installSurface === 'codex-toml' && !isMinimalMode(_effectiveInstallMode)) {
+  // #2695: this branch runs for BOTH `core` (minimal) and `full` profiles.
+  // Hooks are lightweight infrastructure (update-check + context monitor), not the
+  // "full agent surface" that `core` deliberately omits. The config.toml / agent
+  // generation below is still gated by its own inner `!isMinimalMode` guard, so
+  // `core` enters the branch to receive the hook-file copy + hooks.json wiring but
+  // does NOT get agent roles generated. Before #2695 the outer `!isMinimalMode`
+  // here skipped the whole branch for `core`, so the registered parent hook pointed
+  // at a worker/registry the same installer never delivered.
+  if (plan.installSurface === 'codex-toml') {
     // Capture pre-install snapshots before ANY GSD mutation
     // (#2760 fix 3). On post-write schema-validation failure OR any throw
     // during the mutation sequence (write failure, merge throw, etc.) we
@@ -11586,9 +11605,18 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 
     // Copy only the hook files that Codex actually registers via its hook configuration (#2153).
     // #772: added gsd-context-monitor.js for the new SubagentStart/Stop/PostToolUse events.
+    // #2695: the parent gsd-check-update.js spawn()s gsd-check-update-worker.js, which
+    //   require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so all four must be
+    //   installed/refreshed together for every profile, or Codex is wired to a dependency
+    //   chain the same installer never delivers.
     // We deliberately do *not* copy gsd-graphify-update.sh or hooks/lib/ for Codex
     // in this change (graphify auto-update support for Codex is out of scope for #3579).
-    const CODEX_HOOKS_TO_COPY = ['gsd-check-update.js', 'gsd-context-monitor.js'];
+    const CODEX_HOOKS_TO_COPY = [
+      'gsd-check-update.js',
+      'gsd-check-update-worker.js',
+      'managed-hooks-registry.cjs',
+      'gsd-context-monitor.js',
+    ];
     const codexHooksSrc = path.join(src, 'hooks', 'dist');
     if (fs.existsSync(codexHooksSrc)) {
       const codexHooksDest = path.join(targetDir, 'hooks');
@@ -11618,9 +11646,28 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           content = content.replace(/\{\{GSD_VERSION\}\}/g, pkg.version);
           fs.writeFileSync(destFile, content);
           try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
+        } else {
+          // #2695: raw byte-for-byte copy for allowlisted artifacts that carry
+          // no {{GSD_VERSION}} placeholder and no runtime path token (e.g.
+          // managed-hooks-registry.cjs, whose only `.claude` mention is inside a
+          // doc comment). Version/path transforms would be a no-op at best and a
+          // surprise at worst; the issue requires the registry copied verbatim.
+          fs.copyFileSync(srcFile, destFile);
+          try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
         }
       }
       console.log(`  ${green}✓${reset} Installed hooks (Codex)`);
+      // #2717: write the CommonJS marker into hooks/ alongside the staged .js
+      // scripts. Codex is excluded from installSharedHooksBundle by the
+      // !isCodex gate, so it never received the marker the shared-bundle path
+      // writes for the other runtimes. Without it, a ~/.codex/package.json
+      // declaring {"type":"module"} makes Node load gsd-check-update.js /
+      // gsd-context-monitor.js as ESM and their require() calls fail silently.
+      // Reuses the same helper the Cursor/Windsurf writers call so the marker
+      // content + user-file-preservation contract is identical everywhere.
+      if (hooksSurface.ensureCommonJsMarker(codexHooksDest)) {
+        console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
+      }
     }
 
     // Add Codex hooks (SessionStart for update checking) — requires codex_hooks feature flag

@@ -30,18 +30,36 @@ const HEADER_RE = /^([a-z]+)(\([^)]*\))?(!)?:/i;
 // An issue reference inside a scope: `(#123)`, `(#123, core)`, etc.
 const ISSUE_REF_IN_SCOPE_RE = /#\d+/;
 
+// #2716: recognized non-user-facing conventional-commit types. A title whose
+// START-anchored type prefix is one of these is internal work (tests, chores,
+// CI, docs, refactors, perf, reverts) and must NOT render under the user-facing
+// "Enhancement" heading in release notes. Only a CLEAN prefix match qualifies —
+// untyped or anchor-defeated titles fall through to the visible Enhancement
+// fallback (a safety net so possibly-user-facing content is never hidden).
+const NON_USER_FACING_TYPES = new Set([
+  'docs', 'refactor', 'test', 'ci', 'chore', 'perf', 'revert',
+]);
+
 /**
  * Classify a clean conventional title into a changelog bucket.
  * Callers that hold a full changelog bullet line (with a `* ` marker and a
  * ` by @author` suffix) must strip those first; this operates on the title.
  *
  * @param {string} title
- * @returns {'Feature'|'Fix'|'Enhancement'}
+ * @returns {'Feature'|'Fix'|'Enhancement'|'Internal'}
  */
 function classifyBucket(title) {
   const t = String(title == null ? '' : title).trim();
   if (FEATURE_RE.test(t)) return 'Feature';
   if (FIX_RE.test(t)) return 'Fix';
+  // #2716: a clean non-user-facing type prefix → Internal (omitted from user-facing
+  // release-note sections). The HEADER_RE anchor ensures a leading tag/prefix
+  // (e.g. `[security] fix(...)`) does NOT match here — those keep falling through
+  // to the visible Enhancement fallback.
+  const headerMatch = HEADER_RE.exec(t);
+  if (headerMatch && NON_USER_FACING_TYPES.has(headerMatch[1].toLowerCase())) {
+    return 'Internal';
+  }
   return 'Enhancement';
 }
 

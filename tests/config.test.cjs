@@ -769,12 +769,20 @@ describe('config-set <key> null — unset/clear (#2046)', () => {
       'review.models.gemini must be absent on disk after unset, not the string "null"'
     );
 
+    // #2797: review.models.<slug> is federated to its lane capability now, and a
+    // federated key always resolves to its declared default — so a cleared key
+    // reads back as the empty string (rendered `""` by the non-raw formatter)
+    // instead of erroring. The property this test actually guards is unchanged
+    // and asserted above: the key is REMOVED from disk, never persisted as the
+    // literal string "null".
     const getResult = runGsdTools('config-get review.models.gemini', tmpDir);
+    const shown = (getResult.output || '').trim();
     assert.ok(
-      !getResult.output || !getResult.output.trim() || getResult.output.trim() === 'undefined',
+      shown === '' || shown === '""' || shown === 'undefined',
       `config-get should return empty/undefined after unset, got: ${getResult.output}`
     );
-    assert.notStrictEqual(getResult.output && getResult.output.trim(), 'null');
+    assert.notStrictEqual(shown, 'null');
+    assert.notStrictEqual(shown, '"null"');
   });
 
   test('secret key: config-set brave_search null removes the key (never persists "null")', () => {
@@ -1465,8 +1473,17 @@ describe('config-set prototype-pollution guard via dynamic-key prefixes (alert #
       'features.__proto__: Object.prototype should not gain "somevalue"');
   });
 
-  test('review.models.constructor is blocked by setConfigValue guard (not schema gate)', () => {
-    const result = runGsdTools('config-set review.models.constructor somevalue', tmpDir);
+  test('agent_skills.constructor is blocked by setConfigValue guard (not schema gate)', () => {
+    // #2797: this case used `review.models.constructor`, which reached the
+    // setConfigValue guard only because the central pattern
+    // ^review\.models\.[a-zA-Z0-9_-]+$ accepted it first. That pattern is now
+    // federated to the lane capabilities and gone from the central schema, so
+    // the key is rejected at the schema gate instead (asserted separately below).
+    //
+    // The GUARD still needs coverage, so this exercises it through a surviving
+    // dynamic prefix. Losing this assertion would have quietly deleted the
+    // regression test for alert #26 rather than relocating it.
+    const result = runGsdTools('config-set agent_skills.constructor somevalue', tmpDir);
 
     assert.strictEqual(result.success, false, `Expected failure but got: ${result.output}`);
 
@@ -1480,7 +1497,19 @@ describe('config-set prototype-pollution guard via dynamic-key prefixes (alert #
     );
 
     assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'somevalue'), false,
-      'review.models.constructor: Object.prototype should not gain "somevalue"');
+      'agent_skills.constructor: Object.prototype should not gain "somevalue"');
+  });
+
+  test('review.models.constructor is now rejected at the schema gate (#2797)', () => {
+    // Defence in depth: after federation the key never reaches setConfigValue at
+    // all, because no lane declares `review.models.constructor`. Rejecting
+    // earlier is strictly safer than rejecting later — this locks that it is
+    // still rejected, by whichever gate gets there first.
+    const result = runGsdTools('config-set review.models.constructor somevalue', tmpDir);
+
+    assert.strictEqual(result.success, false, `Expected failure but got: ${result.output}`);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(Object.prototype, 'somevalue'), false,
+      'Object.prototype must not gain "somevalue"');
   });
 
   test('positive control: agent_skills.sonnet-coder with valid value succeeds', () => {
