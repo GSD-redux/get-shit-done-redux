@@ -77,7 +77,9 @@
     },
     "orchestratorExec": {
       "command": "codex",
-      "args": ["exec"],
+      "args": [
+        "exec"
+      ],
       "cwdFlag": "--cd",
       "promptFlag": null
     },
@@ -92,12 +94,22 @@
   },
   "reviewer": {
     "slug": "codex",
-    "flags": ["--codex"],
+    "flags": [
+      "--codex"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "codex" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "codex"
+    },
     "invoke": {
       "binary": "codex",
-      "args": ["exec", "--ephemeral", "--skip-git-repo-check", "-"],
+      "args": [
+        "exec",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "-"
+      ],
       "promptChannel": "stdin",
       "outputChannel": "file-arg",
       "outputArg": "-o",
@@ -111,5 +123,12 @@
     "requiresBinaries": [],
     "promptBudgetKey": null,
     "handler": null
+  },
+  "config": {
+    "review.models.codex": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Codex reviewer lane."
+    }
   }
 }

@@ -11,7 +11,9 @@
   },
   "reviewer": {
     "slug": "ollama",
-    "flags": ["--ollama"],
+    "flags": [
+      "--ollama"
+    ],
     "transport": "openai-http",
     "probe": {
       "kind": "http-reachable",
@@ -29,8 +31,27 @@
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "Ollama",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [
+      "jq"
+    ],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
     "handler": "openai-compatible"
+  },
+  "config": {
+    "review.models.ollama": {
+      "type": "string",
+      "default": "",
+      "description": "Model requested from the Ollama reviewer lane; empty discovers the first model from /v1/models."
+    },
+    "review.ollama_host": {
+      "type": "string",
+      "default": "",
+      "description": "Base URL of the Ollama OpenAI-compatible server."
+    },
+    "review.max_prompt_tokens_per_reviewer.ollama": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    }
   }
 }

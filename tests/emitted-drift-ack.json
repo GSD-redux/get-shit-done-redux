@@ -1,6 +1,9 @@
 {
   "version": 1,
   "paths": {
+    "review.md": {
+      "reason": "#2797 / ADR-2782 D9 (config half). Growth is comment-only: the three per-lane prompt-budget fallback guards (ollama, lm_studio, llama_cpp) gain an explanation of why they test for the -1 sentinel rather than 0. A federated config key always resolves to its declared default rather than reporting not-found, so an unset per-lane budget needs a sentinel that cannot collide with a legitimate value — and 0 is legitimate: it already means \"do not trim this lane\" (the early-return guard in prepare_trimmed_prompt_for_reviewer). Treating 0 as unset would have silently switched a user who deliberately disabled trimming for one lane onto the global budget. No lane's invocation shape changed."
+    },
     "explore.md": {
       "reason": "#2229 adds the three-way claim disposition (admit / refute / abstain) plus the Unresolved ledger to the /gsd-explore Step-3 research pass, so a surfaced research claim carries its grounding instead of being folded into confident prose unverified. Review round 2 grew it further, all of it load-bearing rather than elaboration: a resolve-model bash block binding researcher_model AND researcher_profile (without the profile the tier-floor guard had no operative trigger at all, and its test asserted only that the prose existed), the model= spawn parameter with the #2517 omit-on-inherit rule, an authority-based decision procedure separating refute from abstain (the two arms could previously describe the same event), a defined destination for an untagged finding, and the corrected ledger template. The growth is that guidance written inline in the workflow body, deliberately NOT relocated into an eagerly @-imported reference, which ADR-1610 Decision 4 names as gaming the size proxy (only lazy, Read-at-step extraction counts). 11127 -> 16771 bytes (+5644), DEFAULT tier, cap 40960 — 41% of budget."
     }

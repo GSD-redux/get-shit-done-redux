@@ -49,9 +49,6 @@
     "planning.commit_docs",
     "planning.search_gitignored",
     "planning.sub_repos",
-    "review.ollama_host",
-    "review.lm_studio_host",
-    "review.llama_cpp_host",
     "review.default_reviewers",
     "review.max_prompt_tokens",
     "review.max_prompt_tokens_per_reviewer",
@@ -119,11 +116,6 @@
       "description": "agent_skills.<agent-type>"
     },
     {
-      "topLevel": "review",
-      "source": "^review\\.models\\.[a-zA-Z0-9_-]+$",
-      "description": "review.models.<cli-name>"
-    },
-    {
       "topLevel": "features",
       "source": "^features\\.[a-zA-Z0-9_]+$",
       "description": "features.<feature_name>"
@@ -177,11 +169,6 @@
       "topLevel": "fast_mode",
       "source": "^fast_mode\\.agent_overrides\\.[a-zA-Z0-9_-]+$",
       "description": "fast_mode.agent_overrides.<agent-id>"
-    },
-    {
-      "topLevel": "review",
-      "source": "^review\\.max_prompt_tokens_per_reviewer\\.[a-zA-Z0-9_-]+$",
-      "description": "review.max_prompt_tokens_per_reviewer.<reviewer-slug>"
     },
     {
       "topLevel": "review",

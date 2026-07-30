@@ -11,7 +11,9 @@
   },
   "reviewer": {
     "slug": "lm_studio",
-    "flags": ["--lm-studio"],
+    "flags": [
+      "--lm-studio"
+    ],
     "transport": "openai-http",
     "probe": {
       "kind": "http-reachable",
@@ -29,8 +31,27 @@
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "LM Studio",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [
+      "jq"
+    ],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
     "handler": "openai-compatible"
+  },
+  "config": {
+    "review.models.lm_studio": {
+      "type": "string",
+      "default": "",
+      "description": "Model requested from the LM Studio reviewer lane; empty discovers the first model from /v1/models."
+    },
+    "review.lm_studio_host": {
+      "type": "string",
+      "default": "",
+      "description": "Base URL of the LM Studio OpenAI-compatible server."
+    },
+    "review.max_prompt_tokens_per_reviewer.lm_studio": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    }
   }
 }
