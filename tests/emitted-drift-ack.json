@@ -3,6 +3,12 @@
   "paths": {
     "plan-phase.md": {
       "reason": "#2770: decision-coverage gate recomputes CONTEXT_PATH in-block + guards the empty-glob case (handler now fails closed on empty arg). Net growth kept under the ADR-857 size cap by condensing adjacent §13a prose/JSON; the residual +89 bytes are the irreducible glob+guard logic."
+    },
+    "autonomous.md": {
+      "reason": "#2800 — the hand-enumerated reviewer-flag list is replaced by a loop over `gsd_run review-lane flags`, and the whole CONVERGENCE_ARGS construction is relocated below the runtime-launcher preamble because it now calls gsd_run and each bash fence is its own shell. Growth is the explanatory comments carrying that constraint plus the loop body, against nine deleted flag literals. Deliberate: the byte delta is the cost of the flags no longer being hand-maintained in three places that had drifted apart."
+    },
+    "next.md": {
+      "reason": "#2800 — same derived-flag-loop change as autonomous.md. next.md needed no relocation (its launcher preamble already precedes the loop), so the growth here is only the loop plus the comment recording that --all and --text stay literal because they are convergence controls, not reviewer lanes."
     }
   }
 }
