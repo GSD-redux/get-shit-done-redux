@@ -1295,4 +1295,95 @@ describe('no-adhoc-markdown-parsing rule', () => {
       invalid: [],
     });
   });
+
+  // ── TABLE-REGEX widening: [^|\n] and escaped-pipe-plus-others classes (#2880) ──
+
+  test('invalid: content.replace(<inline [^|\\n] cell-class regex>) — the exact shape that evaded the rule before #2880', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          // /\|[^|\n]*\|/ — pipe-excluding cell class ALSO excludes newline; this
+          // is the src/state-document.cts shape that the sole-member-class check
+          // missed prior to the #2880 widening.
+          code: String.raw`content.replace(/\|[^|\n]*\|/, 'x');`,
+          filename: 'src/state-document.cts',
+          // CallExpression is the outer/enter-first node (adhocReplaceMutation);
+          // its Literal argument (visited next, on descent) is the second,
+          // independent tableRegex finding — same ordering as the established
+          // roadmapContent.replace(...) case above.
+          errors: [{ messageId: 'adhocReplaceMutation' }, { messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: factory function returning new RegExp(<template literal with [^|\\n] cell class>)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: 'function buildRowPattern() {\n  return new RegExp(`\\\\|[^|\\\\n]*\\\\|`, \'im\');\n}',
+          filename: 'src/state-document.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid: cell class with the pipe escaped alongside another excluded member [^\\|\\n]', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`const cellRe = /\|[^\|\n]*\|/;`,
+          filename: 'src/state-document.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: negated class with NO pipe at all is not a cell scan (e.g. /^[^\\n]*$/)', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code: String.raw`content.replace(/^[^\n]*$/, 'x');`,
+          filename: 'src/state-document.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('invalid: body.replace(...) — non-matching receiver name (bounded withSection callback) suppresses ONLY adhocReplaceMutation; the regex literal itself is still an independent tableRegex finding', () => {
+    // The ADHOC-REPLACE-MUTATION check is scoped to receivers matching
+    // /roadmap|state|reqContent|content/i — "body" (the withSection callback
+    // parameter name) does not match, so no adhocReplaceMutation fires here.
+    // But the standalone Literal visitor inspects EVERY regex literal in the
+    // file regardless of call-site context, so the pipe-excluding-class regex
+    // is still caught as a bare tableRegex finding either way.
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [],
+      invalid: [
+        {
+          code: String.raw`body.replace(/\|[^|\n]*\|/, 'x');`,
+          filename: 'src/state-document.cts',
+          errors: [{ messageId: 'tableRegex' }],
+        },
+      ],
+    });
+  });
+
+  test('valid: allow-adhoc-markdown suppresses the widened [^|\\n] shape', () => {
+    ruleTester.run('no-adhoc-markdown-parsing', noAdhocMarkdownParsing, {
+      valid: [
+        {
+          code: String.raw`content.replace(/\|[^|\n]*\|/, 'x'); // allow-adhoc-markdown: reason`,
+          filename: 'src/state-document.cts',
+        },
+      ],
+      invalid: [],
+    });
+  });
 });

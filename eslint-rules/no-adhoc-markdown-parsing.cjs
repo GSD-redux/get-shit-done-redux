@@ -173,8 +173,17 @@ const rule = {
     function isTableRegexSource(src) {
       // Must contain an escaped pipe
       if (!src.includes('\\|')) return false;
-      // Must ALSO contain a negated-pipe cell-capture class: [^|] or [^\|]
-      return /\[\^\\?\|\]/.test(src);
+      // Must ALSO contain a negated character class that EXCLUDES the pipe —
+      // the hand-rolled cell-capture idiom. The pipe may be escaped (`[^\|]`)
+      // and may sit alongside other excluded characters (#2880): the common,
+      // and strictly MORE correct, spelling is `[^|\n]` (a GFM cell can span
+      // neither a pipe nor a line break). Matching only the sole-member class
+      // caught the sloppier spelling and missed the better one —
+      // `src/state-document.cts` used `[^|\n]` and evaded the rule entirely,
+      // which is the ADR-2143 §7 enforcement hole this widening closes. A
+      // negated class that does not exclude a pipe at all (`[^\n]`, `[^a-z]`)
+      // is still NOT a cell scan and stays out of scope.
+      return /\[\^[^\]]*\\?\|[^\]]*\]/.test(src);
     }
 
     function isTableRegex(node) {
