@@ -15,43 +15,112 @@
  * detected. The instance→cli mapping lives HERE (single source; see the parity
  * test in tests/review-reviewer-instances.test.cjs — DEFECT.GENERATIVE-FIX).
  *
- * KNOWN_REVIEWER_SLUGS (post-review #2092): registry-derived, not a flat
- * hand-maintained array. Each capability-runtime descriptor that is a valid
- * reviewer CLI declares `runtime.hostBehaviors.reviewerCli: true`
- * (capabilities/<id>/capability.json); this module reads that flag off the
- * generated capability-registry.cjs at require-time. A handful of reviewer
- * CLIs are NOT install-time runtimes at all (no capabilities/<id>/ descriptor
- * exists) — those stay a small hardcoded tail:
- *   - `gemini` — hook-event dialect name only (see runtime-hooks-surface.cts);
- *     the Gemini CLI reviewer is not an installable runtime (#1928 folded
- *     gemini into antigravity's descriptor).
- *   - `coderabbit` / `ollama` / `lm_studio` / `llama_cpp` — third-party
- *     review/model CLIs with no GSD install surface at all.
+ * KNOWN_REVIEWER_SLUGS (ADR-2782 D9, Phase 5a #2798): derived from declared
+ * `reviewer` bodies in the capability registry, not a hand-maintained tail.
+ * A capability of EITHER `role: "runtime"` (the six dual-purpose hosts —
+ * antigravity/claude/codex/cursor/opencode/qwen) or the lane-only
+ * `role: "reviewer"` (gemini/coderabbit/ollama/lm_studio/llama_cpp) may carry
+ * a `reviewer` body, and it is the body's `reviewer.slug` — NOT the capability
+ * id — that becomes the roster entry: the two differ for `lm-studio` (id) /
+ * `lm_studio` (slug) and `llama-cpp` (id) / `llama_cpp` (slug), ADR-2782's
+ * three-namespace trap (`id` must be kebab; `slug` keeps the shipped roster's
+ * snake form).
+ *
+ * `runtime.hostBehaviors.reviewerCli: true` survives as a DERIVED LEGACY ALIAS
+ * for one release (D9): a capability that only sets the flag (no `reviewer`
+ * body yet) still contributes its capability id as a slug, exactly as before
+ * this phase. Where a capability carries BOTH a declared body and the alias,
+ * the BODY WINS — that capability contributes only the body's slug, never
+ * both. Alias removal is a named later phase (#2801), not done here.
+ *
+ * Before this phase the five non-runtime reviewers (`gemini`, `coderabbit`,
+ * `ollama`, `lm_studio`, `llama_cpp`) had no `capabilities/<id>/` descriptor at
+ * all and were a hardcoded `NON_RUNTIME_REVIEWER_SLUGS` tail. Phase 5a gives
+ * each one a lane-only `role: "reviewer"` capability (ADR-2782 D3), so the
+ * tail is deleted outright. See
+ * `docs/adr/2782-reviewer-lane-capability-surface.md`.
  */
 
-const NON_RUNTIME_REVIEWER_SLUGS: ReadonlyArray<string> = [
-  'gemini',
-  'coderabbit',
-  'ollama',
-  'lm_studio',
-  'llama_cpp',
-];
-
-function deriveRuntimeReviewerSlugs(): string[] {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const registry = require('./capability-registry.cjs') as {
-    runtimes?: Record<string, { runtime?: { hostBehaviors?: { reviewerCli?: boolean } } }>;
-  };
-  const runtimes = registry.runtimes || {};
-  return Object.keys(runtimes).filter(
-    (id) => runtimes[id]?.runtime?.hostBehaviors?.reviewerCli === true,
-  );
+interface RegistryReviewerCapability {
+  reviewer?: { slug?: unknown };
+  runtime?: { hostBehaviors?: { reviewerCli?: unknown } };
 }
 
-export const KNOWN_REVIEWER_SLUGS: ReadonlyArray<string> = [
-  ...deriveRuntimeReviewerSlugs(),
-  ...NON_RUNTIME_REVIEWER_SLUGS,
-];
+interface ReviewerCapabilityRegistry {
+  capabilities?: Record<string, RegistryReviewerCapability>;
+}
+
+/**
+ * Derive the reviewer-slug roster from a capability registry.
+ *
+ * Exported (rather than a require()-time-only side effect) so tests can
+ * exercise the derivation directly against a synthetic registry — the real
+ * roster below is a single call against the generated
+ * `capability-registry.cjs`, and `tests/review-lane-descriptor.test.cjs`'s
+ * `checkReviewerLaneParity` separately guards that the real roster still
+ * agrees with `src/review-lane-descriptor.cts` and the workflow.
+ *
+ * Reads `registry.capabilities` — every declared capability regardless of
+ * role — because a `role: "reviewer"` lane-only capability is never stored in
+ * `registry.runtimes` (that map is role:"runtime" only). Per capability: a
+ * declared `reviewer.slug` wins outright (D9) and the capability contributes
+ * ONLY that slug; only when there is no body does the legacy
+ * `hostBehaviors.reviewerCli` alias contribute the capability id instead. The
+ * result is collected into a Set (so a slug can never appear twice, even if
+ * two distinct capabilities somehow named the same one) and returned as a
+ * SORTED array, so the roster's order never depends on `Object.entries()`
+ * iteration / registry build order.
+ */
+export function deriveReviewerSlugs(registry: ReviewerCapabilityRegistry): string[] {
+  const capabilities = registry.capabilities || {};
+  const slugs = new Set<string>();
+  for (const [capId, cap] of Object.entries(capabilities)) {
+    // Trim before the emptiness test: `length > 0` alone admits a whitespace-only
+    // slug ("   ") verbatim into the roster, where it can never match a real lane
+    // but still occupies a roster entry. Unreachable through the checked-in
+    // registry today, but this function is EXPORTED for reuse and carries no
+    // other validation, so it should not depend on its caller's hygiene.
+    const rawSlug = cap?.reviewer?.slug;
+    const declaredSlug = typeof rawSlug === 'string' ? rawSlug.trim() : '';
+    if (declaredSlug.length > 0) {
+      slugs.add(declaredSlug);
+      continue; // the body wins — never ALSO add this capability's alias below.
+    }
+    if (cap?.runtime?.hostBehaviors?.reviewerCli === true) {
+      slugs.add(capId);
+    }
+  }
+  return [...slugs].sort();
+}
+
+/**
+ * The roster, derived once at module load.
+ *
+ * GUARDED, because this runs at `require()` time: an uncaught throw here does not
+ * degrade reviewer selection, it breaks `require()` of this module for EVERY
+ * consumer. The sibling `capability-trust.cjs` already holds this line — its
+ * `discloseExecutableSurfaces` is documented "TOTAL: never throws, for any
+ * manifest shape" and wrapped accordingly — and this module handles the same
+ * class of registry-derived input, so it should not be the asymmetric one.
+ *
+ * A malformed registry yields an EMPTY roster rather than a crash. That is a
+ * visible degradation, not a silent one: under ADR-2782 D4 an explicitly
+ * requested reviewer that is unavailable is an ERROR, so `/gsd:review --claude`
+ * against an empty roster fails loudly instead of quietly reviewing with nobody.
+ *
+ * Unreachable through the checked-in registry today (it is generated, JSON-sourced
+ * and code-reviewed, so it cannot carry a getter or a Proxy). Guarded anyway —
+ * reachability analysis is not a contract, and the next caller should not have to
+ * redo it.
+ */
+export const KNOWN_REVIEWER_SLUGS: ReadonlyArray<string> = (() => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return deriveReviewerSlugs(require('./capability-registry.cjs') as ReviewerCapabilityRegistry);
+  } catch {
+    return [];
+  }
+})();
 
 /** Instance names are lowercase slugs that must not shadow a built-in slug. */
 export const INSTANCE_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;

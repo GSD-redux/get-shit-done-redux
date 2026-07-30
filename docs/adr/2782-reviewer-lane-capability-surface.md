@@ -330,6 +330,32 @@ Therefore, normatively:
 A host change is a change of *who receives the user's plans*. It is the most security-relevant
 mutation in this design, and it must not be reachable by editing a JSON file.
 
+> **Implementation note added by Phase 3 (#2796) — how rule 1 is actually satisfied.**
+>
+> The resolved host is **deliberately excluded from the disclosure signature**, and a reader
+> comparing rule 1 to `capability-trust.cts` must not mistake that for the rule being unimplemented.
+>
+> `signatureForManifest(manifest, stagedDir?)` is the single consent key that **both** the loader and
+> the lifecycle compute, explicitly so the two "can never drift". The loader has **no config
+> resolver** — `hostConfigKey` names a key in `.planning/config.json`, which is outside the SHA-pinned
+> bundle. Folding the resolved host into the signature would therefore make the loader and the
+> lifecycle compute *different* signatures for the same manifest, producing a permanent
+> false-mismatch loop that re-prompts forever.
+>
+> So the binding is split, and rule 1 still holds end to end:
+> - the **signature** binds the manifest-derived lane fields (`slug`, `transport`, `binary`, `args`,
+>   `hostConfigKey`, `promptChannel`, `handler`) — everything that is SHA-pinned;
+> - the **consent record** additionally stores the resolved host, which is what rule 1 requires;
+> - **Phase 5b re-resolves and compares at invocation** and blocks on mismatch, which is where rule 4
+>   already places the check.
+>
+> `reviewsSection` and `timeoutFloorMs` are excluded for a different reason: a cosmetic change must
+> not force re-consent, because a prompt carrying no security information is how users learn to click
+> through — the same failure this decision cites when rejecting a per-run egress prompt.
+>
+> *(Recorded here rather than in the PR that made the decision. A squash-merged PR body is not a
+> durable record: it is invisible to anyone reading the ADR later, which is exactly who needs this.)*
+
 **Stated honestly, and consistent with ADR-1244 D5's own acknowledgment that there is no sandbox:**
 even with the above, consent-at-install remains a weaker gate for a *standing egress channel* than
 for a hook. A user consents once; the lane thereafter receives every plan on every review run.
@@ -659,6 +685,41 @@ lane and they are deliberately not the same string:
 | `reviewer.slug` | `lm_studio` | snake | the shipped roster and `review.lm_studio_host`, which D9 leaves unchanged |
 | `reviewer.flags` | `--lm-studio` | kebab | the shipped flag |
 
-Phase 2 therefore validates `reviewer.slug` against its own pattern (`/^[a-z][a-z0-9_-]*$/`) rather
-than reusing `KEBAB_RE`, which would have rejected two shipped lanes. Phase 5a must create
-`capabilities/lm-studio/` and `capabilities/llama-cpp/`, each declaring the snake-case slug.
+Phase 2 therefore validates `reviewer.slug` against its own pattern rather than reusing `KEBAB_RE`,
+which would have rejected two shipped lanes. Phase 5a must create `capabilities/lm-studio/` and
+`capabilities/llama-cpp/`, each declaring the snake-case slug.
+
+*(Corrected 2026-07-29: this paragraph first recorded the pattern as `/^[a-z][a-z0-9_-]*$/`. Phase 2's
+own security review caught that as a divergence from Phase 1's exported `LANE_SLUG_RE`, which permits
+a leading digit — a model-named lane such as `4o-mini` would have been accepted by the core descriptor
+and rejected by the manifest validator, reintroducing exactly the translation layer this epic deletes.
+The shipped pattern is `/^[a-z0-9][a-z0-9_-]*$/`, and a parity assertion now fails if the two ever
+drift again.)*
+
+### 2026-07-29 — Phase 4 and Phase 5a are swapped (ordering correction from Phase 5a)
+
+**The phase table above runs Phase 4 (federated config) before Phase 5a (lane declarations), and
+#2798 states "Depends on Phases 2 and 4". That ordering is inverted, and it makes Phase 4
+unsatisfiable.**
+
+D9's ownership table assigns `review.ollama_host` to the `ollama` lane, `review.lm_studio_host` to
+`lm_studio`, and `review.llama_cpp_host` to `llama_cpp`. A federated `config` slice lives inside a
+`capabilities/<id>/capability.json` — and **those capability directories do not exist until Phase 5a
+creates them**. Verified before the swap: `capabilities/{ollama,lm_studio,llama_cpp,gemini,coderabbit}`
+were all absent, and only the six `reviewerCli`-flagged runtime capabilities existed.
+
+So in the stated order Phase 4 has nowhere to put three of its five key families, and its own "Done
+when" — *"`review.<host>_host` owned by lane capabilities"* — cannot be met. Shipping it unmet would
+be a failed deployment under `CI.GATE.acceptance-criteria-required`.
+
+5a's stated dependency on Phase 4 is likewise unfounded: declaring a `reviewer` body requires only the
+manifest vocabulary from Phase 2. **The real dependency graph is `Phase 2 → 5a → 4`**, with
+`5a → 5b → 6` unchanged. Nothing about either phase's *content* changes — only their order.
+
+**A second correction, to #2798's acceptance list.** It requires "`docs/INVENTORY.md` updated +
+`node scripts/gen-inventory-manifest.cjs --write` run **after** `build:lib`". That rests on a false
+premise: the inventory catalogs `bin/lib/*.cjs` **modules**, not capability directories —
+`antigravity`, `opencode` and `qwen` appear zero times in it, and `INVENTORY-MANIFEST.json`'s six
+families contain no `capabilities/` entry at all. `gen-inventory-manifest.cjs --check` passes with the
+five new capability directories added and no inventory edit. The item is vacuous for this phase, and
+inventing an edit to satisfy it would introduce drift rather than prevent it.

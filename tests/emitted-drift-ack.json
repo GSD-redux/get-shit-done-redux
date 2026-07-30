@@ -9,6 +9,12 @@
     },
     "hooks/managed-hooks-registry.cjs": {
       "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so the registry is now emitted into Codex installs byte-for-byte. The diff is in bin/install.js (allowlist + raw-copy fallback + profile gate), not in the registry source, so the hooks-built attribution rule flags the emitted registry path. This ripple is the intended fix."
+    },
+    "code-review.md": {
+      "reason": "#2694: three inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved SUMMARY.md/REVIEW.md artifacts are no longer silently dropped. The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 3 boundary sites; no observable command shape changed otherwise. This is the intended fix."
+    },
+    "code-review-fix.md": {
+      "reason": "#2694: six inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved REVIEW.md/REVIEW-FIX.md artifacts are no longer silently dropped (status/depth/files_reviewed_list extraction). The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 6 boundary sites; no observable command shape changed otherwise. This is the intended fix."
     }
   }
 }
