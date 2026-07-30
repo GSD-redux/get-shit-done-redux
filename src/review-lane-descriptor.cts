@@ -786,3 +786,254 @@ export function checkReviewerLaneParity(input: ParityInput): ParityResult {
 
   return { ok: violations.length === 0, violations };
 }
+
+/* ------------------------------------------------------------------ *
+ * Documentation parity (ADR-2782 Phase 6, #2800 — closes #2781/#2272)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Frozen reason enum for the DOCUMENTATION arm.
+ *
+ * Deliberately separate from `PARITY_VIOLATION` rather than an extension of it. The two functions
+ * answer different questions — `checkReviewerLaneParity` asks *what runs* (descriptor ↔ roster ↔
+ * registry), this asks *what is documented*. Fusing them would change the signature of a function
+ * with seven dependents and would let a stale doc make the runtime checker look red.
+ *
+ * Same three-coordinated-changes rule as its sibling: this enum, the emitting site, and the test
+ * locking `Object.keys(...).sort()`.
+ */
+export const DOCS_PARITY_VIOLATION = Object.freeze({
+  MALFORMED_LANE: 'malformed_lane',
+  DOC_FLAG_MISSING: 'doc_flag_missing',
+  DOC_FLAG_UNDECLARED: 'doc_flag_undeclared',
+  DOC_TITLE_MISSING: 'doc_title_missing',
+  SIGNATURE_FLAG_MISSING: 'signature_flag_missing',
+  DOC_UNREADABLE: 'doc_unreadable',
+} as const);
+
+export type DocsParityViolationReason =
+  (typeof DOCS_PARITY_VIOLATION)[keyof typeof DOCS_PARITY_VIOLATION];
+
+export interface DocsParityViolation {
+  reason: DocsParityViolationReason;
+  /** The document the violation was found in. */
+  doc: string;
+  /** The flag or section title at fault. */
+  subject: string;
+}
+
+export interface DocsParityResult {
+  ok: boolean;
+  violations: DocsParityViolation[];
+  /**
+   * Documents that carry no `/gsd-review` surface at all and were therefore skipped.
+   *
+   * Reported rather than silently dropped: `docs/pt-BR/FEATURES.md` is a 77-line stub, and a
+   * caller that cannot tell "this mirror does not document the command" from "this mirror agrees"
+   * has the same blindness this whole gate exists to remove.
+   */
+  skipped: string[];
+}
+
+export interface DocsParityInput {
+  descriptor: ReadonlyArray<ReviewerLane>;
+  /** Map of document label (repo-relative path) to its full text. */
+  docs: Record<string, string>;
+}
+
+/**
+ * Non-lane tokens that legitimately share the `/gsd-review` signature line.
+ *
+ * `--all` is a selection control, not a reviewer lane. Without this allow-list the undeclared-flag
+ * arm would fire on correct documentation — the gate failing on a doc that is right is the fastest
+ * way to get a gate deleted.
+ */
+const NON_LANE_SIGNATURE_FLAGS: ReadonlySet<string> = new Set(['--all']);
+
+/**
+ * Escape a declared string for literal use inside a RegExp.
+ *
+ * `llama.cpp` is a shipped `reviewsSection`. Unescaped, its `.` matches any character, so
+ * `llamaXcpp` would satisfy the check — a false pass on one of the lanes most likely to be
+ * forgotten. Declared data is matched literally, never as a pattern.
+ */
+function escapeLiteral(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Is `flag` documented in `text` under one of the two structural shapes docs actually use?
+ *
+ * Backticked is the `COMMANDS.md` table-cell shape; bracketed (`[--gemini]`) is the
+ * `FEATURES.md` signature shape. Requiring one of those two delimiters — rather than a bare
+ * substring — is what keeps prose and fenced examples from satisfying the gate: the bare
+ * `--codex` inside the fenced `/gsd-plan-review-convergence 3 --codex` example at
+ * COMMANDS.md:274 is neither, so it is correctly inert. It also bounds the token for free, since
+ * a backticked `--claude` demands its closing backtick and cannot be satisfied by
+ * a backticked `--claude-foo`.
+ */
+function flagIsDocumented(text: string, flag: string): boolean {
+  const f = escapeLiteral(flag);
+  return new RegExp('`' + f + '`|\\[' + f + '\\]').test(text);
+}
+
+/** Every bracketed `--token` on a signature line — the line's claimed reviewer flag set. */
+const BRACKETED_FLAG_RE = /\[(--[a-z0-9][a-z0-9-]*)\]/g;
+
+/**
+ * The `**Command:** ... /gsd-review ... [--flag]` signature line, if the doc carries one.
+ *
+ * Anchored on `/gsd-review` plus a bracketed flag rather than on the bolded label, because the
+ * label is translated in every mirror. Structure survives translation; prose does not.
+ */
+function findSignatureLine(lines: string[]): number {
+  return lines.findIndex((l) => /\/gsd[-:]review\b/.test(l) && l.includes('[--'));
+}
+
+/**
+ * Documentation parity for the declared reviewer roster (#2800; closes #2781, #2272).
+ *
+ * Gates `docs/COMMANDS.md`, its four locale mirrors, `docs/FEATURES.md` and its mirrors against
+ * the one declared source of truth. This is the `DEFECT.GENERATIVE-FIX` parity assertion
+ * `CONTEXT.md:806` requires for this roster and which has never existed for it — only the Cursor
+ * lane ever had one (`tests/cursor-reviewer.test.cjs`).
+ *
+ * Three arms, deliberately independent so that gaming one does not green the build:
+ *
+ *  1. **flag** — every declared flag appears, delimited, somewhere in the doc. This is the arm
+ *     that catches #2781 (`--kimi-code` present in `docs/COMMANDS.md` and absent from all four
+ *     mirrors).
+ *  2. **signature** — where a `Command:` signature line exists it is held to the FULL roster, and
+ *     any bracketed non-lane token on it is reported. This restores per-site strictness the
+ *     file-wide arm cannot provide.
+ *  3. **title** — every declared `reviewsSection` appears in the Purpose paragraph. This is the
+ *     arm that catches the class #2800 names: the `Command:` line updated and the `Purpose:` line
+ *     one row below not.
+ *
+ * A doc carrying no `/gsd-review` surface is **skipped, not failed** — a partial mirror that never
+ * claimed to document the command is not drift.
+ *
+ * Pure and total: no filesystem, no clock, never throws. A non-string document is reported as
+ * `DOC_UNREADABLE` rather than coerced or skipped; an empty or absent `docs` map degrades to
+ * violations rather than a clean bill of health, because a checker that cannot distinguish
+ * "nothing to read" from "everything agrees" is worse than no checker.
+ *
+ * CRLF-insensitive: a Windows `autocrlf` checkout must produce an identical verdict.
+ */
+export function checkReviewerDocsParity(input: DocsParityInput): DocsParityResult {
+  const violations: DocsParityViolation[] = [];
+  const skipped: string[] = [];
+
+  const add = (reason: DocsParityViolationReason, doc: string, subject: string): void => {
+    violations.push({ reason, doc, subject });
+  };
+
+  // Trust boundary: narrow from `unknown` rather than believing the annotation. Phase 2 (#2795)
+  // admits third-party overlay lanes into this same descriptor.
+  const declaredFlags: string[] = [];
+  const declaredTitles: string[] = [];
+  const rawLanes: unknown[] = Array.isArray(input?.descriptor)
+    ? (input.descriptor as unknown[])
+    : [];
+  for (const raw of rawLanes) {
+    if (raw === null || typeof raw !== 'object') {
+      add(DOCS_PARITY_VIOLATION.MALFORMED_LANE, '(descriptor)', String(raw));
+      continue;
+    }
+    const lane = raw as Record<string, unknown>;
+    const flags: unknown[] = Array.isArray(lane.flags) ? (lane.flags as unknown[]) : [];
+    for (const flag of flags) {
+      if (typeof flag === 'string' && flag.length > 0) declaredFlags.push(flag);
+    }
+    if (typeof lane.reviewsSection === 'string' && lane.reviewsSection.length > 0) {
+      declaredTitles.push(lane.reviewsSection);
+    }
+  }
+  const declaredFlagSet = new Set(declaredFlags);
+
+  // An absent or non-object map is not "no docs to check" — it is every doc missing. Reported as
+  // such so the caller cannot read silence as success.
+  const rawDocs =
+    input?.docs !== null && typeof input?.docs === 'object'
+      ? (input.docs as Record<string, unknown>)
+      : {};
+  const docLabels = Object.keys(rawDocs);
+  if (docLabels.length === 0) {
+    for (const flag of declaredFlagSet) {
+      add(DOCS_PARITY_VIOLATION.DOC_FLAG_MISSING, '(no documents supplied)', flag);
+    }
+    return { ok: violations.length === 0, violations, skipped };
+  }
+
+  for (const label of docLabels) {
+    // A document value that is not a string is REPORTED, not coerced and not skipped.
+    //
+    // The earlier version called `String(rawValue)`, which (a) throws outright on an object with
+    // an own non-callable `toString` and (b) — worse — turns any other object into
+    // `[object Object]`, a "document" with no `/gsd-review` marker that then lands in `skipped`.
+    // That is a silent pass: the gate would report success for input it never actually read.
+    // `@typescript-eslint/no-base-to-string` flags exactly this, and it is right to.
+    const rawValue = rawDocs[label];
+    if (typeof rawValue !== 'string') {
+      add(DOCS_PARITY_VIOLATION.DOC_UNREADABLE, label, typeof rawValue);
+      continue;
+    }
+    const text = rawValue.replace(/\r\n/g, '\n');
+
+    // Skip-if-absent. A mirror that does not document /gsd-review is a partial translation, not
+    // drift — gating it would make this change responsible for authoring one.
+    if (!/\/gsd[-:]review\b/.test(text)) {
+      skipped.push(label);
+      continue;
+    }
+
+    // --- arm 1: every declared flag is documented somewhere in the doc ---
+    for (const flag of declaredFlagSet) {
+      if (!flagIsDocumented(text, flag)) {
+        add(DOCS_PARITY_VIOLATION.DOC_FLAG_MISSING, label, flag);
+      }
+    }
+
+    const lines = text.split('\n');
+    const sigIdx = findSignatureLine(lines);
+    if (sigIdx === -1) continue; // COMMANDS.md-shaped docs carry a table, not a signature.
+
+    // --- arm 2: the signature line carries the FULL roster and nothing undeclared ---
+    const sigLine = lines[sigIdx];
+    for (const flag of declaredFlagSet) {
+      if (!flagIsDocumented(sigLine, flag)) {
+        add(DOCS_PARITY_VIOLATION.SIGNATURE_FLAG_MISSING, label, flag);
+      }
+    }
+    // Fresh RegExp per line — a module-level /g literal carries `lastIndex` between calls and
+    // would silently skip matches on the second document scanned.
+    const scanner = new RegExp(BRACKETED_FLAG_RE.source, BRACKETED_FLAG_RE.flags);
+    const seenUndeclared = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = scanner.exec(sigLine)) !== null) {
+      const token = m[1];
+      if (typeof token !== 'string') continue;
+      if (declaredFlagSet.has(token) || NON_LANE_SIGNATURE_FLAGS.has(token)) continue;
+      if (seenUndeclared.has(token)) continue;
+      seenUndeclared.add(token);
+      add(DOCS_PARITY_VIOLATION.DOC_FLAG_UNDECLARED, label, token);
+    }
+
+    // --- arm 3: the Purpose paragraph names every declared section title ---
+    //
+    // The Purpose paragraph is the next non-blank line after the signature. Structural, so it
+    // survives every translated label. Absent (signature is the last line) => title arm skipped,
+    // the flag arms still stand.
+    let p = sigIdx + 1;
+    while (p < lines.length && lines[p].trim() === '') p += 1;
+    if (p >= lines.length) continue;
+    const purpose = lines[p];
+    for (const title of declaredTitles) {
+      if (!new RegExp(escapeLiteral(title)).test(purpose)) {
+        add(DOCS_PARITY_VIOLATION.DOC_TITLE_MISSING, label, title);
+      }
+    }
+  }
+
+  return { ok: violations.length === 0, violations, skipped };
+}

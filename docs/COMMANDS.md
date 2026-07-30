@@ -263,7 +263,7 @@ Cross-AI plan convergence loop — replan with review feedback until no HIGH con
 | Argument / Flag | Required | Description |
 |-----------------|----------|-------------|
 | `N` | **Yes** | Phase number to plan and review |
-| `--codex` / `--gemini` / `--claude` / `--opencode` | No | Single-reviewer selection |
+| Reviewer flags | No | Pass through every reviewer lane flag: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
 | `--all` | No | Run every configured reviewer in parallel |
 | `--max-cycles N` | No | Override cycle cap (default 3) |
 
@@ -628,7 +628,7 @@ Show status, next steps, and automatically advance to the next logical workflow 
 | `--next --auto` | Like `--next`, but chains steps automatically until milestone completion or a blocking decision |
 | `--next --converge` | When the next action is planning, route it through `/gsd-plan-review-convergence`; requires `workflow.plan_review_convergence=true` |
 | `--cross-ai` | Alias for `--converge` |
-| Reviewer flags | With `--converge`, pass through `--codex`, `--gemini`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N` |
+| Reviewer flags | With `--converge`, pass through every reviewer lane flag: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code`, `--all`, and `--max-cycles N` |
 | `--do "task description"` | Analyze freeform intent and dispatch to the most appropriate GSD command |
 | `--forensic` | Append a 6-check integrity audit after the standard report (STATE consistency, orphaned handoffs, deferred scope drift, memory-flagged pending work, blocking todos, uncommitted code) |
 
@@ -858,7 +858,7 @@ Run all remaining phases autonomously.
 | `--interactive` | Lean context with user input |
 | `--converge` | Route each planning step through `/gsd-plan-review-convergence`; requires `workflow.plan_review_convergence=true` |
 | `--cross-ai` | Alias for `--converge` |
-| Reviewer flags | With `--converge`, pass through `--codex`, `--gemini`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`, and `--max-cycles N` |
+| Reviewer flags | With `--converge`, pass through every reviewer lane flag: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code`, `--all`, and `--max-cycles N` |
 | `--text` | Replace `AskUserQuestion` prompts with plain numbered lists |
 
 ```bash

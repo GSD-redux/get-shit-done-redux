@@ -218,7 +218,7 @@ v1.40 中，六个命名空间路由器作为第一阶段入口点随附发布�
 | 参数 / 标志 | 必填 | 描述 |
 |-----------------|----------|-------------|
 | `N` | **是** | 要规划和审查的阶段编号 |
-| `--codex` / `--gemini` / `--claude` / `--opencode` | 否 | 单一审查者选择 |
+| 审查者标志 | 否 | 原样传递所有审查者通道标志：`--gemini`、`--claude`、`--codex`、`--coderabbit`、`--opencode`、`--qwen`、`--cursor`、`--agy` / `--antigravity`、`--ollama`、`--lm-studio`、`--llama-cpp`、`--kimi-code` |
 | `--all` | 否 | 并行运行所有已配置的审查者 |
 | `--max-cycles N` | 否 | 覆盖循环上限（默认 3） |
 
@@ -1244,6 +1244,7 @@ node gsd-tools.cjs intel api-surface              # 渲染 api-map.json → API-
 | `--qwen` | 包含 Qwen Code 审查（阿里巴巴 Qwen 模型） |
 | `--cursor` | 包含 Cursor 代理审查 |
 | `--agy` / `--antigravity` | 包含 Antigravity CLI 审查（使用 Google 凭证免费） |
+| `--kimi-code` | 包含 Kimi Code CLI 审查（Moonshot AI） |
 | `--ollama` | 包含 Ollama 服务器审查 |
 | `--lm-studio` | 包含 LM Studio 服务器审查 |
 | `--llama-cpp` | 包含 llama.cpp 服务器审查 |

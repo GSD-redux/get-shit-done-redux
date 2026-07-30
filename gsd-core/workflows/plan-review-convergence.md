@@ -18,22 +18,22 @@ Read all files referenced by the invoking prompt's execution_context before star
 
 ## 1. Parse and Normalize Arguments
 
-Extract from $ARGUMENTS: phase number, reviewer flags (`--codex`, `--gemini`, `--agy`/`--antigravity`, `--claude`, `--opencode`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--all`), `--max-cycles N`, `--text`, `--ws`.
+Extract from $ARGUMENTS: phase number, reviewer flags (the declared reviewer lane flags, plus `--all`), `--max-cycles N`, `--text`, `--ws`.
 
 ```bash
 PHASE=$(echo "$ARGUMENTS" | grep -oE '[0-9]+\.?[0-9]*' | head -1)
 
+# Reviewer flags are DERIVED from the declared lane roster (#2800/#2272), never hand-listed.
+# Three surfaces used to enumerate them independently and had drifted: --coderabbit was missing
+# from all three, --qwen/--cursor/--kimi-code from this one, and the old unanchored
+# `grep -q '\-\-agy'` matched INSIDE --antigravity, appending both for one user flag.
+# `--all` is a selection control, not a lane, so it stays literal.
 REVIEWER_FLAGS=""
-echo "$ARGUMENTS" | grep -q '\-\-codex' && REVIEWER_FLAGS="$REVIEWER_FLAGS --codex"
-echo "$ARGUMENTS" | grep -q '\-\-gemini' && REVIEWER_FLAGS="$REVIEWER_FLAGS --gemini"
-echo "$ARGUMENTS" | grep -q '\-\-agy' && REVIEWER_FLAGS="$REVIEWER_FLAGS --agy"
-echo "$ARGUMENTS" | grep -q '\-\-antigravity' && REVIEWER_FLAGS="$REVIEWER_FLAGS --antigravity"
-echo "$ARGUMENTS" | grep -q '\-\-claude' && REVIEWER_FLAGS="$REVIEWER_FLAGS --claude"
-echo "$ARGUMENTS" | grep -q '\-\-opencode' && REVIEWER_FLAGS="$REVIEWER_FLAGS --opencode"
-echo "$ARGUMENTS" | grep -q '\-\-ollama' && REVIEWER_FLAGS="$REVIEWER_FLAGS --ollama"
-echo "$ARGUMENTS" | grep -q '\-\-lm-studio' && REVIEWER_FLAGS="$REVIEWER_FLAGS --lm-studio"
-echo "$ARGUMENTS" | grep -q '\-\-llama-cpp' && REVIEWER_FLAGS="$REVIEWER_FLAGS --llama-cpp"
-echo "$ARGUMENTS" | grep -q '\-\-all' && REVIEWER_FLAGS="$REVIEWER_FLAGS --all"
+for REVIEW_FLAG in $(gsd_run review-lane flags) --all; do
+  if echo "$ARGUMENTS" | grep -qE "(^|[[:space:]])${REVIEW_FLAG}([[:space:]]|$)"; then
+    REVIEWER_FLAGS="$REVIEWER_FLAGS $REVIEW_FLAG"
+  fi
+done
 # #2315: do NOT default REVIEWER_FLAGS to --codex here. The default is resolved
 # against review.default_reviewers in step 1.5 (after the config gate) so a bare
 # invocation respects the configured reviewer lineup per ADR-0011 / ADR-0015.

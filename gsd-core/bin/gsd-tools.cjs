@@ -1188,6 +1188,24 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return;
     }
 
+    // Phase 6 (#2800, closes #2272). The reviewer-flag lists in
+    // plan-review-convergence.md, autonomous.md and next.md were hand-enumerated in three places
+    // and had drifted apart: `--coderabbit` was missing from all three and had been silently
+    // falling back to `--codex`. One declared source, three consumers.
+    //
+    // Emits FLAGS, not slugs: `antigravity` declares two (`--antigravity`, `--agy`), so the flag
+    // count (13) is deliberately not the lane count (12). Same output contract as `sections` —
+    // one token per line, descriptor order, and no trailing newline on an empty result.
+    if (sub === 'flags') {
+      const rows = chosen
+        .map((s) => laneBySlug.get(s))
+        .filter(Boolean)
+        .flatMap((l) => (Array.isArray(l.flags) ? l.flags : []))
+        .filter((f) => typeof f === 'string' && f.length > 0);
+      process.stdout.write(rows.join('\n') + (rows.length ? '\n' : ''));
+      return;
+    }
+
     // Effort argv is resolved per lane by the host's own execution policy, exactly as the legs did
     // via `resolve-execution … --pick effort_argv_string`. A lane whose slug is not a known host
     // simply gets none.
@@ -1267,7 +1285,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
 
     if (sub !== 'invoke') {
-      error("Usage: review-lane <plan|invoke|sections> [--selected a,b] [--run-dir D] [--repo-root R]");
+      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
       return;
     }
 
