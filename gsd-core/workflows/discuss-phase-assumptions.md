@@ -666,8 +666,7 @@ Handle return: PHASE COMPLETE / PLANNING COMPLETE / INCONCLUSIVE / GAPS FOUND
 (identical handling to discuss-phase.md auto_advance step)
 
 **If neither `--auto` nor config enabled:**
-The workflow is complete — `confirm_creation` already showed the creation summary
-earlier in the step order, so do NOT route back to it. End here.
+End here — `confirm_creation` already ran; do not route back to it.
 </step>
 
 </process>

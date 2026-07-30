@@ -3,6 +3,9 @@
   "paths": {
     "plan-phase.md": {
       "reason": "#2770: decision-coverage gate recomputes CONTEXT_PATH in-block + guards the empty-glob case (handler now fails closed on empty arg). Net growth kept under the ADR-857 size cap by condensing adjacent §13a prose/JSON; the residual +89 bytes are the irreducible glob+guard logic."
+    },
+    "discuss-phase-assumptions.md": {
+      "reason": "#2772: re-synced <answer_validation> to the parent canonical block (had drifted — lost the 'Other' empty-text branch) + fixed the auto_advance→confirm_creation circularity (end the workflow). discuss-phase.md is net -11 (condensed); auto.md shrank -4650 (removed a dead MAX_PASSES resolver shim)."
     }
   }
 }
