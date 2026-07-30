@@ -146,6 +146,97 @@ describe('parseStateMd', () => {
     assert.equal(s.nextAction, 'execute');
     assert.deepEqual(s.nextPhases, ['4.5', '4.6']);
   });
+
+  // #2754 — the frontmatter fence regex and downstream splits used literal \n,
+  // so a CRLF STATE.md dropped the ENTIRE frontmatter block (every field absent).
+  // The invariant is CRLF/LF parity — parseStateMd must yield the same state for
+  // the same content regardless of line endings, matching the canonical
+  // extractFrontmatter parser (src/frontmatter.cts), which is CRLF-safe.
+  const crlf = (lfContent) => lfContent.replace(/\n/g, '\r\n');
+
+  test('parses full YAML frontmatter identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'status: executing',
+      'milestone: v1.9',
+      'milestone_name: Code Quality',
+      'active_phase: 4',
+      'next_action: execute',
+      '---',
+      '',
+      '# State',
+      'Phase: 1 of 5 (fix-graphiti-deployment)',
+    ].join('\n');
+
+    const lfState = parseStateMd(lf);
+    const crlfState = parseStateMd(crlf(lf));
+    assert.deepStrictEqual(crlfState, lfState,
+      'CRLF STATE.md must parse identically to LF — pre-fix the entire frontmatter block was dropped (#2754)');
+    // pin the specific fields the issue names so a vacuous deepEqual({},{}) can't pass:
+    assert.equal(crlfState.status, 'executing');
+    assert.equal(crlfState.milestone, 'v1.9');
+    assert.equal(crlfState.milestoneName, 'Code Quality');
+    assert.equal(crlfState.activePhase, '4');
+    assert.equal(crlfState.nextAction, 'execute');
+    assert.equal(crlfState.phaseNum, '1');
+    assert.equal(crlfState.phaseTotal, '5');
+  });
+
+  test('parses next_phases flow-array form identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'next_phases: [4.5, 4.6]',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)), parseStateMd(lf));
+    assert.deepEqual(parseStateMd(crlf(lf)).nextPhases, ['4.5', '4.6']);
+  });
+
+  test('parses next_phases block-list form identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'next_phases:',
+      '  - 4.5',
+      '  - 4.6',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)).nextPhases, parseStateMd(lf).nextPhases,
+      'block-list regex used a literal \\n — CRLF must still parse the list');
+    assert.deepEqual(parseStateMd(crlf(lf)).nextPhases, ['4.5', '4.6']);
+  });
+
+  test('parses the progress nested block identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'progress:',
+      '  completed_phases: 3',
+      '  total_phases: 5',
+      '  percent: 60',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)), parseStateMd(lf),
+      'progress block regex used a literal \\n — CRLF must still parse completed/total/percent');
+    assert.equal(parseStateMd(crlf(lf)).completedPhases, '3');
+    assert.equal(parseStateMd(crlf(lf)).totalPhases, '5');
+    assert.equal(parseStateMd(crlf(lf)).percent, '60');
+  });
+
+  test('treats literal "null" values as null identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'status: null',
+      'milestone: null',
+      'milestone_name: null',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)), parseStateMd(lf));
+    assert.equal(parseStateMd(crlf(lf)).status, null);
+    assert.equal(parseStateMd(crlf(lf)).milestone, null);
+  });
 });
 
 // ─── formatGsdState ─────────────────────────────────────────────────────────
