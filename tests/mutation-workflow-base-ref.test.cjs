@@ -204,17 +204,27 @@ describe('#2452 CI gates: base-ref fetch must preserve ancestry', () => {
       // Base then advances, leaving `feature` BEHIND — the failing condition.
       git(origin, ['checkout', '--quiet', 'base']);
       for (let n = 1; n <= BASE_ADVANCE; n++) {
-        fs.writeFileSync(path.join(origin, `base-${n}.txt`), `${n}\n`);
-        // Stage only the file this iteration created. `git add .` re-stages every
-        // file already in the tree, so across BASE_ADVANCE iterations it rehashes
-        // O(n²) blobs — roughly 1,800 stagings and 60 full index rewrites to add 60
-        // one-line files. That churn is what this loop failed on in CI: the index
-        // ended up referencing a blob whose object write had not landed
-        // ("invalid object … for 'base-31.txt' / Error building trees") at commit 32
-        // of 60. Staging the single new path is equivalent here — each commit adds
-        // exactly one file — and removes the redundant work entirely.
-        git(origin, ['add', `base-${n}.txt`]);
-        git(origin, ['commit', '--quiet', '-m', `base advance ${n}`]);
+        // EMPTY commits: this loop needs base-branch DEPTH, nothing else. No
+        // assertion reads these commits' contents — the three-dot diff below is
+        // asserted on `covered.cts`, which lives on the HEAD side, and base-side
+        // files cannot appear in `origin/base...HEAD` at all.
+        //
+        // They used to write and stage a `base-N.txt` per iteration, and that is
+        // what kept failing in CI:
+        //
+        //   error: invalid object 100644 <sha> for 'base-N.txt'
+        //   error: Error building trees
+        //
+        // The first attempt blamed `git add .` rehashing O(n²) blobs and switched
+        // to staging one path per iteration (#1881). It did not work — the failure
+        // simply moved from commit 32 to commit 25, and went on blocking unrelated
+        // PRs. The trigger for the lost object write was never reproduced off-CI.
+        //
+        // So rather than keep guessing at the trigger, this removes the failure
+        // CLASS: `--allow-empty` writes no blob and no tree for these commits, so
+        // there is no object for the index to reference and lose. It is also
+        // dramatically less work than 60 write+hash+index cycles.
+        git(origin, ['commit', '--quiet', '--allow-empty', '-m', `base advance ${n}`]);
       }
 
       // ---- runner: has the PR head, must fetch the base ref separately ------
