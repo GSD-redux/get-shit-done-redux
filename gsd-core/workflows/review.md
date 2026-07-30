@@ -291,8 +291,13 @@ Codex at `xhigh` effort and ~525 s for headless Claude on a large plan set. Each
 own `timeoutFloorMs` and the runner enforces it internally, but the **Bash tool call wrapping the
 loop below must still be given a high `timeout:`** — at least `900000`, and `1200000` when Codex or
 headless Claude are in the selection — or the host kills the whole loop mid-lane. On Claude Code,
-raise the host cap via `BASH_MAX_TIMEOUT_MS` if a review can exceed it. A cross-AI review that
-silently drops a lane is blind in one eye.
+raise the host cap via `BASH_MAX_TIMEOUT_MS` if a review can exceed it.
+
+A silent empty output after a long run is a **timeout kill, not a crash** — the Codex `0xc0000142`
+misdiagnosis persisted for exactly this reason, because an empty result cannot distinguish the two
+on its own. Treat an empty result on a slow lane as a dropped lane and re-run with more time rather
+than diagnosing a CLI or sandbox failure. A cross-AI review that silently drops a lane is blind in
+one eye.
 
 **No hook-trust bypass (#2479):** no lane passes a hook-trust bypass flag and none runs a capability
 probe for one. That flag only bypasses *persisted* hook trust (a first-run condition) and flagless

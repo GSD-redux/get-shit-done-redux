@@ -1191,11 +1191,25 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // Effort argv is resolved per lane by the host's own execution policy, exactly as the legs did
     // via `resolve-execution … --pick effort_argv_string`. A lane whose slug is not a known host
     // simply gets none.
+    // Resolved through the SAME `resolve-execution` surface the bash legs used
+    // (`--host <slug> --pick effort_argv_string`), so the host's negotiated effortSurface still
+    // decides whether an argument is emitted and the catalog still owns the syntax (ADR-1239 #2481,
+    // ADR-443's escalation ladder). `cmdResolveExecution` writes to stdout and exits, so it cannot
+    // be called in-process for a value — this spawns the same bounded query the legs did, once per
+    // selected lane. A lane whose slug is not a known host resolves to no effort argument at all.
     const effortFor = (slug) => {
       try {
-        const { resolveExecution } = require('./lib/model-resolver.cjs');
-        const r = resolveExecution ? resolveExecution('gsd-plan-checker', { host: slug, cwd }) : null;
-        const s = r && r.effort_argv_string ? String(r.effort_argv_string) : '';
+        const r = cp.spawnSync(
+          process.execPath,
+          [__filename, 'query', 'resolve-execution', 'gsd-plan-checker',
+            // NOT `--raw`: that prints the resolved EFFORT ('low'), ignoring --pick. The picked
+            // field is what carries the host-specific syntax ('--effort low' for claude,
+            // '-c model_reasoning_effort=low' for codex), which is the whole point of asking.
+            '--host', slug, '--pick', 'effort_argv_string'],
+          { cwd, encoding: 'utf8', timeout: 15000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 },
+        );
+        if (r.status !== 0) return [];
+        const s = String(r.stdout || '').trim();
         return s ? s.split(/\s+/).filter(Boolean) : [];
       } catch { return []; }
     };

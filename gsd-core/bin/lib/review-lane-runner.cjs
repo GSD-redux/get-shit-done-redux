@@ -216,7 +216,11 @@ function handleOpencodeOutput(rawStdout) {
             continue;
         const e = evt;
         const part = (e.part ?? {});
-        if (e.type === 'text' && typeof part.text === 'string' && part.text) {
+        if (e.type === 'text' && typeof part.text === 'string') {
+            // An EMPTY string is kept, not skipped. The shipped jq was `.part.text // empty`, and `//`
+            // only substitutes for `false`/`null` — an empty string is truthy in jq, so it survived and
+            // contributed a blank line. Dropping it here would quietly close up blank lines between
+            // parts, which is a real (if cosmetic) divergence from the behaviour being ported.
             texts.push(part.text);
         }
         else if (e.type === 'step_finish') {

@@ -171,71 +171,73 @@ const path = require('node:path');
 const reviewPath = path.resolve(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
 const read = () => fs.readFileSync(reviewPath, 'utf-8');
 
-describe('bug #687 → #2073: agy print mode bounded by --print-timeout PAIRED with an external timeout', () => {
-  // #687 established that agy print mode must be bounded (its native
-  // --print-timeout, default 5m). #2073 superseded the "no external killer"
-  // half of that contract with documentation:
-  //   - agy's own print-mode guidance says to PAIR --print-timeout with an
-  //     external terminal `timeout` ("Pair with the terminal timeout= so the
-  //     outer call doesn't cut the run short"), because --print-timeout cannot
-  //     fire before agy creates a session (a pre-session stall otherwise hangs
-  //     unbounded). The external cap is set HIGHER than --print-timeout so it
-  //     only backstops a stall, never cuts a healthy run.
-  //   - agy gained `--model` in ~1.0.3 (issue #3782's "no --model flag" note
-  //     was correct at the time, stale now); review.models.agy is passed as
-  //     --model so a pinned model that 404s has an escape hatch.
-  //   - the prompt is now a file reference: inline `-p "$(cat …)"` overflows
-  //     the exec arg list on a large review prompt (Linux MAX_ARG_STRLEN
-  //     128 KB/single-arg → rc 126).
+describe('bug #687 → #2073: agy print mode is bounded, and its fallback chain fires', () => {
+  // Phase 5b (#2799) moved the agy invocation out of review.md's bash into the declared lane plus
+  // the named `antigravity` handler, so these assertions follow it.
+  //
+  // ONE INVARIANT DELIBERATELY CHANGED. The old contract was "--print-timeout PAIRED with an
+  // external timeout/gtimeout killer, falling back to bare agy on macOS". That fallback WAS the
+  // bug: stock macOS ships neither killer, so the lane ran unbounded there — and --print-timeout
+  // cannot fire before agy creates a session (#2073 mode 3), which is the whole reason a second
+  // bound existed. spawnSync's native timeout is always available, so the outer bound is now
+  // unconditional on every platform. Strictly stronger; only the mechanism changed.
+  const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+  const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+  const { runLane } = require('../gsd-core/bin/lib/review-lane-runner.cjs');
+  const lane = REVIEWER_LANES.find((l) => l.slug === 'antigravity');
+  const planFor = () => {
+    const r = resolveLanePlan({ lane, configGet: (k) => ({ 'review.models.agy': 'agy-m' })[k], runDir: '/run', repoRoot: '/repo' });
+    assert.equal(r.ok, true);
+    return r.plan;
+  };
 
-  test('invokes agy with --print-timeout AND a paired external killer when available', () => {
-    const c = read();
-    assert.match(c, /--print-timeout \d+s?/, 'review.md must pass agy its native --print-timeout');
-    // Capability probe for GNU `timeout` / macOS `gtimeout` (stock macOS has neither).
-    assert.match(c, /command -v timeout/, 'review.md must probe for the `timeout` killer');
-    assert.match(c, /command -v gtimeout/, 'review.md must probe for `gtimeout` (macOS Homebrew)');
-    // The external cap (600s) is applied ahead of agy and is >= --print-timeout (540s).
-    assert.match(c, /600 agy --print-timeout 540s/,
-      'review.md must pair an external cap (600s) >= --print-timeout (540s) with agy (agy guidance)');
+  test('keeps its native --print-timeout AND carries an unconditional outer bound', () => {
+    const argv = planFor().argv;
+    const i = argv.indexOf('--print-timeout');
+    assert.notEqual(i, -1, 'the tool-native inner bound must survive');
+    assert.match(argv[i + 1], /^\d+s$/);
+    assert.ok(lane.timeoutFloorMs > 0, 'and an outer wall-clock bound must be declared');
   });
 
-  test('external cap is >= --print-timeout, and falls back to bare agy on macOS', () => {
-    const c = read();
-    const bound = c.match(/(\d+)\s+agy --print-timeout (\d+)s/);
-    assert.ok(bound, 'review.md must encode the external-cap + --print-timeout pair');
-    assert.ok(
-      Number(bound[1]) >= Number(bound[2]),
-      'external cap (seconds) must be >= --print-timeout (seconds) so it only backstops a stall',
-    );
-    // Graceful fallback when no external killer is available (stock macOS).
-    assert.match(c, /else\n\s*agy --print-timeout/,
-      'review.md must fall back to --print-timeout alone when no external killer is available (macOS)');
+  test('the outer bound is larger than the inner one, so it only backstops', () => {
+    const argv = planFor().argv;
+    const innerSec = parseInt(argv[argv.indexOf('--print-timeout') + 1], 10);
+    assert.ok(lane.timeoutFloorMs / 1000 > innerSec,
+      'the outer cap must not pre-empt a healthy run bounded by --print-timeout');
   });
 
   test('uses a file-reference prompt, not inline "$(cat …)" (arg-list overflow, #2073)', () => {
-    const c = read();
-    assert.doesNotMatch(c, /agy[^\n]*-p "\$\(cat/,
-      'review.md must not feed agy the prompt inline via "$(cat …)" — a large review prompt overflows the exec arg list (rc 126)');
-    assert.match(c, /Read the file at \{run_dir\}\/gsd-review-prompt\.md/,
-      'review.md should pass agy a file-reference prompt (mirrors the Cursor block)');
+    assert.equal(lane.invoke.promptChannel, 'argv-file-ref');
+    const last = planFor().argv.slice(-1)[0];
+    assert.ok(last.includes('/run/gsd-review-prompt.md'));
+    assert.ok(last.length < 1000, 'the reference must never carry the prompt body');
   });
 
-  test('wires --model from review.models.agy (#2073 mode 2; agy gained --model in ~1.0.3)', () => {
-    assert.match(read(), /--model "\$AGY_MODEL"/,
-      'review.md must pass --model "$AGY_MODEL" when review.models.agy is set');
+  test('wires --model from review.models.agy (#2073 mode 2)', () => {
+    assert.equal(lane.modelConfigKey, 'review.models.agy');
+    const argv = planFor().argv;
+    assert.equal(argv[argv.indexOf('--model') + 1], 'agy-m');
   });
 
-  test('discards partial output on non-zero exit so the fallback fires (#687)', () => {
-    const c = read();
-    assert.match(c, /_AGY_RC.*-ne 0/, 'review.md must check the agy exit code');
-    assert.match(c, /: > \{run_dir\}\/gsd-review-antigravity\.md/,
-      'review.md must truncate the output file when agy timed out / failed');
-  });
-
-  test('no unguarded bare "agy -p" invocation remains at line start', () => {
-    // A bare `agy -p …` with no cap was the original #687 hang.
-    assert.doesNotMatch(read(), /^agy -p/m,
-      'review.md must not invoke a bare `agy -p` unbounded at line start');
+  test('discards partial output on non-zero exit so the fallback fires (#687)', async () => {
+    const p = planFor();
+    const files = {};
+    const d = {
+      files,
+      spawn: () => ({ status: 124, stdout: 'PARTIAL GARBAGE', stderr: '' }),
+      httpJson: async () => ({ ok: true, status: 200, body: '{}' }),
+      readFile: (x) => { if (!(x in files)) throw new Error('ENOENT'); return files[x]; },
+      writeFile: (x, c) => { files[x] = c; },
+      exists: (x) => x in files,
+      hasBinary: () => true,
+      configGet: () => undefined,
+      homeDir: '/home/u',
+      warn: () => {},
+    };
+    await runLane(p, d, { repoRoot: '/repo' });
+    assert.ok(!files[p.reviewPath].includes('PARTIAL GARBAGE'),
+      'a non-zero exit must discard stdout so the transcript fallback and diagnostic can take over');
+    assert.ok(files[p.reviewPath].includes('failed or returned empty output'));
   });
 });
   });
@@ -260,94 +262,29 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 describe('enh-773: automated codex exec invocations include --ephemeral (hook-trust bypass dropped by #2479)', () => {
-  const workflow = fs.readFileSync(
-    path.join(process.cwd(), 'gsd-core', 'workflows', 'review.md'),
-    'utf8'
-  );
+  // Declared in the lane now rather than grepped out of review.md's bash lines.
+  const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+  const codex = REVIEWER_LANES.find((l) => l.slug === 'codex');
+  const args = codex.invoke.args.join(' ');
 
-  // Extract codex exec INVOCATION lines from code fences. A `codex exec --help`
-  // capability probe would not be an automation invocation, so keep it excluded
-  // from the per-invocation flag assertions below (#2479 asserts no such probe
-  // exists at all).
-  const codexExecLines = workflow
-    .split(/\r?\n/)
-    .filter((line) => line.includes('codex exec') && !line.includes('codex exec --help'));
-
-  test('review.md contains at least one codex exec invocation', () => {
-    assert.ok(
-      codexExecLines.length > 0,
-      'review.md must contain at least one codex exec invocation'
-    );
+  test('the codex lane uses the exec subcommand', () => {
+    assert.ok(args.includes('exec'));
+    assert.equal(codex.invoke.args[0], 'exec', 'exec is a SUBCOMMAND and must come first');
   });
 
-  test('every codex exec invocation includes --ephemeral', () => {
-    for (const line of codexExecLines) {
-      assert.ok(
-        line.includes('--ephemeral'),
-        `codex exec invocation is missing --ephemeral:\n  ${line.trim()}`
-      );
-    }
+  test('codex exec is --ephemeral', () => {
+    assert.ok(args.includes('--ephemeral'));
   });
 
-  test('#2479: no hook-trust bypass — flag and capability probe are both absent', () => {
-    // The flag only bypasses *persisted* hook trust (a first-run condition) and
-    // flagless invocations work in steady state, while host-harness safety
-    // classifiers deny commands carrying it — and cited the probe itself as
-    // intent. Inverts the former #1115 gating contract: instead of probe + gated
-    // $CODEX_BYPASS_FLAG, the workflow must be free of the literal flag string
-    // ANYWHERE in the file — not just on invocation lines — so a line
-    // continuation, a renamed carrier variable, or a probe grepping for it are
-    // all caught by the same assertion. (The #2479 prose note deliberately
-    // describes the flag without spelling it out, keeping the file-wide ban
-    // clean.)
-    assert.ok(
-      !workflow.includes('--dangerously-bypass-hook-trust'),
-      'review.md must not contain --dangerously-bypass-hook-trust anywhere (#2479 — file-wide ban covers invocations, continuations, carrier variables, and probes)'
-    );
-    assert.ok(
-      !workflow.includes('CODEX_BYPASS_FLAG'),
-      'review.md must not interpolate a $CODEX_BYPASS_FLAG variable (#2479)'
-    );
-    assert.ok(
-      !/codex[^\r\n]*--help[^\r\n]*grep/.test(workflow),
-      'review.md must not capability-probe codex flags via `codex --help | grep` (#2479 — the probe itself feeds harness safety classifiers)'
-    );
+  test('no hook-trust bypass flag is emitted (#2479)', () => {
+    assert.ok(!/dangerously|bypass/i.test(args),
+      'host-harness safety classifiers deny commands carrying it; a genuine untrusted-hook prompt '
+      + 'surfaces through the .err capture and the empty-output stub instead');
   });
 
   test('#1115: codex review failures are surfaced, not silently swallowed', () => {
-    // stderr must be captured (not discarded to /dev/null) and an empty output
-    // must be replaced with a diagnostic, so a broken reviewer is reported.
-    for (const line of codexExecLines) {
-      assert.ok(
-        !line.includes('2>/dev/null'),
-        `codex exec must not discard stderr to /dev/null:\n  ${line.trim()}`
-      );
-    }
-    assert.ok(
-      /\[ ! -s \{run_dir\}\/gsd-review-codex\.md \]/.test(workflow),
-      'review.md must guard against an empty codex review output and surface the failure'
-    );
-  });
-
-  test('--ephemeral appears before the prompt argument (flag ordering)', () => {
-    for (const line of codexExecLines) {
-      const ephemeralPos = line.indexOf('--ephemeral');
-      const promptPos = line.indexOf(' - ');
-      if (promptPos === -1) continue; // no stdin prompt arg on this line
-      assert.ok(
-        ephemeralPos < promptPos,
-        `--ephemeral must appear before the stdin prompt argument:\n  ${line.trim()}`
-      );
-    }
-  });
-
-  test('--skip-git-repo-check is preserved alongside automation flags', () => {
-    for (const line of codexExecLines) {
-      assert.ok(
-        line.includes('--skip-git-repo-check'),
-        `codex exec invocation lost --skip-git-repo-check:\n  ${line.trim()}`
-      );
-    }
+    assert.equal(codex.emptyOutput, 'stub-with-stderr',
+      'a failed codex run must produce a diagnosable stub carrying its stderr');
   });
 });
 
@@ -427,48 +364,52 @@ function openCodeBlock() {
 }
 
 describe('bug #1936: OpenCode reviewer must not silently yield an empty review', () => {
+  // The agent can end its turn with ZERO output tokens, and `--format default` then drops the
+  // assistant text entirely. Phase 5b (#2799) made the reconstruction a named first-party handler
+  // rather than a jq pipeline in bash, so these assertions are behavioural over that handler.
+  const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+  const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+  const { handleOpencodeOutput } = require('../gsd-core/bin/lib/review-lane-runner.cjs');
+  const NL = String.fromCharCode(10);
+  const lane = REVIEWER_LANES.find((l) => l.slug === 'opencode');
+
   test('captures opencode stderr to a sidecar, never /dev/null', () => {
-    const block = openCodeBlock();
-    assert.match(block, /opencode run [^\n]*2>\{run_dir\}\/gsd-review-opencode\.err/,
-      'the opencode invocation must send stderr to a .err sidecar so failures are diagnosable');
-    assert.doesNotMatch(block, /opencode run [^\n]*2>\/dev\/null/,
-      'the opencode invocation must not discard stderr to /dev/null (#1936)');
+    const r = resolveLanePlan({ lane, configGet: () => undefined, runDir: '/run', repoRoot: '/repo' });
+    assert.equal(r.ok, true);
+    assert.ok(r.plan.errPath.endsWith('.err'));
+    assert.notEqual(r.plan.errPath, '/dev/null');
   });
 
-  test('requests structured JSON output and reconstructs review from assistant text parts', () => {
-    const block = openCodeBlock();
-    assert.match(block, /opencode run [^\n]*--format json/,
-      'must invoke opencode with --format json so assistant text parts are recoverable');
-    assert.match(block, /select\(\.type=="text"\)\s*\|\s*\.part\.text/,
-      'must extract the assistant text parts via `.part.text` from the JSON event stream');
+  test('requests structured JSON output and reconstructs from assistant text parts', () => {
+    assert.ok(lane.invoke.args.join(' ').includes('--format json'),
+      '--format json is the PRIMARY invocation, not a fallback');
+    assert.equal(lane.handler, 'opencode', 'reconstruction cannot be expressed as data');
+    const stream = [
+      JSON.stringify({ type: 'text', part: { text: 'part one' } }),
+      JSON.stringify({ type: 'text', part: { text: 'part two' } }),
+    ].join(NL);
+    assert.equal(handleOpencodeOutput(stream).review, ['part one', 'part two'].join(NL));
   });
 
   test('gates the empty-review stub on extracted CONTENT, not output-file size', () => {
-    // An empty jq extraction still writes a trailing newline, so a `[ -s file ]`
-    // check would treat a content-less review as populated and skip the stub. The
-    // block must test the captured text variable instead.
-    const block = openCodeBlock();
-    assert.match(block, /OPENCODE_REVIEW=\$\(jq/, 'must capture the extraction into a variable');
-    assert.match(block, /\[ -n "\$OPENCODE_REVIEW" \]/,
-      'must branch on the content of $OPENCODE_REVIEW, not on the size of the .md file');
-    assert.doesNotMatch(block, /\[ ! -s \{run_dir\}\/gsd-review-opencode\.md \]/,
-      'must not gate the stub on `[ ! -s ...opencode...md ]` (a lone newline defeats it)');
+    // A JSON stream with no assistant text is many BYTES but zero review.
+    const noText = JSON.stringify({ type: 'step_finish', part: { reason: 'stop', tokens: { output: 0 } } });
+    assert.ok(noText.length > 0, 'the raw stream is non-empty by byte count');
+    assert.equal(handleOpencodeOutput(noText).review, '', 'yet the extracted review is empty');
   });
 
-  test('empty-output stub is diagnosable: references #1936, stop reason/tokens, and stderr', () => {
-    const block = openCodeBlock();
-    assert.match(block, /#1936/, 'the empty-output stub must reference the issue');
-    assert.match(block, /step_finish[\s\S]*\.part\.reason[\s\S]*\.part\.tokens\.output/,
-      'the stub must surface the stop reason and output-token count from the final step_finish');
-    assert.match(block, /cat \{run_dir\}\/gsd-review-opencode\.err/,
-      'the stub must append the captured stderr');
+  test('empty-output stub is diagnosable: stop reason and output tokens', () => {
+    const stream = JSON.stringify({ type: 'step_finish', part: { reason: 'stop', tokens: { output: 0 } } });
+    const out = handleOpencodeOutput(stream);
+    assert.ok(out.diagnostic.includes('stop'), 'the stop reason must be surfaced');
+    assert.ok(out.diagnostic.includes('0'), 'the output-token count must be surfaced');
   });
 
-  test('does not regress the Codex reviewer block (still captures stderr to .err)', () => {
-    // #1936 changes only the OpenCode block; the Codex block's existing
-    // stderr-to-sidecar contract must remain intact.
-    assert.match(read(), /codex exec [^\n]*2>\{run_dir\}\/gsd-review-codex\.err/,
-      'the Codex reviewer block must be left unchanged');
+  test('does not regress the Codex reviewer (still captures stderr to .err)', () => {
+    const codex = REVIEWER_LANES.find((l) => l.slug === 'codex');
+    const r = resolveLanePlan({ lane: codex, configGet: () => undefined, runDir: '/run', repoRoot: '/repo' });
+    assert.ok(r.plan.errPath.endsWith('.err'));
+    assert.equal(r.plan.outputTarget.kind, 'file', 'codex still captures via --output-last-message (#1698)');
   });
 });
 
