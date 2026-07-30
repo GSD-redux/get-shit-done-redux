@@ -627,7 +627,7 @@ const LEG_MARKER_RE = /<!--\s*reviewer-lane:\s*([a-z0-9_-]+)\s*-->/g;
  * `LEG_MARKER_RE` can only capture `[a-z0-9_-]`. A lane whose slug falls outside
  * that class is therefore UNMATCHABLE in the workflow: its marker can be present
  * and correct and the scan will still never see it, so the lane reports
- * `LEG_MARKER_MISSING` forever with no indication why. All eleven shipped slugs
+ * `LEG_MARKER_MISSING` forever with no indication why. All twelve shipped slugs
  * sit inside the class (`lm_studio`, `llama_cpp` use the underscore), so this
  * never bites today — but Phase 2 (#2795) admits third-party overlay lanes, and
  * a slug like `acme.reviewer` would silently vanish from a review.
@@ -852,30 +852,72 @@ export interface DocsParityInput {
 const NON_LANE_SIGNATURE_FLAGS: ReadonlySet<string> = new Set(['--all']);
 
 /**
- * Escape a declared string for literal use inside a RegExp.
- *
- * `llama.cpp` is a shipped `reviewsSection`. Unescaped, its `.` matches any character, so
- * `llamaXcpp` would satisfy the check — a false pass on one of the lanes most likely to be
- * forgotten. Declared data is matched literally, never as a pattern.
- */
-function escapeLiteral(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
  * Is `flag` documented in `text` under one of the two structural shapes docs actually use?
  *
  * Backticked is the `COMMANDS.md` table-cell shape; bracketed (`[--gemini]`) is the
  * `FEATURES.md` signature shape. Requiring one of those two delimiters — rather than a bare
- * substring — is what keeps prose and fenced examples from satisfying the gate: the bare
- * `--codex` inside the fenced `/gsd-plan-review-convergence 3 --codex` example at
- * COMMANDS.md:274 is neither, so it is correctly inert. It also bounds the token for free, since
- * a backticked `--claude` demands its closing backtick and cannot be satisfied by
- * a backticked `--claude-foo`.
+ * substring — is what keeps prose and fenced examples from satisfying the gate, and it bounds the
+ * token for free: a backticked `--claude` demands its closing backtick, so a backticked
+ * `--claude-foo` cannot satisfy it.
+ *
+ * Literal `includes`, deliberately NOT a RegExp. `new RegExp` throws `SyntaxError` on a pattern
+ * beyond ~100k chars, and Phase 2 (#2795) admits third-party overlay lanes whose declared strings
+ * are untrusted in length — a parity gate that throws on its own input is indistinguishable from
+ * one that never ran. Literal matching also removes the need to escape metacharacters, which is
+ * what `llama.cpp` needed.
  */
 function flagIsDocumented(text: string, flag: string): boolean {
-  const f = escapeLiteral(flag);
-  return new RegExp('`' + f + '`|\\[' + f + '\\]').test(text);
+  return text.includes('`' + flag + '`') || text.includes('[' + flag + ']');
+}
+
+/**
+ * Strip fenced code blocks and HTML comments before parity matching.
+ *
+ * Both are places a flag can be *mentioned* without being *documented*: a fenced block showing
+ * markdown syntax, or a commented-out row left behind by an edit. Counting either is a false pass
+ * — the gate would report a lane as documented when a reader never sees it.
+ *
+ * Lines are replaced with empty strings rather than removed so that every downstream line index
+ * (the signature line, the Purpose paragraph beneath it) still refers to the same physical line.
+ */
+function stripNonProse(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let inFence = false;
+  let inComment = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inComment && /^(`{3,}|~{3,})/.test(trimmed)) {
+      inFence = !inFence;
+      out.push('');
+      continue;
+    }
+    if (inFence) {
+      out.push('');
+      continue;
+    }
+    let working = line;
+    if (!inComment && working.includes('<!--') && !working.includes('-->')) {
+      inComment = true;
+      working = working.slice(0, working.indexOf('<!--'));
+      out.push(working);
+      continue;
+    }
+    if (inComment) {
+      if (working.includes('-->')) {
+        inComment = false;
+        working = working.slice(working.indexOf('-->') + 3);
+        out.push(working);
+      } else {
+        out.push('');
+      }
+      continue;
+    }
+    // Single-line comment: drop the commented span only.
+    working = working.replace(/<!--[\s\S]*?-->/g, '');
+    out.push(working);
+  }
+  return out.join('\n');
 }
 
 /** Every bracketed `--token` on a signature line — the line's claimed reviewer flag set. */
@@ -1011,18 +1053,23 @@ export function checkReviewerDocsParity(input: DocsParityInput): DocsParityResul
     }
     const text = rawValue.replace(/\r\n/g, '\n');
 
+    // Fenced examples and commented-out rows mention a flag without documenting it. Stripped
+    // BEFORE the `/gsd-review` skip check too, so a doc whose only mention is inside a fence is
+    // correctly treated as not documenting the command at all.
+    const prose = stripNonProse(text);
+
     // Skip-if-absent. A mirror that does not document /gsd-review is a partial translation, not
     // drift — gating it would make this change responsible for authoring one.
-    if (!/\/gsd[-:]review\b/.test(text)) {
+    if (!/\/gsd[-:]review\b/.test(prose)) {
       skipped.push(label);
       continue;
     }
 
-    const lines = text.split('\n');
+    const lines = prose.split('\n');
 
     // --- arm 1: every declared flag is documented somewhere in the doc ---
     for (const flag of declaredFlagSet) {
-      if (!flagIsDocumented(text, flag)) {
+      if (!flagIsDocumented(prose, flag)) {
         add(DOCS_PARITY_VIOLATION.DOC_FLAG_MISSING, label, flag);
       }
     }
@@ -1074,7 +1121,7 @@ export function checkReviewerDocsParity(input: DocsParityInput): DocsParityResul
     if (p >= lines.length) continue;
     const purpose = lines[p];
     for (const title of declaredTitles) {
-      if (!new RegExp(escapeLiteral(title)).test(purpose)) {
+      if (!purpose.includes(title)) {
         add(DOCS_PARITY_VIOLATION.DOC_TITLE_MISSING, label, title);
       }
     }
