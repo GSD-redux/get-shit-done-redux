@@ -420,22 +420,50 @@ describe('hook execution when enabled', { skip: isWindows ? 'bash hooks require 
     assert.strictEqual(parsed.hookSpecificOutput.file_path, '.planning/STATE.md');
   });
 
-  test('phase-boundary prefers Claude file_path when both fields are present (#2304)', () => {
+  // #2752 — `path` is the AUTHORITATIVE field (kimi-cli executes on it; its file
+  // tools send `path` only). `file_path` is model-controlled on Kimi (kimi-cli never
+  // sends it). The old precedence (`file_path || path`) let a model-supplied decoy
+  // `file_path` suppress the reminder for a real write or fabricate one for a file
+  // never touched. Mirrors the #2595 JS-guard fix: `path` wins, `file_path` is the
+  // fallback (Claude emits `file_path` and no `path`, so the fallback must remain).
+  test('phase-boundary prefers Kimi tool_input.path when both fields are present (#2752)', () => {
     const hookPath = path.join(HOOKS_DIR, 'gsd-phase-boundary.sh');
-    const input = JSON.stringify({
-      tool_input: { file_path: '.planning/STATE.md', path: 'unrelated.txt' }
+    // Suppression repro: a real .planning/ write WITH a decoy non-empty file_path.
+    const suppressionInput = JSON.stringify({
+      tool_name: 'kimi_cli.tools.file:StrReplaceFile',
+      tool_input: { path: '.planning/STATE.md', file_path: 'unrelated.txt', edit: { old: 'a', new: 'b' } }
     });
 
-    const result = spawnHook(hookPath, {
-      input,
+    const suppressionResult = spawnHook(hookPath, {
+      input: suppressionInput,
       encoding: 'utf-8',
       cwd: tmpDir,
     });
 
-    assert.strictEqual(result.status, 0, `Should exit 0: ${result.stderr}`);
-    const parsed = JSON.parse(result.stdout);
-    assert.strictEqual(parsed.hookSpecificOutput.file_path, '.planning/STATE.md',
-      'file_path must win over path — normalization is a fallback, not an override');
+    assert.strictEqual(suppressionResult.status, 0, `Should exit 0: ${suppressionResult.stderr}`);
+    const suppressionParsed = JSON.parse(suppressionResult.stdout);
+    assert.strictEqual(suppressionParsed.hookSpecificOutput.planning_modified, true,
+      'A real .planning/STATE.md write must NOT be suppressed by a model-supplied decoy file_path (#2752)');
+    assert.strictEqual(suppressionParsed.hookSpecificOutput.file_path, '.planning/STATE.md',
+      'path must win over file_path — the runtime executes on path, file_path is the fallback');
+
+    // Fabrication repro: a write ELSEWHERE with a decoy file_path pointing into .planning/.
+    const fabricationInput = JSON.stringify({
+      tool_name: 'kimi_cli.tools.file:StrReplaceFile',
+      tool_input: { path: 'src/index.ts', file_path: '.planning/STATE.md', edit: { old: 'a', new: 'b' } }
+    });
+
+    const fabricationResult = spawnHook(hookPath, {
+      input: fabricationInput,
+      encoding: 'utf-8',
+      cwd: tmpDir,
+    });
+
+    assert.strictEqual(fabricationResult.status, 0, `Should exit 0: ${fabricationResult.stderr}`);
+    // No reminder emitted — the write was to src/index.ts; the decoy .planning/
+    // file_path must NOT fabricate a reminder for a file never touched.
+    assert.strictEqual(fabricationResult.stdout, '',
+      'A decoy .planning/ file_path must NOT fabricate a reminder when the real path is outside .planning/ (#2752)');
   });
 
   test('phase-boundary negative control: Kimi path outside .planning/ stays silent (#2304)', () => {
