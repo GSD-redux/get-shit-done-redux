@@ -1418,15 +1418,21 @@ if [ "$GATE_CFG" != "false" ]; then
   # passed an empty arg and the gate silently green-skipped. Derive it from the phase
   # dir (the canonical <phase>-CONTEXT.md convention).
   CONTEXT_PATH=$(ls "${PHASE_DIR}"/*-CONTEXT.md 2>/dev/null | head -1)
-  GATE_RESULT=$(gsd_run query check.decision-coverage-plan "${PHASE_DIR}" "${CONTEXT_PATH}")
-  # BLOCKING: refuse to mark phase planned when a trackable decision is uncovered.
-  # `passed: true` covers both real-pass and skipped cases (gate disabled / no CONTEXT.md /
-  # no trackable decisions). Verify-phase counterpart deliberately omits this exit-1 — that
-  # gate is non-blocking by design (review finding F15).
-  echo "$GATE_RESULT" | jq -e '(.passed // .data.passed) == true' >/dev/null || {
-    echo "$GATE_RESULT" | jq -r '(.message // .data.message // "Decision coverage gate failed.")'
-    exit 1
-  }
+  # Only run the gate when a CONTEXT.md actually exists for this phase. A genuinely
+  # CONTEXT.md-less phase (e.g. the §4 "Continue without context" path) is the
+  # legitimate skip — do NOT invoke the gate with an empty path, which the handler
+  # now fails closed on (a caller error, not "no context").
+  if [ -n "$CONTEXT_PATH" ]; then
+    GATE_RESULT=$(gsd_run query check.decision-coverage-plan "${PHASE_DIR}" "${CONTEXT_PATH}")
+    # BLOCKING: refuse to mark phase planned when a trackable decision is uncovered.
+    # `passed: true` covers both real-pass and skipped cases (gate disabled / no CONTEXT.md /
+    # no trackable decisions). Verify-phase counterpart deliberately omits this exit-1 — that
+    # gate is non-blocking by design (review finding F15).
+    echo "$GATE_RESULT" | jq -e '(.passed // .data.passed) == true' >/dev/null || {
+      echo "$GATE_RESULT" | jq -r '(.message // .data.message // "Decision coverage gate failed.")'
+      exit 1
+    }
+  fi
 fi
 ```
 
