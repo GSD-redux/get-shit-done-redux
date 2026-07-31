@@ -69,13 +69,15 @@ Parse JSON for: `researcher_model`, `synthesizer_model`, `roadmapper_model`, `co
 
 **If `response_language` is set:** All user-facing questions, prompts, and explanations in this workflow MUST be presented in `{response_language}`. Technical terms, code, file paths, and subagent prompts stay in English — only user-facing output is translated.
 
-**If `agents_installed` is false but `missing_agents` is empty and `sandbox_violations` (from init JSON) is non-empty (#2540):** the install is complete but some generated agents carry a sandbox weaker than their declared tool contract. Display this warning and — as long as none of the required agents (gsd-project-researcher, gsd-research-synthesizer, gsd-roadmapper) appear in `sandbox_violations` — proceed WITH research subagents as normal (do NOT skip Steps 6–7; the violations affect unrelated agents, not this workflow's spawns):
+**If `agents_installed` is false but `missing_agents` is empty and `sandbox_violations` (from init JSON) is non-empty (#2540):** the install is complete but some generated agents carry a sandbox that disagrees with their declared tool contract — in either direction, per each entry's `direction` field. Display this warning and — as long as none of the required agents (gsd-project-researcher, gsd-research-synthesizer, gsd-roadmapper) appear in `sandbox_violations` — proceed WITH research subagents as normal (do NOT skip Steps 6–7; the violations affect unrelated agents, not this workflow's spawns):
 ```text
-⚠ Some GSD agents have a sandbox weaker than their declared tool contract:
-  {sandbox_violations agents joined with newline}
+⚠ Some GSD agents have a sandbox that disagrees with their declared tool contract:
+  {sandbox_violations joined with newline, each as "{agent} ({direction})"}
 
-These agents cannot write their declared outputs until regenerated. Re-run the
-installer to fix: npx @opengsd/gsd-core@latest --global
+under-privileged = the sandbox is weaker than the contract, so the agent cannot
+write its declared outputs; over-privileged = it grants write to a contract that
+declares none. Re-run the installer to regenerate:
+npx @opengsd/gsd-core@latest --global
 ```
 If a required agent IS listed in `sandbox_violations`, fall through to the missing-agents handling below instead.
 
