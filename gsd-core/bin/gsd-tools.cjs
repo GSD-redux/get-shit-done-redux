@@ -3336,7 +3336,11 @@ async function main() {
   // move the other at the same time (keep them consistent).
   const SKIP_ROOT_RESOLUTION = new Set([
     'generate-slug', 'current-timestamp', 'verify-path-exists',
-    'verify-summary', 'template', 'frontmatter', 'detect-custom-files',
+    // #2844: verify-summary was previously skipped, leaving relative file-claim
+    // paths resolved against the raw process.cwd() — invoking from a subdirectory
+    // manufactured "missing files" on an otherwise-correct SUMMARY. It now goes
+    // through findProjectRoot so claims resolve against the project root.
+    'template', 'frontmatter', 'detect-custom-files',
     // #1854: restore-custom-files operates on a runtime config dir passed
     // explicitly via --config-dir; it never reads .planning/.
     'restore-custom-files',
