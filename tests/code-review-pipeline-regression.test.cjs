@@ -38,7 +38,24 @@ const REVIEWER_PATH = path.join(ROOT, 'agents', 'gsd-code-reviewer.md');
 // This mirrors the logic in code-review.md lines 172-184 exactly.
 // If those lines change, this function must be updated in tandem (and the
 // docs-parity assertions below will catch a mismatch at the regex level).
-// ---------------------------------------------------------------------------
+//
+// #2666: the acceptance predicate accepts root-level paths (no `/`) and known
+// extensionless build files (Dockerfile/Makefile/etc.), not only nested paths
+// with a trailing extension. Prose bullets are rejected by the known-filename /
+// has-extension distinction (plus the post-processing existence check backstop
+// in the shipped workflow).
+const KNOWN_EXTENSIONLESS_BUILD_FILES = new Set([
+  'dockerfile', 'containerfile', 'makefile', 'justfile', 'procfile',
+]);
+function isAcceptablePath(raw) {
+  // A trailing `.`+alphanumerics extension qualifies (root-level OR nested):
+  // package.json, renovate.json, .gitlab-ci.yml, AGENTS.md, app/foo.tsx
+  if (/\.[A-Za-z0-9]+$/.test(raw)) return true;
+  // Known extensionless build filename (basename, case-insensitive): Dockerfile, Makefile, …
+  const base = raw.split('/').pop();
+  if (KNOWN_EXTENSIONLESS_BUILD_FILES.has(base.toLowerCase())) return true;
+  return false;
+}
 function parseKeyFiles(yaml) {
   const files = [];
   let inSection = null;
@@ -53,7 +70,7 @@ function parseKeyFiles(yaml) {
       // Order matters: parens BEFORE em-dash because em-dashes can appear inside parens
       raw = raw.replace(/\s+\([^)]*\)\s*$/, '');
       raw = raw.split(/\s+—\s/)[0].trim();
-      if (/\//.test(raw) && /\.[A-Za-z0-9]+$/.test(raw)) {
+      if (isAcceptablePath(raw)) {
         files.push(raw);
       }
     }
@@ -160,6 +177,107 @@ describe('Bug 1 — compute_file_scope SUMMARY parser', () => {
     assert.deepStrictEqual(files, ['app/page.tsx']);
   });
 
+  // #2666 — the Tier-2 extractor must NOT drop repository-root files (no `/`)
+  // or known extensionless build files. Pre-fix the buggy predicate
+  // `/\//.test(raw) && /\.[A-Za-z0-9]+$/.test(raw)` dropped every root-level
+  // path and every extensionless build file anywhere in the tree.
+  test('#2666 RED: root-level files with extensions are accepted (package.json, renovate.json, .gitlab-ci.yml, AGENTS.md)', () => {
+    const yaml = [
+      'key-files:',
+      '  modified:',
+      '    - package.json',
+      '    - renovate.json',
+      '    - .gitlab-ci.yml',
+      '    - AGENTS.md',
+      '    - CLAUDE.md',
+    ].join('\n');
+    const files = parseKeyFiles(yaml);
+    assert.deepStrictEqual(
+      files.sort(),
+      ['.gitlab-ci.yml', 'AGENTS.md', 'CLAUDE.md', 'package.json', 'renovate.json'],
+      'root-level files with extensions must not be dropped for lacking a directory separator',
+    );
+  });
+
+  test('#2666: nested extensionless build files are accepted (docker/Dockerfile, web/Makefile)', () => {
+    const yaml = [
+      'key-files:',
+      '  modified:',
+      '    - docker/Dockerfile',
+      '    - web/Makefile',
+    ].join('\n');
+    const files = parseKeyFiles(yaml);
+    assert.deepStrictEqual(files.sort(), ['docker/Dockerfile', 'web/Makefile']);
+  });
+
+  test('#2666: root-level extensionless build files are accepted (Dockerfile, Makefile, Justfile, Containerfile, Procfile)', () => {
+    const yaml = [
+      'key-files:',
+      '  created:',
+      '    - Dockerfile',
+      '    - Makefile',
+      '    - Justfile',
+      '    - Containerfile',
+      '    - Procfile',
+    ].join('\n');
+    const files = parseKeyFiles(yaml);
+    assert.deepStrictEqual(
+      files.sort(),
+      ['Containerfile', 'Dockerfile', 'Justfile', 'Makefile', 'Procfile'],
+    );
+  });
+
+  test('#2666 acceptance #1: the reporter 10-file Docker+CI phase yields all 10 paths', () => {
+    const yaml = [
+      'key-files:',
+      '  created:',
+      '    - Dockerfile',
+      '    - .gitlab-ci.yml',
+      '    - renovate.json',
+      '    - AGENTS.md',
+      '    - CLAUDE.md',
+      '    - docs/DEVELOPMENT.md',
+      '    - scripts/version-consistency-gate.mjs',
+      '    - web/package.json',
+      '    - web/version_management.md',
+      '    - web/update-version.cjs',
+    ].join('\n');
+    const files = parseKeyFiles(yaml);
+    assert.deepStrictEqual(
+      files.sort(),
+      [
+        '.gitlab-ci.yml', 'AGENTS.md', 'CLAUDE.md', 'Dockerfile',
+        'docs/DEVELOPMENT.md', 'renovate.json', 'scripts/version-consistency-gate.mjs',
+        'web/package.json', 'web/update-version.cjs', 'web/version_management.md',
+      ],
+      'the full reporter phase must scope all 10 files, including Dockerfile + root files',
+    );
+  });
+
+  test('#2666 negative-space: a path-like prose bullet with no extension and unknown basename is rejected', () => {
+    // `topic/mode/date filters` has a `/` but no extension and an unknown basename —
+    // the pre-fix predicate dropped it (good), the relaxed predicate must STILL drop it.
+    const yaml = [
+      'key-decisions:',
+      '  - topic/mode/date filters',
+      'key-files:',
+      '  created:',
+      '    - app/page.tsx',
+    ].join('\n');
+    const files = parseKeyFiles(yaml);
+    assert.deepStrictEqual(files, ['app/page.tsx']);
+  });
+
+  test('#2666 negative-space: em-dash/parenthetical stripping still works on an accepted root file', () => {
+    const yaml = [
+      'key-files:',
+      '  modified:',
+      '    - Dockerfile — multi-stage build',
+    ].join('\n');
+    const files = parseKeyFiles(yaml);
+    assert.deepStrictEqual(files, ['Dockerfile']);
+  });
+
   // Docs-parity: the workflow .md must contain the hyphen-aware boundary regex
   // so what we tested above is actually what is deployed.
   test('code-review.md contains hyphen-aware boundary regex [\\w-]+', () => {
@@ -190,6 +308,76 @@ describe('Bug 1 — compute_file_scope SUMMARY parser', () => {
     assert.ok(
       scriptSection.includes('split(/\\s+—\\s'),
       'Script must split on em-dash to strip narrative'
+    );
+  });
+
+  // #2666 docs-parity: the shipped workflow must NOT still carry the buggy
+  // AND-joined predicate that required BOTH a `/` and a trailing extension —
+  // that predicate dropped every root-level file and every extensionless build
+  // file. Catches a revert of the #2666 fix.
+  test('#2666 docs-parity: compute_file_scope does not contain the buggy slash-and-extension predicate', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const scriptStart = src.indexOf('const files = [];');
+    const scriptEnd = src.indexOf('if (files.length)', scriptStart);
+    const scriptSection = src.slice(scriptStart, scriptEnd);
+    assert.ok(
+      !scriptSection.includes('/\\//.test(raw) && /\\.[A-Za-z0-9]+$/.test(raw)'),
+      'compute_file_scope must not use the buggy AND-joined /\\//.test(raw) && /\\.[A-Za-z0-9]+$/.test(raw) ' +
+        'predicate (#2666) — it drops every root-level and extensionless build file. Found section:\n' +
+        scriptSection
+    );
+  });
+
+  // #2666 docs-parity: the shipped workflow must reference the known
+  // extensionless build filenames so Dockerfile/Makefile/etc. are accepted.
+  test('#2666 docs-parity: compute_file_scope accepts known extensionless build files (Dockerfile)', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    const scriptStart = src.indexOf('const files = [];');
+    const scriptEnd = src.indexOf('if (files.length)', scriptStart);
+    const scriptSection = src.slice(scriptStart, scriptEnd);
+    assert.ok(
+      /dockerfile/i.test(scriptSection),
+      'compute_file_scope must reference known extensionless build filenames (e.g. Dockerfile) ' +
+        'so they are not dropped (#2666). Found section:\n' + scriptSection
+    );
+  });
+
+  // #2666 docs-parity: the Tier-3 git-diff fallback must intersect with the
+  // SUMMARY scope and warn on dropped files (not only fire on zero Tier-2 hits).
+  test('#2666 docs-parity: Tier-3 intersects/warns against git diff --name-only', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    // The shipped workflow must compute git diff --name-only AND emit a warning
+    // when the diff contains files the SUMMARY extractor did not surface.
+    assert.ok(
+      src.includes('git diff --name-only'),
+      'code-review.md must run `git diff --name-only` to cross-check the SUMMARY scope (#2666)'
+    );
+    assert.ok(
+      /warn|missing|not surfaced|did not|not in/i.test(src),
+      'code-review.md must warn when git diff contains files the SUMMARY extractor dropped (#2666)'
+    );
+  });
+
+  // #2666 docs-parity: the membership test must be EXACT whole-line matching
+  // (grep -Fxq), not an unanchored `case` substring match — otherwise a short
+  // basename in the diff (root `Dockerfile`) substring-matches a longer scoped
+  // path (`docker/Dockerfile`) and is silently skipped, reintroducing the bug.
+  test('#2666 docs-parity: Tier-3 cross-check uses exact whole-line matching (grep -Fxq), not substring case', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    assert.ok(
+      src.includes('grep -Fxq'),
+      'code-review.md Tier-3 cross-check must use grep -Fxq (exact whole-line match) for membership ' +
+        'testing, not an unanchored `case` substring match that would skip a root `Dockerfile` ' +
+        'whose name appears as a suffix of an already-scoped `docker/Dockerfile` (#2666)'
+    );
+    // The unanchored substring `case "$IN_SCOPE" in` membership test must NOT be
+    // present — it would false-match a basename suffix. Plain substring check (no
+    // regex, so no CRLF-fragility): the grep -Fxq positive guard above proves the
+    // correct mechanism; this negative guard catches a revert to the `case` form.
+    assert.ok(
+      !src.includes('case "$IN_SCOPE"'),
+      'code-review.md Tier-3 must not use the unanchored `case "$IN_SCOPE"` substring membership ' +
+        'test (#2666) — use grep -Fxq for exact whole-line matching'
     );
   });
 });

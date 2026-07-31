@@ -3033,6 +3033,29 @@ function runWithTimeout(argv) {
   const detached = !isWin && secs > 0;
   const spawnFailureCode = (err) =>
     (err && err.code === 'ENOENT' ? 127 : err && err.code === 'EACCES' ? 126 : 125);
+  // #2667: on Windows, a `.cmd`/`.bat`/`.exe` command cannot be spawned directly
+  // — Node's CVE-2024-27980 hardening (April 2024, all active lines incl. 22.x)
+  // throws EINVAL when child_process.spawn is given a `.cmd`/`.bat` without a
+  // shell, so e.g. `run-with-timeout 120 -- node_modules/.bin/fallow.cmd` silently
+  // produced empty stdout + exit 125 and the fallow pre-pass no-op'd.
+  //
+  // We do NOT use `shell: true` for this: with `shell:true`, Node space-joins the
+  // unescaped cmdArgs into a cmd.exe command string (DEP0190) — that would re-open
+  // a shell-injection surface and violate the recorded no-shell-for-argv-array
+  // contract (DEFECT.UNBOUNDED-SUBPROCESS, CONTEXT.md:772). Instead we spawn
+  // `cmd.exe /c <cmd> <args>` with an explicit argv ARRAY, which is what Node's
+  // own exec does internally and keeps every arg a discrete, un-interpolated
+  // token. The gate is NARROW: it fires ONLY for the Windows shim extensions,
+  // never for the `bash -c` callers (command is `bash`, no such suffix), so the 7
+  // bash callers keep their array-only argv on every platform. POSIX untouched.
+  // NOTE: .exe is INTENTIONALLY excluded — real PE executables (node.exe, etc.)
+  // spawn fine directly and mediating them through cmd.exe /c breaks the timeout
+  // cap's process-group kill (the wrapped child escapes reap → exit 124 never
+  // fires) and risks cmd.exe mis-parsing an arg like `-e "setTimeout(()=>{})"`.
+  // Only .cmd/.bat are the CVE-2024-27980 EINVAL cases that require mediation.
+  const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(cmd));
+  const spawnCmd = winShim ? (process.env.ComSpec || 'cmd.exe') : cmd;
+  const spawnArgs = winShim ? ['/d', '/s', '/c', cmd, ...cmdArgs] : cmdArgs;
   // Node's setTimeout delay is a 32-bit signed ms int; a larger value silently
   // clamps to 1ms → a spurious immediate timeout. Cap the budget (~24.8 days).
   const timerMs = Math.min(Math.round(secs * 1000), 2 ** 31 - 1);
@@ -3043,7 +3066,11 @@ function runWithTimeout(argv) {
   return new Promise((resolve) => {
     let child;
     try {
-      child = spawn(cmd, cmdArgs, { stdio: 'inherit', detached });
+      // #2667: on win32 `.cmd`/`.bat`/`.exe`, spawn cmd.exe with an explicit argv
+      // array (spawnCmd/spawnArgs) rather than the shim directly — preserves the
+      // array-only, no-shell-string argv contract. `detached` is always false on
+      // win32, so it never co-occurs with the cmd.exe mediation.
+      child = spawn(spawnCmd, spawnArgs, { stdio: 'inherit', detached });
     } catch (err) {
       process.stderr.write(`run-with-timeout: ${cmd}: ${err && err.message ? err.message : 'failed to start'}\n`);
       resolve(spawnFailureCode(err));
