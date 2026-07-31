@@ -802,7 +802,11 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
     error('ROADMAP.md not found');
   }
 
-  const slug = generateSlugInternal(description) || '';
+  // The slug becomes the phase directory name, so an unrenderable
+  // description must stop here rather than create `phases/01-` with
+  // nothing after the hyphen (#2848).
+  const slug = generateSlugInternal(description)
+    ?? error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
 
   const { newPhaseId, dirName } = withPlanningLock(cwd, () => {
     const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
@@ -947,7 +951,11 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
     }
     const added: Record<string, unknown>[] = [];
     for (const description of descriptions) {
-      const slug = generateSlugInternal(description) || '';
+      // The slug becomes the phase directory name, so an unrenderable
+      // description must stop here rather than create `phases/01-` with
+      // nothing after the hyphen (#2848).
+      const slug = generateSlugInternal(description)
+        ?? error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
       let newPhaseId: number | string;
       let dirName: string;
       if (config.phase_naming === 'custom') {
@@ -1000,7 +1008,11 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
     error('ROADMAP.md not found');
   }
 
-  const slug = generateSlugInternal(description) || '';
+  // The slug becomes the phase directory name, so an unrenderable
+  // description must stop here rather than create `phases/01-` with
+  // nothing after the hyphen (#2848).
+  const slug = generateSlugInternal(description)
+    ?? error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
 
   const { decimalPhase, dirName } = withPlanningLock(cwd, () => {
     const rawContent = fs.readFileSync(roadmapPath, 'utf-8');

@@ -23,7 +23,7 @@ import phaseIdModule = require('./phase-id.cjs');
 const { normalizePhaseName, phaseTokenMatches, extractPhaseToken } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsModule = require('./core-utils.cjs');
-const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath } = coreUtilsModule;
+const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath, generateSlugInternal } = coreUtilsModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
@@ -112,7 +112,10 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       directory: toPosixPath(path.join(relBase, match)),
       phase_number: phaseNumber,
       phase_name: phaseName,
-      phase_slug: phaseName ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : null,
+      // `null` (not `''`) when the name yields no slug: an absent slug is
+      // reported as absent, never as an empty string a caller could concatenate
+      // into a nameless path segment (#2848).
+      phase_slug: generateSlugInternal(phaseName),
       plans,
       summaries,
       incomplete_plans: incompletePlans,

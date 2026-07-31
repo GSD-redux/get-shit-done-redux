@@ -336,6 +336,88 @@ describe('generateSlugInternal', () => {
     const result = coreUtils.generateSlugInternal(long);
     assert.ok(result !== null && result.length <= 60, `truncation must still apply; got len ${result && result.length}`);
   });
+
+  test('cyrillic is transliterated instead of collapsing to an empty slug', () => {
+    assert.strictEqual(
+      coreUtils.generateSlugInternal('Расчёт показателей за квартал'),
+      'raschyot-pokazateley-za-kvartal',
+    );
+  });
+
+  test('multi-character transliterations are not corrupted by shorter ones', () => {
+    // щ→sch must not be produced by ш→sh plus a stray ч; ё→yo must not fall
+    // back to е→e. A chained .replace() implementation gets this wrong unless
+    // the rules are ordered; the single-pass table cannot get it wrong at all.
+    assert.strictEqual(coreUtils.generateSlugInternal('щи'), 'schi');
+    assert.strictEqual(coreUtils.generateSlugInternal('ши'), 'shi');
+    assert.strictEqual(coreUtils.generateSlugInternal('ёж'), 'yozh');
+    assert.strictEqual(coreUtils.generateSlugInternal('ежи'), 'ezhi');
+  });
+
+  test('the soft and hard signs vanish rather than becoming hyphens', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('объявление'), 'obyavlenie');
+  });
+
+  test('ukrainian letters outside the russian alphabet are transliterated', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Її ґудзик'), 'yiyi-gudzik');
+  });
+
+  test('latin diacritics are folded rather than punched out', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Café Naïve'), 'cafe-naive');
+  });
+
+
+  test('a mixed title keeps its latin part and transliterates the rest', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Фаза 42 Done'), 'faza-42-done');
+  });
+
+  test('60-limit boundary: 59, 60 and 61 characters of ascii', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('a'.repeat(59)).length, 59);
+    assert.strictEqual(coreUtils.generateSlugInternal('a'.repeat(60)).length, 60);
+    assert.strictEqual(coreUtils.generateSlugInternal('a'.repeat(61)).length, 60);
+  });
+
+  test('60-limit boundary counts the slug, not the source: щ is one char but three', () => {
+    // 19 щ → 57 chars, 20 → 60 exactly, 21 → 63 truncated back to 60.
+    assert.strictEqual(coreUtils.generateSlugInternal('щ'.repeat(19)).length, 57);
+    assert.strictEqual(coreUtils.generateSlugInternal('щ'.repeat(20)).length, 60);
+    assert.strictEqual(coreUtils.generateSlugInternal('щ'.repeat(21)).length, 60);
+  });
+
+  test('40-limit boundary: 39, 40 and 41 characters of ascii', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('b'.repeat(39), 40).length, 39);
+    assert.strictEqual(coreUtils.generateSlugInternal('b'.repeat(40), 40).length, 40);
+    assert.strictEqual(coreUtils.generateSlugInternal('b'.repeat(41), 40).length, 40);
+  });
+
+  test('40-limit boundary counts the slug, not the source: ж is one char but two', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('ж'.repeat(19), 40).length, 38);
+    assert.strictEqual(coreUtils.generateSlugInternal('ж'.repeat(20), 40).length, 40);
+    assert.strictEqual(coreUtils.generateSlugInternal('ж'.repeat(21), 40).length, 40);
+  });
+
+  test('a slug cut exactly on a hyphen does not end with one (#2849)', () => {
+    // The 60th character of the untruncated slug is the word-boundary hyphen.
+    // The trim must run AGAIN after the cut, or truncation resurrects the very
+    // trailing hyphen the first trim removed.
+    const at60 = coreUtils.generateSlugInternal(`${'a'.repeat(59)} tail`);
+    assert.strictEqual(at60, 'a'.repeat(59));
+    const at40 = coreUtils.generateSlugInternal(`${'b'.repeat(39)} tail`, 40);
+    assert.strictEqual(at40, 'b'.repeat(39));
+  });
+
+  test('truncation cuts code points, so no lone surrogate reaches a filename', () => {
+    const slug = coreUtils.generateSlugInternal(`${'a'.repeat(58)}\u{1F389}bb`);
+    assert.ok(slug !== null);
+    for (const ch of slug) {
+      const cp = ch.codePointAt(0);
+      assert.ok(cp < 0xd800 || cp > 0xdfff, 'lone surrogate in slug');
+    }
+  });
+
+  test('an explicit limit is honoured over the default', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Hello World Again', 5), 'hello');
+  });
 });
 
 // ─── filterPlanFiles ──────────────────────────────────────────────────────────

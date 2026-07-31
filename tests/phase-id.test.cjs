@@ -1030,3 +1030,42 @@ describe('phaseKeyFrom* — one key space for directories and prose', () => {
     );
   });
 });
+
+describe('toDir path guards (post slug-consolidation)', () => {
+  const ID = { project: 'P', milestone: '01', phase: '01' };
+
+  const REJECTED = [
+    ['a script the canonical generator cannot spell in ascii', 'ελληνικά'],
+    ['a mixed CJK phase name', '中文フェーズ'],
+    ['a cyrillic phase name reaching the guard directly', 'расчёт-признаков'],
+    ['an empty slug', ''],
+    ['punctuation that sanitises to nothing', '!!!'],
+    ['an all-digit slug, which would re-parse as a plan tail', '12345'],
+    ['a parent-directory traversal', '..'],
+  ];
+
+  for (const [what, slug] of REJECTED) {
+    test(`throws on ${what}`, () => {
+      assert.throws(
+        () => phaseId.toDir(ID, slug),
+        /^Error: toDir:/,
+        `toDir accepted ${JSON.stringify(slug)} as a directory segment`,
+      );
+    });
+  }
+
+  test('collapses a path separator instead of emitting one', () => {
+    // The separator case is guarded by SANITISATION, not by a throw: the class
+    // collapses `/` to a hyphen. Asserting a throw here would measure the wrong
+    // property — what matters is that no separator reaches the path segment.
+    const dir = phaseId.toDir(ID, 'a/b');
+    assert.strictEqual(dir, 'P.01-01-a-b');
+    assert.ok(!dir.includes('/') && !dir.includes('\\'), 'path separator survived into the segment');
+  });
+
+  test('still accepts a slug the canonical generator would produce', () => {
+    // Negative control for the block above: if toDir rejected everything the
+    // assertions would pass while proving nothing.
+    assert.strictEqual(phaseId.toDir(ID, 'raschyot-priznakov'), 'P.01-01-raschyot-priznakov');
+  });
+});

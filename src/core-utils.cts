@@ -93,63 +93,90 @@ function pathExistsInternal(cwd: string, targetPath: string): boolean {
   }
 }
 
-function generateSlugInternal(text: string | null | undefined): string | null {
-  if (!text) return null;
-  // #2849: strip leading/trailing hyphens AFTER truncation, not only before.
-  // .substring(0, 60) can land on a separator, re-introducing a trailing hyphen
-  // the strip step exists to prevent. Truncation cannot add a leading hyphen, so
-  // running the full ^-+|-+$ pass last is equivalent for leading hyphens and
-  // fixes the trailing-hyphen-after-truncation case.
-  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').substring(0, 60).replace(/^-+|-+$/g, '');
-}
+/**
+ * Cyrillic → ASCII transliteration table (#2848).
+ *
+ * Every key is a SINGLE code point and the table is applied in ONE pass
+ * (Array.from + map lookup), never as a chain of `.replace()` calls. That
+ * removes the ordering trap a chained implementation has, where `щ`→`sch` must
+ * run before `ш`→`sh` or the shorter rule corrupts the longer one's output: a
+ * single-pass map cannot feed one substitution's output into another's input,
+ * so the table needs no ordering discipline at all.
+ */
+const CYRILLIC_TRANSLITERATION: Readonly<Record<string, string>> = Object.freeze({
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'zh', з: 'z',
+  и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r',
+  с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch',
+  ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya',
+  // Ukrainian / Belarusian / Serbian letters absent from the Russian alphabet.
+  і: 'i', ї: 'yi', є: 'ye', ґ: 'g', ў: 'u', ђ: 'dj', ј: 'j', љ: 'lj', њ: 'nj',
+  ћ: 'c', џ: 'dz',
+});
 
-// ─── Transliteration (#2848) ─────────────────────────────────────────────────
-//
-// Non-Latin titles used to reduce to an empty slug: the `[^a-z0-9]+` strip
-// removed every character of an all-Cyrillic title and the hyphen cleanup left
-// "". Callers then created unnamed phase directories (`01-`) and empty
-// `milestone_slug` init JSON. The fix transliterates Cyrillic to ASCII BEFORE
-// the existing ASCII filter, so a non-Latin title yields a usable ASCII slug
-// while Latin-script text (which hits zero map entries) is byte-for-byte
-// unchanged — the negative control is satisfied by construction.
-//
-// Multi-letter mappings (ж→zh, ч→ch, ш→sh, щ→sch, ю→yu, я→ya) are applied as a
-// single pass; soft/hard signs (ъ, ь) drop to nothing rather than a hyphen.
-// Scope is Cyrillic (Russian + the reported Ukrainian/Belarusian extras
-// і ї є ґ ў) per the issue's confirmed-working patch. CJK and other
-// non-transliterated scripts keep the existing strip-to-ASCII behavior.
-const CYRILLIC_TRANSLITERATION: Readonly<Record<string, string>> = {
-  // multi-letter first (longest-match-safe within a single pass via ordered keys)
-  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
-  з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o',
-  п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts',
-  ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu',
-  я: 'ya',
-  // Ukrainian / Belarusian extras reported in #2848
-  є: 'ye', і: 'i', ї: 'yi', ґ: 'g', ў: 'u',
-};
-
-const CYRILLIC_TRANSLITERATION_KEYS = Object.keys(CYRILLIC_TRANSLITERATION);
+const DEFAULT_SLUG_MAX_LENGTH = 60;
 
 /**
- * Lowercase + transliterate Cyrillic characters to ASCII. The output still
- * contains non-ASCII for scripts outside the map (CJK, etc.) — the caller's
- * existing `[^a-z0-9]+` filter handles those. Latin-script input is returned
- * lowercased with no other change.
+ * The single slug implementation (#2848). Every slug in this codebase is
+ * produced here — call sites re-export or delegate, never re-implement.
  *
- * Shared by `generateSlugInternal` (core-utils) and `slugify` (gsd2-import) so
- * the transliteration step is not duplicated across the two slug helpers (#2848
- * explicitly requires both be fixed).
+ * Non-Latin input used to collapse to `''`, which callers then wrote into path
+ * segments as a nameless `phases/01-` directory. Cyrillic is transliterated to
+ * ASCII; a script with no ASCII spelling leaves nothing the filter can keep, so
+ * the result is the empty string — the contract `next` pins in
+ * tests/core-utils.test.cjs ('not null, not `-`'). Callers that cannot use an
+ * empty path segment check for it explicitly; see slugify in gsd2-import.
+ *
+ * Truncation happens HERE and nowhere else: callers pass their own limit via
+ * `maxLength` instead of re-cutting the result, so a slug can never be cut
+ * twice against two different limits. Cutting is done over code POINTS rather
+ * than UTF-16 code units so a truncation cannot leave a lone surrogate behind,
+ * and the hyphen trim runs again AFTER the cut so truncation cannot resurrect
+ * the trailing hyphen the first trim removed (#2849).
+ *
+ * @returns the slug; `null` when `text` itself is falsy, and `''` when `text`
+ * is non-empty but contains no slug-safe characters.
+ */
+function generateSlugInternal(
+  text: string | null | undefined,
+  maxLength: number = DEFAULT_SLUG_MAX_LENGTH,
+): string | null {
+  if (!text) return null;
+  // Transliteration runs BEFORE the NFKD fold, not after. `ё` and `ї` are
+  // precomposed: NFKD splits them into a base letter plus a combining
+  // diaeresis, so folding first would strip the mark and quietly downgrade
+  // `ё`→`e` and `ї`→`i` before the table ever sees them.
+  //
+  // The table itself lives in `transliterateForSlug` (landed with #2934) and is
+  // called here rather than re-implemented: a second copy of the same rule is
+  // exactly the failure mode this consolidation exists to end.
+  const transliterated = transliterateForSlug(text);
+  // With Cyrillic already ASCII, the fold only has Latin diacritics left to
+  // deal with: `Café` → `cafe` rather than `caf-`.
+  const ascii = transliterated.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+  const collapsed = ascii.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  const points = Array.from(collapsed);
+  const cut = points.length <= maxLength ? collapsed : points.slice(0, maxLength).join('');
+  // Contract preserved from next, which pins it in tests: a FALSY input yields
+  // null (handled above), while a non-empty input whose characters are all
+  // separators yields '' — not null and not a stray '-'. This PR consolidates
+  // the implementation; it does not redefine what the implementation returns.
+  return cut.replace(/^-+|-+$/g, '');
+}
+
+/**
+ * Lowercase + transliterate Cyrillic to ASCII against the single table above.
+ *
+ * Shared by `generateSlugInternal` here and by `slugify` in gsd2-import, so the
+ * transliteration step exists exactly once in the tree — the property this PR
+ * is about. Scripts outside the table (CJK and the like) pass through unchanged
+ * and are handled by the caller's `[^a-z0-9]+` filter.
  */
 function transliterateForSlug(text: string): string {
-  const lowered = text.toLowerCase();
-  let out = '';
-  for (const ch of lowered) {
-    out += CYRILLIC_TRANSLITERATION_KEYS.includes(ch)
+  return Array.from(text.toLowerCase())
+    .map((ch) => (Object.prototype.hasOwnProperty.call(CYRILLIC_TRANSLITERATION, ch)
       ? CYRILLIC_TRANSLITERATION[ch]
-      : ch;
-  }
-  return out;
+      : ch))
+    .join('');
 }
 
 // ─── Phase file helpers ──────────────────────────────────────────────────────
@@ -331,6 +358,7 @@ export = {
   pathExistsInternal,
   generateSlugInternal,
   transliterateForSlug,
+  DEFAULT_SLUG_MAX_LENGTH,
   filterPlanFiles,
   filterSummaryFiles,
   getPhaseFileStats,

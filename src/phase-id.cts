@@ -205,9 +205,14 @@ function getPhaseDirFromPhaseId(phaseId: unknown, phaseName: string | null | und
   const milestone = String(parseInt(m[1], 10)).padStart(2, '0');
   const subParts = m[2].split('-').map(p => String(parseInt(p, 10)).padStart(2, '0'));
   const sub = subParts.join('-');
-  const slug = phaseName
-    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-    : '';
+  // Deferred require: core-utils.cjs imports this module at load time, so a
+  // top-level import here would be a cycle. By call time both modules are
+  // fully initialised. Re-export, never re-implement (#2848).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const coreUtils = require('./core-utils.cjs') as {
+    generateSlugInternal(text: string | null | undefined, maxLength?: number): string | null;
+  };
+  const slug = coreUtils.generateSlugInternal(phaseName);
   const parts = [milestone, sub, slug].filter(Boolean);
   const base = parts.join('-');
   return projectCode ? `${projectCode}-${base}` : base;

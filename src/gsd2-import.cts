@@ -28,8 +28,8 @@ import { realClock } from './clock.cjs';
 import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output } = ioMod;
-const { transliterateForSlug } = coreUtilsMod;
+const { output, error } = ioMod;
+const { generateSlugInternal } = coreUtilsMod;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -90,12 +90,32 @@ function zeroPad(n: number, width = 2): string {
   return String(n).padStart(width, '0');
 }
 
+/**
+ * Slug for an imported GSD-2 slice title. Delegates to the single
+ * implementation in core-utils — this module used to carry its own copy, which
+ * diverged from it in two ways: it trimmed a single leading/trailing hyphen
+ * instead of a run, and it never truncated (#2848).
+ *
+ * The result becomes an on-disk `phases/<n>-<slug>` directory name, so a title
+ * with no slug-safe content must stop the import loudly rather than emit a
+ * nameless `phases/01-` directory.
+ */
 function slugify(title: string): string {
-  // #2848: transliterate Cyrillic to ASCII before the filter so a non-Latin
-  // title does not collapse to an empty slug. The shared primitive keeps this
-  // in sync with generateSlugInternal. slugify's DISTINCT contract is preserved:
-  // single leading/trailing hyphen strip (/^-|-$/), and NO 60-char truncation.
-  return transliterateForSlug(title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  // #2848 consolidation: slugify no longer re-implements the slug rule, it
+  // delegates to the single implementation in core-utils. Its one distinguishing
+  // property — no 60-char truncation — is preserved explicitly through the
+  // maxLength parameter rather than through a private copy of the expression.
+  //
+  // One behaviour change comes with the merge and is intentional: the shared
+  // helper strips ALL leading/trailing hyphens (/^-+|-+$/) where the local copy
+  // stripped a single one (/^-|-$/), so an input like `--a--` now yields `a`
+  // instead of `-a-`. A directory named `-a-` was never wanted; the old single
+  // strip was an artefact of the duplicated expression, not a contract.
+  const slug = generateSlugInternal(title, Number.POSITIVE_INFINITY);
+  // Both empty outcomes are failures for a directory name: null (falsy title)
+  // and '' (title made entirely of separators).  would let '' through, so
+  // the check is on emptiness, not on nullishness.
+  return slug || error(`Cannot derive a phase directory name from slice title: ${JSON.stringify(title)}`);
 }
 
 // ─── GSD-2 Parser ───────────────────────────────────────────────────────────
