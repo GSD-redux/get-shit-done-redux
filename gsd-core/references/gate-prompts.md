@@ -90,11 +90,14 @@ Up to 4 suggested next actions with selection (status, resume workflows).
 3-option handler for existing CONTEXT.md in discuss workflow.
 - question: "Phase {N} already has a CONTEXT.md. How should we handle it?"
 - header: "Context"
-- options: Overwrite | Append | Cancel
+- options: Update it | View it | Skip
 
 ## Pattern: gray-area-option
 Dynamic template for presenting gray area choices in discuss workflow.
 - question: "{Gray area title}"
 - header: "Decision"
-- options: {Option 1} | {Option 2} | Let Claude decide
-- Note: Options generated at runtime. Always include "Let Claude decide" as last option.
+- options: {Option 1} | {Option 2}
+- Note: Options generated at runtime. Present real choices only — do NOT include a
+  "skip" or "you decide" option (the user ran discuss-phase to decide). An "Other"
+  free-text escape hatch may be offered per modes/default.md, but never a
+  "Let Claude decide" cop-out.

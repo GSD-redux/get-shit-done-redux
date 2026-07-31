@@ -19,7 +19,7 @@ See also: [ADR-1244](../adr/1244-capability-ecosystem.md) —
 | Column | Description |
 |---|---|
 | **id** | Canonical capability identifier; unique across first- and third-party capabilities. Reserved prefixes: `gsd-`, `gsd-core-`, `anthropic-`. |
-| **role** | `feature` — extends what the loop does; `runtime` — adapts GSD to a specific AI runtime/IDE. |
+| **role** | `feature` — extends what the loop does; `runtime` — adapts GSD to a specific AI runtime/IDE; `reviewer` — declares a cross-AI reviewer lane (ADR-2782). A capability may be both a runtime and a reviewer. |
 | **tier** | `core` — always active; `standard` — active when the runtime supports it; `full` — opt-in or runtime-specific. |
 | **engines.gsd** | Semver RANGE expressing host-version compatibility. A hard gate at install and at load. `—` means the capability declares no range. |
 | **extension points** | The loop points this capability registers hooks into (from the registry's `byLoopPoint` index). `—` means it registers none (typical for runtime capabilities, whose job is surface emission). |
@@ -144,7 +144,7 @@ fields described below, with `source` = `third-party`.
 | Column | Value |
 |---|---|
 | **id** | As declared in `capability.json`. Must not use reserved prefixes (`gsd-`, `gsd-core-`, `anthropic-`). |
-| **role** | `feature` or `runtime`, as declared. |
+| **role** | `feature`, `runtime`, or `reviewer`, as declared. |
 | **tier** | `core`, `standard`, or `full`, as declared. |
 | **engines.gsd** | Range from `capability.json`; verified at install and at each load. |
 | **extension points** | The loop points the capability registers into, validated against the known 12 identifiers. |

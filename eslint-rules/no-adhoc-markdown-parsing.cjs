@@ -170,11 +170,92 @@ const rule = {
     // [^\|]), indicating a hand-rolled table-row/cell scan such as /\|[^|]*\|/.
     // Conservative by design: a bare escaped-pipe delimiter probe with no
     // negated-pipe cell class is NOT flagged.
+    //
+    // The negated class qualifies ONLY when its body is the pipe (escaped or
+    // bare) plus zero or more of the two-character line-terminator/tab escapes
+    // `\n`, `\r`, `\t` (#2880): the common, and strictly MORE correct, spelling
+    // is `[^|\n]` (a GFM cell can span neither a pipe nor a line break) —
+    // `src/state-document.cts` used exactly that and evaded the rule entirely,
+    // which is the ADR-2143 §7 enforcement hole this widening closes. A
+    // negated class that excludes the pipe alongside anything ELSE — e.g.
+    // `[^\s|]`, `[^"|]`, `[^a-z|]` — is a different (non-table) idiom and is
+    // NOT flagged, and a negated class that does not exclude a pipe at all
+    // (`[^\n]`, `[^a-z]`) is still NOT a cell scan.
+    //
+    // Implemented as a single-pass scanner (not a regex) — see
+    // hasQualifyingNegatedPipeClass below for why the regex encoding of this
+    // fingerprint was rejected (quadratic-on-failure blowup).
     function isTableRegexSource(src) {
       // Must contain an escaped pipe
       if (!src.includes('\\|')) return false;
-      // Must ALSO contain a negated-pipe cell-capture class: [^|] or [^\|]
-      return /\[\^\\?\|\]/.test(src);
+      return hasQualifyingNegatedPipeClass(src);
+    }
+
+    // ── Single-pass negated-character-class scanner (FIX 3 + FIX 4) ─────────
+    // Walks `src` once, left to right. On encountering a negated class
+    // `[^...]` it scans forward to the class's closing `]` (honoring `\`
+    // escapes within the class) exactly once, then resumes scanning
+    // immediately AFTER that `]` — never backtracking into the class body.
+    // This keeps the whole walk O(n) regardless of how many negated classes
+    // (or how large) the source contains — unlike the regex it replaces,
+    // /\[\^[^\]]*\\?\|[^\]]*\]/, which is quadratic on failure (two unbounded
+    // [^\]]* runs around an optional), measured at ~23s for a 256000-char
+    // adversarial input.
+    //
+    // Returns true if ANY negated class in `src` QUALIFIES as a hand-rolled
+    // GFM cell-capture class: it excludes a pipe (`\|` or bare `|`) and,
+    // after removing that pipe, every remaining member is one of the
+    // two-character line-terminator/tab escapes `\n`, `\r`, `\t` (zero extra
+    // members is fine — `[^|]` alone qualifies). A class that excludes the
+    // pipe alongside anything ELSE (`[^\s|]`, `[^"|]`, `[^a-z|]`) does NOT
+    // qualify — that is a different, non-table idiom. A class that never
+    // excludes a pipe at all (`[^\n]`, `[^a-z]`) does not qualify either.
+    function hasQualifyingNegatedPipeClass(src) {
+      let i = 0;
+      while (i < src.length) {
+        const ch = src[i];
+        if (ch === '\\') {
+          i += 2;
+          continue;
+        }
+        if (ch === '[' && src[i + 1] === '^') {
+          let j = i + 2;
+          let classHasPipe = false;
+          let classIsPure = true;
+          let closed = false;
+          while (j < src.length) {
+            const cc = src[j];
+            if (cc === '\\') {
+              const next = src[j + 1];
+              if (next === '|') {
+                classHasPipe = true;
+              }
+              else if (next !== 'n' && next !== 'r' && next !== 't') {
+                classIsPure = false;
+              }
+              j += 2;
+              continue;
+            }
+            if (cc === ']') {
+              closed = true;
+              j += 1;
+              break;
+            }
+            if (cc === '|') {
+              classHasPipe = true;
+            }
+            else {
+              classIsPure = false;
+            }
+            j += 1;
+          }
+          if (closed && classHasPipe && classIsPure) return true;
+          i = closed ? j : src.length;
+          continue;
+        }
+        i += 1;
+      }
+      return false;
     }
 
     function isTableRegex(node) {

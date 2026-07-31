@@ -49,6 +49,33 @@ const PLAN_CHECKER_PATH = path.join(__dirname, '..', 'agents', 'gsd-plan-checker
 let jqAvailable = false;
 try { execFileSync('jq', ['--version'], { stdio: 'ignore', timeout: 10000, killSignal: 'SIGKILL' }); jqAvailable = true; } catch { /* no jq on PATH */ }
 
+// #2800: the hand-written per-flag `grep -q '\-\-<flag>'` whitelist lines were
+// replaced by a loop deriving REVIEWER_FLAGS from `gsd_run review-lane flags`
+// (the declared lane roster). These helpers extract the REAL deployed parse
+// block (`REVIEWER_FLAGS=""` through the closing `done` of the for-loop) and
+// execute it under a real `gsd_run` shim backed by the actual gsd-tools.cjs
+// binary, so behavioral coverage proves pass-through against the real
+// implementation rather than a stale hand-written literal. POSIX-only —
+// callers must skip on win32.
+const GSD_TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+function extractReviewerFlagsParseBlock(workflowText) {
+  const startIdx = workflowText.indexOf('REVIEWER_FLAGS=""');
+  const doneIdx = workflowText.indexOf('\ndone\n', startIdx);
+  if (startIdx === -1 || doneIdx === -1) return null;
+  return workflowText.slice(startIdx, doneIdx + '\ndone'.length);
+}
+
+function runReviewerFlagsParseBlock(block, args) {
+  const stub = 'gsd_run() { node "$GSD_TOOLS_PATH" "$@"; }';
+  const script = `${stub}\n${block}\nprintf "%s" "$REVIEWER_FLAGS"`;
+  return execFileSync('bash', ['-c', script], {
+    env: { ...process.env, ARGUMENTS: args, GSD_TOOLS_PATH },
+    encoding: 'utf8',
+    timeout: 5000,
+  }).trim();
+}
+
 // ─── Command source ────────────────────────────────────────────────────────
 
 describe('plan-review-convergence command source (#2306)', () => {
@@ -161,11 +188,28 @@ describe('plan-review-convergence: --agy/--antigravity reviewer whitelist (#2293
   const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
   const SKILL_PATH = path.join(__dirname, '..', 'skills', 'gsd-plan-review-convergence', 'SKILL.md');
 
-  test('workflow REVIEWER_FLAGS extraction whitelists --agy and --antigravity', () => {
-    // The runtime contract is the grep-accumulation block: each recognized flag
-    // has its own `grep -q '\\-\\-<flag>'` line. Absence = the flag is silently dropped.
-    assert.ok(/grep -q '\\-\\-agy'/.test(workflow), 'workflow must whitelist --agy');
-    assert.ok(/grep -q '\\-\\-antigravity'/.test(workflow), 'workflow must whitelist --antigravity');
+  test('workflow REVIEWER_FLAGS extraction derives its whitelist from review-lane flags, not a hand-written list (#2800)', () => {
+    // #2800: the runtime contract used to be a hand-written grep-accumulation
+    // block — one `grep -q '\-\-<flag>'` line per recognized flag. Absence meant
+    // the flag was silently dropped, and that whitelist drifted three separate
+    // times (--coderabbit, then --qwen/--cursor/--kimi-code, then the unanchored
+    // --agy pattern matching inside --antigravity). The fix derives the whitelist
+    // structurally from the declared lane roster via `gsd_run review-lane flags`,
+    // so --agy/--antigravity (and every other lane flag) are guaranteed reachable
+    // without being named individually here.
+    assert.ok(
+      workflow.includes('gsd_run review-lane flags'),
+      'workflow must derive REVIEWER_FLAGS by iterating `gsd_run review-lane flags` (the declared lane roster), not a hand-written list'
+    );
+    // Anti-parity guard: re-introducing a hand-enumerated per-flag whitelist line
+    // (the exact shape of the pre-#2800 bug) must fail this test, even though the
+    // structural loop above would still make --agy/--antigravity work — a FUTURE
+    // flag added only to a resurrected hand list, and never to the descriptor,
+    // would otherwise silently regress to the #2293 failure mode.
+    assert.ok(
+      !/grep -q '\\-\\-[a-zA-Z0-9-]+'\s*&&\s*REVIEWER_FLAGS=/.test(workflow),
+      'workflow must NOT contain a hand-written per-flag `grep -q \'--<flag>\' && REVIEWER_FLAGS=...` whitelist line — flags must be derived from the declared lane roster (#2800), never re-enumerated by hand'
+    );
   });
 
   test('generated SKILL.md mirrors the --agy flag (argument-hint parity)', () => {
@@ -187,17 +231,9 @@ describe('plan-review-convergence: --agy/--antigravity reviewer whitelist (#2293
   // respecting review.default_reviewers.
   test('[behavioral] the deployed parse block passes --antigravity through (parse block no longer applies a --codex default — #2315)', (t) => {
     if (process.platform === 'win32') { t.skip('POSIX shell extraction; not run on Windows'); return; }
-    const { execFileSync } = require('node:child_process');
-    const startIdx = workflow.indexOf('REVIEWER_FLAGS=""');
-    const endMarker = "echo \"$ARGUMENTS\" | grep -q '\\-\\-all' && REVIEWER_FLAGS=\"$REVIEWER_FLAGS --all\"";
-    const endIdx = workflow.indexOf(endMarker);
-    assert.ok(startIdx !== -1 && endIdx !== -1, 'the REVIEWER_FLAGS parse block must exist in the workflow');
-    const block = workflow.slice(startIdx, endIdx + endMarker.length) + '\nprintf "%s" "$REVIEWER_FLAGS"';
-    const run = (args) => execFileSync('bash', ['-c', block], {
-      env: { ...process.env, ARGUMENTS: args },
-      encoding: 'utf8',
-      timeout: 5000,
-    }).trim();
+    const block = extractReviewerFlagsParseBlock(workflow);
+    assert.ok(block, 'the REVIEWER_FLAGS parse block must exist in the workflow');
+    const run = (args) => runReviewerFlagsParseBlock(block, args);
 
     const agy = run('5 --antigravity');
     assert.ok(agy.split(/\s+/).includes('--antigravity'), `--antigravity must pass through, got: "${agy}"`);
@@ -313,12 +349,12 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
     if (!jqAvailable) { t.skip('jq not on PATH — workflow resolution block pipes through jq (production dependency, review.md:244); structural tests above still validate the fix'); return; }
     const { execFileSync } = require('node:child_process');
 
-    // Parse block: from REVIEWER_FLAGS="" to the last grep line (--all).
-    const parseStart = workflow.indexOf('REVIEWER_FLAGS=""');
-    const parseEndMarker = "echo \"$ARGUMENTS\" | grep -q '\\-\\-all' && REVIEWER_FLAGS=\"$REVIEWER_FLAGS --all\"";
-    const parseEnd = workflow.indexOf(parseEndMarker);
-    assert.ok(parseStart !== -1 && parseEnd !== -1, 'parse block must exist');
-    const parseBlock = workflow.slice(parseStart, parseEnd + parseEndMarker.length);
+    // Parse block: the REAL deployed REVIEWER_FLAGS derivation loop (#2800), from
+    // `REVIEWER_FLAGS=""` through the closing `done`. It calls `gsd_run review-lane
+    // flags`, so the stub below delegates that specific call to the real gsd-tools.cjs
+    // binary rather than a hand-maintained flag list.
+    const parseBlock = extractReviewerFlagsParseBlock(workflow);
+    assert.ok(parseBlock, 'parse block must exist');
 
     // Resolution block: the `if [ -z "$REVIEWER_FLAGS" ]; then` that appears
     // AFTER the config gate (CONVERGENCE_ENABLED=). This is the #2315 fix.
@@ -333,18 +369,20 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
     const resolutionBlock = workflow.slice(resolutionStart, closingFence);
 
     const run = ({ args, defaultReviewers }) => {
-      // Stub gsd_run: only `query config-get review.default_reviewers` is exercised.
-      // Empty/default → unset key (gsd_run returns nothing → empty stdout).
+      // Stub gsd_run: `query config-get review.default_reviewers` returns the
+      // stubbed value; `review-lane flags` delegates to the REAL gsd-tools.cjs
+      // binary (so the parse block's loop is genuinely exercised, not stubbed
+      // into a no-op); anything else is a no-op.
       //
       // The default_reviewers value is passed via env var ($GSD_TEST_DEFAULT_REVIEWERS)
       // rather than inline-interpolated into the bash script. This avoids a quoting
       // fragility: a future test input containing a single quote would otherwise
       // break the bash single-quoted string and execute as bash. With env-var
       // handoff, the value never crosses an interpreting shell context.
-      const stub = `gsd_run() { case "$*" in *"config-get review.default_reviewers"*) printf '%s' "$GSD_TEST_DEFAULT_REVIEWERS";; *) return 0;; esac; }`;
+      const stub = `gsd_run() { case "$*" in *"config-get review.default_reviewers"*) printf '%s' "$GSD_TEST_DEFAULT_REVIEWERS";; *"review-lane flags"*) node "$GSD_TOOLS_PATH" review-lane flags;; *) return 0;; esac; }`;
       const script = `${stub}\n${parseBlock}\n${resolutionBlock}\nprintf 'REVIEWER_FLAGS=[%s] REVIEWER_DISPLAY=[%s]' "$REVIEWER_FLAGS" "$REVIEWER_DISPLAY"`;
       return execFileSync('bash', ['-c', script], {
-        env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '' },
+        env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '', GSD_TOOLS_PATH },
         encoding: 'utf8',
         timeout: 5000,
       });
@@ -388,20 +426,17 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
 
     // Re-extract the blocks (the test above proved extraction works; we re-use
     // the same logic rather than promoting to a helper to keep the test scope local).
-    const parseStart = workflow.indexOf('REVIEWER_FLAGS=""');
-    const parseEndMarker = "echo \"$ARGUMENTS\" | grep -q '\\-\\-all' && REVIEWER_FLAGS=\"$REVIEWER_FLAGS --all\"";
-    const parseEnd = workflow.indexOf(parseEndMarker);
-    const parseBlock = workflow.slice(parseStart, parseEnd + parseEndMarker.length);
+    const parseBlock = extractReviewerFlagsParseBlock(workflow);
     const configGateIdx = workflow.indexOf('CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence');
     const resolutionStart = workflow.indexOf('if [ -z "$REVIEWER_FLAGS" ]; then', configGateIdx);
     const closingFence = workflow.indexOf('\n```\n', resolutionStart);
     const resolutionBlock = workflow.slice(resolutionStart, closingFence);
     const { execFileSync } = require('node:child_process');
     const run = ({ args, defaultReviewers }) => {
-      const stub = `gsd_run() { case "$*" in *"config-get review.default_reviewers"*) printf '%s' "$GSD_TEST_DEFAULT_REVIEWERS";; *) return 0;; esac; }`;
+      const stub = `gsd_run() { case "$*" in *"config-get review.default_reviewers"*) printf '%s' "$GSD_TEST_DEFAULT_REVIEWERS";; *"review-lane flags"*) node "$GSD_TOOLS_PATH" review-lane flags;; *) return 0;; esac; }`;
       const script = `${stub}\n${parseBlock}\n${resolutionBlock}\nprintf 'REVIEWER_FLAGS=[%s] REVIEWER_DISPLAY=[%s]' "$REVIEWER_FLAGS" "$REVIEWER_DISPLAY"`;
       return execFileSync('bash', ['-c', script], {
-        env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '' },
+        env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '', GSD_TOOLS_PATH },
         encoding: 'utf8',
         timeout: 5000,
       });
@@ -943,25 +978,22 @@ describe('plan-review-convergence reviews-mode incorporation contract (#724)', (
 describe('plan-review-convergence local model reviewer flags (#2306-local)', () => {
   const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
 
-  test('workflow parses --ollama flag into REVIEWER_FLAGS', () => {
-    assert.ok(
-      workflow.includes('--ollama'),
-      'workflow must parse --ollama flag so it is forwarded to the review agent'
-    );
-  });
-
-  test('workflow parses --lm-studio flag into REVIEWER_FLAGS', () => {
-    assert.ok(
-      workflow.includes('--lm-studio'),
-      'workflow must parse --lm-studio flag so it is forwarded to the review agent'
-    );
-  });
-
-  test('workflow parses --llama-cpp flag into REVIEWER_FLAGS', () => {
-    assert.ok(
-      workflow.includes('--llama-cpp'),
-      'workflow must parse --llama-cpp flag so it is forwarded to the review agent'
-    );
+  // #2800: local-model flags are no longer hand-listed in the workflow — they
+  // reach REVIEWER_FLAGS via the derived `gsd_run review-lane flags` loop (see
+  // the #2293 describe block above). Prove pass-through behaviorally against
+  // the REAL deployed parse block instead of grepping for a literal string
+  // that no longer exists in the workflow source.
+  test('[behavioral] --ollama, --lm-studio, --llama-cpp pass through the derived REVIEWER_FLAGS loop', (t) => {
+    if (process.platform === 'win32') { t.skip('POSIX shell extraction; not run on Windows'); return; }
+    const block = extractReviewerFlagsParseBlock(workflow);
+    assert.ok(block, 'the REVIEWER_FLAGS parse block must exist in the workflow');
+    for (const flag of ['--ollama', '--lm-studio', '--llama-cpp']) {
+      const out = runReviewerFlagsParseBlock(block, `5 ${flag}`);
+      assert.ok(
+        out.split(/\s+/).includes(flag),
+        `${flag} must pass through the derived REVIEWER_FLAGS loop, got: "${out}"`
+      );
+    }
   });
 });
 

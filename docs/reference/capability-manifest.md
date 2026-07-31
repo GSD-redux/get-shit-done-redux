@@ -4,18 +4,18 @@
 > **See also:** [How to develop a capability](../how-to/develop-a-capability.md) · [Capability Command Reference](gsd-capability-command.md)
 
 Each capability is a folder `capabilities/<id>/` (or an overlay root `~/.gsd/capabilities/<id>/` / `.gsd/capabilities/<id>/`) containing one `capability.json` declaration.
-The file is schema-validated JSON with a common **envelope** plus a **role-typed body** (`role: "feature"` or `role: "runtime"`).
+The file is schema-validated JSON with a common **envelope** plus a **role-typed body** (`role: "feature"`, `role: "runtime"`, or `role: "reviewer"`).
 
 ---
 
 ## Envelope fields
 
-These fields are present for both `role: "feature"` and `role: "runtime"` capabilities.
+These fields are present for `role: "feature"`, `role: "runtime"`, and `role: "reviewer"` capabilities.
 
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string (kebab-case) | Yes | Unique identifier; **must equal the folder name**. The prefix `gsd-`, `gsd-core-`, and `anthropic-` are reserved for first-party use. |
-| `role` | `"feature"` \| `"runtime"` | Yes | Discriminator that selects the body schema. |
+| `role` | `"feature"` \| `"runtime"` \| `"reviewer"` | Yes | Discriminator that selects the body schema. `"reviewer"` is for lane-only capabilities that ship a `reviewer` body and nothing else — see [Reviewer body](#reviewer-body-role-reviewer-or-on-any-role) below. |
 | `version` | semver string | Yes (1.6.0+) | Semantic version of this capability. The registry rejects a manifest without one. |
 | `title` | string | Yes | Short human-readable label. Must be a non-empty string. |
 | `description` | string | Yes | Longer summary sentence. Must be a non-empty string. |
@@ -155,7 +155,104 @@ Runtime capabilities describe how GSD projects its artefacts onto one host CLI. 
 | Permission writer | `runtime.permissionWriter` | `null` \| `"opencode"` \| `"kilo"` \| `"antigravity"`. The finish-time permissions-sidecar writer. |
 | Extended hook events | `runtime.extendedHookEvents` | string[] over a closed vocabulary: `SubagentStop`, `Stop`, `PreCompact`, `FileChanged`, `BeforeAgent`, `AfterAgent`, `BeforeModel`, `SubagentStart`. |
 
+### `hostBehaviors`
+
+`runtime.hostBehaviors` is an **open, unvalidated bag** of per-host behavior switches consumed directly by installer and runtime-adaptation code. Unlike every axis in the table above, it is **not covered by any schema**: the key `hostBehaviors` appears zero times in `scripts/gen-capability-registry.cjs` and zero times in `scripts/registry-schema.cjs`. An unknown key inside `hostBehaviors` is neither rejected nor warned about — it is simply ignored by any code path that does not look for it by name.
+
+58 distinct keys are declared across the shipped runtime manifests; most are set by exactly one capability. This table is not exhaustive — it lists the keys with the widest reuse so a reader can pattern-match new ones against the same shape:
+
+| Key | Capabilities declaring it |
+|---|---|
+| `reapplyCommand` | 9 |
+| `skipSharedHooksInstall` | 8 |
+| `reviewerCli` | 6 |
+| `frontmatterDialect` | 5 |
+| `hyphenNameAgentBody` | 3 |
+| `legacyCommandsGsdInstallMigration` | 3 |
+| `skipUpdateBannerCommand` | 3 |
+| `verificationStyle` | 3 |
+
+**`reviewerCli` is deprecated.** It is a boolean that historically marked a runtime capability as also being a reviewer lane. It is now a **derived legacy alias**, retained for one release so an out-of-tree runtime descriptor that still sets it keeps working. A declared `reviewer` body (see below) takes precedence over the alias, and a capability declaring both contributes **one** slug, not two. `reviewerCli` is superseded by the `reviewer` body; its removal is tracked by issue #2801. It is currently set by 6 capabilities: `antigravity`, `claude`, `codex`, `cursor`, `opencode`, `qwen`.
+
+See [ADR-1016](../adr/1016-runtime-capability-descriptor.md) (the runtime body is a closed 8-axis plus 4 install-surface vocabulary; `hostBehaviors` is the deliberate open seam beside it) and [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) (introduces the `reviewer` body and the `reviewerCli` alias's deprecation).
+
 For a minimal `role: "runtime"` example, see [ADR-1016 §Decision 8](../adr/1016-runtime-capability-descriptor.md).
+
+---
+
+## Reviewer body (`role: "reviewer"`, or on any role)
+
+[ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) introduces the *reviewer lane*: one external CLI or model endpoint that `/gsd:review` hands a plan to for independent review.
+
+The `reviewer` body is **optional and absent-safe at every layer**. A capability with no `reviewer` body is simply not a lane — that is never a validation error. This is a normative forward/backward-compatibility invariant, not a nicety: a plugin, a runtime, or a future GSD version may omit `reviewer` entirely with no consequence.
+
+The shape is **hybrid**:
+
+- A `reviewer` body is admissible on `role: "runtime"`, so an existing runtime capability — `codex`, `antigravity` — keeps **one** manifest that is both an installable runtime and a reviewer lane.
+- A third role, `role: "reviewer"`, exists for lane-only CLIs that GSD never installs into. There are currently 5: `coderabbit`, `gemini`, `llama-cpp`, `lm-studio`, `ollama`.
+
+Current role counts across `capabilities/`: `feature` 20, `runtime` 19, `reviewer` 5.
+
+All 12 shipped lane declarations carry all 13 fields below.
+
+| Field | Type | Notes |
+|---|---|---|
+| `slug` | string | Lane identity; grammar `^[a-z0-9][a-z0-9_-]*$`. May use `_` (`lm_studio`, `llama_cpp`) even where the capability *folder id* is kebab-case (`lm-studio`). |
+| `flags` | string[] | User-facing CLI flags that select this lane. A lane may declare more than one — `antigravity` declares `--antigravity` and `--agy`. 12 lanes declare 13 flags in total. |
+| `transport` | closed enum | `spawn` \| `openai-http`. |
+| `probe` | object | Availability check. `probe.kind` is a closed enum: `command-exists` \| `command-capability` \| `http-reachable`. `command-capability` additionally takes `binary`, `needle`, and a **required** `timeoutMs` — it exists because a bare binary name can be ambiguous (`kimi` is claimed by both the Kimi Code CLI and the legacy Python `kimi-cli`), and the timeout bound is mandatory because an unbounded `--help \| grep` probe is this repo's named Unbounded Subprocesses defect. |
+| `invoke` | object | `binary`, `args[]`, `promptChannel` (`stdin` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `modelArg` (string or `null`), `effortChannel` (`argv` \| `none`). `args` supports the `{{model}}` and `{{prompt}}` placeholders. |
+| `timeoutFloorMs` | number | Measured per-lane floor. Lane divergence here is real and correct — the descriptor's job is to declare divergence in one place, not to promise uniformity. |
+| `emptyOutput` | closed enum | `stub-with-stderr` \| `handler-owned`. |
+| `reviewsSection` | string | The `REVIEWS.md` heading this lane renders under. Must be unique across the merged roster. |
+| `evidenceClass` | closed enum | `source-grounded` \| `diff-only` (diff-only findings are down-weighted in consensus). |
+| `requiresBinaries` | string[] | Extra binaries the lane needs beyond `invoke.binary`. |
+| `promptBudgetKey` | string or `null` | Federated config key bounding prompt size. |
+| `modelConfigKey` | string or `null` | Federated config key naming the model, e.g. `review.models.kimi-code`. |
+| `handler` | closed enum or `null` | `antigravity` \| `openai-compatible` \| `opencode` \| `null`. |
+
+**`handler` is a closed enum of first-party handler names, not an open escape hatch.** [ADR-1016](../adr/1016-runtime-capability-descriptor.md) explicitly rejected "arbitrary code in the descriptor"; hard shapes are absorbed by adding a named primitive that is reviewed first-party. The consequence, stated plainly: **a third-party reviewer lane is strictly data-only.** A plugin can ship a lane, but not a quirky lane that needs imperative code — a lane requiring behavior beyond the closed `handler` set is not expressible and must be proposed and merged first-party.
+
+Uniqueness is enforced across the merged first-party ∪ overlay set: duplicate `slug`, duplicate `flags` entry, and duplicate `reviewsSection` are each build-time violations. Two lanes sharing a `reviewsSection` heading would silently merge their output in `REVIEWS.md`, producing apparent consensus that does not exist.
+
+An unknown field inside a `reviewer` body is a **non-fatal warning on stderr, never a build failure** ([ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) D4), so a manifest built against a newer GSD degrades visibly rather than crashing.
+
+### Example — lane-only `role: "reviewer"` capability
+
+```json
+{
+  "id": "coderabbit",
+  "role": "reviewer",
+  "version": "1.8.0",
+  "title": "CodeRabbit",
+  "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts).",
+  "tier": "full",
+  "requires": [],
+  "engines": { "gsd": ">=1.8.0" },
+  "reviewer": {
+    "slug": "coderabbit",
+    "flags": ["--coderabbit"],
+    "transport": "spawn",
+    "probe": { "kind": "command-exists", "binary": "coderabbit" },
+    "invoke": {
+      "binary": "coderabbit",
+      "args": ["review", "--prompt-only"],
+      "promptChannel": "none",
+      "outputChannel": "stdout",
+      "modelArg": null,
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 360000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "CodeRabbit",
+    "evidenceClass": "diff-only",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "modelConfigKey": null,
+    "handler": null
+  }
+}
+```
 
 ---
 

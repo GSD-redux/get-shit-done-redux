@@ -146,6 +146,131 @@ describe('parseStateMd', () => {
     assert.equal(s.nextAction, 'execute');
     assert.deepEqual(s.nextPhases, ['4.5', '4.6']);
   });
+
+  // #2754 — the frontmatter fence regex and downstream splits used literal \n,
+  // so a CRLF STATE.md dropped the ENTIRE frontmatter block (every field absent).
+  // The invariant is CRLF/LF parity — parseStateMd must yield the same state for
+  // the same content regardless of line endings, matching the canonical
+  // extractFrontmatter parser (src/frontmatter.cts), which is CRLF-safe.
+  const crlf = (lfContent) => lfContent.replace(/\n/g, '\r\n');
+
+  test('parses full YAML frontmatter identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'status: executing',
+      'milestone: v1.9',
+      'milestone_name: Code Quality',
+      'active_phase: 4',
+      'next_action: execute',
+      '---',
+      '',
+      '# State',
+      'Phase: 1 of 5 (fix-graphiti-deployment)',
+    ].join('\n');
+
+    const lfState = parseStateMd(lf);
+    const crlfState = parseStateMd(crlf(lf));
+    assert.deepStrictEqual(crlfState, lfState,
+      'CRLF STATE.md must parse identically to LF — pre-fix the entire frontmatter block was dropped (#2754)');
+    // pin the specific fields the issue names so a vacuous deepEqual({},{}) can't pass:
+    assert.equal(crlfState.status, 'executing');
+    assert.equal(crlfState.milestone, 'v1.9');
+    assert.equal(crlfState.milestoneName, 'Code Quality');
+    assert.equal(crlfState.activePhase, '4');
+    assert.equal(crlfState.nextAction, 'execute');
+    assert.equal(crlfState.phaseNum, '1');
+    assert.equal(crlfState.phaseTotal, '5');
+  });
+
+  test('parses next_phases flow-array form identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'next_phases: [4.5, 4.6]',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)), parseStateMd(lf));
+    assert.deepEqual(parseStateMd(crlf(lf)).nextPhases, ['4.5', '4.6']);
+  });
+
+  test('parses next_phases block-list form identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'next_phases:',
+      '  - 4.5',
+      '  - 4.6',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)).nextPhases, parseStateMd(lf).nextPhases,
+      'block-list regex used a literal \\n — CRLF must still parse the list');
+    assert.deepEqual(parseStateMd(crlf(lf)).nextPhases, ['4.5', '4.6']);
+  });
+
+  test('parses the progress nested block identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'progress:',
+      '  completed_phases: 3',
+      '  total_phases: 5',
+      '  percent: 60',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)), parseStateMd(lf),
+      'progress block regex used a literal \\n — CRLF must still parse completed/total/percent');
+    assert.equal(parseStateMd(crlf(lf)).completedPhases, '3');
+    assert.equal(parseStateMd(crlf(lf)).totalPhases, '5');
+    assert.equal(parseStateMd(crlf(lf)).percent, '60');
+  });
+
+  test('treats literal "null" values as null identically under CRLF (#2754)', () => {
+    const lf = [
+      '---',
+      'status: null',
+      'milestone: null',
+      'milestone_name: null',
+      '---',
+    ].join('\n');
+
+    assert.deepStrictEqual(parseStateMd(crlf(lf)), parseStateMd(lf));
+    assert.equal(parseStateMd(crlf(lf)).status, null);
+    assert.equal(parseStateMd(crlf(lf)).milestone, null);
+  });
+
+  // #2754 (Generative-Fix Divergence guard, CLAUDE.md "parallel surfaces sharing a
+  // parser"): parseStateMd and the canonical extractFrontmatter both derive GSD
+  // state from the same STATE.md frontmatter, and they diverged once already (this
+  // very CRLF bug). Pin the overlap so a future divergence on a scalar shape or
+  // line ending is caught here, not in a live Windows report.
+  const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+
+  test('parseStateMd frontmatter-derived fields agree with extractFrontmatter (LF + CRLF, #2754)', () => {
+    const lf = [
+      '---',
+      'status: executing',
+      'milestone: v1.9',
+      'milestone_name: Code Quality',
+      'active_phase: 4',
+      'next_action: execute',
+      '---',
+      '',
+      '# State',
+      'Phase: 1 of 5 (fix-graphiti-deployment)',
+    ].join('\n');
+
+    for (const [label, content] of [['LF', lf], ['CRLF', crlf(lf)]]) {
+      const fm = extractFrontmatter(content);
+      const st = parseStateMd(content);
+      // extractFrontmatter yields the raw frontmatter object; parseStateMd projects
+      // a subset onto its own keys. Assert the projection matches the raw values.
+      assert.equal(st.status, fm.status, `status mismatch (${label})`);
+      assert.equal(st.milestone, fm.milestone, `milestone mismatch (${label})`);
+      assert.equal(st.milestoneName, fm.milestone_name, `milestone_name mismatch (${label})`);
+      assert.equal(st.activePhase, String(fm.active_phase), `active_phase mismatch (${label})`);
+      assert.equal(st.nextAction, fm.next_action, `next_action mismatch (${label})`);
+    }
+  });
 });
 
 // ─── formatGsdState ─────────────────────────────────────────────────────────
