@@ -2411,7 +2411,11 @@ test('writeNonClaudeDefaults function exists and is a no-op for Claude (#2834)',
   const src = fs.readFileSync(INSTALL_JS, 'utf8');
   const fnIdx = src.indexOf('function writeNonClaudeDefaults(');
   assert.ok(fnIdx !== -1, 'writeNonClaudeDefaults must be defined as a function');
-  const fnBody = src.slice(fnIdx, fnIdx + 1200);
+  // Bound the slice by the next top-level declaration rather than a fixed
+  // character count, so adding a comment or a guard inside the function cannot
+  // push the asserted tokens out of the window and red this test spuriously.
+  const nextFnIdx = src.indexOf('\nfunction ', fnIdx + 1);
+  const fnBody = src.slice(fnIdx, nextFnIdx === -1 ? undefined : nextFnIdx);
   assert.ok(/nativeModelAliases/.test(fnBody), 'writeNonClaudeDefaults must early-return for Claude (nativeModelAliases check)');
   assert.ok(/resolve_model_ids/.test(fnBody), 'writeNonClaudeDefaults must write resolve_model_ids');
   assert.ok(/defaults\.runtime/.test(fnBody), 'writeNonClaudeDefaults must write runtime');
