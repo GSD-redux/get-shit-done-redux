@@ -1,7 +1,7 @@
 {
   "id": "mempalace",
   "role": "feature",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "MemPalace memory",
   "description": "Cross-session, cross-project memory: deliberate recall before discuss/plan and verbatim capture + temporal-KG sync at phase boundaries, via the MemPalace MCP server and CLI.",
   "tier": "full",

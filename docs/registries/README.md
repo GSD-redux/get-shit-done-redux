@@ -197,6 +197,8 @@ Example:
 | `configKeys` | yes | Federated config keys it owns (may be empty). |
 | `runtimeCompat` | yes | Array of compatible runtimes; `["all"]` is allowed. |
 
+> **Credential-bearing `configKeys` carry an exposure the example below does not show.** Config values are written in plaintext to `.planning/config.json` — masking is display-only, and that file is the security boundary — while `planning.commit_docs` defaults to `true`. A key holding a live credential therefore lands in the installing user's repository unless they have gitignored `.planning/`. No first-party reviewer lane stores a credential this way. If yours must, document the exposure in your own README.
+
 Example:
 
 ```json

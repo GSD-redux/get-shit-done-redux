@@ -1,7 +1,7 @@
 {
   "id": "ai-integration",
   "role": "feature",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "AI design contract",
   "description": "AI-SPEC design contract workflow for phases that build AI systems; owns the AI integration command, agents, and workflow.ai_integration_phase activation key.",
   "tier": "full",
