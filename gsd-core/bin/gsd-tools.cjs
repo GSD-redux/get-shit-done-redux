@@ -3048,7 +3048,12 @@ function runWithTimeout(argv) {
   // token. The gate is NARROW: it fires ONLY for the Windows shim extensions,
   // never for the `bash -c` callers (command is `bash`, no such suffix), so the 7
   // bash callers keep their array-only argv on every platform. POSIX untouched.
-  const winShim = isWin && /\.(cmd|bat|exe)$/i.test(path.basename(cmd));
+  // NOTE: .exe is INTENTIONALLY excluded — real PE executables (node.exe, etc.)
+  // spawn fine directly and mediating them through cmd.exe /c breaks the timeout
+  // cap's process-group kill (the wrapped child escapes reap → exit 124 never
+  // fires) and risks cmd.exe mis-parsing an arg like `-e "setTimeout(()=>{})"`.
+  // Only .cmd/.bat are the CVE-2024-27980 EINVAL cases that require mediation.
+  const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(cmd));
   const spawnCmd = winShim ? (process.env.ComSpec || 'cmd.exe') : cmd;
   const spawnArgs = winShim ? ['/d', '/s', '/c', cmd, ...cmdArgs] : cmdArgs;
   // Node's setTimeout delay is a 32-bit signed ms int; a larger value silently
