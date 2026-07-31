@@ -1940,3 +1940,185 @@ describe('#1874 F6 adjacent: malformed settings.local.json does not crash the in
     );
   });
 });
+
+// ─── #1874 F18 — ~/.gsd/defaults.json is machine-global: lock it, write it once ───
+//
+// Every runtime and project on the box reads this file. The read-modify-write
+// took no lock (so concurrent installs lost each other's key) and issued two
+// separate whole-file writes (so a crash could truncate it, and the second
+// write bought nothing).
+
+describe('#1874 F18: ~/.gsd/defaults.json read-modify-write is locked and atomic', () => {
+  const { writeNonClaudeDefaults } = installExports || {};
+
+  // The function early-returns under GSD_TEST_MODE, and resolves its target via
+  // os.homedir() — which reads HOME on POSIX and USERPROFILE on Windows.
+  function withRealInstallHome(root, fn) {
+    const saved = {
+      testMode: process.env.GSD_TEST_MODE,
+      home: process.env.HOME,
+      userProfile: process.env.USERPROFILE,
+    };
+    delete process.env.GSD_TEST_MODE;
+    process.env.HOME = root;
+    process.env.USERPROFILE = root;
+    try {
+      return fn();
+    } finally {
+      if (saved.testMode === undefined) delete process.env.GSD_TEST_MODE;
+      else process.env.GSD_TEST_MODE = saved.testMode;
+      if (saved.home === undefined) delete process.env.HOME; else process.env.HOME = saved.home;
+      if (saved.userProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = saved.userProfile;
+    }
+  }
+
+  test('a clean install writes defaults.json exactly once, not twice', (t) => {
+    const root = createTempDir('gsd-1874-f18-once-');
+    t.after(() => cleanup(root));
+
+    const defaultsPath = path.join(root, '.gsd', 'defaults.json');
+    const writes = [];
+    const origWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = (target, ...rest) => {
+      // Count writes aimed at defaults.json, including the atomic temp sibling.
+      const resolved = path.resolve(String(target));
+      if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) writes.push(resolved);
+      return origWriteFileSync.call(fs, target, ...rest);
+    };
+
+    try {
+      withRealInstallHome(root, () => {
+        const origLog = console.log;
+        console.log = () => {};
+        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
+      });
+    } finally {
+      fs.writeFileSync = origWriteFileSync;
+    }
+
+    // Both keys change on a clean install; that is one file state, so one write.
+    assert.strictEqual(writes.length, 1,
+      `defaults.json must be written once per install, got ${writes.length}`);
+
+    const after = JSON.parse(fs.readFileSync(defaultsPath, 'utf8'));
+    assert.strictEqual(after.resolve_model_ids, 'omit');
+    assert.strictEqual(after.runtime, 'codex');
+  });
+
+  test('the read-modify-write holds the install-migration lock', (t) => {
+    const root = createTempDir('gsd-1874-f18-lock-');
+    t.after(() => cleanup(root));
+
+    const gsdDir = path.join(root, '.gsd');
+    const lockPath = path.join(gsdDir, 'gsd-install-migration.lock');
+    const defaultsPath = path.join(gsdDir, 'defaults.json');
+    let lockHeldDuringWrite = null;
+
+    const origWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = (target, ...rest) => {
+      const resolved = path.resolve(String(target));
+      if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) {
+        lockHeldDuringWrite = fs.existsSync(lockPath);
+      }
+      return origWriteFileSync.call(fs, target, ...rest);
+    };
+
+    try {
+      withRealInstallHome(root, () => {
+        const origLog = console.log;
+        console.log = () => {};
+        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
+      });
+    } finally {
+      fs.writeFileSync = origWriteFileSync;
+    }
+
+    assert.strictEqual(lockHeldDuringWrite, true,
+      'the lock must be held while defaults.json is being written');
+    assert.strictEqual(fs.existsSync(lockPath), false,
+      'the lock must be released when the write completes');
+  });
+
+  test('a failure mid-write leaves the previous defaults.json intact and parseable', (t) => {
+    const root = createTempDir('gsd-1874-f18-crash-');
+    t.after(() => cleanup(root));
+
+    const gsdDir = path.join(root, '.gsd');
+    fs.mkdirSync(gsdDir, { recursive: true });
+    const defaultsPath = path.join(gsdDir, 'defaults.json');
+    // A pre-existing file carrying settings other installs depend on.
+    const prior = JSON.stringify({ model_profile: 'balanced', resolve_model_ids: true }, null, 2) + '\n';
+    fs.writeFileSync(defaultsPath, prior);
+
+    // Faithful crash window: the bytes written before the failure DO land, then
+    // the call fails. fs-method override, not chmod — root bypasses mode bits.
+    const origWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = (target, data, options) => {
+      const resolved = path.resolve(String(target));
+      if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) {
+        origWriteFileSync.call(fs, target, String(data).slice(0, 10), options);
+        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      }
+      return origWriteFileSync.call(fs, target, data, options);
+    };
+
+    try {
+      withRealInstallHome(root, () => {
+        const origLog = console.log;
+        console.log = () => {};
+        // The installer treats this as best-effort and logs rather than throwing.
+        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
+      });
+    } finally {
+      fs.writeFileSync = origWriteFileSync;
+    }
+
+    assert.strictEqual(fs.readFileSync(defaultsPath, 'utf8'), prior,
+      'defaults.json must be byte-identical to its pre-write contents');
+    // The read path swallows parse errors and treats a corrupt file as absent,
+    // so a truncated write would silently degrade model resolution box-wide.
+    const recovered = JSON.parse(fs.readFileSync(defaultsPath, 'utf8'));
+    assert.strictEqual(recovered.model_profile, 'balanced');
+    assert.strictEqual(recovered.resolve_model_ids, true);
+
+    assert.deepStrictEqual(
+      fs.readdirSync(gsdDir).filter(n => n.startsWith('defaults.json.tmp-')),
+      [],
+      'no atomic temp residue may survive a failed write'
+    );
+    assert.strictEqual(fs.existsSync(path.join(gsdDir, 'gsd-install-migration.lock')), false,
+      'the lock must be released even when the write fails');
+  });
+
+  test('an install that changes nothing does not rewrite the file', (t) => {
+    const root = createTempDir('gsd-1874-f18-noop-');
+    t.after(() => cleanup(root));
+
+    const gsdDir = path.join(root, '.gsd');
+    fs.mkdirSync(gsdDir, { recursive: true });
+    const defaultsPath = path.join(gsdDir, 'defaults.json');
+    const prior = JSON.stringify({ resolve_model_ids: 'omit', runtime: 'codex' }, null, 2) + '\n';
+    fs.writeFileSync(defaultsPath, prior);
+
+    const writes = [];
+    const origWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = (target, ...rest) => {
+      const resolved = path.resolve(String(target));
+      if (resolved === defaultsPath || resolved.startsWith(`${defaultsPath}.tmp-`)) writes.push(resolved);
+      return origWriteFileSync.call(fs, target, ...rest);
+    };
+    try {
+      withRealInstallHome(root, () => {
+        const origLog = console.log;
+        console.log = () => {};
+        try { writeNonClaudeDefaults('codex'); } finally { console.log = origLog; }
+      });
+    } finally {
+      fs.writeFileSync = origWriteFileSync;
+    }
+
+    assert.deepStrictEqual(writes, [], 'an unchanged defaults.json must not be rewritten');
+    assert.strictEqual(fs.readFileSync(defaultsPath, 'utf8'), prior);
+  });
+});
