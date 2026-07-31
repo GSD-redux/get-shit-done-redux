@@ -31,6 +31,8 @@ const {
   buildIndex,
 } = require('../gsd-core/bin/lib/context-predicates.cjs');
 
+const { scanFencedBlocks } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+
 const ROOT = path.resolve(__dirname, '..');
 const CRLF = '\r\n';
 
@@ -459,4 +461,101 @@ describe('selectPredicates + buildIndex: pure-function smoke coverage', () => {
     assert.equal(index.predicates.length, 1);
     assert.ok(!Object.prototype.hasOwnProperty.call(index.predicates[0], 'line'));
   });
+});
+
+// ─── Parity: fenced-line determination vs markdown-sectionizer.scanFencedBlocks
+// (DEFECT.GENERATIVE-FIX) ───────────────────────────────────────────────────
+//
+// context-predicates.cts derives its fenced-line skip flags from
+// markdown-sectionizer.cts's exported `scanFencedBlocks` seam rather than
+// carrying its own copy of the fence state machine. This suite asserts that
+// parsePredicates' observable skip/keep decision for every ID-marker line
+// agrees with what `scanFencedBlocks` independently reports for that same
+// `lines` array, across the fence-shape table below — so a future change to
+// the shared scanner cannot silently diverge from predicate parsing.
+
+describe('parsePredicates: fence-skip parity with markdown-sectionizer.scanFencedBlocks', () => {
+  const BARE_ID_RE = /^`([A-Za-z][A-Za-z0-9._-]*)=/;
+
+  function assertFenceParity(name, lines) {
+    test(name, () => {
+      const md = lines.join('\n');
+      const blocks = scanFencedBlocks(lines);
+      const expectedSkip = new Array(lines.length).fill(false);
+      for (const block of blocks) {
+        const end = block.closeLineIdx === -1 ? lines.length - 1 : block.closeLineIdx;
+        for (let i = block.openLineIdx; i <= end; i++) expectedSkip[i] = true;
+      }
+
+      const r = parsePredicates(md);
+      const parsedIds = new Set(r.predicates.map((p) => p.id));
+
+      let sawMarker = false;
+      for (let i = 0; i < lines.length; i++) {
+        const m = BARE_ID_RE.exec(lines[i].trim());
+        if (!m) continue;
+        sawMarker = true;
+        const id = m[1];
+        if (expectedSkip[i]) {
+          assert.ok(
+            !parsedIds.has(id),
+            `${name}: line ${i} (${id}) is inside a scanFencedBlocks fence and must not be parsed as live`,
+          );
+        } else {
+          assert.ok(
+            parsedIds.has(id),
+            `${name}: line ${i} (${id}) is outside any scanFencedBlocks fence and must be parsed as live`,
+          );
+        }
+      }
+      assert.ok(sawMarker, `${name}: fixture must contain at least one ID marker line`);
+    });
+  }
+
+  assertFenceParity('3-backtick fence', ['`BEFORE=1`', '```', '`INSIDE=2`', '```', '`AFTER=3`']);
+
+  assertFenceParity('3-tilde fence', ['`BEFORE=1`', '~~~', '`INSIDE=2`', '~~~', '`AFTER=3`']);
+
+  assertFenceParity('4-backtick fence containing a nested 3-backtick fence', [
+    '`BEFORE=1`',
+    '````',
+    '```',
+    '`INSIDE=2`',
+    '```',
+    '````',
+    '`AFTER=3`',
+  ]);
+
+  assertFenceParity('language-tagged fence', [
+    '`BEFORE=1`',
+    '```bash',
+    '`INSIDE=2`',
+    '```',
+    '`AFTER=3`',
+  ]);
+
+  assertFenceParity('info string containing a backtick is not a valid opener', [
+    '`BEFORE=1`',
+    '``` `evil` ',
+    '`STILL=2`',
+    '```',
+    '`INSIDE=3`',
+    '```',
+    '`AFTER=4`',
+  ]);
+
+  assertFenceParity('indented (<=3 space) fence', [
+    '`BEFORE=1`',
+    '   ```',
+    '`INSIDE=2`',
+    '   ```',
+    '`AFTER=3`',
+  ]);
+
+  assertFenceParity('unterminated fence skips to end of file', [
+    '`BEFORE=1`',
+    '```',
+    '`INSIDE=2`',
+    '`ALSOINSIDE=3`',
+  ]);
 });

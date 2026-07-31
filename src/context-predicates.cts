@@ -25,8 +25,8 @@
  *
  * Grammar (from discovery facts):
  *   Two line forms, each on exactly one source line:
- *     1. Bare backtick-wrapped:  `ID=value`
- *     2. List-item backtick:    - `ID=value`
+ *     1. Bare backtick-wrapped, optionally indented: `ID=value`, `  `ID=value``
+ *     2. List-item backtick: `-`/`*`/`+`/`N.` marker followed by `ID=value`
  *
  *   ID grammar: CLASS(.subkey)*  where CLASS = first dot-separated segment.
  *   ID chars: [A-Za-z0-9._-]  (CLASS always uppercase; subkeys may be mixed).
@@ -34,14 +34,40 @@
  *   the value (up to the closing backtick).
  *
  *   Skip:
- *     - Fenced code blocks (toggle on triple-backtick lines)
+ *     - Fenced code blocks: ``` or ~~~, fence-length- and fence-char-aware
+ *       (a longer fence containing a shorter same-char fence line stays a
+ *       single skipped region; mismatched-char lines are fence content, not
+ *       a toggle)
+ *     - HTML comments (`<!-- ... -->`), including multi-line
  *     - Prose lines (headings, blank lines, list items without a predicate)
  *     - Blockquote lines (session-log preamble, etc.)
  *
- * Dependency-free: Node built-ins only (none needed at all — pure string
- * parsing). ADR-457 build-at-publish: compiled by tsc to
+ * Fence-length-awareness note: `src/markdown-sectionizer.cts`'s
+ * `stripFencedCode` is the repo's canonical CommonMark fence-stripper, but its
+ * `StripFencedResult.text` DROPS fence delimiter and content lines from the
+ * output — it does not preserve original line numbers. This parser reports
+ * `Predicate.line`/`Malformed.line` as 1-based SOURCE line numbers, which
+ * callers assert on — so line-accurate skip detection is required, and
+ * `stripFencedCode` cannot serve it directly. Instead, `computeSkippedLineFlags`
+ * below consumes `markdown-sectionizer.cts`'s exported `scanFencedBlocks` seam
+ * — which IS line-index based (`openLineIdx`/`closeLineIdx` into the same
+ * `lines` array this module already splits on) — and derives a per-line
+ * skipped-boolean array from its `FencedBlockRecord[]` output. This avoids a
+ * third independent copy of the CommonMark fence state machine (ADR-1671
+ * Prototype scope: production consumes the compiled seam); only the
+ * HTML-comment scan below remains genuinely local, since
+ * `markdown-sectionizer.cts` has no comment scanner.
+ *
+ * Depends on `markdown-sectionizer.cjs`'s `scanFencedBlocks` seam for fence
+ * detection (otherwise pure string parsing; no other dependency). ADR-457
+ * build-at-publish: compiled by tsc to
  * gsd-core/bin/lib/context-predicates.cjs (gitignored).
  */
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- markdown-sectionizer.cjs is an export= CommonJS module
+import markdownSectionizer = require('./markdown-sectionizer.cjs');
+
+const { scanFencedBlocks } = markdownSectionizer;
 
 /** A single parsed predicate fact from CONTEXT.md. */
 export interface Predicate {
@@ -106,11 +132,19 @@ const ID_RE = /^([A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*)=(.+)$/;
 // malformed empty-value case (`ID=` with nothing after the '=').
 const ID_ONLY_RE = /^[A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*$/;
 
+// List markers recognized ahead of a backtick-wrapped declaration:
+// `-`, `*`, `+`, or a numbered marker (`1.`, `42.`), each followed by
+// whitespace. Mirrors the marker family `iterateBullets`/`updateBullet`
+// (markdown-sectionizer.cts) recognize, widened here beyond the
+// prototype-carried-forward dash-only form (ADR-1671 Phase 1 commit 3).
+const LIST_MARKER_RE = /^[ \t]*(?:[-*+]|\d+\.)[ \t]+/;
+
 /**
  * Strip a source line down to its backtick-wrapped "inner" content, if any.
  * Handles both line forms:
- *   1. Bare backtick line at column 0:  `ID=value`
- *   2. List-item backtick (optionally indented): - `ID=value`
+ *   1. Bare backtick line, optionally indented: `ID=value`, `  `ID=value``
+ *   2. List-item backtick, any of `-`/`*`/`+`/`N.`, optionally indented:
+ *      `- `ID=value``, `* `ID=value``, `+ `ID=value``, `1. `ID=value``
  *
  * @param raw - the original source line (with newline stripped)
  * @returns the inner content between the backticks, or null if the line is
@@ -119,13 +153,19 @@ const ID_ONLY_RE = /^[A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*$/;
 function extractInner(raw: string): string | null {
   const line = raw.trimEnd();
 
-  if (line.startsWith('`') && line.endsWith('`') && line.length > 2) {
-    return line.slice(1, -1);
+  // Bare backtick-wrapped, tolerating leading indentation — shape decides
+  // the bare form, not column 0 (Postel: CONTEXT.md authors indent freely).
+  const bareTrimmed = line.replace(/^[ \t]+/, '');
+  if (bareTrimmed.startsWith('`') && bareTrimmed.endsWith('`') && bareTrimmed.length > 2) {
+    return bareTrimmed.slice(1, -1);
   }
 
-  // strip optional leading whitespace + "- " then check for backtick wrapping
-  const stripped = line.replace(/^\s*-\s+/, '');
-  if (stripped.startsWith('`') && stripped.endsWith('`') && stripped.length > 2) {
+  // List-item form: strip optional leading whitespace + list marker, then
+  // check for backtick wrapping. `stripped !== line` guards against a line
+  // with no marker at all (LIST_MARKER_RE.replace would otherwise no-op and
+  // re-check the same failed bare-form test).
+  const stripped = line.replace(LIST_MARKER_RE, '');
+  if (stripped !== line && stripped.startsWith('`') && stripped.endsWith('`') && stripped.length > 2) {
     return stripped.slice(1, -1);
   }
 
@@ -182,6 +222,64 @@ function detectMalformed(raw: string): { text: string; reason: string } | null {
 }
 
 /**
+ * Compute, per source line, whether that line falls inside a fenced code
+ * block or an HTML comment (`<!-- ... -->`, single- or multi-line).
+ * LINE-PRESERVING: returns one boolean per input line (no lines dropped or
+ * collapsed) — see the module doc comment for why that distinction is
+ * load-bearing here.
+ *
+ * Fence detection is delegated entirely to `markdown-sectionizer.cts`'s
+ * `scanFencedBlocks` seam — this module carries NO local copy of the fence
+ * state machine. `scanFencedBlocks` is line-index based
+ * (`openLineIdx`/`closeLineIdx`), so its output maps 1:1 onto this function's
+ * `lines` array; an unterminated fence (`closeLineIdx === -1`) skips every
+ * remaining line to end of file, matching `stripFencedCode`'s
+ * `unterminatedFence` semantics.
+ *
+ * HTML-comment detection remains local — `markdown-sectionizer.cts` has no
+ * comment scanner. A line already marked fenced by `scanFencedBlocks` is
+ * never treated as an HTML-comment opener/closer, preserving the
+ * mutual-exclusion priority the previous single-pass implementation
+ * enforced (a `<!--` inside fence content is fence content, not a comment
+ * boundary).
+ *
+ * @param lines - source lines (as produced by `markdown.split('\n')`)
+ */
+function computeSkippedLineFlags(lines: string[]): boolean[] {
+  const skip = new Array<boolean>(lines.length).fill(false);
+
+  for (const block of scanFencedBlocks(lines)) {
+    const end = block.closeLineIdx === -1 ? lines.length - 1 : block.closeLineIdx;
+    for (let i = block.openLineIdx; i <= end; i++) skip[i] = true;
+  }
+
+  let inHtmlComment = false;
+  for (let i = 0; i < lines.length; i++) {
+    // Strip trailing \r for comment matching (CRLF safety), mirroring
+    // stripFencedCode's own `rawLine.replace(/\r$/, '')`.
+    const line = lines[i].replace(/\r$/, '');
+
+    if (inHtmlComment) {
+      skip[i] = true;
+      if (line.includes('-->')) inHtmlComment = false;
+      continue;
+    }
+
+    if (skip[i]) continue; // already inside a fenced block — cannot also open a comment here
+
+    const trimmed = line.trim();
+    if (trimmed.startsWith('<!--')) {
+      skip[i] = true;
+      if (!trimmed.includes('-->')) {
+        inHtmlComment = true; // multi-line: stays open until a later '-->'
+      }
+    }
+  }
+
+  return skip;
+}
+
+/**
  * Parse all predicates from a CONTEXT.md markdown string.
  *
  * @param markdown
@@ -193,7 +291,7 @@ export function parsePredicates(markdown: string): ParseResult {
   // Track id -> occurrence count for duplicate detection
   const idCounts = new Map<string, number>();
 
-  let inFencedCode = false;
+  const skippedLines = computeSkippedLineFlags(lines);
   let currentSection = '';
   const allSections: string[] = [];
   const seenSections = new Set<string>();
@@ -202,14 +300,9 @@ export function parsePredicates(markdown: string): ParseResult {
     const raw = lines[i];
     const lineNo = i + 1; // 1-based
 
-    // Track fenced code blocks (triple-backtick toggle).
-    const trimmed = raw.trimStart();
-    if (trimmed.startsWith('```')) {
-      inFencedCode = !inFencedCode;
-      continue;
-    }
-
-    if (inFencedCode) continue;
+    // Fenced code blocks and HTML comments (line-preserving; see
+    // computeSkippedLineFlags's doc comment).
+    if (skippedLines[i]) continue;
 
     // Track section headings for the section field.
     if (raw.startsWith('#')) {
@@ -222,7 +315,7 @@ export function parsePredicates(markdown: string): ParseResult {
     }
 
     // Blockquote lines (start with ">") are prose — skip.
-    if (trimmed.startsWith('>')) continue;
+    if (raw.trimStart().startsWith('>')) continue;
 
     // Attempt extraction.
     const pred = extractPredicate(raw);

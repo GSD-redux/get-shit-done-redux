@@ -2,33 +2,37 @@
 
 /**
  * Integration tests for scripts/gen-context-index.cjs — the CI gate that
- * keeps gsd-core/bin/lib/context-index.cjs in sync with the predicates
- * declared in the repo-root CONTEXT.md (ADR-1671, #2928 Phase 1, rows F1-F17).
+ * keeps docs/CONTEXT-INDEX.json in sync with the predicates declared in the
+ * repo-root CONTEXT.md (ADR-1671, #2928 Phase 1, rows F1-F17).
  *
- * FIXTURE-ISOLATION GAP (disclosed, not worked around): gen-context-index.cjs
- * hardcodes CONTEXT_PATH and INDEX_PATH to the real repo-root CONTEXT.md and
- * the real committed context-index.cjs — there is no --cwd flag or env
- * override to point it at a temp fixture tree. To exercise the real CLI
- * (spawnSync, not an engine-direct call — an engine-direct call is false-green
- * for CLI behavior per the design's own risk analysis) without ever mutating
- * the real repo files, every test here spawns the script under
- * tests/helpers/gen-context-index-fs-fixture.cjs, a `--require` preload that
- * redirects the exact two absolute paths the script reads/writes
- * (fs.readFileSync / fs.existsSync / fs.writeFileSync) to fixture paths
- * supplied via env vars — verified empirically that Node's own CJS loader
- * reads `require()`-d `.cjs` source through the same patchable
- * fs.readFileSync, so `require(INDEX_PATH)` inside the script also honors the
- * redirect. See that file's header comment for the full mechanism.
+ * The committed artifact is plain JSON (not a `.cjs` CommonJS module): a
+ * shipped runtime module is the wrong place for ~120 KB of arbitrary
+ * CONTEXT.md prose, and embedding it there tripped both
+ * tests/cline-install.test.cjs (leaked `.claude/hooks/...` path literals) and
+ * tests/package-name-single-source.test.cjs (hardcoded package-name
+ * literals) — both true positives against runtime-code content scanning.
+ * docs/CONTEXT-INDEX.json mirrors docs/INVENTORY-MANIFEST.json's precedent:
+ * a committed, generated, `--check`-guarded JSON manifest that is not
+ * runtime code.
+ *
+ * Fixture isolation (ADR-1671 Phase 1 commit 3): gen-context-index.cjs now
+ * accepts `--context-path <p>` / `--index-path <p>` CLI overrides (and the
+ * same-named parameters on the exported `checkReport`/`buildFreshIndex`
+ * pure functions), so every test here spawns the real CLI (spawnSync, not an
+ * engine-direct call — an engine-direct call is false-green for CLI behavior
+ * per the design's own risk analysis) pointed directly at temp fixture
+ * files, with NO fs monkeypatching. The prior `--require` preload
+ * (tests/helpers/gen-context-index-fs-fixture.cjs) redirected two hardcoded
+ * absolute paths by patching fs.readFileSync/existsSync/writeFileSync — that
+ * indirection is no longer needed now that the paths are directly
+ * injectable, and the preload has been deleted.
  *
  * Prohibited: Raw Text Matching on Test Outputs (CONTRIBUTING.md). This
- * generator has no --json mode — its --check/--write messages are
- * human-readable prose with no structured IR. Per this task's brief, that gap
- * is NOT worked around with a stdout regex: every assertion below is on exit
- * code, or on filesystem facts (the fixture index file's bytes), never on
- * message text. Rows that ask for "message names X" (F7, F8, F9, F10) are
- * therefore asserted only on exit code + no-bare-stack-trace here; the
- * message-content half of those rows needs a --json surface that does not
- * exist yet (reported to the orchestrator, not invented here).
+ * generator's `--check --json` mode emits a typed `{ ok, reason, duplicates,
+ * count, classes }` report — `reason` is always one of the frozen `REASON`
+ * enum values. Rows F7-F10 assert on `report.reason === REASON.FAIL_X`
+ * (and, for F7, that `report.duplicates` names the duplicate id) instead of
+ * exit-code-only / stderr-substring assertions.
  */
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
@@ -38,36 +42,34 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
-const { serializeIndex, buildFreshIndex } = require('../scripts/gen-context-index.cjs');
+const { serializeIndex, buildFreshIndex, checkReport, REASON } = require('../scripts/gen-context-index.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'gen-context-index.cjs');
-const PRELOAD = path.join(__dirname, 'helpers', 'gen-context-index-fs-fixture.cjs');
 const REAL_CONTEXT_PATH = path.join(ROOT, 'CONTEXT.md');
 
 const STACK_FRAME_RE = /\n\s+at\s+\S+\s+\(.*:\d+:\d+\)/;
 
 /**
- * Spawn the real gen-context-index.cjs CLI through the fs-fixture preload.
+ * Spawn the real gen-context-index.cjs CLI with explicit `--context-path` /
+ * `--index-path` overrides — no fs monkeypatching, no `--require` preload.
  *
- * @param {string[]} args - CLI args (e.g. ['--check']).
- * @param {{contextMd?: string, index?: string}} [fixtures] - absolute fixture
- *   paths (or the '__FAULT__' sentinel for contextMd) to redirect the real
- *   CONTEXT.md / committed index reads+writes to. Omit a key to leave that
- *   seam untouched (real content, read-only).
+ * @param {string[]} args - CLI args (e.g. ['--check', '--json']).
+ * @param {{contextPath?: string, indexPath?: string}} [paths] - absolute
+ *   fixture paths to pass via `--context-path`/`--index-path`. Omit a key to
+ *   leave that seam at its real-repo default (read-only, untouched).
  * @returns {{code: number, stdout: string, stderr: string}}
  */
-function runGenContextIndex(args, fixtures = {}) {
-  const env = { ...process.env };
-  if (fixtures.contextMd !== undefined) env.GSD_TEST_GCI_CONTEXT_MD = fixtures.contextMd;
-  if (fixtures.index !== undefined) env.GSD_TEST_GCI_INDEX = fixtures.index;
+function runGenContextIndex(args, paths = {}) {
+  const fullArgs = [...args];
+  if (paths.contextPath !== undefined) fullArgs.push('--context-path', paths.contextPath);
+  if (paths.indexPath !== undefined) fullArgs.push('--index-path', paths.indexPath);
 
   try {
-    const stdout = execFileSync(process.execPath, ['--require', PRELOAD, SCRIPT, ...args], {
+    const stdout = execFileSync(process.execPath, [SCRIPT, ...fullArgs], {
       cwd: ROOT,
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
-      env,
       timeout: 30000,
     });
     return { code: 0, stdout, stderr: '' };
@@ -79,6 +81,38 @@ function runGenContextIndex(args, fixtures = {}) {
     };
   }
 }
+
+/**
+ * Parse the single JSON line `--check --json` writes to stdout.
+ *
+ * @param {string} stdout
+ * @returns {object}
+ */
+function parseJsonReport(stdout) {
+  return JSON.parse(stdout.trim());
+}
+
+describe('gen-context-index.cjs REASON enum (three-coordinated-changes lock)', () => {
+  test('REASON key set is exactly the documented set', () => {
+    // Locks the documented enum shape (CONTRIBUTING.md three-coordinated-
+    // changes pattern): adding a reason requires updating this assertion
+    // too, so the typed surface cannot silently drift from what tests expect.
+    assert.deepEqual(Object.keys(REASON).sort(), [
+      'FAIL_CONTEXT_MISSING',
+      'FAIL_CONTEXT_UNREADABLE',
+      'FAIL_DUPLICATE_IDS',
+      'FAIL_INDEX_MISSING',
+      'FAIL_INDEX_UNPARSEABLE',
+      'FAIL_LIB_NOT_BUILT',
+      'FAIL_STALE',
+      'OK_UP_TO_DATE',
+    ]);
+  });
+
+  test('REASON is frozen', () => {
+    assert.ok(Object.isFrozen(REASON));
+  });
+});
 
 describe('gen-context-index.cjs --check (F)', () => {
   let tmpDir;
@@ -92,7 +126,7 @@ describe('gen-context-index.cjs --check (F)', () => {
   });
 
   test('checkExitsZeroWhenIndexIsFresh', () => {
-    // Read-only against the real, already-fresh repo state — no redirect
+    // Read-only against the real, already-fresh repo state — no override
     // needed, and nothing is mutated.
     const r = runGenContextIndex(['--check']);
     assert.equal(r.code, 0);
@@ -101,15 +135,13 @@ describe('gen-context-index.cjs --check (F)', () => {
   test('checkExitsZeroAfterPureLineShift', () => {
     // S5: the committed artifact carries no `line` field, so a pure line
     // shift in CONTEXT.md must not perturb the byte-identical serialization.
-    // Verified empirically before writing this test (see task report): GREEN
-    // today, not RED — S5 was already ported in the prior commit.
     const real = fs.readFileSync(REAL_CONTEXT_PATH, 'utf8');
     const lines = real.split(/\r?\n/);
     const shifted = [lines[0], '', '', ...lines.slice(1)].join('\n');
     const shiftedPath = path.join(tmpDir, 'CONTEXT-shifted.md');
     fs.writeFileSync(shiftedPath, shifted, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { contextMd: shiftedPath });
+    const r = runGenContextIndex(['--check'], { contextPath: shiftedPath });
     assert.equal(r.code, 0, 'a pure line shift must not fail the gate (Q4 resolution, S5)');
   });
 
@@ -123,7 +155,7 @@ describe('gen-context-index.cjs --check (F)', () => {
     const modifiedPath = path.join(tmpDir, 'CONTEXT-value-changed.md');
     fs.writeFileSync(modifiedPath, modified, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { contextMd: modifiedPath });
+    const r = runGenContextIndex(['--check'], { contextPath: modifiedPath });
     assert.equal(r.code, 1);
   });
 
@@ -133,7 +165,7 @@ describe('gen-context-index.cjs --check (F)', () => {
     const addedPath = path.join(tmpDir, 'CONTEXT-added.md');
     fs.writeFileSync(addedPath, added, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { contextMd: addedPath });
+    const r = runGenContextIndex(['--check'], { contextPath: addedPath });
     assert.equal(r.code, 1);
   });
 
@@ -144,7 +176,7 @@ describe('gen-context-index.cjs --check (F)', () => {
     const removedPath = path.join(tmpDir, 'CONTEXT-removed.md');
     fs.writeFileSync(removedPath, removed, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { contextMd: removedPath });
+    const r = runGenContextIndex(['--check'], { contextPath: removedPath });
     assert.equal(r.code, 1);
   });
 
@@ -154,64 +186,106 @@ describe('gen-context-index.cjs --check (F)', () => {
     const classGainedPath = path.join(tmpDir, 'CONTEXT-class-gained.md');
     fs.writeFileSync(classGainedPath, classGained, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { contextMd: classGainedPath });
+    const r = runGenContextIndex(['--check'], { contextPath: classGainedPath });
     assert.equal(r.code, 1);
   });
 
-  test('checkExitsOneAndNamesDuplicateIdentifier', () => {
+  test('checkExitsOneAndNamesDuplicateIdentifier (F7)', () => {
     const real = fs.readFileSync(REAL_CONTEXT_PATH, 'utf8');
     const dupPath = path.join(tmpDir, 'CONTEXT-dup.md');
     const dupIntroduced = real + '\n`RULESET.PR-SCOPE.one-concern-per-pr=duplicate copy for test`\n';
     fs.writeFileSync(dupPath, dupIntroduced, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { contextMd: dupPath });
+    const r = runGenContextIndex(['--check', '--json'], { contextPath: dupPath });
     assert.equal(r.code, 1);
     assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'no bare stack trace in non-debug failure output');
+
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_DUPLICATE_IDS);
+    assert.ok(
+      report.duplicates.some((d) => d.id === 'RULESET.PR-SCOPE.one-concern-per-pr'),
+      'report.duplicates must name the duplicate id',
+    );
   });
 
-  test('checkExitsOneWithRemedyWhenIndexMissing', () => {
-    const missingIndexPath = path.join(tmpDir, 'does-not-exist.cjs');
-    const r = runGenContextIndex(['--check'], { index: missingIndexPath });
+  test('checkExitsOneWithRemedyWhenIndexMissing (F8)', () => {
+    const missingIndexPath = path.join(tmpDir, 'does-not-exist.json');
+    const r = runGenContextIndex(['--check', '--json'], { indexPath: missingIndexPath });
     assert.equal(r.code, 1);
     assert.doesNotMatch(r.stderr, STACK_FRAME_RE);
+
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_INDEX_MISSING);
   });
 
-  test('checkExitsOneWithNamedReasonWhenIndexCorrupt', () => {
-    const corruptIndexPath = path.join(tmpDir, 'corrupt-index.cjs');
+  test('checkExitsOneWithNamedReasonWhenIndexCorrupt (F9)', () => {
+    const corruptIndexPath = path.join(tmpDir, 'corrupt-index.json');
     fs.writeFileSync(corruptIndexPath, 'this is not { valid javascript', 'utf8');
 
-    const r = runGenContextIndex(['--check'], { index: corruptIndexPath });
+    const r = runGenContextIndex(['--check', '--json'], { indexPath: corruptIndexPath });
     assert.equal(r.code, 1);
     assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'no bare stack trace for a corrupt committed index');
+
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_INDEX_UNPARSEABLE);
   });
 
-  test('checkExitsOneWhenContextMdMissing', () => {
+  test('checkExitsOneWhenContextMdMissing (F10)', () => {
     const missingContextPath = path.join(tmpDir, 'does-not-exist.md');
-    const r = runGenContextIndex(['--check'], { contextMd: missingContextPath });
+    const r = runGenContextIndex(['--check', '--json'], { contextPath: missingContextPath });
     assert.equal(r.code, 1);
     assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'no bare stack trace when CONTEXT.md is missing');
+
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_CONTEXT_MISSING);
   });
 
   test('checkExitsOneWhenContextMdUnreadable', () => {
-    // Fault injection via the mandated technique: the fs-fixture preload
-    // monkeypatches fs.readFileSync to throw an injected EACCES for the real
-    // CONTEXT_PATH when this sentinel is set — never chmod 0o000 (root
-    // bypasses mode bits; see CONTRIBUTING.md cross-platform IO-failure rule).
-    const r = runGenContextIndex(['--check'], { contextMd: '__FAULT__' });
-    assert.equal(r.code, 1);
-    assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'a degraded fs fault must not crash with a raw stack trace');
+    // Fault injection via the mandated technique (CONTRIBUTING.md /
+    // CLAUDE.md cross-platform IO-failure rule): monkeypatch fs.readFileSync
+    // to throw an injected EACCES for one specific fixture path, restore in
+    // `finally`. Never chmod 0o000 (root bypasses mode bits). This is an
+    // in-process call to the exported `checkReport` pure function rather
+    // than a subprocess spawn — a subprocess's fs cannot be monkeypatched
+    // from the parent test process without a `--require` preload, and
+    // `checkReport` IS the typed surface under test here, so calling it
+    // directly is not an engine-direct false-green for CLI *argv* behavior
+    // (that risk is covered by the spawned-CLI tests above); it is the
+    // correct level to exercise a fault the CLI itself cannot inject.
+    const fixtureContextPath = path.join(tmpDir, 'unreadable-context.md');
+    fs.writeFileSync(fixtureContextPath, '`FOO=bar`\n', 'utf8');
+
+    const origReadFileSync = fs.readFileSync;
+    fs.readFileSync = function patchedReadFileSync(p, ...rest) {
+      if (p === fixtureContextPath) {
+        const err = new Error(`EACCES: permission denied, open '${p}' (injected by test, never a real fs fault)`);
+        err.code = 'EACCES';
+        throw err;
+      }
+      return origReadFileSync.call(fs, p, ...rest);
+    };
+    try {
+      const report = checkReport(fixtureContextPath, path.join(tmpDir, 'unused-index.json'));
+      assert.equal(report.ok, false);
+      assert.equal(report.reason, REASON.FAIL_CONTEXT_UNREADABLE);
+    } finally {
+      fs.readFileSync = origReadFileSync;
+    }
   });
 
-  test('checkIsCrlfAgnostic', () => {
+  test('checkIsCrlfAgnostic (F17)', () => {
     // F17: a CRLF-committed index compared against the (LF) fresh real
-    // CONTEXT.md must still exit 0 — comparison is CRLF-normalized. Verified
-    // empirically before writing this test: also GREEN today.
+    // CONTEXT.md must still exit 0 — comparison is CRLF-normalized.
     const freshSerialized = serializeIndex(buildFreshIndex());
     const crlfSerialized = freshSerialized.replace(/\n/g, '\r\n');
-    const crlfIndexPath = path.join(tmpDir, 'context-index-crlf.cjs');
+    const crlfIndexPath = path.join(tmpDir, 'context-index-crlf.json');
     fs.writeFileSync(crlfIndexPath, crlfSerialized, 'utf8');
 
-    const r = runGenContextIndex(['--check'], { index: crlfIndexPath });
+    const r = runGenContextIndex(['--check'], { indexPath: crlfIndexPath });
     assert.equal(r.code, 0, 'CRLF-vs-LF committed/fresh comparison must be normalized, not a false failure');
   });
 });
@@ -228,20 +302,20 @@ describe('gen-context-index.cjs --write / default / usage (F)', () => {
   });
 
   test('writeThenCheckIsClean', () => {
-    const writeTarget = path.join(tmpDir, 'write-target.cjs');
-    const w = runGenContextIndex(['--write'], { index: writeTarget });
+    const writeTarget = path.join(tmpDir, 'write-target.json');
+    const w = runGenContextIndex(['--write'], { indexPath: writeTarget });
     assert.equal(w.code, 0);
     assert.ok(fs.existsSync(writeTarget), '--write must create the fixture-redirected index file');
 
-    const c = runGenContextIndex(['--check'], { index: writeTarget });
+    const c = runGenContextIndex(['--check'], { indexPath: writeTarget });
     assert.equal(c.code, 0, '--check must be clean immediately after --write');
   });
 
   test('writeIsByteIdenticalAcrossRuns', () => {
-    const target1 = path.join(tmpDir, 'w1.cjs');
-    const target2 = path.join(tmpDir, 'w2.cjs');
-    assert.equal(runGenContextIndex(['--write'], { index: target1 }).code, 0);
-    assert.equal(runGenContextIndex(['--write'], { index: target2 }).code, 0);
+    const target1 = path.join(tmpDir, 'w1.json');
+    const target2 = path.join(tmpDir, 'w2.json');
+    assert.equal(runGenContextIndex(['--write'], { indexPath: target1 }).code, 0);
+    assert.equal(runGenContextIndex(['--write'], { indexPath: target2 }).code, 0);
 
     const content1 = fs.readFileSync(target1, 'utf8');
     const content2 = fs.readFileSync(target2, 'utf8');
@@ -249,8 +323,8 @@ describe('gen-context-index.cjs --write / default / usage (F)', () => {
   });
 
   test('writtenIndexContainsNoLineField', () => {
-    const target = path.join(tmpDir, 'no-line-field.cjs');
-    assert.equal(runGenContextIndex(['--write'], { index: target }).code, 0);
+    const target = path.join(tmpDir, 'no-line-field.json');
+    assert.equal(runGenContextIndex(['--write'], { indexPath: target }).code, 0);
     const content = fs.readFileSync(target, 'utf8');
     assert.equal(content.includes('"line"'), false, 'the committed artifact must carry no `line` field anywhere (S5)');
   });
