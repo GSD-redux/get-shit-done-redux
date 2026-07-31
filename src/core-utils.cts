@@ -95,7 +95,56 @@ function pathExistsInternal(cwd: string, targetPath: string): boolean {
 
 function generateSlugInternal(text: string | null | undefined): string | null {
   if (!text) return null;
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').substring(0, 60);
+  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').substring(0, 60);
+}
+
+// ─── Transliteration (#2848) ─────────────────────────────────────────────────
+//
+// Non-Latin titles used to reduce to an empty slug: the `[^a-z0-9]+` strip
+// removed every character of an all-Cyrillic title and the hyphen cleanup left
+// "". Callers then created unnamed phase directories (`01-`) and empty
+// `milestone_slug` init JSON. The fix transliterates Cyrillic to ASCII BEFORE
+// the existing ASCII filter, so a non-Latin title yields a usable ASCII slug
+// while Latin-script text (which hits zero map entries) is byte-for-byte
+// unchanged — the negative control is satisfied by construction.
+//
+// Multi-letter mappings (ж→zh, ч→ch, ш→sh, щ→sch, ю→yu, я→ya) are applied as a
+// single pass; soft/hard signs (ъ, ь) drop to nothing rather than a hyphen.
+// Scope is Cyrillic (Russian + the reported Ukrainian/Belarusian extras
+// і ї є ґ ў) per the issue's confirmed-working patch. CJK and other
+// non-transliterated scripts keep the existing strip-to-ASCII behavior.
+const CYRILLIC_TRANSLITERATION: Readonly<Record<string, string>> = {
+  // multi-letter first (longest-match-safe within a single pass via ordered keys)
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
+  з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o',
+  п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts',
+  ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu',
+  я: 'ya',
+  // Ukrainian / Belarusian extras reported in #2848
+  є: 'ye', і: 'i', ї: 'yi', ґ: 'g', ў: 'u',
+};
+
+const CYRILLIC_TRANSLITERATION_KEYS = Object.keys(CYRILLIC_TRANSLITERATION);
+
+/**
+ * Lowercase + transliterate Cyrillic characters to ASCII. The output still
+ * contains non-ASCII for scripts outside the map (CJK, etc.) — the caller's
+ * existing `[^a-z0-9]+` filter handles those. Latin-script input is returned
+ * lowercased with no other change.
+ *
+ * Shared by `generateSlugInternal` (core-utils) and `slugify` (gsd2-import) so
+ * the transliteration step is not duplicated across the two slug helpers (#2848
+ * explicitly requires both be fixed).
+ */
+function transliterateForSlug(text: string): string {
+  const lowered = text.toLowerCase();
+  let out = '';
+  for (const ch of lowered) {
+    out += CYRILLIC_TRANSLITERATION_KEYS.includes(ch)
+      ? CYRILLIC_TRANSLITERATION[ch]
+      : ch;
+  }
+  return out;
 }
 
 // ─── Phase file helpers ──────────────────────────────────────────────────────
@@ -248,6 +297,7 @@ export = {
   extractOneLinerFromBody,
   pathExistsInternal,
   generateSlugInternal,
+  transliterateForSlug,
   filterPlanFiles,
   filterSummaryFiles,
   getPhaseFileStats,

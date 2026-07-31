@@ -212,6 +212,78 @@ describe('generateSlugInternal', () => {
   test('preserves numbers in slug', () => {
     assert.strictEqual(coreUtils.generateSlugInternal('Phase 42 Done'), 'phase-42-done');
   });
+
+  // ─── #2858 — wait, #2848: non-Latin (Cyrillic) titles must not produce an
+  // empty slug. A transliteration map is applied before the ASCII filter so the
+  // title's meaning is preserved as ASCII. Latin-script output is byte-for-byte
+  // unchanged (negative control below).
+
+  test('#2848 row 1 — Cyrillic title produces a non-empty transliterated slug', () => {
+    // Russian "Проверка гипотезы" → "proverka gipotezy" → slug.
+    const result = coreUtils.generateSlugInternal('Проверка гипотезы');
+    assert.ok(typeof result === 'string' && result.length > 0, `Cyrillic title must not produce an empty slug; got: ${JSON.stringify(result)}`);
+    assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(result), `slug must be ASCII-only and well-formed; got: ${result}`);
+    assert.strictEqual(result, 'proverka-gipotezy');
+  });
+
+  test('#2848 row 3 — Latin-script output is byte-for-byte unchanged (negative control)', () => {
+    // These must remain identical to the pre-fix outputs.
+    assert.strictEqual(coreUtils.generateSlugInternal('Hello World!'), 'hello-world');
+    assert.strictEqual(coreUtils.generateSlugInternal('Setup environment'), 'setup-environment');
+    assert.strictEqual(coreUtils.generateSlugInternal('  Hello  '), 'hello');
+    assert.strictEqual(coreUtils.generateSlugInternal('Phase 42 Done'), 'phase-42-done');
+  });
+
+  test('#2848 row 4 — multi-letter Cyrillic mappings transliterate correctly', () => {
+    // ж→zh ч→ch ш→sh щ→sch ю→yu я→ya. 'Яша Щучин' → ya-sh-a + sch-u-ch-i-n.
+    const result = coreUtils.generateSlugInternal('Яша Щучин');
+    assert.ok(result, `expected non-empty slug; got: ${result}`);
+    assert.ok(result.includes('yasha'), `я→ya + ш→sh + а→a = yasha expected; got: ${result}`);
+    assert.ok(result.includes('schuchin'), `щ→sch + у→u + ч→ch expected; got: ${result}`);
+    assert.strictEqual(result, 'yasha-schuchin');
+    // Spot-check each multi-letter mapping in isolation.
+    assert.strictEqual(coreUtils.generateSlugInternal('ж'), 'zh');
+    assert.strictEqual(coreUtils.generateSlugInternal('ч'), 'ch');
+    assert.strictEqual(coreUtils.generateSlugInternal('ш'), 'sh');
+    assert.strictEqual(coreUtils.generateSlugInternal('щ'), 'sch');
+    assert.strictEqual(coreUtils.generateSlugInternal('ю'), 'yu');
+    assert.strictEqual(coreUtils.generateSlugInternal('я'), 'ya');
+  });
+
+  test('#2848 row 5 — soft/hard signs (ъ ь) drop cleanly without hyphen runs', () => {
+    // "Объект день" — ъ and ь should disappear, NOT produce consecutive hyphens.
+    const result = coreUtils.generateSlugInternal('Объект день');
+    assert.ok(result, `expected non-empty slug; got: ${result}`);
+    assert.ok(!result.includes('--'), `no double hyphens from dropped signs; got: ${result}`);
+    assert.strictEqual(result, 'obekt-den');
+  });
+
+  test('#2848 row 6 — Ukrainian/Belarusian Cyrillic extras transliterate', () => {
+    // і ї є ґ ў — non-Russian Cyrillic letters in the reported scope.
+    assert.strictEqual(coreUtils.generateSlugInternal('і'), 'i');
+    assert.strictEqual(coreUtils.generateSlugInternal('ї'), 'yi');
+    assert.strictEqual(coreUtils.generateSlugInternal('є'), 'ye');
+    assert.strictEqual(coreUtils.generateSlugInternal('ґ'), 'g');
+    assert.strictEqual(coreUtils.generateSlugInternal('ў'), 'u');
+  });
+
+  test('#2848 row 7 — null/undefined/empty still return null (contract preserved)', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal(null), null);
+    assert.strictEqual(coreUtils.generateSlugInternal(undefined), null);
+    assert.strictEqual(coreUtils.generateSlugInternal(''), null);
+  });
+
+  test('#2848 row 9 — mixed Latin+Cyrillic title transliterates correctly', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('Phase Фаза 42'), 'phase-faza-42');
+  });
+
+  test('#2848 row 10 — truncation still applies after transliteration (≤60 chars)', () => {
+    // A long Cyrillic title transliterates to a longer ASCII string; the 60-char
+    // cap must still bind the result.
+    const long = 'Проверка'.repeat(20);
+    const result = coreUtils.generateSlugInternal(long);
+    assert.ok(result !== null && result.length <= 60, `truncation must still apply; got len ${result && result.length}`);
+  });
 });
 
 // ─── filterPlanFiles ──────────────────────────────────────────────────────────

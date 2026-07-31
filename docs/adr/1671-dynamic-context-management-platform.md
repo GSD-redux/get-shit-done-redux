@@ -38,7 +38,7 @@ Adopt a **dynamic context management platform** built on a hybrid of build-time 
 
 1. **Fragment store (authoring model).** Author workflow content as composable, priority-tagged fragments (workflow sections + shared `references/` + predicate-derived blocks), each carrying an applicability condition (which flags / capabilities / runtimes require it). This is the net-new authoring discipline.
 
-2. **Build-time composer + per-runtime budget emission (the universal floor).** Generalize `prompt-budget.cts` out of the review silo into a shared `context-composer` seam (`src/*.cts` → `build:lib` → `bin/lib/*.cjs`). At build/install time, for each command × runtime, the composer selects the needed fragments and trims by priority to fit that runtime's measured cap (`scripts/workflow-size.cjs` `lfByteCount`), emitting a right-sized artifact through the existing converter. Caps move from *source* to *emitted output*; the Windsurf 12 KB `throw` becomes a graceful auto-trim/auto-extract. This is what makes caps stop biting on non-lazy runtimes, and it requires no runtime feature — so it is the universal floor.
+2. **Build-time composer + per-runtime budget emission (the universal floor).** Generalize `prompt-budget.cts` out of the review silo into a shared `context-composer` seam (`src/*.cts` → `build:lib` → `bin/lib/*.cjs`). At build/install time, for each command × runtime, the composer selects the needed fragments and trims by priority to fit that runtime's measured cap (`scripts/workflow-size.cjs` `lfByteCount`), emitting a right-sized artifact through the existing converter. Caps move from *source* to *emitted output*; the Windsurf 12 KB `throw` becomes a graceful auto-trim/auto-extract — noting that this `throw` is currently **duplicated byte-identically in two surfaces**, `bin/install.js:2796-2797` and `src/runtime-artifact-conversion.cts:1116-1117`, so the change must land in both or they drift. This is what makes caps stop biting on non-lazy runtimes, and it requires no runtime feature — so it is the universal floor.
 
 3. **Progressive disclosure where the host supports it.** On lazy-loading hosts (Claude Code and the Agent SDK), keep the stub + `@-ref` model and let the init bundle name exactly which files to read; the body and references load on demand.
 
@@ -103,12 +103,18 @@ A working prototype proves the platform pattern end-to-end. It ships as a **refe
 
 - `examples/dynamic-context-management/context-predicates.cjs` — pure parser/selector: `parsePredicates(markdown)` (handles bare and list-item backtick predicate forms, splits on first `=`, skips fenced code / blockquote prose, detects duplicate IDs), `selectPredicates(predicates, {klass, prefix, contains})` (the JIT "task → predicate set" selector), and `buildIndex(predicates)` (deterministic, sorted).
 - `examples/dynamic-context-management/gen-context-index.cjs` — self-contained CLI with `--check`/`--write` drift-guard plus a `--select <query>` mode demonstrating JIT brief assembly.
-- `examples/dynamic-context-management/CONTEXT-INDEX.json` — sample generated index: **393 predicates, 18 classes**.
+- `examples/dynamic-context-management/CONTEXT-INDEX.json` — sample generated index: **416 predicates, 20 classes** (regenerated 2026-07-31). Originally committed as **393 predicates, 18 classes** (2026-06-24); `CONTEXT.md` has since gained the `PROBE` (11) and `PROHIB` (10) classes, with `DEFECT` 161→167 and `RULESET` 59→56. The committed artifact had gone stale (`--check` exited 1) and was regenerated with `--write`.
 - `examples/dynamic-context-management/demo.cjs` + `README.md` — runnable usage example and notes.
 
 During research the slice was validated with 42 behavioral tests (predicate forms, fenced-code / prose skipping, duplicate-id detection, the selector, a deterministic index, and a fast-check property test); those return as CI tests under `tests/` with the production implementation.
 
-The prototype immediately surfaced **3 latent duplicate predicate IDs** in `CONTEXT.md` (`RULESET.WORKFLOW_MARKDOWN.FENCES`, `RULESET.GEMINI.TOOLS.ask_user`, `RULESET.GEMINI.TEST_SENTINEL`) — integrity drift no existing tool catches. Production `--check` can be made to fail on *new* duplicates once the existing three are reconciled.
+The prototype immediately surfaced **3 latent duplicate predicate IDs** in `CONTEXT.md` (`RULESET.WORKFLOW_MARKDOWN.FENCES`, `RULESET.GEMINI.TOOLS.ask_user`, `RULESET.GEMINI.TEST_SENTINEL`) — integrity drift no existing tool catches.
+
+**Re-checked 2026-07-31:** only **one** remains — `RULESET.WORKFLOW_MARKDOWN.FENCES`. The two `RULESET.GEMINI.*` duplicates were removed along with the Gemini runtime, not reconciled deliberately. Production `--check` can be made to fail on *new* duplicates once that single remaining ID is reconciled.
+
+**Phase 0 acceptance status (2026-07-31).** The epic's Phase 0 criterion — "`gen-context-index --check` green in CI" — was **unmet**: `--check` exited 1 against `next`, and no CI job failed, because the example sits deliberately outside `tests/` — the red was invisible to the pipeline. The index has now been regenerated and `--check` exits 0.
+
+That is a point-in-time true-up, not a fix. Per Open question 4, the index is keyed on baked `line` numbers, so it will re-drift on the next `CONTEXT.md` line shift. The criterion stays fragile until the keying changes — and it stays *silently* fragile for as long as the drift-guard remains outside CI.
 
 Prototype scope notes: the parser is intentionally self-contained for the example; production should consume the compiled `markdown-sectionizer` seam, live under `src/` → `bin/lib/`, and be drift-guarded by a generator wired into the build **after** `build:lib`.
 
@@ -117,6 +123,9 @@ Prototype scope notes: the parser is intentionally self-contained for the exampl
 1. Fragment unit: separate files vs in-file section markers?
 2. Build-time emission vs run-time assembly as the primary surface during migration (double-write vs per-workflow cutover)?
 3. Whether/when to invest in per-runtime native channels (skills, MCP) above the universal file floor.
+4. **Index keying: stable IDs vs baked `line` numbers.** `CONTEXT-INDEX.json` stores each predicate's `line`, so `--check` re-drifts on *any* `CONTEXT.md` line shift — a typo fix three sections up fails the gate. Phase 1 promotes `--check` to a CI gate, where that makes it routinely red for reasons unrelated to predicate integrity. Keying the comparison on stable IDs, with `line` retained as non-compared metadata, is the candidate fix. Raised by @davesienkowski (#1671, 2026-06-25) and confirmed on `next` 2026-07-31.
+
+**Resolved by other work — not carried as open.** A fourth question was proposed in review (#1671, 2026-06-25): *what populates the eval-gate assertion set, and is it graded exogenously?* Since that review, the answer has landed as first-class predicate classes rather than remaining a design gap: `PROBE.principle` (`verifier-reach-equals-spec-reach`), `PROBE.family` (edge-probe + prohibition-probe + ui-consideration-probe), `PROBE.protocol` (recall → precision), and `PROHIB.judgment-tier` (exogenous grading) — see ADR-550 D4/D7 and ADR-1606. The `PROHIB.*` predicates live in the same `CONTEXT.md` store this ADR formalizes, which is the single-store property that review asked for.
 
 ## Related
 
