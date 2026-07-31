@@ -55,12 +55,44 @@ const THREE_DOT_WORKFLOWS = [
 // Bounded: git subprocesses in tests must never hang a CI lane.
 const GIT_TIMEOUT_MS = 30_000;
 
+/**
+ * Environment for every git call below, with EVERY `GIT_*` variable stripped.
+ *
+ * Without this the helper inherits the runner's environment. A leaked
+ * `GIT_INDEX_FILE` makes `git add` in this temp repo write into a DIFFERENT
+ * repository's index; a leaked `GIT_OBJECT_DIRECTORY` /
+ * `GIT_ALTERNATE_OBJECT_DIRECTORIES` sends the blob to a different object store;
+ * a leaked `GIT_DIR` / `GIT_WORK_TREE` redirects the operation wholesale. In
+ * each case `git commit` then cannot resolve a blob it just staged, and git
+ * reports exactly:
+ *
+ *   error: invalid object 100644 <sha> for 'base-N.txt'
+ *   error: Error building trees
+ *
+ * That failure was previously attributed to `git add .` rehashing O(n²) blobs
+ * "before the object write had landed" (see the loop comment below) and worked
+ * around by staging one path per iteration. That reduced the churn but not the
+ * cause: sequential execFileSync calls cannot race each other's object writes,
+ * and the failure persisted — reappearing at a lower commit index on PR branches
+ * while `next` stayed green. Making the environment hermetic addresses the
+ * mechanism rather than the symptom; the single-path staging below is kept
+ * because it is genuinely less work.
+ */
+function gitEnv() {
+  const env = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_')) delete env[key];
+  }
+  return env;
+}
+
 function git(cwd, args) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
     timeout: GIT_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
+    env: gitEnv(),
   });
 }
 
@@ -172,17 +204,27 @@ describe('#2452 CI gates: base-ref fetch must preserve ancestry', () => {
       // Base then advances, leaving `feature` BEHIND — the failing condition.
       git(origin, ['checkout', '--quiet', 'base']);
       for (let n = 1; n <= BASE_ADVANCE; n++) {
-        fs.writeFileSync(path.join(origin, `base-${n}.txt`), `${n}\n`);
-        // Stage only the file this iteration created. `git add .` re-stages every
-        // file already in the tree, so across BASE_ADVANCE iterations it rehashes
-        // O(n²) blobs — roughly 1,800 stagings and 60 full index rewrites to add 60
-        // one-line files. That churn is what this loop failed on in CI: the index
-        // ended up referencing a blob whose object write had not landed
-        // ("invalid object … for 'base-31.txt' / Error building trees") at commit 32
-        // of 60. Staging the single new path is equivalent here — each commit adds
-        // exactly one file — and removes the redundant work entirely.
-        git(origin, ['add', `base-${n}.txt`]);
-        git(origin, ['commit', '--quiet', '-m', `base advance ${n}`]);
+        // EMPTY commits: this loop needs base-branch DEPTH, nothing else. No
+        // assertion reads these commits' contents — the three-dot diff below is
+        // asserted on `covered.cts`, which lives on the HEAD side, and base-side
+        // files cannot appear in `origin/base...HEAD` at all.
+        //
+        // They used to write and stage a `base-N.txt` per iteration, and that is
+        // what kept failing in CI:
+        //
+        //   error: invalid object 100644 <sha> for 'base-N.txt'
+        //   error: Error building trees
+        //
+        // The first attempt blamed `git add .` rehashing O(n²) blobs and switched
+        // to staging one path per iteration (#1881). It did not work — the failure
+        // simply moved from commit 32 to commit 25, and went on blocking unrelated
+        // PRs. The trigger for the lost object write was never reproduced off-CI.
+        //
+        // So rather than keep guessing at the trigger, this removes the failure
+        // CLASS: `--allow-empty` writes no blob and no tree for these commits, so
+        // there is no object for the index to reference and lose. It is also
+        // dramatically less work than 60 write+hash+index cycles.
+        git(origin, ['commit', '--quiet', '--allow-empty', '-m', `base advance ${n}`]);
       }
 
       // ---- runner: has the PR head, must fetch the base ref separately ------

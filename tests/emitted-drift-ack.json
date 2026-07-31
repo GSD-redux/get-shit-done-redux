@@ -1,20 +1,17 @@
 {
   "version": 1,
   "paths": {
-    "review.md": {
-      "reason": "#2794 / ADR-2782 Phase 1. Three deliberate additions to gsd-core/workflows/review.md: (1) an explicit `<!-- reviewer-lane: <slug> -->` marker above each of the 11 invoke_reviewers legs, which is what makes a leg machine-identifiable for the DEFECT.GENERATIVE-FIX parity assertion — the legs are prose-labelled and five NON-lane bold labels in the same step share the bold-then-fence shape a heuristic matcher would key on, so inference was not an option; (2) the ADR-2782 D4 explicit-selection contract in the detect_clis prose, without which the selector correction is unobservable (review-reviewer-selection.cts has no production caller — the workflow narrates the policy and the reviewing agent executes it, so code and prose must move together); (3) the qwen leg's stderr sidecar, the last lane still discarding stderr to /dev/null (#2494/#2605 class). Growth is prose and comments only; no lane's observable command shape changed apart from the qwen redirect."
+    "plan-phase.md": {
+      "reason": "#2770: decision-coverage gate recomputes CONTEXT_PATH in-block + guards the empty-glob case (handler now fails closed on empty arg). Net growth kept under the ADR-857 size cap by condensing adjacent §13a prose/JSON; the residual +89 bytes are the irreducible glob+guard logic."
     },
-    "hooks/gsd-check-update-worker.js": {
-      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs — so all three are now emitted into Codex installs alongside the parent. The diff is in bin/install.js (allowlist + copy-loop + profile gate), not in the hook sources themselves, so the hooks-built attribution rule flags the emitted worker/registry paths. This ripple is the intended fix."
+    "discuss-phase-assumptions.md": {
+      "reason": "#2772: re-synced <answer_validation> to the parent canonical block (had drifted — lost the 'Other' empty-text branch) + fixed the auto_advance→confirm_creation circularity (end the workflow). discuss-phase.md is net -11 (condensed); auto.md shrank -4650 (removed a dead MAX_PASSES resolver shim)."
     },
-    "hooks/managed-hooks-registry.cjs": {
-      "reason": "#2695: the Codex installer now delivers the complete four-file update-check hook set for every profile. gsd-check-update.js spawn()s gsd-check-update-worker.js, which require()s managed-hooks-registry.cjs for MANAGED_HOOKS — so the registry is now emitted into Codex installs byte-for-byte. The diff is in bin/install.js (allowlist + raw-copy fallback + profile gate), not in the registry source, so the hooks-built attribution rule flags the emitted registry path. This ripple is the intended fix."
+    "autonomous.md": {
+      "reason": "#2800 — the hand-enumerated reviewer-flag list is replaced by a loop over `gsd_run review-lane flags`, and the whole CONVERGENCE_ARGS construction is relocated below the runtime-launcher preamble because it now calls gsd_run and each bash fence is its own shell. Growth is the explanatory comments carrying that constraint plus the loop body, against nine deleted flag literals. Deliberate: the byte delta is the cost of the flags no longer being hand-maintained in three places that had drifted apart."
     },
-    "code-review.md": {
-      "reason": "#2694: three inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved SUMMARY.md/REVIEW.md artifacts are no longer silently dropped. The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 3 boundary sites; no observable command shape changed otherwise. This is the intended fix."
-    },
-    "code-review-fix.md": {
-      "reason": "#2694: six inline node -e frontmatter-boundary one-liners now normalize \\r\\n -> \\n before matching (content.replace(/\\r\\n/g,'\\n').match(...)), so CRLF-saved REVIEW.md/REVIEW-FIX.md artifacts are no longer silently dropped (status/depth/files_reviewed_list extraction). The growth is the inserted .replace(/\\r\\n/g,'\\n') at each of the 6 boundary sites; no observable command shape changed otherwise. This is the intended fix."
+    "next.md": {
+      "reason": "#2800 — same derived-flag-loop change as autonomous.md. next.md needed no relocation (its launcher preamble already precedes the loop), so the growth here is only the loop plus the comment recording that --all and --text stay literal because they are convergence controls, not reviewer lanes."
     }
   }
 }

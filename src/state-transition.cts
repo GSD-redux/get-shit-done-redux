@@ -534,7 +534,11 @@ function beginPhaseCore(
     body = mutateCurrentPositionResume(body, intent, today, updated);
   }
 
-  return { content: reassemble(body), updated };
+  // #2736: surface the #3127 resume decision so the adapter can drop its
+  // intent-first current_phase_name override on a resume — the core just
+  // preserved the mid-flight name, and an override would drift frontmatter
+  // away from the preserved body value.
+  return { content: reassemble(body), updated, data: { resumed: isAlreadyExecuting } };
 }
 
 // Local frontmatter type aliases matching frontmatter.cts so we can call

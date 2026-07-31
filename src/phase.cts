@@ -2456,7 +2456,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           planCount,
           summaryCount,
         );
-        stateContent = syncStateFrontmatter(stateContent, cwd);
+        // #2736: the transition holds the next phase's exact display name in
+        // the intent; pass it as authoritative so the sync's prose
+        // re-derivation cannot rewrite current_phase_name to the name's own
+        // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`).
+        stateContent = syncStateFrontmatter(
+          stateContent,
+          cwd,
+          nextPhaseDisplayName ? { current_phase_name: nextPhaseDisplayName } : undefined,
+        );
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
       }

@@ -276,13 +276,23 @@ function loadDecisionExtraction(contextPath: string): { trackable: Decision[]; o
 
 function cmdDecisionCoveragePlan(projectDir: string, args: string[], raw: boolean): void {
   const phaseDir = args[2] ? resolvePath(args[2], projectDir) : '';
-  const contextPath = args[3] ? resolvePath(args[3], projectDir) : '';
+  const contextArg = args[3];
+  const contextPath = contextArg ? resolvePath(contextArg, projectDir) : '';
 
   if (!gateEnabled(projectDir)) {
     output({ passed: true, skipped: true, reason: 'workflow.context_coverage_gate is false', total: 0, covered: 0, uncovered: [], message: 'Decision coverage gate disabled by config.' }, raw, undefined);
     return;
   }
-  if (!contextPath || !fs.existsSync(contextPath)) {
+  // #2770: an EMPTY/MISSING contextPath argument is a CALLER ERROR (the workflow
+  // forgot to pass the path — e.g. a shell variable lost between Bash blocks), not
+  // evidence the phase has no CONTEXT.md. Fail closed (mirrors #1365 fail-loud) so a
+  // blocking gate cannot silently certify success on a caller mistake.
+  if (!contextArg || contextArg === '') {
+    output({ passed: false, skipped: false, reason: 'missing context path argument', total: 0, covered: 0, uncovered: [], message: 'Decision coverage gate called without a context path argument — the caller (e.g. the plan-phase workflow) must pass the CONTEXT.md path. An empty argument is a caller error, not evidence there is nothing to check (#2770).' }, raw, undefined);
+    return;
+  }
+  // A REAL path whose file genuinely does not exist is the LEGITIMATE green skip.
+  if (!fs.existsSync(contextPath)) {
     output({ passed: true, skipped: true, reason: 'CONTEXT.md missing', total: 0, covered: 0, uncovered: [], message: 'No CONTEXT.md - nothing to check.' }, raw, undefined);
     return;
   }

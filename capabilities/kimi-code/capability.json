@@ -88,5 +88,45 @@
       "skipSharedHooksInstall": true,
       "namedSubagentsSupported": false
     }
+  },
+  "reviewer": {
+    "slug": "kimi-code",
+    "flags": [
+      "--kimi-code"
+    ],
+    "transport": "spawn",
+    "probe": {
+      "kind": "command-capability",
+      "binary": "kimi",
+      "needle": "--output-format",
+      "timeoutMs": 5000
+    },
+    "invoke": {
+      "binary": "kimi",
+      "args": [
+        "{{model}}",
+        "-p",
+        "{{prompt}}"
+      ],
+      "promptChannel": "argv-file-ref",
+      "outputChannel": "stdout",
+      "modelArg": "-m",
+      "effortChannel": "none"
+    },
+    "timeoutFloorMs": 900000,
+    "emptyOutput": "stub-with-stderr",
+    "reviewsSection": "Kimi Code",
+    "evidenceClass": "source-grounded",
+    "requiresBinaries": [],
+    "promptBudgetKey": null,
+    "modelConfigKey": "review.models.kimi-code",
+    "handler": null
+  },
+  "config": {
+    "review.models.kimi-code": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Kimi Code reviewer lane."
+    }
   }
 }
