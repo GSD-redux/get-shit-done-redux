@@ -844,4 +844,47 @@ describe('#2528 matchPhaseDirs — canonical dir-match selection', () => {
     assert.strictEqual(phaseId.phaseNumberForMatch('MEM-05-80-20-cleanup', true), 'MEM-05');
     assert.strictEqual(phaseId.phaseNumberForMatch('10-24-setup', false), '10-24');
   });
+
+  // The fallback compares a query against each directory's LEADING DIGIT RUN.
+  // Its whole correctness rests on that run being captured entire before the
+  // zero-strip compare: a regex that stopped at the first digit would make
+  // every query a prefix match, and "1" would claim 10, 100, and 12 alike.
+  // These are the digit-width transitions where that mistake shows up first.
+  test('a bare query never prefix-matches a wider leading digit run', () => {
+    const dirs = ['01-alpha', '09-nine', '10-ten', '12-twelve', '100-hundred'];
+    assert.deepStrictEqual(M(dirs, '1').matches, ['01-alpha']);
+    assert.deepStrictEqual(M(dirs, '9').matches, ['09-nine']);
+    assert.deepStrictEqual(M(dirs, '10').matches, ['10-ten']);
+    assert.deepStrictEqual(M(dirs, '100').matches, ['100-hundred']);
+    // …and the same holds when only the wider dirs exist, so the assertion is
+    // not being satisfied by an exact-width dir happening to be present.
+    assert.deepStrictEqual(M(['10-ten', '100-hundred'], '1').matches, []);
+    assert.deepStrictEqual(M(['90-ninety'], '9').matches, []);
+  });
+
+  // Property form of the same contract, over the whole integer corpus rather
+  // than the hand-picked transitions above: a directory is returned only if its
+  // own leading digit run IS the query. Stated as an invariant over the result
+  // rather than an expected list, so it holds for primary and fallback matches
+  // alike and cannot be satisfied by reimplementing the selection in the test.
+  test('resolution never crosses leading-digit-run boundaries', () => {
+    fc.assert(
+      fc.property(
+        fc.uniqueArray(fc.integer({ min: 1, max: 999 }), { minLength: 2, maxLength: 6 }),
+        fc.array(digitRun(1, 3), { minLength: 2, maxLength: 6 }),
+        (leads, tails) => {
+          const dirs = leads.map(
+            (n, i) => `${String(n).padStart(2, '0')}-${tails[i % tails.length]}-slug`,
+          );
+          for (const q of leads) {
+            for (const dir of M(dirs, String(q)).matches) {
+              const run = dir.match(/^(\d+)/)[1].replace(/^0+(?=\d)/, '');
+              if (run !== String(q)) return false;
+            }
+          }
+          return true;
+        },
+      ),
+    );
+  });
 });
