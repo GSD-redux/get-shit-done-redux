@@ -2619,13 +2619,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
   // by one or more optional criteria (ANDed together)"); no selector is
   // silently dropped or overridden by another.
   //
-  // Flag parsing mirrors routePromptBudget's Map-based flagMap: only the
-  // three known `--flag value` (space-separated) forms are recognized —
-  // `--flag=value` embedded-equals forms are NOT supported, so a token like
-  // `--class=` or `--class==A` never matches a known flag and falls through
-  // to the "unknown flag" branch. On a duplicate flag the FIRST occurrence
-  // wins (`Map.set` only fires when the key is absent), which is
-  // deterministic across repeated invocations with identical argv.
+  // Flag parsing mirrors routePromptBudget's Map-based flagMap: the three
+  // known flags are recognized in both the space-separated `--flag value`
+  // form and the inline-assignment `--flag=value` form (the latter is the
+  // escape hatch for a flag-shaped selector value, e.g. `--contains=--dry-run`
+  // — #2928 review finding C; the space-separated form has no such escape by
+  // design, since a following `--...` token always reads as a missing value).
+  // `--class=` (empty value) and `--class==A` (double-equals typo shape)
+  // are rejected the same way under either form. On a duplicate flag the
+  // FIRST occurrence wins (`Map.set` only fires when the key is absent),
+  // which is deterministic across repeated invocations with identical argv.
   //
   // Prototype-pollution safety: selector values are only ever compared via
   // `===`/`.startsWith()`/`.includes()` against ordinary string fields — this
@@ -2642,6 +2645,27 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     for (let i = 1; i < args.length; i++) {
       const current = args[i];
       if (typeof current !== 'string' || !current.startsWith('--')) continue;
+
+      // Inline-assignment escape hatch (`--flag=value`, mirrors the `--config-dir=`/
+      // `--runtime=` convention in routeUpdateContext elsewhere in this file). This is
+      // the ONLY way to pass a flag-shaped selector value (e.g. searching CONTEXT.md
+      // for the literal substring "--dry-run"): the space-separated form below always
+      // treats a following `--...` token as a missing value, by design, so it has no
+      // escape hatch on its own (#2928 review finding C).
+      const eqFlag = [...KNOWN_FLAGS].find((f) => current.startsWith(`${f}=`));
+      if (eqFlag) {
+        const value = current.slice(eqFlag.length + 1);
+        // Reject an empty value (`--class=`) and the `--class==A` double-equals typo
+        // shape (a value starting with `=`) the same way the pre-existing malformed-
+        // assignment behavior did — never silently accept "=A" as a literal value.
+        if (value === '' || value.startsWith('=')) {
+          error(`context-predicates: ${eqFlag} requires a non-empty value`, ERROR_REASON.USAGE);
+          return;
+        }
+        if (!flagMap.has(eqFlag)) flagMap.set(eqFlag, value);
+        continue;
+      }
+
       if (!KNOWN_FLAGS.has(current)) {
         error(`Unknown flag for context-predicates: ${current}`, ERROR_REASON.USAGE);
         return;
@@ -3288,8 +3312,10 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
 // `when` key resolution. If one is ever moved to SKIP_ROOT_RESOLUTION,
 // move the other at the same time (keep them consistent).
 //
-// Module-scoped for the same reason as TOP_LEVEL_USAGE above — exported for
-// the dispatch-table/help-string/skip-list parity test.
+// Module-scoped for the same reason as TOP_LEVEL_USAGE above — kept
+// module-private and exposed to the dispatch-table/help-string/skip-list
+// parity test only through the read-only skipsRootResolution() predicate
+// below (never as the live Set itself; see that function's doc comment).
 const SKIP_ROOT_RESOLUTION = new Set([
   'generate-slug', 'current-timestamp', 'verify-path-exists',
   // #2844: verify-summary was previously skipped, leaving relative file-claim
@@ -3316,6 +3342,18 @@ const SKIP_ROOT_RESOLUTION = new Set([
   // needs no .planning/ access, so skip the findProjectRoot traversal.
   'eval',
 ]);
+
+// Read-only accessor for SKIP_ROOT_RESOLUTION (DEFECT.MUTABLE-EXPORTED-SET,
+// #2928 review). The Set above stays module-private and mutable internally
+// (main() only ever calls .has() on it), but exporting the live Set directly
+// would let any importer call .add()/.delete() on it — Object.freeze() does
+// not lock Set.prototype.add/delete, so freezing the instance would not have
+// closed this — and silently change dispatch behavior for every caller in the
+// process. Export this predicate instead; it exposes membership without
+// exposing a mutation surface.
+function skipsRootResolution(command) {
+  return SKIP_ROOT_RESOLUTION.has(command);
+}
 
 async function main() {
   let args = process.argv.slice(2);
@@ -3639,6 +3677,6 @@ module.exports = {
   dispatchHostCommand,
   HOST_COMMAND_ROUTERS,
   TOP_LEVEL_USAGE,
-  SKIP_ROOT_RESOLUTION,
+  skipsRootResolution,
 };
 

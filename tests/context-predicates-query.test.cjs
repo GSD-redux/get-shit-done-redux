@@ -152,6 +152,51 @@ describe('gsd_run query context-predicates (G)', () => {
     assert.equal(r.parsedError && r.parsedError.reason, ERROR_REASON.USAGE);
   });
 
+  // #2928 review finding C: a flag-shaped selector value (e.g. searching CONTEXT.md
+  // for the literal text "--since") was previously unmatchable — the space-separated
+  // form always reads a following `--...` token as a missing value, with no escape hatch.
+  describe('inline-assignment escape hatch for flag-shaped values (#2928 finding C)', () => {
+    test('contains=value form matches a flag-shaped selector value', () => {
+      const expected = selectPredicates(REAL_PREDICATES, { contains: '--since' });
+      assert.ok(expected.length > 0, 'fixture sanity: "--since" must appear in a real CONTEXT.md predicate value');
+
+      const r = queryContextPredicates(['--contains=--since']);
+      assert.equal(r.success, true, '--contains=--since must be accepted, not read as an unknown flag');
+      const parsed = JSON.parse(r.output);
+      const ids = parsed.predicates.map((p) => p.id).sort();
+      assert.deepEqual(ids, expected.map((p) => p.id).sort());
+    });
+
+    test('space-separated form still treats a flag-shaped value as missing (no escape without =)', () => {
+      const r = queryContextPredicatesJsonErrors(['--contains', '--since']);
+      assert.equal(r.success, false, '--contains --since (space-separated) must remain a usage error');
+      assert.equal(r.parsedError && r.parsedError.reason, ERROR_REASON.USAGE);
+    });
+
+    test('contains= with an empty value is still rejected', () => {
+      const r = queryContextPredicatesJsonErrors(['--contains=']);
+      assert.equal(r.success, false);
+      assert.equal(r.parsedError && r.parsedError.reason, ERROR_REASON.USAGE);
+    });
+
+    test('contains== (double-equals) is still rejected, not accepted as literal "=x"', () => {
+      const r = queryContextPredicatesJsonErrors(['--contains==x']);
+      assert.equal(r.success, false);
+      assert.equal(r.parsedError && r.parsedError.reason, ERROR_REASON.USAGE);
+    });
+
+    test('class=/prefix= inline-assignment form also works (not contains-only)', () => {
+      const expected = selectPredicates(REAL_PREDICATES, { klass: 'META' });
+      const r = queryContextPredicates(['--class=META']);
+      assert.equal(r.success, true);
+      const parsed = JSON.parse(r.output);
+      assert.deepEqual(
+        parsed.predicates.map((p) => p.id).sort(),
+        expected.map((p) => p.id).sort(),
+      );
+    });
+  });
+
   test('queryRejectsPrototypePollutingSelectorKeys', () => {
     for (const hostile of ['__proto__', 'constructor', 'prototype']) {
       const r = queryContextPredicates(['--class', hostile]);
@@ -196,5 +241,38 @@ describe('gsd_run query context-predicates (G)', () => {
     const r = queryContextPredicates([]);
     assert.equal(r.success, false);
     assert.doesNotMatch(r.error || '', STACK_FRAME_RE, 'no bare stack trace in non-debug failure output');
+  });
+});
+
+// allow-test-rule: source-text-is-the-product #2928
+// Wiring check for #2928's acceptance criterion — "an agent/orchestrator can invoke the
+// selector through a wired `gsd_run query` surface to assemble a brief". Before this, nothing
+// in the repo called `context-predicates`; it was a stranded CLI. docs/contributor-standards.md
+// §"Pre-work requirements" is the real, tested brief-assembly site governing how an AI-agent
+// prompt must cite CONTEXT.md's META.RULE predicates — this asserts it routes through the
+// selector instead of a grep-by-eye read, and that the selector actually returns the predicate
+// set that site names.
+describe('context-predicates wired into a real brief-assembly site (#2928)', () => {
+  const STANDARDS_DOC = path.join(ROOT, 'docs', 'contributor-standards.md');
+  const standardsText = fs.readFileSync(STANDARDS_DOC, 'utf8');
+
+  test('contributorStandardsRoutesPredicateCitationThroughTheQuerySelector', () => {
+    assert.ok(
+      standardsText.includes('node gsd-tools.cjs query context-predicates --class'),
+      'docs/contributor-standards.md must invoke the context-predicates selector rather than instructing a grep-by-eye read'
+    );
+    assert.ok(
+      standardsText.includes('META.RULE.brief-must-cite-doc') && standardsText.includes('META.RULE.brief-no-paraphrase'),
+      'the wiring site must name the predicates it expects the selector to surface'
+    );
+  });
+
+  test('theSelectorActuallyReturnsThePredicatesTheWiringSiteNames', () => {
+    const r = queryContextPredicates(['--class', 'META']);
+    assert.equal(r.success, true);
+    const parsed = JSON.parse(r.output);
+    const ids = parsed.predicates.map((p) => p.id);
+    assert.ok(ids.includes('META.RULE.brief-must-cite-doc'));
+    assert.ok(ids.includes('META.RULE.brief-no-paraphrase'));
   });
 });

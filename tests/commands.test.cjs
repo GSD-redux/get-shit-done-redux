@@ -3783,7 +3783,7 @@ describe('#2279: map-codebase date stamp instructions overwrite existing dates',
 // and is immune to the no-source-grep concern.
 // ─────────────────────────────────────────────────────────────────────────────
 describe('gsd-tools.cjs dispatch/help/skip-list parity (DEFECT.GENERATIVE-FIX, #2928 S9)', () => {
-  const { HOST_COMMAND_ROUTERS, TOP_LEVEL_USAGE, SKIP_ROOT_RESOLUTION } = require('../gsd-core/bin/gsd-tools.cjs');
+  const { HOST_COMMAND_ROUTERS, TOP_LEVEL_USAGE, skipsRootResolution } = require('../gsd-core/bin/gsd-tools.cjs');
 
   // Parse the "Commands: a, b, c\n\nGlobal flags:" line out of the usage
   // string rather than hardcoding a copy of it here — this test must fail
@@ -3822,9 +3822,19 @@ describe('gsd-tools.cjs dispatch/help/skip-list parity (DEFECT.GENERATIVE-FIX, #
       'context-predicates must be listed in TOP_LEVEL_USAGE',
     );
     assert.ok(
-      SKIP_ROOT_RESOLUTION.has('context-predicates'),
+      skipsRootResolution('context-predicates'),
       'context-predicates must be in SKIP_ROOT_RESOLUTION (it is a pure repo-root CONTEXT.md ' +
       'read, like prompt-budget, and must work with no .planning/ directory present)',
     );
+  });
+
+  test('SKIP_ROOT_RESOLUTION is not exported as a mutable live Set (DEFECT.MUTABLE-EXPORTED-SET, #2928)', () => {
+    const gsdTools = require('../gsd-core/bin/gsd-tools.cjs');
+    assert.equal(
+      gsdTools.SKIP_ROOT_RESOLUTION,
+      undefined,
+      'the live Set must not be exported directly — only the read-only skipsRootResolution() predicate',
+    );
+    assert.equal(typeof gsdTools.skipsRootResolution, 'function');
   });
 });

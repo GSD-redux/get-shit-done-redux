@@ -149,7 +149,63 @@ describe('property: parse <-> index contract', () => {
   });
 });
 
-// ─── H4: selectPredicates returns only a matching subset ──────────────────
+// ─── H5: comment/fence mutual precedence (DEFECT.CONTEXT-PREDICATES-COMMENT-
+// FENCE-BLIND, #2928 review) — a predicate genuinely OUTSIDE a wrapper
+// (comment or fence) is always parsed live, and a predicate genuinely INSIDE
+// it is never parsed live, even when the wrapper's own content contains
+// tokens that LOOK LIKE the OTHER construct (fence delimiters inside a
+// comment, or comment tokens inside a fence — the two directions the
+// interleaved single-pass in `computeSkippedLineFlags` must both get right).
+// Document-shaped generator: wraps a marked "inside" predicate between an
+// open/close pair of ONE kind, salted with lookalike noise from the OTHER
+// kind, with unrelated real predicates before/after the wrapper. ──────────
+
+// Noise lines that look like the OTHER construct's tokens, keyed by which
+// kind is being used as the OUTER wrapper for a given run.
+const FENCE_NOISE_LINES = ['<!-- not a real comment, just fence content', 'text mentioning --> mid-line', '<!-- nested-looking'];
+const COMMENT_NOISE_LINES = ['```', '~~~', '``` info string'];
+
+const wrapperKindArb = fc.constantFrom('fence', 'comment');
+
+describe('property: comment/fence mutual precedence', () => {
+  test('predicateOutsideWrapperIsAlwaysLiveAndInsideIsNeverLive', () => {
+    fc.assert(
+      fc.property(
+        wrapperKindArb,
+        fc.array(fc.constantFrom(0, 1, 2), { minLength: 0, maxLength: 3 }),
+        fc.array(fc.constantFrom(0, 1, 2), { minLength: 0, maxLength: 3 }),
+        (wrapperKind, beforeNoiseIdx, afterNoiseIdx) => {
+          const noisePool = wrapperKind === 'fence' ? FENCE_NOISE_LINES : COMMENT_NOISE_LINES;
+          const open = wrapperKind === 'fence' ? '```' : '<!-- wrapper open';
+          const close = wrapperKind === 'fence' ? '```' : '-->';
+
+          const lines = [
+            '`OUTSIDE_BEFORE=1`',
+            open,
+            ...beforeNoiseIdx.map((i) => noisePool[i]),
+            '`INSIDE_MARKER=2`',
+            ...afterNoiseIdx.map((i) => noisePool[i]),
+            close,
+            '`OUTSIDE_AFTER=3`',
+          ];
+
+          const md = lines.join('\n');
+          const r = parsePredicates(md);
+          const ids = new Set(r.predicates.map((p) => p.id));
+
+          assert.ok(ids.has('OUTSIDE_BEFORE'), `OUTSIDE_BEFORE must always be live (wrapper=${wrapperKind})`);
+          assert.ok(ids.has('OUTSIDE_AFTER'), `OUTSIDE_AFTER must always be live (wrapper=${wrapperKind})`);
+          assert.ok(
+            !ids.has('INSIDE_MARKER'),
+            `INSIDE_MARKER must never be live inside a real ${wrapperKind}, even with ${
+              wrapperKind === 'fence' ? 'comment' : 'fence'
+            }-lookalike noise around it`,
+          );
+        },
+      ),
+    );
+  });
+});
 
 describe('property: selectPredicates subset invariant', () => {
   test('selectorReturnsOnlyMatchingSubset', () => {

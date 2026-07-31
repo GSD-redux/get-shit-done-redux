@@ -350,4 +350,96 @@ describe('gen-context-index.cjs --write / default / usage (F)', () => {
     assert.notEqual(r.code, 0);
     assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'usage output must never be a bare stack trace');
   });
+
+  // ─── DEFECT.GEN-CONTEXT-INDEX-PARSEARGS-GATE-BYPASS (MAJOR review finding):
+  // conflicting `--check --write` must be a hard usage error, not a silent
+  // `--write` win, and a missing/flag-shaped path value must never resolve
+  // to the cwd (which previously leaked a raw EISDIR stack trace). ────────
+
+  test('checkAndWriteTogetherIsUsageErrorNotASilentWrite (a)', () => {
+    const target = path.join(tmpDir, 'should-not-be-written.json');
+    const r = runGenContextIndex(['--check', '--write'], { indexPath: target });
+    assert.notEqual(r.code, 0, '--check --write together must not silently exit 0 as a write');
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'usage output must never be a bare stack trace');
+    assert.equal(fs.existsSync(target), false, '--write must never win over --check and rewrite the index');
+  });
+
+  test('writeAndCheckReversedOrderIsAlsoAUsageError (a)', () => {
+    const target = path.join(tmpDir, 'should-also-not-be-written.json');
+    const r = runGenContextIndex(['--write', '--check'], { indexPath: target });
+    assert.notEqual(r.code, 0, 'conflicting mode flags must be a usage error regardless of order');
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE);
+    assert.equal(fs.existsSync(target), false);
+  });
+
+  test('missingTrailingValueForContextPathIsUsageErrorNotEisdirStackTrace (b)', () => {
+    const target = path.join(tmpDir, 'should-not-be-written-2.json');
+    // `--context-path` is the LAST arg: argv[i+1] is undefined, which used
+    // to resolve to the cwd via `path.resolve(undefined ?? '')`.
+    const r = runGenContextIndex(['--write', '--index-path', target, '--context-path']);
+    assert.notEqual(r.code, 0, 'a missing --context-path value must be a usage error');
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'must never leak a raw EISDIR (or any) stack trace');
+    assert.equal(fs.existsSync(target), false, 'no write must happen when the path argument is rejected');
+  });
+
+  test('flagShapedValueForIndexPathIsUsageErrorNotSwallowedAsALiteralPath (b)', () => {
+    // `--index-path` is immediately followed by another flag rather than a
+    // path — must be rejected, not silently swallowed as the literal path
+    // "--json".
+    const r = runGenContextIndex(['--write', '--index-path', '--json']);
+    assert.notEqual(r.code, 0, 'a flag-shaped --index-path value must be a usage error');
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE);
+  });
+});
+
+// ─── DEFECT.GEN-CONTEXT-INDEX-DUPLICATE-GATE-UNPROVEN (MAJOR review finding):
+// `FAIL_DUPLICATE_IDS` was only ever proven against synthetic fixtures — this
+// branch hand-deleted the ONE live duplicate
+// (`RULESET.WORKFLOW_MARKDOWN.FENCES`) from the real CONTEXT.md, so the
+// committed docs/CONTEXT-INDEX.json ships `duplicates: []` and the gate has
+// never been shown to catch a REAL duplicate in the real document. This
+// suite re-inserts the exact deleted line (recovered from
+// `git show origin/next:CONTEXT.md`) into a copy of the REAL CONTEXT.md and
+// runs the real generator CLI against it. ───────────────────────────────────
+
+describe('gen-context-index.cjs --check against a real-CONTEXT.md duplicate (real-data proof)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempDir('gen-context-index-real-dup-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('reinsertingTheDeletedRulesetWorkflowMarkdownFencesLineFailsWithNamedDuplicate', () => {
+    // The exact line this branch deleted from the real CONTEXT.md (does NOT
+    // mention MD040 — the live line that replaced it does).
+    const deletedLine =
+      '`RULESET.WORKFLOW_MARKDOWN.FENCES=when editing shell snippets inside workflow markdown, preserve the opening language fence; malformed fence can create fresh CodeRabbit threads`';
+
+    const real = fs.readFileSync(REAL_CONTEXT_PATH, 'utf8');
+    assert.ok(
+      real.includes('RULESET.WORKFLOW_MARKDOWN.FENCES'),
+      'sanity: the real CONTEXT.md must still carry the live (MD040) FENCES line',
+    );
+    assert.ok(!real.includes(deletedLine), 'sanity: the deleted line must not already be present verbatim');
+
+    const reinserted = real + '\n' + deletedLine + '\n';
+    const fixturePath = path.join(tmpDir, 'CONTEXT-real-with-reinserted-duplicate.md');
+    fs.writeFileSync(fixturePath, reinserted, 'utf8');
+
+    const r = runGenContextIndex(['--check', '--json'], { contextPath: fixturePath });
+    assert.equal(r.code, 1, 'a real duplicate reintroduced into the real CONTEXT.md must fail the gate');
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE);
+
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_DUPLICATE_IDS);
+    assert.ok(
+      report.duplicates.some((d) => d.id === 'RULESET.WORKFLOW_MARKDOWN.FENCES'),
+      'report.duplicates must name RULESET.WORKFLOW_MARKDOWN.FENCES as the real duplicate',
+    );
+  });
 });

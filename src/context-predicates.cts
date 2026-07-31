@@ -48,26 +48,58 @@
  * output — it does not preserve original line numbers. This parser reports
  * `Predicate.line`/`Malformed.line` as 1-based SOURCE line numbers, which
  * callers assert on — so line-accurate skip detection is required, and
- * `stripFencedCode` cannot serve it directly. Instead, `computeSkippedLineFlags`
- * below consumes `markdown-sectionizer.cts`'s exported `scanFencedBlocks` seam
- * — which IS line-index based (`openLineIdx`/`closeLineIdx` into the same
- * `lines` array this module already splits on) — and derives a per-line
- * skipped-boolean array from its `FencedBlockRecord[]` output. This avoids a
- * third independent copy of the CommonMark fence state machine (ADR-1671
- * Prototype scope: production consumes the compiled seam); only the
- * HTML-comment scan below remains genuinely local, since
- * `markdown-sectionizer.cts` has no comment scanner.
+ * `stripFencedCode` cannot serve it directly.
  *
- * Depends on `markdown-sectionizer.cjs`'s `scanFencedBlocks` seam for fence
- * detection (otherwise pure string parsing; no other dependency). ADR-457
- * build-at-publish: compiled by tsc to
+ * Comment/fence precedence (DEFECT.CONTEXT-PREDICATES-COMMENT-FENCE-BLIND,
+ * #2928 review): `computeSkippedLineFlags` previously ran the HTML-comment
+ * scan and a delegated call to `markdown-sectionizer.cts`'s exported
+ * `scanFencedBlocks` seam as two INDEPENDENT passes over the raw lines. That
+ * is unsound: `scanFencedBlocks` is comment-blind, so a fence delimiter
+ * appearing INSIDE an HTML comment (with no later matching close in the
+ * file) was treated as a real *unterminated* fence — silently skipping every
+ * remaining line to EOF and permanently dropping later predicates. The
+ * converse is also unsound the other way: a bare two-pass ordering that
+ * resolves comments first and only then masks-and-rescans for fences
+ * mis-handles a `<!--`/`-->` token that appears *inside a genuine fenced
+ * block* (proven while fixing this: guarding the comment pass by a
+ * comment-blind fence pass, or vice versa, always breaks one of the two
+ * directions — the two constructs must suppress each other's
+ * open/close detection while active, which only a single interleaved
+ * left-to-right pass can guarantee).
+ *
+ * Chosen precedence (documented per the review's requirement): the two
+ * constructs are scanned in ONE forward pass with two mutually-exclusive
+ * states, `fence: {char,len} | null` and `inHtmlComment: boolean`.
+ *   - While a fence is open, only a fence-close delimiter (same char, run
+ *     length >= the opener's) can close it; any `<!--`/`-->` token on a
+ *     fenced-content line is fence content, never a comment boundary.
+ *   - While NEITHER is open and an HTML comment opens, only a `-->` token
+ *     can close it; any fence delimiter seen while inside a comment is
+ *     comment content, never a fence boundary.
+ *   - When neither is open, a comment opener (`<!--`) is checked BEFORE a
+ *     fence opener on the same line — HTML comments are lexically outermost
+ *     in this document's grammar — so a fence-shaped info string that
+ *     happens to also look like `<!--...-->` never spuriously opens/closes
+ *     anything once the line has already been claimed as a fence opener (the
+ *     inverse: a genuine one-line comment `<!-- ``` -->` is masked whole and
+ *     never interpreted as a fence delimiter).
+ * This single-pass design reuses `markdown-sectionizer.cts`'s exact
+ * delimiter-matching rule (same regex, same `len >= open.len` /
+ * mismatched-char-is-content / backtick-info-string-cannot-contain-backtick
+ * semantics as `scanFencedBlocks`), so non-comment-interacting documents are
+ * byte-for-byte identical to delegating to `scanFencedBlocks` (see
+ * `tests/context-predicates.test.cjs`'s fence-skip parity suite) — the
+ * interleaving is required ONLY to resolve the comment/fence interaction,
+ * not to change fence semantics themselves. This is therefore a second,
+ * necessarily local copy of the (tiny) delimiter-match condition — the
+ * scanFencedBlocks seam cannot serve both scans at once, because the correct
+ * boundary decision for either construct depends on the OTHER construct's
+ * live state at that exact line, not just on a static, comment-blind
+ * pre-scan of the raw lines.
+ *
+ * ADR-457 build-at-publish: compiled by tsc to
  * gsd-core/bin/lib/context-predicates.cjs (gitignored).
  */
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- markdown-sectionizer.cjs is an export= CommonJS module
-import markdownSectionizer = require('./markdown-sectionizer.cjs');
-
-const { scanFencedBlocks } = markdownSectionizer;
 
 /** A single parsed predicate fact from CONTEXT.md. */
 export interface Predicate {
@@ -122,15 +154,50 @@ export interface ContextIndex {
   duplicates: Duplicate[];
 }
 
-// Regex matching the predicate ID grammar: one or more dot-separated segments.
-// First segment must start with an uppercase letter (CLASS).
-// Subsequent segments may start with letter/digit and include hyphens/underscores.
-// We intentionally allow lowercase-starting sub-segments (e.g. PRED.k320.rule).
-const ID_RE = /^([A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*)=(.+)$/;
+// ID grammar, validated STRUCTURALLY rather than by a single regex
+// (DEFECT.CONTEXT-PREDICATES-ID-REDOS, #2928 review). The formerly-used regex
+// `^([A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*)=(.+)$` is exponential: the
+// group `(?:\.[A-Za-z0-9_.-]+)*` is ambiguous because its own character
+// class contains `.`, so N consecutive dots have exponentially many
+// backtick-partitionings for the regex engine to try on a failed match
+// (measured: ~565ms for 40 consecutive dots, doubling roughly every 5).
+// `.github/workflows/test.yml` runs `lint:ci` -> `lint:generated-sync` ->
+// `gen-context-index.cjs --check` on `pull_request`, which parses the PR's
+// own CONTEXT.md — so any external contributor could hang the shared CI
+// runner with one crafted line, no write access required.
+//
+// Fix: split the candidate id on '.' and validate each segment with a
+// simple, non-backtracking, per-segment pattern — linear in id length, no
+// ambiguous quantifier. First segment (CLASS) must start with an uppercase
+// letter; subsequent segments may start with letter/digit and include
+// hyphens/underscores. We intentionally allow lowercase-starting
+// sub-segments (e.g. PRED.k320.rule).
+//
+// Behavior change vs. the old regex: an EMPTY segment (a doubled dot, e.g.
+// `A..b`) now REJECTS — the old regex accepted it because `.` was inside the
+// subsequent-segment character class, so `.` itself could satisfy
+// `[A-Za-z0-9_.-]+` with a single character. The real repo CONTEXT.md was
+// checked (`grep -nE '\`[A-Z][A-Za-z0-9_.-]*\.\.[A-Za-z0-9_.-]*='
+// CONTEXT.md`) and contains ZERO ids with a doubled dot, so rejecting the
+// empty-segment case is the correct, stricter grammar with no behavior loss
+// against real data (pinned by a dedicated test below).
+const ID_FIRST_SEGMENT_RE = /^[A-Z][A-Z0-9_-]*$/;
+const ID_SUBSEQUENT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 
-// ID-only grammar (no trailing "=value" requirement) — used to detect the
-// malformed empty-value case (`ID=` with nothing after the '=').
-const ID_ONLY_RE = /^[A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*$/;
+/**
+ * Structurally validate a candidate predicate id (linear time — no ambiguous
+ * backtracking quantifier; see the ID grammar comment above).
+ *
+ * @param id - candidate id (everything before the first '=')
+ */
+function isValidId(id: string): boolean {
+  const segments = id.split('.');
+  if (!ID_FIRST_SEGMENT_RE.test(segments[0])) return false;
+  for (let i = 1; i < segments.length; i++) {
+    if (!ID_SUBSEQUENT_SEGMENT_RE.test(segments[i])) return false;
+  }
+  return true;
+}
 
 // List markers recognized ahead of a backtick-wrapped declaration:
 // `-`, `*`, `+`, or a numbered marker (`1.`, `42.`), each followed by
@@ -189,8 +256,18 @@ function extractPredicate(raw: string): { id: string; value: string } | null {
   const id = inner.slice(0, eqIdx);
   const value = inner.slice(eqIdx + 1);
 
-  // Validate ID — must match the grammar (no spaces, correct char set).
-  if (!ID_RE.test(inner)) return null;
+  // Value must be non-empty (the old ID_RE's trailing `(.+)$` requirement)
+  // and must contain no embedded ECMAScript LineTerminator character (LF,
+  // CR, U+2028 LINE SEPARATOR, U+2029 PARAGRAPH SEPARATOR) -- the old
+  // regex's `.` metachar excludes exactly those four characters and carried
+  // no `s`/`m` flag, so a value spanning an embedded \r (possible only via
+  // the documented lone-CR limit: a "line" with no real \n at all still
+  // carries a mid-string \r joining what the author intended as two
+  // separate lines) could never satisfy `(.+)$`. Preserved byte-for-behavior
+  // here so `yieldsNoPredicatesForLoneCrDocumentAsDocumentedLimit` stays
+  // pinned. And the id must match the structural grammar (no spaces,
+  // correct char set, no empty segment -- see isValidId's doc comment).
+  if (value === '' || /[\n\r\u2028\u2029]/.test(value) || !isValidId(id)) return null;
 
   return { id, value };
 }
@@ -214,12 +291,21 @@ function detectMalformed(raw: string): { text: string; reason: string } | null {
   const id = inner.slice(0, eqIdx);
   const value = inner.slice(eqIdx + 1);
 
-  if (value === '' && ID_ONLY_RE.test(id)) {
+  if (value === '' && isValidId(id)) {
     return { text: raw.trimEnd(), reason: 'empty-value' };
   }
 
   return null;
 }
+
+// Fence delimiter line matcher — mirrors `markdown-sectionizer.cts`'s
+// `scanFencedBlocks` regex exactly (≥3 backticks/tildes, ≤3-space indent
+// tolerance). Kept local so the single interleaved pass below can decide,
+// line by line, whether a delimiter is a REAL fence boundary given the
+// comment state AT THAT LINE — see the module doc comment's "Comment/fence
+// precedence" section for why this can't be a call-then-mask over
+// `scanFencedBlocks`'s output.
+const FENCE_DELIM_RE = /^( {0,3})(`{3,}|~{3,})(.*)$/;
 
 /**
  * Compute, per source line, whether that line falls inside a fenced code
@@ -228,52 +314,83 @@ function detectMalformed(raw: string): { text: string; reason: string } | null {
  * collapsed) — see the module doc comment for why that distinction is
  * load-bearing here.
  *
- * Fence detection is delegated entirely to `markdown-sectionizer.cts`'s
- * `scanFencedBlocks` seam — this module carries NO local copy of the fence
- * state machine. `scanFencedBlocks` is line-index based
- * (`openLineIdx`/`closeLineIdx`), so its output maps 1:1 onto this function's
- * `lines` array; an unterminated fence (`closeLineIdx === -1`) skips every
- * remaining line to end of file, matching `stripFencedCode`'s
- * `unterminatedFence` semantics.
- *
- * HTML-comment detection remains local — `markdown-sectionizer.cts` has no
- * comment scanner. A line already marked fenced by `scanFencedBlocks` is
- * never treated as an HTML-comment opener/closer, preserving the
- * mutual-exclusion priority the previous single-pass implementation
- * enforced (a `<!--` inside fence content is fence content, not a comment
- * boundary).
+ * Single interleaved forward pass over two mutually-exclusive states —
+ * `fence` (open fence delimiter char + run length, or null) and
+ * `inHtmlComment` — so each construct suppresses the OTHER's open/close
+ * detection while it is active (module doc comment's "Comment/fence
+ * precedence"). This is the fix for DEFECT.CONTEXT-PREDICATES-COMMENT-FENCE-
+ * BLIND: a fence delimiter inside a real HTML comment is comment content
+ * (never opens a fence), and a `<!--`/`-->` token inside a real fenced block
+ * is fence content (never opens/closes a comment).
  *
  * @param lines - source lines (as produced by `markdown.split('\n')`)
  */
 function computeSkippedLineFlags(lines: string[]): boolean[] {
   const skip = new Array<boolean>(lines.length).fill(false);
 
-  for (const block of scanFencedBlocks(lines)) {
-    const end = block.closeLineIdx === -1 ? lines.length - 1 : block.closeLineIdx;
-    for (let i = block.openLineIdx; i <= end; i++) skip[i] = true;
-  }
-
+  let fence: { char: '`' | '~'; len: number } | null = null;
   let inHtmlComment = false;
+
   for (let i = 0; i < lines.length; i++) {
-    // Strip trailing \r for comment matching (CRLF safety), mirroring
-    // stripFencedCode's own `rawLine.replace(/\r$/, '')`.
+    // Strip trailing \r (CRLF safety), mirroring stripFencedCode's/
+    // scanFencedBlocks's own `rawLine.replace(/\r$/, '')`.
     const line = lines[i].replace(/\r$/, '');
 
+    if (fence !== null) {
+      // Inside a real fence: only a matching closer can end it. Any
+      // `<!--`/`-->` on this line is fence content, not a comment boundary
+      // (converse precedence).
+      skip[i] = true;
+      const m = FENCE_DELIM_RE.exec(line);
+      if (m) {
+        const char = m[2][0] as '`' | '~';
+        const len = m[2].length;
+        const trailing = m[3];
+        if (char === fence.char && len >= fence.len && /^\s*$/.test(trailing)) {
+          fence = null;
+        }
+      }
+      continue;
+    }
+
     if (inHtmlComment) {
+      // Inside a real comment: only '-->' can end it. Any fence delimiter on
+      // this line is comment content, not a fence boundary (primary
+      // precedence — the DEFECT.CONTEXT-PREDICATES-COMMENT-FENCE-BLIND
+      // repro: a fence delimiter with no later real closer must not skip to
+      // EOF just because it happened to appear inside a comment).
       skip[i] = true;
       if (line.includes('-->')) inHtmlComment = false;
       continue;
     }
 
-    if (skip[i]) continue; // already inside a fenced block — cannot also open a comment here
-
+    // Neither construct open: HTML comments are lexically outermost in this
+    // document's grammar, so a comment opener is checked BEFORE a fence
+    // opener on the same line.
     const trimmed = line.trim();
     if (trimmed.startsWith('<!--')) {
       skip[i] = true;
       if (!trimmed.includes('-->')) {
         inHtmlComment = true; // multi-line: stays open until a later '-->'
       }
+      continue;
     }
+
+    const m = FENCE_DELIM_RE.exec(line);
+    if (m) {
+      const char = m[2][0] as '`' | '~';
+      const trailing = m[3];
+      // CommonMark §4.5: a backtick fence opener's info string must not
+      // itself contain a backtick — such a line is ordinary content, not a
+      // valid opener (mirrors scanFencedBlocks).
+      if (!(char === '`' && trailing.includes('`'))) {
+        skip[i] = true;
+        fence = { char, len: m[2].length };
+        continue;
+      }
+    }
+
+    skip[i] = false;
   }
 
   return skip;

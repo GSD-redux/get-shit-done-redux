@@ -291,34 +291,85 @@ function checkReport(contextPath = CONTEXT_PATH, indexPath = INDEX_PATH) {
 // ─── Argument parsing ─────────────────────────────────────────────────────────
 
 /**
+ * True when `value` cannot be accepted as a `--context-path`/`--index-path`
+ * argument: absent (no more argv), empty string, or flag-shaped (starts with
+ * `-`, so a dangling `--context-path` immediately followed by the NEXT flag
+ * is rejected rather than silently swallowing that flag as a literal path).
+ *
+ * @param {string|undefined} value
+ * @returns {boolean}
+ */
+function isMissingPathValue(value) {
+  return value === undefined || value === '' || value.startsWith('-');
+}
+
+/**
  * Parse CLI arguments into a structured options object.
  *
  * `--context-path` / `--index-path` override the two hardcoded repo-root
  * paths — added so tests can point the real CLI at a temp fixture tree
  * directly, with no fs monkeypatching required.
  *
+ * Two usage-error conditions (DEFECT.GEN-CONTEXT-INDEX-PARSEARGS-GATE-BYPASS,
+ * MAJOR review finding) collapse into `mode: 'unknown'`, the same clean,
+ * no-stack-trace usage-error path `main()` already uses for an unrecognized
+ * flag:
+ *   (a) `--check` and `--write` given together — previously the LAST one
+ *       seen silently won, so `--check --write` exited 0 and REWROTE the
+ *       committed index instead of gating. Conflicting mode flags are now a
+ *       hard usage error regardless of order.
+ *   (b) a missing/empty/flag-shaped value for `--context-path` /
+ *       `--index-path` — previously `path.resolve(argv[++i] ?? '')`
+ *       resolved to the current working directory, and in `--write` mode
+ *       that later threw an uncaught, uncleaned `EISDIR` stack trace from
+ *       `fs.writeFileSync` (CONTRIBUTING.md: no stack trace in non-debug
+ *       failure output). Rejected up front instead, before any I/O.
+ *
  * @param {string[]} argv - process.argv.slice(2)
- * @returns {{ mode: 'check'|'write'|'default'|'unknown', json: boolean, contextPath: string, indexPath: string, unknownArg?: string }}
+ * @returns {{ mode: 'check'|'write'|'default'|'unknown', json: boolean, contextPath: string, indexPath: string, unknownArg?: string, usageMessage?: string }}
  */
 function parseArgs(argv) {
   const opts = { mode: 'default', json: false, contextPath: CONTEXT_PATH, indexPath: INDEX_PATH };
+  let sawCheck = false;
+  let sawWrite = false;
+
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--check') {
+      sawCheck = true;
       opts.mode = 'check';
     } else if (arg === '--write') {
+      sawWrite = true;
       opts.mode = 'write';
     } else if (arg === '--json') {
       opts.json = true;
-    } else if (arg === '--context-path') {
-      opts.contextPath = path.resolve(argv[++i] ?? '');
-    } else if (arg === '--index-path') {
-      opts.indexPath = path.resolve(argv[++i] ?? '');
+    } else if (arg === '--context-path' || arg === '--index-path') {
+      const value = argv[i + 1];
+      if (isMissingPathValue(value)) {
+        return {
+          ...opts,
+          mode: 'unknown',
+          unknownArg: arg,
+          usageMessage: `${arg} requires a non-empty path argument (got ${value === undefined ? 'nothing' : JSON.stringify(value)})`,
+        };
+      }
+      i++;
+      if (arg === '--context-path') opts.contextPath = path.resolve(value);
+      else opts.indexPath = path.resolve(value);
     } else {
       opts.mode = 'unknown';
       opts.unknownArg = arg;
     }
   }
+
+  if (sawCheck && sawWrite) {
+    return {
+      ...opts,
+      mode: 'unknown',
+      usageMessage: '--check and --write are mutually exclusive',
+    };
+  }
+
   return opts;
 }
 
@@ -329,6 +380,7 @@ function main() {
 
   if (opts.mode === 'unknown') {
     process.stderr.write('Usage: gen-context-index.cjs [--write|--check] [--json] [--context-path <path>] [--index-path <path>]\n');
+    if (opts.usageMessage) process.stderr.write(`${opts.usageMessage}\n`);
     throw new ExitError(1);
   }
 

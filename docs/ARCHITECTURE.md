@@ -347,6 +347,14 @@ gsd-tools query research-plan          ← Research Provider: check cache, build
 
 Agents always return a `RESEARCH.md` path, never raw fetched content. Context discipline is enforced through subagent isolation, compact provider output, and fetch-to-disk. See [ADR-0656](adr/0656-research-module-seam.md).
 
+### Context Predicate Fact-Store (`src/context-predicates.cts`, ADR-1671)
+
+The `CONTEXT.md` predicate fact-store — every backtick-wrapped `CLASS.subkey=value` declaration in the repo-root `CONTEXT.md` — has a compiled parser/selector seam (generated to `gsd-core/bin/lib/context-predicates.cjs` per ADR-457) reachable live via `gsd-tools query context-predicates --class|--prefix|--contains`. Fence-aware line skipping mirrors `markdown-sectionizer.cts`'s exported `scanFencedBlocks` delimiter-matching rule exactly (proven by a fence-skip parity test suite), but is scanned by a LOCAL, interleaved single pass rather than a call into that seam directly: fences and HTML comments must mutually suppress each other's open/close detection while either is active (a fence delimiter inside a real comment, or a comment token inside a real fence, must not falsely toggle the other construct), and that precedence cannot be resolved by two independent passes over `scanFencedBlocks`'s comment-blind output — see `src/context-predicates.cts`'s module doc comment.
+
+`scripts/gen-context-index.cjs --check` is the CI drift-guard for the committed `docs/CONTEXT-INDEX.json` artifact: it fails on staleness between a fresh parse of `CONTEXT.md` and the committed file, and on any duplicate predicate ID. It is wired into `lint:generated-sync` (so `lint:ci`, so CI). `docs/CONTEXT-INDEX.json` is **generated — never hand-edit it**; regenerate with `gen-context-index.cjs --write` (also wired into `build`, after `build:lib`, and into `regen:derived`). The generator `require()`s the compiled `context-predicates.cjs`, so it must run after `build:lib` in any pipeline; `.github/workflows/test.yml` does this.
+
+The committed index intentionally carries **no `line` field** for any predicate (ADR-1671 open question 4, resolved by #2928) — committed-but-uncompared metadata goes silently stale, the same defect class the drift-guard exists to catch, with the alarm removed. The live `gsd-tools query context-predicates` parse still returns `line`/`section` for callers that want to cite a source location. See [ADR-1671](adr/1671-dynamic-context-management-platform.md) and [CLI Tools Reference](CLI-TOOLS.md#query-context-predicates).
+
 ### CLI Tools (`gsd-core/bin/`)
 
 Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core/bin/lib/` (see [`docs/INVENTORY.md`](INVENTORY.md#cli-modules) for the authoritative roster):
@@ -382,6 +390,7 @@ Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core
 | `schema-detect.cjs`    | Schema-drift detection for ORM patterns (Prisma, Drizzle, etc.)                                     |
 | `profile-pipeline.cjs` | User behavioral profiling data pipeline, session file scanning                                      |
 | `profile-output.cjs`       | Profile rendering, USER-PROFILE.md and dev-preferences.md generation                                |
+| `context-predicates.cjs`   | `CONTEXT.md` predicate fact-store parser/selector (ADR-1671, #2928); backs `query context-predicates` and `scripts/gen-context-index.cjs`'s `docs/CONTEXT-INDEX.json` drift guard; compiled from `src/context-predicates.cts` |
 | `loop-host-contract.cjs`   | Generated Loop Host Contract — 12 loop points, per-step agent roles, and core artifacts; emitted by `scripts/gen-loop-host-contract.cjs` from workflow markers (ADR-894 §3); consumed by `gen-capability-registry.cjs` |
 | `capability-loader.cjs`    | Runtime registry overlay loader (ADR-1244 D2) — `loadRegistry({ includeInstalled })` composes the frozen first-party registry with a validated installed overlay of third-party capability manifests read from global `$GSD_HOME/.gsd/capabilities/` and project `<projectRoot>/.gsd/capabilities/`; first-party always wins; load-time `engines.gsd` re-gate skips incompatible overlays with a warning; gate-kind hooks on skipped capabilities fail OPEN — no gate is injected; a loud warning (stderr + envelope `warnings`) names the load failure and the `gsd capability remove <id>` remediation (#2009) |
 | `capability-registry.cjs`  | Generated central Capability Registry — role-partitioned index of all co-located capability declarations; emitted by `scripts/gen-capability-registry.cjs` (ADR-894 §5) |
