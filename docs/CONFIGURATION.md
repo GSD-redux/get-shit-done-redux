@@ -228,7 +228,9 @@ API key fields accept a string value (the key itself). They can also be set to t
 
 ### Code-review CLI routing
 
-`review.models.<cli>` maps a reviewer flavor to a bare model id. The code-review workflow injects this value into the CLI's `--model` (or `-m`) flag when invoking the reviewer.
+`review.models.<cli>` maps a reviewer flavor to a bare model id, which is injected into the CLI's own model flag (`--model`, `-m`, …) when the reviewer is invoked.
+
+The key suffix is **not** always the lane slug. Each lane declares the config key it reads, and one shipped lane already differs: the Antigravity lane's slug is `antigravity` but its key is `review.models.agy`, after the CLI's own name. Consult the table below rather than deriving the key from the flag.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -236,6 +238,7 @@ API key fields accept a string value (the key itself). They can also be set to t
 | `review.models.codex` | string | `null` | Model id for Codex review (injected into --model), e.g. `"gpt-5"` |
 | `review.models.gemini` | string | `null` | Model id for Gemini review (injected into -m), e.g. `"gemini-2.5-pro"` |
 | `review.models.opencode` | string | `null` | Model id for OpenCode review (injected into --model), e.g. `"claude-sonnet-4"` |
+| `review.models.kimi-code` | string | `null` | Model id for Kimi Code review (injected into -m) |
 
 **Ownership.** These keys are owned by their reviewer-lane capabilities rather than the central
 config schema — `review.models.ollama` belongs to the `ollama` capability, `review.ollama_host`
@@ -1014,7 +1017,8 @@ Configure per-CLI model selection for `/gsd-review`. When set, overrides the CLI
 | `review.models.claude` | string | (CLI default) | Model used when `--claude` reviewer is invoked |
 | `review.models.codex` | string | (CLI default) | Model used when `--codex` reviewer is invoked |
 | `review.models.opencode` | string | (CLI default) | Model used when `--opencode` reviewer is invoked |
-| `review.models.agy` | string | (CLI default) | Model used when the `--antigravity` / `--agy` reviewer is invoked. The key suffix is the CLI's own name (`agy`), not the lane slug |
+| `review.models.agy` | string | (CLI default) | Model used when the `--antigravity` / `--agy` reviewer is invoked. The key suffix is the CLI's own name (`agy`), not the lane slug — the lane declares which key it reads, so the two need not match |
+| `review.models.kimi-code` | string | (CLI default) | Model used when the `--kimi-code` reviewer is invoked (injected into `-m`) |
 | `review.models.ollama` | string | (server default) | Model name passed to Ollama when `--ollama` reviewer is invoked. If unset, the first available model reported by the server is used (e.g. `llama3`). Set to a specific tag: `gsd config-set review.models.ollama codellama` |
 | `review.models.lm_studio` | string | (server default) | Model name passed to LM Studio when `--lm-studio` reviewer is invoked. If unset, the first available model reported by the server is used. |
 | `review.models.llama_cpp` | string | (server default) | Model name passed to llama.cpp when `--llama-cpp` reviewer is invoked. If unset, the first model reported by `/v1/models` is used. |

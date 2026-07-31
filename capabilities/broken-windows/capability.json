@@ -1,7 +1,7 @@
 {
   "id": "broken-windows",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Broken-windows ledger",
   "description": "Cross-phase defect register accumulating stubs, TODOs, skipped tests, unrun verifies, and unmet truths into .planning/WINDOWS.md. Blocks /gsd-ship while any window is open unless explicitly waived with a recorded reason. Operationalizes GSD's no-defer discipline as a tracked, enforced artifact (issue #1950).",
   "tier": "full",

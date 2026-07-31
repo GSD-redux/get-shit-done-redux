@@ -971,6 +971,117 @@ describe('requirements mark-complete command', () => {
     assert.strictEqual(output.updated, false);
     assert.strictEqual(output.reason, 'REQUIREMENTS.md not found');
   });
+
+  // #2788: a requirement row stranded at `Gaps Found` (by revert-phase, the
+  // gaps_found response) must be recoverable — mark-complete moves it to Complete.
+  // Pre-fix the `/^pending$/i` guard rejected `Gaps Found`, stranding the row
+  // permanently (no inverse transition existed) AND mark-complete reported
+  // `updated: true` while the row stayed `Gaps Found` (defect 2, the lie).
+  const GAPS_FOUND_REQUIREMENTS = `# Requirements
+
+## Coverage
+- [ ] **REQ-01**: feature one
+- [ ] **REQ-02**: feature two
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| REQ-01 | Phase 1 | Gaps Found |
+| REQ-02 | Phase 1 | Complete |
+`;
+
+  test('#2788 defect 1: a Gaps Found row moves to Complete via mark-complete (no longer terminal)', () => {
+    writeRequirements(tmpDir, GAPS_FOUND_REQUIREMENTS);
+    const result = runGsdTools('requirements mark-complete REQ-01', tmpDir);
+    assert.ok(result.success);
+    const out = JSON.parse(result.output);
+    // The row EXISTS and moved to Complete, so updated/marked_complete are truthful.
+    assert.ok(out.updated, 'the stranded Gaps Found row must be recoverable');
+    assert.ok(out.marked_complete.includes('REQ-01'));
+    const content = readRequirements(tmpDir);
+    assert.ok(/REQ-01 \| Phase 1 \| Complete/.test(content),
+      'the row must read Complete after mark-complete; got:\n' + content);
+    assert.ok(content.includes('- [x] **REQ-01**'), 'the checkbox must be checked');
+  });
+
+  test('#2788 defect 2: when a row EXISTS but the write is rejected, updated is FALSE (no false success)', () => {
+    // A row at `Blocked` (a status mark-complete does not accept) EXISTS for REQ-01.
+    // The checkbox flips, but the row does not move — `updated` must be false so the
+    // operator is not told it worked while the audit row still reads Blocked.
+    const blockedRequirements = `# Requirements
+
+## Coverage
+- [ ] **REQ-01**: feature one
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| REQ-01 | Phase 1 | Blocked |
+`;
+    writeRequirements(tmpDir, blockedRequirements);
+    const result = runGsdTools('requirements mark-complete REQ-01', tmpDir);
+    assert.ok(result.success);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.updated, false,
+      'a checkbox flip on a table-bearing file whose row EXISTS but did not move must NOT report updated:true');
+    assert.ok(!out.marked_complete.includes('REQ-01'),
+      'REQ-01 must not be in marked_complete when the row write was rejected');
+    const content = readRequirements(tmpDir);
+    assert.ok(/REQ-01 \| Phase 1 \| Blocked/.test(content),
+      'the row must still read Blocked (write rejected); got:\n' + content);
+    // #2788 defect 2: the checkbox must NOT flip when the row write is rejected —
+    // the checkbox and the row are two representations of the same fact, so they
+    // must not silently diverge. The checkbox stays unchecked on disk.
+    assert.ok(content.includes('- [ ] **REQ-01**'),
+      'the checkbox must stay unchecked when the row write was rejected; got:\n' + content);
+    // write_set carries the truth: NEITHER surface applied (checkbox rolled back,
+    // traceability rejected).
+    const checkboxEntry = out.write_set.find(
+      (e) => e.requirement === 'REQ-01' && e.surface === 'checkbox');
+    assert.ok(checkboxEntry && checkboxEntry.applied === false,
+      'write_set must record the checkbox surface as not applied (rolled back)');
+    const traceabilityEntry = out.write_set.find(
+      (e) => e.requirement === 'REQ-01' && e.surface === 'traceability');
+    assert.ok(traceabilityEntry && traceabilityEntry.applied === false,
+      'write_set must record the traceability surface as not applied');
+  });
+
+  test('#2788 end-to-end: revert-phase (Complete → Gaps Found) then mark-complete (Gaps Found → Complete) round-trips', () => {
+    const completeRequirements = `# Requirements
+
+## Coverage
+- [x] **REQ-01**: feature one
+
+## Traceability
+
+| Requirement | Phase | Status |
+|-------------|-------|--------|
+| REQ-01 | Phase 1 | Complete |
+`;
+    writeRequirements(tmpDir, completeRequirements);
+    // revert-phase strands the row at Gaps Found (the gaps_found response).
+    const reverted = JSON.parse(runGsdTools('requirements revert-phase REQ-01', tmpDir).output);
+    assert.ok(reverted.reverted.includes('REQ-01'));
+    let content = readRequirements(tmpDir);
+    assert.ok(/REQ-01 \| Phase 1 \| Gaps Found/.test(content), 'revert should strand at Gaps Found');
+    // Now the requirement is genuinely satisfied again — mark-complete must recover it.
+    const marked = JSON.parse(runGsdTools('requirements mark-complete REQ-01', tmpDir).output);
+    assert.ok(marked.updated, 'the stranded row must be recoverable via mark-complete');
+    content = readRequirements(tmpDir);
+    assert.ok(/REQ-01 \| Phase 1 \| Complete/.test(content),
+      'after mark-complete the row must read Complete again');
+  });
+
+  test('#2788 negative-space: the normal Pending → Complete path is unchanged', () => {
+    writeRequirements(tmpDir, STANDARD_REQUIREMENTS);
+    const out = JSON.parse(runGsdTools('requirements mark-complete TEST-01', tmpDir).output);
+    assert.ok(out.updated);
+    assert.ok(out.marked_complete.includes('TEST-01'));
+    const content = readRequirements(tmpDir);
+    assert.ok(/TEST-01 \| Phase 1 \| Complete/.test(content), 'Pending row still moves to Complete');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

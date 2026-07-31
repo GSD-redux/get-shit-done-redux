@@ -1,7 +1,7 @@
 {
   "id": "zcode",
   "role": "runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "ZCode",
   "description": "ZCode (Z.ai) — desktop Agentic Development Environment for GLM-5.2; Claude-shaped nested skills at ~/.zcode/skills/<name>/SKILL.md, slash commands, named subagents, native MCP; declarative plugin surface; profile-marker install; tier-2 community support.",
   "tier": "core",

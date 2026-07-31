@@ -143,12 +143,15 @@ function readGsdState(dir) {
 function parseStateMd(content) {
   const state = {};
 
-  // YAML frontmatter between --- markers (anchored at file start)
-  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  // YAML frontmatter between --- markers (anchored at file start).
+  // #2754: \r?\n (not literal \n) so a CRLF STATE.md (Windows-authored) parses
+  // identically to LF — pre-fix the literal-\n fence dropped the ENTIRE block.
+  // Mirrors the CRLF-safe extractFrontmatter in src/frontmatter.cts.
+  const fmMatch = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (fmMatch) {
     const fm = fmMatch[1];
     // Top-level scalar key: value
-    for (const line of fm.split('\n')) {
+    for (const line of fm.split(/\r?\n/)) {
       const m = line.match(/^(\w+):\s*(.+)/);
       if (!m) continue;
       const [, key, val] = m;
@@ -169,10 +172,10 @@ function parseStateMd(content) {
       const items = npFlowMatch[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
       state.nextPhases = items.length > 0 ? items : null;
     } else {
-      const npBlockMatch = fm.match(/^next_phases:\s*\n((?:[ \t]*-[ \t]*[^\n]+\n?)*)/m);
+      const npBlockMatch = fm.match(/^next_phases:\s*\r?\n((?:[ \t]*-[ \t]*[^\r\n]+\r?\n?)*)/m);
       if (npBlockMatch) {
         const items = npBlockMatch[1]
-          .split('\n')
+          .split(/\r?\n/)
           .map(line => line.match(/^[ \t]*-[ \t]*(.+)$/))
           .filter(Boolean)
           .map(m => m[1].trim().replace(/^["']|["']$/g, ''))
@@ -181,7 +184,7 @@ function parseStateMd(content) {
       }
     }
     // progress nested block: completed_phases / total_phases / percent (2-space indent)
-    const progMatch = fm.match(/^progress:\s*\n((?:[ \t]+\w+:.+\n?)+)/m);
+    const progMatch = fm.match(/^progress:\s*\r?\n((?:[ \t]+\w+:.+\r?\n?)+)/m);
     if (progMatch) {
       const cp = progMatch[1].match(/^[ \t]+completed_phases:\s*(\d+)/m);
       const tp = progMatch[1].match(/^[ \t]+total_phases:\s*(\d+)/m);

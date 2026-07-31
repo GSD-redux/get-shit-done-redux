@@ -1,5 +1,0 @@
----
-type: Added
-pr: 2525
----
-**Runtime-aware subagent dispatch for built-in-only runtimes (kimi-code)** — workflows calling `Agent(subagent_type="gsd-*")` now resolve the type for the current runtime via `gsd_run query resolve-dispatch-type --requested <name> --raw` before dispatch. On named-dispatch runtimes (Claude/OpenCode/…) the `gsd-*` name is returned unchanged; on built-in-only runtimes (kimi-code — three built-in subagents `coder`/`explore`/`plan`, no custom registration) it maps to the closest built-in by role-suffix heuristic (`-planner`→`plan`, `-researcher`/`-checker`/`-auditor`→`explore`, everything else→`coder`). The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless of the resolved type. Adds the `resolveDispatchType` function to host-integration, the query to gsd-tools, a reference doc, and the resolution preamble to 26 workflow files. Pivot from the epic's original Option B (PreToolUse hook remap) after research confirmed Kimi Code's hook API supports only allow/deny, not tool_input rewriting. (#2508)

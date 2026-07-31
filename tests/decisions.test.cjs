@@ -1124,3 +1124,59 @@ describe('check.decision-coverage-plan — planner-canonical tag scanning (#2372
     assert.strictEqual(parsed.passed, true);
   });
 });
+
+// ─── #2770: empty contextPath argument must fail closed, not green-skip ──────
+// The handler conflated "empty argument" (a CALLER ERROR — the workflow forgot to
+// pass the path) with "file missing" (a LEGITIMATE green skip). An empty arg
+// returned passed:true/skipped/reason:"CONTEXT.md missing", silently certifying a
+// blocking gate. Must fail closed (mirrors #1365 fail-loud).
+
+describe('check.decision-coverage-plan — empty contextPath argument fails closed (#2770)', () => {
+  let tmpDir;
+  let planningDir;
+  let phaseDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-2770-');
+    planningDir = path.join(tmpDir, '.planning');
+    phaseDir = path.join(planningDir, 'phases', '01-init');
+    fs.mkdirSync(phaseDir, { recursive: true });
+  });
+
+  afterEach(() => cleanup(tmpDir));
+
+  test('empty contextPath argument → passed:false (caller error, fail closed)', () => {
+    const result = runDecisionCoveragePlan(phaseDir, '', tmpDir);
+    const parsed = JSON.parse(result.output || '{}');
+    assert.strictEqual(parsed.passed, false,
+      `Empty contextPath argument must fail closed (caller error), not green-skip. Got: ${JSON.stringify(parsed)}`);
+    const reason = (parsed.reason || '').toLowerCase();
+    assert.ok(
+      reason.includes('missing') && reason.includes('argument'),
+      `Reason must identify the missing argument. Got: "${parsed.reason}"`
+    );
+  });
+
+  test('real path to a genuinely-absent CONTEXT.md → legitimate green skip preserved (#2770)', () => {
+    // Negative space: a REAL path whose file does not exist is the legitimate skip.
+    const absentPath = path.join(phaseDir, 'CONTEXT.md'); // never written
+    const result = runDecisionCoveragePlan(phaseDir, absentPath, tmpDir);
+    const parsed = JSON.parse(result.output || '{}');
+    assert.strictEqual(parsed.passed, true,
+      `A real path to a genuinely-absent CONTEXT.md is a legitimate green skip. Got: ${JSON.stringify(parsed)}`);
+    assert.strictEqual(parsed.skipped, true);
+    assert.ok(
+      (parsed.reason || '').toLowerCase().includes('context.md missing'),
+      `Reason must be the legitimate CONTEXT.md-missing skip. Got: "${parsed.reason}"`
+    );
+  });
+
+  test('undefined-ish argument omitted entirely → passed:false (fail closed)', () => {
+    // The CLI invocation drops a trailing empty arg in some shells; the handler must
+    // still fail closed when args[3] is absent (not just empty string).
+    const result = runGsdTools(['query', 'check.decision-coverage-plan', phaseDir], tmpDir);
+    const parsed = JSON.parse(result.output || '{}');
+    assert.strictEqual(parsed.passed, false,
+      `Missing contextPath argument must fail closed. Got: ${JSON.stringify(parsed)}`);
+  });
+});

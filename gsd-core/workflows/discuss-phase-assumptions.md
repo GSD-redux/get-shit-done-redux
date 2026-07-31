@@ -48,14 +48,12 @@ Capture the idea in "Deferred Ideas". Don't lose it, don't act on it.
 </scope_guardrail>
 
 <answer_validation>
-**IMPORTANT: Answer validation** — After every AskUserQuestion call, check if the response
-is empty or whitespace-only. If so:
-1. Retry the question once with the same parameters
-2. If still empty, present the options as a plain-text numbered list
+**IMPORTANT: Answer validation** — After every AskUserQuestion call, if the response is empty/whitespace-only:
 
-**Text mode (`workflow.text_mode: true` in config or `--text` flag):**
-When text mode is active, do not use AskUserQuestion at all. Present every question as a
-plain-text numbered list and ask the user to type their choice number.
+- **"Other" with empty text** (the user wants to type freeform): output `"What would you like to discuss?"`, STOP generating, wait for the user's next message, then reflect it back and continue. Do NOT retry AskUserQuestion or call any tools.
+- **Any other empty response:** retry once with the same parameters; if still empty, present options as a plain-text numbered list. Never proceed with empty input.
+
+**Text mode** (`--text` or `workflow.text_mode: true`): follow `workflows/discuss-phase/modes/text.md` — do not use AskUserQuestion at all.
 </answer_validation>
 
 <process>
@@ -668,7 +666,7 @@ Handle return: PHASE COMPLETE / PLANNING COMPLETE / INCONCLUSIVE / GAPS FOUND
 (identical handling to discuss-phase.md auto_advance step)
 
 **If neither `--auto` nor config enabled:**
-Route to confirm_creation step.
+End here — `confirm_creation` already ran; do not route back to it.
 </step>
 
 </process>
