@@ -2,11 +2,12 @@
 
 /**
  * scripts/registry-schema.cjs — pure schema/vocab constants + validation +
- * markdown-generation logic for the two third-party discoverability catalogs
- * (issue #2182):
+ * markdown-generation logic for the three third-party discoverability catalogs
+ * (issue #2182, plus #2904):
  *
  *   - `docs/registries/capabilities.json`  → "GSD Community Capability Registry"
  *   - `docs/registries/eos.json`           → "GSD EoS Registry" (PR2)
+ *   - `docs/registries/reviewers.json`     → "GSD Reviewer Lane Registry" (issue #2904)
  *
  * The vocabulary constants below are ADDITIVE CONTRACTS that track the
  * runtime/ADR closed vocabularies they describe — they are a documentation-
@@ -41,10 +42,14 @@
  *     (every entry published before the amendment stays valid) or declare
  *     it as `argv` | `none`, mirroring `HOST_INTEGRATION_AXES.effortSurface`
  *     in `src/host-integration.cts`.
- *   - `CAPABILITY_REQUIRED` / `EOS_REQUIRED` mirror the required top-level
- *     fields for each entry type, including `enginesGsd` (ADR-1244 D1
- *     "Versioned capability manifest" — the `engines.gsd` semver-range gate,
- *     modelled on VS Code's `engines.vscode`).
+ *   - `CAPABILITY_REQUIRED` / `EOS_REQUIRED` / `REVIEWER_REQUIRED` mirror the
+ *     required top-level fields for each entry type, including `enginesGsd`
+ *     (ADR-1244 D1 "Versioned capability manifest" — the `engines.gsd`
+ *     semver-range gate, modelled on VS Code's `engines.vscode`).
+ *   - `REVIEWER_LANE_TRANSPORTS` / `REVIEWER_EVIDENCE_CLASSES` /
+ *     `REVIEWER_SLUG_RE` / `REVIEWER_FLAG_RE` / `REVIEWER_SECTION_MAX` mirror
+ *     the ADR-2782 reviewer-lane vocabulary (`capability-validator.cjs`) for
+ *     the `reviewer` entry type's `interactions` sub-object (issue #2904).
  *
  * This module is pure — no `fs`/`process`/child-process access — so tests
  * can `require()` it directly and assert on structured return values.
@@ -107,37 +112,53 @@ const OPTIONAL_AXES = Object.freeze({
   effortSurface: Object.freeze(['argv', 'none']),
 });
 
-// ─── Required top-level fields ───────────────────────────────────────────────
-const CAPABILITY_REQUIRED = Object.freeze([
-  'id',
-  'name',
-  'type',
-  'repo',
-  'description',
-  'author',
-  'license',
-  'enginesGsd',
-  'install',
-  'uninstall',
-  'interactions',
-  'discussion',
-]);
+// ─── ADR-2782 reviewer-lane vocabulary (issue #2904) ─────────────────────────
+// A THIRD catalog: third-party reviewer lanes (`role: "reviewer"`, ADR-2782
+// D3). A lane registers on ZERO Loop Extension Points and is forbidden from
+// declaring `steps`/`contributions`/`gates`/`skills`/`agents`/`hooks`
+// (`FEATURE_FIELDS_FORBIDDEN_ON_REVIEWER`, capability-validator.cjs), so the
+// Capability entry's two required `interactions` fields are unsatisfiable by
+// construction for a lane — hence its own entry type rather than a relaxation
+// of the Capability schema.
+//
+// These constants are ADDITIVE CONTRACTS mirroring the canonical runtime
+// vocabulary in `gsd-core/bin/lib/capability-validator.cjs`, exactly the way
+// `AXES` mirrors `HOST_INTEGRATION_AXES`. They are hand-written mirrors, NOT
+// imports: this module is documented pure (no `fs`/`process`), and requiring a
+// `gsd-core/bin/lib` runtime module from a docs-pipeline script would invert
+// that. Parity is enforced instead by `tests/registry-reviewer-parity.test.cjs`.
+//
+// `REVIEWER_SLUG_RE` deliberately does NOT reuse the registry's kebab-case `id`
+// grammar. `LANE_SLUG_RE` permits underscores AND a leading digit —
+// `lm_studio`, `llama_cpp`, `4o-mini` are real shipped lane slugs — and
+// capability-validator.cjs:807-810 requires the two grammars stay
+// byte-identical. A kebab-only rule here would reject well-formed entries and
+// leave authors with a schema satisfiable only by lying.
+const REVIEWER_LANE_TRANSPORTS = Object.freeze(['spawn', 'openai-http']);
+const REVIEWER_EVIDENCE_CLASSES = Object.freeze(['source-grounded', 'diff-only']);
+const REVIEWER_SLUG_RE = /^[a-z0-9][a-z0-9_-]*$/;
+// Flags are kebab even when the slug is snake: `lm_studio` → `--lm-studio`.
+const REVIEWER_FLAG_RE = /^--[a-z0-9][a-z0-9-]*$/;
+// Cap for the one free-text reviewer interactions field, mirroring the 300-cap
+// on the equivalently free-form `axes.dispatch`. A REVIEWS.md heading is short.
+const REVIEWER_SECTION_MAX = 200;
 
-const EOS_REQUIRED = Object.freeze([
-  'id',
-  'name',
-  'type',
-  'repo',
-  'description',
-  'author',
-  'license',
-  'enginesGsd',
-  'install',
-  'uninstall',
-  'interactions',
-  'discussion',
-  'protocolVersion',
+// ─── Required top-level fields ───────────────────────────────────────────────
+// The twelve fields every entry type requires. Each type's set is DERIVED from
+// this one so a future shared field cannot be added to one type's list and
+// silently forgotten in another (DEFECT.GENERATIVE-FIX). The three sets are
+// distinct frozen arrays, not aliases, so a type may still diverge deliberately
+// — as `eos` already does with `protocolVersion`.
+const BASE_REQUIRED = Object.freeze([
+  'id', 'name', 'type', 'repo', 'description', 'author', 'license',
+  'enginesGsd', 'install', 'uninstall', 'interactions', 'discussion',
 ]);
+const CAPABILITY_REQUIRED = Object.freeze([...BASE_REQUIRED]);
+const EOS_REQUIRED = Object.freeze([...BASE_REQUIRED, 'protocolVersion']);
+// A lane is installed with `gsd capability install`, owns a repo, a license and
+// an `engines.gsd` range exactly as a Feature Capability does — so it requires
+// the same twelve top-level fields. Only `interactions` differs.
+const REVIEWER_REQUIRED = Object.freeze([...BASE_REQUIRED]);
 
 // Escape Markdown inline metacharacters in UNTRUSTED free text so a registry
 // entry cannot inject links/tables/code-spans into the generated catalog.
@@ -313,16 +334,107 @@ function validateEosInteractions(interactions, addError) {
 }
 
 /**
+ * Validate the `interactions` sub-object for a reviewer entry (ADR-2782 D3
+ * lane vocabulary — issue #2904).
+ *
+ * @param {object} interactions
+ * @param {(field: string, reason: string) => void} addError
+ * @returns {void}
+ */
+function validateReviewerInteractions(interactions, addError) {
+  const allowedKeys = new Set([
+    'slug',
+    'flags',
+    'transport',
+    'evidenceClass',
+    'reviewsSection',
+    'requiresBinaries',
+    'configKeys',
+    'runtimeCompat',
+  ]);
+  for (const key of Object.keys(interactions)) {
+    if (!allowedKeys.has(key)) addError(`interactions.${key}`, 'unknown field');
+  }
+
+  for (const field of allowedKeys) {
+    if (interactions[field] === undefined) addError(`interactions.${field}`, 'missing required field');
+  }
+
+  if (interactions.slug !== undefined) {
+    const v = interactions.slug;
+    if (typeof v !== 'string' || !REVIEWER_SLUG_RE.test(v)) {
+      addError('interactions.slug', 'must match the reviewer lane slug grammar');
+    }
+  }
+
+  if (interactions.flags !== undefined) {
+    const v = interactions.flags;
+    if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === 'string' && REVIEWER_FLAG_RE.test(x))) {
+      addError('interactions.flags', 'must be a non-empty array of lane CLI flags');
+    }
+  }
+
+  if (interactions.transport !== undefined) {
+    const v = interactions.transport;
+    if (typeof v !== 'string' || !REVIEWER_LANE_TRANSPORTS.includes(v)) {
+      addError('interactions.transport', 'must be one of the allowed lane transports');
+    }
+  }
+
+  if (interactions.evidenceClass !== undefined) {
+    const v = interactions.evidenceClass;
+    if (typeof v !== 'string' || !REVIEWER_EVIDENCE_CLASSES.includes(v)) {
+      addError('interactions.evidenceClass', 'must be one of the allowed evidence classes');
+    }
+  }
+
+  if (interactions.reviewsSection !== undefined) {
+    const v = interactions.reviewsSection;
+    if (typeof v !== 'string' || v.trim() === '') {
+      addError('interactions.reviewsSection', 'must be a non-empty string');
+    } else if (v.length > REVIEWER_SECTION_MAX) {
+      addError('interactions.reviewsSection', `exceeds max length ${REVIEWER_SECTION_MAX}`);
+    }
+  }
+
+  for (const field of ['requiresBinaries', 'configKeys', 'runtimeCompat']) {
+    if (interactions[field] === undefined) continue;
+    const v = interactions[field];
+    if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) {
+      addError(`interactions.${field}`, 'must be an array of strings');
+    }
+  }
+}
+
+// Per-type rules. A Map (not a plain object) so the lookup below is not a
+// bracket-read on a caller-supplied key — that shape reads as a
+// prototype-pollution sink to CodeQL, and a Map.get does not.
+const TYPE_RULES = new Map([
+  ['capability', { required: CAPABILITY_REQUIRED, validateInteractions: validateCapabilityInteractions }],
+  ['eos', { required: EOS_REQUIRED, validateInteractions: validateEosInteractions }],
+  ['reviewer', { required: REVIEWER_REQUIRED, validateInteractions: validateReviewerInteractions }],
+]);
+
+/**
  * Validate an array of registry entries against the closed schema for
- * `opts.type` ('capability' | 'eos').
+ * `opts.type` ('capability' | 'eos' | 'reviewer').
  *
  * @param {object[]} entries
- * @param {{type: 'capability'|'eos'}} opts
+ * @param {{type: 'capability'|'eos'|'reviewer'}} opts
  * @returns {{ok: boolean, errors: Array<{index: number, id?: string, field: string, reason: string}>}}
  */
 function validateEntries(entries, opts) {
   if (!Array.isArray(entries)) {
     return { ok: false, errors: [{ index: -1, field: '(root)', reason: 'entries must be an array' }] };
+  }
+
+  // An unrecognized type is a hard error, not a silent fallthrough. Before the
+  // third type existed this was a binary ternary whose ELSE branch was
+  // `capability`, so a typo'd type validated against the wrong schema and
+  // reported plausible-looking per-entry errors.
+  const rules = TYPE_RULES.get(opts.type);
+  if (!rules) {
+    return { ok: false, errors: [{ index: -1, field: '(root)', reason: `unknown registry type "${opts.type}"` }] };
   }
 
   // Entry-count cap: a pathologically large array (e.g. from an automated or
@@ -331,7 +443,7 @@ function validateEntries(entries, opts) {
     return { ok: false, errors: [{ index: -1, field: '(root)', reason: 'too many entries (max 2000)' }] };
   }
 
-  const required = opts.type === 'eos' ? EOS_REQUIRED : CAPABILITY_REQUIRED;
+  const required = rules.required;
   const requiredSet = new Set(required);
   const seenIds = new Set();
   const errors = [];
@@ -460,10 +572,8 @@ function validateEntries(entries, opts) {
       const interactions = entry.interactions;
       if (typeof interactions !== 'object' || interactions === null || Array.isArray(interactions)) {
         addError('interactions', 'interactions must be an object');
-      } else if (opts.type === 'eos') {
-        validateEosInteractions(interactions, addError);
       } else {
-        validateCapabilityInteractions(interactions, addError);
+        rules.validateInteractions(interactions, addError);
       }
     }
 
@@ -477,12 +587,20 @@ function validateEntries(entries, opts) {
   return { ok: errors.length === 0, errors };
 }
 
+// Per-type page presentation. Keyed by a Map for the same reason as TYPE_RULES.
+const RENDER_META = new Map([
+  ['capability', { title: 'GSD Community Capability Registry', addNoun: 'capability' }],
+  ['eos', { title: 'GSD EoS Registry', addNoun: 'integration' }],
+  ['reviewer', { title: 'GSD Reviewer Lane Registry', addNoun: 'reviewer lane' }],
+]);
+
 /**
  * Render the deterministic Markdown document for a registry.
  *
  * @param {object[]} entries
- * @param {{type: 'capability'|'eos', sourceFile?: string}} opts
+ * @param {{type: 'capability'|'eos'|'reviewer', sourceFile?: string}} opts
  * @returns {string}
+ * @throws {Error} when opts.type is not a known registry type
  */
 function renderMarkdown(entries, opts) {
   const sorted = [...entries].sort((a, b) => {
@@ -491,19 +609,27 @@ function renderMarkdown(entries, opts) {
     return 0;
   });
   const isEos = opts.type === 'eos';
+  // An unrecognized type must fail loudly rather than silently render a
+  // "GSD Community Capability Registry" page — mirroring the validateEntries
+  // unknown-type guard above. This function writes a COMMITTED catalog file,
+  // so a silent wrong-title render is the worst failure mode available.
+  // Message shape mirrors gen-registry.cjs#renderFor's existing
+  // `gen-registry: unknown registry type "..."` throw.
+  const meta = RENDER_META.get(opts.type);
+  if (!meta) throw new Error(`registry-schema: unknown registry type "${opts.type}"`);
   const lines = [];
 
   lines.push(
     `<!-- GENERATED by scripts/gen-registry.cjs from docs/registries/${opts.sourceFile} — do not edit by hand; run \`npm run gen:registry\` -->`,
   );
   lines.push('');
-  lines.push(isEos ? '# GSD EoS Registry' : '# GSD Community Capability Registry');
+  lines.push(`# ${meta.title}`);
   lines.push('');
   lines.push(
     "> **Not an endorsement.** Inclusion means only that a maintainer merged a PR linking the author's repository — GSD has not reviewed, tested, or verified any listing. See the [registry README](./README.md).",
   );
   lines.push('');
-  lines.push(`_To add your ${isEos ? 'integration' : 'capability'}, see the [registry README](./README.md)._`);
+  lines.push(`_To add your ${meta.addNoun}, see the [registry README](./README.md)._`);
   lines.push('');
 
   if (sorted.length === 0) {
@@ -554,6 +680,23 @@ function renderMarkdown(entries, opts) {
       // literal separator text above contains Markdown metacharacters, so
       // this equally neutralizes every embedded free-text/vocab value
       // (notably interactions.axes.dispatch, a free-form untrusted string).
+      lines.push(`- **Every interaction with GSD:** ${mdInline(summary)}`);
+    } else if (opts.type === 'reviewer') {
+      let summary =
+        `Lane: ${interactions.slug}; ` +
+        `flags: ${(interactions.flags || []).join(', ')}; ` +
+        `transport: ${interactions.transport}; ` +
+        `evidence: ${interactions.evidenceClass}; ` +
+        `REVIEWS.md section: ${interactions.reviewsSection}`;
+      for (const field of ['requiresBinaries', 'configKeys', 'runtimeCompat']) {
+        const v = interactions[field];
+        if (Array.isArray(v) && v.length > 0) summary += `; ${field}: ${v.join(', ')}`;
+      }
+      // slug/flags/transport are vocab-constrained; reviewsSection and the
+      // three arrays are untrusted free text — same single-pass mdInline
+      // rationale as the eos/capability branches above: none of the literal
+      // separator text contains Markdown metacharacters, so one pass over the
+      // assembled summary neutralizes every embedded value.
       lines.push(`- **Every interaction with GSD:** ${mdInline(summary)}`);
     } else {
       let summary =
@@ -608,6 +751,12 @@ module.exports = {
   AXES_FREE_STRING,
   CAPABILITY_REQUIRED,
   EOS_REQUIRED,
+  REVIEWER_REQUIRED,
+  REVIEWER_LANE_TRANSPORTS,
+  REVIEWER_EVIDENCE_CLASSES,
+  REVIEWER_SLUG_RE,
+  REVIEWER_FLAG_RE,
+  REVIEWER_SECTION_MAX,
   isValidGsdRange,
   validateEntries,
   renderMarkdown,
