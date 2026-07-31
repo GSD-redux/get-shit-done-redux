@@ -12,6 +12,9 @@
     },
     "next.md": {
       "reason": "#2800 — same derived-flag-loop change as autonomous.md. next.md needed no relocation (its launcher preamble already precedes the loop), so the growth here is only the loop plus the comment recording that --all and --text stay literal because they are convergence controls, not reviewer lanes."
+    },
+    "code-review.md": {
+      "reason": "#2666: the Tier-2 SUMMARY extractor predicate is relaxed to accept root-level and extensionless build files (Dockerfile/Makefile/etc.), and the Tier-3 git-diff fallback is converted from an eq-zero gate into an intersect-and-warn that cross-checks the SUMMARY scope against `git diff --name-only` with exact whole-line matching (grep -Fxq) and warns about + adds any changed files the extractor missed. Growth is the relaxed predicate + the portable cross-check branch + their explanatory comments."
     }
   }
 }

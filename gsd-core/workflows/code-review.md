@@ -187,10 +187,10 @@ if [ -z "$FILES_OVERRIDE" ]; then
             raw = raw.split(/\s+—\s/)[0].trim();
             // #2666: accept root-level paths (no `/`) and known extensionless build
             // files, not only nested paths with a trailing extension. The pre-fix
-            // predicate `/\//.test(raw) && /\.[A-Za-z0-9]+$/.test(raw)` silently
-            // dropped every repository-root file (Dockerfile, renovate.json,
-            // AGENTS.md, package.json, .gitlab-ci.yml, …) and every extensionless
-            // build file anywhere in the tree (**/Dockerfile, **/Makefile).
+            // guard required BOTH a directory separator AND a trailing dot-extension,
+            // which silently dropped every repository-root file (Dockerfile,
+            // renovate.json, AGENTS.md, package.json, .gitlab-ci.yml, …) and every
+            // extensionless build file anywhere in the tree (**/Dockerfile, **/Makefile).
             // Prose bullets are rejected by the known-filename / has-extension
             // distinction, with the post-processing existence check (`[ -f ]`) as a
             // backstop — a prose string is never a real file on disk.
