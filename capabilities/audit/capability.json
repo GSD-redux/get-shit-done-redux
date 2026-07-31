@@ -1,7 +1,7 @@
 {
   "id": "audit",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Audit",
   "description": "Open-artifact audit and UAT-gap audit for milestone close gates; exposes `gsd-tools audit-uat` (cross-phase UAT outstanding items) and `gsd-tools audit-open` (structured open-artifact scan across debug, tasks, threads, todos, seeds, UAT, verification, context-questions).",
   "tier": "full",

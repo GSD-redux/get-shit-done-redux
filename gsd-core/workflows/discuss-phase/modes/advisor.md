@@ -92,16 +92,14 @@ research agents.
 
    ```
    Agent(
-     prompt="First, read @~/.claude/agents/gsd-advisor-researcher.md for your role and instructions.
-
-     <gray_area>{area_name}: {area_description from gray area identification}</gray_area>
+     prompt="<gray_area>{area_name}: {area_description from gray area identification}</gray_area>
      <phase_context>{phase_goal and description from ROADMAP.md}</phase_context>
      <project_context>{project name and brief description from PROJECT.md}</project_context>
      <calibration_tier>{resolved calibration tier: full_maturity | standard | minimal_decisive}</calibration_tier>
 
      Research this gray area and return a structured comparison table with rationale.
      ${AGENT_SKILLS_ADVISOR}",
-     subagent_type="general-purpose",
+     subagent_type="gsd-advisor-researcher",
      model="{ADVISOR_MODEL}",
      description="Research: {area_name}"
    )

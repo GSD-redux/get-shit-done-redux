@@ -1,7 +1,7 @@
 {
   "id": "tdd",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Test-driven development",
   "description": "Injects TDD heuristics into the planner and enforces RED/GREEN gate compliance on type:tdd plans after execution. Owns workflow.tdd_mode; the --tdd CLI flag is the ephemeral override.",
   "tier": "full",

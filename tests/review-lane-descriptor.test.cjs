@@ -35,6 +35,17 @@ const {
 const {
   KNOWN_REVIEWER_SLUGS,
 } = require('../gsd-core/bin/lib/review-reviewer-selection.cjs');
+const CAPABILITY_REGISTRY = require('../gsd-core/bin/lib/capability-registry.cjs');
+
+/**
+ * Reviewer slugs the GENERATED registry declares — the surface Phase 5b (#2799) re-pointed parity
+ * onto. Once `invoke_reviewers` iterates lanes, the registry (not the workflow text) is what
+ * decides which lanes exist at runtime.
+ */
+const REGISTRY_LANE_SLUGS = Object.values(CAPABILITY_REGISTRY.capabilities || {})
+  .map((c) => c && c.reviewer && c.reviewer.slug)
+  .filter((s) => typeof s === 'string' && s)
+  .sort();
 
 const ROOT = path.join(__dirname, '..');
 // Normalized to LF on read so the CRLF cases below can construct a Windows
@@ -53,6 +64,7 @@ function check(overrides = {}) {
   return checkReviewerLaneParity({
     descriptor: REVIEWER_LANES,
     roster: KNOWN_REVIEWER_SLUGS,
+    registry: REGISTRY_LANE_SLUGS,
     workflowText: WORKFLOW_TEXT,
     ...overrides,
   });
@@ -110,161 +122,113 @@ describe('reviewer lane parity — descriptor vs roster', () => {
   });
 });
 
-describe('reviewer lane parity — descriptor vs invoke_reviewers legs', () => {
-  test('a leg added without a descriptor entry is a violation', () => {
-    // The #2718 shape: a new lane's bash block lands in the workflow and nothing
-    // else moves. This is the row a forward-only assertion cannot catch.
-    const r = check({
-      workflowText: WORKFLOW_TEXT.replace(
-        '<!-- reviewer-lane: qwen -->',
-        '<!-- reviewer-lane: qwen -->\n<!-- reviewer-lane: kimi_code -->',
-      ),
-    });
-    assert.deepStrictEqual(reasons(r), [
-      `${PARITY_VIOLATION.LEG_MARKER_UNDECLARED}:kimi_code`,
-    ]);
-  });
-
-  test('a declared lane whose workflow leg was removed is a violation', () => {
-    const r = check({
-      workflowText: WORKFLOW_TEXT.replace('<!-- reviewer-lane: qwen -->', ''),
-    });
-    assert.deepStrictEqual(reasons(r), [
-      `${PARITY_VIOLATION.LEG_MARKER_MISSING}:qwen`,
-    ]);
-  });
-
-  test('a duplicated leg marker is a violation', () => {
-    const r = check({
-      workflowText: WORKFLOW_TEXT.replace(
-        '<!-- reviewer-lane: qwen -->',
-        '<!-- reviewer-lane: qwen -->\n<!-- reviewer-lane: qwen -->',
-      ),
-    });
-    assert.deepStrictEqual(reasons(r), [
-      `${PARITY_VIOLATION.LEG_MARKER_DUPLICATED}:qwen`,
-    ]);
-  });
-
-  test('marker matching tolerates whitespace variation', () => {
-    const r = check({
-      workflowText: WORKFLOW_TEXT.replace(
-        '<!-- reviewer-lane: qwen -->',
-        '<!--reviewer-lane:qwen-->',
-      ),
-    });
-    assert.deepStrictEqual(r.violations, []);
-  });
-
-  test('a marker outside the invoke_reviewers step does not satisfy the leg', () => {
-    // Scoped, not file-wide: a marker parked in write_reviews must not be
-    // mistaken for a dispatch leg.
-    const moved = WORKFLOW_TEXT
-      .replace('<!-- reviewer-lane: qwen -->', '')
-      .replace('## Qwen Review', '<!-- reviewer-lane: qwen -->\n## Qwen Review');
-    const r = check({ workflowText: moved });
-    assert.deepStrictEqual(reasons(r), [
-      `${PARITY_VIOLATION.LEG_MARKER_MISSING}:qwen`,
-    ]);
-  });
-});
-
-describe('reviewer lane parity — descriptor vs write_reviews sections', () => {
-  test('an output section with no declared lane is a violation', () => {
-    const r = check({
-      workflowText: WORKFLOW_TEXT.replace(
-        '## Qwen Review',
-        '## Qwen Review\n\n{qwen}\n\n---\n\n## Kimi Review',
-      ),
-    });
-    assert.deepStrictEqual(reasons(r), [
-      `${PARITY_VIOLATION.SECTION_UNDECLARED}:Kimi`,
-    ]);
-  });
-
-  test('a declared lane with no output section is a violation', () => {
-    const r = check({
-      workflowText: WORKFLOW_TEXT.replace('## Qwen Review', '## Renamed Heading'),
-    });
+describe('reviewer lane parity — descriptor vs registry (ADR-2782 Phase 5b)', () => {
+  // Phase 5b deleted the per-lane workflow text this file used to scan, so the leg-marker and
+  // section-heading families are gone. What replaced them is the parity that is load-bearing once
+  // lanes are data: the registry is what the runtime actually iterates.
+  test('a registry lane with no descriptor entry is a violation', () => {
+    const r = check({ registry: [...REGISTRY_LANE_SLUGS, 'acme'] });
     assert.ok(
-      reasons(r).includes(`${PARITY_VIOLATION.SECTION_MISSING}:Qwen`),
-      `expected a section-missing violation, got: ${JSON.stringify(reasons(r))}`,
+      reasons(r).includes(`${PARITY_VIOLATION.REGISTRY_LANE_UNDECLARED}:acme`),
+      'a lane the registry ships but the descriptor never declared must fail',
     );
   });
 
-  test('a duplicated output section is a violation', () => {
-    // Two lanes under one heading would silently MERGE in REVIEWS.md, producing
-    // a review that appears to have consensus it does not have (ADR-2782 D8).
+  test('a descriptor lane absent from the registry is a violation', () => {
     const r = check({
-      workflowText: WORKFLOW_TEXT.replace(
-        '## Qwen Review',
-        '## Qwen Review\n\n{a}\n\n---\n\n## Qwen Review',
-      ),
+      descriptor: [...REVIEWER_LANES, fakeLane('acme')],
+      roster: [...KNOWN_REVIEWER_SLUGS, 'acme'],
     });
-    assert.deepStrictEqual(reasons(r), [
-      `${PARITY_VIOLATION.SECTION_DUPLICATED}:Qwen`,
-    ]);
+    assert.ok(
+      reasons(r).includes(`${PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_REGISTRY}:acme`),
+      'a declared lane no capability manifest ships must fail',
+    );
+  });
+
+  test('an empty registry reports every lane rather than passing silently', () => {
+    // Degrading to violations is the point: a checker that cannot tell "no registry" from
+    // "registry agrees" is worse than no checker.
+    const r = check({ registry: [] });
+    const missing = r.violations.filter(
+      (v) => v.reason === PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_REGISTRY,
+    );
+    assert.equal(missing.length, REVIEWER_LANES.length);
+  });
+
+  test('a non-array registry degrades to violations, never throws', () => {
+    for (const bad of [null, undefined, 42, 'gemini', {}]) {
+      const r = check({ registry: bad });
+      assert.equal(r.ok, false);
+    }
+  });
+});
+
+describe('reviewer lane parity — anti-parity: no bespoke leg may return', () => {
+  test('a re-added per-CLI leg marker is a violation', () => {
+    // The regex flipped polarity in Phase 5b: matching a leg marker is now the failure. Without
+    // this, nothing stops a contributor quietly re-adding a hand-authored block — which is the
+    // drift (#2718 -> #2781) the epic exists to end, and every other check here would still pass.
+    const wf = WORKFLOW_TEXT.replace(
+      '<step name="invoke_reviewers">',
+      '<step name="invoke_reviewers">\n<!-- reviewer-lane: gemini -->',
+    );
+    const r = check({ workflowText: wf });
+    assert.ok(reasons(r).includes(`${PARITY_VIOLATION.BESPOKE_LEG_PRESENT}:gemini`));
+  });
+
+  test('the shipped workflow contains no leg markers', () => {
+    const r = check();
+    assert.deepStrictEqual(
+      r.violations.filter((v) => v.reason === PARITY_VIOLATION.BESPOKE_LEG_PRESENT),
+      [],
+    );
+  });
+
+  test('a marker outside the invoke_reviewers step is not a bespoke leg', () => {
+    const r = check({ workflowText: `${WORKFLOW_TEXT}\n<!-- reviewer-lane: gemini -->\n` });
+    assert.deepStrictEqual(
+      r.violations.filter((v) => v.reason === PARITY_VIOLATION.BESPOKE_LEG_PRESENT),
+      [],
+      'the anti-parity check is scoped to invoke_reviewers, as the old leg check was',
+    );
   });
 });
 
 describe('reviewer lane parity — not-corruption (must NOT fire)', () => {
-  test('ADR-1517 instance sections are exempt from lane parity', () => {
-    // `## OpenCode Review (opencode-deepseek)` and `(opencode-mimo)` are already
-    // in the shipped file. ADR-2782 D8: reviewer instances are not lanes. A
-    // naive `## … Review` matcher fails against these on day one.
-    const r = check();
-    assert.deepStrictEqual(r.violations, []);
-
-    const withNewInstance = WORKFLOW_TEXT.replace(
-      '## Qwen Review',
-      '## Qwen Review (qwen-turbo)\n\n{x}\n\n---\n\n## Qwen Review',
-    );
-    assert.deepStrictEqual(
-      checkReviewerLaneParity({
-        descriptor: REVIEWER_LANES,
-        roster: KNOWN_REVIEWER_SLUGS,
-        workflowText: withNewInstance,
-      }).violations,
-      [],
-      'adding a reviewer instance section must not trip lane parity',
-    );
+  // Phase 5b deleted the section-heading and leg-marker matchers these cases were written against.
+  // The invariant they protected still matters and is asserted here against the surfaces that
+  // replaced them: nothing in REVIEWS.md prose may promote itself into the lane roster.
+  test('the shipped repo is clean', () => {
+    assert.deepStrictEqual(check().violations, []);
   });
 
-  test('the h1 title and non-lane headings are not read as lane sections', () => {
-    // `# Cross-AI Plan Review — Phase {N}` contains "Review" but is h1;
-    // `## Consensus Summary` is h2 but has no ` Review` suffix.
-    const r = check();
-    assert.deepStrictEqual(r.violations, []);
+  test('an ADR-1517 instance heading never becomes a lane', () => {
+    // `## OpenCode Review (opencode-deepseek)` is an INSTANCE resolving through a lane, not a lane
+    // (ADR-2782 D8). Instances take no part in the roster, the flag set, or uniqueness.
+    const withNewInstance = WORKFLOW_TEXT.replace(
+      '## Consensus Summary',
+      '## Qwen Review (qwen-turbo)\n\n{x}\n\n---\n\n## Consensus Summary',
+    );
+    assert.deepStrictEqual(check({ workflowText: withNewInstance }).violations, []);
+  });
 
+  test('extra non-lane headings are inert', () => {
     const withExtras = WORKFLOW_TEXT.replace(
       '## Consensus Summary',
       '## Another Summary\n\n---\n\n## Consensus Summary',
     );
-    assert.deepStrictEqual(
-      checkReviewerLaneParity({
-        descriptor: REVIEWER_LANES,
-        roster: KNOWN_REVIEWER_SLUGS,
-        workflowText: withExtras,
-      }).violations,
-      [],
-    );
+    assert.deepStrictEqual(check({ workflowText: withExtras }).violations, []);
   });
 
   test('bold prose in invoke_reviewers is not read as a leg', () => {
-    // Five non-lane bold labels share the bold-then-fence shape a heuristic
-    // matcher would key on. Adding another must not register a lane.
+    // Non-lane bold labels share the bold-then-fence shape a heuristic matcher would key on.
+    // Adding another must not register a lane — the anti-parity check keys on the explicit marker
+    // only, never on prose shape.
     const withProse = WORKFLOW_TEXT.replace(
-      '<!-- reviewer-lane: qwen -->',
-      '**Some new maintainer note (#9999):**\n\n```bash\necho hi\n```\n\n<!-- reviewer-lane: qwen -->',
+      '<step name="invoke_reviewers">',
+      '<step name="invoke_reviewers">\n**Some new maintainer note (#9999):**\n\n```bash\necho hi\n```\n',
     );
-    assert.deepStrictEqual(
-      checkReviewerLaneParity({
-        descriptor: REVIEWER_LANES,
-        roster: KNOWN_REVIEWER_SLUGS,
-        workflowText: withProse,
-      }).violations,
-      [],
-    );
+    assert.deepStrictEqual(check({ workflowText: withProse }).violations, []);
   });
 });
 
@@ -279,28 +243,49 @@ describe('reviewer lane parity — cross-platform and hostile input', () => {
 
   test('a divergence is still detected under CRLF', () => {
     const crlf = asCrlf(
-      WORKFLOW_TEXT.replace('<!-- reviewer-lane: qwen -->', ''),
+      WORKFLOW_TEXT.replace(
+        '<step name="invoke_reviewers">',
+        '<step name="invoke_reviewers">\n<!-- reviewer-lane: qwen -->',
+      ),
     );
     assert.deepStrictEqual(reasons(check({ workflowText: crlf })), [
-      `${PARITY_VIOLATION.LEG_MARKER_MISSING}:qwen`,
+      `${PARITY_VIOLATION.BESPOKE_LEG_PRESENT}:qwen`,
     ]);
   });
 
-  test('empty workflow text degrades to violations rather than throwing', () => {
-    // A read failure must never be mistaken for a clean bill of health.
-    const r = check({ workflowText: '' });
-    assert.strictEqual(r.ok, false);
+  test('empty workflow text is clean for anti-parity but an empty REGISTRY is not', () => {
+    // Phase 5b split what "degrades to violations" means. An empty WORKFLOW legitimately contains
+    // no bespoke leg, so the anti-parity arm is silent — the workflow no longer names lanes at all.
+    // The read-failure guard moved to the registry arm, which is now the surface that decides which
+    // lanes exist: an unreadable registry must never read as "registry agrees".
+    const emptyWorkflow = check({ workflowText: '' });
+    assert.deepStrictEqual(
+      emptyWorkflow.violations.filter((v) => v.reason === PARITY_VIOLATION.BESPOKE_LEG_PRESENT),
+      [],
+    );
+
+    const emptyRegistry = check({ registry: [] });
+    assert.strictEqual(emptyRegistry.ok, false);
     assert.strictEqual(
-      r.violations.filter((v) => v.reason === PARITY_VIOLATION.LEG_MARKER_MISSING)
-        .length,
+      emptyRegistry.violations.filter(
+        (v) => v.reason === PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_REGISTRY,
+      ).length,
       REVIEWER_LANES.length,
     );
   });
 
   test('non-string workflow text is coerced, never thrown on', () => {
-    for (const bad of [undefined, null]) {
+    // Totality is the invariant. Since Phase 5b the workflow no longer names lanes, so an absent
+    // one legitimately yields NO anti-parity violation — the read-failure guard moved to the
+    // registry arm, which is covered in the registry describe above.
+    for (const bad of [undefined, null, 42, {}, []]) {
       const r = check({ workflowText: bad });
-      assert.strictEqual(r.ok, false, `expected violations for ${String(bad)}`);
+      assert.equal(typeof r.ok, 'boolean');
+      assert.ok(Array.isArray(r.violations));
+      assert.deepStrictEqual(
+        r.violations.filter((v) => v.reason === PARITY_VIOLATION.BESPOKE_LEG_PRESENT),
+        [],
+      );
     }
   });
 
@@ -361,7 +346,7 @@ describe('reviewer lane parity — properties', () => {
   const slugArb = fc.stringMatching(/^[a-z][a-z0-9_-]{0,12}$/);
 
   /**
-   * Slugs OUTSIDE the grammar. These are unmatchable by LEG_MARKER_RE, so the
+   * Slugs OUTSIDE the declared LANE_SLUG_RE grammar, which stays enforced after Phase 5b so
    * contract is that they are reported as INVALID_SLUG rather than silently
    * reported missing. Includes regex metacharacters and prototype-pollution
    * shaped keys.
@@ -395,7 +380,9 @@ describe('reviewer lane parity — properties', () => {
 
   /** Build a review.md-shaped document declaring exactly `slugs`. */
   function docFor(slugs, sections, noise, eol) {
-    const legs = slugs.map((s) => `<!-- reviewer-lane: ${s} -->\n**${s}:**`).join('\n');
+    // No leg markers: Phase 5b's workflow iterates lanes, and a marker is now the violation.
+    // `slugs` is retained so callers keep their existing shape.
+    const legs = slugs.map((s) => `**${s}:**`).join('\n');
     const heads = sections.map((s) => `## ${s} Review`).join('\n\n');
     const body = [
       '<step name="invoke_reviewers">',
@@ -465,23 +452,19 @@ describe('reviewer lane parity — properties', () => {
     );
   });
 
-  test('a slug outside the marker grammar is reported, never silently missing', () => {
-    // The silent-miss this prevents: LEG_MARKER_RE captures only [a-z0-9_-], so
-    // a slug like `acme.reviewer` can have a present, correct marker that the
-    // scan can never see — reporting LEG_MARKER_MISSING forever with no clue why.
+  test('a slug outside the declared grammar is named, never silently accepted', () => {
+    // The grammar is still enforced after Phase 5b, for the same reason: a lane whose slug falls
+    // outside it is unmatchable downstream, and a loud named violation beats a silent miss.
     fc.assert(
       fc.property(badSlugArb, (bad) => {
         const lane = { ...fakeLane('placeholder'), slug: bad };
         const r = checkReviewerLaneParity({
           descriptor: [lane],
           roster: [bad],
-          workflowText: `<step name="invoke_reviewers">\n<!-- reviewer-lane: ${bad} -->\n</step>`,
+          registry: [bad],
+          workflowText: '<step name="invoke_reviewers">\n</step>',
         });
-        const reasonsOut = r.violations.map((v) => v.reason);
-        return (
-          reasonsOut.includes(PARITY_VIOLATION.INVALID_SLUG) &&
-          !reasonsOut.includes(PARITY_VIOLATION.LEG_MARKER_MISSING)
-        );
+        return r.violations.map((v) => v.reason).includes(PARITY_VIOLATION.INVALID_SLUG);
       }),
       FC,
     );
@@ -497,19 +480,21 @@ describe('reviewer lane parity — properties', () => {
         const declared = checkReviewerLaneParity({
           descriptor: [lane],
           roster: [name],
-          workflowText:
-            `<step name="invoke_reviewers">\n<!-- reviewer-lane: ${name} -->\n</step>\n` +
-            '<step name="write_reviews">\n## Sec Review\n</step>',
+          registry: [name],
+          workflowText: '<step name="invoke_reviewers">\n</step>',
         });
         const absent = checkReviewerLaneParity({
           descriptor: [lane],
           roster: [name],
+          registry: [],
           workflowText: '<step name="invoke_reviewers">\n</step>',
         });
         return (
           declared.ok &&
           absent.violations.some(
-            (v) => v.reason === PARITY_VIOLATION.LEG_MARKER_MISSING && v.subject === name,
+            (v) =>
+              v.reason === PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_REGISTRY &&
+              v.subject === name,
           )
         );
       }),
@@ -550,6 +535,7 @@ describe('reviewer lane parity — properties', () => {
         const r = checkReviewerLaneParity({
           descriptor: lanes,
           roster: lanes.map((l) => l.slug),
+          registry: lanes.map((l) => l.slug),
           workflowText: doc,
         });
         return r.ok;
@@ -558,24 +544,18 @@ describe('reviewer lane parity — properties', () => {
     );
   });
 
-  test('removing one lane marker always yields exactly that lane missing', () => {
+  test('dropping one lane from the registry yields exactly that lane missing', () => {
     fc.assert(
-      fc.property(laneSetArb, noiseArb, fc.nat(), (lanes, noise, pick) => {
+      fc.property(laneSetArb, fc.nat(), (lanes, pick) => {
         const victim = lanes[pick % lanes.length];
-        const kept = lanes.filter((l) => l.slug !== victim.slug);
-        const doc = docFor(
-          kept.map((l) => l.slug),
-          lanes.map((l) => l.reviewsSection),
-          noise,
-          '\n',
-        );
         const r = checkReviewerLaneParity({
           descriptor: lanes,
           roster: lanes.map((l) => l.slug),
-          workflowText: doc,
+          registry: lanes.filter((l) => l.slug !== victim.slug).map((l) => l.slug),
+          workflowText: '<step name="invoke_reviewers">\n</step>',
         });
         const missing = r.violations.filter(
-          (v) => v.reason === PARITY_VIOLATION.LEG_MARKER_MISSING,
+          (v) => v.reason === PARITY_VIOLATION.DESCRIPTOR_LANE_NOT_IN_REGISTRY,
         );
         return missing.length === 1 && missing[0].subject === victim.slug;
       }),
@@ -590,6 +570,7 @@ describe('reviewer lane parity — properties', () => {
         const input = {
           descriptor: lanes,
           roster: lanes.map((l) => l.slug),
+          registry: lanes.map((l) => l.slug),
           workflowText: docFor(
             lanes.map((l) => l.slug),
             lanes.map((l) => l.reviewsSection),
@@ -664,13 +645,15 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
   });
 
   test('handler is a closed first-party enum', () => {
-    const allowed = [null, 'antigravity', 'openai-compatible'];
+    const allowed = [null, 'antigravity', 'openai-compatible', 'opencode'];
     for (const lane of REVIEWER_LANES) {
       assert.ok(allowed.includes(lane.handler), `${lane.slug}: unexpected handler ${lane.handler}`);
     }
     assert.deepStrictEqual(
       REVIEWER_LANES.filter((l) => l.handler !== null).map((l) => l.slug).sort(),
-      ['antigravity', 'llama_cpp', 'lm_studio', 'ollama'],
+      // `opencode` joined in Phase 5b: its review is reconstructed from assistant text parts of a
+      // --format json stream, which data cannot express (#1936).
+      ['antigravity', 'llama_cpp', 'lm_studio', 'ollama', 'opencode'],
     );
   });
 
@@ -715,19 +698,16 @@ describe('reviewer lane descriptor — declared shape (ADR-2782 D1/D2/D6/D7)', (
     // Adding a reason is three coordinated changes: enum, emitting site, and
     // this assertion.
     assert.deepStrictEqual(Object.keys(PARITY_VIOLATION).sort(), [
+      'BESPOKE_LEG_PRESENT',
+      'DESCRIPTOR_LANE_NOT_IN_REGISTRY',
       'DESCRIPTOR_LANE_NOT_IN_ROSTER',
       'DUPLICATE_FLAG',
       'DUPLICATE_SECTION',
       'DUPLICATE_SLUG',
       'INVALID_SLUG',
-      'LEG_MARKER_DUPLICATED',
-      'LEG_MARKER_MISSING',
-      'LEG_MARKER_UNDECLARED',
       'MALFORMED_LANE',
+      'REGISTRY_LANE_UNDECLARED',
       'ROSTER_SLUG_UNDECLARED',
-      'SECTION_DUPLICATED',
-      'SECTION_MISSING',
-      'SECTION_UNDECLARED',
     ]);
     assert.ok(Object.isFrozen(PARITY_VIOLATION));
   });

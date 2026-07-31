@@ -1,8 +1,39 @@
 {
   "version": 1,
   "paths": {
-    "review.md": {
-      "reason": "#2797 / ADR-2782 D9 (config half). Growth is comment-only: the three per-lane prompt-budget fallback guards (ollama, lm_studio, llama_cpp) gain an explanation of why they test for the -1 sentinel rather than 0. A federated config key always resolves to its declared default rather than reporting not-found, so an unset per-lane budget needs a sentinel that cannot collide with a legitimate value — and 0 is legitimate: it already means \"do not trim this lane\" (the early-return guard in prepare_trimmed_prompt_for_reviewer). Treating 0 as unset would have silently switched a user who deliberately disabled trimming for one lane onto the global budget. No lane's invocation shape changed."
-    }
+    "agents/gsd-advisor-researcher.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-ai-researcher.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-assumptions-analyzer.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-code-reviewer.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-codebase-mapper.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-debug-session-manager.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-debugger.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-doc-classifier.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-doc-synthesizer.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-doc-verifier.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-doc-writer.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-domain-researcher.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-eval-auditor.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-eval-planner.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-executor.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-framework-selector.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-integration-checker.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-intel-updater.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-mempalace-curator.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-nyquist-auditor.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-pattern-mapper.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-phase-researcher.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-plan-checker.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-planner.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-project-researcher.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-research-synthesizer.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-roadmapper.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-security-auditor.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-ui-auditor.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-ui-checker.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-ui-researcher.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-user-profiler.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "agents/gsd-verifier.toml": "#2834: Codex agent TOML now carries model-routing fields on first install.",
+    "gsd-code-fixer.md": "#2825: setup_worktree now reads workflow.use_worktrees and gates git worktree add on it (skipping worktree creation when the user opted out), the cleanup tail is gated to a no-op in that mode, and the spec adds three safety guardrails — honor the opt-out, never rm -rf a possible Windows reparse point/junction (the delete-the-target path that wiped real node_modules), and record where verification ran. Growth is the gated bash branch + the three guardrail paragraphs."
   }
 }

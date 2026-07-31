@@ -91,6 +91,9 @@ const RUNTIME_REVIEWER_IDS = ['antigravity', 'claude', 'codex', 'cursor', 'openc
  */
 const LITERAL_ROSTER = [
   'antigravity', 'claude', 'coderabbit', 'codex', 'cursor', 'gemini',
+  // `kimi-code` joined in Phase 5b (#2799, closes #2718) — see
+  // kimiCodeIsDeclaredAndInvocableInThisPhase for why it landed here and not in 5a.
+  'kimi-code',
   'llama_cpp', 'lm_studio', 'ollama', 'opencode', 'qwen',
 ];
 
@@ -328,10 +331,10 @@ describe('B. The six existing runtime capabilities', () => {
 
 describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
   test('rosterMembershipIsUnchangedByDerivationRefactor', () => {
-    assert.equal(KNOWN_REVIEWER_SLUGS.length, 11, 'roster must be exactly 11 — not 10, not 12');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'roster must be exactly 12 — not 11, not 13');
     assert.deepEqual(
       [...KNOWN_REVIEWER_SLUGS].sort(), LITERAL_ROSTER,
-      `roster must be exactly the same 11 slugs as before this phase, got: ${JSON.stringify(KNOWN_REVIEWER_SLUGS)}`,
+      `roster must be exactly the declared lane set, got: ${JSON.stringify(KNOWN_REVIEWER_SLUGS)}`,
     );
   });
 
@@ -414,28 +417,43 @@ describe('D. Cross-phase invariants that must not regress', () => {
     const workflowText = fs
       .readFileSync(path.join(ROOT, 'gsd-core', 'workflows', 'review.md'), 'utf-8')
       .replace(/\r\n/g, '\n');
+    const registry = [...SHIPPED.capMap.values()]
+      .map((c) => c && c.reviewer && c.reviewer.slug)
+      .filter((x) => typeof x === 'string' && x)
+      .sort();
     const result = checkReviewerLaneParity({
       descriptor: REVIEWER_LANES,
       roster: KNOWN_REVIEWER_SLUGS,
+      registry,
       workflowText,
     });
     assert.deepEqual(
       result.violations, [],
-      `Phase 1's descriptor <-> roster <-> legs <-> sections parity must stay green across this migration, got: ${JSON.stringify(result.violations)}`,
+      `descriptor <-> roster <-> registry parity must stay green across this migration, got: ${JSON.stringify(result.violations)}`,
     );
     assert.equal(result.ok, true);
   });
 
-  test('kimiCodeIsDeliberatelyNotDeclaredYet', () => {
-    assert.equal(KNOWN_REVIEWER_SLUGS.includes('kimi-code'), false, '"kimi-code" must not be in the roster yet — it has no invoke_reviewers leg until 5b');
-    assert.equal(KNOWN_REVIEWER_SLUGS.includes('kimi_code'), false);
+  test('kimiCodeIsDeclaredAndInvocableInThisPhase', () => {
+    // Phase 5a deliberately withheld this lane: declaring it there would have made it selectable
+    // but NOT invocable — present in `--all`, selected, and producing an empty section for the
+    // whole 5a -> 5b window. ADR-2782's phase table lands it here, with the iteration that runs it.
+    assert.equal(KNOWN_REVIEWER_SLUGS.includes('kimi-code'), true);
     const cap = SHIPPED.capMap.get('kimi-code');
-    assert.ok(cap, 'expected the kimi-code capability to exist (it is net-new for an unrelated, EoS reason)');
-    assert.equal('reviewer' in cap, false, 'kimi-code must not declare a reviewer body in this phase');
+    assert.ok(cap, 'expected the kimi-code capability to exist');
+    assert.equal('reviewer' in cap, true, 'kimi-code must declare a reviewer body in 5b');
+    assert.equal(cap.reviewer.slug, 'kimi-code');
+    // The probe is the whole reason D7 ships wider than existence: `kimi` is claimed by BOTH the
+    // Kimi Code CLI and the legacy Python kimi-cli, so an existence-only probe registers the wrong
+    // tool. And it MUST be bounded — the original was an unbounded `kimi --help | grep` that ran
+    // on every review regardless of flags.
+    assert.equal(cap.reviewer.probe.kind, 'command-capability');
+    assert.equal(cap.reviewer.probe.binary, 'kimi');
+    assert.ok(cap.reviewer.probe.timeoutMs > 0, 'every process-starting probe must be bounded');
     assert.equal(
       Boolean(cap.runtime && cap.runtime.hostBehaviors && cap.runtime.hostBehaviors.reviewerCli),
       false,
-      'kimi-code must not carry the legacy reviewerCli alias either',
+      'the body is the declaration — the legacy reviewerCli alias must not also be set',
     );
   });
 
@@ -509,8 +527,8 @@ describe('E. Lane fidelity — no translation layer', () => {
       }
     }
 
-    assert.equal(REVIEWER_LANES.length, 11, 'expected exactly 11 declared descriptor lanes');
-    assert.equal(bySlug.size, 11, `expected exactly 11 capabilities declaring a reviewer body, got: ${bySlug.size}`);
+    assert.equal(REVIEWER_LANES.length, 12, 'expected exactly 12 declared descriptor lanes');
+    assert.equal(bySlug.size, 12, `expected exactly 11 capabilities declaring a reviewer body, got: ${bySlug.size}`);
 
     // Top-level scalar/array fields compared whole; the two fields that are
     // themselves nested objects (probe, invoke) are compared sub-field-by-
@@ -611,7 +629,7 @@ describe('F. Isolated-security-review regressions', () => {
     // The module under test already imported successfully above; assert the
     // derived roster is a usable array rather than a partially-initialised value.
     assert.ok(Array.isArray([...KNOWN_REVIEWER_SLUGS]), 'roster must be iterable after module load');
-    assert.equal(KNOWN_REVIEWER_SLUGS.length, 11, 'the real registry still yields the eleven lanes');
+    assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'the real registry still yields the eleven lanes');
     // And the derivation itself is total over the shapes JSON can express.
     for (const hostile of [null, undefined, [], 0, 'x', { capabilities: null }, { capabilities: [] }]) {
       assert.doesNotThrow(

@@ -64,7 +64,7 @@ const trustMod = require('./capability-trust.cjs') as {
   signatureForManifest: (manifest: Record<string, unknown>, stagedDir?: string) => string;
 };
 const consentMod = require('./capability-consent.cjs') as {
-  recordProjectConsent: (args: { gsdHome?: string; projectRoot: string; id: string; integrity: string; disclosureSignature: string; contentHash: string }) => void;
+  recordProjectConsent: (args: { gsdHome?: string; projectRoot: string; id: string; integrity: string; disclosureSignature: string; contentHash: string; reviewerHost?: string }) => void;
   revokeProjectConsent: (args: { gsdHome?: string; projectRoot: string; id: string }) => void;
   /** #1459 CB-1/CB-2: recompute the full-bundle content hash (the consent security binding). */
   bundleContentHash: (capDir: string) => string;
@@ -826,6 +826,61 @@ function warnIfConsentSkipped(opts: LifecycleOptions, id: string): void {
  * Best-effort: a consent-store write failure must not turn a successful install/upgrade into a
  * failure (the bundle is already committed) — it is surfaced as a warning, not a throw.
  */
+/**
+ * Resolve an `openai-http` reviewer lane's declared `hostConfigKey` to the destination it currently
+ * names, or `undefined` when this capability is not such a lane.
+ *
+ * Falls back to the lane's declared `defaultHost` when the key is unset, because that is exactly
+ * what the invocation path will do — binding the config value while the runtime uses the default
+ * would guarantee a mismatch on the very first review.
+ *
+ * Non-throwing: consent binding is best-effort and must never turn a successful install into a
+ * failure. An unresolvable host simply records nothing, which reads as "not bound" and allows.
+ */
+function resolveReviewerEgressHost(
+  opts: LifecycleOptions,
+  manifest: Record<string, unknown>,
+): string | undefined {
+  try {
+    const reviewer = manifest['reviewer'];
+    if (reviewer === null || typeof reviewer !== 'object' || Array.isArray(reviewer)) return undefined;
+    const r = reviewer as Record<string, unknown>;
+    if (r['transport'] !== 'openai-http') return undefined;
+    const invoke = r['invoke'];
+    if (invoke === null || typeof invoke !== 'object') return undefined;
+    const inv = invoke as Record<string, unknown>;
+    const key = typeof inv['hostConfigKey'] === 'string' ? inv['hostConfigKey'] : '';
+    const fallback = typeof inv['defaultHost'] === 'string' ? inv['defaultHost'] : '';
+
+    let configured = '';
+    if (key) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const cfgLoader = require('./config-loader.cjs') as {
+        loadConfigResolved?: (cwd: string) => { config?: Record<string, unknown> };
+      };
+      const root = projectRootMod.consentProjectRoot(opts.runtimeDir);
+      const cfg = cfgLoader.loadConfigResolved ? (cfgLoader.loadConfigResolved(root).config ?? {}) : {};
+      let cur: unknown = cfg;
+      for (const part of key.split('.')) {
+        if (cur === null || typeof cur !== 'object') { cur = undefined; break; }
+        cur = Object.prototype.hasOwnProperty.call(cur, part)
+          ? (cur as Record<string, unknown>)[part]
+          : undefined;
+      }
+      if (typeof cur === 'string') configured = cur.trim();
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { normalizeHost } = require('./review-lane-invocation.cjs') as {
+      normalizeHost: (s: string) => string;
+    };
+    const resolved = normalizeHost(configured || fallback);
+    return resolved || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function bindProjectConsent(opts: LifecycleOptions, id: string, integrity: string, manifest: Record<string, unknown>): void {
   // #1459 IC-07: a project-scope op WITHOUT a consent store cannot bind — warn (then nothing to do).
   if (!shouldBindConsent(opts)) {
@@ -843,6 +898,11 @@ function bindProjectConsent(opts: LifecycleOptions, id: string, integrity: strin
       integrity,
       disclosureSignature: trustMod.signatureForManifest(manifest),
       contentHash: consentMod.bundleContentHash(capDir(opts.runtimeDir, id)),
+      // ADR-2782 D5 rule 1 (#2799): bind the RESOLVED egress destination, not merely the config key
+      // that names it. The key lives in `.planning/config.json`, outside the SHA-pinned bundle, so
+      // without this the user consents to "wherever that key points" — a promise the bundle hash
+      // cannot keep. Phase 5b re-resolves and compares at invocation (rule 4).
+      reviewerHost: resolveReviewerEgressHost(opts, manifest),
     });
   } catch (err) {
     // #1459 IC-05/WIN-2: a consent-store write failure (read-only/UNC/NFS store) must NOT turn an

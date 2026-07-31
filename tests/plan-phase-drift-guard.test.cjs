@@ -1604,25 +1604,26 @@ describe('plan-phase decision-coverage gate (#2492)', () => {
     assert.ok(decIdx < commitIdx, 'Decision gate must run before commit so failures block the commit');
   });
 
-  test('plan-phase Decision Coverage Gate uses CONTEXT_PATH variable defined in INIT extraction (review F1)', () => {
-    // The CONTEXT_PATH bash variable is defined at Step 4 (`CONTEXT_PATH=$(_gsd_field "$INIT" context_path)`).
-    // The plan-phase gate snippet must reference the same casing — `${CONTEXT_PATH}` — not `${context_path}`,
-    // otherwise the BLOCKING gate is invoked with an empty path and silently skips.
-    const defIdx = md.indexOf('CONTEXT_PATH=$(_gsd_field "$INIT" context_path)');
-    assert.ok(defIdx !== -1, 'CONTEXT_PATH must be defined from INIT JSON');
-
+  test('plan-phase Decision Coverage Gate recomputes CONTEXT_PATH in-block and guards the empty-glob case (#2770)', () => {
+    // #2770: the CONTEXT_PATH set in the step-1 init Bash block does NOT survive into
+    // the separately-spawned gate block, so the gate used to run with an empty arg and
+    // silently green-skip. The gate must now (a) recompute CONTEXT_PATH locally from the
+    // phase dir, and (b) guard the empty case so a genuinely CONTEXT.md-less phase still
+    // skips (the handler now fails closed on an empty arg, so an unguarded empty path
+    // would hard-halt the legitimate "Continue without context" flow).
     const gateIdx = md.indexOf('check.decision-coverage-plan');
     assert.ok(gateIdx !== -1, 'check.decision-coverage-plan invocation must exist');
 
-    // Slice the surrounding gate snippet (~600 chars) and verify variable casing matches the definition.
-    const snippet = md.slice(Math.max(0, gateIdx - 200), gateIdx + 400);
+    // The gate invocation is now nested inside the empty-glob guard, so slice a wide
+    // window around it to capture both the recompute and the guard.
+    const snippet = md.slice(Math.max(0, gateIdx - 600), gateIdx + 400);
     assert.ok(
-      snippet.includes('${CONTEXT_PATH}'),
-      'Gate snippet must reference ${CONTEXT_PATH} (uppercase) to match the variable defined in Step 4',
+      snippet.includes('CONTEXT_PATH=$(ls "${PHASE_DIR}"/*-CONTEXT.md'),
+      'Gate must recompute CONTEXT_PATH in-block from the phase-dir glob (not rely on the init-block variable) (#2770)',
     );
     assert.ok(
-      !snippet.includes('${context_path}'),
-      'Gate snippet must NOT reference ${context_path} (lowercase) — that name is undefined in shell scope',
+      snippet.includes('if [ -n "$CONTEXT_PATH" ]'),
+      'Gate must guard the empty-glob case so a CONTEXT.md-less phase still skips (handler now fails closed on empty arg) (#2770)',
     );
   });
 

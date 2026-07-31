@@ -6983,6 +6983,47 @@ function writeCopilotHookConfig(targetDir) {
  * Generate config.toml and per-agent .toml files for Codex.
  * Reads agent .md files from source, extracts metadata, writes .toml configs.
  */
+
+/**
+ * #2834: Write ~/.gsd/defaults.json for non-Claude runtimes — sets
+ * resolve_model_ids="omit" (so resolveModelInternal() returns '' instead of
+ * Claude aliases the runtime can't resolve) and runtime=<runtime> (so
+ * resolveRuntime() resolves correctly out of the box). MUST be called BEFORE
+ * installCodexConfig (or any other step that reads defaults.json at generation
+ * time), so a clean first install produces correctly-model-routed agent TOMLs.
+ * No-op for Claude runtimes (Claude is the resolveRuntime fallback + has native
+ * model aliases). Preserves an explicit `true` opt-in and existing values.
+ */
+function writeNonClaudeDefaults(runtime) {
+  if (_hostBehaviors(runtime).nativeModelAliases || process.env.GSD_TEST_MODE) return;
+  const gsdDir = path.join(os.homedir(), '.gsd');
+  const defaultsPath = path.join(gsdDir, 'defaults.json');
+  try {
+    fs.mkdirSync(gsdDir, { recursive: true });
+    let defaults = {};
+    try { defaults = JSON.parse(fs.readFileSync(defaultsPath, 'utf8')); } catch { /* new file */ }
+    if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
+      defaults = {};
+    }
+    // Three-valued domain: false/absent → aliases; true → full IDs; "omit" → ''.
+    const existing = defaults.resolve_model_ids;
+    const shouldDefaultToOmit = existing !== true && existing !== 'omit';
+    if (shouldDefaultToOmit) {
+      defaults.resolve_model_ids = 'omit';
+      fs.writeFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n');
+      console.log(`  ${green}✓${reset} Set resolve_model_ids: "omit" in ~/.gsd/defaults.json`);
+    }
+    // #2395: persist runtime for non-Claude runtimes.
+    if (defaults.runtime === undefined || defaults.runtime === null || defaults.runtime === '') {
+      defaults.runtime = runtime;
+      fs.writeFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n');
+      console.log(`  ${green}✓${reset} Set runtime: "${runtime}" in ~/.gsd/defaults.json`);
+    }
+  } catch (e) {
+    console.log(`  ${yellow}⚠${reset} Could not write ~/.gsd/defaults.json: ${e.message}`);
+  }
+}
+
 function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-sandbox') {
   // ADR-1239 Phase B write-confinement: every Codex config write stays under targetDir.
   const configPath = assertDestWithinConfigHome(targetDir, 'config.toml');
@@ -11586,6 +11627,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
 
     let agentCount = 0;
     if (!isMinimalMode(_effectiveInstallMode)) {
+      // #2834: write ~/.gsd/defaults.json (resolve_model_ids + runtime) BEFORE generating
+      // agent TOMLs — installCodexConfig reads defaults.json at generation time, so on a
+      // clean first install the runtime-aware model resolver must already know the runtime.
+      writeNonClaudeDefaults(runtime);
       try {
         // Generate Codex config.toml and per-agent .toml files.
         agentCount = installCodexConfig(targetDir, agentsSrc, plan.sandboxTier);
@@ -12361,58 +12406,11 @@ function finishInstall(settingsPath, settings, statuslineCommand, shouldInstallS
     configureAntigravityMcpConfig(isGlobal, configDir);
   }
 
-  // For non-Claude runtimes, DEFAULT resolve_model_ids to "omit" in ~/.gsd/defaults.json
-  // when it is absent or falsy, so resolveModelInternal() returns '' instead of Claude
-  // aliases (opus/sonnet/haiku) the runtime can't resolve. An explicit `true` opt-in
-  // (resolveModelInternal returns full materialized model IDs) MUST be preserved —
-  // rewriting it to "omit" would make generated agent manifests inherit the active
-  // chat model instead of pinning the resolved model. See #1156 (default-to-omit
-  // intent) and #1569 (preserve explicit true). Guard matches the #130-class pattern
-  // on configureOpencodePermissions above.
-  if (!_hostBehaviors(runtime).nativeModelAliases && !process.env.GSD_TEST_MODE) {
-    const gsdDir = path.join(os.homedir(), '.gsd');
-    const defaultsPath = path.join(gsdDir, 'defaults.json');
-    try {
-      fs.mkdirSync(gsdDir, { recursive: true });
-      let defaults = {};
-      try { defaults = JSON.parse(fs.readFileSync(defaultsPath, 'utf8')); } catch { /* new file */ }
-      // Recover a malformed (valid-JSON-but-non-object) defaults.json to a fresh object so
-      // the write below succeeds and the file is no longer broken. Without this, `null` /
-      // `[]` / a number / a string bypass the parse catch and either throw a TypeError on
-      // property access (swallowed by the outer try/catch, leaving the file broken) or get
-      // a property set that won't round-trip through JSON.stringify. (#1657)
-      if (defaults === null || typeof defaults !== 'object' || Array.isArray(defaults)) {
-        defaults = {};
-      }
-      // Three-valued domain: false/absent → aliases; true → full IDs; "omit" → ''.
-      // Honor ONLY an explicit canonical `true` opt-in (full model IDs) and an existing
-      // "omit"; default everything else — absent, falsy, OR any non-canonical value — to
-      // "omit", the safe non-Claude default. Allowlist-based so malformed values
-      // (0, "", "yes", {}, …) don't leak Claude aliases the runtime can't resolve (#1569).
-      const existing = defaults.resolve_model_ids;
-      const shouldDefaultToOmit = existing !== true && existing !== 'omit';
-      if (shouldDefaultToOmit) {
-        defaults.resolve_model_ids = 'omit';
-        fs.writeFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n');
-        console.log(`  ${green}✓${reset} Set resolve_model_ids: "omit" in ~/.gsd/defaults.json`);
-      }
-
-      // #2395: also persist `runtime: <runtime>` for non-Claude runtimes, so
-      // resolveRuntime() (precedence: GSD_RUNTIME env > config.runtime > 'claude')
-      // resolves to the install's actual runtime identity out of the box — without
-      // this, agent_runtime and every runtime-branded slash hint falls through to
-      // the hard-coded 'claude' default. Mirrors the resolve_model_ids write above:
-      // honor an explicit pre-existing value (any string), only default-populating
-      // when absent. Claude is the resolveRuntime() fallback, so it needs no write.
-      if (defaults.runtime === undefined || defaults.runtime === null || defaults.runtime === '') {
-        defaults.runtime = runtime;
-        fs.writeFileSync(defaultsPath, JSON.stringify(defaults, null, 2) + '\n');
-        console.log(`  ${green}✓${reset} Set runtime: "${runtime}" in ~/.gsd/defaults.json`);
-      }
-    } catch (e) {
-      console.log(`  ${yellow}⚠${reset} Could not write ~/.gsd/defaults.json: ${e.message}`);
-    }
-  }
+  // #2834: defaults.json (resolve_model_ids + runtime) is now written BEFORE
+  // installCodexConfig via writeNonClaudeDefaults(runtime) — extracted into a
+  // function so it can run at the right point in the flow (before agent TOML
+  // generation reads it). This call is idempotent (preserves existing values).
+  writeNonClaudeDefaults(runtime);
 
   // program + command are now single-source lookups (ADR-1239 Phase B / #1679):
   // program is the runtime display label; command is the per-host /gsd-new-project
