@@ -141,8 +141,17 @@ function captureConsole(fn) {
 
 function withWriteFailure(matchPath, fn) {
   const originalWriteFileSync = fs.writeFileSync;
+  const resolvedMatch = path.resolve(matchPath);
+  // Atomic writers (atomicWriteFileSync) never write the destination directly —
+  // they write `<target>.tmp-<pid>-<n>` and rename. Matching only the final path
+  // would make this injection silently stop firing for any write that becomes
+  // atomic, turning a rollback assertion into a vacuous pass.
+  const targetsMatch = (filePath) => {
+    const resolved = path.resolve(String(filePath));
+    return resolved === resolvedMatch || resolved.startsWith(`${resolvedMatch}.tmp-`);
+  };
   fs.writeFileSync = (filePath, ...args) => {
-    if (path.resolve(String(filePath)) === path.resolve(matchPath)) {
+    if (targetsMatch(filePath)) {
       throw new Error(`injected write failure for ${path.basename(matchPath)}`);
     }
     return originalWriteFileSync.call(fs, filePath, ...args);

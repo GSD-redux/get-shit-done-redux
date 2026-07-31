@@ -1483,10 +1483,18 @@ function readSettings(settingsPath) {
 }
 
 /**
- * Write settings.json with proper formatting
+ * Write settings.json with proper formatting.
+ *
+ * Atomic (temp+rename) because hosts discard the ENTIRE settings file on any
+ * parse failure, so a truncated write costs the user every hook, permission,
+ * and statusline they have — not just GSD's entries. This is the sole writer
+ * of that surface for six runtimes.
+ *
+ * `atomicWriteFileSync` is declared further down this file; it is dereferenced
+ * at call time, after module evaluation, so the ordering is safe.
  */
 function writeSettings(settingsPath, settings) {
-  fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
 }
 
 // #2875 Part 2 (J8): model-override resolution (readGsdGlobalModelOverrides /
@@ -13882,6 +13890,7 @@ module.exports = {
     cleanupLegacyGsdCc,
     // #1191 — exported so tests exercise the REAL readSettings, not a replica
     readSettings,
+    writeSettings,
     stripJsonComments,
     copyWithPathReplacement,
   };
