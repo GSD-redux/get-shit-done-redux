@@ -1706,9 +1706,17 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
               milestoneBounded = versionedHeading.test(roadmapRaw);
             }
             return {
-              totalPhases: (!milestoneBounded || roadmapPhaseCount === 0)
-                ? phaseDirs.length
-                : Math.max(phaseDirs.length, roadmapPhaseCount),
+              // #2828: when the roadmap has phases (roadmapPhaseCount > 0), use the
+              // roadmap count as the floor — it is the authoritative total. The
+              // !milestoneBounded flag still flows to milestoneUnbounded (for the
+              // percent skip) and still guards the #1761 sibling-milestone conflation
+              // by NOT inflating beyond roadmapPhaseCount, but a flat unmilestoned
+              // roadmap (where extractCurrentMilestone returns the whole doc) has no
+              // sibling milestones to conflate, so roadmapPhaseCount IS the right total.
+              // Fall back to phaseDirs.length only when no roadmap phases were found.
+              totalPhases: roadmapPhaseCount > 0
+                ? Math.max(phaseDirs.length, roadmapPhaseCount)
+                : phaseDirs.length,
               milestoneBounded,
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
