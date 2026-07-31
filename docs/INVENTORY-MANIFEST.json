@@ -346,6 +346,7 @@
       "config-types.cjs",
       "config.cjs",
       "configuration.cjs",
+      "context-composer.cjs",
       "context-predicates.cjs",
       "context-utilization.cjs",
       "core-utils.cjs",
