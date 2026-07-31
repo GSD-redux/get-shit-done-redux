@@ -95,31 +95,38 @@ describe('composeWithinBudget: flexReserve prevents an undershooting head-shrink
 
 describe('composeWithinBudget: flexReserve raises the proportional cap above the share', () => {
   test('flexReserve wins over a smaller proportional share', () => {
-    // charsPerUnit=4: flexReserve=20 units => charsForReserve=80 chars,
-    // which exceeds both the tiny proportional share and floorChars=0.
-    const content = 'Y'.repeat(100);
+    // Walk-through (charsPerUnit=4, safetyMarginPct=0, measure=chars/4):
+    //   required: 'R'.repeat(40) verbatim -> measures 10 units
+    //   proportional: 'Y'.repeat(400) proportional-truncate, floorChars: 0, flexReserve: 30
+    //   baseline = 10 + 100 = 110 > 30 (budget), so pressure; contentBudget = 30 (reserve defaults to 0)
+    //   overhead = 110 - 100 = 10  ->  groupBudget = 30 - 10 = 20, which is in (0, 100), so the step RUNS
+    //   charsBudget = 20 * 4 = 80  ->  share = floor(400/400 * 80) = 80
+    //   charsForReserve = flexReserve 30 * charsPerUnit 4 = 120
+    //   maxChars = max(max(share 80, floorChars 0), 120) = 120
+    // The surviving content is exactly 120 chars — not the 80 the share alone would allow,
+    // proving flexReserve raised the cap above the proportional share.
+    const content = 'Y'.repeat(400);
     const fragments = [
-      { id: 'required', content: 'R'.repeat(400), strategy: { kind: 'verbatim' }, required: true },
+      { id: 'required', content: 'R'.repeat(40), strategy: { kind: 'verbatim' }, required: true },
       {
         id: 'proportional',
         content,
         strategy: { kind: 'proportional-truncate', floorChars: 0 },
-        flexReserve: 20,
+        flexReserve: 30,
       },
     ];
     const result = composeWithinBudget({
       fragments,
-      budget: 1,
+      budget: 30,
       measure: measureChars4,
-      options: { charsPerUnit: 4 },
+      options: { charsPerUnit: 4, safetyMarginPct: 0 },
     });
 
     const proportional = result.fragments.find((f) => f.id === 'proportional');
-    // Cap should be max(share, floorChars=0, charsForReserve=80) = 80,
-    // tailTruncate(100 chars, 80) => first 80 chars.
-    assert.equal(proportional.content, 'Y'.repeat(80));
-    assert.equal(proportional.content.length, 80);
+    assert.equal(proportional.content.length, 120);
+    assert.equal(proportional.content, 'Y'.repeat(120));
     assert.equal(proportional.truncated, true);
+    assert.ok(result.metadata.floored.includes('proportional'));
   });
 
   test('floored records exactly the ids whose flexReserve prevented a smaller truncation', () => {

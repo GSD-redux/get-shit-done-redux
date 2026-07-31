@@ -324,14 +324,20 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
               if (next !== beforeTruncate) {
                 m.content = next;
                 m.truncated = true;
-              } else if (
+              }
+              // flexReserve raised the cap above what the unreserved cap
+              // would have allowed, and that raised cap actually mattered
+              // (the unreserved cap would have cut into the content) —
+              // this holds whether the reserve prevented a trim outright
+              // (next === beforeTruncate) or merely shrank the trim below
+              // what the unreserved cap would have produced. Either way a
+              // cut was prevented, so it belongs in `floored`.
+              if (
                 m.flexReserve > 0 &&
                 maxChars > capWithoutReserve &&
-                capWithoutReserve < beforeTruncate.length
+                capWithoutReserve < beforeTruncate.length &&
+                !floored.includes(m.id)
               ) {
-                // flexReserve raised the cap above what would have truncated
-                // the content, and that raised cap is exactly why no
-                // truncation happened here.
                 floored.push(m.id);
               }
             }
