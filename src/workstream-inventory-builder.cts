@@ -81,6 +81,20 @@ export interface StateProjection {
   last_activity: string | null | undefined;
 }
 
+/**
+ * Which authoritative signal claimed the current milestone is shipped.
+ *
+ *  - `snapshot` — `milestones/<version>-ROADMAP.md` exists. Written by
+ *    `milestone complete`; the strongest signal a tool can produce.
+ *  - `heading`  — the LIVE ROADMAP carries a shipped marker for the current
+ *    milestone. Operator-typed prose; the weakest signal.
+ *  - `legacy`   — the over-broad project-lifetime fallback used only when the
+ *    current milestone version cannot be determined (#1913 protection for
+ *    malformed/legacy projects).
+ *  - `null`     — no shipped signal.
+ */
+export type MilestoneShippedSignal = 'snapshot' | 'heading' | 'legacy' | null;
+
 export interface BuildWorkstreamInventoryInputs {
   name: string;
   projectDir: string;
@@ -98,7 +112,15 @@ export interface BuildWorkstreamInventoryInputs {
    * "milestone complete" regardless of the mutable STATE.md `Status` field,
    * so a stale field can never report a shipped workstream as executing (#1913).
    */
-  milestoneShipped: boolean;
+  milestoneShipped?: boolean;
+  /**
+   * #2562 review: WHICH shipped signal fired, so the builder can cross-validate
+   * it against the milestone's own artifacts at the right strength. The two
+   * signals are not interchangeable — see the `shippedContradicted` block below.
+   * Supersedes the `milestoneShipped` boolean; a caller passing only the boolean
+   * is treated as `'legacy'` (ungated), preserving pre-review behavior.
+   */
+  milestoneShippedSignal?: MilestoneShippedSignal;
   /**
    * #2562: number of phases the CURRENT milestone declares in the ROADMAP
    * `## Progress` table (including phases declared but never scaffolded). When
@@ -131,6 +153,14 @@ export interface WorkstreamInventory {
   status_source: 'field' | 'derived';
   /** True when the derived status disagrees with the STATE.md `Status` field (the field is stale). */
   status_conflict: boolean;
+  /**
+   * #2562 review: a shipped signal fired for the current milestone but the
+   * milestone's own artifacts contradict it, so the claim was NOT trusted.
+   * Distinct from `status_conflict`, which reports the derived-vs-STATE-field
+   * disagreement. Without this the rejection would be silent: `status` falls
+   * back to the field and no output says a shipped marker was seen and refused.
+   */
+  milestone_shipped_unverified: boolean;
   current_phase: string | null | undefined;
   last_activity: string | null | undefined;
   phases: PhaseStatus[];
@@ -154,9 +184,17 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     stateProjection,
     filesExist,
     milestoneShipped,
+    milestoneShippedSignal,
     currentMilestonePhaseCount = 0,
     milestoneScoped,
   } = inputs;
+
+  // A caller that passes only the legacy boolean states THAT a signal fired but
+  // not which one. Treat it as `legacy` — the ungated strength — so pre-review
+  // callers keep their exact behavior rather than silently acquiring a new gate.
+  const shippedSignal: MilestoneShippedSignal =
+    milestoneShippedSignal !== undefined ? milestoneShippedSignal : (milestoneShipped ? 'legacy' : null);
+  const milestoneShippedResolved = shippedSignal !== null;
 
   // #2562: when scoping is active, prior-milestone phase directories are
   // excluded from the completion rollup and the denominator. The caller states
@@ -195,6 +233,10 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   let completedPhases = 0;
   let totalPlans = 0;
   let completedPlans = 0;
+  // #2562 review: in-milestone phase directories that are still on disk and NOT
+  // complete. Distinct from `effectivePhaseCount - completedPhases`, which also
+  // counts phases the roadmap declares but never scaffolded — see below.
+  let liveIncompletePhases = 0;
 
   for (const dir of [...phaseDirNames].sort()) {
     const counts = countsMap.get(dir);
@@ -217,6 +259,7 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
       totalPlans += planCount;
       completedPlans += Math.min(summaryCount, planCount);
       if (status === 'complete') completedPhases++;
+      else liveIncompletePhases++;
     }
     phases.push({
       directory: dir,
@@ -248,11 +291,50 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   // #1913: derive status from authoritative shipped signals rather than trusting
   // the mutable STATE.md `Status` field. When a shipped signal is present, the
   // workstream is "milestone complete" regardless of a stale field value.
+  //
+  // #2562 review: a shipped signal is a CLAIM, and a claim its own milestone's
+  // artifacts contradict must not be echoed as fact — the defect class this issue
+  // is about reaches `status`, not just `progress_percent`. The two signals need
+  // DIFFERENT cross-checks; one check for both regresses the commonest shape:
+  //
+  //  - `heading` — operator-typed marker in the LIVE roadmap. Nothing has been
+  //    archived, so every phase the milestone declares should be on disk and
+  //    complete. Gate on the full ratio, which also catches the
+  //    declared-but-never-scaffolded phases that have no directory to inspect.
+  //  - `snapshot` — `milestones/<version>-ROADMAP.md`. The `milestone complete`
+  //    run that writes it also MOVES the milestone's phase directories into
+  //    `milestones/<version>-phases/` (milestone.cts:755-762) while COPYING —
+  //    never truncating — the live ROADMAP (:671-674), so its Progress rows
+  //    survive. A correctly-archived milestone therefore reads 0/N by
+  //    construction; gating it on the ratio would strip `milestone complete`
+  //    from every archived milestone. What IS meaningful is a phase still live
+  //    and unfinished — one added or reopened after the archive, reachable
+  //    because `milestone complete` does not advance STATE's `milestone:` field
+  //    (state-transition.cts:83, :1335); only `/gsd-new-milestone` does (:1224).
+  //  - `legacy` — project-lifetime fallback, reachable only when the milestone
+  //    version is unknown, where scoping is off and there is no current-milestone
+  //    artifact set to check against. Ungated, exactly as before.
   const fieldStatus = stateProjection.status;
-  const useDerived = milestoneShipped;
-  const status = useDerived ? 'milestone complete' : fieldStatus;
-  const status_source: 'field' | 'derived' = useDerived ? 'derived' : 'field';
-  const status_conflict = useDerived && !isCompletedInventory(fieldStatus);
+  const shippedContradicted = scoped && (
+    shippedSignal === 'heading'
+      ? completedPhases < effectivePhaseCount
+      : shippedSignal === 'snapshot'
+        ? liveIncompletePhases > 0
+        : false
+  );
+  const useDerived = milestoneShippedResolved && !shippedContradicted;
+  // Refusing the claim does not make the STATE field a safe fallback: it is
+  // operator-written and in this window it commonly ALSO reads "milestone
+  // complete", which would re-report the refused claim through the other door.
+  // Against contradicting artifacts, NEITHER source may assert completion.
+  const artifactOverride = shippedContradicted && isCompletedInventory(fieldStatus);
+  const status = useDerived
+    ? 'milestone complete'
+    : artifactOverride
+      ? 'in_progress'
+      : fieldStatus;
+  const status_source: 'field' | 'derived' = useDerived || artifactOverride ? 'derived' : 'field';
+  const status_conflict = (useDerived && !isCompletedInventory(fieldStatus)) || artifactOverride;
 
   return {
     name,
@@ -266,6 +348,7 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     status,
     status_source,
     status_conflict,
+    milestone_shipped_unverified: shippedContradicted,
     current_phase: stateProjection.current_phase,
     last_activity: stateProjection.last_activity,
     phases,

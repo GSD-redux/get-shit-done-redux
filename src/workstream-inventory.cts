@@ -35,7 +35,7 @@ const { phaseKeyFromDir, phaseKeyFromProse, parentPhaseKey } = phaseIdMod;
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestonePhaseFilter, isMilestoneShippedInRoadmap } = roadmapParserMod;
 import { buildWorkstreamInventory, isCompletedInventory } from './workstream-inventory-builder.cjs';
-import type { WorkstreamInventory, StateProjection } from './workstream-inventory-builder.cjs';
+import type { WorkstreamInventory, StateProjection, MilestoneShippedSignal } from './workstream-inventory-builder.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -228,22 +228,28 @@ function readStateProjection(statePath: string): StateProjection {
  * marked shipped. When the version cannot be determined, we fall back to the
  * over-broad legacy detection to preserve #1913's protection for those
  * (malformed/legacy) projects.
+ *
+ * Returns WHICH signal fired, not merely that one did. The two differ in how
+ * much they can be trusted and therefore in how the builder cross-validates
+ * them against the milestone's own artifacts — see the `shippedContradicted`
+ * block in `workstream-inventory-builder.cts`. Collapsing them to a boolean is
+ * what forced a single completeness check to serve two incompatible shapes.
  */
-function workstreamMilestoneShipped(
+function workstreamShippedSignal(
   roadmapPath: string,
   planningBase: string,
   currentVersion: string | null,
-): boolean {
+): MilestoneShippedSignal {
   if (!currentVersion) {
-    return legacyMilestoneShipped(roadmapPath, planningBase);
+    return legacyMilestoneShipped(roadmapPath, planningBase) ? 'legacy' : null;
   }
   // Canonical shipped artifact: the archived ROADMAP snapshot of the CURRENT
   // milestone (`vX.Y-ROADMAP.md`), written at milestone close. REQUIREMENTS
   // snapshots are intentionally NOT accepted — they can be written at milestone
   // START (requirements-locked), so they do not imply shipped.
   const snapshot = path.join(planningBase, 'milestones', `${currentVersion}-ROADMAP.md`);
-  if (fs.existsSync(snapshot)) return true;
-  return currentMilestoneHeadingShipped(roadmapPath, currentVersion);
+  if (fs.existsSync(snapshot)) return 'snapshot';
+  return currentMilestoneHeadingShipped(roadmapPath, currentVersion) ? 'heading' : null;
 }
 
 function sortWorkstreamInventories(inventories: WorkstreamInventory[], activeWorkstreamName: string | null): WorkstreamInventory[] {
@@ -417,7 +423,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       state: fs.existsSync(p.state),
       requirements: fs.existsSync(p.requirements),
     },
-    milestoneShipped: workstreamMilestoneShipped(p.roadmap, p.planning, currentVersion),
+    milestoneShippedSignal: workstreamShippedSignal(p.roadmap, p.planning, currentVersion),
   });
 }
 
