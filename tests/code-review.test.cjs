@@ -260,6 +260,39 @@ describe('CR-AGENT: code review agent frontmatter', () => {
     assert.ok(content.includes('files_reviewed_list'),
       'gsd-code-reviewer REVIEW.md frontmatter spec must include files_reviewed_list for --auto scope persistence');
   });
+
+  // #2825: gsd-code-fixer is the only writer that hand-rolls a git worktree; it
+  // must honor workflow.use_worktrees (the documented opt-out) like its four
+  // sibling writer workflows, and never rm -rf a possible Windows reparse point.
+  test('#2825 gsd-code-fixer.md reads workflow.use_worktrees and gates git worktree add on it', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-code-fixer.md'), 'utf-8');
+    assert.ok(
+      content.includes('workflow.use_worktrees'),
+      'gsd-code-fixer setup_worktree must read the workflow.use_worktrees config flag (#2825)',
+    );
+    // The git worktree add must be CONDITIONAL on the flag, not unconditional.
+    // Locate the worktree-add line and confirm a USE_WORKTREES gate precedes it.
+    assert.ok(
+      /USE_WORKTREES=.false./.test(content) || content.includes('if [ "$USE_WORKTREES" = "false" ]'),
+      'gsd-code-fixer must gate worktree creation on USE_WORKTREES=false (skip when opted out) (#2825)',
+    );
+  });
+
+  test('#2825 gsd-code-fixer.md forbids rm -rf on a possible reparse point (Windows junction safety)', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-code-fixer.md'), 'utf-8');
+    assert.ok(
+      /rm -rf.*reparse point|reparse point.*rm -rf|NEVER .rm -rf.|never use .rm -rf/i.test(content),
+      'gsd-code-fixer must forbid rm -rf on a possible reparse point/junction (#2825) — on Windows that is the delete-the-target path',
+    );
+  });
+
+  test('#2825 gsd-code-fixer.md records where verification ran (main checkout vs worktree)', () => {
+    const content = fs.readFileSync(path.join(AGENTS_DIR, 'gsd-code-fixer.md'), 'utf-8');
+    assert.ok(
+      /verification[\s\S]*(main checkout|worktree)|(main checkout|worktree)[\s\S]*verification/i.test(content),
+      'gsd-code-fixer REVIEW-FIX.md must record where verification ran (main checkout vs worktree) so a reader knows if the numbers are reproducible (#2825)',
+    );
+  });
 });
 
 // --- CR-CMD: code review command structure ---

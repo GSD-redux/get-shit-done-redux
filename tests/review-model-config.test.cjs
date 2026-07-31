@@ -146,15 +146,26 @@ describe('review.models.<cli> config key', () => {
     assert.doesNotMatch(rawText, /"gemini":\s*"null"/,
       'must never persist review.models.gemini as the literal string "null"');
 
-    // config-get on the removed key reports not-found (the review workflow reads
-    // it as `... 2>/dev/null || echo ""` → empty → the `[ -n "$VAR" ]` guard falls
-    // back to the reviewer default).
+    // config-get on the removed key yields EMPTY (the review workflow reads it as
+    // `... 2>/dev/null || echo ""` → empty → the `[ -n "$VAR" ]` guard falls back
+    // to the reviewer default).
+    //
+    // #2797: this key is now federated to the `gemini` lane capability, and a
+    // federated key always resolves to its declared default — so config-get exits
+    // 0 with empty output rather than exiting non-zero with "Key not found". The
+    // WORKFLOW outcome is unchanged: the guard above sees empty either way, which
+    // is exactly what this test's own rationale (the comment above) turns on.
+    //
+    // What #2046 actually protects is asserted below and is untouched: clearing
+    // must never yield the literal string "null", which would be handed to the
+    // CLI as a model name.
     const getResult = runGsdTools(
       ['config-get', 'review.models.gemini', '--raw'],
       tmpDir,
       { HOME: tmpDir, USERPROFILE: tmpDir }
     );
-    assert.ok(!getResult.success, 'config-get on a cleared key should report not-found');
+    assert.strictEqual((getResult.output || '').trim(), '',
+      'config-get on a cleared key must yield empty output');
     assert.notStrictEqual(getResult.output && getResult.output.trim(), 'null',
       'config-get must not emit the literal string "null" for a cleared key');
   });

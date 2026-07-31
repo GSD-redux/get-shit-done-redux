@@ -218,7 +218,7 @@ WebSearch에서 가져온 패키지는 `[ASSUMED]`(`[VERIFIED]`가 아님)로 �
 | 인수 / 플래그 | 필수 | 설명 |
 |-----------------|----------|-------------|
 | `N` | **예** | 계획 및 리뷰할 단계 번호 |
-| `--codex` / `--gemini` / `--claude` / `--opencode` | 아니요 | 단일 리뷰어 선택 |
+| 리뷰어 플래그 | 아니요 | 모든 리뷰어 레인 플래그를 그대로 전달: `--gemini`, `--claude`, `--codex`, `--coderabbit`, `--opencode`, `--qwen`, `--cursor`, `--agy` / `--antigravity`, `--ollama`, `--lm-studio`, `--llama-cpp`, `--kimi-code` |
 | `--all` | 아니요 | 구성된 모든 리뷰어를 병렬로 실행 |
 | `--max-cycles N` | 아니요 | 사이클 상한 재정의 (기본값 3) |
 
@@ -1250,6 +1250,7 @@ AI 시스템 구축을 포함하는 단계에 대한 AI-SPEC.md 디자인 계약
 | `--qwen` | Qwen Code 검토 포함 (Alibaba Qwen 모델) |
 | `--cursor` | Cursor 에이전트 검토 포함 |
 | `--agy` / `--antigravity` | Antigravity CLI 검토 포함 (Google 자격증명으로 무료) |
+| `--kimi-code` | Kimi Code CLI 검토 포함 (Moonshot AI) |
 | `--ollama` | Ollama 서버 검토 포함 |
 | `--lm-studio` | LM Studio 서버 검토 포함 |
 | `--llama-cpp` | llama.cpp 서버 검토 포함 |

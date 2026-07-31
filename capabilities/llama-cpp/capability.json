@@ -1,7 +1,7 @@
 {
   "id": "llama-cpp",
   "role": "reviewer",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "llama.cpp",
   "description": "llama.cpp server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.llama_cpp_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`llama-cpp`, required by KEBAB_RE); `reviewer.slug` stays snake (`llama_cpp`) to match the shipped roster and the `review.llama_cpp_host` config key (ADR-2782's three-namespace trap).",
   "tier": "full",
@@ -11,7 +11,9 @@
   },
   "reviewer": {
     "slug": "llama_cpp",
-    "flags": ["--llama-cpp"],
+    "flags": [
+      "--llama-cpp"
+    ],
     "transport": "openai-http",
     "probe": {
       "kind": "http-reachable",
@@ -21,16 +23,36 @@
     },
     "invoke": {
       "hostConfigKey": "review.llama_cpp_host",
+      "defaultHost": "http://localhost:8080",
       "path": "/v1/chat/completions",
       "modelDiscovery": "first-from-models-endpoint",
+      "fallbackModel": "local-model",
       "effortChannel": "none"
     },
     "timeoutFloorMs": 120000,
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "llama.cpp",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [],
     "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
+    "modelConfigKey": "review.models.llama_cpp",
     "handler": "openai-compatible"
+  },
+  "config": {
+    "review.models.llama_cpp": {
+      "type": "string",
+      "default": "",
+      "description": "Model requested from the llama.cpp reviewer lane; empty discovers the first model from /v1/models."
+    },
+    "review.llama_cpp_host": {
+      "type": "string",
+      "default": "",
+      "description": "Base URL of the llama.cpp OpenAI-compatible server."
+    },
+    "review.max_prompt_tokens_per_reviewer.llama_cpp": {
+      "type": "number",
+      "default": -1,
+      "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+    }
   }
 }

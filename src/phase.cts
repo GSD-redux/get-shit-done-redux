@@ -2078,7 +2078,9 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
               // Complete" gate is folded into the newValue callback so one
               // updateTableCell call both probes and writes.
               const reqUpdate = updateTraceabilityCell(reqContent, reqRowMatch, 'Status', (current) =>
-                /^(?:pending|in progress)$/i.test(current.trim()) ? ' Complete ' : current);
+                // #2788: accept `Gaps Found` too so a phase stranded by revert-phase (the
+                // gaps_found response) can complete without hand-editing the table.
+                /^(?:pending|in progress|gaps found)$/i.test(current.trim()) ? ' Complete ' : current);
               if (reqUpdate.ok) {
                 reqContent = reqUpdate.value;
               } else if (!isPlaceholderReqId(reqId)) {
@@ -2456,7 +2458,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           planCount,
           summaryCount,
         );
-        stateContent = syncStateFrontmatter(stateContent, cwd);
+        // #2736: the transition holds the next phase's exact display name in
+        // the intent; pass it as authoritative so the sync's prose
+        // re-derivation cannot rewrite current_phase_name to the name's own
+        // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`).
+        stateContent = syncStateFrontmatter(
+          stateContent,
+          cwd,
+          nextPhaseDisplayName ? { current_phase_name: nextPhaseDisplayName } : undefined,
+        );
 
         writes.push({ filePath: statePath, before: originalStateContent, after: stateContent });
       }

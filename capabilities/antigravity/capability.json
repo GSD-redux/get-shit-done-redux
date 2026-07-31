@@ -1,7 +1,7 @@
 {
   "id": "antigravity",
   "role": "runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Antigravity",
   "description": "Google Antigravity IDE — nested under ~/.gemini/antigravity; probed across 1.x and 2.x layouts; Gemini hook event dialect; flat skill layout; tier-1 support.",
   "tier": "core",
@@ -102,12 +102,24 @@
   },
   "reviewer": {
     "slug": "antigravity",
-    "flags": ["--antigravity", "--agy"],
+    "flags": [
+      "--antigravity",
+      "--agy"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "agy" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "agy"
+    },
     "invoke": {
       "binary": "agy",
-      "args": ["--print-timeout", "540s", "-p"],
+      "args": [
+        "--print-timeout",
+        "540s",
+        "{{model}}",
+        "-p",
+        "{{prompt}}"
+      ],
       "promptChannel": "argv-file-ref",
       "outputChannel": "stdout",
       "modelArg": "--model",
@@ -117,8 +129,16 @@
     "emptyOutput": "handler-owned",
     "reviewsSection": "Antigravity",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.agy",
     "handler": "antigravity"
+  },
+  "config": {
+    "review.models.agy": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+    }
   }
 }

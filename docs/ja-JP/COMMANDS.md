@@ -218,7 +218,7 @@ WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` では
 | 引数 / フラグ | 必須 | 説明 |
 |-----------------|----------|-------------|
 | `N` | **Yes** | 計画およびレビューするフェーズ番号 |
-| `--codex` / `--gemini` / `--claude` / `--opencode` | No | 単一レビュアーの選択 |
+| レビュアーフラグ | No | すべてのレビュアーレーンフラグをそのまま渡す: `--gemini`、`--claude`、`--codex`、`--coderabbit`、`--opencode`、`--qwen`、`--cursor`、`--agy` / `--antigravity`、`--ollama`、`--lm-studio`、`--llama-cpp`、`--kimi-code` |
 | `--all` | No | 設定済みのすべてのレビュアーを並列で実行 |
 | `--max-cycles N` | No | サイクル上限を上書き（デフォルト3） |
 
@@ -1244,6 +1244,7 @@ AI システムの構築を含むフェーズの AI-SPEC.md デザインコン�
 | `--qwen` | Qwen Code レビューを含める（Alibaba Qwen モデル） |
 | `--cursor` | Cursor エージェントレビューを含める |
 | `--agy` / `--antigravity` | Antigravity CLI レビューを含める（Google 認証情報で無料） |
+| `--kimi-code` | Kimi Code CLI レビューを含める（Moonshot AI） |
 | `--ollama` | Ollama サーバーレビューを含める |
 | `--lm-studio` | LM Studio サーバーレビューを含める |
 | `--llama-cpp` | llama.cpp サーバーレビューを含める |

@@ -137,6 +137,22 @@ interface ConsentRecord {
    */
   contentHash: string;
   consentedAt: string;
+  /**
+   * ADR-2782 D5 rule 1 (#2799): the egress destination this consent was granted against, for an
+   * `openai-http` reviewer lane. Absent for every other capability, and for records written before
+   * the rule existed.
+   *
+   * OPTIONAL BY DESIGN, and `isValidConsentRecord` deliberately does not require it. Making it
+   * mandatory would invalidate every consent record already on disk, forcing re-consent across all
+   * installed capabilities — precisely the spurious re-consent storm D4 rule 5 forbids.
+   *
+   * Deliberately NOT part of `disclosureSignature`: that signature is computed by BOTH the loader
+   * and the lifecycle so the two can never drift, and the loader has no config resolver. Folding a
+   * config-derived value in would make them compute different signatures for the same manifest and
+   * re-prompt forever. The signature binds the manifest; this field binds the destination; Phase 5b
+   * re-resolves and compares at invocation, which is where D5 rule 4 puts the check.
+   */
+  reviewerHost?: string;
 }
 
 interface ConsentStore {
@@ -455,6 +471,9 @@ function isValidConsentRecord(rec: unknown): rec is ConsentRecord {
   // match a recomputed hash and is treated as invalid (fail closed).
   if (typeof r['contentHash'] !== 'string' || !r['contentHash']) return false;
   if (typeof r['consentedAt'] !== 'string' || !r['consentedAt']) return false;
+  // Optional (see ConsentRecord.reviewerHost): absent is valid and is the common case. Present but
+  // non-string is a corrupt record — reject rather than silently comparing against a non-host.
+  if (r['reviewerHost'] !== undefined && typeof r['reviewerHost'] !== 'string') return false;
   return true;
 }
 
@@ -698,8 +717,9 @@ function recordProjectConsent(args: {
   integrity: string;
   disclosureSignature: string;
   contentHash: string;
+  reviewerHost?: string;
 }): void {
-  const { gsdHome, projectRoot, id, integrity, disclosureSignature, contentHash } = args;
+  const { gsdHome, projectRoot, id, integrity, disclosureSignature, contentHash, reviewerHost } = args;
   if (isUnsafeCapabilityId(id)) {
     throw new Error(
       `Invalid capability id "${String(id)}": must match /^[a-z][a-z0-9-]*$/ (kebab-case, lowercase). ` +
@@ -744,6 +764,9 @@ function recordProjectConsent(args: {
       disclosureSignature,
       contentHash,
       consentedAt: new Date().toISOString(),
+      // Written only when the capability actually declares an egress destination, so a spawn lane
+      // or a non-lane capability keeps a byte-identical record shape.
+      ...(typeof reviewerHost === 'string' && reviewerHost ? { reviewerHost } : {}),
     };
     writeConsentStore(gsdHome, store);
   } finally {
@@ -787,6 +810,39 @@ function revokeProjectConsent(args: { gsdHome?: string; projectRoot: string; id:
 }
 
 /**
+ * The egress destination a capability's consent was granted against, or `undefined`.
+ *
+ * ADR-2782 D5 rule 4 (#2799) — read on the INVOCATION path, not only at install, because
+ * `hostConfigKey` names a key in `.planning/config.json`: the one consent-bound value that lives
+ * outside the SHA-pinned bundle and can be changed by an ordinary pull request with no re-install
+ * and no integrity check.
+ *
+ * `undefined` means "nothing to compare", and the caller MUST treat that as allow, not deny. Two
+ * legitimate ways to get it: the capability has no consent record at all (first-party lanes ship
+ * inside the SHA-pinned distribution and are never consent-gated), or the record predates this
+ * field. Denying on absence would break every existing local-model user on upgrade.
+ *
+ * Non-throwing: a missing, corrupt, or oversized store yields `undefined` like any other absence.
+ */
+function readConsentedReviewerHost(args: {
+  gsdHome?: string;
+  projectRoot: string;
+  id: string;
+}): string | undefined {
+  const { gsdHome, projectRoot, id } = args;
+  if (isUnsafeCapabilityId(id)) return undefined;
+  try {
+    const store = readConsentStore(gsdHome);
+    const key = consentKey(realpathProject(projectRoot), id);
+    if (!Object.prototype.hasOwnProperty.call(store.records, key)) return undefined;
+    const host = store.records[key].reviewerHost;
+    return typeof host === 'string' && host ? host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * #1459 finding 2 (round 6): TEST-ONLY — override the cumulative bundle entry-count cap and return a
  * restore() that resets it to the production default. Lets a test prove the streaming walk fails closed
  * at the bound without planting 100k real files. Never called by production code.
@@ -805,6 +861,7 @@ export = {
   consentStorePath,
   bundleContentHash,
   readConsentStore,
+  readConsentedReviewerHost,
   hasProjectConsent,
   recordProjectConsent,
   revokeProjectConsent,

@@ -159,12 +159,13 @@ describe('Kimi shell-guard vocabulary parity (#2304)', () => {
     );
   });
 
-  test('gsd-phase-boundary.sh falls back to Kimi\'s tool_input.path field', () => {
+  test('gsd-phase-boundary.sh prefers Kimi\'s authoritative tool_input.path, falls back to file_path (#2752)', () => {
     const src = readHook('hooks/gsd-phase-boundary.sh');
     assert.ok(
-      src.includes('i.file_path||(typeof i.path===\'string\'?i.path:\'\')'),
-      'gsd-phase-boundary.sh no longer falls back to tool_input.path — ' +
-        'the hook reads an empty path on Kimi (#2304)'
+      src.includes('(typeof i.path===\'string\'&&i.path)||(typeof i.file_path===\'string\'&&i.file_path)||\'\''),
+      'gsd-phase-boundary.sh no longer prefers tool_input.path over file_path — ' +
+        'path is the authoritative field (kimi-cli executes on it); a model-supplied ' +
+        'decoy file_path must not suppress or fabricate a reminder (#2752, mirrors #2595)'
     );
   });
 });

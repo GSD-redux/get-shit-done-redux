@@ -1,7 +1,7 @@
 {
   "id": "graphify",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Knowledge graph",
   "description": "Build, query, and inspect the project knowledge graph in `.planning/graphs/`; exposes graphify CLI subcommands (build, query, status, diff) and the /gsd-graphify skill.",
   "tier": "full",

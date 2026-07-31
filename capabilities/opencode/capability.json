@@ -1,7 +1,7 @@
 {
   "id": "opencode",
   "role": "runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "OpenCode",
   "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
   "tier": "core",
@@ -89,7 +89,9 @@
     },
     "orchestratorExec": {
       "command": "opencode",
-      "args": ["run"],
+      "args": [
+        "run"
+      ],
       "cwdFlag": "--dir",
       "promptFlag": null
     },
@@ -113,12 +115,24 @@
   },
   "reviewer": {
     "slug": "opencode",
-    "flags": ["--opencode"],
+    "flags": [
+      "--opencode"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "opencode" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "opencode"
+    },
     "invoke": {
       "binary": "opencode",
-      "args": ["run", "--format", "json", "-"],
+      "args": [
+        "run",
+        "{{model}}",
+        "{{effort}}",
+        "--format",
+        "json",
+        "-"
+      ],
       "promptChannel": "stdin",
       "outputChannel": "stdout",
       "modelArg": "--model",
@@ -128,8 +142,16 @@
     "emptyOutput": "stub-with-stderr",
     "reviewsSection": "OpenCode",
     "evidenceClass": "source-grounded",
-    "requiresBinaries": ["jq"],
+    "requiresBinaries": [],
     "promptBudgetKey": null,
-    "handler": null
+    "modelConfigKey": "review.models.opencode",
+    "handler": "opencode"
+  },
+  "config": {
+    "review.models.opencode": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the OpenCode reviewer lane."
+    }
   }
 }

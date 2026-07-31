@@ -3,11 +3,13 @@
 
 /**
  * scripts/validate-registry.cjs — CLI validator for the third-party
- * discoverability catalogs (issue #2182):
+ * discoverability catalogs (issue #2182, plus #2904):
  *
  *   - docs/registries/capabilities.json  ("GSD Community Capability Registry")
  *   - docs/registries/eos.json           ("GSD EoS Registry", PR2 — optional
  *     until that JSON file ships)
+ *   - docs/registries/reviewers.json     ("GSD Reviewer Lane Registry",
+ *     issue #2904 — optional until that JSON file ships)
  *
  * Validates each source's JSON array against the closed schema in
  * scripts/registry-schema.cjs (validateEntries). Human-readable errors go to
@@ -33,14 +35,15 @@ const { validateEntries } = require('./registry-schema.cjs');
 // a subprocess against isolated temp-fixture directories via `cwd`.
 const SOURCES = [
   { file: 'capabilities.json', type: 'capability' },
-  { file: 'eos.json', type: 'eos' },
+  { file: 'eos.json', type: 'eos', optional: true },
+  { file: 'reviewers.json', type: 'reviewer', optional: true },
 ];
 
 /**
  * Load + validate a single registry JSON file.
  *
  * @param {string} jsonPath  absolute path to the registry JSON file
- * @param {'capability'|'eos'} type
+ * @param {'capability'|'eos'|'reviewer'} type
  * @returns {{ok: boolean, errors: Array<{index: number, id?: string, field: string, reason: string}>}}
  */
 function validateFile(jsonPath, type) {
@@ -81,10 +84,11 @@ function main() {
   const results = [];
   let anyFailed = false;
 
-  for (const { file, type } of SOURCES) {
+  for (const { file, type, optional } of SOURCES) {
     const jsonPath = path.join(registriesDir, file);
-    // eos.json is optional until PR2 ships it — skip silently when absent.
-    if (type === 'eos' && !fs.existsSync(jsonPath)) continue;
+    // eos.json (pre-PR2) and reviewers.json (issue #2904) are optional until
+    // their source JSON ships — skip silently when absent.
+    if (optional && !fs.existsSync(jsonPath)) continue;
 
     const verdict = validateFile(jsonPath, type);
     results.push({ file, type, ok: verdict.ok, errors: verdict.errors });

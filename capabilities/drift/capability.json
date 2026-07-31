@@ -1,7 +1,7 @@
 {
   "id": "drift",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Drift detection gates",
   "description": "Drift detection gates for the planning loop. At execute:wave:post: a blocking schema drift gate (detects schema files changed without a database push) and a non-blocking codebase drift gate (detects structural additions not reflected in STRUCTURE.md). At plan:pre: a non-blocking, warn-only codebase drift gate (gated on workflow.plan_drift_precheck) that flags a stale codebase map before planning, so plans are authored against a fresh STRUCTURE.md instead of discovering drift mid-execution.",
   "tier": "full",

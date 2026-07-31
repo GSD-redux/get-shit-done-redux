@@ -1,7 +1,7 @@
 {
   "id": "kilo",
   "role": "runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Kilo Code",
   "description": "Kilo Code — XDG-based config dir; global skills at ~/.kilo/skills (separate from XDG config); flat command/ + skills artifact layout; no lifecycle hook registration; tier-2 support.",
   "tier": "core",

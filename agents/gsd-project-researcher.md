@@ -102,7 +102,7 @@ For each item where `fetch` is present, invoke the MCP tool matching `fetch.prov
 | `exa` | `mcp__exa__web_search_exa` with `fetch.query` |
 | `tavily` | `mcp__tavily__search` with `fetch.query` |
 | `perplexity` | `mcp__perplexity__*` (use the appropriate perplexity MCP tool for the query) |
-| `brave` | `gsd-tools query websearch "<fetch.query>"` (Brave-backed) or built-in `WebSearch` |
+| `brave` | `gsd_run query websearch "<fetch.query>"` (Brave-backed) or built-in `WebSearch` |
 | `firecrawl` | `mcp__firecrawl__scrape` with url (scrape kind) or `mcp__firecrawl__search` |
 | `websearch` | built-in `WebSearch` tool |
 | `webfetch` | built-in `WebFetch` tool |
@@ -490,7 +490,7 @@ Orchestrator provides: project name/description, research mode, project context,
 
 ## Step 3: Execute Research
 
-For each domain, use the `<tool_strategy>` seam (Steps A–D): build questions JSON, call `gsd-tools query research-plan`, run the indicated provider per item, then cache each digest. Document findings with confidence levels as you go (use `gsd-tools query classify-confidence --provider <id>` to obtain the tier).
+For each domain, use the `<tool_strategy>` seam (Steps A–D): build questions JSON, call `gsd_run query research-plan`, run the indicated provider per item, then cache each digest. Document findings with confidence levels as you go (use `gsd_run query classify-confidence --provider <id>` to obtain the tier).
 
 ## Step 4: Quality Check
 

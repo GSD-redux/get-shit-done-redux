@@ -277,653 +277,121 @@ Note: `INSTRUCTIONS_BLOCK_FILE`, `ROADMAP_SECTION_FILE`, and `PHASE_DIR` come fr
 </step>
 
 <step name="invoke_reviewers">
-Read model preferences from planning config. Null/missing values fall back to CLI defaults.
+Every reviewer lane is **declared data** (ADR-2782). This step iterates the lanes the selection
+resolved; it does not enumerate them. Adding a reviewer is a capability manifest, not an edit here.
+
+**Do not re-add a per-CLI block.** A `<!-- reviewer-lane: … -->` marker anywhere in this step now
+FAILS the parity gate (`checkReviewerLaneParity` → `bespoke_leg_present`). Lane divergence is
+declared in the manifest — timeout floor, probe, prompt/output channel, empty-output policy — and
+behaviour that data genuinely cannot express is a named first-party `handler` (ADR-2782 D6), never
+a bespoke block here.
+
+**Timeout guidance (#2194):** prompt-fed source-grounded reviews are slow — measured ~570 s for
+Codex at `xhigh` effort and ~525 s for headless Claude on a large plan set. Each lane declares its
+own `timeoutFloorMs` and the runner enforces it internally, but the **Bash tool call wrapping the
+loop below must still be given a high `timeout:`** — at least `900000`, and `1200000` when Codex or
+headless Claude are in the selection — or the host kills the whole loop mid-lane. On Claude Code,
+raise the host cap via `BASH_MAX_TIMEOUT_MS` if a review can exceed it.
+
+A silent empty output after a long run is a **timeout kill, not a crash** — the Codex `0xc0000142`
+misdiagnosis persisted for exactly this reason, because an empty result cannot distinguish the two
+on its own. Treat an empty result on a slow lane as a dropped lane and re-run with more time rather
+than diagnosing a CLI or sandbox failure. A cross-AI review that silently drops a lane is blind in
+one eye.
+
+**No hook-trust bypass (#2479):** no lane passes a hook-trust bypass flag and none runs a capability
+probe for one. That flag only bypasses *persisted* hook trust (a first-run condition) and flagless
+invocations work in steady state, while host-harness safety classifiers deny commands carrying it.
+An environment that genuinely hits an untrusted-hook prompt surfaces through the `.err` capture and
+the empty-output stub as a dropped lane with diagnosable stderr, not silent attrition. Do not
+reintroduce the flag (even spelled out in prose — a regression test bans the literal file-wide).
+
+**Reviewer instances (#1517, optional):** instances resolve *through* a lane and are not lanes
+themselves (ADR-2782 D8). Each selected instance invokes its base `cli` with its own `model`/`agent`
+as opaque argv. Exact invocation in `gsd-core/references/reviewer-instances.md`.
+
+Lanes run **sequentially, not in parallel** — concurrent invocation trips provider rate limits.
 
 ```bash
-# JSON scalars from gsd-tools.cjs query; --raw strips the JSON quotes natively
-# (no jq dependency — jq is absent on stock Windows/Git-Bash, #2589)
-GEMINI_MODEL=$(gsd_run query config-get review.models.gemini --raw 2>/dev/null || true)
-CLAUDE_MODEL=$(gsd_run query config-get review.models.claude --raw 2>/dev/null || true)
-CODEX_MODEL=$(gsd_run query config-get review.models.codex --raw 2>/dev/null || true)
-OPENCODE_MODEL=$(gsd_run query config-get review.models.opencode --raw 2>/dev/null || true)
-# review.models.agy, when set, is passed to agy as --model (escape hatch for a
-# pinned model that 404s server-side); otherwise agy uses its persisted default.
-AGY_MODEL=$(gsd_run query config-get review.models.agy --raw 2>/dev/null || true)
+RUN_DIR="{run_dir}"
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# SELECTED_REVIEWERS is the comma-separated result of reviewer selection (ADR-0011 precedence:
+# explicit flags > --all > review.default_reviewers > all detected). Unchanged by this phase.
 
-# Reasoning effort per reviewer (#2481). Empty unless the host's effortSurface
-# axis is `argv`. Pass --attempt N to walk ADR-443's escalation ladder.
-CLAUDE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host claude --pick effort_argv_string 2>/dev/null || true)
-CODEX_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host codex --pick effort_argv_string 2>/dev/null || true)
-OPENCODE_EFFORT_ARGS=$(gsd_run query resolve-execution gsd-plan-checker --host opencode --pick effort_argv_string 2>/dev/null || true)
-```
-
-**No hook-trust bypass (#2479):** the codex invocations below deliberately pass no
-hook-trust bypass flag and run no capability probe for one (#1115's former gate).
-That flag only bypasses *persisted* hook trust (a first-run condition) and flagless
-invocations work in steady state, while host-harness safety classifiers deny
-commands carrying it — and cited the probe itself as intent (#2479). An environment
-that genuinely hits an untrusted-hook prompt surfaces through the `.err` capture +
-empty-output guard below as a dropped lane with diagnosable stderr, not silent
-attrition. Do not reintroduce the flag (even spelled out in prose here — a
-regression test bans the literal file-wide) or the probe; the #1115 "unexpected
-argument" failure mode existed only because the flag was emitted, so with no flag
-there is nothing to version-gate.
-
-**Reviewer instances (#1517, optional):** when instances are configured, each selected
-instance invokes its base `cli` with its own `model`/`agent` (opaque argv, never
-shell-interpolated). Exact invocation in `gsd-core/references/reviewer-instances.md`.
-
-For each selected CLI, invoke in sequence (not parallel — avoid rate limits):
-
-**Timeout guidance (#2194):** prompt-fed source-grounded reviews are slow — measured ~570s for Codex at `xhigh` effort and ~525s for headless Claude on a large plan set. Each of the Gemini / Claude / Codex blocks below MUST be invoked with a high Bash `timeout:` — at least `900000` (15 min), and `1200000` (20 min) for Codex `xhigh` or headless Claude — so a lane is not killed mid-review. On Claude Code, raise the host cap via `BASH_MAX_TIMEOUT_MS` if a review can exceed it. A silent empty output after a long run is a **timeout kill, not a crash** — the Codex `0xc0000142` misdiagnosis persisted because the empty-output branches below cannot distinguish the two; treat an empty result on a slow lane as a dropped lane and re-run with more time rather than diagnosing a CLI/sandbox failure. A cross-AI review that silently drops a lane is blind in one eye.
-
-<!-- reviewer-lane: gemini -->
-**Gemini:**
-```bash
-# #2494: capture stderr to a .err sidecar (not /dev/null) and stub an empty
-# result, mirroring the Codex and Cursor blocks. Without the guard a failed
-# lane — CLI missing, unauthenticated, rate-limited, crashed, or any exit that
-# writes no stdout — leaves a zero-byte file that write_reviews renders as a
-# reviewer that ran cleanly with nothing to report, silently dropping a lane
-# from the cross-AI consensus while present_results reports success.
-# Scope limit: the guard only runs if this block completes. A host Bash-tool
-# timeout that kills the whole block skips it, the same hard bound the
-# OpenCode block documents below — per the timeout guidance above, treat an
-# empty result on a slow lane as a dropped lane rather than a crash.
-if [ -n "$GEMINI_MODEL" ] && [ "$GEMINI_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | gemini -m "$GEMINI_MODEL" -p - 2>{run_dir}/gsd-review-gemini.err > {run_dir}/gsd-review-gemini.md
-else
-  cat {run_dir}/gsd-review-prompt.md | gemini -p - 2>{run_dir}/gsd-review-gemini.err > {run_dir}/gsd-review-gemini.md
-fi
-if [ ! -s {run_dir}/gsd-review-gemini.md ]; then
-  echo "Gemini review failed or returned empty output. stderr:" > {run_dir}/gsd-review-gemini.md
-  cat {run_dir}/gsd-review-gemini.err >> {run_dir}/gsd-review-gemini.md
-fi
-```
-
-<!-- reviewer-lane: claude -->
-**Claude (separate session):**
-```bash
-# #2494: same guard as the Gemini block above — stderr to a .err sidecar
-# instead of /dev/null, and a diagnostic stub when the lane produces nothing.
-if [ -n "$CLAUDE_MODEL" ] && [ "$CLAUDE_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | claude --model "$CLAUDE_MODEL" $CLAUDE_EFFORT_ARGS -p - 2>{run_dir}/gsd-review-claude.err > {run_dir}/gsd-review-claude.md
-else
-  cat {run_dir}/gsd-review-prompt.md | claude $CLAUDE_EFFORT_ARGS -p - 2>{run_dir}/gsd-review-claude.err > {run_dir}/gsd-review-claude.md
-fi
-if [ ! -s {run_dir}/gsd-review-claude.md ]; then
-  echo "Claude review failed or returned empty output. stderr:" > {run_dir}/gsd-review-claude.md
-  cat {run_dir}/gsd-review-claude.err >> {run_dir}/gsd-review-claude.md
-fi
-```
-
-<!-- reviewer-lane: codex -->
-**Codex:**
-```bash
-# No hook-trust bypass flag — see the #2479 note above. Capture stderr to a .err
-# file (not /dev/null) so a non-zero exit — e.g. an untrusted-hook prompt on a
-# first run — is diagnosable instead of a silent empty review (#1115).
-# Capture the review via codex's own `-o/--output-last-message <FILE>` (only the
-# final agent message) and discard stdout (#1698): on some platforms (Windows)
-# codex writes process-teardown output to stdout *after* the final message, and a
-# stdout redirect would append that noise to a non-empty file — slipping past the
-# `[ ! -s … ]` empty-output guard as a silently polluted review.
-if [ -n "$CODEX_MODEL" ] && [ "$CODEX_MODEL" != "null" ]; then
-  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral --model "$CODEX_MODEL" $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
-else
-  cat {run_dir}/gsd-review-prompt.md | codex exec --ephemeral $CODEX_EFFORT_ARGS --skip-git-repo-check -o {run_dir}/gsd-review-codex.md - 2>{run_dir}/gsd-review-codex.err >/dev/null
-fi
-if [ ! -s {run_dir}/gsd-review-codex.md ]; then
-  echo "Codex review failed or returned empty output. stderr:" > {run_dir}/gsd-review-codex.md
-  cat {run_dir}/gsd-review-codex.err >> {run_dir}/gsd-review-codex.md
-fi
-```
-
-<!-- reviewer-lane: coderabbit -->
-**CodeRabbit:**
-
-Note: CodeRabbit reviews the current git diff/working tree — it does not accept a prompt or model flag. It may take up to 5 minutes. Use `timeout: 360000` on the Bash tool call. The source-grounding requirement in the build_prompt Review Instructions applies only to the prompt-fed reviewers above; CodeRabbit is a diff-only reviewer and never receives it. Treat its output as a diff observation, not a grounded plan-level verdict.
-
-```bash
-# #2605: same guard as every other leg (#2494/#2592). `2>/dev/null` with no
-# `[ ! -s … ]` stub left a zero-byte file when coderabbit was missing,
-# unauthenticated, or exited without stdout — write_reviews then rendered a
-# reviewer that "ran cleanly with nothing to report", silently dropping the lane.
-coderabbit review --prompt-only 2>{run_dir}/gsd-review-coderabbit.err > {run_dir}/gsd-review-coderabbit.md
-if [ ! -s {run_dir}/gsd-review-coderabbit.md ]; then
-  echo "CodeRabbit review failed or returned empty output. stderr:" > {run_dir}/gsd-review-coderabbit.md
-  cat {run_dir}/gsd-review-coderabbit.err >> {run_dir}/gsd-review-coderabbit.md 2>/dev/null
-fi
-```
-
-<!-- reviewer-lane: opencode -->
-**OpenCode (via GitHub Copilot):**
-
-OpenCode's default `build` agent is an agentic coder, not a prompt→completion API.
-On a large review prompt it may run a few `read` tool calls and then end its turn
-with **zero output tokens** (`reason:"stop"`, `output:0`), so `--format default`
-yields empty stdout and the second reviewer is silently lost (#1936). Invoke with
-`--format json` and reconstruct the review from the assistant `text` parts; if the
-agent emitted none, surface the stop `reason`, output-token count, and captured
-stderr so the failure is diagnosable instead of a generic empty stub. Runs are also
-nondeterministic in length, so bound this Bash tool call with a wall-clock timeout —
-set `timeout: 660000` on the call (same mechanism the CodeRabbit block documents).
-That bound is hard: if it fires mid-`opencode run` the tool kills the command and
-the jq reconstruction below never runs, so the reviewing agent simply proceeds
-without an OpenCode result. The completing zero-output case — the actual #1936 bug —
-is fully handled below; the timeout only backstops the rarer nondeterministic hang. A
-reviewer instance with `"agent": "review"` (see
-`gsd-core/references/reviewer-instances.md`) sidesteps the default `build` agent and
-is the durable fix when this recurs.
-
-```bash
-# stderr → sidecar (never /dev/null) so a real error is diagnosable — mirrors the
-# Codex block. --format json is the primary invocation (not a fallback): the review
-# text lives in assistant `text` parts, which the default formatter drops when the
-# agent stops with no final message (#1936).
-if [ -n "$OPENCODE_MODEL" ] && [ "$OPENCODE_MODEL" != "null" ]; then
-  set -- --model "$OPENCODE_MODEL"
-else
-  set --
-fi
-cat {run_dir}/gsd-review-prompt.md | opencode run "$@" $OPENCODE_EFFORT_ARGS --format json - 2>{run_dir}/gsd-review-opencode.err > {run_dir}/gsd-review-opencode.json
-# Reconstruct the review from the assistant text parts into a variable and test
-# its CONTENT, not the file size: an empty extraction still prints a trailing
-# newline that would fool a `[ -s file ]` check into skipping the stub.
-OPENCODE_REVIEW=$(jq -rs '[.[] | select(.type=="text") | .part.text // empty] | join("\n")' {run_dir}/gsd-review-opencode.json 2>/dev/null)
-if [ -n "$OPENCODE_REVIEW" ]; then
-  printf '%s\n' "$OPENCODE_REVIEW" > {run_dir}/gsd-review-opencode.md
-else
-  # No assistant text (no final message, or stdout was not valid JSON):
-  {
-    echo "OpenCode review returned no assistant text (#1936: agent ended its turn with no final message)."
-    OPENCODE_DIAG=$(jq -rs '[.[] | select(.type=="step_finish")] | last | "stop reason=\(.part.reason // "?"), output tokens=\(.part.tokens.output // "?")"' {run_dir}/gsd-review-opencode.json 2>/dev/null)
-    [ -n "$OPENCODE_DIAG" ] && echo "Diagnostic: $OPENCODE_DIAG"
-    echo "stderr:"
-    cat {run_dir}/gsd-review-opencode.err
-  } > {run_dir}/gsd-review-opencode.md
-fi
-```
-
-<!-- reviewer-lane: qwen -->
-**Qwen Code:**
-```bash
-# #2794: the last leg still sending stderr to /dev/null. Every other lane
-# captures it to a .err sidecar and appends it to the stub (#2494/#2605); qwen
-# wrote a bare "failed or returned empty output." with no diagnostic at all, so
-# a missing binary, an auth prompt, and a rate-limit were indistinguishable from
-# each other and from a clean empty review.
-cat {run_dir}/gsd-review-prompt.md | qwen - 2>{run_dir}/gsd-review-qwen.err > {run_dir}/gsd-review-qwen.md
-if [ ! -s {run_dir}/gsd-review-qwen.md ]; then
-  echo "Qwen review failed or returned empty output. stderr:" > {run_dir}/gsd-review-qwen.md
-  cat {run_dir}/gsd-review-qwen.err >> {run_dir}/gsd-review-qwen.md 2>/dev/null
-fi
-```
-
-<!-- reviewer-lane: cursor -->
-**Cursor:**
-```bash
-# cursor-agent is a SEPARATE binary from the `cursor` IDE launcher; print mode (-p) takes the
-# prompt as an ARGUMENT, not stdin. A full review prompt can exceed the OS argument limit, so
-# reference the prompt file by path rather than inlining it. Capture stderr so a failure is
-# diagnosable instead of a silent empty result.
-# #2176: same absolute-root anchor as the Antigravity block — cursor-agent runs
-# in the repo cwd, but repo-relative references in the assembled prompt still
-# need an explicit root to resolve against. rev-parse (not bare pwd) so the
-# anchor is correct even when /gsd:review is invoked from a repo subdirectory.
-_CURSOR_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-CURSOR_PROMPT_ARG="Read the file at {run_dir}/gsd-review-prompt.md in full and carry out the review request it contains. The repository under review is at $_CURSOR_ROOT — resolve every relative file path in the review request against that absolute root. Output only the resulting markdown review. Do not edit any files."
-cursor-agent -p --mode ask --trust --output-format text "$CURSOR_PROMPT_ARG" 2>{run_dir}/gsd-review-cursor.err > {run_dir}/gsd-review-cursor.md
-if [ ! -s {run_dir}/gsd-review-cursor.md ]; then
-  echo "Cursor review failed or returned empty output. stderr:" > {run_dir}/gsd-review-cursor.md
-  cat {run_dir}/gsd-review-cursor.err >> {run_dir}/gsd-review-cursor.md
-fi
-```
-
-<!-- reviewer-lane: antigravity -->
-**Antigravity CLI:**
-
-**Maintainer note — why this block has three layers (last updated against agy 1.0.16):**
-
-`agy -p` (the `--print` non-interactive flag) works correctly on macOS and Linux: it sends the
-prompt, receives the model response, and writes it to stdout. On **native Windows** it silently
-produces no stdout output despite the API call succeeding — a bug in `text_drip.go`'s non-TTY
-flush path, tracked at https://github.com/google-antigravity/antigravity-cli/issues/27466 and
-still open as of agy 1.0.2.
-
-Regardless of platform, `agy` always persists the full exchange to a transcript file on disk.
-The transcript fallback (Step 2 below) reads that file directly, giving Windows users full review
-coverage without any extra tooling. This pattern was first documented by the community MCP bridge
-at https://github.com/SinanTufekci/Claude-Code-Antigravity-CLI-MCP-Server — we inline the same
-logic here in pure bash/jq so no additional dependency is required.
-
-**Stale-response guard (why the pre-flight watermark matters):**
-Without a watermark, the fallback would read the last `PLANNER_RESPONSE` entry in the transcript
-regardless of when it was written — including entries from a previous invocation in the same
-workspace. To prevent that, we record the transcript's line count *before* calling `agy -p`. In
-the fallback, we only read lines appended after that count. If no new lines were written (agy
-failed before producing a response), `_AGY_RESULT` is empty and Step 3 fires — never stale. If
-the conv-id changed (agy started a fresh session), all lines in the new file are new and we use
-skip=0.
-
-**If the upstream stdout bug is fixed** (check the issue above): Step 2 silently becomes
-unreachable; stdout is non-empty and Step 1 handles it. No code change needed.
-
-**If the transcript paths change** in a future `agy` release: Step 2 silently becomes a no-op
-and Step 3 fires with a clear error message in REVIEWS.md. No silent corruption. To debug:
-- `~/.gemini/antigravity-cli/cache/last_conversations.json` — workspace → conv-id map
-- `~/.gemini/antigravity-cli/brain/<id>/.system_generated/logs/transcript.jsonl`
-  Filter: `source=="MODEL"`, `status=="DONE"`, `type=="PLANNER_RESPONSE"`, take the last match's `content` field.
-
-Invocation specifics (verified agy 1.0.0, macOS arm64 and Linux amd64):
-- `-p` takes the prompt as a **flag value** — `echo X | agy -p` errors with "flag needs an argument: -p"
-- `--print-timeout` defaults to 5m, aligning with this workflow's global timeout
-- `--model "<name>"` selects the model (available since agy ~1.0.3; `agy models` lists
-  them). When `review.models.agy` is set it is passed as `--model`; otherwise agy uses
-  its persisted default (`agy models`).
-
-```bash
-# Pre-flight: snapshot the transcript watermark before invoking agy.
-# Must run BEFORE agy -p — this is what prevents the fallback from reading a stale prior response.
-_AGY_WS=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-_AGY_CACHE="$HOME/.gemini/antigravity-cli/cache/last_conversations.json"
-_AGY_MARK_CONV=""
-_AGY_MARK_LINES=0
-if [ -f "$_AGY_CACHE" ]; then
-  _AGY_MARK_CONV=$(jq -r --arg ws "$_AGY_WS" '
-    .[$ws] //
-    (to_entries
-     | map(select(.key | ascii_downcase == ($ws | ascii_downcase)))
-     | first | .value) //
-    empty
-  ' "$_AGY_CACHE" 2>/dev/null)
-  if [ -n "$_AGY_MARK_CONV" ] && [ "$_AGY_MARK_CONV" != "null" ]; then
-    _AGY_MARK_TX="$HOME/.gemini/antigravity-cli/brain/${_AGY_MARK_CONV}/.system_generated/logs/transcript.jsonl"
-    [ -f "$_AGY_MARK_TX" ] && _AGY_MARK_LINES=$(wc -l < "$_AGY_MARK_TX" | tr -d ' ')
-  fi
-fi
-
-# Step 1 — primary invocation: stdout works on macOS, Linux, and WSL.
-# Three hardening invariants (#2073), all mirroring the Cursor block's discipline:
-#   * FILE-REFERENCE prompt (not inline `$(cat …)`) — a large review prompt (≈197 KB
-#     for 6 plans + CONTEXT + RESEARCH + REQUIREMENTS) overflows the exec arg list
-#     (`bash: agy: Argument list too long`, rc 126), indistinguishable from a model
-#     failure when stderr is suppressed.
-#   * EXTERNAL `timeout` wrapper when available (GNU `timeout` / `gtimeout`) —
-#     `--print-timeout` is agy's native cap but it CANNOT fire before agy creates a
-#     session; under concurrent heavy runs one process can stall pre-session (no
-#     `brain/<conv-id>/` dir, alive at 583 s despite `--print-timeout 300s`). The
-#     external cap bounds wall-clock regardless. Stock macOS lacks `timeout`, so
-#     the block probes for it and falls back to --print-timeout alone there.
-#   * `--model` from `review.models.agy` when set — escape hatch for a pinned model
-#     that 404s server-side (exits 0 with empty stdout AND empty transcript).
-#   * stdin tied to /dev/null so agy never blocks on a tty.
-# A non-zero exit (external timeout = 124, crash, etc.) discards any partial output
-# so the Step 2 transcript fallback / Step 3 diagnostic take over.
-if [ -n "$AGY_MODEL" ] && [ "$AGY_MODEL" != "null" ]; then
-  set -- --model "$AGY_MODEL"
-else
-  set --
-fi
-# #2176: grant the reviewer the repo under review. Without --add-dir, agy's
-# permission context never receives the cwd repo — the agent anchors on its own
-# ~/.gemini/antigravity-cli/scratch dir and reviews the plan text in isolation
-# (the exact failure the Review Instructions forbid). Capability-probed so an
-# older agy without --add-dir still runs; the prompt anchor below keeps
-# absolute-path reads possible on that fallback.
-if agy --help 2>/dev/null | grep -q -- '--add-dir'; then
-  set -- "$@" --add-dir "$_AGY_WS"
-fi
-# #2176: anchor the prompt to the absolute repo root so repo-relative references
-# in the assembled review prompt resolve even on the no---add-dir fallback, and
-# require an explicit self-report if the reviewer still cannot read the repo.
-_AGY_PROMPT="Read the file at {run_dir}/gsd-review-prompt.md in full and carry out the review request it contains. The repository under review is at $_AGY_WS — resolve every relative file path in the review request against that absolute root and verify claims against those files. If you cannot read files under $_AGY_WS, begin your output with the exact line REVIEWED-WITHOUT-REPO-ACCESS before the review. Output only the resulting markdown review. Do not edit any files."
-# Capability-probe an external wall-clock killer (GNU coreutils `timeout` or the
-# macOS Homebrew `gtimeout`). Stock macOS ships NEITHER — a bare `timeout …` would
-# fail with rc 127 ("command not found") and silently lose the reviewer, so fall
-# back to agy's native --print-timeout alone in that case. The external cap, when
-# available, is set HIGHER than --print-timeout so it only backstops a pre-session
-# stall (which --print-timeout cannot bound — #2073 mode 3) and never pre-empts a
-# healthy run. Mirrors the probe in scripts/base64-scan.sh.
-_AGY_KILLER="$(command -v timeout 2>/dev/null || command -v gtimeout 2>/dev/null || true)"
-if [ -n "$_AGY_KILLER" ]; then
-  "$_AGY_KILLER" 600 agy --print-timeout 540s "$@" -p "$_AGY_PROMPT" </dev/null 2>/dev/null > {run_dir}/gsd-review-antigravity.md
-else
-  agy --print-timeout 540s "$@" -p "$_AGY_PROMPT" </dev/null 2>/dev/null > {run_dir}/gsd-review-antigravity.md
-fi
-_AGY_RC=$?
-if [ "$_AGY_RC" -ne 0 ]; then
-  : > {run_dir}/gsd-review-antigravity.md
-fi
-
-# Step 2 — transcript fallback: catches Windows agy -p stdout bug (and any future stdout-silent edge cases).
-# Reads only lines appended AFTER the pre-flight watermark. If agy failed before writing a new response,
-# _AGY_RESULT is empty and Step 3 fires — no stale content can leak through.
-# Undocumented paths, verified agy 1.0.0–1.0.2. See maintainer note above if these break.
-if [ ! -s {run_dir}/gsd-review-antigravity.md ]; then
-  if [ -f "$_AGY_CACHE" ]; then
-    _AGY_CONV=$(jq -r --arg ws "$_AGY_WS" '
-      .[$ws] //
-      (to_entries
-       | map(select(.key | ascii_downcase == ($ws | ascii_downcase)))
-       | first | .value) //
-      empty
-    ' "$_AGY_CACHE" 2>/dev/null)
-    if [ -n "$_AGY_CONV" ] && [ "$_AGY_CONV" != "null" ]; then
-      _AGY_TX="$HOME/.gemini/antigravity-cli/brain/${_AGY_CONV}/.system_generated/logs/transcript.jsonl"
-      if [ -f "$_AGY_TX" ]; then
-        # If conv-id changed, agy started a new session — all lines are new, skip 0.
-        # If same conv-id, only read lines beyond the watermark.
-        [ "$_AGY_CONV" = "$_AGY_MARK_CONV" ] && _AGY_SKIP=$_AGY_MARK_LINES || _AGY_SKIP=0
-        _AGY_RESULT=$(tail -n +"$((_AGY_SKIP + 1))" "$_AGY_TX" 2>/dev/null | \
-          jq -r 'select(.source=="MODEL" and .status=="DONE" and .type=="PLANNER_RESPONSE") | .content' \
-          2>/dev/null | tail -1)
-        [ -n "$_AGY_RESULT" ] && echo "$_AGY_RESULT" > {run_dir}/gsd-review-antigravity.md
-      fi
-    fi
-  fi
-fi
-
-# Step 3 — final guard: both approaches yielded nothing (auth error, first-run setup,
-# path schema changed, 404'd pinned model, pre-session stall, etc.)
-if [ ! -s {run_dir}/gsd-review-antigravity.md ]; then
-  {
-    echo "Antigravity review failed or returned empty output."
-    # #2073 mode 2: a pinned model that 404s exits 0 with empty stdout AND an empty
-    # transcript — the only evidence is in agy's own log. Surface it instead of a
-    # bare generic stub so the failure is diagnosable.
-    _AGY_LOG="$HOME/.gemini/antigravity-cli/cli.log"
-    if [ -f "$_AGY_LOG" ]; then
-      _AGY_ERR=$(grep -iE 'agent executor error|NOT_FOUND|Publisher model' "$_AGY_LOG" | tail -3)
-      if [ -n "$_AGY_ERR" ]; then
-        echo "agy log hint (pinned model may be unavailable — run 'agy models' and set review.models.agy):"
-        echo "$_AGY_ERR"
-      fi
-    fi
-    # #2073 mode 3: pre-session stall tell — no new conversation dir appeared.
-    echo "If no agy run started, that is the pre-session-stall case: check whether a new ~/.gemini/antigravity-cli/brain/<conv-id>/ dir appeared within ~30s of launch."
-  } > {run_dir}/gsd-review-antigravity.md
-fi
-
-# #2176: blind-review marker. Two tells that the reviewer ran without repo
-# access: the prompt's mandated REVIEWED-WITHOUT-REPO-ACCESS self-report in the
-# first lines of output, or the agent DECLARING the scratch dir as its
-# workspace. Both patterns are anchored — the self-report to the head of the
-# file, the scratch tell to a workspace-declaration phrasing — so a grounded
-# review that merely QUOTES these strings (e.g. reviewing this very file) is
-# never mis-stamped. Stamp a machine-readable marker so the Consensus Summary
-# down-weights the review instead of counting an ungrounded verdict at full
-# weight. (Temp file + mv, no in-place sed — BSD/GNU safe.)
-if [ -s {run_dir}/gsd-review-antigravity.md ] && \
-   { head -5 {run_dir}/gsd-review-antigravity.md | grep -q 'REVIEWED-WITHOUT-REPO-ACCESS' || \
-     grep -qiE '(workspace|working) (directory|dir).{0,40}antigravity-cli/scratch' {run_dir}/gsd-review-antigravity.md; }; then
-  {
-    echo "> [reviewed-without-repo-access] This reviewer ran without visibility into the repo under review — down-weight its verdict in the Consensus Summary."
-    echo ""
-    cat {run_dir}/gsd-review-antigravity.md
-  } > {run_dir}/gsd-review-antigravity.md.tmp && \
-  mv {run_dir}/gsd-review-antigravity.md.tmp {run_dir}/gsd-review-antigravity.md
-fi
-```
-
-<!-- reviewer-lane: ollama -->
-**Ollama (local, OpenAI-compatible):**
-
-Read host and model from config. All three local backends share the same `/v1/chat/completions` endpoint — only host and model differ. Use `jq --rawfile` to safely encode the multi-line prompt as JSON without shell-escaping issues.
-
-```bash
-# Shared helper: apply prompt-budget trimming for local reviewers
+# Shared budget-trim helper. Was defined inside the Ollama leg; it is lane-agnostic, so it is
+# hoisted here now that any lane may declare a promptBudgetKey. Returns non-zero when the budget
+# is too small for the minimum review set (prompt-budget exit 2 / 11).
 prepare_trimmed_prompt_for_reviewer() {
-  REVIEWER_KEY="$1"
-  REVIEWER_BUDGET="$2"
-  OUTPUT_PROMPT="$3"
-  OUTPUT_META="$4"
-
-  [ -z "$REVIEWER_BUDGET" ] && return 0
-  [ "$REVIEWER_BUDGET" = "null" ] && return 0
-  [ "$REVIEWER_BUDGET" = "0" ] && return 0
+  REVIEWER_KEY="$1"; REVIEWER_BUDGET="$2"; OUTPUT_PROMPT="$3"; OUTPUT_META="$4"
 
   PLAN_FILE_ARGS=""
-  for p in {run_dir}/gsd-review-plan-*.md; do
+  for p in "$RUN_DIR"/gsd-review-plan-*.md; do
     [ -f "$p" ] && PLAN_FILE_ARGS="$PLAN_FILE_ARGS --plan-file $p"
   done
   PROJECT_ARG=""
-  [ -f "{run_dir}/gsd-review-project.md" ] && PROJECT_ARG="--project-file {run_dir}/gsd-review-project.md"
+  [ -f "$RUN_DIR/gsd-review-project.md" ] && PROJECT_ARG="--project-file $RUN_DIR/gsd-review-project.md"
   CONTEXT_ARG=""
-  [ -f "{run_dir}/gsd-review-context.md" ] && CONTEXT_ARG="--context-file {run_dir}/gsd-review-context.md"
+  [ -f "$RUN_DIR/gsd-review-context.md" ] && CONTEXT_ARG="--context-file $RUN_DIR/gsd-review-context.md"
   RESEARCH_ARG=""
-  [ -f "{run_dir}/gsd-review-research.md" ] && RESEARCH_ARG="--research-file {run_dir}/gsd-review-research.md"
+  [ -f "$RUN_DIR/gsd-review-research.md" ] && RESEARCH_ARG="--research-file $RUN_DIR/gsd-review-research.md"
   REQUIREMENTS_ARG=""
-  [ -f "{run_dir}/gsd-review-requirements.md" ] && REQUIREMENTS_ARG="--requirements-file {run_dir}/gsd-review-requirements.md"
+  [ -f "$RUN_DIR/gsd-review-requirements.md" ] && REQUIREMENTS_ARG="--requirements-file $RUN_DIR/gsd-review-requirements.md"
 
   gsd_run query prompt-budget \
     --budget "$REVIEWER_BUDGET" \
-    --instructions-file "{run_dir}/gsd-review-instructions.md" \
-    --roadmap-file "{run_dir}/gsd-review-roadmap.md" \
+    --instructions-file "$RUN_DIR/gsd-review-instructions.md" \
+    --roadmap-file "$RUN_DIR/gsd-review-roadmap.md" \
     $PLAN_FILE_ARGS $PROJECT_ARG $CONTEXT_ARG $RESEARCH_ARG $REQUIREMENTS_ARG \
     --output-prompt "$OUTPUT_PROMPT" \
     --output-metadata "$OUTPUT_META"
   return $?
 }
 
-# Resolve prompt budget for Ollama: per-reviewer override > global default > null
-OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.ollama --raw 2>/dev/null || echo "null")
-if [ -z "$OLLAMA_REVIEWER_BUDGET" ] || [ "$OLLAMA_REVIEWER_BUDGET" = "null" ]; then
-  OLLAMA_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
-fi
+gsd_run query review-lane plan \
+  --selected "$SELECTED_REVIEWERS" --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" --json \
+  > "$RUN_DIR/gsd-review-lanes.json"
 
-# Apply budget trim for Ollama if a budget is configured
-OLLAMA_PROMPT_FILE="{run_dir}/gsd-review-prompt.md"
-OLLAMA_SKIP=0
-if [ -n "$OLLAMA_REVIEWER_BUDGET" ] && [ "$OLLAMA_REVIEWER_BUDGET" != "null" ] && [ "$OLLAMA_REVIEWER_BUDGET" != "0" ]; then
-  OLLAMA_TRIMMED_PROMPT="{run_dir}/gsd-review-prompt-ollama.md"
-  OLLAMA_TRIM_META="{run_dir}/gsd-review-prompt-ollama.metadata.json"
-  prepare_trimmed_prompt_for_reviewer "ollama" "$OLLAMA_REVIEWER_BUDGET" "$OLLAMA_TRIMMED_PROMPT" "$OLLAMA_TRIM_META"
-  OLLAMA_EXIT=$?
-  if [ $OLLAMA_EXIT -ne 0 ]; then
-    if [ $OLLAMA_EXIT -eq 2 ] || [ $OLLAMA_EXIT -eq 11 ]; then
-      echo "WARNING: prompt budget for ollama (${OLLAMA_REVIEWER_BUDGET} tokens) is too small for the minimum review set. Skipping Ollama reviewer." >&2
+for SLUG in $(echo "$SELECTED_REVIEWERS" | tr ',' ' '); do
+  # Per-lane prompt budget. The lane declares its own `promptBudgetKey`; `plan` resolved it,
+  # applying #2797's sentinel rule (-1 = unset → fall back to the global budget; 0 legitimately
+  # means "do not trim this lane"). Trimming itself stays in prompt-budget, which owns it.
+  LANE_BUDGET=$(gsd_run query review-lane plan --selected "$SLUG" --run-dir "$RUN_DIR" \
+                  --repo-root "$REPO_ROOT" --json 2>/dev/null \
+                | sed -n 's/.*"promptBudget": *\([0-9-]*\).*/\1/p' | head -1)
+  PROMPT_ARG=""
+  if [ -n "$LANE_BUDGET" ] && [ "$LANE_BUDGET" != "null" ] && [ "$LANE_BUDGET" -gt 0 ] 2>/dev/null; then
+    TRIMMED="$RUN_DIR/gsd-review-prompt-$SLUG.md"
+    if prepare_trimmed_prompt_for_reviewer "$SLUG" "$LANE_BUDGET" "$TRIMMED" \
+         "$RUN_DIR/gsd-review-prompt-$SLUG.metadata.json"; then
+      PROMPT_ARG="--prompt-file $TRIMMED"
     else
-      echo "WARNING: prompt-budget returned unexpected exit code ${OLLAMA_EXIT} for ollama. Skipping Ollama reviewer." >&2
+      # A budget too small for the minimum review set drops the lane just as silently as an empty
+      # response used to (#2605), so leave the skip visible in the review output, not only on stderr.
+      echo "$SLUG review skipped: prompt budget (${LANE_BUDGET} tokens) too small for the minimum review set." \
+        > "$RUN_DIR/gsd-review-$SLUG.md"
+      continue
     fi
-    OLLAMA_SKIP=1
-  else
-    OLLAMA_PROMPT_FILE="$OLLAMA_TRIMMED_PROMPT"
   fi
-fi
 
-if [ "$OLLAMA_SKIP" != "1" ]; then
-OLLAMA_HOST=$(gsd_run query config-get review.ollama_host --raw 2>/dev/null || echo "")
-if [ -z "$OLLAMA_HOST" ] || [ "$OLLAMA_HOST" = "null" ]; then OLLAMA_HOST="http://localhost:11434"; fi
-OLLAMA_MODEL=$(gsd_run query config-get review.models.ollama --raw 2>/dev/null || echo "")
-if [ -z "$OLLAMA_MODEL" ] || [ "$OLLAMA_MODEL" = "null" ]; then
-  OLLAMA_MODEL=$(curl -s --max-time 2 "${OLLAMA_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "llama3"' 2>/dev/null || echo "llama3")
-fi
-# #2605: brought to parity with the LM Studio / llama.cpp legs below. Ollama
-# already emitted a non-empty stub, so it never silently vanished — but it was
-# the LEAST diagnosable leg: bare `-s` (which suppresses curl's error text as
-# well as the progress meter), stderr to /dev/null, and the response piped
-# straight into jq so the body — where an OpenAI-compatible server puts its error
-# JSON on an HTTP 4xx/5xx, with curl still exiting 0 — was discarded unread.
-OLLAMA_RESPONSE=$(jq -n --rawfile content "$OLLAMA_PROMPT_FILE" \
-  --arg model "$OLLAMA_MODEL" \
-  '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -sS --max-time 120 -X POST "${OLLAMA_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-ollama.err)
-OLLAMA_CONTENT=$(echo "$OLLAMA_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
-case "$OLLAMA_CONTENT" in
-  *[![:space:]]*) : ;;
-  *) OLLAMA_CONTENT="" ;;
-esac
-if [ -n "$OLLAMA_CONTENT" ]; then
-  printf '%s\n' "$OLLAMA_CONTENT" > {run_dir}/gsd-review-ollama.md
-fi
-if [ ! -s {run_dir}/gsd-review-ollama.md ]; then
-  echo "Warning: Ollama returned empty content — see {run_dir}/gsd-review-ollama.md" >&2
-  echo "Ollama review failed or returned empty output. stderr:" > {run_dir}/gsd-review-ollama.md
-  cat {run_dir}/gsd-review-ollama.err >> {run_dir}/gsd-review-ollama.md 2>/dev/null
-  echo "Raw response body:" >> {run_dir}/gsd-review-ollama.md
-  printf '%s\n' "$OLLAMA_RESPONSE" >> {run_dir}/gsd-review-ollama.md
-fi
-else
-echo "Ollama review skipped: prompt budget (${OLLAMA_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-ollama.md
-fi
+  # One invocation, whatever the lane's transport, prompt channel, output channel or handler.
+  # `--explicit` marks a lane the user NAMED: ADR-2782 D4 — not finding a lane nobody asked for is
+  # normal, failing to run one somebody asked for is an error.
+  gsd_run query review-lane invoke --slug "$SLUG" \
+    --run-dir "$RUN_DIR" --repo-root "$REPO_ROOT" $PROMPT_ARG $EXPLICIT_FLAG --json \
+    >> "$RUN_DIR/gsd-review-lane-results.jsonl"
+done
 ```
 
-<!-- reviewer-lane: lm_studio -->
-**LM Studio (local, OpenAI-compatible):**
-```bash
-# Resolve prompt budget for LM Studio: per-reviewer override > global default > null
-LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.lm_studio --raw 2>/dev/null || echo "null")
-if [ -z "$LM_STUDIO_REVIEWER_BUDGET" ] || [ "$LM_STUDIO_REVIEWER_BUDGET" = "null" ]; then
-  LM_STUDIO_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
-fi
+Each lane leaves `{run_dir}/gsd-review-<slug>.md` — its review, or a diagnostic stub carrying the
+captured stderr (and, for an OpenAI-compatible lane, the raw response body, where such a server puts
+its error JSON on an HTTP 4xx/5xx while still exiting 0). A stub is never mistaken for a clean
+review: it keeps its "failed or returned empty output" header (#2494/#2605/#2794).
 
-# Apply budget trim for LM Studio if a budget is configured
-LM_STUDIO_PROMPT_FILE="{run_dir}/gsd-review-prompt.md"
-LM_STUDIO_SKIP=0
-if [ -n "$LM_STUDIO_REVIEWER_BUDGET" ] && [ "$LM_STUDIO_REVIEWER_BUDGET" != "null" ] && [ "$LM_STUDIO_REVIEWER_BUDGET" != "0" ]; then
-  LM_STUDIO_TRIMMED_PROMPT="{run_dir}/gsd-review-prompt-lm_studio.md"
-  LM_STUDIO_TRIM_META="{run_dir}/gsd-review-prompt-lm_studio.metadata.json"
-  prepare_trimmed_prompt_for_reviewer "lm_studio" "$LM_STUDIO_REVIEWER_BUDGET" "$LM_STUDIO_TRIMMED_PROMPT" "$LM_STUDIO_TRIM_META"
-  LM_STUDIO_EXIT=$?
-  if [ $LM_STUDIO_EXIT -ne 0 ]; then
-    if [ $LM_STUDIO_EXIT -eq 2 ] || [ $LM_STUDIO_EXIT -eq 11 ]; then
-      echo "WARNING: prompt budget for lm_studio (${LM_STUDIO_REVIEWER_BUDGET} tokens) is too small for the minimum review set. Skipping LM Studio reviewer." >&2
-    else
-      echo "WARNING: prompt-budget returned unexpected exit code ${LM_STUDIO_EXIT} for lm_studio. Skipping LM Studio reviewer." >&2
-    fi
-    LM_STUDIO_SKIP=1
-  else
-    LM_STUDIO_PROMPT_FILE="$LM_STUDIO_TRIMMED_PROMPT"
-  fi
-fi
-
-if [ "$LM_STUDIO_SKIP" != "1" ]; then
-LM_STUDIO_HOST=$(gsd_run query config-get review.lm_studio_host --raw 2>/dev/null || echo "")
-if [ -z "$LM_STUDIO_HOST" ] || [ "$LM_STUDIO_HOST" = "null" ]; then LM_STUDIO_HOST="http://localhost:1234"; fi
-LM_STUDIO_MODEL=$(gsd_run query config-get review.models.lm_studio --raw 2>/dev/null || echo "")
-if [ -z "$LM_STUDIO_MODEL" ] || [ "$LM_STUDIO_MODEL" = "null" ]; then
-  LM_STUDIO_MODEL=$(curl -s --max-time 2 "${LM_STUDIO_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
-fi
-# #2605: same guard as the claude/gemini/codex legs above (#2494/#2592). Two
-# changes make a dropped lane diagnosable rather than silently omitted:
-#   1. `-sS` instead of `-s`. Plain `-s` silences curl's ERROR text too, so an
-#      unreachable endpoint produced no message anywhere. `-S` restores errors
-#      while keeping the progress meter off; they land in the .err sidecar.
-#   2. An `[ ! -s … ]` stub. Previously nothing was written when content was
-#      empty, so the file never existed, write_reviews omitted the section, and
-#      the result was indistinguishable from the reviewer never being selected.
-# The raw response body is appended too: an HTTP 4xx/5xx from an OpenAI-compatible
-# server exits 0 with the error JSON in the BODY, so stderr alone would be empty.
-LM_STUDIO_RESPONSE=$(jq -n --rawfile content "$LM_STUDIO_PROMPT_FILE" \
-  --arg model "$LM_STUDIO_MODEL" \
-  '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -sS --max-time 120 -X POST "${LM_STUDIO_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-lm_studio.err)
-LM_STUDIO_ACTUAL_MODEL=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.model // ""' 2>/dev/null || echo "")
-if [ -n "$LM_STUDIO_ACTUAL_MODEL" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "null" ] && [ "$LM_STUDIO_ACTUAL_MODEL" != "$LM_STUDIO_MODEL" ]; then
-  echo "Warning: LM Studio served model '$LM_STUDIO_ACTUAL_MODEL' but '$LM_STUDIO_MODEL' was requested. Review may be from a different model." >&2
-fi
-LM_STUDIO_CONTENT=$(echo "$LM_STUDIO_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
-# A whitespace-only reply must count as empty. `[ ! -s … ]` counts BYTES, so a
-# response of "   " would be written out and pass the guard as a "successful"
-# but vacuous review — the same indistinguishable-from-success outcome the guard
-# exists to prevent. Command substitution strips trailing newlines but not
-# spaces, so this case-glob is what actually closes it.
-case "$LM_STUDIO_CONTENT" in
-  *[![:space:]]*) : ;;
-  *) LM_STUDIO_CONTENT="" ;;
-esac
-# printf, not echo: `echo "$VAR"` swallows a value that is exactly `-n`/`-e`/`-E`
-# and would write 0 bytes, misclassifying a real reply as empty. Same idiom the
-# OpenCode leg already uses above.
-if [ -n "$LM_STUDIO_CONTENT" ]; then
-  printf '%s\n' "$LM_STUDIO_CONTENT" > {run_dir}/gsd-review-lm_studio.md
-fi
-if [ ! -s {run_dir}/gsd-review-lm_studio.md ]; then
-  echo "Warning: LM Studio returned empty content — see {run_dir}/gsd-review-lm_studio.md" >&2
-  echo "LM Studio review failed or returned empty output. stderr:" > {run_dir}/gsd-review-lm_studio.md
-  cat {run_dir}/gsd-review-lm_studio.err >> {run_dir}/gsd-review-lm_studio.md 2>/dev/null
-  echo "Raw response body:" >> {run_dir}/gsd-review-lm_studio.md
-  printf '%s\n' "$LM_STUDIO_RESPONSE" >> {run_dir}/gsd-review-lm_studio.md
-fi
-else
-# A budget skip drops the lane just as silently as an empty response did: no
-# file, so write_reviews omits the section entirely. Leave the same diagnosable
-# stub so the skip is visible in the review output, not only on stderr (#2605).
-echo "LM Studio review skipped: prompt budget (${LM_STUDIO_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-lm_studio.md
-fi
-```
-
-<!-- reviewer-lane: llama_cpp -->
-**llama.cpp (local, OpenAI-compatible):**
-```bash
-# Resolve prompt budget for llama.cpp: per-reviewer override > global default > null
-LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens_per_reviewer.llama_cpp --raw 2>/dev/null || echo "null")
-if [ -z "$LLAMA_CPP_REVIEWER_BUDGET" ] || [ "$LLAMA_CPP_REVIEWER_BUDGET" = "null" ]; then
-  LLAMA_CPP_REVIEWER_BUDGET=$(gsd_run query config-get review.max_prompt_tokens --raw 2>/dev/null || echo "null")
-fi
-
-# Apply budget trim for llama.cpp if a budget is configured
-LLAMA_CPP_PROMPT_FILE="{run_dir}/gsd-review-prompt.md"
-LLAMA_CPP_SKIP=0
-if [ -n "$LLAMA_CPP_REVIEWER_BUDGET" ] && [ "$LLAMA_CPP_REVIEWER_BUDGET" != "null" ] && [ "$LLAMA_CPP_REVIEWER_BUDGET" != "0" ]; then
-  LLAMA_CPP_TRIMMED_PROMPT="{run_dir}/gsd-review-prompt-llama_cpp.md"
-  LLAMA_CPP_TRIM_META="{run_dir}/gsd-review-prompt-llama_cpp.metadata.json"
-  prepare_trimmed_prompt_for_reviewer "llama_cpp" "$LLAMA_CPP_REVIEWER_BUDGET" "$LLAMA_CPP_TRIMMED_PROMPT" "$LLAMA_CPP_TRIM_META"
-  LLAMA_CPP_EXIT=$?
-  if [ $LLAMA_CPP_EXIT -ne 0 ]; then
-    if [ $LLAMA_CPP_EXIT -eq 2 ] || [ $LLAMA_CPP_EXIT -eq 11 ]; then
-      echo "WARNING: prompt budget for llama_cpp (${LLAMA_CPP_REVIEWER_BUDGET} tokens) is too small for the minimum review set. Skipping llama.cpp reviewer." >&2
-    else
-      echo "WARNING: prompt-budget returned unexpected exit code ${LLAMA_CPP_EXIT} for llama_cpp. Skipping llama.cpp reviewer." >&2
-    fi
-    LLAMA_CPP_SKIP=1
-  else
-    LLAMA_CPP_PROMPT_FILE="$LLAMA_CPP_TRIMMED_PROMPT"
-  fi
-fi
-
-if [ "$LLAMA_CPP_SKIP" != "1" ]; then
-LLAMA_CPP_HOST=$(gsd_run query config-get review.llama_cpp_host --raw 2>/dev/null || echo "")
-if [ -z "$LLAMA_CPP_HOST" ] || [ "$LLAMA_CPP_HOST" = "null" ]; then LLAMA_CPP_HOST="http://localhost:8080"; fi
-LLAMA_CPP_MODEL=$(gsd_run query config-get review.models.llama_cpp --raw 2>/dev/null || echo "")
-if [ -z "$LLAMA_CPP_MODEL" ] || [ "$LLAMA_CPP_MODEL" = "null" ]; then
-  LLAMA_CPP_MODEL=$(curl -s --max-time 2 "${LLAMA_CPP_HOST}/v1/models" 2>/dev/null | jq -r '.data[0].id // "local-model"' 2>/dev/null || echo "local-model")
-fi
-# #2605: same guard as the LM Studio leg above. The response is captured to a
-# variable FIRST rather than piped straight into jq — piping discarded the raw
-# body, which is exactly where an OpenAI-compatible server puts its error JSON on
-# an HTTP 4xx/5xx (curl still exits 0), leaving nothing to diagnose.
-LLAMA_CPP_RESPONSE=$(jq -n --rawfile content "$LLAMA_CPP_PROMPT_FILE" \
-  --arg model "$LLAMA_CPP_MODEL" \
-  '{model: $model, messages: [{role: "user", content: $content}]}' | \
-  curl -sS --max-time 120 -X POST "${LLAMA_CPP_HOST}/v1/chat/completions" \
-    -H "Content-Type: application/json" -d @- 2>{run_dir}/gsd-review-llama_cpp.err)
-LLAMA_CPP_CONTENT=$(echo "$LLAMA_CPP_RESPONSE" | jq -r '.choices[0].message.content // ""' 2>/dev/null || echo "")
-# Whitespace-only reply counts as empty; printf not echo. See the LM Studio leg
-# above for why both are required.
-case "$LLAMA_CPP_CONTENT" in
-  *[![:space:]]*) : ;;
-  *) LLAMA_CPP_CONTENT="" ;;
-esac
-if [ -n "$LLAMA_CPP_CONTENT" ]; then
-  printf '%s\n' "$LLAMA_CPP_CONTENT" > {run_dir}/gsd-review-llama_cpp.md
-fi
-if [ ! -s {run_dir}/gsd-review-llama_cpp.md ]; then
-  echo "Warning: llama.cpp returned empty content — see {run_dir}/gsd-review-llama_cpp.md" >&2
-  echo "llama.cpp review failed or returned empty output. stderr:" > {run_dir}/gsd-review-llama_cpp.md
-  cat {run_dir}/gsd-review-llama_cpp.err >> {run_dir}/gsd-review-llama_cpp.md 2>/dev/null
-  echo "Raw response body:" >> {run_dir}/gsd-review-llama_cpp.md
-  printf '%s\n' "$LLAMA_CPP_RESPONSE" >> {run_dir}/gsd-review-llama_cpp.md
-fi
-else
-echo "llama.cpp review skipped: prompt budget (${LLAMA_CPP_REVIEWER_BUDGET} tokens) too small for the minimum review set." > {run_dir}/gsd-review-llama_cpp.md
-fi
-```
-
-If a CLI or local server fails, log the error and continue with remaining reviewers.
+A lane that will not run reports a typed reason rather than an empty file — `missing_binary`,
+`probe_failed`, `probe_timeout`, `missing_required_binary`, `host_unreachable`,
+`egress_host_changed`, `unknown_handler`, `budget_too_small`. **`egress_host_changed` means the lane
+was consented to send plans to one destination and `.planning/config.json` now names another; it is
+blocked, not silently redirected** (ADR-2782 D5).
 
 Display progress:
 ```
@@ -966,83 +434,26 @@ trimmed_reviewers:        # only present if at least one reviewer was trimmed
 
 # Cross-AI Plan Review — Phase {N}
 
-## Gemini Review
+<!-- Sections are RENDERED from each lane's declared `reviewsSection`, in descriptor order.
+     There is deliberately no hardcoded per-reviewer heading list here any more: a hand-maintained
+     list is exactly the drift #2781 was filed about, and it silently disagreed with the roster.
+     `gsd_run query review-lane sections --selected "$SELECTED_REVIEWERS"` emits
+     `<slug><TAB><reviewsSection>` in order; for each row, emit:
 
-{gemini review content}
+         ## <reviewsSection> Review
 
----
+         {contents of {run_dir}/gsd-review-<slug>.md}
 
-## Claude Review
+         ---
 
-{claude review content}
+     Two headings must NOT be generated from this list, because they are not lanes:
+       * `## <Adapter> Review (<instance>)` — an ADR-1517 reviewer INSTANCE resolves THROUGH a lane
+         and is rendered from the instance list, not the lane list (ADR-2782 D8).
+       * `## Consensus Summary` — not a review section at all.
 
----
-
-## Codex Review
-
-{codex review content}
-
----
-
-## CodeRabbit Review
-
-{coderabbit review content}
-
----
-
-## OpenCode Review
-
-{opencode review content}
-
----
-
-## OpenCode Review (opencode-deepseek)
-
-{opencode-deepseek instance review content — only present when this instance was selected}
-
----
-
-## OpenCode Review (opencode-mimo)
-
-{opencode-mimo instance review content — only present when this instance was selected}
-
----
-
-## Qwen Review
-
-{qwen review content}
-
----
-
-## Cursor Review
-
-{cursor review content}
-
----
-
-## Antigravity Review
-
-{antigravity review content}
-
----
-
-## Ollama Review
-
-{ollama review content}
-
----
-
-## LM Studio Review
-
-{lm_studio review content}
-
----
-
-## llama.cpp Review
-
-{llama_cpp review content}
-
----
+     A lane whose `evidenceClass` is `diff-only` (CodeRabbit) carries its caveat from data: it never
+     received the source-grounding prompt, so its verdict is folded in as a diff observation and is
+     not weighted as a grounded plan review. -->
 
 ## Consensus Summary
 

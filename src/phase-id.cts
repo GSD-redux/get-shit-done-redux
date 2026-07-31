@@ -595,9 +595,38 @@ function parsePhaseFromProse(value: string | null): { phase: string | null; name
   // cannot drive O(n^2) regex backtracking (CPU-exhaustion DoS). A real phase
   // name is far shorter than the cap.
   const parenName = str.match(/\(([^)]{1,200})\)/);
-  const dashName = str.match(/—\s*([^(\n]{1,200}?)(?:\s*\(|$)/);
-  const rawName = parenName?.[1] ?? dashName?.[1] ?? null;
-  const name = rawName && !/^(?:complete|executing|not started)$/i.test(rawName.trim())
+  // #2736 (the #1695 AC #3 residual): status-keyword-aware precedence. The
+  // first-party writer shapes are `N — Name (aside)` (completePhaseCore),
+  // `N (Name) — EXECUTING` (beginPhaseCore), `N — COMPLETE`, and the
+  // gsd2-import `N (slug) — Milestone: Title`. A blind paren-first read
+  // harvests the aside as the name on the first shape; a blind dash-first
+  // read harvests the status keyword on the others. Prefer the em-dash name
+  // when it is a genuine name, else fall back to the parenthetical. Still
+  // lossy for names that themselves contain a parenthetical — transitions
+  // that hold the exact name bypass this parser entirely via the
+  // syncStateFrontmatter authoritative override.
+  //
+  // The em-dash separator is searched on a paren-stripped copy, so an em-dash
+  // INSIDE a parenthetical name (`16 (Native — Global Hotkey) — EXECUTING`)
+  // can never be mistaken for the name separator.
+  const strNoParens = str.replace(/\([^)\n]{0,200}\)/g, ' ');
+  const dashName = strNoParens.match(/—\s*([^(\n]{1,200}?)\s*$/);
+  // The precedence-decision vocabulary is deliberately broader than the final
+  // name-nulling filter below: a dash tail that merely LOOKS like a status
+  // annotation should lose to a parenthetical name, without changing which
+  // extracted names are nulled (that set stays the long-standing three).
+  const STATUS_WORD_RE = /^(?:complete|executing|not started)$/i;
+  const STATUSY_TAIL_RE = /^(?:completed?|executing|not started|planning|planned|ready(?:\s+to\s+\S.{0,50})?|done|in progress|blocked|paused|verifying)$/i;
+  const dashRaw = dashName?.[1]?.trim() ?? null;
+  const dashIsName = dashRaw !== null && dashRaw.length > 0
+    && !STATUSY_TAIL_RE.test(dashRaw)
+    && !/^milestone\s*:/i.test(dashRaw)
+    // A lone ALL-CAPS token after the dash reads as a status marker whenever a
+    // parenthetical name exists to prefer (the beginPhase writer's systematic
+    // `(Name) — STATUS` shape); with no parenthetical it stays the best guess.
+    && !(parenName && /^[A-Z][A-Z0-9_-]*$/.test(dashRaw));
+  const rawName = dashIsName ? dashRaw : (parenName?.[1] ?? dashRaw ?? null);
+  const name = rawName && !STATUS_WORD_RE.test(rawName.trim())
     ? rawName.trim()
     : null;
   return {
