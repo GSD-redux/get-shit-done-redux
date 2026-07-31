@@ -524,7 +524,6 @@ The prompt-level data/instruction isolation seam for untrusted web/document ingr
 `RULESET.CODERABBIT.GUARD.RESOLVE=fix validated finding -> focused tests -> commit/push -> resolveReviewThread(threadId) -> wait CI/CodeRabbit -> final unresolved_count query`
 `RULESET.CODERABBIT.GUARD.SCOPE=if a new @me open PR appears during final list, include it in the same guard pass before declaring all-open-PRs complete`
 `RULESET.TESTS.CODERABBIT_FIX=prefer exported-function behavioral tests over source-grep; lint-no-source-grep rejects readFileSync source assertions without allow-test-rule`
-`RULESET.WORKFLOW_MARKDOWN.FENCES=when editing shell snippets inside workflow markdown, preserve the opening language fence; malformed fence can create fresh CodeRabbit threads`
 `CI.GATE.issue-link-required=hard-fail if PR body lacks closes/fixes/resolves #<issue>`
 `CI.GATE.changeset-lint=hard-fail for user-facing code diffs unless .changeset/* or PR has no-changelog label`
 `CI.GATE.repair-sequence(PR)=create issue -> apply approval label -> edit PR body w/ closing keyword -> apply no-changelog if appropriate -> re-run checks`
