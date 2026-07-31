@@ -270,28 +270,27 @@ elif [ -n "$DIFF_BASE" ]; then
     ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
     ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
 
-  # Build a newline-delimited list of already-scoped files for membership testing
-  # (portable — bash 3.2 on macOS has no associative arrays)
-  IN_SCOPE=$(
-    printf '%s\n' "${REVIEW_FILES[@]}"
-    printf '\n'
-  )
+  # Build a newline-delimited list of already-scoped files for exact membership
+  # testing (portable — bash 3.2 on macOS has no associative arrays). grep -Fxq
+  # matches the WHOLE line exactly, so a short basename (e.g. root `Dockerfile`)
+  # does NOT substring-match a longer scoped path (e.g. `docker/Dockerfile`).
+  IN_SCOPE=$(printf '%s\n' "${REVIEW_FILES[@]}")
 
   MISSING_FROM_SUMMARY=()
   while IFS= read -r file; do
     [ -z "$file" ] && continue
-    # Membership test against the newline-delimited scope (portable pattern match)
-    case "$IN_SCOPE" in
-      *"$file"$'\n'*) ;;  # already scoped
-      *) MISSING_FROM_SUMMARY+=("$file"); REVIEW_FILES+=("$file") ;;
-    esac
+    # Exact whole-line match; grep nonzero-exit => not in scope.
+    if printf '%s\n' "${REVIEW_FILES[@]}" | grep -Fxq -- "$file" 2>/dev/null; then
+      : # already scoped
+    else
+      MISSING_FROM_SUMMARY+=("$file"); REVIEW_FILES+=("$file")
+    fi
   done <<< "$DIFF_FILES"
 
   if [ ${#MISSING_FROM_SUMMARY[@]} -gt 0 ]; then
     echo "Warning: SUMMARY scope was missing ${#MISSING_FROM_SUMMARY[@]} changed file(s) the git diff surfaced; adding them to the review scope:"
     printf '  - %s\n' "${MISSING_FROM_SUMMARY[@]}"
   fi
-  unset IN_SCOPE
 fi
 ```
 

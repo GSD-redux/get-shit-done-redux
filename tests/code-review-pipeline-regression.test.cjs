@@ -315,7 +315,7 @@ describe('Bug 1 — compute_file_scope SUMMARY parser', () => {
   // AND-joined predicate that required BOTH a `/` and a trailing extension —
   // that predicate dropped every root-level file and every extensionless build
   // file. Catches a revert of the #2666 fix.
-  test('#2666 docs-parity: compute_file_scope does not contain the buggy /\//.test && extension predicate', () => {
+  test('#2666 docs-parity: compute_file_scope does not contain the buggy slash-and-extension predicate', () => {
     const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
     const scriptStart = src.indexOf('const files = [];');
     const scriptEnd = src.indexOf('if (files.length)', scriptStart);
@@ -355,6 +355,29 @@ describe('Bug 1 — compute_file_scope SUMMARY parser', () => {
     assert.ok(
       /warn|missing|not surfaced|did not|not in/i.test(src),
       'code-review.md must warn when git diff contains files the SUMMARY extractor dropped (#2666)'
+    );
+  });
+
+  // #2666 docs-parity: the membership test must be EXACT whole-line matching
+  // (grep -Fxq), not an unanchored `case` substring match — otherwise a short
+  // basename in the diff (root `Dockerfile`) substring-matches a longer scoped
+  // path (`docker/Dockerfile`) and is silently skipped, reintroducing the bug.
+  test('#2666 docs-parity: Tier-3 cross-check uses exact whole-line matching (grep -Fxq), not substring case', () => {
+    const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    assert.ok(
+      src.includes('grep -Fxq'),
+      'code-review.md Tier-3 cross-check must use grep -Fxq (exact whole-line match) for membership ' +
+        'testing, not an unanchored `case` substring match that would skip a root `Dockerfile` ' +
+        'whose name appears as a suffix of an already-scoped `docker/Dockerfile` (#2666)'
+    );
+    // The unanchored substring `case "$IN_SCOPE" in` membership test must NOT be
+    // present — it would false-match a basename suffix. Plain substring check (no
+    // regex, so no CRLF-fragility): the grep -Fxq positive guard above proves the
+    // correct mechanism; this negative guard catches a revert to the `case` form.
+    assert.ok(
+      !src.includes('case "$IN_SCOPE"'),
+      'code-review.md Tier-3 must not use the unanchored `case "$IN_SCOPE"` substring membership ' +
+        'test (#2666) — use grep -Fxq for exact whole-line matching'
     );
   });
 });
