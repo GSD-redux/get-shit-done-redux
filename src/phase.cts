@@ -1771,8 +1771,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     );
   }
   const unsummarizedPlans = findUnsummarizedPlans(
-    coverageScan.planFiles as string[],
-    coverageScan.summaryFiles as string[],
+    coverageScan.planFiles,
+    coverageScan.summaryFiles,
   );
   if (unsummarizedPlans.length > 0) {
     // Sanitize plan filenames before interpolation: they come raw from
@@ -1788,10 +1788,9 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     // that some plans are missing summaries. The status: superseded marker is a
     // committable, review-time-trusted bypass; surfacing its count keeps that
     // bypass visible rather than silent.
+    const phaseInfoPlanCount = Array.isArray(phaseInfo['plans']) ? (phaseInfo['plans'] as string[]).length : 0;
     const supersededCount =
-      (coverageScan.planFiles as string[]).length === 0
-        ? 0
-        : (phaseInfo['plans'] ? (phaseInfo['plans'] as string[]).length : 0) - (coverageScan.planFiles as string[]).length;
+      coverageScan.planFiles.length === 0 ? 0 : Math.max(0, phaseInfoPlanCount - coverageScan.planFiles.length);
     const supersededNote = supersededCount > 0
       ? ` ${supersededCount} plan(s) excluded as status: superseded (retired).`
       : '';
