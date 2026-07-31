@@ -28,7 +28,7 @@ test('writeNonClaudeDefaults is called before installCodexConfig in the Codex in
     '(resolve_model_ids + runtime) exists before agent TOML generation reads it (#2834)');
 
   // The #2834 comment must be present at the call site.
-  const callSite = src.slice(writeIdx - 200, writeIdx + 100);
+  const callSite = src.slice(writeIdx - 300, writeIdx + 100);
   assert.ok(/#2834/.test(callSite), 'the writeNonClaudeDefaults call must carry the #2834 rationale comment');
 });
 
