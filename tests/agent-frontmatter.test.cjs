@@ -1312,8 +1312,13 @@ describe('Bug #2647: gsd-code-fixer worktree path is repo-relative, not a hardco
     const assigns = [];
     const lines = markdown.split('\n');
     for (const line of lines) {
-      const idx = line.indexOf('wt=');
-      if (idx === -1) continue;
+      // Match `wt=` only as a whole token (preceded by start-of-line or
+      // whitespace) so `prior_wt=` and `${reviewfix_wt}`-style names are not
+      // captured. `\b` would also match the `wt` in `prior_wt`, so anchor on
+      // `(?:^|\s)wt=`.
+      const m = /(?:^|\s)wt=/.exec(line);
+      if (!m) continue;
+      const idx = m.index + m[0].length - 'wt='.length;
       // Skip inline-code spans (odd backtick count before the match).
       const before = line.slice(0, idx);
       if ((before.match(/`/g) || []).length % 2 === 1) continue;
