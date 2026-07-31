@@ -160,6 +160,71 @@ const EOS_REQUIRED = Object.freeze([...BASE_REQUIRED, 'protocolVersion']);
 // the same twelve top-level fields. Only `interactions` differs.
 const REVIEWER_REQUIRED = Object.freeze([...BASE_REQUIRED]);
 
+// Control-character rejection (defense in depth): `allowTabNewline` widens the
+// reject-set exception for the two shell-snippet fields (install/uninstall),
+// which legitimately contain tabs/newlines; every other free text field
+// disallows ALL C0 control characters plus DEL (incl. \n/\t). Checked via char
+// codes (not a literal control-char regex range) — same approach as
+// capability-validator.cjs's hooks[].matcher check, which avoids tripping
+// ESLint's no-control-regex rule. Module-scope so both the top-level field
+// checks inside `validateEntries` and the `interactions` sub-object
+// validators (module-level functions, outside that closure) share the ONE
+// implementation rather than each keeping their own copy.
+function hasDisallowedControlChar(v, allowTabNewline) {
+  for (let c = 0; c < v.length; c += 1) {
+    const code = v.charCodeAt(c);
+    if (allowTabNewline && (code === 0x09 || code === 0x0a)) continue;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
+// Caps for `interactions` array-of-strings fields (configKeys, requires,
+// runtimeCompat, produces, consumes, requiresBinaries, ...). These bound
+// UNTRUSTED third-party strings that are rendered verbatim (after mdInline
+// escaping) into a committed Markdown catalog — an unbounded count or length
+// lets a malicious registry PR blow up the generated doc.
+const INTERACTION_STRING_MAX = 200;
+const INTERACTION_ARRAY_MAX = 50;
+
+/**
+ * Validate an interactions field that is an array of free-form untrusted
+ * strings: shape, element count, per-element length, and control characters.
+ * `allowEmpty` distinguishes "may be empty" fields from non-empty-required
+ * ones — non-empty-required fields' blank-array message is expected to be
+ * handled by the caller (this helper does not special-case emptiness itself
+ * beyond letting an empty array with `allowEmpty: true` through).
+ *
+ * @param {object} interactions
+ * @param {string} field
+ * @param {(field: string, reason: string) => void} addError
+ * @param {{allowEmpty?: boolean}} [opts]
+ * @returns {void}
+ */
+function validateStringArrayField(interactions, field, addError, { allowEmpty = true } = {}) {
+  const v = interactions[field];
+  const qualifiedField = `interactions.${field}`;
+
+  if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) {
+    addError(qualifiedField, 'must be an array of strings');
+    return;
+  }
+
+  if (!allowEmpty && v.length === 0) return;
+
+  if (v.length > INTERACTION_ARRAY_MAX) {
+    addError(qualifiedField, `exceeds max entries ${INTERACTION_ARRAY_MAX}`);
+  }
+
+  for (const x of v) {
+    if (x.length > INTERACTION_STRING_MAX) {
+      addError(qualifiedField, `exceeds max length ${INTERACTION_STRING_MAX}`);
+    } else if (hasDisallowedControlChar(x, false)) {
+      addError(qualifiedField, 'must not contain control characters');
+    }
+  }
+}
+
 // Escape Markdown inline metacharacters in UNTRUSTED free text so a registry
 // entry cannot inject links/tables/code-spans into the generated catalog.
 // Neutralizes: link hijack ([ ] ( )), table breakout (|), code span (`),
@@ -242,10 +307,7 @@ function validateCapabilityInteractions(interactions, addError) {
 
   for (const field of ['configKeys', 'requires', 'runtimeCompat', 'produces', 'consumes']) {
     if (interactions[field] === undefined) continue;
-    const v = interactions[field];
-    if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) {
-      addError(`interactions.${field}`, 'must be an array of strings');
-    }
+    validateStringArrayField(interactions, field, addError);
   }
 }
 
@@ -394,15 +456,14 @@ function validateReviewerInteractions(interactions, addError) {
       addError('interactions.reviewsSection', 'must be a non-empty string');
     } else if (v.length > REVIEWER_SECTION_MAX) {
       addError('interactions.reviewsSection', `exceeds max length ${REVIEWER_SECTION_MAX}`);
+    } else if (hasDisallowedControlChar(v, false)) {
+      addError('interactions.reviewsSection', 'must not contain control characters');
     }
   }
 
   for (const field of ['requiresBinaries', 'configKeys', 'runtimeCompat']) {
     if (interactions[field] === undefined) continue;
-    const v = interactions[field];
-    if (!Array.isArray(v) || !v.every((x) => typeof x === 'string')) {
-      addError(`interactions.${field}`, 'must be an array of strings');
-    }
+    validateStringArrayField(interactions, field, addError);
   }
 }
 
@@ -475,21 +536,9 @@ function validateEntries(entries, opts) {
       }
     }
 
-    // Control-character rejection (defense in depth): `allowTabNewline` widens
-    // the reject-set exception for the two shell-snippet fields (install/
-    // uninstall), which legitimately contain tabs/newlines; every other free
-    // text field disallows ALL C0 control characters plus DEL (incl. \n/\t).
-    // Checked via char codes (not a literal control-char regex range) — same
-    // approach as capability-validator.cjs's hooks[].matcher check, which
-    // avoids tripping ESLint's no-control-regex rule.
-    const hasDisallowedControlChar = (v, allowTabNewline) => {
-      for (let c = 0; c < v.length; c += 1) {
-        const code = v.charCodeAt(c);
-        if (allowTabNewline && (code === 0x09 || code === 0x0a)) continue;
-        if (code < 0x20 || code === 0x7f) return true;
-      }
-      return false;
-    };
+    // Control-character rejection (defense in depth) — delegates to the
+    // module-scope `hasDisallowedControlChar` (shared with the `interactions`
+    // sub-object validators below) so there is exactly one implementation.
     const checkNoControlChars = (field, allowTabNewline) => {
       if (missing.has(field)) return;
       const v = entry[field];
@@ -587,11 +636,83 @@ function validateEntries(entries, opts) {
   return { ok: errors.length === 0, errors };
 }
 
-// Per-type page presentation. Keyed by a Map for the same reason as TYPE_RULES.
+// Per-type page presentation AND per-type interaction summary both live in
+// this ONE table (Map, for the same CodeQL reason as TYPE_RULES): title/
+// addNoun drive the page header, buildSummary drives the per-entry "Every
+// interaction with GSD" line. Folding both into a single lookup means a
+// future fourth registry type MUST supply its own buildSummary or the
+// `RENDER_META.get` miss below throws — it cannot silently inherit
+// capability's (or any other type's) rendering the way the old if/else-if/
+// else chain's final `else` branch used to.
 const RENDER_META = new Map([
-  ['capability', { title: 'GSD Community Capability Registry', addNoun: 'capability' }],
-  ['eos', { title: 'GSD EoS Registry', addNoun: 'integration' }],
-  ['reviewer', { title: 'GSD Reviewer Lane Registry', addNoun: 'reviewer lane' }],
+  [
+    'capability',
+    {
+      title: 'GSD Community Capability Registry',
+      addNoun: 'capability',
+      buildSummary(entry, interactions) {
+        let summary =
+          `Loop Extension Points: ${(interactions.loopExtensionPoints || []).join(', ')}; ` +
+          `hook kinds: ${(interactions.hookKinds || []).join(', ')}`;
+        for (const field of ['configKeys', 'requires', 'runtimeCompat', 'produces', 'consumes']) {
+          const v = interactions[field];
+          if (Array.isArray(v) && v.length > 0) summary += `; ${field}: ${v.join(', ')}`;
+        }
+        // configKeys/requires/runtimeCompat/produces/consumes are untrusted
+        // free-form strings (schema only requires "array of strings") — same
+        // single-pass mdInline rationale as the eos branch above.
+        return summary;
+      },
+    },
+  ],
+  [
+    'eos',
+    {
+      title: 'GSD EoS Registry',
+      addNoun: 'integration',
+      buildSummary(entry, interactions) {
+        // Required AXES keys always render, in their fixed order; an OPTIONAL_AXES
+        // key (e.g. `effortSurface`) renders ONLY when the entry actually carries
+        // it — an entry that omits it must render byte-identical to before
+        // OPTIONAL_AXES existed (no `effortSurface=undefined` noise).
+        const presentOptionalKeys = Object.keys(OPTIONAL_AXES).filter(
+          (key) => interactions.axes && Object.hasOwn(interactions.axes, key),
+        );
+        const axesSummary = [...Object.keys(AXES), ...presentOptionalKeys]
+          .map((key) => `${key}=${interactions.axes ? interactions.axes[key] : undefined}`)
+          .join(', ');
+        return (
+          `Interface points: ${(interactions.interfacePoints || []).join(', ')}; ` +
+          `profile: ${interactions.profile}; protocol v${entry.protocolVersion}; axes: ${axesSummary}`
+        );
+      },
+    },
+  ],
+  [
+    'reviewer',
+    {
+      title: 'GSD Reviewer Lane Registry',
+      addNoun: 'reviewer lane',
+      buildSummary(entry, interactions) {
+        let summary =
+          `Lane: ${interactions.slug}; ` +
+          `flags: ${(interactions.flags || []).join(', ')}; ` +
+          `transport: ${interactions.transport}; ` +
+          `evidence: ${interactions.evidenceClass}; ` +
+          `REVIEWS.md section: ${interactions.reviewsSection}`;
+        for (const field of ['requiresBinaries', 'configKeys', 'runtimeCompat']) {
+          const v = interactions[field];
+          if (Array.isArray(v) && v.length > 0) summary += `; ${field}: ${v.join(', ')}`;
+        }
+        // slug/flags/transport are vocab-constrained; reviewsSection and the
+        // three arrays are untrusted free text — same single-pass mdInline
+        // rationale as the eos/capability branches above: none of the literal
+        // separator text contains Markdown metacharacters, so one pass over the
+        // assembled summary neutralizes every embedded value.
+        return summary;
+      },
+    },
+  ],
 ]);
 
 /**
@@ -662,55 +783,12 @@ function renderMarkdown(entries, opts) {
     lines.push(`- **What it is:** ${mdInline(entry.description)}`);
     lines.push(`- **Author:** ${mdInline(entry.author)}`);
 
-    if (isEos) {
-      // Required AXES keys always render, in their fixed order; an OPTIONAL_AXES
-      // key (e.g. `effortSurface`) renders ONLY when the entry actually carries
-      // it — an entry that omits it must render byte-identical to before
-      // OPTIONAL_AXES existed (no `effortSurface=undefined` noise).
-      const presentOptionalKeys = Object.keys(OPTIONAL_AXES).filter(
-        (key) => interactions.axes && Object.hasOwn(interactions.axes, key),
-      );
-      const axesSummary = [...Object.keys(AXES), ...presentOptionalKeys]
-        .map((key) => `${key}=${interactions.axes ? interactions.axes[key] : undefined}`)
-        .join(', ');
-      const summary =
-        `Interface points: ${(interactions.interfacePoints || []).join(', ')}; ` +
-        `profile: ${interactions.profile}; protocol v${entry.protocolVersion}; axes: ${axesSummary}`;
-      // Single mdInline pass over the fully-assembled summary: none of the
-      // literal separator text above contains Markdown metacharacters, so
-      // this equally neutralizes every embedded free-text/vocab value
-      // (notably interactions.axes.dispatch, a free-form untrusted string).
-      lines.push(`- **Every interaction with GSD:** ${mdInline(summary)}`);
-    } else if (opts.type === 'reviewer') {
-      let summary =
-        `Lane: ${interactions.slug}; ` +
-        `flags: ${(interactions.flags || []).join(', ')}; ` +
-        `transport: ${interactions.transport}; ` +
-        `evidence: ${interactions.evidenceClass}; ` +
-        `REVIEWS.md section: ${interactions.reviewsSection}`;
-      for (const field of ['requiresBinaries', 'configKeys', 'runtimeCompat']) {
-        const v = interactions[field];
-        if (Array.isArray(v) && v.length > 0) summary += `; ${field}: ${v.join(', ')}`;
-      }
-      // slug/flags/transport are vocab-constrained; reviewsSection and the
-      // three arrays are untrusted free text — same single-pass mdInline
-      // rationale as the eos/capability branches above: none of the literal
-      // separator text contains Markdown metacharacters, so one pass over the
-      // assembled summary neutralizes every embedded value.
-      lines.push(`- **Every interaction with GSD:** ${mdInline(summary)}`);
-    } else {
-      let summary =
-        `Loop Extension Points: ${(interactions.loopExtensionPoints || []).join(', ')}; ` +
-        `hook kinds: ${(interactions.hookKinds || []).join(', ')}`;
-      for (const field of ['configKeys', 'requires', 'runtimeCompat', 'produces', 'consumes']) {
-        const v = interactions[field];
-        if (Array.isArray(v) && v.length > 0) summary += `; ${field}: ${v.join(', ')}`;
-      }
-      // configKeys/requires/runtimeCompat/produces/consumes are untrusted
-      // free-form strings (schema only requires "array of strings") — same
-      // single-pass mdInline rationale as the eos branch above.
-      lines.push(`- **Every interaction with GSD:** ${mdInline(summary)}`);
-    }
+    // Single mdInline pass over the fully-assembled per-type summary: none of
+    // the literal separator text in any RENDER_META buildSummary implementation
+    // contains Markdown metacharacters, so one pass over the assembled string
+    // equally neutralizes every embedded free-text/vocab value (notably eos's
+    // interactions.axes.dispatch, a free-form untrusted string).
+    lines.push(`- **Every interaction with GSD:** ${mdInline(meta.buildSummary(entry, interactions))}`);
 
     // Code-span content (install/uninstall) is NOT mdInline-escaped — it is a
     // verbatim shell snippet, not inline prose. Instead each block picks a
@@ -757,6 +835,8 @@ module.exports = {
   REVIEWER_SLUG_RE,
   REVIEWER_FLAG_RE,
   REVIEWER_SECTION_MAX,
+  INTERACTION_STRING_MAX,
+  INTERACTION_ARRAY_MAX,
   isValidGsdRange,
   validateEntries,
   renderMarkdown,

@@ -19,6 +19,8 @@ const {
   REVIEWER_LANE_TRANSPORTS,
   REVIEWER_EVIDENCE_CLASSES,
   REVIEWER_SECTION_MAX,
+  INTERACTION_STRING_MAX,
+  INTERACTION_ARRAY_MAX,
   isValidGsdRange,
   validateEntries,
   renderMarkdown,
@@ -672,10 +674,11 @@ describe('validateEntries: tightened discussion/license regexes', () => {
 
 // ─── reviewer entry type (#2904) ────────────────────────────────────────────
 //
-// registry-schema.cjs does not yet export REVIEWER_REQUIRED /
-// REVIEWER_LANE_TRANSPORTS / REVIEWER_EVIDENCE_CLASSES / REVIEWER_SECTION_MAX,
-// nor does validateEntries/renderMarkdown recognize `type: 'reviewer'` — every
-// describe block below is FAILING-FIRST against the unmodified module. See
+// The describe blocks below cover the `reviewer` entry type: the
+// REVIEWER_REQUIRED / REVIEWER_LANE_TRANSPORTS / REVIEWER_EVIDENCE_CLASSES /
+// REVIEWER_SECTION_MAX vocabulary constants, `interactions` validation, and
+// renderMarkdown's `type: 'reviewer'` output. They were authored FAILING-FIRST
+// against the unmodified module, ahead of the implementation. See
 // .gsd/phase/feat-2904-enh-registries-add-a-reviewer-entry-type/50-test-matrix.md.
 
 describe('registry-schema: reviewer vocabulary constants', () => {
@@ -1210,5 +1213,186 @@ describe('renderMarkdown: capability and eos rendering are unchanged by the thir
   test('eos rendering is byte-identical to the pre-reviewer-type golden output', () => {
     const rendered = renderMarkdown([validEosEntry()], { type: 'eos', sourceFile: 'eos.json' });
     assert.equal(rendered, GOLDEN_EOS_MD);
+  });
+});
+
+// ─── validateEntries: interactions array-of-strings hardening (control chars,
+// per-element length cap, array count cap) — capability and reviewer types ──
+
+describe('validateEntries: interactions string-array fields — control characters', () => {
+  test('capability interactions.configKeys element with a control char is rejected', () => {
+    const entry = validCapabilityEntry();
+    entry.interactions.configKeys = ['a\x00b'];
+    const verdict = validateEntries([entry], { type: 'capability' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.configKeys');
+    assert.ok(err, `expected interactions.configKeys error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, 'must not contain control characters');
+  });
+
+  test('reviewer interactions.requiresBinaries element with a control char is rejected', () => {
+    const entry = validReviewerEntry();
+    entry.interactions.requiresBinaries = ['a\x00b'];
+    const verdict = validateEntries([entry], { type: 'reviewer' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.requiresBinaries');
+    assert.ok(err, `expected interactions.requiresBinaries error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, 'must not contain control characters');
+  });
+});
+
+describe('validateEntries: interactions string-array fields — per-element length cap', () => {
+  test('capability interactions.configKeys element at 199/200 chars (limit-1/limit) is valid', () => {
+    for (const len of [INTERACTION_STRING_MAX - 1, INTERACTION_STRING_MAX]) {
+      const entry = validCapabilityEntry();
+      entry.interactions.configKeys = ['x'.repeat(len)];
+      const verdict = validateEntries([entry], { type: 'capability' });
+      assert.equal(
+        verdict.errors.some((e) => e.field === 'interactions.configKeys'),
+        false,
+        `expected len ${len} valid, got: ${JSON.stringify(verdict.errors)}`,
+      );
+    }
+  });
+
+  test('capability interactions.configKeys element at 201 chars (limit+1) is rejected', () => {
+    const entry = validCapabilityEntry();
+    entry.interactions.configKeys = ['x'.repeat(INTERACTION_STRING_MAX + 1)];
+    const verdict = validateEntries([entry], { type: 'capability' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.configKeys');
+    assert.ok(err, `expected interactions.configKeys error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, `exceeds max length ${INTERACTION_STRING_MAX}`);
+  });
+
+  test('reviewer interactions.requiresBinaries element at 199/200 chars (limit-1/limit) is valid', () => {
+    for (const len of [INTERACTION_STRING_MAX - 1, INTERACTION_STRING_MAX]) {
+      const entry = validReviewerEntry();
+      entry.interactions.requiresBinaries = ['x'.repeat(len)];
+      const verdict = validateEntries([entry], { type: 'reviewer' });
+      assert.equal(
+        verdict.errors.some((e) => e.field === 'interactions.requiresBinaries'),
+        false,
+        `expected len ${len} valid, got: ${JSON.stringify(verdict.errors)}`,
+      );
+    }
+  });
+
+  test('reviewer interactions.requiresBinaries element at 201 chars (limit+1) is rejected', () => {
+    const entry = validReviewerEntry();
+    entry.interactions.requiresBinaries = ['x'.repeat(INTERACTION_STRING_MAX + 1)];
+    const verdict = validateEntries([entry], { type: 'reviewer' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.requiresBinaries');
+    assert.ok(err, `expected interactions.requiresBinaries error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, `exceeds max length ${INTERACTION_STRING_MAX}`);
+  });
+});
+
+describe('validateEntries: interactions string-array fields — array count cap', () => {
+  test('capability interactions.configKeys at 49/50 elements (limit-1/limit) is valid', () => {
+    for (const n of [INTERACTION_ARRAY_MAX - 1, INTERACTION_ARRAY_MAX]) {
+      const entry = validCapabilityEntry();
+      entry.interactions.configKeys = Array.from({ length: n }, (_, i) => `k${i}`);
+      const verdict = validateEntries([entry], { type: 'capability' });
+      assert.equal(
+        verdict.errors.some((e) => e.field === 'interactions.configKeys'),
+        false,
+        `expected ${n} elements valid, got: ${JSON.stringify(verdict.errors)}`,
+      );
+    }
+  });
+
+  test('capability interactions.configKeys at 51 elements (limit+1) is rejected', () => {
+    const entry = validCapabilityEntry();
+    entry.interactions.configKeys = Array.from({ length: INTERACTION_ARRAY_MAX + 1 }, (_, i) => `k${i}`);
+    const verdict = validateEntries([entry], { type: 'capability' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.configKeys');
+    assert.ok(err, `expected interactions.configKeys error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, `exceeds max entries ${INTERACTION_ARRAY_MAX}`);
+  });
+
+  test('reviewer interactions.requiresBinaries at 49/50 elements (limit-1/limit) is valid', () => {
+    for (const n of [INTERACTION_ARRAY_MAX - 1, INTERACTION_ARRAY_MAX]) {
+      const entry = validReviewerEntry();
+      entry.interactions.requiresBinaries = Array.from({ length: n }, (_, i) => `b${i}`);
+      const verdict = validateEntries([entry], { type: 'reviewer' });
+      assert.equal(
+        verdict.errors.some((e) => e.field === 'interactions.requiresBinaries'),
+        false,
+        `expected ${n} elements valid, got: ${JSON.stringify(verdict.errors)}`,
+      );
+    }
+  });
+
+  test('reviewer interactions.requiresBinaries at 51 elements (limit+1) is rejected', () => {
+    const entry = validReviewerEntry();
+    entry.interactions.requiresBinaries = Array.from({ length: INTERACTION_ARRAY_MAX + 1 }, (_, i) => `b${i}`);
+    const verdict = validateEntries([entry], { type: 'reviewer' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.requiresBinaries');
+    assert.ok(err, `expected interactions.requiresBinaries error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, `exceeds max entries ${INTERACTION_ARRAY_MAX}`);
+  });
+});
+
+describe('validateEntries: reviewer interactions.reviewsSection — control characters', () => {
+  test('reviewsSection containing ESC (\\x1b) is rejected', () => {
+    const entry = validReviewerEntry();
+    entry.interactions.reviewsSection = 'Sec\x1bRED';
+    const verdict = validateEntries([entry], { type: 'reviewer' });
+    assert.equal(verdict.ok, false);
+    const err = verdict.errors.find((e) => e.field === 'interactions.reviewsSection');
+    assert.ok(err, `expected interactions.reviewsSection error, got: ${JSON.stringify(verdict.errors)}`);
+    assert.equal(err.reason, 'must not contain control characters');
+  });
+});
+
+describe('validateEntries: regression — hostile interactions entry can no longer validate', () => {
+  test('the control-char/oversized-array reviewer entry from the security-review repro is rejected', () => {
+    const entry = {
+      id: 'x',
+      name: 'X',
+      type: 'reviewer',
+      repo: 'o/r',
+      description: 'd',
+      author: 'a',
+      license: 'MIT',
+      enginesGsd: '>=1.6.0',
+      install: 'i',
+      uninstall: 'u',
+      discussion: 'https://github.com/o/r/discussions/1',
+      interactions: {
+        slug: 'x',
+        flags: ['--x'],
+        transport: 'spawn',
+        evidenceClass: 'diff-only',
+        reviewsSection: 'Sec\x1b[31mRED\x1b[0m',
+        requiresBinaries: ['bin\x00null', 'y'.repeat(5000)],
+        configKeys: [],
+        runtimeCompat: ['all'],
+      },
+    };
+    const verdict = validateEntries([entry], { type: 'reviewer' });
+    assert.equal(verdict.ok, false);
+    assert.ok(
+      verdict.errors.some(
+        (e) => e.field === 'interactions.reviewsSection' && e.reason === 'must not contain control characters',
+      ),
+      `expected reviewsSection control-char rejection, got: ${JSON.stringify(verdict.errors)}`,
+    );
+    assert.ok(
+      verdict.errors.some(
+        (e) => e.field === 'interactions.requiresBinaries' && e.reason === 'must not contain control characters',
+      ),
+      `expected requiresBinaries control-char rejection, got: ${JSON.stringify(verdict.errors)}`,
+    );
+    assert.ok(
+      verdict.errors.some(
+        (e) => e.field === 'interactions.requiresBinaries' && e.reason === `exceeds max length ${INTERACTION_STRING_MAX}`,
+      ),
+      `expected requiresBinaries length rejection, got: ${JSON.stringify(verdict.errors)}`,
+    );
   });
 });
