@@ -17,6 +17,8 @@
  *
  *   ID grammar: CLASS(.subkey)*  where CLASS = first dot-separated segment.
  *   ID chars: [A-Za-z0-9._-]  (CLASS always uppercase; subkeys may be mixed).
+ *   A doubled dot (empty segment, e.g. `A..b`) is REJECTED — see the
+ *   ID-validation comment below for why.
  *   Split on FIRST '=' only; everything before is the ID, everything after is
  *   the value (up to the closing backtick).
  *
@@ -27,11 +29,43 @@
  *     - Session-log blockquote preamble
  */
 
-// Regex matching the predicate ID grammar: one or more dot-separated segments.
-// First segment must start with an uppercase letter (CLASS).
-// Subsequent segments may start with letter/digit and include hyphens/underscores.
-// We intentionally allow lowercase-starting sub-segments (e.g. PRED.k320.rule).
-const ID_RE = /^([A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*)=(.+)$/;
+// ID grammar, validated STRUCTURALLY rather than by a single regex
+// (DEFECT.CONTEXT-PREDICATES-ID-REDOS, #2928 review). The formerly-used regex
+// `^([A-Z][A-Z0-9_-]*(?:\.[A-Za-z0-9_.-]+)*)=(.+)$` is exponential: the group
+// `(?:\.[A-Za-z0-9_.-]+)*` is ambiguous because its own character class
+// contains `.`, so N consecutive dots have exponentially many
+// backtick-partitionings for the regex engine to try on a failed match
+// (measured: ~565ms for 40 consecutive dots, doubling roughly every 5).
+//
+// Fix: split the candidate id on '.' and validate each segment with a
+// simple, non-backtracking, per-segment pattern — linear in id length, no
+// ambiguous quantifier. First segment (CLASS) must start with an uppercase
+// letter; subsequent segments may start with letter/digit and include
+// hyphens/underscores. We intentionally allow lowercase-starting
+// sub-segments (e.g. PRED.k320.rule).
+//
+// Behavior change vs. the old regex: an EMPTY segment (a doubled dot, e.g.
+// `A..b`) now REJECTS — the old regex accepted it because `.` was inside the
+// subsequent-segment character class, so `.` itself could satisfy
+// `[A-Za-z0-9_.-]+` with a single character.
+const ID_FIRST_SEGMENT_RE = /^[A-Z][A-Z0-9_-]*$/;
+const ID_SUBSEQUENT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * Structurally validate a candidate predicate id (linear time — no ambiguous
+ * backtracking quantifier; see the ID grammar comment above).
+ *
+ * @param {string} id - candidate id (everything before the first '=')
+ * @returns {boolean}
+ */
+function isValidId(id) {
+  const segments = id.split('.');
+  if (!ID_FIRST_SEGMENT_RE.test(segments[0])) return false;
+  for (let i = 1; i < segments.length; i++) {
+    if (!ID_SUBSEQUENT_SEGMENT_RE.test(segments[i])) return false;
+  }
+  return true;
+}
 
 /**
  * Parse a single source line and return a raw {id, value} if it is a predicate,
@@ -68,8 +102,9 @@ function extractPredicate(raw) {
   const id = inner.slice(0, eqIdx);
   const value = inner.slice(eqIdx + 1);
 
-  // Validate ID — must match the grammar (no spaces, correct char set).
-  if (!ID_RE.test(inner)) return null;
+  // Validate ID — must match the grammar (no spaces, correct char set, no
+  // empty segment — see isValidId's doc comment).
+  if (value === '' || !isValidId(id)) return null;
 
   return { id, value };
 }
