@@ -15,7 +15,7 @@ import path from 'node:path';
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
-import { getDirName } from './runtime-name-policy.cjs';
+import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -36,8 +36,9 @@ interface AgentsInstalledResult {
  *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
  *   3. For non-claude runtimes with a manifest-backed project-local install:
  *      <projectRoot>/<localConfigDir>/agents (or <projectRoot>/agents when
- *      the runtime's local install targets the project root). Symlinked local
- *      agent directories are ignored.
+ *      the runtime's local install targets the project root). Requiring the
+ *      GSD manifest prevents runtime-native project agents from shadowing a
+ *      working global GSD install. Symlinked local agent directories are ignored.
  *   4. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
@@ -54,14 +55,15 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
   if (projectRoot) {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { runtimes } = require('./capability-registry.cjs') as {
-      runtimes: Record<string, { runtime?: { configHome?: { kind?: string }; hostBehaviors?: { localTargetIsProjectRoot?: boolean } } }>;
+      runtimes: Record<string, { runtime?: { hostBehaviors?: { localTargetIsProjectRoot?: boolean } } }>;
     };
     const runtimeConfig = runtimes[resolved]?.runtime;
-    const localConfigDir = runtimeConfig?.configHome?.kind === 'none'
+    const localConfigDirName = getDirName(resolved);
+    const localConfigDir = localConfigDirName === NO_LOCAL_CONFIG_DIR_SENTINEL
       ? undefined
       : runtimeConfig?.hostBehaviors?.localTargetIsProjectRoot
         ? projectRoot
-        : path.join(projectRoot, getDirName(resolved));
+        : path.join(projectRoot, localConfigDirName);
     if (!localConfigDir) {
       return path.join(getGlobalConfigDir(resolved), 'agents');
     }
