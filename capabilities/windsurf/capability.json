@@ -1,7 +1,7 @@
 {
   "id": "windsurf",
   "role": "runtime",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Windsurf",
   "description": "Windsurf (Codeium) — workspace workflow artifact layout for slash commands; Cascade native hooks.json blocking hook bus (pre_write_code, pre_run_command); tier-2 support.",
   "tier": "core",

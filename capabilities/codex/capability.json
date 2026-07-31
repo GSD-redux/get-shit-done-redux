@@ -1,7 +1,7 @@
 {
   "id": "codex",
   "role": "runtime",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "OpenAI Codex CLI",
   "description": "OpenAI Codex CLI — shell-var command style; per-agent sandbox tiers; config.toml + hooks.json hook surface; tier-1 support.",
   "tier": "core",

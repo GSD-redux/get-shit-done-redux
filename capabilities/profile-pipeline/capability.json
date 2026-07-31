@@ -1,7 +1,7 @@
 {
   "id": "profile-pipeline",
   "role": "feature",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Developer profiling pipeline",
   "description": "Developer behavioral profiling from Claude Code session history; scans session JSONL files, extracts and samples user messages, and generates profile artifacts (USER-PROFILE.md, dev-preferences.md, CLAUDE.md sections). Exposes eight `gsd-tools` commands: scan-sessions, extract-messages, profile-sample (pipeline phase) and write-profile, profile-questionnaire, generate-dev-preferences, generate-claude-profile, generate-claude-md (output phase). Backs the /gsd-profile-user skill and gsd-user-profiler agent.",
   "tier": "full",

@@ -160,13 +160,13 @@ Two naming rules are easy to conflate, so keep them apart. Your `slug` may not b
 
 An *unknown* field inside your `reviewer` body behaves differently: it is a non-fatal warning on stderr, never a build failure. A manifest built against a newer GSD degrades visibly instead of crashing.
 
-### Listing your lane is not wired yet
+### Publish it so people can find it
 
-You can build, install, and run a third-party lane today. You cannot yet **list** it in a discoverability catalog, and it is better to know that before you write the entry than after.
+From GSD 1.9.1, a lane has its own discoverability catalog: the [Reviewer Lane Registry](../registries/reviewer-registry.md). Listing is a documentation PR — append one entry to `docs/registries/reviewers.json`, regenerate, open a PR. Register once; your GitHub Releases are the update channel from then on.
 
-Neither existing registry accepts a lane. A [Community Capability Registry](../registries/capability-registry.md) entry requires a non-empty `loopExtensionPoints` and a `hookKinds` value, and a lane registers on zero loop extension points by design — the two fields are unsatisfiable rather than merely unset. The [EoS Registry](../registries/eos-registry.md) is for host integrations that embed the orchestration engine through the ADR-1239 interface, which a reviewer lane does not do.
+Follow [List your reviewer lane in the registry](list-your-reviewer-lane.md) for the task flow.
 
-Do not work around this by filing a loop extension point your lane does not use. A third `reviewer` entry type is tracked by [#2904](https://github.com/open-gsd/gsd-core/issues/2904) for a 1.9.x point release; until it lands, distribute your lane by URL and it will install and run normally.
+The Reviewer Lane Registry is for lanes that are **not install targets in their own right**. If your `reviewer` body rides on a `role: "runtime"` capability, list that capability under whichever catalog matches its primary install shape instead — one entry, not two.
 
 ---
 
