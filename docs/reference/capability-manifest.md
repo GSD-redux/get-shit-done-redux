@@ -184,6 +184,8 @@ For a minimal `role: "runtime"` example, see [ADR-1016 §Decision 8](../adr/1016
 
 [ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) introduces the *reviewer lane*: one external CLI or model endpoint that `/gsd:review` hands a plan to for independent review.
 
+To declare one, follow [Ship a reviewer lane in your capability](../how-to/ship-a-reviewer-lane.md). This section is the field reference behind that guide.
+
 The `reviewer` body is **optional and absent-safe at every layer**. A capability with no `reviewer` body is simply not a lane — that is never a validation error. This is a normative forward/backward-compatibility invariant, not a nicety: a plugin, a runtime, or a future GSD version may omit `reviewer` entirely with no consequence.
 
 The shape is **hybrid**:
@@ -201,7 +203,7 @@ All 12 shipped lane declarations carry all 13 fields below.
 | `flags` | string[] | User-facing CLI flags that select this lane. A lane may declare more than one — `antigravity` declares `--antigravity` and `--agy`. 12 lanes declare 13 flags in total. |
 | `transport` | closed enum | `spawn` \| `openai-http`. |
 | `probe` | object | Availability check. `probe.kind` is a closed enum: `command-exists` \| `command-capability` \| `http-reachable`. `command-capability` additionally takes `binary`, `needle`, and a **required** `timeoutMs` — it exists because a bare binary name can be ambiguous (`kimi` is claimed by both the Kimi Code CLI and the legacy Python `kimi-cli`), and the timeout bound is mandatory because an unbounded `--help \| grep` probe is this repo's named Unbounded Subprocesses defect. |
-| `invoke` | object | `binary`, `args[]`, `promptChannel` (`stdin` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `modelArg` (string or `null`), `effortChannel` (`argv` \| `none`). `args` supports the `{{model}}` and `{{prompt}}` placeholders. |
+| `invoke` | object | Shape is selected by `transport`. For `spawn`: `binary`, `args[]`, `promptChannel` (`stdin` \| `argv` \| `argv-file-ref` \| `none`), `outputChannel` (`stdout` \| `file-arg`), `outputArg` (required when `outputChannel` is `file-arg`), `modelArg` (string or `null`), `effortChannel` (`none` \| `argv` \| `env`). For `openai-http`: `hostConfigKey`, `defaultHost`, `path`, `modelDiscovery` (`none` \| `first-from-models-endpoint`), `fallbackModel`, `effortChannel`. `args` supports the `{{model}}`, `{{prompt}}`, `{{effort}}`, and `{{output}}` placeholders. |
 | `timeoutFloorMs` | number | Measured per-lane floor. Lane divergence here is real and correct — the descriptor's job is to declare divergence in one place, not to promise uniformity. |
 | `emptyOutput` | closed enum | `stub-with-stderr` \| `handler-owned`. |
 | `reviewsSection` | string | The `REVIEWS.md` heading this lane renders under. Must be unique across the merged roster. |

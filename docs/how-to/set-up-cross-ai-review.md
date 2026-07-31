@@ -156,6 +156,7 @@ This runs `plan-phase → review → replan → re-review` up to three cycles (d
 ## Related
 
 - [Verify and ship](verify-and-ship.md)
+- [Ship a reviewer lane in your capability](ship-a-reviewer-lane.md) — add a reviewer GSD does not ship with, by declaring it in a capability manifest
 - [Configuration](../CONFIGURATION.md)
 - [Commands](../COMMANDS.md)
 - [docs index](../README.md)
