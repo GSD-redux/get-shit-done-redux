@@ -1426,3 +1426,95 @@ describe('#3333 regression: copyWithPathReplacement tolerates a source file vani
       'vanish.md destination must not exist — the vanished source must be skipped, not partially written');
   });
 });
+
+// ─── #1874 F6 — malformed settings.local.json is preserved by the #338 migration ───
+
+describe('#1874 F6 (#338 migration): a malformed settings.local.json is preserved', () => {
+  test('local file stays byte-identical and shared GSD entries are not stripped', (t) => {
+    const root = createTempDir('gsd-1874-f6-');
+    t.after(() => cleanup(root));
+
+    const claudeDir = path.join(root, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+
+    // Shared settings carries GSD-shaped entries, so the #338 migration branch fires.
+    const sharedSettingsPath = path.join(claudeDir, 'settings.json');
+    fs.writeFileSync(sharedSettingsPath, JSON.stringify({
+      hooks: {
+        SessionStart: [
+          { hooks: [{ type: 'command', command: `${process.execPath} ${path.join(claudeDir, 'hooks', 'gsd-check-update.js')}` }] },
+        ],
+      },
+    }, null, 2) + '\n');
+
+    // Unparseable local settings — the stray brace defeats both the JSON and the
+    // JSONC path — carrying user content that must survive.
+    const localSettingsPath = path.join(claudeDir, 'settings.local.json');
+    const malformedLocal = '{\n  "permissions": { "allow": ["Bash(npm test)"] },\n}}\n';
+    fs.writeFileSync(localSettingsPath, malformedLocal);
+
+    const env = { ...process.env, HOME: root, USERPROFILE: root };
+    delete env.GSD_TEST_MODE;
+    const result = runNode(
+      [INSTALL_SCRIPT, '--claude', '--local'],
+      { cwd: root, env, timeoutMs: 60_000 },
+    );
+    assert.strictEqual(result.exitCode, 0,
+      `installer exited ${result.exitCode}\n${result.stdout}\n${result.stderr}`);
+
+    // Byte-equality, not parse-equality: the file is unparseable by construction.
+    assert.strictEqual(
+      fs.readFileSync(localSettingsPath, 'utf8'),
+      malformedLocal,
+      'a malformed settings.local.json must be left byte-for-byte intact'
+    );
+
+    // Aborting only the local write would still strip the shared file below,
+    // destroying the GSD entries outright instead of relocating them. The whole
+    // migration must stand down so it can retry once the user fixes the file.
+    const sharedAfter = JSON.parse(fs.readFileSync(sharedSettingsPath, 'utf8'));
+    const sessionStart = (sharedAfter.hooks && sharedAfter.hooks.SessionStart) || [];
+    assert.ok(
+      sessionStart.some(
+        entry => entry && entry.hooks && Array.isArray(entry.hooks) &&
+          entry.hooks.some(h => h && h.command && h.command.includes('gsd-check-update'))
+      ),
+      'GSD entries must remain in settings.json when the migration is skipped'
+    );
+  });
+});
+
+// ─── #1874 F6 (adjacent): a malformed settings file must not crash the install ───
+// The bare `return;` in the unparseable-settings guard returned undefined while
+// every sibling early exit returns the full result shape, so installAllRuntimes'
+// statusline lookup (results.find(r => r.runtime)) threw. Reachable on its own —
+// no #338 migration required.
+
+describe('#1874 F6 adjacent: malformed settings.local.json does not crash the install', () => {
+  test('installer exits 0 and preserves the malformed file when no migration applies', (t) => {
+    const root = createTempDir('gsd-1874-f6-nocrash-');
+    t.after(() => cleanup(root));
+
+    const claudeDir = path.join(root, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    const localSettingsPath = path.join(claudeDir, 'settings.local.json');
+    const malformedLocal = '{\n  "permissions": { "allow": ["Bash(npm test)"] },\n}}\n';
+    fs.writeFileSync(localSettingsPath, malformedLocal);
+
+    const env = { ...process.env, HOME: root, USERPROFILE: root };
+    delete env.GSD_TEST_MODE;
+    const result = runNode(
+      [INSTALL_SCRIPT, '--claude', '--local'],
+      { cwd: root, env, timeoutMs: 60_000 },
+    );
+
+    assert.strictEqual(result.exitCode, 0,
+      `installer must not crash on an unparseable settings file\n${result.stdout}\n${result.stderr}`);
+    assert.ok(!/TypeError/.test(result.stderr), 'installer must not throw a TypeError');
+    assert.strictEqual(
+      fs.readFileSync(localSettingsPath, 'utf8'),
+      malformedLocal,
+      'the unparseable file must be left intact'
+    );
+  });
+});

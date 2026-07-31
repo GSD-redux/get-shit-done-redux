@@ -12364,9 +12364,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       );
       const hasGsdStatusline = sharedRaw.statusLine && sharedRaw.statusLine.command &&
         isManagedHookCommand(sharedRaw.statusLine.command, { surface: 'settings-json' });
-      if (hasGsdHooks || hasGsdStatusline) {
+      const needsMigration = hasGsdHooks || hasGsdStatusline;
+      // readSettings returns null ONLY for an unparseable file — its documented
+      // "preserve existing, don't touch" signal. Stand the WHOLE migration down
+      // in that case: skipping just the local merge while still stripping the
+      // shared file below would destroy the GSD entries outright instead of
+      // relocating them. Leaving both files untouched lets the migration retry
+      // once the user repairs the local file.
+      const localRaw = needsMigration ? readSettings(settingsPath) : null;
+      if (needsMigration && localRaw === null) {
+        console.log('  ' + yellow + 'i' + reset + '  Skipping #338 migration — ' + settingsFileName +
+          ' could not be parsed. Your existing settings are preserved.');
+      } else if (needsMigration) {
         // Merge GSD entries into settings.local.json
-        const localRaw = readSettings(settingsPath) || {};
         if (hasGsdStatusline && !localRaw.statusLine) {
           localRaw.statusLine = sharedRaw.statusLine;
         }
@@ -12426,7 +12436,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
   if (rawSettings === null) {
     console.log('  ' + yellow + 'i' + reset + '  Skipping settings.local.json configuration — file could not be parsed (comments or malformed JSON). Your existing settings are preserved.');
     persistActiveProfileMarker();
-    return;
+    // Callers index this result by `runtime` (installAllRuntimes' statusline
+    // lookup), so every early exit must return the full shape — a bare return
+    // crashes the install rather than skipping one file.
+    return { settingsPath: null, settings: null, statuslineCommand: null, updateBannerCommand: null, runtime, configDir: targetDir };
   }
   const settings = validateHookFields(cleanupOrphanedHooks(rawSettings));
   // #3002 CR: rewrite legacy `node .../gsd-*.js` command strings carried over
@@ -13599,7 +13612,10 @@ function installAllRuntimes(runtimes, isGlobal, isInteractive) {
     });
   };
 
-  if (primaryStatuslineResult) {
+  // `settings` is null on every early exit (unparseable file, skipped runtime),
+  // and handleStatusline dereferences it — an install that declined to touch a
+  // settings file has no statusline to prompt about, so fall through.
+  if (primaryStatuslineResult && primaryStatuslineResult.settings) {
     handleStatusline(primaryStatuslineResult.settings, isInteractive, continueAfterStatusline);
   } else if (canInstallBanner) {
     // No statusline-capable runtime, but at least one runtime can host the
