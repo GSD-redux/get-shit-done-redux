@@ -116,6 +116,14 @@
         "host-integration-descriptors.test.cjs"
       ],
       "issue": "1684"
+    },
+    "prompt-budget": {
+      "files": [
+        "prompt-budget-cli.test.cjs",
+        "prompt-budget-parity.test.cjs",
+        "prompt-budget.test.cjs"
+      ],
+      "issue": "2929"
     }
   }
 }
