@@ -26,7 +26,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
-const { toPosixPath, generateSlugInternal, readSubdirectories } = coreUtilsMod;
+const { toPosixPath, generateSlugInternal, readSubdirectories, findUnsummarizedPlans } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const {

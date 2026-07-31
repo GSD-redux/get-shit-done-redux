@@ -277,18 +277,46 @@ function countMatchedSummaries(planFiles: string[], summaryFiles: string[]): num
   const summarySet = new Set(summaryFiles);
   let matched = 0;
   for (const plan of planFiles) {
-    const slashIdx = plan.lastIndexOf('/');
-    const dir = slashIdx >= 0 ? plan.slice(0, slashIdx + 1) : '';
-    const base = (dir ? plan.slice(dir.length) : plan).replace(/\.md$/i, '');
-    const candidates: string[] = [
-      dir + base.replace(/PLAN/i, 'SUMMARY') + '.md',
-      dir + base + '-SUMMARY.md',
-    ];
-    const extended = base.match(/^(\d+)-PLAN-(\d+)/i);
-    if (extended) candidates.push(dir + extended[1] + '-' + extended[2] + '-SUMMARY.md');
-    if (candidates.some((c) => summarySet.has(c))) matched++;
+    if (summaryCandidates(plan).some((c) => summarySet.has(c))) matched++;
   }
   return matched;
+}
+
+/**
+ * The candidate `*-SUMMARY.md` filenames a single plan's completion record
+ * could take, per the three naming conventions documented above
+ * `countMatchedSummaries`. Extracted so `findUnsummarizedPlans` can reuse the
+ * exact same matching rule without duplicating it (a divergence between the
+ * count and the list would let a plan be counted as matched while still
+ * appearing in the unsummarized set, or vice versa).
+ */
+function summaryCandidates(plan: string): string[] {
+  const slashIdx = plan.lastIndexOf('/');
+  const dir = slashIdx >= 0 ? plan.slice(0, slashIdx + 1) : '';
+  const base = (dir ? plan.slice(dir.length) : plan).replace(/\.md$/i, '');
+  const candidates: string[] = [
+    dir + base.replace(/PLAN/i, 'SUMMARY') + '.md',
+    dir + base + '-SUMMARY.md',
+  ];
+  const extended = base.match(/^(\d+)-PLAN-(\d+)/i);
+  if (extended) candidates.push(dir + extended[1] + '-' + extended[2] + '-SUMMARY.md');
+  return candidates;
+}
+
+/**
+ * #2648: the plan files in `planFiles` that have NO matching completion record
+ * in `summaryFiles`, using the identical matching rule as `countMatchedSummaries`
+ * (so the count and the named list can never disagree). Callers that must NAME
+ * the missing plans — e.g. phase.complete's fail-closed coverage gate, which
+ * refuses completion when any non-retired plan lacks a SUMMARY — need the list,
+ * not just the count. `planFiles` is expected to be already superseded-filtered
+ * (the caller passes `scanPhasePlans(...).planFiles`, which drops
+ * `status: superseded` plans), so a deliberately-retired plan never appears
+ * here and never blocks completion.
+ */
+function findUnsummarizedPlans(planFiles: string[], summaryFiles: string[]): string[] {
+  const summarySet = new Set(summaryFiles);
+  return planFiles.filter((plan) => !summaryCandidates(plan).some((c) => summarySet.has(c)));
 }
 
 export = {
@@ -305,4 +333,5 @@ export = {
   timeAgo,
   extractCanonicalPlanId,
   countMatchedSummaries,
+  findUnsummarizedPlans,
 };
