@@ -68,12 +68,28 @@ describe('#2828 — total_phases uses the roadmap count on a flat unmilestoned r
     assert.ok(result.success, `state sync failed: ${result.error}`);
 
     const stateMd = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf8');
-    const m = stateMd.match(/^progress:\s*\r?\n(?:[ \t]+\w+:.+\r?\n?)*?[ \t]+total_phases:\s*(\d+)/m);
-    assert.ok(m, `progress.total_phases must be written by state sync. STATE.md:\n${stateMd}`);
+    // Parse the `progress:` YAML block line-by-line (ReDoS-safe: avoids a nested-quantifier
+    // regex over the whole block). Find total_phases among the block's indented children.
+    const lines = stateMd.split(/\r?\n/);
+    let inProgress = false;
+    let totalPhases = null;
+    for (const line of lines) {
+      if (/^progress:\s*$/.test(line)) { inProgress = true; continue; }
+      if (inProgress) {
+        // A new top-level (column-0) key ends the progress block.
+        if (/^\S/.test(line)) { inProgress = false; continue; }
+        const tp = line.match(/^\s+total_phases:\s*(\d+)/);
+        if (tp) { totalPhases = Number(tp[1]); break; }
+      }
+    }
+    assert.ok(
+      totalPhases !== null,
+      `progress.total_phases must be written by state sync. STATE.md:\n${stateMd}`,
+    );
     assert.strictEqual(
-      Number(m[1]),
+      totalPhases,
       6,
-      `progress.total_phases must be the roadmap count (6) for a flat unmilestoned roadmap, not the on-disk phase-dir count (1). Got: ${m[1]}`,
+      `progress.total_phases must be the roadmap count (6) for a flat unmilestoned roadmap, not the on-disk phase-dir count (1). Got: ${totalPhases}`,
     );
   });
 });
