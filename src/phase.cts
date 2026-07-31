@@ -1750,16 +1750,55 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   // marker exists to unblock. Matches roadmap.cts's already-correct-but-unenforced
   // `summaryCount >= planCount` predicate, now enforced at the completion seam.
   const coverageScan = scanPhasePlans(phaseFullDir);
+  // #2648 security: fail CLOSED when the phase directory cannot be read.
+  // scanPhasePlans deliberately swallows readdirSync errors and returns an empty
+  // plan set ({planFiles: []}), which is indistinguishable from a readable empty
+  // phase. For a COVERAGE gate that is the wrong posture: "I could not read the
+  // plans" must mean "I cannot prove coverage," not "all plans are summarized" —
+  // otherwise any I/O failure (permissions, ENOTDIR, EBUSY on Windows, a dir
+  // present in ROADMAP.md but missing/unreadable on disk) silently re-opens the
+  // exact hole this gate exists to close. Distinguish the two: a readable
+  // directory with zero plans is a legitimately complete empty phase; an
+  // UNREADABLE directory is a fail-closed refusal. Mirrors cmdPhaseInsert's own
+  // readdirSync-fail-closed posture (a swallow there used to risk writing a
+  // colliding phase number).
+  try {
+    fs.readdirSync(phaseFullDir);
+  } catch (readErr) {
+    error(
+      `Phase ${phaseNum} cannot be completed: its plan directory is unreadable (${phaseInfo['directory'] as string}: ${(readErr as NodeJS.ErrnoException).code || (readErr as Error).message}), so plan coverage cannot be verified. Restore read access and retry — a coverage gate that passes when it cannot read the plans is no gate at all (#2648).`,
+      ERROR_REASON.PHASE_PLAN_COVERAGE_INCOMPLETE,
+    );
+  }
   const unsummarizedPlans = findUnsummarizedPlans(
     coverageScan.planFiles as string[],
     coverageScan.summaryFiles as string[],
   );
   if (unsummarizedPlans.length > 0) {
-    const listed = unsummarizedPlans.slice(0, 20).join(', ');
+    // Sanitize plan filenames before interpolation: they come raw from
+    // readdirSync and could carry C0 control chars / DEL (a committable filename
+    // could spoof the terminal in plain-error mode). Strip them so the message is
+    // safe to print regardless of --json-errors. Path traversal sequences are not
+    // a code-execution vector here (printed only, never reopened from the message).
+    const sanitize = (name: string): string => name.replace(/[\u0000-\u001f\u007f]/g, '?');
+    const listed = unsummarizedPlans.slice(0, 20).map(sanitize).join(', ');
     const more = unsummarizedPlans.length > 20 ? ` (and ${unsummarizedPlans.length - 20} more)` : '';
+    // Audit surface (#2648 review M1): name how many plans were excluded as
+    // superseded so a reviewer can see WHICH work was declared retired, not just
+    // that some plans are missing summaries. The status: superseded marker is a
+    // committable, review-time-trusted bypass; surfacing its count keeps that
+    // bypass visible rather than silent.
+    const supersededCount =
+      (coverageScan.planFiles as string[]).length === 0
+        ? 0
+        : (phaseInfo['plans'] ? (phaseInfo['plans'] as string[]).length : 0) - (coverageScan.planFiles as string[]).length;
+    const supersededNote = supersededCount > 0
+      ? ` ${supersededCount} plan(s) excluded as status: superseded (retired).`
+      : '';
     error(
-      `Phase ${phaseNum} cannot be completed: ${unsummarizedPlans.length} plan(s) have no completion record (*-SUMMARY.md): ${listed}${more}. ` +
-        `Execute the plans and write their summaries, or retire a plan with machine-readable \`status: superseded\` frontmatter (#2349) if it was deliberately dropped — a retired plan is excluded from this gate. ` +
+      `Phase ${phaseNum} cannot be completed: ${unsummarizedPlans.length} plan(s) have no completion record (*-SUMMARY.md): ${listed}${more}.` +
+        supersededNote +
+        ` Execute the plans and write their summaries, or retire a plan with machine-readable \`status: superseded\` frontmatter (#2349) if it was deliberately dropped — a retired plan is excluded from this gate. ` +
         `Completing a phase with unexecuted plans is what lost an entire promised deliverable silently (#2648).`,
       ERROR_REASON.PHASE_PLAN_COVERAGE_INCOMPLETE,
     );
