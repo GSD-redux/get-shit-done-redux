@@ -34,11 +34,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const fc = require('fast-check');
 
 const { cleanup, createTempDir } = require('./helpers.cjs');
-const { BUILD_SCRIPT } = require('./helpers/install-shared.cjs');
+const { BUILD_SCRIPT, buildParityManifest, buildInstallTree, PKG_VERSION } = require('./helpers/install-shared.cjs');
 const {
   resolveChangedPaths,
   resolveBase,
@@ -57,6 +58,7 @@ const {
   touchesRuntimeRegistry,
   reconcileFamilies,
   safeDirArgs,
+  measuredPackageVersion,
 } = require('./helpers/emitted-runtime.cjs');
 
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
@@ -2447,4 +2449,304 @@ test('differential attribution over the real tree', { timeout: 900_000 }, async 
     result.ok,
     `emitted-attribution failed against ${base}@${baseSha.slice(0, 12)}:\n\n${formatReport(result)}`,
   );
+});
+
+// ─── Cross-tree version normalization (#2891) ──────────────────────────────────
+//
+// #2767's `currentManifests({ repoRoot })` spawns a DIFFERENT checkout's installer
+// but, before this fix, still normalized the emitted content against THIS checkout's
+// PKG_VERSION — so a version-bumped current tree compared against an older-version
+// baseline worktree never collapsed the baseline's `// gsd-hook-version: <old>` stamp
+// to '<VERSION>', every one of that baseline's emitted files spuriously "differed",
+// and the differential attribution gate above (the real-tree test) failed with all
+// 364 emitted hook paths unattributed. These tests pin the mechanism directly against
+// `buildParityManifest`'s `pkgVersion` option and `measuredPackageVersion`, the two
+// pieces `currentManifests` composes to fix it, rather than only against the
+// expensive real-tree gate.
+
+function makeVersionStampedTree(hookVersion) {
+  const root = createTempDir('gsd-test-ppm-version-');
+  const configDir = path.join(root, 'cfg');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, 'hook.js'),
+    `// gsd-hook-version: ${hookVersion}\nconsole.log('hook body unchanged across versions');\n`,
+  );
+  return { root, configDir };
+}
+
+test('buildParityManifest: same content at two different pkgVersions hashes identically when each is normalized against its OWN version (#2891)', () => {
+  const a = makeVersionStampedTree('1.8.0');
+  const b = makeVersionStampedTree('1.9.0');
+  try {
+    const manifestA = buildParityManifest(a.configDir, a.root, { pkgVersion: '1.8.0' });
+    const manifestB = buildParityManifest(b.configDir, b.root, { pkgVersion: '1.9.0' });
+    assert.equal(
+      manifestA['hook.js'],
+      manifestB['hook.js'],
+      'byte-identical-apart-from-version-stamp files must hash identically once each side ' +
+      'is normalized against the version that actually produced it'
+    );
+  } finally {
+    cleanup(a.root);
+    cleanup(b.root);
+  }
+});
+
+test('buildParityManifest: hash of a measured tree does not depend on the MEASURING repo\'s own version (#2891)', () => {
+  // Reproduces the real cross-tree shape: content stamped with version X, normalized
+  // with the EXPLICIT pkgVersion of the tree that produced it (X) — never with this
+  // checkout's own PKG_VERSION (Y), which is what the pre-fix bug silently defaulted to.
+  const measuredVersion = '7.7.7';
+  assert.notEqual(
+    measuredVersion,
+    PKG_VERSION,
+    'test fixture must use a version distinct from this checkout\'s own PKG_VERSION for the assertion below to be meaningful'
+  );
+  const tree = makeVersionStampedTree(measuredVersion);
+  try {
+    const manifest = buildParityManifest(tree.configDir, tree.root, { pkgVersion: measuredVersion });
+    // The stamp must have collapsed to '<VERSION>' — if it hadn't (e.g. because the
+    // measuring repo's own PKG_VERSION had been used instead), the raw '7.7.7' would
+    // still be present pre-hash and this hash would differ from a control manifest
+    // built directly against the sentinel-substituted content.
+    const controlContent = `// gsd-hook-version: <VERSION>\nconsole.log('hook body unchanged across versions');\n`;
+    const controlHash = crypto.createHash('sha256').update(controlContent).digest('hex').slice(0, 16);
+    assert.equal(
+      manifest['hook.js'],
+      controlHash,
+      'hash must reflect the version-stamp collapsing to <VERSION> using the MEASURED tree\'s ' +
+      'own version, independent of whatever PKG_VERSION the measuring repo happens to be at'
+    );
+  } finally {
+    cleanup(tree.root);
+  }
+});
+
+test('buildParityManifest: pkgVersion guard rejects empty/undefined/null/non-string/non-semver-shaped and never corrupts the manifest (#2891)', () => {
+  const tree = makeVersionStampedTree('1.8.0');
+  try {
+    // Omitting pkgVersion entirely is legitimate (defaults to this checkout's own
+    // PKG_VERSION) and must NOT throw.
+    assert.doesNotThrow(() => buildParityManifest(tree.configDir, tree.root));
+
+    // Explicitly passing a bad value must throw — including an EXPLICIT `undefined`,
+    // which is deliberately NOT treated the same as omitting the key (see the `in`
+    // guard in install-shared.cjs: a caller-side bug that resolves a version to
+    // `undefined` must fail loudly, never silently fall back to this checkout's own
+    // version). '1' and '12' are shape failures (#2891 review FINDING 2): a
+    // non-semver-shaped string like '1' must be rejected, not silently accepted and
+    // later matched as a substring of unrelated numeric content (e.g. 'v 1.8.0 x').
+    for (const bad of ['', undefined, null, 42, '1', '12']) {
+      assert.throws(
+        () => buildParityManifest(tree.configDir, tree.root, { pkgVersion: bad }),
+        /pkgVersion must be a non-empty semver-ish string/,
+        `expected pkgVersion=${JSON.stringify(bad)} to throw`
+      );
+    }
+
+    // Corruption check: an empty pkgVersion, if it ever reached blind substring
+    // replacement, would corrupt content that merely contains matching characters.
+    // Confirm the guard fires BEFORE that — a file whose entire content is 'abc' must
+    // never make it into a manifest via a '' pkgVersion.
+    const corruptibleRoot = createTempDir('gsd-test-ppm-corrupt-');
+    const corruptibleDir = path.join(corruptibleRoot, 'cfg');
+    fs.mkdirSync(corruptibleDir, { recursive: true });
+    fs.writeFileSync(path.join(corruptibleDir, 'f.txt'), 'abc');
+    try {
+      assert.throws(
+        () => buildParityManifest(corruptibleDir, corruptibleRoot, { pkgVersion: '' }),
+        /pkgVersion must be a non-empty semver-ish string/
+      );
+    } finally {
+      cleanup(corruptibleRoot);
+    }
+  } finally {
+    cleanup(tree.root);
+  }
+});
+
+test('buildParityManifest: pkgVersion shape guard boundary — limit-1/limit/limit+1 by length (#2891 review FINDING 2)', () => {
+  const tree = makeVersionStampedTree('1.8.0');
+  try {
+    // '0.0.0' is the shortest string SEMVER_ISH_RE accepts (5 chars: MAJOR.MINOR.PATCH,
+    // all single-digit, no prerelease/build) — the "limit" case.
+    assert.doesNotThrow(
+      () => buildParityManifest(tree.configDir, tree.root, { pkgVersion: '0.0.0' }),
+      'a minimal valid MAJOR.MINOR.PATCH string must be accepted (limit)'
+    );
+    // '12' (limit+1 relative to the 1-char failure below, and still nowhere near
+    // semver-shaped) must still be rejected.
+    assert.throws(
+      () => buildParityManifest(tree.configDir, tree.root, { pkgVersion: '12' }),
+      /pkgVersion must be a non-empty semver-ish string/,
+      'a 2-char non-semver-shaped string must be rejected (limit+1 by length from \'1\')'
+    );
+    // '1' (limit-1 relative to '12') must be rejected — the concrete regression this
+    // guard exists to close: {pkgVersion:'1'} was previously ACCEPTED and rewrote
+    // 'v 1.8.0 x' to 'v <VERSION>.8.0 x' via a bare-substring match.
+    assert.throws(
+      () => buildParityManifest(tree.configDir, tree.root, { pkgVersion: '1' }),
+      /pkgVersion must be a non-empty semver-ish string/,
+      'a 1-char string must be rejected (limit-1)'
+    );
+  } finally {
+    cleanup(tree.root);
+  }
+});
+
+test('buildParityManifest: pkgVersion is honored when reachable via the PROTOTYPE CHAIN, not only as an own key (#2891 review FINDING 4)', () => {
+  const tree = makeVersionStampedTree('7.7.7');
+  try {
+    // Object.create({pkgVersion:'7.7.7'}) has NO own 'pkgVersion' key, but the key IS
+    // reachable via `in` — before the fix this silently fell through to this
+    // checkout's own PKG_VERSION (the exact silent-fallback the guard exists to
+    // prevent), reached via a different vector than an explicit own-key bad value.
+    const opts = Object.create({ pkgVersion: '7.7.7' });
+    const manifest = buildParityManifest(tree.configDir, tree.root, opts);
+    const controlContent = `// gsd-hook-version: <VERSION>\nconsole.log('hook body unchanged across versions');\n`;
+    const controlHash = crypto.createHash('sha256').update(controlContent).digest('hex').slice(0, 16);
+    assert.equal(
+      manifest['hook.js'],
+      controlHash,
+      'an inherited pkgVersion must be read and normalized against, not silently ignored in favor of this checkout\'s own PKG_VERSION'
+    );
+  } finally {
+    cleanup(tree.root);
+  }
+});
+
+test('buildParityManifest: opts guard rejects null/non-object (#2891 review FINDING 5)', () => {
+  const tree = makeVersionStampedTree('1.8.0');
+  try {
+    for (const bad of [null, 'x', 42, true, []]) {
+      assert.throws(
+        () => buildParityManifest(tree.configDir, tree.root, bad),
+        /opts must be a plain object or omitted/,
+        `expected opts=${JSON.stringify(bad)} to throw a clear message, not a raw TypeError`
+      );
+    }
+  } finally {
+    cleanup(tree.root);
+  }
+});
+
+test('buildInstallTree: no longer accepts/forwards an opts argument, so a bad third argument is silently ignored rather than reaching buildParityManifest\'s guard (#2891 review FINDINGS 5+6)', () => {
+  // FINDING 6 removed buildInstallTree's dead opts-forwarding parameter (pkgVersion
+  // never affects the emitted FILE SET, only content hashes, and no caller ever passed
+  // a third argument). A consequence: buildInstallTree(cd, root, null) — the exact
+  // FINDING 5 repro against the OLD forwarding code — no longer reaches
+  // buildParityManifest's opts guard at all; the extra argument is simply unused,
+  // consistent with ordinary JS call semantics, and buildParityManifest gets its
+  // default `{}`. This must NOT throw.
+  const tree = makeVersionStampedTree('1.8.0');
+  try {
+    assert.doesNotThrow(() => buildInstallTree(tree.configDir, tree.root, null));
+    assert.deepEqual(
+      buildInstallTree(tree.configDir, tree.root, null),
+      buildInstallTree(tree.configDir, tree.root),
+      'a discarded third argument must not change the result'
+    );
+  } finally {
+    cleanup(tree.root);
+  }
+});
+
+test('measuredPackageVersion: resolves this checkout\'s version with no repoRoot, the measured tree\'s version with one, and fails closed (#2891)', () => {
+  // No repoRoot at all (key genuinely absent): this checkout's own PKG_VERSION, no
+  // filesystem I/O.
+  assert.equal(measuredPackageVersion(), PKG_VERSION);
+  // Explicit `undefined` is the ONLY falsy value treated as "this checkout" — every
+  // OTHER falsy value ('', 0, false) is a caller-side bug and must fail closed rather
+  // than silently defaulting, consistent with `currentManifests`' installScript gate
+  // and with `buildParityManifest`'s pkgVersion guard (#2891 review FINDING 7).
+  assert.equal(measuredPackageVersion(undefined), PKG_VERSION);
+  for (const bad of ['', 0, false]) {
+    assert.throws(
+      () => measuredPackageVersion(bad),
+      /repoRoot must be a non-empty path or omitted entirely/,
+      `expected repoRoot=${JSON.stringify(bad)} to throw`
+    );
+  }
+
+  // A different tree's package.json: its OWN version, not this checkout's.
+  const measuredRoot = createTempDir('gsd-test-mpv-ok-');
+  try {
+    fs.writeFileSync(
+      path.join(measuredRoot, 'package.json'),
+      JSON.stringify({ name: 'measured-tree', version: '9.9.9' }),
+    );
+    assert.equal(measuredPackageVersion(measuredRoot), '9.9.9');
+  } finally {
+    cleanup(measuredRoot);
+  }
+
+  // Missing package.json: fails closed, never falls back to this checkout's version.
+  const missingRoot = createTempDir('gsd-test-mpv-missing-');
+  try {
+    assert.throws(() => measuredPackageVersion(missingRoot), /cannot read/);
+  } finally {
+    cleanup(missingRoot);
+  }
+
+  // Unparseable package.json.
+  const badJsonRoot = createTempDir('gsd-test-mpv-badjson-');
+  try {
+    fs.writeFileSync(path.join(badJsonRoot, 'package.json'), '{not json');
+    assert.throws(() => measuredPackageVersion(badJsonRoot), /not valid JSON/);
+  } finally {
+    cleanup(badJsonRoot);
+  }
+
+  // Version-less package.json (key ABSENT entirely) — the only branch the pre-review
+  // test suite drove.
+  const noVersionRoot = createTempDir('gsd-test-mpv-noversion-');
+  try {
+    fs.writeFileSync(path.join(noVersionRoot, 'package.json'), JSON.stringify({ name: 'no-version' }));
+    assert.throws(() => measuredPackageVersion(noVersionRoot), /no non-empty string "version" field/);
+  } finally {
+    cleanup(noVersionRoot);
+  }
+
+  // "version" key PRESENT but an empty string — a distinct branch from "absent"
+  // (`typeof '' === 'string'` but `''.length === 0`); the pre-review suite never drove
+  // it and both surviving mutants collapse this into the absent-key case (#2891 review
+  // FINDING 3).
+  const emptyVersionRoot = createTempDir('gsd-test-mpv-emptyversion-');
+  try {
+    fs.writeFileSync(path.join(emptyVersionRoot, 'package.json'), JSON.stringify({ version: '' }));
+    assert.throws(() => measuredPackageVersion(emptyVersionRoot), /no non-empty string "version" field/);
+  } finally {
+    cleanup(emptyVersionRoot);
+  }
+
+  // "version" key PRESENT but non-string (e.g. a bare JSON number) — the other branch
+  // `typeof version !== 'string'` guards, distinct from both "absent" and "empty
+  // string" (#2891 review FINDING 3).
+  const numericVersionRoot = createTempDir('gsd-test-mpv-numericversion-');
+  try {
+    fs.writeFileSync(path.join(numericVersionRoot, 'package.json'), JSON.stringify({ version: 123 }));
+    assert.throws(() => measuredPackageVersion(numericVersionRoot), /no non-empty string "version" field/);
+  } finally {
+    cleanup(numericVersionRoot);
+  }
+
+  // Unreadable package.json: monkeypatch fs.readFileSync (NEVER chmod 0o000 — root
+  // bypasses mode bits and the test would silently pass with zero coverage in root
+  // Docker/CI). Save original, override to throw, assert.throws, restore in `finally`.
+  const unreadableRoot = createTempDir('gsd-test-mpv-unreadable-');
+  try {
+    fs.writeFileSync(path.join(unreadableRoot, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+    const orig = fs.readFileSync;
+    try {
+      fs.readFileSync = () => { throw new Error('injected package.json read failure'); };
+      assert.throws(() => measuredPackageVersion(unreadableRoot), /injected package\.json read failure/);
+    } finally {
+      fs.readFileSync = orig;
+    }
+    // Restoration is real, not assumed.
+    assert.equal(measuredPackageVersion(unreadableRoot), '1.0.0');
+  } finally {
+    cleanup(unreadableRoot);
+  }
 });

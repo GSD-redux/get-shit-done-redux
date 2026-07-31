@@ -185,7 +185,21 @@ if [ -z "$FILES_OVERRIDE" ]; then
             raw = raw.replace(/^['"]|['"]$/g, '');
             raw = raw.replace(/\s+\([^)]*\)\s*$/, '');
             raw = raw.split(/\s+—\s/)[0].trim();
-            if (/\//.test(raw) && /\.[A-Za-z0-9]+$/.test(raw)) {
+            // #2666: accept root-level paths (no `/`) and known extensionless build
+            // files, not only nested paths with a trailing extension. The pre-fix
+            // guard required BOTH a directory separator AND a trailing dot-extension,
+            // which silently dropped every repository-root file (Dockerfile,
+            // renovate.json, AGENTS.md, package.json, .gitlab-ci.yml, …) and every
+            // extensionless build file anywhere in the tree (**/Dockerfile, **/Makefile).
+            // Prose bullets are rejected by the known-filename / has-extension
+            // distinction, with the post-processing existence check (`[ -f ]`) as a
+            // backstop — a prose string is never a real file on disk.
+            const KNOWN_EXTENSIONLESS_BUILD_FILES = new Set([
+              'dockerfile', 'containerfile', 'makefile', 'justfile', 'procfile',
+            ]);
+            const hasExtension = /\.[A-Za-z0-9]+$/.test(raw);
+            const basename = raw.split('/').pop().toLowerCase();
+            if (hasExtension || KNOWN_EXTENSIONLESS_BUILD_FILES.has(basename)) {
               files.push(raw);
             }
           }
@@ -210,37 +224,72 @@ if [ -z "$FILES_OVERRIDE" ]; then
 fi
 ```
 
-**Tier 3 — Git diff fallback (per D-02):**
+**Tier 3 — Git diff fallback (per D-02) and SUMMARY/diff cross-check (per #2666):**
 
-If no SUMMARY.md files found OR no files extracted from them:
+If no SUMMARY.md files found OR no files extracted from them, fall back to the git diff.
+Additionally, whenever a reliable diff base is available, cross-check the SUMMARY scope
+against the diff and warn about (then add) any changed files the SUMMARY extractor did not
+surface — so a partial SUMMARY result can no longer silently mask the rest of the phase.
 ```bash
+# Compute diff base from phase commits — fail closed if no reliable base found
+PHASE_COMMITS=$(git log --oneline --all --grep="${PADDED_PHASE}" --format="%H" 2>/dev/null)
+DIFF_BASE=""
+if [ -n "$PHASE_COMMITS" ]; then
+  DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
+  # Verify the parent commit exists (first commit in repo has no parent)
+  if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
+    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
+  fi
+fi
+
 if [ ${#REVIEW_FILES[@]} -eq 0 ]; then
-  # Compute diff base from phase commits — fail closed if no reliable base found
-  PHASE_COMMITS=$(git log --oneline --all --grep="${PADDED_PHASE}" --format="%H" 2>/dev/null)
-  
-  if [ -n "$PHASE_COMMITS" ]; then
-    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
-    
-    # Verify the parent commit exists (first commit in repo has no parent)
-    if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
-      DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
-    fi
-    
+  # Full git-diff fallback (per D-02): SUMMARY scoping yielded nothing.
+  if [ -n "$DIFF_BASE" ]; then
     # Run git diff with specific exclusions (per D-03)
     DIFF_FILES=$(git diff --name-only "${DIFF_BASE}..HEAD" -- . \
       ':!.planning/' ':!ROADMAP.md' ':!STATE.md' \
       ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
       ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
-    
+
     while IFS= read -r file; do
       [ -n "$file" ] && REVIEW_FILES+=("$file")
     done <<< "$DIFF_FILES"
-    
+
     echo "File scope: ${#REVIEW_FILES[@]} files from git diff (base: ${DIFF_BASE})"
   else
     # Fail closed — no reliable diff base found. Do not use arbitrary HEAD~N.
     echo "Warning: No phase commits found for '${PADDED_PHASE}'. Cannot determine reliable diff scope."
     echo "Use --files flag to specify files explicitly: /gsd:code-review ${PHASE_ARG} --files=file1,file2,..."
+  fi
+elif [ -n "$DIFF_BASE" ]; then
+  # #2666 cross-check: SUMMARY yielded a non-empty (possibly partial) scope.
+  # Warn about — and add — any changed files the SUMMARY extractor did not surface,
+  # so a partial result can no longer silently ship an incomplete review scope.
+  DIFF_FILES=$(git diff --name-only "${DIFF_BASE}..HEAD" -- . \
+    ':!.planning/' ':!ROADMAP.md' ':!STATE.md' \
+    ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
+    ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
+
+  # Build a newline-delimited list of already-scoped files for exact membership
+  # testing (portable — bash 3.2 on macOS has no associative arrays). grep -Fxq
+  # matches the WHOLE line exactly, so a short basename (e.g. root `Dockerfile`)
+  # does NOT substring-match a longer scoped path (e.g. `docker/Dockerfile`).
+  IN_SCOPE=$(printf '%s\n' "${REVIEW_FILES[@]}")
+
+  MISSING_FROM_SUMMARY=()
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    # Exact whole-line match; grep nonzero-exit => not in scope.
+    if printf '%s\n' "${REVIEW_FILES[@]}" | grep -Fxq -- "$file" 2>/dev/null; then
+      : # already scoped
+    else
+      MISSING_FROM_SUMMARY+=("$file"); REVIEW_FILES+=("$file")
+    fi
+  done <<< "$DIFF_FILES"
+
+  if [ ${#MISSING_FROM_SUMMARY[@]} -gt 0 ]; then
+    echo "Warning: SUMMARY scope was missing ${#MISSING_FROM_SUMMARY[@]} changed file(s) the git diff surfaced; adding them to the review scope:"
+    printf '  - %s\n' "${MISSING_FROM_SUMMARY[@]}"
   fi
 fi
 ```
@@ -415,7 +464,22 @@ FALLOW_OK=$(FALLOW_TMP=\"${FALLOW_JSON_PATH}.tmp\" node -e \"
 if [ \"$FALLOW_OK\" != \"1\" ]; then
   FALLOW_STDERR_SUMMARY=$(head -5 \"$FALLOW_STDERR_TMP\")
   rm -f \"${FALLOW_JSON_PATH}.tmp\" \"$FALLOW_STDERR_TMP\"
-  echo \"WARNING: fallow structural pre-pass failed (exit ${FALLOW_EXIT}): ${FALLOW_STDERR_SUMMARY}\"
+  # #2667: distinguish a hard EXECUTION failure (the binary was found at step 1
+  # but would not run) from the binary-missing path (step 2). Exit 124 = timeout,
+  # 2 = usage error, 125 = spawn failure (e.g. Windows EINVAL on a .cmd shim —
+  # CVE-2024-27980, now mediated by run-with-timeout), 126/127 = not executable /
+  # not found. A non-zero exit here with a resolved binary means fallow is
+  # installed but did not produce a report — surface that loudly so a Windows
+  # user does not mistake it for "fallow absent".
+  case \"$FALLOW_EXIT\" in
+    124) FALLOW_FAIL_KIND=\"timed out\" ;;
+    2)   FALLOW_FAIL_KIND=\"usage error\" ;;
+    125) FALLOW_FAIL_KIND=\"spawn failure (the binary was found but did not start — e.g. a Windows .cmd shim; run-with-timeout mediates this)\" ;;
+    126) FALLOW_FAIL_KIND=\"not executable\" ;;
+    127) FALLOW_FAIL_KIND=\"not found\" ;;
+    *)   FALLOW_FAIL_KIND=\"crashed\" ;;
+  esac
+  echo \"WARNING: fallow structural pre-pass failed (${FALLOW_FAIL_KIND}, exit ${FALLOW_EXIT}): ${FALLOW_STDERR_SUMMARY}\"
   FALLOW_JSON_PATH=\"\"
 else
   mv \"${FALLOW_JSON_PATH}.tmp\" \"$FALLOW_JSON_PATH\"
@@ -423,7 +487,7 @@ else
 fi
 ```
 
-On any failure of the structural pre-pass (binary missing, timeout, empty output, or unparseable JSON), the workflow continues with no `<structural_findings>` injection; the reviewer agent receives a normal review request.
+On any failure of the structural pre-pass (binary missing at step 2, or an execution failure here — timeout, spawn failure, crash, empty output, or unparseable JSON), the workflow continues with no `<structural_findings>` injection; the reviewer agent receives a normal review request. The WARNING above names the failure KIND so a hard execution failure (e.g. a Windows `.cmd` spawn failure) is not mistaken for an absent optional dependency.
 
 4) Optional MCP bridge path (runtime-dependent):
 - If `FALLOW_MCP=true`, set reviewer input mode to MCP-backed structural findings.

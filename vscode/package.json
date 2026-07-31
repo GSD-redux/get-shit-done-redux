@@ -2,7 +2,7 @@
   "name": "gsd-core-vscode",
   "displayName": "GSD Core",
   "description": "GSD orchestration engine embedded in VS Code (ADR-1239 IDE profile).",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "publisher": "opengsd",
   "engines": {
     "vscode": "^1.105.0"
