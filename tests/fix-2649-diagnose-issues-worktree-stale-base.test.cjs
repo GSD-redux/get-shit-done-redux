@@ -42,14 +42,29 @@ describe('diagnose-issues: pre-dispatch worktree base-check (#2649)', () => {
     assert.ok(spawnIdx !== -1, '"spawn_agents" step must exist in diagnose-issues.md');
     const baseCheckIdx = content.indexOf('worktree.base-check', spawnIdx);
     assert.ok(baseCheckIdx !== -1, 'worktree.base-check must be invoked within the spawn_agents step');
-    // The check must precede the dispatch — the Agent(...) call comes after the
-    // EXPECTED_BASE capture, and the base-check must run before that capture so
-    // the degrade decision reflects the most current local HEAD.
-    const expectedBaseIdx = content.indexOf('EXPECTED_BASE=$(git rev-parse HEAD)', spawnIdx);
-    assert.ok(expectedBaseIdx !== -1, 'EXPECTED_BASE capture must exist within spawn_agents');
+    // The load-bearing invariant is "base-check BEFORE the Agent() dispatch" so the
+    // degrade decision can drop isolation from the spawn. (Where EXPECTED_BASE is
+    // captured relative to the check is cosmetic — the check only reads HEAD, never
+    // mutates it — so assert the real invariant, not a loose disjunction.)
+    const agentIdx = content.indexOf('Agent(', spawnIdx);
+    assert.ok(agentIdx !== -1, 'spawn_agents must contain an Agent() dispatch');
     assert.ok(
-      baseCheckIdx < expectedBaseIdx || (expectedBaseIdx < baseCheckIdx && content.indexOf('Agent(', baseCheckIdx) !== -1),
-      'worktree.base-check must run before the debug-agent dispatch',
+      baseCheckIdx < agentIdx,
+      'worktree.base-check must run before the Agent() dispatch so the degrade decision can drop isolation from the spawn',
+    );
+  });
+
+  test('verify-only worktree_branch_check backstop remains embedded in the Agent() prompt', () => {
+    // Acceptance criterion #4: the base-check is a PRE-DISPATCH degrade; the
+    // <worktree_branch_check> guard is a POST-FORK fail-closed backstop. Both
+    // layers must survive — a future edit that dropped the backstop embedding
+    // would re-open the silent-stale-base class. Guard its continued presence.
+    const content = fs.readFileSync(DIAGNOSE_PATH, 'utf-8');
+    const spawnIdx = content.indexOf('<step name="spawn_agents">');
+    assert.ok(spawnIdx !== -1, '"spawn_agents" step must exist');
+    assert.ok(
+      content.indexOf('worktree-branch-check.md', spawnIdx) !== -1,
+      'spawn_agents must still materialize the <worktree_branch_check> backstop after the base-check gate (#2649 acceptance criterion 4)',
     );
   });
 
