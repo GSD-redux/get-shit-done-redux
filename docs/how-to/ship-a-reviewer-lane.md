@@ -1,6 +1,6 @@
 # How to ship a reviewer lane in your capability
 
-**Goal:** Declare a *reviewer lane* in a capability manifest so `/gsd:review` discovers your external review CLI or model endpoint, offers a flag for it, invokes it, and renders its output into `REVIEWS.md` — without patching GSD core.
+**Goal:** Declare a *reviewer lane* in a capability manifest so `/gsd-review` discovers your external review CLI or model endpoint, offers a flag for it, invokes it, and renders its output into `REVIEWS.md` — without patching GSD core.
 
 **Prerequisites:** You already have a capability (`capability.json`), or you are creating one. The reviewer tool is installed and works from your shell. GSD 1.9.0 or later.
 
@@ -32,7 +32,7 @@ Most lanes are `transport: "spawn"` — GSD runs a binary and reads its output. 
   "role": "reviewer",
   "version": "1.0.0",
   "title": "Acme Review CLI",
-  "description": "Acme CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target.",
+  "description": "Acme CLI — cross-AI /gsd-review reviewer lane only; not a GSD install target.",
   "tier": "full",
   "requires": [],
   "engines": { "gsd": ">=1.9.0" },
@@ -182,7 +182,7 @@ gsd-tools review-lane plan --selected acme
 A resolvable lane returns `"ok": true` with its `section`, `transport`, and prompt path. Once that is green, run it for real against a planned phase:
 
 ```bash
-/gsd:review --phase 3 --acme
+/gsd-review --phase 3 --acme
 ```
 
 If the lane is absent from `--all`, the probe is the usual culprit: `command-exists` fails silently when the binary is not on `PATH` in the environment GSD runs in.
