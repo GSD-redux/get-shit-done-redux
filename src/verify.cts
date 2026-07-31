@@ -176,6 +176,16 @@ function verifySummaryCore(
   // is still not read. Recovering it needs a real frontmatter parse, which is
   // deliberately left as a follow-up rather than smuggled in here.
   const mentionedFiles = new Set<string>();
+  // #2844: Pattern 1 matches any backticked path-like token. A SUMMARY body is
+  // predominantly about what the phase DID, so a backticked path in prose ("Built
+  // `src/kept.ts`", a `- \`src/x.ts\`` list item) is a legitimate claim (#2685
+  // pins this). The false-positive class #2844 fixes is a path mentioned as a
+  // FUTURE/CONDITIONAL deliverable — "next phase will add `shared/types.ts`",
+  // "planned", "would", "to be created" — which is NOT a claim about this phase.
+  // Exclude those lines rather than requiring an explicit claim verb (which would
+  // drop the legitimate "Built …" / list-item forms #2685 protects).
+  const isFutureMention = (line: string): boolean =>
+    /\b(?:will(?:\s+(?:add|create|build|land))?(?:[^.])?|(?:next|later|future)\s+phase|planned?|would\s+(?:be|add|create|build)|to\s+be\s+(?:added|created|built)|eventually|not\s+yet)\b/i.test(line);
   const patterns = [
     /`([^`]+\.[a-zA-Z]+)`/g,
     /(?:Created|Modified|Added|Updated|Edited):\s*`?([^\s`[\]]+\.[a-zA-Z]+)`?/gi,
@@ -185,9 +195,14 @@ function verifySummaryCore(
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(content)) !== null) {
       const filePath = m[1];
-      if (filePath && isProbableProjectFile(filePath)) {
-        mentionedFiles.add(filePath);
-      }
+      if (!filePath || !isProbableProjectFile(filePath)) continue;
+      // #2844: skip a backticked path on a future/conditional line — it names a
+      // deliverable this phase did NOT produce, so probing it is a false positive.
+      const lineStart = content.lastIndexOf('\n', m.index) + 1;
+      const lineEnd = content.indexOf('\n', m.index);
+      const line = content.slice(lineStart, lineEnd === -1 ? undefined : lineEnd);
+      if (isFutureMention(line)) continue;
+      mentionedFiles.add(filePath);
     }
   }
 

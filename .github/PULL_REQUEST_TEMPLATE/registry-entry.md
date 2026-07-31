@@ -15,6 +15,7 @@ Full schema and process: [docs/registries/README.md](../../docs/registries/READM
 
 - [ ] Capability Registry entry — adds/updates one object in `docs/registries/capabilities.json`
 - [ ] EoS Registry entry — adds/updates one object in `docs/registries/eos.json`
+- [ ] Reviewer Lane Registry entry — adds/updates one object in `docs/registries/reviewers.json`
 
 ## The entry
 
@@ -44,6 +45,7 @@ Full schema and process: [docs/registries/README.md](../../docs/registries/READM
 - [ ] `id`, `name`, `type`, `repo`, `description`, `author`, `license`, `enginesGsd`, `install`, `uninstall`, `interactions`, `discussion` are all present and non-empty
 - [ ] **(Capability entries only)** `interactions.loopExtensionPoints` is a non-empty subset of the 12 Loop Extension Points, `interactions.hookKinds` ⊆ `{step, contribution, gate}`, and `interactions.configKeys` / `requires` / `runtimeCompat` / `produces` / `consumes` are present (empty arrays are fine where nothing applies)
 - [ ] **(EoS entries only)** `protocolVersion` is an integer ≥ 1, `interactions.interfacePoints` is a non-empty subset of the six interface points, `interactions.profile` is one of `programmatic-cli` / `declarative-cli` / `ide`, and `interactions.axes` has exactly the eight required axis keys plus, optionally, `effortSurface` (`argv` / `none`)
+- [ ] **(Reviewer entries only)** `interactions.slug` matches the lane slug grammar `^[a-z0-9][a-z0-9_-]*$`, `interactions.flags` is a non-empty array matching `^--[a-z0-9][a-z0-9-]*$`, `interactions.transport` is `spawn` or `openai-http`, `interactions.evidenceClass` is `source-grounded` or `diff-only`, `interactions.reviewsSection` is a non-empty string (max 200 characters), and `interactions.requiresBinaries` / `configKeys` / `runtimeCompat` are present (empty arrays are fine where nothing applies)
 
 ## Ownership & non-endorsement
 
@@ -53,12 +55,12 @@ Full schema and process: [docs/registries/README.md](../../docs/registries/READM
 
 ## One entry, one PR
 
-- [ ] This PR adds or updates exactly **one** entry, in exactly one of `capabilities.json` / `eos.json`
+- [ ] This PR adds or updates exactly **one** entry, in exactly one of `capabilities.json` / `eos.json` / `reviewers.json`
 - [ ] I have not bundled any other registry entry, code change, or unrelated docs change into this PR
 
 ## Generated file in sync
 
-- [ ] I ran `npm run gen:registry` after editing the JSON source, and this PR includes the regenerated `docs/registries/capability-registry.md` or `docs/registries/eos-registry.md`
+- [ ] I ran `npm run gen:registry` after editing the JSON source, and this PR includes the regenerated `docs/registries/capability-registry.md`, `docs/registries/eos-registry.md`, or `docs/registries/reviewer-registry.md`
 - [ ] I did **not** hand-edit the generated `.md` file directly — all edits were made to the JSON source
 
 ## Documentation

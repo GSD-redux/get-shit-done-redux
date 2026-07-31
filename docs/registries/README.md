@@ -1,6 +1,6 @@
-# GSD Registries: Community Capability Registry & EoS Registry
+# GSD Registries: Community Capability Registry, EoS Registry & Reviewer Lane Registry
 
-Specification, entry schema, and submission process for GSD's two third-party discoverability catalogs — the **GSD Community Capability Registry** and the **GSD EoS Registry**.
+Specification, entry schema, and submission process for GSD's three third-party discoverability catalogs — the **GSD Community Capability Registry**, the **GSD EoS Registry**, and the **GSD Reviewer Lane Registry**.
 
 ---
 
@@ -8,7 +8,7 @@ Specification, entry schema, and submission process for GSD's two third-party di
 
 > Inclusion in this registry means only that a maintainer merged a PR that linked to the author's repository. It is not an endorsement. GSD has not reviewed, tested, audited, or verified the correctness, quality, safety, or security of any listed solution, nor its claimed GSD interactions. Use at your own risk; evaluate the linked source yourself. Entries are removed only for illegal content, malware, spam, or a link that is dead/completely non-functional — never curated for quality.
 
-This stance applies identically to every entry in both registries. It is reproduced verbatim at the top of each generated catalog (`capability-registry.md`, `eos-registry.md`).
+This stance applies identically to every entry in all three registries. It is reproduced verbatim at the top of each generated catalog (`capability-registry.md`, `eos-registry.md`, `reviewer-registry.md`).
 
 ## Narrow removal policy
 
@@ -25,18 +25,19 @@ A registry entry is **never** removed for quality, staleness of a working projec
 
 ## What gets listed
 
-Two independent catalogs, sharing one schema shape, one non-endorsement stance, and one submission process:
+Three independent catalogs, sharing one schema shape, one non-endorsement stance, and one submission process:
 
 - **Community Capability Registry** (`docs/registries/capability-registry.md`, generated from `docs/registries/capabilities.json`) — third-party **Feature Capabilities**: plug-ins that attach at GSD's Loop Extension Points (ADR-857, ADR-894, ADR-1244) and are installed with `gsd capability install <spec>`.
 - **EoS Registry** (`docs/registries/eos-registry.md`, generated from `docs/registries/eos.json`) — third-party **Embeddable Orchestration System (EoS)** host integrations: projects that embed GSD as an orchestration engine inside a host through the ADR-1239 Host-Integration Interface.
+- **Reviewer Lane Registry** (`docs/registries/reviewer-registry.md`, generated from `docs/registries/reviewers.json`) — third-party **reviewer lanes**: `role: "reviewer"` capabilities (ADR-2782) that add an external review lane to `/gsd-review`, installed with `gsd capability install <spec>`. A lane registers on zero Loop Extension Points and owns no artifacts, which is why it cannot be listed as a Feature Capability.
 
-Both registries are non-endorsing discoverability catalogs (issue #2182). Neither is the runtime **Capability Registry** (the generated manifest consumed at load time, ADR-894 §5) or the **Capability Registry Overlay** (the runtime loader that merges an installed third-party manifest into that generated registry, ADR-1244 D2) — see `CONTEXT.md` → "Community Capability Registry" and "EoS Registry" for the full disambiguation.
+All three registries are non-endorsing discoverability catalogs (issue #2182, plus #2904 for the Reviewer Lane Registry). None is the runtime **Capability Registry** (the generated manifest consumed at load time, ADR-894 §5) or the **Capability Registry Overlay** (the runtime loader that merges an installed third-party manifest into that generated registry, ADR-1244 D2) — see `CONTEXT.md` → "Community Capability Registry", "EoS Registry", and "Reviewer Lane Registry" for the full disambiguation.
 
 ---
 
 ## Entry schema
 
-Every entry is one JSON object in `docs/registries/capabilities.json` or `docs/registries/eos.json`, validated by `scripts/registry-schema.cjs`. Field names below are exact and case-sensitive; unknown top-level keys are rejected.
+Every entry is one JSON object in `docs/registries/capabilities.json`, `docs/registries/eos.json`, or `docs/registries/reviewers.json`, validated by `scripts/registry-schema.cjs`. Field names below are exact and case-sensitive; unknown top-level keys are rejected.
 
 ### Capability entries (`capabilities.json`, `type: "capability"`)
 
@@ -166,6 +167,66 @@ Example:
 }
 ```
 
+### Reviewer entries (`reviewers.json`, `type: "reviewer"`)
+
+| Field | Required | Meaning |
+|---|---|---|
+| `id` | yes | Unique slug across the registry (`^[a-z0-9]+(-[a-z0-9]+)*$`). |
+| `name` | yes | Human-readable name. |
+| `type` | yes | Must equal `"reviewer"`. |
+| `repo` | yes | `owner/repo` on github.com — the author's own repository. |
+| `description` | yes | One-paragraph plain-language description of the reviewer lane and what it reviews. |
+| `author` | yes | Author name (and, optionally, contact). |
+| `license` | yes | SPDX identifier (or `UNLICENSED` / `Proprietary`). |
+| `enginesGsd` | yes | Declared `engines.gsd` semver range (ADR-1244 D1), e.g. `>=1.8.0`. |
+| `install` | yes | Exact, copy-pasteable install command — the ADR-1244 URL-import flow, e.g. `gsd capability install https://github.com/OWNER/REPO.git#v1.0.0`. |
+| `uninstall` | yes | Exact, copy-pasteable removal command, e.g. `gsd capability remove <id>`. |
+| `interactions` | yes | Object — see below. |
+| `discussion` | yes | URL of this entry's GitHub Discussion (`https://github.com/<owner>/<repo>/discussions/<n>`). |
+
+`interactions` (Reviewer):
+
+| Field | Required | Meaning |
+|---|---|---|
+| `slug` | yes | Lane identity, matching the manifest's `reviewer.slug`. Must match the runtime lane grammar `^[a-z0-9][a-z0-9_-]*$` — underscores and a leading digit are permitted (`lm_studio`, `4o-mini`), unlike the kebab-only `id` field. |
+| `flags` | yes, non-empty | The CLI flags that select the lane, e.g. `["--gemini"]`. Each must match `^--[a-z0-9][a-z0-9-]*$` — flags are kebab even when the slug is snake (`lm_studio` → `--lm-studio`). |
+| `transport` | yes | `spawn` or `openai-http`. |
+| `evidenceClass` | yes | `source-grounded` or `diff-only`. |
+| `reviewsSection` | yes | The `REVIEWS.md` heading the lane renders under (max 200 characters). |
+| `requiresBinaries` | yes | External binaries the lane needs (may be empty). |
+| `configKeys` | yes | Federated config keys it owns (may be empty). |
+| `runtimeCompat` | yes | Array of compatible runtimes; `["all"]` is allowed. |
+
+Example:
+
+```json
+{
+  "id": "acme-review-lane",
+  "name": "Acme Review Lane",
+  "type": "reviewer",
+  "repo": "some-org/gsd-lane-acme",
+  "description": "Adds an Acme-hosted model as an external reviewer lane for /gsd-review, evaluating diffs against Acme's static-analysis findings.",
+  "author": "Some Org <hello@some-org.example>",
+  "license": "MIT",
+  "enginesGsd": ">=1.8.0",
+  "install": "gsd capability install https://github.com/some-org/gsd-lane-acme.git#v1.0.0",
+  "uninstall": "gsd capability remove acme-review-lane",
+  "interactions": {
+    "slug": "acme",
+    "flags": ["--acme"],
+    "transport": "openai-http",
+    "evidenceClass": "diff-only",
+    "reviewsSection": "## Acme Review",
+    "requiresBinaries": [],
+    "configKeys": ["acme.api_key"],
+    "runtimeCompat": ["all"]
+  },
+  "discussion": "https://github.com/open-gsd/gsd-core/discussions/1236"
+}
+```
+
+A `role: "runtime"` capability that also carries a `reviewer` body (a host that is also a reviewer keeps one manifest, ADR-2782 D1) lists under whichever catalog matches its primary install shape — the Reviewer Lane Registry is for lanes that are not install targets in their own right.
+
 ---
 
 ## Submission process
@@ -173,14 +234,14 @@ Example:
 Registration is a **documentation PR**, per [CONTRIBUTING.md → Documentation Updates](../../CONTRIBUTING.md#documentation-updates--update-the-relevant-docs):
 
 1. **Fork** the repository.
-2. **Edit** `docs/registries/capabilities.json` (Capability Registry) or `docs/registries/eos.json` (EoS Registry) and append exactly one entry matching the [schema](#entry-schema) above.
-3. **Run `npm run gen:registry`** to regenerate the corresponding `docs/registries/capability-registry.md` or `docs/registries/eos-registry.md`. Commit both the JSON source and the regenerated markdown.
+2. **Edit** `docs/registries/capabilities.json` (Capability Registry), `docs/registries/eos.json` (EoS Registry), or `docs/registries/reviewers.json` (Reviewer Lane Registry) and append exactly one entry matching the [schema](#entry-schema) above.
+3. **Run `npm run gen:registry`** to regenerate the corresponding `docs/registries/capability-registry.md`, `docs/registries/eos-registry.md`, or `docs/registries/reviewer-registry.md`. Commit both the JSON source and the regenerated markdown.
 4. **Open a PR** from a `docs/<issue#>-<slug>` branch (see CONTRIBUTING.md branch-naming conventions) using the [registry-entry PR template](../../.github/PULL_REQUEST_TEMPLATE/registry-entry.md).
 5. A maintainer reviews and merges. The only gate is whether the entry is a real, linkable solution with all required fields present — not a quality judgment (see [Non-endorsement stance](#non-endorsement-stance)).
 
 **One entry = one PR.** Do not bundle multiple registry additions, updates, or removals into a single PR.
 
-**The generated `.md` files are GENERATED — never hand-edit them.** `docs/registries/capability-registry.md` and `docs/registries/eos-registry.md` are produced by `scripts/gen-registry.cjs` from `capabilities.json` / `eos.json`. A PR that edits the generated markdown without a matching JSON source change will fail the `gen:registry --check` drift gate. Always edit the JSON and regenerate.
+**The generated `.md` files are GENERATED — never hand-edit them.** `docs/registries/capability-registry.md`, `docs/registries/eos-registry.md`, and `docs/registries/reviewer-registry.md` are produced by `scripts/gen-registry.cjs` from `capabilities.json` / `eos.json` / `reviewers.json`. A PR that edits the generated markdown without a matching JSON source change will fail the `gen:registry --check` drift gate. Always edit the JSON and regenerate.
 
 ---
 
@@ -202,11 +263,11 @@ There is no re-registration on new releases: register once, and your GitHub Rele
 
 ## Ranking + comments
 
-Ranking and community feedback live in **GitHub Discussions**, not in the registry markdown. Each merged entry — from either registry — gets exactly one Discussion in the dedicated `EoS Registry` Discussions category:
+Ranking and community feedback live in **GitHub Discussions**, not in the registry markdown. Each merged entry — from any of the three registries — gets exactly one Discussion in the dedicated `EoS Registry` Discussions category:
 
 - **Upvotes** on the Discussion post and on individual comments, with GitHub's built-in **Top** sort surfacing the most-upvoted community feedback first.
 - **Threaded comments** for experience reports, questions, and follow-up from other users.
 
-**Operational setup (one-time, per repo):** a repo admin creates the `EoS Registry` category under this repository's Discussions settings, using the **open-ended discussion** format. From then on, every merged entry gets its own Discussion thread created in that category, and the thread's URL is recorded in the entry's `discussion` field (see [Entry schema](#entry-schema) above) so the generated catalog links directly to it. Despite its name, the category carries threads for **both** registries — `discussion` is required on Capability entries exactly as it is on EoS entries.
+**Operational setup (one-time, per repo):** a repo admin creates the `EoS Registry` category under this repository's Discussions settings, using the **open-ended discussion** format. From then on, every merged entry gets its own Discussion thread created in that category, and the thread's URL is recorded in the entry's `discussion` field (see [Entry schema](#entry-schema) above) so the generated catalog links directly to it. Despite its name, the category carries threads for **all three** catalogs — `discussion` is required on Capability and Reviewer entries exactly as it is on EoS entries.
 
 **The open-ended format is required, and the choice is not cosmetic.** Because `discussion` is a required field, the thread must exist *before* the entry's PR is opened — and the person opening it is the entry's author, an outside contributor holding neither `maintain` nor `admin` permission on this repository. GitHub's **Announcement** format restricts starting new discussions to those two permission levels, so choosing it blocks every external submission at the first step, while still looking correctly configured to the admin who set it up. **Question/Answer** adds answer-marking, which pins one reply above the rest of a thread — a directory entry has no answer, and the pinning cuts across the upvote **Top** ordering described above. Open-ended is the format this process requires.
