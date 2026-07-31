@@ -18,7 +18,7 @@ A `reviewer` body is admissible on two roles. Pick by whether GSD installs *into
 | Your tool only reviews — GSD never installs commands, agents, or skills into it | `role: "reviewer"` | The honest description: a lane with no install surface, like `gemini`, `coderabbit`, and `ollama` |
 | Your capability adds planning steps, gates, or contributions | `role: "feature"` — and a separate lane capability | A feature manifest may not carry a `reviewer` body; the validator rejects it |
 
-A `role: "reviewer"` capability **must** carry a `reviewer` body, **must not** carry a `runtime` body, and **must not** carry feature-only fields (`skills`, `agents`, `steps`, `contributions`, `gates`).
+A `role: "reviewer"` capability **must** carry a `reviewer` body, **must not** carry a `runtime` body, and **must not** carry any feature-only field — `skills`, `agents`, `steps`, `contributions`, `gates`, `hooks`, or `activationKey`. A lane owns no artifacts and wires no loop extension point.
 
 ---
 
@@ -152,7 +152,11 @@ If you are shipping out-of-tree, package and install it like any other capabilit
 gsd capability install <url>
 ```
 
-Validation runs on the merged first-party ∪ overlay set, so a collision with an installed lane is caught at install, not at review time. Expect a hard failure on a duplicate `slug`, a duplicate entry in `flags`, a duplicate `reviewsSection`, a `slug` outside `^[a-z0-9][a-z0-9_-]*$`, or a reserved `slug`.
+Uniqueness is checked across the merged first-party ∪ overlay set — a duplicate `slug`, a duplicate entry in `flags`, or a duplicate `reviewsSection` collides. **Expect that collision to be quiet.** `gsd capability install` does not run the cross-capability check; it runs at *load* time, and a colliding overlay is dropped from the active set with a warning rather than failing the install. First-party always wins.
+
+That failure mode is worth internalizing before you debug it: the install command reports success, and your lane simply never appears. If a lane you just installed is missing from `gsd-tools review-lane sections`, suspect a name collision before you suspect the probe. Malformed values inside the body — a `slug` outside `^[a-z0-9][a-z0-9_-]*$`, an enum member that does not exist, an `outputArg` without `outputChannel: "file-arg"` — are ordinary validation errors and are reported directly.
+
+Two naming rules are easy to conflate, so keep them apart. Your `slug` may not be `__proto__`, `constructor`, or `prototype` — a prototype-pollution guard, not a namespace policy; any other grammatical slug is yours, including one starting `gsd-`. Your capability **`id`**, separately, may not begin with `gsd-`, `gsd-core-`, or `anthropic-`; those prefixes are reserved so nothing can impersonate a first-party capability.
 
 An *unknown* field inside your `reviewer` body behaves differently: it is a non-fatal warning on stderr, never a build failure. A manifest built against a newer GSD degrades visibly instead of crashing.
 
@@ -195,10 +199,13 @@ A reviewer lane is a **fourth executable-surface disclosure class**, alongside h
         sends: plan text, requirements, research findings, CONTEXT.md decisions
 ```
 
-Two consequences you should design for:
+Be clear-eyed about what that buys, because your users are trusting your judgment as much as the mechanism. ADR-2782 D5 says it plainly: disclosure and host pinning make the channel *"visible, pinned, and revocable — it does not make it safe"*, and consent-at-install is a **weaker gate for a standing egress channel than for a hook**. A user consents once; your lane thereafter receives every plan on every review run. A per-run prompt was considered and rejected as consent fatigue. Design your lane as if that single consent is the only one you will ever get, because it is.
+
+Three consequences you should design for:
 
 - **Your `args` are signature-bound, not just your binary.** Changing `binary`, `args`, `hostConfigKey`, `promptChannel`, or `handler` in a new version re-triggers consent on update. Changing `reviewsSection` or `timeoutFloorMs` does not — a cosmetic prompt is how users learn to click through.
 - **An `openai-http` lane binds the *resolved host*, not just the config key.** GSD re-resolves `hostConfigKey` before every invocation and blocks the lane if the destination changed, rather than silently sending plans somewhere new. Users see the lane refuse and must re-consent. Point `defaultHost` at the address you actually mean.
+- **What the user saw is only tamper-evident because the bundle is pinned.** The disclosure is trustworthy because the downloaded capability is integrity-checked and its hash recorded at install; a later change to your `args` or `hostConfigKey` shows up as a changed signature rather than sliding in quietly. Keep `engines.gsd` honest for the same reason — it is a hard gate, so a lane declaring a range it does not actually work on is blocked at install and skipped at load rather than failing confusingly at review time.
 
 For the reasoning behind consent-plus-integrity rather than a sandbox, see [The capability trust model](../explanation/capability-trust-model.md).
 
