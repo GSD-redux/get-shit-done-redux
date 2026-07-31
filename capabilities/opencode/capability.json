@@ -1,7 +1,7 @@
 {
   "id": "opencode",
   "role": "runtime",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "OpenCode",
   "description": "OpenCode — XDG-based config dir; flat commands/ + skills artifact layout; settings-json config format; no lifecycle hook registration; tier-2 support.",
   "tier": "core",

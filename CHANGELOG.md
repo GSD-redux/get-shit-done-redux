@@ -6,6 +6,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-07-31
+
+### Added
+
+- **Reviewer lanes are now documented as an authorable capability surface** — a new how-to walks capability authors through declaring a `reviewer` body so `/gsd-review` discovers, invokes, and renders their external review CLI or model endpoint, and the manifest reference's `invoke` row now lists the full accepted vocabulary for both transports. (#2782) (#2906)
+- **Third-party reviewer lanes can now be listed in a discoverability catalog.** ADR-2782 made a reviewer lane installable by a third party, but the two existing registries could not hold one — the Community Capability Registry requires a non-empty `loopExtensionPoints`, which a lane registers on none of, and the EoS Registry is for host integrations. A new Reviewer Lane Registry (`docs/registries/reviewers.json` → `docs/registries/reviewer-registry.md`) gives lanes a home, with an entry schema describing the lane itself: slug, flags, transport, evidence class, and REVIEWS.md section. (#2904) (#2912)
+
+### Fixed
+
+- **Fallow structural pre-pass no longer silently no-ops on Windows** — `run-with-timeout` now mediates `.cmd`/`.bat`/`.exe` spawns via an explicit `cmd.exe /c` argv array (Node's CVE-2024-27980 hardening requires a shell for these on Windows), and the fallow pre-pass names the failure kind so a Windows spawn failure is not mistaken for an absent binary. The existing `bash -c` callers and POSIX behavior are unchanged. (#2667) (#2897)
+- **A clean Codex install now applies balanced model settings to agent TOMLs on the first run** — `~/.gsd/defaults.json` (`resolve_model_ids` + `runtime`) is now written before agent TOML generation, so the runtime-aware model resolver knows the target runtime during the first pass. Previously a second install was required. (#2834) (#2900)
+- **`verify-summary` no longer reports a valid SUMMARY as failed because of a path mentioned in prose** — file-claim extraction is now bound to a creation/modification claim (a `Created:`/`Modified:`/`key-files` line), so a prose mention of a future deliverable is not checked for existence; and `verify-summary` now resolves the project root, so invoking it from a subdirectory no longer manufactures missing files. (#2910)
+- **`findProjectRoot` no longer silently resolves to a parent project across a git-repo boundary** — when invoked from a nested git repository that has no `.planning/` of its own, resolution stays within the caller's repo (or falls back to the start directory) instead of crossing into an ancestor GSD project. The existing plain-descendant and co-located `.git`+`.planning` cases are unchanged. (#2909)
+- **A requirement row stranded at `Gaps Found` can now be completed again, and `requirements mark-complete` no longer reports false success on a row it could not move** — the completion guards now accept `Gaps Found` (so `revert-phase`'s stranded rows are recoverable instead of permanently blocking the milestone), and when a traceability table has a row for an ID, `mark-complete` counts it as updated only if the row actually moved (not merely because the checkbox flipped). (#2788) (#2902)
+- **`/gsd-code-review --fix` now honors `workflow.use_worktrees`** — when the setting is `false`, the fixer edits and commits in the main checkout instead of creating a git worktree (matching the other writer workflows), and the spec forbids `rm -rf` on a possible Windows reparse point so an improvised worktree teardown can no longer delete the real `node_modules`. The REVIEW-FIX report also records where verification ran. (#2905)
+
 ## [1.9.0] - 2026-07-31
 
 ### Added

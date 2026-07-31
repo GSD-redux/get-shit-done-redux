@@ -1,7 +1,7 @@
 {
   "id": "gap-analysis",
   "role": "feature",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Post-planning gap analysis",
   "description": "Proactive, non-blocking post-planning coverage report. After all PLAN.md files are generated, cross-references every REQ-ID and D-ID from REQUIREMENTS.md and CONTEXT.md against plan bodies. Emits a Source | Item | Status table. Does not block phase advancement.",
   "tier": "standard",

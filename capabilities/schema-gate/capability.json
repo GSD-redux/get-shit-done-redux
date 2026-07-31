@@ -1,7 +1,7 @@
 {
   "id": "schema-gate",
   "role": "feature",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Schema push detection gate",
   "description": "Detects ORM schema-relevant files in the phase scope during planning and injects a mandatory [BLOCKING] schema push task into the plan. Prevents false-positive verification where build/types pass because TypeScript types come from config, not the live database.",
   "tier": "full",
