@@ -1705,16 +1705,18 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
               );
               milestoneBounded = versionedHeading.test(roadmapRaw);
             }
+            // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
+            // at all — only Phase headings) from a MILESTONED-but-unbounded one
+            // (milestone/version headings exist but the asserted one isn't among them).
+            // On a flat roadmap the whole-doc count is correct (no sibling milestones to
+            // conflate); on a sectioned-but-unbounded one it conflates siblings (#1761),
+            // so fall back to phaseDirs.length.
+            const hasMilestoneSectioning = roadmapRaw !== null
+              && /^#{2,3}\s+(?!Phase\s+\S)/mi.test(roadmapRaw);
+            const safeToUseRoadmapCount = milestoneBounded
+              || (roadmapPhaseCount > 0 && !hasMilestoneSectioning);
             return {
-              // #2828: when the roadmap has phases (roadmapPhaseCount > 0), use the
-              // roadmap count as the floor — it is the authoritative total. The
-              // !milestoneBounded flag still flows to milestoneUnbounded (for the
-              // percent skip) and still guards the #1761 sibling-milestone conflation
-              // by NOT inflating beyond roadmapPhaseCount, but a flat unmilestoned
-              // roadmap (where extractCurrentMilestone returns the whole doc) has no
-              // sibling milestones to conflate, so roadmapPhaseCount IS the right total.
-              // Fall back to phaseDirs.length only when no roadmap phases were found.
-              totalPhases: roadmapPhaseCount > 0
+              totalPhases: safeToUseRoadmapCount
                 ? Math.max(phaseDirs.length, roadmapPhaseCount)
                 : phaseDirs.length,
               milestoneBounded,
