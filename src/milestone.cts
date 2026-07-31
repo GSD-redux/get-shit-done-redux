@@ -26,7 +26,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { escapeRegex, normalizePhaseName, matchPhaseDirs, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestonePhaseFilter, extractCurrentMilestone, getMilestoneInfo } = roadmapParserMod;
@@ -573,10 +573,10 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
           if (major === 0 || major === 999) continue;
           const normalized = normalizePhaseName(phaseNum);
           // A phase has disk_status: 'no_directory' when no phase directory
-          // with a matching token exists on disk. Use the same phaseTokenMatches
-          // helper that roadmap.analyze uses to avoid false positives on decimal
-          // (2.1) and letter-suffix (12A) phase IDs.
-          const hasDirectory = phaseDirEntries.some((d) => phaseTokenMatches(d, normalized));
+          // with a matching token exists on disk. Use the same matchPhaseDirs
+          // owner that roadmap.analyze uses to avoid false positives on decimal
+          // (2.1) and letter-suffix (12A) phase IDs. (#2528)
+          const hasDirectory = matchPhaseDirs(phaseDirEntries, normalized).matches.length > 0;
           if (!hasDirectory) {
             noDirectoryPhases.push(phaseNum);
           }

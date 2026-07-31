@@ -14,7 +14,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources } = phaseIdMod;
+const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -381,13 +381,13 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     let hasContext = false;
     let hasResearch = false;
 
-    // DEAD catch removed (#2245 audit): _phaseDirNames.find(...) is a pure
+    // DEAD catch removed (#2245 audit): matchPhaseDirs(...) is a pure
     // array lookup on an already-resolved string array, and
     // countPhasePlansAndSummaries is itself fully defensive (its own
     // readdirSync is self-guarded, and it delegates to scanPhasePlans, which
     // never throws) — nothing in this block can throw, so the try/catch could
     // never be triggered.
-    const dirMatch = _phaseDirNames.find(d => phaseTokenMatches(d, normalized));
+    const dirMatch = matchPhaseDirs(_phaseDirNames, normalized).matches[0];
 
     if (dirMatch) {
       const counts = countPhasePlansAndSummaries(path.join(phasesDir, dirMatch));

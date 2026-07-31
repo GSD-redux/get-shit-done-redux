@@ -40,7 +40,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, stripProjectCodePrefix, comparePhaseNum } = phaseIdMod;
+const { normalizePhaseName, matchPhaseDirs, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, stripProjectCodePrefix, comparePhaseNum } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -2187,7 +2187,7 @@ function cmdValidateHealth(
         while ((pm = phasePattern.exec(scopedContent)) !== null) {
           const phaseNum = pm[1];
           const normalizedPh = normalizePhaseName(phaseNum);
-          const hasDirectory = phaseDirNames2.some((d) => phaseTokenMatches(d, normalizedPh));
+          const hasDirectory = matchPhaseDirs(phaseDirNames2, normalizedPh).matches.length > 0;
           if (!hasDirectory) {
             unstarted.push(phaseNum);
           }
@@ -2415,21 +2415,19 @@ function cmdVerifySchemaDrift(
     return;
   }
 
-  // Resolve the phase directory with the canonical phase-token matcher
-  // (phase-id.cjs), not a naive substring test. A bare `.includes(phaseArg)`
-  // lets a non-existent phase silently match a different phase whose directory
-  // name merely contains the requested token (e.g. "1" matching "11-expansion"),
-  // making the drift gate inspect the wrong phase. This mirrors find-phase /
-  // verify phase-completeness, which both use phaseTokenMatches. (#1571)
+  // Resolve the phase directory with the canonical phase-directory matcher
+  // (phase-id.cjs::matchPhaseDirs), not a naive substring test. A bare
+  // `.includes(phaseArg)` lets a non-existent phase silently match a different
+  // phase whose directory name merely contains the requested token (e.g. "1"
+  // matching "11-expansion"), making the drift gate inspect the wrong phase.
+  // This shares the one selection rule with find-phase / verify
+  // phase-completeness rather than restating it. (#1571, #2528)
   let phaseDir: string | null = null;
   const normalizedPhase = normalizePhaseName(phaseArg);
   const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.isDirectory() && phaseTokenMatches(entry.name, normalizedPhase)) {
-      phaseDir = path.join(phasesDir, entry.name);
-      break;
-    }
-  }
+  const dirNames = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  const drift = matchPhaseDirs(dirNames, normalizedPhase).matches[0];
+  if (drift) phaseDir = path.join(phasesDir, drift);
 
   if (!phaseDir) {
     const exact = path.join(phasesDir, phaseArg);

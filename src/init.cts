@@ -74,7 +74,7 @@ const {
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery } = phaseId;
+const { escapeRegex, normalizePhaseName, matchPhaseDirs, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -1411,7 +1411,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
 
     try {
       const dirs = _phaseDirEntries.filter(isDirInMilestone);
-      const dirMatch = dirs.find((d) => phaseTokenMatches(d, normalized));
+      const dirMatch = matchPhaseDirs(dirs, normalized).matches[0];
 
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);

@@ -41,7 +41,6 @@ const {
   normalizePhaseName,
   phaseMarkdownRegexSource,
   comparePhaseNum,
-  phaseTokenMatches,
   matchPhaseDirs,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -206,7 +205,8 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
 
     if (phase) {
       const normalized = normalizePhaseName(phase);
-      const match = dirs.find((d) => phaseTokenMatches(d, normalized));
+      const { matches } = matchPhaseDirs(dirs, normalized);
+      const match = matches[0];
       if (!match) {
         output({ files: [], count: 0, phase_dir: null, error: 'Phase not found' }, raw, '');
         return;
@@ -263,7 +263,7 @@ function cmdPhaseNextDecimal(cwd: string, basePhase: string, raw: boolean): void
     if (fs.existsSync(phasesDir)) {
       const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
       const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
-      baseExists = dirs.some((d) => phaseTokenMatches(d, normalized));
+      baseExists = matchPhaseDirs(dirs, normalized).matches.length > 0;
 
       const dirPattern = new RegExp(`^${OPTIONAL_PROJECT_CODE_PREFIX_SOURCE}${escapeRegex(normalized)}\\.(\\d+)`);
       for (const dir of dirs) {
@@ -1556,7 +1556,7 @@ function cmdPhaseRemove(
   const force = options.force || false;
 
   const subdirs = readSubdirectories(phasesDir, true);
-  const targetDir = subdirs.find((d) => phaseTokenMatches(d, normalized)) || null;
+  const targetDir = matchPhaseDirs(subdirs, normalized).matches[0] || null;
 
   if (targetDir && !force) {
     const files = fs.readdirSync(path.join(phasesDir, targetDir));
