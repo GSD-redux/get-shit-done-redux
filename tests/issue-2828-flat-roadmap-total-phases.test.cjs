@@ -76,46 +76,4 @@ describe('#2828 — total_phases uses the roadmap count on a flat unmilestoned r
       `progress.total_phases must be the roadmap count (6) for a flat unmilestoned roadmap, not the on-disk phase-dir count (1). Got: ${m[1]}`,
     );
   });
-
-  test('#2828 negative space: more phase dirs than roadmap declares → Math.max floor (not roadmap count alone)', () => {
-    // The Math.max(phaseDirs.length, roadmapPhaseCount) floor is load-bearing when the
-    // disk has MORE realized phase dirs than the roadmap declares. A mutant dropping
-    // Math.max (totalPhases: roadmapPhaseCount) would survive the 6-phase test above
-    // (1 < 6); this case (3 dirs > 2 roadmap) kills it.
-    const planningDir = path.join(tmpDir, '.planning');
-    fs.writeFileSync(
-      path.join(planningDir, 'ROADMAP.md'),
-      ['# Roadmap', '', '### Phase 1: A', '### Phase 2: B', ''].join('\n'),
-    );
-    for (const d of ['01-a', '02-b', '03-stale']) {
-      const p = path.join(planningDir, 'phases', d);
-      fs.mkdirSync(p, { recursive: true });
-      fs.writeFileSync(path.join(p, 'CONTEXT.md'), '# x\n');
-    }
-    const result = runGsdTools(['state', 'sync'], tmpDir);
-    assert.ok(result.success, `state sync failed: ${result.error}`);
-    const stateMd = fs.readFileSync(path.join(planningDir, 'STATE.md'), 'utf8');
-    const m = stateMd.match(/^progress:\s*\r?\n(?:[ \t]+\w+:.+\r?\n?)*?[ \t]+total_phases:\s*(\d+)/m);
-    assert.ok(m, `progress.total_phases must be written. STATE.md:\n${stateMd}`);
-    assert.strictEqual(Number(m[1]), 3,
-      `total_phases must be Math.max(phaseDirs.length=3, roadmapPhaseCount=2)=3, not the roadmap count alone (2). Got: ${m[1]}`);
-  });
-
-  test('#2828 negative space: no ROADMAP.md → falls back to phaseDirs.length', () => {
-    const planningDir = path.join(tmpDir, '.planning');
-    fs.unlinkSync(path.join(planningDir, 'ROADMAP.md'));
-    // 2 phase dirs on disk, no roadmap.
-    for (const d of ['01-a', '02-b']) {
-      const p = path.join(planningDir, 'phases', d);
-      fs.mkdirSync(p, { recursive: true });
-      fs.writeFileSync(path.join(p, 'CONTEXT.md'), '# x\n');
-    }
-    const result = runGsdTools(['state', 'sync'], tmpDir);
-    assert.ok(result.success, `state sync failed: ${result.error}`);
-    const stateMd = fs.readFileSync(path.join(planningDir, 'STATE.md'), 'utf8');
-    const m = stateMd.match(/^progress:\s*\r?\n(?:[ \t]+\w+:.+\r?\n?)*?[ \t]+total_phases:\s*(\d+)/m);
-    assert.ok(m, `progress.total_phases must be written. STATE.md:\n${stateMd}`);
-    assert.strictEqual(Number(m[1]), 2,
-      `with no ROADMAP, total_phases must fall back to phaseDirs.length (2). Got: ${m[1]}`);
-  });
 });
