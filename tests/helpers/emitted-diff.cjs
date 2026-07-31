@@ -7,7 +7,9 @@
  * Given the emitted manifests at `next` HEAD and at PR HEAD, plus the repo paths the
  * PR actually changed, decide which moved emitted paths are EXPLAINED by the diff and
  * which are not. Unattributable deltas are a hard failure that names them; the only
- * way through is a committed acknowledgment (`tests/emitted-drift-ack.json`).
+ * way through is a committed acknowledgment — a per-PR fragment under
+ * `tests/emitted-drift-acks/` (#2914), or, for branches predating that split, the
+ * legacy single `tests/emitted-drift-ack.json` — both are read and unioned (#2914).
  *
  * ── Why this module is pure ──────────────────────────────────────────────────
  * No fs, no git, no installer, no clock. The naive shape — one integration test that
@@ -35,15 +37,42 @@ const { attributeEmittedPath } = require('./emitted-provenance.cjs');
 const ACK_VERSION = 1;
 
 /**
- * The acknowledgment file, named ONCE (#2778).
+ * Key names that can never be a legitimate emitted path or bare workflow/agent filename,
+ * and that also happen to be the JS-object footguns (`__proto__`, `constructor`,
+ * `prototype`). Rejected LOUDLY by `parseAck` rather than silently dropped: a document
+ * naming one of these is always an authoring mistake (never a real path), and dropping it
+ * quietly would let the SAME document pass `scripts/lint-emitted-drift-ack.cjs`'s
+ * duplicate-detection (which excludes these keys for a different reason — see
+ * `declaredKeys`'s doc comment there) while erroring differently here — exactly the
+ * generative-fix-divergence class this repo's parity test exists to catch (#2914 review).
+ */
+const RESERVED_ACK_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * The LEGACY acknowledgment file, named ONCE (#2778), still honored (#2914).
  *
  * This string was previously typed by hand in `formatReport`'s unattributable branch, in
  * `parseAck`'s default `source`, and again as `ACK_PATH` in emitted-runtime.cjs. Adding a
  * fourth copy for the growth branch is the *generative fix divergence* class this repo
  * records: parallel surfaces reading one shared value must not be able to drift. One
  * definition consumed by every branch is cheaper than a parity test over four literals.
+ *
+ * #2914 replaces this SINGLE SHARED FILE with per-PR fragments under `ACK_DIR` — a
+ * single mutable document whose `paths` map every PR rewrites wholesale is a guaranteed
+ * merge-conflict cell between any two PRs that both need an ack (5 of 6 conflicting PRs
+ * in the open queue collided on this file and nothing else). The legacy path is still
+ * read and unioned with the fragments directory so open PRs authored before the split
+ * (#2818, #2812, #2728, #2566, #2531) are not broken by this change.
  */
 const ACK_FILE = 'tests/emitted-drift-ack.json';
+
+/**
+ * The per-PR fragment directory (#2914) — the `.changeset/`-shaped fix to the same
+ * shared-mutable-file problem `.changeset/` already solves: every fragment is a
+ * separately-named file, so two PRs adding an ack can never conflict with each other,
+ * and a fragment left behind on `next` after merge is inert rather than a shared cell.
+ */
+const ACK_DIR = 'tests/emitted-drift-acks';
 
 /**
  * Distinguishes "caller omitted the base side" from "caller said there is none".
@@ -91,6 +120,24 @@ const INVISIBLE = new RegExp(
 const NEW_FILE_CAP = 32768;
 
 /**
+ * Upper bound on how many fragment files a `readdirSync` of `ACK_DIR` (or its
+ * counterpart in `scripts/lint-emitted-drift-ack.cjs`) may return in one pass.
+ *
+ * 500 is ample headroom over any real repo's fragment count, which stays in the
+ * single digits between releases (fragments are deleted once spent). Exceeding it
+ * throws rather than silently truncating: a truncated listing would silently drop
+ * acknowledgments from the merged set, which is exactly the class of silent failure
+ * this whole ack seam exists to prevent — the fix for a directory this large is to
+ * prune spent fragments, never to read only some of them.
+ *
+ * Duplicated (not imported) in `scripts/lint-emitted-drift-ack.cjs`, which cannot
+ * require anything from `tests/` (it ships in the npm package; `tests/` does not).
+ * The two are held to the same value by the schema-parity test in
+ * `tests/emitted-attribution.test.cjs`.
+ */
+const MAX_ACK_FRAGMENTS = 500;
+
+/**
  * Render the minimal valid acknowledgment document for a set of entries (#2778).
  *
  * Built with `JSON.stringify` from `ACK_VERSION` rather than typed out, for two reasons: the
@@ -136,8 +183,16 @@ function ackDocument(entries) {
  * help text must not be a breaking change.
  */
 const REMEDIATION = Object.freeze({
-  ackFile: ACK_FILE,
-  createIfAbsent: 'create the file if absent — it exists only when something needs acknowledging',
+  // Deliberately NOT a fixed filename (#2914): the remedy is a NEW fragment under
+  // `ACK_DIR`, and the whole point of a fragment directory is that its name is the
+  // contributor's to pick — a fixed suggestion here would tempt everyone back onto one
+  // shared filename, resurrecting the exact merge-conflict cell this design removes.
+  ackFile: `${ACK_DIR}/<a-name-nobody-else-will-use>.json`,
+  ackDir: ACK_DIR,
+  createIfAbsent:
+    `create a NEW file under ${ACK_DIR}/ — pick a name nobody else is using (include `
+    + 'this issue or PR number, e.g. `2914-fix.json`), and never reuse an existing '
+    + 'fragment\'s name',
   doNotRegenerate:
     'Do NOT regenerate anything to silence this — there is nothing left to regenerate.',
   /** The size ratchet keys on `entry.name` from readdirSync (emitted-runtime.cjs `currentSizes`). */
@@ -147,13 +202,13 @@ const REMEDIATION = Object.freeze({
   rippleReason: '<why this ripple is deliberate>',
   growthReason: '<why this growth is deliberate>',
   staleAckFix:
-    `Delete those entries from ${ACK_FILE}, or correct them to name the ripple you `
-    + 'actually made. If that leaves no entries, delete the file itself — an empty one '
-    + 'signals nothing.',
+    `Delete those entries from your fragment under ${ACK_DIR}/, or correct them to name `
+    + 'the ripple you actually made. If that leaves no entries, delete the file itself '
+    + '— an empty one signals nothing.',
   spentAckNote:
     'These are inert, NOT a failure: the base already carries them, so their ripple is '
-    + `absorbed and they can no longer clear anything. Delete them from ${ACK_FILE} `
-    + 'whenever convenient.',
+    + `absorbed and they can no longer clear anything. Delete them from your fragment `
+    + `under ${ACK_DIR}/ whenever convenient.`,
   ackDocument,
 });
 
@@ -209,6 +264,19 @@ function parseAck(doc, { source = 'emitted-drift-ack.json' } = {}) {
   }
 
   for (const [rel, value] of Object.entries(paths)) {
+    if (RESERVED_ACK_KEYS.has(rel)) {
+      // Reject loudly rather than silently drop. This is the fix for #2914 review: a
+      // document naming `__proto__`/`constructor`/`prototype` used to be silently
+      // accepted here (a genuine own key when the document comes from `JSON.parse`,
+      // per the production path) while the lint filtered it out of duplicate detection
+      // — two surfaces disagreeing about the SAME key is exactly the drift the parity
+      // test below exists to catch.
+      errors.push(
+        `${source}: ack key "${rel}" is reserved and can never be a valid emitted path `
+        + 'or workflow/agent filename — remove it',
+      );
+      continue;
+    }
     const reason = value && typeof value === 'object' ? value.reason : value;
     if (typeof reason !== 'string' || reason.trim() === '') {
       // "name them AND say why" is the contract (ADR-2719 §3). An ack with no reason
@@ -223,6 +291,63 @@ function parseAck(doc, { source = 'emitted-drift-ack.json' } = {}) {
   }
 
   return { entries, errors };
+}
+
+/**
+ * Union multiple ack SOURCES into ONE document (#2914).
+ *
+ * `docs` is an ordered list of `{ source, doc }`, where `doc` is a parsed ack document
+ * (or `null`) and `source` is a human label used only in error messages — a fragment's
+ * repo-relative path, or the legacy file's path. Each source is parsed with the SAME
+ * `parseAck` the single-document gate already uses, so the schema can never drift
+ * between "one file" and "many files" — there is exactly one definition of what a valid
+ * entry looks like, reused here rather than re-typed.
+ *
+ * ── The collision rule (#2914) ────────────────────────────────────────────────
+ * Two sources declaring the SAME emitted/growth key is an ERROR, never a silent
+ * last-wins merge. Two per-PR fragments are never supposed to name the same path — if
+ * they do, at least one of them is wrong, or the world has already changed under one of
+ * them since it was written — and silently letting the later source win would let a
+ * fragment quietly retire an earlier one's acknowledgment with zero signal in the diff.
+ * That is exactly the class of silent drift the acknowledgment seam (#2789 spent/live
+ * lifecycle) exists to end: an ack that stops explaining anything must be conspicuous,
+ * never invisible. Failing loudly, with both source names in the message, is the only
+ * reading consistent with the rest of this module's "unknown fails toward the strict
+ * side" law (see `readAckFileAtRef`'s doc comment for the base-side version of the same
+ * principle).
+ *
+ * @param {Array<{source: string, doc: object|null}>} docs
+ * @returns {{ merged: {version: number, paths: object}, errors: string[] }}
+ */
+function mergeAckSources(docs) {
+  const errors = [];
+  // Null-prototype for the same reason `ackDocument` uses one above: an ordinary `{}`
+  // would turn an assignment keyed `__proto__` into setting the prototype rather than a
+  // property. `parseAck` now rejects `RESERVED_ACK_KEYS` outright (#2914 review) so
+  // `entries` below can never actually carry one — this is belt-and-suspenders against
+  // the day that stops being true, not the current enforcement point.
+  const paths = Object.create(null);
+  const owner = new Map(); // rel -> source that already claimed it, for the error message
+
+  for (const { source, doc } of docs) {
+    const { entries, errors: parseErrors } = parseAck(doc, { source });
+    errors.push(...parseErrors);
+    for (const [rel, entry] of entries) {
+      if (owner.has(rel)) {
+        errors.push(
+          `duplicate ack for "${rel}": declared in both ${owner.get(rel)} and ${source}. `
+          + 'Two ack sources may never name the same path — rename or merge the fragments.',
+        );
+        continue;
+      }
+      owner.set(rel, source);
+      paths[rel] = entry.runtime !== undefined
+        ? { reason: entry.reason, runtime: entry.runtime }
+        : { reason: entry.reason };
+    }
+  }
+
+  return { merged: { version: ACK_VERSION, paths }, errors };
 }
 
 /**
@@ -259,6 +384,13 @@ function parseAck(doc, { source = 'emitted-drift-ack.json' } = {}) {
  *                                      absent there). Required once `ack` is non-null.
  * @param {object}   [opts.sizeBaseline] { [name]: bytes } workflow/agent sizes at next
  * @param {object}   [opts.sizeCurrent]  { [name]: bytes } workflow/agent sizes at PR HEAD
+ * @param {string[]} [opts.mergeAckErrors] errors already discovered while UNIONING
+ *   `ack` from multiple physical sources (`mergeAckSources`, #2914) — e.g. two fragments
+ *   naming the same path. This module never touches the filesystem, so it cannot
+ *   discover a cross-file collision on its own; the shell layer that reads the legacy
+ *   file plus every fragment computes this and folds it in verbatim so a duplicate
+ *   fails the gate exactly like any other ack schema error, rather than silently
+ *   resolving via last-wins.
  *
  * @returns {{
  *   moved: number, attributed: Array, unattributable: Array, acked: Array,
@@ -274,6 +406,7 @@ function diffEmitted({
   baseAck = BASE_ACK_OMITTED,
   sizeBaseline = null,
   sizeCurrent = null,
+  mergeAckErrors = [],
 } = {}) {
   const errors = [];
 
@@ -306,6 +439,8 @@ function diffEmitted({
   const changedSet = new Set(changedPaths);
   const { entries: declaredAcks, errors: ackErrors } = parseAck(ack);
   errors.push(...ackErrors);
+  // Folded in verbatim, not re-derived: see `mergeAckErrors`'s doc comment above.
+  errors.push(...mergeAckErrors);
 
   // Keyed on DECLARED ENTRIES, not on the document being non-null. `{}`, `{version:1}`
   // and `{paths:{}}` all carry zero acks and `parseAck` calls them legal, so demanding a
@@ -702,10 +837,13 @@ function formatReport(result, { sampleLimit = 20 } = {}) {
 module.exports = {
   ACK_VERSION,
   ACK_FILE,
+  ACK_DIR,
   NEW_FILE_CAP,
+  MAX_ACK_FRAGMENTS,
   REMEDIATION,
   sourceSatisfiedBy,
   parseAck,
+  mergeAckSources,
   diffEmitted,
   buildReport,
   formatReport,

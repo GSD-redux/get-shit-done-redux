@@ -584,14 +584,18 @@ jobs:
           path: .gsd-cache/emitted-baseline.json
           key: emitted-baseline-${{ github.sha }}
 
-  # #2914: tests/emitted-drift-ack.json must never persist on `next`. Every entry is
-  # scoped to the diff that introduced it (#2789) — once merged it is, by definition,
-  # already at the base, so it is spent and inert regardless of shape. This is
-  # DELIBERATELY NOT a PR-lane check comparing a PR's base ack against `next`: that is
-  # exactly the #2768 shape #2789 was written to end (a spent-but-present base ack
-  # would red every open PR the moment one landed). It runs only here, on push to
-  # `next`, asserting a fact about `next`'s own tree; it needs no npm install, since
-  # the guard is pure fs.existsSync.
+  # #2914: tests/emitted-drift-ack.json (the LEGACY single ack file) must never persist
+  # on `next`. Every entry is scoped to the diff that introduced it (#2789) — once
+  # merged it is, by definition, already at the base, so it is spent and inert
+  # regardless of shape. Acks now go in per-PR fragments under
+  # tests/emitted-drift-acks/ instead — one independently-named file per PR, never a
+  # single file every PR rewrites wholesale — so a fragment LEFT ON next is harmless and
+  # is deliberately NOT what this guard checks; only the legacy shared file is a shared
+  # merge-conflict cell worth guarding against. This is DELIBERATELY NOT a PR-lane check
+  # comparing a PR's base ack against `next`: that is exactly the #2768 shape #2789 was
+  # written to end (a spent-but-present base ack would red every open PR the moment one
+  # landed). It runs only here, on push to `next`, asserting a fact about `next`'s own
+  # tree; it needs no npm install, since the guard is pure fs.existsSync.
   #
   # Enforcement scope, stated honestly: this job is push-triggered and runs post-merge,
   # and is not wired into `required-tests` — it cannot BLOCK a merge. A red run here
