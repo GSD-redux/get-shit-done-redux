@@ -1572,16 +1572,25 @@ describe('bug-2686: review-fix agent worktree isolation', () => {
     );
   });
 
-  test('agent instructions use a /tmp path for the worktree', () => {
-    // Require either a literal /tmp/sv- path or a variable assignment to /tmp/sv-
-    // (e.g. `wt=$(mktemp -d "/tmp/sv-..."`).  Bare `$wt` or `wt=` references
-    // without a /tmp/sv- assignment are not sufficient.
+  test('agent instructions use a repo-relative worktree path under .claude/worktrees/ (not a hardcoded /tmp path)', () => {
+    // #2647: the original #2686 fix placed the worktree at a hardcoded `/tmp/sv-`
+    // mktemp path to match sibling GSD agents. On Windows/Git Bash that landed
+    // OUTSIDE the project tree — outside the agent session's permission allowlist,
+    // so every Read inside the worktree prompted — and mktemp's MAX_PATH-avoidance
+    // substitute produced an un-removable `C:/mvwtNN` path. The worktree must now
+    // be repo-relative under `.claude/worktrees/` (the same dir the harness-managed
+    // executor worktrees use: gitignored via `.claude/`, inside the permission
+    // scope), and the agent must NOT define a `/tmp/sv-` worktree path.
     const hasTmpWorktreePath =
       /\/tmp\/sv-/.test(agentContent) ||
       /\bwt\s*=\s*["']?\/tmp\/sv-/.test(agentContent);
     assert.ok(
-      hasTmpWorktreePath,
-      'gsd-code-fixer.md must define a worktree variable at a /tmp/sv-... path, consistent with other GSD agents (#2686)'
+      !hasTmpWorktreePath,
+      'gsd-code-fixer.md must NOT define a worktree variable at a /tmp/sv-... path (#2647 — use a repo-relative .claude/worktrees/ path instead)'
+    );
+    assert.ok(
+      /\.claude\/worktrees\//.test(agentContent),
+      'gsd-code-fixer.md must define the worktree under .claude/worktrees/ (repo-relative, gitignored, inside the permission scope) (#2647)'
     );
   });
 });
