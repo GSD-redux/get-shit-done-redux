@@ -120,8 +120,56 @@ function readIfPresent(file) {
   return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
 }
 
+/**
+ * assertAbsentOnNext — the `next`-lane guard (#2914), invoked only by the
+ * `guard-no-ack-on-next` workflow job on push to `next`, never in `lint:ci`.
+ *
+ * `validateAckText` lints SHAPE, because a PR's own working tree may legitimately carry
+ * a live, well-formed ack — that is the normal case a PR-lane check must allow. This
+ * function instead rejects PRESENCE outright, valid or not: per the ack-lifecycle law
+ * (#2789, `RULESET.EMITTED_ATTRIBUTION`), an entry already at the base is spent the
+ * moment it merges, so a document surviving on `next` is inert cruft by definition, not
+ * a thing to schema-check.
+ *
+ * This MUST NOT run as a PR-lane check comparing a PR against `next` — that is the #2768
+ * shape #2789 exists to prevent (a spent-but-present base ack would red every open PR the
+ * instant one landed). It is safe only because it runs on `next` itself, asserting a fact
+ * about `next`'s own tree, never about any PR's diff against it.
+ *
+ * @param {boolean} present  whether ACK_REPO_PATH exists in the tree being checked
+ * @returns {{ ok: boolean, message: string }}
+ */
+function assertAbsentOnNext(present) {
+  if (!present) {
+    return { ok: true, message: `ok guard-no-ack-on-next: ${ACK_REPO_PATH} is absent (the healthy steady state)` };
+  }
+  return {
+    ok: false,
+    message: [
+      `guard-no-ack-on-next: ${ACK_REPO_PATH} exists on next.`,
+      '',
+      'Every entry in this file is scoped to the diff that introduced it (#2789). Once merged '
+      + 'to next it is, by definition, already at the base -- spent and inert, regardless of '
+      + 'whether it is otherwise well-formed.',
+      '',
+      'CONTRIBUTING.md: "When you remove the last entry from tests/emitted-drift-ack.json, '
+      + 'delete the file too -- its presence is the alarm."',
+      '',
+      `Remedy: git rm ${ACK_REPO_PATH}`,
+    ].join('\n'),
+  };
+}
+
 function main() {
   const file = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
+
+  if (process.argv.includes('--guard-next')) {
+    const result = assertAbsentOnNext(fs.existsSync(file));
+    console.log(result.message);
+    if (!result.ok) process.exitCode = 1;
+    return;
+  }
+
   const result = validateAckText(readIfPresent(file));
   const all = [...result.schemaErrors, ...result.policyErrors];
 
@@ -146,4 +194,4 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { validateAckText, ACK_VERSION, ACK_REPO_PATH };
+module.exports = { validateAckText, assertAbsentOnNext, ACK_VERSION, ACK_REPO_PATH };

@@ -583,3 +583,33 @@ jobs:
         with:
           path: .gsd-cache/emitted-baseline.json
           key: emitted-baseline-${{ github.sha }}
+
+  # #2914: tests/emitted-drift-ack.json must never persist on `next`. Every entry is
+  # scoped to the diff that introduced it (#2789) — once merged it is, by definition,
+  # already at the base, so it is spent and inert regardless of shape. This is
+  # DELIBERATELY NOT a PR-lane check comparing a PR's base ack against `next`: that is
+  # exactly the #2768 shape #2789 was written to end (a spent-but-present base ack
+  # would red every open PR the moment one landed). It runs only here, on push to
+  # `next`, asserting a fact about `next`'s own tree; it needs no npm install, since
+  # the guard is pure fs.existsSync.
+  #
+  # Enforcement scope, stated honestly: this job is push-triggered and runs post-merge,
+  # and is not wired into `required-tests` — it cannot BLOCK a merge. A red run here
+  # only turns `next`'s own CI red for manual follow-up, same as publish-emitted-baseline
+  # above. It fires reliably today because the path that reaches `next`
+  # (`auto-backmerge.yml`'s admin-merge step) authenticates with `GSD_BOT_PR_TOKEN`, a
+  # PAT, which DOES trigger this workflow on push. If that secret ever lapses, the
+  # `|| secrets.GITHUB_TOKEN` fallback there would push with the default token instead,
+  # which GitHub's anti-recursion rule keeps from triggering new workflow runs —
+  # silently skipping this job and publish-emitted-baseline alike. That is a known,
+  # shared limitation of every push-to-next job in this file, not specific to this guard.
+  guard-no-ack-on-next:
+    name: Guard no spent ack on next
+    if: github.event_name == 'push' && github.ref == 'refs/heads/next'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Assert tests/emitted-drift-ack.json is absent
+        run: node scripts/lint-emitted-drift-ack.cjs --guard-next

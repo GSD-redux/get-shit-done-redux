@@ -791,6 +791,15 @@ alarm, so an empty one signals nothing. Nothing here is regenerated: if you find
 looking for a baseline file to re-run a generator over, that file was deleted by #2724 and
 is not coming back.
 
+`tests/emitted-drift-ack.json` must never persist on `next` (#2914): every entry is
+scoped to the diff that introduced it, so once merged it is, by definition, already at
+the base — spent and inert, regardless of shape. This is enforced only on `next` itself,
+by the `guard-no-ack-on-next` job in `.github/workflows/test.yml` (push-to-`next`
+trigger, `scripts/lint-emitted-drift-ack.cjs --guard-next`), never as a PR-lane check —
+a PR-lane "base ack must be absent" check would red every open PR the moment one landed
+(the #2768 shape #2789 exists to prevent). If you ever see this file present on `next`,
+delete it; do not try to make it well-formed.
+
 `npm run regen:derived` still exists for the artifacts that ARE committed and derived —
 `sync-manifest-versions`, the ADR index, the capability matrix, the inventory manifest,
 the registry, and `tests/fixtures/install-tree/*.json` (`npm run gen:install-tree`, the

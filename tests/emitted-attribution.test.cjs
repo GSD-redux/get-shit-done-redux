@@ -33,6 +33,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
@@ -62,7 +63,7 @@ const {
 } = require('./helpers/emitted-runtime.cjs');
 
 const { EXPECTED_MANIFEST_COUNT, loadManifests } = require('./helpers/emitted-provenance.cjs');
-const { validateAckText } = require('../scripts/lint-emitted-drift-ack.cjs');
+const { validateAckText, assertAbsentOnNext } = require('../scripts/lint-emitted-drift-ack.cjs');
 const {
   ACK_VERSION,
   ACK_FILE,
@@ -770,6 +771,54 @@ test('the lint rejects a present-but-empty file rather than reading it as absent
     assert.match(r.schemaErrors[0], /present but empty/, `${JSON.stringify(raw)} must name emptiness`);
     assert.ok(!r.ok);
   }
+});
+
+// ─── guard-no-ack-on-next: presence itself is the failure (#2914) ────────────
+//
+// Unlike `validateAckText` above (a PR-lane shape lint that must let a live, well-formed
+// ack through), `assertAbsentOnNext` runs ONLY against `next` itself — see the
+// `guard-no-ack-on-next` job in `.github/workflows/test.yml`, gated on push to `next` — and
+// rejects PRESENCE outright, valid or not. Per the ack-lifecycle law (#2789), an entry
+// already at the base is spent the moment it merges, so the shape never matters here.
+// `assertAbsentOnNext` takes only the boolean `present` — an entryless-vs-populated
+// distinction is collapsed to that boolean before this function ever sees it (see
+// `main()`'s `fs.existsSync` call in `scripts/lint-emitted-drift-ack.cjs`), so no test
+// here can exercise that distinction: there is deliberately no separate "entryless"
+// case below, since one would be identical in input and assertion to the populated
+// case and would claim coverage the function structurally cannot provide.
+
+test('assertAbsentOnNext passes when the file is absent — the healthy steady state', () => {
+  const r = assertAbsentOnNext(false);
+  assert.ok(r.ok);
+  assert.match(r.message, /absent \(the healthy steady state\)/);
+});
+
+test('assertAbsentOnNext fails when the file is present with entries, naming the file and the remedy', () => {
+  const r = assertAbsentOnNext(true);
+  assert.ok(!r.ok);
+  assert.match(r.message, /tests\/emitted-drift-ack\.json exists on next/);
+  assert.match(r.message, /spent and inert/);
+  assert.match(r.message, /delete the file too/, 'must cite CONTRIBUTING.md\'s delete-the-file rule');
+  assert.match(r.message, /git rm tests\/emitted-drift-ack\.json/, 'the remedy must be named, not just the problem');
+});
+
+test('assertAbsentOnNext fed from a real next-like tree: absent passes, present fails (regression, #2914)', () => {
+  // A throwaway directory standing in for `next`'s tree, so the check exercises real
+  // fs.existsSync semantics on ACK_REPO_PATH rather than a hand-picked boolean.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-guard-next-'));
+  const ackPath = path.join(dir, ACK_REPO_PATH);
+  fs.mkdirSync(path.dirname(ackPath), { recursive: true });
+
+  assert.ok(
+    assertAbsentOnNext(fs.existsSync(ackPath)).ok,
+    'a fresh tree with no ack file must pass',
+  );
+
+  // Reproduces the exact #2834/#2900 shape: 34 spent entries surviving on next.
+  fs.writeFileSync(ackPath, JSON.stringify({ version: 1, paths: { 'a.md': { reason: 'spent' } } }));
+  const r = assertAbsentOnNext(fs.existsSync(ackPath));
+  assert.ok(!r.ok, 'a tree carrying the file, however well-formed, must fail');
+  assert.match(r.message, /exists on next/);
 });
 
 // ─── readAckFileAtRef: the base-side reader (#2789) ──────────────────────────
