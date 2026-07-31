@@ -681,6 +681,105 @@
       }
     },
     {
+      "name": "A11-fractional-effective-budget-half",
+      "why": "pins the ROUNDING MODE of effectiveBudget. 95 * (1 - 10/100) = 85.5, where Math.floor (85) and Math.round (86) disagree. Without a fractional case the mode is unpinned and floor->round is a byte-invisible mutation, which an isolated review confirmed against the 47-case corpus.",
+      "input": {
+        "sections": {
+          "instructions": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "roadmap": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "plans": [
+            {
+              "file": "a.md",
+              "content": "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
+            }
+          ]
+        },
+        "budget": 95,
+        "options": {
+          "safetyMarginPct": 10
+        }
+      },
+      "expected": {
+        "prompt": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n\n## Roadmap\n\nRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n\n## Plans\n\n### a.md\n\nPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP",
+        "metadata": {
+          "budget": 95,
+          "effectiveBudget": 85,
+          "estimatedTokens": 85,
+          "omitted": [],
+          "projectMdShrunk": false,
+          "planTruncationPct": 0,
+          "hardFailed": false,
+          "noteInjected": false
+        }
+      }
+    },
+    {
+      "name": "A12-fractional-effective-budget-below-half",
+      "why": "companion to A11 below the .5 point: 97 * 0.90 = 87.3, where floor and round agree but Math.ceil (88) would not. Guards the mutation A11 does not cover.",
+      "input": {
+        "sections": {
+          "instructions": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "roadmap": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "plans": [
+            {
+              "file": "a.md",
+              "content": "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
+            }
+          ]
+        },
+        "budget": 97,
+        "options": {
+          "safetyMarginPct": 10
+        }
+      },
+      "expected": {
+        "prompt": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n\n## Roadmap\n\nRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n\n## Plans\n\n### a.md\n\nPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP",
+        "metadata": {
+          "budget": 97,
+          "effectiveBudget": 87,
+          "estimatedTokens": 87,
+          "omitted": [],
+          "projectMdShrunk": false,
+          "planTruncationPct": 0,
+          "hardFailed": false,
+          "noteInjected": false
+        }
+      }
+    },
+    {
+      "name": "A13-fractional-effective-budget-odd-margin",
+      "why": "third rounding guard at a non-multiple-of-10 margin: 93 * (1 - 15/100) = 79.05. Exercises the margin arithmetic itself, not just the budget, since safetyMarginPct is caller-supplied.",
+      "input": {
+        "sections": {
+          "instructions": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+          "roadmap": "RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "plans": [
+            {
+              "file": "a.md",
+              "content": "PPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP"
+            }
+          ]
+        },
+        "budget": 93,
+        "options": {
+          "safetyMarginPct": 15
+        }
+      },
+      "expected": {
+        "prompt": "IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII\n\n## Roadmap\n\nRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR\n\n## Plans\n\n### a.md\n\nPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP",
+        "metadata": {
+          "budget": 93,
+          "effectiveBudget": 79,
+          "estimatedTokens": 79,
+          "omitted": [],
+          "projectMdShrunk": false,
+          "planTruncationPct": 0,
+          "hardFailed": false,
+          "noteInjected": false
+        }
+      }
+    },
+    {
       "name": "A6-safety-margin-zero",
       "why": "A5 — 0% margin means the full budget is usable",
       "input": {

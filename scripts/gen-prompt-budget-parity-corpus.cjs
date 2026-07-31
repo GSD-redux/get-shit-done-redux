@@ -182,6 +182,35 @@ function buildCases() {
     budget: 100,
     options: {},
   });
+
+  // The rounding mode of effectiveBudget was unpinned: every other case in this file
+  // uses a (budget, safetyMarginPct) pair whose product is a whole number, so
+  // Math.floor and Math.round agree and mutating one to the other changed nothing.
+  // These three straddle .5 in both directions so the mode is observable.
+  //   95 * 0.90 = 85.5  -> floor 85, round 86   (disagree)
+  //   97 * 0.90 = 87.3  -> floor 87, round 87   (agree; guards against a ceil mutation)
+  //   93 * 0.85 = 79.05 -> floor 79, round 79   (agree; second ceil guard, different margin)
+  add({
+    name: 'A11-fractional-effective-budget-half',
+    why: 'pins the ROUNDING MODE of effectiveBudget. 95 * (1 - 10/100) = 85.5, where Math.floor (85) and Math.round (86) disagree. Without a fractional case the mode is unpinned and floor->round is a byte-invisible mutation, which an isolated review confirmed against the 47-case corpus.',
+    sections: boundaryBase(56),
+    budget: 95,
+    options: { safetyMarginPct: 10 },
+  });
+  add({
+    name: 'A12-fractional-effective-budget-below-half',
+    why: 'companion to A11 below the .5 point: 97 * 0.90 = 87.3, where floor and round agree but Math.ceil (88) would not. Guards the mutation A11 does not cover.',
+    sections: boundaryBase(58),
+    budget: 97,
+    options: { safetyMarginPct: 10 },
+  });
+  add({
+    name: 'A13-fractional-effective-budget-odd-margin',
+    why: 'third rounding guard at a non-multiple-of-10 margin: 93 * (1 - 15/100) = 79.05. Exercises the margin arithmetic itself, not just the budget, since safetyMarginPct is caller-supplied.',
+    sections: boundaryBase(50),
+    budget: 93,
+    options: { safetyMarginPct: 15 },
+  });
   add({
     name: 'A6-safety-margin-zero',
     why: 'A5 — 0% margin means the full budget is usable',
