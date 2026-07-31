@@ -124,9 +124,16 @@ const SKILL_RUNTIMES = [
 // (the generator's copy was missing the realpath normalization below) and
 // shipped broken fixtures three times (#2086, #2095, #2100).
 
-// The installed package version, normalized to '<VERSION>' in hash computation so
+// This checkout's own package version — the DEFAULT normalized in hash computation so
 // the golden is stable across version bumps (the rc step runs `npm version X.Y.Z-rc.N`
 // before tests, which rebakes the version into hook files and gsd-core/VERSION).
+//
+// This is only a default. buildParityManifest's `pkgVersion` option exists precisely
+// because the tree being MEASURED is not always this checkout (#2767's `repoRoot`
+// installer-spawn path measures a DIFFERENT tree's `bin/install.js` output). The
+// version that must be normalized is always the version of the tree that PRODUCED
+// the emitted bytes, not the version of whichever checkout happens to be running this
+// test file — see the pkgVersion JSDoc on buildParityManifest below.
 const PKG_VERSION = require('../../package.json').version;
 
 // Volatile metadata files always excluded from the parity manifest.
@@ -193,8 +200,71 @@ const EXCLUDED_PREFIXES = ['gsd-core/bin/lib/'];
 // ─── Helper functions ─────────────────────────────────────────────────────────
 
 function stripAnsi(str) {
-   
+
   return str.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+// A version string can itself contain regex metacharacters (`.`, and — via
+// prerelease/build metadata — `-`/`+`), so it must be escaped before being spliced
+// into a RegExp source, or e.g. the `.` in "1.9.0" would match ANY character.
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Loosely semver-shaped: leading `MAJOR.MINOR.PATCH`, optional `-prerelease` and/or
+// `+build` metadata (e.g. `1.9.0`, `1.9.0-rc.1`, `1.9.0+abc`). Deliberately loose
+// (not the full semver grammar) — this only needs to reject obviously-malformed
+// values like `'1'` (FINDING 2, #2891 review) before they reach regex construction,
+// not to be a semver validator.
+const SEMVER_ISH_RE = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
+
+/**
+ * Anchored, narrow version-stamp normalization — the FINDING 1 (#2891 review) fix for
+ * the prior `.split(pkgVersion).join('<VERSION>')`, which blind-replaced EVERY
+ * occurrence of the version string anywhere in emitted content. That was unsound in
+ * both directions once each side of a diff normalizes against a DIFFERENT pkgVersion
+ * (baseline vs current tree, #2891): a bare semver literal that genuinely changed
+ * between the two versions collapses to '<VERSION>' on both sides and goes invisible
+ * (false negative), while an UNCHANGED file that happens to contain a literal equal to
+ * only the CURRENT version collapses on one side only and reports as spurious drift
+ * (false positive). Emitted sources really do carry bare semver literals that are NOT
+ * install-time stamps — e.g. gsd-core/workflows/update.md's `1.4.0`/`1.3.1` examples,
+ * agents/gsd-project-researcher.md's `1.2.3`, gsd-core/workflows/help/modes/full.md's
+ * `1.0.0` — and those must stay VISIBLE to the parity gate if they ever change.
+ *
+ * So instead of replacing the version everywhere, this only normalizes it at the
+ * specific places `bin/install.js` actually stamps `pkg.version` into emitted content
+ * as a version FIELD/marker (not prose):
+ *   - `// gsd-hook-version: <ver>` / `# gsd-hook-version: <ver>` — the
+ *     `{{GSD_VERSION}}` substitution done for every emitted hook file.
+ *   - `"version": "<ver>"` — JSON manifests (plugin/extension/capability-style)
+ *     embedding the package version as a string field.
+ *   - `version: "<ver>"` / `version: <ver>` — YAML frontmatter version fields (e.g.
+ *     skill frontmatter's `yamlQuote(pkg.version)`, Hermes' category
+ *     `DESCRIPTION.md`).
+ *   - `@opengsd/gsd-core@<ver>` — pinned package-spec references.
+ *   - a file whose ENTIRE trimmed content IS the version (`gsd-core/VERSION`).
+ * Each pattern only matches when the version in the content EQUALS the supplied
+ * `pkgVersion` — this is deliberately narrow, at the cost of needing a new pattern any
+ * time the installer grows a new stamp site (see the empirical repro-harness check
+ * this fix was verified against, #2891 review FINDING 1).
+ *
+ * @param {string} content
+ * @param {string} pkgVersion - already validated non-empty semver-ish string.
+ * @returns {string}
+ */
+function normalizeVersionStamps(content, pkgVersion) {
+  const v = escapeRegExp(pkgVersion);
+  // `(?![\w.+-])` after a bare (unquoted/uncaptured-suffix) match stops a version
+  // from matching as a PREFIX of a longer version-shaped string it is not equal to
+  // (e.g. pkgVersion '1.9.0' must not match inside '1.9.0-rc.1' or '1.9.0.1').
+  return content
+    .replace(new RegExp(`((?:\\/\\/|#)\\s*gsd-hook-version:\\s*)${v}(?![\\w.+-])`, 'g'), '$1<VERSION>')
+    .replace(new RegExp(`("version"\\s*:\\s*")${v}(")`, 'g'), '$1<VERSION>$2')
+    .replace(new RegExp(`(version:\\s*")${v}(")`, 'g'), '$1<VERSION>$2')
+    .replace(new RegExp(`(version:\\s*)${v}(?![\\w.+-])`, 'g'), '$1<VERSION>')
+    .replace(new RegExp(`(@opengsd/gsd-core@)${v}(?![\\w.+-])`, 'g'), '$1<VERSION>')
+    .replace(new RegExp(`^(\\s*)${v}(\\s*)$`), '$1<VERSION>$2');
 }
 
 function walk(dir) {
@@ -218,9 +288,68 @@ function walk(dir) {
  *
  * @param {string} configDir - absolute path to the installed runtime config dir
  * @param {string} root      - temp root path to replace with '<HOME>'
+ * @param {object} [opts]
+ * @param {string} [opts.pkgVersion] - the version string to normalize to '<VERSION>'.
+ *   MUST be the version of the tree that PRODUCED the emitted content at `configDir`
+ *   — NOT necessarily this checkout's own version. OMITTING this option (or the whole
+ *   `opts` argument) defaults to this checkout's own PKG_VERSION, which is only
+ *   correct when `configDir` was emitted by THIS checkout's installer. A caller
+ *   measuring a DIFFERENT tree's installer output (#2767's `repoRoot`-driven spawns)
+ *   must pass that other tree's own version explicitly, or the normalization silently
+ *   compares apples to oranges: baseline hooks baked with version X never collapse to
+ *   '<VERSION>' when normalized against version Y, so every emitted file looks changed
+ *   even when byte-identical apart from the version stamp. Must be a non-empty
+ *   semver-ish string (`MAJOR.MINOR.PATCH` with optional prerelease/build metadata)
+ *   when the key is REACHABLE at all — see the guard below for why, and why an
+ *   explicit `{ pkgVersion: undefined }` is treated as a caller error rather than
+ *   silently falling back to the default (that fallback is the exact bug being
+ *   fixed). `opts` itself must be a plain object (or omitted/undefined) — `null` or a
+ *   non-object throws rather than reaching `Object`'s coercion of `null`/`undefined`
+ *   (#2891 review FINDING 5).
  * @returns {{ [rel: string]: string }}
  */
-function buildParityManifest(configDir, root) {
+function buildParityManifest(configDir, root, opts = {}) {
+  // `opts = {}` only substitutes for an OMITTED (or explicit `undefined`) third
+  // argument — `null` and other non-object values sail past a default parameter and
+  // would otherwise reach the `in` check below and throw a raw, unhelpful
+  // `TypeError: Cannot convert undefined or null to object` (#2891 review FINDING 5).
+  // Fail with a clear, attributable message instead.
+  if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
+    throw new Error(
+      `buildParityManifest: opts must be a plain object or omitted, got ${JSON.stringify(opts)}.`
+    );
+  }
+
+  // Distinguish "the caller didn't pass pkgVersion at all" (legitimate — use this
+  // checkout's own PKG_VERSION) from "the caller passed pkgVersion explicitly, and it
+  // happens to be undefined/null/empty/non-string" (a caller error that must throw,
+  // never silently fall back). A plain default-parameter (`{ pkgVersion = PKG_VERSION
+  // } = {}`) cannot make this distinction — JS treats an explicit `undefined` value
+  // identically to an absent key, which would let a caller-side bug (e.g. a repoRoot
+  // version lookup that resolved to undefined) silently normalize against THIS
+  // checkout's version instead of throwing — exactly the cross-tree mis-attribution
+  // bug #2891 fixes. Use the `in` operator (not `hasOwnProperty`) so the key is honored
+  // whether it is OWN or INHERITED — `Object.create({ pkgVersion: 'x' })` reaches this
+  // function with the key reachable via the prototype chain, and a caller-error value
+  // sitting there must still be validated (and rejected) rather than silently ignored
+  // in favor of the default; only a key ABSENT from the whole chain means "caller
+  // didn't specify one, use this checkout's own version" (#2891 review FINDING 4).
+  const pkgVersion = 'pkgVersion' in opts ? opts.pkgVersion : PKG_VERSION;
+
+  // GUARD: an empty/falsy/non-string/non-semver-shaped pkgVersion must never reach the
+  // normalization below. A careless caller passing e.g. '1' would silently match and
+  // corrupt content that merely contains that digit as a substring of an unrelated
+  // number (#2891 review FINDING 2) — and, pre-FINDING-1, an empty string reaching
+  // `.split('')` would have exploded manifest content into individual characters. Fail
+  // closed instead of falling back to this checkout's PKG_VERSION: a silent fallback is
+  // exactly the cross-tree mis-attribution bug this option exists to fix (#2891).
+  if (typeof pkgVersion !== 'string' || pkgVersion.length === 0 || !SEMVER_ISH_RE.test(pkgVersion)) {
+    throw new Error(
+      `buildParityManifest: pkgVersion must be a non-empty semver-ish string ` +
+      `(MAJOR.MINOR.PATCH, optional -prerelease/+build), got ${JSON.stringify(pkgVersion)}. ` +
+      'Pass the version of the tree that produced the emitted content at configDir.'
+    );
+  }
   const allFiles = walk(configDir);
   const unsorted = {};
 
@@ -246,12 +375,21 @@ function buildParityManifest(configDir, root) {
 
     const content = fs.readFileSync(full);
     // Normalize every occurrence of the temp root so hashes are stable across runs.
-    // Also normalize the package version so the golden survives `npm version` bumps
-    // (the rc release step bakes the new version into hook files before running tests).
-    const normalized = content.toString('utf8')
-      .split(realRoot).join('<HOME>')
-      .split(root).join('<HOME>')
-      .split(PKG_VERSION).join('<VERSION>');
+    // Also normalize the PRODUCING tree's package version at its known stamp sites
+    // (pkgVersion, defaulted to this checkout's own) — via the ANCHORED
+    // normalizeVersionStamps, not a blind substring replace — so the golden survives
+    // `npm version` bumps (the rc release step bakes the new version into hook files
+    // before running tests) and, for a cross-tree caller, so the version stamp baked
+    // in by a DIFFERENT tree's installer doesn't masquerade as a real content diff,
+    // WITHOUT also masking a genuine content change to an unrelated bare semver
+    // literal that happens to equal pkgVersion (#2891; see normalizeVersionStamps'
+    // own doc comment for the blind-replace failure modes this replaced).
+    const normalized = normalizeVersionStamps(
+      content.toString('utf8')
+        .split(realRoot).join('<HOME>')
+        .split(root).join('<HOME>'),
+      pkgVersion,
+    );
     const hash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
     unsorted[rel] = hash;
   }
@@ -266,7 +404,14 @@ function buildParityManifest(configDir, root) {
 
 /** Sorted list of emitted relative paths for a runtime install (file-set snapshot,
  *  #2267). Reuses buildParityManifest's exact exclusion set so the tree and the
- *  content manifest never diverge on which files they cover. */
+ *  content manifest never diverge on which files they cover. Deliberately does NOT
+ *  take (or forward) a `pkgVersion`/`opts` parameter: the emitted FILE SET is
+ *  version-independent — `pkgVersion` only ever changes which bytes a file's HASH
+ *  normalizes to, never which paths buildParityManifest walks or excludes — so there
+ *  is nothing for a caller to pass here, and forwarding one through would only let a
+ *  bad version value make a pure file-set query throw for no file-set-shaped reason
+ *  (#2891 review FINDING 6; verified no caller passes a third argument —
+ *  tests/golden-install-tree.test.cjs, scripts/gen-install-tree-fixtures.cjs). */
 function buildInstallTree(configDir, root) {
   return Object.keys(buildParityManifest(configDir, root)).sort();
 }

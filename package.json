@@ -1,6 +1,6 @@
 {
   "name": "@opengsd/gsd-core",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "GSD Core is a meta-prompting, context engineering, and spec-driven development system for AI coding agents.",
   "main": ".opencode/plugins/gsd-core.js",
   "bin": {

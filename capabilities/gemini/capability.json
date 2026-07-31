@@ -1,7 +1,7 @@
 {
   "id": "gemini",
   "role": "reviewer",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Gemini CLI",
   "description": "Google Gemini CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Spawned as `gemini -p - -m <model>` with the plan piped on stdin.",
   "tier": "full",

@@ -1,7 +1,7 @@
 {
   "id": "qwen",
   "role": "runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Qwen Code",
   "description": "Qwen Code (Alibaba) — nested-skill artifact layout; settings-json hook surface; Claude hook event dialect; tier-2 support.",
   "tier": "core",

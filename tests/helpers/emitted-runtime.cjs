@@ -42,6 +42,7 @@ const {
   MINIMUM_MANIFEST_FAMILIES,
   runMinimalInstall,
   buildParityManifest,
+  PKG_VERSION,
 } = require('./install-shared.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
@@ -602,6 +603,73 @@ function baselineSizesAtRef(base = 'origin/next') {
 }
 
 /**
+ * The package version of the tree whose emitted output is about to be measured.
+ *
+ * `bin/install.js` bakes `{{GSD_VERSION}}` -> `pkg.version` into every emitted hook,
+ * and `buildParityManifest`'s `pkgVersion` normalization exists to collapse that stamp
+ * back to '<VERSION>' so a version bump alone never moves a hash. That normalization is
+ * only correct when `pkgVersion` matches the version of the tree that PRODUCED the
+ * content being hashed — for `repoRoot`-driven cross-tree measurement (#2767, #2891)
+ * that is NOT necessarily this checkout's own `PKG_VERSION`. This helper resolves the
+ * right version for whichever tree is actually being measured.
+ *
+ * Fails closed: a missing, unreadable, unparseable, or version-less `package.json` at
+ * `repoRoot` throws rather than silently falling back to this checkout's own version —
+ * a silent fallback here is exactly the cross-tree mis-attribution bug #2891 fixes
+ * (every emitted hook path would spuriously differ, and the differential attribution
+ * gate would blame nothing for it).
+ *
+ * @param {string} [repoRoot] - absolute path to the tree being measured. Only an
+ *   OMITTED (or explicit `undefined`) repoRoot means "this checkout" and returns this
+ *   module's own PKG_VERSION with no I/O. Any OTHER falsy value (`''`, `0`, `false`) is
+ *   NOT treated as "this checkout" — it is a caller-side bug (e.g. an unresolved path
+ *   variable) and must fail closed rather than silently measuring the wrong tree,
+ *   consistent with `currentManifests`' `installScript` gate below and with how
+ *   `buildParityManifest`'s `pkgVersion` treats an explicit-but-empty value as a caller
+ *   error rather than a fallback trigger (#2891 review FINDING 7).
+ * @returns {string} non-empty package version string.
+ */
+function measuredPackageVersion(repoRoot) {
+  if (repoRoot === undefined) return PKG_VERSION;
+  if (!repoRoot) {
+    throw new Error(
+      `measuredPackageVersion: repoRoot must be a non-empty path or omitted entirely, got ${JSON.stringify(repoRoot)}. ` +
+      'An omitted/undefined repoRoot means "this checkout"; any other falsy value is treated as a caller error.'
+    );
+  }
+
+  const pkgPath = path.join(repoRoot, 'package.json');
+  let raw;
+  try {
+    raw = fs.readFileSync(pkgPath, 'utf8');
+  } catch (err) {
+    throw new Error(
+      `measuredPackageVersion: cannot read ${pkgPath} (${err.message}); cannot normalize ` +
+      'emitted version for the measured tree; a wrong version silently mis-attributes every hook.'
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(
+      `measuredPackageVersion: ${pkgPath} is not valid JSON (${err.message}); cannot normalize ` +
+      'emitted version for the measured tree; a wrong version silently mis-attributes every hook.'
+    );
+  }
+
+  const version = parsed && parsed.version;
+  if (typeof version !== 'string' || version.length === 0) {
+    throw new Error(
+      `measuredPackageVersion: ${pkgPath} has no non-empty string "version" field; cannot ` +
+      'normalize emitted version for the measured tree; a wrong version silently mis-attributes every hook.'
+    );
+  }
+  return version;
+}
+
+/**
  * Build the CURRENT emitted manifest set for real — one installer spawn per runtime.
  * This is the expensive, honest half: it reflects what the tree actually emits now,
  * not what the author regenerated into a fixture.
@@ -616,14 +684,25 @@ function baselineSizesAtRef(base = 'origin/next') {
  *   base-ref worktree) so the two sides stay comparable even if the definition itself
  *   evolves — running the OTHER tree's own (older, or absent) copy of this function would
  *   defeat that.
+ *
+ *   The version normalized into '<VERSION>' inside each manifest entry is resolved via
+ *   `measuredPackageVersion(repoRoot)` — i.e. `<repoRoot>/package.json`'s own version,
+ *   NOT this checkout's — since `<repoRoot>/bin/install.js` is what stamped the emitted
+ *   content in the first place (#2891).
  */
 function currentManifests({ repoRoot } = {}) {
-  const installScript = repoRoot ? path.join(repoRoot, 'bin', 'install.js') : undefined;
+  // Gated the same way `measuredPackageVersion` gates its own repoRoot below: only an
+  // omitted/`undefined` repoRoot means "this checkout" (installScript stays the
+  // default). Any other falsy value falls through to `measuredPackageVersion`, which
+  // throws — this line never gets a chance to diverge from that same rule (#2891
+  // review FINDING 7).
+  const installScript = repoRoot !== undefined ? path.join(repoRoot, 'bin', 'install.js') : undefined;
+  const pkgVersion = measuredPackageVersion(repoRoot);
   const manifests = {};
   for (const { name, runtime, scope } of MANIFEST_FAMILIES) {
     const { configDir, root } = runMinimalInstall({ runtime, scope, installScript });
     try {
-      manifests[name] = buildParityManifest(configDir, root);
+      manifests[name] = buildParityManifest(configDir, root, { pkgVersion });
     } finally {
       cleanup(root);
     }
@@ -695,6 +774,7 @@ module.exports = {
   baselineManifestsAtRef,
   baselineSizesAtRef,
   buildBaselineAtRef,
+  measuredPackageVersion,
   currentManifests,
   currentSizes,
   readAckFile,
