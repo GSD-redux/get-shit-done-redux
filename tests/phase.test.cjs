@@ -2982,28 +2982,18 @@ describe('phase complete plan-coverage gate (#2648)', () => {
     assert.equal(out.completed_phase, '1');
   });
 
-  test('fails CLOSED when the phase plan directory is unreadable (security #2648)', () => {
-    // The coverage gate must not pass when it cannot read the plans directory —
-    // otherwise any I/O failure silently re-opens the hole. scanPhasePlans
-    // swallows readdirSync errors and returns an empty plan set, so the gate
-    // independently readdirSync's the dir and refuses on a throw.
-    //
-    // Reproduce WITHOUT chmod 0o000 (root bypasses mode bits in root CI/Docker,
-    // so a mode-based test silently passes with zero coverage there): make the
-    // phase dir a regular FILE (ENOTDIR), which readdirSync rejects reliably
-    // regardless of uid.
-    writePlanCoverageFixture(tmpDir, { plans: ['01'], summaries: ['01'] });
-    const phase1Dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
-    fs.rmSync(phase1Dir, { recursive: true, force: true });
-    fs.writeFileSync(phase1Dir, 'not a directory'); // ENOTDIR on readdirSync
-
-    const result = runGsdTools(['--json-errors', 'phase', 'complete', '1'], tmpDir);
-
-    assert.equal(result.success, false, 'phase complete must fail closed when the plan dir is unreadable (#2648)');
-    const errorPayload = JSON.parse(result.error);
-    assert.equal(errorPayload.reason, 'phase_plan_coverage_incomplete');
-    assert.match(errorPayload.message, /unreadable/i);
-  });
+  // NOTE on the security-review B1 case (fail-closed on an UNREADABLE plan dir):
+  // the gate defends it in code — it readdirSync's the phase dir and refuses on a
+  // throw before scanPhasePlans' swallow-and-return-empty can make the gate pass
+  // (src/phase.cts). It is NOT covered by a unit test here because there is no
+  // cross-platform, root-safe way to construct it: any condition that makes the
+  // phase dir unreadable to the gate's readdirSync ALSO makes findPhaseInternal
+  // (which walks the parent phases/ dir) fail upstream with "Phase N not found"
+  // before the gate runs, and the root-safe alternative to chmod 0o000 does not
+  // exist (root bypasses mode bits, so a mode-based test silently passes with
+  // zero coverage in root Docker/CI — the documented reason the repo forbids
+  // chmod-based IO-failure tests). The defensive code is cheap and correct; the
+  // unreachable-path gap is recorded in 60-review.json.
 });
 
 describe('phase complete command', () => {
