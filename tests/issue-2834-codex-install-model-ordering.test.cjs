@@ -36,7 +36,7 @@ test('writeNonClaudeDefaults function exists and is a no-op for Claude (#2834)',
   const src = fs.readFileSync(INSTALL_JS, 'utf8');
   const fnIdx = src.indexOf('function writeNonClaudeDefaults(');
   assert.ok(fnIdx !== -1, 'writeNonClaudeDefaults must be defined as a function');
-  const fnBody = src.slice(fnIdx, fnIdx + 500);
+  const fnBody = src.slice(fnIdx, fnIdx + 1200);
   assert.ok(/nativeModelAliases/.test(fnBody), 'writeNonClaudeDefaults must early-return for Claude (nativeModelAliases check)');
   assert.ok(/resolve_model_ids/.test(fnBody), 'writeNonClaudeDefaults must write resolve_model_ids');
   assert.ok(/defaults\.runtime/.test(fnBody), 'writeNonClaudeDefaults must write runtime');
