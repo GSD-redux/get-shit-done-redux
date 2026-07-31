@@ -26,7 +26,14 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
 import coreUtilsMod = require('./core-utils.cjs');
-const { toPosixPath, generateSlugInternal, readSubdirectories } = coreUtilsMod;
+// #2528: `extractCanonicalPlanId` used to exist here as a byte-identical second
+// copy, and this PR had to patch BOTH with the same rewind rule — the exact
+// generative-fix divergence CLAUDE.md warns about. Collapsed onto core-utils'
+// copy, which was already the leaf owner, so there is no second surface left to
+// drift and no parity test needed to police one.
+const {
+  toPosixPath, generateSlugInternal, readSubdirectories, extractCanonicalPlanId,
+} = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
 import phaseIdMod = require('./phase-id.cjs');
 const {
@@ -164,34 +171,6 @@ function describeNonCanonicalPlans(dirFiles: string[], matchedFiles: string[]): 
   );
 }
 
-function extractCanonicalPlanId(filename: string): string {
-  const base = filename
-    .replace(/-PLAN\.md$/i, '')
-    .replace(/-SUMMARY\.md$/i, '')
-    .replace(/\.md$/i, '');
-  const parts = base.split('-').filter(Boolean);
-  // #2043: a phase/plan token component is either a zero-padded number (≥2 digits)
-  // or a single-digit-plus-letter id ("3A"); a *bare* single digit is a slug word,
-  // so "46-6-rs-…" is not paired into a "46-6" id while "3A-01" stays intact.
-  const tokenRe = /^(?:\d{2,}[A-Z]?|\d[A-Z])(?:\.\d+)*$/i;
-  // #2232: the PAIRED plan component is a zero-padded continuation segment
-  // (exactly 2 digits), so a ≥3-digit slug word (a year) is not paired into a
-  // bogus "14-2026" id. The leading phase component keeps tokenRe's unbounded
-  // \d{2,} — phase numbers ≥100 are legitimate; only continuations are capped.
-  const planTokenRe = new RegExp(
-    `^(?:${phaseIdMod.PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?|\\d[A-Z])(?:\\.\\d+)*$`,
-    'i',
-  );
-  const singleDigitSlugRe = new RegExp(`^${phaseIdMod.SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
-  const phaseIdx = parts.findIndex((p) => tokenRe.test(p));
-  if (phaseIdx >= 0 && phaseIdx + 1 < parts.length && planTokenRe.test(parts[phaseIdx + 1])) {
-    if (phaseIdx + 2 < parts.length && singleDigitSlugRe.test(parts[phaseIdx + 2])) {
-      return parts[phaseIdx];
-    }
-    return `${parts[phaseIdx]}-${parts[phaseIdx + 1]}`;
-  }
-  return base;
-}
 
 interface PhaseListOptions {
   type?: string;
