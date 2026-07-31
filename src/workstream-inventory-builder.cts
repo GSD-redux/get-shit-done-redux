@@ -149,7 +149,14 @@ export interface WorkstreamInventory {
   active: boolean;
   files: WorkstreamFilesExist;
   status: string;
-  /** Whether `status` was derived from an authoritative signal ("derived") or taken verbatim from the STATE.md field ("field"). */
+  /**
+   * Whether `status` was derived ("derived") or taken verbatim from the STATE.md
+   * field ("field"). `"derived"` covers TWO cases and does NOT imply
+   * `status === 'milestone complete'`: a shipped signal fired and was accepted,
+   * OR a shipped signal was refused by the artifacts and the STATE field claimed
+   * completion anyway, so `status` was derived DOWN to `'in_progress'`. Check
+   * `milestone_shipped_unverified` to tell them apart.
+   */
   status_source: 'field' | 'derived';
   /** True when the derived status disagrees with the STATE.md `Status` field (the field is stale). */
   status_conflict: boolean;
