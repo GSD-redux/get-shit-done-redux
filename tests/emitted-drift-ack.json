@@ -13,8 +13,107 @@
     "next.md": {
       "reason": "#2800 — same derived-flag-loop change as autonomous.md. next.md needed no relocation (its launcher preamble already precedes the loop), so the growth here is only the loop plus the comment recording that --all and --text stay literal because they are convergence controls, not reviewer lanes."
     },
-    "code-review.md": {
-      "reason": "#2667: the fallow structural pre-pass failure WARNING now names the failure KIND (timeout / spawn failure / crash / not-found) via a case statement, so a Windows .cmd spawn failure (CVE-2024-27980) is not mistaken for an absent binary. Growth is the case statement + the explanatory prose."
+    "agents/gsd-advisor-researcher.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-ai-researcher.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-assumptions-analyzer.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-code-fixer.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-code-reviewer.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-codebase-mapper.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-debug-session-manager.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-debugger.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-doc-classifier.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-doc-synthesizer.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-doc-verifier.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-doc-writer.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-domain-researcher.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-eval-auditor.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-eval-planner.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-executor.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-framework-selector.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-integration-checker.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-intel-updater.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-mempalace-curator.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-nyquist-auditor.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-pattern-mapper.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-phase-researcher.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-plan-checker.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-planner.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-project-researcher.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-research-synthesizer.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-roadmapper.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-security-auditor.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-ui-auditor.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-ui-checker.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-ui-researcher.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-user-profiler.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "agents/gsd-verifier.toml": {
+      "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
     },
     "spec-phase.md": {
       "reason": "#2733: five transitions in gsd-core/workflows/spec-phase.md were re-pointed so control reaches the mandatory Step 5.5 edge-completeness and Step 5.6 prohibition-completeness probes, which no path could reach before. Four upstream gate-passed jumps went from 'Jump to Step 6' to 'Jump to Step 5.5', and Step 5.5's own terminal soft gate at :305 went from 'proceed to Step 6' to 'proceed to Step 5.6' so the common all-edges-resolved path stops skipping the prohibition probe. The +10 bytes is exactly those five targets growing by 2 bytes each ('Step 6' -> 'Step 5.5' / 'Step 5.6'); it is the literal fix, not incidental prose growth, and cannot be avoided without leaving a probe unreachable. Verified: 31987 -> 31997 bytes, DEFAULT tier, cap 40960."
