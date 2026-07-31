@@ -874,3 +874,112 @@ describe('#2562 — milestone scoping boundaries (one phase-key derivation)', ()
     assert.equal(inv.phases.length, 2, 'the phases themselves stay listed, they just do not count');
   });
 });
+
+// #2562 review round 4 — `status` was the one field still asserted from an
+// un-cross-validated shipped marker: `progress_percent` derived from artifacts
+// while `status` echoed the marker, so the two could contradict each other in a
+// single payload. That IS this issue's symptom, reached through `status`.
+//
+// The cross-check differs by signal strength, and using one check for both
+// regresses the archived case — see the builder comment. These four pin both
+// halves plus the window where the STATE field re-asserts the refused claim.
+describe('#2562 — a shipped marker its own artifacts contradict is not asserted as status', () => {
+  let tmpDir;
+  before(() => { tmpDir = createFixture(); });
+  after(() => cleanup(tmpDir));
+
+  const V2_STATE = 'milestone: v2.0\nstatus: executing\n';
+  const V2_SHIPPED_STATE = 'milestone: v2.0\nstatus: milestone complete\n';
+  // v2.0 declares phases 3 and 4. Rows survive archiving: `milestone complete`
+  // COPIES ROADMAP.md to the snapshot (milestone.cts:671-674) and never
+  // truncates the live file.
+  const V2_ROADMAP = shipped => [
+    '# Roadmap', '',
+    `## Milestone v2.0 — Two${shipped ? ' — ✅ SHIPPED' : ''}`, '',
+    '## Progress', '',
+    '| Phase | Milestone | Plans | Status | Done |',
+    '| --- | --- | --- | --- | --- |',
+    '| 3. New A | v2.0 | 1/1 | Complete | - |',
+    '| 4. New B | v2.0 | 0/1 | In Progress | - |',
+    '',
+  ].join('\n');
+
+  function writePhase(wsDir, slug, { plans = 0, summaries = 0, verification } = {}) {
+    const dir = path.join(wsDir, 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
+    for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
+    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+  }
+
+  function writeSnapshot(wsDir) {
+    fs.mkdirSync(path.join(wsDir, 'milestones'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'milestones', 'v2.0-ROADMAP.md'), '# v2.0 archived\n');
+  }
+
+  test('a live-ROADMAP SHIPPED heading is refused while the milestone is incomplete', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-heading-lies' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), V2_ROADMAP(true));
+    writePhase(wsDir, '3-new-a', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '4-new-b', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-heading-lies', { active: null });
+    assert.ok(inv);
+    assert.notEqual(inv.status, 'milestone complete', 'phase 4 is unfinished — the heading is a claim, not a fact');
+    assert.equal(inv.milestone_shipped_unverified, true);
+    assert.equal(inv.progress_percent, 50, 'status and percent must agree');
+  });
+
+  // Nothing on disk contradicts the archive: `milestone complete` MOVES phase
+  // dirs into `milestones/v2.0-phases/` (milestone.cts:755-762) while leaving
+  // the Progress rows, so a correctly-archived milestone reads 0/2 by
+  // construction. Gating this on the completeness ratio — the obvious single
+  // fix — reddens here and strips `milestone complete` from every archived
+  // milestone in every project.
+  test('an archived snapshot survives its phase dirs being moved out (no ratio gate)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-archived-clean' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), V2_ROADMAP(false));
+    writeSnapshot(wsDir); // phases/ is empty — the dirs are under milestones/v2.0-phases/
+
+    const inv = inspectWorkstream(tmpDir, 'ws-archived-clean', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.status, 'milestone complete');
+    assert.equal(inv.status_source, 'derived');
+    assert.equal(inv.milestone_shipped_unverified, false);
+  });
+
+  // `milestone complete` does not advance STATE's `milestone:` field
+  // (state-transition.cts:1335 writes status/last_activity only; :1224 is the
+  // separate new-milestone path), so a phase can be added or reopened while the
+  // shipped version is still current. That live dir DOES contradict the archive.
+  test('an archived snapshot is refused once a phase is reopened under it', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-archived-reopened' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), V2_ROADMAP(false));
+    writeSnapshot(wsDir);
+    writePhase(wsDir, '4-new-b', { plans: 2, summaries: 1 }); // reopened after the archive
+
+    const inv = inspectWorkstream(tmpDir, 'ws-archived-reopened', { active: null });
+    assert.ok(inv);
+    assert.notEqual(inv.status, 'milestone complete');
+    assert.equal(inv.milestone_shipped_unverified, true);
+  });
+
+  // The refusal must not leak back in through the STATE field, which is
+  // operator-written and in this window commonly says the same thing.
+  test('a refused marker is not re-asserted by a STATE field claiming the same', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-field-echo' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_SHIPPED_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), V2_ROADMAP(true));
+    writePhase(wsDir, '3-new-a', { plans: 1, summaries: 1, verification: 'passed' });
+    writePhase(wsDir, '4-new-b', { plans: 1, summaries: 0 });
+
+    const inv = inspectWorkstream(tmpDir, 'ws-field-echo', { active: null });
+    assert.ok(inv);
+    assert.equal(isCompletedInventory(inv.status), false, 'neither source may assert completion here');
+    assert.equal(inv.status_conflict, true, 'the field disagrees with the artifacts');
+    assert.equal(inv.milestone_shipped_unverified, true);
+  });
+});
