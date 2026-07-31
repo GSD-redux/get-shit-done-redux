@@ -19,6 +19,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const { cleanup } = require('./helpers.cjs');
+
 // ─── load real install.js exports once ───────────────────────────────────────
 //
 // install.js prints a banner at module-load time (outside its GSD_TEST_MODE
@@ -40,7 +42,7 @@ let installExports;
     process.stdout.write = _origWrite;
   }
 }
-const { readSettings, stripJsonComments } = installExports;
+const { readSettings, writeSettings, stripJsonComments } = installExports;
 
 // ─── tests ───────────────────────────────────────────────────────────────────
 
@@ -262,5 +264,109 @@ describe('readSettings: JSON null coalesced to empty, malformed warns (#1191)', 
     }
     assert.deepStrictEqual(result, {}, 'absent file must return {}');
     assert.strictEqual(warnCalls.length, 0, 'no warning expected for absent file');
+  });
+});
+
+// ─── writeSettings durability (#1874 F5) ─────────────────────────────────────
+//
+// Claude Code discards the ENTIRE settings file on any parse failure, so a
+// truncated write costs the user every hook, permission, and statusline they
+// have — not just GSD's entries. writeSettings is the sole writer of this
+// surface for six runtimes, so it must never leave a partial file behind.
+
+describe('writeSettings durability (#1874 F5)', () => {
+
+  // The user's existing settings: entries GSD does not own and must not lose.
+  const PRIOR = JSON.stringify({
+    permissions: { allow: ['Bash(npm test)'] },
+    statusLine: { command: '/usr/local/bin/my-statusline' },
+    env: { MY_TOKEN: 'keep-me' },
+  }, null, 2) + '\n';
+
+  function withTmpDir(fn) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-write-settings-'));
+    try { return fn(dir); } finally { cleanup(dir); }
+  }
+
+  test('a failure mid-write leaves the previous settings file intact', () => {
+    withTmpDir((dir) => {
+      const settingsPath = path.join(dir, 'settings.json');
+      fs.writeFileSync(settingsPath, PRIOR);
+
+      // Simulate the crash window faithfully: the bytes that were written
+      // before the failure DO land on disk, then the call fails. A mock that
+      // merely throws would pass against a non-atomic writer, proving nothing.
+      // fs-method override rather than chmod — root bypasses mode bits, so a
+      // permission-based test silently passes with zero coverage in root CI.
+      const origWriteFileSync = fs.writeFileSync;
+      fs.writeFileSync = (target, data, options) => {
+        const partial = String(data).slice(0, 12);
+        origWriteFileSync(target, partial, options);
+        throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+      };
+
+      let threw = false;
+      try {
+        writeSettings(settingsPath, { hooks: { SessionStart: [] } });
+      } catch {
+        threw = true;
+      } finally {
+        fs.writeFileSync = origWriteFileSync;
+      }
+
+      assert.ok(threw, 'the write failure must propagate, not be swallowed');
+      assert.strictEqual(
+        fs.readFileSync(settingsPath, 'utf8'),
+        PRIOR,
+        'settings.json must be byte-identical to its pre-write contents'
+      );
+      // The real cost of the bug: a truncated file is discarded wholesale by
+      // the host, so assert the user's non-GSD entries actually survive.
+      const recovered = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+      assert.deepStrictEqual(recovered.permissions.allow, ['Bash(npm test)']);
+      assert.strictEqual(recovered.env.MY_TOKEN, 'keep-me');
+    });
+  });
+
+  test('a failure mid-write leaves no temp file behind', () => {
+    withTmpDir((dir) => {
+      const settingsPath = path.join(dir, 'settings.json');
+      fs.writeFileSync(settingsPath, PRIOR);
+
+      const origWriteFileSync = fs.writeFileSync;
+      fs.writeFileSync = (target, data, options) => {
+        origWriteFileSync(target, String(data).slice(0, 12), options);
+        throw new Error('simulated mid-write failure');
+      };
+      try {
+        writeSettings(settingsPath, { hooks: {} });
+      } catch { /* expected */ } finally {
+        fs.writeFileSync = origWriteFileSync;
+      }
+
+      assert.deepStrictEqual(
+        fs.readdirSync(dir).sort(),
+        ['settings.json'],
+        'no .tmp-* residue may survive a failed write'
+      );
+    });
+  });
+
+  test('a successful write produces the same bytes as before (format contract)', () => {
+    withTmpDir((dir) => {
+      const settingsPath = path.join(dir, 'settings.json');
+      const settings = { hooks: { SessionStart: [{ hooks: [{ command: 'x' }] }] }, env: { A: '1' } };
+
+      writeSettings(settingsPath, settings);
+
+      // Two-space indent + trailing newline is the on-disk contract other
+      // tooling (and users' diffs) depend on; atomicity must not disturb it.
+      assert.strictEqual(
+        fs.readFileSync(settingsPath, 'utf8'),
+        JSON.stringify(settings, null, 2) + '\n'
+      );
+      assert.deepStrictEqual(readSettings(settingsPath), settings, 'must round-trip through readSettings');
+      assert.deepStrictEqual(fs.readdirSync(dir), ['settings.json'], 'no temp residue on success');
+    });
   });
 });
