@@ -199,6 +199,55 @@ describe('#2351 run-with-timeout — kill semantics (POSIX process groups)', () 
   });
 });
 
+describe('#2667 run-with-timeout — Windows .cmd/.bat/.exe spawn mediation (CVE-2024-27980)', () => {
+  // Node's CVE-2024-27980 hardening throws EINVAL when child_process.spawn is
+  // given a .cmd/.bat without shell:true. run-with-timeout now mediates
+  // .cmd/.bat/.exe on win32 via shell:true, while leaving every `bash`/argv-
+  // array caller unchanged (the recorded no-shell-for-argv-array contract).
+  const isWin = process.platform === 'win32';
+
+  test('win32 RED: a .cmd shim runs (exit 0, non-empty stdout) — pre-fix this threw EINVAL → exit 125 / empty stdout', { skip: !isWin ? 'win32-only' : false }, () => {
+    const dir = createTempDir('rwt-2667-cmd');
+    try {
+      // A .cmd shim that echoes JSON to stdout (mimics fallow.cmd audit --format json).
+      const shim = path.join(dir, 'fake.cmd');
+      fs.writeFileSync(shim, '@echo {"verdict":"clean"}\r\n', 'utf8');
+      const r = runVerb(['10', '--', shim]);
+      assert.equal(r.status, 0, `expected the .cmd shim to run (exit 0); got ${r.status}. stderr: ${r.stderr}`);
+      assert.ok((r.stdout || '').includes('clean'), `expected non-empty JSON stdout from the .cmd shim; got: ${r.stdout}`);
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('win32: a .bat shim is also mediated (exit 0, non-empty stdout)', { skip: !isWin ? 'win32-only' : false }, () => {
+    const dir = createTempDir('rwt-2667-bat');
+    try {
+      const shim = path.join(dir, 'fake.bat');
+      fs.writeFileSync(shim, '@echo {"verdict":"clean"}\r\n', 'utf8');
+      const r = runVerb(['10', '--', shim]);
+      assert.equal(r.status, 0, `expected the .bat shim to run (exit 0); got ${r.status}. stderr: ${r.stderr}`);
+      assert.ok((r.stdout || '').length > 0, 'expected non-empty stdout from the .bat shim');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('win32: a real .exe (where) is mediated and runs', { skip: !isWin ? 'win32-only' : false }, () => {
+    const r = runVerb(['10', '--', 'where.exe', 'cmd.exe']);
+    assert.equal(r.status, 0, `expected where.exe to run (exit 0); got ${r.status}. stderr: ${r.stderr}`);
+    assert.ok((r.stdout || '').length > 0, 'expected non-empty stdout from where.exe');
+  });
+
+  test('POSIX negative-space: a bash -c caller is unchanged (no shell:true added) — argv stays array-only', { skip: isWin ? 'posix-only' : false }, () => {
+    // The fix's gate (win32 && .cmd/.bat/.exe) skips `bash` on POSIX: behavior
+    // must be identical to before. `bash -c 'echo ok'` exits 0 with stdout "ok".
+    const r = runVerb(['10', '--', 'bash', '-c', 'echo ok']);
+    assert.equal(r.status, 0, `expected bash caller to still work (exit 0); got ${r.status}`);
+    assert.equal((r.stdout || '').trim(), 'ok', 'expected stdout "ok" from the unchanged bash caller');
+  });
+});
+
 describe('#2351 run-with-timeout — coreutils independence (the regression)', () => {
   // The whole point: no dependency on GNU `timeout`/`gtimeout`. Prove it by
   // scrubbing PATH so neither could be found, and driving the child by absolute

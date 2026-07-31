@@ -464,7 +464,22 @@ FALLOW_OK=$(FALLOW_TMP=\"${FALLOW_JSON_PATH}.tmp\" node -e \"
 if [ \"$FALLOW_OK\" != \"1\" ]; then
   FALLOW_STDERR_SUMMARY=$(head -5 \"$FALLOW_STDERR_TMP\")
   rm -f \"${FALLOW_JSON_PATH}.tmp\" \"$FALLOW_STDERR_TMP\"
-  echo \"WARNING: fallow structural pre-pass failed (exit ${FALLOW_EXIT}): ${FALLOW_STDERR_SUMMARY}\"
+  # #2667: distinguish a hard EXECUTION failure (the binary was found at step 1
+  # but would not run) from the binary-missing path (step 2). Exit 124 = timeout,
+  # 2 = usage error, 125 = spawn failure (e.g. Windows EINVAL on a .cmd shim —
+  # CVE-2024-27980, now mediated by run-with-timeout), 126/127 = not executable /
+  # not found. A non-zero exit here with a resolved binary means fallow is
+  # installed but did not produce a report — surface that loudly so a Windows
+  # user does not mistake it for "fallow absent".
+  case \"$FALLOW_EXIT\" in
+    124) FALLOW_FAIL_KIND=\"timed out\" ;;
+    2)   FALLOW_FAIL_KIND=\"usage error\" ;;
+    125) FALLOW_FAIL_KIND=\"spawn failure (the binary was found but did not start — e.g. a Windows .cmd shim; run-with-timeout mediates this)\" ;;
+    126) FALLOW_FAIL_KIND=\"not executable\" ;;
+    127) FALLOW_FAIL_KIND=\"not found\" ;;
+    *)   FALLOW_FAIL_KIND=\"crashed\" ;;
+  esac
+  echo \"WARNING: fallow structural pre-pass failed (${FALLOW_FAIL_KIND}, exit ${FALLOW_EXIT}): ${FALLOW_STDERR_SUMMARY}\"
   FALLOW_JSON_PATH=\"\"
 else
   mv \"${FALLOW_JSON_PATH}.tmp\" \"$FALLOW_JSON_PATH\"
@@ -472,7 +487,7 @@ else
 fi
 ```
 
-On any failure of the structural pre-pass (binary missing, timeout, empty output, or unparseable JSON), the workflow continues with no `<structural_findings>` injection; the reviewer agent receives a normal review request.
+On any failure of the structural pre-pass (binary missing at step 2, or an execution failure here — timeout, spawn failure, crash, empty output, or unparseable JSON), the workflow continues with no `<structural_findings>` injection; the reviewer agent receives a normal review request. The WARNING above names the failure KIND so a hard execution failure (e.g. a Windows `.cmd` spawn failure) is not mistaken for an absent optional dependency.
 
 4) Optional MCP bridge path (runtime-dependent):
 - If `FALLOW_MCP=true`, set reviewer input mode to MCP-backed structural findings.
