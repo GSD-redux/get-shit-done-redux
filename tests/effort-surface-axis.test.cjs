@@ -388,11 +388,6 @@ describe('#2481 — ADR-443 mechanism callers, as they actually exist', () => {
 });
 
 describe('#2481 review workflow resolves effort per reviewer', () => {
-  const reviewMd = fs.readFileSync(
-    path.join(REPO_ROOT, 'gsd-core', 'workflows', 'review.md'),
-    'utf8',
-  );
-
   test('shipped orchestration invokes resolve-execution — the grep ADR-443 said returned zero hits', () => {
     // Phase 5b (#2799) moved the call out of review.md's per-lane bash and into the review-lane
     // route, which resolves effort once per selected lane through the SAME surface. ADR-443's

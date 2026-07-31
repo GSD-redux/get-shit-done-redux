@@ -1188,6 +1188,30 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return;
     }
 
+    // Phase 6 (#2800, closes #2272). The reviewer-flag lists in
+    // plan-review-convergence.md, autonomous.md and next.md were hand-enumerated in three places
+    // and had drifted apart: `--coderabbit` was missing from all three and had been silently
+    // falling back to `--codex`. One declared source, three consumers.
+    //
+    // Emits FLAGS, not slugs: `antigravity` declares two (`--antigravity`, `--agy`), so the flag
+    // count (13) is deliberately not the lane count (12). Same output contract as `sections` —
+    // one token per line, descriptor order, and no trailing newline on an empty result.
+    if (sub === 'flags') {
+      const rows = chosen
+        .map((s) => laneBySlug.get(s))
+        .filter(Boolean)
+        .flatMap((l) => (Array.isArray(l.flags) ? l.flags : []))
+        // Shape-filtered, not merely non-empty. All three consumers read this through an
+        // UNQUOTED `$(gsd_run review-lane flags)` so the newline-separated output word-splits
+        // into loop items — which is the intent. Phase 2 (#2795) admits third-party overlay
+        // lanes into this same descriptor, so an overlay declaring `--foo bar` would inject a
+        // second loop item, and one declaring a glob character would expand against the cwd.
+        // Emitting only well-formed flags keeps that from reaching the shell at all.
+        .filter((f) => typeof f === 'string' && /^--[a-z0-9][a-z0-9-]*$/.test(f));
+      process.stdout.write(rows.join('\n') + (rows.length ? '\n' : ''));
+      return;
+    }
+
     // Effort argv is resolved per lane by the host's own execution policy, exactly as the legs did
     // via `resolve-execution … --pick effort_argv_string`. A lane whose slug is not a known host
     // simply gets none.
@@ -1267,7 +1291,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
 
     if (sub !== 'invoke') {
-      error("Usage: review-lane <plan|invoke|sections> [--selected a,b] [--run-dir D] [--repo-root R]");
+      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
       return;
     }
 

@@ -179,6 +179,87 @@ describe('no-path-literal-in-assert invalid cases', () => {
       ],
     });
   });
+
+  // ── #2764: membership / substring checks over a path-returning receiver ──
+  // The equality-only visitor missed these; they pass lint and fail on Windows.
+
+  test('invalid (#2764): assert.ok(path.relative(R,f).includes("a/b"))', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(path.relative(ROOT, f).includes('a/b'));`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid (#2764): .map(f => path.relative(...)) hop then .includes (the #2728 shape)', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(arr.map(f => path.relative(ROOT, f)).includes('a/b'));`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid (#2764): path.join(...).indexOf("a/b") !== -1', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(path.join(a, b).indexOf('a/b') !== -1);`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid (#2764): path.resolve(...).startsWith("a/b")', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(path.resolve(x).startsWith('a/b'));`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid (#2764): path.resolve(...).endsWith("a/b")', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(path.resolve(x).endsWith('a/b'));`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
+
+  test('invalid (#2764): path.resolve(...).match(/a\\/b/) — regex with a slash', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [],
+      invalid: [
+        {
+          code: `assert.ok(path.resolve(x).match(/a\\/b/));`,
+          filename: 'tests/foo.test.cjs',
+          errors: [{ messageId: 'pathLiteral' }],
+        },
+      ],
+    });
+  });
 });
 
 // ─── VALID cases (no violation expected) ─────────────────────────────────────
@@ -331,6 +412,68 @@ describe('no-path-literal-in-assert valid cases', () => {
       valid: [
         {
           code: `assert.equal(toPosixPath(path.join(a, b)), '/x/y');`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  // ── #2764: membership checks that must NOT trigger ──
+
+  test('valid (#2764): normalized receiver .includes("a/b") — POSIX normalizer suppresses', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `assert.ok(path.relative(ROOT, f).replace(/\\\\/g, '/').includes('a/b'));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid (#2764): non-path string receiver .includes("a/b")', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `assert.ok('plain string'.includes('a/b'));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid (#2764): path receiver .includes(arg-with-no-slash)', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `assert.ok(path.relative(ROOT, f).includes('foo'));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid (#2764): path receiver .match(regex-with-no-slash)', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `assert.ok(path.resolve(x).match(/^home/));`,
+          filename: 'tests/foo.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('valid (#2764): membership inside a Windows-excluded platform guard', () => {
+    ruleTester.run('no-path-literal-in-assert', noPathLiteralInAssert, {
+      valid: [
+        {
+          code: `if (process.platform !== 'win32') { assert.ok(path.relative(ROOT, f).includes('a/b')); }`,
           filename: 'tests/foo.test.cjs',
         },
       ],

@@ -31,8 +31,6 @@ const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 
 const REVIEW_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
-const SHIP_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
-const REVIEWER_INSTANCES_MD = path.join(__dirname, '..', 'gsd-core', 'references', 'reviewer-instances.md');
 
 describe('#2358 review.md temp paths are run-scoped, not phase-only', () => {
   const content = fs.readFileSync(REVIEW_MD, 'utf-8');

@@ -488,9 +488,9 @@ gsd_run query commit "docs(state): record phase ${PHASE} context session" --file
 <step name="auto_advance">
 Auto-advance behavior is defined in `workflows/discuss-phase/modes/chain.md`.
 
-If `--auto`, `--chain`, or `workflow.auto_advance` is enabled, Read that file now and execute its `auto_advance` step (which handles flag-syncing, banner display, plan-phase Skill dispatch, and return-status branching).
+If `--auto`, `--chain`, or `workflow.auto_advance` is enabled, Read that file now and execute its `auto_advance` step (flag-syncing, banner, plan-phase dispatch, return-status branching).
 
-Otherwise, route to `confirm_creation` (manual next steps).
+Otherwise, end here — `confirm_creation` already ran; do not route back to it.
 </step>
 
 </process>

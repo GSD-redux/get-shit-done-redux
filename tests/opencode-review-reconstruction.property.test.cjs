@@ -22,7 +22,6 @@
 'use strict';
 
 const { describe, test } = require('node:test');
-const assert = require('node:assert/strict');
 const fc = require('fast-check');
 
 const { handleOpencodeOutput } = require('../gsd-core/bin/lib/review-lane-runner.cjs');

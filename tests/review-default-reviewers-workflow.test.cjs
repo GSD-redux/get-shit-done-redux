@@ -165,11 +165,6 @@ describe('review workflow source-grounding requirement in build_prompt (#1318)',
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const reviewPath = path.resolve(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
-const read = () => fs.readFileSync(reviewPath, 'utf-8');
 
 describe('bug #687 → #2073: agy print mode is bounded, and its fallback chain fires', () => {
   // Phase 5b (#2799) moved the agy invocation out of review.md's bash into the declared lane plus
@@ -345,23 +340,6 @@ describe('#1698 regression: codex review is captured via --output-last-message, 
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const reviewPath = path.resolve(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
-const read = () => fs.readFileSync(reviewPath, 'utf-8');
-
-// Isolate the base OpenCode reviewer block (heading -> next reviewer heading) so
-// assertions about its stderr handling don't accidentally match sibling reviewers
-// (gemini/claude/coderabbit/qwen legitimately use /dev/null).
-function openCodeBlock() {
-  const c = read();
-  const start = c.indexOf('**OpenCode (via GitHub Copilot):**');
-  assert.notStrictEqual(start, -1, 'review.md must contain the base OpenCode reviewer block');
-  const rest = c.slice(start + 1);
-  const nextHeading = rest.search(/\n\*\*[A-Z][^\n]*:\*\*/);
-  return nextHeading === -1 ? c.slice(start) : c.slice(start, start + 1 + nextHeading);
-}
 
 describe('bug #1936: OpenCode reviewer must not silently yield an empty review', () => {
   // The agent can end its turn with ZERO output tokens, and `--format default` then drops the
