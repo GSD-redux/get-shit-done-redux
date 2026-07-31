@@ -1705,10 +1705,20 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
               );
               milestoneBounded = versionedHeading.test(roadmapRaw);
             }
+            // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
+            // at all — only Phase headings) from a MILESTONED-but-unbounded one
+            // (milestone/version headings exist but the asserted one isn't among them).
+            // On a flat roadmap the whole-doc count is correct (no sibling milestones to
+            // conflate); on a sectioned-but-unbounded one it conflates siblings (#1761),
+            // so fall back to phaseDirs.length.
+            const hasMilestoneSectioning = roadmapRaw !== null
+              && /^#{2,3}\s+(?!Phase\s+\S)/mi.test(roadmapRaw);
+            const safeToUseRoadmapCount = milestoneBounded
+              || (roadmapPhaseCount > 0 && !hasMilestoneSectioning);
             return {
-              totalPhases: (!milestoneBounded || roadmapPhaseCount === 0)
-                ? phaseDirs.length
-                : Math.max(phaseDirs.length, roadmapPhaseCount),
+              totalPhases: safeToUseRoadmapCount
+                ? Math.max(phaseDirs.length, roadmapPhaseCount)
+                : phaseDirs.length,
               milestoneBounded,
               completedPhases: diskCompletedPhases,
               totalPlans: diskTotalPlans,
