@@ -107,12 +107,22 @@
   },
   "reviewer": {
     "slug": "claude",
-    "flags": ["--claude"],
+    "flags": [
+      "--claude"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "claude" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "claude"
+    },
     "invoke": {
       "binary": "claude",
-      "args": ["-p", "-"],
+      "args": [
+        "{{model}}",
+        "{{effort}}",
+        "-p",
+        "-"
+      ],
       "promptChannel": "stdin",
       "outputChannel": "stdout",
       "modelArg": "--model",
@@ -124,6 +134,14 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.claude",
     "handler": null
+  },
+  "config": {
+    "review.models.claude": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Claude reviewer lane."
+    }
   }
 }

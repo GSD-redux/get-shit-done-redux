@@ -44,19 +44,6 @@ PLAN_STRATEGY="local"
 if echo "$ARGUMENTS" | grep -qE '(^|[[:space:]])\-\-(converge|cross-ai)([[:space:]]|$)'; then
   PLAN_STRATEGY="converge"
 fi
-
-CONVERGENCE_ARGS=""
-for REVIEW_FLAG in --codex --gemini --claude --opencode --ollama --lm-studio --llama-cpp --all --text; do
-  if echo "$ARGUMENTS" | grep -qE "(^|[[:space:]])${REVIEW_FLAG}([[:space:]]|$)"; then
-    CONVERGENCE_ARGS="${CONVERGENCE_ARGS} ${REVIEW_FLAG}"
-  fi
-done
-
-MAX_CYCLES_ARG=""
-if echo "$ARGUMENTS" | grep -qE '\-\-max-cycles\s+[0-9]+'; then
-  MAX_CYCLES_ARG=$(echo "$ARGUMENTS" | grep -oE '\-\-max-cycles\s+[0-9]+' | awk '{print $2}')
-  CONVERGENCE_ARGS="${CONVERGENCE_ARGS} --max-cycles ${MAX_CYCLES_ARG}"
-fi
 ```
 
 When `--only` is set, also set `FROM_PHASE` to the same value so existing filter logic applies.
@@ -76,6 +63,23 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 If `PLAN_STRATEGY` is `converge`, fail fast unless the existing convergence feature gate is enabled:
 
 ```bash
+# Lane flags derived from the declared roster (#2800/#2272); --all and --text are convergence
+# controls, not reviewer lanes, so they stay literal.
+# This block must stay AFTER the launcher preamble (above) because it calls `gsd_run` —
+# do not move it back above the preamble in a future edit.
+CONVERGENCE_ARGS=""
+for REVIEW_FLAG in $(gsd_run review-lane flags) --all --text; do
+  if echo "$ARGUMENTS" | grep -qE "(^|[[:space:]])${REVIEW_FLAG}([[:space:]]|$)"; then
+    CONVERGENCE_ARGS="${CONVERGENCE_ARGS} ${REVIEW_FLAG}"
+  fi
+done
+
+MAX_CYCLES_ARG=""
+if echo "$ARGUMENTS" | grep -qE '\-\-max-cycles\s+[0-9]+'; then
+  MAX_CYCLES_ARG=$(echo "$ARGUMENTS" | grep -oE '\-\-max-cycles\s+[0-9]+' | awk '{print $2}')
+  CONVERGENCE_ARGS="${CONVERGENCE_ARGS} --max-cycles ${MAX_CYCLES_ARG}"
+fi
+
 if [ "$PLAN_STRATEGY" = "converge" ]; then
   CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
   if [ "$CONVERGENCE_ENABLED" != "true" ]; then

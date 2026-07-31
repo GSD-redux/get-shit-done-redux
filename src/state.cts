@@ -66,6 +66,13 @@ interface ReadModifyWriteOptions {
   resync?: boolean;
   /** #2440: when true, total_plans/total_phases take derived values even under !resync. */
   deriveProgressKeys?: boolean;
+  /**
+   * #2736: intent-first frontmatter values forwarded to syncStateFrontmatter.
+   * Transition adapters that already hold the exact value (e.g. beginPhase's
+   * display name) pass it here so the lossy body-prose re-derivation can never
+   * destroy information the transition just resolved.
+   */
+  authoritativeFm?: Record<string, unknown>;
 }
 
 interface StateRecordMetricOptions {
@@ -1767,7 +1774,7 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
   return fm;
 }
 
-function syncStateFrontmatter(content: string, cwd: string | undefined): string {
+function syncStateFrontmatter(content: string, cwd: string | undefined, authoritativeFm?: Record<string, unknown>): string {
   // Read existing frontmatter BEFORE stripping — it may contain values
   // that the body no longer has (e.g., Status field removed by an agent).
   // `cwd` already identifies the workspace this content came from, so the STATE.md path is
@@ -1869,6 +1876,21 @@ function syncStateFrontmatter(content: string, cwd: string | undefined): string 
   // #2567: guard the information-losing direction — a stale archive
   // "Last activity:" line must not overwrite a newer frontmatter value.
   preferNewerLastActivity(existingFm, derivedFm);
+
+  // #2736: intent-first override, applied last. A transition adapter that
+  // already holds the exact value (completePhase's next-phase display name,
+  // beginPhase's phase name) passes it here, so the body-prose re-derivation
+  // above — which is lossy by construction for names containing a
+  // parenthetical (`Closer-ruling measurement (D1a)` → `D1a`) — never runs
+  // the final word on a field the transition just resolved. The prose parser
+  // remains the fallback for genuinely unknown prose only.
+  if (authoritativeFm) {
+    for (const [key, value] of Object.entries(authoritativeFm)) {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        derivedFm[key] = value;
+      }
+    }
+  }
 
   const yamlStr = reconstructFrontmatter(derivedFm as unknown as Frontmatter);
   return `---\n${yamlStr}\n---\n\n${body}`;
@@ -2188,7 +2210,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
       return;
     }
 
-    let synced = syncStateFrontmatter(modified, cwd);
+    let synced = syncStateFrontmatter(modified, cwd, options?.authoritativeFm);
 
     // Post-transform body source fields used for the delta comparison (#1230).
     // Use `modified` (not `synced`): syncStateFrontmatter only rewrites the frontmatter block, so the body is identical in both — and we need the body the transform produced.
@@ -2219,7 +2241,22 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
       preBodyStoppedAt, postBodyStoppedAt,
       preBodyPhaseSource, postBodyPhaseSource,
     });
-    if (preservation.mutated) {
+    // #2736: re-assert the intent-first values AFTER preservation. On STATE.md
+    // layouts with no body `Phase:` line, both phase-source snapshots are null
+    // (equal), so the #1695 restore fires and would put the stale pre-transition
+    // name back over the authoritative one. Intent beats both the prose
+    // re-derivation and the curated restore — the transition just resolved it.
+    let authoritativeReasserted = false;
+    if (options?.authoritativeFm) {
+      for (const [key, value] of Object.entries(options.authoritativeFm)) {
+        if (typeof value === 'string' && value.trim().length > 0 && preservation.postFm[key] !== value) {
+          preservation.postFm[key] = value;
+          authoritativeReasserted = true;
+        }
+      }
+    }
+
+    if (preservation.mutated || authoritativeReasserted) {
       const yamlStr = reconstructFrontmatter(preservation.postFm as unknown as Frontmatter);
       const body = stripFrontmatter(synced);
       synced = `---\n${yamlStr}\n---\n\n${body}`;
@@ -2315,12 +2352,28 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
     sourcePath: statePath,
   };
 
+  // #2736: the transition holds the exact display name; without this the
+  // post-transform sync re-derives current_phase_name from the freshly
+  // written `Phase: N (Name) — EXECUTING` line, which truncates any name
+  // that itself contains a parenthetical. The #1695 delta-gate preservation
+  // still runs after the sync; the override is re-asserted after it inside
+  // readModifyWriteStateMd for layouts with no body `Phase:` line.
+  const rmwOptions: ReadModifyWriteOptions = {
+    authoritativeFm: intent.phaseName ? { current_phase_name: intent.phaseName } : undefined,
+  };
   let updated: string[] = [];
   readModifyWriteStateMd(statePath, (content) => {
     const result = transitionCore(content, intent, deps);
     updated = result.updated;
+    // #3127 resume: the core preserved the mid-flight Current Phase Name, so
+    // the intent-first override must not fire — it would drift frontmatter
+    // away from the preserved body value. Dropping it here is safe because
+    // readModifyWriteStateMd consults options only after this callback returns.
+    if (result.data?.['resumed']) {
+      delete rmwOptions.authoritativeFm;
+    }
     return result.content;
-  }, cwd);
+  }, cwd, rmwOptions);
 
   output({ updated, phase: phaseNumber, phase_name: phaseName || null, plan_count: planCount || null }, raw, updated.length > 0 ? 'true' : 'false');
 }

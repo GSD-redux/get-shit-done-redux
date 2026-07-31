@@ -11,12 +11,21 @@
   },
   "reviewer": {
     "slug": "gemini",
-    "flags": ["--gemini"],
+    "flags": [
+      "--gemini"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "gemini" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "gemini"
+    },
     "invoke": {
       "binary": "gemini",
-      "args": ["-p", "-"],
+      "args": [
+        "{{model}}",
+        "-p",
+        "-"
+      ],
       "promptChannel": "stdin",
       "outputChannel": "stdout",
       "modelArg": "-m",
@@ -28,6 +37,14 @@
     "evidenceClass": "source-grounded",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": "review.models.gemini",
     "handler": null
+  },
+  "config": {
+    "review.models.gemini": {
+      "type": "string",
+      "default": "",
+      "description": "Model passed to the Gemini reviewer lane."
+    }
   }
 }

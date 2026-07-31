@@ -11,12 +11,20 @@
   },
   "reviewer": {
     "slug": "coderabbit",
-    "flags": ["--coderabbit"],
+    "flags": [
+      "--coderabbit"
+    ],
     "transport": "spawn",
-    "probe": { "kind": "command-exists", "binary": "coderabbit" },
+    "probe": {
+      "kind": "command-exists",
+      "binary": "coderabbit"
+    },
     "invoke": {
       "binary": "coderabbit",
-      "args": ["review", "--prompt-only"],
+      "args": [
+        "review",
+        "--prompt-only"
+      ],
       "promptChannel": "none",
       "outputChannel": "stdout",
       "modelArg": null,
@@ -28,6 +36,7 @@
     "evidenceClass": "diff-only",
     "requiresBinaries": [],
     "promptBudgetKey": null,
+    "modelConfigKey": null,
     "handler": null
   }
 }

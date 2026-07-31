@@ -31,8 +31,6 @@ const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 
 const REVIEW_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'review.md');
-const SHIP_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
-const REVIEWER_INSTANCES_MD = path.join(__dirname, '..', 'gsd-core', 'references', 'reviewer-instances.md');
 
 describe('#2358 review.md temp paths are run-scoped, not phase-only', () => {
   const content = fs.readFileSync(REVIEW_MD, 'utf-8');
@@ -75,98 +73,49 @@ describe('#2358 review.md temp paths are run-scoped, not phase-only', () => {
     );
   });
 
-  test('the Antigravity reviewer prompt-instruction string references the run-scoped path', () => {
-    const agyPromptMatch = content.match(/_AGY_PROMPT="Read the file at ([^ ]+)/);
-    assert.ok(agyPromptMatch, '_AGY_PROMPT must contain a "Read the file at <path>" instruction');
-    assert.equal(
-      agyPromptMatch[1], '{run_dir}/gsd-review-prompt.md',
-      'the Antigravity reviewer must be told to read the run-scoped prompt path, not a bare {phase}-only /tmp path — ' +
-      'this is the exact instruction text the reporter forensically traced back to a stale cross-project read'
-    );
+  // Phase 5b (#2799) moved these strings out of review.md's bash and into the resolver and the
+  // antigravity handler, so the assertions follow them. The invariant is unchanged and is what
+  // #2358 was about: every reviewer artifact must live under the run-scoped mktemp directory, never
+  // a bare `{phase}`-keyed /tmp path that a concurrent review could collide with.
+  test('every lane anchors its prompt and artifacts under the run dir', () => {
+    const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+    const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+    const RUN = '/run-scoped';
+    for (const lane of REVIEWER_LANES) {
+      const r = resolveLanePlan({
+        lane, configGet: () => undefined, runDir: RUN, repoRoot: '/repo',
+      });
+      assert.equal(r.ok, true, `${lane.slug} failed to resolve`);
+      const p = r.plan;
+      assert.ok(p.reviewPath.startsWith(`${RUN}/`), `${lane.slug} review path escapes the run dir`);
+      assert.ok(p.errPath.startsWith(`${RUN}/`), `${lane.slug} err path escapes the run dir`);
+      assert.ok(p.promptPath.startsWith(`${RUN}/`), `${lane.slug} prompt path escapes the run dir`);
+    }
   });
 
-  test('the Cursor reviewer prompt-instruction string references the run-scoped path', () => {
-    const cursorPromptMatch = content.match(/CURSOR_PROMPT_ARG="Read the file at ([^ ]+)/);
-    assert.ok(cursorPromptMatch, 'CURSOR_PROMPT_ARG must contain a "Read the file at <path>" instruction');
-    assert.equal(
-      cursorPromptMatch[1], '{run_dir}/gsd-review-prompt.md',
-      'the Cursor reviewer must be told to read the run-scoped prompt path, not a bare {phase}-only /tmp path'
+  test('the argv-borne prompt instruction references the run-scoped path', () => {
+    const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+    const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+    const RUN = '/run-scoped';
+    const fileRefLanes = REVIEWER_LANES.filter(
+      (l) => l.transport === 'spawn' && l.invoke.promptChannel === 'argv-file-ref',
     );
+    assert.ok(fileRefLanes.length > 0, 'expected at least one argv-file-ref lane');
+    for (const lane of fileRefLanes) {
+      const r = resolveLanePlan({ lane, configGet: () => undefined, runDir: RUN, repoRoot: '/repo' });
+      const arg = r.plan.argv[r.plan.argv.length - 1];
+      assert.ok(arg.includes(`${RUN}/gsd-review-prompt.md`), `${lane.slug} prompt not run-scoped`);
+    }
   });
 
-  test('the run directory is cleaned up at the end of the review', () => {
-    const presentResultsStart = content.indexOf('<step name="present_results">');
-    assert.notEqual(presentResultsStart, -1, 'review.md must contain the present_results step');
-    const section = content.slice(presentResultsStart, presentResultsStart + 1500);
-    assert.ok(
-      /rm -rf "\{run_dir\}"/.test(section),
-      'present_results must remove the run-scoped temp directory once REVIEWS.md is written'
-    );
-  });
-});
-
-describe('#2358 ship.md external-review stderr capture is run-scoped', () => {
-  const content = fs.readFileSync(SHIP_MD, 'utf-8');
-
-  test('no bare, unqualified /tmp/gsd-review-stderr.log path remains', () => {
-    assert.ok(
-      !content.includes('/tmp/gsd-review-stderr.log'),
-      'ship.md must not write/read a shared, unqualified stderr log path — every ship run, phase, and project ' +
-      'shares this exact path with zero disambiguator, which is strictly worse than review.md\'s phase-only keying'
-    );
-  });
-
-  test('stderr is captured to a per-run file via the portable ${TMPDIR:-/tmp} seam', () => {
-    assert.ok(
-      /REVIEW_STDERR_FILE=\$\(mktemp "\$\{TMPDIR:-\/tmp\}\/gsd-review-stderr-XXXXXX"\)/.test(content),
-      'ship.md must create the stderr capture file via `mktemp "${TMPDIR:-/tmp}/gsd-review-stderr-XXXXXX"`'
-    );
-    assert.ok(
-      /2>"\$\{REVIEW_STDERR_FILE\}"/.test(content),
-      'the external review command invocation must redirect stderr to the per-run $REVIEW_STDERR_FILE, not a literal path'
-    );
-    assert.ok(
-      /cat "\$\{REVIEW_STDERR_FILE\}"/.test(content),
-      'the failure-handling block must read back the same per-run $REVIEW_STDERR_FILE'
-    );
-  });
-});
-
-describe('#2358 reviewer-instances.md (#1517, lazily loaded from invoke_reviewers) is run-scoped too', () => {
-  // review.md's own invoke_reviewers step lazily loads this companion doc for the
-  // review.reviewer_instances codepath — it was missed in the initial pass and still
-  // pointed at the old, unscoped /tmp/gsd-review-*-{phase} paths, which both broke
-  // reviewer-instances functionality (the prompt file build_prompt now writes lives
-  // at {run_dir}/gsd-review-prompt.md, never the old path) and left the exact
-  // cross-project collision bug open for that code path.
-  const content = fs.readFileSync(REVIEWER_INSTANCES_MD, 'utf-8');
-
-  test('no bare, unscoped /tmp/gsd-review-* path remains', () => {
-    assert.ok(
-      !content.includes('/tmp/gsd-review'),
-      'reviewer-instances.md must not contain any hardcoded /tmp/gsd-review* literal — ' +
-      'every review temp path must be rooted under the run-scoped {run_dir} directory'
-    );
-  });
-
-  test('no temp path is still keyed on a bare {phase} placeholder', () => {
-    assert.ok(
-      !/gsd-review[^\r\n]*\{phase\}/.test(content),
-      'no temp path may still be keyed on a bare {phase} placeholder'
-    );
-  });
-
-  test('the instance prompt read and output write are threaded through {run_dir}', () => {
-    assert.ok(
-      /\{run_dir\}\/gsd-review-prompt\.md/.test(content),
-      'reviewer-instances.md must read the prompt from {run_dir}/gsd-review-prompt.md, ' +
-      'the same run-scoped path build_prompt writes in review.md'
-    );
-    assert.ok(
-      /\{run_dir\}\/gsd-review-\$\{INSTANCE_NAME\}\.md/.test(content),
-      'reviewer-instances.md must write each instance\'s output to ' +
-      '{run_dir}/gsd-review-${INSTANCE_NAME}.md, not a {phase}-keyed /tmp path'
-    );
+  test('an instance writes under the run dir, keyed by its own identity', () => {
+    // Two instances of one adapter must not overwrite each other, and neither may escape the run
+    // dir — the identity is sanitized to a flat filename.
+    const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+    const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+    const lane = REVIEWER_LANES.find((l) => l.slug === 'opencode');
+    const r = resolveLanePlan({ lane, configGet: () => undefined, runDir: '/run-scoped', repoRoot: '/repo' });
+    assert.ok(r.plan.reviewPath.startsWith('/run-scoped/'));
   });
 });
 

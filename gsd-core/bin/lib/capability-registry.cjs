@@ -210,7 +210,9 @@ const capabilities = {
         "args": [
           "--print-timeout",
           "540s",
-          "-p"
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -221,11 +223,17 @@ const capabilities = {
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
+    },
+    "config": {
+      "review.models.agy": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      }
     }
   },
   "assumption-delta": {
@@ -586,6 +594,8 @@ const capabilities = {
       "invoke": {
         "binary": "claude",
         "args": [
+          "{{model}}",
+          "{{effort}}",
           "-p",
           "-"
         ],
@@ -600,7 +610,15 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.claude",
       "handler": null
+    },
+    "config": {
+      "review.models.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Claude reviewer lane."
+      }
     }
   },
   "claude-orchestration": {
@@ -974,6 +992,7 @@ const capabilities = {
       "evidenceClass": "diff-only",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -1086,7 +1105,10 @@ const capabilities = {
         "args": [
           "exec",
           "--ephemeral",
+          "{{model}}",
+          "{{effort}}",
           "--skip-git-repo-check",
+          "{{output}}",
           "-"
         ],
         "promptChannel": "stdin",
@@ -1101,7 +1123,15 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.codex",
       "handler": null
+    },
+    "config": {
+      "review.models.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Codex reviewer lane."
+      }
     }
   },
   "copilot": {
@@ -1330,7 +1360,8 @@ const capabilities = {
           "ask",
           "--trust",
           "--output-format",
-          "text"
+          "text",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -1343,6 +1374,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -1572,6 +1604,7 @@ const capabilities = {
       "invoke": {
         "binary": "gemini",
         "args": [
+          "{{model}}",
           "-p",
           "-"
         ],
@@ -1586,7 +1619,15 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.gemini",
       "handler": null
+    },
+    "config": {
+      "review.models.gemini": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Gemini reviewer lane."
+      }
     }
   },
   "graphify": {
@@ -2070,6 +2111,46 @@ const capabilities = {
         "skipSharedHooksInstall": true,
         "namedSubagentsSupported": false
       }
+    },
+    "reviewer": {
+      "slug": "kimi-code",
+      "flags": [
+        "--kimi-code"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-capability",
+        "binary": "kimi",
+        "needle": "--output-format",
+        "timeoutMs": 5000
+      },
+      "invoke": {
+        "binary": "kimi",
+        "args": [
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": "-m",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Kimi Code",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "modelConfigKey": "review.models.kimi-code",
+      "handler": null
+    },
+    "config": {
+      "review.models.kimi-code": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Kimi Code reviewer lane."
+      }
     }
   },
   "llama-cpp": {
@@ -2097,19 +2178,37 @@ const capabilities = {
       },
       "invoke": {
         "hostConfigKey": "review.llama_cpp_host",
+        "defaultHost": "http://localhost:8080",
         "path": "/v1/chat/completions",
         "modelDiscovery": "first-from-models-endpoint",
+        "fallbackModel": "local-model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "llama.cpp",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.llama_cpp",
+      "modelConfigKey": "review.models.llama_cpp",
       "handler": "openai-compatible"
+    },
+    "config": {
+      "review.models.llama_cpp": {
+        "type": "string",
+        "default": "",
+        "description": "Model requested from the llama.cpp reviewer lane; empty discovers the first model from /v1/models."
+      },
+      "review.llama_cpp_host": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the llama.cpp OpenAI-compatible server."
+      },
+      "review.max_prompt_tokens_per_reviewer.llama_cpp": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "lm-studio": {
@@ -2137,19 +2236,37 @@ const capabilities = {
       },
       "invoke": {
         "hostConfigKey": "review.lm_studio_host",
+        "defaultHost": "http://localhost:1234",
         "path": "/v1/chat/completions",
         "modelDiscovery": "first-from-models-endpoint",
+        "fallbackModel": "local-model",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "LM Studio",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.lm_studio",
+      "modelConfigKey": "review.models.lm_studio",
       "handler": "openai-compatible"
+    },
+    "config": {
+      "review.models.lm_studio": {
+        "type": "string",
+        "default": "",
+        "description": "Model requested from the LM Studio reviewer lane; empty discovers the first model from /v1/models."
+      },
+      "review.lm_studio_host": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the LM Studio OpenAI-compatible server."
+      },
+      "review.max_prompt_tokens_per_reviewer.lm_studio": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "mempalace": {
@@ -2401,19 +2518,37 @@ const capabilities = {
       },
       "invoke": {
         "hostConfigKey": "review.ollama_host",
+        "defaultHost": "http://localhost:11434",
         "path": "/v1/chat/completions",
         "modelDiscovery": "first-from-models-endpoint",
+        "fallbackModel": "llama3",
         "effortChannel": "none"
       },
       "timeoutFloorMs": 120000,
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "Ollama",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": "review.max_prompt_tokens_per_reviewer.ollama",
+      "modelConfigKey": "review.models.ollama",
       "handler": "openai-compatible"
+    },
+    "config": {
+      "review.models.ollama": {
+        "type": "string",
+        "default": "",
+        "description": "Model requested from the Ollama reviewer lane; empty discovers the first model from /v1/models."
+      },
+      "review.ollama_host": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of the Ollama OpenAI-compatible server."
+      },
+      "review.max_prompt_tokens_per_reviewer.ollama": {
+        "type": "number",
+        "default": -1,
+        "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+      }
     }
   },
   "opencode": {
@@ -2545,6 +2680,8 @@ const capabilities = {
         "binary": "opencode",
         "args": [
           "run",
+          "{{model}}",
+          "{{effort}}",
           "--format",
           "json",
           "-"
@@ -2558,11 +2695,17 @@ const capabilities = {
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
-      "handler": null
+      "modelConfigKey": "review.models.opencode",
+      "handler": "opencode"
+    },
+    "config": {
+      "review.models.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the OpenCode reviewer lane."
+      }
     }
   },
   "pattern-mapper": {
@@ -2890,6 +3033,7 @@ const capabilities = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -4172,13 +4316,16 @@ const byLoopPoint = {
 const configKeys = {
   "workflow.ai_integration_phase": "ai-integration",
   "workflow.api_coverage_gate": "ai-integration",
+  "review.models.agy": "antigravity",
   "workflow.assumption_delta": "assumption-delta",
   "workflow.windows_enforce": "broken-windows",
+  "review.models.claude": "claude",
   "claude_orchestration.enabled": "claude-orchestration",
   "claude_orchestration.execution_backend": "claude-orchestration",
   "claude_orchestration.min_agent_sdk_version": "claude-orchestration",
   "workflow.code_review": "code-review",
   "workflow.code_review_depth": "code-review",
+  "review.models.codex": "codex",
   "workflow.drift_threshold": "drift",
   "workflow.drift_action": "drift",
   "workflow.schema_drift_gate": "drift",
@@ -4189,8 +4336,16 @@ const configKeys = {
   "external_job.submit_timeout_ms": "external-job",
   "external_job.poll_timeout_ms": "external-job",
   "workflow.post_planning_gaps": "gap-analysis",
+  "review.models.gemini": "gemini",
   "graphify.enabled": "graphify",
   "intel.enabled": "intel",
+  "review.models.kimi-code": "kimi-code",
+  "review.models.llama_cpp": "llama-cpp",
+  "review.llama_cpp_host": "llama-cpp",
+  "review.max_prompt_tokens_per_reviewer.llama_cpp": "llama-cpp",
+  "review.models.lm_studio": "lm-studio",
+  "review.lm_studio_host": "lm-studio",
+  "review.max_prompt_tokens_per_reviewer.lm_studio": "lm-studio",
   "mempalace.enabled": "mempalace",
   "mempalace.memory_mode": "mempalace",
   "mempalace.wing": "mempalace",
@@ -4202,6 +4357,10 @@ const configKeys = {
   "mempalace.diary_journal": "mempalace",
   "mempalace.auto_capture_hooks": "mempalace",
   "workflow.nyquist_validation": "nyquist",
+  "review.models.ollama": "ollama",
+  "review.ollama_host": "ollama",
+  "review.max_prompt_tokens_per_reviewer.ollama": "ollama",
+  "review.models.opencode": "opencode",
   "workflow.pattern_mapper": "pattern-mapper",
   "profile-pipeline.enabled": "profile-pipeline",
   "workflow.research": "research",
@@ -4228,6 +4387,12 @@ const configSchema = {
     "default": true,
     "description": "Require an explicit API-coverage decision (full-by-default, opt-out-not-opt-in) before a phase that integrates an external API/SDK/service can seal. At plan:pre the planner is prompted to enumerate the API surface into COVERAGE.md; at verify:pre a blocking gate fails the seal unless the matrix exists with every non-integrated capability an explicit, reasoned opt-out. Independent of ai_integration_phase (applies to any external-API integration, not only AI)."
   },
+  "review.models.agy": {
+    "owner": "antigravity",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+  },
   "workflow.assumption_delta": {
     "owner": "assumption-delta",
     "type": "boolean",
@@ -4239,6 +4404,12 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the blocking ship:pre gate for the broken-windows ledger. When true (opt-in), /gsd-ship blocks while .planning/WINDOWS.md has any open entry. When false (default), windows are still tracked (the executor and verifier still populate WINDOWS.md via gsd-tools windows append) but ship does not block — teams can adopt tracking before enforcement. Issue #1950."
+  },
+  "review.models.claude": {
+    "owner": "claude",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Claude reviewer lane."
   },
   "claude_orchestration.enabled": {
     "owner": "claude-orchestration",
@@ -4279,6 +4450,12 @@ const configSchema = {
       "standard",
       "deep"
     ]
+  },
+  "review.models.codex": {
+    "owner": "codex",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Codex reviewer lane."
   },
   "workflow.drift_threshold": {
     "owner": "drift",
@@ -4347,6 +4524,12 @@ const configSchema = {
     "default": true,
     "description": "Run the post-planning gap analysis report after plans are generated."
   },
+  "review.models.gemini": {
+    "owner": "gemini",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Gemini reviewer lane."
+  },
   "graphify.enabled": {
     "owner": "graphify",
     "type": "boolean",
@@ -4358,6 +4541,48 @@ const configSchema = {
     "type": "boolean",
     "default": false,
     "description": "Enable the intel code-intelligence command."
+  },
+  "review.models.kimi-code": {
+    "owner": "kimi-code",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the Kimi Code reviewer lane."
+  },
+  "review.models.llama_cpp": {
+    "owner": "llama-cpp",
+    "type": "string",
+    "default": "",
+    "description": "Model requested from the llama.cpp reviewer lane; empty discovers the first model from /v1/models."
+  },
+  "review.llama_cpp_host": {
+    "owner": "llama-cpp",
+    "type": "string",
+    "default": "",
+    "description": "Base URL of the llama.cpp OpenAI-compatible server."
+  },
+  "review.max_prompt_tokens_per_reviewer.llama_cpp": {
+    "owner": "llama-cpp",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the llama.cpp reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.models.lm_studio": {
+    "owner": "lm-studio",
+    "type": "string",
+    "default": "",
+    "description": "Model requested from the LM Studio reviewer lane; empty discovers the first model from /v1/models."
+  },
+  "review.lm_studio_host": {
+    "owner": "lm-studio",
+    "type": "string",
+    "default": "",
+    "description": "Base URL of the LM Studio OpenAI-compatible server."
+  },
+  "review.max_prompt_tokens_per_reviewer.lm_studio": {
+    "owner": "lm-studio",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the LM Studio reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
   },
   "mempalace.enabled": {
     "owner": "mempalace",
@@ -4429,6 +4654,30 @@ const configSchema = {
     "type": "boolean",
     "default": true,
     "description": "Enable Nyquist validation coverage auditing."
+  },
+  "review.models.ollama": {
+    "owner": "ollama",
+    "type": "string",
+    "default": "",
+    "description": "Model requested from the Ollama reviewer lane; empty discovers the first model from /v1/models."
+  },
+  "review.ollama_host": {
+    "owner": "ollama",
+    "type": "string",
+    "default": "",
+    "description": "Base URL of the Ollama OpenAI-compatible server."
+  },
+  "review.max_prompt_tokens_per_reviewer.ollama": {
+    "owner": "ollama",
+    "type": "number",
+    "default": -1,
+    "description": "Prompt-token budget for the Ollama reviewer lane. Unset is -1, a sentinel: 0 is a legitimate value meaning \"do not trim this lane\", so it cannot double as \"not configured\"."
+  },
+  "review.models.opencode": {
+    "owner": "opencode",
+    "type": "string",
+    "default": "",
+    "description": "Model passed to the OpenCode reviewer lane."
   },
   "workflow.pattern_mapper": {
     "owner": "pattern-mapper",
@@ -4624,7 +4873,9 @@ const runtimes = {
         "args": [
           "--print-timeout",
           "540s",
-          "-p"
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -4635,11 +4886,17 @@ const runtimes = {
       "emptyOutput": "handler-owned",
       "reviewsSection": "Antigravity",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.agy",
       "handler": "antigravity"
+    },
+    "config": {
+      "review.models.agy": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Antigravity reviewer lane. The key suffix is the lane binary/flag alias `agy`, not the slug `antigravity` — preserved verbatim so existing .planning/config.json files keep working."
+      }
     }
   },
   "augment": {
@@ -4871,6 +5128,8 @@ const runtimes = {
       "invoke": {
         "binary": "claude",
         "args": [
+          "{{model}}",
+          "{{effort}}",
           "-p",
           "-"
         ],
@@ -4885,7 +5144,15 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.claude",
       "handler": null
+    },
+    "config": {
+      "review.models.claude": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Claude reviewer lane."
+      }
     }
   },
   "cline": {
@@ -5181,7 +5448,10 @@ const runtimes = {
         "args": [
           "exec",
           "--ephemeral",
+          "{{model}}",
+          "{{effort}}",
           "--skip-git-repo-check",
+          "{{output}}",
           "-"
         ],
         "promptChannel": "stdin",
@@ -5196,7 +5466,15 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": "review.models.codex",
       "handler": null
+    },
+    "config": {
+      "review.models.codex": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Codex reviewer lane."
+      }
     }
   },
   "copilot": {
@@ -5425,7 +5703,8 @@ const runtimes = {
           "ask",
           "--trust",
           "--output-format",
-          "text"
+          "text",
+          "{{prompt}}"
         ],
         "promptChannel": "argv-file-ref",
         "outputChannel": "stdout",
@@ -5438,6 +5717,7 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },
@@ -5829,6 +6109,46 @@ const runtimes = {
         "skipSharedHooksInstall": true,
         "namedSubagentsSupported": false
       }
+    },
+    "reviewer": {
+      "slug": "kimi-code",
+      "flags": [
+        "--kimi-code"
+      ],
+      "transport": "spawn",
+      "probe": {
+        "kind": "command-capability",
+        "binary": "kimi",
+        "needle": "--output-format",
+        "timeoutMs": 5000
+      },
+      "invoke": {
+        "binary": "kimi",
+        "args": [
+          "{{model}}",
+          "-p",
+          "{{prompt}}"
+        ],
+        "promptChannel": "argv-file-ref",
+        "outputChannel": "stdout",
+        "modelArg": "-m",
+        "effortChannel": "none"
+      },
+      "timeoutFloorMs": 900000,
+      "emptyOutput": "stub-with-stderr",
+      "reviewsSection": "Kimi Code",
+      "evidenceClass": "source-grounded",
+      "requiresBinaries": [],
+      "promptBudgetKey": null,
+      "modelConfigKey": "review.models.kimi-code",
+      "handler": null
+    },
+    "config": {
+      "review.models.kimi-code": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the Kimi Code reviewer lane."
+      }
     }
   },
   "opencode": {
@@ -5960,6 +6280,8 @@ const runtimes = {
         "binary": "opencode",
         "args": [
           "run",
+          "{{model}}",
+          "{{effort}}",
           "--format",
           "json",
           "-"
@@ -5973,11 +6295,17 @@ const runtimes = {
       "emptyOutput": "stub-with-stderr",
       "reviewsSection": "OpenCode",
       "evidenceClass": "source-grounded",
-      "requiresBinaries": [
-        "jq"
-      ],
+      "requiresBinaries": [],
       "promptBudgetKey": null,
-      "handler": null
+      "modelConfigKey": "review.models.opencode",
+      "handler": "opencode"
+    },
+    "config": {
+      "review.models.opencode": {
+        "type": "string",
+        "default": "",
+        "description": "Model passed to the OpenCode reviewer lane."
+      }
     }
   },
   "pi": {
@@ -6174,6 +6502,7 @@ const runtimes = {
       "evidenceClass": "source-grounded",
       "requiresBinaries": [],
       "promptBudgetKey": null,
+      "modelConfigKey": null,
       "handler": null
     }
   },

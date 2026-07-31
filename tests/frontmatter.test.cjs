@@ -1761,3 +1761,282 @@ test('extractFrontmatter handles large frontmatter blocks without body bleed', (
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #2736 regressions — `phase complete` / `state begin-phase` rewrite
+// current_phase_name to the name's own parenthetical. Placed here beside the
+// #1695 delta-gate suite (the same defect family): the transition holds the
+// exact display name, then the post-transform syncStateFrontmatter re-derives
+// the scalar from body prose via the lossy parsePhaseFromProse. The fix is
+// intent-first: adapters pass the intent-held name as an authoritative
+// override (completePhase directly, beginPhase via readModifyWriteStateMd
+// options), re-asserted after the #1695 preservation so neither the prose
+// re-derivation nor the curated restore can destroy it. Parser-precedence
+// cases live in tests/phase-id.test.cjs.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __d2736, test: __t2736, beforeEach: __be2736, afterEach: __ae2736 } = require('node:test');
+  const __assert2736 = require('node:assert/strict');
+  const __fs2736 = require('node:fs');
+  const __path2736 = require('node:path');
+  const { runGsdTools: __run2736, createTempProject: __mk2736, cleanup: __rm2736 } = require('./helpers.cjs');
+  const __state2736 = require('../gsd-core/bin/lib/state.cjs');
+
+  const PAREN_NAME_2736 = 'Closer-ruling measurement (D1a)';
+
+  // The issue's repro (a) fixture: curated frontmatter name present, body
+  // `Phase:` line exactly as completePhaseCore writes it, and no
+  // `Current Phase Name:` body field (the common STATE.md shape, where the
+  // replace-only body-field write is a no-op).
+  function postAdvanceState2736() {
+    return [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.10',
+      'current_phase: 48',
+      'current_phase_name: Harness debt clearance',
+      'status: planning',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '**Status:** Ready to plan',
+      '',
+      '## Current Position',
+      '',
+      `Phase: 48 — ${PAREN_NAME_2736}`,
+      'Plan: Not started',
+      '',
+    ].join('\n');
+  }
+
+  __d2736('#2736: syncStateFrontmatter authoritative override (unit)', () => {
+    __t2736('an intent-first override survives the prose round-trip verbatim', () => {
+      const out = __state2736.syncStateFrontmatter(postAdvanceState2736(), undefined, {
+        current_phase_name: PAREN_NAME_2736,
+      });
+      const fm = extractFrontmatter(out);
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `authoritative current_phase_name must win over the prose re-derivation; got ${JSON.stringify(fm.current_phase_name)}`,
+      );
+    });
+
+    __t2736('without an override, the dash name wins (secondary fix), but the paren aside is still dropped', () => {
+      // Documents the residual lossiness that makes the intent-first override
+      // necessary: for `N — Name (aside)` prose where the aside IS part of the
+      // name, no precedence can recover the full name from prose alone.
+      const out = __state2736.syncStateFrontmatter(postAdvanceState2736(), undefined);
+      const fm = extractFrontmatter(out);
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        'Closer-ruling measurement',
+        `the paren-over-dash harvest ('D1a') must be gone; got ${JSON.stringify(fm.current_phase_name)}`,
+      );
+    });
+
+    __t2736('an empty/blank override entry is ignored (no clearing an existing value)', () => {
+      const out = __state2736.syncStateFrontmatter(postAdvanceState2736(), undefined, {
+        current_phase_name: '   ',
+      });
+      const fm = extractFrontmatter(out);
+      __assert2736.notStrictEqual(fm.current_phase_name, '   ');
+    });
+  });
+
+  __d2736('#2736: phase complete preserves a paren-containing next-phase name (e2e)', () => {
+    let tmpDir;
+    __be2736(() => { tmpDir = __mk2736(); });
+    __ae2736(() => { __rm2736(tmpDir); });
+
+    __t2736('current_phase_name lands as the exact roadmap display name, not its parenthetical', () => {
+      const planningDir = __path2736.join(tmpDir, '.planning');
+      const phase1Dir = __path2736.join(planningDir, 'phases', '01-foundation');
+      __fs2736.mkdirSync(phase1Dir, { recursive: true });
+
+      __fs2736.writeFileSync(
+        __path2736.join(planningDir, 'ROADMAP.md'),
+        [
+          '# Roadmap',
+          '',
+          '- [ ] Phase 1: Foundation',
+          `- [ ] Phase 2: ${PAREN_NAME_2736}`,
+          '',
+          '### Phase 1: Foundation',
+          '**Goal:** Setup',
+          '**Plans:** 1 plans',
+          '',
+          `### Phase 2: ${PAREN_NAME_2736}`,
+          '**Goal:** Measure closer rulings',
+          '',
+        ].join('\n'),
+      );
+
+      // The in-the-wild STATE.md shape: frontmatter + ## Current Position with
+      // a `Phase:` line, and NO `Current Phase Name:` body field.
+      __fs2736.writeFileSync(
+        __path2736.join(planningDir, 'STATE.md'),
+        [
+          '---',
+          'gsd_state_version: 1.0',
+          'current_phase: 1',
+          'current_phase_name: Foundation',
+          'status: executing',
+          '---',
+          '',
+          '# Project State',
+          '',
+          '## Current Position',
+          '',
+          'Phase: 1 — Foundation',
+          'Plan: 1 of 1',
+          'Status: Executing Phase 1',
+          'Last activity: 2026-07-01 — mid-flight',
+          '',
+        ].join('\n'),
+      );
+
+      __fs2736.writeFileSync(__path2736.join(phase1Dir, '01-01-PLAN.md'), '# Plan\n');
+      __fs2736.writeFileSync(__path2736.join(phase1Dir, '01-01-SUMMARY.md'), '# Summary\n');
+      __fs2736.writeFileSync(
+        __path2736.join(phase1Dir, '01-VERIFICATION.md'),
+        ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+      );
+
+      const result = __run2736(['phase', 'complete', '1'], tmpDir);
+      __assert2736.ok(result.success, `phase complete failed: ${result.error}`);
+
+      const stateContent = __fs2736.readFileSync(__path2736.join(planningDir, 'STATE.md'), 'utf-8');
+      const fm = extractFrontmatter(stateContent);
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `current_phase_name must be the exact next-phase display name; got ${JSON.stringify(fm.current_phase_name)} ` +
+        '(the prose round-trip harvested the parenthetical — #2736)',
+      );
+      // The body prose the transition wrote stays as designed.
+      __assert2736.match(stateContent, /Phase: 2 — Closer-ruling measurement \(D1a\)/);
+    });
+  });
+
+  __d2736('#2736 sibling: state begin-phase preserves a paren-containing name (e2e)', () => {
+    let tmpDir;
+    __be2736(() => { tmpDir = __mk2736(); });
+    __ae2736(() => { __rm2736(tmpDir); });
+
+    function writeBeginFixture2736(lines) {
+      __fs2736.writeFileSync(__path2736.join(tmpDir, '.planning', 'STATE.md'), lines.join('\n'));
+    }
+
+    __t2736('the intent-held name survives the begin-phase sync verbatim', () => {
+      writeBeginFixture2736([
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 1',
+        'current_phase_name: Foundation',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        'Phase: 1 — Foundation',
+        'Plan: Not started',
+        'Status: Ready to execute',
+        'Last activity: 2026-07-01 — planned',
+        '',
+      ]);
+
+      const result = __run2736(
+        ['state', 'begin-phase', '--phase', '2', '--name', PAREN_NAME_2736, '--plans', '1'],
+        tmpDir,
+      );
+      __assert2736.ok(result.success, `state begin-phase failed: ${result.error}`);
+
+      const fm = extractFrontmatter(__fs2736.readFileSync(__path2736.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `current_phase_name must be the exact intent-held name; got ${JSON.stringify(fm.current_phase_name)} ` +
+        '(the `N (Name) — EXECUTING` round-trip truncates paren-containing names — #2736)',
+      );
+    });
+
+    __t2736('the override outlives the #1695 preservation restore when no body Phase: line exists', () => {
+      // Cross-AI review finding (P4.6 round 1): with no `Phase:` body line the
+      // pre/post phase-source snapshots are both null (equal), so the #1695
+      // restore fires after the sync and used to put the stale pre-transition
+      // name back over the authoritative one. The re-assert after
+      // applyStatePreservation is what this pins.
+      writeBeginFixture2736([
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 1',
+        'current_phase_name: Foundation',
+        'status: planning',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Current Phase:** 1',
+        '**Status:** Ready to execute',
+        '**Last Activity:** 2026-07-01',
+        '',
+      ]);
+
+      const result = __run2736(
+        ['state', 'begin-phase', '--phase', '2', '--name', PAREN_NAME_2736, '--plans', '1'],
+        tmpDir,
+      );
+      __assert2736.ok(result.success, `state begin-phase failed: ${result.error}`);
+
+      const fm = extractFrontmatter(__fs2736.readFileSync(__path2736.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `the intent-held name must outlive the preservation restore; got ${JSON.stringify(fm.current_phase_name)}`,
+      );
+    });
+
+    __t2736('a #3127 resume does NOT override the preserved mid-flight name', () => {
+      // Cross-AI review finding (P4.6 round 2): on a resume (Status already
+      // `Executing Phase N`), beginPhaseCore deliberately preserves the
+      // mid-flight Current Phase Name — the adapter must drop the intent-first
+      // override so frontmatter tracks the preserved body value instead of the
+      // resume invocation's --name.
+      writeBeginFixture2736([
+        '---',
+        'gsd_state_version: 1.0',
+        'current_phase: 2',
+        `current_phase_name: ${PAREN_NAME_2736}`,
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '## Current Position',
+        '',
+        `Phase: 2 — ${PAREN_NAME_2736}`,
+        'Plan: 1 of 1',
+        'Status: Executing Phase 2',
+        'Last activity: 2026-07-01 — mid-flight',
+        '',
+      ]);
+
+      const result = __run2736(
+        ['state', 'begin-phase', '--phase', '2', '--name', 'A Different Name', '--plans', '1'],
+        tmpDir,
+      );
+      __assert2736.ok(result.success, `state begin-phase (resume) failed: ${result.error}`);
+
+      const fm = extractFrontmatter(__fs2736.readFileSync(__path2736.join(tmpDir, '.planning', 'STATE.md'), 'utf-8'));
+      __assert2736.strictEqual(
+        fm.current_phase_name,
+        PAREN_NAME_2736,
+        `a resume must keep the preserved mid-flight name, not the resume's --name; got ${JSON.stringify(fm.current_phase_name)}`,
+      );
+    });
+  });
+}

@@ -1,109 +1,203 @@
-// allow-test-rule: source-text-is-the-product (see #2073)
-// gsd-core/workflows/review.md is a workflow document whose bash blocks ARE
-// what /gsd-review loads and executes at runtime. Asserting the Antigravity
-// invocation shape asserts the deployed contract — this is behavioral coverage
-// of the workflow, not a source-grep over application code.
-
 /**
- * Antigravity (agy) reviewer invocation tests (#2073)
+ * Antigravity (agy) reviewer lane — the #2073 invariants.
  *
- * The agy block in /gsd-review had three real-world failure modes on agy 1.0.16:
- *   1. inline `-p "$(cat <prompt>)"` overflowed the exec arg list on a large prompt
- *   2. a pinned model that 404'd exited 0 with empty stdout AND an empty transcript
- *      (no --model escape hatch; the generic Step 3 stub gave no diagnostic)
- *   3. a pre-session stall hung past --print-timeout (which can't fire before a
- *      session exists) because there was no external wall-clock `timeout`
- * Plus a stale maintainer note claiming agy has no --model flag.
+ * These tests pinned the three real failure modes of agy 1.0.16 against the hand-authored bash
+ * block in `gsd-core/workflows/review.md`. Phase 5b (#2799) deleted that block: the lane is now
+ * declared data plus a named first-party handler, so the assertions move to those surfaces — and
+ * the source-text exemption this file used to carry is no longer needed, because nothing here reads
+ * a source file any more.
  *
- * These tests pin the corrected invocation shape in gsd-core/workflows/review.md.
+ * The move is an upgrade, not a translation. The old tests could only prove that certain TEXT
+ * appeared in a markdown fence; these prove the resolved invocation and the handler's actual
+ * behaviour. Every #2073 mode below is the same invariant, checked where it now lives.
+ *
+ * One invariant deliberately CHANGED, and is recorded here rather than silently dropped: mode 3's
+ * external `timeout`/`gtimeout` probe is gone. The bash needed it because `--print-timeout` cannot
+ * fire before agy creates a session, and stock macOS ships neither killer — so on a stock Mac that
+ * leg ran unbounded. The runner spawns with Node's native timeout, which is always available, so
+ * the outer bound is now unconditional. The invariant ("a pre-session stall is bounded") got
+ * stronger; only the mechanism changed.
  */
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('fs');
-const path = require('path');
 
-const ROOT = path.join(__dirname, '..');
-const REVIEW_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'review.md');
+const { REVIEWER_LANES } = require('../gsd-core/bin/lib/review-lane-descriptor.cjs');
+const { resolveLanePlan } = require('../gsd-core/bin/lib/review-lane-invocation.cjs');
+const {
+  antigravityDiagnostic,
+  antigravityTranscriptFallback,
+  stampBlindReview,
+  runLane,
+} = require('../gsd-core/bin/lib/review-lane-runner.cjs');
 
-function agyBashBlock() {
-  const content = fs.readFileSync(REVIEW_PATH, 'utf-8');
-  const fences = content.match(/```bash[\s\S]*?```/g) || [];
-  // Target the INVOCATION block (the fence that writes the antigravity review
-  // output), not the `command -v agy` detection one-liner.
-  const agy = fences.find((f) => /\bagy\b/.test(f) && /gsd-review-antigravity/.test(f));
-  assert.ok(agy, 'review.md should contain the agy invocation bash block');
-  return agy;
+const RUN = '/run';
+const ROOT = '/repo';
+const HOME = '/home/u';
+
+const LANE = REVIEWER_LANES.find((l) => l.slug === 'antigravity');
+
+function planFor(config = {}) {
+  const r = resolveLanePlan({ lane: LANE, configGet: (k) => config[k], runDir: RUN, repoRoot: ROOT });
+  assert.equal(r.ok, true);
+  return r.plan;
 }
 
-describe('Antigravity (agy) reviewer invocation in /gsd-review (#2073)', () => {
-  test('review.md exists', () => {
-    assert.ok(fs.existsSync(REVIEW_PATH), 'review.md should exist');
+function deps(overrides = {}) {
+  const files = overrides.files || {};
+  const warnings = [];
+  return Object.assign(
+    {
+      files,
+      warnings,
+      spawn: () => ({ status: 0, stdout: '', stderr: '' }),
+      httpJson: async () => ({ ok: true, status: 200, body: '{}' }),
+      readFile: (p) => { if (!(p in files)) throw new Error(`ENOENT ${p}`); return files[p]; },
+      writeFile: (p, c) => { files[p] = c; },
+      exists: (p) => p in files,
+      hasBinary: () => true,
+      configGet: () => undefined,
+      homeDir: HOME,
+      warn: (m) => warnings.push(m),
+    },
+    overrides,
+  );
+}
+
+describe('Antigravity lane — #2073 mode 1 (exec arg-list overflow)', () => {
+  test('the prompt travels by FILE REFERENCE, never inlined', () => {
+    // Inline `-p "$(cat <prompt>)"` overflowed the exec arg list on a large prompt set (~197 KB),
+    // failing with rc 126 in a way indistinguishable from a model failure.
+    assert.equal(LANE.invoke.promptChannel, 'argv-file-ref');
+    const argv = planFor().argv;
+    const promptArg = argv[argv.length - 1];
+    assert.ok(promptArg.includes(`${RUN}/gsd-review-prompt.md`), 'must reference the prompt file');
+    assert.ok(promptArg.length < 1000, 'the reference must stay short, never carry the prompt body');
   });
 
-  test('#2073 mode 1 — does NOT inline the prompt via "$(cat ...)" (arg-list overflow)', () => {
-    const block = agyBashBlock();
+  test('the prompt argument carries the absolute repo root (#2176)', () => {
+    // Without the anchor agy reviews the plan text in isolation from its own scratch dir.
+    const argv = planFor().argv;
+    assert.ok(argv[argv.length - 1].includes(ROOT));
+  });
+});
+
+describe('Antigravity lane — #2073 mode 2 (a pinned model that 404s)', () => {
+  test('review.models.agy reaches argv as --model', () => {
+    // The slug is `antigravity` but the shipped key is `review.models.agy`; resolving by slug
+    // would silently ignore the very escape hatch this mode exists to provide.
+    assert.equal(LANE.modelConfigKey, 'review.models.agy');
+    const argv = planFor({ 'review.models.agy': 'gemini-x' }).argv;
+    const i = argv.indexOf('--model');
+    assert.ok(i !== -1, '--model must be present when the key is set');
+    assert.equal(argv[i + 1], 'gemini-x');
+  });
+
+  test('no model configured emits no --model', () => {
+    assert.ok(!planFor().argv.includes('--model'));
+  });
+
+  test('the diagnostic surfaces agy cli.log rather than a generic stub', () => {
+    // This mode exits 0 with empty stdout AND an empty transcript — every other signal reads as a
+    // clean run. The log is the only evidence there was a failure at all.
+    const files = {
+      [`${HOME}/.gemini/antigravity-cli/cli.log`]: [
+        'routine',
+        'agent executor error: Publisher model NOT_FOUND gemini-x',
+      ].join('\n'),
+    };
+    const out = antigravityDiagnostic(deps({ files }));
+    assert.ok(out.includes('NOT_FOUND'), 'the log line must be surfaced');
+    assert.ok(out.includes('agy models'), 'the remedy must be named');
+  });
+
+  test('an absent log still yields the pre-session-stall tell', () => {
+    const out = antigravityDiagnostic(deps());
+    assert.ok(out.includes('pre-session-stall'));
+    assert.ok(!out.includes('agy models'), 'no hint should be invented without evidence');
+  });
+});
+
+describe('Antigravity lane — #2073 mode 3 (pre-session stall)', () => {
+  test('the outer wall-clock bound is declared and unconditional', () => {
+    // The bash probed for GNU `timeout` / `gtimeout` and fell back to --print-timeout alone when
+    // neither existed — which is stock macOS, so that leg ran unbounded there. The bound is now
+    // the plan's own timeout, enforced by the spawn on every platform.
+    assert.equal(LANE.timeoutFloorMs, 600000);
+    assert.equal(planFor().timeoutMs, 600000);
+  });
+
+  test('the tool-native inner timeout stays in argv', () => {
+    // Two-level by design: a 600s outer cap over a 540s native --print-timeout. The descriptor
+    // carries ONE scalar; the inner bound is the lane's own argument (ADR-2782 D6).
+    const argv = planFor().argv;
+    const i = argv.indexOf('--print-timeout');
+    assert.ok(i !== -1);
+    assert.equal(argv[i + 1], '540s');
+  });
+
+  test('the REVIEW spawn receives the outer bound, and every spawn is bounded', async () => {
+    const p = planFor();
+    const calls = [];
+    const d = deps({
+      spawn: (b, a, o) => { calls.push({ argv: a, opts: o }); return { status: 0, stdout: 'a review', stderr: '' }; },
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+
+    // The handler also spawns `agy --help` to probe --add-dir, so target the review invocation by
+    // its shape rather than by position — a positional assertion silently follows the wrong call
+    // the moment another probe is added.
+    const review = calls.find((c) => c.argv.includes('-p'));
+    assert.ok(review, 'expected a review invocation');
+    assert.equal(review.opts.timeoutMs, 600000);
+
+    for (const c of calls) {
+      assert.ok(c.opts.timeoutMs > 0, `unbounded spawn: ${c.argv.join(' ')}`);
+    }
+  });
+
+  test('no prompt is fed on stdin, so a tty stall is impossible', () => {
+    // The bash tied stdin to /dev/null for exactly this reason.
+    assert.equal(planFor().stdin, null);
+  });
+});
+
+describe('Antigravity lane — transcript fallback and staleness', () => {
+  const CACHE = `${HOME}/.gemini/antigravity-cli/cache/last_conversations.json`;
+  const TX = (id) => `${HOME}/.gemini/antigravity-cli/brain/${id}/.system_generated/logs/transcript.jsonl`;
+  const entry = (content) =>
+    JSON.stringify({ source: 'MODEL', status: 'DONE', type: 'PLANNER_RESPONSE', content });
+
+  test('the lane is handler-owned, so the generic stub cannot pre-empt the fallback', () => {
+    assert.equal(LANE.emptyOutput, 'handler-owned');
+    assert.equal(LANE.handler, 'antigravity');
+  });
+
+  test('a response written by THIS run is read back', () => {
+    const files = {
+      [CACHE]: JSON.stringify({ [ROOT]: 'c1' }),
+      [TX('c1')]: [entry('old'), entry('NEW')].join('\n'),
+    };
+    assert.equal(antigravityTranscriptFallback(ROOT, { convId: 'c1', lines: 1 }, deps({ files })), 'NEW');
+  });
+
+  test('a response from a PRIOR run is never presented as this one', () => {
+    const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: entry('STALE') };
+    assert.equal(antigravityTranscriptFallback(ROOT, { convId: 'c1', lines: 1 }, deps({ files })), '');
+  });
+
+  test('a blind review is marked so consensus can down-weight it (#2176)', () => {
     assert.ok(
-      !/"\$\(cat/.test(block),
-      'agy must not inline the prompt via "$(cat …)" — a large review prompt overflows the exec arg list',
+      stampBlindReview('REVIEWED-WITHOUT-REPO-ACCESS\nx').includes('[reviewed-without-repo-access]'),
     );
   });
 
-  test('#2073 mode 1 — uses a file-reference prompt (mirrors the Cursor block)', () => {
-    const block = agyBashBlock();
-    assert.ok(
-      /Read the file at \{run_dir\}\/gsd-review-prompt\.md/.test(block),
-      'agy should reference the prompt by file path, not inline it',
-    );
-  });
-
-  test('#2073 mode 3 — pairs agy with an external wall-clock killer when available (timeout/gtimeout probe)', () => {
-    const block = agyBashBlock();
-    // Capability probe for GNU `timeout` and macOS `gtimeout` (stock macOS has neither).
-    assert.match(block, /command -v timeout/, 'agy block should probe for the `timeout` killer');
-    assert.match(block, /command -v gtimeout/, 'agy block should probe for `gtimeout` (macOS Homebrew)');
-    // The external cap (600s) is >= agy's native --print-timeout (540s) so it only
-    // backstops a pre-session stall, never cuts a healthy run.
-    assert.match(block, /600 agy --print-timeout 540s/, 'external cap (600s) must be >= --print-timeout (540s)');
-    // Graceful fallback when no external killer is available (stock macOS).
-    assert.match(block, /else\n\s*agy --print-timeout 540s/,
-      'agy block must fall back to --print-timeout alone when no external killer is available (macOS)');
-  });
-
-  test('#2073 mode 3 — stdin is tied to /dev/null (no tty stall)', () => {
-    const block = agyBashBlock();
-    assert.ok(
-      /<\/dev\/null/.test(block),
-      'agy invocation should redirect stdin from /dev/null so it never blocks on a tty',
-    );
-  });
-
-  test('#2073 mode 2 — wires review.models.agy via --model when configured', () => {
-    const block = agyBashBlock();
-    assert.match(block, /--model "\$AGY_MODEL"/, 'agy block should pass --model "$AGY_MODEL" when set');
-  });
-
-  test('#2073 mode 2 — Step 3 stub surfaces a diagnostic from agy cli.log (not just a generic stub)', () => {
-    const block = agyBashBlock();
-    assert.ok(
-      /cli\.log/.test(block),
-      'the empty-output stub should inspect agy cli.log for a model-availability diagnostic (NOT_FOUND / agent executor error)',
-    );
-  });
-
-  test('#2073 — stale "no --model flag" maintainer note is corrected', () => {
-    const content = fs.readFileSync(REVIEW_PATH, 'utf-8');
-    assert.ok(
-      !/No .{0,4}-m.{0,4}\/.{0,4}--model.{0,4} flag/i.test(content),
-      'the stale maintainer note claiming agy has no --model flag must be corrected (--model exists since ~1.0.3)',
-    );
-  });
-
-  test('#2073 — review.models.agy is documented as supported (not "reserved for future")', () => {
-    const content = fs.readFileSync(REVIEW_PATH, 'utf-8');
-    assert.ok(
-      !/review\.models\.agy is reserved for future/i.test(content),
-      'review.models.agy is now wired (passed as --model); the "reserved for future" comment must be updated',
-    );
+  test('all three layers failing still writes a diagnosable artifact, never an empty file', async () => {
+    const p = planFor();
+    const d = deps({ spawn: () => ({ status: 1, stdout: '', stderr: 'boom' }) });
+    const r = await runLane(p, d, { repoRoot: ROOT });
+    assert.equal(r.stubbed, true);
+    assert.ok(d.files[p.reviewPath].includes('failed or returned empty output'));
+    assert.ok(d.files[p.reviewPath].includes('pre-session-stall'));
   });
 });

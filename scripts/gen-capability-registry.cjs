@@ -129,6 +129,71 @@ function loadCentralConfigKeys(schemaPath = CONFIG_SCHEMA_PATH) {
   return new Set(Array.isArray(manifest.validKeys) ? manifest.validKeys : []);
 }
 
+/**
+ * Loads the central config-schema's DYNAMIC key patterns (#2797).
+ *
+ * `loadCentralConfigKeys` above reads `validKeys` only, so a federated key
+ * claimed by a central *pattern* was invisible to the exclusivity check. That is
+ * not a cosmetic gap: `isCentralConfigKey` consults these same patterns, and
+ * `mergeFederatedConfig` skips every key for which it returns true — so an
+ * overlapping slice is inert while the build stays green.
+ *
+ * The patterns are read from the SAME manifest the runtime reads and compiled
+ * with the same `source`, rather than re-implementing a matcher here, so the two
+ * cannot drift.
+ *
+ * Failure contract MATCHES `loadCentralConfigKeys` above deliberately — the two
+ * read the same file and must not disagree about what a broken one means:
+ *   - ENOENT → empty list. Legitimately absent.
+ *   - Any other read error, or a JSON parse error → prominent stderr + throw.
+ *
+ * An earlier revision swallowed the parse error and returned []. That is
+ * fail-OPEN on the gate this function exists to feed: with zero patterns,
+ * `validateCrossCapability`'s pattern-collision check silently passes and an
+ * inert federated slice ships green. It was masked in the one production call
+ * site only because `loadCentralConfigKeys` runs first against the same path and
+ * throws — a coincidence of ordering, not a guarantee, and this function is
+ * exported and called standalone.
+ *
+ * A single unparseable PATTERN is still skipped rather than fatal: that is a
+ * per-entry defect the central schema's own tests own, and skipping one pattern
+ * degrades to "checked less" rather than blocking every build.
+ */
+function loadCentralConfigPatterns(schemaPath = CONFIG_SCHEMA_PATH) {
+  let raw;
+  try {
+    raw = fs.readFileSync(schemaPath, 'utf8');
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return [];
+    process.stderr.write(
+      '  ERROR  Failed to read config-schema manifest at ' + schemaPath + ': ' + err.message + '\n',
+    );
+    throw new ExitError(1, 'could not read config-schema manifest');
+  }
+
+  let manifest;
+  try {
+    manifest = JSON.parse(raw);
+  } catch (err) {
+    process.stderr.write(
+      '  ERROR  Config-schema manifest at ' + schemaPath + ' is broken (JSON parse error): ' + err.message + '\n',
+    );
+    throw new ExitError(1, 'config-schema manifest JSON is malformed');
+  }
+  const declared = Array.isArray(manifest.dynamicKeyPatterns) ? manifest.dynamicKeyPatterns : [];
+  const out = [];
+  for (const entry of declared) {
+    const src = entry && typeof entry.source === 'string' ? entry.source : null;
+    if (!src) continue;
+    try {
+      out.push(new RegExp(src));
+    } catch {
+      // Unparseable pattern — the central schema's own tests own that failure.
+    }
+  }
+  return out;
+}
+
 // ─── ADR-857 Phase 4a: Derived views ─────────────────────────────────────────
 
 // (Config-slice validation, per-capability validators, contract validators,
@@ -336,8 +401,11 @@ function runConsistencyGate(capabilityClusters, profileMembership, capMap) {
  *   (used during 3a-impl while migration is in-progress).
  * @param {string} [capabilitiesDir]    Override capabilities dir (for testing with fixtures).
  */
-function loadAndValidate(centralKeys, capabilitiesDir) {
+function loadAndValidate(centralKeys, capabilitiesDir, centralPatterns) {
   const resolvedCentralKeys = centralKeys !== undefined ? centralKeys : loadCentralConfigKeys();
+  // #2797: patterns default to the real manifest unless a caller passes its own
+  // (tests pass [] to isolate the exact-key path).
+  const resolvedCentralPatterns = centralPatterns !== undefined ? centralPatterns : loadCentralConfigPatterns();
   const resolvedCapDir = capabilitiesDir !== undefined ? capabilitiesDir : CAPABILITIES_DIR;
   const errors = [];
   const capMap = new Map();
@@ -406,7 +474,7 @@ function loadAndValidate(centralKeys, capabilitiesDir) {
   }
 
   // Cross-capability invariants — capMap contains only fully-valid capabilities at this point.
-  const crossErrors = validateCrossCapability(capMap, resolvedCentralKeys);
+  const crossErrors = validateCrossCapability(capMap, resolvedCentralKeys, resolvedCentralPatterns);
   errors.push(...crossErrors);
 
   // C2: Global consumes-satisfiability — runs after capMap is fully built so cross-capability
@@ -857,6 +925,7 @@ module.exports = {
   validateCrossCapability,
   classifyCrossErrors,
   loadCentralConfigKeys,
+  loadCentralConfigPatterns,
   loadAndValidate,
   buildRegistry,
   serializeRegistry,

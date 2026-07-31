@@ -347,6 +347,16 @@ const PROVENANCE_RULES = [
     // bytes; its CONTENT never does — see the `sources` comment below for why
     // that rules out attributing to `hooks/<name>.js`.
     pattern: /^(?!gsd-session\.json$).+$/,
+    // `hooks/package.json` (the CommonJS marker) is ALSO code-derived, not built
+    // from a tracked hooks/package.json source: its bytes are a fixed literal
+    // emitted at install time by ensureCommonJsMarker (HOOKS_WINDOWS_SHIM_SRC,
+    // a.k.a. src/runtime-hooks-surface.cts) for cursor/windsurf, and by the codex
+    // copy block (bin/install.js) which calls that same exported helper (#2717).
+    // So — like the `.cmd` shim below — it routes `sources`/`transforms` to that
+    // source file rather than to a nonexistent `hooks/package.json`. The codex
+    // emission path is covered transitively: it requires + calls the helper whose
+    // content literal defines the marker bytes.
+    //
     // `.cmd` shim bytes are code-derived (a literal template + the install-time
     // interpreter/path tokens in HOOKS_WINDOWS_SHIM_SRC) — the wrapped `.js`
     // file's NAME flows in (as a hardcoded literal filename inside that same
@@ -356,8 +366,8 @@ const PROVENANCE_RULES = [
     // used elsewhere in this table (copilot-hook-registration, cline-rules-
     // code-derived, hermes-category-description). The redundancy between
     // `sources` and `transforms` here is harmless — the mis-attribution was not.
-    sources: (m) => [m[0].endsWith('.cmd') ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
-    transforms: (m) => (m[0].endsWith('.cmd') ? [HOOKS_WINDOWS_SHIM_SRC] : []),
+    sources: (m) => [m[0].endsWith('.cmd') || m[0] === 'package.json' ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
+    transforms: (m) => (m[0].endsWith('.cmd') || m[0] === 'package.json' ? [HOOKS_WINDOWS_SHIM_SRC] : []),
   },
   {
     id: 'copilot-hook-registration',

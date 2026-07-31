@@ -837,14 +837,27 @@ const VALID_EVIDENCE_CLASSES  = new Set(['source-grounded', 'diff-only']);
 // member per lane has stopped being a vocabulary and become a dispatch table for
 // bespoke code — at which point the descriptor is a plugin system wearing a
 // manifest, and that is a decision for an ADR, not for a downstream phase.
-const VALID_LANE_HANDLERS     = new Set(['antigravity', 'openai-compatible']);
+// `opencode` admitted by Phase 5b (#2799) under the SECOND arm of the rule above:
+// it serves 1 lane, justified by a documented upstream defect data cannot express.
+// OpenCode's default `build` agent is an agentic coder, not a prompt→completion
+// API; on a large review prompt it can end its turn with ZERO output tokens, and
+// `--format default` then drops the assistant text entirely, silently losing the
+// reviewer (#1936). The review must therefore be RECONSTRUCTED from the assistant
+// `text` parts of a `--format json` stream — a parse, not a copy. Expressing that
+// as data would need an `outputChannel: 'json-parts'` plus a selector expression,
+// i.e. exactly the ad-hoc interpreter the admission rule exists to prevent.
+const VALID_LANE_HANDLERS     = new Set(['antigravity', 'openai-compatible', 'opencode']);
 
 // D2 — `transport` selects the invoke sub-shape. A manifest carrying fields from
 // BOTH sub-shapes, or from NEITHER, has undefined meaning and fails validation.
 // The discriminator is explicit rather than inferred from field presence, which
 // is precisely the ambiguity these two sets exist to detect.
 const SPAWN_ONLY_INVOKE_FIELDS = ['binary', 'args', 'promptChannel', 'outputChannel', 'outputArg', 'modelArg'];
-const HTTP_ONLY_INVOKE_FIELDS  = ['hostConfigKey', 'path', 'modelDiscovery'];
+// `defaultHost` / `fallbackModel` added by Phase 5b (#2799). Phase 4 federated every
+// `review.*_host` key with a default of `""`, so the REAL fallback destination and model
+// (`http://localhost:11434` / `llama3` and friends) existed only inside the bash leg. Once the
+// lane is invoked from data, an unset host with no declared default would POST to a garbage URL.
+const HTTP_ONLY_INVOKE_FIELDS  = ['hostConfigKey', 'defaultHost', 'path', 'modelDiscovery', 'fallbackModel'];
 
 // Feature-only fields are as forbidden on a lane-only capability as on a runtime
 // one; a `role: "reviewer"` capability owns no artefacts and wires no loop point.
@@ -1545,7 +1558,14 @@ function validateRuntimeBody(cap) {
  */
 const KNOWN_REVIEWER_FIELDS = new Set([
   'slug', 'flags', 'transport', 'probe', 'invoke', 'timeoutFloorMs', 'emptyOutput',
-  'reviewsSection', 'evidenceClass', 'requiresBinaries', 'promptBudgetKey', 'handler',
+  'reviewsSection', 'evidenceClass', 'requiresBinaries', 'promptBudgetKey',
+  // `modelConfigKey` added by Phase 5b (#2799). The model key was IMPLICIT
+  // (`review.models.<slug>`) until a shipped lane broke the convention: antigravity's
+  // slug is `antigravity` but its key is `review.models.agy`, so resolving by slug
+  // missed a configured model and silently disabled the pinned-model escape hatch
+  // #2073 added. A convention one shipped lane already violates is not a contract.
+  'modelConfigKey',
+  'handler',
 ]);
 
 const KNOWN_PROBE_FIELDS = new Set(['kind', 'binary', 'needle', 'timeoutMs', 'hostConfigKey', 'path']);
@@ -1794,6 +1814,19 @@ function validateReviewerBodyFields(cap) {
         errors.push(ctx + ' reviewer.requiresBinaries entry ' + describeValue(bin) + ' must be a non-empty string');
       }
     }
+  }
+
+  // OPTIONAL, and that is required by D4 rather than a convenience: `modelConfigKey` did not exist
+  // before Phase 5b, so demanding it would fail validation on every reviewer manifest authored
+  // against an earlier GSD — exactly the forward/backward-compatibility break D4 rule 2 forbids.
+  // Absent is read as `null` (this lane accepts no model override). `null` is explicit; an empty
+  // string is neither, and is rejected.
+  if (r.modelConfigKey !== undefined && r.modelConfigKey !== null &&
+      (typeof r.modelConfigKey !== 'string' || r.modelConfigKey.length === 0)) {
+    errors.push(
+      ctx + ' reviewer.modelConfigKey must be a dotted config key or null ' +
+      '(got: ' + describeValue(r.modelConfigKey) + ')',
+    );
   }
 
   // `null` is the declared "no per-lane budget"; an empty string is not.
@@ -2552,7 +2585,7 @@ const TIER_RANK = { core: 0, standard: 1, full: 2 };
  * @param {Set<string>}         centralKeys  Set of keys in the central config-schema
  * @returns {string[]}          Array of error strings; empty = all pass.
  */
-function validateCrossCapability(capMap, centralKeys) {
+function validateCrossCapability(capMap, centralKeys, centralPatterns = []) {
   const errors = [];
 
   // Ownership: one owner per skill stem + agent name
@@ -2621,6 +2654,27 @@ function validateCrossCapability(capMap, centralKeys) {
           'config key "' + key + '" is declared in capability "' + capId +
           '" AND exists in the central config-schema — migration mid-flight: ' +
           'remove from central config-schema before adding to the capability',
+        );
+      }
+      // #2797: exact-key membership is not the whole central schema. A key may
+      // also be claimed by a central DYNAMIC PATTERN, and until now that
+      // collision was invisible here — `centralKeys` is built from
+      // `manifest.validKeys` alone.
+      //
+      // Why that mattered enough to fix rather than note: `isCentralConfigKey`
+      // DOES consult the patterns, and `mergeFederatedConfig` skips every key
+      // for which it returns true. So a federated slice overlapping a central
+      // pattern is INERT — it carries no traffic — while the build stays green.
+      // Two of the four key families Phase 4 migrates (`review.models.<slug>`
+      // and `review.max_prompt_tokens_per_reviewer.<slug>`) were pattern-backed,
+      // so the invariant was blind to exactly the migration it exists to police.
+      const collidingPattern = centralPatterns.find((p) => p.test(key));
+      if (collidingPattern) {
+        errors.push(
+          'config key "' + key + '" is declared in capability "' + capId +
+          '" AND is matched by central config-schema pattern /' + collidingPattern.source +
+          '/ — the federated slice would be inert (mergeFederatedConfig skips central keys): ' +
+          'remove the pattern from the central config-schema in the SAME commit',
         );
       }
     }
