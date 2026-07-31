@@ -52,6 +52,22 @@ export interface Fragment {
   readonly strategy: ShrinkStrategy;
   readonly required?: boolean;
   readonly group?: string;
+  /**
+   * Floor expressed in MEASURE UNITS (the same unit `measure()` returns),
+   * below which this fragment must never be taken. Applies across ALL
+   * strategies — unlike `floorChars` (a chars-denominated detail of
+   * `proportional-truncate` only). Default 0 (today's behavior).
+   */
+  readonly flexReserve?: number;
+  /**
+   * When true, this fragment is the byte-stable canonical prefix (ADR-1671
+   * "Architecture and contracts"): never trimmed, shrunk, or dropped,
+   * regardless of `strategy` or budget pressure — it behaves as `verbatim`
+   * unconditionally. Isolate fragments must form a leading, contiguous
+   * prefix of `ComposeInput.fragments` (declaration order); a non-isolate
+   * fragment followed by an isolate one is rejected.
+   */
+  readonly isolate?: boolean;
 }
 
 /** Tuning knobs for {@link composeWithinBudget}. */
@@ -88,9 +104,17 @@ export interface ComposeMetadata {
   readonly underPressure: boolean;
   readonly omitted: string[];
   readonly shrunk: string[];
+  /** Ids of fragments whose `flexReserve` actually prevented a trim that would otherwise have happened. */
+  readonly floored: string[];
   readonly truncationPct: number;
   readonly hardFailed: boolean;
   readonly hardFailReason: 'minimum-set' | null;
+  /**
+   * Concatenation, in declaration order, of `wrapper + content` for every
+   * `isolate` fragment — the byte-stable prefix a caller can hash or assert
+   * on. Empty string when there are no isolate fragments.
+   */
+  readonly isolatePrefix: string;
 }
 
 /** Result of {@link composeWithinBudget}: a plan, not a rendered string. */
@@ -136,6 +160,8 @@ interface WorkingFragment {
   readonly required: boolean;
   readonly group: string | undefined;
   readonly originalLength: number;
+  readonly flexReserve: number;
+  readonly isolate: boolean;
   content: string;
   shrunk: boolean;
   truncated: boolean;
@@ -166,11 +192,25 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
 
   const seenIds = new Set<string>();
   const working: WorkingFragment[] = [];
+  let sawNonIsolate = false;
+  let isolatePrefix = '';
   for (const f of fragments) {
     if (seenIds.has(f.id)) {
       throw new TypeError(`composeWithinBudget: duplicate fragment id "${f.id}"`);
     }
     seenIds.add(f.id);
+    const isolate = f.isolate === true;
+    if (isolate) {
+      if (sawNonIsolate) {
+        throw new TypeError(
+          `composeWithinBudget: isolate fragment "${f.id}" declared after a non-isolate fragment; ` +
+            'isolate fragments must form a leading, contiguous prefix of ComposeInput.fragments'
+        );
+      }
+      isolatePrefix += (f.wrapper ?? '') + f.content;
+    } else {
+      sawNonIsolate = true;
+    }
     working.push({
       id: f.id,
       wrapper: f.wrapper ?? '',
@@ -178,6 +218,8 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
       required: f.required === true,
       group: f.group,
       originalLength: f.content.length,
+      flexReserve: f.flexReserve ?? 0,
+      isolate,
       content: f.content,
       shrunk: false,
       truncated: false,
@@ -199,9 +241,11 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
           underPressure: false,
           omitted: [],
           shrunk: [],
+          floored: [],
           truncationPct: 0,
           hardFailed: true,
           hardFailReason: 'minimum-set',
+          isolatePrefix,
         },
       };
     }
@@ -218,10 +262,17 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
 
   const omitted: string[] = [];
   const shrunk: string[] = [];
+  const floored: string[] = [];
   const truncation = { pct: 0 };
   const processedGroups = new Set<string>();
 
   for (const w of working) {
+    // Isolate fragments are the byte-stable canonical prefix (ADR-1671):
+    // never trimmed, shrunk, or dropped, regardless of declared strategy.
+    // They still count toward the budget via total()/costOf above.
+    if (w.isolate) {
+      continue;
+    }
     switch (w.strategy.kind) {
       case 'verbatim': {
         continue;
@@ -230,9 +281,14 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
         if (total() > contentBudget && isPresent(w)) {
           const next = headShrink(w.content, w.strategy.maxLines);
           if (next !== w.content) {
-            w.content = next;
-            w.shrunk = true;
-            shrunk.push(w.id);
+            if (w.flexReserve > 0 && measure(next) < w.flexReserve) {
+              // Shrinking would undershoot the floor — leave untouched.
+              floored.push(w.id);
+            } else {
+              w.content = next;
+              w.shrunk = true;
+              shrunk.push(w.id);
+            }
           }
         }
         continue;
@@ -244,7 +300,8 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
 
         if (total() > contentBudget) {
           const members = working.filter(
-            (m) => m.strategy.kind === 'proportional-truncate' && (m.group ?? m.id) === groupKey
+            (m) =>
+              m.strategy.kind === 'proportional-truncate' && (m.group ?? m.id) === groupKey && !m.isolate
           );
           const memberContentTotal = members.reduce((sum, m) => sum + measure(m.content), 0);
           const overhead = total() - memberContentTotal;
@@ -259,11 +316,23 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
               const floorChars = m.strategy.kind === 'proportional-truncate' ? m.strategy.floorChars : 0;
               const share =
                 originalChars > 0 ? Math.floor((m.originalLength / originalChars) * charsBudget) : 0;
-              const maxChars = Math.max(share, floorChars);
+              const charsForReserve = m.flexReserve * charsPerUnit;
+              const capWithoutReserve = Math.max(share, floorChars);
+              const maxChars = Math.max(capWithoutReserve, charsForReserve);
+              const beforeTruncate = m.content;
               const next = tailTruncate(m.content, maxChars);
-              if (next !== m.content) {
+              if (next !== beforeTruncate) {
                 m.content = next;
                 m.truncated = true;
+              } else if (
+                m.flexReserve > 0 &&
+                maxChars > capWithoutReserve &&
+                capWithoutReserve < beforeTruncate.length
+              ) {
+                // flexReserve raised the cap above what would have truncated
+                // the content, and that raised cap is exactly why no
+                // truncation happened here.
+                floored.push(m.id);
               }
             }
 
@@ -277,8 +346,16 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
       }
       case 'drop': {
         if (total() > contentBudget && isPresent(w) && Boolean(w.content)) {
-          w.content = '';
-          omitted.push(w.id);
+          // Dropping always takes a fragment to 0, and 0 is below any
+          // positive floor — so ANY flexReserve > 0 disables drop entirely
+          // for this fragment, not just when its current size already sits
+          // at/under the floor.
+          if (w.flexReserve > 0) {
+            floored.push(w.id);
+          } else {
+            w.content = '';
+            omitted.push(w.id);
+          }
         }
         continue;
       }
@@ -303,9 +380,11 @@ export function composeWithinBudget(input: ComposeInput): ComposeResult {
       underPressure,
       omitted,
       shrunk,
+      floored,
       truncationPct: truncation.pct,
       hardFailed: false,
       hardFailReason: null,
+      isolatePrefix,
     },
   };
 }

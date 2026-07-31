@@ -138,6 +138,8 @@ const COVERED = {
     tests: [
       'tests/prompt-budget-parity.test.cjs',
       'tests/prompt-budget.unit.test.cjs',
+      'tests/context-composer.test.cjs',
+      'tests/context-composer.property.test.cjs',
     ],
     minScore: 66,
   },
