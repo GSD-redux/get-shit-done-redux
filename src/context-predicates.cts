@@ -18,10 +18,17 @@
  *     `line` and `section`.
  *
  * One addition beyond the prototype: `ParseResult.malformed` collects
- * backtick lines that look like a predicate declaration but are rejected for
- * having an empty value (e.g. `` `ID=` ``), so the empty-value case is
- * surfaced as a diagnostic instead of being silently dropped. This does not
- * change any accept/reject outcome — only adds a diagnostic.
+ * backtick lines that look like a predicate declaration attempt (contains a
+ * backtick-wrapped `id=value`-shaped inner with an `=` at index >= 1) but are
+ * rejected, with a distinct named `reason` per rejection class: `empty-value`
+ * (e.g. `` `ID=` ``), `empty-segment` (a doubled dot in the id, e.g.
+ * `` `A..b=1` ``), `invalid-id-chars` (disallowed characters in the id, e.g. a
+ * space: `` `FOO BAR=1` ``), `lowercase-leading-class` (id's first segment
+ * starts lowercase, e.g. `` `foo.bar=1` ``), and `value-contains-newline` (an
+ * embedded CR/LF/U+2028/U+2029 in the value). A line with no `=` at all (e.g.
+ * `` `ID` ``, ordinary inline code) is NOT a declaration attempt and never
+ * produces a diagnostic. This does not change any accept/reject outcome —
+ * only adds diagnostics.
  *
  * Grammar (from discovery facts):
  *   Two line forms, each on exactly one source line:
@@ -184,6 +191,39 @@ export interface ContextIndex {
 const ID_FIRST_SEGMENT_RE = /^[A-Z][A-Z0-9_-]*$/;
 const ID_SUBSEQUENT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 
+/** Result of {@link validateIdDetailed}: valid, or invalid with a named reason. */
+interface IdValidation {
+  valid: boolean;
+  reason?: 'empty-segment' | 'invalid-id-chars' | 'lowercase-leading-class';
+}
+
+/**
+ * Structurally validate a candidate predicate id (linear time — no ambiguous
+ * backtracking quantifier; see the ID grammar comment above), returning WHY it
+ * is invalid so malformed diagnostics can name the exact rejection class.
+ *
+ * @param id - candidate id (everything before the first '=')
+ */
+function validateIdDetailed(id: string): IdValidation {
+  const segments = id.split('.');
+
+  // A doubled dot (or leading/trailing dot) produces an empty segment.
+  if (segments.some((seg) => seg === '')) return { valid: false, reason: 'empty-segment' };
+
+  const first = segments[0];
+  if (!ID_FIRST_SEGMENT_RE.test(first)) {
+    // Distinguish "starts lowercase" (a highly plausible typo, e.g.
+    // `foo.bar=1`) from any other first-segment character-set violation
+    // (e.g. a space, `FOO BAR=1`).
+    if (/^[a-z]/.test(first)) return { valid: false, reason: 'lowercase-leading-class' };
+    return { valid: false, reason: 'invalid-id-chars' };
+  }
+  for (let i = 1; i < segments.length; i++) {
+    if (!ID_SUBSEQUENT_SEGMENT_RE.test(segments[i])) return { valid: false, reason: 'invalid-id-chars' };
+  }
+  return { valid: true };
+}
+
 /**
  * Structurally validate a candidate predicate id (linear time — no ambiguous
  * backtracking quantifier; see the ID grammar comment above).
@@ -191,12 +231,7 @@ const ID_SUBSEQUENT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
  * @param id - candidate id (everything before the first '=')
  */
 function isValidId(id: string): boolean {
-  const segments = id.split('.');
-  if (!ID_FIRST_SEGMENT_RE.test(segments[0])) return false;
-  for (let i = 1; i < segments.length; i++) {
-    if (!ID_SUBSEQUENT_SEGMENT_RE.test(segments[i])) return false;
-  }
-  return true;
+  return validateIdDetailed(id).valid;
 }
 
 // List markers recognized ahead of a backtick-wrapped declaration:
@@ -273,11 +308,18 @@ function extractPredicate(raw: string): { id: string; value: string } | null {
 }
 
 /**
- * Detect the "looks like a declaration but has an empty value" malformed
- * case for a line that {@link extractPredicate} already rejected. Only
- * fires when the ID portion is grammatically valid on its own and the value
- * after the first '=' is empty (e.g. `` `ID=` ``). Does not change any
- * accept/reject decision — diagnostic only.
+ * Detect the "looks like a predicate declaration attempt but is rejected"
+ * malformed case for a line that {@link extractPredicate} already rejected —
+ * naming WHY, so a maintainer's typo is diagnosable instead of silently
+ * vanishing. Only fires when the line is backtick-wrapped (in either
+ * recognized form) AND contains an `=` at index >= 1 — a plain inline-code
+ * line with no `=` at all (e.g. `` `ID` ``) is not a declaration attempt and
+ * never produces a diagnostic. Does not change any accept/reject decision —
+ * diagnostic only.
+ *
+ * Reason precedence when a line fails more than one check at once: id
+ * validity is checked first (an invalid id makes the value irrelevant), then
+ * empty-value, then embedded-newline.
  *
  * @param raw - the original source line (with newline stripped)
  */
@@ -291,8 +333,15 @@ function detectMalformed(raw: string): { text: string; reason: string } | null {
   const id = inner.slice(0, eqIdx);
   const value = inner.slice(eqIdx + 1);
 
-  if (value === '' && isValidId(id)) {
+  const idCheck = validateIdDetailed(id);
+  if (!idCheck.valid) {
+    return { text: raw.trimEnd(), reason: idCheck.reason as string };
+  }
+  if (value === '') {
     return { text: raw.trimEnd(), reason: 'empty-value' };
+  }
+  if (/[\n\r\u2028\u2029]/.test(value)) {
+    return { text: raw.trimEnd(), reason: 'value-contains-newline' };
   }
 
   return null;

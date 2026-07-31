@@ -103,14 +103,14 @@ A working prototype proves the platform pattern end-to-end. It ships as a **refe
 
 - `examples/dynamic-context-management/context-predicates.cjs` — pure parser/selector: `parsePredicates(markdown)` (handles bare and list-item backtick predicate forms, splits on first `=`, skips fenced code / blockquote prose, detects duplicate IDs), `selectPredicates(predicates, {klass, prefix, contains})` (the JIT "task → predicate set" selector), and `buildIndex(predicates)` (deterministic, sorted).
 - `examples/dynamic-context-management/gen-context-index.cjs` — self-contained CLI with `--check`/`--write` drift-guard plus a `--select <query>` mode demonstrating JIT brief assembly.
-- `examples/dynamic-context-management/CONTEXT-INDEX.json` — sample generated index: **416 predicates, 20 classes** (regenerated 2026-07-31). Originally committed as **393 predicates, 18 classes** (2026-06-24); `CONTEXT.md` has since gained the `PROBE` (11) and `PROHIB` (10) classes, with `DEFECT` 161→167 and `RULESET` 59→56. The committed artifact had gone stale (`--check` exited 1) and was regenerated with `--write`.
+- `examples/dynamic-context-management/CONTEXT-INDEX.json` — sample generated index: **415 predicates, 20 classes** (verified 2026-07-31; down from 416 after #2928/PR #2938 reconciled the last duplicate predicate ID, `RULESET.WORKFLOW_MARKDOWN.FENCES`). Originally committed as **393 predicates, 18 classes** (2026-06-24); `CONTEXT.md` has since gained the `PROBE` (11) and `PROHIB` (10) classes, with `DEFECT` 161→167 and `RULESET` 59→56→55. The committed artifact had gone stale (`--check` exited 1) and was regenerated with `--write`.
 - `examples/dynamic-context-management/demo.cjs` + `README.md` — runnable usage example and notes.
 
-During research the slice was validated with 42 behavioral tests (predicate forms, fenced-code / prose skipping, duplicate-id detection, the selector, a deterministic index, and a fast-check property test); those return as CI tests under `tests/` with the production implementation.
+During research the slice was validated with 42 behavioral tests (predicate forms, fenced-code / prose skipping, duplicate-id detection, the selector, a deterministic index, and a fast-check property test); those landed as CI tests under `tests/` with the production implementation (#2928/PR #2938).
 
 The prototype immediately surfaced **3 latent duplicate predicate IDs** in `CONTEXT.md` (`RULESET.WORKFLOW_MARKDOWN.FENCES`, `RULESET.GEMINI.TOOLS.ask_user`, `RULESET.GEMINI.TEST_SENTINEL`) — integrity drift no existing tool catches.
 
-**Re-checked 2026-07-31:** only **one** remains — `RULESET.WORKFLOW_MARKDOWN.FENCES`. The two `RULESET.GEMINI.*` duplicates were removed along with the Gemini runtime, not reconciled deliberately. Production `--check` can be made to fail on *new* duplicates once that single remaining ID is reconciled.
+**Re-checked 2026-07-31:** the two `RULESET.GEMINI.*` duplicates were removed along with the Gemini runtime, not reconciled deliberately; the remaining `RULESET.WORKFLOW_MARKDOWN.FENCES` duplicate was reconciled deliberately in #2928/PR #2938, which also productionized `--check` into CI so it now fails closed on any *new* duplicate ID.
 
 **Phase 0 acceptance status (2026-07-31).** The epic's Phase 0 criterion — "`gen-context-index --check` green in CI" — was **unmet**: `--check` exited 1 against `next`, and no CI job failed, because the example sits deliberately outside `tests/` — the red was invisible to the pipeline. The index has now been regenerated and `--check` exits 0.
 

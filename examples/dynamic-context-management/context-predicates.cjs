@@ -27,6 +27,16 @@
  *     - Prose lines (headings, blank lines, list items without a predicate)
  *     - The "PR fix discipline" section (pure prose, no predicates)
  *     - Session-log blockquote preamble
+ *
+ * `ParseResult.malformed` collects backtick lines that look like a predicate
+ * declaration attempt (contains a backtick-wrapped `id=value`-shaped inner
+ * with an `=` at index >= 1) but are rejected, with a distinct named `reason`
+ * per rejection class: `empty-value`, `empty-segment` (doubled dot),
+ * `invalid-id-chars` (disallowed characters, e.g. a space),
+ * `lowercase-leading-class` (id's first segment starts lowercase), and
+ * `value-contains-newline` (embedded CR/LF/U+2028/U+2029 in the value). A
+ * line with no `=` at all (ordinary inline code, e.g. `` `ID` ``) never
+ * produces a diagnostic. Mirrors production's src/context-predicates.cts.
  */
 
 // ID grammar, validated STRUCTURALLY rather than by a single regex
@@ -53,18 +63,68 @@ const ID_SUBSEQUENT_SEGMENT_RE = /^[A-Za-z0-9_-]+$/;
 
 /**
  * Structurally validate a candidate predicate id (linear time — no ambiguous
+ * backtracking quantifier; see the ID grammar comment above), returning WHY it
+ * is invalid so malformed diagnostics can name the exact rejection class.
+ *
+ * @param {string} id - candidate id (everything before the first '=')
+ * @returns {{ valid: boolean, reason?: string }}
+ */
+function validateIdDetailed(id) {
+  const segments = id.split('.');
+
+  // A doubled dot (or leading/trailing dot) produces an empty segment.
+  if (segments.some((seg) => seg === '')) return { valid: false, reason: 'empty-segment' };
+
+  const first = segments[0];
+  if (!ID_FIRST_SEGMENT_RE.test(first)) {
+    // Distinguish "starts lowercase" (a highly plausible typo, e.g.
+    // `foo.bar=1`) from any other first-segment character-set violation
+    // (e.g. a space, `FOO BAR=1`).
+    if (/^[a-z]/.test(first)) return { valid: false, reason: 'lowercase-leading-class' };
+    return { valid: false, reason: 'invalid-id-chars' };
+  }
+  for (let i = 1; i < segments.length; i++) {
+    if (!ID_SUBSEQUENT_SEGMENT_RE.test(segments[i])) return { valid: false, reason: 'invalid-id-chars' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Structurally validate a candidate predicate id (linear time — no ambiguous
  * backtracking quantifier; see the ID grammar comment above).
  *
  * @param {string} id - candidate id (everything before the first '=')
  * @returns {boolean}
  */
 function isValidId(id) {
-  const segments = id.split('.');
-  if (!ID_FIRST_SEGMENT_RE.test(segments[0])) return false;
-  for (let i = 1; i < segments.length; i++) {
-    if (!ID_SUBSEQUENT_SEGMENT_RE.test(segments[i])) return false;
+  return validateIdDetailed(id).valid;
+}
+
+/**
+ * Strip a source line down to its backtick-wrapped "inner" content, if any.
+ * Handles both line forms:
+ *   1. Bare backtick line: `ID=value`  (starts with backtick at column 0)
+ *   2. List-item backtick: - `ID=value`  (list-item with leading "- ")
+ * Also tolerates "  - `ID=value`" (indented list item — observed in CONTEXT.md).
+ *
+ * @param {string} raw - the original source line (with newline stripped)
+ * @returns {string | null}
+ */
+function extractInner(raw) {
+  const line = raw.trimEnd();
+
+  if (line.startsWith('`') && line.endsWith('`') && line.length > 2) {
+    // bare backtick line
+    return line.slice(1, -1);
   }
-  return true;
+
+  // strip optional leading whitespace + "- " then check for backtick wrapping
+  const stripped = line.replace(/^\s*-\s+/, '');
+  if (stripped.startsWith('`') && stripped.endsWith('`') && stripped.length > 2) {
+    return stripped.slice(1, -1);
+  }
+
+  return null;
 }
 
 /**
@@ -75,24 +135,7 @@ function isValidId(id) {
  * @returns {{ id: string, value: string } | null}
  */
 function extractPredicate(raw) {
-  const line = raw.trimEnd();
-
-  // Form 1: `ID=value`  (starts with backtick at column 0)
-  // Form 2: - `ID=value`  (list-item with leading "- ")
-  // Also tolerate "  - `ID=value`" (indented list item — observed in CONTEXT.md).
-  let inner = null;
-
-  if (line.startsWith('`') && line.endsWith('`') && line.length > 2) {
-    // bare backtick line
-    inner = line.slice(1, -1);
-  } else {
-    // strip optional leading whitespace + "- " then check for backtick wrapping
-    const stripped = line.replace(/^\s*-\s+/, '');
-    if (stripped.startsWith('`') && stripped.endsWith('`') && stripped.length > 2) {
-      inner = stripped.slice(1, -1);
-    }
-  }
-
+  const inner = extractInner(raw);
   if (inner === null) return null;
 
   // Now match the ID grammar. Split on FIRST '=' only.
@@ -102,11 +145,50 @@ function extractPredicate(raw) {
   const id = inner.slice(0, eqIdx);
   const value = inner.slice(eqIdx + 1);
 
-  // Validate ID — must match the grammar (no spaces, correct char set, no
-  // empty segment — see isValidId's doc comment).
-  if (value === '' || !isValidId(id)) return null;
+  // Value must be non-empty and must contain no embedded ECMAScript
+  // LineTerminator character (LF, CR, U+2028 LINE SEPARATOR, U+2029 PARAGRAPH
+  // SEPARATOR) — mirrors production's src/context-predicates.cts. And the id
+  // must match the structural grammar (no spaces, correct char set, no empty
+  // segment — see isValidId's doc comment).
+  if (value === '' || /[\n\r\u2028\u2029]/.test(value) || !isValidId(id)) return null;
 
   return { id, value };
+}
+
+/**
+ * Detect the "looks like a predicate declaration attempt but is rejected"
+ * malformed case for a line that {@link extractPredicate} already rejected —
+ * naming WHY. Only fires when the line is backtick-wrapped AND contains an
+ * `=` at index >= 1 — a plain inline-code line with no `=` at all (e.g.
+ * `` `ID` ``) is not a declaration attempt and never produces a diagnostic.
+ * Does not change any accept/reject decision — diagnostic only. Mirrors
+ * production's src/context-predicates.cts detectMalformed.
+ *
+ * @param {string} raw - the original source line (with newline stripped)
+ * @returns {{ text: string, reason: string } | null}
+ */
+function detectMalformed(raw) {
+  const inner = extractInner(raw);
+  if (inner === null) return null;
+
+  const eqIdx = inner.indexOf('=');
+  if (eqIdx < 1) return null;
+
+  const id = inner.slice(0, eqIdx);
+  const value = inner.slice(eqIdx + 1);
+
+  const idCheck = validateIdDetailed(id);
+  if (!idCheck.valid) {
+    return { text: raw.trimEnd(), reason: idCheck.reason };
+  }
+  if (value === '') {
+    return { text: raw.trimEnd(), reason: 'empty-value' };
+  }
+  if (/[\n\r\u2028\u2029]/.test(value)) {
+    return { text: raw.trimEnd(), reason: 'value-contains-newline' };
+  }
+
+  return null;
 }
 
 /**
@@ -116,12 +198,14 @@ function extractPredicate(raw) {
  * @returns {{
  *   predicates: Array<{ id: string, klass: string, value: string, line: number, section: string }>,
  *   duplicates: Array<{ id: string, lines: number[] }>,
+ *   malformed: Array<{ line: number, text: string, reason: string }>,
  *   skippedSections: string[]
  * }}
  */
 function parsePredicates(markdown) {
   const lines = markdown.split('\n');
   const predicates = [];
+  const malformed = [];
   // Track id -> list of line numbers for duplicate detection
   const idLines = new Map(); // id -> number[]
 
@@ -166,7 +250,11 @@ function parsePredicates(markdown) {
 
     // Attempt extraction.
     const pred = extractPredicate(raw);
-    if (!pred) continue;
+    if (!pred) {
+      const bad = detectMalformed(raw);
+      if (bad) malformed.push({ line: lineNo, text: bad.text, reason: bad.reason });
+      continue;
+    }
 
     const klass = pred.id.split('.')[0];
     predicates.push({
@@ -199,7 +287,7 @@ function parsePredicates(markdown) {
   const activeSections = new Set(predicates.map((p) => p.section));
   const skippedSections = allSections.filter((s) => !activeSections.has(s));
 
-  return { predicates, duplicates, skippedSections };
+  return { predicates, duplicates, malformed, skippedSections };
 }
 
 /**
