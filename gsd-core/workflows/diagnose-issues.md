@@ -97,6 +97,28 @@ AGENT_SKILLS_DEBUGGER=$(gsd_run query agent-skills gsd-debugger)
 EXPECTED_BASE=$(git rev-parse HEAD)
 ```
 
+**Pre-dispatch worktree base-check (#2649, mirrors execute-phase #683/#1369 and quick #1941).**
+Claude Code's `isolation="worktree"` forks new worktrees from `origin/HEAD`, not the live local
+HEAD. If local HEAD has advanced without an intervening `git push` (the documented GSD steady
+state — commit every step, push only on request), `origin/HEAD` is pinned to a stale ancestor
+and the debug agent's `worktree_branch_check` guard halts with a base-mismatch fatal *after* the
+worktree already exists, with no automatic degrade. Run the same pre-dispatch check the four
+sibling dispatch sites run, and auto-degrade to sequential (main-tree) debug-agent dispatch when
+the fork base cannot be reliably resolved. The verify-only `<worktree_branch_check>` guard below
+stays active as a backstop in both cases.
+
+```bash
+if [ "${USE_WORKTREES:-true}" != "false" ]; then
+  _DIAG_SHOULD_DEGRADE=$(gsd_run query worktree.base-check --pick shouldDegrade 2>/dev/null || true)
+  if [ "$_DIAG_SHOULD_DEGRADE" = "true" ]; then
+    _DIAG_DEGRADE_MSG=$(gsd_run query worktree.base-check --pick message 2>/dev/null || true)
+    [ -n "$_DIAG_DEGRADE_MSG" ] && printf '%s\n' "$_DIAG_DEGRADE_MSG" >&2
+    echo "⚠ [#2649] Worktree fork base diverged from orchestrator HEAD — auto-degrading to sequential mode for diagnosis to avoid a base-mismatch halt." >&2
+    USE_WORKTREES=false
+  fi
+fi
+```
+
 **Spawn debug agents in parallel:**
 
 For each gap, fill the debug-subagent-prompt template and spawn:
