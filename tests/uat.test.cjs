@@ -996,39 +996,22 @@ describe('uat render-checkpoint', () => {
   });
 
   // Two alias keys that differ only by case or Unicode normalization form are
-  // distinct object keys — `tsc` accepts them (TS1117 only fires on byte-equal
-  // duplicates) and every assertion above still passes. But resolution
+  // distinct object keys — every assertion above still passes. But resolution
   // lowercases and NFC-normalizes before the lookup, so the two collapse to one
   // lookup key at runtime and whichever was written first becomes unreachable:
-  // the losing language silently renders the English fallback. The collision
-  // therefore has to be checked in normalized space, against the source literal
-  // rather than the object, since the object no longer records what was written.
+  // the losing language silently renders the English fallback.
+  //
+  // Both defects survive compilation and both are observable on the catalog
+  // itself, precisely because the keys stay distinct. The remaining case — two
+  // byte-identical keys, where the object genuinely no longer records what was
+  // written — is rejected by tsc as TS1117 before this suite can run, since the
+  // tests execute against `gsd-core/bin/lib/uat.cjs` built from this source.
   test('checkpoint alias catalog declares no colliding or unreachable alias keys', () => {
-    const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'uat.cts'), 'utf8');
-    const literal = source.match(
-      /const CHECKPOINT_LANGUAGE_ALIASES: Record<string, string> = \{([\s\S]*?)\r?\n\};/,
-    );
-    assert.ok(literal, 'CHECKPOINT_LANGUAGE_ALIASES literal not found in src/uat.cts');
-
-    const declared = [...literal[1].matchAll(/(?:'([^']+)'|([^\s,{:]+))\s*:\s*'[^']*'/g)].map(
-      (m) => m[1] ?? m[2],
-    );
-    const declaredOnce = new Set();
-    const repeated = declared.filter((a) => declaredOnce.size === declaredOnce.add(a).size);
-    assert.deepStrictEqual(
-      repeated,
-      [],
-      `alias key(s) declared twice — the later value silently wins: ${repeated.join(', ')}`,
-    );
-    assert.strictEqual(
-      declared.length,
-      Object.keys(CHECKPOINT_LANGUAGE_ALIASES).length,
-      'alias literal parse disagrees with the resolved catalog — the extraction regex is out of date',
-    );
+    const declared = Object.keys(CHECKPOINT_LANGUAGE_ALIASES);
 
     const seen = new Set();
     const collisions = declared.filter(
-      (a) => seen.size === seen.add(a.normalize('NFC').toLowerCase()).size,
+      (alias) => seen.size === seen.add(alias.normalize('NFC').toLowerCase()).size,
     );
     assert.deepStrictEqual(
       collisions,
@@ -1039,7 +1022,9 @@ describe('uat render-checkpoint', () => {
     // An alias not already in lookup form is the mirror defect: it collides with
     // nothing, and resolveCheckpointFrame() — which normalizes its argument
     // before indexing — can never produce it, so the entry is simply dead.
-    const unreachable = declared.filter((a) => a !== a.normalize('NFC').toLowerCase());
+    const unreachable = declared.filter(
+      (alias) => alias !== alias.normalize('NFC').toLowerCase(),
+    );
     assert.deepStrictEqual(
       unreachable,
       [],
