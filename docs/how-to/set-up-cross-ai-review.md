@@ -8,7 +8,9 @@
 
 ## Decide which reviewers to use
 
-GSD Core can route review requests to any combination of: Gemini CLI, Claude (separate session), Codex CLI, CodeRabbit, OpenCode, Qwen Code, Cursor, Antigravity CLI, Ollama, LM Studio, and llama.cpp.
+GSD Core can route review requests to any combination of: Gemini CLI, Claude (separate session), Codex CLI, CodeRabbit, OpenCode, Qwen Code, Cursor, Antigravity CLI, Kimi Code, Ollama, LM Studio, and llama.cpp.
+
+That list is not fixed. Each of those is a declared reviewer lane, and a capability can ship its own — see [Ship a reviewer lane in your capability](ship-a-reviewer-lane.md). To see exactly which lanes your installation has, run `gsd-tools review-lane sections`.
 
 Each reviewer runs the same structured prompt against your `PLAN.md` files independently. Because different models have different blind spots, multi-reviewer consensus catches more issues than any single reviewer.
 
