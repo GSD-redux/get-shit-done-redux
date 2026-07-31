@@ -172,9 +172,9 @@ From a terminal **in your project directory**, run the installer:
 npx @opengsd/gsd-core@latest --claude --local
 ```
 
-Use `--local` for just this project (or `--global` for all projects). On a different
-runtime? See [Install on your runtime](../how-to/install-on-your-runtime.md) for its
-flag. You'll see a summary of what was installed, e.g.:
+This tutorial uses `--local`, so GSD is installed only in this project. On a
+different runtime? See [Install on your runtime](../how-to/install-on-your-runtime.md)
+for its flag. You'll see a summary of what was installed, e.g.:
 
 ```text
 ✓ Installed 71 commands to commands/ (gsd-<cmd>.md flat form)
@@ -203,14 +203,31 @@ in Claude Code's native format.
 
 ## Step 2 — Open Claude Code
 
-Open (or restart) Claude Code in your project directory. You'll land at a prompt
-ready for input.
+For this disposable tutorial project, open (or restart) Claude Code in your
+project directory with:
+
+```bash
+claude --dangerously-skip-permissions
+```
+
+You'll land at a prompt ready for input.
 
 > [!CAUTION]
-> **The permissions flag.** GSD spawns sub-agents that read and write files.
-> Starting with `claude --dangerously-skip-permissions` skips the per-file
-> confirmation — ideal for a throwaway tutorial in an empty folder. For real
-> work, read the [security model](../explanation/security-model.md) first.
+> **The permissions flag is optional.** It skips per-file confirmation while
+> GSD's sub-agents read and write files. Use it only for this throwaway tutorial
+> in an empty folder. To keep confirmations enabled, start with `claude` instead.
+> For real work, read the [security model](../explanation/security-model.md) first.
+
+<details>
+<summary>💡 <b>What just happened?</b></summary>
+
+<br>
+
+Claude Code opened in the project where Step 1 installed GSD. It loaded the
+project-local `.claude/` commands and agents, so `/gsd-*` commands are now
+available at the prompt.
+
+</details>
 
 ---
 
@@ -306,6 +323,17 @@ into the task plans.
 > [!NOTE]
 > **Why discuss before planning?** Decide the small stuff up front and the plan is
 > right the first time — instead of you correcting a wrong plan, choice by choice.
+
+<details>
+<summary>💡 <b>What just happened?</b></summary>
+
+<br>
+
+`/clear` discarded the old chat context, then `/gsd-discuss-phase 1` captured
+your implementation choices in `01-CONTEXT.md`. The next planner receives those
+decisions without needing the earlier conversation.
+
+</details>
 
 ---
 
@@ -437,6 +465,17 @@ If a check **fails**, GSD diagnoses the root cause and writes a fix plan → re-
 > **Why a separate verify step?** "The code was written" and "the code works" are
 > different claims. Verify proves the second one *before* you open a PR.
 
+<details>
+<summary>💡 <b>What just happened?</b></summary>
+
+<br>
+
+GSD turned the phase summaries into user-visible checks, recorded your answers
+in `01-UAT.md`, and routed any failure back through a concrete fix plan. Shipping
+only starts after those checks match reality.
+
+</details>
+
 ---
 
 ## Step 8 — Ship it
@@ -467,6 +506,17 @@ flowchart LR
     classDef ok fill:#132a1a,stroke:#3fb950,color:#e6edf3;
     class d,p,e,v,s a; class pr,idea ok;
 ```
+
+<details>
+<summary>💡 <b>What just happened?</b></summary>
+
+<br>
+
+`/gsd-ship 1` assembled the completed phase's requirements, decisions, and
+verification evidence into a pull request. The PR is open for review; nothing
+has been merged into the default branch yet.
+
+</details>
 
 ---
 
