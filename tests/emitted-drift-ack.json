@@ -114,6 +114,9 @@
     },
     "agents/gsd-verifier.toml": {
       "reason": "#2834: Codex agent TOML now carries model-routing fields on first install."
+    },
+    "code-review.md": {
+      "reason": "Concurrent merge grew code-review.md (not this PR — picked up via rebase onto next). Acknowledged as drift."
     }
   }
 }
