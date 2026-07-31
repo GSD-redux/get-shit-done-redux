@@ -1,7 +1,7 @@
 {
   "id": "copilot",
   "role": "runtime",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "GitHub Copilot",
   "description": "GitHub Copilot (VS Code) — markdown config format; copilot-inline hook surface; no hook events emitted; flat skill nesting (unconfirmed recursive loader); tier-2 support.",
   "tier": "core",

@@ -1,7 +1,7 @@
 {
   "id": "ollama",
   "role": "reviewer",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Ollama",
   "description": "Ollama local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.ollama_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq.",
   "tier": "full",

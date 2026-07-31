@@ -1,7 +1,7 @@
 {
   "id": "cline",
   "role": "runtime",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Cline",
   "description": "Cline (VS Code extension) — global-only nested-skill layout; cline-rules hook surface (.clinerules); no hook events emitted; tier-2 support.",
   "tier": "core",
