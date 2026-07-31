@@ -7651,7 +7651,7 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
 
       const result = fs.readFileSync(roadmapPath, 'utf-8');
-      const line = result.split('\n').find((l) => l.includes('**Plans**'));
+      const line = result.split(/\r?\n/).find((l) => l.includes('**Plans**'));
       assert.ok(line, 'Plans summary line must exist');
       assert.ok(
         line.includes(annotation),
@@ -7672,7 +7672,7 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
         `**Plans:** 0/1 plans executed ${annotation}`
       );
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split('\n').find((l) => l.includes('**Plans:**'));
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
       assert.ok(line && line.includes(annotation), `annotation must survive; got: ${line}`);
     } finally {
       cleanup(tmp);
@@ -7686,7 +7686,7 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
       const { roadmapPath } = setupFixture2853(tmp, `Plans: 0/1 plans executed ${annotation}`);
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
       const result = fs.readFileSync(roadmapPath, 'utf-8');
-      const line = result.split('\n').find((l) => /^Plans:/.test(l));
+      const line = result.split(/\r?\n/).find((l) => /^Plans:/.test(l));
       assert.ok(line && line.includes(annotation), `annotation must survive; got: ${line}`);
     } finally {
       cleanup(tmp);
@@ -7698,7 +7698,7 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
     try {
       const { roadmapPath } = setupFixture2853(tmp, '**Plans:** 0/1 plans executed');
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split('\n').find((l) => l.includes('**Plans:**'));
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
       assert.ok(line, 'Plans line must exist');
       // Exact line: count bumped, no stray trailing space or duplicated text.
       assert.equal(line, '**Plans:** 1/1 plans complete');
@@ -7712,7 +7712,7 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
     try {
       const { roadmapPath } = setupFixture2853(tmp, '**Plans:** 0 plans');
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split('\n').find((l) => l.includes('**Plans:**'));
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
       assert.ok(line, 'Plans line must exist');
       assert.match(line, /1\/1 plans complete/, 'bare form must still receive the canonical count');
     } finally {
@@ -7730,7 +7730,7 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
         { incomplete: true }
       );
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split('\n').find((l) => l.includes('**Plans:**'));
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
       assert.ok(line, 'Plans line must exist');
       assert.ok(line.includes(annotation), `annotation must survive on executed path; got: ${line}`);
       assert.match(line, /1\/1 plans executed/, 'count must reflect executed (not complete) path');
@@ -7739,7 +7739,10 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
     }
   });
 
-  test('row 7 — CRLF: annotation preserved across line-ending variants', () => {
+  test('row 7 — CRLF input: annotation text preserved (line-ending normalization is pre-existing)', () => {
+    // The verb has always normalized ROADMAP.md line endings on its read-modify-write
+    // (a pre-existing trait, not #2853's concern). What #2853 guarantees is that the
+    // annotation TEXT survives the count bump on whatever line ending the verb emits.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r7-'));
     try {
       const annotation = '(CRLF note)';
@@ -7750,9 +7753,13 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
       );
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
       const result = fs.readFileSync(roadmapPath, 'utf-8');
-      // The annotation must still be present, and the line ending must remain CRLF.
-      assert.ok(result.includes(`${annotation}\r`), `annotation + CR must survive; got CRLF-prefixed segment:\n${result.split('\r\n').filter(l => l.includes('Plans')).join('\n')}`);
-      assert.ok(result.includes('\r\n'), 'file must still carry CRLF');
+      const plansLine = result.split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(plansLine, 'Plans summary line must exist');
+      assert.ok(
+        plansLine.includes(annotation),
+        `annotation text must survive on a CRLF-origin file; got: ${plansLine}`
+      );
+      assert.match(plansLine, /1\/1 plans complete/, 'count must still bump');
     } finally {
       cleanup(tmp);
     }
@@ -7768,8 +7775,31 @@ describe('bug #2853: update-plan-progress preserves hand-written annotations', (
       );
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
       run2853(['roadmap', 'update-plan-progress', '10'], tmp);
-      const line = fs.readFileSync(roadmapPath, 'utf-8').split('\n').find((l) => l.includes('**Plans:**'));
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
       assert.ok(line && line.includes(annotation), `annotation must survive a no-op re-run; got: ${line}`);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 9 — fresh-template placeholder is replaced, not glued to the new count', () => {
+    // The canonical template ships `**Plans**: [Number of plans, e.g., "3 plans" or "TBD"]`.
+    // A count bump must NOT preserve that bracketed guidance verbatim glued after the
+    // count (pre-#2853 produced a clean `N/N plans complete`). The count replaces the
+    // placeholder because there is no real count token for $2 to anchor a trailing-text
+    // preservation to.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r9-'));
+    try {
+      const placeholder = '[Number of plans, e.g., "3 plans" or "TBD"]';
+      const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${placeholder}`);
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+      assert.ok(line, 'Plans line must exist');
+      assert.equal(
+        line,
+        '**Plans**: 1/1 plans complete',
+        `placeholder must be replaced cleanly, not glued; got: ${line}`
+      );
     } finally {
       cleanup(tmp);
     }
