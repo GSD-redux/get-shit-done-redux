@@ -11,9 +11,16 @@
  * per copy — which is how this bug class kept resurfacing (#2528 is the third
  * instance).
  *
+ * A FOURTH copy survived the first pass of that consolidation and was caught in
+ * review: `smart-entry.cjs :: detectVerifyFailed`, which resolves the current
+ * phase's directory to decide whether its verification failed. It is the worst
+ * of the four to get wrong — an unresolved directory reports "not failed",
+ * which is indistinguishable from a healthy phase, so the bug is silent by
+ * construction. Its absence from this gate is exactly why it was missed.
+ *
  * The selection now delegates to one owner (`phase-id.cjs :: matchPhaseDirs`).
  * This gate is the durable guard the #2528 triage asked for: for every corpus
- * scenario, the three resolution paths MUST agree on the same directory for
+ * scenario, the four resolution paths MUST agree on the same directory for
  * the same bare input — found, not-found, and ambiguous alike. It fails the
  * moment any path re-implements selection and drifts.
  */
@@ -25,6 +32,34 @@ const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 const { findPhaseInternal } = require('../gsd-core/bin/lib/phase-locator.cjs');
+const { detectSignals } = require('../gsd-core/bin/lib/smart-entry.cjs');
+
+// Path 4 has no JSON resolution surface to read: `detectVerifyFailed` resolves a
+// directory and then reports a boolean about its contents. So selection is
+// observed indirectly — plant the failing verification artifact in exactly one
+// directory and see whether the signal fires. `verify_failed === true` means
+// that directory is the one smart-entry chose; `false` means it chose another
+// or resolved nothing.
+const FAILED_SUMMARY = '# Summary\n\nSTATUS: failed\n';
+const PASSED_SUMMARY = '# Summary\n\nSTATUS: passed\n';
+
+function writeState(tmpDir, currentPhase) {
+  fs.writeFileSync(
+    path.join(tmpDir, '.planning', 'STATE.md'),
+    `---\nstatus: executing\ntotal_phases: 99\ncurrent_phase: ${currentPhase}\n---\n\n# State\n\n**Status:** executing\n`,
+  );
+}
+
+function smartEntrySeesFailureIn(tmpDir, dirs, failingDirs) {
+  for (const d of dirs) {
+    // Every directory always gets a summary — a passing one where the failure
+    // is not planted. Deleting instead would let "resolved a dir with no
+    // artifact" pass for the same reason as "resolved the right dir".
+    const summary = path.join(tmpDir, '.planning', 'phases', d, 'SUMMARY.md');
+    fs.writeFileSync(summary, failingDirs.includes(d) ? FAILED_SUMMARY : PASSED_SUMMARY);
+  }
+  return detectSignals(tmpDir).verify_failed;
+}
 
 // Each scenario: phase dirs on disk, the user's bare input, and the expected
 // resolution ('10-24-7-autonomy' → that dir; null → not found; 'AMBIGUOUS' →
@@ -94,7 +129,7 @@ const SCENARIOS = [
   },
 ];
 
-describe('#2528 resolution-path parity — locator / find-phase / phase-plan-index', () => {
+describe('#2528 resolution-path parity — locator / find-phase / phase-plan-index / smart-entry', () => {
   let tmpDir;
 
   beforeEach(() => {
@@ -139,6 +174,14 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
       const idxAmbiguous = Boolean(idxOut.ambiguous_matches);
       const idxResolved = !idxOut.error && idxOut.plans.length > 0;
 
+      // ── Path 4: smart-entry (detectSignals → detectVerifyFailed) ──────────
+      // Not a resolution API — it answers "did the current phase fail
+      // verification". But it resolves the same directory from the same bare
+      // input, and a miss here is SILENT: an unresolved phase reports
+      // "not failed", which is byte-identical to a healthy phase. That is why
+      // it belongs in this gate and not merely in its own unit test.
+      writeState(tmpDir, query);
+
       if (expect === 'AMBIGUOUS') {
         assert.ok(locatorAmbiguous, 'locator must surface ambiguity');
         assert.ok(findAmbiguous, 'find-phase must surface ambiguity');
@@ -153,10 +196,33 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
           [...(idxOut.ambiguous_matches || [])].sort(),
           'find-phase and phase-plan-index must list the same candidates',
         );
+        // Path 4 deliberately does NOT fail loud on ambiguity: it is a routing
+        // signal with no way to ask the user, so it keeps the first candidate
+        // in the already-sorted list, exactly as its prior `.find()` did. What
+        // parity still requires is that it picks from the SAME candidate set —
+        // so a failure in any ambiguous candidate must be reachable, and a
+        // failure outside the set must not be.
+        const candidates = [...(located.ambiguous_matches || [])].map((c) => path.basename(c));
+        assert.ok(
+          smartEntrySeesFailureIn(tmpDir, dirs, candidates),
+          'smart-entry must resolve into the ambiguous candidate set',
+        );
+        const outsiders = dirs.filter((d) => !candidates.includes(d));
+        if (outsiders.length > 0) {
+          assert.ok(
+            !smartEntrySeesFailureIn(tmpDir, dirs, outsiders),
+            'smart-entry must not resolve to a directory outside the candidate set',
+          );
+        }
       } else if (expect === null) {
         assert.strictEqual(locatorDir, null, 'locator must report not-found');
         assert.strictEqual(findDir, null, 'find-phase must report not-found');
         assert.strictEqual(idxOut.error, 'Phase not found', 'phase-plan-index must report not-found');
+        assert.ok(
+          !smartEntrySeesFailureIn(tmpDir, dirs, dirs),
+          'smart-entry must report not-found too — a failing artifact in every '
+          + 'directory must still not be attributed to an unresolvable phase',
+        );
       } else {
         assert.strictEqual(locatorDir, expect, 'locator resolved the wrong dir');
         if (expectPhaseNumber) {
@@ -168,6 +234,16 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
           idxResolved,
           `phase-plan-index must resolve and index plans, got: ${idxRes.output}`,
         );
+        assert.ok(
+          smartEntrySeesFailureIn(tmpDir, dirs, [expect]),
+          `smart-entry resolved a different dir — it did not see the failure planted in ${expect}`,
+        );
+        for (const other of dirs.filter((d) => d !== expect)) {
+          assert.ok(
+            !smartEntrySeesFailureIn(tmpDir, dirs, [other]),
+            `smart-entry resolved ${other} instead of ${expect}`,
+          );
+        }
       }
     });
   }

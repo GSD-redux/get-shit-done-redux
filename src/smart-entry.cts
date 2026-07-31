@@ -50,7 +50,7 @@ import stateDocument = require('./state-document.cjs');
 const { stateExtractField } = stateDocument;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseId = require('./phase-id.cjs');
-const { comparePhaseNum, extractPhaseToken, normalizePhaseName, phaseTokenMatches } = phaseId;
+const { comparePhaseNum, extractPhaseToken, matchPhaseDirs, normalizePhaseName, stripProjectCodePrefix } = phaseId;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -163,7 +163,15 @@ function parseIntOrNull(s: string | null): number | null {
 
 function phaseTokenFromDirName(name: string): string | null {
   const token = extractPhaseToken(name);
-  return /^\d+(?:[A-Z])?(?:\.\d+)*(?:-|$)/i.test(token) ? token : null;
+  // #2528: the shape probe runs on the PROJECT-CODE-STRIPPED token. A prefixed
+  // directory tokenizes to `MEM-05-80-20`, which does not start with a digit,
+  // so the unstripped probe rejected it and the entry was dropped before any
+  // resolution ran — every phase in a project-coded plan was invisible here.
+  // The full token is still what is returned: `comparePhaseNum` strips the
+  // prefix itself, so the sort is unaffected, and `matchPhaseDirs` needs the
+  // real directory name.
+  const probe = stripProjectCodePrefix(token);
+  return /^\d+(?:[A-Z])?(?:\.\d+)*(?:-|$)/i.test(probe) ? token : null;
 }
 
 /**
@@ -240,7 +248,16 @@ function detectVerifyFailed(cwd: string, currentPhaseRaw: string | null): boolea
   let targetDir: string | undefined;
   if (phaseToken) {
     const normalized = normalizePhaseName(phaseToken);
-    targetDir = entries.find((name) => phaseTokenMatches(name, normalized));
+    // #2528: the fourth directory-resolution site, and the one where a miss is
+    // silent — a phase whose directory cannot be found reports "not failed",
+    // which reads identically to a healthy phase. It must therefore apply the
+    // same canonical selection as the locator and the two command scans, or a
+    // dir like `05-80-20-cleanup` (phase 5 named "80/20 Cleanup") never
+    // surfaces its own failed verification. `entries` is already sorted, and
+    // `matchPhaseDirs` filters without reordering, so taking the first match
+    // preserves the previous `.find()` selection exactly.
+    const { matches } = matchPhaseDirs(entries, normalized);
+    targetDir = matches[0];
     if (!targetDir) return false;
   } else {
     // No current phase in state — fall back to the highest-numbered phase dir.
