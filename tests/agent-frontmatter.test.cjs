@@ -1357,14 +1357,16 @@ describe('Bug #2647: gsd-code-fixer worktree path is repo-relative, not a hardco
   test('the worktree path is concurrency-unique (PID + epoch suffix)', () => {
     const wtAssigns = parseWtAssignments(md);
     assert.ok(wtAssigns.length > 0, 'expected at least one wt= assignment in gsd-code-fixer.md');
-    // The path must carry both a PID (`$$`) and a time component (`$(date +%s)`)
+    // The path must carry BOTH a PID (`$$`) AND a time component (`$(date +%s)`)
     // so concurrent runs for the same phase do not collide — the property
-    // mktemp's XXXXXX provided before #2647.
-    const nonUnique = wtAssigns.filter(v => !v.includes('$${') && !v.includes('$$-') && !v.includes('$(date +%s)'));
+    // mktemp's XXXXXX provided before #2647. Requiring both (not either) is
+    // faithful to the fix: PID alone could recycle after wrap; epoch alone could
+    // collide for two same-second runs.
+    const nonUnique = wtAssigns.filter(v => !v.includes('$$') || !v.includes('$(date +%s)'));
     assert.deepEqual(
       nonUnique,
       [],
-      `worktree paths lack a concurrency-uniqueness suffix (#2647): ${JSON.stringify(nonUnique, null, 2)}`,
+      `worktree paths lack the PID+epoch concurrency-uniqueness suffix (#2647): ${JSON.stringify(nonUnique, null, 2)}`,
     );
   });
 });

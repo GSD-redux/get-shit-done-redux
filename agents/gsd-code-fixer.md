@@ -252,6 +252,17 @@ USE_WORKTREES=$(node -e '
 branch=$(git branch --show-current)
 test -n "$branch" || { echo "Detached HEAD is not supported for review-fix (#2686)"; exit 1; }
 
+# #2647 defense-in-depth: padded_phase is interpolated into a worktree PATH
+# and a git BRANCH NAME below. The orchestrator (code-review-fix.md) already
+# validates it as ^[0-9]+(\.[0-9]+)?$, but this agent prompt is a literal bash
+# contract any caller can spawn — validate at the SINK too, so a future caller
+# that forgets cannot turn ${padded_phase} into a path-traversal or branch-name
+# injection. Reject anything that is not digits + an optional single dotted
+# numeric suffix (e.g. '02' or '36.14'); reject '../', spaces, shell metachars.
+if ! [[ "$padded_phase" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "Invalid padded_phase for review-fix: '$padded_phase' (expected e.g. '02' or '36.14')"; exit 1
+fi
+
 # Recovery-sentinel handling (#2839):
 # Path is ${phase_dir}/.review-fix-recovery-pending.json. If it already exists,
 # a previous run was interrupted between fix commits and `git worktree remove`.
