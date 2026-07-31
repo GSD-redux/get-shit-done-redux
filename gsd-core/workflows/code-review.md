@@ -185,7 +185,21 @@ if [ -z "$FILES_OVERRIDE" ]; then
             raw = raw.replace(/^['"]|['"]$/g, '');
             raw = raw.replace(/\s+\([^)]*\)\s*$/, '');
             raw = raw.split(/\s+—\s/)[0].trim();
-            if (/\//.test(raw) && /\.[A-Za-z0-9]+$/.test(raw)) {
+            // #2666: accept root-level paths (no `/`) and known extensionless build
+            // files, not only nested paths with a trailing extension. The pre-fix
+            // predicate `/\//.test(raw) && /\.[A-Za-z0-9]+$/.test(raw)` silently
+            // dropped every repository-root file (Dockerfile, renovate.json,
+            // AGENTS.md, package.json, .gitlab-ci.yml, …) and every extensionless
+            // build file anywhere in the tree (**/Dockerfile, **/Makefile).
+            // Prose bullets are rejected by the known-filename / has-extension
+            // distinction, with the post-processing existence check (`[ -f ]`) as a
+            // backstop — a prose string is never a real file on disk.
+            const KNOWN_EXTENSIONLESS_BUILD_FILES = new Set([
+              'dockerfile', 'containerfile', 'makefile', 'justfile', 'procfile',
+            ]);
+            const hasExtension = /\.[A-Za-z0-9]+$/.test(raw);
+            const basename = raw.split('/').pop().toLowerCase();
+            if (hasExtension || KNOWN_EXTENSIONLESS_BUILD_FILES.has(basename)) {
               files.push(raw);
             }
           }
@@ -210,38 +224,74 @@ if [ -z "$FILES_OVERRIDE" ]; then
 fi
 ```
 
-**Tier 3 — Git diff fallback (per D-02):**
+**Tier 3 — Git diff fallback (per D-02) and SUMMARY/diff cross-check (per #2666):**
 
-If no SUMMARY.md files found OR no files extracted from them:
+If no SUMMARY.md files found OR no files extracted from them, fall back to the git diff.
+Additionally, whenever a reliable diff base is available, cross-check the SUMMARY scope
+against the diff and warn about (then add) any changed files the SUMMARY extractor did not
+surface — so a partial SUMMARY result can no longer silently mask the rest of the phase.
 ```bash
+# Compute diff base from phase commits — fail closed if no reliable base found
+PHASE_COMMITS=$(git log --oneline --all --grep="${PADDED_PHASE}" --format="%H" 2>/dev/null)
+DIFF_BASE=""
+if [ -n "$PHASE_COMMITS" ]; then
+  DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
+  # Verify the parent commit exists (first commit in repo has no parent)
+  if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
+    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
+  fi
+fi
+
 if [ ${#REVIEW_FILES[@]} -eq 0 ]; then
-  # Compute diff base from phase commits — fail closed if no reliable base found
-  PHASE_COMMITS=$(git log --oneline --all --grep="${PADDED_PHASE}" --format="%H" 2>/dev/null)
-  
-  if [ -n "$PHASE_COMMITS" ]; then
-    DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)^
-    
-    # Verify the parent commit exists (first commit in repo has no parent)
-    if ! git rev-parse "${DIFF_BASE}" >/dev/null 2>&1; then
-      DIFF_BASE=$(echo "$PHASE_COMMITS" | tail -1)
-    fi
-    
+  # Full git-diff fallback (per D-02): SUMMARY scoping yielded nothing.
+  if [ -n "$DIFF_BASE" ]; then
     # Run git diff with specific exclusions (per D-03)
     DIFF_FILES=$(git diff --name-only "${DIFF_BASE}..HEAD" -- . \
       ':!.planning/' ':!ROADMAP.md' ':!STATE.md' \
       ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
       ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
-    
+
     while IFS= read -r file; do
       [ -n "$file" ] && REVIEW_FILES+=("$file")
     done <<< "$DIFF_FILES"
-    
+
     echo "File scope: ${#REVIEW_FILES[@]} files from git diff (base: ${DIFF_BASE})"
   else
     # Fail closed — no reliable diff base found. Do not use arbitrary HEAD~N.
     echo "Warning: No phase commits found for '${PADDED_PHASE}'. Cannot determine reliable diff scope."
     echo "Use --files flag to specify files explicitly: /gsd:code-review ${PHASE_ARG} --files=file1,file2,..."
   fi
+elif [ -n "$DIFF_BASE" ]; then
+  # #2666 cross-check: SUMMARY yielded a non-empty (possibly partial) scope.
+  # Warn about — and add — any changed files the SUMMARY extractor did not surface,
+  # so a partial result can no longer silently ship an incomplete review scope.
+  DIFF_FILES=$(git diff --name-only "${DIFF_BASE}..HEAD" -- . \
+    ':!.planning/' ':!ROADMAP.md' ':!STATE.md' \
+    ':!*-SUMMARY.md' ':!*-VERIFICATION.md' ':!*-PLAN.md' \
+    ':!package-lock.json' ':!yarn.lock' ':!Gemfile.lock' ':!poetry.lock' 2>/dev/null)
+
+  # Build a newline-delimited list of already-scoped files for membership testing
+  # (portable — bash 3.2 on macOS has no associative arrays)
+  IN_SCOPE=$(
+    printf '%s\n' "${REVIEW_FILES[@]}"
+    printf '\n'
+  )
+
+  MISSING_FROM_SUMMARY=()
+  while IFS= read -r file; do
+    [ -z "$file" ] && continue
+    # Membership test against the newline-delimited scope (portable pattern match)
+    case "$IN_SCOPE" in
+      *"$file"$'\n'*) ;;  # already scoped
+      *) MISSING_FROM_SUMMARY+=("$file"); REVIEW_FILES+=("$file") ;;
+    esac
+  done <<< "$DIFF_FILES"
+
+  if [ ${#MISSING_FROM_SUMMARY[@]} -gt 0 ]; then
+    echo "Warning: SUMMARY scope was missing ${#MISSING_FROM_SUMMARY[@]} changed file(s) the git diff surfaced; adding them to the review scope:"
+    printf '  - %s\n' "${MISSING_FROM_SUMMARY[@]}"
+  fi
+  unset IN_SCOPE
 fi
 ```
 
