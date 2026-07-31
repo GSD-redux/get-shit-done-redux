@@ -2884,6 +2884,22 @@ describe('phase complete plan-coverage gate (#2648)', () => {
       ].join('\n'),
     );
 
+    // createTempProject() scaffolds .planning/phases but NOT STATE.md; write it
+    // so the "ROADMAP/STATE unchanged on refusal" assertions have a file to read
+    // (mirrors writePhaseCompleteVerificationGateFixture's STATE.md write above).
+    fs.writeFileSync(
+      path.join(planningDir, 'STATE.md'),
+      [
+        '# State', '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** Foundation',
+        '**Status:** In progress',
+        '**Current Plan:** 01-01',
+        '**Last Activity:** 2025-01-01',
+        '**Last Activity Description:** Working on phase 1', '',
+      ].join('\n'),
+    );
+
     for (const plan of plans) {
       const isSuperseded = supersededPlans.includes(plan);
       const body = isSuperseded
@@ -3418,6 +3434,11 @@ describe('phase complete command', () => {
       const d = path.join(tmpDir, '.planning', 'phases', `${num}-${names[i]}`);
       fs.mkdirSync(d, { recursive: true });
       fs.writeFileSync(path.join(d, `${num}-PLAN.md`), '# Plan\n');
+      // #2648: phase.complete now refuses when a non-retired plan has no matching
+      // *-SUMMARY.md. This test's concern is the total_phases-decrement cascade,
+      // not plan coverage, so give each phase's plan a summary to keep it
+      // fully-covered and isolate the #1752 behavior under test.
+      fs.writeFileSync(path.join(d, `${num}-SUMMARY.md`), '# Summary\n');
     }
 
     const result = runVerifiedPhaseComplete('phase complete 36', tmpDir);
