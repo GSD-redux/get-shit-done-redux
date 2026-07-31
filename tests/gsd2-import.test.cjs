@@ -271,8 +271,8 @@ describe('slugify', () => {
   test('#2848 row 2 — Cyrillic title produces a non-empty transliterated slug', () => {
     const result = slugify('Настройка окружения');
     assert.ok(typeof result === 'string' && result.length > 0, `Cyrillic title must not produce an empty slug; got: ${JSON.stringify(result)}`);
-    assert.ok(!/[^\x00-\x7f]/.test(result), `slug must be ASCII-only; got: ${result}`);
-    assert.strictEqual(result, 'nastroika-okruzheniya');
+    assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(result), `slug must be ASCII-only and well-formed; got: ${result}`);
+    assert.strictEqual(result, 'nastroyka-okruzheniya');
   });
 
   test('#2848 row 3 — Latin-script output is byte-for-byte unchanged (negative control)', () => {

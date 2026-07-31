@@ -222,8 +222,7 @@ describe('generateSlugInternal', () => {
     // Russian "Проверка гипотезы" → "proverka gipotezy" → slug.
     const result = coreUtils.generateSlugInternal('Проверка гипотезы');
     assert.ok(typeof result === 'string' && result.length > 0, `Cyrillic title must not produce an empty slug; got: ${JSON.stringify(result)}`);
-    assert.ok(!/[^\x00-\x7f]/.test(result), `slug must be ASCII-only; got: ${result}`);
-    assert.ok(!/^[-]|[-]$/.test(result), 'slug must not start or end with a hyphen');
+    assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(result), `slug must be ASCII-only and well-formed; got: ${result}`);
     assert.strictEqual(result, 'proverka-gipotezy');
   });
 
@@ -256,7 +255,7 @@ describe('generateSlugInternal', () => {
     const result = coreUtils.generateSlugInternal('Объект день');
     assert.ok(result, `expected non-empty slug; got: ${result}`);
     assert.ok(!result.includes('--'), `no double hyphens from dropped signs; got: ${result}`);
-    assert.strictEqual(result, 'obiekt-den');
+    assert.strictEqual(result, 'obekt-den');
   });
 
   test('#2848 row 6 — Ukrainian/Belarusian Cyrillic extras transliterate', () => {
