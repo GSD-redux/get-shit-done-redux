@@ -1289,6 +1289,82 @@ describe('Bug #2990: gsd-code-fixer worktree attaches to a NEW branch, not the u
 });
 
 /**
+ * Bug #2647: gsd-code-fixer hand-rolled its worktree at a hardcoded `/tmp/sv-...`
+ * mktemp path, which on Windows/Git Bash landed OUTSIDE the project tree —
+ * outside the agent session's permission allowlist, so every Read inside the
+ * worktree prompted — and mktemp's MAX_PATH-avoidance substitute produced an
+ * un-removable `C:/mvwtNN` path. The fix places the worktree repo-relative
+ * under `.claude/worktrees/` (the same dir the harness-managed executor
+ * worktrees use: gitignored via `.claude/`, inside the permission scope),
+ * with a PID+epoch suffix for concurrency uniqueness.
+ *
+ * These assertions parse the `wt=...` assignment(s) out of the agent markdown
+ * (source-text-is-the-product, same allow-test-rule as the #2990 block above)
+ * and assert the path is repo-relative under `.claude/worktrees/`, never an
+ * absolute `/tmp` path, and concurrency-unique.
+ */
+describe('Bug #2647: gsd-code-fixer worktree path is repo-relative, not a hardcoded /tmp path', () => {
+  const md = fs.readFileSync(AGENT_PATH, 'utf-8');
+
+  // Extract `wt=...` shell assignments from fenced bash blocks (skip inline
+  // backtick spans and bash comments, mirroring parseWorktreeAddInvocations).
+  function parseWtAssignments(markdown) {
+    const assigns = [];
+    const lines = markdown.split('\n');
+    for (const line of lines) {
+      const idx = line.indexOf('wt=');
+      if (idx === -1) continue;
+      // Skip inline-code spans (odd backtick count before the match).
+      const before = line.slice(0, idx);
+      if ((before.match(/`/g) || []).length % 2 === 1) continue;
+      // Skip bash comments.
+      if (line.trimStart().startsWith('#')) continue;
+      // Skip `wt="."` (the use_worktrees=false opt-out — not a worktree path).
+      const value = line.slice(idx + 'wt='.length).trim();
+      if (value === '"."' || value === "'.'") continue;
+      assigns.push(value);
+    }
+    return assigns;
+  }
+
+  test('the worktree path is NOT an absolute /tmp path', () => {
+    const wtAssigns = parseWtAssignments(md);
+    assert.ok(wtAssigns.length > 0, 'expected at least one wt= assignment in gsd-code-fixer.md');
+    const tmpViolations = wtAssigns.filter(v => /\/tmp\/sv-|mktemp -d "\/tmp\//.test(v));
+    assert.deepEqual(
+      tmpViolations,
+      [],
+      `worktree paths still hardcoded to /tmp (#2647): ${JSON.stringify(tmpViolations, null, 2)}`,
+    );
+  });
+
+  test('the worktree path is repo-relative under .claude/worktrees/', () => {
+    const wtAssigns = parseWtAssignments(md);
+    assert.ok(wtAssigns.length > 0, 'expected at least one wt= assignment in gsd-code-fixer.md');
+    const nonRelative = wtAssigns.filter(v => !v.includes('.claude/worktrees/rf-'));
+    assert.deepEqual(
+      nonRelative,
+      [],
+      `worktree paths not under .claude/worktrees/ (#2647): ${JSON.stringify(nonRelative, null, 2)}`,
+    );
+  });
+
+  test('the worktree path is concurrency-unique (PID + epoch suffix)', () => {
+    const wtAssigns = parseWtAssignments(md);
+    assert.ok(wtAssigns.length > 0, 'expected at least one wt= assignment in gsd-code-fixer.md');
+    // The path must carry both a PID (`$$`) and a time component (`$(date +%s)`)
+    // so concurrent runs for the same phase do not collide — the property
+    // mktemp's XXXXXX provided before #2647.
+    const nonUnique = wtAssigns.filter(v => !v.includes('$${') && !v.includes('$$-') && !v.includes('$(date +%s)'));
+    assert.deepEqual(
+      nonUnique,
+      [],
+      `worktree paths lack a concurrency-uniqueness suffix (#2647): ${JSON.stringify(nonUnique, null, 2)}`,
+    );
+  });
+});
+
+/**
  * Extract the cleanup-tail bash block from the agent .md, then parse it into
  * an ordered array of `git ...` invocation records. Per-record assertions go
  * against the structured records, not the raw markdown text. Anchor on the
