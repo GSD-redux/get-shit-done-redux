@@ -1727,6 +1727,44 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   const warnings: string[] = [];
   const phaseFullDir = path.join(cwd, phaseInfo['directory'] as string);
 
+  // #2648: fail-closed plan-coverage gate. phase.complete used to gate ONLY on a
+  // single *-VERIFICATION.md status, so a phase could close "complete" while an
+  // arbitrary number of its plans — including plans a lock/recovery decision
+  // silently dropped — had no completion record (a confirmed production incident
+  // closed a phase with 6/30 plans unexecuted, including its entire final UI
+  // scope, with every tool-reported signal green). Now refuse completion when any
+  // plan lacks a matching *-SUMMARY.md, UNLESS that plan is explicitly retired
+  // via machine-readable `status: superseded` frontmatter (the #2349 marker).
+  //
+  // scanPhasePlans is the superseded-AWARE counter (it drops status: superseded
+  // plans from planFiles before returning), so a deliberately-retired plan never
+  // appears in the unsummarized set and never blocks completion — closing the
+  // Goodhart hole (delete a SUMMARY to raise the %) without regressing the
+  // legitimate lock/recovery pattern (retire a plan instead of executing it).
+  // This is evaluated BEFORE the verification-gate transaction below so a
+  // plan-coverage refusal fails fast without mutating ROADMAP/STATE. The count
+  // path (cmdPhaseComplete's own planCount/summaryCount above) is NOT superseded-
+  // aware (it comes from findPhaseInternal/phase-locator.cts); that is fine for
+  // DISPLAY (the X/Y cell) but must not be the gate — the gate needs the
+  // superseded-adjusted set so retired plans don't re-block the very phases the
+  // marker exists to unblock. Matches roadmap.cts's already-correct-but-unenforced
+  // `summaryCount >= planCount` predicate, now enforced at the completion seam.
+  const coverageScan = scanPhasePlans(phaseFullDir);
+  const unsummarizedPlans = findUnsummarizedPlans(
+    coverageScan.planFiles as string[],
+    coverageScan.summaryFiles as string[],
+  );
+  if (unsummarizedPlans.length > 0) {
+    const listed = unsummarizedPlans.slice(0, 20).join(', ');
+    const more = unsummarizedPlans.length > 20 ? ` (and ${unsummarizedPlans.length - 20} more)` : '';
+    error(
+      `Phase ${phaseNum} cannot be completed: ${unsummarizedPlans.length} plan(s) have no completion record (*-SUMMARY.md): ${listed}${more}. ` +
+        `Execute the plans and write their summaries, or retire a plan with machine-readable \`status: superseded\` frontmatter (#2349) if it was deliberately dropped — a retired plan is excluded from this gate. ` +
+        `Completing a phase with unexecuted plans is what lost an entire promised deliverable silently (#2648).`,
+      ERROR_REASON.PHASE_PLAN_COVERAGE_INCOMPLETE,
+    );
+  }
+
   try {
     const phaseFiles = fs.readdirSync(phaseFullDir);
 
