@@ -1,7 +1,7 @@
 {
   "id": "claude",
   "role": "runtime",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Claude Code",
   "description": "Anthropic Claude Code — primary development runtime; tier-1 support with full hook surface and skills-based global install.",
   "tier": "core",

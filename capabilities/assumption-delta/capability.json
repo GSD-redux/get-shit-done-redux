@@ -1,7 +1,7 @@
 {
   "id": "assumption-delta",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Assumption-delta architecture checkpoint",
   "description": "Rarely-firing advisory checkpoint that triggers when a phase makes something plural, optional, or chosen that used to be singular, required, or derived. Surfaces one identity-model question (promote the new general representation to primary, or add it alongside?) so a silent primary-key drift does not accumulate into a later user-facing bug. Non-blocking; fires only on a detected signal.",
   "tier": "full",

@@ -1,7 +1,7 @@
 {
   "id": "external-job",
   "role": "feature",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "title": "Async external-job scheduler adapter",
   "description": "Default-off producer of the async external-job manifest (#1164). At execute:wave:post an executor can externalize long-running compute (SLURM first, scheduler-pluggable), commit a .planning/async-jobs/<job>.json manifest, defer SUMMARY.md, and return external_job_waiting. The core loop (#1165) consumes the manifest; this capability is the only thing that writes it. NOTE on contribution point: #1164 specifies execute:wave:pre, but execute-phase.md only dispatches execute:wave:post today (wave:pre is declared in the loop host contract but not rendered); wiring wave:pre dispatch is a core-loop change #1164 explicitly puts out of scope, so this capability registers at wave:post and the executor honors the runtime_budget classification guidance before running any tagged task. The adapter (scripts/slurm-adapter.cjs) reads external_job.submit_timeout_ms / poll_timeout_ms / artifact_dir through the canonical capability-config seam (env override > config > registry default).",
   "tier": "full",
