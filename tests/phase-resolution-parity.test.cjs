@@ -248,3 +248,193 @@ describe('#2528 resolution-path parity — locator / find-phase / phase-plan-ind
     });
   }
 });
+
+// ─── #2528 consumer parity ───────────────────────────────────────────────────
+/**
+ * The four paths above are the resolution APIs. Review found eight further call
+ * sites that had each re-implemented the same "resolve a phase directory from a
+ * bare number" step by hand — `dirs.find/some(d => phaseTokenMatches(d, n))` —
+ * and so reproduced the #2528 symptom in full even after the owner existed.
+ *
+ * They are covered here rather than in their own files because the failure this
+ * gate exists to catch is not "command X is broken" but "a consumer stopped
+ * agreeing with the owner". Splitting them up is how the first four drifted.
+ *
+ * Every path is observed through the surface a user actually sees, never
+ * through the matcher:
+ *
+ *   1. `phases list --phase N`     → `error: 'Phase not found'` vs listed files
+ *   2. `phase next-decimal N`      → `found`
+ *   3. `phase remove N --force`    → `directory_deleted`
+ *   4. `verify schema-drift N`     → `Phase directory not found` message
+ *   5. `validate health`  (W021)   → milestone-complete-vs-roadmap consistency
+ *   6. `init manager`              → the overview table's `disk_status`
+ *   7. `milestone complete vX`     → the unstarted-phase completion guard
+ *   8. `roadmap analyze`           → per-phase `disk_status`
+ *
+ * Paths 1-4 take the phase as a query. Paths 5-8 never see one: they walk the
+ * ROADMAP and ask the disk about each phase in turn, so their "query" is the
+ * roadmap heading and their answer is whether the phase looks started.
+ */
+
+const CONSUMER_SCENARIOS = [
+  {
+    name: '#2528 bare-integer fallback ("80/20 Cleanup")',
+    dirs: ['05-80-20-cleanup', '11-other'],
+    query: '5',
+    resolvesTo: '05-80-20-cleanup',
+  },
+  {
+    name: '#2528 tokenizer fix ("24/7 Autonomy")',
+    dirs: ['10-24-7-autonomy', '11-other'],
+    query: '10',
+    resolvesTo: '10-24-7-autonomy',
+  },
+  {
+    name: '#2528 bare-integer fallback ("12-Factor Refactor")',
+    dirs: ['30-12-factor-refactor'],
+    query: '30',
+    resolvesTo: '30-12-factor-refactor',
+  },
+  {
+    // Control. Without it every assertion below could be satisfied by a
+    // consumer that resolves unconditionally.
+    name: 'a phase with no directory stays unresolved on every consumer',
+    dirs: ['11-other'],
+    query: '99',
+    resolvesTo: null,
+  },
+];
+
+describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs', () => {
+  const projects = [];
+
+  afterEach(() => {
+    for (const dir of projects.splice(0)) cleanup(dir);
+  });
+
+  // Each mutating path needs its own project: `phase remove` deletes and
+  // renumbers, `milestone complete` archives the whole phases tree.
+  function project(dirs, roadmapPhase, status = 'executing') {
+    const tmpDir = createTempProject();
+    projects.push(tmpDir);
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    for (const d of dirs) {
+      const dir = path.join(phasesDir, d);
+      fs.mkdirSync(dir, { recursive: true });
+      const padded = (d.match(/^\d+/) || ['01'])[0];
+      fs.writeFileSync(path.join(dir, `${padded}-01-PLAN.md`), '---\nwave: 1\n---\n');
+    }
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n## Phase ${roadmapPhase}: Target\n`,
+    );
+    // `milestone:` is load-bearing: milestone-complete only runs its
+    // unstarted-phase guard when STATE names the version being completed.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\nstatus: ${status}\nmilestone: v1.0\ntotal_phases: 99\ncurrent_phase: ${roadmapPhase}\n---\n\n# State\n\n**Status:** ${status}\n`,
+    );
+    return tmpDir;
+  }
+
+  function json(cmd, cwd) {
+    const res = runGsdTools(cmd, cwd);
+    assert.ok(res.success, `${cmd} failed: ${res.error}`);
+    return JSON.parse(res.output);
+  }
+
+  for (const { name, dirs, query, resolvesTo } of CONSUMER_SCENARIOS) {
+    const resolves = resolvesTo !== null;
+
+    test(`${name} — query-driven consumers`, () => {
+      const tmpDir = project(dirs, query);
+
+      // 1. phases list
+      const listed = json(`phases list --phase ${query} --type plans`, tmpDir);
+      if (resolves) {
+        assert.ok(!listed.error, `phases list: ${listed.error}`);
+        assert.deepStrictEqual(
+          listed.files,
+          [`${resolvesTo.match(/^\d+/)[0]}-01-PLAN.md`],
+          'phases list resolved a different directory',
+        );
+      } else {
+        assert.strictEqual(listed.error, 'Phase not found');
+      }
+
+      // 2. phase next-decimal — `found` is the base-phase existence check
+      assert.strictEqual(
+        json(`phase next-decimal ${query}`, tmpDir).found,
+        resolves,
+        'next-decimal disagreed on whether the base phase exists',
+      );
+
+      // 3. verify schema-drift
+      const drift = json(`verify schema-drift ${query}`, tmpDir);
+      assert.strictEqual(
+        drift.message === `Phase directory not found: ${query}`,
+        !resolves,
+        `schema-drift disagreed: ${drift.message}`,
+      );
+
+      // 4. phase remove — mutating, so it runs last and on its own project
+      const removeProject = project(dirs, query);
+      assert.strictEqual(
+        json(`phase remove ${query} --force`, removeProject).directory_deleted,
+        resolvesTo,
+        'phase remove deleted the wrong directory (or none)',
+      );
+    });
+
+    test(`${name} — roadmap-driven consumers`, () => {
+      // 5. validate health, W021: STATE must claim the milestone is done for
+      //    the roadmap-vs-disk consistency check to run at all.
+      const health = json('validate health', project(dirs, query, 'milestone complete'));
+      const w021 = health.warnings.filter((w) => w.code === 'W021');
+      assert.strictEqual(
+        w021.length > 0,
+        !resolves,
+        `W021 disagreed on whether Phase ${query} is started: ${JSON.stringify(w021)}`,
+      );
+
+      const tmpDir = project(dirs, query);
+
+      // 6. init manager overview table
+      const manager = json('init manager', tmpDir);
+      const managed = manager.phases.find((p) => p.number === query);
+      assert.ok(managed, `init manager did not list Phase ${query}`);
+      assert.strictEqual(
+        managed.disk_status === 'no_directory',
+        !resolves,
+        'init manager disagreed on disk_status',
+      );
+
+      // 7. roadmap analyze
+      const analyzed = json('roadmap analyze', tmpDir).phases.find((p) => p.number === query);
+      assert.ok(analyzed, `roadmap analyze did not list Phase ${query}`);
+      assert.strictEqual(
+        analyzed.disk_status === 'no_directory',
+        !resolves,
+        'roadmap analyze disagreed on disk_status',
+      );
+      assert.strictEqual(
+        analyzed.disk_status,
+        managed.disk_status,
+        'roadmap analyze and init manager disagreed with each other',
+      );
+
+      // 8. milestone complete — mutating, own project. The guard blocks
+      //    completion while any roadmap phase has no directory.
+      const completion = runGsdTools('milestone complete v1.0', project(dirs, query));
+      assert.strictEqual(
+        completion.success,
+        resolves,
+        `milestone-complete guard disagreed: ${completion.error || completion.output}`,
+      );
+      if (!resolves) {
+        assert.match(completion.error, /Cannot mark milestone complete/);
+      }
+    });
+  }
+});
