@@ -672,9 +672,28 @@ const unpad = (digits: string): string => digits.replace(/^0+(?=\d)/, '');
  *      "05-80-20" is byte-identical in shape to a real deep-decomposition dir).
  *      The fallback can only turn a silent not-found into a resolution or into
  *      a surfaced ambiguity (callers keep their #2237 multi-match guards) —
- *      never override a primary match. Non-bare queries ("46-6", "12A",
- *      "PROJ-42") never enter the fallback, so deep-decomposition and
- *      letter-suffix lookups are untouched.
+ *      never override a primary match.
+ *
+ * SCOPE, precisely (#2528 re-review). Non-bare QUERIES ("46-6", "12A",
+ * "PROJ-42") never enter the fallback, so nothing changes about how a
+ * deep-decomposition or letter-suffix lookup is asked. What DOES change is the
+ * DIRECTORY side: a bare query now reaches directories the tokenizer classified
+ * as multi-segment, and a genuine sub-phase directory has exactly that shape.
+ * So `5` against a lone `05-01-auth` resolves (phase_number "05", phase_name
+ * "01-auth") where it previously found nothing.
+ *
+ * That widening is DELIBERATE and it is irreducible from directory names alone.
+ * `05-01-auth` (sub-phase 5.1) and `30-12-factor-refactor` (phase 30 named
+ * "12-Factor Refactor") are the same string shape — `NN-NN-<slug>` — and the
+ * discriminator that would separate them, "is the second segment a valid decimal
+ * sub-phase", accepts both (`5.1` and `30.12` are equally well-formed). Any rule
+ * strong enough to exclude `05-01-auth` also excludes `30-12-factor-refactor`,
+ * which is the defect #2528 exists to fix. The tie is therefore broken in favour
+ * of resolving, and the consequence is bounded on the side that matters: when
+ * BOTH readings have a directory (`05-01-auth` + `05-02-api`) the result is two
+ * matches, and every caller — including the destructive `phase remove` path —
+ * refuses to choose. `tests/phase-resolution-parity.test.cjs` pins both
+ * directions: the lone-directory resolution and the two-directory refusal.
  *
  * `usedBareFallback` tells callers to derive the displayed phase number from
  * the directory's leading digit run instead of `extractPhaseToken` (whose

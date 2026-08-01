@@ -305,6 +305,7 @@ const CONSUMER_SCENARIOS = [
     resolvesTo: null,
   },
 ];
+
 /**
  * #2528 re-review: the AMBIGUOUS row the rows above cannot express.
  *
@@ -324,6 +325,23 @@ const AMBIGUOUS_SCENARIO = {
   dirs: ['05-80-20-a', '05-90-till-late'],
   query: '5',
 };
+
+/**
+ * #2528 re-review: sub-phase-shaped directories, pinned in BOTH directions.
+ *
+ * `05-01-auth` is a genuine deep-decomposition directory for phase 5.1, and it
+ * has the same `NN-NN-<slug>` shape as `30-12-factor-refactor` (phase 30 named
+ * "12-Factor Refactor"). No rule over directory names alone separates them —
+ * "is the second segment a valid decimal sub-phase" accepts `5.1` and `30.12`
+ * equally — so the bare-integer fallback necessarily reaches both, and a bare
+ * `5` now resolves a lone `05-01-auth` where base found nothing.
+ *
+ * Both halves are pinned here because the docblock's claim about scope is only
+ * true of the QUERY side, and nothing previously observed the directory side:
+ *   - one such directory  → resolves, and the display number is the leading run
+ *   - two such directories → ambiguous, and the destructive path deletes nothing
+ */
+const SUBPHASE_DIRS = ['05-01-auth', '05-02-api'];
 
 describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs', () => {
   const projects = [];
@@ -481,6 +499,28 @@ describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs',
       'phase remove deleted a directory it reported refusing to choose',
     );
     assert.deepStrictEqual(removed.renamed_directories, [], 'phase remove renumbered anyway');
+  });
+
+  test('a lone sub-phase-shaped directory resolves, and its two-directory twin does not', () => {
+    const [first, second] = SUBPHASE_DIRS;
+
+    // One directory: the fallback reaches it, and the displayed number is the
+    // leading digit run — NOT the mis-absorbed `05-01` token.
+    const lone = findPhaseInternal(project([first], '5'), '5');
+    assert.ok(lone && lone.found, 'a lone sub-phase-shaped directory did not resolve');
+    assert.strictEqual(lone.phase_number, '05');
+    assert.strictEqual(lone.phase_name, '01-auth');
+    assert.strictEqual(path.basename(lone.directory), first);
+
+    // Two directories: the same shape is now ambiguous, and the destructive
+    // path must delete neither — this is the case the reviewer measured as
+    // "deletes 05-01-auth and renumbers 06-next → 05-next".
+    const tmpDir = project(SUBPHASE_DIRS, '5');
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    const removed = json('phase remove 5 --force', tmpDir);
+    assert.strictEqual(removed.directory_deleted, null);
+    assert.deepStrictEqual(removed.ambiguous_matches, [first, second]);
+    assert.deepStrictEqual(fs.readdirSync(phasesDir).sort(), [...SUBPHASE_DIRS].sort());
   });
 
   test('validate health pairs a digit-leading directory with its roadmap phase (W006/W007)', () => {
