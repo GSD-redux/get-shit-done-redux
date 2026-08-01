@@ -22,14 +22,26 @@ const WINDSURF_CAP = 12000;
 // ─── A1-A8: happy path + boundaries + independence ───────────────────────────
 
 test('passesRuntimeWithNoDeclaredCap', () => {
+  // `windsurf` must also report SOME sizes here: EMITTED_CAPS declares a
+  // windsurf cap, and a runtime the cap table names but `sizes` never
+  // mentions is REASON.UNKNOWN_RUNTIME (a distinct, more specific error —
+  // see A10/`errorsOnCapRuleForUnknownRuntime`), not the "no declared cap"
+  // path this test targets. Giving windsurf a compliant artifact keeps that
+  // orthogonal path out of this fixture while still proving `claude` (which
+  // truly has no cap entry) is recorded unmeasured and passes.
   const r = evaluateEmittedCaps({
-    sizes: { claude: { 'workflows/plan-phase.md': 999999 } },
+    sizes: {
+      claude: { 'workflows/plan-phase.md': 999999 },
+      windsurf: { 'workflows/satisfies-the-rule.md': 100 },
+    },
     capTable: EMITTED_CAPS,
   });
+  assert.equal(r.errors.length, 0);
   assert.equal(r.violations.length, 0);
   assert.equal(r.unmeasured.length, 1);
   assert.equal(r.unmeasured[0].runtime, 'claude');
-  assert.equal(r.compliant.length, 0);
+  assert.equal(r.compliant.length, 1);
+  assert.equal(r.compliant[0].runtime, 'windsurf');
   assert.ok(r.ok);
 });
 
@@ -82,10 +94,25 @@ test('passesZeroByteArtifact', () => {
 });
 
 test('ignoresPathMatchingNoCapRule', () => {
-  const r = evaluateEmittedCaps({ sizes: { windsurf: { 'skills/gsd-add-tests/SKILL.md': 999999 } } });
+  // The sole windsurf rule (`workflows/*.md`) must ALSO match something in
+  // this fixture, or it is a dead rule across the whole run (A13/A14 — a
+  // deliberate hard error, see `errorsOnDeadCapRuleMatchingNothing`) and
+  // this test would be asserting two different failure modes at once. Give
+  // it a compliant match so the ONLY thing under test is: a path the rule
+  // doesn't match is ignored (unmeasured), not that the rule is dead.
+  const r = evaluateEmittedCaps({
+    sizes: {
+      windsurf: {
+        'skills/gsd-add-tests/SKILL.md': 999999,
+        'workflows/satisfies-the-rule.md': 100,
+      },
+    },
+  });
   assert.equal(r.violations.length, 0);
   assert.equal(r.unmeasured.length, 1);
   assert.equal(r.unmeasured[0].rel, 'skills/gsd-add-tests/SKILL.md');
+  assert.equal(r.compliant.length, 1);
+  assert.equal(r.deadRules.length, 0);
   assert.ok(r.ok);
 });
 
@@ -231,9 +258,16 @@ test('rejectsReservedKeysInSizesMap', () => {
     assert.ok(!rRel.ok);
   }
 
-  // The brief's "in either map" also covers capTable's runtime keys.
+  // The brief's "in either map" also covers capTable's runtime keys. Must use
+  // the COMPUTED key form (`{ ['__proto__']: ... }`), matching the genuine
+  // OWN-property construction above: the literal object-initializer form
+  // `{ __proto__: ... }` is special-cased by the language to set the
+  // object's [[Prototype]] instead of creating an own property, so it would
+  // produce an object with ZERO own keys (nothing for JSON.stringify to
+  // serialize, and nothing for Object.keys(capTable) to ever see) — testing
+  // nothing at all rather than the hostile-key case this asserts on.
   const capTableWithReservedRuntime = JSON.parse(
-    JSON.stringify({ __proto__: [{ pattern: '*.md', maxBytes: 10, note: 'x' }] }),
+    JSON.stringify({ ['__proto__']: [{ pattern: '*.md', maxBytes: 10, note: 'x' }] }),
   );
   const rCapTable = evaluateEmittedCaps({ sizes: { windsurf: { 'a.md': 1 } }, capTable: capTableWithReservedRuntime });
   const capErr = rCapTable.errors.find((e) => e.reason === REASON.RESERVED_KEY && e.scope === 'capTable-runtime');

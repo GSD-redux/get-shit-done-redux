@@ -57,8 +57,15 @@ after(() => {
  * `configDir === root` (no runtime-specific subdirectory layout needed for
  * these synthetic cases).
  */
-function makeSyntheticConfig(files) {
+function makeSyntheticConfig(filesOrFactory) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-emitted-sizes-'));
+  // `filesOrFactory` may be a `(root) => files` factory for callers whose
+  // file CONTENT must embed the just-created temp root path (e.g. simulating
+  // an `@`-reference). It cannot be the root's own destructured binding —
+  // `const { root } = makeSyntheticConfig({ ...: root })` would read `root`
+  // from within its own TDZ and throw "Cannot access 'root' before
+  // initialization" before this function is ever called.
+  const files = typeof filesOrFactory === 'function' ? filesOrFactory(root) : filesOrFactory;
   for (const [rel, content] of Object.entries(files)) {
     const full = path.join(root, ...rel.split('/'));
     fs.mkdirSync(path.dirname(full), { recursive: true });
@@ -125,11 +132,14 @@ test('countsMultiByteUtf8AsBytes', (t) => {
 // ─── B5 ────────────────────────────────────────────────────────────────────
 
 test('normalizesConfigRootBeforeCounting', (t) => {
-  const { configDir, root } = makeSyntheticConfig({
-    // Simulate an `@`-reference embedding the absolute temp root, as a real
-    // install's projected agents/commands/workflows do.
-    'artifact.md': `see @${root}/gsd-core/CONTEXT.md for details\n`,
-  });
+  // Factory form: the temp root doesn't exist until `makeSyntheticConfig`
+  // creates it, so the content that embeds it (simulating an `@`-reference
+  // to the absolute temp root, as a real install's projected
+  // agents/commands/workflows do) must be built from the `root` the
+  // factory receives, not a `root` this destructuring is still declaring.
+  const { configDir, root } = makeSyntheticConfig((r) => ({
+    'artifact.md': `see @${r}/gsd-core/CONTEXT.md for details\n`,
+  }));
   t.after(() => cleanup(root));
 
   const sizes = buildEmittedSizes(configDir, root);
