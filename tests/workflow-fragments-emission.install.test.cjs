@@ -26,7 +26,7 @@
  * ── The overlay technique (rows 33/36) ───────────────────────────────────
  *
  * Rows 33 and 36 need a spawned `bin/install.js` that reads a DIFFERENT
- * `gsd-core/workflows/plan-phase.md` (malformed, row 36) or a different
+ * `gsd-core/workflows/execute-phase.md` (malformed, row 36) or a different
  * `gsd-core/bin/lib/workflow-fragments.cjs` (stubbed to identity, row 33)
  * than this checkout's real files, without paying to copy the ~400 MB
  * repository (mostly node_modules) for every run. `buildOverlayRepo` mirrors
@@ -59,9 +59,13 @@ const { executionContextRefs } = require('../scripts/command-contract-helpers.cj
 const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
-const PILOT_REL = path.join('gsd-core', 'workflows', 'plan-phase.md');
+const PILOT_REL = path.join('gsd-core', 'workflows', 'execute-phase.md');
 const PILOT_PATH = path.join(REPO_ROOT, PILOT_REL);
-const UNMARKED_REL = path.join('gsd-core', 'workflows', 'ship.md');
+// plan-phase.md was the original #2930 pilot but was reverted to unmarked
+// (chore/2930 retarget: it sits 36 B under the ADR-857 Phase-6 PRE_PHASE6
+// gate and cannot absorb marker overhead) — it is now a genuinely unmarked
+// file again, so row 33 uses it instead of plan-phase.md.
+const UNMARKED_REL = path.join('gsd-core', 'workflows', 'plan-phase.md');
 
 const RUNTIMES = Object.keys(RUNTIME_META);
 
@@ -158,7 +162,7 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
   return { result, configDir: root, root };
 }
 
-// ─── Row 32: emitted plan-phase.md shrinks by exactly the marker bytes ────
+// ─── Row 32: emitted execute-phase.md shrinks by exactly the marker bytes ────
 //
 // Defect found and fixed inline while verifying (chore/2930 review; not one
 // of the five assigned findings, but discovered incidentally): this test
@@ -181,7 +185,7 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
 // unrelated rewrites this module does not own.
 //
 // A second, independent contaminant surfaced fixing the first one: opencode
-// embeds the install's own absolute configDir path into plan-phase.md
+// embeds the install's own absolute configDir path into execute-phase.md
 // content (same fact row 33/atRefContractStillResolvesAfterComposition
 // documents for SKILL.md), and `runMinimalInstall`'s temp-dir prefix
 // (`gsd-<runtime>-<scope>-`) is a DIFFERENT length than
@@ -216,8 +220,8 @@ test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', () => {
         );
         const realPath = path.join(real.configDir, PILOT_REL);
         const stubPath = path.join(stub.configDir, PILOT_REL);
-        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing plan-phase.md`);
-        assert.ok(fs.existsSync(stubPath), `${runtime}: identity-stub install is missing plan-phase.md`);
+        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing execute-phase.md`);
+        assert.ok(fs.existsSync(stubPath), `${runtime}: identity-stub install is missing execute-phase.md`);
         const realText = fs.readFileSync(realPath, 'utf8').split(real.root).join('<ROOT>');
         const stubText = fs.readFileSync(stubPath, 'utf8').split(stub.root).join('<ROOT>');
         const realBytes = Buffer.byteLength(realText, 'utf8');
@@ -266,8 +270,8 @@ test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', () => {
         );
         const realPath = path.join(real.configDir, UNMARKED_REL);
         const stubPath = path.join(stub.configDir, UNMARKED_REL);
-        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing ship.md`);
-        assert.ok(fs.existsSync(stubPath), `${runtime}: stub install is missing ship.md`);
+        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing plan-phase.md`);
+        assert.ok(fs.existsSync(stubPath), `${runtime}: stub install is missing plan-phase.md`);
 
         // Normalize each side's own randomly-generated temp root out of the
         // content before hashing: some runtimes (opencode) embed the
@@ -280,14 +284,14 @@ test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', () => {
         assert.equal(
           Buffer.byteLength(realText, 'utf8'),
           Buffer.byteLength(stubText, 'utf8'),
-          `${runtime}: ship.md byte size drifted between real compose and identity-stub compose`,
+          `${runtime}: plan-phase.md byte size drifted between real compose and identity-stub compose`,
         );
         const realHash = crypto.createHash('sha256').update(realText).digest('hex');
         const stubHash = crypto.createHash('sha256').update(stubText).digest('hex');
         assert.equal(
           realHash,
           stubHash,
-          `${runtime}: ship.md content drifted between real compose and identity-stub compose`,
+          `${runtime}: plan-phase.md content drifted between real compose and identity-stub compose`,
         );
       } finally {
         cleanup(real.root);
@@ -306,12 +310,12 @@ test('noSectionMarkerLeaksIntoEmittedArtifacts', () => {
     const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
     try {
       const emittedPath = path.join(configDir, PILOT_REL);
-      assert.ok(fs.existsSync(emittedPath), `${runtime}: emitted plan-phase.md is missing`);
+      assert.ok(fs.existsSync(emittedPath), `${runtime}: emitted execute-phase.md is missing`);
       const emittedText = fs.readFileSync(emittedPath, 'utf8');
       assert.equal(
         emittedText.includes('gsd:section'),
         false,
-        `${runtime}: emitted plan-phase.md still contains a gsd:section marker token`,
+        `${runtime}: emitted execute-phase.md still contains a gsd:section marker token`,
       );
     } finally {
       cleanup(root);
@@ -378,7 +382,7 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
     '# Marker syntax\n\nExample (deliberately unfenced and unclosed to prove non-composition):\n\n<!-- gsd:section id="x" when="always" -->\nnever closed on purpose\n';
   const NON_WORKFLOW_DOC_REL = path.join('gsd-core', 'references', 'context-budget.md');
   const overlayRepo = buildOverlayRepo({
-    'gsd-core/workflows/plan-phase.md': markedWorkflow,
+    'gsd-core/workflows/execute-phase.md': markedWorkflow,
     [NON_WORKFLOW_DOC_REL.split(path.sep).join('/')]: nonWorkflowDoc,
   });
   let dest;
@@ -391,11 +395,11 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
     );
 
     const emittedWorkflowPath = path.join(dest.configDir, PILOT_REL);
-    assert.ok(fs.existsSync(emittedWorkflowPath), 'emitted plan-phase.md is missing');
+    assert.ok(fs.existsSync(emittedWorkflowPath), 'emitted execute-phase.md is missing');
     assert.equal(
       fs.readFileSync(emittedWorkflowPath, 'utf8'),
       'body\n',
-      'gsd-core/workflows/plan-phase.md must still compose (markers stripped)',
+      'gsd-core/workflows/execute-phase.md must still compose (markers stripped)',
     );
 
     const emittedDocPath = path.join(dest.configDir, NON_WORKFLOW_DOC_REL);
@@ -415,7 +419,7 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
 
 test('malformedMarkersFailInstallWithoutPartialEmit', () => {
   const malformed = '<!-- gsd:section id="broken" when="always" -->\nnever closed\n';
-  const overlayRepo = buildOverlayRepo({ 'gsd-core/workflows/plan-phase.md': malformed });
+  const overlayRepo = buildOverlayRepo({ 'gsd-core/workflows/execute-phase.md': malformed });
   let dest;
   try {
     dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
@@ -436,7 +440,7 @@ test('malformedMarkersFailInstallWithoutPartialEmit', () => {
     assert.equal(
       fs.existsSync(emittedPath),
       false,
-      'a half-composed plan-phase.md must never be written when composition throws',
+      'a half-composed execute-phase.md must never be written when composition throws',
     );
   } finally {
     cleanup(overlayRepo);

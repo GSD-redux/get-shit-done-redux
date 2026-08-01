@@ -93,10 +93,9 @@ import contextComposer = require('./context-composer.cjs');
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
-  'flag:--prd',
-  'flag:--ingest',
-  'flag:--reviews',
-  'flag:--chunked',
+  'flag:--wave',
+  'state:gap-closure-phase',
+  'state:has-prior-phases',
 ]);
 
 /**

@@ -50,10 +50,9 @@ gap fragment and composes back byte-identical to its source.
 | Value | Meaning |
 |---|---|
 | `always` | Section is always applicable. |
-| `flag:--prd` | Applicable when the workflow runs with `--prd`. |
-| `flag:--ingest` | Applicable when the workflow runs with `--ingest`. |
-| `flag:--reviews` | Applicable when the workflow runs with `--reviews`. |
-| `flag:--chunked` | Applicable when the workflow runs with `--chunked`. |
+| `flag:--wave` | Applicable when the workflow runs with `--wave`. |
+| `state:gap-closure-phase` | Applicable when the phase number is a gap-closure phase (has a decimal, e.g. `4.1`). |
+| `state:has-prior-phases` | Applicable when prior phases (and their `VERIFICATION.md` files) exist. |
 
 This list is **closed by design** (Greenspun's Tenth Rule): left open-ended,
 `when=` would acquire boolean operators, negation, precedence, and
@@ -125,29 +124,40 @@ a later phase of ADR-1671's epic.
 
 ## Piloted on one workflow so far
 
-Only `gsd-core/workflows/plan-phase.md` carries markers today. The marker
+Only `gsd-core/workflows/execute-phase.md` carries markers today. The marker
 grammar and composer seam are general-purpose across any workflow file, but
 rollout to other LARGE/XL workflows is intentionally sequenced as later work,
 not part of this phase.
 
-Of the mutually-exclusive branches issue #2930 cites as motivating this work
-(`--prd`, `--ingest`, `--mvp`, `--reviews`), the pilot marks `--reviews`,
-`--prd`, and `--ingest` (plus `--chunked`, not originally listed) — three of
-the four cited. **`--mvp` is not marked, and that is not an oversight.** Its
-content in `plan-phase.md` is INTERLEAVED with other flags rather than
-living in its own contiguous section: `MVP_MODE` resolution shares a single
-bash block with `--tdd`, `--no-tracer`, and `--no-reversibility-gates`
-handling (`plan-phase.md:125-158`), and elsewhere it is inline
-`${MVP_MODE === 'true' ? ... }` template interpolation embedded inside the
-planner prompt (`plan-phase.md:794-803`). The marker grammar is closed,
-non-nesting, and whole-line (see [Marker syntax](#marker-syntax) above) — it
-has no way to wrap part of a line or split a shared conditional block
-without either corrupting the conditional or bundling unrelated flags into
-one section. This is a real limit the pilot surfaced, not a gap in scope:
-see [ADR-1671](../adr/1671-dynamic-context-management-platform.md) open
+The pilot marks three `<step>` blocks: `partial-wave` (`flag:--wave`),
+`gap-closure-artifacts` (`state:gap-closure-phase`), and `regression-gate`
+(`state:has-prior-phases`).
+
+**The pilot was retargeted from `plan-phase.md` mid-phase.** Issue #2930's
+own motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
+`--reviews`) all live in `plan-phase.md`, not `execute-phase.md`. But
+`plan-phase.md` sits only 36 B under an independent, pre-existing size gate
+(`tests/phase6-capstone-conformance.test.cjs`'s `PRE_PHASE6`, an ADR-857
+Phase-6 completion property) and cannot absorb any marker overhead at all —
+so it could not be fragmentized under this phase's grammar regardless of
+branch shape. This is direct evidence for the epic's premise that
+fragmentization pays off, and it also means Phase 4 (moving size caps from
+source bytes to emitted bytes) may need to land before `plan-phase.md`
+itself can be fragmentized. Separately, and independent of the size-gate
+finding, `--mvp` would remain unmarkable by this grammar even if the size
+gate allowed it: its content in `plan-phase.md` is INTERLEAVED with other
+flags rather than living in its own contiguous section (`MVP_MODE`
+resolution shares a single bash block with `--tdd`, `--no-tracer`, and
+`--no-reversibility-gates` handling at `plan-phase.md:125-158`, and
+elsewhere it is inline `${MVP_MODE === 'true' ? ... }` template
+interpolation embedded inside the planner prompt at `plan-phase.md:794-803`)
+— the marker grammar is closed, non-nesting, and whole-line (see
+[Marker syntax](#marker-syntax) above), with no way to wrap part of a line
+or split a shared conditional block without either corrupting the
+conditional or bundling unrelated flags into one section. See
+[ADR-1671](../adr/1671-dynamic-context-management-platform.md) open
 question 1's resolution for the full record, and Phase 6 (LARGE/XL rollout)
-for how it gets addressed — either accepted or resolved with a
-finer-grained mechanism.
+for how both limits get addressed.
 
 ## Related
 

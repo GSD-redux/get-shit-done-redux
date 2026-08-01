@@ -182,7 +182,6 @@ if [[ "$ARGUMENTS" =~ --chunked ]] || [[ "$CHUNKED_CFG" == "true" ]]; then
 fi
 ```
 
-<!-- gsd:section id="reviews-prereq" when="flag:--reviews" -->
 ## 2.5. Validate `--reviews` Prerequisite
 
 **Skip if:** No `--reviews` flag.
@@ -201,7 +200,6 @@ Then re-run /gsd:plan-phase {N} --reviews
 ```
 Exit workflow.
 
-<!-- /gsd:section -->
 ## 3. Validate Phase
 
 ```bash
@@ -215,7 +213,6 @@ Now that `PHASE` is finalized, resolve MVP mode:
 MVP_MODE=$(gsd_run query phase.mvp-mode "${PHASE}" $MVP_FLAG_ARG --pick active)
 ```
 
-<!-- gsd:section id="prd-express" when="flag:--prd" -->
 ## 3.5. Handle PRD Express Path
 
 **Skip if:** No `--prd` flag in arguments.
@@ -224,8 +221,6 @@ MVP_MODE=$(gsd_run query phase.mvp-mode "${PHASE}" $MVP_FLAG_ARG --pick active)
 
 Read and execute `gsd-core/workflows/plan-phase/steps/prd-express-path.md` — it reads the PRD (`$PRD_FILE`), generates `CONTEXT.md` (every PRD requirement/story/criterion → locked decision, uncovered areas → "Claude's Discretion", canonical refs extracted from ROADMAP.md + PRD-referenced specs), commits it, sets `context_content`, and bypasses step 4 (Load CONTEXT.md). The rest of the workflow proceeds normally with the PRD-derived context.
 
-<!-- /gsd:section -->
-<!-- gsd:section id="ingest-express" when="flag:--ingest" -->
 ## 3.6. Handle ADR Ingest Express Path
 
 **Skip if:** No `--ingest` flag in arguments.
@@ -241,7 +236,6 @@ Read and execute `gsd-core/workflows/plan-phase/steps/prd-express-path.md` — i
 
 **Effect:** This bypasses step 4 (Load CONTEXT.md) since CONTEXT.md was synthesized from ADR input.
 
-<!-- /gsd:section -->
 ## 4. Load CONTEXT.md
 
 **Skip if:** PRD express path or ADR ingest express path was used (CONTEXT.md already created in step 3.5/3.6).
@@ -895,7 +889,6 @@ Agent(
 
 **If `CHUNKED_MODE` is `true`:** Skip the Agent() call above — proceed to step 8.5 instead.
 
-<!-- gsd:section id="chunked-mode" when="flag:--chunked" -->
 ## 8.5. Chunked Planning Mode
 
 **Skip if `CHUNKED_MODE` is `false`.**
@@ -1003,7 +996,6 @@ For each plan entry extracted from `PLAN-OUTLINE.md`:
 After all N plans are written and committed, treat this as `## PLANNING COMPLETE` and continue
 to step 9.
 
-<!-- /gsd:section -->
 ## 9. Handle Planner Return
 
 - **`## PLANNING COMPLETE`:** Display plan count. If `--skip-verify` or `plan_checker_enabled` is false (from init): skip to step 13. Otherwise: step 10.

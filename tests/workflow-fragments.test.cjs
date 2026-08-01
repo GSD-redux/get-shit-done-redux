@@ -65,7 +65,7 @@ describe('single marker pair', () => {
   test('singleMarkerPairStripsMarkersAndPreservesBody', () => {
     const source = doc(
       'before prose',
-      '<!-- gsd:section id="sec-a" when="flag:--prd" -->',
+      '<!-- gsd:section id="sec-a" when="flag:--wave" -->',
       'body line 1',
       'body line 2',
       '<!-- /gsd:section -->',
@@ -77,7 +77,7 @@ describe('single marker pair', () => {
     assert.equal(sections[0].body, 'before prose\n');
     assert.equal(sections[1].explicit, true);
     assert.equal(sections[1].id, 'sec-a');
-    assert.equal(sections[1].when, 'flag:--prd');
+    assert.equal(sections[1].when, 'flag:--wave');
     assert.equal(sections[1].body, 'body line 1\nbody line 2\n');
     assert.equal(sections[2].explicit, false);
     assert.equal(sections[2].body, 'after prose');
@@ -97,7 +97,7 @@ describe('multiple disjoint marker pairs', () => {
       'bodyA',
       '<!-- /gsd:section -->',
       'gap1',
-      '<!-- gsd:section id="b" when="flag:--chunked" -->',
+      '<!-- gsd:section id="b" when="state:has-prior-phases" -->',
       'bodyB',
       '<!-- /gsd:section -->',
       'gap2',
@@ -125,27 +125,25 @@ describe('multiple disjoint marker pairs', () => {
 
 // ─── Row 4: the real pilot workflow ─────────────────────────────────────────
 
-describe('real plan-phase.md', () => {
-  // NOTE (chore/2930 review, defect found and fixed inline while verifying):
-  // this test previously asserted "plan-phase.md ships unmarked today" —
-  // stale the moment the SAME commit that introduced this test (c036e31ee,
-  // #2930) also piloted real `gsd:section` markers onto plan-phase.md
-  // (reviews-prereq, prd-express, ingest-express, chunked-mode). Rewritten
-  // to assert against the file's actual current (marked) shape instead of a
-  // premise the file no longer satisfies.
+describe('real execute-phase.md', () => {
+  // NOTE (chore/2930 retarget): the pilot moved from plan-phase.md to
+  // execute-phase.md — plan-phase.md sits 36 B under the ADR-857 Phase-6
+  // PRE_PHASE6 gate (tests/phase6-capstone-conformance.test.cjs) and cannot
+  // absorb marker overhead, so the maintainer retargeted the pilot to
+  // execute-phase.md (partial-wave, gap-closure-artifacts, regression-gate).
   test('pilotWorkflowParsesAndRendersToSourceMinusMarkers', () => {
-    const pilotPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
+    const pilotPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
     const original = fs.readFileSync(pilotPath, 'utf8');
 
-    // plan-phase.md carries the pilot's real marker pairs today: parsing it
-    // must recognize exactly those four explicit sections, in document
+    // execute-phase.md carries the pilot's real marker pairs today: parsing
+    // it must recognize exactly those three explicit sections, in document
     // order, and composing it must strip every marker line while leaving
     // every byte of body content untouched.
     const baselineSections = parseWorkflowSections(original, pilotPath);
     const baselineExplicit = baselineSections.filter((s) => s.explicit);
     assert.deepEqual(
       baselineExplicit.map((s) => s.id),
-      ['reviews-prereq', 'prd-express', 'ingest-express', 'chunked-mode'],
+      ['partial-wave', 'gap-closure-artifacts', 'regression-gate'],
     );
     const composedOriginal = composeWorkflow(original, { sourcePath: pilotPath });
     assert.equal(composedOriginal.includes('gsd:section'), false);
@@ -153,18 +151,17 @@ describe('real plan-phase.md', () => {
 
     // Wrap an ADDITIONAL, disjoint marker pair around an arbitrary interior
     // slice of real content that sits outside every existing marker pair
-    // (lines 11-15: inside <required_reading>, well before "reviews-prereq"
-    // at line 185) and confirm it parses as a fifth explicit section and
-    // composes to the SAME final output as the unmodified file — every
-    // fragment is `verbatim` (row 23), so wrapping already-included content
-    // in a new marker pair can never change what is emitted, only how it is
-    // partitioned internally.
+    // (lines 11-15, well before "partial-wave") and confirm it parses as a
+    // fourth explicit section and composes to the SAME final output as the
+    // unmodified file — every fragment is `verbatim` (row 23), so wrapping
+    // already-included content in a new marker pair can never change what
+    // is emitted, only how it is partitioned internally.
     const lines = original.split(/\r?\n/);
     const sliceStart = 10;
     const sliceEnd = 15;
     const markedLines = [
       ...lines.slice(0, sliceStart),
-      '<!-- gsd:section id="pilot-slice" when="flag:--prd" -->',
+      '<!-- gsd:section id="pilot-slice" when="always" -->',
       ...lines.slice(sliceStart, sliceEnd),
       '<!-- /gsd:section -->',
       ...lines.slice(sliceEnd),
@@ -175,7 +172,7 @@ describe('real plan-phase.md', () => {
     const explicitSections = sections.filter((s) => s.explicit);
     assert.deepEqual(
       explicitSections.map((s) => s.id),
-      ['pilot-slice', 'reviews-prereq', 'prd-express', 'ingest-express', 'chunked-mode'],
+      ['pilot-slice', 'partial-wave', 'gap-closure-artifacts', 'regression-gate'],
     );
     assert.equal(explicitSections[0].body, lines.slice(sliceStart, sliceEnd).join('\n') + '\n');
 
@@ -339,7 +336,7 @@ describe('structural negatives throw with file + line', () => {
       '<!-- gsd:section id="dup" when="always" -->',
       'first',
       '<!-- /gsd:section -->',
-      '<!-- gsd:section id="dup" when="flag:--chunked" -->',
+      '<!-- gsd:section id="dup" when="flag:--wave" -->',
       'second',
       '<!-- /gsd:section -->',
     );
@@ -379,7 +376,7 @@ describe('attribute-shape negatives', () => {
   });
 
   test('whenValueWithBooleanOperatorThrows', () => {
-    for (const when of ['flag:--prd && flag:--chunked', 'flag:--prd || flag:--chunked', '!flag:--prd']) {
+    for (const when of ['flag:--wave && state:has-prior-phases', 'flag:--wave || state:has-prior-phases', '!flag:--wave']) {
       const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
       assert.throws(
         () => parseWorkflowSections(source, 'workflow.md'),
@@ -455,7 +452,7 @@ describe('frozen when= vocabulary', () => {
     assert.equal(Object.isFrozen(WHEN_VOCABULARY), true);
     assert.deepEqual(
       [...WHEN_VOCABULARY].sort(),
-      ['always', 'flag:--chunked', 'flag:--ingest', 'flag:--prd', 'flag:--reviews'],
+      ['always', 'flag:--wave', 'state:gap-closure-phase', 'state:has-prior-phases'],
     );
   });
 });
