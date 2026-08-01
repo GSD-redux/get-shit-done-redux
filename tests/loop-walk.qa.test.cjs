@@ -427,13 +427,36 @@ describe('oracle self-tests', () => {
   });
 
   test('monotonic-progress fails on a broken context (value decreased)', () => {
+    // Neither observation carries milestone_version/milestone_name at all (branch 2 of the
+    // three-way scope rule, #2966 FIX 2b) — they share the same (absent) scope by construction,
+    // so this MUST still compare normally and violate. A prior fix over-broadened the "skip when
+    // scope is unknowable" rule to skip ANY scope-less payload, which silently disabled this exact
+    // check for a minimal payload like this one; only the full remote suite caught it.
     const outcome = getOracle('monotonic-progress').check({
       history: [{ json: { total_plans: 5 } }],
       result: { json: { total_plans: 2 } },
     });
     assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.key, 'total_plans');
+    assert.strictEqual(outcome.subject.from, 5);
+    assert.strictEqual(outcome.subject.to, 2);
     assert.strictEqual(typeof outcome.detail, 'string');
     assert.ok(outcome.detail.length > 0);
+  });
+
+  test('monotonic-progress: a decrease with total_summaries (the exact self-test shape) still violates when neither side has scope', () => {
+    // Regression coverage for the #2966 self-test payload shape reported by the full suite:
+    // `{ total_summaries: n }`, no milestone fields, no argv at all.
+    const outcome = getOracle('monotonic-progress').check({
+      history: [{ json: { total_summaries: 3 } }],
+      result: { json: { total_summaries: 1 } },
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.key, 'total_summaries');
+    assert.strictEqual(outcome.subject.from, 3);
+    assert.strictEqual(outcome.subject.to, 1);
   });
 
   test('monotonic-progress: a decrease WITHIN the same milestone_version is a VIOLATION', () => {
@@ -490,9 +513,12 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.subject.to, 1);
   });
 
-  test('monotonic-progress: an observation whose payload lacks BOTH milestone fields is skipped entirely, never guessed as a boundary', () => {
-    // Mirrors `roadmap analyze`'s real payload shape: neither milestone_version
-    // nor milestone_name present at all (#2966 FIX 2b).
+  test('monotonic-progress: a MIXED pair (one scoped, one not) is skipped — genuinely indeterminate, not a boundary guess', () => {
+    // Mirrors `roadmap analyze`'s real payload shape sitting between two scoped `progress`
+    // observations: neither milestone_version nor milestone_name present on the middle entry.
+    // Branch 3 of the three-way rule (#2966 FIX 2c): that ONE pairing is skipped and does not
+    // become the new reference point, so the surrounding same-scope comparison still applies —
+    // see the next test.
     const ctx = {
       history: [
         { json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },

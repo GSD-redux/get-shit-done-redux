@@ -437,12 +437,34 @@ const ORACLES = Object.freeze([
       'Numeric total_plans/total_summaries/phases_completed fields must never decrease across history + result, ' +
       'in walk order, WITHIN a comparable scope (VIOLATION). A scope is the pair of {milestone_version + ' +
       'milestone_name} from the payload and the active workstream derived from the invocation\'s own argv ' +
-      '(`--ws <name>`, see `progressScopeOf`) — a milestone/workstream boundary crossing legally resets these ' +
-      'counters, so a scope CHANGE resets the comparison SILENTLY: it is expected behavior, not evidence, and is ' +
-      'never reported (not a violation, not a smell) — see #2966 FIX 2. An observation whose payload carries ' +
-      'neither milestone_version nor milestone_name (e.g. `roadmap analyze`) has an UNKNOWABLE scope and is ' +
-      'skipped entirely — it neither starts nor continues a comparison — rather than guessing it crossed a ' +
-      'boundary.',
+      '(`--ws <name>`, see `progressScopeOf`). Two consecutive observations are compared using a THREE-WAY rule ' +
+      'keyed on whether each one\'s payload carries a milestone scope at all (`hasScope`, true when the payload ' +
+      'has `milestone_version` and/or `milestone_name`; see below):\n' +
+      '  1. BOTH have scope -> compare via `scopeEqual` (milestone_version + milestone_name + workstream). Same ' +
+      '     scope: a decrease is a VIOLATION. Different scope: a milestone/workstream boundary crossing legally ' +
+      '     resets the counters, so this resets the comparison SILENTLY — expected behavior, never reported (not ' +
+      '     a violation, not a smell). See #2966 FIX 2(a). This observation becomes the new reference point.\n' +
+      '  2. NEITHER has scope -> they share the same (absent) milestone scope by construction, so the SAME ' +
+      '     `scopeEqual` comparison applies (it degenerates to comparing `undefined === undefined` plus ' +
+      '     workstream, e.g. a `--ws` switch still resets silently even with no milestone fields at all): a ' +
+      '     same-scope decrease is a VIOLATION. This is the branch a prior fix got wrong (see WHY THE BLANKET ' +
+      '     SKIP WAS WRONG below) and is the one #2966 FIX 2(b) restores. This observation becomes the new ' +
+      '     reference point.\n' +
+      '  3. MIXED (one has scope, the other does not) -> genuinely indeterminate; this pair is not compared, and ' +
+      '     — unlike branches 1/2 — the mixed observation does NOT replace the reference point, so the NEXT ' +
+      '     entry is compared against the last observation whose scope-category matched. This is the `roadmap ' +
+      '     analyze` (no milestone fields) sitting between two `progress` observations (milestone fields) case ' +
+      '     that motivated scope-awareness in the first place: it must not mask a real same-scope decrease on ' +
+      '     either side of it.\n\n' +
+      'WHY THE BLANKET SKIP WAS WRONG: an earlier version of this oracle skipped ANY entry lacking both milestone ' +
+      'fields entirely — it neither compared it nor let it become the reference point. That was meant to fix ' +
+      'branch 3 above, but it silently also disabled branch 2: a minimal payload like `{ total_summaries: n }` ' +
+      '(no milestone fields at all, e.g. the oracle\'s own self-test fixtures) could never trigger a violation no ' +
+      'matter how far it decreased, because it could never be compared against anything. That is a false ' +
+      'NEGATIVE in the exact defect this oracle exists to catch, and it is strictly worse than the false ' +
+      'POSITIVE the blanket skip was trying to fix — it was caught only by the full remote suite\'s self-tests, ' +
+      'not by any local check. Do not re-broaden this to a blanket "no scope fields -> skip" rule; keep the ' +
+      'three-way branch above, where "neither has scope" is fully comparable and only a genuine MIX is skipped.',
     check(ctx) {
       try {
         const history = ctx && Array.isArray(ctx.history) ? ctx.history : [];
@@ -450,7 +472,7 @@ const ORACLES = Object.freeze([
         /** @type {{key:string, from:number, to:number, fromIndex:number, toIndex:number}[]} */
         const violations = [];
         for (const key of PROGRESS_KEYS) {
-          /** @type {{value:number, index:number, scope:ReturnType<typeof progressScopeOf>} | undefined} */
+          /** @type {{value:number, index:number, scope:ReturnType<typeof progressScopeOf>, hasScope:boolean} | undefined} */
           let prev;
           entries.forEach((entry, index) => {
             const json = entry && entry.json;
@@ -458,23 +480,26 @@ const ORACLES = Object.freeze([
             const value = json[key];
             if (typeof value !== 'number' || Number.isNaN(value)) return;
             const scope = progressScopeOf(entry);
-            // Scope is unknowable when the payload carries neither milestone field —
-            // skip entirely (do not compare against it, do not let it become `prev`)
-            // rather than guessing whether it crossed a boundary. See FIX 2(b).
-            if (scope.milestoneVersion === undefined && scope.milestoneName === undefined) return;
-            if (prev !== undefined) {
-              if (scopeEqual(prev.scope, scope)) {
-                if (value < prev.value) {
-                  violations.push({
-                    key, from: prev.value, to: value, fromIndex: prev.index, toIndex: index,
-                  });
-                }
-              }
-              // else: scope changed — a boundary crossing is expected, not questionable.
-              // Reset the comparison silently (fall through to `prev = ...` below);
-              // never report it, per FIX 2(a).
+            const hasScope = scope.milestoneVersion !== undefined || scope.milestoneName !== undefined;
+            if (prev === undefined) {
+              prev = { value, index, scope, hasScope };
+              return;
             }
-            prev = { value, index, scope };
+            if (prev.hasScope !== hasScope) {
+              // Branch 3: mixed — genuinely indeterminate. Skip this comparison AND leave
+              // `prev` untouched, so the next entry is still compared against the last
+              // scope-category-matching observation (see JSDoc above).
+              return;
+            }
+            // Branch 1 (both scoped) and Branch 2 (neither scoped) are the SAME check:
+            // `scopeEqual` naturally degenerates to comparing undefined===undefined plus
+            // workstream when neither side carries milestone fields.
+            if (scopeEqual(prev.scope, scope) && value < prev.value) {
+              violations.push({
+                key, from: prev.value, to: value, fromIndex: prev.index, toIndex: index,
+              });
+            }
+            prev = { value, index, scope, hasScope };
           });
         }
         if (violations.length) {
