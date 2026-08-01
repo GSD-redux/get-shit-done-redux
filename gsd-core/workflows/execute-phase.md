@@ -301,11 +301,9 @@ else
   else
     git switch --quiet "$DEFAULT_BRANCH" 2>/dev/null && git merge --ff-only --quiet "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   fi
-  # Pinned base (#2916); --no-track (#2498) so default autoSetupMerge doesn't wire upstream to origin/$DEFAULT_BRANCH.
-  # #2639: warn if local is ahead of origin — fork will miss unpushed commits.
+  # Pinned base (#2916); --no-track (#2498). #2639: warn if local ahead of origin.
   AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..$DEFAULT_BRANCH" 2>/dev/null || echo 0)
-  [ "$AHEAD" != "0" ] && [ -n "$AHEAD" ] && \
-    echo "WARNING: $DEFAULT_BRANCH is $AHEAD ahead of origin — '$BRANCH_NAME' forks from origin and won't include those unpushed commits (#2639)." >&2
+  [ "$AHEAD" != "0" ] && [ -n "$AHEAD" ] && echo "WARNING: $DEFAULT_BRANCH is $AHEAD ahead of origin — '$BRANCH_NAME' won't include those commits (#2639)." >&2
   git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" --no-track \
     || { echo "ERROR: Could not create '$BRANCH_NAME' from origin/$DEFAULT_BRANCH (#2916)." >&2; exit 1; }
 fi
