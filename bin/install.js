@@ -45,6 +45,9 @@ const {
 } = require('../gsd-core/bin/lib/worktree-base-ref.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
 const { createImperativeAdapter } = require('../gsd-core/bin/lib/adapter-imperative.cjs');
+// #2930 (epic #1671 Phase 3): strips `<!-- gsd:section -->` markers from
+// workflow .md content at emit time, before any per-runtime rewrite runs.
+const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 // Canonical set of hook files shipped to users. Imported here so writeManifest()
 // records exactly the same set that build-hooks.js copies to hooks/dist/, making
@@ -7784,6 +7787,32 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       // Replace ~/.claude/ and $HOME/.claude/ and ./.claude/ with runtime-appropriate paths
       // Skip generic replacement for Copilot/Antigravity — their converters handle all paths
       let content = fs.readFileSync(srcPath, 'utf8');
+
+      // #2930 (epic #1671 Phase 3): strip `<!-- gsd:section -->` markers
+      // BEFORE any per-runtime rewrite so a `.claude/` -> `.windsurf/` regex
+      // (or any other converter below) never reaches inside a marker
+      // attribute and corrupts it. composeWorkflow is a no-op (byte-identical
+      // return) for the 88+ workflows and every non-workflow .md that carries
+      // no markers, and for a malformed marker it throws loudly naming
+      // srcPath — never emit a half-composed workflow.
+      //
+      // Scoped to gsd-core/workflows/ ONLY (two independent reviewers,
+      // chore/2930): copyWithPathReplacement is the emit path for every .md
+      // under gsd-core/, skills/, and commands/ (see the three call sites),
+      // not just workflows. A doc that merely DOCUMENTS the marker syntax
+      // with an unfenced example (docs/reference/workflow-fragments.md is
+      // the live instance of this class, though not under the install tree
+      // today) would otherwise get silently mis-parsed as a real marker and
+      // that line lossily dropped — a file class issue #2930 never scoped
+      // to. Path is normalized UNCONDITIONALLY (backslash paths arrive on
+      // Linux too — CONTEXT.md path-separator rule) and checked as a
+      // path-segment match so the recursive descent (srcPath may be several
+      // directory levels below gsd-core/workflows/) is still caught.
+      const normalizedSrcPath = srcPath.replace(/\\/g, '/');
+      if (/(?:^|\/)gsd-core\/workflows\//.test(normalizedSrcPath)) {
+        content = composeWorkflow(content, { sourcePath: srcPath });
+      }
+
       if (!dispatch.mdSkipGenericRewrite) {
         const globalClaudeRegex = /~\/\.claude\//g;
         const globalClaudeHomeRegex = /\$HOME\/\.claude\//g;
