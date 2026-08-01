@@ -34,7 +34,16 @@ const SCAN_DIRS = [
   'gsd-core/workflows',
   'commands/gsd',
   'skills',
+  'docs',
 ];
+
+// Files that are historical record (must not be rewritten to satisfy this
+// guard) or generated changelog. RELEASE-NOTES-LEGACY.md carries the old #13898
+// attribution as shipped history; it is out of scope.
+const EXCLUDED_FILES = new Set([
+  path.join(REPO_ROOT, 'docs', 'RELEASE-NOTES-LEGACY.md'),
+  path.join(REPO_ROOT, 'CHANGELOG.md'),
+]);
 
 const BANNED = 'mcp__context7__get-library-docs';
 
@@ -54,7 +63,8 @@ function listMarkdown(dir) {
 }
 
 describe('#2943 — no shipped artifact references the nonexistent get-library-docs tool', () => {
-  const files = SCAN_DIRS.flatMap(listMarkdown);
+  const files = SCAN_DIRS.flatMap(listMarkdown)
+    .filter((f) => !EXCLUDED_FILES.has(f));
   assert.ok(files.length > 50, `scan surface sanity check (found ${files.length} markdown files)`);
 
   const offenders = [];
