@@ -45,18 +45,16 @@ function resolveTarballFiles() {
  */
 function extractRequires(source) {
   const requires = [];
-  // Match require('...') or require("...") with a static string literal.
-  // Ignores requires inside line comments (// ...) to reduce false positives.
-  const lines = source.split('\n');
+  // Strip block comments (/* ... */) and inline line comments (// ...) before
+  // matching, so a require() appearing in a doc comment or fenced code block
+  // inside a /* */ does not produce a false positive.
+  const stripped = source
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
   const requireRe = /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
-  for (const line of lines) {
-    // Skip full-line comments
-    const trimmed = line.trim();
-    if (trimmed.startsWith('//') || trimmed.startsWith('*')) continue;
-    let m;
-    while ((m = requireRe.exec(line)) !== null) {
-      requires.push(m[1]);
-    }
+  let m;
+  while ((m = requireRe.exec(stripped)) !== null) {
+    requires.push(m[1]);
   }
   return requires;
 }
@@ -119,13 +117,16 @@ describe('#2858 — shipped scripts require only shipped paths', () => {
 
   before(() => {
     shippedFiles = resolveTarballFiles();
-    // Filter to scripts/**/*.cjs (the shipped script surface)
+    // Filter to scripts/**/*.{cjs,js} (the shipped script surface — both .cjs
+    // and .js files ship under scripts/, e.g. build-hooks.js is required by
+    // bin/install.js). Both extensions are checked so a broken require() in a
+    // .js file is caught just the same as one in a .cjs file.
     shippedScripts = [...shippedFiles]
-      .filter((f) => f.startsWith('scripts/') && f.endsWith('.cjs'))
+      .filter((f) => f.startsWith('scripts/') && /\.(cjs|js)$/.test(f))
       .sort();
   });
 
-  test('every shipped scripts/*.cjs is require-able from a shipped-only tree', () => {
+  test('every shipped scripts/*.{cjs,js} is require-able from a shipped-only tree', () => {
     assert.ok(shippedScripts.length > 0, 'expected at least one shipped script');
 
     const violations = [];
