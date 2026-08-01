@@ -45,6 +45,9 @@ const {
 } = require('../gsd-core/bin/lib/worktree-base-ref.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
 const { createImperativeAdapter } = require('../gsd-core/bin/lib/adapter-imperative.cjs');
+// #2930 (epic #1671 Phase 3): strips `<!-- gsd:section -->` markers from
+// workflow .md content at emit time, before any per-runtime rewrite runs.
+const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 // Canonical set of hook files shipped to users. Imported here so writeManifest()
 // records exactly the same set that build-hooks.js copies to hooks/dist/, making
@@ -7786,6 +7789,16 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       // Replace ~/.claude/ and $HOME/.claude/ and ./.claude/ with runtime-appropriate paths
       // Skip generic replacement for Copilot/Antigravity — their converters handle all paths
       let content = fs.readFileSync(srcPath, 'utf8');
+
+      // #2930 (epic #1671 Phase 3): strip `<!-- gsd:section -->` markers
+      // BEFORE any per-runtime rewrite so a `.claude/` -> `.windsurf/` regex
+      // (or any other converter below) never reaches inside a marker
+      // attribute and corrupts it. composeWorkflow is a no-op (byte-identical
+      // return) for the 88+ workflows and every non-workflow .md that carries
+      // no markers, and for a malformed marker it throws loudly naming
+      // srcPath — never emit a half-composed workflow.
+      content = composeWorkflow(content, { sourcePath: srcPath });
+
       if (!dispatch.mdSkipGenericRewrite) {
         const globalClaudeRegex = /~\/\.claude\//g;
         const globalClaudeHomeRegex = /\$HOME\/\.claude\//g;

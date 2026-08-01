@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "plan-phase.md": "#2930 (epic #1671 Phase 3): pilots the in-file `<!-- gsd:section -->` marker grammar by wrapping the --reviews/--prd/--ingest/--chunked branch sections (reviews-prereq, prd-express, ingest-express, chunked-mode) in marker pairs, proving the composeWorkflow seam runs at install time before per-runtime rewrites. SOURCE grows by exactly the 330 marker bytes (8 marker lines); the EMITTED artifact composeWorkflow produces at install is byte-identical to the pre-#2930 file (markers are stripped, never shipped). See .gsd/phase/chore-2930-fragmentize-xl-workflow/40-design.md 'Known limits' item 5."
+  }
+}

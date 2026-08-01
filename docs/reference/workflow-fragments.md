@@ -1,0 +1,141 @@
+# Workflow fragments (reference)
+
+> **Diátaxis quadrant:** Reference. This is the canonical specification of the
+> in-file `<!-- gsd:section -->` marker grammar used to fragmentize GSD workflow
+> markdown for per-runtime emission. For the surrounding seam (why it exists and
+> how it composes with the shared budget composer), see
+> [Architecture: Workflow Fragmentization and Emission](../ARCHITECTURE.md#workflow-fragmentization-and-emission-srcworkflow-fragmentscts-adr-1671)
+> and [ADR-1671](../adr/1671-dynamic-context-management-platform.md) (open
+> questions 1 and 2).
+
+Workflow authors can mark one or more sections of a `gsd-core/workflows/*.md` file
+so that `bin/install.js`'s emission path can compose them per runtime. Today this
+is an authoring model with no run-time effect yet — see
+[Not acted on yet](#not-acted-on-yet) below.
+
+## Marker syntax
+
+An open marker is a line whose only content (after trimming leading/trailing
+whitespace) is:
+
+```html
+<!-- gsd:section id="<id>" when="<when>" -->
+```
+
+A close marker is a line whose only content is:
+
+```html
+<!-- /gsd:section -->
+```
+
+- Attribute order is free and inner spacing around `=` and between attributes
+  is flexible.
+- `id` must match `/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/` and must be unique
+  within one file.
+- `when` must be exactly one entry of the frozen vocabulary below — no
+  operators, no negation, no nesting.
+- Both `id` and `when` are **required** on every open marker; a marker missing
+  either attribute fails closed (see [Fails closed](#fails-closed)).
+
+Text between an open marker and its matching close marker is that section's
+body, byte-for-byte (including its own line terminators). Text outside any
+marker pair becomes an implicit "gap" fragment — the file's ordinary,
+unmarked content — so a workflow with no markers at all parses to exactly one
+gap fragment and composes back byte-identical to its source.
+
+## The frozen `when=` vocabulary
+
+`when=` takes exactly one of:
+
+| Value | Meaning |
+|---|---|
+| `always` | Section is always applicable. |
+| `flag:--prd` | Applicable when the workflow runs with `--prd`. |
+| `flag:--ingest` | Applicable when the workflow runs with `--ingest`. |
+| `flag:--reviews` | Applicable when the workflow runs with `--reviews`. |
+| `flag:--chunked` | Applicable when the workflow runs with `--chunked`. |
+
+This list is **closed by design** (Greenspun's Tenth Rule): left open-ended,
+`when=` would acquire boolean operators, negation, precedence, and
+runtime/capability predicates one edit at a time, becoming an ad-hoc,
+informally-specified applicability language. Widening the vocabulary is a
+coordinated ADR amendment to ADR-1671, never an organic edit to the parser.
+
+## Fails closed
+
+An authoring mistake throws at parse time, naming the source file and 1-based
+line number, rather than being silently dropped or swallowed to end-of-file:
+
+- Missing `id=` or `when=` attribute.
+- `when=` value not in the frozen vocabulary above (including any boolean
+  operator or negation form).
+- `id=` value that does not match the id grammar.
+- An unrecognized attribute on an open marker.
+- A close marker carrying attributes.
+- An unmatched close marker (close with no open).
+- A nested marker (open marker while already inside an open section).
+- A duplicate `id=` within one file.
+- An open marker with no matching close before end of file.
+
+An unrecognized `when=` is treated as an authoring instruction that must never
+be silently ignored, not as a value to fail open on — this is deliberately
+asymmetric with the marker *formatting* tolerance above (free attribute order,
+flexible spacing), which is liberal by design.
+
+## Markers are stripped at emit
+
+Composition runs `parseWorkflowSections` → map sections to fragments → the
+shared `context-composer.cjs` budget seam (every fragment uses the `verbatim`
+strategy, so nothing is trimmed) → re-join fragment bodies in document order.
+The marker lines themselves are never part of any fragment body, so the
+composed output — and therefore every installed runtime artifact — contains
+no `gsd:section` markers at all. An unmarked file composes to itself exactly;
+a marked file composes to itself minus the marker line bytes.
+
+Composition runs **before** the per-runtime converters (the `.claude/` →
+`.windsurf/`-style path and reference rewrites), so a marker's `id`/`when`
+attribute text is never exposed to a rewrite regex.
+
+## Fenced and commented lookalikes are literal
+
+A `<!-- gsd:section ... -->`-shaped line inside a fenced code block (three or
+more backticks or tildes, CommonMark-style) is **not** a marker — it is
+literal fence content, because workflows document their own marker syntax in
+fenced examples (as in this page and in the workflow files themselves). The
+same applies to a `gsd:section` mention inside an unrelated HTML comment, or
+in prose/backtick text that never opens a real one-line comment. Fence and
+comment detection run as a single interleaved left-to-right scan, mirroring
+the discipline used by the `CONTEXT.md` predicate parser
+(`src/context-predicates.cts`): while a fence is open, only a matching closer
+can end it; while a comment is open, only `-->` can end it; an unclosed fence
+running to end of file is not an error — everything after it is simply
+literal.
+
+The pre-existing `<!-- gsd:loop-host ... -->` marker family (consumed by
+`scripts/gen-loop-host-contract.cjs`) is a different, already-established
+marker and is never treated as a `gsd:section` marker.
+
+## Not acted on yet
+
+`when=` is parsed and validated today, but applicability selection — actually
+choosing which sections apply to a given invocation — is not implemented in
+this phase. Every fragment composes into the output regardless of its `when=`
+value; only the marker lines are stripped. Run-time selection is planned for
+a later phase of ADR-1671's epic.
+
+## Piloted on one workflow so far
+
+Only `gsd-core/workflows/plan-phase.md` carries markers today. The marker
+grammar and composer seam are general-purpose across any workflow file, but
+rollout to other LARGE/XL workflows is intentionally sequenced as later work,
+not part of this phase.
+
+## Related
+
+- [ADR-1671](../adr/1671-dynamic-context-management-platform.md) — the
+  platform decision record, including open questions 1 (fragment unit) and 2
+  (build-time vs. run-time emission), both resolved by this phase.
+- [Architecture: Workflow Fragmentization and Emission](../ARCHITECTURE.md#workflow-fragmentization-and-emission-srcworkflow-fragmentscts-adr-1671).
+- `src/workflow-fragments.cts` — the compiled parser/composer source.
+- `src/context-composer.cts` — the shared budget-composition seam consumed by
+  `composeWorkflow`.

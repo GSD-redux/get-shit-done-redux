@@ -64,6 +64,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Capability matrix](reference/capability-matrix.md) — generated catalogue of every capability's role, tier, extension points, hook kinds, and `engines.gsd`
 - [Capability manifest](reference/capability-manifest.md) — the full `capability.json` schema and validation rules
 - [`gsd capability` command](reference/gsd-capability-command.md) — install / update / remove / list reference for third-party capabilities
+- [Workflow fragments](reference/workflow-fragments.md) — in-file `<!-- gsd:section -->` marker grammar for fragmentizing workflow markdown at emission time
 - [Reviewer Lane Registry](registries/reviewer-registry.md) — generated catalogue of third-party reviewer lanes, with their flags, transport, and install commands
 
 ---
