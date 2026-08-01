@@ -95,7 +95,12 @@ function pathExistsInternal(cwd: string, targetPath: string): boolean {
 
 function generateSlugInternal(text: string | null | undefined): string | null {
   if (!text) return null;
-  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').substring(0, 60);
+  // #2849: strip leading/trailing hyphens AFTER truncation, not only before.
+  // .substring(0, 60) can land on a separator, re-introducing a trailing hyphen
+  // the strip step exists to prevent. Truncation cannot add a leading hyphen, so
+  // running the full ^-+|-+$ pass last is equivalent for leading hyphens and
+  // fixes the trailing-hyphen-after-truncation case.
+  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').substring(0, 60).replace(/^-+|-+$/g, '');
 }
 
 // ─── Transliteration (#2848) ─────────────────────────────────────────────────
