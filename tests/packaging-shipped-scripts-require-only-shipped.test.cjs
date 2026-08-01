@@ -1,4 +1,4 @@
-// allow-test-rule: integration-test-input
+// allow-test-rule: integration-test-input (see #2858)
 // #2858 — class-extinction guard: every shipped scripts/**/*.cjs must be
 // require-able using only shipped paths. A script that ships in the npm tarball
 // but requires a module from tests/ (which does not ship) is MODULE_NOT_FOUND
