@@ -74,6 +74,10 @@ function createCompleteAgents(agentsDir) {
   fs.mkdirSync(agentsDir, { recursive: true });
   for (const agent of EXPECTED_AGENTS) {
     fs.writeFileSync(path.join(agentsDir, `${agent}.toml`), `name = "${agent}"\n`);
+    // #2540: a real Codex install writes the contract-bearing .md beside the
+    // .toml, and checkAgentsInstalled treats a toml-only codex agent as
+    // incomplete — a "complete" fixture must carry both.
+    fs.writeFileSync(path.join(agentsDir, `${agent}.md`), `# ${agent}\n`);
   }
 }
 
