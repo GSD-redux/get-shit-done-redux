@@ -950,6 +950,29 @@ describe('#2562 — a shipped marker its own artifacts contradict is not asserte
     assert.equal(inv.milestone_shipped_unverified, false);
   });
 
+  // The narrow predicate "a live dir that is itself unfinished" was NOT enough:
+  // here the live dir is COMPLETE and the unfinished phase 2 is declared with no
+  // directory, so nothing is live-and-unfinished and the marker sailed through,
+  // reproducing the reported symptom verbatim (`milestone complete` beside 50%).
+  // What makes the ratio meaningful again is simply that the archive is dirty —
+  // any in-milestone directory outliving it — so the check is the conjunction.
+  test('an archived snapshot is refused when a COMPLETE live dir sits beside a dirless phase', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-archived-dirty' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), V2_ROADMAP(false));
+    writeSnapshot(wsDir);
+    writePhase(wsDir, '3-new-a', { plans: 1, summaries: 1, verification: 'passed' }); // complete, still live
+    // phase 4 is declared in the Progress table with NO directory
+
+    const inv = inspectWorkstream(tmpDir, 'ws-archived-dirty', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.completed_phases, 1);
+    assert.equal(inv.roadmap_phase_count, 2, 'the dirless phase 4 stays in the denominator');
+    assert.equal(inv.progress_percent, 50);
+    assert.notEqual(inv.status, 'milestone complete', 'status must not contradict the percentage');
+    assert.equal(inv.milestone_shipped_unverified, true);
+  });
+
   // `milestone complete` does not advance STATE's `milestone:` field
   // (state-transition.cts:1335 writes status/last_activity only; :1224 is the
   // separate new-milestone path), so a phase can be added or reopened while the
