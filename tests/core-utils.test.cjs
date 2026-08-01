@@ -248,6 +248,13 @@ describe('generateSlugInternal', () => {
     assert.ok((slug?.length ?? 0) <= 60);
   });
 
+  test('#2849 — all-separator input collapses to empty, not a stray hyphen', () => {
+    // Input that is entirely separators must reduce to '' (not null, not '-'),
+    // both short and when truncated past 60 chars.
+    assert.strictEqual(coreUtils.generateSlugInternal('!!!'), '');
+    assert.strictEqual(coreUtils.generateSlugInternal('!'.repeat(70)), '');
+  });
+
   test('unicode characters are replaced with hyphens', () => {
     const result = coreUtils.generateSlugInternal('中文phase');
     assert.ok(typeof result === 'string');
