@@ -13,6 +13,7 @@ This project's `tests/` directory uses **filename suffix markers** to group test
 | `install` | `*.install.test.cjs` | Tests that perform a real install/uninstall against a sandbox project. Slower; PR CI skips these on PRs and runs them on `main` push only. |
 | `security` | `*.security.test.cjs` | Adversarial input, prompt-injection guards, fixture-driven hostile-payload sweeps. |
 | `slow` | `*.slow.test.cjs` | Anything that routinely takes >5s wall-clock or holds significant memory. |
+| `qa` | `*.qa.test.cjs` | End-to-end walks that drive the real `gsd-tools` binary across multiple loop steps against one accumulating temp project, with invariant oracles after every step. Slower than `unit`; excluded from the fast lane. |
 | `all` | (any) | Explicit alias for "no filter". Equivalent to running with no `--suite` flag. |
 
 ## How to place a new test
@@ -26,6 +27,7 @@ Examples:
 - `tests/prompt-injection-guards.security.test.cjs` — `security`
 - `tests/installer-end-to-end.install.test.cjs` — `install`
 - `tests/sdk-mutation-stress.slow.test.cjs` — `slow`
+- `tests/loop-walk-accumulating-project.qa.test.cjs` — `qa`
 
 The suite-suffix convention was chosen over a directory layout (`tests/security/`) so the 545+ existing test files don't need to move. Existing files all classify as `unit` until someone explicitly retags them.
 
