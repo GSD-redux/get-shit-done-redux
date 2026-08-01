@@ -1,7 +1,7 @@
 'use strict';
 
-// allow-test-rule: source-text-is-the-product — noSectionMarkerLeaksIntoEmittedArtifacts
-// (#2930) asserts on the literal bytes of an EMITTED install artifact, which IS the
+// allow-test-rule: source-text-is-the-product — noSectionMarkerLeaksIntoEmittedArtifacts (#2930)
+// asserts on the literal bytes of an EMITTED install artifact, which IS the
 // deployed contract (a leaked `gsd:section` marker byte would ship to every user). This
 // mirrors the test-matrix's own row-34/35 exemption from the "no source-grep" rule
 // (50-test-matrix.md "No source-grep" note) — the ESLint rule itself only fires on
