@@ -226,7 +226,7 @@ function getLatestCompletedMilestone(cwd: string): { version: string; name: stri
 function withProjectRoot(cwd: string, result: Record<string, unknown>): Record<string, unknown> {
   result['project_root'] = cwd;
   const activeRuntime = resolveRuntime(cwd);
-  const agentStatus = checkAgentsInstalled(activeRuntime);
+  const agentStatus = checkAgentsInstalled(activeRuntime, cwd);
   result['agents_installed'] = agentStatus.agents_installed;
   result['missing_agents'] = agentStatus.missing_agents;
   result['agents_dir'] = agentStatus.agents_dir;
@@ -2268,7 +2268,7 @@ function cmdAgentSkills(
   if (!block) {
     const runtime = (config && (config['runtime'] as string)) || process.env['GSD_RUNTIME'] || 'claude';
     if (runtime !== 'claude') {
-      const agentCheck = checkAgentsInstalled(runtime) as unknown as { agents_dir?: string } | null;
+      const agentCheck = checkAgentsInstalled(runtime, projectRoot) as unknown as { agents_dir?: string } | null;
       const agentsDir = agentCheck?.agents_dir;
       if (typeof agentsDir === 'string' && agentsDir.length > 0) {
         const agentFile = path.join(agentsDir, `${agentType}.md`);
