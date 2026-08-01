@@ -603,6 +603,51 @@ describe('broken-windows CLI: windows append', () => {
     assert.equal(res.success, false);
     assert.match(res.error, /4-backtick|fence|invalid_text/i);
   });
+
+  // ─── #2893: append must not destroy prose below the JSON ledger ──────────
+
+  test('#2893 — append preserves prose below the JSON ledger block', (t) => {
+    const tmp = createTempDir('bw-append-prose-');
+    t.after(() => cleanup(tmp));
+
+    // Create a WINDOWS.md with prose below the JSON block.
+    fs.mkdirSync(path.join(tmp, '.planning'), { recursive: true });
+    const lp = path.join(tmp, '.planning', LEDGER_FILE_NAME);
+    const initial = renderLedger({
+      schema_version: 1, open_count: 0, waived_count: 0, fixed_count: 0, total_count: 0,
+      last_updated: '2026-01-01T00:00:00Z', entries: [],
+    });
+    const prose = [
+      '',
+      '## Investigation Notes',
+      '',
+      'This window was opened because the flaky test in thread-status.test.ts',
+      'turned out to be a real race condition against live data, not a pre-existing break.',
+      '',
+      '## ACPT-M03',
+      '',
+      'Went red on a green that PREDATED the diff — checkpoint refused, then fixed.',
+    ].join('\n');
+    fs.writeFileSync(lp, initial + prose, 'utf8');
+
+    // Append a window entry.
+    const res = runGsdTools(
+      ['windows', 'append', '--kind', 'stub', '--phase', '2', '--description', 'test entry'],
+      tmp,
+    );
+    assert.equal(res.success, true, `stderr: ${res.error || ''}`);
+    const obj = JSON.parse(res.output);
+    assert.equal(obj.ok, true);
+
+    // The prose must survive.
+    const after = fs.readFileSync(lp, 'utf8');
+    assert.match(after, /Investigation Notes/, 'prose heading must survive the append');
+    assert.match(after, /thread-status\.test\.ts/, 'prose body must survive the append');
+    assert.match(after, /ACPT-M03/, 'second prose heading must survive');
+    assert.match(after, /PREDATED the diff/, 'second prose body must survive');
+    // The ledger must also be correct.
+    assert.match(after, /open_count: 1/);
+  });
 });
 
 // ---------------------------------------------------------------------------
