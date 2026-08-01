@@ -558,6 +558,49 @@ describe('agent-skills global: prefix', () => {
     assert.strictEqual(r.ir.block, '', 'block must be empty when skill is missing');
   });
 
+  // ─── #2941: bare skill name matching a global skill must hint at global: prefix ──
+
+  test('#2941 — bare name matching a global skill hints at the global: prefix', () => {
+    // Create a global skill so it exists on disk under ~/.claude/skills/
+    createGlobalSkill('patch-coverage-check');
+    // Reference it by BARE name (no global: prefix) — this resolves as
+    // project-relative, which doesn't exist, so it's skipped. The warning
+    // must hint that the name matches a global skill.
+    writeConfig(tmpDir, {
+      agent_skills: { 'gsd-executor': ['patch-coverage-check'] },
+    });
+
+    const r = runAgentSkillsJson(
+      ['agent-skills', 'gsd-executor'], tmpDir, { HOME: fakeHome, USERPROFILE: fakeHome }
+    );
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assert.strictEqual(r.ir.block, '', 'block must be empty — bare name does not resolve as project-relative');
+    assert.ok(Array.isArray(r.ir.warnings), 'IR must include warnings');
+    const hintWarning = r.ir.warnings.find((w) => /patch-coverage-check/.test(w) && /global:/.test(w));
+    assert.ok(hintWarning,
+      `warning must hint at the global: prefix when a bare name matches a global skill, got: ${JSON.stringify(r.ir.warnings)}`);
+  });
+
+  test('#2941 — bare name with NO global match keeps the original warning (no false hint)', () => {
+    // No global skill of this name exists. The warning must be the original
+    // "Skill not found" message without a global: hint.
+    writeConfig(tmpDir, {
+      agent_skills: { 'gsd-executor': ['totally-nonexistent-skill'] },
+    });
+
+    const r = runAgentSkillsJson(
+      ['agent-skills', 'gsd-executor'], tmpDir, { HOME: fakeHome, USERPROFILE: fakeHome }
+    );
+    assert.ok(r.success, `Command failed: ${r.error}`);
+    assert.strictEqual(r.ir.block, '', 'block must be empty');
+    assert.ok(Array.isArray(r.ir.warnings), 'IR must include warnings');
+    const notFoundWarning = r.ir.warnings.find((w) => /Skill not found/.test(w) && /totally-nonexistent-skill/.test(w));
+    assert.ok(notFoundWarning, `must have the standard "not found" warning, got: ${JSON.stringify(r.ir.warnings)}`);
+    // Must NOT contain a global: hint — there is no global skill of this name.
+    assert.ok(!notFoundWarning.includes('global:'),
+      `warning must not hint at global: when no global skill matches, got: ${notFoundWarning}`);
+  });
+
   test('mix of global: and project-relative paths both resolve correctly', () => {
     createGlobalSkill('shadcn');
 
