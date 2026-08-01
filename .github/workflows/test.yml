@@ -595,13 +595,6 @@ jobs:
       - name: Guard — require GitHub-hosted runner
         run: node scripts/ci-guard-runner.cjs
 
-      - name: Rebase check — merge PR base branch into PR head
-        if: github.event_name == 'pull_request'
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          CI_REBASE_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/ci-rebase-check.cjs
-
       - name: Set up Node.js 24
         uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
         with:

@@ -22,6 +22,7 @@
     "hooks",
     "scripts",
     "!scripts/gen-emitted-baseline.cjs",
+    "!scripts/qa-smell-ratchet.cjs",
     "pi",
     "vscode"
   ],
