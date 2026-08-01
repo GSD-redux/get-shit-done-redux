@@ -3,6 +3,7 @@
   "modules": {
     "config": {
       "files": [
+        "config-defaults-runtime-exclusion.test.cjs",
         "config-field-docs.test.cjs",
         "config-get-default.test.cjs",
         "config-schema.property.test.cjs",
