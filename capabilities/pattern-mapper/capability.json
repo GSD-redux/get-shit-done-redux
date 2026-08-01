@@ -1,7 +1,7 @@
 {
   "id": "pattern-mapper",
   "role": "feature",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "Pattern mapping",
   "description": "Optional codebase-pattern mapping before planning; owns the pattern mapper agent and workflow.pattern_mapper activation key.",
   "tier": "full",

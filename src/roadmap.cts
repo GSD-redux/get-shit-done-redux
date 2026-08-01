@@ -615,14 +615,31 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     //   `**Plans**: N plans`  — bold word + outer colon (gsd-core/templates/roadmap.md)
     //   `**Plans:** N plans`  — bold "Plans:" (colon inside bold)
     //   `Plans: N plans`      — plain text header
+    //
+    // #2853: the verb owns the count token ONLY — it must not destroy hand-written
+    // prose a human placed after the count (e.g. "(11-16 are gap closure ...)").
+    // Group $1 = phase header → `Plans:` label + trailing whitespace (unchanged).
+    // Group $2 = the existing count token to replace: matches `N/N plans complete`,
+    // `N/N plans executed`, or the bare template `N plans` form. Group $3 = whatever
+    // else is on the line (`[^\r\n]*`, so CRLF `\r` is preserved).
+    //
+    // Trailing text is preserved ONLY when a real count token ($2) was present —
+    // i.e. an annotation a human wrote after a real count. When $2 is absent the
+    // line is the fresh-template bracketed placeholder (`[Number of plans…]`) or
+    // other freeform guidance, not user prose: the count replaces the whole token,
+    // preserving the pre-#2853 clean-output behaviour on the template path.
     const planCountPattern = new RegExp(
-      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)[^\\n]+`,
+      `(#{2,4}\\s*Phase\\s+${phasePattern}${OPTIONAL_PHASE_TAG_SOURCE}(?=[:\\s])(?:(?!\\n#{1,4}\\s)[\\s\\S])*?(?:\\*\\*Plans\\*\\*:|\\*\\*Plans:\\*\\*|(?:^|\\n)Plans:)\\s*)(\\d+\\s*\\/\\s*\\d+\\s+plans(?:\\s+(?:complete|executed))?|\\d+\\s+plans)?([^\\r\\n]*)`,
       'i'
     );
     const planCountText = isComplete
       ? `${summaryCount}/${planCount} plans complete`
       : `${summaryCount}/${planCount} plans executed`;
-    roadmapContent = replaceInCurrentMilestone(roadmapContent, planCountPattern, `$1${planCountText}`);
+    roadmapContent = replaceInCurrentMilestone(roadmapContent, planCountPattern, (_match, label, existingCount, trailing) => {
+      // Preserve trailing text only when a real count preceded it.
+      const suffix = existingCount ? trailing : '';
+      return `${label}${planCountText}${suffix}`;
+    });
 
     // If complete: check checkbox
     if (isComplete) {

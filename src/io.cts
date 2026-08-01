@@ -173,6 +173,7 @@ const ERROR_REASON = Object.freeze({
   // workflow / phase
   PHASE_NOT_FOUND: 'phase_not_found',
   PHASE_VERIFICATION_INCOMPLETE: 'phase_verification_incomplete',
+  PHASE_PLAN_COVERAGE_INCOMPLETE: 'phase_plan_coverage_incomplete',
   SUMMARY_NO_PLANNING: 'summary_no_planning',
   // graphify
   GRAPHIFY_NO_GRAPH: 'graphify_no_graph',

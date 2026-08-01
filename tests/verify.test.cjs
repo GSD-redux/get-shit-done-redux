@@ -920,6 +920,70 @@ describe('verify summary command', () => {
       `Expected checked <= 1, got ${output.checks.files_created.checked}`
     );
   });
+
+  // #2844: a prose MENTION of a path (not a creation claim) must not be treated
+  // as a file claim. Pre-fix Pattern 1 matched any backticked path-like token, so
+  // `shared/types.ts` in a "next phase will add…" sentence was checked for
+  // existence and its absence failed the verdict on a healthy phase.
+  test('#2844 a prose path mention is not treated as a missing file claim', () => {
+    // Real created file exists.
+    fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'src', 'real.ts'), 'export const x = 1;\n');
+    const summaryPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, [
+      '# Summary',
+      '',
+      'This phase investigated the schema surface.',
+      '', // PROSE mention — NOT a creation claim; shared/types.ts does NOT exist.
+      'Next phase will add `shared/types.ts` for the shared schema.',
+      '',
+      'Created: `src/real.ts`',
+    ].join('\n'));
+
+    const result = runGsdTools('verify-summary .planning/phases/01-test/01-01-SUMMARY.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.passed, true,
+      `prose mention must not fail the verdict; errors: ${JSON.stringify(output.errors)}`);
+    assert.ok(!JSON.stringify(output.checks.files_created.missing).includes('shared/types.ts'),
+      'shared/types.ts (a prose mention, absent) must NOT be reported missing');
+  });
+
+  test('#2844 a SUMMARY with only future/prose path mentions passes', () => {
+    // The mentioned paths are FUTURE deliverables (not produced this phase) and
+    // are absent — they must not be probed. isFutureMention excludes the lines.
+    const summaryPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, [
+      '# Summary',
+      '',
+      'Investigation only. No artifacts created this phase.',
+      '`docs/schema.md` is planned for a later phase.',
+      'Next phase will add `shared/types.ts` for the shared schema.',
+    ].join('\n'));
+
+    const result = runGsdTools('verify-summary .planning/phases/01-test/01-01-SUMMARY.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.passed, true,
+      `future/prose mentions must not fail the verdict; errors: ${JSON.stringify(output.errors)}`);
+  });
+
+  test('#2844 negative-space: a real Created claim for an ABSENT file still fails', () => {
+    // src/missing.ts is claimed but does NOT exist — must still be caught.
+    const summaryPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-SUMMARY.md');
+    fs.writeFileSync(summaryPath, [
+      '# Summary',
+      '',
+      'Created: `src/missing.ts`',
+    ].join('\n'));
+
+    const result = runGsdTools('verify-summary .planning/phases/01-test/01-01-SUMMARY.md', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.passed, false, 'an absent claimed file must fail the verdict');
+    assert.ok(JSON.stringify(output.checks.files_created.missing).includes('src/missing.ts'),
+      'src/missing.ts must be reported missing');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

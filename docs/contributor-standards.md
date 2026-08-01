@@ -163,6 +163,18 @@ Before any AI agent writes a single line of code or docs, it must read:
 
 If you are dispatching an AI agent, include these reads in the agent's prompt explicitly. An agent that invents synonyms for `CONTEXT.md` vocabulary or contradicts an accepted ADR without flagging it has failed the pre-work requirement.
 
+**Citing a machine-oriented predicate in a brief.** `CONTEXT.md`'s `KEY.SUBKEY=value` predicates
+(see below) must be cited by ID verbatim, never paraphrased (`META.RULE.brief-must-cite-doc`,
+`META.RULE.brief-no-paraphrase`). Rather than grepping the file by eye for the predicate set a
+brief needs, pull it with the selector, which parses the live file on every call:
+
+```bash
+node gsd-tools.cjs query context-predicates --class <CLASS> | --prefix <dotted.prefix> | --contains <text>
+```
+
+See [`query context-predicates`](CLI-TOOLS.md#query-context-predicates) for the full flag and
+output reference.
+
 **In the PR body**, state which ADR or standards section was followed. If using an AI assistant, this statement is your responsibility as the author — not the agent's.
 
 ### Worktree isolation
