@@ -302,6 +302,14 @@ else
     git switch --quiet "$DEFAULT_BRANCH" 2>/dev/null && git merge --ff-only --quiet "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   fi
   # Pinned base (#2916); --no-track (#2498) so default autoSetupMerge doesn't wire upstream to origin/$DEFAULT_BRANCH.
+  # #2639: warn loudly when local $DEFAULT_BRANCH is ahead of origin — the fork
+  # from origin/$DEFAULT_BRANCH will silently miss those unpushed commits.
+  AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..$DEFAULT_BRANCH" 2>/dev/null || echo 0)
+  if [ "$AHEAD" != "0" ] && [ -n "$AHEAD" ]; then
+    echo "WARNING: Local '$DEFAULT_BRANCH' is $AHEAD commit(s) ahead of 'origin/$DEFAULT_BRANCH'." >&2
+    echo "         The new branch '$BRANCH_NAME' will be forked from 'origin/$DEFAULT_BRANCH' and will NOT include those unpushed commits." >&2
+    echo "         If this is unexpected (e.g. plan/research docs committed locally but not pushed), push first or merge them onto '$BRANCH_NAME' after creation." >&2
+  fi
   git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" --no-track \
     || { echo "ERROR: Could not create '$BRANCH_NAME' from origin/$DEFAULT_BRANCH (#2916)." >&2; exit 1; }
 fi
