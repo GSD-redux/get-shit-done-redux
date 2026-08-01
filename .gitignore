@@ -84,6 +84,8 @@ build/
 /gsd-core/bin/lib/mcp-server.cjs
 /gsd-core/bin/lib/external-descriptor-trust.cjs
 /gsd-core/bin/lib/cli-skew-check.cjs
+/gsd-core/bin/lib/context-composer.cjs
+/gsd-core/bin/lib/context-predicates.cjs
 /gsd-core/bin/lib/capability-loader.cjs
 /gsd-core/bin/lib/capability-source.cjs
 /gsd-core/bin/lib/capability-ledger.cjs

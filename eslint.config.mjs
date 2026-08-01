@@ -234,6 +234,10 @@ export default tseslint.config(
       'gsd-core/bin/lib/state-io.cjs',
       'gsd-core/bin/lib/external-descriptor-trust.cjs',
       'gsd-core/bin/lib/mcp-server.cjs',
+      // ADR-1671 (#2928): tsc-generated runtime artifact — lint the src/context-predicates.cts source.
+      'gsd-core/bin/lib/context-predicates.cjs',
+      // #2929: tsc-generated runtime artifact — lint the src/context-composer.cts source.
+      'gsd-core/bin/lib/context-composer.cjs',
     ],
   },
 

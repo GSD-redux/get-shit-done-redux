@@ -1,7 +1,7 @@
 {
   "id": "pi",
   "role": "runtime",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "pi",
   "description": "pi (pi.dev) — bun-runtime programmatic-CLI; TS ExtensionAPI (registerCommand/registerTool/registerProvider/pi.on); single native-extension file at ~/.pi/agent/extensions/gsd.js (.js, not .cjs — pi's extension auto-discovery accepts only .ts/.js, #2470); no shared-settings hook surface; tier-2 support.",
   "tier": "core",

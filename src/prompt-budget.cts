@@ -9,7 +9,12 @@
  *
  * Used by the review pipeline to support small-context models.
  *
- * Trim priority (in order — never violate):
+ * Trim priority (in order — never violate). As of #2929 (epic #1671 Phase 2)
+ * the ladder itself is executed by the shared `context-composer` seam
+ * (`composeWithinBudget`); this module builds the fragment list in this
+ * exact order, delegates the decision of what survives/shrinks/truncates,
+ * and keeps only the prompt-specific rendering (`renderNote`,
+ * `assemblePrompt`) and the hard-fail response shapes here:
  *   1. Instructions:   ALWAYS kept verbatim
  *   2. Reserve note tokens FIRST when any trim is anticipated
  *   3. Roadmap:        ALWAYS kept verbatim
@@ -21,7 +26,13 @@
  *   9. Hard-fail:      if minimum-set exceeds effectiveBudget
  */
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- context-composer.cjs is an export= CommonJS module
+import contextComposer = require('./context-composer.cjs');
+
 const NOTE_RESERVE_TOKENS = 80;
+
+/** floor per plan when proportionally truncating and for the minimum-set check. */
+const MIN_PLAN_BYTES = 1024;
 
 const DEFAULT_NOTE_TEMPLATE = [
   '<note>',
@@ -101,29 +112,6 @@ function renderNote(template: string, budget: number, omitted: string[], planTru
 }
 
 /**
- * Head-shrink a string to at most `maxLines` lines.
- */
-function headShrink(text: string, maxLines: number): string {
-  if (maxLines <= 0) return '';
-  let idx = -1;
-  let seen = 0;
-  while (seen < maxLines) {
-    idx = text.indexOf('\n', idx + 1);
-    if (idx === -1) return text;
-    seen += 1;
-  }
-  return text.slice(0, idx);
-}
-
-/**
- * Tail-truncate a string to at most `maxChars` characters.
- */
-function tailTruncate(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars);
-}
-
-/**
  * Assemble the final prompt string from its sections.
  */
 function assemblePrompt(parts: {
@@ -180,8 +168,6 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
     projectMdHeadLines = 40,
   } = options;
 
-  const effectiveBudget = Math.floor(budget * (1 - safetyMarginPct / 100));
-
   const {
     instructions,
     roadmap,
@@ -192,34 +178,66 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
     requirements: requirementsRaw = null,
   } = sections;
 
-  // Working mutable state
-  let projectMd: string | null = projectMdRaw;
-  let context: string | null = contextRaw;
-  let research: string | null = researchRaw;
-  let requirements: string | null = requirementsRaw;
-  let workingPlans: PlanSection[] = plans.map((p) => ({ file: p.file, content: p.content }));
+  // Unique per-plan fragment ids: plain `plan:<file>` unless a filename
+  // collision forces disambiguation by index — composeWithinBudget throws on
+  // duplicate ids, and legitimate input may repeat a filename across plans.
+  const usedPlanIds = new Set<string>();
+  const planIds: string[] = plans.map((p, idx) => {
+    let id = `plan:${p.file}`;
+    if (usedPlanIds.has(id)) id = `plan:${idx}:${p.file}`;
+    usedPlanIds.add(id);
+    return id;
+  });
 
-  const omitted: string[] = [];
-  let projectMdShrunk = false;
-  let planTruncationPct = 0;
-  let noteInjected = false;
-  let hardFailed = false;
+  const planFragments: contextComposer.Fragment[] = plans.map((p, idx) => ({
+    id: planIds[idx],
+    content: p.content,
+    wrapper: `### ${p.file}\n\n`,
+    strategy: { kind: 'proportional-truncate', floorChars: MIN_PLAN_BYTES },
+    group: 'plans',
+    required: true,
+  }));
 
-  // Minimum-set check: instructions + roadmap + 1KB per plan.
-  // NOTE_RESERVE_TOKENS is intentionally excluded here: a note is only injected
-  // when trimming actually occurs, and a prompt that fits without any trim needs
-  // no note at all. Including NOTE_RESERVE_TOKENS here would cause false hard-fails
-  // for prompts that genuinely fit the effective budget untrimmed.
-  const MIN_PLAN_BYTES = 1024;
-  const minPlanTokens = plans.reduce((sum, p) => {
-    return sum + estimateTokens(p.content.slice(0, MIN_PLAN_BYTES));
-  }, 0);
-  const minSet =
-    estimateTokens(instructions) +
-    estimateTokens(roadmap) +
-    minPlanTokens;
+  const fragments: contextComposer.Fragment[] = [
+    { id: 'instructions', content: instructions, wrapper: '', strategy: { kind: 'verbatim' }, required: true },
+    { id: 'roadmap', content: roadmap, wrapper: '## Roadmap\n\n', strategy: { kind: 'verbatim' }, required: true },
+    {
+      id: 'projectMd',
+      content: projectMdRaw ?? '',
+      wrapper: '## Project\n\n',
+      strategy: { kind: 'head-shrink', maxLines: projectMdHeadLines },
+    },
+    { id: 'plans-header', content: '', wrapper: '## Plans\n\n', strategy: { kind: 'verbatim' }, required: true },
+    ...planFragments,
+    { id: 'context', content: contextRaw ?? '', wrapper: '## Context\n\n', strategy: { kind: 'drop' } },
+    { id: 'research', content: researchRaw ?? '', wrapper: '## Research\n\n', strategy: { kind: 'drop' } },
+    { id: 'requirements', content: requirementsRaw ?? '', wrapper: '## Requirements\n\n', strategy: { kind: 'drop' } },
+  ];
 
-  if (minSet > effectiveBudget) {
+  const composed = contextComposer.composeWithinBudget({
+    fragments,
+    budget,
+    measure: estimateTokens,
+    options: {
+      safetyMarginPct,
+      reserve: NOTE_RESERVE_TOKENS,
+      charsPerUnit: 4,
+      // Minimum-set floor: instructions + roadmap (in full) + 1KB per plan.
+      // NOTE_RESERVE_TOKENS is intentionally excluded — a note is only
+      // injected when trimming actually occurs, and a prompt that fits
+      // without any trim needs no note at all. Wrappers are also excluded
+      // (this checks the floor, not the steady-state budget).
+      minimumFor: (f) => {
+        if (f.id === 'instructions' || f.id === 'roadmap') return f.content;
+        if (f.id.startsWith('plan:')) return f.content.slice(0, MIN_PLAN_BYTES);
+        return null;
+      },
+    },
+  });
+
+  const effectiveBudget = composed.metadata.effectiveBudget;
+
+  if (composed.metadata.hardFailed) {
     return {
       prompt: '',
       metadata: {
@@ -235,165 +253,55 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
     };
   }
 
-  // ── Budget accounting ──────────────────────────────────────────────────────
-  const TOKENS_ROADMAP_HEADER = estimateTokens('## Roadmap\n\n');
-  const TOKENS_PROJECT_HEADER = estimateTokens('## Project\n\n');
-  const TOKENS_PLANS_HEADER = estimateTokens('## Plans\n\n');
-  const TOKENS_CONTEXT_HEADER = estimateTokens('## Context\n\n');
-  const TOKENS_RESEARCH_HEADER = estimateTokens('## Research\n\n');
-  const TOKENS_REQUIREMENTS_HEADER = estimateTokens('## Requirements\n\n');
-  const TOKENS_PLAN_ITEM_HEADERS = workingPlans.reduce(
-    (sum, p) => sum + estimateTokens('### ' + p.file + '\n\n'),
-    0
-  );
+  const byId = new Map(composed.fragments.map((f) => [f.id, f]));
+  const get = (id: string): contextComposer.ComposedFragment => {
+    const found = byId.get(id);
+    if (!found) throw new Error(`applyBudget: missing composed fragment "${id}"`);
+    return found;
+  };
 
-  const staticBaseTokens =
-    estimateTokens(instructions) +
-    TOKENS_ROADMAP_HEADER +
-    estimateTokens(roadmap) +
-    TOKENS_PLANS_HEADER +
-    TOKENS_PLAN_ITEM_HEADERS;
+  const instructionsOut = get('instructions').content;
+  const roadmapOut = get('roadmap').content;
 
-  let projectTokens = projectMd
-    ? TOKENS_PROJECT_HEADER + estimateTokens(projectMd)
-    : 0;
-  let contextTokens = context
-    ? TOKENS_CONTEXT_HEADER + estimateTokens(context)
-    : 0;
-  let researchTokens = research
-    ? TOKENS_RESEARCH_HEADER + estimateTokens(research)
-    : 0;
-  let requirementsTokens = requirements
-    ? TOKENS_REQUIREMENTS_HEADER + estimateTokens(requirements)
-    : 0;
-  let planContentTokens = workingPlans.reduce(
-    (sum, p) => sum + estimateTokens(p.content),
-    0
-  );
+  const projectMdFragment = get('projectMd');
+  const projectMd: string | null = projectMdFragment.present ? projectMdFragment.content : null;
 
-  const getCurrentBaseTokens = (): number =>
-    staticBaseTokens +
-    projectTokens +
-    planContentTokens +
-    contextTokens +
-    researchTokens +
-    requirementsTokens;
+  const contextFragment = get('context');
+  const context: string | null = contextFragment.present ? contextFragment.content : null;
 
-  let currentBaseTokens = getCurrentBaseTokens();
+  const researchFragment = get('research');
+  const research: string | null = researchFragment.present ? researchFragment.content : null;
 
-  // Detect budget pressure: is ANY trim needed?
-  // Pressure exists when the current base tokens already exceed the effective
-  // budget. Only when pressure is real do we reserve NOTE_RESERVE_TOKENS so
-  // the note itself fits after trimming. Checking against
-  // effectiveBudget - NOTE_RESERVE_TOKENS (the old threshold) would cause
-  // spurious pressure 80 tokens early, dropping sections that fit fine.
-  const baseTokens = currentBaseTokens;
-  const budgetUnderPressure = baseTokens > effectiveBudget;
+  const requirementsFragment = get('requirements');
+  const requirements: string | null = requirementsFragment.present ? requirementsFragment.content : null;
 
-  // Available for content (reserve note slot when under pressure)
-  const contentBudget = budgetUnderPressure
-    ? effectiveBudget - NOTE_RESERVE_TOKENS
-    : effectiveBudget;
+  // Plans are never dropped — only their content may be truncated — so map
+  // deliberately by original index/file rather than relying on `present`.
+  const workingPlans: PlanSection[] = plans.map((p, idx) => ({
+    file: p.file,
+    content: get(planIds[idx]).content,
+  }));
 
-  // ── Trim step 1: head-shrink PROJECT.md ───────────────────────────────────
-  if (currentBaseTokens > contentBudget && projectMd) {
-    const shrunk = headShrink(projectMd, projectMdHeadLines);
-    if (shrunk !== projectMd) {
-      projectMd = shrunk;
-      projectMdShrunk = true;
-      projectTokens = TOKENS_PROJECT_HEADER + estimateTokens(projectMd);
-      currentBaseTokens = getCurrentBaseTokens();
-    }
-  }
-
-  // ── Trim step 2: proportional plan truncation ─────────────────────────────
-  if (currentBaseTokens > contentBudget) {
-    // Compute tokens available for plan content only
-    const overhead =
-      staticBaseTokens +
-      projectTokens +
-      contextTokens +
-      researchTokens +
-      requirementsTokens;
-    const planBudgetTokens = contentBudget - overhead;
-    const totalPlanTokens = planContentTokens;
-
-    if (planBudgetTokens > 0 && planBudgetTokens < totalPlanTokens) {
-      // Proportional share per plan (at least 1KB per plan)
-      const totalOriginalChars = plans.reduce(
-        (sum, p) => sum + p.content.length,
-        0
-      );
-
-      const totalPlanCharsBudget = planBudgetTokens * 4;
-      workingPlans = workingPlans.map((p) => {
-        const proportionalShare =
-          totalOriginalChars > 0
-            ? Math.floor((p.content.length / totalOriginalChars) * totalPlanCharsBudget)
-            : 0;
-        const maxChars = Math.max(proportionalShare, MIN_PLAN_BYTES);
-        return { file: p.file, content: tailTruncate(p.content, maxChars) };
-      });
-
-      const newTotalChars = workingPlans.reduce(
-        (sum, p) => sum + p.content.length,
-        0
-      );
-      if (totalOriginalChars > 0) {
-        planTruncationPct =
-          ((totalOriginalChars - newTotalChars) / totalOriginalChars) * 100;
-      }
-      planContentTokens = workingPlans.reduce(
-        (sum, p) => sum + estimateTokens(p.content),
-        0
-      );
-      currentBaseTokens = getCurrentBaseTokens();
-    }
-  }
-
-  // ── Trim step 3: drop context ─────────────────────────────────────────────
-  if (currentBaseTokens > contentBudget && context) {
-    context = null;
-    omitted.push('context');
-    contextTokens = 0;
-    currentBaseTokens = getCurrentBaseTokens();
-  }
-
-  // ── Trim step 4: drop research ────────────────────────────────────────────
-  if (currentBaseTokens > contentBudget && research) {
-    research = null;
-    omitted.push('research');
-    researchTokens = 0;
-    currentBaseTokens = getCurrentBaseTokens();
-  }
-
-  // ── Trim step 5: drop requirements (last resort) ──────────────────────────
-  if (currentBaseTokens > contentBudget && requirements) {
-    requirements = null;
-    omitted.push('requirements');
-    requirementsTokens = 0;
-    currentBaseTokens = getCurrentBaseTokens();
-  }
+  const omitted = composed.metadata.omitted;
+  const projectMdShrunk = composed.metadata.shrunk.includes('projectMd');
+  const planTruncationPct = composed.metadata.truncationPct;
 
   // ── Decide whether note is actually needed ────────────────────────────────
   const anyTrimOccurred =
     omitted.length > 0 || projectMdShrunk || planTruncationPct > 0;
 
   let note: string | null = null;
+  let noteInjected = false;
   if (anyTrimOccurred) {
     note = renderNote(noteTemplate, budget, omitted, planTruncationPct);
     noteInjected = true;
   }
 
-  // Suppress unused variable warning — currentBaseTokens is used via the
-  // closure in getCurrentBaseTokens(); the final value is not used directly.
-  void currentBaseTokens;
-
   // ── Assemble ──────────────────────────────────────────────────────────────
   const prompt = assemblePrompt({
-    instructions,
+    instructions: instructionsOut,
     note,
-    roadmap,
+    roadmap: roadmapOut,
     projectMd,
     plans: workingPlans,
     context,
@@ -404,7 +312,6 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
   const estimatedTokens = estimateTokens(prompt);
 
   if (estimatedTokens > effectiveBudget) {
-    hardFailed = true;
     return {
       prompt: '',
       metadata: {
@@ -414,7 +321,7 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
         omitted,
         projectMdShrunk,
         planTruncationPct,
-        hardFailed,
+        hardFailed: true,
         noteInjected,
       },
     };
@@ -429,7 +336,7 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
       omitted,
       projectMdShrunk,
       planTruncationPct,
-      hardFailed,
+      hardFailed: false,
       noteInjected,
     },
   };

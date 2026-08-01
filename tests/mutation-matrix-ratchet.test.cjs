@@ -189,6 +189,7 @@ describe('mutation-matrix ratchet: guard detects missing minScore', () => {
 // reverse: removing a module from COVERED also requires updating the baseline.
 const RATCHET_BASELINE = {
   'context-utilization':     80,
+  'context-composer':        66,  // #2929: extracted from prompt-budget; same floor as prompt-budget
   'prompt-budget':           66,  // CI 68.33% 2026-06-14; was 90 (timeout-inflated local)
   'frontmatter':             62,
   'adr-parser':              68,

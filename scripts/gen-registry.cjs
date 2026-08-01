@@ -2,10 +2,14 @@
 'use strict';
 
 /**
- * scripts/gen-registry.cjs — generates docs/registries/capability-registry.md
- * (and, once PR2 ships docs/registries/eos.json, docs/registries/eos-registry.md)
- * from the corresponding source JSON, via registry-schema.cjs#renderMarkdown.
- * Issue #2182.
+ * scripts/gen-registry.cjs — generates docs/registries/capability-registry.md,
+ * docs/registries/eos-registry.md, and docs/registries/reviewer-registry.md
+ * from their corresponding source JSON, via registry-schema.cjs#renderMarkdown.
+ * Issue #2182 (capability/eos); issue #2904 (reviewer).
+ *
+ * eos.json and reviewers.json are both OPTIONAL sources (`SOURCES[].optional`)
+ * — an absent one is skipped silently. capabilities.json is the primary
+ * source and is never optional.
  *
  * NOT to be confused with `scripts/gen-capability-registry.cjs`: that script
  * generates the RUNTIME capability manifest consumed by the host at runtime
@@ -34,7 +38,8 @@ const { renderMarkdown } = require('./registry-schema.cjs');
 
 const SOURCES = [
   { type: 'capability', jsonFile: 'capabilities.json', mdFile: 'capability-registry.md' },
-  { type: 'eos', jsonFile: 'eos.json', mdFile: 'eos-registry.md' },
+  { type: 'eos', jsonFile: 'eos.json', mdFile: 'eos-registry.md', optional: true },
+  { type: 'reviewer', jsonFile: 'reviewers.json', mdFile: 'reviewer-registry.md', optional: true },
 ];
 
 /**
@@ -57,14 +62,16 @@ function getRegistriesDir() {
  * Render the markdown for a single registry type from its committed source
  * JSON.
  *
- * Only `eos.json` is optional (pre-PR2, before that source JSON ships) —
- * an absent `eos.json` returns null and callers treat that as "nothing to
- * do". `capabilities.json` is the primary registry source: a missing
- * `capabilities.json` is ALWAYS an error (never a silent "up to date"
- * pass), mirroring the type distinction in `scripts/validate-registry.cjs`
- * (`type === 'eos' && !exists → continue`).
+ * Optionality is a per-source data flag (`SOURCES[].optional`), not a
+ * hardcoded type literal: `eos.json` (pre-PR2) and `reviewers.json` (issue
+ * #2904) are both optional — an absent source JSON returns null and callers
+ * treat that as "nothing to do". `capabilities.json` is still the primary
+ * registry source and is never optional: a missing `capabilities.json` is
+ * ALWAYS an error (never a silent "up to date" pass), mirroring the same
+ * `optional` flag in `scripts/validate-registry.cjs`
+ * (`optional && !exists → continue`).
  *
- * @param {'capability'|'eos'} type
+ * @param {'capability'|'eos'|'reviewer'} type
  * @returns {string|null}
  */
 function renderFor(type) {
@@ -73,14 +80,31 @@ function renderFor(type) {
 
   const jsonPath = path.join(getRegistriesDir(), source.jsonFile);
   if (!fs.existsSync(jsonPath)) {
-    if (type === 'eos') return null;
+    if (source.optional) return null;
     throw new ExitError(
       1,
       `${source.jsonFile} does not exist at ${jsonPath}. Run:\n  node scripts/gen-registry.cjs --write\n(after adding docs/registries/${source.jsonFile})`,
     );
   }
 
-  const entries = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  // A malformed source JSON must surface as an actionable CLI error, not an
+  // unhandled SyntaxError with a raw Node stack trace — mirrors
+  // scripts/validate-registry.cjs#validateFile's try/catch around JSON.parse.
+  let entries;
+  try {
+    entries = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  } catch (err) {
+    throw new ExitError(1, `${source.jsonFile} is not valid JSON at ${jsonPath}: ${err.message}`);
+  }
+
+  // Mirrors validate-registry.cjs's explicit non-array rejection: a source
+  // JSON that parses to a non-array (object, string, etc.) would otherwise
+  // throw an opaque TypeError from `[...entries].sort()` in renderMarkdown,
+  // or silently mis-render for an iterable-but-wrong-shape value like a string.
+  if (!Array.isArray(entries)) {
+    throw new ExitError(1, `${source.jsonFile} must be a JSON array of entries`);
+  }
+
   return renderMarkdown(entries, { type, sourceFile: source.jsonFile });
 }
 
@@ -91,7 +115,7 @@ function main() {
 
   for (const { type, mdFile } of SOURCES) {
     const rendered = renderFor(type);
-    if (rendered === null) continue; // source JSON absent (eos.json before PR2)
+    if (rendered === null) continue; // source JSON absent and optional (eos.json before PR2 / reviewers.json)
 
     const mdPath = path.join(registriesDir, mdFile);
 

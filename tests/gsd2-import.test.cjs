@@ -262,6 +262,33 @@ describe('slugify', () => {
   test('strips leading/trailing hyphens', () => {
     assert.strictEqual(slugify('  spaces  '), 'spaces');
   });
+
+  // ─── #2848: non-Latin (Cyrillic) titles must not produce an empty slug. The
+  // transliteration map (shared with generateSlugInternal) is applied before the
+  // ASCII filter. slugify keeps its DISTINCT contract: single leading/trailing
+  // hyphen strip, NO truncation.
+
+  test('#2848 row 2 — Cyrillic title produces a non-empty transliterated slug', () => {
+    const result = slugify('Настройка окружения');
+    assert.ok(typeof result === 'string' && result.length > 0, `Cyrillic title must not produce an empty slug; got: ${JSON.stringify(result)}`);
+    assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(result), `slug must be ASCII-only and well-formed; got: ${result}`);
+    assert.strictEqual(result, 'nastroyka-okruzheniya');
+  });
+
+  test('#2848 row 3 — Latin-script output is byte-for-byte unchanged (negative control)', () => {
+    assert.strictEqual(slugify('Auth System'), 'auth-system');
+    assert.strictEqual(slugify('My Feature (v2)'), 'my-feature-v2');
+    assert.strictEqual(slugify('  spaces  '), 'spaces');
+  });
+
+  test('#2848 row 11 — slugify does NOT truncate (distinct from generateSlugInternal contract)', () => {
+    // generateSlugInternal truncates at 60; slugify must NOT — that difference is
+    // existing, documented behavior, not the bug. A long Cyrillic title produces a
+    // long ASCII slug that exceeds 60 chars.
+    const long = 'Настройка'.repeat(20);
+    const result = slugify(long);
+    assert.ok(result.length > 60, `slugify must not truncate; got len ${result.length}`);
+  });
 });
 
 describe('zeroPad', () => {

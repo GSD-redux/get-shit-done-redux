@@ -33,6 +33,7 @@ const fc = require('./helpers/fast-check-setup.cjs');
 const {
   stripFencedCode,
   extractFencedBlock,
+  scanFencedBlocks,
   tokenizeHeadings,
   collectSections,
   collectSection,
@@ -347,6 +348,160 @@ describe('extractFencedBlock', () => {
   test('an empty fence body returns an empty string, not null', () => {
     const src = '```coverage\n\n```';
     assert.equal(extractFencedBlock(src, 'coverage'), '');
+  });
+});
+
+// ─── scanFencedBlocks (public export) ─────────────────────────────────────────
+// #2928: `export` was newly added to this function and its `FencedBlockRecord`
+// interface, making it public API for the first time (context-predicates.cts
+// consumes it directly). Hyrum's Law: a newly-public contract needs its own
+// lock-in test, independent of the consumer that motivated exporting it.
+
+describe('scanFencedBlocks (public export)', () => {
+  test('is actually exported from the compiled module as a function', () => {
+    assert.equal(typeof scanFencedBlocks, 'function');
+  });
+
+  test('returns {char, len, infoString, openLineIdx, closeLineIdx} with 0-based line indices', () => {
+    const lines = [
+      'before',
+      '```js',
+      'const x = 1;',
+      '```',
+      'after',
+    ];
+    const blocks = scanFencedBlocks(lines);
+    assert.equal(blocks.length, 1);
+    assert.deepEqual(blocks[0], {
+      char: '`',
+      len: 3,
+      infoString: 'js',
+      openLineIdx: 1,
+      closeLineIdx: 3,
+    });
+  });
+
+  test('closeLineIdx is -1 for an unterminated fence (EOF while open)', () => {
+    const lines = [
+      'before',
+      '```',
+      'body, never closed',
+    ];
+    const blocks = scanFencedBlocks(lines);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].openLineIdx, 1);
+    assert.equal(blocks[0].closeLineIdx, -1);
+  });
+
+  test('requires >=3 backticks or >=3 tildes to open a fence', () => {
+    assert.deepEqual(scanFencedBlocks(['``', 'not a fence']), []);
+    assert.deepEqual(scanFencedBlocks(['~~', 'not a fence']), []);
+    const backtickBlocks = scanFencedBlocks(['```', 'x', '```']);
+    assert.equal(backtickBlocks.length, 1);
+    assert.equal(backtickBlocks[0].char, '`');
+    const tildeBlocks = scanFencedBlocks(['~~~', 'x', '~~~']);
+    assert.equal(tildeBlocks.length, 1);
+    assert.equal(tildeBlocks[0].char, '~');
+  });
+
+  test('tolerates up to 3 spaces of indent on the opening delimiter', () => {
+    const blocks = scanFencedBlocks(['   ```', 'body', '```']);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].openLineIdx, 0);
+    assert.equal(blocks[0].closeLineIdx, 2);
+  });
+
+  test('4+ spaces of indent is not recognised as a fence delimiter', () => {
+    const blocks = scanFencedBlocks(['    ```', 'still not a fence']);
+    assert.deepEqual(blocks, []);
+  });
+
+  test('a closer must be the same delimiter char with run length >= the opener, and no trailing text', () => {
+    // Same char, longer run: valid closer.
+    const longerCloser = scanFencedBlocks(['```', 'body', '`````']);
+    assert.equal(longerCloser.length, 1);
+    assert.equal(longerCloser[0].closeLineIdx, 2);
+
+    // Same char, shorter run: not a valid closer -> content, fence stays open (EOF -> -1).
+    const shorterCloser = scanFencedBlocks(['````', 'body', '```']);
+    assert.equal(shorterCloser.length, 1);
+    assert.equal(shorterCloser[0].closeLineIdx, -1);
+  });
+
+  test('mismatched delimiter char while a fence is open is CONTENT, not a boundary — a 3-backtick line inside a 4-backtick fence does not close it', () => {
+    const lines = [
+      '````outer',
+      '```coverage',
+      'nested body',
+      '```',
+      '````',
+    ];
+    const blocks = scanFencedBlocks(lines);
+    assert.equal(blocks.length, 1, 'only the outer 4-backtick fence is a real block');
+    assert.equal(blocks[0].char, '`');
+    assert.equal(blocks[0].len, 4);
+    assert.equal(blocks[0].openLineIdx, 0);
+    assert.equal(blocks[0].closeLineIdx, 4);
+  });
+
+  test('a same-char run that is too short, encountered while open, is content not a closer', () => {
+    const lines = [
+      '````',
+      '```',
+      'still inside',
+      '````',
+    ];
+    const blocks = scanFencedBlocks(lines);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].openLineIdx, 0);
+    assert.equal(blocks[0].closeLineIdx, 3);
+  });
+
+  test('a same-char, sufficient-length run carrying trailing non-whitespace text, encountered while open, is content not a closer', () => {
+    const lines = [
+      '```',
+      '``` still inside (has trailing text)',
+      '```',
+      'after',
+    ];
+    const blocks = scanFencedBlocks(lines);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].openLineIdx, 0);
+    assert.equal(blocks[0].closeLineIdx, 2);
+  });
+
+  test('CommonMark §4.5: a backtick fence info string must not contain a backtick — such a line is not a valid opener', () => {
+    const blocks = scanFencedBlocks(['``` has ` a backtick', 'more text']);
+    assert.deepEqual(blocks, [], 'a backtick in the info string means the line is not a valid opener at all');
+  });
+
+  test('infoString is the trimmed trailing text of the opener', () => {
+    const blocks = scanFencedBlocks(['```   js and stuff   ', 'body', '```']);
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].infoString, 'js and stuff');
+  });
+
+  test('multiple sequential blocks in one document are all returned, in order', () => {
+    const lines = [
+      'a',
+      '```',
+      'code1',
+      '```',
+      'b',
+      '~~~py',
+      'code2',
+      '~~~',
+      'c',
+    ];
+    const blocks = scanFencedBlocks(lines);
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[0].char, '`');
+    assert.equal(blocks[0].openLineIdx, 1);
+    assert.equal(blocks[0].closeLineIdx, 3);
+    assert.equal(blocks[1].char, '~');
+    assert.equal(blocks[1].infoString, 'py');
+    assert.equal(blocks[1].openLineIdx, 5);
+    assert.equal(blocks[1].closeLineIdx, 7);
   });
 });
 

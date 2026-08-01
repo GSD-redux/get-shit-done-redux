@@ -194,15 +194,25 @@ function extractCurrentMilestone(content: string, cwd?: string): string {
 /**
  * Replace a pattern only in the current milestone section of ROADMAP.md.
  */
-function replaceInCurrentMilestone(content: string, pattern: RegExp, replacement: string): string {
+type RoadmapReplacer = (match: string, ...captures: string[]) => string;
+
+function replaceInCurrentMilestone(
+  content: string,
+  pattern: RegExp,
+  replacement: string | RoadmapReplacer,
+): string {
+  const apply = (src: string): string =>
+    typeof replacement === 'function'
+      ? src.replace(pattern, replacement)
+      : src.replace(pattern, replacement);
   const lastDetailsClose = content.lastIndexOf('</details>');
   if (lastDetailsClose === -1) {
-    return content.replace(pattern, replacement);
+    return apply(content);
   }
   const offset = lastDetailsClose + '</details>'.length;
   const before = content.slice(0, offset);
   const after = content.slice(offset);
-  return before + after.replace(pattern, replacement);
+  return before + apply(after);
 }
 
 /**
