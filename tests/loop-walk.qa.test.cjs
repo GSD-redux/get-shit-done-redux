@@ -30,8 +30,71 @@ const { loadScenario, runScenario, assertWiringIsLive } = require('./qa/scenario
 const { resolveRef } = require('./qa/fixtures/index.cjs');
 const { resolveWithin, resolveForCompare } = require('./qa/paths.cjs');
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
+const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+const { evaluateUatPassed } = require('../gsd-core/bin/lib/uat-predicate.cjs');
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * Recursively collect every `.md` file under `dir` (absolute paths).
+ *
+ * @param {string} dir
+ * @param {string[]} [out]
+ * @returns {string[]}
+ */
+function collectFixtureMarkdownFiles(dir, out = []) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      collectFixtureMarkdownFiles(abs, out);
+    } else if (entry.isFile() && abs.endsWith('.md')) {
+      out.push(abs);
+    }
+  }
+  return out;
+}
+
+/**
+ * Is `content` conceptually "a document with a frontmatter block", ignoring any
+ * leading blank lines and/or leading HTML comment(s) (e.g. the #2371 provenance
+ * marker)?
+ *
+ * WHY skip leading comments/blanks rather than requiring byte-0 `---`: the whole
+ * point of this predicate is to catch DEFECT 1's shape — a provenance comment
+ * placed BEFORE the frontmatter fence, which makes `extractFrontmatter` (which
+ * only recognizes `---` at byte 0, `gsd-core/bin/lib/frontmatter.cjs`) silently
+ * return `{}`. A predicate that itself required byte-0 `---` would only ever
+ * fire on already-correct fixtures and could never catch this regression class —
+ * it would be exactly as vacuous as the bug it exists to guard against.
+ *
+ * @param {string} content
+ * @returns {boolean}
+ */
+function hasFrontmatterShape(content) {
+  const lines = content.split(/\r?\n/);
+  let i = 0;
+  let inComment = false;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (inComment) {
+      if (line.includes('-->')) inComment = false;
+      i += 1;
+      continue;
+    }
+    const trimmed = line.trim();
+    if (trimmed === '') {
+      i += 1;
+      continue;
+    }
+    if (trimmed.startsWith('<!--')) {
+      if (!trimmed.includes('-->')) inComment = true;
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  return lines[i] === '---';
+}
 
 /** Looks up an oracle by id, failing loudly if the catalog ever drops one. */
 function getOracle(id) {
@@ -964,6 +1027,92 @@ describe('wiring self-test (anti-vacuity)', () => {
     const report = assertWiringIsLive({ LoopWalk, runOracles, liveCommands });
     assert.strictEqual(report.ok, false);
     assert.ok(report.steps.some((s) => s.expectFailures.length > 0));
+  });
+});
+
+describe('fixture integrity', () => {
+  /**
+   * Absolute path to `tests/qa/fixtures/`, the corpus every QA scenario/fixture-ref
+   * draws from (see `tests/qa/fixtures/index.cjs`'s `resolveRef`).
+   */
+  const FIXTURES_ROOT = path.join(__dirname, 'qa', 'fixtures');
+
+  /**
+   * Every fixture `.md` file, read once, keyed by absolute path — every test below
+   * reuses this instead of re-walking the tree.
+   *
+   * WHY module-content, not module-frontmatter: this guards against defect classes
+   * where a provenance comment (or any other byte-0 preamble) silently defeats
+   * `extractFrontmatter`, which only recognizes a frontmatter block that starts at
+   * byte 0 of the file (`gsd-core/bin/lib/frontmatter.cjs` — `content.startsWith('---\n')`).
+   */
+  const fixtureFiles = collectFixtureMarkdownFiles(FIXTURES_ROOT);
+
+  test('discovered at least the known fixture directories (sanity, not vacuous)', () => {
+    assert.ok(fixtureFiles.length > 0, 'expected at least one fixture .md file under tests/qa/fixtures');
+  });
+
+  test('every fixture that is frontmatter-shaped (optionally preceded by a leading comment) parses to a NON-EMPTY object', () => {
+    const offenders = [];
+    for (const file of fixtureFiles) {
+      const content = fs.readFileSync(file, 'utf-8');
+      if (!hasFrontmatterShape(content)) continue;
+      const fm = extractFrontmatter(content, file);
+      if (Object.keys(fm).length === 0) {
+        offenders.push(path.relative(FIXTURES_ROOT, file));
+      }
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `fixture(s) are frontmatter-shaped but extractFrontmatter returned {} (frontmatter not at byte 0 — ` +
+        `likely a leading comment ahead of the fence — or malformed): ${JSON.stringify(offenders)}`,
+    );
+  });
+
+  test('every fixture carries the #2371 provenance marker somewhere in the file', () => {
+    const offenders = [];
+    for (const file of fixtureFiles) {
+      const content = fs.readFileSync(file, 'utf-8');
+      if (!content.includes('provenance:')) {
+        offenders.push(path.relative(FIXTURES_ROOT, file));
+      }
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `fixture(s) missing the #2371 provenance marker: ${JSON.stringify(offenders)}`,
+    );
+  });
+
+  describe('UAT fixtures flip the REAL evaluateUatPassed verdict', () => {
+    let dir;
+
+    beforeEach(() => {
+      dir = createTempDir('gsd-uat-fixture-integrity-');
+    });
+
+    afterEach(() => {
+      cleanup(dir);
+    });
+
+    test('the passing UAT fixture yields passed:true, no_uat_artifacts:false', () => {
+      const content = fs.readFileSync(path.join(FIXTURES_ROOT, 'uat', 'current-test-passing.md'), 'utf-8');
+      fs.writeFileSync(path.join(dir, 'feature-UAT.md'), content, 'utf-8');
+      const report = evaluateUatPassed(dir);
+      assert.strictEqual(report.passed, true);
+      assert.strictEqual(report.no_uat_artifacts, false);
+      assert.ok(report.checks.length > 0, 'expected at least one real parsed check');
+    });
+
+    test('the failing UAT fixture yields passed:false, no_uat_artifacts:false', () => {
+      const content = fs.readFileSync(path.join(FIXTURES_ROOT, 'uat', 'current-test-failing.md'), 'utf-8');
+      fs.writeFileSync(path.join(dir, 'feature-UAT.md'), content, 'utf-8');
+      const report = evaluateUatPassed(dir);
+      assert.strictEqual(report.passed, false);
+      assert.strictEqual(report.no_uat_artifacts, false);
+      assert.ok(report.checks.length > 0, 'expected at least one real parsed check');
+    });
   });
 });
 

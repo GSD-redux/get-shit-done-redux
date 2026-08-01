@@ -1,7 +1,7 @@
 {
   "name": "uat-fail-then-remediate",
   "fixture": "greenfield",
-  "notes": "FINDING (verified empirically, not yet asserted by an `expect` below): the final `phase uat-passed 1` call, run AFTER 01-UAT.md is remediated to `status: passed`, still returns `no_uat_artifacts: true` and `passed: false` — identical to the pre-remediation payload. The step's own `expect` only checks `blockers` (which is `[]` in both the failing and passing case), so this walk currently passes without catching it. Full observed payload both before and after remediation: {\"phase\":\"1\",\"passed\":false,\"uat_files\":[\"01-UAT.md\"],\"verification_files\":[],\"checks\":[],\"blockers\":[],\"no_uat_artifacts\":true,\"policy\":{\"require_verification\":false}}. Root cause is in `phase uat-passed`'s UAT-artifact detection (src/phase.cts), out of scope for this oracle/scenario-boundary change — recorded here per dispatch instructions rather than fixed.",
+  "notes": "FIXED: the prior FINDING here (dated before the fixture fix) was itself a fixture defect, not an engine defect — @uat/current-test-failing and @uat/current-test-passing carried NO `### N. Name` / `result:` block that `parseUatResultItems` (src/uat-predicate.cts) recognizes, so both fixtures always produced zero parsed `checks` and the same `no_uat_artifacts:true, passed:false` payload regardless of remediation. Both fixtures now carry a real `### 1. ...` / `result: passed|failed` block, and the `expect` blocks below assert the real before/after divergence: `passed:false, no_uat_artifacts:true` while failing, `passed:true, no_uat_artifacts:false` after remediation.",
   "steps": [
     {
       "at": "discuss:post",
@@ -41,6 +41,10 @@
       "run": [
         ["uat", "render-checkpoint", "--file", ".planning/phases/01-parser/01-UAT.md"],
         ["phase", "uat-passed", "1"]
+      ],
+      "expect": [
+        { "path": "passed", "is": false },
+        { "path": "no_uat_artifacts", "is": false }
       ]
     },
     {
@@ -60,7 +64,9 @@
       },
       "run": [["phase", "uat-passed", "1"]],
       "expect": [
-        { "path": "blockers", "is": [] }
+        { "path": "blockers", "is": [] },
+        { "path": "passed", "is": true },
+        { "path": "no_uat_artifacts", "is": false }
       ]
     }
   ]
