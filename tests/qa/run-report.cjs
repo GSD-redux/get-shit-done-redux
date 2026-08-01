@@ -77,16 +77,31 @@ function discoverScenarioFiles() {
     .map((name) => path.join(SCENARIOS_DIR, name));
 }
 
-function main() {
-  const { out, keep } = parseArgs(process.argv.slice(2));
-  const liveCommands = [...getLiveCommandTokens()];
+/**
+ * Run every discovered scenario for real and return the raw array of
+ * per-scenario reports (each carrying its own `fixture` field — see
+ * `runScenario`'s header). This is the shared "drive every scenario" seam:
+ * `main()` below feeds this straight into `buildReport`, and
+ * `scripts/qa-smell-ratchet.cjs` reuses this EXACT function rather than
+ * re-implementing scenario discovery + walking, so the two tools can never
+ * silently diverge on which scenarios ran or how.
+ *
+ * @param {{keep?: boolean, liveCommands?: string[]}} [opts] `keep` (default
+ *   `false`) is forwarded to `runScenario` — see its own header for the
+ *   `GSD_QA_KEEP=1` interaction. `liveCommands` defaults to a fresh call to
+ *   `getLiveCommandTokens()` when omitted.
+ * @returns {Array<ReturnType<typeof runScenario> & {fixture: string}>}
+ * @throws {Error} when no scenario files are discovered.
+ */
+function runAllScenarios(opts) {
+  const { keep = false, liveCommands = [...getLiveCommandTokens()] } = opts || {};
 
   const scenarioFiles = discoverScenarioFiles();
   if (scenarioFiles.length === 0) {
     throw new Error(`run-report: no scenario files discovered under "${SCENARIOS_DIR}"`);
   }
 
-  const scenarioReports = scenarioFiles.map((file) => {
+  return scenarioFiles.map((file) => {
     const scenario = loadScenario(file);
     const report = runScenario(scenario, { LoopWalk, runOracles, liveCommands, keep });
     // `runScenario`'s own return value carries no `fixture` field — attach it
@@ -94,6 +109,12 @@ function main() {
     // show which starting world each scenario walked.
     return { ...report, fixture: scenario.fixture };
   });
+}
+
+function main() {
+  const { out, keep } = parseArgs(process.argv.slice(2));
+
+  const scenarioReports = runAllScenarios({ keep });
 
   const meta = {
     nodeVersion: process.version,
@@ -112,4 +133,12 @@ function main() {
   );
 }
 
-main();
+// Guarded so `scripts/qa-smell-ratchet.cjs` (and anything else) can
+// `require('./run-report.cjs')` for its exports — `discoverScenarioFiles`,
+// `runAllScenarios` — without triggering a second full scenario run and a
+// stray `qa-report.json` write as a side effect of loading the module.
+if (require.main === module) {
+  main();
+}
+
+module.exports = { discoverScenarioFiles, runAllScenarios, parseArgs, REPO_ROOT, SCENARIOS_DIR };

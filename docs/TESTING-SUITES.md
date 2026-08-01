@@ -136,6 +136,39 @@ are readable, and it preserves "the installer stopped shipping X" as a hard
 absolute failure with no attribution reasoning involved. Regenerate it with
 `npm run gen:install-tree` (folded into `npm run regen:derived`).
 
+## The QA smell ratchet
+
+`tests/loop-walk.qa.test.cjs` (the `qa` suite) is the QA-walk harness's own
+self-test. Separately, `scripts/qa-smell-ratchet.cjs` drives that same harness
+end to end against the real `gsd-tools` binary and turns its findings into a
+CI gate — run it with `npm run lint:qa-smells`.
+
+The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
+
+- A **violation** is the engine breaking a documented contract. It always
+  fails the build — baseline or no baseline, acknowledged or not.
+- A **smell** is legal-but-questionable behavior. A smell **never fails a
+  build on its own merits**. What fails is the absence of a decision about
+  it: an **unacknowledged NEW smell**, or a **STALE** entry in
+  `tests/qa/smell-baseline.json` (one that stopped firing — the baseline is
+  shrink-only, so a fixed or changed scenario must be pruned, not left
+  behind).
+
+When the ratchet reports a NEW smell, there are exactly two legitimate
+responses:
+
+1. **Fix the underlying behavior** so the smell stops firing.
+2. **Acknowledge it** by adding a fragment under `tests/qa/smell-acks/` — the
+   ratchet's failure output prints a paste-ready skeleton naming the required
+   `key`, `id`, `scenario`, `reason`, and `pr`/`issue` fields. See
+   `tests/qa/smell-acks/README.md` for the full shape and lifecycle.
+
+Run `node scripts/qa-smell-ratchet.cjs --update` to regenerate
+`tests/qa/smell-baseline.json` from the current run, folding in any acked
+fragments and pruning stale entries. The baseline only ever shrinks: growth
+happens by adding an acknowledgment (a reviewable diff), never by widening
+the generator's tolerance.
+
 ## Running suites locally
 
 ```bash
