@@ -12,6 +12,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const { REASON, evaluateTrimSafety } = require('./helpers/trim-safety.cjs');
 
@@ -148,4 +149,76 @@ test('isIdempotentOverRepeatedEvaluation', () => {
   assert.deepEqual(r1, r2);
   assert.equal(JSON.stringify(metadata), metadataBefore, 'metadata must not be mutated');
   assert.equal(JSON.stringify(loadBearingIds), idsBefore, 'loadBearingIds must not be mutated');
+});
+
+// ─── property tests ───────────────────────────────────────────────────────
+
+const idArb = fc.constantFrom('a', 'b', 'c', 'd', 'e');
+const idSetArb = fc.uniqueArray(idArb, { maxLength: 5 });
+const nonEmptyIdSetArb = fc.uniqueArray(idArb, { minLength: 1, maxLength: 5 });
+const prefixArb = fc.string({ maxLength: 6 });
+
+test('propertyOkIffNoLoadBearingIdOmittedOrShrunkAndPrefixMatchesAndNoHardFail', () => {
+  fc.assert(
+    fc.property(
+      nonEmptyIdSetArb,
+      idSetArb,
+      idSetArb,
+      idSetArb,
+      fc.boolean(),
+      prefixArb,
+      prefixArb,
+      (loadBearingIds, omitted, shrunk, floored, hardFailed, isolatePrefix, expectedIsolatePrefix) => {
+        const metadata = baseMetadata({ omitted, shrunk, floored, hardFailed, isolatePrefix });
+        const r = evaluateTrimSafety({ metadata, loadBearingIds, expectedIsolatePrefix });
+
+        const noneOmittedOrShrunk = loadBearingIds.every((id) => !omitted.includes(id) && !shrunk.includes(id));
+        const prefixMatches = isolatePrefix === expectedIsolatePrefix;
+        const expectedOk = noneOmittedOrShrunk && prefixMatches && hardFailed === false;
+
+        assert.equal(r.ok, expectedOk);
+      },
+    ),
+  );
+});
+
+test('propertyIdInOnlyFlooredNeverProducesAFinding', () => {
+  fc.assert(
+    fc.property(nonEmptyIdSetArb, (loadBearingIds) => {
+      const flooredOnlyId = loadBearingIds[0];
+      const metadata = baseMetadata({ omitted: [], shrunk: [], floored: [flooredOnlyId] });
+      const r = evaluateTrimSafety({ metadata, loadBearingIds });
+
+      assert.ok(
+        !r.findings.some((f) => f.id === flooredOnlyId),
+        `${flooredOnlyId} appears only in floored and must never produce a finding`,
+      );
+    }),
+  );
+});
+
+test('propertyEvaluationIsIdempotentAndNeverMutatesInputs', () => {
+  fc.assert(
+    fc.property(
+      nonEmptyIdSetArb,
+      idSetArb,
+      idSetArb,
+      idSetArb,
+      fc.boolean(),
+      prefixArb,
+      prefixArb,
+      (loadBearingIds, omitted, shrunk, floored, hardFailed, isolatePrefix, expectedIsolatePrefix) => {
+        const metadata = baseMetadata({ omitted, shrunk, floored, hardFailed, isolatePrefix });
+        const metadataBefore = JSON.stringify(metadata);
+        const idsBefore = JSON.stringify(loadBearingIds);
+
+        const r1 = evaluateTrimSafety({ metadata, loadBearingIds, expectedIsolatePrefix });
+        const r2 = evaluateTrimSafety({ metadata, loadBearingIds, expectedIsolatePrefix });
+
+        assert.deepEqual(r1, r2);
+        assert.equal(JSON.stringify(metadata), metadataBefore, 'metadata must not be mutated');
+        assert.equal(JSON.stringify(loadBearingIds), idsBefore, 'loadBearingIds must not be mutated');
+      },
+    ),
+  );
 });

@@ -93,62 +93,55 @@ test('sizeKeySetMatchesParityManifestKeySet', () => {
 
 // ─── B3 ────────────────────────────────────────────────────────────────────
 
-test('countsCrlfIdenticallyToLf', () => {
+test('countsCrlfIdenticallyToLf', (t) => {
   const body = 'line one\nline two\nline three\n';
   const crlfConfig = makeSyntheticConfig({ 'artifact.md': body.replace(/\n/g, '\r\n') });
   const lfConfig = makeSyntheticConfig({ 'artifact.md': body });
-
-  try {
-    const crlfSizes = buildEmittedSizes(crlfConfig.configDir, crlfConfig.root);
-    const lfSizes = buildEmittedSizes(lfConfig.configDir, lfConfig.root);
-
-    assert.strictEqual(crlfSizes['artifact.md'], lfSizes['artifact.md']);
-  } finally {
+  t.after(() => {
     cleanup(crlfConfig.root);
     cleanup(lfConfig.root);
-  }
+  });
+
+  const crlfSizes = buildEmittedSizes(crlfConfig.configDir, crlfConfig.root);
+  const lfSizes = buildEmittedSizes(lfConfig.configDir, lfConfig.root);
+
+  assert.strictEqual(crlfSizes['artifact.md'], lfSizes['artifact.md']);
 });
 
 // ─── B4 ────────────────────────────────────────────────────────────────────
 
-test('countsMultiByteUtf8AsBytes', () => {
+test('countsMultiByteUtf8AsBytes', (t) => {
   // em-dash (—, U+2014) and right-arrow (→, U+2192) are each 3 bytes in UTF-8
   // but 1 UTF-16 code unit — a `.length`-based counter would undercount.
   const content = 'a—b→c';
   const { configDir, root } = makeSyntheticConfig({ 'artifact.md': content });
+  t.after(() => cleanup(root));
 
-  try {
-    const sizes = buildEmittedSizes(configDir, root);
-    assert.strictEqual(sizes['artifact.md'], Buffer.byteLength(content, 'utf8'));
-    assert.notStrictEqual(sizes['artifact.md'], content.length, 'byte count must not equal UTF-16 length');
-  } finally {
-    cleanup(root);
-  }
+  const sizes = buildEmittedSizes(configDir, root);
+  assert.strictEqual(sizes['artifact.md'], Buffer.byteLength(content, 'utf8'));
+  assert.notStrictEqual(sizes['artifact.md'], content.length, 'byte count must not equal UTF-16 length');
 });
 
 // ─── B5 ────────────────────────────────────────────────────────────────────
 
-test('normalizesConfigRootBeforeCounting', () => {
+test('normalizesConfigRootBeforeCounting', (t) => {
   const { configDir, root } = makeSyntheticConfig({
     // Simulate an `@`-reference embedding the absolute temp root, as a real
     // install's projected agents/commands/workflows do.
     'artifact.md': `see @${root}/gsd-core/CONTEXT.md for details\n`,
   });
+  t.after(() => cleanup(root));
 
-  try {
-    const sizes = buildEmittedSizes(configDir, root);
-    const expectedNormalized = `see @<HOME>/gsd-core/CONTEXT.md for details\n`;
+  const sizes = buildEmittedSizes(configDir, root);
+  const expectedNormalized = `see @<HOME>/gsd-core/CONTEXT.md for details\n`;
 
-    assert.strictEqual(sizes['artifact.md'], Buffer.byteLength(expectedNormalized, 'utf8'));
-    // The raw on-disk byte count (root not collapsed to '<HOME>') must differ
-    // whenever the root path is not already exactly 6 characters ('<HOME>' length) —
-    // proving the measured count really is post-normalization, not raw disk bytes.
-    const rawContent = fs.readFileSync(path.join(configDir, 'artifact.md'));
-    if (root.length !== '<HOME>'.length) {
-      assert.notStrictEqual(sizes['artifact.md'], rawContent.length);
-    }
-  } finally {
-    cleanup(root);
+  assert.strictEqual(sizes['artifact.md'], Buffer.byteLength(expectedNormalized, 'utf8'));
+  // The raw on-disk byte count (root not collapsed to '<HOME>') must differ
+  // whenever the root path is not already exactly 6 characters ('<HOME>' length) —
+  // proving the measured count really is post-normalization, not raw disk bytes.
+  const rawContent = fs.readFileSync(path.join(configDir, 'artifact.md'));
+  if (root.length !== '<HOME>'.length) {
+    assert.notStrictEqual(sizes['artifact.md'], rawContent.length);
   }
 });
 

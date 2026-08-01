@@ -368,7 +368,7 @@ test('propertyEveryArtifactLandsInExactlyOneBucket', () => {
         for (const runtime of Object.keys(sizes)) {
           if (Object.keys(sizes[runtime]).length === 0) delete sizes[runtime];
         }
-        if (Object.keys(sizes).length === 0) return; // nothing to conserve this run
+        fc.pre(Object.keys(sizes).length > 0); // nothing to conserve this run
 
         const capTable = {};
         for (const { runtime, patternKind, dir, maxBytes } of ruleSpecs) {

@@ -970,6 +970,16 @@ const convertClaudeToWindsurfMarkdown = runtimeArtifactConversion.convertClaudeT
 const convertClaudeCommandToWindsurfSkill = runtimeArtifactConversion.convertClaudeCommandToWindsurfSkill;
 const convertClaudeCommandToWindsurfWorkflow = runtimeArtifactConversion.convertClaudeCommandToWindsurfWorkflow;
 const convertClaudeAgentToWindsurfAgent = runtimeArtifactConversion.convertClaudeAgentToWindsurfAgent;
+// #2931 (ADR-1508): single-sourced in the conversion module — was a second,
+// unlinked verbatim copy here (used by the local Cursor/Trae/CodeBuddy/Cline
+// converters below), the exact drift class this PR exists to reduce. Verified
+// behaviorally identical (no block / one block / adjacent blocks / whole-
+// content block / unclosed opening tag / nested-looking tags / repeated
+// sequential calls for global-regex lastIndex leakage) before merging.
+// install.js re-binds (does not re-define) — RUNTIME_COMPATIBILITY_BLOCK_RE
+// is no longer duplicated here either. (All call sites are below this line
+// → no TDZ hazard.)
+const applyClaudeCodeBrandSwap = runtimeArtifactConversion.applyClaudeCodeBrandSwap;
 
 function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
@@ -2517,56 +2527,6 @@ function extractFrontmatterField(frontmatter, fieldName) {
   const match = frontmatter.match(regex);
   if (!match) return null;
   return match[1].trim().replace(/^['"]|['"]$/g, '');
-}
-
-// #2284 finding (b): the `<runtime_compatibility>` block appearing in
-// gsd-core/workflows/{plan-phase,execute-phase}.md is a runtime-COMPARISON
-// table ("**Claude Code:** Uses `Agent(...)`" / "a backgrounded Claude Code
-// agent" / "top-level Claude Code") — every "Claude Code" mention inside it
-// is a COMPARED-RUNTIME LABEL, not a host self-reference. The brand swap
-// below (`Claude Code` → the installing runtime's own display name) is
-// meant only for host self-references; applying it inside this block
-// mislabels the comparison (e.g. Windsurf installs would read "**Windsurf:**
-// Uses `Agent(...)`" describing what is actually Claude Code's behavior).
-// This is cross-cutting across every runtime that brand-swaps workflow
-// content (cursor/windsurf/trae/cline/codebuddy hardcoded; qwen/hermes
-// descriptor-driven via hostBehaviors.brandingRewrites) — confirmed to
-// reproduce on unmodified Windsurf, not Hermes-specific.
-const RUNTIME_COMPATIBILITY_BLOCK_RE = /<runtime_compatibility>[\s\S]*?<\/runtime_compatibility>/g;
-
-/**
- * Rewrite bare "Claude Code" self-references in workflow content to
- * `brandName`, EXCEPT inside `<runtime_compatibility>...</runtime_compatibility>`
- * blocks, which are left byte-for-byte verbatim. Every other content
- * transform in a runtime's `.md` converter (tool-name renames, path
- * rewrites, etc.) is unaffected — only this literal brand-name swap is
- * protected-region-aware, since only it risks mislabeling a
- * runtime-comparison table.
- *
- * Implementation: SPLIT `content` on the protected-block regex, brand-swap
- * only the GAP text between (and around) matches, then rejoin gap+block
- * alternately. No placeholder/sentinel token of any kind is substituted in
- * — a prior version used a sentinel-token mask/restore, which is exactly the
- * kind of invisible landmine this rewrite eliminates (a sentinel string, no
- * matter how obscure, is a theoretical collision risk with real content and
- * is easy to silently reintroduce in a future edit without it showing in a
- * diff). Behavior-identical to the removed sentinel-token version — verified
- * via `npm run gen:golden` producing zero further diff.
- */
-function applyClaudeCodeBrandSwap(content, brandName) {
-  if (!brandName) return content;
-  let result = '';
-  let lastIndex = 0;
-  RUNTIME_COMPATIBILITY_BLOCK_RE.lastIndex = 0; // reset shared global-regex state before each use
-  let m;
-  while ((m = RUNTIME_COMPATIBILITY_BLOCK_RE.exec(content))) {
-    const gap = content.slice(lastIndex, m.index);
-    result += gap.replace(/\bClaude Code\b/g, brandName);
-    result += m[0]; // protected block, verbatim — never brand-swapped
-    lastIndex = m.index + m[0].length;
-  }
-  result += content.slice(lastIndex).replace(/\bClaude Code\b/g, brandName);
-  return result;
 }
 
 // Tool name mapping from Claude Code to Cursor CLI

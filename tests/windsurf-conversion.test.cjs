@@ -80,6 +80,29 @@ Body content.
     assert.ok(result.includes('Shell'), 'Shell tool mentioned');
     assert.ok(result.includes('StrReplace'), 'StrReplace tool mentioned');
   });
+
+  // #2931 finding 2: this converter used to truncate with a raw UTF-16
+  // `description.slice(0, 177)` — precisely the surrogate-pair-splitting bug
+  // truncateWindsurfWorkflowDescription (used by the sibling workflow
+  // converter) was written to avoid. Harmonized to share that code-point-safe
+  // helper; this locks in that the skill converter no longer emits a lone
+  // surrogate when the cut lands inside a multi-byte character.
+  test('neverSplitsAMultiByteCharacterWhenTruncating (regression for #2931 finding 2)', () => {
+    // Position a surrogate-pair emoji exactly straddling the naive UTF-16
+    // slice(0, 177) boundary: 176 'a's put the high surrogate at index 176
+    // and the low surrogate at index 177.
+    const description = `${'a'.repeat(176)}\u{1F600}bbbb`;
+    const naiveSlice = description.slice(0, 177);
+    assert.ok(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(naiveSlice), 'fixture must actually straddle a naive UTF-16 slice boundary');
+
+    const input = `---\nname: test\ndescription: ${description}\n---\n\nbody\n`;
+    const result = convertClaudeCommandToWindsurfSkill(input, 'gsd-test');
+    const roundTripped = Buffer.from(result, 'utf8').toString('utf8');
+    assert.strictEqual(roundTripped, result, 'result round-trips through Buffer unchanged');
+    assert.ok(!result.includes('�'), 'no U+FFFD replacement character emitted');
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result), 'no lone high surrogate');
+    assert.ok(!/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(result), 'no lone low surrogate');
+  });
 });
 
 describe('convertClaudeCommandToWindsurfWorkflow', () => {
@@ -182,6 +205,57 @@ Test body
           'newline in payload must be JSON-escaped in the preview');
       }
     });
+  });
+});
+
+// #2931 finding 1: the #1615 regex constrains commandName's CHARACTER CLASS
+// but not its LENGTH, so total emitted size was NOT actually bounded by
+// construction (a 5000-char commandName silently emitted 15,162 bytes; a
+// 20000-char one silently emitted 60,162 bytes — both over the 12000 cap).
+// These tests lock in the separate WINDSURF_COMMAND_NAME_MAX length guard.
+describe('convertClaudeCommandToWindsurfWorkflow — commandName length cap (#2931 finding 1)', () => {
+  // Mirrors WINDSURF_COMMAND_NAME_MAX in src/runtime-artifact-conversion.cts
+  // (not exported — the module's own guard is the single source of truth;
+  // this local copy exists only to compute fixture lengths below).
+  const WINDSURF_COMMAND_NAME_MAX = 128;
+  const validInput = '---\nname: x\ndescription: x\n---\n\nbody\n';
+
+  test('acceptsCommandNameAtMaxMinusOne', () => {
+    const name = 'a'.repeat(WINDSURF_COMMAND_NAME_MAX - 1);
+    assert.doesNotThrow(() => convertClaudeCommandToWindsurfWorkflow(validInput, name));
+  });
+
+  test('acceptsCommandNameAtMaxInclusive', () => {
+    const name = 'a'.repeat(WINDSURF_COMMAND_NAME_MAX);
+    assert.doesNotThrow(() => convertClaudeCommandToWindsurfWorkflow(validInput, name));
+  });
+
+  test('rejectsCommandNameOverMax', () => {
+    const name = 'a'.repeat(WINDSURF_COMMAND_NAME_MAX + 1);
+    assert.throws(
+      () => convertClaudeCommandToWindsurfWorkflow(validInput, name),
+      /too long/,
+      'commandName one over the max must throw, not silently truncate',
+    );
+  });
+
+  test('emittedBytesForWorstLegalCaseStaysWellUnder12000Bytes', () => {
+    // Worst legal case: MAX-length commandName + a MAX-length description
+    // made entirely of 4-byte-UTF-8 emoji code points.
+    const name = 'a'.repeat(WINDSURF_COMMAND_NAME_MAX);
+    const description = '\u{1F600}'.repeat(WINDSURF_WORKFLOW_DESCRIPTION_MAX);
+    const result = convertClaudeCommandToWindsurfWorkflow(makeCommandInput(description), name);
+    const bytes = Buffer.byteLength(result, 'utf8');
+    assert.ok(bytes < 12000, `worst legal case emitted ${bytes} bytes, expected well under 12000`);
+  });
+
+  test('regression: 20000-char commandName throws rather than silently emitting ~60KB', () => {
+    const name = 'a'.repeat(20000);
+    assert.throws(
+      () => convertClaudeCommandToWindsurfWorkflow(validInput, name),
+      /too long/,
+      '20000-char commandName must throw, not silently emit an oversized workflow',
+    );
   });
 });
 

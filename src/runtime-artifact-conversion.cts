@@ -1114,16 +1114,22 @@ function convertClaudeCommandToWindsurfSkill(content, skillName) {
     }
   }
   description = toSingleLine(description);
-  const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
+  // #2931: code-point-safe truncation (see truncateWindsurfWorkflowDescription
+  // below) — a raw UTF-16 `slice(0, 177)` can bisect a surrogate pair and
+  // emit a lone surrogate on re-encode. Same exact bounds as before (>180
+  // chars -> first 177 code points + '...'), just harmonized with the
+  // sibling Windsurf workflow converter's helper instead of duplicating the
+  // surrogate-splitting idiom here.
+  const shortDescription = truncateWindsurfWorkflowDescription(description);
   const adapter = getWindsurfSkillAdapterHeader(skillName);
 
   return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
 }
 
 // #2931: cap on the Windsurf workflow's only unbounded input (the frontmatter
-// `description`). Mirrors convertClaudeCommandToWindsurfSkill's 180-char
-// truncation idiom below, but named so the emission-size reasoning is
-// self-documenting at the one call site that needs it.
+// `description`). Shared (not just mirrored) by convertClaudeCommandToWindsurfSkill
+// above — both converters call truncateWindsurfWorkflowDescription below so
+// there is exactly one code-point-safe truncation idiom, not two.
 const WINDSURF_WORKFLOW_DESCRIPTION_MAX = 180;
 
 function truncateWindsurfWorkflowDescription(description) {
@@ -1134,6 +1140,23 @@ function truncateWindsurfWorkflowDescription(description) {
   if (codePoints.length <= WINDSURF_WORKFLOW_DESCRIPTION_MAX) return description;
   return `${codePoints.slice(0, WINDSURF_WORKFLOW_DESCRIPTION_MAX - 3).join('')}...`;
 }
+
+// #2931: SEPARATE size control from the #1615 security regex below — do not
+// fold the two together or make either conditional on the other. The #1615
+// regex constrains commandName's CHARACTER CLASS but not its LENGTH, and
+// commandName is interpolated into the emitted template three times (the
+// `# <commandName>` heading, the `@.../<stem>.md` @-reference target, and the
+// trailing "after /<commandName>" mention) — so an unbounded commandName
+// reopens the byte-cap hole the removed 12000-byte throw used to close
+// (verified: commandName length 246 -> 900 bytes, 5000 -> 15,162 bytes,
+// 20000 -> 60,162 bytes — all silently over the old 12000 cap). THROW rather
+// than truncate: a truncated commandName would silently point the workflow's
+// `@~/.claude/gsd-core/commands/gsd/<stem>.md` reference at a file that does
+// not exist (see DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED) — a name
+// too long to represent is a genuine error, not something to degrade. 128 is
+// deliberately generous: the longest real shipped command name is
+// `gsd-plan-review-convergence` at 27 characters.
+const WINDSURF_COMMAND_NAME_MAX = 128;
 
 function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
   // #1615 security: commandName flows unsanitized into a markdown body that
@@ -1154,6 +1177,17 @@ function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
       'must match /^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/ (no slashes, backslashes, spaces, dots, trailing dash, or control chars — prevents prompt injection and path-component injection into the workflow body)'
     );
   }
+  // #2931: SEPARATE size control — see WINDSURF_COMMAND_NAME_MAX above for
+  // why this exists and why it throws instead of truncating. Kept as an
+  // independent check from the #1615 regex above (not folded into it, not
+  // conditional on it).
+  if (commandName.length > WINDSURF_COMMAND_NAME_MAX) {
+    const preview = JSON.stringify(commandName.slice(0, 60));
+    throw new Error(
+      `convertClaudeCommandToWindsurfWorkflow: commandName too long (${commandName.length} chars, ` +
+      `preview ${preview}...); max ${WINDSURF_COMMAND_NAME_MAX} chars (see WINDSURF_COMMAND_NAME_MAX)`
+    );
+  }
   const converted = convertClaudeToWindsurfMarkdown(content);
   const { frontmatter } = extractFrontmatterAndBody(converted);
   const rawDescription = frontmatter ? extractFrontmatterField(frontmatter, 'description') : '';
@@ -1163,15 +1197,15 @@ function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
   const singleLineDescription = rawDescription ? toSingleLine(rawDescription) : '';
   const effectiveDescription = truncateWindsurfWorkflowDescription(singleLineDescription || `Run ${commandName}.`);
   const stem = commandName.startsWith('gsd-') ? commandName.slice(4) : commandName;
-  // #2931: no byte-length cap here by construction. The only unbounded input
-  // (description) is now truncated above to WINDSURF_WORKFLOW_DESCRIPTION_MAX
-  // code points, so total emission size is bounded by the fixed template text
-  // plus that constant — measured headroom against the old 12000-byte throw
-  // was 11,696 bytes across all 71 shipped commands, so this cap is never
-  // reachable by construction. The 12000 constant now lives in exactly one
-  // place — the cap table in tests/helpers/emitted-caps.cjs — which
-  // eliminates the DEFECT.GENERATIVE-FIX duplication class rather than
-  // adding a parity test for a second copy of the same number.
+  // #2931: total emission size is bounded by (fixed template text) +
+  // (3 x WINDSURF_COMMAND_NAME_MAX, one per commandName/stem interpolation
+  // above) + (WINDSURF_WORKFLOW_DESCRIPTION_MAX Unicode code points, up to 4
+  // UTF-8 bytes each). Both inputs are validated/truncated above — commandName
+  // is length-capped-and-thrown by WINDSURF_COMMAND_NAME_MAX, description is
+  // truncated by truncateWindsurfWorkflowDescription — so this bound holds by
+  // construction, not by measurement. The 12000-byte figure itself lives in
+  // exactly one place — the cap table in tests/helpers/emitted-caps.cjs —
+  // this comment only justifies why the actual emitted size stays under it.
   return `# ${commandName}\n\n${effectiveDescription}\n\nRead and execute the GSD command at @~/.claude/gsd-core/commands/gsd/${stem}.md end-to-end. Treat the user's message after /${commandName} as the command arguments.`;
 }
 
@@ -2952,6 +2986,12 @@ export = {
   convertClaudeToWindsurfMarkdown,
   convertClaudeCommandToWindsurfSkill,
   convertClaudeCommandToWindsurfWorkflow,
+  // #2931: single-sourced brand-swap helper (was duplicated verbatim in
+  // bin/install.js — the exact drift class this PR exists to reduce). Used
+  // internally by convertClaudeToWindsurfMarkdown/convertClaudeToAugmentMarkdown
+  // above and bound from here by the remaining bin/install.js converters
+  // (Cursor/Trae/CodeBuddy/Cline) that still brand-swap inline.
+  applyClaudeCodeBrandSwap,
   convertClaudeToAugmentMarkdown,
   convertClaudeCommandToAugmentSkill,
   convertClaudeToTraeMarkdown,
