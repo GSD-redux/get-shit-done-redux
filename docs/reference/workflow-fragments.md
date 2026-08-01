@@ -65,16 +65,21 @@ coordinated ADR amendment to ADR-1671, never an organic edit to the parser.
 An authoring mistake throws at parse time, naming the source file and 1-based
 line number, rather than being silently dropped or swallowed to end-of-file:
 
-- Missing `id=` or `when=` attribute.
-- `when=` value not in the frozen vocabulary above (including any boolean
-  operator or negation form).
-- `id=` value that does not match the id grammar.
-- An unrecognized attribute on an open marker.
-- A close marker carrying attributes.
-- An unmatched close marker (close with no open).
-- A nested marker (open marker while already inside an open section).
-- A duplicate `id=` within one file.
-- An open marker with no matching close before end of file.
+- Missing `id=` or `when=` attribute (`MISSING_ID`, `MISSING_WHEN`).
+- `when=` value not in the frozen vocabulary above, including any boolean
+  operator or negation form (`UNKNOWN_WHEN`).
+- `id=` value that does not match the id grammar (`MALFORMED_ID`).
+- Malformed attribute syntax on an open marker — the attribute text is not a
+  run of well-formed `key="value"` tokens (e.g. an unterminated quote or a
+  duplicate attribute key) (`MALFORMED_ATTRIBUTES`).
+- An unrecognized attribute on an open marker (`UNRECOGNIZED_ATTRIBUTE`).
+- A close marker carrying attributes (`CLOSE_WITH_ATTRIBUTES`).
+- An unmatched close marker, i.e. close with no open (`UNMATCHED_CLOSE`).
+- A nested marker, i.e. open marker while already inside an open section
+  (`NESTED_SECTION`).
+- A duplicate `id=` within one file (`DUPLICATE_ID`).
+- An open marker with no matching close before end of file
+  (`UNCLOSED_SECTION`).
 
 An unrecognized `when=` is treated as an authoring instruction that must never
 be silently ignored, not as a value to fail open on — this is deliberately

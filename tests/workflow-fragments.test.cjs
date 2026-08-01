@@ -440,6 +440,40 @@ describe('REASON enum is frozen and its shape is locked', () => {
   });
 });
 
+// ─── Doc/enum parity guard (DEFECT.GENERATIVE-FIX, code review #2930) ──────
+
+describe('REASON enum and docs "Fails closed" bullets stay in parity', () => {
+  test('everyReasonMemberIsDocumentedAndNoStaleBulletsRemain', () => {
+    // allow-test-rule: docs-parity — the doc text IS the contract being checked here (#2930)
+    const docPath = path.join(__dirname, '..', 'docs', 'reference', 'workflow-fragments.md');
+    const docText = fs.readFileSync(docPath, 'utf8');
+
+    const sectionMatch = /## Fails closed\r?\n([\s\S]*?)\r?\n## /.exec(docText);
+    assert.ok(sectionMatch, 'docs/reference/workflow-fragments.md must have a "## Fails closed" section');
+    const sectionText = sectionMatch[1];
+
+    const enumMembers = Object.keys(REASON);
+    // Key on the reason IDENTIFIER (e.g. `MALFORMED_ATTRIBUTES`) appearing in
+    // a bullet, never on bullet prose — a reword of the human-readable
+    // sentence must never falsely trip or falsely clear this guard.
+    const undocumented = enumMembers.filter((name) => !sectionText.includes(name));
+
+    const mentionedIdentifiers = [...sectionText.matchAll(/`([A-Z][A-Z0-9_]*)`/g)].map((m) => m[1]);
+    const staleMentions = mentionedIdentifiers.filter((name) => !enumMembers.includes(name));
+
+    assert.deepEqual(
+      undocumented,
+      [],
+      `REASON member(s) missing a "Fails closed" bullet in docs/reference/workflow-fragments.md: ${undocumented.join(', ')}`,
+    );
+    assert.deepEqual(
+      staleMentions,
+      [],
+      `"Fails closed" section mentions identifier(s) that are not REASON members (stale bullet?): ${staleMentions.join(', ')}`,
+    );
+  });
+});
+
 // ─── Row 19: frozen vocabulary ──────────────────────────────────────────────
 
 describe('frozen when= vocabulary', () => {
