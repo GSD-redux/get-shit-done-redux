@@ -18,6 +18,7 @@ const { runGsdTools, cleanup } = require('../helpers.cjs');
 const { classify } = require('./result.cjs');
 const { createFixture } = require('../fixtures/index.cjs');
 const { LOOP_HOST_CONTRACT } = require('../../gsd-core/bin/lib/loop-host-contract.cjs');
+const { resolveWithin } = require('./paths.cjs');
 
 /**
  * WHY re-derive rather than re-list: `loop-host-contract.cjs` is itself
@@ -280,11 +281,15 @@ class LoopWalk {
    * a real agent (researcher/planner/executor/...) would produce mid-loop.
    * Creates parent directories as needed.
    *
+   * `relPath` is resolved via `resolveWithin` before any I/O — a scenario- or
+   * caller-supplied path that escapes `this.dir` (e.g. `"../../escaped.md"`)
+   * throws rather than reaching `fs.writeFileSync` outside the temp project.
+   *
    * @param {string} relPath - path relative to `this.dir`.
    * @param {string} content
    */
   writeArtifact(relPath, content) {
-    const abs = path.join(this.dir, relPath);
+    const abs = resolveWithin(this.dir, relPath);
     fs.mkdirSync(path.dirname(abs), { recursive: true });
     fs.writeFileSync(abs, content, 'utf-8');
   }

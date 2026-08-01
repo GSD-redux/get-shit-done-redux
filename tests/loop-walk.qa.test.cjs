@@ -25,6 +25,7 @@ const { LoopWalk } = require('./qa/loop-walk.cjs');
 const { MUTATIONS, apply, NOOP } = require('./qa/mutations.cjs');
 const { loadScenario, runScenario, assertWiringIsLive } = require('./qa/scenario.cjs');
 const { resolveRef } = require('./qa/fixtures/index.cjs');
+const { resolveWithin } = require('./qa/paths.cjs');
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
 
 /** Looks up an oracle by id, failing loudly if the catalog ever drops one. */
@@ -681,6 +682,113 @@ describe('mutations', () => {
       assert.strictEqual(sizeAfter, sizeBefore);
       assert.strictEqual(lstat.isSymbolicLink() || lstat.isFile(), true);
     });
+  });
+});
+
+describe('path containment', () => {
+  test('resolveWithin rejects a traversing relPath, naming it and the base', (t) => {
+    const dir = createTempDir('gsd-pathguard-');
+    t.after(() => cleanup(dir));
+    assert.throws(() => resolveWithin(dir, '../../etc/hosts'), (err) => {
+      assert.ok(err instanceof Error);
+      assert.ok(err.message.includes('../../etc/hosts'));
+      assert.ok(err.message.includes(dir));
+      return true;
+    });
+  });
+
+  test('resolveWithin rejects an absolute relPath', (t) => {
+    const dir = createTempDir('gsd-pathguard-abs-');
+    t.after(() => cleanup(dir));
+    assert.throws(() => resolveWithin(dir, '/etc/hosts'), /absolute/);
+  });
+
+  test('resolveWithin rejects a sibling-prefix escape (path-segment, not string-prefix, containment)', (t) => {
+    const dir = createTempDir('gsd-pathguard-sibling-');
+    t.after(() => cleanup(dir));
+    assert.throws(() => resolveWithin(dir, `../${path.basename(dir)}-evil/x`), /escapes/);
+  });
+
+  test('resolveWithin accepts an in-project path that does not exist yet', (t) => {
+    const dir = createTempDir('gsd-pathguard-notyet-');
+    t.after(() => cleanup(dir));
+    const resolved = resolveWithin(dir, 'deep/not/created/yet.md');
+    assert.strictEqual(typeof resolved, 'string');
+    assert.ok(resolved.length > 0);
+  });
+
+  test('LoopWalk#writeArtifact rejects a traversing relPath', (t) => {
+    const walk = LoopWalk.create({ fixture: 'greenfield', prefix: 'gsd-pathguard-write-' });
+    t.after(() => walk.cleanup());
+    assert.throws(() => walk.writeArtifact('../../escaped.md', 'x'), /escapes|absolute/);
+    assert.strictEqual(fs.existsSync(path.join(path.dirname(walk.dir), 'escaped.md')), false);
+  });
+
+  test('LoopWalk#writeArtifact still writes a legitimate in-project path after the guard', (t) => {
+    const walk = LoopWalk.create({ fixture: 'greenfield', prefix: 'gsd-pathguard-write-ok-' });
+    t.after(() => walk.cleanup());
+    walk.writeArtifact('.planning/PROJECT.md', '# ok\n');
+    assert.strictEqual(fs.existsSync(path.join(walk.dir, '.planning', 'PROJECT.md')), true);
+  });
+
+  test('mutations apply("delete", ...) rejects a traversing relPath', (t) => {
+    const mutDir = createTempDir('gsd-pathguard-delete-');
+    t.after(() => cleanup(mutDir));
+    assert.throws(() => apply('delete', { dir: mutDir, relPath: '../../../../etc/hosts' }), /escapes|absolute/);
+  });
+
+  test('mutations apply("symlink", ...) rejects a traversing relPath', (t) => {
+    const mutDir = createTempDir('gsd-pathguard-symlink-');
+    t.after(() => cleanup(mutDir));
+    assert.throws(() => apply('symlink', { dir: mutDir, relPath: '../../../../etc/hosts' }), /escapes|absolute/);
+  });
+
+  test('loadScenario rejects a mutate.target that traverses out of the project, at load time', (t) => {
+    const dir = createTempDir('gsd-pathguard-scenario-mutate-');
+    t.after(() => cleanup(dir));
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(file, JSON.stringify({
+      name: 'traversal-mutate',
+      fixture: 'greenfield',
+      steps: [{ at: 'plan:pre', mutate: { id: 'crlf', target: '../../evil.md' }, run: [['progress']] }],
+    }));
+    assert.throws(() => loadScenario(file), /evil|\.\./);
+  });
+
+  test('loadScenario rejects an absolute mutate.target, at load time', (t) => {
+    const dir = createTempDir('gsd-pathguard-scenario-mutate-abs-');
+    t.after(() => cleanup(dir));
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(file, JSON.stringify({
+      name: 'absolute-mutate',
+      fixture: 'greenfield',
+      steps: [{ at: 'plan:pre', mutate: { id: 'crlf', target: '/etc/evil.md' }, run: [['progress']] }],
+    }));
+    assert.throws(() => loadScenario(file), /absolute/);
+  });
+
+  test('loadScenario rejects an agent.write key that traverses out of the project, at load time', (t) => {
+    const dir = createTempDir('gsd-pathguard-scenario-write-');
+    t.after(() => cleanup(dir));
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(file, JSON.stringify({
+      name: 'traversal-write',
+      fixture: 'greenfield',
+      steps: [{ at: 'plan:pre', agent: { write: { '../../escaped.md': '@project/minimal' } }, run: [['progress']] }],
+    }));
+    assert.throws(() => loadScenario(file), /escaped|\.\./);
+  });
+
+  test('loadScenario rejects an absolute agent.write key, at load time', (t) => {
+    const dir = createTempDir('gsd-pathguard-scenario-write-abs-');
+    t.after(() => cleanup(dir));
+    const file = path.join(dir, 's.json');
+    fs.writeFileSync(file, JSON.stringify({
+      name: 'absolute-write',
+      fixture: 'greenfield',
+      steps: [{ at: 'plan:pre', agent: { write: { '/etc/evil.md': '@project/minimal' } }, run: [['progress']] }],
+    }));
+    assert.throws(() => loadScenario(file), /etc|absolute/i);
   });
 });
 

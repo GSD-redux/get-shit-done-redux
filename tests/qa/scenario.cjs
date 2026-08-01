@@ -21,6 +21,28 @@ const path = require('node:path');
 const { resolveRef } = require('./fixtures/index.cjs');
 const { LOOP_HOST_CONTRACT } = require('../../gsd-core/bin/lib/loop-host-contract.cjs');
 const { MUTATIONS, apply, NOOP } = require('./mutations.cjs');
+const { resolveWithin } = require('./paths.cjs');
+
+/**
+ * True when `relPath` is absolute or contains a `..` path segment, checked on
+ * BOTH the raw string and its backslash-normalized form — a scenario-JSON
+ * path can carry Windows-style separators as data regardless of the host OS
+ * running the walk. Used at `validateScenario` LOAD time, ahead of
+ * `resolveWithin`'s own (equally strict) runtime check: failing a malformed
+ * scenario fast and loud at load time is better than failing at apply time —
+ * the scenario is malformed, not the run.
+ *
+ * @param {string} relPath
+ * @returns {boolean}
+ */
+function isTraversalOrAbsolute(relPath) {
+  if (typeof relPath !== 'string' || relPath === '') return true;
+  const normRel = relPath.replace(/\\/g, '/');
+  if (path.isAbsolute(relPath) || path.posix.isAbsolute(normRel) || /^[a-zA-Z]:\//.test(normRel)) {
+    return true;
+  }
+  return normRel.split('/').includes('..');
+}
 
 /** Scenario `fixture` must be one of these — see `loop-walk.cjs` `FIXTURE_BUILDERS`. */
 const VALID_FIXTURES = new Set(['greenfield', 'planning', 'seeded']);
@@ -193,6 +215,12 @@ function validateScenario(scenario, sourceLabel) {
       if (typeof step.mutate.target !== 'string' || step.mutate.target === '') {
         throw new Error(`loadScenario: ${where}.mutate.target must be a non-empty project-relative path string, got ${JSON.stringify(step.mutate.target)}`);
       }
+      if (isTraversalOrAbsolute(step.mutate.target)) {
+        throw new Error(
+          `loadScenario: ${where}.mutate.target ${JSON.stringify(step.mutate.target)} must be project-relative `
+            + '— absolute paths and ".." segments are rejected at load time',
+        );
+      }
       if (step.mutate.targetBytes !== undefined) {
         const { targetBytes } = step.mutate;
         if (typeof targetBytes !== 'number' || !Number.isFinite(targetBytes) || targetBytes < 0) {
@@ -211,6 +239,12 @@ function validateScenario(scenario, sourceLabel) {
         for (const [relPath, ref] of Object.entries(step.agent.write)) {
           if (typeof ref !== 'string' || ref === '') {
             throw new Error(`loadScenario: ${where}.agent.write["${relPath}"] must be a non-empty ref string, got ${JSON.stringify(ref)}`);
+          }
+          if (isTraversalOrAbsolute(relPath)) {
+            throw new Error(
+              `loadScenario: ${where}.agent.write key ${JSON.stringify(relPath)} must be project-relative `
+                + '— absolute paths and ".." segments are rejected at load time',
+            );
           }
         }
       }
@@ -341,7 +375,7 @@ function runScenario(scenario, opts) {
         if (step.mutate) {
           const { id, target, targetBytes } = step.mutate;
           const entry = MUTATION_BY_ID.get(id);
-          const absTarget = path.join(walk.dir, target);
+          const absTarget = resolveWithin(walk.dir, target);
           if (entry.kind === 'content') {
             // This `readFileSync` is harness plumbing, not a test assertion —
             // it reads a planning ARTIFACT the walk itself just wrote so the

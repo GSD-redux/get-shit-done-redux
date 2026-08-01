@@ -62,84 +62,12 @@
  * `severity` defaults to `SEVERITY.VIOLATION` for every original oracle.
  */
 
-const fs = require('node:fs');
 const nodePath = require('node:path');
 const { KIND } = require('./result.cjs');
+const { resolveForCompare, isUnderProjectDir } = require('./paths.cjs');
 
 /** Severity of a failed oracle outcome. A SMELL is evidence, not a verdict — it never fails a build. */
 const SEVERITY = Object.freeze({ VIOLATION: 'violation', SMELL: 'smell' });
-
-/**
- * Realpath-resolves `candidate` by walking up to its nearest EXISTING ancestor and rejoining
- * the non-existent suffix, rather than requiring the whole path to exist. Plain
- * `fs.realpathSync` throws ENOENT for the *entire* path when any segment is missing, which is
- * exactly the case for QA payloads — `init` returns `project_path` / `roadmap_path` for files
- * the agent has not written yet, nested under a project directory that DOES exist. Falling
- * back to the fully-unresolved raw string in that case would compare an unresolved `d` against
- * a resolved `projectDir` and reintroduce the same false positive this function exists to fix
- * (verified: `.planning/NOT-YET.md` under an mkdtemp'd macOS `/var/...` dir was flagged as
- * outside a `/private/var/...`-resolved project root). Resolving the nearest existing ancestor
- * and rejoining the missing suffix keeps the comparison correct without requiring the leaf to
- * exist.
- *
- * @param {string} candidate absolute path (may or may not exist on disk)
- * @returns {string} realpath-resolved path, with any non-existent suffix rejoined
- */
-function realpathNearestAncestor(candidate) {
-  try {
-    return fs.realpathSync(candidate);
-  } catch {
-    const parent = nodePath.dirname(candidate);
-    if (parent === candidate) return candidate; // reached a root that itself doesn't exist
-    return nodePath.join(realpathNearestAncestor(parent), nodePath.basename(candidate));
-  }
-}
-
-/**
- * Best-effort realpath resolution for containment comparisons: resolves `candidate` via
- * `realpathNearestAncestor` and backslash-normalizes the result.
- *
- * MACOS SYMLINK CASE (do not "simplify" this back to a lexical compare): on macOS,
- * `os.tmpdir()` / `TMPDIR` resolves to `/var/folders/...`, which is itself a symlink to
- * `/private/var/folders/...`. `fs.mkdtempSync` returns the unresolved `/var/...` form, but
- * `gsd-tools` output paths are realpath-resolved by the OS/child process to the
- * `/private/var/...` form. Comparing those two strings *lexically* makes the very same
- * directory compare as "outside the project" and fires a spurious `value-hygiene` smell on
- * every macOS run. Resolving both sides through `fs.realpathSync` before comparison is what
- * fixes that — a lexical `path.relative`/prefix compare on the raw strings will regress it.
- *
- * @param {string} candidate absolute path (may or may not exist on disk)
- * @returns {string} realpath-resolved (nearest-ancestor fallback) path, backslash-normalized
- */
-function resolveForCompare(candidate) {
-  // Unconditional: backslash-separated path strings can arrive as *data* (e.g. a
-  // Windows-style path embedded in JSON) even when running on Linux/macOS, not only when
-  // `fs.realpathSync` itself returns a drive-letter path on native Windows.
-  return realpathNearestAncestor(candidate).replace(/\\/g, '/');
-}
-
-/**
- * True when `resolvedCandidate` is `resolvedProjectDir` itself or a path-segment descendant
- * of it. Both arguments MUST already be realpath-resolved and backslash-normalized via
- * `resolveForCompare` — this function does no I/O itself, so the (syscall-bearing) realpath
- * work happens once per candidate/project-dir string, not repeatedly inside this comparator.
- *
- * Uses `path.posix.relative` structurally (never substring/`.includes()` on the raw string,
- * and never a string-prefix test) so a sibling directory like `/tmp/proj-evil` does NOT count
- * as inside `/tmp/proj`: a relative path that escapes `resolvedProjectDir` either starts with
- * a `..` path segment or is itself still absolute (e.g. a different drive on Windows).
- * `path.posix` (not the platform-specific `path`) is used deliberately because both inputs
- * were already forward-slash-normalized by `resolveForCompare`, and comparisons must stay
- * consistent regardless of the host OS.
- *
- * @param {string} resolvedCandidate realpath-resolved, backslash-normalized absolute path
- * @param {string} resolvedProjectDir realpath-resolved, backslash-normalized absolute project root
- * @returns {boolean}
- */
-function isUnderProjectDir(resolvedCandidate, resolvedProjectDir) {
-  const rel = nodePath.posix.relative(resolvedProjectDir, resolvedCandidate);
-  return rel === '' || (rel.split('/')[0] !== '..' && !nodePath.posix.isAbsolute(rel));
-}
 
 /** Exact-match sentinel strings that indicate a value was coerced by mistake. */
 const SENTINEL_STRINGS = new Set(['undefined', 'null', 'NaN', '[object Object]']);

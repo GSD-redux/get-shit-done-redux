@@ -24,6 +24,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { resolveWithin } = require('./paths.cjs');
 
 /** Distinguishable placeholder heading/content used by unicode-headings. */
 const UNICODE_HEADING_TEXT = '🚀 مرحبا Ünïcøde';
@@ -316,19 +317,19 @@ function escapedPipes(text) {
 }
 
 /**
- * Resolves `{dir, relPath}` to an absolute on-disk path, normalizing both
- * segments' separators to forward slashes UNCONDITIONALLY before joining —
- * matching the project-wide path-normalization convention regardless of the
- * platform this happens to run on.
+ * Resolves `{dir, relPath}` to an absolute on-disk path via `resolveWithin`
+ * (`./paths.cjs`) — the single containment guard for this harness. `relPath`
+ * is scenario-supplied (`step.mutate.target`), so this is the seam both
+ * `deleteFile` and `symlinkFile` inherit: a traversing `relPath` (e.g.
+ * `"../../../../etc/hosts"`) throws here rather than reaching
+ * `fs.unlinkSync` / `fs.symlinkSync` outside `dir`.
  *
  * @param {string} dir
  * @param {string} relPath
  * @returns {string}
  */
 function resolveTargetPath(dir, relPath) {
-  const normDir = String(dir).replace(/\\/g, '/');
-  const normRel = String(relPath).replace(/\\/g, '/');
-  return path.join(normDir, normRel);
+  return resolveWithin(dir, relPath);
 }
 
 /**
