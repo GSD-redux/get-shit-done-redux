@@ -1624,25 +1624,27 @@ function cmdPhaseRemove(
           );
         }
         // #2640: if neither body field was found, the transform is a no-op.
-        // readModifyWriteStateMd's no-op guard would then skip the frontmatter
-        // resync, leaving progress.* stale. Force a body diff by touching the
-        // 'Total Phases:' line — create it if absent so the guard passes and
-        // syncStateFrontmatter rebuilds the frontmatter from the post-deletion
-        // disk/ROADMAP state.
-        if (modified === stateContent) {
+        // readModifyWriteStateMd's no-op guard (#948) would then skip the
+        // frontmatter resync, leaving progress.* stale. Force a body diff
+        // ONLY when a phase directory was actually removed (targetDir !== null)
+        // so the guard passes and syncStateFrontmatter rebuilds the frontmatter
+        // from the post-deletion disk/ROADMAP state. Without the targetDir gate,
+        // a no-op removal (ROADMAP-only phase, no directory) would inject a
+        // spurious 'Total Phases:' line into a body that intentionally lacked one.
+        if (targetDir && modified === stateContent) {
+          // subdirs was read before the deletion; excluding the removed target
+          // gives the remaining count. Renumbering changes names but not count.
           const remainingPhases = subdirs.filter(
             (d) => phaseTokenMatches(d, normalized) === false,
           ).length;
-          // Renumbering may have changed dir names; approximate with count - 1.
-          const approxTotal = Math.max(0, remainingPhases);
           if (totalRaw) {
             modified =
-              stateReplaceField(modified, 'Total Phases', String(approxTotal)) || modified;
+              stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;
           } else {
             // No 'Total Phases:' field in the body — append one so the no-op
             // guard sees a diff. syncStateFrontmatter will then rebuild the
             // frontmatter progress.* block from the real disk/ROADMAP count.
-            modified = `Total Phases: ${approxTotal}\n` + modified;
+            modified = `Total Phases: ${remainingPhases}\n` + modified;
           }
         }
         return modified;
