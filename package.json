@@ -21,6 +21,7 @@
     "GEMINI.md",
     "hooks",
     "scripts",
+    "!scripts/gen-emitted-baseline.cjs",
     "pi",
     "vscode"
   ],
