@@ -162,6 +162,177 @@ describe('state-snapshot command', () => {
     assert.strictEqual(output.paused_at, 'Phase 3, Plan 1, Task 2 - mid-implementation', 'paused_at extracted');
   });
 
+  // ─── Regression: #2956 — Phase must be scoped to ## Current Position ──────
+  // Third generation of #2444 / #2567. Stopped At / Paused At were scoped to
+  // ## Session; Phase (which canonically lives in ## Current Position per
+  // gsd-core/templates/state.md) was left unscoped, so a historical Phase: /
+  // **Phase:** line in an archive section silently overwrote current_phase on
+  // every write. Because current_phase is routing input for gsd-progress / --next,
+  // the rewind routes work to the wrong phase — not merely a stale display.
+
+  test('#2956 scopes Phase to ## Current Position — bold archive line below the section (shape B)', () => {
+    // Bold **Phase:** 19 in an archive BELOW ## Current Position. The unscoped
+    // extractor's bold pattern wins outright (it is tried first, unanchored),
+    // so the read returns 19 instead of 22. Scoping to the section fixes it.
+    const stateContent = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene) — COMPLETE',
+      '',
+      '## Archive — earlier milestones',
+      '',
+ '**Phase:** 19 **complete — shipped v2.43.0**',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const result = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.current_phase, '22', 'current_phase must come from ## Current Position, not the bold archive line');
+  });
+
+  test('#2956 scopes Phase to ## Current Position — plain archive line above the section (shape C)', () => {
+    // Plain archive Phase: 19 ABOVE ## Current Position. Without scoping the
+    // plain pattern (^Phase:, /im) matches the first line-start occurrence in
+    // document order — the archive line — and returns 19 instead of 22.
+    const stateContent = [
+      '# Project State',
+      '',
+      '## Archive — earlier milestones',
+      '',
+      'Phase: 19 **complete — shipped v2.43.0**',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene) — COMPLETE',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const result = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.current_phase, '22', 'current_phase must come from ## Current Position, not the plain archive line above it');
+  });
+
+  test('#2956 scopes Phase to ### Current Position (bootstrap h3 variant)', () => {
+    // gsd-core/templates/state.md ships a bootstrap layout that uses a level-3
+    // ### Current Position heading. The section matcher must recognise BOTH h2
+    // and h3, mirroring how matchSessionSection recognises ## Session and
+    // ## Session Continuity — matching only h2 would silently drop the h3 shape.
+    const stateContent = [
+      '# Project State',
+      '',
+      '### Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene)',
+      '',
+      '### Archive',
+      '',
+ '**Phase:** 19',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const result = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.current_phase, '22', 'current_phase must resolve from the h3 ### Current Position section');
+  });
+
+  test('#2956 scopes Phase to ## Current Position under CRLF', () => {
+    // The #2444 seam was CRLF-fixed by migrating onto collectSection (which
+    // strips the trailing \r before heading-text extraction). The Phase scope
+    // must inherit that CRLF tolerance — a hand-rolled [ \t]*\n boundary would
+    // silently fail to match a ## Current Position\r\n heading.
+    const stateContent = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene)',
+      '',
+      '## Archive — earlier milestones',
+      '',
+ '**Phase:** 19',
+      '',
+    ].join('\r\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const result = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.current_phase, '22', 'current_phase must come from ## Current Position under CRLF');
+  });
+
+  test('#2956 ignores a Phase token in decisions prose outside ## Current Position', () => {
+    // A decisions-table row or prose mention of "Phase 19" elsewhere is NOT the
+    // current phase. Scoping it out is correct, not a regression — this is the
+    // over-broad-fix guard.
+    const stateContent = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene)',
+      '',
+      '### Decisions',
+      '',
+      '| Decided to defer Phase 19 to the next milestone | 2026-07-01 |',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const result = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.current_phase, '22', 'a Phase token in decisions prose must not leak into current_phase');
+  });
+
+  test('#2956 scopes Paused At to ## Session on the read path (parity with the write seam)', () => {
+    // The WRITE seam (buildStateFrontmatter src/state.cts ~1576) already scopes
+    // Paused At to ## Session. The READ seam (cmdStateSnapshot) read it
+    // unscoped — a parity gap. A stale "Paused At:" in a Session Continuity
+    // Archive below the real ## Session must not win on the read path.
+    const stateContent = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene)',
+      '',
+      '## Session',
+      '',
+      '**Paused At:** Phase 22, Plan 1, Task 2 - mid-implementation',
+      '',
+      '## Session Continuity Archive',
+      '',
+      '**Paused At:** Phase 19, Plan 3 (stale)',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const result = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.paused_at, 'Phase 22, Plan 1, Task 2 - mid-implementation', 'paused_at must come from ## Session, not the archive');
+  });
+
   describe('--cwd override', () => {
     let outsideDir;
 
@@ -586,6 +757,51 @@ describe('STATE.md frontmatter sync', () => {
     const delimiterCount = (content.match(/^---$/gm) || []).length;
     assert.strictEqual(delimiterCount, 2, 'should have exactly one frontmatter block (2 delimiters)');
     assert.ok(content.includes('status: paused'), 'frontmatter should reflect latest status');
+  });
+
+  test('#2956 write-then-read does not rewind current_phase past an archive Phase line', () => {
+    // The write seam (buildStateFrontmatter) and the read seam (cmdStateSnapshot)
+    // must agree: a state write that re-syncs frontmatter must not pick up the
+    // archive **Phase:** 19 line and write current_phase: 19, which the next
+    // state-snapshot read would then surface. Round-trip must stay at 22.
+    //
+    // The fixture carries a **Status:** field so `state update Status` performs
+    // a real field update (updated:true) and forces the frontmatter resync
+    // through buildStateFrontmatter — without an existing Status field the
+    // update is a no-op (updated:false) and no write occurs.
+    const stateContent = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 22 (Documentation hygiene)',
+      '',
+      '**Status:** Ready',
+      '',
+      '## Archive — earlier milestones',
+      '',
+ '**Phase:** 19 **complete — shipped v2.43.0**',
+      '',
+    ].join('\n');
+
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    // state update forces a frontmatter sync through buildStateFrontmatter.
+    const writeResult = runGsdTools('state update Status "Executing"', tmpDir);
+    assert.ok(writeResult.success, `write failed: ${writeResult.error}`);
+    const writeOutput = JSON.parse(writeResult.output);
+    assert.strictEqual(writeOutput.updated, true, 'state update must perform a real field update to force the resync');
+
+    // The persisted frontmatter must not have rewound to the archive phase.
+    const written = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.ok(/current_phase:\s*22\b/m.test(written), 'written frontmatter current_phase must be 22 (not the archive 19)');
+    assert.ok(!/^current_phase:\s*19\b/m.test(written), 'written frontmatter must NOT carry the archive phase 19');
+
+    // And a fresh read must agree.
+    const readResult = runGsdTools('state-snapshot', tmpDir);
+    assert.ok(readResult.success, `read failed: ${readResult.error}`);
+    const output = JSON.parse(readResult.output);
+    assert.strictEqual(output.current_phase, '22', 'read-after-write current_phase must stay 22 (round-trip agreement)');
   });
 
   test('preserves frontmatter status when body Status field is missing', () => {
