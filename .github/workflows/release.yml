@@ -253,6 +253,12 @@ jobs:
                   echo ""
                   echo "Failed at: \`${SHA}\` — \`${SUBJECT}\`"
                   echo ""
+                  if [ -n "$SKIPPED_EMPTY" ]; then
+                    echo "### Skipped before this conflict (already applied by content — empty pick)"
+                    echo ""
+                    echo "$SKIPPED_EMPTY"
+                    echo ""
+                  fi
                   if [ "$DRY_RUN" = "true" ]; then
                     echo "**Dry run:** branch was not pushed, so the picks below were discarded with the runner."
                     if [ -n "$INCLUDED" ]; then

@@ -122,6 +122,17 @@ describe('#2913 — cherry-pick empty-vs-conflict discrimination (real git)', ()
     const headAfter = git(repo, 'rev-parse', 'next');
     const currentHead = git(repo, 'rev-parse', 'HEAD');
     assert.strictEqual(currentHead, headAfter, 'after skip, HEAD should be unchanged (no new commit applied)');
+
+    // #2913 MINOR 1: after --skip, the sequencer must be clean so the next
+    // iteration's cherry-pick succeeds. A regression that switched --skip to
+    // --quit (which leaves sequencer state) would fail here.
+    git(repo, 'checkout', baseSha);
+    git(repo, 'checkout', '-b', 'throwaway2');
+    const realSha = commitFile(repo, 'other.txt', 'real change\n', 'fix: a real fix');
+    git(repo, 'checkout', 'next');
+    const realPick = spawnSync('git', ['-C', repo, 'cherry-pick', '-x', realSha], { encoding: 'utf8' });
+    assert.strictEqual(realPick.status, 0,
+      `after --skip, the sequencer must be clean so the next cherry-pick succeeds; got status ${realPick.status}:\n${realPick.stderr || realPick.stdout}`);
   });
 
   test('a genuine cherry-pick conflict is detected as conflict and aborted', () => {
