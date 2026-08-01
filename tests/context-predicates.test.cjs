@@ -320,6 +320,11 @@ describe('parsePredicates: ID/value grammar boundaries (C)', () => {
   test('rejectsInlineCodeWithoutEqualsSign', () => {
     const r = parsePredicates('`ID`');
     assert.equal(r.predicates.length, 0);
+    assert.equal(
+      r.malformed.length,
+      0,
+      'ordinary inline code with no "=" at all is not a declaration attempt and must not be diagnosed',
+    );
   });
 
   test('reportsEmptyValueAsMalformedRatherThanDroppingSilently', () => {
@@ -520,6 +525,53 @@ describe('parsePredicates: duplicate detection + validation (E)', () => {
     const md = fs.readFileSync(path.join(ROOT, 'CONTEXT.md'), 'utf8');
     const r = parsePredicates(md);
     assert.equal(r.duplicates.length, 0, 'the real CONTEXT.md must carry no duplicate predicate ids');
+  });
+});
+
+// ─── E2. Malformed diagnostics — one distinct reason per rejection class ───
+
+describe('parsePredicates: malformed diagnostics name the exact rejection reason (E2)', () => {
+  test('reportsEmptySegmentForDoubledDot', () => {
+    const r = parsePredicates('`A..b=1`');
+    assert.equal(r.predicates.length, 0);
+    assert.equal(r.malformed.length, 1);
+    assert.equal(r.malformed[0].reason, 'empty-segment');
+  });
+
+  test('reportsInvalidIdCharsForSpaceInId', () => {
+    const r = parsePredicates('`FOO BAR=1`');
+    assert.equal(r.predicates.length, 0);
+    assert.equal(r.malformed.length, 1);
+    assert.equal(r.malformed[0].reason, 'invalid-id-chars');
+  });
+
+  test('reportsLowercaseLeadingClassForLowercaseFirstSegment', () => {
+    const r = parsePredicates('`foo.bar=1`');
+    assert.equal(r.predicates.length, 0);
+    assert.equal(r.malformed.length, 1);
+    assert.equal(r.malformed[0].reason, 'lowercase-leading-class');
+  });
+
+  test('reportsValueContainsNewlineForEmbeddedCr', () => {
+    // A lone embedded CR inside an otherwise well-formed, LF-terminated
+    // backtick line (distinct from the documented lone-CR-only-line limit
+    // pinned by yieldsNoPredicatesForLoneCrDocumentAsDocumentedLimit above,
+    // which never reaches a closing backtick at all).
+    const md = '`ID=ab\rcd`\n';
+    const r = parsePredicates(md);
+    assert.equal(r.predicates.length, 0, 'a value with an embedded CR must be rejected, not silently accepted');
+    assert.equal(r.malformed.length, 1);
+    assert.equal(r.malformed[0].reason, 'value-contains-newline');
+  });
+
+  test('idCheckTakesPrecedenceOverEmptyValueWhenBothFail', () => {
+    // `foo.bar=` fails BOTH the id (lowercase-leading) and the value (empty)
+    // checks — id validity is checked first per detectMalformed's documented
+    // precedence.
+    const r = parsePredicates('`foo.bar=`');
+    assert.equal(r.predicates.length, 0);
+    assert.equal(r.malformed.length, 1);
+    assert.equal(r.malformed[0].reason, 'lowercase-leading-class');
   });
 });
 
