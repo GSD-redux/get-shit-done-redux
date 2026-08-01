@@ -23,7 +23,7 @@ const { KIND, classify } = require('./qa/result.cjs');
 const { ORACLES, runOracles, SEVERITY } = require('./qa/oracles.cjs');
 const { LoopWalk } = require('./qa/loop-walk.cjs');
 const { MUTATIONS, apply, NOOP } = require('./qa/mutations.cjs');
-const { loadScenario, runScenario } = require('./qa/scenario.cjs');
+const { loadScenario, runScenario, assertWiringIsLive } = require('./qa/scenario.cjs');
 const { resolveRef } = require('./qa/fixtures/index.cjs');
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
 
@@ -720,6 +720,86 @@ describe('greenfield walk (end-to-end)', () => {
     const totalSmells = report.steps.reduce((sum, step) => sum + step.smells.length, 0);
     assert.ok(totalSmells > 0, 'expected the greenfield walk to surface at least one smell');
     assert.ok(report.smellSummary.length > 0, 'expected a non-empty smellSummary');
+  });
+});
+
+describe('scenario discovery (mutations wired for real)', () => {
+  /**
+   * Every `.json` scenario file under `tests/qa/scenarios/`, EXCLUDING
+   * underscore-prefixed ones (`_selftest-must-fail.json`) — an
+   * underscore-prefixed scenario is deliberately broken (see
+   * `assertWiringIsLive`) and must never run as a normal walk.
+   *
+   * @returns {string[]} absolute file paths.
+   */
+  function discoverScenarioFiles() {
+    const scenariosDir = path.join(__dirname, 'qa', 'scenarios');
+    return fs
+      .readdirSync(scenariosDir)
+      .filter((name) => name.endsWith('.json') && !name.startsWith('_'))
+      .sort()
+      .map((name) => path.join(scenariosDir, name));
+  }
+
+  test('discovery excludes underscore-prefixed self-test scenarios', () => {
+    const names = discoverScenarioFiles().map((p) => path.basename(p));
+    assert.ok(names.includes('greenfield-happy-path.json'));
+    assert.ok(names.includes('perturbation-crlf.json'));
+    assert.ok(names.includes('perturbation-truncated-frontmatter.json'));
+    assert.ok(names.includes('perturbation-delete-artifact.json'));
+    assert.strictEqual(names.includes('_selftest-must-fail.json'), false);
+  });
+
+  test('every discovered perturbation scenario applies its mutation and runs to completion without a harness crash', () => {
+    const liveCommands = [...getLiveCommandTokens()];
+    const perturbationFiles = discoverScenarioFiles().filter((p) => path.basename(p).startsWith('perturbation-'));
+    assert.ok(perturbationFiles.length >= 3, 'expected at least the crlf, truncated-frontmatter, and delete-artifact scenarios');
+
+    // Anti-vacuity for perturbations specifically: a mutation that changes
+    // nothing observable in ANY scenario is indistinguishable from a
+    // mutation that was never applied (see `scenario.cjs`'s
+    // `mutationObserved` computation). At least one mutated step across the
+    // whole perturbation set must show a genuinely different result from its
+    // own clean baseline — if none ever does, that is a finding about which
+    // engine surfaces are sensitive to corruption, not something to paper
+    // over by weakening this assertion.
+    let anyMutationObserved = false;
+
+    for (const file of perturbationFiles) {
+      const scenario = loadScenario(file);
+      const report = runScenario(scenario, { LoopWalk, runOracles, liveCommands });
+
+      assert.strictEqual(report.steps.length, scenario.steps.length, `${scenario.name}: a step went missing from the report`);
+      for (const step of report.steps) {
+        assert.strictEqual(
+          step.oracleFailures.some((f) => f.id === 'step-exception'),
+          false,
+          `${scenario.name}: step at "${step.at}" crashed the harness: ${JSON.stringify(step.oracleFailures)}`,
+        );
+      }
+
+      const mutatedStep = report.steps.find((s) => s.mutation);
+      assert.ok(mutatedStep, `${scenario.name}: no step recorded a mutation — mutations remain unwired`);
+      assert.strictEqual(mutatedStep.mutationNoop, false, `${scenario.name}: mutation no-oped on a real roadmap artifact`);
+
+      if (mutatedStep.mutationObserved) anyMutationObserved = true;
+    }
+
+    assert.strictEqual(
+      anyMutationObserved,
+      true,
+      'no perturbation scenario produced an observable mutation against its probed surface — '
+        + 'every corruption was silently absorbed',
+    );
+  });
+});
+
+describe('wiring self-test (anti-vacuity)', () => {
+  test('the self-test scenario proves the expect/oracle assertion machinery actually fires', () => {
+    const liveCommands = [...getLiveCommandTokens()];
+    const report = assertWiringIsLive({ LoopWalk, runOracles, liveCommands });
+    assert.strictEqual(report.ok, false);
+    assert.ok(report.steps.some((s) => s.expectFailures.length > 0));
   });
 });
 

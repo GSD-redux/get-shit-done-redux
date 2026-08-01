@@ -20,9 +20,16 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { resolveRef } = require('./fixtures/index.cjs');
 const { LOOP_HOST_CONTRACT } = require('../../gsd-core/bin/lib/loop-host-contract.cjs');
+const { MUTATIONS, apply, NOOP } = require('./mutations.cjs');
 
 /** Scenario `fixture` must be one of these — see `loop-walk.cjs` `FIXTURE_BUILDERS`. */
 const VALID_FIXTURES = new Set(['greenfield', 'planning', 'seeded']);
+
+/** Every known mutation id, derived from `mutations.cjs` (never hardcoded — see that module's `MUTATIONS`). */
+const VALID_MUTATION_IDS = new Set(MUTATIONS.map((m) => m.id));
+
+/** `id -> {id, kind, describe}` lookup, derived once from `MUTATIONS`. */
+const MUTATION_BY_ID = new Map(MUTATIONS.map((m) => [m.id, m]));
 
 /**
  * The legal set of `step.at` values, derived from the generated loop-host
@@ -129,6 +136,9 @@ function validateScenario(scenario, sourceLabel) {
   if (!Array.isArray(scenario.steps) || scenario.steps.length === 0) {
     throw new Error(`loadScenario: "steps"${label} must be a non-empty array — an empty scenario is an error, not a silent pass`);
   }
+  if (scenario.selfTest !== undefined && typeof scenario.selfTest !== 'boolean') {
+    throw new Error(`loadScenario: "selfTest"${label} must be a boolean, got ${JSON.stringify(scenario.selfTest)}`);
+  }
 
   const legalPoints = getLegalPoints();
   scenario.steps.forEach((step, index) => {
@@ -169,6 +179,26 @@ function validateScenario(scenario, sourceLabel) {
     }
     if (step.jsonErrors !== undefined && typeof step.jsonErrors !== 'boolean') {
       throw new Error(`loadScenario: ${where}.jsonErrors must be a boolean, got ${JSON.stringify(step.jsonErrors)}`);
+    }
+    if (step.mutate !== undefined) {
+      if (!step.mutate || typeof step.mutate !== 'object' || Array.isArray(step.mutate)) {
+        throw new Error(`loadScenario: ${where}.mutate must be an object, got ${JSON.stringify(step.mutate)}`);
+      }
+      if (typeof step.mutate.id !== 'string' || !VALID_MUTATION_IDS.has(step.mutate.id)) {
+        throw new Error(
+          `loadScenario: ${where}.mutate.id is ${JSON.stringify(step.mutate.id)}, which is not a known mutation id `
+            + `(valid ids: ${[...VALID_MUTATION_IDS].sort().join(', ')})`,
+        );
+      }
+      if (typeof step.mutate.target !== 'string' || step.mutate.target === '') {
+        throw new Error(`loadScenario: ${where}.mutate.target must be a non-empty project-relative path string, got ${JSON.stringify(step.mutate.target)}`);
+      }
+      if (step.mutate.targetBytes !== undefined) {
+        const { targetBytes } = step.mutate;
+        if (typeof targetBytes !== 'number' || !Number.isFinite(targetBytes) || targetBytes < 0) {
+          throw new Error(`loadScenario: ${where}.mutate.targetBytes must be a non-negative finite number, got ${JSON.stringify(targetBytes)}`);
+        }
+      }
     }
     if (step.agent !== undefined) {
       if (!step.agent || typeof step.agent !== 'object' || Array.isArray(step.agent)) {
@@ -250,7 +280,7 @@ function evaluateExpectations(expectations, result) {
  * }} opts
  * @returns {{
  *   name: string,
- *   steps: Array<{ at: string, argv: string[], kind: string|null, expectFailures: string[], oracleFailures: {id:string,detail:string}[], smells: {id:string,detail:string}[] }>,
+ *   steps: Array<{ at: string, argv: string[], kind: string|null, expectFailures: string[], oracleFailures: {id:string,detail:string}[], smells: {id:string,detail:string}[], mutation: {id:string,target:string}|null, mutationNoop: boolean, mutationObserved: boolean }>,
  *   ok: boolean,
  *   smellSummary: Array<{ id: string, count: number, examples: string[] }>,
  * }}
@@ -277,6 +307,62 @@ function runScenario(scenario, opts) {
           for (const [relPath, ref] of Object.entries(step.agent.write)) {
             walk.writeArtifact(relPath, resolveRef(ref));
           }
+        }
+
+        // Anti-vacuity for perturbations: BEFORE the mutation is applied,
+        // run this step's own `run` sequence once against the CLEAN (as-yet
+        // unmutated) world and keep only the last result's `kind`/`json` —
+        // never pushed to `history`, never fed to oracles, never counted in
+        // `statsBefore/After`. This baseline exists solely so that, once the
+        // mutated run happens below, the two can be compared: a mutation
+        // that changes nothing observable is indistinguishable from a
+        // mutation that was never applied, so `mutationObserved` gives that
+        // distinction a name instead of leaving it implicit in a diff nobody
+        // looks at.
+        let cleanBaseline = null;
+        if (step.mutate) {
+          const jsonErrorModeForBaseline = step.jsonErrors !== false;
+          const baselineOptions = { jsonErrors: jsonErrorModeForBaseline };
+          const baselineRuns = Array.isArray(step.run) ? step.run : [];
+          let baselineResult = null;
+          for (const argv of baselineRuns) {
+            baselineResult = walk.run(...argv, baselineOptions);
+          }
+          if (baselineResult) {
+            cleanBaseline = { kind: baselineResult.kind, json: baselineResult.json };
+          }
+        }
+
+        // Mutation is applied AFTER `agent.write` and BEFORE `run` — a step
+        // can write a valid artifact and then corrupt it, so `run` observes
+        // the corrupted world exactly as a real engine invocation would.
+        let mutationRecord = null;
+        let mutationNoop = false;
+        if (step.mutate) {
+          const { id, target, targetBytes } = step.mutate;
+          const entry = MUTATION_BY_ID.get(id);
+          const absTarget = path.join(walk.dir, target);
+          if (entry.kind === 'content') {
+            // This `readFileSync` is harness plumbing, not a test assertion —
+            // it reads a planning ARTIFACT the walk itself just wrote so the
+            // mutation catalog's pure string transforms have input to work
+            // on. It is never string-matched/asserted against; the mutated
+            // bytes are written straight back to disk for `run` to react to.
+            // Do NOT "fix" this into a stat-only check — see `mutations.cjs`
+            // and this file's header for why oracles must never read SUT
+            // output, which does not apply to this harness-owned write path.
+            const before = fs.readFileSync(absTarget, 'utf-8');
+            const mutateOpts = targetBytes !== undefined ? { targetBytes } : undefined;
+            const after = apply(id, before, mutateOpts);
+            if (after === NOOP) {
+              mutationNoop = true;
+            } else {
+              fs.writeFileSync(absTarget, after, 'utf-8');
+            }
+          } else {
+            apply(id, { dir: walk.dir, relPath: target });
+          }
+          mutationRecord = { id, target };
         }
 
         const readOnly = !!step.readOnly;
@@ -316,6 +402,17 @@ function runScenario(scenario, opts) {
 
         if (result) history.push(result);
 
+        // `mutationObserved` is only meaningful for a mutated step: it is
+        // `true` when the mutated run's result differs from the clean
+        // baseline captured above, by `kind` OR by deep-inequality of
+        // `json` — a `kind`-only comparison would miss a mutation that
+        // keeps `kind: "json"` but silently changes the payload (e.g.
+        // `found: true` -> `found: false`), which is exactly the class of
+        // corruption a perturbation scenario exists to catch.
+        const mutationObserved = step.mutate && cleanBaseline
+          ? (cleanBaseline.kind !== (result ? result.kind : null) || !deepEqual(cleanBaseline.json, result ? result.json : null))
+          : false;
+
         steps.push({
           at: step.at,
           argv: lastArgv,
@@ -323,6 +420,9 @@ function runScenario(scenario, opts) {
           expectFailures,
           oracleFailures,
           smells,
+          mutation: mutationRecord,
+          mutationNoop,
+          mutationObserved,
         });
       } catch (err) {
         steps.push({
@@ -332,6 +432,9 @@ function runScenario(scenario, opts) {
           expectFailures: [],
           oracleFailures: [{ id: 'step-exception', detail: `${err && err.message}` }],
           smells: [],
+          mutation: null,
+          mutationNoop: false,
+          mutationObserved: false,
         });
       }
     }
@@ -372,4 +475,50 @@ function summarizeSmells(steps) {
   }));
 }
 
-module.exports = { loadScenario, runScenario, deepEqual, dotGet };
+/** Absolute path to the wiring self-test scenario — see `assertWiringIsLive`. */
+const SELF_TEST_SCENARIO_PATH = path.join(__dirname, 'scenarios', '_selftest-must-fail.json');
+
+/**
+ * The REAL wiring detector for this harness's assertion machinery.
+ *
+ * `totalSmells > 0` on a happy-path walk proves almost nothing: it leans on
+ * well-known engine behaviors that fire regardless of whether `expect` /
+ * oracle plumbing actually works. This function instead loads the
+ * deliberately-broken `scenarios/_selftest-must-fail.json` scenario — whose
+ * `expect` block asserts something KNOWN FALSE about a real command — and
+ * runs it for real. If the assertion machinery is wired correctly, the run
+ * MUST fail (`ok === false`, non-empty `expectFailures`); if it silently
+ * passes, `expect` is not actually being evaluated and this function throws
+ * naming that fact, rather than letting a broken harness report a clean bill
+ * of health.
+ *
+ * @param {{ LoopWalk: object, runOracles: Function, liveCommands?: string[] }} opts
+ * @returns {ReturnType<typeof runScenario>} the self-test's own report, for
+ *   callers that want to inspect or log it.
+ * @throws {Error} when the self-test scenario is missing `"selfTest": true`,
+ *   or when it does NOT fail — either case means the expect/oracle assertion
+ *   machinery is not provably wired.
+ */
+function assertWiringIsLive(opts) {
+  const scenario = loadScenario(SELF_TEST_SCENARIO_PATH);
+  if (scenario.selfTest !== true) {
+    throw new Error(`assertWiringIsLive: "${SELF_TEST_SCENARIO_PATH}" is missing "selfTest": true`);
+  }
+  const report = runScenario(scenario, opts);
+  if (report.ok !== false) {
+    throw new Error(
+      'assertWiringIsLive: the self-test scenario (a KNOWN-FALSE expectation) did not fail — '
+        + 'the expect/oracle assertion machinery is not wired',
+    );
+  }
+  const hasExpectFailure = report.steps.some((s) => s.expectFailures.length > 0);
+  if (!hasExpectFailure) {
+    throw new Error(
+      'assertWiringIsLive: the self-test scenario failed via oracleFailures but recorded no expectFailures — '
+        + 'the "expect" assertion machinery specifically is not provably wired',
+    );
+  }
+  return report;
+}
+
+module.exports = { loadScenario, runScenario, deepEqual, dotGet, assertWiringIsLive };

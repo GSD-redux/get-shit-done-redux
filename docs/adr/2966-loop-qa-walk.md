@@ -28,7 +28,7 @@ The limit is stated plainly and not glossed over: this walk proves the engine's 
 
 ### 4. Oracles read a typed IR only, never rendered text
 
-`tests/qa/oracles.cjs`'s seven invariant oracles assert exclusively against `tests/qa/result.cjs`'s typed `RunResult` IR, never against raw stdout/stderr text. This is forced, not stylistic: `CONTRIBUTING.md` → "Prohibited: Raw Text Matching on Test Outputs" and `RULESET.TESTS.no-source-grep.tmp-file-traps` both ban it. The same constraint governs the tree-idempotence oracle: it compares `fs.statSync` facts (`size`, `mtimeMs`, `isFile()`) across runs, never content hashing or reading the SUT's own tmp-file output, which would trip the identical lint.
+`tests/qa/oracles.cjs`'s ten invariant oracles (seven `SEVERITY.VIOLATION` oracles plus three `SEVERITY.SMELL` oracles — see §5) assert exclusively against `tests/qa/result.cjs`'s typed `RunResult` IR, never against raw stdout/stderr text. This is forced, not stylistic: `CONTRIBUTING.md` → "Prohibited: Raw Text Matching on Test Outputs" and `RULESET.TESTS.no-source-grep.tmp-file-traps` both ban it. The same constraint governs the tree-idempotence oracle: it compares `fs.statSync` facts (`size`, `mtimeMs`, `isFile()`) across runs, never content hashing or reading the SUT's own tmp-file output, which would trip the identical lint.
 
 ### 5. Findings carry severity; the harness reports evidence, it does not adjudicate
 

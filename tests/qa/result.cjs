@@ -32,9 +32,9 @@ const fs = require('node:fs');
 const KIND = Object.freeze({
   /** exit 0, stdout parsed as JSON (object OR scalar OR array). */
   JSON: 'json',
-  /** exit 0, stdout non-empty but not JSON — an untyped success. NOT an error. */
+  /** exit 0, stdout non-empty but not JSON — an untyped success. NOT an error. Requires non-empty stdout. */
   PROSE: 'prose',
-  /** exit 0, no stdout and no stderr. NOT a crash. */
+  /** exit 0, no stdout payload. NOT a crash. stderr may still carry warnings. */
   EMPTY: 'empty',
   /** exit 0, stdout JSON carrying an `error` key — the documented soft-failure idiom. */
   SOFT_ERROR: 'soft-error',
@@ -128,12 +128,25 @@ function resolveFilePointer(stdout, io = {}) {
  * An exit-1 run with a healthy-looking stdout payload is still an error — the
  * exit code outranks the payload.
  *
+ * CLASSIFICATION KEYS OFF STDOUT, NOT STDERR (exit-0 family): whether a
+ * successful run is EMPTY, PROSE, JSON, or SOFT_ERROR depends solely on the
+ * (file-pointer-resolved) stdout payload. stderr on the exit-0 path is never
+ * used to pick a `kind` — including when stdout is empty and stderr is not —
+ * it is only ever surfaced through `warnings` (see below).
+ *
  * @param {{ exitCode: number|null, stdout: string, stderr: string, timedOut?: boolean, argv?: string[] }} raw
  * @param {{ readFileSync?: typeof fs.readFileSync }} [io]
  * @returns {{
  *   kind: string, exitCode: number|null, argv: string[],
- *   json: unknown, err: object|null, pointer: string|null, warnings: string[]
+ *   json: unknown, err: object|null, pointer: string|null,
+ *   warnings: string[],
  * }}
+ *   `warnings` is populated only when the substrate actually supplied stderr
+ *   text — today that means the exit-1 (error) family, since `loop-walk.cjs`'s
+ *   `run()` discards stderr on a clean exit (`execFileSync` swallows it). See
+ *   the JSDoc on `warnings` usage in `tests/qa/loop-walk.cjs` `run()` for the
+ *   full explanation; do not build an oracle assuming success-path stderr is
+ *   observable through that substrate.
  */
 function classify(raw, io = {}) {
   const argv = Array.isArray(raw.argv) ? raw.argv : [];
@@ -143,12 +156,13 @@ function classify(raw, io = {}) {
   if (raw.timedOut) return { ...base, kind: KIND.TIMEOUT };
   if (raw.exitCode !== 0 && raw.exitCode !== 1) return { ...base, kind: KIND.UNEXPECTED_EXIT };
 
-  // Warnings are every stderr line except the last — captured so an oracle can
-  // report them without any oracle having to touch raw text itself.
   const stderrLines = stderr.split('\n').map((l) => l.trim()).filter((l) => l !== '');
-  const warnings = stderrLines.slice(0, Math.max(0, stderrLines.length - 1));
 
   if (raw.exitCode === 1) {
+    // Warnings are every stderr line except the last: the last line is
+    // consumed below as the candidate structured-error envelope, so it is
+    // not itself a warning.
+    const warnings = stderrLines.slice(0, Math.max(0, stderrLines.length - 1));
     const parsed = tryParseJson(lastNonEmptyLine(stderr));
     const envelope = parsed.ok && parsed.value !== null && typeof parsed.value === 'object'
       && parsed.value.ok === false && typeof parsed.value.reason === 'string';
@@ -157,12 +171,19 @@ function classify(raw, io = {}) {
       : { ...base, kind: KIND.UNSTRUCTURED_ERROR, warnings };
   }
 
+  // exit 0: no envelope is ever parsed out of stderr, so every stderr line is
+  // a warning candidate — none of it is consumed the way exit-1's last line is.
+  const warnings = stderrLines;
+
   const resolved = resolveFilePointer(raw.stdout, io);
   if (resolved.unreadable) {
     return { ...base, kind: KIND.UNSTRUCTURED_ERROR, pointer: resolved.pointer, warnings };
   }
   const text = typeof resolved.text === 'string' ? resolved.text : '';
-  if (text.trim() === '' && stderr.trim() === '') return { ...base, kind: KIND.EMPTY };
+  // Classification keys off STDOUT ONLY: a non-empty stderr with empty stdout
+  // is still EMPTY (see module header + KIND.EMPTY docstring above), and the
+  // stderr content is preserved in `warnings`, never dropped.
+  if (text.trim() === '') return { ...base, kind: KIND.EMPTY, warnings };
 
   const parsed = tryParseJson(text);
   if (!parsed.ok) return { ...base, kind: KIND.PROSE, pointer: resolved.pointer, warnings };

@@ -212,6 +212,24 @@ class LoopWalk {
    * `"undefined"` would have been a silent correctness bug indistinguishable
    * from a passing run until an actual leak test caught it.
    *
+   * ⚠️ KNOWN LIMIT — SUCCESS-PATH STDERR IS NOT OBSERVABLE THROUGH THIS
+   * SUBSTRATE, SO `result.warnings` IS ERROR-PATH-ONLY TODAY: this method
+   * builds `raw.stderr` as `result.success ? '' : (result.error ?? '')`
+   * (below), and `runGsdTools` (`tests/helpers.cjs`) invokes the child via
+   * `execFileSync`, which discards the child's stderr stream entirely on a
+   * clean (non-throwing) exit — Node never captures it, so there is no text
+   * to forward even if this method wanted to. The practical effect: for any
+   * exit-0 invocation, `classify()` always receives `stderr: ''`, so
+   * `result.warnings` can never be non-empty on the success path, no matter
+   * what the real `gsd-tools` process actually wrote to stderr. `warnings`
+   * only ever populates on the exit-1 (error) path, where `result.error`
+   * (helpers.cjs's captured stderr-on-failure text) is threaded through.
+   * Capturing success-path stderr would require changing `runGsdTools` /
+   * `tests/helpers.cjs` (e.g. to `spawnSync`) — out of scope here because
+   * that helper is shared by ~131 test files. DO NOT build an oracle that
+   * assumes `.warnings` reflects success-path stderr; it structurally cannot
+   * today, and a check written against that assumption is silently vacuous.
+   *
    * @param {...(string|{jsonErrors?: boolean})} args - argv tokens, optionally
    *   followed by a trailing `{jsonErrors?: boolean}` options object.
    * @returns {ReturnType<typeof classify>}

@@ -323,15 +323,25 @@ const ORACLES = Object.freeze([
   Object.freeze({
     id: 'read-only-idempotence',
     describe:
-      'For commands documented as read-only: repeatResult.json must deep-equal result.json, and statsBefore/statsAfter must be identical on every key.',
+      'For commands documented as read-only: repeatResult.json must deep-equal result.json, and statsBefore/statsAfter must be identical on every key. ' +
+      'An oracle asked to check idempotence without the data to check it FAILS (VIOLATION) rather than passing vacuously — missing repeatResult, ' +
+      'statsBefore, or statsAfter is itself a finding, named explicitly in the detail.',
     check(ctx) {
       try {
         if (!ctx || !ctx.readOnly) return { ok: true };
         const findings = [];
-        if (ctx.result && ctx.repeatResult) {
+        if (!ctx.repeatResult) {
+          findings.push('ctx.readOnly is true but ctx.repeatResult is missing — idempotence cannot be checked');
+        } else if (ctx.result) {
           if (!deepEqual(ctx.result.json, ctx.repeatResult.json, new WeakMap())) {
             findings.push('repeatResult.json is not deep-equal to result.json');
           }
+        }
+        if (!(ctx.statsBefore instanceof Map)) {
+          findings.push('ctx.readOnly is true but ctx.statsBefore is missing — idempotence cannot be checked');
+        }
+        if (!(ctx.statsAfter instanceof Map)) {
+          findings.push('ctx.readOnly is true but ctx.statsAfter is missing — idempotence cannot be checked');
         }
         const before = ctx.statsBefore instanceof Map ? ctx.statsBefore : new Map();
         const after = ctx.statsAfter instanceof Map ? ctx.statsAfter : new Map();
