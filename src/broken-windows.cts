@@ -721,7 +721,27 @@ function writeLedgerAtomic(cwd: string, ledger: Ledger): void {
   ensurePlanningDir(cwd);
   const p = ledgerPath(cwd);
   const tmp = `${p}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, renderLedger(ledger), 'utf8');
+
+  // #2893: preserve any prose below the JSON ledger block. renderLedger
+  // reconstructs frontmatter + header + table + JSON — it does not include
+  // trailing prose that users may have written below the closing fence.
+  // Without this, every append/waive/fixed silently destroys that prose.
+  let trailingProse = '';
+  try {
+    const existing = fs.readFileSync(p, 'utf8');
+    const fenceEnd = existing.indexOf(JSON_FENCE_CLOSE);
+    if (fenceEnd !== -1) {
+      const afterFence = existing.slice(fenceEnd + JSON_FENCE_CLOSE.length);
+      // Drop leading newlines/whitespace; keep the rest as prose.
+      trailingProse = afterFence.replace(/^\n+/, '');
+    }
+  } catch {
+    // File doesn't exist yet (first write) — no prose to preserve.
+  }
+
+  const rendered = renderLedger(ledger);
+  const content = trailingProse ? `${rendered}${trailingProse}` : rendered;
+  fs.writeFileSync(tmp, content, 'utf8');
   try {
     renameWithRetry(tmp, p);
   } catch (err) {
