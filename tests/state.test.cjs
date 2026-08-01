@@ -764,12 +764,19 @@ describe('STATE.md frontmatter sync', () => {
     // must agree: a state write that re-syncs frontmatter must not pick up the
     // archive **Phase:** 19 line and write current_phase: 19, which the next
     // state-snapshot read would then surface. Round-trip must stay at 22.
+    //
+    // The fixture carries a **Status:** field so `state update Status` performs
+    // a real field update (updated:true) and forces the frontmatter resync
+    // through buildStateFrontmatter — without an existing Status field the
+    // update is a no-op (updated:false) and no write occurs.
     const stateContent = [
       '# Project State',
       '',
       '## Current Position',
       '',
       'Phase: 22 (Documentation hygiene)',
+      '',
+      '**Status:** Ready',
       '',
       '## Archive — earlier milestones',
       '',
@@ -782,6 +789,8 @@ describe('STATE.md frontmatter sync', () => {
     // state update forces a frontmatter sync through buildStateFrontmatter.
     const writeResult = runGsdTools('state update Status "Executing"', tmpDir);
     assert.ok(writeResult.success, `write failed: ${writeResult.error}`);
+    const writeOutput = JSON.parse(writeResult.output);
+    assert.strictEqual(writeOutput.updated, true, 'state update must perform a real field update to force the resync');
 
     // The persisted frontmatter must not have rewound to the archive phase.
     const written = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
