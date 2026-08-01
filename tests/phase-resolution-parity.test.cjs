@@ -305,6 +305,25 @@ const CONSUMER_SCENARIOS = [
     resolvesTo: null,
   },
 ];
+/**
+ * #2528 re-review: the AMBIGUOUS row the rows above cannot express.
+ *
+ * Every scenario in CONSUMER_SCENARIOS is binary — a query either resolves to
+ * one directory or to none — so a query that resolves to TWO fell through the
+ * gate entirely. That gap is what let the destructive path regress unseen:
+ * `phase remove` took `matches[0]` while every guarded sibling refuses, turning
+ * "resolve nothing, delete nothing" at base into "delete one of two candidates,
+ * and renumber every phase after it".
+ *
+ * This is a fallback ambiguity specifically: neither directory's TOKEN is `05`
+ * (`05-80-20-a` tokenizes to `05-80-20`), so both are reached only by the
+ * bare-integer fallback this PR adds — i.e. the ambiguity is one this PR
+ * created, which is why the PR owes it a guard.
+ */
+const AMBIGUOUS_SCENARIO = {
+  dirs: ['05-80-20-a', '05-90-till-late'],
+  query: '5',
+};
 
 describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs', () => {
   const projects = [];
@@ -437,4 +456,30 @@ describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs',
       }
     });
   }
+
+  test('two directories claiming one bare phase number — the destructive path deletes neither', () => {
+    const { dirs, query } = AMBIGUOUS_SCENARIO;
+    const tmpDir = project(dirs, query);
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+
+    const removed = json(`phase remove ${query} --force`, tmpDir);
+
+    assert.strictEqual(removed.directory_deleted, null, 'phase remove chose a directory');
+    assert.deepStrictEqual(
+      removed.ambiguous_matches,
+      dirs,
+      'phase remove did not surface both candidates',
+    );
+    assert.match(removed.error, /ambiguous/i);
+
+    // The load-bearing assertion: the refusal is about the FILESYSTEM, not the
+    // report. A `directory_deleted: null` printed after an `rmSync` would pass
+    // every check above.
+    assert.deepStrictEqual(
+      fs.readdirSync(phasesDir).sort(),
+      [...dirs].sort(),
+      'phase remove deleted a directory it reported refusing to choose',
+    );
+    assert.deepStrictEqual(removed.renamed_directories, [], 'phase remove renumbered anyway');
+  });
 });

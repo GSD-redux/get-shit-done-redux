@@ -1557,7 +1557,32 @@ function cmdPhaseRemove(
   const force = options.force || false;
 
   const subdirs = readSubdirectories(phasesDir, true);
-  const targetDir = matchPhaseDirs(subdirs, normalized).matches[0] || null;
+  // #2237/#2528: every other resolution path refuses to choose between multiple
+  // directories claiming one phase number. This one is the DESTRUCTIVE path, so
+  // taking `matches[0]` silently is strictly worse than anywhere else: it turns
+  // "resolve nothing" into "delete one of two candidates, unrecoverably, and
+  // renumber every phase after it". Refuse before any file is touched.
+  const { matches: phaseDirMatches } = matchPhaseDirs(subdirs, normalized);
+  if (phaseDirMatches.length > 1) {
+    output(
+      {
+        removed: null,
+        error:
+          `Phase ${normalized} is ambiguous: ${phaseDirMatches.length} directories match `
+          + `(${phaseDirMatches.map((m) => `"${m}"`).join(', ')}). Refusing to remove any of them. `
+          + 'Set a distinct project_code in .planning/config.json, or pass the full directory name.',
+        ambiguous_matches: phaseDirMatches,
+        directory_deleted: null,
+        renamed_directories: [],
+        renamed_files: [],
+        roadmap_updated: false,
+        state_updated: false,
+      },
+      raw,
+    );
+    return;
+  }
+  const targetDir = phaseDirMatches[0] || null;
 
   if (targetDir && !force) {
     const files = fs.readdirSync(path.join(phasesDir, targetDir));
