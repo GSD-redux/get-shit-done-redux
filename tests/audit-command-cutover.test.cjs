@@ -569,7 +569,8 @@ describe('audit-open — output shape (#2911)', () => {
 
     const expectedCountKeys = [
       'debug_sessions', 'quick_tasks', 'threads', 'todos',
-      'seeds', 'uat_gaps', 'verification_gaps', 'context_questions', 'total',
+      'seeds', 'uat_gaps', 'verification_gaps', 'context_questions',
+      'deferred_items', 'total',
     ];
     for (const key of expectedCountKeys) {
       assert.equal(
@@ -581,6 +582,7 @@ describe('audit-open — output shape (#2911)', () => {
     const expectedItemKeys = [
       'debug_sessions', 'quick_tasks', 'threads', 'todos',
       'seeds', 'uat_gaps', 'verification_gaps', 'context_questions',
+      'deferred_items',
     ];
     for (const key of expectedItemKeys) {
       assert.ok(
