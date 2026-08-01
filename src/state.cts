@@ -1308,6 +1308,31 @@ function matchSessionSection(body: string): string | null {
 }
 
 /**
+ * Match the "Current Position" section body from a STATE.md body. #2956: this
+ * is the Phase analogue of matchSessionSection. `Phase` canonically lives under
+ * `## Current Position` (gsd-core/templates/state.md), so — like Stopped At /
+ * Paused At under `## Session` — it must be extracted from THAT section, not
+ * from the first `Phase:` / `**Phase:**` line anywhere in the body. Without the
+ * scope, a historical `Phase:` line in an archive section silently overwrites
+ * `current_phase` on every write, and because `current_phase` is routing input
+ * for gsd-progress / --next the rewind routes work to the wrong phase.
+ *
+ * Level-flexible: the canonical template uses an h2 `## Current Position`, the
+ * bootstrap template an h3 `### Current Position` (templates/state.md). Both
+ * must match — mirroring how matchSessionSection recognises `## Session` and
+ * `## Session Continuity`. Exact 'current position' text match (case-insensitive)
+ * excludes unrelated headings. Built on the same `collectSection` seam as
+ * matchSessionSection, so it inherits that seam's CRLF tolerance (#2444 fix).
+ * Returns the section body, or null (caller falls back to full-body search).
+ */
+function matchCurrentPositionSection(body: string): string | null {
+  const isCurrentPosition = (h: HeadingToken): boolean =>
+    (h.level === 2 || h.level === 3) && h.text.trim().toLowerCase() === 'current position';
+  const section = collectSection(body, isCurrentPosition, { levelBounded: true });
+  return section ? section.body : null;
+}
+
+/**
  * #2567: prevent a stale archive "Last activity:" line from overwriting a
  * newer frontmatter value. `stateExtractField` matches the first body
  * occurrence, which may be a historical line in an archive section. Unlike
@@ -1392,7 +1417,14 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   };
 
   // Extract basic fields — frontmatter keys take precedence over body
-  const prosePhase = parseProsePhaseField(stateExtractField(body, 'Phase'));
+  // #2956: scope `Phase` extraction to ## Current Position so a historical
+  // Phase: / **Phase:** line in an archive section cannot overwrite the current
+  // value. Phase canonically lives in ## Current Position (templates/state.md),
+  // so it is scopeable exactly like Stopped At under ## Session. Fall back to
+  // full-body search only when no ## Current Position section exists, so files
+  // with no section heading keep their current behaviour.
+  const currentPositionScope = matchCurrentPositionSection(body) ?? body;
+  const prosePhase = parseProsePhaseField(stateExtractField(currentPositionScope, 'Phase'));
   const currentPhase = fmScalar('current_phase') ?? stateExtractField(body, 'Current Phase') ?? prosePhase.phase;
   const currentPhaseName = fmScalar('current_phase_name') ?? stateExtractField(body, 'Current Phase Name') ?? prosePhase.name;
   const totalPhasesRaw = fmScalar('total_phases') ?? stateExtractField(body, 'Total Phases');
@@ -1404,7 +1436,12 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
   const proseLastActivity = parseProseLastActivityField(rawLastActivity);
   const lastActivity = fmScalar('last_activity') ?? proseLastActivity.date ?? rawLastActivity;
   const lastActivityDesc = fmScalar('last_activity_desc') ?? stateExtractField(body, 'Last Activity Description') ?? proseLastActivity.description;
-  const pausedAt = fmScalar('paused_at') ?? stateExtractField(body, 'Paused At');
+  // #2956: Paused At canonically lives in ## Session (see the comment above
+  // preferNewerLastActivity and the write seam in buildStateFrontmatter). The
+  // write seam already scopes it to ## Session; this read seam must agree, so a
+  // stale "Paused At:" in a Session Continuity Archive cannot win here either.
+  const sessionScope = matchSessionSection(body) ?? body;
+  const pausedAt = fmScalar('paused_at') ?? stateExtractField(sessionScope, 'Paused At');
 
   // Parse numeric fields
   const totalPhases = totalPhasesRaw ? parseInt(totalPhasesRaw, 10) : null;
@@ -1552,7 +1589,14 @@ function extractRetiredPhaseNumbers(scope: string): Set<string> {
  * reliably via `state json` instead of fragile regex parsing.
  */
 function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Record<string, unknown> {
-  const prosePhase = parseProsePhaseField(stateExtractField(bodyContent, 'Phase'));
+  // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
+  // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
+  // below). Phase canonically lives in ## Current Position (templates/state.md);
+  // without the scope, a historical Phase: / **Phase:** line in an archive
+  // section overwrites current_phase here, and the next read surfaces it. Fall
+  // back to full-body search when no ## Current Position section exists.
+  const currentPositionScope = matchCurrentPositionSection(bodyContent) ?? bodyContent;
+  const prosePhase = parseProsePhaseField(stateExtractField(currentPositionScope, 'Phase'));
   const currentPhase = stateExtractField(bodyContent, 'Current Phase') ?? prosePhase.phase;
   const currentPhaseName = stateExtractField(bodyContent, 'Current Phase Name') ?? prosePhase.name;
   const currentPlan = stateExtractField(bodyContent, 'Current Plan');
