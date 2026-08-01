@@ -2213,7 +2213,7 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
  * @param clock
  *   Optional clock seam; defaults to realClock. Passed through to acquireStateLock.
  */
-function readModifyWriteStateMd(statePath: string, transformFn: (content: string) => string, cwd: string, options?: ReadModifyWriteOptions, clock?: StateLockClock): void {
+function readModifyWriteStateMd(statePath: string, transformFn: (content: string) => string, cwd: string, options?: ReadModifyWriteOptions, clock?: StateLockClock): boolean {
   const resync = !options || options.resync !== false;
   const lockPath = acquireStateLock(statePath, clock);
   try {
@@ -2261,7 +2261,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // content already returns the mutated string, and callers that detect a
     // no-op explicitly return the original content unchanged.
     if (modified === content) {
-      return;
+      return false;
     }
 
     let synced = syncStateFrontmatter(modified, cwd, options?.authoritativeFm);
@@ -2317,6 +2317,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     }
 
     platformWriteSync(statePath, synced);
+    return true;
   } finally {
     releaseStateLock(lockPath);
   }
