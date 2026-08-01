@@ -2,130 +2,39 @@
   "version": 1,
   "smells": [
     {
-      "key": "039e58c8c584::value-hygiene|abandoned-mid-execute-resume|init resume|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "abandoned-mid-execute-resume",
-      "reason": "init/resume legitimately returns agents_dir pointing at the install tree's agents/ directory, which sits outside the QA walk's temp project root by design (agents are installed once, not per-project) — see #2966 and oracles.cjs's value-hygiene header comment on why this is a strict-equality-only sentinel check, never a substring scan."
-    },
-    {
       "key": "0cad2954807d::soft-error-exit-zero|greenfield-happy-path|state-snapshot|(subject-with-no-stable-discriminator)",
       "id": "soft-error-exit-zero",
       "scenario": "greenfield-happy-path",
-      "reason": "state-snapshot uses the documented soft-failure idiom (output({error:...}) while exiting 0) when STATE.md does not exist yet on a greenfield project. 42 call sites across the engine use this idiom; oracles.cjs rates changing it CRITICAL blast radius — tracked as a known trade-off, not a regression, see #2966."
-    },
-    {
-      "key": "1bcf38f56659::value-hygiene|uat-fail-then-remediate|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "uat-fail-then-remediate",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "2ef4c897e79c::monotonic-progress|milestone-rollover|stats|key=total_plans;fromScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":null};toScope={\"milestoneName\":\"Post-Rollover Milestone\",\"milestoneVersion\":\"v2.0\",\"workstream\":null}",
-      "id": "monotonic-progress",
-      "scenario": "milestone-rollover",
-      "reason": "total_plans legitimately resets to 0 when `stats` is read after a real milestone rollover (v1.0 -> v2.0) — a new milestone's ROADMAP.md has not accumulated any plans yet. This is the exact scope-boundary case monotonic-progress's SEVERITY.SMELL split exists to distinguish from a real regression — see #2966."
+      "issue": 2980,
+      "reason": "state-snapshot uses the documented soft-failure idiom (output({error:...}) while exiting 0) when STATE.md does not exist yet on a greenfield project. 42 call sites across the engine use this idiom; oracles.cjs rates changing it CRITICAL blast radius — tracked as a known trade-off in #2980."
     },
     {
       "key": "373270350622::soft-error-exit-zero|perturbation-delete-artifact|roadmap get-phase 1|(subject-with-no-stable-discriminator)",
       "id": "soft-error-exit-zero",
       "scenario": "perturbation-delete-artifact",
-      "reason": "`roadmap get-phase 1` reports ROADMAP.md not found via the same output({error:...})-exit-0 soft-failure idiom after the perturbation deletes the artifact — same known trade-off as the state-snapshot occurrences above, see #2966."
+      "issue": 2980,
+      "reason": "`roadmap get-phase 1` reports ROADMAP.md not found via the same output({error:...})-exit-0 soft-failure idiom after the perturbation deletes the artifact — same known trade-off as the state-snapshot occurrences above, tracked in #2980."
     },
     {
       "key": "383aca0b3b13::soft-error-exit-zero|perturbation-unicode-headings|roadmap get-phase 1|(subject-with-no-stable-discriminator)",
       "id": "soft-error-exit-zero",
       "scenario": "perturbation-unicode-headings",
-      "reason": "Same roadmap get-phase soft-failure idiom as perturbation-delete-artifact, fired here because the unicode-heading perturbation leaves the phase unresolvable — see #2966."
-    },
-    {
-      "key": "3c357c8daa0c::value-hygiene|milestone-rollover|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "milestone-rollover",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "5b14426784f9::monotonic-progress|multi-workstream|--ws beta progress|key=total_plans;fromScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":\"beta\"};toScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":\"alpha\"}",
-      "id": "monotonic-progress",
-      "scenario": "multi-workstream",
-      "reason": "total_plans is not comparable across a workstream switch (beta -> alpha) inside the same milestone — each workstream tracks its own plan count. This is the workstream half of monotonic-progress's scope-boundary detection, see #2966."
-    },
-    {
-      "key": "669d74bbead9::value-hygiene|out-of-order|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "out-of-order",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "66df2a1f91aa::value-hygiene|multi-phase-dependencies|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "multi-phase-dependencies",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "76c73e63073a::monotonic-progress|perturbation-nonsequential-phases|roadmap analyze|key=total_plans;fromScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":null};toScope={\"milestoneName\":undefined,\"milestoneVersion\":undefined,\"workstream\":null}",
-      "id": "monotonic-progress",
-      "scenario": "perturbation-nonsequential-phases",
-      "reason": "`roadmap analyze`'s payload does not carry milestone_version/milestone_name at all, so progressScopeOf resolves its scope to {undefined,undefined}, which reads as a scope boundary rather than a genuine counter regression. This is a payload-shape gap in `roadmap analyze` (it predates the monotonic-progress oracle), not a real progress regression — see #2966."
-    },
-    {
-      "key": "8f08d0f3fceb::value-hygiene|abandoned-mid-execute-resume|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "abandoned-mid-execute-resume",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
+      "issue": 2980,
+      "reason": "Same roadmap get-phase soft-failure idiom as perturbation-delete-artifact, fired here because the unicode-heading perturbation leaves the phase unresolvable — tracked in #2980."
     },
     {
       "key": "8ff1a5363a3f::untyped-success|greenfield-happy-path|smart-entry|(subject-with-no-stable-discriminator)",
       "id": "untyped-success",
       "scenario": "greenfield-happy-path",
+      "issue": 2979,
       "reason": "smart-entry emits KIND.PROSE unconditionally, with no typed JSON surface for the harness to assert on — a real product gap tracked in #2979, not a QA-harness defect."
     },
     {
       "key": "92b6b4718571::soft-error-exit-zero|out-of-order|state-snapshot|(subject-with-no-stable-discriminator)",
       "id": "soft-error-exit-zero",
       "scenario": "out-of-order",
-      "reason": "Same state-snapshot soft-failure idiom as greenfield-happy-path, fired here because the out-of-order walk reaches state-snapshot before STATE.md exists — see #2966."
-    },
-    {
-      "key": "94cdc0dac641::monotonic-progress|multi-workstream|progress|key=total_plans;fromScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":\"beta\"};toScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":\"alpha\"}",
-      "id": "monotonic-progress",
-      "scenario": "multi-workstream",
-      "reason": "Same multi-workstream beta->alpha scope-boundary as the --ws-scoped occurrence above, observed here via the unscoped `progress` invocation — see #2966."
-    },
-    {
-      "key": "b73d82a89ecb::monotonic-progress|milestone-rollover|progress|key=total_plans;fromScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":null};toScope={\"milestoneName\":\"Post-Rollover Milestone\",\"milestoneVersion\":\"v2.0\",\"workstream\":null}",
-      "id": "monotonic-progress",
-      "scenario": "milestone-rollover",
-      "reason": "Same v1.0->v2.0 milestone-rollover scope-boundary as the `stats` occurrence above, observed here via `progress` — see #2966."
-    },
-    {
-      "key": "dea0d7053e10::monotonic-progress|multi-workstream|--ws alpha progress|key=total_plans;fromScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":\"beta\"};toScope={\"milestoneName\":\"milestone\",\"milestoneVersion\":\"v1.0\",\"workstream\":\"alpha\"}",
-      "id": "monotonic-progress",
-      "scenario": "multi-workstream",
-      "reason": "Same multi-workstream beta->alpha scope-boundary as the other multi-workstream occurrences, observed here via the `--ws alpha progress` invocation — see #2966."
-    },
-    {
-      "key": "dedc690b5ab2::value-hygiene|multi-workstream|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "multi-workstream",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "f0e6eba3868f::value-hygiene|greenfield-happy-path|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "greenfield-happy-path",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "f379cb722343::value-hygiene|plan-drift|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "plan-drift",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
-    },
-    {
-      "key": "fc013fd3f3ae::value-hygiene|brownfield-with-map|init new-project|key=$.agents_dir",
-      "id": "value-hygiene",
-      "scenario": "brownfield-with-map",
-      "reason": "Same init agents_dir-outside-project-root behavior as every other scenario's init call — see #2966."
+      "issue": 2980,
+      "reason": "Same state-snapshot soft-failure idiom as greenfield-happy-path, fired here because the out-of-order walk reaches state-snapshot before STATE.md exists — tracked in #2980."
     }
   ]
 }

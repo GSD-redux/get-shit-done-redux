@@ -326,6 +326,47 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.ok, true);
   });
 
+  test('value-hygiene has no finding (not even a SMELL) for an allowlisted external-path key like agents_dir', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-allowlist-');
+    const outsideDir = createTempDir('gsd-hygiene-allowlist-outside-');
+    t.after(() => {
+      cleanup(projectDir);
+      cleanup(outsideDir);
+    });
+    const outcome = getOracle('value-hygiene').check({
+      result: { json: { agents_dir: path.join(outsideDir, 'agents') } },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, true);
+    const { violations, smells } = runOracles({
+      result: { json: { agents_dir: path.join(outsideDir, 'agents') } },
+      projectDir,
+    });
+    assert.strictEqual(violations.some((v) => v.id === 'value-hygiene'), false);
+    assert.strictEqual(smells.some((s) => s.id === 'value-hygiene'), false);
+  });
+
+  test('value-hygiene still SMELLs on a non-allowlisted out-of-project key even when agents_dir is also present', (t) => {
+    const projectDir = createTempDir('gsd-hygiene-mixed-');
+    const outsideDir = createTempDir('gsd-hygiene-mixed-outside-');
+    t.after(() => {
+      cleanup(projectDir);
+      cleanup(outsideDir);
+    });
+    const outcome = getOracle('value-hygiene').check({
+      result: {
+        json: {
+          agents_dir: path.join(outsideDir, 'agents'),
+          leaked_path: path.join(outsideDir, 'leak.md'),
+        },
+      },
+      projectDir,
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+    assert.strictEqual(outcome.subject.key, '$.leaked_path');
+  });
+
   test('value-hygiene SMELLs on a sibling-prefix path (containment is path-segment, not string-prefix)', (t) => {
     const projectDir = createTempDir('gsd-hygiene-sibling-');
     t.after(() => cleanup(projectDir));
@@ -407,37 +448,77 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.subject.to, 2);
   });
 
-  test('monotonic-progress: the SAME decrease ACROSS a milestone_version change is NOT a violation, and records a SMELL', () => {
-    const outcome = getOracle('monotonic-progress').check({
+  test('monotonic-progress: the SAME decrease ACROSS a milestone_version change is NOT reported at all (silent reset, not even a SMELL)', () => {
+    const ctx = {
       history: [{ json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] }],
       result: { json: { total_plans: 2, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
-    });
-    assert.strictEqual(outcome.ok, false);
-    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
-    assert.strictEqual(outcome.subject.key, 'total_plans');
-    assert.strictEqual(outcome.subject.from, 5);
-    assert.strictEqual(outcome.subject.to, 2);
-    assert.strictEqual(outcome.subject.fromScope.milestoneVersion, 'v1.0');
-    assert.strictEqual(outcome.subject.toScope.milestoneVersion, 'v2.0');
+    };
+    const outcome = getOracle('monotonic-progress').check(ctx);
+    assert.strictEqual(outcome.ok, true, 'a milestone-version boundary crossing must reset silently, not fire at all');
 
-    // Confirm this never reaches `runOracles(ctx).failed` — a SMELL must never fail a build.
-    const { failed, smells } = runOracles({
-      history: [{ json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] }],
-      result: { json: { total_plans: 2, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
-    });
+    // Confirm this never reaches `runOracles(ctx).failed` NOR `.smells` — a boundary
+    // crossing is expected behavior, not evidence worth a human look (#2966 FIX 2a).
+    const { failed, smells } = runOracles(ctx);
     assert.strictEqual(failed.find((f) => f.id === 'monotonic-progress'), undefined);
-    assert.ok(smells.some((s) => s.id === 'monotonic-progress'));
+    assert.strictEqual(smells.find((s) => s.id === 'monotonic-progress'), undefined);
   });
 
-  test('monotonic-progress: a decrease ACROSS a --ws workstream switch is NOT a violation, and records a SMELL', () => {
-    const outcome = getOracle('monotonic-progress').check({
+  test('monotonic-progress: a decrease ACROSS a --ws workstream switch is NOT reported at all (silent reset, not even a SMELL)', () => {
+    const ctx = {
       history: [{ json: { total_plans: 5 }, argv: ['--ws', 'alpha', 'progress'] }],
       result: { json: { total_plans: 0 }, argv: ['--ws', 'beta', 'progress'] },
+    };
+    const outcome = getOracle('monotonic-progress').check(ctx);
+    assert.strictEqual(outcome.ok, true, 'a workstream boundary crossing must reset silently, not fire at all');
+    const { failed, smells } = runOracles(ctx);
+    assert.strictEqual(failed.find((f) => f.id === 'monotonic-progress'), undefined);
+    assert.strictEqual(smells.find((s) => s.id === 'monotonic-progress'), undefined);
+  });
+
+  test('monotonic-progress: a subsequent same-scope decrease AFTER a boundary crossing is still a VIOLATION (the reset re-arms the check)', () => {
+    const outcome = getOracle('monotonic-progress').check({
+      history: [
+        { json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },
+        { json: { total_plans: 0, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
+        { json: { total_plans: 3, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
+      ],
+      result: { json: { total_plans: 1, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
     });
     assert.strictEqual(outcome.ok, false);
-    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
-    assert.strictEqual(outcome.subject.fromScope.workstream, 'alpha');
-    assert.strictEqual(outcome.subject.toScope.workstream, 'beta');
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.from, 3);
+    assert.strictEqual(outcome.subject.to, 1);
+  });
+
+  test('monotonic-progress: an observation whose payload lacks BOTH milestone fields is skipped entirely, never guessed as a boundary', () => {
+    // Mirrors `roadmap analyze`'s real payload shape: neither milestone_version
+    // nor milestone_name present at all (#2966 FIX 2b).
+    const ctx = {
+      history: [
+        { json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },
+        { json: { total_plans: 1 }, argv: ['roadmap', 'analyze'] },
+      ],
+      result: { json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },
+    };
+    const outcome = getOracle('monotonic-progress').check(ctx);
+    assert.strictEqual(outcome.ok, true, 'the scope-less entry must be invisible to the comparison, not a violation or a smell');
+    const { failed, smells } = runOracles(ctx);
+    assert.strictEqual(failed.find((f) => f.id === 'monotonic-progress'), undefined);
+    assert.strictEqual(smells.find((s) => s.id === 'monotonic-progress'), undefined);
+  });
+
+  test('monotonic-progress: a scope-less observation does not mask a real same-scope decrease around it', () => {
+    const outcome = getOracle('monotonic-progress').check({
+      history: [
+        { json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },
+        { json: { total_plans: 1 }, argv: ['roadmap', 'analyze'] },
+      ],
+      result: { json: { total_plans: 2, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.from, 5);
+    assert.strictEqual(outcome.subject.to, 2);
   });
 
   test('routing-validity passes on a clean context', () => {

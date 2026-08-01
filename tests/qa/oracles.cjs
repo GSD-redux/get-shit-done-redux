@@ -72,6 +72,43 @@ const SEVERITY = Object.freeze({ VIOLATION: 'violation', SMELL: 'smell' });
 /** Exact-match sentinel strings that indicate a value was coerced by mistake. */
 const SENTINEL_STRINGS = new Set(['undefined', 'null', 'NaN', '[object Object]']);
 
+/**
+ * Leaf JSON-key names whose CONTRACT is to point OUTSIDE the project directory —
+ * `value-hygiene`'s absolute-path-leak sub-check allowlists these by LEAF key
+ * name only (never by value, never by full path), so a legitimately-external
+ * field never manufactures a finding. This is an allowlist of contractually
+ * external fields, NOT a general suppression: adding a key here requires
+ * actually knowing that field's contract — that EVERY value it ever holds is
+ * expected to live outside `ctx.projectDir` — not just that it happened to fire
+ * once. The sub-check still fires (as a SMELL) for any absolute path outside
+ * the project on a key NOT in this set — see #2966 FIX 1.
+ *
+ * - `agents_dir` — `agent-install-check.cts`'s `getAgentsDir` /
+ *   `checkAgentsInstalled`, surfaced on every `init` subcommand's response via
+ *   `init.cts`'s `withProjectRoot`. Points at the INSTALL tree (the runtime's
+ *   global config dir, or — for the `claude` runtime — the `agents/` directory
+ *   bundled as a sibling of `gsd-core/`), never at the project: agents are
+ *   installed once, not per-project.
+ */
+const EXTERNAL_PATH_ALLOWED_KEYS = Object.freeze(new Set(['agents_dir']));
+
+/**
+ * Extract the leaf key name from a `walk()`-built path (e.g. `"$.agents_dir"`
+ * -> `"agents_dir"`, `"$.foo.bar[3]"` -> `"bar"` for the array element itself,
+ * `"$.arr[3]"` -> `"arr"` is NOT how this parses — array indices are not key
+ * names, so a leaf under an array index has no matching allowlist entry by
+ * design; only a genuine object key can match `EXTERNAL_PATH_ALLOWED_KEYS`.
+ *
+ * @param {string} walkPath
+ * @returns {string}
+ */
+function leafKeyOf(walkPath) {
+  const segments = walkPath.split('.');
+  const last = segments[segments.length - 1];
+  const bracketIdx = last.indexOf('[');
+  return bracketIdx === -1 ? last : last.slice(0, bracketIdx);
+}
+
 /** `json` field names checked by `monotonic-progress`, in no particular order. */
 const PROGRESS_KEYS = ['total_plans', 'total_summaries', 'phases_completed'];
 
@@ -275,8 +312,9 @@ const ORACLES = Object.freeze([
     describe:
       'result.json must not contain a NaN number or a string exactly equal to a coercion-artifact sentinel ' +
       '(VIOLATION). When ctx.projectDir is supplied, an absolute-path string outside it is reported as a SMELL — ' +
-      'never a violation, since paths like init\'s are legitimate, but a payload leaking a path outside the project ' +
-      'is worth a human look. Without ctx.projectDir the path check is skipped rather than guessed.',
+      'never a violation — UNLESS its leaf key name is in EXTERNAL_PATH_ALLOWED_KEYS (a field whose contract is to ' +
+      'point outside the project, e.g. agents_dir), which is skipped entirely: not a smell, not a violation. Without ' +
+      'ctx.projectDir the path check is skipped rather than guessed.',
     check(ctx) {
       try {
         /** @type {{message: string, key: string, value: unknown}[]} */
@@ -298,7 +336,8 @@ const ORACLES = Object.freeze([
             resolvedProjectDir !== null &&
             typeof leaf === 'string' &&
             nodePath.isAbsolute(leaf) &&
-            !isUnderProjectDir(resolveForCompare(leaf), resolvedProjectDir)
+            !isUnderProjectDir(resolveForCompare(leaf), resolvedProjectDir) &&
+            !EXTERNAL_PATH_ALLOWED_KEYS.has(leafKeyOf(path))
           ) {
             smells.push({
               message: `absolute path ${JSON.stringify(leaf)} at ${path} is outside ctx.projectDir ${JSON.stringify(projectDir)}`,
@@ -399,16 +438,17 @@ const ORACLES = Object.freeze([
       'in walk order, WITHIN a comparable scope (VIOLATION). A scope is the pair of {milestone_version + ' +
       'milestone_name} from the payload and the active workstream derived from the invocation\'s own argv ' +
       '(`--ws <name>`, see `progressScopeOf`) — a milestone/workstream boundary crossing legally resets these ' +
-      'counters, so a scope change is reported as a SMELL (`monotonic-progress-boundary`) carrying the before/after ' +
-      'counters and scopes, never folded into the pass/fail verdict.',
+      'counters, so a scope CHANGE resets the comparison SILENTLY: it is expected behavior, not evidence, and is ' +
+      'never reported (not a violation, not a smell) — see #2966 FIX 2. An observation whose payload carries ' +
+      'neither milestone_version nor milestone_name (e.g. `roadmap analyze`) has an UNKNOWABLE scope and is ' +
+      'skipped entirely — it neither starts nor continues a comparison — rather than guessing it crossed a ' +
+      'boundary.',
     check(ctx) {
       try {
         const history = ctx && Array.isArray(ctx.history) ? ctx.history : [];
         const entries = ctx && ctx.result ? [...history, ctx.result] : history;
         /** @type {{key:string, from:number, to:number, fromIndex:number, toIndex:number}[]} */
         const violations = [];
-        /** @type {{key:string, from:number, to:number, fromIndex:number, toIndex:number, fromScope:object, toScope:object}[]} */
-        const boundaries = [];
         for (const key of PROGRESS_KEYS) {
           /** @type {{value:number, index:number, scope:ReturnType<typeof progressScopeOf>} | undefined} */
           let prev;
@@ -418,6 +458,10 @@ const ORACLES = Object.freeze([
             const value = json[key];
             if (typeof value !== 'number' || Number.isNaN(value)) return;
             const scope = progressScopeOf(entry);
+            // Scope is unknowable when the payload carries neither milestone field —
+            // skip entirely (do not compare against it, do not let it become `prev`)
+            // rather than guessing whether it crossed a boundary. See FIX 2(b).
+            if (scope.milestoneVersion === undefined && scope.milestoneName === undefined) return;
             if (prev !== undefined) {
               if (scopeEqual(prev.scope, scope)) {
                 if (value < prev.value) {
@@ -425,12 +469,10 @@ const ORACLES = Object.freeze([
                     key, from: prev.value, to: value, fromIndex: prev.index, toIndex: index,
                   });
                 }
-              } else {
-                boundaries.push({
-                  key, from: prev.value, to: value, fromIndex: prev.index, toIndex: index,
-                  fromScope: prev.scope, toScope: scope,
-                });
               }
+              // else: scope changed — a boundary crossing is expected, not questionable.
+              // Reset the comparison silently (fall through to `prev = ...` below);
+              // never report it, per FIX 2(a).
             }
             prev = { value, index, scope };
           });
@@ -443,21 +485,6 @@ const ORACLES = Object.freeze([
             subject: { key: first.key, from: first.from, to: first.to, fromIndex: first.fromIndex, toIndex: first.toIndex },
             detail: violations
               .map((v) => `${v.key} decreased from ${v.from} (entry ${v.fromIndex}) to ${v.to} (entry ${v.toIndex})`)
-              .join('; '),
-          };
-        }
-        if (boundaries.length) {
-          const first = boundaries[0];
-          return {
-            ok: false,
-            severity: SEVERITY.SMELL,
-            subject: {
-              key: first.key, from: first.from, to: first.to, fromIndex: first.fromIndex, toIndex: first.toIndex,
-              fromScope: first.fromScope, toScope: first.toScope,
-            },
-            detail: boundaries
-              .map((b) => `${b.key} crossed a scope boundary from ${b.from} (entry ${b.fromIndex}, scope ` +
-                `${JSON.stringify(b.fromScope)}) to ${b.to} (entry ${b.toIndex}, scope ${JSON.stringify(b.toScope)})`)
               .join('; '),
           };
         }

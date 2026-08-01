@@ -86,13 +86,18 @@ const BASELINE_VERSION = 1;
 const MAX_ACK_FRAGMENTS = 500;
 
 /**
- * Prefix `--update` writes into a newly-discovered entry's `reason` field
- * instead of an empty string. A plain (non-`--update`) run rejects any
- * reason carrying this prefix (see `isPlaceholderReason`), so the baseline
- * can never silently ship with an entry nobody has actually justified.
+ * `--update` writes this into a newly-discovered entry's OPTIONAL `reason`
+ * field (alongside `issue: null`) as a note-to-self, never as a substitute for
+ * `issue` — see the header's "THE DESIGN INVARIANT" and #2966 FIX 3. A plain
+ * (non-`--update`) run rejects any entry whose `issue` is not a positive
+ * integer regardless of what `reason` says, and additionally rejects a
+ * `reason` still carrying this placeholder prefix (see `isPlaceholderReason`),
+ * so the baseline can never silently ship with a smell nobody has triaged.
  */
 const PLACEHOLDER_REASON_PREFIX = 'TODO(qa-smell-ratchet):';
-const PLACEHOLDER_REASON = `${PLACEHOLDER_REASON_PREFIX} explain why this smell is accepted today, referencing an issue where possible.`;
+const PLACEHOLDER_REASON =
+  `${PLACEHOLDER_REASON_PREFIX} triage this smell — either file a defect and set "issue" to its number (REAL), ` +
+  'or fix the oracle so it stops firing (FALSE POSITIVE). A "reason" alone, with no "issue", is never accepted.';
 
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isPlaceholderReason = (reason) => typeof reason === 'string' && reason.startsWith(PLACEHOLDER_REASON_PREFIX);
@@ -131,16 +136,25 @@ function parseArgs(argv) {
 }
 
 /**
- * Validate the four required string fields on one baseline/fragment entry,
- * pushing a message per problem onto `errors`. Does not mutate `entry`.
+ * Validate one baseline/fragment entry, pushing a message per problem onto
+ * `errors`. Does not mutate `entry`.
+ *
+ * Every entry MUST carry the three string fields (`key`, `id`, `scenario`)
+ * AND a positive-integer `issue` — the ONLY two terminal states for a smell
+ * are REAL (an assigned defect, cited by its issue number) or FALSE POSITIVE
+ * (the oracle gets fixed and the entry is never baselined at all); there is
+ * no third "accepted with a good explanation" state, so a free-text `reason`
+ * can NEVER substitute for `issue` (#2966 FIX 3). `reason` remains an OPTIONAL
+ * human note: when present it must be a non-empty, non-placeholder string,
+ * but its absence is never itself an error.
  *
  * @param {unknown} entry
  * @param {string} where human-readable location for error messages
  *   (e.g. `"tests/qa/smell-baseline.json.smells[3]"` or a fragment's own
  *   relative path).
  * @param {string[]} errors
- * @returns {boolean} true when `entry` has all four required fields and a
- *   real (non-placeholder) reason.
+ * @returns {boolean} true when `entry` has all required fields, a valid
+ *   `issue`, and (if present) a real (non-placeholder) `reason`.
  */
 function validateEntryFields(entry, where, errors) {
   if (!isPlainObject(entry)) {
@@ -148,18 +162,31 @@ function validateEntryFields(entry, where, errors) {
     return false;
   }
   let ok = true;
-  for (const field of ['key', 'id', 'scenario', 'reason']) {
+  for (const field of ['key', 'id', 'scenario']) {
     if (typeof entry[field] !== 'string' || entry[field] === '') {
       errors.push(`${where}.${field} must be a non-empty string, got ${JSON.stringify(entry[field])}`);
       ok = false;
     }
   }
-  if (ok && isPlaceholderReason(entry.reason)) {
+  if (!Number.isInteger(entry.issue) || entry.issue <= 0) {
     errors.push(
-      `${where}.reason is still the placeholder ("${entry.reason}") — fill in a real reason `
-        + 'explaining why this smell is accepted, then re-run',
+      `${where}.issue must be a positive integer, got ${JSON.stringify(entry.issue)} — every acknowledged smell ` +
+        'must be REAL (an assigned defect, cited by issue number) or a FALSE POSITIVE (the oracle is fixed, never ' +
+        'baselined); a free-text "reason" can never substitute for a tracked issue number',
     );
     ok = false;
+  }
+  if (entry.reason !== undefined) {
+    if (typeof entry.reason !== 'string' || entry.reason === '') {
+      errors.push(`${where}.reason, when present, must be a non-empty string, got ${JSON.stringify(entry.reason)}`);
+      ok = false;
+    } else if (isPlaceholderReason(entry.reason)) {
+      errors.push(
+        `${where}.reason is still the placeholder ("${entry.reason}") — either remove it or replace it with a `
+          + 'real human note; either way, "issue" (not "reason") is what makes this entry valid',
+      );
+      ok = false;
+    }
   }
   return ok;
 }
@@ -171,7 +198,7 @@ function validateEntryFields(entry, where, errors) {
  *   by `--update`'s bootstrap path — a not-yet-existing baseline is the
  *   expected first-run state there, never an error. In check mode a missing
  *   baseline is always an error (there is nothing to ratchet against).
- * @returns {{ entries: Array<{key:string,id:string,scenario:string,reason:string}>, errors: string[], existed: boolean }}
+ * @returns {{ entries: Array<{key:string,id:string,scenario:string,issue:number,reason?:string}>, errors: string[], existed: boolean }}
  */
 function readBaseline({ allowMissing }) {
   const existed = fs.existsSync(BASELINE_PATH);
@@ -238,11 +265,13 @@ function listFragmentFiles() {
 
 /**
  * Read and validate every fragment under `tests/qa/smell-acks/`. Each
- * fragment is ONE acknowledgment: the same four fields as a baseline entry
- * (`key`, `id`, `scenario`, `reason`) plus a positive-integer `pr` or `issue`
- * field.
+ * fragment is ONE acknowledgment: the same shape as a baseline entry — `key`,
+ * `id`, `scenario`, a positive-integer `issue`, and an OPTIONAL `reason` —
+ * validated identically via `validateEntryFields` (#2966 FIX 3: there is no
+ * separate "acknowledge via PR number" path; every acknowledgment cites the
+ * issue tracking the underlying defect).
  *
- * @returns {{ entries: Array<{key:string,id:string,scenario:string,reason:string,pr?:number,issue?:number,_source:string}>, errors: string[] }}
+ * @returns {{ entries: Array<{key:string,id:string,scenario:string,issue:number,reason?:string,_source:string}>, errors: string[] }}
  */
 function readAckFragments() {
   const errors = [];
@@ -262,12 +291,6 @@ function readAckFragments() {
       continue;
     }
     if (!validateEntryFields(doc, label, errors)) continue;
-    const hasPr = Number.isInteger(doc.pr) && doc.pr > 0;
-    const hasIssue = Number.isInteger(doc.issue) && doc.issue > 0;
-    if (!hasPr && !hasIssue) {
-      errors.push(`${label}: must carry a positive integer "pr" or "issue" field`);
-      continue;
-    }
     entries.push({ ...doc, _source: label });
   }
   return { entries, errors };
@@ -359,8 +382,7 @@ function fragmentSkeleton(finding) {
     key: finding.key,
     id: finding.id,
     scenario: finding.scenario,
-    reason: PLACEHOLDER_REASON,
-    pr: '<YOUR PR OR ISSUE NUMBER>',
+    issue: '<YOUR ISSUE NUMBER>',
   };
   const suggestedName = `${ACKS_DIR_REL_PATH}/<issue>-${slugify(finding.id)}-${slugify(finding.scenario)}.json`;
   return `${suggestedName}:\n${JSON.stringify(doc, null, 2)}`;
@@ -473,11 +495,28 @@ function main() {
     const { byKey: knownBeforeUpdate } = mergeKnown(baseline.entries, fragments.entries);
     const oldBaselineKeys = new Set(baseline.entries.map((e) => e.key));
 
+    // `--update` NEVER invents an issue number (#2966 FIX 3). A key already
+    // carrying a real `issue` (from the committed baseline or a fragment) keeps
+    // it, along with its `reason` if any. A genuinely NEW smell — no prior
+    // acknowledgment exists — gets `issue: null` and a TODO `reason`; the very
+    // next plain (non-`--update`) run REJECTS that entry, forcing a human to
+    // triage it as REAL (cite the issue) or FALSE POSITIVE (fix the oracle).
     const newBaselineEntries = [...runKeys].sort().map((key) => {
       const representative = smells.find((s) => s.key === key);
       const carried = knownBeforeUpdate.get(key);
-      const reason = carried && !isPlaceholderReason(carried.reason) ? carried.reason : PLACEHOLDER_REASON;
-      return { key, id: representative.id, scenario: representative.scenario, reason };
+      const hasKnownIssue = !!carried && Number.isInteger(carried.issue) && carried.issue > 0;
+      const entry = {
+        key,
+        id: representative.id,
+        scenario: representative.scenario,
+        issue: hasKnownIssue ? carried.issue : null,
+      };
+      if (hasKnownIssue && typeof carried.reason === 'string' && !isPlaceholderReason(carried.reason)) {
+        entry.reason = carried.reason;
+      } else if (!hasKnownIssue) {
+        entry.reason = PLACEHOLDER_REASON;
+      }
+      return entry;
     });
     const newBaselineKeys = new Set(newBaselineEntries.map((e) => e.key));
 
@@ -498,7 +537,7 @@ function main() {
     );
     for (const key of added) {
       const e = newBaselineEntries.find((x) => x.key === key);
-      const placeholderNote = isPlaceholderReason(e.reason) ? ' [PLACEHOLDER REASON — fill in before next check run]' : '';
+      const placeholderNote = e.issue === null ? ' [issue: null — TODO, needs triage before the next check run]' : '';
       console.log(`  + ${key}${placeholderNote}`);
     }
     for (const key of removed) console.log(`  - ${key}`);
@@ -558,7 +597,9 @@ function main() {
       console.error(`  oracle:   ${f.id}`);
       console.error(`  scenario: ${f.scenario}`);
       console.error(`  detail:   ${f.detail}`);
-      console.error('  remedy:   fix the underlying behavior, OR acknowledge it by adding a fragment:\n');
+      console.error('  remedy:   exactly two options — no third "accepted with an explanation" state:');
+      console.error('              1. fix the detector if this is a FALSE POSITIVE (the oracle is wrong; make it stop firing);');
+      console.error('              2. file a defect and add an entry citing its issue number (REAL) — a fragment:\n');
       console.error(`${fragmentSkeleton(f).split('\n').map((l) => `    ${l}`).join('\n')}\n`);
     }
   }
@@ -570,7 +611,8 @@ function main() {
       console.error(`  source:   ${e.source}`);
       console.error(`  oracle:   ${e.id}`);
       console.error(`  scenario: ${e.scenario}`);
-      console.error(`  reason:   ${e.reason}`);
+      console.error(`  issue:    ${e.issue}`);
+      if (e.reason !== undefined) console.error(`  reason:   ${e.reason}`);
     }
     console.error('\n  remedy: node scripts/qa-smell-ratchet.cjs --update');
   }

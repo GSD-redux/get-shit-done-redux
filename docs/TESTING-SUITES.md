@@ -154,20 +154,38 @@ The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
   shrink-only, so a fixed or changed scenario must be pruned, not left
   behind).
 
-When the ratchet reports a NEW smell, there are exactly two legitimate
-responses:
+Every smell must terminate in exactly one of TWO states — there is no third
+"accepted with a good explanation" state:
 
-1. **Fix the underlying behavior** so the smell stops firing.
-2. **Acknowledge it** by adding a fragment under `tests/qa/smell-acks/` — the
-   ratchet's failure output prints a paste-ready skeleton naming the required
-   `key`, `id`, `scenario`, `reason`, and `pr`/`issue` fields. See
-   `tests/qa/smell-acks/README.md` for the full shape and lifecycle.
+1. **REAL** — an assigned defect. File it, then acknowledge the smell with an
+   entry (baseline entry or `tests/qa/smell-acks/` fragment) carrying that
+   `issue` number.
+2. **FALSE POSITIVE** — the oracle itself is wrong. Fix the oracle
+   (`tests/qa/oracles.cjs`) so it stops firing. It is NEVER baselined.
+
+When the ratchet reports a NEW smell, there are exactly two legitimate
+responses — fix the detector, or file a defect and cite its issue number:
+
+1. **Fix the underlying behavior (or the oracle, if it's a false positive)**
+   so the smell stops firing.
+2. **File a defect and acknowledge it** by adding a fragment under
+   `tests/qa/smell-acks/` — the ratchet's failure output prints a paste-ready
+   skeleton naming the required `key`, `id`, `scenario`, and `issue` fields.
+   `issue` MUST be a positive integer naming the tracking issue; a free-text
+   `reason` may accompany it as an optional human note but can NEVER
+   substitute for `issue` — "write an explanation" is not a way to acknowledge
+   a smell. See `tests/qa/smell-acks/README.md` for the full shape and
+   lifecycle.
 
 Run `node scripts/qa-smell-ratchet.cjs --update` to regenerate
 `tests/qa/smell-baseline.json` from the current run, folding in any acked
-fragments and pruning stale entries. The baseline only ever shrinks: growth
-happens by adding an acknowledgment (a reviewable diff), never by widening
-the generator's tolerance.
+fragments and pruning stale entries. `--update` never invents an issue
+number: a genuinely new smell is written with `issue: null` and a TODO
+`reason`, and the very next plain (non-`--update`) run REJECTS that entry —
+forcing a human to triage it before it can ship. The baseline only ever
+shrinks: growth happens by adding an acknowledgment carrying a real issue
+number (a reviewable diff), never by widening the generator's tolerance and
+never by prose alone.
 
 ## Running suites locally
 
