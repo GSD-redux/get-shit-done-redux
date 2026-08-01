@@ -16,6 +16,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { getLiveCommandTokens } = require('./helpers/live-command-registry.cjs');
 
@@ -25,8 +28,10 @@ const { LoopWalk } = require('./qa/loop-walk.cjs');
 const { MUTATIONS, apply, NOOP } = require('./qa/mutations.cjs');
 const { loadScenario, runScenario, assertWiringIsLive } = require('./qa/scenario.cjs');
 const { resolveRef } = require('./qa/fixtures/index.cjs');
-const { resolveWithin } = require('./qa/paths.cjs');
+const { resolveWithin, resolveForCompare } = require('./qa/paths.cjs');
 const { LOOP_HOST_CONTRACT } = require('../gsd-core/bin/lib/loop-host-contract.cjs');
+
+const execFileAsync = promisify(execFile);
 
 /** Looks up an oracle by id, failing loudly if the catalog ever drops one. */
 function getOracle(id) {
@@ -327,6 +332,51 @@ describe('oracle self-tests', () => {
     assert.ok(outcome.detail.length > 0);
   });
 
+  test('monotonic-progress: a decrease WITHIN the same milestone_version is a VIOLATION', () => {
+    const outcome = getOracle('monotonic-progress').check({
+      history: [{ json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] }],
+      result: { json: { total_plans: 2, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] },
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.VIOLATION);
+    assert.strictEqual(outcome.subject.key, 'total_plans');
+    assert.strictEqual(outcome.subject.from, 5);
+    assert.strictEqual(outcome.subject.to, 2);
+  });
+
+  test('monotonic-progress: the SAME decrease ACROSS a milestone_version change is NOT a violation, and records a SMELL', () => {
+    const outcome = getOracle('monotonic-progress').check({
+      history: [{ json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] }],
+      result: { json: { total_plans: 2, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+    assert.strictEqual(outcome.subject.key, 'total_plans');
+    assert.strictEqual(outcome.subject.from, 5);
+    assert.strictEqual(outcome.subject.to, 2);
+    assert.strictEqual(outcome.subject.fromScope.milestoneVersion, 'v1.0');
+    assert.strictEqual(outcome.subject.toScope.milestoneVersion, 'v2.0');
+
+    // Confirm this never reaches `runOracles(ctx).failed` — a SMELL must never fail a build.
+    const { failed, smells } = runOracles({
+      history: [{ json: { total_plans: 5, milestone_version: 'v1.0', milestone_name: 'milestone' }, argv: ['progress'] }],
+      result: { json: { total_plans: 2, milestone_version: 'v2.0', milestone_name: 'Milestone Two' }, argv: ['progress'] },
+    });
+    assert.strictEqual(failed.find((f) => f.id === 'monotonic-progress'), undefined);
+    assert.ok(smells.some((s) => s.id === 'monotonic-progress'));
+  });
+
+  test('monotonic-progress: a decrease ACROSS a --ws workstream switch is NOT a violation, and records a SMELL', () => {
+    const outcome = getOracle('monotonic-progress').check({
+      history: [{ json: { total_plans: 5 }, argv: ['--ws', 'alpha', 'progress'] }],
+      result: { json: { total_plans: 0 }, argv: ['--ws', 'beta', 'progress'] },
+    });
+    assert.strictEqual(outcome.ok, false);
+    assert.strictEqual(outcome.severity, SEVERITY.SMELL);
+    assert.strictEqual(outcome.subject.fromScope.workstream, 'alpha');
+    assert.strictEqual(outcome.subject.toScope.workstream, 'beta');
+  });
+
   test('routing-validity passes on a clean context', () => {
     const outcome = getOracle('routing-validity').check({
       result: { json: { recommended: '/gsd-plan-phase' } },
@@ -375,7 +425,7 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.severity, SEVERITY.SMELL);
     assert.strictEqual(typeof outcome.detail, 'string');
     assert.ok(outcome.detail.length > 0);
-    assert.ok(outcome.detail.includes('progress'), 'detail must name the offending command');
+    assert.deepEqual(outcome.subject.argv, ['progress'], 'subject.argv must name the offending command');
     const { violations, smells } = runOracles(ctx);
     assert.strictEqual(violations.some((v) => v.id === 'soft-error-exit-zero'), false);
     assert.strictEqual(smells.some((s) => s.id === 'soft-error-exit-zero'), true);
@@ -393,7 +443,7 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.severity, SEVERITY.SMELL);
     assert.strictEqual(typeof outcome.detail, 'string');
     assert.ok(outcome.detail.length > 0);
-    assert.ok(outcome.detail.includes('init'), 'detail must name the offending command');
+    assert.deepEqual(outcome.subject.argv, ['init'], 'subject.argv must name the offending command');
     const { violations, smells } = runOracles(ctx);
     assert.strictEqual(violations.some((v) => v.id === 'untyped-success'), false);
     assert.strictEqual(smells.some((s) => s.id === 'untyped-success'), true);
@@ -414,7 +464,7 @@ describe('oracle self-tests', () => {
     assert.strictEqual(outcome.severity, SEVERITY.SMELL);
     assert.strictEqual(typeof outcome.detail, 'string');
     assert.ok(outcome.detail.length > 0);
-    assert.ok(outcome.detail.includes('bad-usage'), 'detail must name the offending command');
+    assert.deepEqual(outcome.subject.argv, ['bad-usage'], 'subject.argv must name the offending command');
     const { violations, smells } = runOracles(ctx);
     assert.strictEqual(violations.some((v) => v.id === 'contract-conflict'), false);
     assert.strictEqual(smells.some((s) => s.id === 'contract-conflict'), true);
@@ -691,8 +741,9 @@ describe('path containment', () => {
     t.after(() => cleanup(dir));
     assert.throws(() => resolveWithin(dir, '../../etc/hosts'), (err) => {
       assert.ok(err instanceof Error);
-      assert.ok(err.message.includes('../../etc/hosts'));
-      assert.ok(err.message.includes(dir));
+      assert.strictEqual(err.code, 'EPATHESCAPE');
+      assert.strictEqual(err.attemptedPath, '../../etc/hosts');
+      assert.strictEqual(err.base, dir);
       return true;
     });
   });
@@ -700,7 +751,12 @@ describe('path containment', () => {
   test('resolveWithin rejects an absolute relPath', (t) => {
     const dir = createTempDir('gsd-pathguard-abs-');
     t.after(() => cleanup(dir));
-    assert.throws(() => resolveWithin(dir, '/etc/hosts'), /absolute/);
+    assert.throws(() => resolveWithin(dir, '/etc/hosts'), (err) => {
+      assert.strictEqual(err.code, 'EPATHESCAPE');
+      assert.strictEqual(err.attemptedPath, '/etc/hosts');
+      assert.strictEqual(err.base, dir);
+      return true;
+    });
   });
 
   test('resolveWithin rejects a sibling-prefix escape (path-segment, not string-prefix, containment)', (t) => {
@@ -929,5 +985,96 @@ describe('walk isolation', () => {
     walk.run('progress');
     const statsAfter = walk.statSnapshot();
     assert.deepStrictEqual(statsBefore, statsAfter);
+  });
+});
+
+describe('worktree-concurrency (dedicated — trajectory 9 is not expressible as a single scenario)', () => {
+  /**
+   * WHY THIS IS A DEDICATED TEST, NOT A `scenarios/*.json` FILE
+   * ────────────────────────────────────────────────────────────
+   * `scenario.cjs#runScenario` drives exactly one `LoopWalk` through a
+   * strictly sequential `steps` array — `LoopWalk#run` itself is built on
+   * `execFileSync` (see `loop-walk.cjs`), so within the DSL there is no way to
+   * have two `gsd-tools` invocations genuinely in flight at the same wall-clock
+   * moment. "Two LoopWalk instances driving simultaneously" (issue #2966's
+   * ninth trajectory) is therefore implemented here directly against
+   * `child_process.execFile` (async) so both subprocesses are launched before
+   * either has resolved — real concurrency, not two sequential calls dressed
+   * up as one.
+   */
+
+  /** Absolute path to the gsd-tools entry point, mirrored from `helpers.cjs`'s `TOOLS_PATH`. */
+  const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  /**
+   * Runs a single `gsd-tools --json-errors <argv>` invocation asynchronously
+   * against `dir`, sanitizing ambient `GSD_*` env vars exactly as
+   * `LoopWalk#run` does (see that method's header for why), and pinning the
+   * clock so both concurrent invocations are reproducible.
+   *
+   * @param {string} dir
+   * @param {string[]} argv
+   * @returns {Promise<{stdout: string, startedAtMs: number, finishedAtMs: number}>}
+   */
+  async function runConcurrent(dir, argv) {
+    /** @type {Record<string, string|undefined>} */
+    const sanitize = {};
+    for (const key of Object.keys(process.env)) {
+      if (key.startsWith('GSD_')) sanitize[key] = undefined;
+    }
+    const env = { ...sanitize, GSD_TEST_MODE: '1', GSD_NOW_MS: '1767225600000' };
+    const startedAtMs = Date.now();
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [TOOLS_PATH, '--json-errors', ...argv],
+      { cwd: dir, encoding: 'utf-8', env, timeout: 60000 },
+    );
+    return { stdout: stdout.trim(), startedAtMs, finishedAtMs: Date.now() };
+  }
+
+  test('two LoopWalk projects driven via genuinely concurrent async subprocesses stay isolated', async (t) => {
+    const walkA = LoopWalk.create({ fixture: 'greenfield', prefix: 'gsd-concurrency-a-' });
+    const walkB = LoopWalk.create({ fixture: 'greenfield', prefix: 'gsd-concurrency-b-' });
+    t.after(() => {
+      walkA.cleanup();
+      walkB.cleanup();
+    });
+
+    walkA.writeArtifact('.planning/PROJECT.md', resolveRef('@project/minimal'));
+    walkA.writeArtifact('.planning/ROADMAP.md', resolveRef('@roadmap/three-phase'));
+    walkB.writeArtifact('.planning/PROJECT.md', resolveRef('@project/minimal'));
+    walkB.writeArtifact('.planning/ROADMAP.md', resolveRef('@roadmap/three-phase'));
+
+    // Both promises are created (and their subprocesses spawned) in the same
+    // synchronous tick, BEFORE either `await`s — this is what makes the two
+    // invocations genuinely concurrent rather than sequential-looking-parallel.
+    const promiseA = runConcurrent(walkA.dir, ['init', 'new-project']);
+    const promiseB = runConcurrent(walkB.dir, ['init', 'new-project']);
+    const [resultA, resultB] = await Promise.all([promiseA, promiseB]);
+
+    // Proof of genuine overlap: A's subprocess was still running when B's was
+    // launched (both started before either finished). If the harness had
+    // silently serialized these (e.g. a shared lock), one start time would be
+    // >= the other's finish time.
+    const overlapped = resultA.startedAtMs < resultB.finishedAtMs && resultB.startedAtMs < resultA.finishedAtMs;
+    assert.ok(
+      overlapped,
+      `expected the two subprocess invocations to overlap in wall-clock time (A: ${resultA.startedAtMs}-${resultA.finishedAtMs}, B: ${resultB.startedAtMs}-${resultB.finishedAtMs})`,
+    );
+
+    const jsonA = JSON.parse(resultA.stdout);
+    const jsonB = JSON.parse(resultB.stdout);
+
+    // Isolation: each concurrent run must observe and report its OWN project
+    // root, never the other's — a shared-state bug (e.g. a global cwd) would
+    // show up here as both reporting the same root.
+    assert.strictEqual(resolveForCompare(jsonA.project_root), resolveForCompare(walkA.dir));
+    assert.strictEqual(resolveForCompare(jsonB.project_root), resolveForCompare(walkB.dir));
+    assert.notStrictEqual(resolveForCompare(jsonA.project_root), resolveForCompare(jsonB.project_root));
+
+    // Both saw their own freshly-written PROJECT.md/ROADMAP.md, independent of
+    // the other walk's concurrent writes to a different temp directory.
+    assert.strictEqual(jsonA.project_exists, true);
+    assert.strictEqual(jsonB.project_exists, true);
   });
 });

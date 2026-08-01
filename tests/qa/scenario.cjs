@@ -21,27 +21,22 @@ const path = require('node:path');
 const { resolveRef } = require('./fixtures/index.cjs');
 const { LOOP_HOST_CONTRACT } = require('../../gsd-core/bin/lib/loop-host-contract.cjs');
 const { MUTATIONS, apply, NOOP } = require('./mutations.cjs');
-const { resolveWithin } = require('./paths.cjs');
+const { resolveWithin, isAbsoluteLike, hasTraversalSegment } = require('./paths.cjs');
 
 /**
- * True when `relPath` is absolute or contains a `..` path segment, checked on
- * BOTH the raw string and its backslash-normalized form — a scenario-JSON
- * path can carry Windows-style separators as data regardless of the host OS
- * running the walk. Used at `validateScenario` LOAD time, ahead of
- * `resolveWithin`'s own (equally strict) runtime check: failing a malformed
- * scenario fast and loud at load time is better than failing at apply time —
- * the scenario is malformed, not the run.
+ * True when `relPath` is absolute or contains a `..` path segment. Delegates to
+ * `paths.cjs`'s `isAbsoluteLike` / `hasTraversalSegment` — the single source of truth for
+ * both predicates — rather than keeping a second copy here. Used at `validateScenario` LOAD
+ * time, ahead of `resolveWithin`'s own (equally strict) runtime check: failing a malformed
+ * scenario fast and loud at load time is better than failing at apply time — the scenario is
+ * malformed, not the run.
  *
  * @param {string} relPath
  * @returns {boolean}
  */
 function isTraversalOrAbsolute(relPath) {
   if (typeof relPath !== 'string' || relPath === '') return true;
-  const normRel = relPath.replace(/\\/g, '/');
-  if (path.isAbsolute(relPath) || path.posix.isAbsolute(normRel) || /^[a-zA-Z]:\//.test(normRel)) {
-    return true;
-  }
-  return normRel.split('/').includes('..');
+  return isAbsoluteLike(relPath) || hasTraversalSegment(relPath);
 }
 
 /** Scenario `fixture` must be one of these — see `loop-walk.cjs` `FIXTURE_BUILDERS`. */
@@ -311,28 +306,36 @@ function evaluateExpectations(expectations, result) {
  *   LoopWalk: { create(opts: object): object },
  *   runOracles: (ctx: object) => { passed: string[], violations: {id:string,detail:string}[], smells: {id:string,detail:string}[], failed: {id:string,detail:string}[] },
  *   liveCommands?: string[],
- * }} opts
+ *   keep?: boolean,
+ * }} opts `keep` (default `false`) preserves the walk's temp project instead
+ *   of removing it in `finally` — see `LoopWalk#cleanup`. Also honored via
+ *   the `GSD_QA_KEEP=1` environment variable (an `||`, not an override: either
+ *   one being truthy keeps the tree), since a CI operator invoking this
+ *   through a shell cannot pass a JS option.
  * @returns {{
  *   name: string,
  *   steps: Array<{ at: string, argv: string[], kind: string|null, expectFailures: string[], oracleFailures: {id:string,detail:string}[], smells: {id:string,detail:string}[], mutation: {id:string,target:string}|null, mutationNoop: boolean, mutationObserved: boolean }>,
  *   ok: boolean,
  *   smellSummary: Array<{ id: string, count: number, examples: string[] }>,
+ *   preservedDir?: string,
  * }}
  */
 function runScenario(scenario, opts) {
-  const { LoopWalk, runOracles, liveCommands = [] } = opts || {};
+  const { LoopWalk, runOracles, liveCommands = [], keep = false } = opts || {};
   if (!LoopWalk || typeof LoopWalk.create !== 'function') {
     throw new Error('runScenario: opts.LoopWalk (with a create() factory) is required');
   }
   if (typeof runOracles !== 'function') {
     throw new Error('runScenario: opts.runOracles (function) is required');
   }
+  const shouldKeep = keep || process.env.GSD_QA_KEEP === '1';
 
   const walk = LoopWalk.create({ fixture: scenario.fixture });
   /** @type {object[]} */
   const history = [];
   /** @type {Array<{at:string, argv:string[], kind:string|null, expectFailures:string[], oracleFailures:{id:string,detail:string}[], smells:{id:string,detail:string}[]}>} */
   const steps = [];
+  let preservedDir;
 
   try {
     for (const step of scenario.steps) {
@@ -473,7 +476,7 @@ function runScenario(scenario, opts) {
       }
     }
   } finally {
-    walk.cleanup();
+    preservedDir = walk.cleanup({ keep: shouldKeep });
   }
 
   // A SMELL is evidence, never a build break: `ok` is derived from
@@ -481,7 +484,13 @@ function runScenario(scenario, opts) {
   // findings are smells still counts as `ok`.
   const ok = steps.every((s) => s.expectFailures.length === 0 && s.oracleFailures.length === 0);
   const smellSummary = summarizeSmells(steps);
-  return { name: scenario.name, steps, ok, smellSummary };
+  return {
+    name: scenario.name,
+    steps,
+    ok,
+    smellSummary,
+    ...(preservedDir ? { preservedDir } : {}),
+  };
 }
 
 /**

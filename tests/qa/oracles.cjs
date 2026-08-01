@@ -76,6 +76,63 @@ const SENTINEL_STRINGS = new Set(['undefined', 'null', 'NaN', '[object Object]']
 const PROGRESS_KEYS = ['total_plans', 'total_summaries', 'phases_completed'];
 
 /**
+ * Extract the active workstream id from an argv array, e.g.
+ * `['--json-errors', '--ws', 'alpha', 'progress']` -> `'alpha'`. Returns `null`
+ * when no `--ws` flag is present (the default/unnamed workstream) — never
+ * `undefined`, so two "no workstream" entries compare equal via `===`.
+ *
+ * @param {unknown} argv
+ * @returns {string | null}
+ */
+function workstreamFromArgv(argv) {
+  if (!Array.isArray(argv)) return null;
+  const idx = argv.indexOf('--ws');
+  if (idx === -1 || idx + 1 >= argv.length) return null;
+  const value = argv[idx + 1];
+  return typeof value === 'string' ? value : null;
+}
+
+/**
+ * The comparability scope for a `monotonic-progress` entry: two entries are
+ * comparable only when their milestone (`milestone_version` + `milestone_name`,
+ * the fields a real `progress`/`stats` payload actually exposes — see
+ * `roadmap-parser.cts` `getMilestoneInfo`) AND active workstream (derived from
+ * the invocation's own `argv`, since no payload observed in this codebase
+ * carries a workstream field) all match. `milestone_version` alone is NOT
+ * sufficient: a fixture/project whose ROADMAP.md never carries an explicit
+ * `vX.Y` marker keeps reporting the same fallback `"v1.0"`/`"milestone"` pair
+ * across a real milestone-complete boundary until a roadmap for the *next*
+ * milestone is actually written (verified empirically against `milestone
+ * complete` — see scenarios/milestone-rollover.json) — `milestone_name` is
+ * threaded in alongside version for the same reason value-hygiene documents
+ * elsewhere in this file: a cheap, purely-structural signal is preferred over
+ * inferring intent from command names.
+ *
+ * @param {{json?: unknown, argv?: unknown}} entry
+ * @returns {{milestoneVersion: unknown, milestoneName: unknown, workstream: string | null}}
+ */
+function progressScopeOf(entry) {
+  const json = entry && entry.json;
+  const isPlainObject = json !== null && typeof json === 'object' && !Array.isArray(json);
+  return {
+    milestoneVersion: isPlainObject ? json.milestone_version : undefined,
+    milestoneName: isPlainObject ? json.milestone_name : undefined,
+    workstream: workstreamFromArgv(entry && entry.argv),
+  };
+}
+
+/**
+ * @param {ReturnType<typeof progressScopeOf>} a
+ * @param {ReturnType<typeof progressScopeOf>} b
+ * @returns {boolean}
+ */
+function scopeEqual(a, b) {
+  return a.milestoneVersion === b.milestoneVersion
+    && a.milestoneName === b.milestoneName
+    && a.workstream === b.workstream;
+}
+
+/**
  * Deep-walk an arbitrary JSON-ish value, invoking `visit(primitive, path)` for
  * every non-object leaf. Cycle-safe via a `WeakSet` of visited objects/arrays,
  * so a self-referential structure terminates instead of recursing forever.
@@ -128,7 +185,16 @@ function deepEqual(a, b, seen) {
   return true;
 }
 
-/** @typedef {{ ok: true } | { ok: false, severity: string, detail: string }} OracleOutcome */
+/**
+ * @typedef {{ ok: true } | { ok: false, severity: string, detail: string, subject?: object }} OracleOutcome
+ *
+ * `subject` — OPTIONAL structured data backing `detail`, present where the oracle knows a
+ * machine-checkable shape (e.g. `{ argv: string[] }` for a command-scoped finding,
+ * `{ key: string, value: unknown }` for a value-hygiene leaf, `{ missing: string }` for
+ * read-only-idempotence's absent-input case). `detail` remains a human-readable string for
+ * console/report output; tests MUST assert on `subject`, never on substrings of `detail`
+ * (CONTRIBUTING.md "Prohibited: Raw Text Matching on Test Outputs").
+ */
 
 /**
  * Frozen array of `{ id, describe, check(ctx) -> OracleOutcome }` oracles.
@@ -213,7 +279,9 @@ const ORACLES = Object.freeze([
       'is worth a human look. Without ctx.projectDir the path check is skipped rather than guessed.',
     check(ctx) {
       try {
+        /** @type {{message: string, key: string, value: unknown}[]} */
         const violations = [];
+        /** @type {{message: string, key: string, value: unknown}[]} */
         const smells = [];
         const seen = new WeakSet();
         const json = ctx && ctx.result ? ctx.result.json : undefined;
@@ -223,23 +291,37 @@ const ORACLES = Object.freeze([
         const resolvedProjectDir = projectDir !== null ? resolveForCompare(projectDir) : null;
         walk(json, (leaf, path) => {
           if (typeof leaf === 'number' && Number.isNaN(leaf)) {
-            violations.push(`NaN at ${path}`);
+            violations.push({ message: `NaN at ${path}`, key: path, value: leaf });
           } else if (typeof leaf === 'string' && SENTINEL_STRINGS.has(leaf)) {
-            violations.push(`sentinel string ${JSON.stringify(leaf)} at ${path}`);
+            violations.push({ message: `sentinel string ${JSON.stringify(leaf)} at ${path}`, key: path, value: leaf });
           } else if (
             resolvedProjectDir !== null &&
             typeof leaf === 'string' &&
             nodePath.isAbsolute(leaf) &&
             !isUnderProjectDir(resolveForCompare(leaf), resolvedProjectDir)
           ) {
-            smells.push(`absolute path ${JSON.stringify(leaf)} at ${path} is outside ctx.projectDir ${JSON.stringify(projectDir)}`);
+            smells.push({
+              message: `absolute path ${JSON.stringify(leaf)} at ${path} is outside ctx.projectDir ${JSON.stringify(projectDir)}`,
+              key: path,
+              value: leaf,
+            });
           }
         }, seen, '$');
         if (violations.length) {
-          return { ok: false, severity: SEVERITY.VIOLATION, detail: violations.join('; ') };
+          return {
+            ok: false,
+            severity: SEVERITY.VIOLATION,
+            subject: { key: violations[0].key, value: violations[0].value },
+            detail: violations.map((v) => v.message).join('; '),
+          };
         }
         if (smells.length) {
-          return { ok: false, severity: SEVERITY.SMELL, detail: smells.join('; ') };
+          return {
+            ok: false,
+            severity: SEVERITY.SMELL,
+            subject: { key: smells[0].key, value: smells[0].value },
+            detail: smells.map((s) => s.message).join('; '),
+          };
         }
         return { ok: true };
       } catch (err) {
@@ -258,7 +340,9 @@ const ORACLES = Object.freeze([
       try {
         if (!ctx || !ctx.readOnly) return { ok: true };
         const findings = [];
+        const missing = [];
         if (!ctx.repeatResult) {
+          missing.push('repeatResult');
           findings.push('ctx.readOnly is true but ctx.repeatResult is missing — idempotence cannot be checked');
         } else if (ctx.result) {
           if (!deepEqual(ctx.result.json, ctx.repeatResult.json, new WeakMap())) {
@@ -266,9 +350,11 @@ const ORACLES = Object.freeze([
           }
         }
         if (!(ctx.statsBefore instanceof Map)) {
+          missing.push('statsBefore');
           findings.push('ctx.readOnly is true but ctx.statsBefore is missing — idempotence cannot be checked');
         }
         if (!(ctx.statsAfter instanceof Map)) {
+          missing.push('statsAfter');
           findings.push('ctx.readOnly is true but ctx.statsAfter is missing — idempotence cannot be checked');
         }
         const before = ctx.statsBefore instanceof Map ? ctx.statsBefore : new Map();
@@ -293,9 +379,9 @@ const ORACLES = Object.freeze([
             }
           }
         }
-        return findings.length
-          ? { ok: false, severity: SEVERITY.VIOLATION, detail: findings.join('; ') }
-          : { ok: true };
+        if (!findings.length) return { ok: true };
+        const subject = missing.length ? { missing: missing.join(', ') } : { mismatches: findings };
+        return { ok: false, severity: SEVERITY.VIOLATION, subject, detail: findings.join('; ') };
       } catch (err) {
         return {
           ok: false,
@@ -309,32 +395,73 @@ const ORACLES = Object.freeze([
   Object.freeze({
     id: 'monotonic-progress',
     describe:
-      'Numeric total_plans/total_summaries/phases_completed fields must never decrease across history + result, in walk order.',
+      'Numeric total_plans/total_summaries/phases_completed fields must never decrease across history + result, ' +
+      'in walk order, WITHIN a comparable scope (VIOLATION). A scope is the pair of {milestone_version + ' +
+      'milestone_name} from the payload and the active workstream derived from the invocation\'s own argv ' +
+      '(`--ws <name>`, see `progressScopeOf`) — a milestone/workstream boundary crossing legally resets these ' +
+      'counters, so a scope change is reported as a SMELL (`monotonic-progress-boundary`) carrying the before/after ' +
+      'counters and scopes, never folded into the pass/fail verdict.',
     check(ctx) {
       try {
         const history = ctx && Array.isArray(ctx.history) ? ctx.history : [];
         const entries = ctx && ctx.result ? [...history, ctx.result] : history;
-        const findings = [];
+        /** @type {{key:string, from:number, to:number, fromIndex:number, toIndex:number}[]} */
+        const violations = [];
+        /** @type {{key:string, from:number, to:number, fromIndex:number, toIndex:number, fromScope:object, toScope:object}[]} */
+        const boundaries = [];
         for (const key of PROGRESS_KEYS) {
-          let prevValue;
-          let prevIndex = -1;
+          /** @type {{value:number, index:number, scope:ReturnType<typeof progressScopeOf>} | undefined} */
+          let prev;
           entries.forEach((entry, index) => {
             const json = entry && entry.json;
             if (json === null || typeof json !== 'object' || Array.isArray(json)) return;
             const value = json[key];
             if (typeof value !== 'number' || Number.isNaN(value)) return;
-            if (prevValue !== undefined && value < prevValue) {
-              findings.push(
-                `${key} decreased from ${prevValue} (entry ${prevIndex}) to ${value} (entry ${index})`,
-              );
+            const scope = progressScopeOf(entry);
+            if (prev !== undefined) {
+              if (scopeEqual(prev.scope, scope)) {
+                if (value < prev.value) {
+                  violations.push({
+                    key, from: prev.value, to: value, fromIndex: prev.index, toIndex: index,
+                  });
+                }
+              } else {
+                boundaries.push({
+                  key, from: prev.value, to: value, fromIndex: prev.index, toIndex: index,
+                  fromScope: prev.scope, toScope: scope,
+                });
+              }
             }
-            prevValue = value;
-            prevIndex = index;
+            prev = { value, index, scope };
           });
         }
-        return findings.length
-          ? { ok: false, severity: SEVERITY.VIOLATION, detail: findings.join('; ') }
-          : { ok: true };
+        if (violations.length) {
+          const first = violations[0];
+          return {
+            ok: false,
+            severity: SEVERITY.VIOLATION,
+            subject: { key: first.key, from: first.from, to: first.to, fromIndex: first.fromIndex, toIndex: first.toIndex },
+            detail: violations
+              .map((v) => `${v.key} decreased from ${v.from} (entry ${v.fromIndex}) to ${v.to} (entry ${v.toIndex})`)
+              .join('; '),
+          };
+        }
+        if (boundaries.length) {
+          const first = boundaries[0];
+          return {
+            ok: false,
+            severity: SEVERITY.SMELL,
+            subject: {
+              key: first.key, from: first.from, to: first.to, fromIndex: first.fromIndex, toIndex: first.toIndex,
+              fromScope: first.fromScope, toScope: first.toScope,
+            },
+            detail: boundaries
+              .map((b) => `${b.key} crossed a scope boundary from ${b.from} (entry ${b.fromIndex}, scope ` +
+                `${JSON.stringify(b.fromScope)}) to ${b.to} (entry ${b.toIndex}, scope ${JSON.stringify(b.toScope)})`)
+              .join('; '),
+          };
+        }
+        return { ok: true };
       } catch (err) {
         return { ok: false, severity: SEVERITY.VIOLATION, detail: `monotonic-progress threw: ${err && err.message}` };
       }
@@ -403,12 +530,14 @@ const ORACLES = Object.freeze([
       try {
         const result = ctx && ctx.result;
         if (!result || result.kind !== KIND.SOFT_ERROR) return { ok: true };
-        const argv = Array.isArray(result.argv) ? result.argv.join(' ') : '(no argv)';
+        const argv = Array.isArray(result.argv) ? result.argv : [];
+        const argvDisplay = argv.length ? argv.join(' ') : '(no argv)';
         const errorValue = result.json && typeof result.json === 'object' ? result.json.error : undefined;
         return {
           ok: false,
           severity: SEVERITY.SMELL,
-          detail: `command "${argv}" exited 0 but carries result.json.error = ${JSON.stringify(errorValue)}`,
+          subject: { argv },
+          detail: `command "${argvDisplay}" exited 0 but carries result.json.error = ${JSON.stringify(errorValue)}`,
         };
       } catch (err) {
         return { ok: false, severity: SEVERITY.SMELL, detail: `soft-error-exit-zero threw: ${err && err.message}` };
@@ -426,11 +555,13 @@ const ORACLES = Object.freeze([
       try {
         const result = ctx && ctx.result;
         if (!result || result.kind !== KIND.PROSE) return { ok: true };
-        const argv = Array.isArray(result.argv) ? result.argv.join(' ') : '(no argv)';
+        const argv = Array.isArray(result.argv) ? result.argv : [];
+        const argvDisplay = argv.length ? argv.join(' ') : '(no argv)';
         return {
           ok: false,
           severity: SEVERITY.SMELL,
-          detail: `command "${argv}" emits KIND.PROSE only; no typed surface exists to assert on`,
+          subject: { argv },
+          detail: `command "${argvDisplay}" emits KIND.PROSE only; no typed surface exists to assert on`,
         };
       } catch (err) {
         return { ok: false, severity: SEVERITY.SMELL, detail: `untyped-success threw: ${err && err.message}` };
@@ -452,12 +583,14 @@ const ORACLES = Object.freeze([
         const result = ctx && ctx.result;
         if (!ctx || ctx.jsonErrorMode !== true) return { ok: true };
         if (!result || result.kind !== KIND.UNSTRUCTURED_ERROR) return { ok: true };
-        const argv = Array.isArray(result.argv) ? result.argv.join(' ') : '(no argv)';
+        const argv = Array.isArray(result.argv) ? result.argv : [];
+        const argvDisplay = argv.length ? argv.join(' ') : '(no argv)';
         return {
           ok: false,
           severity: SEVERITY.SMELL,
+          subject: { argv },
           detail:
-            `command "${argv}" emitted unstructured-error text under --json-errors, conflicting docs: ` +
+            `command "${argvDisplay}" emitted unstructured-error text under --json-errors, conflicting docs: ` +
             'docs/json-errors.md says "On any error, exactly one JSON line is written to stderr and the process ' +
             'exits with code 1", but src/cli-exit.cts runMain returns for an ExitError before the json-error branch, ' +
             'so CLI usage errors emit plain text by design',
@@ -488,9 +621,9 @@ const ORACLES = Object.freeze([
  * @param {object} ctx
  * @returns {{
  *   passed: string[],
- *   violations: { id: string, detail: string }[],
- *   smells: { id: string, detail: string }[],
- *   readonly failed: { id: string, detail: string }[],
+ *   violations: { id: string, detail: string, subject?: object }[],
+ *   smells: { id: string, detail: string, subject?: object }[],
+ *   readonly failed: { id: string, detail: string, subject?: object }[],
  * }}
  */
 function runOracles(ctx) {
@@ -509,6 +642,9 @@ function runOracles(ctx) {
       continue;
     }
     const finding = { id: oracle.id, detail: (outcome && outcome.detail) || 'oracle failed with no detail' };
+    if (outcome && outcome.subject !== undefined) {
+      finding.subject = outcome.subject;
+    }
     if (outcome && outcome.severity === SEVERITY.SMELL) {
       smells.push(finding);
     } else {

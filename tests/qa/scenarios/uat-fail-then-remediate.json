@@ -1,0 +1,67 @@
+{
+  "name": "uat-fail-then-remediate",
+  "fixture": "greenfield",
+  "notes": "FINDING (verified empirically, not yet asserted by an `expect` below): the final `phase uat-passed 1` call, run AFTER 01-UAT.md is remediated to `status: passed`, still returns `no_uat_artifacts: true` and `passed: false` — identical to the pre-remediation payload. The step's own `expect` only checks `blockers` (which is `[]` in both the failing and passing case), so this walk currently passes without catching it. Full observed payload both before and after remediation: {\"phase\":\"1\",\"passed\":false,\"uat_files\":[\"01-UAT.md\"],\"verification_files\":[],\"checks\":[],\"blockers\":[],\"no_uat_artifacts\":true,\"policy\":{\"require_verification\":false}}. Root cause is in `phase uat-passed`'s UAT-artifact detection (src/phase.cts), out of scope for this oracle/scenario-boundary change — recorded here per dispatch instructions rather than fixed.",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "execute:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-SUMMARY.md": "@summary/tokenizer-complete"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "verify:pre",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-UAT.md": "@uat/current-test-failing"
+        }
+      },
+      "run": [
+        ["uat", "render-checkpoint", "--file", ".planning/phases/01-parser/01-UAT.md"],
+        ["phase", "uat-passed", "1"]
+      ]
+    },
+    {
+      "at": "plan:post",
+      "run": [["progress"]]
+    },
+    {
+      "at": "execute:post",
+      "run": [["progress"]]
+    },
+    {
+      "at": "verify:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-UAT.md": "@uat/current-test-passing"
+        }
+      },
+      "run": [["phase", "uat-passed", "1"]],
+      "expect": [
+        { "path": "blockers", "is": [] }
+      ]
+    }
+  ]
+}

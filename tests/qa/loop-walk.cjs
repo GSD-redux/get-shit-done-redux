@@ -304,9 +304,24 @@ class LoopWalk {
     return collectStatSnapshot(this.dir);
   }
 
-  /** Remove this walk's temp project. Safe to call multiple times. */
-  cleanup() {
+  /**
+   * Remove this walk's temp project. Safe to call multiple times.
+   *
+   * `opts.keep` (default `false`) skips the removal entirely — the caller
+   * (a QA-report run, typically via `--keep` / `GSD_QA_KEEP=1`) wants the
+   * failing/inspected tree left on disk for a human to `cd` into. When kept,
+   * this returns `this.dir` so the caller can record it (e.g. as
+   * `preservedDir` on a scenario report); when actually cleaned up, it
+   * returns `undefined`.
+   *
+   * @param {{keep?: boolean}} [opts]
+   * @returns {string|undefined}
+   */
+  cleanup(opts = {}) {
+    const { keep = false } = opts;
+    if (keep) return this.dir;
     cleanup(this.dir);
+    return undefined;
   }
 }
 

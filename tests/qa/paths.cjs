@@ -102,6 +102,55 @@ function isUnderProjectDir(resolvedCandidate, resolvedProjectDir) {
 }
 
 /**
+ * True when `relPath` is an absolute path — checked both platform-natively via
+ * `path.isAbsolute` and, since a path can arrive as *data* with foreign separators
+ * regardless of host OS (e.g. a Windows-style path embedded in scenario JSON), via
+ * `path.posix.isAbsolute` on the backslash-normalized form and a drive-letter pattern.
+ *
+ * This is the single source of truth for the "looks absolute" predicate — both
+ * `resolveWithin` (below) and `tests/qa/scenario.cjs`'s load-time validation call this
+ * rather than each keeping their own copy.
+ *
+ * @param {string} relPath
+ * @returns {boolean}
+ */
+function isAbsoluteLike(relPath) {
+  const normRel = relPath.replace(/\\/g, '/');
+  return path.isAbsolute(relPath) || path.posix.isAbsolute(normRel) || /^[a-zA-Z]:\//.test(normRel);
+}
+
+/**
+ * True when `relPath` contains a `..` path segment, checked on its backslash-normalized form
+ * so a Windows-style separator arriving as data is still caught on a POSIX host.
+ *
+ * @param {string} relPath
+ * @returns {boolean}
+ */
+function hasTraversalSegment(relPath) {
+  const normRel = relPath.replace(/\\/g, '/');
+  return normRel.split('/').includes('..');
+}
+
+/**
+ * Builds a typed containment-violation Error for `resolveWithin` to throw: callers that need
+ * to distinguish "this relPath escaped its base" from any other Error MUST branch on
+ * `err.code === 'EPATHESCAPE'` (and may read `err.attemptedPath` / `err.base`) rather than
+ * matching on `err.message` text — see CONTRIBUTING.md "Prohibited: Raw Text Matching on Test
+ * Outputs".
+ *
+ * @param {string} message human-readable message (unchanged shape from before this typed error existed)
+ * @param {{attemptedPath: string, base: string}} fields
+ * @returns {Error & {code: 'EPATHESCAPE', attemptedPath: string, base: string}}
+ */
+function pathEscapeError(message, { attemptedPath, base }) {
+  const err = new Error(message);
+  err.code = 'EPATHESCAPE';
+  err.attemptedPath = attemptedPath;
+  err.base = base;
+  return err;
+}
+
+/**
  * The single containment guard for every scenario-supplied, project-relative path this harness
  * turns into a filesystem write/delete/symlink call. Resolves `relPath` against `baseDir` and
  * throws unless the result is provably `baseDir` itself or a path-segment descendant of it.
@@ -146,11 +195,10 @@ function resolveWithin(baseDir, relPath) {
   // the same rule applied to comparison output.
   const normRel = relPath.replace(/\\/g, '/');
 
-  const looksAbsolute =
-    path.isAbsolute(relPath) || path.posix.isAbsolute(normRel) || /^[a-zA-Z]:\//.test(normRel);
-  if (looksAbsolute) {
-    throw new Error(
+  if (isAbsoluteLike(relPath)) {
+    throw pathEscapeError(
       `resolveWithin: relPath must be project-relative, got an absolute path ${JSON.stringify(relPath)} (base=${JSON.stringify(baseDir)})`,
+      { attemptedPath: relPath, base: baseDir },
     );
   }
 
@@ -159,9 +207,10 @@ function resolveWithin(baseDir, relPath) {
   const resolvedCandidate = resolveForCompare(rawCandidate);
 
   if (!isUnderProjectDir(resolvedCandidate, resolvedBase)) {
-    throw new Error(
+    throw pathEscapeError(
       `resolveWithin: "${relPath}" escapes base "${baseDir}" `
         + `(resolved candidate "${resolvedCandidate}" is outside resolved base "${resolvedBase}")`,
+      { attemptedPath: relPath, base: baseDir },
     );
   }
 
@@ -173,4 +222,6 @@ module.exports = {
   resolveForCompare,
   realpathNearestAncestor,
   isUnderProjectDir,
+  isAbsoluteLike,
+  hasTraversalSegment,
 };

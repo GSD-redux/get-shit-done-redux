@@ -27,7 +27,7 @@ Examples:
 - `tests/prompt-injection-guards.security.test.cjs` — `security`
 - `tests/installer-end-to-end.install.test.cjs` — `install`
 - `tests/sdk-mutation-stress.slow.test.cjs` — `slow`
-- `tests/loop-walk-accumulating-project.qa.test.cjs` — `qa`
+- `tests/loop-walk.qa.test.cjs` — `qa`
 
 The suite-suffix convention was chosen over a directory layout (`tests/security/`) so the 545+ existing test files don't need to move. Existing files all classify as `unit` until someone explicitly retags them.
 
