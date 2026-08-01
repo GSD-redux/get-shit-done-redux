@@ -53,6 +53,25 @@ const OPTIONAL_PHASE_TAG_SOURCE = '(?:\\s*\\([^)\\n]{0,200}\\))?';
 // introduced outside this module without a `// phase-id-owner:` justification.
 const PHASE_NUMBER_TOKEN_SOURCE = '\\d+[A-Z]?(?:\\.\\d+)*';
 
+// #2528 review: the CASE-FLEXIBLE renderings of the two sources above, for call
+// sites that scan directory names (where a project code or a variant suffix may
+// legitimately be lowercase) and therefore cannot use a case-sensitive class.
+//
+// They live HERE, beside the sources they widen, because the alternative in use
+// was `SOURCE.replaceAll('A-Z', 'A-Za-z')` at the consuming site — a derivation
+// that depends on the owner rendering that exact literal. It passes
+// lint-phase-id-drift.cjs (no literal copy of the grammar), but the day this
+// module expresses the same class any other way (`[[:upper:]]`, a named
+// fragment, an escaped range) the replaceAll silently no-ops and the consumer
+// quietly narrows to uppercase-only — the failure is a NON-match, so nothing
+// throws and no test that only feeds uppercase input notices. Deriving it once,
+// where the source is defined, makes that impossible: a rename here is a
+// compile-visible change, not a silent behavior change three modules away.
+const CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE =
+  OPTIONAL_PROJECT_CODE_PREFIX_SOURCE.replaceAll('A-Z', 'A-Za-z');
+const CASE_FLEXIBLE_PHASE_NUMBER_TOKEN_SOURCE =
+  PHASE_NUMBER_TOKEN_SOURCE.replaceAll('A-Z', 'A-Za-z');
+
 // #2232: the canonical CONTINUATION-segment grammar — a dash-separated segment
 // that extends a phase token (a zero-padded sub-phase or plan number, e.g. the
 // "01" in "02-01-setup"). getPhaseDirFromPhaseId writes these zero-padded to
@@ -617,6 +636,26 @@ function phaseTokenMatches(dirName: string, normalized: string): boolean {
 }
 
 /**
+ * #2528: the LEADING DIGIT RUN of a directory name — the fragment the
+ * bare-integer fallback selects on, and the one `phaseNumberForMatch` then
+ * displays. Named (per this module's convention of naming grammar fragments
+ * rather than inlining them) because the two sites must not drift: selecting on
+ * one run and displaying another would resolve a directory and then label it
+ * with a number that never matched.
+ *
+ * `LEADING_DIGIT_RUN_RE` anchors a trailing `-`-or-end so the run is a whole
+ * segment; `_PREFIX` is the same run without that boundary, for reading the run
+ * back off a name already known to match.
+ */
+const LEADING_DIGIT_RUN_SOURCE = '\\d+';
+const LEADING_DIGIT_RUN_RE = new RegExp(`^(${LEADING_DIGIT_RUN_SOURCE})(?:-|$)`);
+const LEADING_DIGIT_RUN_PREFIX_RE = new RegExp(`^${LEADING_DIGIT_RUN_SOURCE}`);
+const BARE_INTEGER_RE = new RegExp(`^${LEADING_DIGIT_RUN_SOURCE}$`);
+
+/** Strip leading zeros for numeric-equality compare, keeping a lone "0". */
+const unpad = (digits: string): string => digits.replace(/^0+(?=\d)/, '');
+
+/**
  * #2528: the CANONICAL phase-directory match selection — the one rule every
  * directory-resolution path (the shared locator plus the `find-phase` and
  * `phase-plan-index` command scans) applies to a candidate dir list. Extracted
@@ -646,12 +685,12 @@ function matchPhaseDirs(dirs: string[], normalized: string): { matches: string[]
   if (primary.length > 0) return { matches: primary, usedBareFallback: false };
 
   const bare = String(normalized);
-  if (!/^\d+$/.test(bare)) return { matches: primary, usedBareFallback: false };
-  const want = bare.replace(/^0+(?=\d)/, '');
+  if (!BARE_INTEGER_RE.test(bare)) return { matches: primary, usedBareFallback: false };
+  const want = unpad(bare);
 
   const fallback = dirs.filter(d => {
-    const m = stripProjectCodePrefix(d).match(/^(\d+)(?:-|$)/);
-    return m !== null && m[1].replace(/^0+(?=\d)/, '') === want;
+    const m = stripProjectCodePrefix(d).match(LEADING_DIGIT_RUN_RE);
+    return m !== null && unpad(m[1]) === want;
   });
   return { matches: fallback, usedBareFallback: fallback.length > 0 };
 }
@@ -666,7 +705,7 @@ function phaseNumberForMatch(dirName: string, usedBareFallback: boolean): string
   if (!usedBareFallback) return extractPhaseToken(dirName);
   const stripped = stripProjectCodePrefix(dirName);
   const prefix = dirName.slice(0, dirName.length - stripped.length);
-  const m = stripped.match(/^\d+/);
+  const m = stripped.match(LEADING_DIGIT_RUN_PREFIX_RE);
   return m ? prefix + m[0] : extractPhaseToken(dirName);
 }
 
@@ -795,6 +834,8 @@ export = {
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
+  CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE,
+  CASE_FLEXIBLE_PHASE_NUMBER_TOKEN_SOURCE,
   PHASE_CONTINUATION_SEGMENT_SOURCE,
   SINGLE_DIGIT_RUN_SEGMENT_SOURCE,
   isPhaseContinuationSegment,
