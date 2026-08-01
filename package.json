@@ -129,6 +129,8 @@
     "test:coverage": "c8 --check-coverage --lines 70 --branches 60 --reporter text --include 'gsd-core/bin/lib/*.cjs' --exclude 'tests/**' --all node scripts/run-tests.cjs",
     "test:coverage:scripts-floor": "c8 check-coverage --lines 55 --include 'scripts/**/*.cjs' --exclude 'tests/**' --all",
     "test:coverage:unit": "c8 --reporter text --reporter json-summary --include 'gsd-core/bin/lib/*.cjs' --exclude 'tests/**' --all node scripts/run-tests.cjs --suite unit && node scripts/check-coverage-gate.cjs",
+    "test:coverage:unit:raw": "c8 --reporter none node scripts/run-tests.cjs --suite unit",
+    "test:coverage:report": "c8 report --reporter text --reporter json-summary --include 'gsd-core/bin/lib/*.cjs' --exclude 'tests/**' --all && node scripts/check-coverage-gate.cjs",
     "test:coverage:all": "npm run test:coverage",
     "test:mutation": "stryker run",
     "test:mutation:since": "stryker run --incremental --since origin/next"
