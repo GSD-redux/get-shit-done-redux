@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-executor.md": "#2943: the context7 doc-lookup block's ctx7 CLI-fallback rationale was rewritten to describe the real mechanism (custom subagents cannot see project-scoped .mcp.json; they inherit only user-scoped ~/.claude/mcp.json), replacing the wrong anthropics/claude-code#13898 'tools: frontmatter restriction' attribution. The tool name was also corrected (get-library-docs -> query-docs) and the params renamed (context7CompatibleLibraryId/topic -> libraryId/query). The +95 bytes is the longer-but-accurate mechanism description; it is the literal fix for the mis-attribution, not incidental prose growth, and the rationale must be correct because agents read it to decide when to fall back to the CLI."
+  }
+}
