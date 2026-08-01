@@ -57,6 +57,30 @@ export function findProjectRoot(startDir: string): string {
     return false;
   }
 
+  // #2843: nearest ancestor (including `from` itself) that contains a `.git`,
+  // bounded by `upTo` (exclusive). Returns the git-repo root, or null if none
+  // exists before `upTo` / the filesystem root. Used to detect a NESTED child
+  // repo whose root is strictly below a candidate ancestor `.planning/` — in
+  // that case the caller's repo boundary sits between start and the ancestor,
+  // so trusting the ancestor's `.planning/` would silently cross into a
+  // different project. (No `git` subprocess — fs walk only, matching
+  // isInsideGitRepo's deliberate no-spawn contract.)
+  function nearestGitRoot(from: string, upTo: string): string | null {
+    let d = from;
+    while (d !== fsRoot) {
+      if (d === upTo) break;
+      try {
+        if (fs.existsSync(d + path.sep + '.git')) return d;
+      } catch {
+        // ignore
+      }
+      const next = path.dirname(d);
+      if (next === d) break;
+      d = next;
+    }
+    return null;
+  }
+
   let dir = resolvedStart;
   let depth = 0;
 
@@ -107,6 +131,18 @@ export function findProjectRoot(startDir: string): string {
       // claims our startDir — explicit sub_repos config takes precedence over the
       // implicit .git signal. (#1422)
       if (isInsideGitRepo(parent)) {
+        // #2843: do NOT cross a git-repo boundary. If the caller is inside its
+        // OWN nested repo whose root is strictly below `parent`, trusting
+        // `parent`'s .planning/ would silently resolve to a DIFFERENT project.
+        // isInsideGitRepo only proved SOME .git exists between start and parent;
+        // verify that .git is parent's own (or absent between), not a nested
+        // child repo. If nearestGitRoot finds a .git strictly below parent,
+        // the boundary is crossed — fall through (do not return parent).
+        if (nearestGitRoot(resolvedStart, parent) !== null) {
+          dir = parent;
+          depth += 1;
+          continue;
+        }
         // Lookahead: walk ancestors above `parent` to find a sub_repos claim.
         let ancestor = path.dirname(parent);
         let ancestorDepth = 0;
@@ -162,6 +198,15 @@ export function findProjectRoot(startDir: string): string {
     try {
       const candidatePlanning = parent2 + path.sep + '.planning';
       if (fs.existsSync(candidatePlanning) && fs.statSync(candidatePlanning).isDirectory()) {
+        // #2843: do not cross a git-repo boundary. If the caller is inside its
+        // own nested repo (a .git strictly below parent2), parent2's .planning/
+        // belongs to a DIFFERENT project — keep walking is wrong; stop and fall
+        // through to the startDir fallback instead of silently resolving to the
+        // ancestor project. (Reached only when no .git exists anywhere in the
+        // chain per the triage, but guard defensively.)
+        if (nearestGitRoot(resolvedStart, parent2) !== null) {
+          break;
+        }
         return parent2;
       }
     } catch {

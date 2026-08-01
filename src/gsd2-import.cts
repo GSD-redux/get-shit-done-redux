@@ -24,9 +24,12 @@ import path from 'node:path';
 import { platformWriteSync } from './shell-command-projection.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
+import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
 const { output } = ioMod;
+const { transliterateForSlug } = coreUtilsMod;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -88,7 +91,11 @@ function zeroPad(n: number, width = 2): string {
 }
 
 function slugify(title: string): string {
-  return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  // #2848: transliterate Cyrillic to ASCII before the filter so a non-Latin
+  // title does not collapse to an empty slug. The shared primitive keeps this
+  // in sync with generateSlugInternal. slugify's DISTINCT contract is preserved:
+  // single leading/trailing hyphen strip (/^-|-$/), and NO 60-char truncation.
+  return transliterateForSlug(title).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
 // ─── GSD-2 Parser ───────────────────────────────────────────────────────────

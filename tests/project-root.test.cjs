@@ -275,4 +275,44 @@ describe('findProjectRoot nearest-.planning resolution (#1414)', () => {
     assert.strictEqual(result, nested,
       'Should return startDir unchanged when no ancestor has .planning/ within the depth bound');
   });
+
+  // #2843: findProjectRoot must NOT cross a git-repo boundary. A nested child
+  // repo (own .git, no .planning of its own) under an ancestor GSD project must
+  // NOT resolve to the ancestor's root — that would silently return a different
+  // project's identity with exit 0. Pre-fix heuristic (3)'s isInsideGitRepo only
+  // checked "does SOME .git exist between start and the ancestor" — the child's
+  // own .git satisfied it, crossing the boundary.
+  test('#2843 does not resolve to an ancestor project across a nested child .git boundary', () => {
+    // tmpDir/                       (plain — not a git repo, not HOME)
+    //   parent-gsd/.planning/       ← ancestor GSD project
+    //   parent-gsd/child-app/.git   ← nested child repo, NO .planning of its own
+    //   parent-gsd/child-app/src/   ← startDir
+    const parentGsd = mkDeep(tmpDir, 'parent-gsd');
+    fs.mkdirSync(path.join(parentGsd, '.planning'), { recursive: true });
+    const childApp = mkDeep(parentGsd, 'child-app');
+    fs.mkdirSync(path.join(childApp, '.git'), { recursive: true });
+    const startDir = mkDeep(childApp, 'src');
+
+    const result = findProjectRoot(startDir);
+    assert.notStrictEqual(result, parentGsd,
+      'must NOT cross child-app\'s .git boundary to resolve to the ancestor parent-gsd project');
+    // The child repo has no .planning of its own, so resolution falls back to
+    // the startDir (or a path within child-app) — never the ancestor.
+    assert.ok(
+      result === startDir || result === childApp,
+      `expected to stay within the child repo (startDir or childApp fallback), got: ${result}`,
+    );
+  });
+
+  test('#2843 negative-space: a co-located .git + .planning (normal single-repo) still resolves to the project root', () => {
+    // The normal case: .git and .planning at the SAME level. The caller's .git
+    // IS the project's .git, so the boundary check passes (no nested child repo).
+    fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+    const nested = mkDeep(tmpDir, 'src', 'lib');
+
+    const result = findProjectRoot(nested);
+    assert.strictEqual(result, tmpDir,
+      'a co-located .git + .planning (single-repo project) must still resolve to the project root');
+  });
 });

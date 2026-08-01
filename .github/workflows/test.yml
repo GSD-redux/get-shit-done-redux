@@ -112,10 +112,22 @@ jobs:
         run: npm run lint:ci
 
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.node-version }})
+    name: test (${{ matrix.os }}, ${{ matrix.node-version }}${{ matrix.shard && format(', shard {0}', matrix.shard) || '' }})
     needs: changes
     if: needs.changes.outputs.product_changed == 'true'
     runs-on: ${{ matrix.os }}
+    # #2952: this lane is sharded three ways (see the matrix below), so the
+    # budget covers ONE shard, not the whole unit suite. Measured on run
+    # 30677442953: shard 1/3 7m12s, 2/3 4m32s, 3/3 3m59s. Shard 1 is the long
+    # pole because the unsharded aux suites (integration/security/install/slow)
+    # ride along on it — that is deliberate; they total ~1m35s and sharding them
+    # would cost more than it saves.
+    #
+    # 15 is ~1.9x the slowest measured shard. Before sharding this same lane ran
+    # 15m20s against a 15-minute cap and was killed mid-run, which is the whole
+    # of #2952 — the number is unchanged, the work behind it is a third the size.
+    # tests/ci-test-job-timeout-budget.test.cjs holds every lane here to a
+    # headroom factor over its own measured cost.
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
@@ -136,12 +148,31 @@ jobs:
           # and one Windows shell/path lane. The non-primary OS/runtime lanes run
           # scoped tests from scripts/ci-test-scope.cjs; Ubuntu/Node 24 runs the
           # broader default suite.
+          #
+          # #2952: the `scope: full` lane is SHARDED three ways. It was the only
+          # unsharded lane in this file, and the whole unit suite under c8 on one
+          # runner grew until it blew a 15-minute cap and reddened `next`. Raising
+          # the cap treated the symptom; sharding changes the shape. Shards are
+          # partitioned by MEASURED per-file duration (tests/test-timings.json)
+          # using LPT in scripts/run-tests.cjs — the same cost-aware packer #2472
+          # gave the `test-full` lane, which measures 0.0% spread across 3 bins on
+          # the current table. The aux suites (integration/security/install/slow)
+          # total ~1m35s and are not worth sharding; they run on shard 1 only.
           - os: ubuntu-latest
             node-version: 22
             scope: targeted
           - os: ubuntu-latest
             node-version: 24
             scope: full
+            shard: 1/3
+          - os: ubuntu-latest
+            node-version: 24
+            scope: full
+            shard: 2/3
+          - os: ubuntu-latest
+            node-version: 24
+            scope: full
+            shard: 3/3
           - os: windows-latest
             node-version: 24
             scope: windows
@@ -226,55 +257,47 @@ jobs:
         if: matrix.scope != 'full'
         run: node scripts/run-tests.cjs --files-from .ci-selected-tests.txt
 
-      # The unit suite runs ONCE here, under c8 with the coverage gate — the
-      # former standalone `coverage` job duplicated this lane's entire unit
-      # run (~4 min of runner time per PR) just to collect the same numbers.
-      - name: Run unit tests (coverage gate ≥70% on gsd-core/bin/lib)
+      # #2952: each shard runs its slice of the unit suite under c8 but renders
+      # NO report and enforces NO gate — it only leaves raw V8 dumps in
+      # coverage/tmp. A per-shard percentage is meaningless (shard 2 never
+      # executes shard 1's files, so every file outside its slice reads 0%), so
+      # the gate has to see all three slices merged. The `coverage-gate` job
+      # below does that. Both call the SAME npm scripts, so the c8 globs and the
+      # ≥70% lib / ≥55% scripts floor thresholds stay defined once, in package.json.
+      - name: Run unit tests (shard ${{ matrix.shard }}, raw coverage only)
         if: matrix.scope == 'full'
         env:
           NODE_OPTIONS: --max-old-space-size=6144
-        run: npm run test:coverage:unit
+        run: npm run test:coverage:unit:raw -- --shard ${{ matrix.shard }}
 
-      # Second-tier floor over the CI/release/lint tooling itself. Re-slices
-      # the SAME V8 coverage data left in coverage/tmp by the run above — no
-      # extra suite execution. Audit 2026-06: scripts/ measured 65.95%; the
-      # 55% floor prevents a collapse to zero-coverage tooling while leaving
-      # headroom for variance. The threshold lives in package.json next to
-      # the 70% lib gate — raise deliberately, never lower.
-      - name: Coverage floor — scripts/ tooling (≥55%)
+      # Raw V8 dumps, not rendered reports — coverage-gate merges these. They
+      # compress hard in the artifact zip, but they are still bulk: keep the
+      # retention at one day so they cannot accumulate against the org quota.
+      - name: Upload raw coverage for merge
         if: matrix.scope == 'full'
-        run: npm run test:coverage:scripts-floor
-
-      - name: Upload coverage artifact
-        if: always() && matrix.scope == 'full'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: coverage-unit
-          # coverage/tmp holds raw per-process V8 dumps (>1 GB for the full
-          # unit suite) — exclude it; the rendered reports are the artifact.
-          path: |
-            coverage/
-            !coverage/tmp
-            .nyc_output/
-          if-no-files-found: ignore
-          # ~440 MB per full run; same-run diagnostic never consumed by other
-          # jobs — keep short so it cannot accumulate against the org quota.
-          retention-days: 3
+          name: coverage-tmp-shard-${{ strategy.job-index }}
+          path: coverage/tmp
+          if-no-files-found: error
+          retention-days: 1
 
+      # The aux suites are small (~1m35s combined) and unsharded — running them
+      # on every shard would triple their cost for no signal.
       - name: Run integration tests
-        if: matrix.scope == 'full'
+        if: matrix.scope == 'full' && matrix.shard == '1/3'
         run: npm run test:integration
 
       - name: Run security tests
-        if: matrix.scope == 'full'
+        if: matrix.scope == 'full' && matrix.shard == '1/3'
         run: npm run test:security
 
       - name: Run install tests
-        if: matrix.scope == 'full' && needs.changes.outputs.full_matrix == 'true'
+        if: matrix.scope == 'full' && matrix.shard == '1/3' && needs.changes.outputs.full_matrix == 'true'
         run: npm run test:install
 
       - name: Run slow tests
-        if: matrix.scope == 'full' && needs.changes.outputs.full_matrix == 'true'
+        if: matrix.scope == 'full' && matrix.shard == '1/3' && needs.changes.outputs.full_matrix == 'true'
         run: npm run test:slow
 
   test-inert:
@@ -353,7 +376,13 @@ jobs:
     # and a NESTED `leg.os` key is not resolvable by the H1 shell-policy linter
     # in scripts/workflow-policy.cjs, which reads `matrix.os`/`matrix.shell`
     # directly. Explicit rows keep both the cross-product and the linter happy.)
-    timeout-minutes: 20
+    # #2952: `full test (windows-latest, 22, shard 3/3)` reached 18m59s (94% of
+    # a 20-minute cap) on 05b170e44 and 18m14s (91%) on 81eeb8a53. The Windows
+    # shards are slow for platform reasons — process spawn and filesystem cost,
+    # not extra work — and this lane has already blown its cap twice before
+    # (#1051, #1212). 30 is ~1.5x the worst observed shard, restoring the
+    # headroom that #1212's sharding bought and this suite has since eaten.
+    timeout-minutes: 30
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
@@ -482,6 +511,67 @@ jobs:
         if: matrix.shard == 1
         run: npm run test:security
 
+  # #2952: the coverage gate that the `test` lane used to run inline. Sharding
+  # the unit suite means no single runner sees the whole picture, so the gate
+  # moves here, downloads every shard's raw V8 dumps into one coverage/tmp, and
+  # runs the SAME commands as before against the merged data. Splitting the
+  # gate out is what makes sharding safe: nothing about the thresholds or the
+  # include/exclude globs changes, only where they are evaluated.
+  coverage-gate:
+    name: Coverage gate (merged shards)
+    needs: [changes, test]
+    if: needs.changes.outputs.product_changed == 'true' && needs.test.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: true
+          token: ${{ github.token }}
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # merge-multiple flattens every shard's dumps into ONE coverage/tmp, which
+      # is exactly the layout c8 expects from a single run. The dumps are
+      # per-process files with distinct names, so there is nothing to collide.
+      - name: Download every shard's raw coverage
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53  # v6.0.0
+        with:
+          pattern: coverage-tmp-shard-*
+          path: coverage/tmp
+          merge-multiple: true
+
+      # c8's default --temp-directory is ./coverage/tmp, which is exactly where
+      # the download above landed every shard's dumps — so these run unmodified
+      # against merged data and the thresholds stay defined in package.json.
+      - name: Report merged coverage + gate gsd-core/bin/lib (≥70% lines, ≥60% branches)
+        run: npm run test:coverage:report
+
+      # Second-tier floor over the CI/release/lint tooling itself. Re-slices the
+      # SAME merged V8 data — no extra suite execution. Audit 2026-06: scripts/
+      # measured 65.95%; the 55% floor prevents a collapse to zero-coverage
+      # tooling while leaving headroom for variance. Raise deliberately, never lower.
+      - name: Coverage floor — scripts/ tooling (≥55%)
+        run: npm run test:coverage:scripts-floor
+
+      - name: Upload merged coverage report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: coverage-unit-merged
+          path: |
+            coverage/
+            !coverage/tmp
+          if-no-files-found: ignore
+          retention-days: 3
+
   required-tests:
     name: Required tests
     needs:
@@ -490,6 +580,7 @@ jobs:
       - test
       - test-inert
       - test-full
+      - coverage-gate
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 1
@@ -503,6 +594,7 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           INERT_RESULT: ${{ needs.test-inert.result }}
           FULL_TEST_RESULT: ${{ needs.test-full.result }}
+          COVERAGE_GATE_RESULT: ${{ needs.coverage-gate.result }}
         run: |
           set -euo pipefail
           echo "code_changed=$CODE_CHANGED"
@@ -512,6 +604,7 @@ jobs:
           echo "test=$TEST_RESULT"
           echo "test-inert=$INERT_RESULT"
           echo "test-full=$FULL_TEST_RESULT"
+          echo "coverage-gate=$COVERAGE_GATE_RESULT"
 
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "::error::test scope detection did not pass"
@@ -533,10 +626,21 @@ jobs:
               echo "::error::test matrix did not pass"
               exit 1
             fi
-            # The coverage gates (lib 70% + scripts/ 55% floor) run inside the
-            # ubuntu/24 full lane of the `test` matrix, so TEST_RESULT covers them.
+            # #2952: the coverage gates no longer run inside the `test` matrix —
+            # sharding moved them to the `coverage-gate` job, which merges every
+            # shard's dumps. TEST_RESULT therefore does NOT cover them any more;
+            # COVERAGE_GATE_RESULT below is what gates coverage.
             if [ "$FULL_TEST_RESULT" != "success" ] && [ "$FULL_TEST_RESULT" != "skipped" ]; then
               echo "::error::full parity matrix did not pass"
+              exit 1
+            fi
+
+            # #2952: the coverage gate is skipped when product code did not change
+            # (same condition as the test lane). Only a non-success, non-skipped
+            # result is a failure — treating `skipped` as red would block every
+            # docs-only PR.
+            if [ "$COVERAGE_GATE_RESULT" != "success" ] && [ "$COVERAGE_GATE_RESULT" != "skipped" ]; then
+              echo "::error::coverage-gate did not pass"
               exit 1
             fi
           else
@@ -583,3 +687,37 @@ jobs:
         with:
           path: .gsd-cache/emitted-baseline.json
           key: emitted-baseline-${{ github.sha }}
+
+  # #2914: tests/emitted-drift-ack.json (the LEGACY single ack file) must never persist
+  # on `next`. Every entry is scoped to the diff that introduced it (#2789) — once
+  # merged it is, by definition, already at the base, so it is spent and inert
+  # regardless of shape. Acks now go in per-PR fragments under
+  # tests/emitted-drift-acks/ instead — one independently-named file per PR, never a
+  # single file every PR rewrites wholesale — so a fragment LEFT ON next is harmless and
+  # is deliberately NOT what this guard checks; only the legacy shared file is a shared
+  # merge-conflict cell worth guarding against. This is DELIBERATELY NOT a PR-lane check
+  # comparing a PR's base ack against `next`: that is exactly the #2768 shape #2789 was
+  # written to end (a spent-but-present base ack would red every open PR the moment one
+  # landed). It runs only here, on push to `next`, asserting a fact about `next`'s own
+  # tree; it needs no npm install, since the guard is pure fs.existsSync.
+  #
+  # Enforcement scope, stated honestly: this job is push-triggered and runs post-merge,
+  # and is not wired into `required-tests` — it cannot BLOCK a merge. A red run here
+  # only turns `next`'s own CI red for manual follow-up, same as publish-emitted-baseline
+  # above. It fires reliably today because the path that reaches `next`
+  # (`auto-backmerge.yml`'s admin-merge step) authenticates with `GSD_BOT_PR_TOKEN`, a
+  # PAT, which DOES trigger this workflow on push. If that secret ever lapses, the
+  # `|| secrets.GITHUB_TOKEN` fallback there would push with the default token instead,
+  # which GitHub's anti-recursion rule keeps from triggering new workflow runs —
+  # silently skipping this job and publish-emitted-baseline alike. That is a known,
+  # shared limitation of every push-to-next job in this file, not specific to this guard.
+  guard-no-ack-on-next:
+    name: Guard no spent ack on next
+    if: github.event_name == 'push' && github.ref == 'refs/heads/next'
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Assert tests/emitted-drift-ack.json is absent
+        run: node scripts/lint-emitted-drift-ack.cjs --guard-next

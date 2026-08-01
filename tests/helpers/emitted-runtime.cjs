@@ -44,15 +44,45 @@ const {
   buildParityManifest,
   PKG_VERSION,
 } = require('./install-shared.cjs');
+const { mergeAckSources, MAX_ACK_FRAGMENTS } = require('./emitted-diff.cjs');
+
+/**
+ * Fail loudly when a fragment listing exceeds `MAX_ACK_FRAGMENTS`, naming the
+ * directory, the cap, and the actual count. Never truncate: a silently-truncated
+ * listing would silently drop acknowledgments, which is exactly the class of silent
+ * failure the ack seam exists to prevent (see `MAX_ACK_FRAGMENTS`'s doc comment in
+ * `emitted-diff.cjs`).
+ */
+function assertFragmentCountWithinCap(dirLabel, names) {
+  if (names.length > MAX_ACK_FRAGMENTS) {
+    throw new Error(
+      `emitted-attribution: ${dirLabel} contains ${names.length} ack fragments, `
+      + `exceeding the cap of ${MAX_ACK_FRAGMENTS}. Refusing to read only some of them — a `
+      + 'truncated read would silently drop acknowledgments. Prune spent fragments from '
+      + 'this directory.',
+    );
+  }
+  return names;
+}
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
 /**
  * Repo-relative and POSIX-separated on every platform: this form is what `git show
  * <ref>:<path>` requires, and git speaks only forward slashes regardless of host OS.
  * `ACK_PATH` derives from it so the two can never name different files.
+ *
+ * LEGACY single-file path (#2778), still honored and unioned with `ACK_DIR_REPO_PATH`
+ * below (#2914) — open PRs authored before the fragment split still carry this file.
  */
 const ACK_REPO_PATH = 'tests/emitted-drift-ack.json';
 const ACK_PATH = path.join(REPO_ROOT, ...ACK_REPO_PATH.split('/'));
+/**
+ * Per-PR fragment directory (#2914). Every fragment is independently named, so two PRs
+ * that each need an ack can never collide on this path the way they always did on the
+ * single legacy file above.
+ */
+const ACK_DIR_REPO_PATH = 'tests/emitted-drift-acks';
+const ACK_DIR = path.join(REPO_ROOT, ...ACK_DIR_REPO_PATH.split('/'));
 const FIXTURE_SUBDIR = 'tests/fixtures/golden-install-parity';
 
 /**
@@ -324,8 +354,13 @@ function resolveBaseSha(base = 'origin/next') {
  * the same "does not exist in" message — so absence is established with `ls-tree`, which
  * exits 0 with empty output when the path is simply not there and non-zero on a real
  * fault.
+ *
+ * `repoPath` defaults to the legacy single file, but is generalized (#2914) so the same
+ * read-at-ref logic serves any one fragment under `ACK_DIR_REPO_PATH` too — there is
+ * exactly one implementation of "read this ack path at that ref", reused per source
+ * rather than re-typed per fragment.
  */
-function readAckFileAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
+function readAckFileAtRef(base, { cwd = REPO_ROOT, run = git, repoPath = ACK_REPO_PATH } = {}) {
   // `execFileSync`'s array form stops SHELL metacharacters but not git's own option
   // parsing: a ref beginning with `-` is read as an option token, and `git show` honors
   // diff options including `--output=<file>`, which writes. Today every caller passes a
@@ -340,7 +375,7 @@ function readAckFileAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
 
   let listing;
   try {
-    listing = run(['ls-tree', '--name-only', base, '--', ACK_REPO_PATH], { cwd });
+    listing = run(['ls-tree', '--name-only', base, '--', repoPath], { cwd });
   } catch (err) {
     throw new Error(
       `emitted-attribution: could not list the ack at "${base}": ${err.message}. This is a `
@@ -352,22 +387,129 @@ function readAckFileAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
 
   let raw;
   try {
-    raw = run(['show', `${base}:${ACK_REPO_PATH}`], { cwd });
+    raw = run(['show', `${base}:${repoPath}`], { cwd });
   } catch (err) {
     throw new Error(
-      `emitted-attribution: ${ACK_REPO_PATH} exists at "${base}" but could not be read: ${err.message}`,
+      `emitted-attribution: ${repoPath} exists at "${base}" but could not be read: ${err.message}`,
     );
   }
   if (raw.trim() === '') {
-    throw new Error(`emitted-attribution: ${ACK_REPO_PATH} is present at "${base}" but empty`);
+    throw new Error(`emitted-attribution: ${repoPath} is present at "${base}" but empty`);
   }
   try {
     return JSON.parse(raw);
   } catch (err) {
     throw new Error(
-      `emitted-attribution: ${ACK_REPO_PATH} at "${base}" is not valid JSON: ${err.message}`,
+      `emitted-attribution: ${repoPath} at "${base}" is not valid JSON: ${err.message}`,
     );
   }
+}
+
+/**
+ * Fragment filenames present under `ACK_DIR_REPO_PATH` AT `base`, sorted.
+ *
+ * Mirrors `readAckFileAtRef`'s absence handling: `ls-tree` on a directory that does not
+ * exist at that ref exits 0 with empty output, which this reads as "no fragments there"
+ * — the healthy steady state, not a fault. A genuine git failure (bad ref, corrupt
+ * object) still throws, for the same reason `readAckFileAtRef` throws on one: silently
+ * reading "could not list" as "nothing there" would leave every fragment ack able to
+ * consume a delta it should not.
+ */
+function listAckFragmentFilesAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
+  let out;
+  try {
+    out = run(['ls-tree', '--name-only', base, '--', `${ACK_DIR_REPO_PATH}/`], { cwd });
+  } catch (err) {
+    throw new Error(
+      `emitted-attribution: could not list ${ACK_DIR_REPO_PATH}/ at "${base}": ${err.message}.`,
+    );
+  }
+  const names = out
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((p) => p.endsWith('.json'))
+    .map((p) => p.slice(p.lastIndexOf('/') + 1))
+    .sort();
+  return assertFragmentCountWithinCap(`${ACK_DIR_REPO_PATH}/ at "${base}"`, names);
+}
+
+/**
+ * Fragment filenames present under `ACK_DIR` on THIS tree (the working copy), sorted.
+ * Absent directory == zero fragments, the healthy steady state — not a fault.
+ */
+function listAckFragmentFiles(dir = ACK_DIR) {
+  if (!fs.existsSync(dir)) return [];
+  const names = fs.readdirSync(dir)
+    .filter((name) => name.endsWith('.json'))
+    .sort();
+  return assertFragmentCountWithinCap(dir, names);
+}
+
+/**
+ * Read + union every ack source on THIS tree (#2914): the legacy single file (if
+ * present) plus every fragment under `ACK_DIR`. Reuses `readAckFile` per physical file
+ * (same absent/empty/unparseable rules for a fragment as for the legacy file — one
+ * definition, not a second one per source) and `mergeAckSources` (tests/helpers/
+ * emitted-diff.cjs) for the union + duplicate-key detection.
+ *
+ * Returns `{ doc: null, errors: [] }` only when NEITHER the legacy file nor any
+ * fragment exists — the healthy steady state matching `readAckFile`'s own `null`
+ * contract, so callers can keep testing `ack === null` to decide whether the base side
+ * needs consulting at all (avoiding the deadlock `readAckFileAtRef`'s doc comment
+ * describes for a corrupt base).
+ *
+ * @returns {{ doc: {version: number, paths: object} | null, errors: string[] }}
+ */
+function readAckSources({ legacyPath = ACK_PATH, fragmentsDir = ACK_DIR } = {}) {
+  const docs = [];
+  if (fs.existsSync(legacyPath)) {
+    docs.push({ source: ACK_REPO_PATH, doc: readAckFile(legacyPath) });
+  }
+  for (const name of listAckFragmentFiles(fragmentsDir)) {
+    docs.push({
+      source: `${ACK_DIR_REPO_PATH}/${name}`,
+      doc: readAckFile(path.join(fragmentsDir, name)),
+    });
+  }
+  if (docs.length === 0) return { doc: null, errors: [] };
+  const { merged, errors } = mergeAckSources(docs);
+  return { doc: merged, errors };
+}
+
+/**
+ * Read + union every ack source AT `base` (#2914): the legacy single file plus every
+ * fragment, as they existed at that ref. Mirrors `readAckSources` above, one ref-read
+ * per physical source via `readAckFileAtRef`'s now-generalized `repoPath` option.
+ *
+ * Base-side merge/schema errors are DELIBERATELY DISCARDED, matching this module's
+ * existing precedent for the base side (see `diffEmitted`'s caller below: "Base-side
+ * SCHEMA errors are deliberately discarded... a document we cannot read simply inherits
+ * nothing — which is the ARMED reading"). A cross-fragment collision found only at the
+ * base is `next`'s own health, not this diff's to answer for; `mergeAckSources`'s
+ * first-source-wins fallback for a duplicate key is still the STRICT reading here (an
+ * entry can only be "spent" against the ONE reason kept, never either of two), so
+ * discarding the error text costs no protection while avoiding a lint-clean PR being
+ * blocked by a historical duplicate it did not introduce and cannot fix by itself.
+ *
+ * A genuine READ failure (corrupt JSON, unreadable object) on any single source still
+ * throws, exactly as `readAckFileAtRef` already does — only the schema/collision
+ * bookkeeping is discarded, never a fault.
+ *
+ * @returns {{ doc: {version: number, paths: object} | null }}
+ */
+function readAckSourcesAtRef(base, { cwd = REPO_ROOT, run = git } = {}) {
+  const docs = [];
+  const legacyDoc = readAckFileAtRef(base, { cwd, run });
+  if (legacyDoc !== null) docs.push({ source: ACK_REPO_PATH, doc: legacyDoc });
+  for (const name of listAckFragmentFilesAtRef(base, { cwd, run })) {
+    const relPath = `${ACK_DIR_REPO_PATH}/${name}`;
+    const doc = readAckFileAtRef(base, { cwd, run, repoPath: relPath });
+    if (doc !== null) docs.push({ source: relPath, doc });
+  }
+  if (docs.length === 0) return { doc: null };
+  const { merged } = mergeAckSources(docs);
+  return { doc: merged };
 }
 
 /**
@@ -755,7 +897,13 @@ module.exports = {
   REPO_ROOT,
   ACK_PATH,
   ACK_REPO_PATH,
+  ACK_DIR,
+  ACK_DIR_REPO_PATH,
   readAckFileAtRef,
+  listAckFragmentFiles,
+  listAckFragmentFilesAtRef,
+  readAckSources,
+  readAckSourcesAtRef,
   FIXTURE_SUBDIR,
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,

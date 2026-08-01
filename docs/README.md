@@ -36,6 +36,8 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Spike and sketch](how-to/spike-and-sketch.md) — use `/gsd-spike` and `/gsd-sketch` for exploratory work before committing to a plan
 - [Design a UI phase](how-to/design-a-ui-phase.md) — use the UI phase loop for frontend and visual work
 - [Develop a Capability for GSD 1.5+](how-to/develop-a-capability.md) — add feature Capabilities, hook fragments, and registry entries
+- [Ship a reviewer lane in your capability](how-to/ship-a-reviewer-lane.md) — declare a `reviewer` body so `/gsd-review` discovers, invokes, and renders your external review CLI or model endpoint
+- [List your reviewer lane in the registry](how-to/list-your-reviewer-lane.md) — publish a lane you have built to the Reviewer Lane Registry so other people can find and install it
 - [Add or update a host's integration](how-to/add-or-update-a-host-integration.md) — set a host's documentation-sourced `runtime.hostIntegration` axes (ADR-1239 Phase A), with the `undocumented` sentinel rule
 - [Turn a capability off (and keep it off)](how-to/turn-a-capability-off.md) — disable a capability via the surface, or gate individual hooks off without removing the capability
 - [Drive GSD from a tracker issue](how-to/drive-gsd-from-a-tracker-issue.md) — start a phase from a GitHub, Linear, or Jira issue
@@ -62,6 +64,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Capability matrix](reference/capability-matrix.md) — generated catalogue of every capability's role, tier, extension points, hook kinds, and `engines.gsd`
 - [Capability manifest](reference/capability-manifest.md) — the full `capability.json` schema and validation rules
 - [`gsd capability` command](reference/gsd-capability-command.md) — install / update / remove / list reference for third-party capabilities
+- [Reviewer Lane Registry](registries/reviewer-registry.md) — generated catalogue of third-party reviewer lanes, with their flags, transport, and install commands
 
 ---
 

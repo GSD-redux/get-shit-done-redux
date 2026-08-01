@@ -1,7 +1,7 @@
 {
   "id": "lm-studio",
   "role": "reviewer",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "LM Studio",
   "description": "LM Studio local model server — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). OpenAI-compatible HTTP transport against a user-configured `review.lm_studio_host` (POST /v1/chat/completions); model discovered via GET /v1/models piped through jq. Capability id/folder are kebab (`lm-studio`, required by KEBAB_RE); `reviewer.slug` stays snake (`lm_studio`) to match the shipped roster and the `review.lm_studio_host` config key (ADR-2782's three-namespace trap).",
   "tier": "full",
