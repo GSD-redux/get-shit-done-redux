@@ -610,12 +610,13 @@ describe('broken-windows CLI: windows append', () => {
     const tmp = createTempDir('bw-append-prose-');
     t.after(() => cleanup(tmp));
 
-    // Create a WINDOWS.md with prose below the JSON block.
+    // Create a WINDOWS.md with a NON-EMPTY ledger + prose below the JSON block.
     fs.mkdirSync(path.join(tmp, '.planning'), { recursive: true });
     const lp = path.join(tmp, '.planning', LEDGER_FILE_NAME);
     const initial = renderLedger({
-      schema_version: 1, open_count: 0, waived_count: 0, fixed_count: 0, total_count: 0,
-      last_updated: '2026-01-01T00:00:00Z', entries: [],
+      schema_version: 1, open_count: 1, waived_count: 0, fixed_count: 0, total_count: 1,
+      last_updated: '2026-01-01T00:00:00Z',
+      entries: [{ id: 1, phase: '1', kind: 'stub', file: '', line: null, description: 'pre-existing', status: 'open', reason: '', recorded_at: '2026-01-01T00:00:00Z', resolved_at: null }],
     });
     const prose = [
       '',
@@ -630,23 +631,37 @@ describe('broken-windows CLI: windows append', () => {
     ].join('\n');
     fs.writeFileSync(lp, initial + prose, 'utf8');
 
-    // Append a window entry.
+    // First append.
     const res = runGsdTools(
       ['windows', 'append', '--kind', 'stub', '--phase', '2', '--description', 'test entry'],
       tmp,
     );
     assert.equal(res.success, true, `stderr: ${res.error || ''}`);
-    const obj = JSON.parse(res.output);
-    assert.equal(obj.ok, true);
+    assert.equal(JSON.parse(res.output).ok, true);
 
-    // The prose must survive.
+    // Second append — idempotency: prose must appear exactly once, not duplicated.
+    const res2 = runGsdTools(
+      ['windows', 'append', '--kind', 'todo', '--phase', '3', '--description', 'second entry'],
+      tmp,
+    );
+    assert.equal(res2.success, true);
+
     const after = fs.readFileSync(lp, 'utf8');
-    assert.match(after, /Investigation Notes/, 'prose heading must survive the append');
-    assert.match(after, /thread-status\.test\.ts/, 'prose body must survive the append');
+    // Prose must survive.
+    assert.match(after, /Investigation Notes/, 'prose heading must survive');
+    assert.match(after, /thread-status\.test\.ts/, 'prose body must survive');
     assert.match(after, /ACPT-M03/, 'second prose heading must survive');
     assert.match(after, /PREDATED the diff/, 'second prose body must survive');
-    // The ledger must also be correct.
-    assert.match(after, /open_count: 1/);
+    // Prose must appear exactly once (not duplicated by the second write).
+    assert.equal((after.match(/Investigation Notes/g) || []).length, 1,
+      'prose heading must appear exactly once after two appends (idempotency)');
+    // The old JSON body must NOT be duplicated as prose (the indexOf(open-fence) bug).
+    // Count JSON fence opens — there must be exactly one.
+    assert.equal((after.match(/````json/g) || []).length, 1,
+      'exactly one JSON fence open must exist (no duplicated JSON body)');
+    // The file must re-parse cleanly with the correct entry count.
+    const reParsed = parseLedger(after);
+    assert.equal(reParsed.entries.length, 3, 'ledger must have 3 entries after two appends');
   });
 });
 
