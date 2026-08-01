@@ -240,10 +240,14 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   let completedPhases = 0;
   let totalPlans = 0;
   let completedPlans = 0;
-  // #2562 review: in-milestone phase directories that are still on disk and NOT
-  // complete. Distinct from `effectivePhaseCount - completedPhases`, which also
-  // counts phases the roadmap declares but never scaffolded — see below.
-  let liveIncompletePhases = 0;
+  // #2562 review: in-milestone phase directories still present under `phases/`,
+  // whatever their status. A CLEAN archive has none — `milestone complete` moves
+  // them all out — so this counts exactly the phases that outlived the archive,
+  // which is what distinguishes "archived" from "archived, then reopened".
+  // Deliberately NOT "…and unfinished": a complete live dir beside a declared
+  // but never-scaffolded phase is a dirty archive too, and the dirless phase has
+  // no directory to inspect.
+  let liveInMilestonePhases = 0;
 
   for (const dir of [...phaseDirNames].sort()) {
     const counts = countsMap.get(dir);
@@ -266,7 +270,7 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
       totalPlans += planCount;
       completedPlans += Math.min(summaryCount, planCount);
       if (status === 'complete') completedPhases++;
-      else liveIncompletePhases++;
+      liveInMilestonePhases++;
     }
     phases.push({
       directory: dir,
@@ -310,23 +314,32 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   //    declared-but-never-scaffolded phases that have no directory to inspect.
   //  - `snapshot` — `milestones/<version>-ROADMAP.md`. The `milestone complete`
   //    run that writes it also MOVES the milestone's phase directories into
-  //    `milestones/<version>-phases/` (milestone.cts:755-762) while COPYING —
-  //    never truncating — the live ROADMAP (:671-674), so its Progress rows
-  //    survive. A correctly-archived milestone therefore reads 0/N by
-  //    construction; gating it on the ratio would strip `milestone complete`
-  //    from every archived milestone. What IS meaningful is a phase still live
-  //    and unfinished — one added or reopened after the archive, reachable
-  //    because `milestone complete` does not advance STATE's `milestone:` field
+  //    `milestones/<version>-phases/` (milestone.cts:783-790) while COPYING —
+  //    never truncating — the live ROADMAP (:700-702), so its Progress rows
+  //    survive. A CLEAN archive therefore reads 0/N by construction, and gating
+  //    it on the ratio alone would strip `milestone complete` from every
+  //    archived milestone. But a live in-milestone directory means the archive
+  //    is NOT clean — a phase was added or reopened after it, reachable because
+  //    `milestone complete` does not advance STATE's `milestone:` field
   //    (state-transition.cts:83, :1335); only `/gsd-new-milestone` does (:1224).
-  //  - `legacy` — project-lifetime fallback, reachable only when the milestone
-  //    version is unknown, where scoping is off and there is no current-milestone
-  //    artifact set to check against. Ungated, exactly as before.
+  //    Once any in-milestone directory is live the ratio IS meaningful again, so
+  //    the check is the conjunction. Requiring the live directory to itself be
+  //    unfinished was too narrow: it let a complete live dir alongside a
+  //    declared-but-unscaffolded phase reproduce the reported symptom, since a
+  //    dirless phase has nothing to inspect.
+  //
+  // The whole cross-check is scoped-only, and NOT because of the signal: when
+  // scoping is off, `effectivePhaseCount` is the whole-roadmap count and
+  // membership is everything, so there is no current-milestone artifact set to
+  // check a current-milestone claim against. `legacy` is additionally ungated by
+  // signal — it is the fallback for an unknown milestone version, which is
+  // exactly when scoping cannot engage either.
   const fieldStatus = stateProjection.status;
   const shippedContradicted = scoped && (
     shippedSignal === 'heading'
       ? completedPhases < effectivePhaseCount
       : shippedSignal === 'snapshot'
-        ? liveIncompletePhases > 0
+        ? liveInMilestonePhases > 0 && completedPhases < effectivePhaseCount
         : false
   );
   const useDerived = milestoneShippedResolved && !shippedContradicted;
