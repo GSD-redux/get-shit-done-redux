@@ -482,4 +482,28 @@ describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs',
     );
     assert.deepStrictEqual(removed.renamed_directories, [], 'phase remove renumbered anyway');
   });
+
+  test('validate health pairs a digit-leading directory with its roadmap phase (W006/W007)', () => {
+    // #2528 re-review, the ninth site. W006/W007 resolve roadmap↔disk by
+    // intersecting token SETS, which is a dir→token labelling rather than the
+    // query→dir selection matchPhaseDirs owns — so the canonical fixture used
+    // to emit BOTH halves of the contradiction at once: "Phase 5 … no directory
+    // on disk" and "Phase 05-80-20 exists on disk but not in ROADMAP.md".
+    const codes = (dirs, roadmapPhase) => json('validate health', project(dirs, roadmapPhase))
+      .warnings.filter((w) => w.code === 'W006' || w.code === 'W007')
+      .map((w) => w.code)
+      .sort();
+
+    assert.deepStrictEqual(
+      codes(['05-80-20-cleanup'], '5'),
+      [],
+      'validate health still reports phase 5 as both missing and orphaned',
+    );
+
+    // Controls, so the assertion above cannot be satisfied by a check that
+    // stopped reporting anything: a roadmap phase with no directory at all must
+    // still raise W006, and a directory no roadmap phase resolves to must still
+    // raise W007.
+    assert.deepStrictEqual(codes(['07-orphan'], '5'), ['W006', 'W007']);
+  });
 });
