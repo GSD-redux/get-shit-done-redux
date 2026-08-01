@@ -130,6 +130,25 @@ grammar and composer seam are general-purpose across any workflow file, but
 rollout to other LARGE/XL workflows is intentionally sequenced as later work,
 not part of this phase.
 
+Of the mutually-exclusive branches issue #2930 cites as motivating this work
+(`--prd`, `--ingest`, `--mvp`, `--reviews`), the pilot marks `--reviews`,
+`--prd`, and `--ingest` (plus `--chunked`, not originally listed) — three of
+the four cited. **`--mvp` is not marked, and that is not an oversight.** Its
+content in `plan-phase.md` is INTERLEAVED with other flags rather than
+living in its own contiguous section: `MVP_MODE` resolution shares a single
+bash block with `--tdd`, `--no-tracer`, and `--no-reversibility-gates`
+handling (`plan-phase.md:125-158`), and elsewhere it is inline
+`${MVP_MODE === 'true' ? ... }` template interpolation embedded inside the
+planner prompt (`plan-phase.md:794-803`). The marker grammar is closed,
+non-nesting, and whole-line (see [Marker syntax](#marker-syntax) above) — it
+has no way to wrap part of a line or split a shared conditional block
+without either corrupting the conditional or bundling unrelated flags into
+one section. This is a real limit the pilot surfaced, not a gap in scope:
+see [ADR-1671](../adr/1671-dynamic-context-management-platform.md) open
+question 1's resolution for the full record, and Phase 6 (LARGE/XL rollout)
+for how it gets addressed — either accepted or resolved with a
+finer-grained mechanism.
+
 ## Related
 
 - [ADR-1671](../adr/1671-dynamic-context-management-platform.md) — the

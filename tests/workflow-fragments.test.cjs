@@ -26,6 +26,7 @@ const {
   renderFragments,
   composeWorkflow,
   WHEN_VOCABULARY,
+  REASON,
 } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const { composeWithinBudget } = require('../gsd-core/bin/lib/context-composer.cjs');
 
@@ -125,21 +126,39 @@ describe('multiple disjoint marker pairs', () => {
 // ─── Row 4: the real pilot workflow ─────────────────────────────────────────
 
 describe('real plan-phase.md', () => {
+  // NOTE (chore/2930 review, defect found and fixed inline while verifying):
+  // this test previously asserted "plan-phase.md ships unmarked today" —
+  // stale the moment the SAME commit that introduced this test (c036e31ee,
+  // #2930) also piloted real `gsd:section` markers onto plan-phase.md
+  // (reviews-prereq, prd-express, ingest-express, chunked-mode). Rewritten
+  // to assert against the file's actual current (marked) shape instead of a
+  // premise the file no longer satisfies.
   test('pilotWorkflowParsesAndRendersToSourceMinusMarkers', () => {
     const pilotPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
     const original = fs.readFileSync(pilotPath, 'utf8');
 
-    // plan-phase.md ships unmarked today (design 40-design.md OQ2): parsing
-    // it must yield exactly one implicit gap fragment and compose back
-    // byte-identical — the production shape this module must never regress.
+    // plan-phase.md carries the pilot's real marker pairs today: parsing it
+    // must recognize exactly those four explicit sections, in document
+    // order, and composing it must strip every marker line while leaving
+    // every byte of body content untouched.
     const baselineSections = parseWorkflowSections(original, pilotPath);
-    assert.equal(baselineSections.length, 1);
-    assert.equal(baselineSections[0].explicit, false);
-    assert.equal(composeWorkflow(original, { sourcePath: pilotPath }), original);
+    const baselineExplicit = baselineSections.filter((s) => s.explicit);
+    assert.deepEqual(
+      baselineExplicit.map((s) => s.id),
+      ['reviews-prereq', 'prd-express', 'ingest-express', 'chunked-mode'],
+    );
+    const composedOriginal = composeWorkflow(original, { sourcePath: pilotPath });
+    assert.equal(composedOriginal.includes('gsd:section'), false);
+    assert.ok(Buffer.byteLength(composedOriginal, 'utf8') < Buffer.byteLength(original, 'utf8'));
 
-    // Now mark up the loop-host block's own line 1 comment region is left
-    // alone; wrap an arbitrary interior slice of the real content in a
-    // marker pair and confirm it parses + renders to source-minus-markers.
+    // Wrap an ADDITIONAL, disjoint marker pair around an arbitrary interior
+    // slice of real content that sits outside every existing marker pair
+    // (lines 11-15: inside <required_reading>, well before "reviews-prereq"
+    // at line 185) and confirm it parses as a fifth explicit section and
+    // composes to the SAME final output as the unmodified file — every
+    // fragment is `verbatim` (row 23), so wrapping already-included content
+    // in a new marker pair can never change what is emitted, only how it is
+    // partitioned internally.
     const lines = original.split(/\r?\n/);
     const sliceStart = 10;
     const sliceEnd = 15;
@@ -154,13 +173,15 @@ describe('real plan-phase.md', () => {
 
     const sections = parseWorkflowSections(marked, pilotPath);
     const explicitSections = sections.filter((s) => s.explicit);
-    assert.equal(explicitSections.length, 1);
-    assert.equal(explicitSections[0].id, 'pilot-slice');
+    assert.deepEqual(
+      explicitSections.map((s) => s.id),
+      ['pilot-slice', 'reviews-prereq', 'prd-express', 'ingest-express', 'chunked-mode'],
+    );
     assert.equal(explicitSections[0].body, lines.slice(sliceStart, sliceEnd).join('\n') + '\n');
 
     const rendered = composeWorkflow(marked, { sourcePath: pilotPath });
-    assert.equal(rendered, original);
-    assert.equal(measureBytes(rendered), measureBytes(original));
+    assert.equal(rendered, composedOriginal);
+    assert.equal(measureBytes(rendered), measureBytes(composedOriginal));
   });
 });
 
@@ -287,7 +308,7 @@ describe('structural negatives throw with file + line', () => {
     const source = doc('prose', '<!-- gsd:section id="a" when="always" -->', 'body, never closed');
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('workflow.md:2') && err.message.includes('unclosed'),
+      (err) => err instanceof TypeError && err.message.includes('workflow.md:2') && err.reason === REASON.UNCLOSED_SECTION,
     );
   });
 
@@ -295,7 +316,7 @@ describe('structural negatives throw with file + line', () => {
     const source = doc('prose', '<!-- /gsd:section -->', 'more prose');
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('workflow.md:2') && err.message.includes('unmatched'),
+      (err) => err instanceof TypeError && err.message.includes('workflow.md:2') && err.reason === REASON.UNMATCHED_CLOSE,
     );
   });
 
@@ -309,7 +330,7 @@ describe('structural negatives throw with file + line', () => {
     );
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('workflow.md:2') && err.message.includes('nested'),
+      (err) => err instanceof TypeError && err.message.includes('workflow.md:2') && err.reason === REASON.NESTED_SECTION,
     );
   });
 
@@ -325,7 +346,7 @@ describe('structural negatives throw with file + line', () => {
     // Throws on the SECOND occurrence's line, not the first.
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('workflow.md:4') && err.message.includes('duplicate'),
+      (err) => err instanceof TypeError && err.message.includes('workflow.md:4') && err.reason === REASON.DUPLICATE_ID,
     );
   });
 });
@@ -337,7 +358,7 @@ describe('attribute-shape negatives', () => {
     const source = '<!-- gsd:section when="always" -->\nbody\n<!-- /gsd:section -->';
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('"id"'),
+      (err) => err instanceof TypeError && err.reason === REASON.MISSING_ID,
     );
   });
 
@@ -345,7 +366,7 @@ describe('attribute-shape negatives', () => {
     const source = '<!-- gsd:section id="x" -->\nbody\n<!-- /gsd:section -->';
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('"when"'),
+      (err) => err instanceof TypeError && err.reason === REASON.MISSING_WHEN,
     );
   });
 
@@ -353,7 +374,7 @@ describe('attribute-shape negatives', () => {
     const source = '<!-- gsd:section id="x" when="flag:--nonexistent" -->\nbody\n<!-- /gsd:section -->';
     assert.throws(
       () => parseWorkflowSections(source, 'workflow.md'),
-      (err) => err instanceof TypeError && err.message.includes('WHEN_VOCABULARY'),
+      (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
     );
   });
 
@@ -362,10 +383,63 @@ describe('attribute-shape negatives', () => {
       const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
       assert.throws(
         () => parseWorkflowSections(source, 'workflow.md'),
-        (err) => err instanceof TypeError && err.message.includes('WHEN_VOCABULARY'),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
         `expected throw for when="${when}"`,
       );
     }
+  });
+
+  test('malformedAttributesThrows', () => {
+    const source = '<!-- gsd:section id="x" when -->\nbody\n<!-- /gsd:section -->';
+    assert.throws(
+      () => parseWorkflowSections(source, 'workflow.md'),
+      (err) => err instanceof TypeError && err.reason === REASON.MALFORMED_ATTRIBUTES,
+    );
+  });
+
+  test('unrecognizedAttributeThrows', () => {
+    const source = '<!-- gsd:section id="x" when="always" bogus="1" -->\nbody\n<!-- /gsd:section -->';
+    assert.throws(
+      () => parseWorkflowSections(source, 'workflow.md'),
+      (err) => err instanceof TypeError && err.reason === REASON.UNRECOGNIZED_ATTRIBUTE,
+    );
+  });
+
+  test('malformedIdValueThrows', () => {
+    const source = '<!-- gsd:section id="-bad-" when="always" -->\nbody\n<!-- /gsd:section -->';
+    assert.throws(
+      () => parseWorkflowSections(source, 'workflow.md'),
+      (err) => err instanceof TypeError && err.reason === REASON.MALFORMED_ID,
+    );
+  });
+
+  test('closeMarkerWithAttributesThrows', () => {
+    const source = '<!-- gsd:section id="x" when="always" -->\nbody\n<!-- /gsd:section foo="1" -->';
+    assert.throws(
+      () => parseWorkflowSections(source, 'workflow.md'),
+      (err) => err instanceof TypeError && err.reason === REASON.CLOSE_WITH_ATTRIBUTES,
+    );
+  });
+});
+
+// ─── FIX 2/3 (chore/2930 review): REASON enum shape is locked ─────────────
+
+describe('REASON enum is frozen and its shape is locked', () => {
+  test('reasonEnumKeysAreLocked', () => {
+    assert.equal(Object.isFrozen(REASON), true);
+    assert.deepEqual(Object.keys(REASON).sort(), [
+      'CLOSE_WITH_ATTRIBUTES',
+      'DUPLICATE_ID',
+      'MALFORMED_ATTRIBUTES',
+      'MALFORMED_ID',
+      'MISSING_ID',
+      'MISSING_WHEN',
+      'NESTED_SECTION',
+      'UNCLOSED_SECTION',
+      'UNKNOWN_WHEN',
+      'UNMATCHED_CLOSE',
+      'UNRECOGNIZED_ATTRIBUTE',
+    ]);
   });
 });
 
@@ -539,6 +613,107 @@ function withInjectedReadFailure(fn) {
     fs.readFileSync = original;
   }
 }
+
+// ─── FIX 4 (chore/2930 review): adversarial parser-input fixtures ─────────
+// CONTRIBUTING.md:484-513 requires adversarial fixtures for a new parser's
+// inputs. Each case here either round-trips byte-identical or produces the
+// correct typed REASON — never a message-text match.
+
+describe('adversarial content bytes', () => {
+  test('unicodeHeadingRoundTripsByteIdentical', () => {
+    const source = doc(
+      '# 見出し — Ünïcödé Hëading 🚀',
+      '<!-- gsd:section id="sec" when="always" -->',
+      'body with 中文, кириллица, emoji 🎉',
+      '<!-- /gsd:section -->',
+      'trailing プロース',
+    );
+    const expected = doc('# 見出し — Ünïcödé Hëading 🚀', 'body with 中文, кириллица, emoji 🎉', 'trailing プロース');
+    const rendered = composeWorkflow(source);
+    assert.equal(rendered, expected);
+    assert.equal(measureBytes(rendered), measureBytes(expected));
+  });
+
+  test('nulByteInBodyRoundTripsByteIdentical', () => {
+    const source = `prose\0more\n<!-- gsd:section id="x" when="always" -->\nbody\0with\0nul\n<!-- /gsd:section -->\nafter\0`;
+    const sections = parseWorkflowSections(source);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.equal(explicitSections.length, 1);
+    assert.equal(explicitSections[0].body, 'body\0with\0nul\n');
+    const rendered = composeWorkflow(source);
+    assert.equal(rendered, 'prose\0more\nbody\0with\0nul\nafter\0');
+  });
+
+  test('unicodeReplacementCharacterRoundTripsByteIdentical', () => {
+    const source = `prose � end\n<!-- gsd:section id="x" when="always" -->\nbody ��\n<!-- /gsd:section -->\nafter �`;
+    const rendered = composeWorkflow(source);
+    assert.equal(rendered, 'prose � end\nbody ��\nafter �');
+  });
+
+  test('leadingByteOrderMarkRoundTripsByteIdentical', () => {
+    const source = '﻿# Heading\n<!-- gsd:section id="x" when="always" -->\nbody\n<!-- /gsd:section -->\ntail';
+    const sections = parseWorkflowSections(source);
+    const gaps = sections.filter((s) => !s.explicit);
+    // The BOM is ordinary content of the leading gap — never stripped or
+    // otherwise special-cased by this parser.
+    assert.equal(gaps[0].body, '﻿# Heading\n');
+    const rendered = composeWorkflow(source);
+    assert.equal(rendered, '﻿# Heading\nbody\ntail');
+  });
+});
+
+describe('adversarial fence shapes', () => {
+  test('fenceWithinFenceStaysLiteralUntilOuterCloser', () => {
+    const source = doc(
+      'prose before',
+      '````',
+      '```',
+      '<!-- gsd:section id="fake" when="always" -->',
+      '```',
+      '````',
+      'prose after',
+    );
+    const sections = parseWorkflowSections(source);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].explicit, false);
+    assert.equal(sections[0].body, source);
+    assert.equal(composeWorkflow(source), source);
+  });
+
+  test('tildeFenceHidesMarkerLookalike', () => {
+    const source = doc('prose', '~~~', '<!-- gsd:section id="fake" when="always" -->', '~~~', 'prose after');
+    const sections = parseWorkflowSections(source);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].explicit, false);
+    assert.equal(sections[0].body, source);
+    assert.equal(composeWorkflow(source), source);
+  });
+
+  test('indentedFenceUpToThreeSpacesHidesMarkerLookalike', () => {
+    const source = doc('prose', '   ```', '<!-- gsd:section id="fake" when="always" -->', '   ```', 'prose after');
+    const sections = parseWorkflowSections(source);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].explicit, false);
+    assert.equal(sections[0].body, source);
+    assert.equal(composeWorkflow(source), source);
+  });
+});
+
+describe('adversarial line-ending shapes', () => {
+  test('markerLineTerminatedByLoneCrIsNotRecognizedAsAMarker', () => {
+    // A bare `\r` with no accompanying `\n` anywhere in the document is not
+    // an EOL this grammar recognizes (only '' / '\n' / '\r\n' — see the
+    // module doc comment). The marker-shaped text is therefore never on its
+    // "own line" and must be left as ordinary literal content, not parsed
+    // as an open marker.
+    const source = '<!-- gsd:section id="x" when="always" -->\rbody, never a real line break';
+    const sections = parseWorkflowSections(source);
+    assert.equal(sections.length, 1);
+    assert.equal(sections[0].explicit, false);
+    assert.equal(sections[0].body, source);
+    assert.equal(composeWorkflow(source), source);
+  });
+});
 
 describe('fs.readFileSync fault injection mid-compose', () => {
   test('readFailureDuringCompositionLeavesNoPartialArtifact', (t) => {

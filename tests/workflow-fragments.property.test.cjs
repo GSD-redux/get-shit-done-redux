@@ -25,9 +25,12 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fc = require('./helpers/fast-check-setup.cjs');
 
-const { parseWorkflowSections, composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
+const { parseWorkflowSections, composeWorkflow, WHEN_VOCABULARY } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 
-const WHEN_VALUES = ['always', 'flag:--prd', 'flag:--ingest', 'flag:--reviews', 'flag:--chunked'];
+// Derived from the module's own frozen WHEN_VOCABULARY (DEFECT.GENERATIVE-FIX,
+// chore/2930 review): a hardcoded copy here would silently desync from the
+// production vocabulary the moment either side is edited without the other.
+const WHEN_VALUES = [...WHEN_VOCABULARY];
 
 // ─── Document-shaped generators ────────────────────────────────────────────
 

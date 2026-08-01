@@ -99,6 +99,32 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'flag:--chunked',
 ]);
 
+/**
+ * Frozen, stable reason codes for every `fail()` throw site in this module.
+ * Tests assert via `assert.equal(err.reason, REASON.X)` rather than
+ * regex-/substring-matching the human-readable message (CONTRIBUTING.md
+ * "Prohibited: Raw Text Matching on Test Outputs"; shape copied from this
+ * repo's own `gsd-core/bin/verify-reapply-patches.cjs` REASON enum) — a
+ * message reword must never silently pass a test that exists to catch a
+ * behavior regression.
+ *
+ * Adding a new reason requires updating this map AND the test that locks
+ * `Object.keys(REASON).sort()` as a coordinated change.
+ */
+export const REASON = Object.freeze({
+  UNCLOSED_SECTION: 'unclosed_section',
+  UNMATCHED_CLOSE: 'unmatched_close',
+  NESTED_SECTION: 'nested_section',
+  DUPLICATE_ID: 'duplicate_id',
+  MISSING_ID: 'missing_id',
+  MISSING_WHEN: 'missing_when',
+  MALFORMED_ID: 'malformed_id',
+  UNKNOWN_WHEN: 'unknown_when',
+  MALFORMED_ATTRIBUTES: 'malformed_attributes',
+  UNRECOGNIZED_ATTRIBUTE: 'unrecognized_attribute',
+  CLOSE_WITH_ATTRIBUTES: 'close_with_attributes',
+});
+
 /** One partitioned section of a parsed workflow document. */
 export interface WorkflowSection {
   readonly id: string;
@@ -178,10 +204,21 @@ function parseAttrs(attrsPart: string): Map<string, string> | null {
   return attrs;
 }
 
-/** Throws a `TypeError` naming `sourcePath` (when given) and the 1-based `line`. */
-function fail(sourcePath: string | undefined, line: number, message: string): never {
+/** A `TypeError` carrying a stable {@link REASON} code alongside the human-readable message. */
+export interface WorkflowFragmentsError extends TypeError {
+  readonly reason: string;
+}
+
+/**
+ * Throws a `TypeError` naming `sourcePath` (when given) and the 1-based
+ * `line`, carrying `reason` (one of {@link REASON}) as a typed property so
+ * callers/tests never need to pattern-match the message prose.
+ */
+function fail(sourcePath: string | undefined, line: number, reason: string, message: string): never {
   const loc = sourcePath ? `${sourcePath}:${line}` : `line ${line}`;
-  throw new TypeError(`workflow-fragments: ${message} (${loc})`);
+  const err = new TypeError(`workflow-fragments: ${message} (${loc})`) as TypeError & { reason: string };
+  err.reason = reason;
+  throw err;
 }
 
 /** Result of classifying a complete one-line HTML comment's inner text. */
@@ -207,7 +244,7 @@ function classifyMarker(inner: string, sourcePath: string | undefined, lineNo: n
     return { kind: 'close' };
   }
   if (inner.startsWith(CLOSE_TAG) && /^\s/.test(inner.slice(CLOSE_TAG.length))) {
-    fail(sourcePath, lineNo, 'close marker must not carry attributes');
+    fail(sourcePath, lineNo, REASON.CLOSE_WITH_ATTRIBUTES, 'close marker must not carry attributes');
   }
   if (!OPEN_TAG_RE.test(inner)) {
     return { kind: 'none' };
@@ -216,25 +253,25 @@ function classifyMarker(inner: string, sourcePath: string | undefined, lineNo: n
   const attrsPart = inner.slice('gsd:section'.length).trim();
   const attrs = parseAttrs(attrsPart);
   if (attrs === null) {
-    fail(sourcePath, lineNo, 'malformed section marker attributes');
+    fail(sourcePath, lineNo, REASON.MALFORMED_ATTRIBUTES, 'malformed section marker attributes');
   }
   const extraKeys = [...attrs.keys()].filter((k) => k !== 'id' && k !== 'when');
   if (extraKeys.length > 0) {
-    fail(sourcePath, lineNo, `unrecognized attribute "${extraKeys[0]}" on section marker`);
+    fail(sourcePath, lineNo, REASON.UNRECOGNIZED_ATTRIBUTE, `unrecognized attribute "${extraKeys[0]}" on section marker`);
   }
   const id = attrs.get('id');
   const when = attrs.get('when');
   if (id === undefined) {
-    fail(sourcePath, lineNo, 'section marker missing required "id" attribute');
+    fail(sourcePath, lineNo, REASON.MISSING_ID, 'section marker missing required "id" attribute');
   }
   if (when === undefined) {
-    fail(sourcePath, lineNo, 'section marker missing required "when" attribute');
+    fail(sourcePath, lineNo, REASON.MISSING_WHEN, 'section marker missing required "when" attribute');
   }
   if (!ID_RE.test(id)) {
-    fail(sourcePath, lineNo, `section marker "id" value "${id}" does not match ${ID_RE}`);
+    fail(sourcePath, lineNo, REASON.MALFORMED_ID, `section marker "id" value "${id}" does not match ${ID_RE}`);
   }
   if (!WHEN_VOCABULARY.includes(when)) {
-    fail(sourcePath, lineNo, `section marker "when" value "${when}" is not in the frozen WHEN_VOCABULARY`);
+    fail(sourcePath, lineNo, REASON.UNKNOWN_WHEN, `section marker "when" value "${when}" is not in the frozen WHEN_VOCABULARY`);
   }
   return { kind: 'open', id, when };
 }
@@ -321,10 +358,10 @@ export function parseWorkflowSections(content: string, sourcePath?: string): Wor
         const classification = classifyMarker(inner, sourcePath, lineNo);
         if (classification.kind === 'open') {
           if (currentOpen !== null) {
-            fail(sourcePath, lineNo, `nested gsd:section marker (already inside "${currentOpen.id}")`);
+            fail(sourcePath, lineNo, REASON.NESTED_SECTION, `nested gsd:section marker (already inside "${currentOpen.id}")`);
           }
           if (seenIds.has(classification.id)) {
-            fail(sourcePath, lineNo, `duplicate section id "${classification.id}"`);
+            fail(sourcePath, lineNo, REASON.DUPLICATE_ID, `duplicate section id "${classification.id}"`);
           }
           flushGapBefore(i);
           seenIds.add(classification.id);
@@ -332,7 +369,7 @@ export function parseWorkflowSections(content: string, sourcePath?: string): Wor
           cursor = i + 1;
         } else if (classification.kind === 'close') {
           if (currentOpen === null) {
-            fail(sourcePath, lineNo, 'unmatched /gsd:section close marker');
+            fail(sourcePath, lineNo, REASON.UNMATCHED_CLOSE, 'unmatched /gsd:section close marker');
           }
           sections.push({
             id: currentOpen.id,
@@ -366,7 +403,7 @@ export function parseWorkflowSections(content: string, sourcePath?: string): Wor
   }
 
   if (currentOpen !== null) {
-    fail(sourcePath, currentOpen.startLineIndex + 1, `unclosed gsd:section marker "${currentOpen.id}"`);
+    fail(sourcePath, currentOpen.startLineIndex + 1, REASON.UNCLOSED_SECTION, `unclosed gsd:section marker "${currentOpen.id}"`);
   }
 
   flushGapBefore(lines.length);

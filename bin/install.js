@@ -7797,7 +7797,23 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       // return) for the 88+ workflows and every non-workflow .md that carries
       // no markers, and for a malformed marker it throws loudly naming
       // srcPath — never emit a half-composed workflow.
-      content = composeWorkflow(content, { sourcePath: srcPath });
+      //
+      // Scoped to gsd-core/workflows/ ONLY (two independent reviewers,
+      // chore/2930): copyWithPathReplacement is the emit path for every .md
+      // under gsd-core/, skills/, and commands/ (see the three call sites),
+      // not just workflows. A doc that merely DOCUMENTS the marker syntax
+      // with an unfenced example (docs/reference/workflow-fragments.md is
+      // the live instance of this class, though not under the install tree
+      // today) would otherwise get silently mis-parsed as a real marker and
+      // that line lossily dropped — a file class issue #2930 never scoped
+      // to. Path is normalized UNCONDITIONALLY (backslash paths arrive on
+      // Linux too — CONTEXT.md path-separator rule) and checked as a
+      // path-segment match so the recursive descent (srcPath may be several
+      // directory levels below gsd-core/workflows/) is still caught.
+      const normalizedSrcPath = srcPath.replace(/\\/g, '/');
+      if (/(?:^|\/)gsd-core\/workflows\//.test(normalizedSrcPath)) {
+        content = composeWorkflow(content, { sourcePath: srcPath });
+      }
 
       if (!dispatch.mdSkipGenericRewrite) {
         const globalClaudeRegex = /~\/\.claude\//g;

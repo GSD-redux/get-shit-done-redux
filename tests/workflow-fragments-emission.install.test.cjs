@@ -159,31 +159,81 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
 }
 
 // ─── Row 32: emitted plan-phase.md shrinks by exactly the marker bytes ────
+//
+// Defect found and fixed inline while verifying (chore/2930 review; not one
+// of the five assigned findings, but discovered incidentally): this test
+// previously compared the RAW `composeWorkflow(source)` byte length directly
+// against `fs.statSync(emittedPath).size`. That equality only holds when the
+// OTHER rewrites `copyWithPathReplacement` also runs (the `~/.claude/` ->
+// `pathPrefix` substitution, attribution stamping, per-runtime converters)
+// happen to be byte-neutral — which they are NOT here: `runMinimalInstall`
+// passes `--config-dir root` with `HOME=root` (root IS the target, not
+// `root/.claude`), so `computePathPrefix` degenerates to the short literal
+// `$HOME/` instead of the real-world `$HOME/.claude/`, shrinking the
+// installed `~/.claude/` references by additional bytes unrelated to
+// composeWorkflow. Proven with a real spawned install and reverted to
+// confirm this reproduces on the UNMODIFIED tree, before this change. Fixed
+// by isolating composeWorkflow's OWN contribution the same way row 33
+// already does: compare two REAL installs of the pilot workflow, one via
+// this checkout's real composeWorkflow and one via an identity-stubbed
+// composeWorkflow, and assert the size DELTA equals exactly the marker
+// bytes stripped — never an absolute emitted byte count, which conflates
+// unrelated rewrites this module does not own.
+//
+// A second, independent contaminant surfaced fixing the first one: opencode
+// embeds the install's own absolute configDir path into plan-phase.md
+// content (same fact row 33/atRefContractStillResolvesAfterComposition
+// documents for SKILL.md), and `runMinimalInstall`'s temp-dir prefix
+// (`gsd-<runtime>-<scope>-`) is a DIFFERENT length than
+// `spawnGlobalInstall`'s (`gsd-2930-dest-<runtime>-`) — so comparing RAW
+// file sizes between the two installs bakes in a root-path-length delta
+// that has nothing to do with composeWorkflow. Normalize each side's own
+// root out of the text before measuring, exactly as row 33 already does.
 
 test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', () => {
   const source = fs.readFileSync(PILOT_PATH, 'utf8');
   const composed = composeWorkflow(source, { sourcePath: PILOT_PATH });
-  const expectedBytes = Buffer.byteLength(composed, 'utf8');
   const sourceBytes = Buffer.byteLength(source, 'utf8');
+  const composedBytes = Buffer.byteLength(composed, 'utf8');
+  const expectedMarkerBytes = sourceBytes - composedBytes;
   assert.ok(
-    expectedBytes < sourceBytes,
+    expectedMarkerBytes > 0,
     'sanity: the pilot workflow must actually carry gsd:section markers to strip',
   );
 
-  for (const runtime of RUNTIMES) {
-    const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
-    try {
-      const emittedPath = path.join(configDir, PILOT_REL);
-      assert.ok(fs.existsSync(emittedPath), `${runtime}: emitted plan-phase.md is missing`);
-      const emittedBytes = fs.statSync(emittedPath).size;
-      assert.equal(
-        emittedBytes,
-        expectedBytes,
-        `${runtime}: emitted plan-phase.md size ${emittedBytes} !== source-minus-markers ${expectedBytes}`,
-      );
-    } finally {
-      cleanup(root);
+  const identityStubRepo = buildOverlayRepo({
+    'gsd-core/bin/lib/workflow-fragments.cjs': 'module.exports = { composeWorkflow: (c) => c };\n',
+  });
+  try {
+    for (const runtime of RUNTIMES) {
+      const real = runMinimalInstall({ runtime, scope: 'global' });
+      const stub = spawnGlobalInstall(path.join(identityStubRepo, 'bin', 'install.js'), runtime);
+      try {
+        assert.equal(
+          stub.result.status,
+          0,
+          `${runtime}: identity-stub install must succeed\nstderr: ${stub.result.stderr}`,
+        );
+        const realPath = path.join(real.configDir, PILOT_REL);
+        const stubPath = path.join(stub.configDir, PILOT_REL);
+        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing plan-phase.md`);
+        assert.ok(fs.existsSync(stubPath), `${runtime}: identity-stub install is missing plan-phase.md`);
+        const realText = fs.readFileSync(realPath, 'utf8').split(real.root).join('<ROOT>');
+        const stubText = fs.readFileSync(stubPath, 'utf8').split(stub.root).join('<ROOT>');
+        const realBytes = Buffer.byteLength(realText, 'utf8');
+        const stubBytes = Buffer.byteLength(stubText, 'utf8');
+        assert.equal(
+          stubBytes - realBytes,
+          expectedMarkerBytes,
+          `${runtime}: emitted size delta (stub ${stubBytes} - real ${realBytes}, root-normalized) must equal exactly the marker bytes stripped (${expectedMarkerBytes})`,
+        );
+      } finally {
+        cleanup(real.root);
+        cleanup(stub.root);
+      }
     }
+  } finally {
+    cleanup(identityStubRepo);
   }
 });
 
@@ -306,6 +356,61 @@ test('atRefContractStillResolvesAfterComposition', () => {
   }
 });
 
+// ─── FIX 1 (chore/2930 review): composeWorkflow is scoped to gsd-core/workflows/ ──
+//
+// copyWithPathReplacement is the emit path for the ENTIRE gsd-core/ tree
+// (skillSrc = path.join(src, 'gsd-core'), bin/install.js:10806-10809), not
+// just gsd-core/workflows/. A non-workflow .md elsewhere under gsd-core/
+// (e.g. gsd-core/references/) that merely DOCUMENTS the marker syntax with
+// an unfenced, structurally-invalid example line must never be run through
+// composeWorkflow — doing so would either throw (breaking install for an
+// unrelated file class) or silently strip/mis-parse the documentation line.
+// Proven here by overlaying BOTH a marked workflow (must still compose) and
+// an EXISTING non-workflow reference doc (buildOverlayRepo can only replace
+// the content of a real leaf file, not graft in a net-new path — see the
+// module doc comment's overlay-technique note) rewritten to carry an
+// intentionally-UNCLOSED marker-shaped line (would throw if composeWorkflow
+// ever touched it) in the SAME install run.
+
+test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
+  const markedWorkflow = '<!-- gsd:section id="a" when="always" -->\nbody\n<!-- /gsd:section -->\n';
+  const nonWorkflowDoc =
+    '# Marker syntax\n\nExample (deliberately unfenced and unclosed to prove non-composition):\n\n<!-- gsd:section id="x" when="always" -->\nnever closed on purpose\n';
+  const NON_WORKFLOW_DOC_REL = path.join('gsd-core', 'references', 'context-budget.md');
+  const overlayRepo = buildOverlayRepo({
+    'gsd-core/workflows/plan-phase.md': markedWorkflow,
+    [NON_WORKFLOW_DOC_REL.split(path.sep).join('/')]: nonWorkflowDoc,
+  });
+  let dest;
+  try {
+    dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
+    assert.equal(
+      dest.result.status,
+      0,
+      `install must succeed: a non-workflow doc's marker-shaped line must never reach composeWorkflow\nstderr: ${dest.result.stderr}`,
+    );
+
+    const emittedWorkflowPath = path.join(dest.configDir, PILOT_REL);
+    assert.ok(fs.existsSync(emittedWorkflowPath), 'emitted plan-phase.md is missing');
+    assert.equal(
+      fs.readFileSync(emittedWorkflowPath, 'utf8'),
+      'body\n',
+      'gsd-core/workflows/plan-phase.md must still compose (markers stripped)',
+    );
+
+    const emittedDocPath = path.join(dest.configDir, NON_WORKFLOW_DOC_REL);
+    assert.ok(fs.existsSync(emittedDocPath), 'emitted context-budget.md is missing');
+    assert.equal(
+      fs.readFileSync(emittedDocPath, 'utf8'),
+      nonWorkflowDoc,
+      'a non-workflow .md must pass through composeWorkflow untouched, byte-identical, including its marker-shaped line',
+    );
+  } finally {
+    cleanup(overlayRepo);
+    if (dest) cleanup(dest.root);
+  }
+});
+
 // ─── Row 36: a malformed marker fails install loudly, with no partial emit ─
 
 test('malformedMarkersFailInstallWithoutPartialEmit', () => {
@@ -314,20 +419,18 @@ test('malformedMarkersFailInstallWithoutPartialEmit', () => {
   let dest;
   try {
     dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
+    // stderr text is a child process's rendered prose, not a typed value
+    // this test can assert on across the process boundary (CONTRIBUTING.md
+    // "Prohibited: Raw Text Matching on Test Outputs" — err.reason is only
+    // reachable in-process; see tests/workflow-fragments.test.cjs's REASON
+    // assertions for the in-process equivalent of this same failure mode).
+    // Assert typed, observable facts instead: the install process exits
+    // non-zero, and no output file is written for the file that failed to
+    // compose.
     assert.notEqual(
       dest.result.status,
       0,
       `install must fail loudly on a malformed marker, got exit 0\nstdout: ${dest.result.stdout}`,
-    );
-    assert.match(
-      dest.result.stderr,
-      /workflow-fragments: unclosed gsd:section marker/,
-      `stderr must name the parser failure: ${dest.result.stderr}`,
-    );
-    assert.match(
-      dest.result.stderr,
-      /plan-phase\.md:1\)/,
-      `stderr must name the offending file and line: ${dest.result.stderr}`,
     );
     const emittedPath = path.join(dest.configDir, PILOT_REL);
     assert.equal(
