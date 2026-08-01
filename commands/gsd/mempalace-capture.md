@@ -25,7 +25,7 @@ Then proceed to Step 1.
 Check whether the MemPalace capability is enabled by reading `.planning/config.json` directly with the Read tool.
 
 1. Read `.planning/config.json` with the Read tool.
-2. If the file does not exist, or `config.mempalace` is absent, or `config.mempalace.enabled !== true`, or `config.mempalace.capture_artifacts !== true`: display the disabled message and **STOP**.
+2. If the file does not exist, or `config.mempalace` is absent, or `config.mempalace.enabled !== true`, or `config.mempalace.capture_artifacts === false`: display the disabled message and **STOP**.
 3. Otherwise proceed to Step 2.
 
 **Disabled message:**
