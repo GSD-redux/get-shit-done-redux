@@ -162,6 +162,28 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
   return { result, configDir: root, root };
 }
 
+/** Convert native path separators to POSIX forward slashes, unconditionally
+ *  (never gate on `path.sep` — CONTEXT.md's path-separator-normalization
+ *  rule). Windows installs embed the SAME root in more than one spelling:
+ *  the `@`-ref / pathPrefix rewrites always emit posix-normalized
+ *  forward-slash paths, while other embedded content can still carry the
+ *  native backslash spelling. `root` itself (from `fs.mkdtempSync`) is a
+ *  native-separator string, so comparing it against text verbatim only
+ *  matches ONE of those spellings. */
+function toPosixSlashes(value) {
+  return value.replace(/\\/g, '/');
+}
+
+/** Strip an install's own absolute root out of emitted text so two installs
+ *  under DIFFERENT temp roots (different lengths, different runtime-name
+ *  prefixes) can be compared byte-for-byte. Normalizes BOTH the text and the
+ *  root to forward-slash spelling first, so every embedded spelling of the
+ *  root collapses onto the SAME placeholder — leaving the comparison
+ *  measuring only composeWorkflow's own contribution. */
+function stripRoot(text, root) {
+  return toPosixSlashes(text).split(toPosixSlashes(root)).join('<ROOT>');
+}
+
 // ─── Row 32: emitted execute-phase.md shrinks by exactly the marker bytes ────
 //
 // Defect found and fixed inline while verifying (chore/2930 review; not one
@@ -222,8 +244,8 @@ test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', () => {
         const stubPath = path.join(stub.configDir, PILOT_REL);
         assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing execute-phase.md`);
         assert.ok(fs.existsSync(stubPath), `${runtime}: identity-stub install is missing execute-phase.md`);
-        const realText = fs.readFileSync(realPath, 'utf8').split(real.root).join('<ROOT>');
-        const stubText = fs.readFileSync(stubPath, 'utf8').split(stub.root).join('<ROOT>');
+        const realText = stripRoot(fs.readFileSync(realPath, 'utf8'), real.root);
+        const stubText = stripRoot(fs.readFileSync(stubPath, 'utf8'), stub.root);
         const realBytes = Buffer.byteLength(realText, 'utf8');
         const stubBytes = Buffer.byteLength(stubText, 'utf8');
         assert.equal(
@@ -279,8 +301,8 @@ test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', () => {
         // and the two installs necessarily used DIFFERENT temp roots — an
         // unnormalized compare would report a spurious mismatch driven by
         // temp-path length, not by anything composeWorkflow's wiring did.
-        const realText = fs.readFileSync(realPath, 'utf8').split(real.root).join('<ROOT>');
-        const stubText = fs.readFileSync(stubPath, 'utf8').split(stub.root).join('<ROOT>');
+        const realText = stripRoot(fs.readFileSync(realPath, 'utf8'), real.root);
+        const stubText = stripRoot(fs.readFileSync(stubPath, 'utf8'), stub.root);
         assert.equal(
           Buffer.byteLength(realText, 'utf8'),
           Buffer.byteLength(stubText, 'utf8'),
@@ -332,9 +354,22 @@ test('noSectionMarkerLeaksIntoEmittedArtifacts', () => {
 // (as a no-op, being unmarked) — this proves that pass never corrupts or
 // relocates the referenced workflow file.
 
+/** Detect absoluteness from the token's own shape only — never from
+ *  `process.platform` — so the same logic runs identically on every OS.
+ *  Covers POSIX (`/...`), Windows drive-letter (`C:/...` or `C:\...`), and
+ *  UNC (`\\server\share`) forms. */
+function isAbsoluteRefTarget(candidate) {
+  return (
+    candidate.startsWith('/') ||
+    /^[a-zA-Z]:[\\/]/.test(candidate) ||
+    candidate.startsWith('\\\\')
+  );
+}
+
 function resolveExecutionContextRefTarget(token, root) {
-  if (token.startsWith('@/')) return token.slice(1); // already absolute (opencode form)
-  const stripped = token.replace(/^@(?:~|\$HOME)\//, '');
+  const withoutAt = token.replace(/^@/, '');
+  if (isAbsoluteRefTarget(withoutAt)) return withoutAt; // already absolute (opencode form)
+  const stripped = withoutAt.replace(/^(?:~|\$HOME)\//, '');
   return path.join(root, stripped);
 }
 
