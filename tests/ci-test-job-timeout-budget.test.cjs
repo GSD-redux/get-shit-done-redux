@@ -54,12 +54,12 @@ const HEADROOM_FACTOR = 1.5;
 const LANE_COSTS = [
   {
     job: 'test',
-    measuredMinutes: 16,
-    // run 30660240241 job 91254510104, next@5a0a9f097: the job ran 15m16s
-    // before GitHub axed it 23s into `npm run test:slow`. The unit suite under
-    // c8 alone was 769s of that. Projected to a completed slow step (27s on the
-    // last green run, 81eeb8a53) the lane costs ~15m20s.
-    evidence: 'run 30660240241 — 15m20s projected',
+    measuredMinutes: 8,
+    // Sharded three ways as of #2952, so this is ONE shard's cost, not the
+    // whole unit suite. Run 30677442953: shard 1/3 7m12s, 2/3 4m32s, 3/3 3m59s.
+    // Shard 1 is the long pole because the unsharded aux suites ride on it.
+    // Before sharding the same lane cost 15m20s and blew a 15-minute cap.
+    evidence: 'run 30677442953 — 7m12s slowest shard',
   },
   {
     job: 'test-full',
@@ -68,6 +68,13 @@ const LANE_COSTS = [
     // 18m59s on 05b170e44 and 18m14s on 81eeb8a53. The Windows shards are slow
     // for platform reasons, not extra work.
     evidence: 'run 30650559192 — 18m59s, windows-22 shard 3/3',
+  },
+  {
+    job: 'coverage-gate',
+    measuredMinutes: 2,
+    // Downloads three shards' raw V8 dumps, renders one merged report and runs
+    // both thresholds. Run 30677442953: 1m20s end to end, most of it npm ci.
+    evidence: 'run 30677442953 — 1m20s',
   },
   {
     job: 'test-inert',
