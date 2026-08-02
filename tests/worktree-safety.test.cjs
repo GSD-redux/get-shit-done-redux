@@ -2023,6 +2023,135 @@ describe('executeWorktreeWaveCleanupPlan', () => {
     assert.deepEqual(result.pending.map((entry) => entry.branch), ['worktree-agent-a2']);
   });
 
+  test('#2852: an unverifiable repo state after merge_failed (rev-parse times out) fails closed and halts the wave', () => {
+    // Boundary coverage for repoRootStillMidMerge's fail-closed branches (caught in
+    // review as an untested mutation-survivor risk): when the post-abort
+    // `git rev-parse --verify -q MERGE_HEAD` check itself cannot be trusted — here, it
+    // times out — the module's existing degrade-not-throw contract applies: treat the
+    // repo state as unknown-therefore-unsafe (still mid-merge) rather than guessing
+    // it's clean. Entry 2 must NOT be evaluated.
+    const plan = {
+      ok: true,
+      repoRoot: '/repo/main',
+      action: 'cleanup_wave',
+      discovery: 'manifest',
+      entries: [
+        {
+          agent_id: 'a1',
+          worktree_path: '/repo/.claude/worktrees/agent-a1',
+          branch: 'worktree-agent-a1',
+          expected_base: 'abc123',
+        },
+        {
+          agent_id: 'a2',
+          worktree_path: '/repo/.claude/worktrees/agent-a2',
+          branch: 'worktree-agent-a2',
+          expected_base: 'abc123',
+        },
+      ],
+    };
+    const result = executeWorktreeWaveCleanupPlan(plan, {
+      execGit: (args) => {
+        const key = args.join(' ');
+        if (key === '-C /repo/.claude/worktrees/agent-a1 rev-parse --abbrev-ref HEAD') {
+          return { exitCode: 0, stdout: 'worktree-agent-a1', stderr: '' };
+        }
+        if (key === 'merge-base HEAD worktree-agent-a1') {
+          return { exitCode: 0, stdout: 'abc123', stderr: '' };
+        }
+        if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key.startsWith('merge worktree-agent-a1')) {
+          return { exitCode: 1, stdout: '', stderr: 'CONFLICT' };
+        }
+        if (key === 'merge --abort') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === 'rev-parse --verify -q MERGE_HEAD') {
+          // Cannot determine repo state — the check itself timed out.
+          return {
+            exitCode: null,
+            stdout: '',
+            stderr: '',
+            timedOut: true,
+            signal: 'SIGTERM',
+            error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+          };
+        }
+        throw new Error(`unexpected git call — repo state is unverified, entry 2 must not be evaluated: ${key}`);
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.entries[0].status, 'blocked');
+    assert.equal(result.entries[0].reason, 'merge_failed');
+    assert.equal(result.entries.length, 1, 'entry 2 must not have been evaluated — state is unverified, fail closed');
+    assert.deepEqual(result.pending.map((entry) => entry.branch), ['worktree-agent-a2']);
+  });
+
+  test('#2852: an unverifiable repo state after merge_failed (rev-parse errors unexpectedly) fails closed and halts the wave', () => {
+    // Same boundary as the timeout case, but for a non-0/1 exit code (e.g. a fatal git
+    // error, code 128) from the post-abort MERGE_HEAD check — neither "found" (0) nor
+    // the well-known "not found" (1). Must also fail closed.
+    const plan = {
+      ok: true,
+      repoRoot: '/repo/main',
+      action: 'cleanup_wave',
+      discovery: 'manifest',
+      entries: [
+        {
+          agent_id: 'a1',
+          worktree_path: '/repo/.claude/worktrees/agent-a1',
+          branch: 'worktree-agent-a1',
+          expected_base: 'abc123',
+        },
+        {
+          agent_id: 'a2',
+          worktree_path: '/repo/.claude/worktrees/agent-a2',
+          branch: 'worktree-agent-a2',
+          expected_base: 'abc123',
+        },
+      ],
+    };
+    const result = executeWorktreeWaveCleanupPlan(plan, {
+      execGit: (args) => {
+        const key = args.join(' ');
+        if (key === '-C /repo/.claude/worktrees/agent-a1 rev-parse --abbrev-ref HEAD') {
+          return { exitCode: 0, stdout: 'worktree-agent-a1', stderr: '' };
+        }
+        if (key === 'merge-base HEAD worktree-agent-a1') {
+          return { exitCode: 0, stdout: 'abc123', stderr: '' };
+        }
+        if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key.startsWith('merge worktree-agent-a1')) {
+          return { exitCode: 1, stdout: '', stderr: 'CONFLICT' };
+        }
+        if (key === 'merge --abort') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === 'rev-parse --verify -q MERGE_HEAD') {
+          // A fatal git error (e.g. corrupted repo) — neither the "found" (0) nor the
+          // well-known "not found" (1) exit code.
+          return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' };
+        }
+        throw new Error(`unexpected git call — repo state is unverified, entry 2 must not be evaluated: ${key}`);
+      },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.entries[0].status, 'blocked');
+    assert.equal(result.entries[0].reason, 'merge_failed');
+    assert.equal(result.entries.length, 1, 'entry 2 must not have been evaluated — state is unverified, fail closed');
+    assert.deepEqual(result.pending.map((entry) => entry.branch), ['worktree-agent-a2']);
+  });
+
   test('#3804: rescues uncommitted SUMMARY.md from worktree .planning/ before dirty check', () => {
     // Fixture: the only dirty file is .planning/q1-SUMMARY.md (executor left it uncommitted
     // per documented contract — orchestrator commits it).  cleanup-wave MUST rescue it
