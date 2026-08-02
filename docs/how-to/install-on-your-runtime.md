@@ -125,6 +125,12 @@ The installer writes four surfaces under `~/.config/opencode/` (XDG) or `~/.open
 
 **GSD safety hooks on OpenCode.** OpenCode does not register lifecycle hooks the way Claude Code does (its `hooksSurface` is `none`), so GSD's prompt-injection guard, read-before-edit guard, injection scanner, and context monitor would otherwise be inert. The bundled plugin (`plugins/gsd-core.js`) closes that gap: OpenCode auto-discovers `plugins/*.{ts,js}` files under its config directory at startup and the adapter bridges OpenCode's event bus (`tool.execute.before`/`after`, `session.created`, `file.edited`) onto GSD's existing hook scripts, spawning them as subprocesses. No `opencode.json` entry is needed — the plugin is loaded by directory auto-discovery (the config `plugin` array is for npm packages only). A blocking hook aborts the tool call; an advisory hook surfaces its message without blocking.
 
+**Your plugin directory is pinned to CommonJS (accepted trade-off, #2544).** GSD's adapter is a CommonJS `.js` file, and Node decides a `.js` file's module type by walking up for the nearest `package.json`. So the installer writes a minimal `{"type":"commonjs"}` marker into the plugin directory itself — `plugins/package.json` on OpenCode and Kilo, `extensions/package.json` on pi. It is written only when GSD actually stages its adapter there, it never overwrites a `package.json` GSD did not write, and uninstall removes only its own.
+
+The trade-off: that marker shadows your config root for **every** `.js` file in that directory, not just GSD's. If you author your own plugins as ESM `.js` and rely on a `"type": "module"` at the config root, they will stop resolving as ESM. This is deliberate — it is strictly narrower than the pre-#2544 behavior, which wrote the marker over `<configRoot>/package.json` itself and destroyed whatever was there — but it is a real constraint rather than a pure improvement, which is why it is stated here.
+
+**Mitigation:** author your own plugins as `.ts`. OpenCode and Kilo compile plugin TypeScript with Bun, and a `package.json` `type` field does not affect `.ts` resolution — so a `.ts` plugin is unaffected by the marker. Failing that, keep ESM plugins outside the auto-discovered directory and load them as npm packages via the config `plugin` array.
+
 **Override the install directory:**
 
 ```bash

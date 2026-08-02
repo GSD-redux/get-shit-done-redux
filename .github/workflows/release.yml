@@ -216,6 +216,7 @@ jobs:
 
           INCLUDED=""
           SKIPPED=""
+          SKIPPED_EMPTY=""
           while IFS= read -r SHA; do
             [ -z "$SHA" ] && continue
             SUBJECT=$(git log -1 --format='%s' "$SHA")
@@ -223,9 +224,26 @@ jobs:
             if echo "$SUBJECT" | grep -qE '^(fix|chore)(\([^)]+\))?!?: '; then
               echo "→ cherry-picking $SHA  $SUBJECT"
               if ! git cherry-pick -x "$SHA"; then
-                # Abort restores HEAD to the last successful pick. On real
-                # runs, push that state so the operator can fetch, resolve
-                # $SHA manually, and finalize with auto_cherry_pick=false.
+                # #2913: git cherry-pick exits non-zero for BOTH genuine conflicts
+                # AND empty picks (the change is already present by content).
+                # Distinguish them: a genuine conflict has unmerged paths; an
+                # empty pick has none. `git cherry` compares patch-ids against a
+                # different base, so a commit already present by content can still
+                # be marked `+` — and applying it produces an empty diff.
+                UNMERGED=$(git diff --name-only --diff-filter=U)
+                if [ -z "$UNMERGED" ]; then
+                  # Already applied by content — skip and continue the loop.
+                  # This is the structural case: every release finalize produces
+                  # a `chore: sync next package version` commit that is a no-op
+                  # against the tag the next hotfix branches from.
+                  git cherry-pick --skip || true
+                  echo "  skip $SHA  $SUBJECT  (already applied by content — empty pick)"
+                  SKIPPED_EMPTY="${SKIPPED_EMPTY}- \`${SHA}\` ${SUBJECT}"$'\n'
+                  continue
+                fi
+                # Genuine conflict — abort restores HEAD to the last successful
+                # pick. On real runs, push that state so the operator can fetch,
+                # resolve $SHA manually, and finalize with auto_cherry_pick=false.
                 git cherry-pick --abort || true
                 if [ "$DRY_RUN" != "true" ]; then
                   git push --force-with-lease origin "$BRANCH" || git push origin "$BRANCH" || true
@@ -235,6 +253,12 @@ jobs:
                   echo ""
                   echo "Failed at: \`${SHA}\` — \`${SUBJECT}\`"
                   echo ""
+                  if [ -n "$SKIPPED_EMPTY" ]; then
+                    echo "### Skipped before this conflict (already applied by content — empty pick)"
+                    echo ""
+                    echo "$SKIPPED_EMPTY"
+                    echo ""
+                  fi
                   if [ "$DRY_RUN" = "true" ]; then
                     echo "**Dry run:** branch was not pushed, so the picks below were discarded with the runner."
                     if [ -n "$INCLUDED" ]; then
@@ -273,6 +297,11 @@ jobs:
             else
               echo "_No fix/chore commits to include._"
               echo ""
+            fi
+            if [ -n "$SKIPPED_EMPTY" ]; then
+              echo "### Skipped (already applied by content — empty pick)"
+              echo ""
+              echo "$SKIPPED_EMPTY"
             fi
             if [ -n "$SKIPPED" ]; then
               echo "### Skipped (feat/refactor/etc — not auto-included)"

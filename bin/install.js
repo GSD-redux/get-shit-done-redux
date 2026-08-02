@@ -45,7 +45,15 @@ const {
 } = require('../gsd-core/bin/lib/worktree-base-ref.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
 const { createImperativeAdapter } = require('../gsd-core/bin/lib/adapter-imperative.cjs');
+// #2930 (epic #1671 Phase 3): strips `<!-- gsd:section -->` markers from
+// workflow .md content at emit time, before any per-runtime rewrite runs.
+const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+// #2544: the CommonJS marker's single source of truth. classifyMarker() backs
+// BOTH ensureCommonJsMarker() (install) and removeCommonJsMarker() (uninstall),
+// so the write side can no longer clobber a package.json the remove side would
+// correctly refuse to delete.
+const { ensureCommonJsMarker, removeCommonJsMarker } = require('../gsd-core/bin/lib/commonjs-marker.cjs');
 // Canonical set of hook files shipped to users. Imported here so writeManifest()
 // records exactly the same set that build-hooks.js copies to hooks/dist/, making
 // the manifest and the installed hooks/ dir structurally identical. Avoids the
@@ -952,6 +960,31 @@ const applyRuntimeContentRewritesForCommandsInPlace = runtimeArtifactConversion.
 const convertClaudeToAugmentMarkdown = runtimeArtifactConversion.convertClaudeToAugmentMarkdown;
 const convertClaudeCommandToAugmentSkill = runtimeArtifactConversion.convertClaudeCommandToAugmentSkill;
 const convertClaudeAgentToAugmentAgent = runtimeArtifactConversion.convertClaudeAgentToAugmentAgent;
+// #2931 (ADR-1508): the windsurf converter family is single-sourced in the
+// conversion module, same pattern as the #1675 Augment dedup above. install.js
+// re-binds (does not re-define) these so there is exactly one body — the
+// generative-drift hazard the dedup removes. The two private helpers
+// (getWindsurfSkillAdapterHeader, convertSlashCommandsToWindsurfSkillMentions)
+// live only in the conversion module now; they are no longer duplicated here.
+// The reference-identity parity guard lives in
+// tests/install-runtime-artifacts.test.cjs (single-owner reference-identity
+// guard describe block), not tests/enh-1511-rewrite-engine-relocation.test.cjs
+// as the Augment comment above stated — that reference was stale.
+// (All call sites are below this line → no TDZ hazard.)
+const convertClaudeToWindsurfMarkdown = runtimeArtifactConversion.convertClaudeToWindsurfMarkdown;
+const convertClaudeCommandToWindsurfSkill = runtimeArtifactConversion.convertClaudeCommandToWindsurfSkill;
+const convertClaudeCommandToWindsurfWorkflow = runtimeArtifactConversion.convertClaudeCommandToWindsurfWorkflow;
+const convertClaudeAgentToWindsurfAgent = runtimeArtifactConversion.convertClaudeAgentToWindsurfAgent;
+// #2931 (ADR-1508): single-sourced in the conversion module — was a second,
+// unlinked verbatim copy here (used by the local Cursor/Trae/CodeBuddy/Cline
+// converters below), the exact drift class this PR exists to reduce. Verified
+// behaviorally identical (no block / one block / adjacent blocks / whole-
+// content block / unclosed opening tag / nested-looking tags / repeated
+// sequential calls for global-regex lastIndex leakage) before merging.
+// install.js re-binds (does not re-define) — RUNTIME_COMPATIBILITY_BLOCK_RE
+// is no longer duplicated here either. (All call sites are below this line
+// → no TDZ hazard.)
+const applyClaudeCodeBrandSwap = runtimeArtifactConversion.applyClaudeCodeBrandSwap;
 
 function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
@@ -2501,56 +2534,6 @@ function extractFrontmatterField(frontmatter, fieldName) {
   return match[1].trim().replace(/^['"]|['"]$/g, '');
 }
 
-// #2284 finding (b): the `<runtime_compatibility>` block appearing in
-// gsd-core/workflows/{plan-phase,execute-phase}.md is a runtime-COMPARISON
-// table ("**Claude Code:** Uses `Agent(...)`" / "a backgrounded Claude Code
-// agent" / "top-level Claude Code") — every "Claude Code" mention inside it
-// is a COMPARED-RUNTIME LABEL, not a host self-reference. The brand swap
-// below (`Claude Code` → the installing runtime's own display name) is
-// meant only for host self-references; applying it inside this block
-// mislabels the comparison (e.g. Windsurf installs would read "**Windsurf:**
-// Uses `Agent(...)`" describing what is actually Claude Code's behavior).
-// This is cross-cutting across every runtime that brand-swaps workflow
-// content (cursor/windsurf/trae/cline/codebuddy hardcoded; qwen/hermes
-// descriptor-driven via hostBehaviors.brandingRewrites) — confirmed to
-// reproduce on unmodified Windsurf, not Hermes-specific.
-const RUNTIME_COMPATIBILITY_BLOCK_RE = /<runtime_compatibility>[\s\S]*?<\/runtime_compatibility>/g;
-
-/**
- * Rewrite bare "Claude Code" self-references in workflow content to
- * `brandName`, EXCEPT inside `<runtime_compatibility>...</runtime_compatibility>`
- * blocks, which are left byte-for-byte verbatim. Every other content
- * transform in a runtime's `.md` converter (tool-name renames, path
- * rewrites, etc.) is unaffected — only this literal brand-name swap is
- * protected-region-aware, since only it risks mislabeling a
- * runtime-comparison table.
- *
- * Implementation: SPLIT `content` on the protected-block regex, brand-swap
- * only the GAP text between (and around) matches, then rejoin gap+block
- * alternately. No placeholder/sentinel token of any kind is substituted in
- * — a prior version used a sentinel-token mask/restore, which is exactly the
- * kind of invisible landmine this rewrite eliminates (a sentinel string, no
- * matter how obscure, is a theoretical collision risk with real content and
- * is easy to silently reintroduce in a future edit without it showing in a
- * diff). Behavior-identical to the removed sentinel-token version — verified
- * via `npm run gen:golden` producing zero further diff.
- */
-function applyClaudeCodeBrandSwap(content, brandName) {
-  if (!brandName) return content;
-  let result = '';
-  let lastIndex = 0;
-  RUNTIME_COMPATIBILITY_BLOCK_RE.lastIndex = 0; // reset shared global-regex state before each use
-  let m;
-  while ((m = RUNTIME_COMPATIBILITY_BLOCK_RE.exec(content))) {
-    const gap = content.slice(lastIndex, m.index);
-    result += gap.replace(/\bClaude Code\b/g, brandName);
-    result += m[0]; // protected block, verbatim — never brand-swapped
-    lastIndex = m.index + m[0].length;
-  }
-  result += content.slice(lastIndex).replace(/\bClaude Code\b/g, brandName);
-  return result;
-}
-
 // Tool name mapping from Claude Code to Cursor CLI
 const claudeToCursorTools = {
   Bash: 'Shell',
@@ -2681,142 +2664,16 @@ function convertClaudeAgentToCursorAgent(content) {
 }
 
 // --- Windsurf converters ---
-// Windsurf uses a tool set similar to Cursor.
-// Config lives in .windsurf/ (local) and ~/.codeium/windsurf/ (global).
-
-// Tool name mapping from Claude Code to Windsurf Cascade
-const claudeToWindsurfTools = {
-  Bash: 'Shell',
-  Edit: 'StrReplace',
-  AskUserQuestion: null, // No direct equivalent — use conversational prompting
-  SlashCommand: null,    // No equivalent — skills are auto-discovered
-};
-
-function convertSlashCommandsToWindsurfSkillMentions(content) {
-  // Keep leading "/" for slash commands; only normalize gsd: -> gsd-.
-  return content.replace(/gsd:/gi, 'gsd-');
-}
-
-function convertClaudeToWindsurfMarkdown(content) {
-  let converted = convertSlashCommandsToWindsurfSkillMentions(content);
-  // Replace tool name references in body text
-  converted = converted.replace(/\bBash\(/g, 'Shell(');
-  converted = converted.replace(/\bEdit\(/g, 'StrReplace(');
-  converted = converted.replace(/\bAskUserQuestion\b/g, 'conversational prompting');
-  // Replace subagent_type from Claude to Windsurf format
-  converted = converted.replace(/subagent_type="general-purpose"/g, 'subagent_type="generalPurpose"');
-  converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
-  // Replace project-level Claude conventions with Windsurf equivalents.
-  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.windsurf/rules`');
-  converted = converted.replace(/\.\/CLAUDE\.md/g, '.windsurf/rules');
-  converted = converted.replace(/`CLAUDE\.md`/g, '`.windsurf/rules`');
-  converted = converted.replace(/\bCLAUDE\.md\b/g, '.windsurf/rules');
-  converted = converted.replace(/\.claude\/skills\//g, '.windsurf/skills/');
-  converted = converted.replace(/\.\/\.claude\//g, './.windsurf/');
-  converted = converted.replace(/\.claude\//g, '.windsurf/');
-  // Bare forms (no trailing slash) — after slash forms to avoid double-rewrite.
-  // Use negative lookahead (?![\w-]) to preserve .claude-plugin and .claudeignore.
-  converted = converted.replace(/~\/\.claude(?![\w-])/g, '~/.windsurf');
-  converted = converted.replace(/\$HOME\/\.claude(?![\w-])/g, '$HOME/.windsurf');
-  // Environment variable name rewrite
-  converted = converted.replace(/\bCLAUDE_CONFIG_DIR\b/g, 'WINDSURF_CONFIG_DIR');
-  // Remove Claude Code-specific bug workarounds before brand replacement
-  converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
-  converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  // Replace "Claude Code" brand references with "Windsurf" — #2284(b): skips
-  // <runtime_compatibility> comparison-table content (protected region).
-  converted = applyClaudeCodeBrandSwap(converted, 'Windsurf');
-  return converted;
-}
-
-function getWindsurfSkillAdapterHeader(skillName) {
-  return `<windsurf_skill_adapter>
-## A. Skill Invocation
-- This skill is invoked when the user mentions \`${skillName}\` or describes a task matching this skill.
-- Treat all user text after the skill mention as \`{{GSD_ARGS}}\`.
-- If no arguments are present, treat \`{{GSD_ARGS}}\` as empty.
-
-## B. User Prompting
-When the workflow needs user input, prompt the user conversationally:
-- Present options as a numbered list in your response text
-- Ask the user to reply with their choice
-- For multi-select, ask for comma-separated numbers
-
-## C. Tool Usage
-Use these Windsurf tools when executing GSD workflows:
-- \`Shell\` for running commands (terminal operations)
-- \`StrReplace\` for editing existing files
-- \`Read\`, \`Write\`, \`Glob\`, \`Grep\`, \`Task\`, \`WebSearch\`, \`WebFetch\`, \`TodoWrite\` as needed
-
-## D. Subagent Spawning
-When the workflow needs to spawn a subagent:
-- Use \`Task(subagent_type="generalPurpose", ...)\`
-- The \`model\` parameter maps to Windsurf's model options (e.g., "fast")
-</windsurf_skill_adapter>`;
-}
-
-function convertClaudeCommandToWindsurfSkill(content, skillName) {
-  const converted = convertClaudeToWindsurfMarkdown(content);
-  const { frontmatter, body } = extractFrontmatterAndBody(converted);
-  let description = `Run GSD workflow ${skillName}.`;
-  if (frontmatter) {
-    const maybeDescription = extractFrontmatterField(frontmatter, 'description');
-    if (maybeDescription) {
-      description = maybeDescription;
-    }
-  }
-  description = toSingleLine(description);
-  const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
-  const adapter = getWindsurfSkillAdapterHeader(skillName);
-
-  return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
-}
-
-function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
-  // #1615 security: commandName flows unsanitized into a markdown body that
-  // Windsurf loads as an LLM-readable workflow. Validate at entry to prevent
-  // (a) prompt injection via newlines / markdown structure in the filename,
-  // (b) path-component injection via .., /, \ in stem → @-reference target.
-  // Pattern: optional gsd- prefix + lowercase alphanumeric + dashes; rejects
-  // everything else. See DEFECT.PROMPT-INJECTION-SCAN-COLLISION and the
-  // PR #1622 security review.
-  if (typeof commandName !== 'string' || !/^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(commandName)) {
-    const preview = typeof commandName === 'string' ? JSON.stringify(commandName.slice(0, 60)) : String(commandName);
-    throw new Error(
-      `convertClaudeCommandToWindsurfWorkflow: rejected commandName ${preview}; ` +
-      'must match /^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/ (no slashes, backslashes, spaces, dots, trailing dash, or control chars — prevents prompt injection and path-component injection into the workflow body)'
-    );
-  }
-  const converted = convertClaudeToWindsurfMarkdown(content);
-  const { frontmatter } = extractFrontmatterAndBody(converted);
-  const description = frontmatter ? extractFrontmatterField(frontmatter, 'description') : '';
-  const stem = commandName.startsWith('gsd-') ? commandName.slice(4) : commandName;
-  const workflow = `# ${commandName}\n\n${toSingleLine(description || `Run ${commandName}.`)}\n\nRead and execute the GSD command at @~/.claude/gsd-core/commands/gsd/${stem}.md end-to-end. Treat the user's message after /${commandName} as the command arguments.`;
-  const byteLength = Buffer.byteLength(workflow, 'utf8');
-  if (byteLength > 12000) {
-    throw new Error(`Windsurf workflow ${commandName} exceeds 12000 bytes (${byteLength}); extract references before installing`);
-  }
-  return workflow;
-}
-
-/**
- * Convert Claude Code agent markdown to Windsurf agent format.
- * Strips frontmatter fields Windsurf doesn't support (color, skills),
- * converts tool references, and adds a role context header.
- */
-function convertClaudeAgentToWindsurfAgent(content) {
-  let converted = convertClaudeToWindsurfMarkdown(content);
-
-  const { frontmatter, body } = extractFrontmatterAndBody(converted);
-  if (!frontmatter) return converted;
-
-  const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
-  const description = extractFrontmatterField(frontmatter, 'description') || '';
-
-  const cleanFrontmatter = `---\nname: ${yamlIdentifier(name)}\ndescription: ${yamlQuote(toSingleLine(description))}\n---`;
-
-  return `${cleanFrontmatter}\n${body}`;
-}
+// #2931 (ADR-1508): single-sourced in runtimeArtifactConversion, bound near
+// the top of this file alongside the #1675 Augment family. This block
+// previously carried byte-identical local duplicates of
+// convertSlashCommandsToWindsurfSkillMentions, convertClaudeToWindsurfMarkdown,
+// getWindsurfSkillAdapterHeader, convertClaudeCommandToWindsurfSkill,
+// convertClaudeCommandToWindsurfWorkflow, and convertClaudeAgentToWindsurfAgent,
+// plus an unused claudeToWindsurfTools table. Deleted here; the two
+// unexported helpers (getWindsurfSkillAdapterHeader,
+// convertSlashCommandsToWindsurfSkillMentions) now live only in the
+// conversion module, with no other caller in this file.
 
 // --- Augment converters ---
 // Augment uses a tool set similar to Cursor/Windsurf.
@@ -7786,6 +7643,32 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       // Replace ~/.claude/ and $HOME/.claude/ and ./.claude/ with runtime-appropriate paths
       // Skip generic replacement for Copilot/Antigravity — their converters handle all paths
       let content = fs.readFileSync(srcPath, 'utf8');
+
+      // #2930 (epic #1671 Phase 3): strip `<!-- gsd:section -->` markers
+      // BEFORE any per-runtime rewrite so a `.claude/` -> `.windsurf/` regex
+      // (or any other converter below) never reaches inside a marker
+      // attribute and corrupts it. composeWorkflow is a no-op (byte-identical
+      // return) for the 88+ workflows and every non-workflow .md that carries
+      // no markers, and for a malformed marker it throws loudly naming
+      // srcPath — never emit a half-composed workflow.
+      //
+      // Scoped to gsd-core/workflows/ ONLY (two independent reviewers,
+      // chore/2930): copyWithPathReplacement is the emit path for every .md
+      // under gsd-core/, skills/, and commands/ (see the three call sites),
+      // not just workflows. A doc that merely DOCUMENTS the marker syntax
+      // with an unfenced example (docs/reference/workflow-fragments.md is
+      // the live instance of this class, though not under the install tree
+      // today) would otherwise get silently mis-parsed as a real marker and
+      // that line lossily dropped — a file class issue #2930 never scoped
+      // to. Path is normalized UNCONDITIONALLY (backslash paths arrive on
+      // Linux too — CONTEXT.md path-separator rule) and checked as a
+      // path-segment match so the recursive descent (srcPath may be several
+      // directory levels below gsd-core/workflows/) is still caught.
+      const normalizedSrcPath = srcPath.replace(/\\/g, '/');
+      if (/(?:^|\/)gsd-core\/workflows\//.test(normalizedSrcPath)) {
+        content = composeWorkflow(content, { sourcePath: srcPath });
+      }
+
       if (!dispatch.mdSkipGenericRewrite) {
         const globalClaudeRegex = /~\/\.claude\//g;
         const globalClaudeHomeRegex = /\$HOME\/\.claude\//g;
@@ -8219,23 +8102,24 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         }
       }
 
+      // #2544: the marker now lives inside kimi's hooks/ dir — remove it
+      // before the emptiness check below, or the dir would never prune.
+      if (removeCommonJsMarker(kimiHooksDir)) {
+        removedCount++;
+        console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksDir}`);
+      }
+
       try {
         if (fs.readdirSync(kimiHooksDir).length === 0) fs.rmdirSync(kimiHooksDir);
       } catch (_) { /* not empty — leave it */ }
     }
 
-    const kimiPkgJsonPath = path.join(kimiHooksRoot, 'package.json');
-    if (fs.existsSync(kimiPkgJsonPath)) {
-      try {
-        const content = fs.readFileSync(kimiPkgJsonPath, 'utf8').trim();
-        if (content === '{"type":"commonjs"}') {
-          fs.unlinkSync(kimiPkgJsonPath);
-          removedCount++;
-          console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksRoot}`);
-        }
-      } catch (e) {
-        // Ignore read errors
-      }
+    // Retire the pre-#2544 marker at kimi's root (~/.kimi), where the bundle
+    // used to write it. Exact content match — a user's own package.json in
+    // kimi's native config home is never touched.
+    if (removeCommonJsMarker(kimiHooksRoot)) {
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksRoot} (pre-#2544 marker)`);
     }
   }
 
@@ -8543,13 +8427,18 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       }
     }
 
-    // #2717: remove the CommonJS marker GSD wrote into hooks/ for runtimes that
-    // stage .js hooks via dedicated paths (cursor/windsurf/codex) — but ONLY if
-    // it still carries GSD's exact content (a user-authored package.json is
-    // never deleted). Safe no-op for runtimes whose marker lives at the config
-    // root (the shared-bundle path) or that never received one.
+    // Retire the CommonJS marker staged into hooks/. hooks/ is shared space and
+    // is deliberately never rmdir'd here, so the marker must be removed
+    // explicitly or it would be left behind. Removed ONLY when it still carries
+    // GSD's exact content — a user-authored package.json is never deleted.
+    //
+    // #2717 reaches the runtimes that stage .js hooks via dedicated paths
+    // (cursor/windsurf/codex); #2544 reaches the shared-bundle runtimes, whose
+    // marker this PR moves out of the config root and into hooks/. Both land in
+    // the same directory, so one guarded call covers both.
     try {
       if (hooksSurface.removeCommonJsMarkerIfGsdOwned(hooksDir)) {
+        removedCount++;
         console.log(`  ${green}✓${reset} Removed GSD hooks/package.json (CommonJS marker)`);
       }
     } catch { /* best-effort */ }
@@ -8564,12 +8453,38 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   if (_np) {
     const pluginsDir = path.join(targetDir, _np.dir);
     const pluginPath = path.join(pluginsDir, _np.file);
+    // Tracks whether GSD actually removed anything from pluginsDir. The rmdir
+    // below is gated on it: pruning a directory GSD never wrote to is the same
+    // "don't touch territory GSD didn't fill" violation this issue is about,
+    // just inverted — a user-created but empty plugin/ or extensions/ dir is
+    // theirs, and an uninstall that never removed anything has no business
+    // deleting it.
+    let removedFromPluginsDir = false;
     if (fs.existsSync(pluginPath)) {
       try {
         fs.unlinkSync(pluginPath);
         removedCount++;
+        removedFromPluginsDir = true;
         console.log(`  ${green}✓${reset} Removed native plugin adapter (${runtime})`);
       } catch (_) { /* best-effort */ }
+    }
+    // #2544: the adapter's CommonJS marker sits beside it. Cleaned up OUTSIDE
+    // the adapter-exists guard above — a partial install (or a hand-deleted
+    // adapter) would otherwise strand GSD's marker forever and keep the dir
+    // from ever pruning. Conditioned on the adapter being GONE, though: if the
+    // unlink above failed, pulling the marker out from under a still-present
+    // CommonJS adapter would leave it unloadable. The exact content match
+    // still leaves any user-authored package.json in place.
+    if (!fs.existsSync(pluginPath) && removeCommonJsMarker(pluginsDir)) {
+      removedCount++;
+      removedFromPluginsDir = true;
+      console.log(`  ${green}✓${reset} Removed GSD package.json from ${_np.dir}/`);
+    }
+    // Only prune a dir GSD emptied. Pre-fix this rmdir sat inside the
+    // adapter-exists guard, so it could never fire on a dir GSD had not
+    // written to; hoisting it out to catch the marker-only case must not
+    // silently widen it to "any empty plugin dir".
+    if (removedFromPluginsDir) {
       try { fs.rmdirSync(pluginsDir); } catch (_) { /* not empty — user plugins present */ }
     }
   }
@@ -8630,19 +8545,14 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   }
 
   // 5. Remove GSD package.json (CommonJS mode marker)
-  const pkgJsonPath = path.join(targetDir, 'package.json');
-  if (fs.existsSync(pkgJsonPath)) {
-    try {
-      const content = fs.readFileSync(pkgJsonPath, 'utf8').trim();
-      // Only remove if it's our minimal CommonJS marker
-      if (content === '{"type":"commonjs"}') {
-        fs.unlinkSync(pkgJsonPath);
-        removedCount++;
-        console.log(`  ${green}✓${reset} Removed GSD package.json`);
-      }
-    } catch (e) {
-      // Ignore read errors
-    }
+  // Since #2544 the marker is staged into hooks/ (and the nativePlugin dir,
+  // handled at 4z above) rather than at targetDir. The targetDir removal is
+  // retained to retire the marker written by pre-#2544 installs — same exact
+  // content match as before, so a user-authored package.json is still never
+  // touched.
+  if (removeCommonJsMarker(targetDir)) {
+    removedCount++;
+    console.log(`  ${green}✓${reset} Removed GSD package.json (pre-#2544 config-root marker)`);
   }
 
   // 6. Clean up settings.json (remove GSD hooks and statusline)
@@ -11106,14 +11016,16 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // a safe no-op when the dir is already present.
     fs.mkdirSync(destRootDir, { recursive: true });
 
-    // Write package.json to force CommonJS mode for GSD scripts
-    // Prevents "require is not defined" errors when project has "type": "module"
-    // Node.js walks up looking for package.json - this stops inheritance from project
-    const pkgJsonDest = path.join(destRootDir, 'package.json');
-    fs.writeFileSync(pkgJsonDest, '{"type":"commonjs"}\n');
-    console.log(`  ${green}✓${reset} Wrote package.json (CommonJS mode)`);
+    // #2544: the CommonJS marker is NOT written here (destRootDir is the
+    // runtime's shared config root — user-writable territory on OpenCode and
+    // Kilo, where it is the documented place to declare local-plugin npm
+    // dependencies). It is written into hooks/ below, the directory GSD
+    // creates and fills with its own .js scripts, once that directory exists.
 
     let hooksOk = true;
+    // #2544: true once GSD has actually written into destRootDir/hooks/, which
+    // is what licenses the CommonJS marker below.
+    let stagedHooks = false;
 
     // Copy hooks from dist/ (bundled with dependencies)
     // Template paths for the target runtime (replaces '.claude' with correct config dir)
@@ -11122,6 +11034,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const hooksDest = path.join(destRootDir, 'hooks');
       fs.mkdirSync(hooksDest, { recursive: true });
       const hookEntries = fs.readdirSync(hooksSrc);
+      if (hookEntries.some((e) => fs.statSync(path.join(hooksSrc, e)).isFile())) stagedHooks = true;
       const configDirReplacement = getConfigDirFromHome(runtime, isGlobal);
       for (const entry of hookEntries) {
         const srcFile = path.join(hooksSrc, entry);
@@ -11216,7 +11129,45 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const hooksLibDest = path.join(destRootDir, 'hooks', 'lib');
       fs.mkdirSync(hooksLibDest, { recursive: true });
       copyLibDir(hooksLibSrc, hooksLibDest, GSD_HOOK_LIB_FILES);
+      if (GSD_HOOK_LIB_FILES.some((f) => fs.existsSync(path.join(hooksLibDest, f)))) stagedHooks = true;
       console.log(`  ${green}✓${reset} Installed hooks/lib/ helpers (git-cmd, graphify-rebuild, ...)`);
+    }
+
+    // #2544: pin the staged hook scripts to CommonJS from inside hooks/ — the
+    // directory GSD just created and filled — instead of from destRootDir.
+    // Scoping the marker to GSD's own directory keeps `require` working in
+    // hooks/*.js and hooks/lib/*.js under any ambient "type": "module", while
+    // leaving the shared config root untouched.
+    //
+    // Gated on `stagedHooks`, NOT on the directory merely existing: hooks/ is
+    // shared space, so an existence check would drop a GSD marker into a
+    // hooks/ directory the user created and GSD never wrote to — the same
+    // write-into-someone-else's-territory this issue is about. And never
+    // written over a package.json GSD does not own.
+    //
+    // ALSO gated on `hooksOk`: `stagedHooks` is computed from the SOURCE
+    // listing before the copy loop, so it stays true when the copies land but
+    // `verifyInstalled` then fails. Marking a hooks/ GSD did not successfully
+    // populate as CommonJS claims an ownership the install did not earn — the
+    // two flags answer different questions ("did we intend to fill it" vs "is
+    // it actually filled"), and the marker needs both.
+    const hooksMarkerDir = path.join(destRootDir, 'hooks');
+    if (stagedHooks && hooksOk) {
+      switch (ensureCommonJsMarker(hooksMarkerDir)) {
+        case 'written':
+          console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
+          break;
+        case 'preserved-foreign':
+          console.warn(`  ${yellow}⚠${reset}  Left existing hooks/package.json untouched (not GSD's marker) — GSD hooks may not resolve as CommonJS`);
+          break;
+        case 'failed':
+          // Best-effort: a read-only or full config dir must not abort the
+          // install with a raw stack trace. The hooks themselves are staged.
+          console.warn(`  ${yellow}⚠${reset}  Could not write hooks/package.json (CommonJS mode) — install continued; GSD hooks may not resolve as CommonJS`);
+          break;
+        default:
+          break;
+      }
     }
 
     return hooksOk;
@@ -11667,6 +11618,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const codexHooksDest = path.join(targetDir, 'hooks');
       fs.mkdirSync(codexHooksDest, { recursive: true });
       const configDirReplacement = getConfigDirFromHome(runtime, isGlobal);
+      // #2544: track whether anything was actually staged. hooks/dist existing
+      // is not the same as an allowlisted file landing in it — see the marker
+      // gate below.
+      let codexStagedHooks = false;
       for (const entry of fs.readdirSync(codexHooksSrc)) {
         if (!CODEX_HOOKS_TO_COPY.includes(entry)) continue;
         const srcFile = path.join(codexHooksSrc, entry);
@@ -11700,6 +11655,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           fs.copyFileSync(srcFile, destFile);
           try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
         }
+        codexStagedHooks = true;
       }
       console.log(`  ${green}✓${reset} Installed hooks (Codex)`);
       // #2717: write the CommonJS marker into hooks/ alongside the staged .js
@@ -11710,7 +11666,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // gsd-context-monitor.js as ESM and their require() calls fail silently.
       // Reuses the same helper the Cursor/Windsurf writers call so the marker
       // content + user-file-preservation contract is identical everywhere.
-      if (hooksSurface.ensureCommonJsMarker(codexHooksDest)) {
+      //
+      // #2544: gated on codexStagedHooks, mirroring installSharedHooksBundle's
+      // `stagedHooks`. The enclosing guard only proves hooks/dist EXISTS; if it
+      // holds none of CODEX_HOOKS_TO_COPY, this block mkdirs hooks/ and stages
+      // nothing, and an ungated marker would claim a directory GSD did not fill.
+      if (codexStagedHooks && hooksSurface.ensureCommonJsMarker(codexHooksDest)) {
         console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
       }
     }
@@ -11960,6 +11921,20 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // leaves kimi's skills/agents artifacts installed correctly.
       if (!installSharedHooksBundle(kimiHooksRoot)) {
         console.warn(`  ${yellow}⚠${reset}  Kimi hook bundle did not verify at ${path.join(kimiHooksRoot, 'hooks')} — GSD lifecycle hooks may be incomplete`);
+      }
+      // #2544: retire the pre-fix marker at kimi's root. installSharedHooksBundle
+      // used to write {"type":"commonjs"} at destRootDir itself; it now writes it
+      // under destRootDir/hooks/, so on an upgrade the old root file is stale and
+      // would keep ~/.kimi pinned to CommonJS.
+      //
+      // Done HERE rather than in installer-migration 007 (which retires the same
+      // stale marker for every other runtime) because kimi's hook root is
+      // ~/.kimi — resolved by resolveKimiHooksTomlDir, OUTSIDE kimi's configDir.
+      // Migration relPaths are structurally confined to configDir, so the
+      // framework cannot address this path at all. Same exact-content predicate
+      // either way, so a user-authored ~/.kimi/package.json is never touched.
+      if (removeCommonJsMarker(kimiHooksRoot)) {
+        console.log(`  ${green}✓${reset} Removed stale package.json from ${kimiHooksRoot} (pre-#2544 marker)`);
       }
       const kimiHookOpts = { portableHooks: hasPortableHooks, runtime };
       const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');

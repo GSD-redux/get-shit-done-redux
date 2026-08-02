@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-roadmapper.md": "#2255 round 10 Blocker 1: Step 7 now arms the gsd-write-guard single-use sentinel before each curated write. The roadmapper Writes both .planning/ROADMAP.md and .planning/STATE.md wholesale, and /gsd:new-milestone spawns it against the OUTGOING milestone's files — new-milestone's phases.clear archives phase DIRECTORIES, never ROADMAP.md, so nothing compacts it first and no ordering rule forces /gsd:complete-milestone to run beforehand. Measured against the shipped hook at the #973 file size (292 lines), a new 4-phase roadmap lands at 18.2% and an 8-phase one at 31.8%: both hard-blocked. The +1130 bytes are that wiring plus the rationale a future editor needs to keep it — the arming is per-target because the sentinel is path-bound and single-use, and each is gated on [ -f ] so the /gsd:new-project path (ENOENT-exempt) strands no unconsumed token. This is the escape-hatch binding the guard must carry to avoid blocking a first-party flow, not incidental prose growth."
+  }
+}

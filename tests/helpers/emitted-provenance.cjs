@@ -91,6 +91,14 @@ const HOOKS_WINDOWS_SHIM_SRC = 'src/runtime-hooks-surface.cts';
  *  (writeHermesCategoryDescription) as a code literal. */
 const INSTALLER_SRC = 'bin/install.js';
 
+/** Module owning the #2544 `{"type":"commonjs"}` marker literal and the
+ *  write/remove ownership predicate behind it. */
+const COMMONJS_MARKER_SRC = 'src/commonjs-marker.cts';
+
+/** Engine module that stages the native plugin adapter and writes the marker
+ *  beside it (_installNativePluginIfDeclared). */
+const INSTALL_ENGINE_SRC = 'src/install-engine.cts';
+
 /** Source file holding the Kimi root-agent literal (runtime-artifact-layout.cts:303). */
 const KIMI_ROOT_AGENT_SRC = 'src/runtime-artifact-layout.cts';
 
@@ -331,7 +339,9 @@ const PROVENANCE_RULES = [
     // Attribute to the REPO source a PR actually edits, not the build artifact.
     // Excludes Copilot's hook-registration JSON (next rule) — that is a code
     // literal, not a built script, and attributing it here resolved to a
-    // nonexistent `hooks/gsd-session.json`.
+    // nonexistent `hooks/gsd-session.json`. `package.json` is excluded for the
+    // same reason (the #2544 `commonjs-marker` rule below): there is no
+    // `hooks/package.json` in the repo to attribute to.
     //
     // `.cmd` shims are a SEPARATE, Windows-only emission path folded into this
     // SAME rule rather than a dedicated one (see the `transforms` doc above for
@@ -346,16 +356,17 @@ const PROVENANCE_RULES = [
     // same source file. The wrapped `.js` file's NAME flows into the `.cmd`
     // bytes; its CONTENT never does — see the `sources` comment below for why
     // that rules out attributing to `hooks/<name>.js`.
-    pattern: /^(?!gsd-session\.json$).+$/,
-    // `hooks/package.json` (the CommonJS marker) is ALSO code-derived, not built
-    // from a tracked hooks/package.json source: its bytes are a fixed literal
-    // emitted at install time by ensureCommonJsMarker (HOOKS_WINDOWS_SHIM_SRC,
-    // a.k.a. src/runtime-hooks-surface.cts) for cursor/windsurf, and by the codex
-    // copy block (bin/install.js) which calls that same exported helper (#2717).
-    // So — like the `.cmd` shim below — it routes `sources`/`transforms` to that
-    // source file rather than to a nonexistent `hooks/package.json`. The codex
-    // emission path is covered transitively: it requires + calls the helper whose
-    // content literal defines the marker bytes.
+    pattern: /^(?!gsd-session\.json$|package\.json$).+$/,
+    // `package.json` (the CommonJS marker) is excluded here and owned by the
+    // dedicated `commonjs-marker` rule below. #2717 attributed it inside THIS
+    // rule, routing it to HOOKS_WINDOWS_SHIM_SRC because at that point
+    // src/runtime-hooks-surface.cts was its only emitter (cursor/windsurf, plus
+    // the codex copy block calling the same exported helper). #2544 adds a
+    // second emitter — src/commonjs-marker.cts, via installSharedHooksBundle and
+    // _installNativePluginIfDeclared — and two roots this rule does not cover
+    // (`plugins`, `extensions`). A rule keyed to HOOKS_ROOTS with a single
+    // source can express neither, so the marker moves to its own rule and that
+    // rule names BOTH emitters. See the `commonjs-marker` entry below.
     //
     // `.cmd` shim bytes are code-derived (a literal template + the install-time
     // interpreter/path tokens in HOOKS_WINDOWS_SHIM_SRC) — the wrapped `.js`
@@ -366,8 +377,57 @@ const PROVENANCE_RULES = [
     // used elsewhere in this table (copilot-hook-registration, cline-rules-
     // code-derived, hermes-category-description). The redundancy between
     // `sources` and `transforms` here is harmless — the mis-attribution was not.
-    sources: (m) => [m[0].endsWith('.cmd') || m[0] === 'package.json' ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
-    transforms: (m) => (m[0].endsWith('.cmd') || m[0] === 'package.json' ? [HOOKS_WINDOWS_SHIM_SRC] : []),
+    // No `package.json` arm here: the pattern above excludes it, so the branch
+    // #2717 added for it is unreachable from this rule.
+    sources: (m) => [m[0].endsWith('.cmd') ? HOOKS_WINDOWS_SHIM_SRC : `hooks/${m[0]}`],
+    transforms: (m) => (m[0].endsWith('.cmd') ? [HOOKS_WINDOWS_SHIM_SRC] : []),
+  },
+  {
+    id: 'commonjs-marker',
+    kind: 'code-derived',
+    // Every root GSD stages its own `.js` files into and therefore pins to
+    // CommonJS: the hooks roots, plus the native plugin/extension dirs.
+    roots: [...HOOKS_ROOTS, 'plugins', 'extensions'],
+    // #2544: a `{"type":"commonjs"}` module-type marker, written as a code
+    // literal so Node's ancestor walk resolves GSD's staged `.js` files as
+    // CommonJS under an ambient `"type": "module"`. Like the Copilot
+    // registration JSON above it is emitted, never built — there is no
+    // `hooks/package.json` or `plugins/package.json` in the repo, so the
+    // built-script rule would attribute it to a path that does not exist.
+    // Sources are scoped PER ROOT, not declared as one flat union. Each root has
+    // exactly one writer besides the shared marker module, and a flat list would
+    // attribute every root to all of them — `extensions/package.json` to the
+    // hooks-surface writer that never touches it, `.kimi/hooks/package.json` to
+    // the native-plugin writer, and so on. That matters because
+    // `emitted-diff.cjs` accepts the FIRST satisfied source: a flat list
+    // containing `bin/install.js` lets any change anywhere in that 13k-line file
+    // authorise marker drift for every root — the blanket escape hatch this
+    // file's own agents-verbatim comment (above) refuses for the same reason.
+    //
+    //   hooks/ (shared bundle)  -> bin/install.js  (installSharedHooksBundle)
+    //   hooks/ (#2717 runtimes) -> src/runtime-hooks-surface.cts + bin/install.js
+    //                              (the codex copy block calls the exported helper)
+    //   .kimi/hooks/            -> bin/install.js  (the kimi hooks-root bundle)
+    //   plugins/, extensions/   -> src/install-engine.cts
+    //                              (_installNativePluginIfDeclared)
+    //
+    // COMMONJS_MARKER_SRC is in every root: it owns the marker BYTES, so a change
+    // to it can move any of them.
+    // The rule ctx is `{ rel, runtime }` — it carries no `root`, so the root is
+    // derived from `rel` here. Keying on a ctx field that does not exist would
+    // send every path down one branch silently, which is the failure this
+    // per-root split exists to prevent.
+    pattern: /^package\.json$/,
+    sources: (_m, ctx) => {
+      const root = String(ctx.rel).replace(/\/package\.json$/, '');
+      if (root === 'plugins' || root === 'extensions') {
+        return [COMMONJS_MARKER_SRC, INSTALL_ENGINE_SRC];
+      }
+      if (root === '.kimi/hooks') return [COMMONJS_MARKER_SRC, INSTALLER_SRC];
+      // 'hooks' — written by the shared bundle for most runtimes and by the
+      // #2717 dedicated paths for cursor/windsurf/codex.
+      return [COMMONJS_MARKER_SRC, INSTALLER_SRC, HOOKS_WINDOWS_SHIM_SRC];
+    },
   },
   {
     id: 'copilot-hook-registration',
