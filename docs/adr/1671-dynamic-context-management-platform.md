@@ -68,6 +68,34 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
   **Amended by #2929 (Phase 2).** This ADR originally specified the contract as "priority + binary-search cutoff to a per-runtime budget". Implementing Phase 2 established that a cutoff alone **cannot express the function this platform generalizes**: `prompt-budget.applyBudget` is not a cutoff but a fixed five-step ladder in which each section carries its own shrink strategy, and only three of its eight sections are ever droppable — `PROJECT.md` is head-shrunk to N lines and plans are proportionally tail-truncated with a per-plan floor, while instructions and roadmap are never trimmed at all. A cutoff composer sorts by priority and discards the tail; it has no way to say "shrink this one", "truncate that one but never below its floor", or "these three are the only droppables, in this order". Building to the literal wording and routing `prompt-budget` through it would have silently changed review-prompt output. Shrink strategies are therefore the core abstraction, and **binary-search cutoff becomes one strategy among them** — the right one for per-runtime emission in Phases 3-4, not for this ladder. Ordering is declaration order rather than a numeric priority field. This is an elaboration of the decision's intent, not a reversal of it.
 - **Applicability grammar (added by #2930, Phase 3).** The fragment unit's `when=` attribute is deliberately a CLOSED grammar: exactly one atom from a frozen vocabulary — `always`, `flag:--wave`, `state:gap-closure-phase`, `state:has-prior-phases` — with no boolean operators, negation, or nesting, and an unknown `when=` value throws rather than being ignored. This is a Greenspun's-Tenth-Rule guard: left open-ended, `when=` acquires `&&`/`!`/precedence/runtime-capability predicates and becomes an ad-hoc, informally-specified predicate language grown one condition at a time. Widening the vocabulary requires a coordinated ADR amendment, not an organic edit. `when=` is parsed and validated in Phase 3 but not yet acted on; applicability selection is Phase 5.
 - **Budget unit:** bytes for emission caps (matches `lfByteCount`, deterministic, offline-safe); a token estimate for run-time selection.
+
+  **Corrected by #2931 (Phase 4) — the Windsurf cap was never load-bearing.** The Context
+  section above states that the one true emission-time cap, Windsurf's 12,000-byte limit,
+  "is a hard `throw` with no graceful fallback", and Phase 4 inherited that as "Windsurf
+  installs that currently hard-fail will succeed". Measured on `next` at `640eaee16`, that
+  is false. `convertClaudeCommandToWindsurfWorkflow` emits a **stub** — a title, a
+  one-line description, and an `@`-reference to the real command body — not an inlined
+  workflow. Across all 71 `commands/gsd/*.md` the largest emission is **304 bytes against
+  the 12,000-byte cap: 11,696 bytes of headroom, zero commands over.** Reaching the throw
+  requires a single frontmatter `description` field of ~11.7 KB.
+  `capabilities/windsurf/capability.json` confirms this is the only `commands` converter
+  for Windsurf (`destSubpath: workflows`).
+
+  This was wrong at authoring rather than expired: `fc2a7c055` (2026-06-23) introduced
+  **both** the stub and the throw in a single commit, one day before this ADR was written
+  (2026-06-24). The throw has never guarded a full body.
+
+  Two consequences. First, epic user story 1 — "a solo developer on a capped runtime can
+  install and run GSD without hitting size limits" — was **already satisfied** before this
+  epic began, because Windsurf already uses the stub + `@-ref` progressive-disclosure model
+  this ADR's Decision item 3 describes. Second, the real gap is narrower and was previously
+  unstated: **nothing anywhere measures an emitted artifact against its host's declared
+  limit.** Phase 4 closes that, and does not "fix Windsurf". The throw is removed in favor
+  of truncating the description — the same bound its sibling
+  `convertClaudeCommandToWindsurfSkill` already applied — which makes the cap unreachable
+  by construction and leaves the 12,000 constant in exactly one place: the guard table.
+  That eliminates the `DEFECT.GENERATIVE-FIX` dual-surface duplication this ADR flags,
+  rather than adding a parity test for it.
 - **Determinism + drift-guard:** every generated artifact follows the universal `--check`/`--write` idiom and is committed; any constant shared between two surfaces gets a `DEFECT.GENERATIVE-FIX` parity assertion. Caps are asserted on **emitted per-runtime bytes** via real spawn-install tests (engine-direct tests are false-green for install behavior).
 - **Boundary coverage:** the composer's budget logic is tested at `cap-1 / cap / cap+1` per `RULESET.TESTS.boundary-coverage`.
 
@@ -80,6 +108,19 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
 3. **Lift `prompt-budget.cts`** out of the review silo into a shared `context-composer` seam with fast-check property tests + boundary coverage.
 4. **Pilot fragmentization on one XL workflow** (`plan-phase.md` or `execute-phase.md`): split into priority-tagged sections + applicability; composer emits per-runtime; prove byte-identical-or-smaller output and green `gsd-test` docker.
 5. **Move caps from source to emitted output**; turn the Windsurf `throw` into graceful auto-trim; auto-regenerate size baselines on intentional edits.
+
+   **Superseded in part by ADR-2719 (#2724), which landed after this ADR.** There are no
+   size baselines left to auto-regenerate: `tests/workflow-size-baseline.json`,
+   `tests/agent-size-baseline.json`, `scripts/update-size-baseline.cjs` and
+   `npm run size:baseline` were all deleted, and the differential attribution check is now
+   the sole gate (`RULESET.EMITTED_ATTRIBUTION`). ADR-2719 also already moved *hash*
+   propagation to emitted per-runtime artifacts across 19 manifests. What it did **not**
+   move is the size ratchet, which still keys on source dirs (`currentSizes` reads
+   `gsd-core/workflows/*.md` and `agents/*.md` by bare filename). Phase 4 therefore adds an
+   absolute per-runtime **cap** over emitted bytes — reusing ADR-2719's existing
+   spawn-install walk — and deliberately leaves the growth ratchet source-keyed: re-keying
+   it onto the 8,529 emitted paths would turn one acknowledgment per edited file into
+   roughly nineteen, which is how a gate becomes something contributors route around.
 6. **Wire the init bundle (C)** to emit a per-invocation sections manifest; workflows consume it.
 7. **Roll out across LARGE/XL tiers**; update INVENTORY families + parity tests.
 8. **(Deferred)** MCP served catalog (ADR-857 §7 / #956).
@@ -96,6 +137,23 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
 
 **Negative / risks**
 - Trimming a load-bearing fragment is a correctness hazard (history: paraphrased `META.RULE` → agent violations). Mitigate with `flexReserve` floors, a Promptfoo-style eval gate, and boundary tests.
+
+  **Amended by #2931 (Phase 4) — the eval gate is deterministic, not model-graded.** A
+  *blocking* CI gate driven by exogenously-graded LLM judgment, as Phase 4 originally
+  worded it, contradicts two recorded decisions: `PROBE.ci.surface` — "the contract
+  (parse/validate, projection round-trip, fail-closed guards), **NEVER the LLM judgment**"
+  (ADR-550 D5) — and `PROHIB.judgment-tier` — "never-silent / never-hard-halt soft gate"
+  (ADR-550 D4). `PROHIB.recall` further records that there is no compiled prohibition-probe
+  recall engine to source an assertion set from; the `PROHIB.*`/`PROBE.*` classes describe
+  the *architecture* of that subsystem, not a corpus of prohibitions about workflow content.
+
+  The gate therefore asserts the **contract**, which is both blocking and deterministic:
+  `composeWithinBudget` already returns `omitted`, `shrunk`, `floored` and `isolatePrefix`,
+  so the gate proves no fragment declared load-bearing was omitted or shrunk, that a
+  floored fragment is a success rather than a finding, and that the `isolate` prefix
+  survives byte-identical. It carries an explicit anti-vacuity rule — an empty
+  load-bearing set fails, because a gate asserting over nothing proves nothing. No model
+  participates. This satisfies the mitigation this section asks for while honoring D4/D5.
 - Per-runtime emission multiplies artifacts across the 15 × N matrix (inventory/parity surface).
 - Build-order fragility (must run after `build:lib`).
 - Dual-surface drift if any future MCP channel is added — requires parity assertions.

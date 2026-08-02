@@ -572,6 +572,65 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  # #2966: turns a loop QA-walk "smell" into a decision — see
+  # scripts/qa-smell-ratchet.cjs's own header for the full design invariant.
+  # Gated the same way as `test`/`coverage-gate` (product_changed only): the
+  # scenarios drive the real gsd-tools binary end-to-end, so there is nothing
+  # to walk on a docs-only change.
+  qa-loop-walk:
+    name: QA loop walk (smell ratchet)
+    needs: changes
+    if: needs.changes.outputs.product_changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          token: ${{ github.token }}
+
+      - name: Guard — require GitHub-hosted runner
+        run: node scripts/ci-guard-runner.cjs
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f  # v6.3.0
+        with:
+          node-version: 24
+          cache: 'npm'
+
+      - name: Environment check
+        run: npm run check:env
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Dependency integrity gate
+        run: node scripts/check-npm-integrity.cjs
+
+      - name: Build runtime lib (required by the QA walk's gsd-tools invocations)
+        run: npm run build:lib
+
+      - name: Run QA loop-walk scenarios
+        run: npm run test:qa
+
+      # `-- --json qa-report.json` asks the ratchet to also write the full report
+      # (its default `npm run lint:qa-smells` invocation does not) — the report is
+      # gitignored and exists for the artifact upload below, not for the gate itself.
+      - name: QA smell ratchet
+        run: npm run lint:qa-smells -- --json qa-report.json
+
+      - name: Upload QA report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: qa-report
+          path: qa-report.json
+          if-no-files-found: ignore
+          retention-days: 3
+
   required-tests:
     name: Required tests
     needs:
@@ -581,6 +640,7 @@ jobs:
       - test-inert
       - test-full
       - coverage-gate
+      - qa-loop-walk
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 1
@@ -595,6 +655,7 @@ jobs:
           INERT_RESULT: ${{ needs.test-inert.result }}
           FULL_TEST_RESULT: ${{ needs.test-full.result }}
           COVERAGE_GATE_RESULT: ${{ needs.coverage-gate.result }}
+          QA_LOOP_WALK_RESULT: ${{ needs.qa-loop-walk.result }}
         run: |
           set -euo pipefail
           echo "code_changed=$CODE_CHANGED"
@@ -605,6 +666,7 @@ jobs:
           echo "test-inert=$INERT_RESULT"
           echo "test-full=$FULL_TEST_RESULT"
           echo "coverage-gate=$COVERAGE_GATE_RESULT"
+          echo "qa-loop-walk=$QA_LOOP_WALK_RESULT"
 
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "::error::test scope detection did not pass"
@@ -641,6 +703,12 @@ jobs:
             # docs-only PR.
             if [ "$COVERAGE_GATE_RESULT" != "success" ] && [ "$COVERAGE_GATE_RESULT" != "skipped" ]; then
               echo "::error::coverage-gate did not pass"
+              exit 1
+            fi
+
+            # #2966: same product_changed-only gating as coverage-gate above.
+            if [ "$QA_LOOP_WALK_RESULT" != "success" ] && [ "$QA_LOOP_WALK_RESULT" != "skipped" ]; then
+              echo "::error::qa-loop-walk did not pass"
               exit 1
             fi
           else

@@ -32,7 +32,16 @@ function resolveTarballFiles() {
     encoding: 'utf-8',
     shell: true, // Windows: npm is npm.cmd and needs a shell
     stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: 60_000,
+    // package.json's `prepack`/`prepare` runs a full `npm run build:lib`
+    // (tsc) before `npm pack` computes the file list — a bounded but
+    // non-trivial subprocess (~2s in isolation). Under the full parallel
+    // 28,000+-test CI matrix this has been observed to take 60.6s and trip
+    // a 60_000ms bound (#2931 gsd-test run d52d2ee4, linux-node24,
+    // duration_ms 60637.56), aborting this file's `before()` hook and
+    // cascading every sibling test to "cancelled". 120s keeps the bound
+    // finite (never unbounded, per the subprocess-timeout convention) while
+    // giving real headroom for a contended CI box.
+    timeout: 120_000,
   });
   const parsed = JSON.parse(raw);
   return new Set(parsed[0].files.map((f) => f.path.replace(/\\/g, '/')));

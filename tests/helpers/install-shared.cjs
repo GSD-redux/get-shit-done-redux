@@ -4,8 +4,9 @@
  * Shared helpers and constants for the install test suites and the
  * golden-install-parity harness. Provides the install/uninstall drivers
  * (walk, runMinimalInstall, RUNTIME_META, BUILD_SCRIPT) and the single
- * canonical golden-parity manifest builder (buildParityManifest) plus its
- * exclusion constants (VOLATILE_FILES, HOOK_CONFIG_FILES,
+ * canonical golden-parity manifest builder (buildParityManifest), its sibling
+ * byte-size builder over the same normalized walk (buildEmittedSizes, #2931),
+ * plus their shared exclusion constants (VOLATILE_FILES, HOOK_CONFIG_FILES,
  * HOOK_CONFIG_RELATIVE_PATHS, EXCLUDED_PREFIXES). Imported by many
  * tests/*.test.cjs and by scripts/gen-golden-install-parity-zcode.cjs — do
  * NOT re-declare the builder/constants inline (enforced by
@@ -308,15 +309,34 @@ function walk(dir) {
  *   (#2891 review FINDING 5).
  * @returns {{ [rel: string]: string }}
  */
-function buildParityManifest(configDir, root, opts = {}) {
-  // `opts = {}` only substitutes for an OMITTED (or explicit `undefined`) third
-  // argument — `null` and other non-object values sail past a default parameter and
-  // would otherwise reach the `in` check below and throw a raw, unhelpful
-  // `TypeError: Cannot convert undefined or null to object` (#2891 review FINDING 5).
-  // Fail with a clear, attributable message instead.
+/**
+ * Shared walk+validate+normalize core for buildParityManifest and
+ * buildEmittedSizes. Both need the EXACT same file set (VOLATILE_FILES,
+ * HOOK_CONFIG_FILES, HOOK_CONFIG_RELATIVE_PATHS, EXCLUDED_PREFIXES) and the
+ * exact same `<HOME>`/version-stamp normalized content — one hashes it, the
+ * other measures its byte length — so the coverage and the normalization live
+ * in ONE place instead of being copy-pasted across the two (the copy-paste
+ * itself is the drift risk this function exists to remove; see #2931 brief).
+ *
+ * @param {string} configDir
+ * @param {string} root
+ * @param {object} opts - same shape as buildParityManifest's `opts` (see its
+ *   JSDoc for the full pkgVersion/opts contract this validates).
+ * @param {string} callerName - used only in thrown error messages, so a
+ *   caller-facing error still names the PUBLIC function the caller invoked
+ *   (`buildParityManifest` / `buildEmittedSizes`), not this internal helper.
+ * @returns {{ [rel: string]: string }} rel -> normalized utf8 content, sorted keys.
+ */
+function collectNormalizedEmittedFiles(configDir, root, opts, callerName) {
+  // `opts = {}` at each public call site only substitutes for an OMITTED (or
+  // explicit `undefined`) third argument — `null` and other non-object values
+  // sail past that default parameter and would otherwise reach the `in` check
+  // below and throw a raw, unhelpful `TypeError: Cannot convert undefined or
+  // null to object` (#2891 review FINDING 5). Fail with a clear, attributable
+  // message instead.
   if (opts === null || typeof opts !== 'object' || Array.isArray(opts)) {
     throw new Error(
-      `buildParityManifest: opts must be a plain object or omitted, got ${JSON.stringify(opts)}.`
+      `${callerName}: opts must be a plain object or omitted, got ${JSON.stringify(opts)}.`
     );
   }
 
@@ -345,7 +365,7 @@ function buildParityManifest(configDir, root, opts = {}) {
   // exactly the cross-tree mis-attribution bug this option exists to fix (#2891).
   if (typeof pkgVersion !== 'string' || pkgVersion.length === 0 || !SEMVER_ISH_RE.test(pkgVersion)) {
     throw new Error(
-      `buildParityManifest: pkgVersion must be a non-empty semver-ish string ` +
+      `${callerName}: pkgVersion must be a non-empty semver-ish string ` +
       `(MAJOR.MINOR.PATCH, optional -prerelease/+build), got ${JSON.stringify(pkgVersion)}. ` +
       'Pass the version of the tree that produced the emitted content at configDir.'
     );
@@ -374,10 +394,10 @@ function buildParityManifest(configDir, root, opts = {}) {
     if (EXCLUDED_PREFIXES.some((p) => rel.startsWith(p))) continue;
 
     const content = fs.readFileSync(full);
-    // Normalize every occurrence of the temp root so hashes are stable across runs.
+    // Normalize every occurrence of the temp root so results are stable across runs.
     // Also normalize the PRODUCING tree's package version at its known stamp sites
     // (pkgVersion, defaulted to this checkout's own) — via the ANCHORED
-    // normalizeVersionStamps, not a blind substring replace — so the golden survives
+    // normalizeVersionStamps, not a blind substring replace — so results survive
     // `npm version` bumps (the rc release step bakes the new version into hook files
     // before running tests) and, for a cross-tree caller, so the version stamp baked
     // in by a DIFFERENT tree's installer doesn't masquerade as a real content diff,
@@ -390,8 +410,7 @@ function buildParityManifest(configDir, root, opts = {}) {
         .split(root).join('<HOME>'),
       pkgVersion,
     );
-    const hash = crypto.createHash('sha256').update(normalized).digest('hex').slice(0, 16);
-    unsorted[rel] = hash;
+    unsorted[rel] = normalized;
   }
 
   // Reconstruct with sorted keys for stable JSON serialisation
@@ -400,6 +419,56 @@ function buildParityManifest(configDir, root, opts = {}) {
     sorted[key] = unsorted[key];
   }
   return sorted;
+}
+
+function buildParityManifest(configDir, root, opts = {}) {
+  const normalizedByRel = collectNormalizedEmittedFiles(configDir, root, opts, 'buildParityManifest');
+  const out = {};
+  for (const rel of Object.keys(normalizedByRel)) {
+    out[rel] = crypto.createHash('sha256').update(normalizedByRel[rel]).digest('hex').slice(0, 16);
+  }
+  return out;
+}
+
+/**
+ * Build a deterministic byte-size map for all non-volatile files under configDir,
+ * measured on the SAME `<HOME>`/version-normalized content buildParityManifest
+ * hashes (see collectNormalizedEmittedFiles — one walk, one normalization, two
+ * projections, so the two functions can never diverge on which files they cover).
+ *
+ * Byte counting is LF-normalized (CRLF -> LF, stripped BEFORE the byte count),
+ * matching RULESET.WORKFLOW_SIZE_BUDGET ("BYTES not lines, LF-normalized" per
+ * #683/#717) and mirroring scripts/workflow-size.cjs's `lfByteCount`. That helper
+ * is NOT reused directly here: `lfByteCount(filePath)` re-reads a file from disk
+ * by path and has no `<HOME>`/version normalization, whereas this must count the
+ * already-normalized IN-MEMORY string collectNormalizedEmittedFiles produced — a
+ * re-read would both duplicate I/O and measure the wrong (unnormalized, raw
+ * temp-root-embedding) bytes. Only the one-line CRLF-strip + `Buffer.byteLength`
+ * formula is duplicated, not a file-reading helper.
+ *
+ * NOTE: this counts the NORMALIZED content (post `<HOME>` substitution and
+ * version-stamp normalization), not raw on-disk bytes. That is deliberate:
+ * determinism is the whole point of this map — a caller comparing sizes across
+ * machines/CI runs/temp dirs needs a value that does not vary with the temp
+ * root's length. Consequence: for any file whose content embeds the temp root
+ * (e.g. `@`-referenced absolute paths), this UNDERSTATES real on-disk size by
+ * roughly `(len(configDir) - len('<HOME>')) * occurrences`. A future consumer
+ * enforcing a byte cap close to a real hard limit must carry its own margin for
+ * this gap — it is not folded in here.
+ *
+ * @param {string} configDir - absolute path to the installed runtime config dir
+ * @param {string} root      - temp root path to replace with '<HOME>'
+ * @param {object} [opts]    - same shape/guards as buildParityManifest's `opts`
+ *   (see its JSDoc for the full pkgVersion/opts contract).
+ * @returns {{ [rel: string]: number }}
+ */
+function buildEmittedSizes(configDir, root, opts = {}) {
+  const normalizedByRel = collectNormalizedEmittedFiles(configDir, root, opts, 'buildEmittedSizes');
+  const out = {};
+  for (const rel of Object.keys(normalizedByRel)) {
+    out[rel] = Buffer.byteLength(normalizedByRel[rel].replace(/\r\n/g, '\n'), 'utf8');
+  }
+  return out;
 }
 
 /** Sorted list of emitted relative paths for a runtime install (file-set snapshot,
@@ -599,6 +668,7 @@ module.exports = {
   stripAnsi,
   walk,
   buildParityManifest,
+  buildEmittedSizes,
   buildInstallTree,
   simulateHookCopy,
   installerEnv,

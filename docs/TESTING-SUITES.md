@@ -13,6 +13,7 @@ This project's `tests/` directory uses **filename suffix markers** to group test
 | `install` | `*.install.test.cjs` | Tests that perform a real install/uninstall against a sandbox project. Slower; PR CI skips these on PRs and runs them on `main` push only. |
 | `security` | `*.security.test.cjs` | Adversarial input, prompt-injection guards, fixture-driven hostile-payload sweeps. |
 | `slow` | `*.slow.test.cjs` | Anything that routinely takes >5s wall-clock or holds significant memory. |
+| `qa` | `*.qa.test.cjs` | End-to-end walks that drive the real `gsd-tools` binary across multiple loop steps against one accumulating temp project, with invariant oracles after every step. Slower than `unit`; excluded from the fast lane. |
 | `all` | (any) | Explicit alias for "no filter". Equivalent to running with no `--suite` flag. |
 
 ## How to place a new test
@@ -26,6 +27,7 @@ Examples:
 - `tests/prompt-injection-guards.security.test.cjs` — `security`
 - `tests/installer-end-to-end.install.test.cjs` — `install`
 - `tests/sdk-mutation-stress.slow.test.cjs` — `slow`
+- `tests/loop-walk.qa.test.cjs` — `qa`
 
 The suite-suffix convention was chosen over a directory layout (`tests/security/`) so the 545+ existing test files don't need to move. Existing files all classify as `unit` until someone explicitly retags them.
 
@@ -133,6 +135,57 @@ committed and normally-merged (ADR-2719 §7) — it conflicts on 0 of 7, its dif
 are readable, and it preserves "the installer stopped shipping X" as a hard
 absolute failure with no attribution reasoning involved. Regenerate it with
 `npm run gen:install-tree` (folded into `npm run regen:derived`).
+
+## The QA smell ratchet
+
+`tests/loop-walk.qa.test.cjs` (the `qa` suite) is the QA-walk harness's own
+self-test. Separately, `scripts/qa-smell-ratchet.cjs` drives that same harness
+end to end against the real `gsd-tools` binary and turns its findings into a
+CI gate — run it with `npm run lint:qa-smells`.
+
+The harness's oracles (`tests/qa/oracles.cjs`) distinguish two severities:
+
+- A **violation** is the engine breaking a documented contract. It always
+  fails the build — baseline or no baseline, acknowledged or not.
+- A **smell** is legal-but-questionable behavior. A smell **never fails a
+  build on its own merits**. What fails is the absence of a decision about
+  it: an **unacknowledged NEW smell**, or a **STALE** entry in
+  `tests/qa/smell-baseline.json` (one that stopped firing — the baseline is
+  shrink-only, so a fixed or changed scenario must be pruned, not left
+  behind).
+
+Every smell must terminate in exactly one of TWO states — there is no third
+"accepted with a good explanation" state:
+
+1. **REAL** — an assigned defect. File it, then acknowledge the smell with an
+   entry (baseline entry or `tests/qa/smell-acks/` fragment) carrying that
+   `issue` number.
+2. **FALSE POSITIVE** — the oracle itself is wrong. Fix the oracle
+   (`tests/qa/oracles.cjs`) so it stops firing. It is NEVER baselined.
+
+When the ratchet reports a NEW smell, there are exactly two legitimate
+responses — fix the detector, or file a defect and cite its issue number:
+
+1. **Fix the underlying behavior (or the oracle, if it's a false positive)**
+   so the smell stops firing.
+2. **File a defect and acknowledge it** by adding a fragment under
+   `tests/qa/smell-acks/` — the ratchet's failure output prints a paste-ready
+   skeleton naming the required `key`, `id`, `scenario`, and `issue` fields.
+   `issue` MUST be a positive integer naming the tracking issue; a free-text
+   `reason` may accompany it as an optional human note but can NEVER
+   substitute for `issue` — "write an explanation" is not a way to acknowledge
+   a smell. See `tests/qa/smell-acks/README.md` for the full shape and
+   lifecycle.
+
+Run `node scripts/qa-smell-ratchet.cjs --update` to regenerate
+`tests/qa/smell-baseline.json` from the current run, folding in any acked
+fragments and pruning stale entries. `--update` never invents an issue
+number: a genuinely new smell is written with `issue: null` and a TODO
+`reason`, and the very next plain (non-`--update`) run REJECTS that entry —
+forcing a human to triage it before it can ship. The baseline only ever
+shrinks: growth happens by adding an acknowledgment carrying a real issue
+number (a reviewable diff), never by widening the generator's tolerance and
+never by prose alone.
 
 ## Running suites locally
 
