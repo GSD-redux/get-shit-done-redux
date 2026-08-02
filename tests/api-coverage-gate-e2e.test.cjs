@@ -175,6 +175,17 @@ describe('api-coverage.verify-pre — seal contract (#1562 acceptance #1,#2,#4,#
     assert.strictEqual(j.detected, false);
   });
 
+  test('#2784 negated external-API prose without a matrix → does NOT block', () => {
+    fresh();
+    writePlan(phaseDir, '01-PLAN.md', '# Plan\nThis phase does not integrate any external REST API.');
+    const r = runGate(tmpDir, phaseDir);
+    assert.ok(r.success, `gate should succeed. stderr: ${r.error}`);
+    const j = JSON.parse(r.output);
+    assert.strictEqual(j.block, false, 'negated integration prose must not block the seal');
+    assert.strictEqual(j.detected, false);
+    assert.strictEqual(j.coverage_present, false);
+  });
+
   test('#1/#6 API phase WITH a valid matrix → passes (matrix persists on disk)', () => {
     fresh();
     writePlan(phaseDir, '01-PLAN.md', '# Plan\nIntegrate the Stripe API for payment processing.');

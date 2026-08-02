@@ -566,7 +566,7 @@ function isNegated(masked: string, offset: number, clauseStart: number): boolean
   // Deliberate limitation: this lexical proximity check cannot interpret
   // semantic double negation without a real parser; ambiguous cases retain the
   // detector's documented fail-closed bias.
-  return /\b(no|not|without|zero|neither|nor|never|none|no longer|does not|cannot|will not|don't|can't|won't|doesn't|didn't|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|shouldn't|wouldn't|couldn't|mightn't|mustn't)\b(?:\W+\w+){0,3}\W*$/i.test(window);
+  return /\b(no longer|does not|will not|no|not|without|zero|neither|nor|never|none|cannot|don't|can't|won't|doesn't|didn't|isn't|aren't|wasn't|weren't|hasn't|haven't|hadn't|shouldn't|wouldn't|couldn't|mightn't|mustn't)\b(?:\W+\w+){0,3}\W*$/i.test(window);
 }
 
 // ─── Coverage matrix parse / validate / render ────────────────────────────────

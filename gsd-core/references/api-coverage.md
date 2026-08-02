@@ -45,6 +45,10 @@ an external host like `api.stripe.com/v1` still counts). In the
 compound modifiers ("Resolver-only API"), and first-party-qualified services
 ("internal Payments API") — a real vendor name is none of these.
 
+#2784 also suppresses nearby lexical negation such as "does not integrate an
+external API" or "without calling a REST API", so explicitly absent
+integrations do not require a manual `COVERAGE.md` declaration.
+
 ## The two touch points
 
 1. **Plan time (`plan:pre`).** A contribution to the planner prompts it to run

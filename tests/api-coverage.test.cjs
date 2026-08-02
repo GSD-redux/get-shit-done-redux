@@ -185,6 +185,11 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
 
   test('boundary coverage for NEGATION_LOOKBACK (60) and intervening words (3 vs 4)', () => {
     // Distance boundary: 'no ' + padding + ' Stripe API'
+    // offset 59 -> 3 + 55 + 1 = 59.
+    const padding55 = '-'.repeat(55);
+    const boundary59 = `no ${padding55} Stripe API`;
+    assert.strictEqual(detectApiIntegration(boundary59).detected, false, 'negation at 59 chars lookback applies');
+
     // length of 'no ' is 3. We want the offset of 'Stripe' to be 60 for boundary60.
     // 3 + 56 (padding) + 1 (space) = 60.
     const padding56 = '-'.repeat(56);
@@ -197,6 +202,9 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
     assert.strictEqual(detectApiIntegration(boundary61).detected, true, 'negation at 61 chars is outside lookback window');
 
     // Intervening word boundary
+    const wordBoundary2 = 'no one two Stripe API'; // 2 intervening words
+    assert.strictEqual(detectApiIntegration(wordBoundary2).detected, false, '2 intervening words are negated');
+
     const wordBoundary3 = 'no one two three Stripe API'; // 3 intervening words
     assert.strictEqual(detectApiIntegration(wordBoundary3).detected, false, '3 intervening words are negated');
 
