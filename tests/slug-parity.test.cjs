@@ -40,6 +40,8 @@ const path = require('node:path');
 const coreUtils = require('../gsd-core/bin/lib/core-utils.cjs');
 const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
+const gsd2Import = require('../gsd-core/bin/lib/gsd2-import.cjs');
+const fc = require('fast-check');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 const { generateSlugInternal, DEFAULT_SLUG_MAX_LENGTH } = coreUtils;
@@ -345,5 +347,114 @@ describe('slug generation is not re-implemented anywhere', () => {
       if (!lines.includes(line)) missing.push(`${file}: ${line}`);
     }
     assert.deepStrictEqual(missing, [], 'allowlist entries no longer present in the source');
+  });
+});
+
+// ─── 5. Property-parity across all four entry points (#2986) ─────────────────
+
+/**
+ * Maintainer's outstanding acceptance criterion on #2848: resurrecting any of
+ * the (now-removed) inline copies of the slug rule must fail CI on its own,
+ * not just on a manual re-read of the diff. This asserts equality against
+ * `generateSlugInternal` itself (the same arbiter as section 1), across
+ * hundreds of generated titles per entry point.
+ *
+ * Every generated title carries at least one Cyrillic word on purpose: on a
+ * random ASCII-only string, a resurrected inline copy and the canonical
+ * generator agree by coincidence, so the property would never turn red on the
+ * exact regression the maintainer flagged. The Cyrillic word is what makes
+ * this able to distinguish "delegates" from "reimplements".
+ */
+const CYRILLIC_WORDS = [
+  'Расчёт', 'Ёжик', 'Її', 'объявления', 'щёлкает', 'Фаза', 'ґудзик', 'показателей',
+];
+const cyrillicWord = fc.constantFrom(...CYRILLIC_WORDS);
+const noise = fc.string({
+  unit: fc.constantFrom(
+    ...'abcdefghijklmnopqrstuvwxyz0123456789 -_.!'.split(''),
+    'é', 'ß', 'ё', 'ї', 'щ', '中', 'ε',
+  ),
+  maxLength: 34,
+});
+const propertyTitle = fc.tuple(noise, cyrillicWord, noise, cyrillicWord).map((parts) => parts.join(' '));
+
+/**
+ * Entry points described as two small tables (in-process call vs. spawned
+ * command), one row per limit that applies at that call site. The subject
+ * guard below asserts their combined length is 4 — one row per property test
+ * further down — so a row silently dropped from either table is caught here
+ * instead of a property test quietly running for one fewer entry point.
+ */
+const INTERNAL_ENTRY_POINTS = [
+  { name: 'phaseId.getPhaseDirFromPhaseId', limit: DEFAULT_SLUG_MAX_LENGTH },
+  { name: 'gsd2Import.slugify', limit: Number.POSITIVE_INFINITY },
+];
+const COMMAND_ENTRY_POINTS = [
+  { name: 'gsd generate-slug', limit: DEFAULT_SLUG_MAX_LENGTH },
+  { name: 'gsd init quick', limit: 40 },
+];
+
+describe('slug parity: property across all four entry points (#2986)', () => {
+  test('the parity property has a subject', () => {
+    assert.strictEqual(
+      typeof generateSlugInternal,
+      'function',
+      'canonical generator is unreachable — the parity property would be vacuous',
+    );
+    assert.strictEqual(
+      INTERNAL_ENTRY_POINTS.length + COMMAND_ENTRY_POINTS.length,
+      4,
+      'an entry-point table lost a row — the parity property would be vacuous',
+    );
+  });
+
+  test('property: phaseId.getPhaseDirFromPhaseId matches the canonical generator', () => {
+    fc.assert(
+      fc.property(propertyTitle, (text) => {
+        const dir = phaseId.getPhaseDirFromPhaseId('1-01', text, null);
+        const slug = dir.slice('01-01-'.length);
+        return slug === generateSlugInternal(text, DEFAULT_SLUG_MAX_LENGTH);
+      }),
+    );
+  });
+
+  test('property: gsd2Import.slugify matches the canonical generator', () => {
+    fc.assert(
+      fc.property(propertyTitle, (text) => {
+        return gsd2Import.slugify(text) === generateSlugInternal(text, Number.POSITIVE_INFINITY);
+      }),
+    );
+  });
+
+  test('property: gsd generate-slug matches the canonical generator', () => {
+    const tmp = createTempProject();
+    try {
+      fc.assert(
+        fc.property(propertyTitle, (text) => {
+          const res = runGsdTools(['generate-slug', text], tmp);
+          if (!res.success) return false;
+          return JSON.parse(res.output).slug === generateSlugInternal(text, DEFAULT_SLUG_MAX_LENGTH);
+        }),
+        { numRuns: 20 },
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('property: gsd init quick matches the canonical generator', () => {
+    const tmp = createTempProject();
+    try {
+      fc.assert(
+        fc.property(propertyTitle, (text) => {
+          const res = runGsdTools(['init', 'quick', text], tmp);
+          if (!res.success) return false;
+          return JSON.parse(res.output).slug === generateSlugInternal(text, 40);
+        }),
+        { numRuns: 20 },
+      );
+    } finally {
+      cleanup(tmp);
+    }
   });
 });
