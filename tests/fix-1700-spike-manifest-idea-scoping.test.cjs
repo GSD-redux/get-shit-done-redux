@@ -101,7 +101,7 @@ describe('fix-1700: spike MANIFEST.md scopes Idea/Requirements per idea key', ()
     const content = spikeMd();
     assert.match(
       content,
-      /spike:\s*NNN\nidea:\s*\{idea-key\}/,
+      /spike:\s*NNN\r?\nidea:\s*\{idea-key\}/,
       'The build_spikes README frontmatter template must record the owning idea key directly ' +
       'on the spike, so spike-wrap-up can attribute requirements without re-deriving it.'
     );
