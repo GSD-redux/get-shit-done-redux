@@ -558,6 +558,52 @@ describe('readGsdState', () => {
 
     assert.deepEqual(readGsdState(proj), { noActiveWorkstream: true });
   });
+
+  test('stored pointer naming an absent workstream dir degrades to the sentinel WITHOUT deleting the pointer file (#2850)', (t) => {
+    // Regression for a review finding: readGsdState previously resolved via
+    // resolveActiveWorkstream's DEFAULT store lookup (getActiveWorkstream),
+    // which self-heals a stale pointer by deleting it (adapter.clear() in
+    // active-workstream-store.cts). The statusline renders once per prompt,
+    // so a merely-stale pointer (mid-rename, mid-cleanup, or any transient
+    // absence of the workstream dir) would be silently unlinked by a hook
+    // whose only job is to display text — violating issue #2850's AC4 ("the
+    // fix is purely additive to what's displayed"). The fix routes through
+    // peekActiveWorkstream, a read-only sibling that never calls clear().
+    // This test asserts BOTH halves: the render still degrades usefully,
+    // AND the pointer file survives the render untouched.
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    // workstream mode is detected via .planning/workstreams/ existing — but
+    // note it does NOT contain a 'ghost' directory, so the pointer below
+    // names a workstream that does not exist.
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'other'), { recursive: true });
+    const pointerPath = path.join(proj, '.planning', 'active-workstream');
+    fs.writeFileSync(pointerPath, 'ghost\n');
+
+    const { _resetControllingTtyCacheForTests } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    _resetControllingTtyCacheForTests();
+    t.after(() => {
+      restoreSessionEnv(saved);
+      _resetControllingTtyCacheForTests();
+    });
+
+    assert.equal(fs.existsSync(pointerPath), true, 'precondition: pointer file must exist before the render');
+
+    const s = readGsdState(proj);
+
+    assert.deepEqual(s, { noActiveWorkstream: true }, 'a stale pointer must still degrade to the observable sentinel');
+    assert.equal(
+      fs.existsSync(pointerPath),
+      true,
+      'a read-only render must never delete the pointer file — that is a write, and the statusline must be purely additive to what is displayed (#2850 AC4)'
+    );
+    assert.equal(
+      fs.readFileSync(pointerPath, 'utf8'),
+      'ghost\n',
+      'the pointer file content must be byte-for-byte unchanged by the render, not just present'
+    );
+  });
 });
 
 // ─── CLAUDE_CODE_AUTO_COMPACT_WINDOW context meter (#2219) ──────────────────
