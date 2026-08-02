@@ -1075,7 +1075,18 @@ function validateArtifactLayout(capId, layout) {
       errors.push(ctx + '.' + scope + ' must be an array');
     } else {
       for (let i = 0; i < arr.length; i++) {
-        errors.push(...validateArtifactKindEntry(capId, arr[i], 'artifactLayout.' + scope + '[' + i + ']'));
+        const entry = arr[i];
+        errors.push(...validateArtifactKindEntry(capId, entry, 'artifactLayout.' + scope + '[' + i + ']'));
+        if (
+          scope === 'local' &&
+          typeof entry === 'object' && entry !== null && !Array.isArray(entry) &&
+          Object.prototype.hasOwnProperty.call(entry, 'home')
+        ) {
+          errors.push(
+            ctx + '.local[' + i + '].home is not allowed; ' +
+            'local artifact layout entries must remain project-scoped',
+          );
+        }
       }
     }
   }
