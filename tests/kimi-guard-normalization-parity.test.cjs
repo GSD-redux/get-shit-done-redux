@@ -2,7 +2,8 @@
 // scanning hooks/*.js source text for the inlined KIMI_TOOL_NAMES copies; the
 // text IS the artifact under test (the copies have no runtime binding).
 /**
- * Kimi guard-normalization parity test (#2304 / PR #2326 review Major 1).
+ * Kimi guard-normalization parity test (#2304 / PR #2326 review Major 1;
+ * extended by PR #2301 review Major 2 for hooks/gsd-write-guard.js).
  *
  * The KIMI_TOOL_NAMES map + normalizeKimiPayload helper is deliberately
  * inlined per hook script (a sibling require is a staging dependency that
@@ -12,12 +13,19 @@
  *
  * This test is that binding, with zero runtime coupling:
  *   1. the five inlined copies are byte-identical;
- *   2. every entry in the guard map is the value-inverse of what the
+ *   2. every entry in each guard map is the value-inverse of what the
  *      installer's matcher vocabulary emits for that Claude tool;
  *   3. every guard-relevant Claude tool the installer translates has a
  *      reverse entry — so a vocabulary extension or rename that updates
  *      convertKimiToolName without updating the guards fails HERE instead
  *      of leaving a guard silently dormant (the #2304 failure mode).
+ *
+ * gsd-write-guard.js is bound SEMANTICALLY, not byte-wise: its copy
+ * intentionally omits the Edit-class mapping (the guard exits 0 for any
+ * tool but Write, so StrReplaceFile/old_string handling there is dead code
+ * — #2301 review Major 1), so its map is checked against the installer
+ * inverse and for Write-dormancy, the only tool it inspects. It is still
+ * required to CARRY a block, so the copy cannot silently disappear.
  */
 
 process.env.GSD_TEST_MODE = '1';
@@ -35,12 +43,18 @@ const { convertKimiToolName } = require('../bin/install.js');
 // dynamic scan is also what makes the no-shared-module decision safe.
 const KIMI_MARKER = 'const KIMI_TOOL_NAMES';
 const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
-const HOOK_FILES = fs
+const ALL_BLOCK_FILES = fs
   .readdirSync(HOOKS_DIR)
   .filter((f) => f.endsWith('.js'))
   .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), 'utf8').includes(KIMI_MARKER))
   .map((f) => `hooks/${f}`)
   .sort();
+
+// Bound semantically (map-inverse + Write-dormancy), never byte-wise — see header.
+const WRITE_GUARD_FILE = 'hooks/gsd-write-guard.js';
+
+// The byte-identity cohort: every scanned guard except the deliberate subset.
+const HOOK_FILES = ALL_BLOCK_FILES.filter((f) => f !== WRITE_GUARD_FILE);
 
 // The five guards normalized for #2304. A scan that misses one of these is a
 // broken scan, not a passing test — without this floor, an over-narrow filter
@@ -82,6 +96,17 @@ function parseMap(block) {
   return entries;
 }
 
+function assertMapIsInstallerInverse(map, file) {
+  for (const [kimiName, claudeName] of Object.entries(map)) {
+    const modulePath = convertKimiToolName(claudeName);
+    assert.ok(
+      typeof modulePath === 'string' && modulePath.endsWith(`:${kimiName}`),
+      `${file}: KIMI_TOOL_NAMES.${kimiName} -> '${claudeName}' is not the inverse of ` +
+        `convertKimiToolName('${claudeName}') = ${modulePath}`
+    );
+  }
+}
+
 describe('Kimi guard normalization parity', () => {
   test('the scan finds every known normalized guard (floor — a scan that finds nothing must fail)', () => {
     for (const known of KNOWN_NORMALIZED_GUARDS) {
@@ -91,6 +116,14 @@ describe('Kimi guard normalization parity', () => {
           'was removed or the scan filter broke; both mean lost coverage'
       );
     }
+  });
+
+  test('the write guard carries a normalization block (semantically bound, but never absent)', () => {
+    assert.ok(
+      ALL_BLOCK_FILES.includes(WRITE_GUARD_FILE),
+      `${WRITE_GUARD_FILE} carries no '${KIMI_MARKER}' block — the shrink guard ` +
+        'is silently dormant on Kimi (#2304)'
+    );
   });
 
   test('all inlined copies of the normalization block are byte-identical', () => {
@@ -104,16 +137,9 @@ describe('Kimi guard normalization parity', () => {
     }
   });
 
-  test('guard map is the value-inverse of the installer matcher vocabulary', () => {
-    const map = parseMap(extractBlock(HOOK_FILES[0]));
-    for (const [kimiName, claudeName] of Object.entries(map)) {
-      const modulePath = convertKimiToolName(claudeName);
-      assert.ok(
-        typeof modulePath === 'string' && modulePath.endsWith(`:${kimiName}`),
-        `KIMI_TOOL_NAMES.${kimiName} -> '${claudeName}' is not the inverse of ` +
-          `convertKimiToolName('${claudeName}') = ${modulePath}`
-      );
-    }
+  test('every guard map is the value-inverse of the installer matcher vocabulary', () => {
+    assertMapIsInstallerInverse(parseMap(extractBlock(HOOK_FILES[0])), HOOK_FILES[0]);
+    assertMapIsInstallerInverse(parseMap(extractBlock(WRITE_GUARD_FILE)), WRITE_GUARD_FILE);
   });
 
   test('every guard-relevant Claude tool has a reverse entry (dormancy alarm)', () => {
@@ -128,6 +154,25 @@ describe('Kimi guard normalization parity', () => {
           `reverse entry — the matching guard would be silently dormant on Kimi (#2304)`
       );
     }
+  });
+
+  test('gsd-write-guard.js maps the Kimi name for Write (its only inspected tool)', () => {
+    const map = parseMap(extractBlock(WRITE_GUARD_FILE));
+    const modulePath = convertKimiToolName('Write');
+    assert.ok(modulePath, "installer no longer maps 'Write' — update this test");
+    const kimiName = modulePath.slice(modulePath.lastIndexOf(':') + 1);
+    assert.equal(
+      map[kimiName],
+      'Write',
+      `${WRITE_GUARD_FILE}: Kimi name '${kimiName}' must map to 'Write' or the ` +
+        'shrink guard is silently dormant on Kimi (#2304)'
+    );
+    // The copy must also carry the payload-field half of the normalization —
+    // WriteFile delivers `path`, the guard reads `file_path`.
+    assert.ok(
+      extractBlock(WRITE_GUARD_FILE).includes('input.file_path'),
+      `${WRITE_GUARD_FILE}: normalizeKimiPayload no longer maps path -> file_path`
+    );
   });
 });
 

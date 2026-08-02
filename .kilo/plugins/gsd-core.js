@@ -563,7 +563,14 @@ const GsdCorePlugin = async ({ directory } = {}) => {
         handleHookResult(r, output);
       }
 
-      // 4. gsd-workflow-guard.js — workflow advisory + git-force-add block
+      // 4. gsd-write-guard.js — hard-block catastrophic shrink of curated
+      //    .planning/ artifacts (ROADMAP.md, milestones/*-ROADMAP.md, STATE.md)
+      if (claudeTool === "Write") {
+        const r = runHook("gsd-write-guard.js", prePayload());
+        handleHookResult(r, output);
+      }
+
+      // 5. gsd-workflow-guard.js — workflow advisory + git-force-add block
       //    (covers Write/Edit/MultiEdit AND Bash force-add detection)
       if (isWriteLike || claudeTool === "Bash") {
         const r = runHook("gsd-workflow-guard.js", prePayload());

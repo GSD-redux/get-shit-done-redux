@@ -1,0 +1,15 @@
+{
+  "name": "_selftest-must-fail",
+  "fixture": "greenfield",
+  "selfTest": true,
+  "steps": [
+    {
+      "at": "discuss:pre",
+      "run": [["init", "new-project"]],
+      "readOnly": true,
+      "expect": [
+        { "path": "project_exists", "is": true }
+      ]
+    }
+  ]
+}

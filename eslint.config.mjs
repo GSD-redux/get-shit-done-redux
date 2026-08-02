@@ -64,6 +64,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/host-integration-sdk.cjs',
       'gsd-core/bin/lib/install-effort-resolver.cjs',
       'gsd-core/bin/lib/install-engine.cjs',
+      'gsd-core/bin/lib/commonjs-marker.cjs',
       'gsd-core/bin/lib/capability-loader.cjs',
       'gsd-core/bin/lib/capability-source.cjs',
       'gsd-core/bin/lib/capability-ledger.cjs',
@@ -117,7 +118,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/installer-migration-authoring.cjs',
       'gsd-core/bin/lib/update-context.cjs',
       'gsd-core/bin/lib/installer-migrations/000-first-time-baseline.cjs',
-      'gsd-core/bin/lib/installer-migrations/007-cursor-retire-commands-surface.cjs',
+      'gsd-core/bin/lib/installer-migrations/008-cursor-retire-commands-surface.cjs',
       'gsd-core/bin/lib/retired-artifact-cleanup.cjs',
       'gsd-core/bin/lib/runtime-homes.cjs',
       'gsd-core/bin/lib/model-catalog.cjs',
@@ -137,6 +138,10 @@ export default tseslint.config(
       'gsd-core/bin/lib/installer-migrations/003-rename-get-shit-done-to-gsd-core.cjs',
       'gsd-core/bin/lib/installer-migrations/004-prune-stale-pristine-snapshots.cjs',
       'gsd-core/bin/lib/installer-migrations/005-opencode-baseline-commands-dir.cjs',
+      // 007 is tsc output like its siblings, but unlike 006 it imports node
+      // builtins — so tsc emits its `__importDefault` helper, which uses `var`
+      // and trips no-var. ADR-457: the linted source is the .cts.
+      'gsd-core/bin/lib/installer-migrations/007-retire-config-root-commonjs-marker.cjs',
       'gsd-core/bin/lib/observability/logger.cjs',
       'gsd-core/bin/lib/active-workstream-store.cjs',
       'gsd-core/bin/lib/adr-parser.cjs',
@@ -242,6 +247,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/context-composer.cjs',
       // ADR-1671 (#2930): tsc-generated runtime artifact — lint the src/workflow-fragments.cts source.
       'gsd-core/bin/lib/workflow-fragments.cjs',
+      // ADR-1671 Phase 5 (#2932): tsc-generated runtime artifact — lint the src/section-manifest.cts source.
+      'gsd-core/bin/lib/section-manifest.cjs',
     ],
   },
 

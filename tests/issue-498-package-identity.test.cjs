@@ -5,8 +5,10 @@ process.env.GSD_TEST_MODE = '1';
 // The package coordinates (npm name, bin name, repo slug, changelog URL) are
 // DERIVED from package.json, not re-typed. deriveIdentity is the pure core;
 // the generated runtime module gsd-core/bin/lib/package-identity.cjs
-// bakes those values at build time so it survives the install layout where
-// the only package.json present is the synthetic {"type":"commonjs"} marker.
+// bakes those values at build time so it survives the install layout, where no
+// package.json carries a .name — the only ones GSD stages are synthetic
+// {"type":"commonjs"} markers, and since #2544 those live in GSD's own
+// directories (hooks/, the native plugin dir) rather than the config root.
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');

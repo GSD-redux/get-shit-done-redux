@@ -845,3 +845,89 @@ describe('path traversal rejection', () => {
     }
   });
 });
+
+// #2562: the inventory can refuse a shipped marker its artifacts contradict, but
+// a refusal that no command projects is the same silent collapse the issue is
+// about — the operator sees a fallback `status` and nothing saying a marker was
+// seen and rejected. These assert at the CLI, the surface that was missing it,
+// not at the builder that already had the field.
+describe('#2562 — a refused shipped marker reaches every workstream command', () => {
+  let tmpDir;
+
+  before(() => {
+    tmpDir = createFixture();
+    const wsDir = path.join(tmpDir, '.planning', 'workstreams', 'dirty-archive');
+    // A milestone that was archived (snapshot present) and then reopened: phase 1
+    // is complete and still on disk, phase 2 is declared with no directory. The
+    // archive is therefore not clean AND the ratio is short.
+    fs.mkdirSync(path.join(wsDir, 'phases', '1-foo'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'phases', '1-foo', '01-PLAN.md'), '# Plan\n');
+    fs.writeFileSync(path.join(wsDir, 'phases', '1-foo', '01-SUMMARY.md'), '# Summary\n');
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), 'milestone: v2.0\nstatus: executing\n');
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      '# Roadmap', '', '## Milestone v2.0 — Two', '', '## Progress', '',
+      '| Phase | Milestone | Plans | Status | Done |',
+      '| --- | --- | --- | --- | --- |',
+      '| 1. Foo | v2.0 | 1/1 | Complete | - |',
+      '| 2. Bar | v2.0 | 0/1 | Not started | - |', '',
+    ].join('\n'));
+    fs.mkdirSync(path.join(wsDir, 'milestones'), { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'milestones', 'v2.0-ROADMAP.md'), '# v2.0 archived\n');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'active-workstream'), 'dirty-archive\n');
+  });
+
+  after(() => cleanup(tmpDir));
+
+  test('workstream progress projects the refusal beside the percentage', () => {
+    const result = runGsdTools(['workstream', 'progress', '--raw'], tmpDir);
+    assert.ok(result.success, `progress failed: ${result.error}`);
+    const ws = JSON.parse(result.output).workstreams.find(w => w.name === 'dirty-archive');
+    assert.ok(ws, 'workstream missing from progress output');
+    assert.strictEqual(ws.milestone_shipped_unverified, true);
+    assert.notStrictEqual(ws.status, 'milestone complete', 'status must not contradict the percentage');
+    assert.strictEqual(ws.progress_percent, 50);
+  });
+
+  test('workstream status projects the refusal', () => {
+    const result = runGsdTools(['workstream', 'status', 'dirty-archive', '--raw'], tmpDir);
+    assert.ok(result.success, `status failed: ${result.error}`);
+    const data = JSON.parse(result.output);
+    assert.strictEqual(data.found, true);
+    assert.strictEqual(data.milestone_shipped_unverified, true);
+  });
+
+  test('workstream list projects the refusal', () => {
+    const result = runGsdTools(['workstream', 'list', '--raw'], tmpDir);
+    assert.ok(result.success, `list failed: ${result.error}`);
+    const ws = JSON.parse(result.output).workstreams.find(w => w.name === 'dirty-archive');
+    assert.ok(ws, 'workstream missing from list output');
+    assert.strictEqual(ws.milestone_shipped_unverified, true);
+  });
+
+  test('a clean archive reports no refusal at the CLI', () => {
+    const isolatedDir = createFixture();
+    try {
+      const wsDir = path.join(isolatedDir, '.planning', 'workstreams', 'clean-archive');
+      fs.mkdirSync(path.join(wsDir, 'phases'), { recursive: true }); // dirs moved out by the archive
+      fs.writeFileSync(path.join(wsDir, 'STATE.md'), 'milestone: v2.0\nstatus: executing\n');
+      fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+        '# Roadmap', '', '## Milestone v2.0 — Two', '', '## Progress', '',
+        '| Phase | Milestone | Plans | Status | Done |',
+        '| --- | --- | --- | --- | --- |',
+        '| 1. Foo | v2.0 | 1/1 | Complete | - |',
+        '| 2. Bar | v2.0 | 1/1 | Complete | - |', '',
+      ].join('\n'));
+      fs.mkdirSync(path.join(wsDir, 'milestones'), { recursive: true });
+      fs.writeFileSync(path.join(wsDir, 'milestones', 'v2.0-ROADMAP.md'), '# v2.0 archived\n');
+
+      const result = runGsdTools(['workstream', 'progress', '--raw'], isolatedDir);
+      assert.ok(result.success, `progress failed: ${result.error}`);
+      const ws = JSON.parse(result.output).workstreams.find(w => w.name === 'clean-archive');
+      assert.ok(ws, 'workstream missing from progress output');
+      assert.strictEqual(ws.milestone_shipped_unverified, false);
+      assert.strictEqual(ws.status, 'milestone complete');
+    } finally {
+      cleanup(isolatedDir);
+    }
+  });
+});

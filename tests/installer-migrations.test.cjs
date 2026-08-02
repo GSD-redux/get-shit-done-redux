@@ -1673,7 +1673,16 @@ test('shipped installer-migration checksums are locked to a committed baseline (
     // old path drops out of the manifest and uninstall can never remove it.
     '2026-07-20-pi-extension-cjs-to-js':
       'sha256:185fa926ae24d83cbdd95c31a9ad2cc8d123e176ad543669b3b0ed75e6ca6f4a',
-    // Migration 007: retire Cursor's duplicate commands/ surface (#2644).
+    // Migration 007 (NEW, added here per this test's own sanctioned "adding a new
+    // migration" case — not a shipped-body edit): retire the pre-#2544
+    // {"type":"commonjs"} marker at the runtime config root. #2544 moved that
+    // marker into the directories GSD fills, so without this an upgraded install
+    // keeps both and the config root stays pinned to CommonJS. Ownership is proven
+    // by exact content match rather than the manifest — the config-root marker was
+    // never manifest-recorded — so the action declares its own classification.
+    '2026-07-28-retire-config-root-commonjs-marker':
+      'sha256:8f2140cbe8f2dd8f7dfd52a0f6957c5edfe966c52d7e6e4d74ec7366930e0e1d',
+    // Migration 008: retire Cursor's duplicate commands/ surface (#2644).
     '2026-07-29-cursor-retire-commands-surface':
       'sha256:d0b2b812a3f752650f2518b48280f74a5937c80ec8412bac493382dfa3db083f',
   };
@@ -1793,9 +1802,9 @@ test('reconciles a drifted applied-migration checksum into install state on appl
 // ---------------------------------------------------------------------------
 
 {
-  const cursorCommandsMigration = require('../gsd-core/bin/lib/installer-migrations/007-cursor-retire-commands-surface.cjs');
+  const cursorCommandsMigration = require('../gsd-core/bin/lib/installer-migrations/008-cursor-retire-commands-surface.cjs');
 
-  test('migration 007 plans only manifest-managed gsd-*.md command files', (t) => {
+  test('migration 008 plans only manifest-managed gsd-*.md command files', (t) => {
     const configDir = createTempInstall();
     t.after(() => cleanup(configDir));
     writeFile(configDir, 'commands/gsd-help.md', '# help\n');
@@ -1815,7 +1824,7 @@ test('reconciles a drifted applied-migration checksum into install state on appl
     ]);
   });
 
-  test('migration 007 backs up a modified managed command and preserves an unknown neighbor', (t) => {
+  test('migration 008 backs up a modified managed command and preserves an unknown neighbor', (t) => {
     const configDir = createTempInstall();
     t.after(() => cleanup(configDir));
     writeFile(configDir, 'commands/gsd-help.md', '# locally modified help\n');
@@ -1840,7 +1849,7 @@ test('reconciles a drifted applied-migration checksum into install state on appl
     );
   });
 
-  test('migration 007 is scoped to Cursor for both global and local installs', (t) => {
+  test('migration 008 is scoped to Cursor for both global and local installs', (t) => {
     for (const scope of ['global', 'local']) {
       const configDir = createTempInstall();
       t.after(() => cleanup(configDir));

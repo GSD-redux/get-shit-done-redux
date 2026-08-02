@@ -265,11 +265,13 @@ describe('Issue #815: --next dist-tag support', () => {
  * which 404s from the registry, leaving update_available permanently false.
  *
  * Original #378 fix derived the name from `require('../package.json').name`.
- * That is broken at runtime (#498): the installed tree carries only a synthetic
- * `{"type":"commonjs"}` package.json (no `.name`), so post-install the worker
- * queried `npm view undefined version` → latest stayed null → update_available
- * permanently false. The old structural test passed only because it grepped the
- * DEV tree, where package.json still has a name.
+ * That is broken at runtime (#498): no package.json in the installed tree
+ * carries a `.name`. It used to resolve to the synthetic `{"type":"commonjs"}`
+ * marker GSD wrote at the config root, so post-install the worker queried
+ * `npm view undefined version` → latest stayed null → update_available
+ * permanently false; since #2544 GSD writes no marker there at all, so the
+ * require would now fail to resolve outright. The old structural test passed
+ * only because it grepped the DEV tree, where package.json still has a name.
  *
  * New contract (#498): the worker no longer resolves the package name itself.
  * It delegates the latest-version lookup to check-latest-version.cjs's
@@ -339,9 +341,10 @@ describe('bug #378 / #498: update worker queries the scoped name via the seam', 
       workerCodeOnly(),
       /require\s*\(\s*['"][^'"]*package\.json['"]\s*\)\s*\.name/,
       [
-        'require(package.json).name resolves to undefined in the installed tree',
-        '(only a {"type":"commonjs"} marker ships). The worker must delegate to',
-        'checkLatestVersion(), which sources the name from the baked seam.',
+        'require(package.json).name never yields a name in the installed tree —',
+        'GSD stages only {"type":"commonjs"} markers, and since #2544 none at the',
+        'config root. The worker must delegate to checkLatestVersion(), which',
+        'sources the name from the baked seam.',
       ].join(' '),
     );
   });
