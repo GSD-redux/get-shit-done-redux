@@ -399,6 +399,7 @@
   "gsd-core/workflows/plan-phase.md",
   "gsd-core/workflows/plan-phase/steps/closed-phase-gate.md",
   "gsd-core/workflows/plan-phase/steps/prd-express-path.md",
+  "gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md",
   "gsd-core/workflows/plan-phase/steps/windows-troubleshooting.md",
   "gsd-core/workflows/plan-review-convergence.md",
   "gsd-core/workflows/plant-seed.md",
