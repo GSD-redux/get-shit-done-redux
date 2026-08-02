@@ -1006,3 +1006,267 @@ describe('#2562 — a shipped marker its own artifacts contradict is not asserte
     assert.equal(inv.milestone_shipped_unverified, true);
   });
 });
+
+// #2645 — deleting a *-VERIFICATION.md must never raise reported completion.
+// #2562 gated completeness on the verdict READ FRESH from disk every call:
+// "verifier ran gaps_found, report later deleted" and "verifier never ran"
+// both read as the internal 'missing' sentinel, and only the fresh read was
+// consulted — so deleting the evidence file alone was enough to silently
+// raise completed_phases/progress_percent. The fix persists the last REAL
+// verdict observed per phase key in a ledger file living at the WORKSTREAM
+// level (`.verification-ledger.json`, sibling to STATE.md/ROADMAP.md),
+// consulted only when the live read comes back 'missing'.
+describe('#2645 — deleting a verification report must not raise completeness', () => {
+  let tmpDir;
+  before(() => { tmpDir = createFixture(); });
+  after(() => cleanup(tmpDir));
+
+  const FLAT_STATE = 'status: executing\n';
+  function flatRoadmap(rows) {
+    return [
+      '# Roadmap', '', '## Progress', '',
+      '| Phase | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- |',
+      ...rows,
+      '',
+    ].join('\n');
+  }
+
+  function writePhase(wsDir, slug, { plans = 1, summaries = 1, verification } = {}) {
+    const dir = path.join(wsDir, 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    for (let i = 1; i <= plans; i++) fs.writeFileSync(path.join(dir, `0${i}-PLAN.md`), '# plan\n');
+    for (let i = 1; i <= summaries; i++) fs.writeFileSync(path.join(dir, `0${i}-SUMMARY.md`), '# summary\n');
+    if (verification) fs.writeFileSync(path.join(dir, '01-VERIFICATION.md'), `---\nstatus: ${verification}\n---\n`);
+    return dir;
+  }
+
+  function verificationFilePath(wsDir, slug) {
+    return path.join(wsDir, 'phases', slug, '01-VERIFICATION.md');
+  }
+
+  // Row 1 — failing-first regression, the issue's own reproduction sequence.
+  test('deleting a gaps_found report after it was observed does not raise completeness (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-gaps' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+
+    const before1 = inspectWorkstream(tmpDir, 'ws-2645-gaps', { active: null });
+    assert.ok(before1);
+    assert.equal(before1.phases[0].status, 'in_progress', 'gaps_found must not count as complete');
+    assert.equal(before1.completed_phases, 0);
+    assert.equal(before1.progress_percent, 0);
+
+    fs.unlinkSync(verificationFilePath(wsDir, '1-foo'));
+
+    const after1 = inspectWorkstream(tmpDir, 'ws-2645-gaps', { active: null });
+    assert.ok(after1);
+    assert.equal(after1.phases[0].status, 'in_progress',
+      'deleting the failing report must not flip the phase to complete');
+    assert.equal(after1.completed_phases, 0, 'deleting evidence must never raise completed_phases');
+    assert.equal(after1.progress_percent, 0, 'deleting evidence must never raise progress_percent');
+  });
+
+  // Row 2 — the other FAILING_VERIFICATION_STATUSES member.
+  test('deleting a human_needed report after it was observed does not raise completeness (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-human' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'human_needed' });
+
+    inspectWorkstream(tmpDir, 'ws-2645-human', { active: null }); // observe while present
+    fs.unlinkSync(verificationFilePath(wsDir, '1-foo'));
+
+    const after = inspectWorkstream(tmpDir, 'ws-2645-human', { active: null });
+    assert.ok(after);
+    assert.equal(after.phases[0].status, 'in_progress');
+    assert.equal(after.completed_phases, 0);
+    assert.equal(after.progress_percent, 0);
+  });
+
+  // Row 3 — criterion 2: verifier-disabled projects (no report ever written)
+  // must still be able to reach 100%.
+  test('a phase that was never verified still reaches complete (#2645, criterion 2)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-never' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | Complete | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1 }); // no verification file, ever
+
+    const inv = inspectWorkstream(tmpDir, 'ws-2645-never', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'complete');
+    assert.equal(inv.completed_phases, 1);
+    assert.equal(inv.progress_percent, 100);
+  });
+
+  // Row 4 — criterion 3: same on-disk shape as row 3 (no file), across TWO
+  // reads, must behave IDENTICALLY — the ledger must not newly gate a phase
+  // that was simply never verified in the first place.
+  test('a not-yet-verified phase is not newly gated by the ledger (#2645, criterion 3)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-not-yet' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | Complete | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1 });
+
+    const first = inspectWorkstream(tmpDir, 'ws-2645-not-yet', { active: null });
+    const second = inspectWorkstream(tmpDir, 'ws-2645-not-yet', { active: null });
+    assert.equal(first.progress_percent, 100);
+    assert.equal(second.progress_percent, 100, 'a second read must not change the outcome');
+    assert.equal(second.phases[0].status, 'complete');
+  });
+
+  // Row 5 — recovery: a genuinely re-verified phase must not be pinned by an
+  // earlier failing verdict the ledger remembers.
+  test('a re-verified passed phase is not pinned by an earlier failing ledger entry (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-recover' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    inspectWorkstream(tmpDir, 'ws-2645-recover', { active: null }); // observe gaps_found
+
+    // Re-verify: overwrite the report with a passing verdict.
+    fs.writeFileSync(verificationFilePath(wsDir, '1-foo'), '---\nstatus: passed\n---\n');
+    const reverified = inspectWorkstream(tmpDir, 'ws-2645-recover', { active: null });
+    assert.equal(reverified.phases[0].status, 'complete', 'a genuine re-verify must count');
+
+    // Delete the now-passing report — the ledger's newest real verdict is
+    // 'passed', which is not in the failing set, so this must stay complete.
+    fs.unlinkSync(verificationFilePath(wsDir, '1-foo'));
+    const afterDelete = inspectWorkstream(tmpDir, 'ws-2645-recover', { active: null });
+    assert.equal(afterDelete.phases[0].status, 'complete',
+      'the ledger must hold the newest verdict, not an earlier failing one');
+  });
+
+  // Row 6 — criterion 4: the ledger must not live inside the phase directory
+  // whose file is the one being deleted.
+  test('ledger file lives outside the phase directory it protects (#2645, criterion 4)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-location' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    const phaseDir = writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    inspectWorkstream(tmpDir, 'ws-2645-location', { active: null });
+
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+    assert.ok(fs.existsSync(ledgerPath), 'the ledger must be persisted somewhere');
+    assert.ok(!ledgerPath.startsWith(phaseDir + path.sep) && ledgerPath !== phaseDir,
+      'the ledger must not live inside the phase directory');
+
+    // Deleting the ENTIRE phase directory (not just the report) must not
+    // touch the ledger — this is what "not the same file" is protecting
+    // against in the realistic case.
+    cleanup(phaseDir);
+    assert.ok(fs.existsSync(ledgerPath), 'removing the phase directory must not remove the ledger');
+  });
+
+  // Row 7 — Bug #2445 dedup safety: a stale duplicate directory sharing the
+  // same phase key must not be able to clobber the WINNING (newest)
+  // directory's ledger entry with its own stale/leftover verdict.
+  test('a stale duplicate directory cannot clobber the ledger entry of the live directory (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-dupe' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | Complete | - |',
+      '| 2. Bar | 0/1 | Not started | - |',
+    ]));
+    // Stale leftover directory (older mtime), leftover gaps_found report.
+    const staleDir = writePhase(wsDir, '01-foo-old', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const oldTime = new Date('2020-01-01T00:00:00Z');
+    fs.utimesSync(staleDir, oldTime, oldTime);
+    // Live/winning directory (newer mtime), currently passed.
+    const liveDir = writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'passed' });
+    const newTime = new Date('2026-01-01T00:00:00Z');
+    fs.utimesSync(liveDir, newTime, newTime);
+
+    const before7 = inspectWorkstream(tmpDir, 'ws-2645-dupe', { active: null });
+    assert.ok(before7);
+    assert.equal(before7.completed_phases, 1, 'the winning (newest) directory is passed');
+
+    // Delete the WINNING directory's report. If the stale directory's
+    // gaps_found had clobbered the ledger, this phase key would now
+    // incorrectly read gaps_found and never recover. It must instead read
+    // the winning directory's own remembered 'passed'.
+    fs.unlinkSync(path.join(liveDir, '01-VERIFICATION.md'));
+
+    const after7 = inspectWorkstream(tmpDir, 'ws-2645-dupe', { active: null });
+    assert.ok(after7);
+    assert.equal(after7.completed_phases, 1,
+      "the ledger must remember the WINNING directory's passed verdict, not the stale duplicate's gaps_found");
+  });
+
+  // Row 8 — boundary: an EXACT mtime tie between two same-keyed directories.
+  // The builder's own tie-break (`rollupDirByKey`) keeps the incumbent on a
+  // tie (first-in-sort-order wins); the ledger's winner selection must agree
+  // so the two never pick different "truths" for the same phase key.
+  test('an exact mtime tie resolves the ledger winner by sort order, matching the builder (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-tie' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | Complete | - |',
+    ]));
+    const tieTime = new Date('2025-06-01T00:00:00Z');
+    // '01-foo-a' sorts before '01-foo-b' — with equal mtimes, the builder's
+    // rollup keeps the incumbent (first-in-sort-order).
+    const dirA = writePhase(wsDir, '01-foo-a', { plans: 1, summaries: 1, verification: 'passed' });
+    fs.utimesSync(dirA, tieTime, tieTime);
+    const dirB = writePhase(wsDir, '01-foo-b', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    fs.utimesSync(dirB, tieTime, tieTime);
+
+    assert.doesNotThrow(() => inspectWorkstream(tmpDir, 'ws-2645-tie', { active: null }));
+    const inv = inspectWorkstream(tmpDir, 'ws-2645-tie', { active: null });
+    assert.ok(inv);
+    // Whichever directory the builder's own rollup picks, the ledger must
+    // agree with it (no invariant throw, no silent disagreement) — the
+    // property under test is AGREEMENT between the two, not which specific
+    // directory wins.
+    assert.ok(inv.completed_phases === 0 || inv.completed_phases === 1);
+  });
+
+  // Row 9 — property: whatever sequence of REAL verdicts is observed for a
+  // phase key, once the file goes missing the ledger must replay exactly the
+  // LAST one observed — never an earlier one, never a synthesized value.
+  test('property: the ledger always replays the most recently observed real verdict after deletion (#2645)', () => {
+    const REAL_STATUSES = ['passed', 'gaps_found', 'human_needed', 'stale', 'unknown'];
+    const FAILING = new Set(['gaps_found', 'human_needed']);
+    fc.assert(fc.property(
+      fc.array(fc.constantFrom(...REAL_STATUSES), { minLength: 1, maxLength: 6 }),
+      (sequence) => {
+        const wsName = `ws-2645-prop-${Math.random().toString(36).slice(2)}`;
+        const wsDir = seedWorkstream(tmpDir, { name: wsName });
+        fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+        fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+          '| 1. Foo | 1/1 | Complete | - |',
+        ]));
+        const dir = writePhase(wsDir, '1-foo', { plans: 1, summaries: 1 });
+        const reportPath = path.join(dir, '01-VERIFICATION.md');
+
+        let lastReal = null;
+        for (const status of sequence) {
+          fs.writeFileSync(reportPath, `---\nstatus: ${status}\n---\n`);
+          inspectWorkstream(tmpDir, wsName, { active: null }); // observe
+          lastReal = status;
+        }
+        fs.unlinkSync(reportPath);
+
+        const inv = inspectWorkstream(tmpDir, wsName, { active: null });
+        const expectComplete = !FAILING.has(lastReal);
+        assert.equal(inv.phases[0].status === 'complete', expectComplete,
+          `after observing ${JSON.stringify(sequence)} then deleting, status must reflect the last real verdict (${lastReal})`);
+
+        cleanup(wsDir);
+      },
+    ), { numRuns: 25 });
+  });
+});
