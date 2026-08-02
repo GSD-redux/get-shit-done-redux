@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "plan-phase.md": "#2650: plan-phase.md grew 14 bytes (94483 -> 94497) net. The stall-detection fix for #2650 moved the bulk of the new logic (gsd_stall_should_recover, gsd_stall_watch, and their explanatory prose) into the lazily-loaded gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md, which is not itself measured against plan-phase.md's frozen ADR-857 Phase 6 PRE_PHASE6 cap (tests/phase6-capstone-conformance.test.cjs). That extraction alone left plan-phase.md 142 bytes SMALLER than baseline. Verification then surfaced tests/plan-phase-drift-guard.test.cjs (#913), which requires at least 7 literal \"ORCHESTRATOR RULE — ALL RUNTIMES\" labels in plan-phase.md itself, one per agent spawn site — the extraction had carried 5 of the 7 labels out with the blocks they lived in. Restoring a short label at each of the 5 stall-watch spawn sites (leaving the explanatory bodies in the extracted reference file) is what pushes the net delta from -142 to +14 bytes. The growth is exactly those 5 short label restorations, verified still under the PRE_PHASE6 cap (94497 < 94519, 22 bytes headroom) and the #913 label-count requirement (7 present)."
+  }
+}
