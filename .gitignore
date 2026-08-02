@@ -99,6 +99,15 @@ build/
 /gsd-core/bin/lib/markdown-sectionizer.cjs
 /gsd-core/bin/lib/markdown-table.cjs
 /gsd-core/bin/lib/write-set.cjs
+# #2657: ADR-457 migration gap — these seven never got a .gitignore entry
+# when their modules moved into src/*.cts.
+/gsd-core/bin/lib/api-coverage.cjs
+/gsd-core/bin/lib/assumption-delta.cjs
+/gsd-core/bin/lib/claude-orchestration.cjs
+/gsd-core/bin/lib/claude-orchestration-command-router.cjs
+/gsd-core/bin/lib/external-job.cjs
+/gsd-core/bin/lib/runtime-artifact-install-plan.cjs
+/gsd-core/bin/lib/state-transition.cjs
 /gsd-core/bin/lib/resolution.cjs
 /gsd-core/bin/lib/research-store.cjs
 /gsd-core/bin/lib/research-provider.cjs
