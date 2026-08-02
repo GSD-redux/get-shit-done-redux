@@ -276,6 +276,146 @@ body`;
   });
 });
 
+// ─── frontmatter validate: plan-gap-closure schema (#2847) ───────────────────
+//
+// Regression coverage for #2847: "--gaps does not load planner-gap-closure.md,
+// so generated gap plans may miss gap_closure metadata". A gap-closure plan
+// with every other required field but no `gap_closure` used to report
+// `valid: true` against the only schema the planner validated against
+// (`plan`). Row 1 below is the failing-first regression test: it fails on
+// pre-fix `FRONTMATTER_SCHEMAS` (no `plan-gap-closure` key exists — the CLI
+// exits 1 with "Unknown schema: plan-gap-closure") and passes after the fix.
+
+describe('frontmatter validate: plan-gap-closure schema (#2847)', () => {
+  const PLAN_BODY_NO_GAP_CLOSURE = `---
+phase: 01
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+files_modified: [src/auth.ts]
+autonomous: true
+must_haves:
+  truths:
+    - "All tests pass"
+---
+body`;
+
+  // Row 1 — failing-first regression test.
+  test('rejects plan-gap-closure frontmatter missing gap_closure (#2847)', () => {
+    const file = writeTempFile(PLAN_BODY_NO_GAP_CLOSURE);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, false, 'Should be invalid: gap_closure is missing');
+    assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure should be reported missing');
+    assert.strictEqual(parsed.missing.length, 1, 'Only gap_closure should be missing; all other fields are present');
+    assert.strictEqual(parsed.schema, 'plan-gap-closure');
+  });
+
+  // Row 2 — happy path.
+  test('accepts complete plan-gap-closure frontmatter', () => {
+    const content = `---
+phase: 01
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+files_modified: [src/auth.ts]
+autonomous: true
+must_haves:
+  truths:
+    - "All tests pass"
+gap_closure: true
+---
+body`;
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'Should be valid: gap_closure is present');
+    assert.deepStrictEqual(parsed.missing, []);
+    assert.ok(parsed.present.includes('gap_closure'));
+    assert.strictEqual(parsed.schema, 'plan-gap-closure');
+  });
+
+  // Row 3 — empty/near-empty input boundary.
+  test('reports all plan-gap-closure fields missing except phase for near-empty frontmatter', () => {
+    const file = writeTempFile('---\nphase: 01\n---\nbody');
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, false);
+    // plan-gap-closure requires 9 fields; phase is present, so 8 should be missing.
+    assert.strictEqual(parsed.missing.length, 8, 'Should have 8 missing required fields');
+    assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure should be among the missing fields');
+  });
+
+  // Row 4 — negative space: standard-mode ('plan' schema) plans are unaffected by #2847's fix.
+  test('plan schema (standard/reviews mode) still reports valid without gap_closure — unaffected by #2847 fix', () => {
+    const file = writeTempFile(PLAN_BODY_NO_GAP_CLOSURE);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'plan schema must not require gap_closure (AC(3): standard mode unaffected)');
+    assert.deepStrictEqual(parsed.missing, []);
+    assert.strictEqual(parsed.schema, 'plan');
+  });
+
+  // Row 5 — CRLF cross-platform newline handling.
+  test('parses plan-gap-closure frontmatter with CRLF line endings', () => {
+    const content = [
+      '---',
+      'phase: 01',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [src/auth.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  truths:',
+      '    - "All tests pass"',
+      'gap_closure: true',
+      '---',
+      'body',
+    ].join('\r\n');
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'CRLF frontmatter must parse identically to LF for plan-gap-closure');
+    assert.ok(parsed.present.includes('gap_closure'));
+  });
+
+  // Row 6 — presence-vs-truthiness boundary: documents existing, consistent validator semantics.
+  test('gap_closure: false satisfies the schema (presence check, matching every other required field)', () => {
+    const content = `---
+phase: 01
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+files_modified: [src/auth.ts]
+autonomous: true
+must_haves:
+  truths:
+    - "All tests pass"
+gap_closure: false
+---
+body`;
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    // The validator checks presence (fm[f] !== undefined), not truthiness — same contract as
+    // every other required field (e.g. `autonomous`). This is not new behavior introduced by
+    // #2847; it documents the existing schema-validation contract for the new schema too.
+    assert.strictEqual(parsed.valid, true);
+    assert.ok(parsed.present.includes('gap_closure'));
+  });
+});
+
 // ─── frontmatter set/merge: must_haves object-list preservation (#1572) ──────
 // `frontmatter set`/`merge` round-tripped the WHOLE frontmatter through the lossy
 // extractFrontmatter → reconstructFrontmatter pair, which flattens must_haves

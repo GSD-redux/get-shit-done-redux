@@ -832,8 +832,11 @@ describe('FRONTMATTER_SCHEMAS', () => {
     ]);
   });
 
-  test('three schemas exist: plan, summary, verification', () => {
-    assert.deepEqual(Object.keys(FRONTMATTER_SCHEMAS).sort(), ['plan', 'summary', 'verification']);
+  test('four schemas exist: plan, plan-gap-closure, summary, verification (#2847)', () => {
+    assert.deepEqual(
+      Object.keys(FRONTMATTER_SCHEMAS).sort(),
+      ['plan', 'plan-gap-closure', 'summary', 'verification']
+    );
   });
 
   test('plan includes phase field', () => {
@@ -858,6 +861,48 @@ describe('FRONTMATTER_SCHEMAS', () => {
 
   test('verification does not include completed field', () => {
     assert.ok(!FRONTMATTER_SCHEMAS.verification.required.includes('completed'));
+  });
+});
+
+// ─── FRONTMATTER_SCHEMAS['plan-gap-closure'] (#2847) ──────────────────────────
+//
+// #2847: --gaps does not load planner-gap-closure.md's requirement into the
+// only machine-checked gate — gap-closure plans could pass validation
+// without `gap_closure: true`, so a subsequent `--gaps-only` execute run
+// silently matched zero plans. Fix: a dedicated schema that requires every
+// 'plan' field plus `gap_closure`, kept separate so standard/reviews-mode
+// plans (validated against 'plan', asserted unchanged above) are unaffected.
+
+describe("FRONTMATTER_SCHEMAS['plan-gap-closure'] (#2847)", () => {
+  test('plan-gap-closure schema has required field', () => {
+    assert.ok('required' in FRONTMATTER_SCHEMAS['plan-gap-closure']);
+  });
+
+  test('plan-gap-closure schema has exactly 9 required fields', () => {
+    assert.equal(FRONTMATTER_SCHEMAS['plan-gap-closure'].required.length, 9);
+  });
+
+  test('plan-gap-closure schema required fields are exact', () => {
+    assert.deepEqual(FRONTMATTER_SCHEMAS['plan-gap-closure'].required, [
+      'phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves', 'gap_closure',
+    ]);
+  });
+
+  test('plan-gap-closure includes gap_closure field', () => {
+    assert.ok(FRONTMATTER_SCHEMAS['plan-gap-closure'].required.includes('gap_closure'));
+  });
+
+  test('plan-gap-closure is a superset of every plan-required field', () => {
+    for (const field of FRONTMATTER_SCHEMAS.plan.required) {
+      assert.ok(
+        FRONTMATTER_SCHEMAS['plan-gap-closure'].required.includes(field),
+        `plan-gap-closure must include every 'plan' required field; missing "${field}"`
+      );
+    }
+  });
+
+  test('plan schema (standard/reviews mode) does NOT include gap_closure — unaffected by #2847 fix', () => {
+    assert.ok(!FRONTMATTER_SCHEMAS.plan.required.includes('gap_closure'));
   });
 });
 
