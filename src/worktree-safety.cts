@@ -520,6 +520,17 @@ function gitResultOk(result: GitResult | null | undefined): boolean {
 }
 
 /**
+ * Parse `git diff --name-only` (or `--diff-filter=D --name-only`) stdout into a
+ * clean list of file paths: split on `\n`, trim each line (also strips a
+ * trailing `\r` from CRLF output on Windows git), drop blanks. Shared by both
+ * the per-entry deletion list and the cross-entry touched-files cache in
+ * `executeWorktreeWaveCleanupPlan` (#2852) so the two call sites can't drift.
+ */
+function parseGitNameOnlyLines(stdout: string): string[] {
+  return stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+/**
  * Walk <worktreePath>/.planning/ recursively and collect absolute paths of
  * all files whose names match *SUMMARY.md.  Returns [] when the directory
  * does not exist or cannot be read.
@@ -700,7 +711,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
     if (touchedFilesCache.has(k)) return touchedFilesCache.get(k) as Set<string> | null;
     const diffResult = execGit(['diff', '--name-only', `HEAD...${entries[k].branch}`], { cwd: repoRoot });
     const value = gitResultOk(diffResult)
-      ? new Set(diffResult.stdout.split('\n').map((l) => l.trim()).filter(Boolean))
+      ? new Set(parseGitNameOnlyLines(diffResult.stdout))
       : null; // unknown — treated conservatively (fail-closed) by the caller
     touchedFilesCache.set(k, value);
     return value;
@@ -756,7 +767,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       // else in the wave depends on (the reported repro: folding a test file into a
       // sibling) is safe to let through. Unknown overlap (a sibling's diff could not
       // be determined) fails closed — block, matching the pre-fix conservative default.
-      const deletedFiles = deletions.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      const deletedFiles = parseGitNameOnlyLines(deletions.stdout);
       let stillDependedOn = false;
       let overlapUnknown = false;
       for (let k = 0; k < entries.length; k += 1) {
