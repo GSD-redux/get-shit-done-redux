@@ -3374,7 +3374,8 @@ const capabilities = {
       },
       "hostBehaviors": {
         "skipSharedHooksInstall": true,
-        "soloStageMetadata": "workflow"
+        "soloStageMetadata": "workflow",
+        "projectInstructionFile": ".trae/rules/rules.md"
       }
     }
   },
@@ -6592,7 +6593,8 @@ const runtimes = {
       },
       "hostBehaviors": {
         "skipSharedHooksInstall": true,
-        "soloStageMetadata": "workflow"
+        "soloStageMetadata": "workflow",
+        "projectInstructionFile": ".trae/rules/rules.md"
       }
     }
   },
