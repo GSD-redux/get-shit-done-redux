@@ -22,7 +22,7 @@ key-decisions: []
 #   prose-only SUMMARYs. When coverage is uncertain, default human_judgment: true — never auto-skip the human.
 duration: Xmin
 completed: YYYY-MM-DD
-status: complete
+status: complete  # or: halted — designed stop, tasks intentionally unfinished (#2830)
 ---
 
 # Phase [X]: [Name] Summary (Minimal)

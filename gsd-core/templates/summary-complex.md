@@ -25,7 +25,7 @@ patterns-established:
 #   uncertain, default human_judgment: true with a rationale — never auto-skip the human.
 duration: Xmin
 completed: YYYY-MM-DD
-status: complete
+status: complete  # or: halted — designed stop, tasks intentionally unfinished (#2830)
 ---
 
 # Phase [X]: [Name] Summary (Complex)

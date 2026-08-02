@@ -68,6 +68,9 @@ import verificationMod = require('./verification.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- verify.cjs is an export= CommonJS module
 import verifyMod = require('./verify.cjs');
 const { readVerificationStatus } = verificationMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-dependency-graph.cjs is an export= CommonJS module
+import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
+const { computeHaltPropagation, isHaltedStatus, buildSummaryFileIndex } = planDependencyGraphMod;
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
   planningWorkspace;
@@ -511,16 +514,59 @@ interface RawPlan {
   filesModified: string[];
   taskCount: number;
   hasSummary: boolean;
+  /** #2830: true iff this plan's own SUMMARY declares `status: halted` (a designed stop). */
+  halted: boolean;
+}
+
+/**
+ * #2830: read a completed plan's SUMMARY frontmatter `status` key. Returns
+ * false — never throws — on a missing/unreadable/malformed SUMMARY, so an
+ * unreadable file degrades to the pre-#2830 behavior ("has a SUMMARY =
+ * complete") rather than breaking plan-index. The "does this value mean
+ * halted" decision itself is `isHaltedStatus` in the shared
+ * plan-dependency-graph module — phase-locator.cts's equivalent read calls
+ * the same predicate, so the two can never disagree on what "halted" means.
+ */
+function isSummaryHalted(summaryPath: string): boolean {
+  try {
+    const content = fs.readFileSync(summaryPath, 'utf-8');
+    const fm = extractFrontmatter(content, summaryPath);
+    return isHaltedStatus(fm['status']);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve a raw `depends_on` token to the `RawPlan.id` it refers to
+ * (case-folded exact match, falling back to canonical-id matching). Returns
+ * `null` when the token does not resolve to any plan in this phase (a typo
+ * or a cross-phase reference) — every call site treats that as "ignore this
+ * edge", never a throw. Shared by `computeDependencyLevels`'s DAG-edge
+ * resolution, the `depends_on` display mapping, and (#2830) the
+ * halt-propagation node resolution, so the three can never disagree about
+ * which token resolves to which plan.
+ */
+function resolveDependencyId(
+  dep: string,
+  planMap: Map<string, RawPlan>,
+  canonicalToId: Map<string, string>,
+): string | null {
+  const lower = dep.toLowerCase();
+  return planMap.has(lower) ? (planMap.get(lower) as RawPlan).id : (canonicalToId.get(lower) ?? null);
 }
 
 // O(V + E). Assigns each in-phase plan its longest-path topological level over the
-// in-phase dependsOn DAG (Kahn's algorithm). Returns { level: Map<id,number>, visited: number }.
-// visited < rawPlans.length signals a dependency cycle.
+// in-phase dependsOn DAG (Kahn's algorithm). Returns { level: Map<id,number>, visited: number,
+// order: string[] }. visited < rawPlans.length signals a dependency cycle. `order` (#2830) is
+// the exact dequeue order this pass already produces — a valid topological order — passed to
+// computeHaltPropagation as `precomputedOrder` so halt propagation does not re-run Kahn's
+// algorithm a second time over the same graph.
 function computeDependencyLevels(
   rawPlans: RawPlan[],
   planMap: Map<string, RawPlan>,
   canonicalToId: Map<string, string>,
-): { level: Map<string, number>; visited: number } {
+): { level: Map<string, number>; visited: number; order: string[] } {
   const level = new Map<string, number>();
   const inDeg = new Map<string, number>();
   const adj = new Map<string, string[]>();
@@ -529,10 +575,7 @@ function computeDependencyLevels(
     if (!inDeg.has(p.id)) inDeg.set(p.id, 0);
     if (!adj.has(p.id)) adj.set(p.id, []);
     for (const dep of p.dependsOn) {
-      const depLower = dep.toLowerCase();
-      const resolvedDep = planMap.has(depLower)
-        ? (planMap.get(depLower) as RawPlan).id
-        : canonicalToId.get(depLower);
+      const resolvedDep = resolveDependencyId(dep, planMap, canonicalToId);
       if (!resolvedDep) continue;
       if (!adj.has(resolvedDep)) adj.set(resolvedDep, []);
       (adj.get(resolvedDep) as string[]).push(p.id);
@@ -568,7 +611,7 @@ function computeDependencyLevels(
     }
   }
 
-  return { level, visited };
+  return { level, visited, order: queue };
 }
 
 function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
@@ -598,7 +641,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
 
   if (!phaseDir) {
     output(
-      { phase: normalized, error: 'Phase not found', plans: [], waves: {}, incomplete: [], has_checkpoints: false },
+      { phase: normalized, error: 'Phase not found', plans: [], waves: {}, incomplete: [], runnable: [], has_checkpoints: false },
       raw,
     );
     return;
@@ -617,6 +660,12 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       return canonical === exact ? [exact] : [exact, canonical];
     }),
   );
+  // #2830: reverse lookup from a completed plan's id (exact or canonical) to
+  // the actual summary filename, so a plan's own SUMMARY frontmatter can be
+  // read for its `status`. Shared builder (also used by phase-locator.cts's
+  // searchPhaseInDir) so the two can never disagree about which summary
+  // belongs to which plan.
+  const summaryFileByPlanId = buildSummaryFileIndex(summaryFiles, extractCanonicalPlanId);
 
   // ── Pass 1: parse each plan file ─────────────────────────────────────────
 
@@ -660,6 +709,16 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     const hasSummary =
       completedPlanIds.has(planId) || completedPlanIds.has(extractCanonicalPlanId(planFile));
 
+    // #2830: a plan can have a SUMMARY (hasSummary=true) and still be halted —
+    // a designed stop still writes a completion record, just one whose status
+    // says "halted" rather than "complete". Only look up the summary file
+    // when one exists; there is nothing to read otherwise.
+    const summaryFile =
+      summaryFileByPlanId.get(planId) ?? summaryFileByPlanId.get(extractCanonicalPlanId(planFile));
+    const halted = hasSummary && summaryFile !== undefined
+      ? isSummaryHalted(path.join(phaseDir, summaryFile))
+      : false;
+
     rawPlans.push({
       id: planId,
       declaredWave,
@@ -669,6 +728,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
       filesModified,
       taskCount,
       hasSummary,
+      halted,
     });
   }
 
@@ -692,7 +752,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     rawPlans.map((p) => [extractCanonicalPlanId(p.id).toLowerCase(), p.id]),
   );
 
-  const { level, visited } = computeDependencyLevels(rawPlans, planMap, canonicalToId);
+  const { level, visited, order } = computeDependencyLevels(rawPlans, planMap, canonicalToId);
 
   if (visited < rawPlans.length) {
     const cycleNodes = rawPlans.filter((p) => !level.has(p.id)).map((p) => p.id);
@@ -702,6 +762,20 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     return;
   }
 
+  // #2830: single shared halt-propagation pass, reusing the SAME id
+  // resolution (planMap/canonicalToId) AND the SAME topological order
+  // (`order`, computeDependencyLevels's own Kahn's-algorithm dequeue
+  // sequence) — passed as `precomputedOrder` so computeHaltPropagation does
+  // NOT run Kahn's algorithm a second time over this graph.
+  const haltNodes = rawPlans.map((p) => ({
+    id: p.id,
+    resolvedDependsOn: p.dependsOn
+      .map((dep) => resolveDependencyId(String(dep), planMap, canonicalToId))
+      .filter((id): id is string => id !== null),
+    halted: p.halted,
+  }));
+  const { blockedBy } = computeHaltPropagation(haltNodes, order);
+
   // ── Pass 3: determine lowest bucket key and build output ─────────────────
 
   const anyWaveZero = rawPlans.some((p) => p.declaredWave === 0);
@@ -710,6 +784,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   const plans: Record<string, unknown>[] = [];
   const waves: Record<string, string[]> = {};
   const incomplete: string[] = [];
+  const runnable: string[] = [];
   let hasCheckpoints = false;
   const warnings: string[] = [];
 
@@ -717,8 +792,15 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     if (!rawPlan.autonomous) {
       hasCheckpoints = true;
     }
+    const blockedByIds = blockedBy.get(rawPlan.id) ?? [];
     if (!rawPlan.hasSummary) {
       incomplete.push(rawPlan.id);
+      // #2830: the runnable-only view — incomplete AND not transitively
+      // blocked by a halted upstream plan. Additive alongside `incomplete`,
+      // which keeps its existing "no SUMMARY yet" meaning unchanged.
+      if (blockedByIds.length === 0) {
+        runnable.push(rawPlan.id);
+      }
     }
 
     const computedWave = (level.get(rawPlan.id) ?? 0) + levelOffset;
@@ -732,15 +814,17 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     const plan: Record<string, unknown> = {
       id: rawPlan.id,
       wave: effectiveWave,
-      depends_on: rawPlan.dependsOn.map((dep) => {
-        const lower = String(dep).toLowerCase();
-        return planMap.has(lower) ? (planMap.get(lower) as RawPlan).id : dep;
-      }),
+      depends_on: rawPlan.dependsOn.map((dep) => resolveDependencyId(String(dep), planMap, canonicalToId) ?? dep),
       autonomous: rawPlan.autonomous,
       objective: rawPlan.objective,
       files_modified: rawPlan.filesModified,
       task_count: rawPlan.taskCount,
       has_summary: rawPlan.hasSummary,
+      // #2830: additive fields — halted is this plan's OWN status; blocked_by
+      // names the halted plan(s) transitively upstream of it (empty when not
+      // blocked). Neither mutates has_summary/incomplete's existing meaning.
+      halted: rawPlan.halted,
+      blocked_by: blockedByIds,
     };
 
     plans.push(plan);
@@ -757,6 +841,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     plans,
     waves,
     incomplete,
+    runnable,
     has_checkpoints: hasCheckpoints,
   };
   if (planNamingWarning) result['warning'] = planNamingWarning;

@@ -409,6 +409,7 @@
       "phase-locator.cjs",
       "phase.cjs",
       "phases-command-router.cjs",
+      "plan-dependency-graph.cjs",
       "plan-drift-guard.cjs",
       "plan-scan.cjs",
       "planning-workspace.cjs",

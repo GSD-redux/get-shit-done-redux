@@ -24,10 +24,12 @@ const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
+const planDependencyGraph = require('../gsd-core/bin/lib/plan-dependency-graph.cjs');
 
 // ─── Fixture builder ──────────────────────────────────────────────────────
 //
@@ -439,6 +441,99 @@ describe('parity: phase-plan-index and findPhaseInternal agree on blocking (#283
       locatorBlocked,
       cliBlocked,
       'phase-plan-index and findPhaseInternal must report the exact same blocked-plan-id -> cause-set mapping',
+    );
+  });
+});
+
+// ─── computeHaltPropagation — direct module tests + fast-check property ───
+
+describe('computeHaltPropagation: graph invariants (#2830)', () => {
+  test('a node with no depends_on and not halted is never blocked', () => {
+    const { blockedBy } = planDependencyGraph.computeHaltPropagation([
+      { id: 'A', resolvedDependsOn: [], halted: false },
+    ]);
+    assert.strictEqual(blockedBy.get('A'), undefined);
+  });
+
+  test('a halted node is never blocked by itself', () => {
+    const { blockedBy } = planDependencyGraph.computeHaltPropagation([
+      { id: 'A', resolvedDependsOn: [], halted: true },
+    ]);
+    assert.strictEqual(blockedBy.get('A'), undefined, 'a halted plan is halted, not "blocked"');
+  });
+
+  test('precomputedOrder (the phase.cts call shape) yields the same result as self-derived order', () => {
+    // phase.cts's cmdPhasePlanIndex passes computeDependencyLevels's own
+    // topological order in as `precomputedOrder` so this function does not
+    // re-run Kahn's algorithm. Assert both call shapes agree.
+    const nodes = [
+      { id: 'A', resolvedDependsOn: [], halted: true },
+      { id: 'B', resolvedDependsOn: ['A'], halted: false },
+      { id: 'C', resolvedDependsOn: ['B'], halted: false },
+    ];
+    const selfDerived = planDependencyGraph.computeHaltPropagation(nodes);
+    const withPrecomputed = planDependencyGraph.computeHaltPropagation(nodes, ['A', 'B', 'C']);
+    assert.deepEqual([...withPrecomputed.blockedBy.entries()], [...selfDerived.blockedBy.entries()]);
+    assert.deepEqual(withPrecomputed.order, ['A', 'B', 'C']);
+    assert.strictEqual(withPrecomputed.visited, 3);
+  });
+
+  test('fast-check — blocked set matches reachability from halted nodes', () => {
+    // Generate a random DAG over N nodes: edges only point from a lower index
+    // to a higher index (guarantees acyclicity by construction, independent
+    // of the code under test), with a random halted flag per node.
+    const dagArb = fc.integer({ min: 1, max: 12 }).chain((n) => {
+      const ids = Array.from({ length: n }, (_, i) => `N${i}`);
+      const edgeArb = fc.array(
+        fc.record({
+          from: fc.integer({ min: 0, max: n - 1 }),
+          to: fc.integer({ min: 0, max: n - 1 }),
+        }).filter(({ from, to }) => from < to), // from depends_on to (to is "earlier"/upstream)
+        { maxLength: n * 2 },
+      );
+      const haltedArb = fc.array(fc.boolean(), { minLength: n, maxLength: n });
+      return fc.record({ ids: fc.constant(ids), edges: edgeArb, halted: haltedArb });
+    });
+
+    fc.assert(
+      fc.property(dagArb, ({ ids, edges, halted }) => {
+        const dependsOn = new Map(ids.map((id) => [id, []]));
+        for (const { from, to } of edges) {
+          dependsOn.get(ids[from]).push(ids[to]);
+        }
+        const nodes = ids.map((id, i) => ({
+          id,
+          resolvedDependsOn: dependsOn.get(id),
+          halted: halted[i],
+        }));
+
+        const { blockedBy } = planDependencyGraph.computeHaltPropagation(nodes);
+
+        // Reference model: reachability via depends_on edges from a halted node.
+        const haltedSet = new Set(nodes.filter((n) => n.halted).map((n) => n.id));
+        const dependsOnMap = new Map(nodes.map((n) => [n.id, n.resolvedDependsOn]));
+        function reachableHaltedCauses(id, seen = new Set()) {
+          const causes = new Set();
+          for (const dep of dependsOnMap.get(id) ?? []) {
+            if (seen.has(dep)) continue;
+            seen.add(dep);
+            if (haltedSet.has(dep)) causes.add(dep);
+            for (const c of reachableHaltedCauses(dep, seen)) causes.add(c);
+          }
+          return causes;
+        }
+
+        for (const n of nodes) {
+          const expected = [...reachableHaltedCauses(n.id)].sort();
+          const actual = [...(blockedBy.get(n.id) ?? [])].sort();
+          assert.deepEqual(
+            actual,
+            expected,
+            `node ${n.id}: computeHaltPropagation blockedBy must equal halted-reachability`,
+          );
+        }
+      }),
+      { numRuns: 50 },
     );
   });
 });
