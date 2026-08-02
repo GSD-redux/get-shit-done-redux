@@ -42,7 +42,8 @@ const phaseId = require('../gsd-core/bin/lib/phase-id.cjs');
 const phaseLocator = require('../gsd-core/bin/lib/phase-locator.cjs');
 const gsd2Import = require('../gsd-core/bin/lib/gsd2-import.cjs');
 const fc = require('fast-check');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { execFileSync } = require('node:child_process');
+const { runGsdTools, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
 
 const { generateSlugInternal, DEFAULT_SLUG_MAX_LENGTH } = coreUtils;
 
@@ -455,6 +456,250 @@ describe('slug parity: property across all four entry points (#2986)', () => {
       );
     } finally {
       cleanup(tmp);
+    }
+  });
+});
+
+// ─── 6. Regression: six guarded call sites refuse an empty slug (PR 2908 review) ───
+
+/**
+ * trek-e's CHANGES_REQUESTED blocker on #2908: `generateSlugInternal('!!!')`
+ * returns `''`, not `null` — so the `?? error(...)` pattern at six call sites
+ * never fires (`??` only reacts to null/undefined, and `''` is neither). Each
+ * site below is exercised through its real CLI command, never by calling the
+ * guard's helper function directly, so a fix that patches the wrong branch
+ * cannot pass this by accident.
+ *
+ * Every test carries BOTH halves: a healthy Cyrillic name (positive control —
+ * proves the probe actually reaches this call site and is not silently
+ * skipped) and the all-punctuation input `'!!!'` (the regression itself).
+ * Test titles embed the exact `file:line` from the read so the gate can count
+ * "6 of 6" by grepping titles, not by trusting a bare pass count.
+ */
+const REGRESSION_HEALTHY_NAME = 'Фаза сборки';
+const REGRESSION_HEALTHY_SLUG = generateSlugInternal(REGRESSION_HEALTHY_NAME, DEFAULT_SLUG_MAX_LENGTH);
+const REGRESSION_BAD_NAME = '!!!';
+
+const ROADMAP_ONE_PHASE = [
+  '# Roadmap',
+  '',
+  '## Milestones',
+  '',
+  '### Phase 1: Foundation',
+  '',
+  '**Goal:** something',
+  '**Status:** ✅ Complete',
+  '',
+].join('\n');
+
+/** ROADMAP.md whose active-milestone bullet carries `name` as the milestone name. */
+function roadmapWithMilestone(name) {
+  return [
+    '# Roadmap',
+    '',
+    '## Milestones',
+    '',
+    `- 🚧 **v1.0 ${name}**`,
+    '',
+    '### Phase 1: Foundation',
+    '',
+    '**Goal:** something',
+    '**Status:** ✅ Complete',
+    '',
+  ].join('\n');
+}
+
+function currentBranch(cwd) {
+  return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf-8' }).trim();
+}
+
+describe('regression: six guarded call sites refuse an empty slug (#2908 review)', () => {
+  test('src/phase.cts:808 (phase add) refuses "!!!" and creates no nameless phase directory', () => {
+    const tmpOk = createTempProject();
+    const tmpBad = createTempProject();
+    try {
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'ROADMAP.md'), ROADMAP_ONE_PHASE);
+      const ok = runGsdTools(['phase', 'add', REGRESSION_HEALTHY_NAME], tmpOk);
+      assert.ok(ok.success, `healthy name must still succeed: ${ok.error}`);
+      assert.strictEqual(JSON.parse(ok.output).slug, REGRESSION_HEALTHY_SLUG);
+      assert.ok(
+        fs.readdirSync(path.join(tmpOk, '.planning', 'phases')).some((d) => d.includes(REGRESSION_HEALTHY_SLUG)),
+        'probe does not reach phase.cts:808 — positive control failed',
+      );
+
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'ROADMAP.md'), ROADMAP_ONE_PHASE);
+      const bad = runGsdTools(['phase', 'add', REGRESSION_BAD_NAME], tmpBad);
+      assert.strictEqual(bad.success, false, `"!!!" must be refused, not silently sluggified: ${bad.output}`);
+      assert.deepStrictEqual(
+        fs.readdirSync(path.join(tmpBad, '.planning', 'phases')),
+        [],
+        'a nameless phase directory (e.g. "02-") was created for an unrenderable description',
+      );
+    } finally {
+      cleanup(tmpOk);
+      cleanup(tmpBad);
+    }
+  });
+
+  test('src/phase.cts:957 (phase add-batch) refuses "!!!" and creates no nameless phase directory', () => {
+    const tmpOk = createTempProject();
+    const tmpBad = createTempProject();
+    try {
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'ROADMAP.md'), ROADMAP_ONE_PHASE);
+      const ok = runGsdTools(['phase', 'add-batch', '--descriptions', JSON.stringify([REGRESSION_HEALTHY_NAME])], tmpOk);
+      assert.ok(ok.success, `healthy name must still succeed: ${ok.error}`);
+      assert.strictEqual(JSON.parse(ok.output).phases[0].slug, REGRESSION_HEALTHY_SLUG);
+      assert.ok(
+        fs.readdirSync(path.join(tmpOk, '.planning', 'phases')).some((d) => d.includes(REGRESSION_HEALTHY_SLUG)),
+        'probe does not reach phase.cts:957 — positive control failed',
+      );
+
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'ROADMAP.md'), ROADMAP_ONE_PHASE);
+      const bad = runGsdTools(['phase', 'add-batch', '--descriptions', JSON.stringify([REGRESSION_BAD_NAME])], tmpBad);
+      assert.strictEqual(bad.success, false, `"!!!" must be refused, not silently sluggified: ${bad.output}`);
+      assert.deepStrictEqual(
+        fs.readdirSync(path.join(tmpBad, '.planning', 'phases')),
+        [],
+        'a nameless phase directory (e.g. "02-") was created for an unrenderable description',
+      );
+    } finally {
+      cleanup(tmpOk);
+      cleanup(tmpBad);
+    }
+  });
+
+  test('src/phase.cts:1014 (phase insert) refuses "!!!" and creates no nameless decimal directory', () => {
+    const tmpOk = createTempProject();
+    const tmpBad = createTempProject();
+    try {
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'ROADMAP.md'), ROADMAP_ONE_PHASE);
+      const ok = runGsdTools(['phase', 'insert', '1', REGRESSION_HEALTHY_NAME], tmpOk);
+      assert.ok(ok.success, `healthy name must still succeed: ${ok.error}`);
+      assert.strictEqual(JSON.parse(ok.output).slug, REGRESSION_HEALTHY_SLUG);
+      assert.ok(
+        fs.readdirSync(path.join(tmpOk, '.planning', 'phases')).some((d) => d.includes(REGRESSION_HEALTHY_SLUG)),
+        'probe does not reach phase.cts:1014 — positive control failed',
+      );
+
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'ROADMAP.md'), ROADMAP_ONE_PHASE);
+      const bad = runGsdTools(['phase', 'insert', '1', REGRESSION_BAD_NAME], tmpBad);
+      assert.strictEqual(bad.success, false, `"!!!" must be refused, not silently sluggified: ${bad.output}`);
+      assert.deepStrictEqual(
+        fs.readdirSync(path.join(tmpBad, '.planning', 'phases')),
+        [],
+        'a nameless decimal directory (e.g. "01.1-") was created for an unrenderable description',
+      );
+    } finally {
+      cleanup(tmpOk);
+      cleanup(tmpBad);
+    }
+  });
+
+  test('src/workstream.cts:165 (workstream create migration) refuses an unrenderable milestone name and starts no migration', () => {
+    const tmpOk = createTempProject();
+    const tmpBad = createTempProject();
+    try {
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'ROADMAP.md'), roadmapWithMilestone(REGRESSION_HEALTHY_NAME));
+      const ok = runGsdTools(['workstream', 'create', 'feature-x'], tmpOk);
+      assert.ok(ok.success, `healthy milestone name must still succeed: ${ok.error}`);
+      assert.ok(
+        fs.existsSync(path.join(tmpOk, '.planning', 'workstreams', REGRESSION_HEALTHY_SLUG)),
+        'probe does not reach workstream.cts:165 — positive control failed (no migrated workstream named after the milestone)',
+      );
+
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'ROADMAP.md'), roadmapWithMilestone(REGRESSION_BAD_NAME));
+      const bad = runGsdTools(['workstream', 'create', 'feature-x'], tmpBad);
+      assert.strictEqual(
+        bad.success,
+        false,
+        `an unrenderable milestone name must be refused, not silently migrated under an empty directory: ${bad.output}`,
+      );
+      assert.strictEqual(
+        fs.existsSync(path.join(tmpBad, '.planning', 'workstreams')),
+        false,
+        'migration proceeded (workstreams/ was created) for an unrenderable milestone name',
+      );
+    } finally {
+      cleanup(tmpOk);
+      cleanup(tmpBad);
+    }
+  });
+
+  test('src/commands.cts:861 (commit milestone-branch guard) refuses an unrenderable milestone name and creates no nameless branch', () => {
+    const tmpOk = createTempGitProject();
+    const tmpBad = createTempGitProject();
+    try {
+      const config = JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'milestone',
+        milestone_branch_template: 'milestone/{milestone}-{slug}',
+      });
+
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'ROADMAP.md'), roadmapWithMilestone(REGRESSION_HEALTHY_NAME));
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'config.json'), config);
+      fs.writeFileSync(path.join(tmpOk, 'touched.txt'), 'x');
+      const ok = runGsdTools(['commit', 'test: probe', '--files', 'touched.txt'], tmpOk);
+      assert.ok(ok.success, `healthy milestone name must still succeed: ${ok.error}`);
+      assert.strictEqual(
+        currentBranch(tmpOk),
+        `milestone/v1.0-${REGRESSION_HEALTHY_SLUG}`,
+        'probe does not reach commands.cts:861 — positive control failed (branch was not renamed after the milestone)',
+      );
+
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'ROADMAP.md'), roadmapWithMilestone(REGRESSION_BAD_NAME));
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'config.json'), config);
+      fs.writeFileSync(path.join(tmpBad, 'touched.txt'), 'x');
+      const branchBefore = currentBranch(tmpBad);
+      const bad = runGsdTools(['commit', 'test: probe', '--files', 'touched.txt'], tmpBad);
+      assert.strictEqual(
+        bad.success,
+        false,
+        `an unrenderable milestone name must be refused, not silently checked out onto a nameless branch: ${bad.output}`,
+      );
+      assert.strictEqual(
+        currentBranch(tmpBad),
+        branchBefore,
+        'a nameless branch (e.g. "milestone/v1.0-") was created for an unrenderable milestone name',
+      );
+    } finally {
+      cleanup(tmpOk);
+      cleanup(tmpBad);
+    }
+  });
+
+  test('src/init.cts:544 (init execute-phase branch_name) refuses an unrenderable milestone name', () => {
+    const tmpOk = createTempProject();
+    const tmpBad = createTempProject();
+    try {
+      const config = JSON.stringify({
+        commit_docs: true,
+        branching_strategy: 'milestone',
+        milestone_branch_template: 'milestone/{milestone}-{slug}',
+      });
+
+      fs.mkdirSync(path.join(tmpOk, '.planning', 'phases', '01-foundation'), { recursive: true });
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'ROADMAP.md'), roadmapWithMilestone(REGRESSION_HEALTHY_NAME));
+      fs.writeFileSync(path.join(tmpOk, '.planning', 'config.json'), config);
+      const ok = runGsdTools(['init', 'execute-phase', '1'], tmpOk);
+      assert.ok(ok.success, `healthy milestone name must still succeed: ${ok.error}`);
+      assert.strictEqual(
+        JSON.parse(ok.output).branch_name,
+        `milestone/v1.0-${REGRESSION_HEALTHY_SLUG}`,
+        'probe does not reach init.cts:544 — positive control failed',
+      );
+
+      fs.mkdirSync(path.join(tmpBad, '.planning', 'phases', '01-foundation'), { recursive: true });
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'ROADMAP.md'), roadmapWithMilestone(REGRESSION_BAD_NAME));
+      fs.writeFileSync(path.join(tmpBad, '.planning', 'config.json'), config);
+      const bad = runGsdTools(['init', 'execute-phase', '1'], tmpBad);
+      assert.strictEqual(
+        bad.success,
+        false,
+        `an unrenderable milestone name must be refused, not silently reported as a nameless branch_name: ${bad.output}`,
+      );
+    } finally {
+      cleanup(tmpOk);
+      cleanup(tmpBad);
     }
   });
 });

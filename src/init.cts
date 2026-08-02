@@ -541,8 +541,11 @@ function cmdInitExecutePhase(
                 '{slug}',
                 // A generic 'milestone' stand-in makes two different unrenderable
                 // milestone names produce the same branch; refuse instead (#2848).
+                // Logical OR, because the generator returns an empty string for
+                // input with no slug-safe characters, not only a missing value —
+                // a nullish check alone lets that case through.
                 generateSlugInternal(milestone['name'] as string)
-                  ?? error(`milestone name has no slug-safe characters: ${JSON.stringify(milestone['name'])}`),
+                  || error(`milestone name has no slug-safe characters: ${JSON.stringify(milestone['name'])}`),
               )
           : null,
 

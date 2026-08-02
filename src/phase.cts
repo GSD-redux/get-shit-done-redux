@@ -804,9 +804,11 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
 
   // The slug becomes the phase directory name, so an unrenderable
   // description must stop here rather than create `phases/01-` with
-  // nothing after the hyphen (#2848).
+  // nothing after the hyphen (#2848). Logical OR, because the generator
+  // returns an empty string for input with no slug-safe characters, not
+  // only a missing value — a nullish check alone lets that case through.
   const slug = generateSlugInternal(description)
-    ?? error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
+    || error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
 
   const { newPhaseId, dirName } = withPlanningLock(cwd, () => {
     const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
@@ -953,9 +955,11 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
     for (const description of descriptions) {
       // The slug becomes the phase directory name, so an unrenderable
       // description must stop here rather than create `phases/01-` with
-      // nothing after the hyphen (#2848).
+      // nothing after the hyphen (#2848). Logical OR, because the generator
+      // returns an empty string for input with no slug-safe characters, not
+      // only a missing value — a nullish check alone lets that case through.
       const slug = generateSlugInternal(description)
-        ?? error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
+        || error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
       let newPhaseId: number | string;
       let dirName: string;
       if (config.phase_naming === 'custom') {
@@ -1010,9 +1014,11 @@ function cmdPhaseInsert(cwd: string, afterPhase: string, description: string, ra
 
   // The slug becomes the phase directory name, so an unrenderable
   // description must stop here rather than create `phases/01-` with
-  // nothing after the hyphen (#2848).
+  // nothing after the hyphen (#2848). Logical OR, because the generator
+  // returns an empty string for input with no slug-safe characters, not
+  // only a missing value — a nullish check alone lets that case through.
   const slug = generateSlugInternal(description)
-    ?? error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
+    || error(`phase description has no slug-safe characters: ${JSON.stringify(description)}`);
 
   const { decimalPhase, dirName } = withPlanningLock(cwd, () => {
     const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
