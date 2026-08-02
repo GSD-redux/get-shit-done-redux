@@ -84,7 +84,7 @@ const BARE_COMMAND_RE = new RegExp(
 const PROSE_ALLOWLIST = [
   { file: 'agents/gsd-executor.md', line: 793, reason: 'describes the SDK return envelope of `gsd-tools query commit`; not an instruction to run the bare word' },
   { file: 'agents/gsd-phase-researcher.md', line: 33, reason: 'package-legitimacy provenance rule names the command as the source of an OK verdict; descriptive' },
-  { file: 'agents/gsd-roadmapper.md', line: 624, reason: 'parenthetical "e.g." naming SDK queries a user *could* run; not an agent instruction' },
+  { file: 'agents/gsd-roadmapper.md', line: 642, reason: 'parenthetical "e.g." naming SDK queries a user *could* run; not an agent instruction' },
   { file: 'agents/gsd-intel-updater.md', line: 40, reason: 'cross-platform note names the `gsd-tools intel <subcommand>` CLI surface descriptively ("CLI invocations go through..."); not an agent instruction' },
   { file: 'gsd-core/workflows/execute-plan.md', line: 387, reason: 'describes the downstream SDK validation step (`validated downstream by ...`); names the mechanism, does not instruct the agent to type it' },
   { file: 'agents/gsd-research-synthesizer.md', line: 65, reason: 'a code comment inside a fenced block explaining what the commit step loads (`# Planning config loaded via gsd-tools query ...`); descriptive, not an invocation — and explicitly names gsd-tools.cjs as the alternative' },

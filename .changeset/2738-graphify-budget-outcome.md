@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 2819
+---
+**`graphify query --budget <N>` now reports whether the budget was met** — the response carries `budget_met` and `budget_estimate` when a budget is requested. The estimate measures the response **as emitted** (the pretty-printed payload the caller is handed, wrapper keys included), so `budget_met` is a claim about the bytes you actually receive rather than about a smaller internal form. Seeds are retained unconditionally, so the seed set is a floor the edge-tier reduction cannot go below; previously a request for 500 tokens could return a ~119k-token payload with no signal that the budget was missed. The tier loop also now recomputes reachability and the estimate after each tier removal, so it stops as soon as the pruned result fits instead of dropping the next, higher-confidence tier unnecessarily. `--budget 0`, which the CLI accepts and forwards, is now honored as a (necessarily unmeetable, reported) budget instead of being silently treated as no budget. (#2738)

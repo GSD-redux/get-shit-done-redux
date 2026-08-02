@@ -333,10 +333,17 @@ for (const scope of ['global', 'local']) {
       const hookPath = path.join(configDir, 'hooks', hook);
       assert.ok(fs.existsSync(hookPath), `${hookPath} must be staged by the install`);
     }
-    // The CommonJS marker installSharedHooksBundle writes alongside hooks/.
-    const marker = path.join(configDir, 'package.json');
-    assert.ok(fs.existsSync(marker), 'CommonJS package.json marker must be staged');
-    assert.equal(JSON.parse(fs.readFileSync(marker, 'utf8')).type, 'commonjs');
+    // #2544: the CommonJS marker is staged INSIDE the directories GSD owns and
+    // fills — hooks/ (the staged guard scripts) and plugins/ (the native
+    // adapter) — never at the config root, which is user-writable territory on
+    // Kilo (where a package.json declares local-plugin npm dependencies).
+    for (const ownedDir of ['hooks', 'plugins']) {
+      const marker = path.join(configDir, ownedDir, 'package.json');
+      assert.ok(fs.existsSync(marker), `CommonJS package.json marker must be staged in ${ownedDir}/`);
+      assert.equal(JSON.parse(fs.readFileSync(marker, 'utf8')).type, 'commonjs');
+    }
+    assert.ok(!fs.existsSync(path.join(configDir, 'package.json')),
+      'the config root must not receive a GSD package.json (#2544)');
 
     // Staged hooks are tracked in the manifest (drift/uninstall accounting).
     assert.ok(manifest && manifest.files['hooks/gsd-prompt-guard.js'],
