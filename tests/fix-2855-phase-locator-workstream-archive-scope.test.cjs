@@ -84,6 +84,32 @@ describe('#2855: findPhaseInternal does not leak cross-workstream archived phase
     assert.strictEqual(result, null, 'a workstream with no directory yet must not resolve to the root archive');
   });
 
+  // Issue #2855 AC1: "...regardless of whether workstream A's roadmap already
+  // lists the phase and when it doesn't yet." findPhaseInternal never reads
+  // ROADMAP.md (it is a pure filesystem lookup), so this dimension cannot
+  // change its behavior — demonstrated directly rather than left as an
+  // inference from reading the source.
+  for (const roadmapHasEntry of [true, false]) {
+    test(`does not leak root archive whether or not the workstream's ROADMAP.md already lists the phase (roadmapHasEntry=${roadmapHasEntry})`, () => {
+      tmpDir = createTempProject('gsd-2855-');
+      const rootArchive = path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '03-legacy');
+      fs.mkdirSync(rootArchive, { recursive: true });
+
+      const wsDir = path.join(tmpDir, '.planning', 'workstreams', 'beta');
+      fs.mkdirSync(path.join(wsDir, 'phases'), { recursive: true });
+      if (roadmapHasEntry) {
+        fs.writeFileSync(
+          path.join(wsDir, 'ROADMAP.md'),
+          ['# Roadmap', '', '### Phase 03: Pending Work', ''].join('\n'),
+        );
+      }
+      process.env.GSD_WORKSTREAM = 'beta';
+
+      const result = phaseLocator.findPhaseInternal(tmpDir, '3');
+      assert.strictEqual(result, null, 'ROADMAP.md presence/absence must not affect the archive-leak guard');
+    });
+  }
+
   test('still finds a phase genuinely archived under the active workstream\'s own tree', () => {
     tmpDir = createTempProject('gsd-2855-');
     const ownArchive = path.join(tmpDir, '.planning', 'workstreams', 'beta', 'milestones', 'v1.0-phases', '03-real');
