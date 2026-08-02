@@ -343,6 +343,24 @@ interface ManifestSection extends sectionManifest.SelectableSection {
 }
 
 /**
+ * Defense-in-depth shape check for a manifest entry's `read` field, which is
+ * documented as a POSIX-normalized, repo-root-RELATIVE path (never a
+ * filesystem escape). Rejects any absolute path (POSIX leading `/`, a
+ * Windows drive prefix like `C:\`/`C:/`, or a Windows UNC/rooted path
+ * starting with `\`) and any path containing a `..` segment (checked on
+ * BOTH separators — the artifact is generated as POSIX-normalized, but this
+ * validates the raw field defensively rather than trusting that invariant).
+ * `false` here is the only accept path in {@link loadSectionManifestSections};
+ * a `true` degrades the WHOLE load to `null`, same as every other shape
+ * violation — never throws, never partially loads.
+ */
+function isUnsafeManifestReadPath(readPath: string): boolean {
+  if (readPath.startsWith('/') || readPath.startsWith('\\')) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(readPath)) return true;
+  return readPath.split(/[\\/]/).includes('..');
+}
+
+/**
  * Loads and shape-validates the generated section manifest, then returns the
  * document-order section array for exactly one named `workflow` (#2992 Phase
  * 6.1: the artifact is now `{ workflows: { <name>: [...] } }`, keyed by
@@ -353,7 +371,10 @@ interface ManifestSection extends sectionManifest.SelectableSection {
  * workflow — design row C4), or when `workflow` has no key in `workflows`.
  * `Object.hasOwn` guards the key lookup so a hostile workflow name
  * (`constructor`, `toString`, `__proto__`) can never resolve via the
- * prototype chain instead of a genuine own key.
+ * prototype chain instead of a genuine own key. Each entry's `read` field is
+ * additionally validated by {@link isUnsafeManifestReadPath} (rejects an
+ * absolute path or a `..` segment) — a single unsafe entry degrades the
+ * WHOLE load to `null`, all-or-nothing like every other shape violation.
  */
 function loadSectionManifestSections(workflow: string): ManifestSection[] | null {
   try {
@@ -366,12 +387,14 @@ function loadSectionManifestSections(workflow: string): ManifestSection[] | null
     const sections = (workflows as Record<string, unknown>)[workflow];
     if (!Array.isArray(sections)) return null;
     for (const section of sections) {
+      const readValue = (section as Record<string, unknown> | null)?.['read'];
       if (
         !section ||
         typeof section !== 'object' ||
         typeof (section as Record<string, unknown>)['id'] !== 'string' ||
         typeof (section as Record<string, unknown>)['when'] !== 'string' ||
-        typeof (section as Record<string, unknown>)['read'] !== 'string'
+        typeof readValue !== 'string' ||
+        isUnsafeManifestReadPath(readValue)
       ) {
         return null;
       }
@@ -488,11 +511,18 @@ function detectPhaseMvpMode(cwd: string, phaseNumber: string | null): boolean {
  * optional, never load-bearing for dispatch (Hyrum's Law: 22 direct init-bundle
  * dependents must be unaffected by its absence).
  *
- * `flags` (D1-D5): built from `options`'s OWN keys — token-presence, not
- * value-truthiness. A key whose value is `undefined` is absent; any other
- * present value (`false`, `0`, `''`, a string, a number) is present as the
- * `--<key>` token. `Object.keys` + a plain `new Set()` so a hostile option
- * key (e.g. `constructor`) can never leak via the prototype chain.
+ * `flags` (D1-D5): built from `options`'s OWN keys, gated on VALUE TRUTHINESS
+ * — not merely `!== undefined`. `parseNamedArgs` (src/command-arg-projection.cts)
+ * never yields `undefined` for an absent flag of either kind: a value-flag's
+ * absence is `null`, a booleanFlag's absence is `false`. An `undefined`-only
+ * absence check therefore lets BOTH kinds of absent flag leak into `flags` as
+ * present. A present value-flag is always a non-empty string, and a present
+ * booleanFlag is always `true` — so skipping any falsy value (`undefined`,
+ * `null`, `false`, `''`, `0`) is a safe, single-rule absence test for both
+ * flag kinds; `--wave 0` still resolves to `true` via `booleanFlags`, so
+ * truthiness never misclassifies a real invocation as absent. `Object.keys`
+ * + a plain `new Set()` so a hostile option key (e.g. `constructor`) can
+ * never leak via the prototype chain.
  *
  * `needsCodebaseMap` is not computed in this shared facts-assembly scope —
  * `isBrownfield && !hasCodebaseMap` is only meaningful for `new-project`
@@ -523,7 +553,7 @@ function buildSectionManifestField(
 
   const flags = new Set<string>();
   for (const key of Object.keys(options)) {
-    if (options[key] === undefined) continue;
+    if (!options[key]) continue;
     flags.add(`--${key}`);
   }
 

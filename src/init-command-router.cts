@@ -62,54 +62,35 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
     error,
     unknownMessage: (_subcommand: string, available: string[]) => `Unknown init workflow: ${_subcommand}\nAvailable: ${available.join(', ')}`,
     handlers: {
+      // #2932/#2992: `parseNamedArgs` never yields `undefined` for an absent
+      // flag (value-flags default to `null`, booleanFlags default to `false`);
+      // `buildSectionManifestField`'s flags-Set builder (src/init.cts) is the
+      // single source of truth for flag ABSENCE and gates on value truthiness,
+      // so `namedArgs` is passed through here uncoerced.
       'execute-phase': () => {
-        // #2932: 'wave' is boolean/token-presence (parseNamedArgs's booleanFlags
-        // semantics already match the design's token-presence rule: `--wave` alone,
-        // `--wave 0`, and duplicate `--wave 1 --wave 2` all resolve to `true`;
-        // near-miss tokens `--waves`/`--wave-filter` never match the exact `--wave` token).
-        //
-        // #2992 fix: `parseNamedArgs`'s booleanFlags ALWAYS populate the key
-        // (true when the token was seen, `false` otherwise — never
-        // `undefined`). `buildSectionManifestField`'s flags-Set builder
-        // (src/init.cts) treats any non-`undefined` option value as PRESENT
-        // (matrix rows D2/D3: an option's own value `false`/a string is
-        // still present — that rule exists for VALUE flags whose absence is
-        // `null`, not for a booleanFlag's own presence signal). Passed
-        // through raw, a booleanFlag's `false` ("token not seen") would be
-        // added to `flags` anyway, making `flag:--wave`/`flag:--validate`/
-        // `flag:--tdd` permanently true regardless of the actual CLI
-        // invocation — silently defeating the whole gating feature (verified
-        // live: `partial-wave` was included with NO `--wave` on the command
-        // line). `|| undefined` folds a booleanFlag's own "absent" value
-        // into the SAME `undefined` sentinel the flags builder already
-        // treats as absent, without touching that builder's documented
-        // contract for value flags.
         const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd', 'wave']);
         init.cmdInitExecutePhase(cwd, args[2], raw, {
-          validate: namedArgs['validate'] || undefined,
-          tdd: namedArgs['tdd'] || undefined,
-          wave: namedArgs['wave'] || undefined,
+          validate: namedArgs['validate'],
+          tdd: namedArgs['tdd'],
+          wave: namedArgs['wave'],
         });
       },
       'plan-phase': () => {
-        // #2992 fix: same booleanFlag-presence correction as execute-phase above.
         const namedArgs = parseNamedArgs(args, ['granularity'], ['validate', 'tdd']);
         init.cmdInitPlanPhase(cwd, args[2], raw, {
-          validate: namedArgs['validate'] || undefined,
-          tdd: namedArgs['tdd'] || undefined,
+          validate: namedArgs['validate'],
+          tdd: namedArgs['tdd'],
           granularity: namedArgs['granularity'],
         });
       },
       'new-project': () => {
-        // #2992 fix: same booleanFlag-presence correction as execute-phase above.
         const namedArgs = parseNamedArgs(args, [], ['auto']);
-        init.cmdInitNewProject(cwd, raw, { auto: namedArgs['auto'] || undefined });
+        init.cmdInitNewProject(cwd, raw, { auto: namedArgs['auto'] });
       },
       'new-milestone': () => {
-        // #2992 fix: same booleanFlag-presence correction as execute-phase above.
         const namedArgs = parseNamedArgs(args, [], ['reset-phase-numbers']);
         init.cmdInitNewMilestone(cwd, raw, {
-          'reset-phase-numbers': namedArgs['reset-phase-numbers'] || undefined,
+          'reset-phase-numbers': namedArgs['reset-phase-numbers'],
         });
       },
       onboard: () => {
@@ -117,13 +98,12 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         init.cmdInitOnboard(cwd, raw, { fast: namedArgs['fast'], text: namedArgs['text'] });
       },
       quick: () => {
-        // #2992 fix: same booleanFlag-presence correction as execute-phase above.
         const namedArgs = parseNamedArgs(args, [], ['discuss', 'research', 'validate', 'full']);
         init.cmdInitQuick(cwd, args.slice(2).join(' '), raw, {
-          discuss: namedArgs['discuss'] || undefined,
-          research: namedArgs['research'] || undefined,
-          validate: namedArgs['validate'] || undefined,
-          full: namedArgs['full'] || undefined,
+          discuss: namedArgs['discuss'],
+          research: namedArgs['research'],
+          validate: namedArgs['validate'],
+          full: namedArgs['full'],
         });
       },
       'ingest-docs': () => init.cmdInitIngestDocs(cwd, raw),
@@ -134,9 +114,8 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
       'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),
       progress: () => {
-        // #2992 fix: same booleanFlag-presence correction as execute-phase above.
         const namedArgs = parseNamedArgs(args, [], ['forensic']);
-        init.cmdInitProgress(cwd, raw, { forensic: namedArgs['forensic'] || undefined });
+        init.cmdInitProgress(cwd, raw, { forensic: namedArgs['forensic'] });
       },
       // Keep manager on CJS for now so runtime-specific command rendering
       // (e.g. $gsd-* for codex) stays consistent with runtime-slash helpers.

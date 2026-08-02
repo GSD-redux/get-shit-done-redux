@@ -16,7 +16,7 @@
  *
  * Derived from Greenspun's Tenth Rule (ADR-1671:69 cites it by name) and
  * binding on this implementation: `when=` is a closed vocabulary, widened
- * from 4 to 20 entries via the ADR-1671 amendment for #2992 (epic #1671
+ * from 4 to 14 entries via the ADR-1671 amendment for #2992 (epic #1671
  * Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
  * 40-design.md`). {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.

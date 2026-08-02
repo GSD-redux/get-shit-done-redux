@@ -3326,6 +3326,51 @@ describe('init section manifest', () => {
       const body = JSON.parse(result.stdout);
       assert.equal(body.section_manifest, null);
     });
+
+    // ── #2992 review finding: an unsafe `read` path degrades the WHOLE
+    // load to null, exactly like every other shape violation above — the
+    // field is documented as a POSIX-normalized, repo-root-RELATIVE path,
+    // so an absolute path, a Windows drive/UNC prefix, or a `..` traversal
+    // segment must never be trusted through to a later `fs.readFileSync`.
+
+    test('degradesToNullWhenReadPathIsAbsolute', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-unsafe-abs-');
+      const manifestPath = path.join(dir, 'unsafe-abs-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: { 'execute-phase': [{ id: 'x', when: 'always', read: '/etc/passwd' }] },
+      }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath });
+      assert.equal(result.status, 0, `expected exit 0 despite an absolute read path, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'unsafe-read-absolute');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'an absolute `read` path must degrade the whole load to null');
+    });
+
+    test('degradesToNullWhenReadPathContainsDotDotTraversal', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-unsafe-dotdot-');
+      const manifestPath = path.join(dir, 'unsafe-dotdot-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: { 'execute-phase': [{ id: 'x', when: 'always', read: '../../etc/passwd' }] },
+      }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath });
+      assert.equal(result.status, 0, `expected exit 0 despite a ../ traversal read path, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'unsafe-read-dotdot');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'a `..` traversal segment in `read` must degrade the whole load to null');
+    });
+
+    test('degradesToNullWhenReadPathIsWindowsDriveAbsolute', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-unsafe-windrive-');
+      const manifestPath = path.join(dir, 'unsafe-windrive-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: { 'execute-phase': [{ id: 'x', when: 'always', read: 'C:\\Windows\\System32\\config' }] },
+      }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath });
+      assert.equal(result.status, 0, `expected exit 0 despite a Windows drive-absolute read path, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'unsafe-read-windrive');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'a Windows drive-absolute `read` path must degrade the whole load to null');
+    });
   });
 
   // ── C1/C12/C16/C17 (#2992): shape guarantees on the field itself ────────
@@ -3484,6 +3529,81 @@ describe('init section manifest', () => {
       const manifestPath = writeDetectorManifest(dir);
       const body = parseOkJson(runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath }), 'd10b');
       assert.ok(body.section_manifest.included.includes('worktrees-section'));
+    });
+  });
+
+  // ── #2992 review finding: state:needs-codebase-map wiring (real CLI) ─────
+  //
+  // No test anywhere drove `state:needs-codebase-map` (src/section-manifest.cts)
+  // or its `cmdInitNewProject` override wiring (src/init.cts, `overrides.needsCodebaseMap`)
+  // through the real CLI. Drives `init new-project` with a `mkdtempSync`
+  // fixture manifest (via `GSD_SECTION_MANIFEST`) naming a single section
+  // gated on the atom, proving inclusion/exclusion tracks the SAME
+  // isBrownfield/hasCodebaseMap computation `needs_codebase_map` itself uses
+  // — never mutating the shipped gsd-core/workflows/section-manifest.json.
+
+  describe('init new-project: state:needs-codebase-map wiring (#2992 review finding)', () => {
+    function writeNeedsCodebaseMapManifest(dir) {
+      const manifestPath = path.join(dir, 'needs-map-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: {
+          'new-project': [
+            { id: 'needs-map-section', when: 'state:needs-codebase-map', read: 'z.md' },
+          ],
+        },
+      }));
+      return manifestPath;
+    }
+
+    test('brownfieldWithoutCodebaseMapIncludesTheGatedSection', () => {
+      const dir = createTempProject('gsd-needsmap-true-');
+      try {
+        fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"test"}');
+        const manifestPath = writeNeedsCodebaseMapManifest(dir);
+        const result = runGsdTools('init new-project', dir, { GSD_SECTION_MANIFEST: manifestPath });
+        assert.ok(result.success, `init new-project failed: ${result.error}`);
+        const output = JSON.parse(result.output);
+        assert.strictEqual(output.needs_codebase_map, true, 'sanity: fixture must be brownfield without a codebase map');
+        assert.deepStrictEqual(output.section_manifest.included, ['needs-map-section']);
+        assert.deepStrictEqual(output.section_manifest.excluded, []);
+      } finally {
+        cleanup(dir);
+      }
+    });
+
+    test('greenfieldExcludesTheGatedSection', () => {
+      const dir = createTempProject('gsd-needsmap-false-');
+      try {
+        const manifestPath = writeNeedsCodebaseMapManifest(dir);
+        const result = runGsdTools('init new-project', dir, { GSD_SECTION_MANIFEST: manifestPath });
+        assert.ok(result.success, `init new-project failed: ${result.error}`);
+        const output = JSON.parse(result.output);
+        assert.strictEqual(output.needs_codebase_map, false, 'sanity: fixture must be greenfield');
+        assert.deepStrictEqual(output.section_manifest.included, []);
+        assert.deepStrictEqual(output.section_manifest.excluded, ['needs-map-section']);
+      } finally {
+        cleanup(dir);
+      }
+    });
+
+    test('brownfieldWithExistingCodebaseMapExcludesTheGatedSection', () => {
+      const dir = createTempProject('gsd-needsmap-hascomap-');
+      try {
+        fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"test"}');
+        fs.mkdirSync(path.join(dir, '.planning', 'codebase'), { recursive: true });
+        for (const name of ['STACK', 'ARCHITECTURE', 'STRUCTURE', 'CONVENTIONS', 'TESTING', 'INTEGRATIONS', 'CONCERNS']) {
+          fs.writeFileSync(path.join(dir, '.planning', 'codebase', `${name}.md`), `# ${name}\n`);
+        }
+        const manifestPath = writeNeedsCodebaseMapManifest(dir);
+        const result = runGsdTools('init new-project', dir, { GSD_SECTION_MANIFEST: manifestPath });
+        assert.ok(result.success, `init new-project failed: ${result.error}`);
+        const output = JSON.parse(result.output);
+        assert.strictEqual(output.needs_codebase_map, false, 'sanity: fixture must already have a complete codebase map');
+        assert.deepStrictEqual(output.section_manifest.included, []);
+        assert.deepStrictEqual(output.section_manifest.excluded, ['needs-map-section']);
+      } finally {
+        cleanup(dir);
+      }
     });
   });
 

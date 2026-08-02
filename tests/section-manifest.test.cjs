@@ -287,6 +287,80 @@ describe('REASON enum is frozen and its shape is locked', () => {
   });
 });
 
+// ─── #2992 review finding: state:needs-codebase-map / state:phase-mvp-mode /
+// state:worktrees-enabled predicate coverage ─────────────────────────────
+//
+// These three atoms were shipped (src/section-manifest.cts) with zero
+// direct predicate-level test coverage — `state:phase-mvp-mode` and
+// `state:worktrees-enabled` DO have real prod-shape integration coverage
+// (tests/init.test.cjs "init execute-phase: state:* detector degradation
+// (#2992 rows D9-D11)"), but `state:needs-codebase-map` had none anywhere.
+// Locking all three here at the evaluator level too, matching every other
+// shipped predicate's dedicated matrix test.
+
+describe('state:needs-codebase-map / state:phase-mvp-mode / state:worktrees-enabled predicates', () => {
+  test('needsCodebaseMapTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: true })), true);
+  });
+
+  test('needsCodebaseMapFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: false })), false);
+  });
+
+  test('needsCodebaseMapFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:needs-codebase-map'](facts({})));
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({})), false);
+  });
+
+  test('needsCodebaseMapFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: undefined })));
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: undefined })), false);
+  });
+
+  test('phaseMvpModeTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: true })), true);
+  });
+
+  test('phaseMvpModeFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: false })), false);
+  });
+
+  test('phaseMvpModeFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:phase-mvp-mode'](facts({})));
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({})), false);
+  });
+
+  test('phaseMvpModeFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: undefined })));
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: undefined })), false);
+  });
+
+  test('worktreesEnabledTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: true })), true);
+  });
+
+  test('worktreesEnabledFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: false })), false);
+  });
+
+  test('worktreesEnabledFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:worktrees-enabled'](facts({})));
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({})), false);
+  });
+
+  test('worktreesEnabledFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: undefined })));
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: undefined })), false);
+  });
+
+  test('selectSectionsIncludesNeedsCodebaseMapSectionOnlyWhenFactIsTrue', () => {
+    const sections = [{ id: 'needs-map', when: 'state:needs-codebase-map' }];
+    assert.deepEqual(selectSections(sections, facts({ needsCodebaseMap: true })), { included: ['needs-map'], excluded: [] });
+    assert.deepEqual(selectSections(sections, facts({ needsCodebaseMap: false })), { included: [], excluded: ['needs-map'] });
+    assert.deepEqual(selectSections(sections, facts({})), { included: [], excluded: ['needs-map'] });
+  });
+});
+
 // ─── Rows 25-33: Object.prototype-shaped when= values fail closed ──────────
 // Added during review — prototype-chain fail-open found by isolated
 // adversarial pass. A bracket lookup on a plain frozen object resolves

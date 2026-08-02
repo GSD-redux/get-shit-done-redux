@@ -76,6 +76,12 @@ const factsArb = fc.record({
   flags: flagsArb,
   phaseNumber: phaseNumberArb,
   hasPriorPhases: fc.boolean(),
+  // #2992 review finding: the three newer state:* booleans (needsCodebaseMap,
+  // phaseMvpMode, worktreesEnabled) must also participate in the partition
+  // invariant, not just the original three W/D/P facts.
+  needsCodebaseMap: fc.boolean(),
+  phaseMvpMode: fc.boolean(),
+  worktreesEnabled: fc.boolean(),
 });
 
 // ─── Row 25: exact partition ────────────────────────────────────────────────
@@ -126,8 +132,8 @@ describe('property: never throws for vocabulary-valid when and arbitrary facts',
 
   test('neverThrowsWhenFactsAreMissingKeysEntirely', () => {
     // Totality also over PARTIAL facts objects (row 19's property-level
-    // twin): dropping zero or more of the three fact keys must never throw.
-    const factKeys = ['flags', 'phaseNumber', 'hasPriorPhases'];
+    // twin): dropping zero or more of the six fact keys must never throw.
+    const factKeys = ['flags', 'phaseNumber', 'hasPriorPhases', 'needsCodebaseMap', 'phaseMvpMode', 'worktreesEnabled'];
     fc.assert(
       fc.property(sectionsArb, factsArb, fc.subarray(factKeys), (sections, facts, keysToKeep) => {
         const partialFacts = {};
