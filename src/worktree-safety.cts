@@ -679,23 +679,30 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
   const pending: CleanupManifestEntry[] = [];
   let ok = true;
 
-  // #2852: memoized per-entry "what did this branch change overall" set, used only
-  // when ANOTHER entry in the wave has a deletion and we need to know whether this
-  // entry's branch still touches the deleted path. Computed lazily via `HEAD...branch`
-  // (same merge-base-relative form already used for the deletion check below) so a
-  // wave with no deletions never pays for the extra git call, and an already-merged
-  // sibling's diff stays stable even after its own merge has moved `repoRoot` HEAD —
-  // the merge-base between the (now-advanced) HEAD and an independent sibling branch
-  // is unaffected by that sibling's own merge commit.
+  // #2852: memoized per-entry "what did this branch change overall" set, used when
+  // ANOTHER entry in the wave has a deletion and we need to know whether this entry's
+  // branch still touches the deleted path.
+  //
+  // CORRECTNESS NOTE (caught in review): this cache must be populated for entry k
+  // no later than the START of k's own turn in the loop below (see `touchedFilesCache.set(i, …)`
+  // right after the per-entry diff call) — NOT lazily the first time some later entry
+  // asks for it. Once entry k has been merged, branch_k becomes an ancestor of `HEAD`
+  // and `git diff --name-only HEAD...branch_k` silently collapses to empty, which
+  // would make a genuinely-depended-on deletion look safe. Populating the cache
+  // during k's own turn captures its diff BEFORE k's own merge can move HEAD, so the
+  // cached value stays correct for every later entry's overlap check regardless of
+  // manifest order. An entry with a LARGER index than the current one has not had
+  // its turn yet (and therefore cannot have been merged), so computing its diff
+  // on-demand against the live `HEAD` at that point is still safe.
   const repoRoot = plan.repoRoot;
-  const changedFilesCache = new Map<number, Set<string> | null>();
+  const touchedFilesCache = new Map<number, Set<string> | null>();
   function getEntryChangedFiles(k: number): Set<string> | null {
-    if (changedFilesCache.has(k)) return changedFilesCache.get(k) as Set<string> | null;
+    if (touchedFilesCache.has(k)) return touchedFilesCache.get(k) as Set<string> | null;
     const diffResult = execGit(['diff', '--name-only', `HEAD...${entries[k].branch}`], { cwd: repoRoot });
     const value = gitResultOk(diffResult)
       ? new Set(diffResult.stdout.split('\n').map((l) => l.trim()).filter(Boolean))
       : null; // unknown — treated conservatively (fail-closed) by the caller
-    changedFilesCache.set(k, value);
+    touchedFilesCache.set(k, value);
     return value;
   }
 
@@ -815,6 +822,14 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       ok = false;
       continue; // #2852: isolate
     }
+
+    // #2852: force-populate THIS entry's own touched-files cache now, immediately
+    // before the only step that can move `HEAD` (the merge below). Every entry that
+    // reaches this line is about to attempt a merge; capturing its diff here — not
+    // lazily, later, when some other entry's overlap check happens to ask for it —
+    // is what keeps that later lookup correct even after this entry has landed on
+    // `HEAD` (see the correctness note on `touchedFilesCache` above).
+    getEntryChangedFiles(i);
 
     const merge = execGit(['merge', entry.branch, '--no-ff', '--no-edit', '-m', `chore: merge executor worktree (${entry.branch})`], { cwd: plan.repoRoot });
     if (!gitResultOk(merge)) {
