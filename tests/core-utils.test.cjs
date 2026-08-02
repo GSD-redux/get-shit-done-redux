@@ -340,17 +340,19 @@ describe('generateSlugInternal', () => {
   test('cyrillic is transliterated instead of collapsing to an empty slug', () => {
     assert.strictEqual(
       coreUtils.generateSlugInternal('Расчёт показателей за квартал'),
-      'raschyot-pokazateley-za-kvartal',
+      'raschet-pokazateley-za-kvartal',
     );
   });
 
   test('multi-character transliterations are not corrupted by shorter ones', () => {
-    // щ→sch must not be produced by ш→sh plus a stray ч; ё→yo must not fall
-    // back to е→e. A chained .replace() implementation gets this wrong unless
-    // the rules are ordered; the single-pass table cannot get it wrong at all.
+    // щ→sch must not be produced by ш→sh plus a stray ч. A chained .replace()
+    // implementation gets this wrong unless the rules are ordered; the
+    // single-pass table cannot get it wrong at all.
     assert.strictEqual(coreUtils.generateSlugInternal('щи'), 'schi');
     assert.strictEqual(coreUtils.generateSlugInternal('ши'), 'shi');
-    assert.strictEqual(coreUtils.generateSlugInternal('ёж'), 'yozh');
+    // ё is transliterated (proves the filter does not just drop it), matching
+    // what upstream/next already ships: ё→e, the same as its base letter е.
+    assert.strictEqual(coreUtils.generateSlugInternal('ёж'), 'ezh');
     assert.strictEqual(coreUtils.generateSlugInternal('ежи'), 'ezhi');
   });
 
