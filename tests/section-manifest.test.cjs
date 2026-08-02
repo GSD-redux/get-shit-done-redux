@@ -229,3 +229,53 @@ describe('REASON enum is frozen and its shape is locked', () => {
     assert.deepEqual(Object.keys(REASON).sort(), ['UNKNOWN_WHEN']);
   });
 });
+
+// ─── Rows 25-33: Object.prototype-shaped when= values fail closed ──────────
+// Added during review — prototype-chain fail-open found by isolated
+// adversarial pass. A bracket lookup on a plain frozen object resolves
+// inherited Object.prototype members (`constructor`, `toString`, etc.) as if
+// they were predicates, silently including the section or throwing an
+// untyped error instead of failing closed with REASON.UNKNOWN_WHEN.
+
+describe('Object.prototype-shaped when= values fail closed (REASON.UNKNOWN_WHEN)', () => {
+  const HOSTILE_WHEN_VALUES = Object.freeze([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+    'prototype',
+    'isPrototypeOf',
+    'propertyIsEnumerable',
+    'toLocaleString',
+  ]);
+
+  for (const when of HOSTILE_WHEN_VALUES) {
+    test(`throwsUnknownWhenFor_${when}`, () => {
+      assert.throws(
+        () => selectSections([{ id: 'x', when }], facts({})),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
+      );
+    });
+
+    test(`neverIncludesSectionFor_${when}`, () => {
+      let caught;
+      try {
+        selectSections([{ id: 'x', when }], facts({}));
+      } catch (err) {
+        caught = err;
+      }
+      assert.ok(caught, `expected selectSections to throw for when="${when}"`);
+      assert.equal(caught.reason, REASON.UNKNOWN_WHEN);
+    });
+  }
+
+  test('noneOfTheHostileValuesAppearInIncludedAcrossAMixedSectionList', () => {
+    for (const when of HOSTILE_WHEN_VALUES) {
+      assert.throws(
+        () => selectSections([{ id: 'safe', when: 'always' }, { id: 'hostile', when }], facts({})),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
+      );
+    }
+  });
+});

@@ -122,13 +122,15 @@ function fail(reason: string, message: string): never {
  *   phases)" -> `state:has-prior-phases`.
  * - `partial-wave` — "If `WAVE_FILTER` was used" -> `flag:--wave`.
  */
-export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) => boolean>> = Object.freeze({
-  always: () => true,
-  'flag:--wave': (facts: InvocationFacts) => facts.waveFlag === true,
-  'state:gap-closure-phase': (facts: InvocationFacts) =>
-    typeof facts.phaseNumber === 'string' && facts.phaseNumber.includes('.'),
-  'state:has-prior-phases': (facts: InvocationFacts) => facts.hasPriorPhases === true,
-});
+export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) => boolean>> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, (facts: InvocationFacts) => boolean>, {
+    always: () => true,
+    'flag:--wave': (facts: InvocationFacts) => facts.waveFlag === true,
+    'state:gap-closure-phase': (facts: InvocationFacts) =>
+      typeof facts.phaseNumber === 'string' && facts.phaseNumber.includes('.'),
+    'state:has-prior-phases': (facts: InvocationFacts) => facts.hasPriorPhases === true,
+  }),
+);
 
 // Coordinated-change guard, checked at module load: every entry of the
 // frozen WHEN_VOCABULARY (imported, never redeclared — see module doc
@@ -139,7 +141,7 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
 // a predicate fails loudly rather than silently falling through to
 // REASON.UNKNOWN_WHEN only at run time.
 for (const when of workflowFragments.WHEN_VOCABULARY) {
-  if (!(when in WHEN_PREDICATES)) {
+  if (!Object.hasOwn(WHEN_PREDICATES, when)) {
     throw new Error(`section-manifest: WHEN_VOCABULARY entry "${when}" has no predicate in WHEN_PREDICATES`);
   }
 }
@@ -165,10 +167,10 @@ export function selectSections(
   const excluded: string[] = [];
 
   for (const section of sections) {
-    const predicate = WHEN_PREDICATES[section.when];
-    if (predicate === undefined) {
+    if (!Object.hasOwn(WHEN_PREDICATES, section.when)) {
       fail(REASON.UNKNOWN_WHEN, `section "${section.id}" has unrecognized when= value "${section.when}"`);
     }
+    const predicate = WHEN_PREDICATES[section.when];
     if (predicate(facts)) {
       included.push(section.id);
     } else {
