@@ -891,7 +891,7 @@ Agent(
 )
 ```
 
-Per 7.99: `PLANNER_STALL_RESULT=$(gsd_stall_watch "$PLANNER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md' "## PLANNING COMPLETE" "## PHASE SPLIT RECOMMENDED" "## ⚠ Source Audit" "## CHECKPOINT REACHED" "## PLANNING INCONCLUSIVE")` — `marker_received` -> step 9; `stalled` -> 9a.
+Per 7.99, `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md' "## PLANNING COMPLETE" "## PHASE SPLIT RECOMMENDED" "## ⚠ Source Audit" "## CHECKPOINT REACHED" "## PLANNING INCONCLUSIVE")` while waiting/active — `marker_received` -> step 9; `stalled` -> 9a.
 
 **If `CHUNKED_MODE` is `true`:** Skip the Agent() call above — proceed to step 8.5 instead.
 
@@ -947,7 +947,7 @@ Agent(
 )
 ```
 
-Per 7.99: `PLANNER_STALL_RESULT=$(gsd_stall_watch "$PLANNER_OUTPUT_FILE" "$OUTLINE_FILE" "## OUTLINE COMPLETE")`.
+Per 7.99, `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "$OUTLINE_FILE" "## OUTLINE COMPLETE")` while waiting/active.
 
 Handle return:
 - **`marker_received`:** Read `PLAN-OUTLINE.md`, extract plan list. Continue to 8.5.2.
@@ -992,7 +992,7 @@ For each plan entry extracted from `PLAN-OUTLINE.md`:
    )
    ```
 
-   Per 7.99: `PLANNER_STALL_RESULT=$(gsd_stall_watch "$PLANNER_OUTPUT_FILE" "$PLAN_FILE" "## PLAN COMPLETE")` — `stalled` falls into step 4 below (preserves prior committed chunks).
+   Per 7.99, `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "$PLAN_FILE" "## PLAN COMPLETE")` while waiting/active — `stalled` falls into step 4 (preserves prior committed chunks).
 
 4. **Verify disk:** Check `${PHASE_DIR}/{plan_id}-PLAN.md` exists. If missing: offer 1) Retry, 2) Stop.
 
@@ -1159,7 +1159,7 @@ Agent(
 )
 ```
 
-Per 7.99: `CHECKER_STALL_RESULT=$(gsd_stall_watch "$CHECKER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md' "## VERIFICATION PASSED" "## ISSUES FOUND")`.
+Per 7.99, `TS=$(date +%s)`; repeat `CHECKER_STALL_RESULT=$(gsd_stall_watch "$TS" "$CHECKER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md' "## VERIFICATION PASSED" "## ISSUES FOUND")` while waiting/active.
 
 ## 11. Handle Checker Return
 
@@ -1276,7 +1276,7 @@ Agent(
 )
 ```
 
-Per 7.99 (no marker; classifies on `*-PLAN.md` mtimes): `PLANNER_STALL_RESULT=$(gsd_stall_watch "$PLANNER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md')` — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
+Per 7.99 (no marker; mtimes only), `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

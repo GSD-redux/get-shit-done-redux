@@ -166,6 +166,97 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pur
       { numRuns: 25 },
     );
   });
+
+  test('a malformed threshold_minutes value degrades to the safe default instead of crashing the watcher', () => {
+    // A security review initially flagged this as a command-injection path
+    // (bash arithmetic recursively re-evaluating a `$(cmd)`-shaped string).
+    // Empirically disproven: bash's arithmetic evaluator hard-errors on such
+    // an operand ("syntax error: operand expected") rather than invoking it —
+    // verified directly against both macOS bash 3.2.57 and Docker bash:5; the
+    // payload command never runs on either. The REAL risk this guard closes
+    // is reliability, not RCE: without validation, a malformed
+    // `planner.stall_threshold_minutes` config value would abort the
+    // stall-watcher itself with that bash syntax error, silently defeating
+    // the exact hang-recovery this issue exists to ship. Prove the function
+    // degrades to a safe default instead of erroring.
+    const marker = `gsd-2650-untouched-${process.pid}-${Date.now()}`;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-malformed-'));
+    try {
+      const payload = `$(touch ${path.join(tmp, marker)})`;
+      const result = runShouldRecover(helpersBash, 0, payload, 'false', 'false');
+      // Must not error (proves the guard prevents the bash-abort), must not
+      // have run the embedded command either way, and must fall back to the
+      // safe default classification (threshold_minutes -> 10 -> elapsed 0 < 600 -> waiting).
+      assert.equal(result, 'waiting');
+      assert.equal(fs.existsSync(path.join(tmp, marker)), false, 'payload must not execute (also true without the guard — bash hard-errors on it instead)');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+});
+
+describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real execution, not just the pure classifier)', () => {
+  // Sourcing the extracted script without `gsd_run` defined naturally exercises
+  // the `|| echo "<default>"` fallback already in the config-get lines (command
+  // lookup fails -> non-zero exit -> the `||` branch fires), so
+  // PLANNER_STALL_INTERVAL_MINUTES/PLANNER_STALL_THRESHOLD_MINUTES start at their
+  // real defaults (5/10) here; each test overrides them afterward for speed.
+  let helpersBash;
+  let tmp;
+
+  test('loads helpers', () => {
+    helpersBash = extractStallHelpersBash();
+    assert.ok(helpersBash.includes('gsd_stall_watch()'));
+  });
+
+  function runWatch(intervalMinutes, thresholdMinutes, dispatchTs, outputFile, artifactGlob, markers) {
+    const overrides = `PLANNER_STALL_INTERVAL_MINUTES=${intervalMinutes}\nPLANNER_STALL_THRESHOLD_MINUTES=${thresholdMinutes}\n`;
+    const call = `gsd_stall_watch ${JSON.stringify(String(dispatchTs))} ${JSON.stringify(outputFile)} ${JSON.stringify(artifactGlob)}` +
+      markers.map((m) => ` ${JSON.stringify(m)}`).join('');
+    const script = `${helpersBash}\n${overrides}${call}\n`;
+    return spawnSync('bash', ['-c', script], { encoding: 'utf-8', timeout: 10000 });
+  }
+
+  test('marker present in the real output file (via real grep, interval=0 so sleep is instant) -> marker_received', (t) => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-watch-'));
+    t.after(() => cleanup(tmp));
+    const outputFile = path.join(tmp, 'agent-output.txt');
+    fs.writeFileSync(outputFile, 'some agent output\n## PLANNING COMPLETE\nmore text\n');
+    const glob = path.join(tmp, '*-PLAN.md');
+    const now = Math.floor(Date.now() / 1000);
+    const result = runWatch(0, 10, now, outputFile, glob, ['## PLANNING COMPLETE']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'marker_received');
+  });
+
+  test('no marker, no output file, dispatch far in the past, threshold=0 (via real find/date, interval=0) -> stalled', (t) => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-watch-'));
+    t.after(() => cleanup(tmp));
+    const missingOutputFile = path.join(tmp, 'never-written.txt');
+    const glob = path.join(tmp, '*-PLAN.md'); // matches nothing -> no fresh activity
+    const longAgo = Math.floor(Date.now() / 1000) - 999999;
+    const result = runWatch(0, 0, longAgo, missingOutputFile, glob, ['## PLANNING COMPLETE']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'stalled');
+  });
+
+  test('marker absent, dispatch just now, non-zero threshold (via real find/date, interval=0) -> waiting', (t) => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-watch-'));
+    t.after(() => cleanup(tmp));
+    const missingOutputFile = path.join(tmp, 'never-written.txt');
+    const glob = path.join(tmp, '*-PLAN.md');
+    const now = Math.floor(Date.now() / 1000);
+    const result = runWatch(0, 10, now, missingOutputFile, glob, ['## PLANNING COMPLETE']);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'waiting');
+  });
+  // Note: the mtime-based "fresh artifact activity -> active" transition is
+  // deliberately NOT integration-tested against a real clock here (it would
+  // require either a real ~60s sleep to get a reliable -newermt window, which
+  // is too slow for this suite, or a sub-minute window at the mercy of
+  // whole-second `date +%s` truncation, which is flaky by construction — see
+  // "No flaky races" policy). That transition IS covered deterministically at
+  // the pure-function level above ("fresh artifact activity keeps waiting...").
 });
 
 describe('bug #2650 config schema — planner.stall_* keys mirror executor.stall_*', () => {
