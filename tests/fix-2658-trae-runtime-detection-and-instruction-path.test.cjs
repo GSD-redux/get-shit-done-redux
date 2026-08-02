@@ -161,11 +161,47 @@ describe('#2658 defect 5: post-generic-rewrite ".trae/"-prefixed forms preserve 
 });
 
 describe('#2658 output parity: bin/install.js vs runtime-artifact-conversion.cjs convertClaudeToTraeMarkdown (#2094 mirror)', () => {
-  test('identical output for the reported-bug input', () => {
-    const input = 'Fallback path is .claude/CLAUDE.md by default.';
-    assert.strictEqual(
-      convertClaudeToTraeMarkdown(input),
-      runtimeArtifactConversion.convertClaudeToTraeMarkdown(input),
+  // Parity must hold for the pre-existing reported-bug input AND for every
+  // arbitrary-prefix ".trae/"-tail shape the prefix-preserving regex
+  // (bin/install.js:2747-2748, mirrored byte-for-byte at
+  // src/runtime-artifact-conversion.cts:1357-1358) was added to handle. A
+  // change to only one copy of that regex would otherwise pass every other
+  // test in this file — none of the defect-5 cases above call the mirror —
+  // while silently diverging from the other copy.
+  const parityCases = [
+    ['the reported-bug input (bare .claude/ prefix)', 'Fallback path is .claude/CLAUDE.md by default.'],
+    ['local relative prefix (post "./.claude/" -> "./.trae/" rewrite)', './.trae/CLAUDE.md'],
+    [
+      'nested project-path absolute prefix (post "./.claude/" -> "<tmp-root>/.trae/" rewrite)',
+      '/private/var/folders/xx/gsd-trae-local-abc123/.trae/CLAUDE.md',
+    ],
+    ['global tilde prefix (post "~/.claude/" -> "~/.trae/" rewrite)', '~/.trae/CLAUDE.md'],
+    ['$HOME-variable prefix (post "$HOME/.claude/" -> "$HOME/.trae/" rewrite)', '$HOME/.trae/CLAUDE.md'],
+    ['backtick-wrapped local relative prefix', '`./.trae/CLAUDE.md`'],
+  ];
+
+  for (const [label, input] of parityCases) {
+    test(`identical output for ${label}`, () => {
+      assert.strictEqual(
+        convertClaudeToTraeMarkdown(input),
+        runtimeArtifactConversion.convertClaudeToTraeMarkdown(input),
+      );
+    });
+  }
+
+  test('fast-check property: any arbitrary ".trae/"-tail path produces identical output in both implementations', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ maxLength: 30 }).filter((s) => !s.includes('`') && !/\s/.test(s)),
+        (prefix) => {
+          const content = `${prefix}.trae/CLAUDE.md`;
+          assert.strictEqual(
+            convertClaudeToTraeMarkdown(content),
+            runtimeArtifactConversion.convertClaudeToTraeMarkdown(content),
+          );
+        },
+      ),
+      { numRuns: 200 },
     );
   });
 });
