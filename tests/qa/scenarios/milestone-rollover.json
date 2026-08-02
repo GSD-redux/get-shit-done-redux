@@ -1,0 +1,90 @@
+{
+  "name": "milestone-rollover",
+  "fixture": "greenfield",
+  "notes": "The point of this scenario is the boundary crossing itself: complete milestone 1.0, confirm the archival side-effects (phases clear returns cleared:0, phase numbering carries forward across the boundary rather than resetting), THEN write the next milestone's ROADMAP.md (v2.0) and observe monotonic-progress's oracle correctly demote the resulting counter reset to a SMELL (scope changed) rather than a VIOLATION. Do not trim/reorder these steps to dodge the oracle — the boundary IS the scenario.",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "execute:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-SUMMARY.md": "@summary/tokenizer-complete"
+        }
+      },
+      "run": [["progress"]],
+      "expect": [
+        { "path": "percent", "is": 100 }
+      ]
+    },
+    {
+      "at": "execute:post",
+      "run": [["stats"]]
+    },
+    {
+      "at": "ship:post",
+      "run": [
+        ["milestone", "complete", "1.0", "--force"]
+      ]
+    },
+    {
+      "at": "ship:post",
+      "run": [
+        ["phases", "clear", "--confirm"]
+      ],
+      "expect": [
+        { "path": "cleared", "is": 0 }
+      ]
+    },
+    {
+      "at": "ship:post",
+      "run": [
+        ["phase", "add", "Phase Four: Post-Rollover Work"]
+      ],
+      "expect": [
+        { "path": "phase_number", "is": 4 }
+      ]
+    },
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/ROADMAP.md": "@roadmap/post-rollover-v2"
+        }
+      },
+      "run": [["progress"], ["stats"]],
+      "expect": [
+        { "path": "milestone_version", "is": "v2.0" }
+      ]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/04-phase-four-post-rollover-work/04-01-PLAN.md": "@plan/post-rollover"
+        }
+      },
+      "run": [["progress"]],
+      "expect": [
+        { "path": "total_plans", "is": 1 }
+      ]
+    }
+  ]
+}

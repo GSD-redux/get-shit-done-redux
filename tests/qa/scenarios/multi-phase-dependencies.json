@@ -1,0 +1,43 @@
+{
+  "name": "multi-phase-dependencies",
+  "fixture": "greenfield",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer"
+        }
+      },
+      "run": [
+        ["roadmap", "annotate-dependencies", "1"],
+        ["roadmap", "get-phase", "1"]
+      ],
+      "expect": [
+        { "path": "phase_number", "is": "1" }
+      ]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/02-printable-output/02-01-PLAN.md": "@plan/renderer"
+        }
+      },
+      "run": [
+        ["roadmap", "annotate-dependencies", "2"],
+        ["roadmap", "analyze"]
+      ]
+    }
+  ]
+}

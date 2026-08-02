@@ -40,6 +40,7 @@ const MANAGED_HOOKS = [
   'gsd-windsurf-pre-write.js',
   'gsd-workflow-guard.js',
   'gsd-worktree-path-guard.js',
+  'gsd-write-guard.js',
 ];
 
 module.exports = { MANAGED_HOOKS };

@@ -16,7 +16,7 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, extractPhaseToken, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone } = roadmapParserMod;
@@ -1526,25 +1526,11 @@ function cmdStateSnapshot(cwd: string, raw: boolean): void {
 
 // ─── State Frontmatter Sync ──────────────────────────────────────────────────
 
-/**
- * Canonical key for matching a ROADMAP phase token against an on-disk phase
- * directory: normalizePhaseName collapses padding/case, strips the project-code
- * prefix, and handles decimals/letter-suffixes/milestone-prefixed IDs, so
- * "Phase 4"/"Phase 04"/dir "04-delta" and "Phase PROJ-42"/dir "PROJ-42-foo"
- * each map to one key. For a directory, extract its phase token first.
- *
- * Stripping the project-code prefix is GSD's canonical phase identity (a
- * project_code is a display prefix; normalizePhaseName / phaseTokenMatches treat
- * `CK-01` and `01` as the same phase, which is what lets a prefixed dir match a
- * bare ROADMAP token). A consistent project uses one scheme, so a bare numeric
- * and a same-suffix project-code phase never coexist in one milestone.
- */
-function phaseKeyFromToken(token: string): string {
-  return normalizePhaseName(token).toUpperCase();
-}
-function phaseKeyFromDir(dir: string): string {
-  return phaseKeyFromToken(extractPhaseToken(dir));
-}
+// `phaseKeyFromToken` / `phaseKeyFromDir` — the canonical key for matching a
+// ROADMAP phase token against an on-disk phase directory — moved to the
+// phase-id owner module in #2562 so every consumer derives BOTH sides of a
+// phase comparison from the same function (see phase-id.cts). Imported at the
+// top of this file; call sites below are unchanged.
 
 /**
  * Extract the set of retired/folded phase keys from a ROADMAP milestone scope
@@ -2213,7 +2199,7 @@ function writeStateMd(statePath: string, content: string, cwd?: string, clock?: 
  * @param clock
  *   Optional clock seam; defaults to realClock. Passed through to acquireStateLock.
  */
-function readModifyWriteStateMd(statePath: string, transformFn: (content: string) => string, cwd: string, options?: ReadModifyWriteOptions, clock?: StateLockClock): void {
+function readModifyWriteStateMd(statePath: string, transformFn: (content: string) => string, cwd: string, options?: ReadModifyWriteOptions, clock?: StateLockClock): boolean {
   const resync = !options || options.resync !== false;
   const lockPath = acquireStateLock(statePath, clock);
   try {
@@ -2261,7 +2247,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     // content already returns the mutated string, and callers that detect a
     // no-op explicitly return the original content unchanged.
     if (modified === content) {
-      return;
+      return false;
     }
 
     let synced = syncStateFrontmatter(modified, cwd, options?.authoritativeFm);
@@ -2317,6 +2303,7 @@ function readModifyWriteStateMd(statePath: string, transformFn: (content: string
     }
 
     platformWriteSync(statePath, synced);
+    return true;
   } finally {
     releaseStateLock(lockPath);
   }

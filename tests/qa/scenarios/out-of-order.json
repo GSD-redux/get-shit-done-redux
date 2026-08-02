@@ -1,0 +1,36 @@
+{
+  "name": "out-of-order",
+  "fixture": "greenfield",
+  "steps": [
+    {
+      "at": "verify:pre",
+      "run": [["state-snapshot"]],
+      "readOnly": true
+    },
+    {
+      "at": "ship:pre",
+      "run": [["phase", "uat-passed", "1"]],
+      "readOnly": true
+    },
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "verify:pre",
+      "run": [["phase", "uat-passed", "1"]],
+      "readOnly": true
+    },
+    {
+      "at": "ship:pre",
+      "run": [["roadmap", "get-phase", "1"]],
+      "readOnly": true
+    }
+  ]
+}

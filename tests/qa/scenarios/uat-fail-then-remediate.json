@@ -1,0 +1,73 @@
+{
+  "name": "uat-fail-then-remediate",
+  "fixture": "greenfield",
+  "notes": "FIXED: the prior FINDING here (dated before the fixture fix) was itself a fixture defect, not an engine defect — @uat/current-test-failing and @uat/current-test-passing carried NO `### N. Name` / `result:` block that `parseUatResultItems` (src/uat-predicate.cts) recognizes, so both fixtures always produced zero parsed `checks` and the same `no_uat_artifacts:true, passed:false` payload regardless of remediation. Both fixtures now carry a real `### 1. ...` / `result: passed|failed` block, and the `expect` blocks below assert the real before/after divergence: `passed:false, no_uat_artifacts:true` while failing, `passed:true, no_uat_artifacts:false` after remediation.",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "execute:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-SUMMARY.md": "@summary/tokenizer-complete"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "verify:pre",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-UAT.md": "@uat/current-test-failing"
+        }
+      },
+      "run": [
+        ["uat", "render-checkpoint", "--file", ".planning/phases/01-parser/01-UAT.md"],
+        ["phase", "uat-passed", "1"]
+      ],
+      "expect": [
+        { "path": "passed", "is": false },
+        { "path": "no_uat_artifacts", "is": false }
+      ]
+    },
+    {
+      "at": "plan:post",
+      "run": [["progress"]]
+    },
+    {
+      "at": "execute:post",
+      "run": [["progress"]]
+    },
+    {
+      "at": "verify:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-UAT.md": "@uat/current-test-passing"
+        }
+      },
+      "run": [["phase", "uat-passed", "1"]],
+      "expect": [
+        { "path": "blockers", "is": [] },
+        { "path": "passed", "is": true },
+        { "path": "no_uat_artifacts", "is": false }
+      ]
+    }
+  ]
+}

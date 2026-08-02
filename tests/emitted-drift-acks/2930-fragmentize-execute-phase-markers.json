@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "execute-phase.md": "#2930 (epic #1671 Phase 3): pilots the in-file `<!-- gsd:section -->` marker grammar by wrapping the --wave/gap-closure/regression-gate branch sections (partial-wave, gap-closure-artifacts, regression-gate) in marker pairs, proving the composeWorkflow seam runs at install time before per-runtime rewrites. Retargeted from plan-phase.md (chore/2930 review): plan-phase.md sits only 36 B under the ADR-857 Phase-6 PRE_PHASE6 gate (tests/phase6-capstone-conformance.test.cjs) and cannot absorb marker overhead, so the maintainer retargeted the pilot to execute-phase.md, which has 728 B of headroom under its own PRE_PHASE6 cap. SOURCE grows by exactly 275 marker bytes (6 marker lines); the EMITTED artifact composeWorkflow produces at install is byte-identical to the pre-#2930 file (markers are stripped, never shipped). See .gsd/phase/chore-2930-fragmentize-xl-workflow/40-design.md 'Known limits' item 5. #2639: handle_branching now warns when local is ahead of origin (+376 B condensed one-line WARNING + rev-list --count check)."
+  }
+}
