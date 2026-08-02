@@ -65,19 +65,29 @@ describe('fix-2657: compiled .cjs artifacts are gitignored, not tracked (ADR-457
     assertNoneStillBad((p) => tracked.has(p), 'to be tracked');
   });
 
-  test('every one of the nine paths matches a .gitignore pattern', () => {
-    // --no-index bypasses git-check-ignore(1)'s "a tracked path is never
-    // reported ignored" special-case, so this is accurate independent of
-    // whether git rm --cached has (yet) run — it checks pattern match only.
-    const isUnmatched = (artifact) => {
+  test('every one of the nine paths is ignored per git', () => {
+    // Deliberately WITHOUT --no-index: git-check-ignore(1) operates on the
+    // pathname alone and does not require the file to exist on disk (true
+    // both with and without --no-index — this repo's gsd-test runner checks
+    // out a fresh shallow clone per sha, where an untracked, gitignored path
+    // exists as a pattern match only, never as a file on disk). Plain
+    // check-ignore is preferred here over --no-index specifically because it
+    // also honors git's "a still-TRACKED path is never reported ignored"
+    // rule (check-ignore(1)) — which is exactly the property under test: a
+    // path that still matches a .gitignore pattern while ALSO remaining
+    // tracked (the pre-fix state for two of the nine, whose pattern
+    // predates this fix per #2248) must still read as "not ignored," the
+    // same as the seven with no pattern at all. --no-index would blur that
+    // distinction by reporting the two as ignored regardless of tracking.
+    const isNotIgnored = (artifact) => {
       try {
-        git(['check-ignore', '--no-index', '-q', artifact]);
+        git(['check-ignore', '-q', artifact]);
         return false;
       } catch {
         return true;
       }
     };
-    assertNoneStillBad(isUnmatched, 'to be unmatched by .gitignore');
+    assertNoneStillBad(isNotIgnored, 'to be reported not-ignored by git');
   });
 
   test('trackedCompiledArtifacts() reports the ADR-457 empty-set end state for the nine', () => {
