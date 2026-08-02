@@ -113,7 +113,7 @@ function slugify(title: string): string {
   // strip was an artefact of the duplicated expression, not a contract.
   const slug = generateSlugInternal(title, Number.POSITIVE_INFINITY);
   // Both empty outcomes are failures for a directory name: null (falsy title)
-  // and '' (title made entirely of separators).  would let '' through, so
+  // and '' (title made entirely of separators). `??` would let '' through, so
   // the check is on emptiness, not on nullishness.
   return slug || error(`Cannot derive a phase directory name from slice title: ${JSON.stringify(title)}`);
 }
