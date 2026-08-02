@@ -520,17 +520,6 @@ function gitResultOk(result: GitResult | null | undefined): boolean {
 }
 
 /**
- * Parse `git diff --name-only` (or `--diff-filter=D --name-only`) stdout into a
- * clean list of file paths: split on `\n`, trim each line (also strips a
- * trailing `\r` from CRLF output on Windows git), drop blanks. Shared by both
- * the per-entry deletion list and the cross-entry touched-files cache in
- * `executeWorktreeWaveCleanupPlan` (#2852) so the two call sites can't drift.
- */
-function parseGitNameOnlyLines(stdout: string): string[] {
-  return stdout.split('\n').map((l) => l.trim()).filter(Boolean);
-}
-
-/**
  * Walk <worktreePath>/.planning/ recursively and collect absolute paths of
  * all files whose names match *SUMMARY.md.  Returns [] when the directory
  * does not exist or cannot be read.
@@ -690,33 +679,6 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
   const pending: CleanupManifestEntry[] = [];
   let ok = true;
 
-  // #2852: memoized per-entry "what did this branch change overall" set, used when
-  // ANOTHER entry in the wave has a deletion and we need to know whether this entry's
-  // branch still touches the deleted path.
-  //
-  // CORRECTNESS NOTE (caught in review): this cache must be populated for entry k
-  // no later than the START of k's own turn in the loop below (see `touchedFilesCache.set(i, …)`
-  // right after the per-entry diff call) — NOT lazily the first time some later entry
-  // asks for it. Once entry k has been merged, branch_k becomes an ancestor of `HEAD`
-  // and `git diff --name-only HEAD...branch_k` silently collapses to empty, which
-  // would make a genuinely-depended-on deletion look safe. Populating the cache
-  // during k's own turn captures its diff BEFORE k's own merge can move HEAD, so the
-  // cached value stays correct for every later entry's overlap check regardless of
-  // manifest order. An entry with a LARGER index than the current one has not had
-  // its turn yet (and therefore cannot have been merged), so computing its diff
-  // on-demand against the live `HEAD` at that point is still safe.
-  const repoRoot = plan.repoRoot;
-  const touchedFilesCache = new Map<number, Set<string> | null>();
-  function getEntryChangedFiles(k: number): Set<string> | null {
-    if (touchedFilesCache.has(k)) return touchedFilesCache.get(k) as Set<string> | null;
-    const diffResult = execGit(['diff', '--name-only', `HEAD...${entries[k].branch}`], { cwd: repoRoot });
-    const value = gitResultOk(diffResult)
-      ? new Set(parseGitNameOnlyLines(diffResult.stdout))
-      : null; // unknown — treated conservatively (fail-closed) by the caller
-    touchedFilesCache.set(k, value);
-    return value;
-  }
-
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i];
     const result: WaveCleanupEntryResult = {
@@ -761,35 +723,17 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       continue; // #2852: isolate
     }
     if (deletions.stdout) {
-      // #2852: a deletion is only a genuine risk when ANOTHER entry in this same wave
-      // still touches the deleted path — merging it first could silently drop or
-      // conflict with that entry's changes once it is processed. A deletion nothing
-      // else in the wave depends on (the reported repro: folding a test file into a
-      // sibling) is safe to let through. Unknown overlap (a sibling's diff could not
-      // be determined) fails closed — block, matching the pre-fix conservative default.
-      const deletedFiles = parseGitNameOnlyLines(deletions.stdout);
-      let stillDependedOn = false;
-      let overlapUnknown = false;
-      for (let k = 0; k < entries.length; k += 1) {
-        if (k === i) continue;
-        const otherFiles = getEntryChangedFiles(k);
-        if (otherFiles === null) {
-          overlapUnknown = true;
-          continue;
-        }
-        if (deletedFiles.some((f) => otherFiles.has(f))) {
-          stillDependedOn = true;
-        }
-      }
-      if (stillDependedOn || overlapUnknown) {
-        result.status = 'blocked';
-        result.reason = 'branch_contains_deletions';
-        result.stderr = deletions.stdout;
-        results.push(result);
-        ok = false;
-        continue; // #2852: isolate
-      }
-      // else: no other wave member depends on the deleted path(s) — safe, fall through.
+      // Unconditional: any deletion in this entry's branch blocks THIS entry. Whether
+      // that guard should have an opt-in for intentional deletions is a deferred
+      // product decision (issue #2852's own triage scoped it out — tracked in #3003);
+      // this fix only isolates the block to this one entry (#2852) instead of aborting
+      // the rest of the wave, same as every other block reason below.
+      result.status = 'blocked';
+      result.reason = 'branch_contains_deletions';
+      result.stderr = deletions.stdout;
+      results.push(result);
+      ok = false;
+      continue; // #2852: isolate
     }
 
     // Safety net: rescue uncommitted SUMMARY.md artifacts before the dirty check.
@@ -833,14 +777,6 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       ok = false;
       continue; // #2852: isolate
     }
-
-    // #2852: force-populate THIS entry's own touched-files cache now, immediately
-    // before the only step that can move `HEAD` (the merge below). Every entry that
-    // reaches this line is about to attempt a merge; capturing its diff here — not
-    // lazily, later, when some other entry's overlap check happens to ask for it —
-    // is what keeps that later lookup correct even after this entry has landed on
-    // `HEAD` (see the correctness note on `touchedFilesCache` above).
-    getEntryChangedFiles(i);
 
     const merge = execGit(['merge', entry.branch, '--no-ff', '--no-edit', '-m', `chore: merge executor worktree (${entry.branch})`], { cwd: plan.repoRoot });
     if (!gitResultOk(merge)) {
