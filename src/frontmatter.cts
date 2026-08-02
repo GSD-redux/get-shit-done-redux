@@ -607,8 +607,21 @@ function parseMustHavesBlock(content: string, blockName: string): unknown[] {
 
 // ─── Frontmatter CRUD commands ────────────────────────────────────────────────
 
+// Shared base for 'plan' and 'plan-gap-closure' below — a plain array reference (not
+// FRONTMATTER_SCHEMAS.plan.required) because the object literal that defines
+// FRONTMATTER_SCHEMAS cannot refer to itself mid-initialization (TDZ).
+const PLAN_REQUIRED_FIELDS = ['phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves'];
+
 const FRONTMATTER_SCHEMAS: Record<string, { required: string[] }> = {
-  plan: { required: ['phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves'] },
+  plan: { required: PLAN_REQUIRED_FIELDS },
+  // #2847: gap-closure plans carry every 'plan' field PLUS gap_closure — the flag
+  // execute-phase --gaps-only filters on. A separate schema (not a change to
+  // 'plan') so standard/reviews-mode plans stay unaffected: they validate against
+  // 'plan' and are never required to declare or be checked for gap_closure.
+  // Derived from PLAN_REQUIRED_FIELDS (never hand-duplicated) so the two can't drift.
+  'plan-gap-closure': {
+    required: [...PLAN_REQUIRED_FIELDS, 'gap_closure'],
+  },
   summary: { required: ['phase', 'plan', 'subsystem', 'tags', 'duration', 'completed'] },
   verification: { required: ['phase', 'verified', 'status', 'score'] },
 };

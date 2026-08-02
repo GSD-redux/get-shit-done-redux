@@ -1,9 +1,8 @@
 'use strict';
 
-// allow-test-rule: source-text-is-the-product
-// agents/gsd-planner.md and gsd-core/workflows/plan-phase.md are the deployed
-// runtime prompt contracts — the planner agent and the plan-phase orchestrator
-// literally execute this markdown. Testing their text content tests the
+// allow-test-rule: source-text-is-the-product (see #2847)
+// agents/gsd-planner.md is the deployed runtime prompt contract — the planner
+// agent literally executes this markdown. Testing its text content tests the
 // deployed contract, per the CONTRIBUTING.md exception matrix and the existing
 // precedent in tests/plan-phase-drift-guard.test.cjs and
 // tests/edge-probe-planner-contract.test.cjs.
@@ -16,13 +15,10 @@
  *
  * Root cause: the planner's only machine-checked validation gate
  * (`gsd_run query frontmatter.validate "$PLAN_PATH" --schema plan`) never
- * required `gap_closure`, and the always-visible `<downstream_consumer>`
- * frontmatter contract in plan-phase.md never mentioned it either — both
- * unconditionally listed the same 4 fields (wave, depends_on, files_modified,
- * autonomous) regardless of mode. The only place `gap_closure: true` was
- * actually documented as required was prose in a conditionally-loaded
- * reference file (gsd-core/references/planner-gap-closure.md) plus an
- * unvalidated checklist item — neither backed by a deterministic gate.
+ * required `gap_closure`. The only place `gap_closure: true` was actually
+ * documented as required was prose in a conditionally-loaded reference file
+ * (gsd-core/references/planner-gap-closure.md) plus an unvalidated checklist
+ * item — neither backed by a deterministic gate.
  *
  * Fix:
  * - src/frontmatter.cts: new `plan-gap-closure` FRONTMATTER_SCHEMAS entry
@@ -32,10 +28,19 @@
  * - agents/gsd-planner.md `<step name="validate_plan">`: selects
  *   `--schema plan-gap-closure` when gap_closure mode is active, `--schema plan`
  *   otherwise (unchanged for standard/reviews mode).
- * - gsd-core/workflows/plan-phase.md `<downstream_consumer>`: states the
- *   gap_closure requirement inline for gap_closure mode, mirroring the
- *   existing `<review_incorporation_contract>` mode-scoped-block precedent
- *   already used for reviews mode.
+ *
+ * Deliberately NOT touched: gsd-core/workflows/plan-phase.md's
+ * `<downstream_consumer>` block. An earlier draft of this fix added a
+ * gap_closure mention there too (mirroring plan-phase.md's existing
+ * `<review_incorporation_contract>` mode-scoped-block pattern for reviews
+ * mode), but plan-phase.md sits only 36 bytes under the hard ADR-857
+ * PRE_PHASE6 ceiling (tests/phase6-capstone-conformance.test.cjs,
+ * `PRE_PHASE6['plan-phase.md'] = 94519`) and cannot absorb the ~330-byte
+ * addition. The `<step name="validate_plan">` fix in gsd-planner.md is the
+ * actual call site and is sufficient on its own: the planner already tracks
+ * gap_closure mode internally (its own `<step name="identify_phase">` switches
+ * to gap_closure_mode on `--gaps`), so the schema selection does not depend on
+ * plan-phase.md's prose at all. See .gsd/bug/fix-2847-gap-closure-frontmatter/10-diagnosis.md.
  */
 
 const { test, describe } = require('node:test');
@@ -49,15 +54,6 @@ const GAP_CLOSURE_REF_PATH = path.join(__dirname, '..', 'gsd-core', 'references'
 
 function readFile(p) {
   return fs.readFileSync(p, 'utf-8');
-}
-
-function extractSection(content, tag) {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
-  const start = content.indexOf(open);
-  const end = content.indexOf(close, start);
-  if (start === -1 || end === -1) return null;
-  return content.slice(start, end + close.length);
 }
 
 function extractStep(content, stepName) {
@@ -116,42 +112,6 @@ describe('#2847: gsd-planner.md validate_plan step selects schema by mode', () =
   });
 });
 
-// ─── gsd-core/workflows/plan-phase.md: downstream_consumer states the contract (#2847) ─
-
-describe('#2847: plan-phase.md downstream_consumer states gap_closure requirement for gap_closure mode', () => {
-  const workflowContent = readFile(PLAN_PHASE_PATH);
-  const downstreamBlock = extractSection(workflowContent, 'downstream_consumer');
-
-  test('downstream_consumer block exists', () => {
-    assert.ok(downstreamBlock, '<downstream_consumer> block must exist in plan-phase.md');
-  });
-
-  test('downstream_consumer block mentions gap_closure for gap_closure mode', () => {
-    assert.ok(
-      downstreamBlock.includes('gap_closure'),
-      'downstream_consumer block must state the gap_closure requirement for gap_closure mode — the always-visible ' +
-      'frontmatter contract must not omit it the way it did pre-#2847 (silent parity gap with plan-gap-closure schema)'
-    );
-  });
-
-  test('downstream_consumer block still lists the base frontmatter fields unconditionally', () => {
-    for (const field of ['wave', 'depends_on', 'files_modified', 'autonomous']) {
-      assert.ok(
-        downstreamBlock.includes(field),
-        `downstream_consumer block must still list "${field}" as a base frontmatter requirement (AC(3): unchanged for standard/reviews mode)`
-      );
-    }
-  });
-
-  test('downstream_consumer gap_closure mention is scoped to gap_closure mode, not stated as universally required', () => {
-    assert.ok(
-      /Mode is gap_closure/i.test(downstreamBlock) || /gap.closure mode/i.test(downstreamBlock),
-      'the gap_closure mention must be scoped to gap_closure mode (mirroring the existing mode-scoped ' +
-      '<review_incorporation_contract> precedent for reviews mode), not presented as a universal requirement'
-    );
-  });
-});
-
 // ─── Cross-file consistency: schema name used by both files matches (#2847) ──
 
 describe('#2847: schema name consistency between gsd-planner.md and src/frontmatter.cts', () => {
@@ -176,6 +136,30 @@ describe('#2847: planner-gap-closure.md reference is untouched and still documen
     assert.ok(
       content.includes('gap_closure: true'),
       'gsd-core/references/planner-gap-closure.md must still document gap_closure: true in its plan-frontmatter template'
+    );
+  });
+});
+
+// ─── plan-phase.md is deliberately untouched (ADR-857 PRE_PHASE6 byte ceiling) ─
+
+describe('#2847: plan-phase.md is deliberately unmodified by this fix (byte-cap conflict)', () => {
+  test('plan-phase.md downstream_consumer block does not gain a gap_closure mention', () => {
+    // This is a NEGATIVE assertion pinning a deliberate design choice, not a symptom of
+    // the bug: plan-phase.md sits within 36 bytes of the hard PRE_PHASE6 ceiling
+    // (tests/phase6-capstone-conformance.test.cjs), so the fix for #2847 lives entirely
+    // in gsd-planner.md's validate_plan step (the actual call site) instead. If a future
+    // change adds gap_closure prose here, the PRE_PHASE6 test is the gate that must be
+    // satisfied first (shrink elsewhere or raise the frozen ceiling deliberately).
+    const workflowContent = readFile(PLAN_PHASE_PATH);
+    const start = workflowContent.indexOf('<downstream_consumer>');
+    const end = workflowContent.indexOf('</downstream_consumer>', start);
+    const downstreamBlock = start === -1 || end === -1
+      ? ''
+      : workflowContent.slice(start, end + '</downstream_consumer>'.length);
+    assert.ok(downstreamBlock.length > 0, '<downstream_consumer> block must still exist in plan-phase.md');
+    assert.ok(
+      !downstreamBlock.includes('gap_closure'),
+      'plan-phase.md downstream_consumer must not mention gap_closure — see the file-level comment above for why'
     );
   });
 });

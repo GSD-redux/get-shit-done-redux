@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-planner.md": "#2847: <step name=\"validate_plan\"> now selects the plan-gap-closure frontmatter schema (which additionally requires gap_closure: true) when gap_closure mode is active, and plan schema otherwise — grows the step's bash block, its \"Schema selection\" prose, and its required-fields list. SOURCE grows by 696 bytes (49309 -> 50005), well within the agent's own XL_CAP (57344 B, tests/agent-size-budget.test.cjs). gsd-core/workflows/plan-phase.md was investigated for a symmetric downstream_consumer mention but deliberately left untouched — it sits only 36 B under the frozen ADR-857 PRE_PHASE6 ceiling (tests/phase6-capstone-conformance.test.cjs) and cannot absorb any addition; the validate_plan step in gsd-planner.md is the actual call site and needs no help from plan-phase.md's prose. See .gsd/bug/fix-2847-gap-closure-frontmatter/10-diagnosis.md."
+  }
+}
