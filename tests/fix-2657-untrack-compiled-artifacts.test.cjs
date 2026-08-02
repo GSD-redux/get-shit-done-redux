@@ -82,7 +82,15 @@ function describeFailure(cmd, args, result) {
 }
 
 function git(args) {
-  return run('git', args);
+  // -c safe.directory=REPO_ROOT: containerized CI checkouts are frequently
+  // owned by a different uid than the one running node --test, and git
+  // refuses to operate at all on such a repo ("detected dubious ownership")
+  // unless explicitly trusted. Scoped per-invocation (not written to any
+  // config file), matching the same fix applied to
+  // scripts/lint-compiled-artifact-sync.cjs's own git() helper, which has
+  // the identical defect (#2657 diagnostic run: `git ls-files` there failed
+  // with the same "dubious ownership" fatal in the runner).
+  return run('git', ['-c', `safe.directory=${REPO_ROOT}`, ...args]);
 }
 
 /** `git ls-files <LIB_DIR>`, asserting success before trusting the output. */
