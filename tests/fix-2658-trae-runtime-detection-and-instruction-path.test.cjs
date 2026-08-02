@@ -6,7 +6,7 @@
  * `CLAUDE.md` path rewrite mutilates the claude fallback into a malformed
  * path instead of resolving to the Trae rules file.
  *
- * Three independent defects collided (see
+ * Defects collided (see
  * .gsd/bug/fix-2658-trae-runtime-not-detected-falls-back-to-/10-diagnosis.md):
  *
  *   1. `gsd-core/workflows/new-project.md` AND `gsd-core/workflows/ingest-docs.md`
@@ -26,6 +26,22 @@
  *      `hostBehaviors.projectInstructionFile`, so even a correctly-detected
  *      trae runtime resolved to the generic `AGENTS.md` default via
  *      `getProjectInstructionFile`.
+ *   5. Found by the end-to-end install test below, one level deeper than the
+ *      static trace: `copyWithPathReplacement` (bin/install.js) runs a
+ *      GENERIC `~/.claude/` / `$HOME/.claude/` / `./.claude/` -> runtime-dir
+ *      rewrite on every .md file BEFORE calling `convertClaudeToTraeMarkdown`,
+ *      substituting a `pathPrefix` the converter is never given (it differs
+ *      per install: relative for a project-local install, an arbitrary
+ *      absolute path for a local install rooted elsewhere, `~/.trae/` for a
+ *      global one). The converter's `.claude/CLAUDE.md`-specific patterns
+ *      (defect 3's fix) never fire on that already-rewritten text, and the
+ *      bare fallback still doubles the prefix — a first attempt at fixing
+ *      this handled only the `./.trae/CLAUDE.md` shape and missed the
+ *      `~/.claude/` / `$HOME/.claude/` forms `gsd-core/workflows/profile-user.md`
+ *      actually uses, caught by row 12 (the real spawned install) below on a
+ *      second run. Fixed with a prefix-preserving pattern (capture whatever
+ *      precedes a `.trae/` tail, keep it, fix only the filename suffix)
+ *      instead of assuming one fixed shape.
  */
 
 const { test, describe } = require('node:test');
@@ -92,6 +108,48 @@ describe('#2658: convertClaudeToTraeMarkdown never mutilates the CLAUDE.md path 
         fc.string({ maxLength: 40 }),
         (prefix, suffix) => {
           const content = `${prefix}.claude/CLAUDE.md${suffix}`;
+          const out = convertClaudeToTraeMarkdown(content);
+          assert.ok(!out.includes(MALFORMED_SINGLE));
+          assert.ok(!out.includes(MALFORMED_DOUBLE));
+        },
+      ),
+      { numRuns: 200 },
+    );
+  });
+});
+
+describe('#2658 defect 5: post-generic-rewrite ".trae/"-prefixed forms preserve their prefix instead of doubling it', () => {
+  // These simulate the text `copyWithPathReplacement`'s generic `~/.claude/` /
+  // `$HOME/.claude/` / `./.claude/` -> runtime-dir pass hands to
+  // convertClaudeToTraeMarkdown — the converter never sees the original
+  // `.claude/`-prefixed source in this pipeline, only these already-rewritten
+  // shapes. A fixed-shape patch that only handled the local relative form
+  // left the local-install-absolute-path and global tilde forms broken.
+  const cases = [
+    ['local relative (post "./.claude/" -> "./.trae/" rewrite)', './.trae/CLAUDE.md', './.trae/rules/rules.md'],
+    [
+      'local install absolute path (post "./.claude/" -> "<tmp-root>/.trae/" rewrite)',
+      '/private/var/folders/xx/gsd-trae-local-abc123/.trae/CLAUDE.md',
+      '/private/var/folders/xx/gsd-trae-local-abc123/.trae/rules/rules.md',
+    ],
+    ['global tilde (post "~/.claude/" -> "~/.trae/" rewrite)', '~/.trae/CLAUDE.md', '~/.trae/rules/rules.md'],
+    ['backtick-wrapped local relative', '`./.trae/CLAUDE.md`', '`./.trae/rules/rules.md`'],
+  ];
+  for (const [label, input, expected] of cases) {
+    test(`${label} -> prefix preserved, no malformed path`, () => {
+      const out = convertClaudeToTraeMarkdown(input);
+      assert.ok(!out.includes(MALFORMED_SINGLE), `output must not contain "${MALFORMED_SINGLE}": ${out}`);
+      assert.ok(!out.includes(MALFORMED_DOUBLE), `output must not contain "${MALFORMED_DOUBLE}": ${out}`);
+      assert.strictEqual(out, expected);
+    });
+  }
+
+  test('fast-check property: any arbitrary path ending in .trae/ never yields a doubled prefix', () => {
+    fc.assert(
+      fc.property(
+        fc.string({ maxLength: 30 }).filter((s) => !s.includes('`') && !/\s/.test(s)),
+        (prefix) => {
+          const content = `${prefix}.trae/CLAUDE.md`;
           const out = convertClaudeToTraeMarkdown(content);
           assert.ok(!out.includes(MALFORMED_SINGLE));
           assert.ok(!out.includes(MALFORMED_DOUBLE));
