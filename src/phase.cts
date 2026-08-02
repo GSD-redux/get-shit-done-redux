@@ -1667,9 +1667,17 @@ function cmdPhaseRemove(
         if (targetDir && modified === stateContent) {
           // subdirs was read before the deletion; excluding the removed target
           // gives the remaining count. Renumbering changes names but not count.
-          const remainingPhases = subdirs.filter(
-            (d) => phaseTokenMatches(d, normalized) === false,
-          ).length;
+          //
+          // #2528: exclude the directory that was ACTUALLY deleted, by identity,
+          // rather than re-deriving "which dir was the target" from the query.
+          // The two are not the same predicate here: `targetDir` comes from
+          // `matchPhaseDirs`, whose bare-integer fallback resolves digit-leading
+          // dirs (`05-80-20-cleanup` for query `5`) that `phaseTokenMatches`
+          // reports as non-matching — so a token re-derivation would count the
+          // just-deleted directory as still present and write a `Total Phases`
+          // one too high. Identity is also what the comment above already
+          // claims this filter does, and the block is gated on targetDir.
+          const remainingPhases = subdirs.filter((d) => d !== targetDir).length;
           if (totalRaw) {
             modified =
               stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;

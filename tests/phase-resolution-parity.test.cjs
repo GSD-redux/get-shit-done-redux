@@ -546,4 +546,30 @@ describe('#2528 consumer parity — the eight sites migrated to matchPhaseDirs',
     // raise W007.
     assert.deepStrictEqual(codes(['07-orphan'], '5'), ['W006', 'W007']);
   });
+
+  test('phase remove counts the surviving phases by identity, not by re-matching the query', () => {
+    // #2640 (landed on `next` while this branch was open) resyncs STATE.md's
+    // phase count after a removal by filtering `subdirs` for the directory that
+    // was deleted. Re-deriving that directory from the QUERY is a tenth site of
+    // the #2528 defect: the bare-integer fallback resolves `05-80-20-cleanup`
+    // for query `5`, but `phaseTokenMatches` (whose token is the mis-absorbed
+    // `05-80-20`) does not — so the just-deleted directory is counted as still
+    // present and the written total is one too high. `targetDir` is already the
+    // directory that was removed, so identity answers the question exactly.
+    const total = (dirs, query) => {
+      const tmpDir = project(dirs, query);
+      json(`phase remove ${query} --force`, tmpDir);
+      const state = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+      const m = state.match(/^Total Phases:\s*(\d+)/m);
+      assert.ok(m, 'phase remove did not resync a phase count into STATE.md');
+      return Number(m[1]);
+    };
+
+    assert.strictEqual(total(['05-80-20-cleanup', '11-other'], '5'), 1);
+
+    // Control: on a directory the tokenizer reads correctly, identity and token
+    // re-derivation agree — so the assertion above is about the digit-leading
+    // shape, not about the counting rule changing for everything.
+    assert.strictEqual(total(['05-cleanup', '11-other'], '5'), 1);
+  });
 });
