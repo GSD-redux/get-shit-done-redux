@@ -17,8 +17,13 @@ const WORKFLOW = fs.readFileSync(path.join(ROOT, 'gsd-core', 'workflows', 'map-c
 // Update run because the placeholder was already replaced by a concrete date.
 // The two files phrased the bug differently, so each needs its own stale regex;
 // a single regex asserted against both silently passes on the file it never
-// matched, leaving that file's negative guard dead.
-const WORKFLOW_STALE_PLACEHOLDER_ONLY = /Use \{date\} for all \[YYYY-MM-DD\] date placeholders/;
+// matched, leaving that file's negative guard dead. map-codebase.md itself used
+// two pre-fix phrasings (the four per-spawn prompts plain, the sequential
+// fallback backtick-wrapped and carrying "from init context"), so its stale
+// regex has to cover both or the fallback site's guard is dead for the same
+// reason.
+const WORKFLOW_STALE_PLACEHOLDER_ONLY =
+  /Use `?\{date\}`?(?: from init context)? for all `?\[YYYY-MM-DD\]`? date placeholders/;
 const MAPPER_STALE_PLACEHOLDER_ONLY = /Replace `?\[YYYY-MM-DD\]`? with the date/i;
 
 // The fixed framing. Both files say "overwriting <any|whatever> ... date"; the
