@@ -22,6 +22,7 @@ import path from 'node:path';
 import phaseIdModule = require('./phase-id.cjs');
 const {
   escapeRegex,
+  isSentinelPhaseId,
   phaseMarkdownRegexSource,
   stripProjectCodePrefix,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -389,7 +390,7 @@ function findRoadmapBulletPhaseInContent(content: string, phaseNum: unknown, pha
 function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseResult | null {
   if (!phaseNum) return null;
   const normalizedPhase = stripProjectCodePrefix(phaseNum);
-  if (/^999(?:\.|$)/.test(normalizedPhase)) return null;
+  if (isSentinelPhaseId(normalizedPhase)) return null;
   // Resolved INSIDE the try for the same reason as getMilestoneInfo below: planningDir
   // throws a plain Error for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and resolving
   // it outside let that escape uncaught, crashing every caller for a malformed workstream
@@ -690,8 +691,8 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     for (const h of tokenizeHeadings(roadmap)) {
       if (h.level < 2 || h.level > 4) continue;
       const pm = phaseHeadingPattern.exec(h.text);
-      // Exclude 999.x backlog phases from milestone phase set. Mirrors init.cts filter.
-      if (pm && !/^999\b/.test(pm[1])) milestonePhaseNums.add(pm[1]);
+      // Exclude reserved sentinel phases from the milestone phase set.
+      if (pm && !isSentinelPhaseId(pm[1])) milestonePhaseNums.add(pm[1]);
     }
     // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
     // so a bullet-house-style ROADMAP populates the milestone phase set instead of
@@ -700,7 +701,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       let bm: RegExpExecArray | null;
       const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
       while ((bm = scanner.exec(roadmap)) !== null) {
-        if (!/^999\b/.test(bm[1])) milestonePhaseNums.add(bm[1]);
+        if (!isSentinelPhaseId(bm[1])) milestonePhaseNums.add(bm[1]);
       }
     }
   } catch {

@@ -34,6 +34,7 @@ const {
   normalizePhaseName,
   phaseMarkdownRegexSource,
   comparePhaseNum,
+  isSentinelPhaseId,
   phaseTokenMatches,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -2487,7 +2488,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         for (const dir of dirs) {
           const dm = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
           if (dm) {
-            if (/^999(?:\.|$)/.test(dm[1])) continue;
+            if (isSentinelPhaseId(dm[1])) continue;
             if (comparePhaseNum(dm[1], phaseNum) > 0) {
               nextPhaseNum = dm[1];
               nextPhaseName = dm[2] || null;
@@ -2530,7 +2531,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           );
           let pm: RegExpExecArray | null;
           while ((pm = phasePattern.exec(roadmapForPhases)) !== null) {
-            if (comparePhaseNum(pm[1], phaseNum) > 0) {
+            if (comparePhaseNum(pm[1], phaseNum) > 0 && !isSentinelPhaseId(pm[1])) {
               nextPhaseNum = pm[1];
               nextPhaseName = pm[2]
                 .replace(/\(INSERTED\)/i, '')

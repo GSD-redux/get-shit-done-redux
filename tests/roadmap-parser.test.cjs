@@ -248,6 +248,11 @@ describe('roadmap-parser: getRoadmapPhaseInternal', () => {
     assert.strictEqual(getRoadmapPhaseInternal(tmpDir, 0), null);
   });
 
+  test('returns null for zero-padded sentinel phase IDs', () => {
+    writeRoadmap(tmpDir, '### Phase 0999.1: Backlog\n**Goal:** deferred\n');
+    assert.strictEqual(getRoadmapPhaseInternal(tmpDir, '0999.1'), null);
+  });
+
   test('finds a phase by number', () => {
     writeRoadmap(tmpDir, [
       '## v1.0: Current',
@@ -581,6 +586,21 @@ describe('roadmap-parser: getMilestonePhaseFilter', () => {
     assert.strictEqual(filter('01-setup'), true, '01-setup matches Phase 1');
     assert.strictEqual(filter('02-build'), true, '02-build matches Phase 2');
     assert.strictEqual(filter('03-deploy'), false, '03-deploy not in milestone');
+  });
+
+  test('excludes zero-padded sentinel headings and bullet entries', () => {
+    writeRoadmap(tmpDir, [
+      '## v1.0: Launch',
+      '### Phase 1: Setup',
+      '### Phase 0999.1: Deferred heading',
+      '- [ ] **Phase 0999.2 — Deferred bullet**',
+    ].join('\n'));
+
+    const filter = getMilestonePhaseFilter(tmpDir);
+    assert.strictEqual(filter.phaseCount, 1);
+    assert.strictEqual(filter('01-setup'), true);
+    assert.strictEqual(filter('0999.1-deferred-heading'), false);
+    assert.strictEqual(filter('0999.2-deferred-bullet'), false);
   });
 
   test('milestone-prefixed phase IDs (e.g. 2-01)', () => {

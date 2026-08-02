@@ -10101,3 +10101,61 @@ describe('#2572: phase complete warns when a SUMMARY claims files that never lan
     }
   });
 });
+
+test('phase complete ignores 999.x sentinel phases (fix #2786)', () => {
+  const tmpDir = createTempProject();
+  try {
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.writeFileSync(roadmapPath, `
+# Roadmap
+
+## Milestone 1
+
+### Phase 1: Tech Debt
+- [ ] do stuff
+
+### Phase 0999.1: Backlog
+- [ ] someday
+`);
+
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    fs.writeFileSync(statePath, `---
+current_milestone: "1"
+current_phase: "1"
+---
+# State
+`);
+
+    // Create a dummy phase dir to allow phase complete
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    fs.mkdirSync(path.join(phasesDir, '01-tech-debt'), { recursive: true });
+
+    // Ensure there's no open PRs or windows that might block
+    const windowsPath = path.join(tmpDir, '.planning', 'WINDOWS.md');
+    fs.writeFileSync(windowsPath, `---
+schema_version: 1
+open_count: 0
+---
+`);
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+    assert.equal(result.success, true, `phase complete failed: ${result.error || result.output}`);
+
+    const newState = fs.readFileSync(statePath, 'utf8');
+    const output = JSON.parse(result.output);
+    assert.equal(output.is_last_phase, true, 'backlog sentinel must not prevent milestone completion');
+    assert.equal(output.next_phase, null, 'backlog sentinel must not become next_phase');
+    assert.match(
+      newState,
+      /^current_phase:\s*"?1"?\s*$/m,
+      'current_phase must remain on the completed active phase at milestone end',
+    );
+    assert.doesNotMatch(
+      newState,
+      /current_phase:\s*"?0*999(?:\.|"?\s*$)/im,
+      'phase complete must not advance current_phase into the backlog sentinel',
+    );
+  } finally {
+    cleanup(tmpDir);
+  }
+});

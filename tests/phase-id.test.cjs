@@ -455,6 +455,35 @@ describe('getMilestoneFromPhaseId', () => {
   });
 });
 
+describe('isSentinelPhaseId', () => {
+  test('recognizes zero-padded and decimal sentinel forms at the reserved boundaries', () => {
+    for (const token of ['0', '00', '0.1', '999', '0999', '999.1', '0999.1']) {
+      assert.equal(phaseId.isSentinelPhaseId(token), true, token);
+    }
+    for (const token of ['1', '998', '1000', '0998.1', '1000.1']) {
+      assert.equal(phaseId.isSentinelPhaseId(token), false, token);
+    }
+  });
+
+  test('matches exactly the reserved leading integer across padding and decimal suffixes', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 1200 }),
+        fc.integer({ min: 0, max: 4 }),
+        fc.option(fc.integer({ min: 0, max: 999 }), { nil: undefined }),
+        (major, padding, decimal) => {
+          const token = `${'0'.repeat(padding)}${major}${decimal === undefined ? '' : `.${decimal}`}`;
+          assert.equal(
+            phaseId.isSentinelPhaseId(token),
+            major === 0 || major === 999,
+            token,
+          );
+        },
+      ),
+    );
+  });
+});
+
 // ─── getPhaseDirFromPhaseId ───────────────────────────────────────────────────
 
 describe('getPhaseDirFromPhaseId', () => {
