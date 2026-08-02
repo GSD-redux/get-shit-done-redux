@@ -42,7 +42,7 @@ const { evaluatePredicate } = gatePredicateEval;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import apiCoverageMod = require('./api-coverage.cjs');
 const { detectApiIntegration, validateCoverageMatrix } = apiCoverageMod;
-import { execTool, posixNormalize } from './shell-command-projection.cjs';
+import { execTool, platformReadSync, posixNormalize } from './shell-command-projection.cjs';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1002,7 +1002,8 @@ function buildPredicateDeps() {
       return null;
     },
     readFrontmatter(filePath: string): Record<string, unknown> {
-      const content = fs.readFileSync(filePath, 'utf8');
+      const content = platformReadSync(filePath);
+      if (content === null) throw new Error(`predicate artifact disappeared before it could be read: ${filePath}`);
       const parsed = extractFrontmatter(content, filePath) as Record<string, unknown>;
       return parsed;
     }

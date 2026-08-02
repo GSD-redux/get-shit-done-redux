@@ -189,3 +189,11 @@ test('evaluatePredicate with real buildPredicateDeps resolves project-level .pla
     cleanup(tmpDir);
   }
 });
+
+test('buildPredicateDeps reports an artifact removed before its frontmatter read', () => {
+  const missingPath = path.join(os.tmpdir(), 'gsd-test-predicate-artifact-missing.md');
+  assert.throws(
+    () => buildPredicateDeps().readFrontmatter(missingPath),
+    /predicate artifact disappeared before it could be read/,
+  );
+});
