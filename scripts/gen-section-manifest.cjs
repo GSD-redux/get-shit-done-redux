@@ -46,6 +46,8 @@
  * `gsd:section` marker.
  *
  * `--check` fails closed (exit 1, never a stack trace) on:
+ *   - the compiled `workflow-fragments.cjs` dependency being unbuilt/unloadable
+ *     (FAIL_LIB_NOT_BUILT — `npm run build:lib` has not run)
  *   - the live build itself failing: a marker's derived step file does not
  *     exist on disk (FAIL_MISSING_STEP_FILE), a step file in a managed
  *     workflow's `steps/` dir is referenced by no marker AND no reachable
@@ -57,6 +59,10 @@
  *     (FAIL_MANIFEST_MALFORMED_SHAPE — `0`, `"s"`, `[]`, `null`, `true` all
  *     land here), or parseable-and-shaped but not equal to the live build
  *     (FAIL_STALE)
+ *
+ * `--write --json` reports the same typed envelope on failure: the compiled
+ * dependency being unloadable (FAIL_LIB_NOT_BUILT, same as above) or the
+ * atomic write itself failing (FAIL_WRITE_ERROR — see `writeManifestAtomically`).
  *
  * Orphan detection (`findOrphanStepFiles`) is plain substring reachability
  * over prose, NOT a second marker parser: starting from the parent workflow's
@@ -113,8 +119,11 @@ const WORKFLOW_FRAGMENTS_LIB_PATH = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'w
 /**
  * Load the compiled workflow-fragments library. The artifact is a gitignored
  * tsc build output of src/workflow-fragments.cts and only exists after
- * `npm run build:lib`. Throws a clean ExitError (never a bare
- * MODULE_NOT_FOUND stack) naming the remedy when it is missing.
+ * `npm run build:lib`. Throws a clean `ManifestBuildError` (REASON.FAIL_LIB_NOT_BUILT;
+ * never a bare MODULE_NOT_FOUND stack) naming the remedy when it is missing —
+ * `ManifestBuildError` extends `ExitError`, so `runMain` still prints only the
+ * friendly message, and `checkReport`/the `--write --json` path can still read
+ * `.reason`/`.subject` off it to emit the typed envelope.
  *
  * @returns {{ parseWorkflowSections: Function }}
  */
@@ -123,9 +132,11 @@ function loadWorkflowFragmentsLib() {
     delete require.cache[require.resolve(WORKFLOW_FRAGMENTS_LIB_PATH)];
     return require(WORKFLOW_FRAGMENTS_LIB_PATH);
   } catch (err) {
-    throw new ExitError(
-      1,
-      `Cannot load ${path.relative(ROOT, WORKFLOW_FRAGMENTS_LIB_PATH)}: ${err && err.message}\n` +
+    const subject = relPosix(ROOT, WORKFLOW_FRAGMENTS_LIB_PATH);
+    throw new ManifestBuildError(
+      REASON.FAIL_LIB_NOT_BUILT,
+      subject,
+      `Cannot load ${subject}: ${err && err.message}\n` +
       'Run:\n  npm run build:lib\n',
     );
   }
@@ -196,12 +207,16 @@ function findOrphanStepFiles(parentText, stepsDir) {
 
 // ─── Live manifest build ─────────────────────────────────────────────────────
 
-/** Thrown by `buildFreshManifest` for every fail-closed condition below;
- *  carries a stable `reason` + the offending `subject` path so `checkReport`
- *  never needs to string-match a message. */
-class ManifestBuildError extends Error {
+/** Thrown by `buildFreshManifest`/`loadWorkflowFragmentsLib`/`writeManifestAtomically`
+ *  for every fail-closed condition below; carries a stable `reason` + the
+ *  offending `subject` path so `checkReport`/the `--write --json` path never
+ *  need to string-match a message. Extends `ExitError` (not plain `Error`) so
+ *  `runMain` still prints only the friendly `message` — never a bare stack
+ *  trace — for the `default`/`--write` (non-`--json`) code paths that let it
+ *  propagate uncaught, exactly like every other `ExitError`. */
+class ManifestBuildError extends ExitError {
   constructor(reason, subject, message) {
-    super(message);
+    super(1, message);
     this.name = 'ManifestBuildError';
     this.reason = reason;
     this.subject = subject;
@@ -316,8 +331,11 @@ function isValidManifestShape(parsed) {
  * Write `content` to `targetPath` atomically: write to a same-directory temp
  * path, then `fs.renameSync` it into place (same filesystem, so the rename is
  * atomic). On ANY failure (the write or the rename), the temp path is removed
- * best-effort and the error is re-thrown — `targetPath` is left exactly as it
- * was before the call, never truncated or partially written.
+ * best-effort and a `ManifestBuildError` (REASON.FAIL_WRITE_ERROR, subject
+ * `targetPath`) is thrown — `targetPath` is left exactly as it was before the
+ * call, never truncated or partially written. `ManifestBuildError` extends
+ * `ExitError`, so a caller that lets it propagate uncaught (e.g. `--write`
+ * without `--json`) still gets only the friendly message, never a stack trace.
  *
  * @param {string} targetPath
  * @param {string} content
@@ -333,7 +351,7 @@ function writeManifestAtomically(targetPath, content) {
     } catch (_cleanupErr) {
       // best-effort: tmpPath may never have been created (writeFileSync itself threw)
     }
-    throw new ExitError(1, `Cannot write ${targetPath}: ${err && err.message}`);
+    throw new ManifestBuildError(REASON.FAIL_WRITE_ERROR, targetPath, `Cannot write ${targetPath}: ${err && err.message}`);
   }
 }
 
@@ -516,10 +534,34 @@ function main() {
     return;
   }
 
-  // opts.mode === 'write'
-  const manifest = buildFreshManifest(opts.workflowsDir, opts.repoRoot);
-  writeManifestAtomically(opts.manifestPath, serializeManifest(manifest));
-  process.stdout.write(`Wrote ${opts.manifestPath}\n  ${manifest.sections.length} section${manifest.sections.length === 1 ? '' : 's'}\n`);
+  // opts.mode === 'write'. Same typed-envelope pattern as --check --json above:
+  // a ManifestBuildError (FAIL_LIB_NOT_BUILT from buildFreshManifest,
+  // FAIL_WRITE_ERROR from writeManifestAtomically) is caught here so --json
+  // still emits {ok, reason, subject} instead of letting the error propagate
+  // to runMain unobserved by the JSON caller.
+  let manifest;
+  let writeErr;
+  try {
+    manifest = buildFreshManifest(opts.workflowsDir, opts.repoRoot);
+    writeManifestAtomically(opts.manifestPath, serializeManifest(manifest));
+  } catch (err) {
+    if (!(err instanceof ManifestBuildError)) throw err;
+    writeErr = err;
+  }
+
+  if (opts.json) {
+    process.stdout.write(JSON.stringify(
+      writeErr
+        ? { ok: false, reason: writeErr.reason, subject: writeErr.subject }
+        : { ok: true, reason: REASON.OK_UP_TO_DATE, subject: null },
+    ) + '\n');
+  } else if (!writeErr) {
+    process.stdout.write(`Wrote ${opts.manifestPath}\n  ${manifest.sections.length} section${manifest.sections.length === 1 ? '' : 's'}\n`);
+  }
+
+  if (writeErr) {
+    throw new ExitError(1, opts.json ? undefined : writeErr.message);
+  }
 }
 
 // ─── Exports (for tests) ──────────────────────────────────────────────────────

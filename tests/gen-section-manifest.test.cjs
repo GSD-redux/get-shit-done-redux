@@ -25,7 +25,11 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const {
   buildFreshManifest,
   writeManifestAtomically,
+  loadWorkflowFragmentsLib,
+  checkReport,
+  ManifestBuildError,
   REASON,
+  WORKFLOW_FRAGMENTS_LIB_PATH,
 } = require('../scripts/gen-section-manifest.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -436,7 +440,16 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
       fs.renameSync = origRenameSync;
     });
 
-    assert.throws(() => writeManifestAtomically(manifestPath, '{"sections":[]}\n'));
+    assert.throws(() => writeManifestAtomically(manifestPath, '{"sections":[]}\n'), (err) => {
+      // Finding 2 (#2932 review): the throw site must attach the typed
+      // FAIL_WRITE_ERROR reason, not just a plain ExitError, so a downstream
+      // `--write --json` consumer can emit the same {ok,reason,subject}
+      // envelope every other failure path in this file produces.
+      assert.ok(err instanceof ManifestBuildError, 'must throw a ManifestBuildError, not a plain ExitError');
+      assert.equal(err.reason, REASON.FAIL_WRITE_ERROR);
+      assert.equal(err.subject, manifestPath);
+      return true;
+    });
 
     assert.equal(
       fs.readFileSync(manifestPath, 'utf8'),
@@ -465,11 +478,70 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
       fs.writeFileSync = origWriteFileSync;
     });
 
-    assert.throws(() => writeManifestAtomically(manifestPath, '{"sections":[]}\n'));
+    assert.throws(() => writeManifestAtomically(manifestPath, '{"sections":[]}\n'), (err) => {
+      assert.ok(err instanceof ManifestBuildError, 'must throw a ManifestBuildError, not a plain ExitError');
+      assert.equal(err.reason, REASON.FAIL_WRITE_ERROR);
+      assert.equal(err.subject, manifestPath);
+      return true;
+    });
 
     assert.equal(fs.existsSync(manifestPath), false, 'the target manifest must never be created on a write failure');
     const leftover = fs.readdirSync(tmpRoot).filter((f) => f.includes('.tmp-'));
     assert.deepEqual(leftover, [], 'no temp file must leak when the initial write itself fails');
+  });
+
+  test('loadWorkflowFragmentsLib throws ManifestBuildError with FAIL_LIB_NOT_BUILT when the compiled lib cannot be read (Finding 2, #2932 review)', (t) => {
+    // Cross-platform IO-failure injection (CLAUDE.md rule): monkeypatch the
+    // `fs` method Node's own module loader uses to read the file content
+    // (never chmod 0o000 — root bypasses mode bits, silently zero-coverage in
+    // root Docker/CI, and would also mutate a file shared by concurrent test
+    // workers). The real compiled artifact is never touched or renamed.
+    const origReadFileSync = fs.readFileSync;
+    fs.readFileSync = function patchedReadFileSync(target, ...rest) {
+      if (target === WORKFLOW_FRAGMENTS_LIB_PATH) {
+        throw new Error('injected read failure (never a real fs fault)');
+      }
+      return origReadFileSync.call(fs, target, ...rest);
+    };
+    t.after(() => {
+      fs.readFileSync = origReadFileSync;
+    });
+
+    assert.throws(() => loadWorkflowFragmentsLib(), (err) => {
+      assert.ok(err instanceof ManifestBuildError, 'must throw a ManifestBuildError, not a plain ExitError');
+      assert.equal(err.reason, REASON.FAIL_LIB_NOT_BUILT);
+      assert.equal(err.subject, 'gsd-core/bin/lib/workflow-fragments.cjs');
+      assert.match(err.message, /npm run build:lib/);
+      return true;
+    });
+  });
+
+  test('checkReport surfaces FAIL_LIB_NOT_BUILT as the same typed envelope other --check failures produce (Finding 2, #2932 review)', (t) => {
+    const tmpRoot = createTempDir('gen-section-manifest-');
+    t.after(() => cleanup(tmpRoot));
+
+    const { workflowsDir, manifestPath } = buildFixture(
+      tmpRoot,
+      'sample',
+      markerSource('handle-x', 'always', 'handle-x.md'),
+      { 'handle-x.md': '<step name="handle_x">\nbody\n</step>\n' },
+    );
+
+    const origReadFileSync = fs.readFileSync;
+    fs.readFileSync = function patchedReadFileSync(target, ...rest) {
+      if (target === WORKFLOW_FRAGMENTS_LIB_PATH) {
+        throw new Error('injected read failure (never a real fs fault)');
+      }
+      return origReadFileSync.call(fs, target, ...rest);
+    };
+    t.after(() => {
+      fs.readFileSync = origReadFileSync;
+    });
+
+    const report = checkReport(workflowsDir, manifestPath, tmpRoot);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_LIB_NOT_BUILT);
+    assert.equal(report.subject, 'gsd-core/bin/lib/workflow-fragments.cjs');
   });
 });
 
