@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 0
+---
+**Plan-phase now auto-recovers from a stalled planner or plan-checker spawn instead of hanging indefinitely** — when a planner/plan-checker subagent produces no completion marker and no fresh on-disk plan activity for a configurable threshold (`planner.stall_threshold_minutes`, default 10 minutes, checked every `planner.stall_detect_interval_minutes`, default 5), plan-phase now automatically surfaces the existing accept-plans/retry/stop recovery choice instead of waiting for a manual interrupt. (#2650)

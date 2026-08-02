@@ -1,4 +1,4 @@
-// allow-test-rule: source-text-is-the-product
+// allow-test-rule: source-text-is-the-product — see #2650
 // Workflow markdown is the installed orchestration contract.
 
 'use strict';
@@ -17,14 +17,20 @@
  * execute-phase.md (bug #3212, commit e7942c21b).
  *
  * The fix extracts the decision logic into a pure, unit-testable bash
- * function (`gsd_stall_should_recover`) embedded directly in plan-phase.md and
- * exercised here via the SAME extraction pattern already used by
- * tests/worktree-cleanup.test.cjs (extractCwdGuardBash) and
- * tests/quick-branching.test.cjs (extractStep25Bash) — the test runs the exact
- * shipped bash, not a hand-copied duplicate (avoids the "Generative Fix
- * Divergence" defect class).
+ * function (`gsd_stall_should_recover`) embedded in the lazily-loaded
+ * `gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md` (kept out
+ * of plan-phase.md's own measured bytes — plan-phase.md is frozen under the
+ * ADR-857 Phase 6 `PRE_PHASE6` gate, `tests/phase6-capstone-conformance.test.cjs`,
+ * with ~36 bytes of headroom at baseline) and exercised here via the SAME
+ * extraction pattern already used by tests/worktree-cleanup.test.cjs
+ * (extractCwdGuardBash) and tests/quick-branching.test.cjs
+ * (extractStep25Bash) — the test runs the exact shipped bash, not a
+ * hand-copied duplicate (avoids the "Generative Fix Divergence" defect
+ * class).
  *
- * Seam: gsd-core/workflows/plan-phase.md, src/config.cts (SCHEMA_DEFAULTS),
+ * Seam: gsd-core/workflows/plan-phase.md,
+ *       gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md,
+ *       src/config.cts (SCHEMA_DEFAULTS),
  *       gsd-core/bin/shared/config-schema.manifest.json, docs/CONFIGURATION.md
  */
 
@@ -35,9 +41,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const fc = require('fast-check');
+const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLAN_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
+const STALL_HELPERS_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase', 'steps', 'stall-detection-helpers.md');
 const CONFIG_SCHEMA_MANIFEST_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'config-schema.manifest.json');
 const CONFIGURATION_DOCS_PATH = path.join(REPO_ROOT, 'docs', 'CONFIGURATION.md');
 
@@ -45,20 +53,24 @@ function readPlanPhase() {
   return fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
 }
 
+function readStallHelpersDoc() {
+  return fs.readFileSync(STALL_HELPERS_PATH, 'utf-8');
+}
+
 /**
  * Extract the ```bash fence that defines gsd_stall_should_recover (and its
- * sibling gsd_stall_watch) from plan-phase.md. Throws with a clear message if
- * the anchor or fence cannot be found — this is what makes row 1 of the test
- * matrix a genuine failing-first regression test (pre-fix, the function does
- * not exist anywhere in the file).
+ * sibling gsd_stall_watch) from the lazily-loaded stall-detection-helpers.md
+ * step file. Throws with a clear message if the anchor or fence cannot be
+ * found — this is what makes row 1 of the test matrix a genuine failing-first
+ * regression test (pre-fix, the function does not exist anywhere in the repo).
  */
 function extractStallHelpersBash() {
-  const content = readPlanPhase();
+  const content = readStallHelpersDoc();
 
   const anchor = 'gsd_stall_should_recover';
   const anchorIdx = content.indexOf(anchor);
   if (anchorIdx === -1) {
-    throw new Error(`extractStallHelpersBash: could not find "${anchor}" anywhere in ${PLAN_PHASE_PATH}`);
+    throw new Error(`extractStallHelpersBash: could not find "${anchor}" anywhere in ${STALL_HELPERS_PATH}`);
   }
 
   // Walk backward to the start of the fenced ```bash block containing the anchor.
@@ -70,7 +82,7 @@ function extractStallHelpersBash() {
     lastOpen = m.index + m[0].length;
   }
   if (lastOpen === -1) {
-    throw new Error(`extractStallHelpersBash: "${anchor}" is not inside a \`\`\`bash fence in ${PLAN_PHASE_PATH}`);
+    throw new Error(`extractStallHelpersBash: "${anchor}" is not inside a \`\`\`bash fence in ${STALL_HELPERS_PATH}`);
   }
 
   const after = content.slice(lastOpen);
@@ -104,7 +116,7 @@ function runShouldRecover(helpersBash, elapsedSeconds, thresholdMinutes, markerF
 describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pure decision function)', () => {
   let helpersBash;
 
-  test('plan-phase.md defines gsd_stall_should_recover inside a ```bash fence', () => {
+  test('stall-detection-helpers.md defines gsd_stall_should_recover inside a ```bash fence', () => {
     helpersBash = extractStallHelpersBash();
     assert.ok(helpersBash.length > 0);
   });
@@ -176,7 +188,7 @@ describe('bug #2650 config schema — planner.stall_* keys mirror executor.stall
 
   test('config-get returns schema defaults for planner stall detector keys', (t) => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-'));
-    t.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
+    t.after(() => cleanup(tmp));
     fs.mkdirSync(path.join(tmp, '.planning'));
     fs.writeFileSync(path.join(tmp, '.planning/config.json'), '{}\n');
 
@@ -199,9 +211,14 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     assert.ok(workflow.length > 0);
   });
 
-  test('resolves PLANNER_STALL_INTERVAL_MINUTES / PLANNER_STALL_THRESHOLD_MINUTES from config', () => {
-    assert.match(workflow, /PLANNER_STALL_INTERVAL_MINUTES=.*planner\.stall_detect_interval_minutes/);
-    assert.match(workflow, /PLANNER_STALL_THRESHOLD_MINUTES=.*planner\.stall_threshold_minutes/);
+  test('plan-phase.md points at the lazily-loaded stall-detection-helpers.md step file (step 7.99)', () => {
+    assert.match(workflow, /gsd-core\/workflows\/plan-phase\/steps\/stall-detection-helpers\.md/);
+  });
+
+  test('stall-detection-helpers.md resolves PLANNER_STALL_INTERVAL_MINUTES / PLANNER_STALL_THRESHOLD_MINUTES from config', () => {
+    const helpersDoc = readStallHelpersDoc();
+    assert.match(helpersDoc, /PLANNER_STALL_INTERVAL_MINUTES=.*planner\.stall_detect_interval_minutes/);
+    assert.match(helpersDoc, /PLANNER_STALL_THRESHOLD_MINUTES=.*planner\.stall_threshold_minutes/);
   });
 
   test('standard planner spawn (step 8) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
@@ -250,16 +267,13 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
   });
 
   test('stall surveillance is not gated behind the teams-status guard (AC2)', () => {
-    // The only `query teams-status` call in the file must stay scoped to the
-    // researcher spawn banner (its pre-existing, unrelated purpose) — the new
-    // stall blocks must not reference or depend on it.
+    // The only `query teams-status` call in plan-phase.md must stay scoped to
+    // the researcher spawn banner (its pre-existing, unrelated purpose) — the
+    // new stall blocks (and the helpers they call) must not reference or
+    // depend on it.
     const teamsStatusOccurrences = workflow.split('query teams-status').length - 1;
     assert.equal(teamsStatusOccurrences, 1, 'teams-status guard must remain scoped to its single pre-existing call site');
-
-    const stallBlockIdx = workflow.indexOf('gsd_stall_should_recover');
-    assert.notEqual(stallBlockIdx, -1);
-    const stallHelpersSection = workflow.slice(stallBlockIdx, workflow.indexOf('## 8. Spawn gsd-planner Agent'));
-    assert.doesNotMatch(stallHelpersSection, /teams-status/, 'stall-detection helpers must not reference the teams-status guard');
+    assert.doesNotMatch(readStallHelpersDoc(), /teams-status/, 'stall-detection helpers must not reference the teams-status guard');
   });
 
   test('completion-marker contract is unchanged (AC4)', () => {
