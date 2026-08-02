@@ -20,12 +20,23 @@
  * `git rm --cached`; the other seven had no .gitignore pattern at all. Both
  * gaps produce the same `git ls-files` symptom, so both are covered by the
  * same assertions here.
+ *
+ * ── Diagnostics discipline ────────────────────────────────────────────────
+ * Every git invocation below uses `spawnSync` (never throws) and every
+ * assertion explicitly checks the exit status BEFORE interpreting output.
+ * A git command that errors (bad cwd, dubious-ownership refusal, missing
+ * binary, anything) must never be silently read as a legitimate "not
+ * ignored" / "still tracked" answer — that conflates "the property does not
+ * hold" with "I could not determine whether the property holds", which is a
+ * distinct defect from the bug this file guards against. On any failure,
+ * the assertion message includes the resolved cwd, exit status, and stderr,
+ * so a red run is self-diagnosing without a second round-trip.
  */
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 
 const { trackedCompiledArtifacts } = require('../scripts/lint-compiled-artifact-sync.cjs');
 
@@ -44,8 +55,64 @@ const NINE_ARTIFACTS = [
   'write-set.cjs',
 ].map((name) => `${LIB_DIR}/${name}`);
 
+/**
+ * Run a command via spawnSync (never throws) and return the raw result.
+ * Throws immediately, with full context, only on a genuine spawn failure
+ * (binary not found, etc.) — a condition no caller here can meaningfully
+ * interpret as a match/no-match answer.
+ */
+function run(cmd, args, opts) {
+  const result = spawnSync(cmd, args, { cwd: REPO_ROOT, encoding: 'utf8', ...opts });
+  if (result.error) {
+    throw new Error(
+      `${cmd} ${args.join(' ')} failed to spawn (cwd=${REPO_ROOT}): ${result.error.message}`,
+    );
+  }
+  return result;
+}
+
+/** Render a failed command's full context for an assertion message. */
+function describeFailure(cmd, args, result) {
+  return (
+    `${cmd} ${args.join(' ')} (cwd=${REPO_ROOT}) exited ${result.status}` +
+    (result.signal ? ` (signal ${result.signal})` : '') +
+    `\n  stderr: ${(result.stderr || '(empty)').trim()}` +
+    `\n  stdout: ${(result.stdout || '(empty)').trim()}`
+  );
+}
+
 function git(args) {
-  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
+  return run('git', args);
+}
+
+/** `git ls-files <LIB_DIR>`, asserting success before trusting the output. */
+function trackedLibFiles() {
+  const args = ['ls-files', LIB_DIR];
+  const result = git(args);
+  assert.equal(
+    result.status,
+    0,
+    `git ls-files must exit 0 before its output can be trusted as "nothing tracked":\n${describeFailure('git', args, result)}`,
+  );
+  return new Set(result.stdout.split('\n').filter(Boolean));
+}
+
+/**
+ * `git check-ignore -q <path>` has exactly two legitimate outcomes: exit 0
+ * (ignored) and exit 1 (not ignored) — check-ignore(1). Any other exit code
+ * or a signal is an infrastructure failure, not a "not ignored" answer, and
+ * must not be conflated with one.
+ */
+function isIgnored(artifactPath) {
+  const args = ['check-ignore', '-q', artifactPath];
+  const result = git(args);
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  throw new Error(
+    `git check-ignore for ${artifactPath} returned neither a match (0) nor a legitimate ` +
+      `no-match (1) exit code — this is an infrastructure failure, not evidence the path ` +
+      `is unignored:\n${describeFailure('git', args, result)}`,
+  );
 }
 
 // Shared shape for both "none of the nine should still be in state X" checks
@@ -61,7 +128,7 @@ function assertNoneStillBad(isBad, failureLabel) {
 
 describe('fix-2657: compiled .cjs artifacts are gitignored, not tracked (ADR-457)', () => {
   test('none of the nine ADR-457 migration-gap artifacts are tracked by git', () => {
-    const tracked = new Set(git(['ls-files', LIB_DIR]).split('\n').filter(Boolean));
+    const tracked = trackedLibFiles();
     assertNoneStillBad((p) => tracked.has(p), 'to be tracked');
   });
 
@@ -79,32 +146,32 @@ describe('fix-2657: compiled .cjs artifacts are gitignored, not tracked (ADR-457
     // predates this fix per #2248) must still read as "not ignored," the
     // same as the seven with no pattern at all. --no-index would blur that
     // distinction by reporting the two as ignored regardless of tracking.
-    const isNotIgnored = (artifact) => {
-      try {
-        git(['check-ignore', '-q', artifact]);
-        return false;
-      } catch {
-        return true;
-      }
-    };
-    assertNoneStillBad(isNotIgnored, 'to be reported not-ignored by git');
+    assertNoneStillBad((p) => !isIgnored(p), 'to be reported not-ignored by git');
   });
 
   test('trackedCompiledArtifacts() reports the ADR-457 empty-set end state for the nine', () => {
-    const stillPresentArtifacts = new Set(trackedCompiledArtifacts().map((p) => p.artifact));
+    let pairs;
+    try {
+      pairs = trackedCompiledArtifacts();
+    } catch (err) {
+      // trackedCompiledArtifacts() (scripts/lint-compiled-artifact-sync.cjs)
+      // wraps its OWN internal `git ls-files gsd-core/bin/lib` call, with cwd
+      // resolved from that script's own __dirname (should equal REPO_ROOT
+      // here regardless of caller). A throw means THAT invocation failed —
+      // not that any artifact is still tracked. Surface it, don't mask it.
+      assert.fail(
+        `trackedCompiledArtifacts() threw instead of returning a result — this indicates its ` +
+          `internal git invocation failed, not that any of the nine is still tracked:\n` +
+          `${err && err.stack ? err.stack : err}`,
+      );
+    }
+    const stillPresentArtifacts = new Set(pairs.map((p) => p.artifact));
     assertNoneStillBad((p) => stillPresentArtifacts.has(p), 'to appear in trackedCompiledArtifacts()');
   });
 
   test('lint-compiled-artifact-sync exits 0 with nothing left to check', () => {
-    // Structured fact only (exit code) — execFileSync throws on non-zero
-    // exit, so a clean return proves success without asserting on stdout
-    // prose (CONTRIBUTING.md "Prohibited: Raw Text Matching on Test Outputs").
-    assert.doesNotThrow(() => {
-      execFileSync(
-        process.execPath,
-        [path.join(REPO_ROOT, 'scripts', 'lint-compiled-artifact-sync.cjs')],
-        { cwd: REPO_ROOT, encoding: 'utf8' },
-      );
-    });
+    const args = [path.join(REPO_ROOT, 'scripts', 'lint-compiled-artifact-sync.cjs')];
+    const result = run(process.execPath, args);
+    assert.equal(result.status, 0, describeFailure(process.execPath, args, result));
   });
 });
