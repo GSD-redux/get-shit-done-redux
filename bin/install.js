@@ -2620,29 +2620,6 @@ function convertClaudeCommandToCursorSkill(content, skillName) {
 }
 
 /**
- * Convert a Claude Code command to a Cursor 1.6 slash command (#785).
- *
- * Cursor slash commands live in `.cursor/commands/<name>.md` and are
- * plain markdown — no YAML frontmatter, no adapter header. The filename
- * becomes the command name (e.g. `gsd-help.md` → `/gsd-help`).
- *
- * Applies the same `convertClaudeToCursorMarkdown` transforms as the skill
- * converter (tool renames, brand substitution, slash-command normalisation),
- * then strips the YAML frontmatter block so only the prose body remains.
- *
- * @param {string} content   raw Claude Code command markdown (may have frontmatter)
- * @param {string} _commandName  the target command name (unused; present for
- *   API symmetry with other converters so the runtime-artifact-layout stage
- *   function can call it uniformly)
- * @returns {string} plain markdown body, no frontmatter
- */
-function convertClaudeCommandToCursorCommand(content, _commandName) {
-  const converted = convertClaudeToCursorMarkdown(content);
-  const { body } = extractFrontmatterAndBody(converted);
-  return body.trimStart();
-}
-
-/**
  * Convert Claude Code agent markdown to Cursor agent format.
  * Strips frontmatter fields Cursor doesn't support (color, skills),
  * converts tool references, and adds a role context header.
@@ -13269,7 +13246,6 @@ module.exports = {
     applyRuntimeContentRewritesInPlace,
     getCodexSkillAdapterHeader,
     convertClaudeCommandToCursorSkill,
-    convertClaudeCommandToCursorCommand,
     convertClaudeAgentToCursorAgent,
     convertClaudeAgentToCodexAgent,
     generateCodexAgentToml,
