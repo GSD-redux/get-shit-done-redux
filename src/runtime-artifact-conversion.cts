@@ -30,11 +30,14 @@ import { posixNormalize } from './shell-command-projection.cjs';
 // `require('../../../package.json')`. That require ran at module load on every
 // gsd-tools invocation (this module sits in the gsd-tools loader chain) and
 // threw `Cannot find module '../../../package.json'` on runtimes whose root has
-// no package.json — notably Codex, where the installer omits the synthetic root
-// package.json — taking the entire CLI down before it did anything. And even
-// where it resolved (Claude's synthetic `{"type":"commonjs"}`), there is no
-// `version` field, so the single consumer below already emitted
-// `version: undefined`. Resolve lazily and defensively instead:
+// no package.json — originally just Codex, where the installer never wrote the
+// synthetic root package.json; since #2544 that is true of EVERY runtime, as
+// GSD's markers moved into `hooks/` and the native plugin dir and the config
+// root is no longer written at all — taking the entire CLI down before it did
+// anything. And even where it used to resolve (the synthetic
+// `{"type":"commonjs"}`), there is no `version` field, so the single consumer
+// below already emitted `version: undefined`. Resolve lazily and defensively
+// instead:
 //   1. Installed trees carry <root>/gsd-core/VERSION (written by the installer);
 //      this module lives at <root>/gsd-core/bin/lib, so VERSION is two dirs up.
 //   2. The source / npm-package tree has no gsd-core/VERSION but carries a real

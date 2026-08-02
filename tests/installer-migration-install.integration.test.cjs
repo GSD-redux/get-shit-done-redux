@@ -24,29 +24,34 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const installScript = path.join(__dirname, '..', 'bin', 'install.js');
 const SUPPORTED_RUNTIMES = installModule.allRuntimes;
 const RUNTIME_INSTALL_CONTRACTS = {
-  claude: { surface: 'flat-skills', settings: true, packageJson: true },
-  antigravity: { surface: 'flat-skills', settings: true, packageJson: true },
-  augment: { surface: 'flat-skills', settings: true, packageJson: true },
-  cline: { surface: 'clinerules', settings: false, packageJson: false },
-  codebuddy: { surface: 'flat-skills', settings: true, packageJson: true },
-  codex: { surface: 'flat-skills', settings: false, packageJson: false, codexConfig: true },
-  copilot: { surface: 'flat-skills', settings: false, packageJson: false, copilotInstructions: true },
-  cursor: { surface: 'flat-skills', settings: false, packageJson: false },
-  gemini: { surface: 'commands-gsd', settings: true, packageJson: true },
-  hermes: { surface: 'hermes-skills', settings: true, packageJson: true },
-  kimi: { surface: 'kimi-skills-agents', settings: false, packageJson: false },
+  claude: { surface: 'flat-skills', settings: true, hooksPackageJson: true },
+  antigravity: { surface: 'flat-skills', settings: true, hooksPackageJson: true },
+  augment: { surface: 'flat-skills', settings: true, hooksPackageJson: true },
+  cline: { surface: 'clinerules', settings: false, hooksPackageJson: false },
+  codebuddy: { surface: 'flat-skills', settings: true, hooksPackageJson: true },
+  // codex/cursor/windsurf: #2717 stages their .js hooks via dedicated paths
+  // (skipSharedHooksInstall / the !isCodex gate keep them out of the shared
+  // bundle) and writes the marker beside those scripts, so hooks/package.json
+  // is expected for all three. Measured on this tree: codex stages 3 .js hooks,
+  // cursor 6, windsurf 2 — each with the marker.
+  codex: { surface: 'flat-skills', settings: false, hooksPackageJson: true, codexConfig: true },
+  copilot: { surface: 'flat-skills', settings: false, hooksPackageJson: false, copilotInstructions: true },
+  cursor: { surface: 'flat-skills', settings: false, hooksPackageJson: true },
+  gemini: { surface: 'commands-gsd', settings: true, hooksPackageJson: true },
+  hermes: { surface: 'hermes-skills', settings: true, hooksPackageJson: true },
+  kimi: { surface: 'kimi-skills-agents', settings: false, hooksPackageJson: false },
   // #2454: Kimi Code (Node CLI) has NO custom named subagents (per official
   // docs), so its install surface is skills-only (flat-skills), NOT
   // kimi-skills-agents. The kimi-agents YAML layout is Python kimi-cli only.
-  'kimi-code': { surface: 'flat-skills', settings: false, packageJson: false },
+  'kimi-code': { surface: 'flat-skills', settings: false, hooksPackageJson: false },
   // #2305: Kilo's native plugin spawns the staged guard hooks, so it receives
   // the shared hooks bundle + the CommonJS package.json marker, like OpenCode.
   // (#1821 excluded Kilo on the false premise that it had no plugin surface.)
-  kilo: { surface: 'flat-command', settings: false, packageJson: true },
+  kilo: { surface: 'flat-command', settings: false, hooksPackageJson: true },
   // #2329: OpenCode discovers commands from the PLURAL `commands/` dir — the
   // singular `command/` (still correct for Kilo) made all /gsd-* commands
   // invisible to OpenCode. commandDirName overrides the flat-command default.
-  opencode: { surface: 'flat-command', settings: true, packageJson: true, commandDirName: 'commands' },
+  opencode: { surface: 'flat-command', settings: true, hooksPackageJson: true, commandDirName: 'commands' },
   // #2102 Stage 1/2: pi is a PLUGIN-ONLY install (hostBehaviors.pluginOnlyInstall)
   // for commands/agents/skills — NO commands/, agents/, or skills/ dir. pi's
   // /gsd command is registered programmatically by the native extension
@@ -60,13 +65,13 @@ const RUNTIME_INSTALL_CONTRACTS = {
   // like OpenCode and (since #2305) Kilo — architecturally identical:
   // hooksSurface:'none' + a native plugin that spawns the staged hooks — NOT
   // like ZCode (no plugin surface, where the same hooks are dead weight).
-  pi: { surface: 'plugin-only', settings: false, packageJson: true },
-  qwen: { surface: 'flat-skills', settings: true, packageJson: true },
-  trae: { surface: 'flat-skills', settings: false, packageJson: false },
-  windsurf: { surface: 'global-artifacts-noop', settings: false, packageJson: false },
+  pi: { surface: 'plugin-only', settings: false, hooksPackageJson: true },
+  qwen: { surface: 'flat-skills', settings: true, hooksPackageJson: true },
+  trae: { surface: 'flat-skills', settings: false, hooksPackageJson: false },
+  windsurf: { surface: 'global-artifacts-noop', settings: false, hooksPackageJson: true },
   // #1821: ZCode (hooksSurface:none, no plugin surface) no longer receives the
   // dead hook scripts or the CommonJS package.json marker.
-  zcode: { surface: 'flat-skills', settings: false, packageJson: false },
+  zcode: { surface: 'flat-skills', settings: false, hooksPackageJson: false },
 };
 
 function sha256(content) {
@@ -384,10 +389,18 @@ function assertFreshInstallContract(runtime, targetDir) {
     contract.settings,
     `${runtime} settings.json presence should match the runtime contract`
   );
+  // #2544: the CommonJS marker lives in hooks/ (the dir GSD fills with its own
+  // .js scripts), never at the config root — that file is user-owned territory
+  // on OpenCode/Kilo and was being clobbered on every install.
+  assert.equal(
+    fs.existsSync(path.join(targetDir, 'hooks', 'package.json')),
+    contract.hooksPackageJson,
+    `${runtime} hooks/package.json presence should match the runtime contract`
+  );
   assert.equal(
     fs.existsSync(path.join(targetDir, 'package.json')),
-    contract.packageJson,
-    `${runtime} package.json presence should match the runtime contract`
+    false,
+    `${runtime} must not receive a GSD package.json at the config root (#2544)`
   );
 
   if (contract.codexConfig) {
