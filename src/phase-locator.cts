@@ -198,7 +198,7 @@ function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
         results.push({
           name: dir,
           milestone: version,
-          basePath: path.relative(cwd, archivePath),
+          basePath: toPosixPath(path.relative(cwd, archivePath)),
           fullPath: path.join(archivePath, dir),
         });
       }

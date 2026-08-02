@@ -193,9 +193,11 @@ describe('#2855: getArchivedPhaseDirs does not leak cross-workstream archived ph
     assert.strictEqual(result.length, 1);
     assert.strictEqual(result[0].name, '04-own');
     assert.strictEqual(result[0].milestone, 'v2.0');
+    // basePath is posix-normalized (toPosixPath) — a forward-slash literal is
+    // the correct cross-platform expectation, not path.join.
     assert.strictEqual(
       result[0].basePath,
-      path.join('.planning', 'workstreams', 'beta', 'milestones', 'v2.0-phases'),
+      '.planning/workstreams/beta/milestones/v2.0-phases',
     );
   });
 
@@ -210,7 +212,9 @@ describe('#2855: getArchivedPhaseDirs does not leak cross-workstream archived ph
     const entry = result[0];
     assert.strictEqual(entry.name, '03-auth');
     assert.strictEqual(entry.milestone, 'v2.1.0');
-    assert.strictEqual(entry.basePath, path.join('.planning', 'milestones', 'v2.1.0-phases'));
+    // basePath is posix-normalized (toPosixPath) — a forward-slash literal is
+    // the correct cross-platform expectation, not path.join.
+    assert.strictEqual(entry.basePath, '.planning/milestones/v2.1.0-phases');
     assert.strictEqual(entry.fullPath, path.join(archiveDir, '03-auth'));
   });
 });
