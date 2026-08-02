@@ -1207,9 +1207,15 @@ describe('#2645 — deleting a verification report must not raise completeness',
   });
 
   // Row 8 — boundary: an EXACT mtime tie between two same-keyed directories.
-  // The builder's own tie-break (`rollupDirByKey`) keeps the incumbent on a
-  // tie (first-in-sort-order wins); the ledger's winner selection must agree
-  // so the two never pick different "truths" for the same phase key.
+  // The builder's own tie-break (`rollupDirByKey`) walks
+  // `[...phaseDirNames].sort()` and keeps the incumbent on a tie
+  // (first-in-sort-order wins, since only a STRICTLY newer mtime replaces
+  // it). The ledger's winner selection must walk the SAME sorted order so
+  // the two deterministically agree on which directory wins — not merely
+  // "some directory wins" (a prior version of this test asserted only
+  // `completed_phases === 0 || 1`, which is true regardless of agreement and
+  // caught nothing; both `01-foo-a`/`01-foo-b` sort deterministically, so the
+  // outcome here is not a coin flip).
   test('an exact mtime tie resolves the ledger winner by sort order, matching the builder (#2645)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-tie' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
@@ -1217,8 +1223,9 @@ describe('#2645 — deleting a verification report must not raise completeness',
       '| 1. Foo | 1/1 | Complete | - |',
     ]));
     const tieTime = new Date('2025-06-01T00:00:00Z');
-    // '01-foo-a' sorts before '01-foo-b' — with equal mtimes, the builder's
-    // rollup keeps the incumbent (first-in-sort-order).
+    // '01-foo-a' sorts before '01-foo-b' — with equal mtimes, BOTH the
+    // builder's rollup and the ledger's winner selection must keep the
+    // incumbent '01-foo-a' (passed), never adopt '01-foo-b' (gaps_found).
     const dirA = writePhase(wsDir, '01-foo-a', { plans: 1, summaries: 1, verification: 'passed' });
     fs.utimesSync(dirA, tieTime, tieTime);
     const dirB = writePhase(wsDir, '01-foo-b', { plans: 1, summaries: 1, verification: 'gaps_found' });
@@ -1227,11 +1234,26 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.doesNotThrow(() => inspectWorkstream(tmpDir, 'ws-2645-tie', { active: null }));
     const inv = inspectWorkstream(tmpDir, 'ws-2645-tie', { active: null });
     assert.ok(inv);
-    // Whichever directory the builder's own rollup picks, the ledger must
-    // agree with it (no invariant throw, no silent disagreement) — the
-    // property under test is AGREEMENT between the two, not which specific
-    // directory wins.
-    assert.ok(inv.completed_phases === 0 || inv.completed_phases === 1);
+    // Deterministic, not "either is fine": the builder's own rollup counts
+    // exactly the sort-order incumbent (01-foo-a, passed) as complete.
+    assert.equal(inv.completed_phases, 1,
+      'the sort-order incumbent (01-foo-a, passed) must be the one the builder counts complete');
+
+    // Concrete cross-check that the LEDGER's winner selection agrees with the
+    // builder's, not just that this run's numbers happen to match: delete
+    // 01-foo-a's report (unlink bumps the directory's mtime — restore it to
+    // the exact tie value so the SECOND read still sees a genuine tie, not a
+    // newest-mtime win). If the ledger's winner selection had instead picked
+    // 01-foo-b (the bug this test guards — unsorted iteration disagreeing
+    // with the builder's sorted `rollupDirByKey`), this phase key's
+    // remembered verdict would be 'gaps_found' and the phase would flip to
+    // in_progress. It must instead stay complete, because the ledger
+    // remembers 01-foo-a's 'passed' — the same directory the builder uses.
+    fs.unlinkSync(path.join(dirA, '01-VERIFICATION.md'));
+    fs.utimesSync(dirA, tieTime, tieTime); // restore the tie the unlink disturbed
+    const afterDelete = inspectWorkstream(tmpDir, 'ws-2645-tie', { active: null });
+    assert.equal(afterDelete.completed_phases, 1,
+      "the ledger must have remembered the sort-order incumbent's 'passed' verdict, not the other directory's gaps_found");
   });
 
   // Row 9 — property: whatever sequence of REAL verdicts is observed for a
@@ -1268,5 +1290,102 @@ describe('#2645 — deleting a verification report must not raise completeness',
         cleanup(wsDir);
       },
     ), { numRuns: 25 });
+  });
+
+  // Row 10 — CONTRIBUTING.md "Filesystem writes and installers": code that
+  // writes under `.planning` needs fault-injection coverage. A corrupted
+  // `.verification-ledger.json` (bad JSON, or valid JSON of the wrong shape)
+  // must degrade to "nothing remembered", never throw and never break the
+  // read-only commands this ledger is a side effect of.
+  test('a corrupted ledger file degrades to no memory instead of throwing (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-corrupt-ledger' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    // Not valid JSON at all.
+    fs.writeFileSync(ledgerPath, 'not json{{{');
+    assert.doesNotThrow(() => inspectWorkstream(tmpDir, 'ws-2645-corrupt-ledger', { active: null }));
+
+    // Valid JSON, wrong shape (array instead of object) — must also degrade,
+    // not partially trust it.
+    fs.writeFileSync(ledgerPath, '["gaps_found"]');
+    const inv = inspectWorkstream(tmpDir, 'ws-2645-corrupt-ledger', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress', 'the live gaps_found read still governs regardless of ledger corruption');
+  });
+
+  // Row 11 — fault injection per CONTRIBUTING.md: read-only target directory
+  // / partial write failure. Monkeypatch `fs.writeFileSync` to throw only for
+  // the ledger path (delegating everything else to the real implementation,
+  // since STATE.md/ROADMAP.md/phase files also go through the same fs
+  // module) — `inspectWorkstream` must still return a valid inventory rather
+  // than propagating the write failure. Restored in `finally` per this
+  // repo's IO-failure-injection convention (never `chmod 0o000` — root
+  // bypasses mode bits in CI).
+  test('a write failure on the ledger file does not break inspectWorkstream (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-write-fail' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    const originalWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = (targetPath, ...rest) => {
+      if (typeof targetPath === 'string' && targetPath === ledgerPath) {
+        throw new Error('injected: simulated read-only target directory');
+      }
+      return originalWriteFileSync(targetPath, ...rest);
+    };
+    try {
+      let inv;
+      assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-write-fail', { active: null }); });
+      assert.ok(inv);
+      assert.equal(inv.phases[0].status, 'in_progress', 'the inventory is still correct even though persistence failed');
+      assert.ok(!fs.existsSync(ledgerPath), 'the failed write must not have left a partial/corrupt ledger file');
+    } finally {
+      fs.writeFileSync = originalWriteFileSync;
+    }
+  });
+
+  // Row 12 — the read-side counterpart: a read failure on the ledger path
+  // specifically (e.g. permission denied) must also degrade rather than
+  // throw, and must not mask the live on-disk verdict for THIS call.
+  test('a read failure on the ledger file does not break inspectWorkstream (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-read-fail' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | Complete | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+    // Seed a ledger entry via a real (unmocked) observation first.
+    inspectWorkstream(tmpDir, 'ws-2645-read-fail', { active: null });
+    assert.ok(fs.existsSync(ledgerPath), 'guard: the ledger must exist before the read-failure case is meaningful');
+
+    const originalReadFileSync = fs.readFileSync;
+    fs.readFileSync = (targetPath, ...rest) => {
+      if (typeof targetPath === 'string' && targetPath === ledgerPath) {
+        throw new Error('injected: simulated permission denied');
+      }
+      return originalReadFileSync(targetPath, ...rest);
+    };
+    try {
+      let inv;
+      assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-read-fail', { active: null }); });
+      assert.ok(inv);
+      // The ledger read failed, so this call falls back to "nothing
+      // remembered" for this read — but the report is still live on disk
+      // with a real (non-missing) gaps_found verdict, so the phase is still
+      // correctly in_progress from the LIVE read, not from the ledger.
+      assert.equal(inv.phases[0].status, 'in_progress');
+    } finally {
+      fs.readFileSync = originalReadFileSync;
+    }
   });
 });

@@ -199,6 +199,66 @@ function countPhaseFiles(phaseDir: string): PhaseFileCounts {
   return { planCount: scan.planCount, summaryCount: scan.summaryCount };
 }
 
+// ─── #2645: verification-deletion ledger ───────────────────────────────────
+//
+// #2562's completeness gate (`FAILING_VERIFICATION_STATUSES`,
+// workstream-inventory-builder.cts) reads a phase's verification verdict
+// fresh from `*-VERIFICATION.md` on every call. That makes "verifier ran,
+// found gaps, report later deleted" indistinguishable from "verifier never
+// ran" — both collapse to the same `'missing'` sentinel
+// (verification.cts's `missingResult()`), which is deliberately NOT in the
+// failing set (so verifier-disabled projects can still reach 100%). Deleting
+// a failing report is therefore sufficient to silently raise the reported
+// completion percentage — a Goodhart hole (#2645).
+//
+// The fix persists the last REAL (non-'missing') verdict this module has
+// ever observed per phase key, in a small ledger file living at the
+// WORKSTREAM directory level — never inside the phase directory whose file
+// is the thing being deleted, so the same `rm` that triggers the hole
+// cannot also erase the memory of it (criterion 4). When a live read comes
+// back 'missing', the ledger is consulted as a fallback; when a live read
+// comes back with a real verdict — including a later 'passed' that
+// supersedes an earlier failing one — the ledger is updated to match, so a
+// genuinely re-verified phase is never permanently pinned. A phase never
+// observed with a report present has no ledger entry, so verifier-disabled
+// projects and genuinely not-yet-verified phases are completely unaffected
+// (criteria 2 and 3 hold by construction, not a special case).
+interface VerificationLedger { [phaseKey: string]: string; }
+
+function verificationLedgerPath(wsDir: string): string {
+  return path.join(wsDir, '.verification-ledger.json');
+}
+
+function readVerificationLedger(wsDir: string): VerificationLedger {
+  try {
+    const raw = fs.readFileSync(verificationLedgerPath(wsDir), 'utf-8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: VerificationLedger = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === 'string') out[key] = value;
+    }
+    return out;
+  } catch {
+    // No ledger yet, unreadable, or malformed JSON — degrade to "nothing
+    // remembered" rather than throw. This sits in the hot path of
+    // `workstream status`/`list`/`progress`.
+    return {};
+  }
+}
+
+function writeVerificationLedger(wsDir: string, ledger: VerificationLedger): void {
+  try {
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(verificationLedgerPath(wsDir), `${JSON.stringify(ledger, null, 2)}\n`, 'utf-8');
+  } catch {
+    // Best-effort persistence: a read-only filesystem or other write
+    // failure must not break inventory reads, which are otherwise pure.
+    // Losing this observation only re-opens the pre-#2645 window for THIS
+    // run; the next successful read while a report is on disk repairs it.
+  }
+}
+
 function readStateProjection(statePath: string): StateProjection {
   try {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
@@ -366,7 +426,18 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   // Collect per-phase file counts (+ canonical key, milestone membership,
   // verification verdict). `phaseKey` lets the builder de-duplicate stale
   // same-numbered directories (Bug #2445's scenario) in the rollup.
-  const phaseFilesCounts = phaseDirNames.map(dir => {
+  //
+  // #2645 review: built from `[...phaseDirNames].sort()`, NOT the raw
+  // `phaseDirNames` (unsorted `readdirSync` order — `readSubdirectories`'s
+  // default). `buildWorkstreamInventory`'s own de-dup (`rollupDirByKey`,
+  // workstream-inventory-builder.cts) iterates the SAME sorted order; the
+  // ledger-winner tie-break below (incumbent wins unless a later entry has a
+  // STRICTLY newer mtime) only agrees with the builder's winner on an exact
+  // mtime tie if both walk entries in the same order. Iterating unsorted
+  // input here let the two independently pick different "winning"
+  // directories for one phase key on a tie — reopening the stale-duplicate-
+  // clobbers-live-verdict hole criterion 4 exists to close.
+  const rawPhaseEntries = [...phaseDirNames].sort().map(dir => {
     const phaseDir = path.join(p.phases, dir);
     const counts = countPhaseFiles(phaseDir);
     return {
@@ -376,7 +447,55 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       planCount: counts.planCount,
       summaryCount: counts.summaryCount,
       inMilestone: isDirInCurrentMilestone(dir),
-      verificationStatus: readVerificationStatus(phaseDir).status,
+      liveVerificationStatus: readVerificationStatus(phaseDir).status,
+    };
+  });
+
+  // #2645: only the directory Bug #2445's de-dup rollup would actually pick
+  // for a phase key (newest mtime; first-in-sort-order on a tie — the SAME
+  // rule buildWorkstreamInventory's `rollupDirByKey` applies, now that both
+  // walk `[...phaseDirNames].sort()`) may read or write that key's ledger
+  // entry. Letting every same-keyed directory (including a stale leftover)
+  // write would let a stale duplicate's stale verdict clobber the live
+  // directory's remembered one. Not extracted into a helper shared with
+  // `rollupDirByKey`: that function also folds in milestone-scoping
+  // exclusion (`scoped && entry?.inMilestone === false`), which is
+  // `workstream-inventory-builder.cts`'s #2562/#2588 concern and explicitly
+  // out of scope for this fix to touch; duplicating the smaller, scoping-free
+  // tie-break rule here — kept in lockstep by the shared sort order above —
+  // is the narrower change.
+  const ledgerWinnerByKey = new Map<string, typeof rawPhaseEntries[number]>();
+  for (const entry of rawPhaseEntries) {
+    const incumbent = ledgerWinnerByKey.get(entry.phaseKey);
+    if (!incumbent || entry.mtimeMs > incumbent.mtimeMs) ledgerWinnerByKey.set(entry.phaseKey, entry);
+  }
+
+  const verificationLedger = readVerificationLedger(wsDir);
+  let ledgerDirty = false;
+  for (const winner of ledgerWinnerByKey.values()) {
+    if (winner.liveVerificationStatus === 'missing') continue;
+    if (verificationLedger[winner.phaseKey] !== winner.liveVerificationStatus) {
+      verificationLedger[winner.phaseKey] = winner.liveVerificationStatus;
+      ledgerDirty = true;
+    }
+  }
+  if (ledgerDirty) writeVerificationLedger(wsDir, verificationLedger);
+
+  const phaseFilesCounts = rawPhaseEntries.map(entry => {
+    const isLedgerWinner = ledgerWinnerByKey.get(entry.phaseKey) === entry;
+    const remembered = verificationLedger[entry.phaseKey];
+    const verificationStatus =
+      entry.liveVerificationStatus === 'missing' && isLedgerWinner && remembered !== undefined
+        ? remembered
+        : entry.liveVerificationStatus;
+    return {
+      directory: entry.directory,
+      phaseKey: entry.phaseKey,
+      mtimeMs: entry.mtimeMs,
+      planCount: entry.planCount,
+      summaryCount: entry.summaryCount,
+      inMilestone: entry.inMilestone,
+      verificationStatus,
     };
   });
 
