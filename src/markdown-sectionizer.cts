@@ -269,7 +269,7 @@ function stripInlineCodeLine(line: string): string {
 // ─── extractFencedBlock ───────────────────────────────────────────────────────
 
 /** A fenced code block located by `scanFencedBlocks`: line-index span + info string. */
-interface FencedBlockRecord {
+export interface FencedBlockRecord {
   /** Fence delimiter character (`` ` `` or `~`). */
   char: '`' | '~';
   /** Fence delimiter run length (≥3). */
@@ -301,8 +301,13 @@ interface FencedBlockRecord {
  * Tracked duplication (same status as `tokenizeHeadings`'s copy, see its
  * comment above): this is a second independent copy of the fence state
  * machine, pending a T-tier consolidation.
+ *
+ * Exported so `context-predicates.cts` can consume this seam directly for its
+ * line-preserving fenced-line skip detection, instead of carrying a third
+ * independent copy of the fence state machine (see that module's doc
+ * comment).
  */
-function scanFencedBlocks(lines: string[]): FencedBlockRecord[] {
+export function scanFencedBlocks(lines: string[]): FencedBlockRecord[] {
   const delimRe = /^( {0,3})(`{3,}|~{3,})(.*)$/;
   const blocks: FencedBlockRecord[] = [];
   let open: { char: '`' | '~'; len: number; infoString: string; openLineIdx: number } | null = null;

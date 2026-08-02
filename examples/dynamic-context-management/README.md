@@ -21,7 +21,7 @@ hand-citing a 200 KB file.
 
 - `context-predicates.cjs` — parser + selector + deterministic index builder (self-contained).
 - `gen-context-index.cjs` — `--check` / `--write` drift-guarded generator + `--select`.
-- `CONTEXT-INDEX.json` — sample generated output (393 predicates, 18 classes).
+- `CONTEXT-INDEX.json` — sample generated output (415 predicates, 20 classes).
 - `demo.cjs` — runnable usage example.
 
 ## Run (from the repo root)
@@ -36,9 +36,13 @@ node examples/dynamic-context-management/gen-context-index.cjs --check
 
 During research this slice was validated with 42 behavioral tests — predicate
 forms, fenced-code / prose skipping, duplicate-id detection, the selector, a
-deterministic index, and a fast-check property test. Those return as CI tests
-under `tests/` when the production implementation lands.
+deterministic index, and a fast-check property test. The production
+implementation has since landed, with `tests/context-predicates.test.cjs` and
+`tests/context-index-sync.test.cjs` as its behavioral tests under `tests/`,
+and `scripts/lint-example-parser-parity.cjs` (wired into `npm run lint:ci`)
+asserting this example and production agree.
 
-It also surfaced 3 latent duplicate predicate IDs in `CONTEXT.md`
+Research also surfaced 3 latent duplicate predicate IDs in `CONTEXT.md`
 (`RULESET.WORKFLOW_MARKDOWN.FENCES`, `RULESET.GEMINI.TOOLS.ask_user`,
-`RULESET.GEMINI.TEST_SENTINEL`), recorded in the index `duplicates` field.
+`RULESET.GEMINI.TEST_SENTINEL`) at the time; all three have since been
+resolved and the current index carries 0 duplicate ids.

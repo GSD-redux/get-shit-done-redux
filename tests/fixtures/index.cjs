@@ -41,7 +41,11 @@ function createFixture(options = {}) {
     execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
     execSync('git config commit.gpgsign false', { cwd: tmpDir, stdio: 'pipe' });
     execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "initial commit"', { cwd: tmpDir, stdio: 'pipe' });
+    // `--allow-empty`: a fixture with `git: true, planning: false,
+    // projectDoc: false` (e.g. a "greenfield" starting world) stages nothing,
+    // so a plain `git commit` would fail with "nothing to commit" and the
+    // caller would never get a usable repo (there'd be no HEAD at all).
+    execSync('git commit --allow-empty -m "initial commit"', { cwd: tmpDir, stdio: 'pipe' });
   }
 
   return tmpDir;

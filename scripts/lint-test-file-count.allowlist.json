@@ -3,6 +3,7 @@
   "modules": {
     "config": {
       "files": [
+        "config-defaults-runtime-exclusion.test.cjs",
         "config-field-docs.test.cjs",
         "config-get-default.test.cjs",
         "config-schema.property.test.cjs",
@@ -116,6 +117,14 @@
         "host-integration-descriptors.test.cjs"
       ],
       "issue": "1684"
+    },
+    "prompt-budget": {
+      "files": [
+        "prompt-budget-cli.test.cjs",
+        "prompt-budget-parity.test.cjs",
+        "prompt-budget.test.cjs"
+      ],
+      "issue": "2929"
     }
   }
 }

@@ -3763,3 +3763,78 @@ describe('#2279: map-codebase date stamp instructions overwrite existing dates',
       'workflow must instruct agents to overwrite existing dates, not just replace [YYYY-MM-DD] placeholders');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEFECT.GENERATIVE-FIX parity guard: HOST_COMMAND_ROUTERS vs TOP_LEVEL_USAGE
+// vs SKIP_ROOT_RESOLUTION (#2928 S9)
+//
+// gsd-tools.cjs's query-command surface is declared across THREE
+// independently hand-maintained sites in the same file with no prior parity
+// gate between them: the dispatch table (HOST_COMMAND_ROUTERS), the
+// `--help` command list (TOP_LEVEL_USAGE), and the project-root-skip list
+// (SKIP_ROOT_RESOLUTION). Nothing previously caught a command being wired
+// into the dispatch table but omitted from the help string (or vice versa)
+// — exactly the generative-fix-divergence shape CLAUDE.md's
+// "Generative Fix Divergence" anti-pattern names ("add a parity assertion
+// test that fails if the shared constants/arrays/parsers diverge").
+//
+// This is a STRUCTURAL comparison against the exported constants, not a
+// source-text/string-match test, so it stays correct across reformatting
+// and is immune to the no-source-grep concern.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('gsd-tools.cjs dispatch/help/skip-list parity (DEFECT.GENERATIVE-FIX, #2928 S9)', () => {
+  const { HOST_COMMAND_ROUTERS, TOP_LEVEL_USAGE, skipsRootResolution } = require('../gsd-core/bin/gsd-tools.cjs');
+
+  // Parse the "Commands: a, b, c\n\nGlobal flags:" line out of the usage
+  // string rather than hardcoding a copy of it here — this test must fail
+  // when the two sites diverge, not silently pass because it re-embeds its
+  // own stale expectation.
+  function parseHelpCommandNames(usage) {
+    const match = usage.match(/Commands: ([\s\S]*?)\n\nGlobal flags:/);
+    assert.ok(match, 'TOP_LEVEL_USAGE must contain a "Commands: ...\\n\\nGlobal flags:" block');
+    return match[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+  }
+
+  test('every HOST_COMMAND_ROUTERS entry is listed in the --help command string', () => {
+    const helpNames = new Set(parseHelpCommandNames(TOP_LEVEL_USAGE));
+    const missing = Object.keys(HOST_COMMAND_ROUTERS).filter((name) => !helpNames.has(name));
+    assert.deepEqual(
+      missing,
+      [],
+      `command(s) registered in HOST_COMMAND_ROUTERS but missing from TOP_LEVEL_USAGE's ` +
+      `"Commands:" list: ${missing.join(', ')}`,
+    );
+  });
+
+  test('context-predicates is registered in all three hand-maintained sites', () => {
+    // Concrete regression pin for the command this parity test was added
+    // alongside (#2928 S9) — a generic diff-based assertion alone would not
+    // fail if ALL THREE sites were missing an entry simultaneously.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(HOST_COMMAND_ROUTERS, 'context-predicates'),
+      'context-predicates must be registered in HOST_COMMAND_ROUTERS',
+    );
+    assert.ok(
+      parseHelpCommandNames(TOP_LEVEL_USAGE).includes('context-predicates'),
+      'context-predicates must be listed in TOP_LEVEL_USAGE',
+    );
+    assert.ok(
+      skipsRootResolution('context-predicates'),
+      'context-predicates must be in SKIP_ROOT_RESOLUTION (it is a pure repo-root CONTEXT.md ' +
+      'read, like prompt-budget, and must work with no .planning/ directory present)',
+    );
+  });
+
+  test('SKIP_ROOT_RESOLUTION is not exported as a mutable live Set (DEFECT.MUTABLE-EXPORTED-SET, #2928)', () => {
+    const gsdTools = require('../gsd-core/bin/gsd-tools.cjs');
+    assert.equal(
+      gsdTools.SKIP_ROOT_RESOLUTION,
+      undefined,
+      'the live Set must not be exported directly — only the read-only skipsRootResolution() predicate',
+    );
+    assert.equal(typeof gsdTools.skipsRootResolution, 'function');
+  });
+});

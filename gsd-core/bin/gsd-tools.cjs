@@ -2605,6 +2605,133 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           }
   }
 
+  // `gsd_run query context-predicates` — selector surface for the CONTEXT.md
+  // predicate fact-store (ADR-1671, #2928 Phase 1 row S9). Parses the
+  // repo-root CONTEXT.md LIVE via the compiled context-predicates.cjs on
+  // every call — it never reads the committed docs/CONTEXT-INDEX.json (that
+  // artifact is a CI drift-guard byproduct, not a query source, so it can
+  // never go stale relative to the live predicates it answers about).
+  //
+  // Selectors: --class <CLASS>, --prefix <dotted.prefix>, --contains <text>.
+  // At least one is required. When more than one is given they are ANDed
+  // together — the same documented precedence selectPredicates() itself
+  // implements (see context-predicates.cjs doc comment: "Select predicates
+  // by one or more optional criteria (ANDed together)"); no selector is
+  // silently dropped or overridden by another.
+  //
+  // Flag parsing mirrors routePromptBudget's Map-based flagMap: the three
+  // known flags are recognized in both the space-separated `--flag value`
+  // form and the inline-assignment `--flag=value` form (the latter is the
+  // escape hatch for a flag-shaped selector value, e.g. `--contains=--dry-run`
+  // — #2928 review finding C; the space-separated form has no such escape by
+  // design, since a following `--...` token always reads as a missing value).
+  // `--class=` (empty value) and `--class==A` (double-equals typo shape)
+  // are rejected the same way under either form. On a duplicate flag the
+  // FIRST occurrence wins (`Map.set` only fires when the key is absent),
+  // which is deterministic across repeated invocations with identical argv.
+  //
+  // Prototype-pollution safety: selector values are only ever compared via
+  // `===`/`.startsWith()`/`.includes()` against ordinary string fields — this
+  // route never uses a user-supplied string as an object property key
+  // (`obj[userValue] = ...`), so `--class __proto__` / `constructor` /
+  // `prototype` are just non-matching ordinary strings, not property-access
+  // vectors. `flagMap` itself is a `Map`, immune to prototype pollution by
+  // construction.
+  function routeContextPredicates({ args, cwd, raw, error }) {
+    const { parsePredicates, selectPredicates } = require('./lib/context-predicates.cjs');
+
+    const KNOWN_FLAGS = new Set(['--class', '--prefix', '--contains']);
+    const flagMap = new Map();
+    for (let i = 1; i < args.length; i++) {
+      const current = args[i];
+      if (typeof current !== 'string' || !current.startsWith('--')) continue;
+
+      // Inline-assignment escape hatch (`--flag=value`, mirrors the `--config-dir=`/
+      // `--runtime=` convention in routeUpdateContext elsewhere in this file). This is
+      // the ONLY way to pass a flag-shaped selector value (e.g. searching CONTEXT.md
+      // for the literal substring "--dry-run"): the space-separated form below always
+      // treats a following `--...` token as a missing value, by design, so it has no
+      // escape hatch on its own (#2928 review finding C).
+      const eqFlag = [...KNOWN_FLAGS].find((f) => current.startsWith(`${f}=`));
+      if (eqFlag) {
+        const value = current.slice(eqFlag.length + 1);
+        // Reject an empty value (`--class=`) and the `--class==A` double-equals typo
+        // shape (a value starting with `=`) the same way the pre-existing malformed-
+        // assignment behavior did — never silently accept "=A" as a literal value.
+        if (value === '' || value.startsWith('=')) {
+          error(`context-predicates: ${eqFlag} requires a non-empty value`, ERROR_REASON.USAGE);
+          return;
+        }
+        if (!flagMap.has(eqFlag)) flagMap.set(eqFlag, value);
+        continue;
+      }
+
+      if (!KNOWN_FLAGS.has(current)) {
+        error(`Unknown flag for context-predicates: ${current}`, ERROR_REASON.USAGE);
+        return;
+      }
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('--')) {
+        if (!flagMap.has(current)) flagMap.set(current, null);
+        continue;
+      }
+      if (!flagMap.has(current)) flagMap.set(current, next);
+      i++;
+    }
+
+    const hasClass = flagMap.has('--class');
+    const hasPrefix = flagMap.has('--prefix');
+    const hasContains = flagMap.has('--contains');
+
+    if (!hasClass && !hasPrefix && !hasContains) {
+      error(
+        'Usage: gsd-tools query context-predicates --class <CLASS> | --prefix <dotted.prefix> | --contains <text> ' +
+        '(selectors are ANDed when combined)',
+        ERROR_REASON.USAGE,
+      );
+      return;
+    }
+
+    const requireNonEmpty = (flagName, rawValue) => {
+      if (rawValue === null || rawValue === undefined || rawValue.trim() === '') {
+        error(`context-predicates: ${flagName} requires a non-empty value`, ERROR_REASON.USAGE);
+        return null;
+      }
+      return rawValue;
+    };
+
+    const opts = {};
+    if (hasClass) {
+      const v = requireNonEmpty('--class', flagMap.get('--class'));
+      if (v === null) return;
+      opts.klass = v;
+    }
+    if (hasPrefix) {
+      const v = requireNonEmpty('--prefix', flagMap.get('--prefix'));
+      if (v === null) return;
+      opts.prefix = v;
+    }
+    if (hasContains) {
+      const v = requireNonEmpty('--contains', flagMap.get('--contains'));
+      if (v === null) return;
+      opts.contains = v;
+    }
+
+    const contextMdPath = path.join(__dirname, '..', '..', 'CONTEXT.md');
+    let markdown;
+    try {
+      markdown = fs.readFileSync(contextMdPath, 'utf8');
+    } catch (err) {
+      error(`context-predicates: cannot read ${contextMdPath}: ${err && err.message}`, ERROR_REASON.USAGE);
+      return;
+    }
+
+    const { predicates } = parsePredicates(markdown);
+    const matches = selectPredicates(predicates, opts);
+
+    output({ matched: matches.length, predicates: matches }, raw);
+  }
+
   function routeUpdateContext({ args, cwd, raw, error }) {
     // #498: resolve the installed GSD version, scope, runtime, and config dir
           // for /gsd:update. Replaces ~280 lines of inline bash in update.md with a
@@ -2940,6 +3067,7 @@ const HOST_COMMAND_ROUTERS = {
     'restore-custom-files': routeRestoreCustomFiles,
     'from-gsd2': routeFromGsd2,
     'prompt-budget': routePromptBudget,
+    'context-predicates': routeContextPredicates,
     'review-lane': routeReviewLane,
     'update-context': routeUpdateContext,
     'classify-confidence': routeClassifyConfidence,
@@ -3143,6 +3271,90 @@ function runWithTimeout(argv) {
 
 // ─── CLI Router ───────────────────────────────────────────────────────────────
 
+// Top-level usage string — emitted by `gsd-tools` (no args) and by
+// `gsd-tools --help` / any `--help` request below.
+// CR feedback: the command list must enumerate every top-level command
+// supported by the dispatcher so `--help` is actually useful for
+// discovery; previously it was a partial subset that didn't include
+// phase / roadmap / milestone / progress / etc.
+//
+// Module-scoped (not function-local) so it can be exported and compared
+// against HOST_COMMAND_ROUTERS in a parity test (DEFECT.GENERATIVE-FIX) —
+// this string and HOST_COMMAND_ROUTERS/SKIP_ROOT_RESOLUTION are three
+// independently hand-maintained sites and nothing previously caught them
+// drifting apart when a query command was added to only one or two.
+const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--ws <name>] [--json-errors]\n' +
+  'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-to-subrepo, pr-subrepo, ' +
+  'config-ensure-section, config-get, config-new-project, config-path, config-set, migrate-config, normalize-test-command, ' +
+  'context-predicates, current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
+  'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
+  'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
+  'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
+  'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
+  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
+  'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
+  'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
+  'Global flags:\n' +
+  '  --raw              Emit raw output without post-processing\n' +
+  '  --pick <field>     Extract a single field from JSON output (dot/bracket notation)\n' +
+  '  --cwd <path>       Override working directory for project-root resolution\n' +
+  '  --ws <name>        Override active workstream (or set GSD_WORKSTREAM)\n' +
+  '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n\n' +
+  'For command-specific argument requirements, invoke the command without args ' +
+  '(e.g. `gsd-tools phase add`) — the resulting error lists what is required.';
+
+// Multi-repo guard: resolve project root for commands that read/write .planning/.
+// Skip for pure-utility commands that don't touch .planning/ to avoid unnecessary
+// filesystem traversal on every invocation.
+// 'loop' and 'capability' are intentionally NOT in SKIP_ROOT_RESOLUTION.
+// Both are registry/config queries that resolve activation via
+// .planning/config.json; they need the project root (cwd) for correct
+// `when` key resolution. If one is ever moved to SKIP_ROOT_RESOLUTION,
+// move the other at the same time (keep them consistent).
+//
+// Module-scoped for the same reason as TOP_LEVEL_USAGE above — kept
+// module-private and exposed to the dispatch-table/help-string/skip-list
+// parity test only through the read-only skipsRootResolution() predicate
+// below (never as the live Set itself; see that function's doc comment).
+const SKIP_ROOT_RESOLUTION = new Set([
+  'generate-slug', 'current-timestamp', 'verify-path-exists',
+  // #2844: verify-summary was previously skipped, leaving relative file-claim
+  // paths resolved against the raw process.cwd() — invoking from a subdirectory
+  // manufactured "missing files" on an otherwise-correct SUMMARY. It now goes
+  // through findProjectRoot so claims resolve against the project root.
+  'template', 'frontmatter', 'detect-custom-files',
+  // #1854: restore-custom-files operates on a runtime config dir passed
+  // explicitly via --config-dir; it never reads .planning/.
+  'restore-custom-files',
+  'worktree', 'prompt-budget',
+  // context-predicates is a pure repo-root CONTEXT.md read (like
+  // prompt-budget); it never touches .planning/, so it needs no project
+  // root resolution and must work from any cwd (including one with no
+  // .planning/ directory at all).
+  'context-predicates',
+  'research-store', 'research-plan', 'package-legitimacy', 'classify-confidence',
+  'user-story', // pure string validation — no .planning/ access needed
+  // #1529: pure runtime→filename projection via getProjectInstructionFile; no
+  // .planning/ access needed, and resolving project root would break workflow
+  // invocations that run before .planning/ exists (new-project Step 1).
+  'project-instruction-file',
+  // #1579: eval.score is pure arithmetic (covered/total + infra weights); it
+  // needs no .planning/ access, so skip the findProjectRoot traversal.
+  'eval',
+]);
+
+// Read-only accessor for SKIP_ROOT_RESOLUTION (DEFECT.MUTABLE-EXPORTED-SET,
+// #2928 review). The Set above stays module-private and mutable internally
+// (main() only ever calls .has() on it), but exporting the live Set directly
+// would let any importer call .add()/.delete() on it — Object.freeze() does
+// not lock Set.prototype.add/delete, so freezing the instance would not have
+// closed this — and silently change dispatch behavior for every caller in the
+// process. Export this predicate instead; it exposes membership without
+// exposing a mutation surface.
+function skipsRootResolution(command) {
+  return SKIP_ROOT_RESOLUTION.has(command);
+}
+
 async function main() {
   let args = process.argv.slice(2);
 
@@ -3276,30 +3488,6 @@ async function main() {
     }
   }
 
-  // Top-level usage string — emitted by `gsd-tools` (no args) and by
-  // `gsd-tools --help` / any `--help` request below.
-  // CR feedback: the command list must enumerate every top-level command
-  // supported by the dispatcher so `--help` is actually useful for
-  // discovery; previously it was a partial subset that didn't include
-  // phase / roadmap / milestone / progress / etc.
-  const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <field>] [--cwd <path>] [--ws <name>] [--json-errors]\n' +
-    'Commands: agent, agent-skills, assumption-delta, audit-open, audit-uat, check, check-commit, commit, commit-to-subrepo, pr-subrepo, ' +
-    'config-ensure-section, config-get, config-new-project, config-path, config-set, migrate-config, normalize-test-command, ' +
-    'current-timestamp, detect-custom-files, docs-init, drift-guard, effort, extract-messages, find-phase, ' +
-    'from-gsd2, frontmatter, gap-analysis, generate-claude-md, generate-claude-profile, ' +
-    'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
-    'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
-    'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
-    'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
-    'Global flags:\n' +
-    '  --raw              Emit raw output without post-processing\n' +
-    '  --pick <field>     Extract a single field from JSON output (dot/bracket notation)\n' +
-    '  --cwd <path>       Override working directory for project-root resolution\n' +
-    '  --ws <name>        Override active workstream (or set GSD_WORKSTREAM)\n' +
-    '  --json-errors      Emit structured JSON error objects on stderr (or set GSD_JSON_ERRORS=1)\n\n' +
-    'For command-specific argument requirements, invoke the command without args ' +
-    '(e.g. `gsd-tools phase add`) — the resulting error lists what is required.';
-
   if (!command) {
     error(TOP_LEVEL_USAGE);
   }
@@ -3326,35 +3514,6 @@ async function main() {
     }
   }
 
-  // Multi-repo guard: resolve project root for commands that read/write .planning/.
-  // Skip for pure-utility commands that don't touch .planning/ to avoid unnecessary
-  // filesystem traversal on every invocation.
-  // 'loop' and 'capability' are intentionally NOT in SKIP_ROOT_RESOLUTION.
-  // Both are registry/config queries that resolve activation via
-  // .planning/config.json; they need the project root (cwd) for correct
-  // `when` key resolution. If one is ever moved to SKIP_ROOT_RESOLUTION,
-  // move the other at the same time (keep them consistent).
-  const SKIP_ROOT_RESOLUTION = new Set([
-    'generate-slug', 'current-timestamp', 'verify-path-exists',
-    // #2844: verify-summary was previously skipped, leaving relative file-claim
-    // paths resolved against the raw process.cwd() — invoking from a subdirectory
-    // manufactured "missing files" on an otherwise-correct SUMMARY. It now goes
-    // through findProjectRoot so claims resolve against the project root.
-    'template', 'frontmatter', 'detect-custom-files',
-    // #1854: restore-custom-files operates on a runtime config dir passed
-    // explicitly via --config-dir; it never reads .planning/.
-    'restore-custom-files',
-    'worktree', 'prompt-budget',
-    'research-store', 'research-plan', 'package-legitimacy', 'classify-confidence',
-    'user-story', // pure string validation — no .planning/ access needed
-    // #1529: pure runtime→filename projection via getProjectInstructionFile; no
-    // .planning/ access needed, and resolving project root would break workflow
-    // invocations that run before .planning/ exists (new-project Step 1).
-    'project-instruction-file',
-    // #1579: eval.score is pure arithmetic (covered/total + infra weights); it
-    // needs no .planning/ access, so skip the findProjectRoot traversal.
-    'eval',
-  ]);
   if (!SKIP_ROOT_RESOLUTION.has(command)) {
     cwd = findProjectRoot(cwd);
   }
@@ -3511,5 +3670,13 @@ if (require.main === module) {
 // synthetic registry + requireModule injections.
 // ADR-1244 Phase 5: export dispatchOverlayCapabilityCommand + defaultRequireFromInstallRoot for
 // the third-party overlay dispatch + install-root confinement tests.
-module.exports = { dispatchCapabilityCommand, dispatchOverlayCapabilityCommand, defaultRequireFromInstallRoot, dispatchHostCommand, HOST_COMMAND_ROUTERS };
+module.exports = {
+  dispatchCapabilityCommand,
+  dispatchOverlayCapabilityCommand,
+  defaultRequireFromInstallRoot,
+  dispatchHostCommand,
+  HOST_COMMAND_ROUTERS,
+  TOP_LEVEL_USAGE,
+  skipsRootResolution,
+};
 

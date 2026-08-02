@@ -252,6 +252,17 @@ USE_WORKTREES=$(node -e '
 branch=$(git branch --show-current)
 test -n "$branch" || { echo "Detached HEAD is not supported for review-fix (#2686)"; exit 1; }
 
+# #2647 defense-in-depth: padded_phase is interpolated into a worktree PATH
+# and a git BRANCH NAME below. The orchestrator (code-review-fix.md) already
+# validates it as ^[0-9]+(\.[0-9]+)?$, but this agent prompt is a literal bash
+# contract any caller can spawn — validate at the SINK too, so a future caller
+# that forgets cannot turn ${padded_phase} into a path-traversal or branch-name
+# injection. Reject anything that is not digits + an optional single dotted
+# numeric suffix (e.g. '02' or '36.14'); reject '../', spaces, shell metachars.
+if ! [[ "$padded_phase" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+  echo "Invalid padded_phase for review-fix: '$padded_phase' (expected e.g. '02' or '36.14')"; exit 1
+fi
+
 # Recovery-sentinel handling (#2839):
 # Path is ${phase_dir}/.review-fix-recovery-pending.json. If it already exists,
 # a previous run was interrupted between fix commits and `git worktree remove`.
@@ -303,7 +314,20 @@ if [ "$USE_WORKTREES" = "false" ]; then
   reviewfix_branch="$branch"
   echo "workflow.use_worktrees=false — editing/committing in the main checkout (no worktree)."
 else
-  wt=$(mktemp -d "/tmp/sv-${padded_phase}-reviewfix-XXXXXX")
+  # #2647: create the worktree INSIDE the repo under the same `.claude/worktrees/`
+  # dir the harness-managed executor worktrees already use. An absolute `/tmp`
+  # path landed outside the project tree (outside the agent session's permission
+  # allowlist → every Read inside prompted; on Windows/Git Bash mktemp also
+  # produced an un-removable short `C:/mvwtNN` path to dodge MAX_PATH). A
+  # repo-relative path inherits the repository's existing permission scope, is
+  # valid and short on Windows as well as POSIX, and is covered by the single
+  # `.gitignore` rule for `.claude/` (`.gitignore:12`). Uniqueness across
+  # concurrent runs for the same phase comes from the PID (`$$`) + epoch suffix
+  # (replacing mktemp's XXXXXX). `$main_repo` is resolved the same way the
+  # cleanup tail below resolves it (`git worktree list --porcelain` first line).
+  main_repo="$(git worktree list --porcelain | awk '/^worktree / { sub(/^worktree /, ""); print; exit }')"
+  wt="$main_repo/.claude/worktrees/rf-${padded_phase}-$$-$(date +%s)"
+  mkdir -p "$wt"
 
   # Create a temp branch from the current branch tip so the worktree
   # attaches to that NEW branch rather than the user's currently-checked-out
@@ -338,7 +362,7 @@ Concrete steps:
 1. Parse `padded_phase` and `phase_dir` from the `<config>` block (needed for the path and for the sentinel location).
 2. Resolve the current branch: `branch=$(git branch --show-current)`. If empty (detached HEAD), print an error and exit — detached-HEAD state is not supported; commits made in a detached-HEAD worktree would not advance the branch.
 3. **Recovery check (#2839, #2990):** If `${phase_dir}/.review-fix-recovery-pending.json` already exists, a prior run was interrupted. Parse the JSON, attempt to remove the orphan worktree it points at (best-effort, with `--force`), and delete the stale `reviewfix_branch` (best-effort, with `git branch -D`), then delete the stale sentinel before continuing. This makes a re-run of `/gsd:code-review --fix` self-healing.
-4. Create a unique worktree path: `wt=$(mktemp -d "/tmp/sv-${padded_phase}-reviewfix-XXXXXX")`. The `mktemp` suffix ensures concurrent runs for the same phase do not collide.
+4. Create a unique worktree path **inside the repo**: `main_repo="$(git worktree list --porcelain | awk '/^worktree / { sub(/^worktree /, ""); print; exit }')"` then `wt="$main_repo/.claude/worktrees/rf-${padded_phase}-$$-$(date +%s)"` + `mkdir -p "$wt"`. The path lives under the same `.claude/worktrees/` dir the harness-managed executor worktrees use (already gitignored via `.claude/`, already in the session's permission scope), and the `$$`-PID + epoch suffix ensures concurrent runs for the same phase do not collide (#2647 — an absolute `/tmp` path landed outside the project tree and prompted on every read).
 5. Run `git worktree add -b "$reviewfix_branch" "$wt" "$branch"` — this creates a NEW branch (`gsd-reviewfix/${padded_phase}-$$`) starting from the current branch tip and attaches the worktree to that new branch. Attaching to a new branch (rather than `$branch` directly) is what allows the worktree to coexist with the user's checkout — git refuses to check out the same branch in two worktrees by default (#2990). Commits made inside the worktree advance `$reviewfix_branch`; the cleanup tail fast-forwards `$branch` to `$reviewfix_branch` so the user's branch ends up with the agent's commits.
 6. **Write the recovery sentinel** at `${phase_dir}/.review-fix-recovery-pending.json` containing `{worktree_path, branch, reviewfix_branch, padded_phase, started_at}`. Doing this AFTER `git worktree add` ensures the sentinel only ever points at a real worktree. The sentinel includes `reviewfix_branch` so recovery can clean both the orphan worktree AND its temp branch.
 7. All subsequent file reads, edits, and commits happen inside `$wt` (which is on `$reviewfix_branch`, not `$branch`).
@@ -636,7 +660,7 @@ _Iteration: {N}_
 
 <critical_rules>
 
-**ALWAYS run inside the isolated worktree** — set up via `branch=$(git branch --show-current)` + `wt=$(mktemp -d "/tmp/sv-${padded_phase}-reviewfix-XXXXXX")` + `git worktree add -b "$reviewfix_branch" "$wt" "$branch"` at the very start (see `setup_worktree` step). Using `mktemp` ensures concurrent runs do not collide. Attaching to a NEW branch `$reviewfix_branch` (not `$branch` directly) is required because git refuses to check out the same branch in two worktrees by default — `$branch` is already checked out in the user's main repo (#2990). Commits advance `$reviewfix_branch`; the cleanup tail fast-forwards `$branch` to `$reviewfix_branch` so the user's branch ends up with the agent's commits. Every file read, edit, and commit must happen inside `$wt`. Run the four-step cleanup tail when done (treat it as a finally block) — but only when a worktree was actually created; when `workflow.use_worktrees` is `false` the cleanup early-exits (no worktree to remove). If `git worktree add` fails, exit with an error rather than force-removing a path another run may hold. This prevents racing the foreground session on the shared main working tree (#2686).
+**ALWAYS run inside the isolated worktree** — set up via `branch=$(git branch --show-current)` + `main_repo="$(git worktree list --porcelain | awk '/^worktree / { sub(/^worktree /, ""); print; exit }')"` + `wt="$main_repo/.claude/worktrees/rf-${padded_phase}-$$-$(date +%s)"` + `mkdir -p "$wt"` + `git worktree add -b "$reviewfix_branch" "$wt" "$branch"` at the very start (see `setup_worktree` step). The worktree path is repo-relative under `.claude/worktrees/` (the same dir the harness-managed executor worktrees use — gitignored via `.claude/`, inside the session's permission scope); the `$$`-PID + epoch suffix ensures concurrent runs do not collide (#2647 — a hardcoded `/tmp` path landed outside the project tree and prompted on every read). Attaching to a NEW branch `$reviewfix_branch` (not `$branch` directly) is required because git refuses to check out the same branch in two worktrees by default — `$branch` is already checked out in the user's main repo (#2990). Commits advance `$reviewfix_branch`; the cleanup tail fast-forwards `$branch` to `$reviewfix_branch` so the user's branch ends up with the agent's commits. Every file read, edit, and commit must happen inside `$wt`. Run the four-step cleanup tail when done (treat it as a finally block) — but only when a worktree was actually created; when `workflow.use_worktrees` is `false` the cleanup early-exits (no worktree to remove). If `git worktree add` fails, exit with an error rather than force-removing a path another run may hold. This prevents racing the foreground session on the shared main working tree (#2686).
 
 **#2825 — honor `workflow.use_worktrees`.** Before creating a worktree, read the
 `workflow.use_worktrees` config flag (the documented opt-out — same key the four sibling writer

@@ -14,6 +14,22 @@ const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
+const MODEL_PROFILES = require('../gsd-core/bin/lib/model-profiles.cjs').MODEL_PROFILES;
+const EXPECTED_AGENTS = Object.keys(MODEL_PROFILES);
+
+function createCompleteCodexAgents(projectRoot) {
+  const agentsDir = path.join(projectRoot, '.codex', 'agents');
+  const files = {};
+  fs.mkdirSync(agentsDir, { recursive: true });
+  for (const name of EXPECTED_AGENTS) {
+    fs.writeFileSync(path.join(agentsDir, `${name}.md`), `# ${name}\n`);
+    fs.writeFileSync(path.join(agentsDir, `${name}.toml`), `name = "${name}"\n`);
+    files[`agents/${name}.md`] = {};
+    files[`agents/${name}.toml`] = {};
+  }
+  fs.writeFileSync(path.join(projectRoot, '.codex', 'gsd-file-manifest.json'), JSON.stringify({ files }));
+}
+
 // ─── JSON output shape ────────────────────────────────────────────────────────
 
 describe('docs-init command', () => {
@@ -88,6 +104,49 @@ describe('docs-init command', () => {
     assert.strictEqual(data.doc_tooling.vitepress, false);
     assert.strictEqual(data.doc_tooling.mkdocs, false);
     assert.strictEqual(data.doc_tooling.storybook, false);
+  });
+});
+
+describe('docs-init Codex project-local agent status', () => {
+  let tmpDir;
+  let globalHome;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+    globalHome = path.join(tmpDir, 'global-codex');
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'config.json'), JSON.stringify({ runtime: 'codex' }));
+    fs.mkdirSync(path.join(globalHome, 'agents'), { recursive: true });
+    for (const name of EXPECTED_AGENTS) {
+      fs.writeFileSync(path.join(globalHome, 'agents', `${name}.md`), `# global-${name}\n`);
+    }
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('reports a complete local Codex installation instead of a global fixture', () => {
+    createCompleteCodexAgents(tmpDir);
+
+    const result = runGsdTools('docs-init --raw', tmpDir, { CODEX_HOME: globalHome });
+    assert.ok(result.success, `docs-init failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.project_root, fs.realpathSync(tmpDir));
+    assert.strictEqual(output.agents_installed, true);
+    assert.deepStrictEqual(output.missing_agents, []);
+  });
+
+  test('reports an empty local Codex directory as unhealthy even with global agents', () => {
+    fs.mkdirSync(path.join(tmpDir, '.codex', 'agents'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, '.codex', 'gsd-file-manifest.json'), JSON.stringify({ files: {} }));
+
+    const result = runGsdTools('docs-init --raw', tmpDir, { CODEX_HOME: globalHome });
+    assert.ok(result.success, `docs-init failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+
+    assert.strictEqual(output.agents_installed, false);
+    assert.deepStrictEqual(output.missing_agents, EXPECTED_AGENTS);
   });
 });
 

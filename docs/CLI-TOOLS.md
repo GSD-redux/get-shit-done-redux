@@ -322,6 +322,47 @@ This command is strictly read-only — no config writes, no disk mutation.
 
 ---
 
+### `query context-predicates`
+
+```bash
+node gsd-tools.cjs query context-predicates --class <CLASS> | --prefix <dotted.prefix> | --contains <text>
+```
+
+Selector surface for the `CONTEXT.md` predicate fact-store (ADR-1671, #2928). Parses the repo-root `CONTEXT.md` **live** on every call via the compiled `context-predicates.cjs` — it never reads the committed `docs/CONTEXT-INDEX.json` (that artifact is a CI drift-guard byproduct, not a query source, so it can never go stale relative to the live predicates it answers about).
+
+**Selectors** (at least one required; when more than one is given they are ANDed together):
+
+| Flag | Type | Description |
+|---|---|---|
+| `--class <CLASS>` | string | Exact match on the predicate's class (the segment before the first `.`) |
+| `--prefix <dotted.prefix>` | string | Match predicate ids starting with this dotted prefix |
+| `--contains <text>` | string | Case-insensitive substring match against `id + ' ' + value` |
+
+Each flag also accepts the inline-assignment form (`--contains=<text>`), which is the escape
+hatch for a flag-shaped value the space-separated form cannot express — e.g.
+`--contains=--dry-run` to search for the literal substring `--dry-run`. The space-separated form
+(`--contains --dry-run`) always reads a following `--...` token as a missing value, by design.
+
+**Output JSON:**
+
+```json
+{
+  "matched": 2,
+  "predicates": [
+    { "id": "RULESET.EXAMPLE", "klass": "RULESET", "value": "…", "line": 42, "section": "Glossary" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `matched` | number | Count of predicates satisfying all given selectors |
+| `predicates` | array | Each entry is a live `Predicate` — `id`, `klass`, `value`, `line` (1-based source line), `section` (nearest enclosing heading) |
+
+This command is strictly read-only — no config writes, no disk mutation. See [ADR-1671](adr/1671-dynamic-context-management-platform.md) and [Architecture — CLI Tools](ARCHITECTURE.md#cli-tools-gsd-corebin).
+
+---
+
 ## Model Resolution
 
 ```bash
@@ -739,6 +780,7 @@ User-facing entry point: `/gsd-graphify` (see [Command Reference](COMMANDS.md#gs
 | Audit | `lib/audit.cjs` | Phase/milestone audit queue handlers; `audit-open` helper |
 | GSD2 Import | `lib/gsd2-import.cjs` | Reverse-migration importer from GSD-2 projects (backs `/gsd-import --from-gsd2`) |
 | Intel | `lib/intel.cjs` | Queryable codebase intelligence index (backs `/gsd-map-codebase --query`) |
+| Context Predicates | `lib/context-predicates.cjs` | `CONTEXT.md` predicate fact-store parser/selector (ADR-1671, #2928) — backs `query context-predicates` and `scripts/gen-context-index.cjs`'s `docs/CONTEXT-INDEX.json` drift guard |
 | Capability State | `lib/capability-state.cjs` | Capability-state resolver — composes install profile, surface, and config into per-capability `enabled`/`active` view |
 | Capability Writer | `lib/capability-writer.cjs` | Capability-state writer (ADR-1213) — write-side inverse; projects `--on`/`--off`/`--gate` onto surface + config substrates then re-resolves |
 | Worktree Base Ref | `lib/worktree-base-ref.cjs` | Worktree fork-base detection and `worktree base-check` / `set-baseref` commands (#683) |

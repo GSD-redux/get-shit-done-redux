@@ -1855,7 +1855,7 @@ function cmdValidateHealth(
   }
 
   try {
-    const agentStatus = checkAgentsInstalled();
+    const agentStatus = checkAgentsInstalled(_slashRuntime, cwd);
     if (!agentStatus.agents_installed) {
       if ((agentStatus.installed_agents).length === 0) {
         addIssue(
@@ -2396,7 +2396,7 @@ function cmdValidateHealth(
 }
 
 function cmdValidateAgents(cwd: string, raw: boolean): void {
-  const agentStatus = checkAgentsInstalled();
+  const agentStatus = checkAgentsInstalled(resolveRuntime(cwd), cwd);
   const expected = Object.keys(MODEL_PROFILES);
 
   output(

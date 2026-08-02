@@ -95,7 +95,61 @@ function pathExistsInternal(cwd: string, targetPath: string): boolean {
 
 function generateSlugInternal(text: string | null | undefined): string | null {
   if (!text) return null;
-  return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').substring(0, 60);
+  // #2849: strip leading/trailing hyphens AFTER truncation, not only before.
+  // .substring(0, 60) can land on a separator, re-introducing a trailing hyphen
+  // the strip step exists to prevent. Truncation cannot add a leading hyphen, so
+  // running the full ^-+|-+$ pass last is equivalent for leading hyphens and
+  // fixes the trailing-hyphen-after-truncation case.
+  return transliterateForSlug(text).replace(/[^a-z0-9]+/g, '-').substring(0, 60).replace(/^-+|-+$/g, '');
+}
+
+// ─── Transliteration (#2848) ─────────────────────────────────────────────────
+//
+// Non-Latin titles used to reduce to an empty slug: the `[^a-z0-9]+` strip
+// removed every character of an all-Cyrillic title and the hyphen cleanup left
+// "". Callers then created unnamed phase directories (`01-`) and empty
+// `milestone_slug` init JSON. The fix transliterates Cyrillic to ASCII BEFORE
+// the existing ASCII filter, so a non-Latin title yields a usable ASCII slug
+// while Latin-script text (which hits zero map entries) is byte-for-byte
+// unchanged — the negative control is satisfied by construction.
+//
+// Multi-letter mappings (ж→zh, ч→ch, ш→sh, щ→sch, ю→yu, я→ya) are applied as a
+// single pass; soft/hard signs (ъ, ь) drop to nothing rather than a hyphen.
+// Scope is Cyrillic (Russian + the reported Ukrainian/Belarusian extras
+// і ї є ґ ў) per the issue's confirmed-working patch. CJK and other
+// non-transliterated scripts keep the existing strip-to-ASCII behavior.
+const CYRILLIC_TRANSLITERATION: Readonly<Record<string, string>> = {
+  // multi-letter first (longest-match-safe within a single pass via ordered keys)
+  а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh',
+  з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o',
+  п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts',
+  ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu',
+  я: 'ya',
+  // Ukrainian / Belarusian extras reported in #2848
+  є: 'ye', і: 'i', ї: 'yi', ґ: 'g', ў: 'u',
+};
+
+const CYRILLIC_TRANSLITERATION_KEYS = Object.keys(CYRILLIC_TRANSLITERATION);
+
+/**
+ * Lowercase + transliterate Cyrillic characters to ASCII. The output still
+ * contains non-ASCII for scripts outside the map (CJK, etc.) — the caller's
+ * existing `[^a-z0-9]+` filter handles those. Latin-script input is returned
+ * lowercased with no other change.
+ *
+ * Shared by `generateSlugInternal` (core-utils) and `slugify` (gsd2-import) so
+ * the transliteration step is not duplicated across the two slug helpers (#2848
+ * explicitly requires both be fixed).
+ */
+function transliterateForSlug(text: string): string {
+  const lowered = text.toLowerCase();
+  let out = '';
+  for (const ch of lowered) {
+    out += CYRILLIC_TRANSLITERATION_KEYS.includes(ch)
+      ? CYRILLIC_TRANSLITERATION[ch]
+      : ch;
+  }
+  return out;
 }
 
 // ─── Phase file helpers ──────────────────────────────────────────────────────
@@ -228,18 +282,46 @@ function countMatchedSummaries(planFiles: string[], summaryFiles: string[]): num
   const summarySet = new Set(summaryFiles);
   let matched = 0;
   for (const plan of planFiles) {
-    const slashIdx = plan.lastIndexOf('/');
-    const dir = slashIdx >= 0 ? plan.slice(0, slashIdx + 1) : '';
-    const base = (dir ? plan.slice(dir.length) : plan).replace(/\.md$/i, '');
-    const candidates: string[] = [
-      dir + base.replace(/PLAN/i, 'SUMMARY') + '.md',
-      dir + base + '-SUMMARY.md',
-    ];
-    const extended = base.match(/^(\d+)-PLAN-(\d+)/i);
-    if (extended) candidates.push(dir + extended[1] + '-' + extended[2] + '-SUMMARY.md');
-    if (candidates.some((c) => summarySet.has(c))) matched++;
+    if (summaryCandidates(plan).some((c) => summarySet.has(c))) matched++;
   }
   return matched;
+}
+
+/**
+ * The candidate `*-SUMMARY.md` filenames a single plan's completion record
+ * could take, per the three naming conventions documented above
+ * `countMatchedSummaries`. Extracted so `findUnsummarizedPlans` can reuse the
+ * exact same matching rule without duplicating it (a divergence between the
+ * count and the list would let a plan be counted as matched while still
+ * appearing in the unsummarized set, or vice versa).
+ */
+function summaryCandidates(plan: string): string[] {
+  const slashIdx = plan.lastIndexOf('/');
+  const dir = slashIdx >= 0 ? plan.slice(0, slashIdx + 1) : '';
+  const base = (dir ? plan.slice(dir.length) : plan).replace(/\.md$/i, '');
+  const candidates: string[] = [
+    dir + base.replace(/PLAN/i, 'SUMMARY') + '.md',
+    dir + base + '-SUMMARY.md',
+  ];
+  const extended = base.match(/^(\d+)-PLAN-(\d+)/i);
+  if (extended) candidates.push(dir + extended[1] + '-' + extended[2] + '-SUMMARY.md');
+  return candidates;
+}
+
+/**
+ * #2648: the plan files in `planFiles` that have NO matching completion record
+ * in `summaryFiles`, using the identical matching rule as `countMatchedSummaries`
+ * (so the count and the named list can never disagree). Callers that must NAME
+ * the missing plans — e.g. phase.complete's fail-closed coverage gate, which
+ * refuses completion when any non-retired plan lacks a SUMMARY — need the list,
+ * not just the count. `planFiles` is expected to be already superseded-filtered
+ * (the caller passes `scanPhasePlans(...).planFiles`, which drops
+ * `status: superseded` plans), so a deliberately-retired plan never appears
+ * here and never blocks completion.
+ */
+function findUnsummarizedPlans(planFiles: string[], summaryFiles: string[]): string[] {
+  const summarySet = new Set(summaryFiles);
+  return planFiles.filter((plan) => !summaryCandidates(plan).some((c) => summarySet.has(c)));
 }
 
 export = {
@@ -248,6 +330,7 @@ export = {
   extractOneLinerFromBody,
   pathExistsInternal,
   generateSlugInternal,
+  transliterateForSlug,
   filterPlanFiles,
   filterSummaryFiles,
   getPhaseFileStats,
@@ -255,4 +338,5 @@ export = {
   timeAgo,
   extractCanonicalPlanId,
   countMatchedSummaries,
+  findUnsummarizedPlans,
 };
