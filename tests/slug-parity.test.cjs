@@ -246,6 +246,21 @@ describe('slug truncation is a single point', () => {
 
 // ─── 4. Structural anti-reintroduction scan ──────────────────────────────────
 
+// This file reads src/*.cts as raw text on purpose: a dead re-implementation
+// of the slug filter is invisible to a behavioral test (nothing ever calls
+// it), so the only way to catch it is to read the source itself.
+//
+// allow-test-rule: structural anti-reintroduction scan for the slug filter, see #2986
+//
+// Honest scope of that scan, stated so nobody over-trusts it: it catches a
+// literal copy-paste of the character class and a reordering of its internal
+// parts (`[^0-9a-z]` vs. `[^a-z0-9]`). It does NOT catch a rewrite using a
+// positive class (`[a-z0-9]` inverted via `.replace` logic instead of `[^…]`),
+// a class assembled from string parts at runtime, or a transliteration table
+// rewritten without any character class at all. Those cases are the
+// behavioral net's job — the property-parity section above (#2986) — not
+// this one's.
+
 /**
  * Sites that use the same character class for a different job, and are
  * therefore NOT slug generation. Each entry is `<path>` + the exact source line
@@ -282,7 +297,13 @@ const NON_SLUG_ALLOWLIST = [
 ];
 
 const CANONICAL_MODULE = 'src/core-utils.cts';
-const FILTER_CLASS = /\[\^a-z/i;
+// Order-insensitive on purpose: the maintainer flagged that a copy which
+// permutes the class's internal ordering (`[^0-9a-z]` instead of `[^a-z0-9]`)
+// slipped past a literal `/\[\^a-z/` match. Matching on EITHER part being
+// present inside a negated class — regardless of what precedes it — closes
+// that gap without widening the allowlist (see the "18 vs 17" measurement
+// in the plan check for this task).
+const FILTER_CLASS = /\[\^[^\]]*(?:a-z|0-9)/i;
 const SRC_DIR = path.join(__dirname, '..', 'src');
 
 /** Executable lines only: comments mention the class legitimately. */
@@ -348,6 +369,101 @@ describe('slug generation is not re-implemented anywhere', () => {
       if (!lines.includes(line)) missing.push(`${file}: ${line}`);
     }
     assert.deepStrictEqual(missing, [], 'allowlist entries no longer present in the source');
+  });
+});
+
+// ─── 4b. Guard against the specific #2908-review anti-pattern reappearing ────
+
+/**
+ * Section 4's scan looks for the slug FILTER CLASS re-implemented anywhere.
+ * This scan is narrower and looks for a different, specific shape: a call to
+ * the real `generateSlugInternal` immediately followed by `??` — the exact
+ * construction that let an empty string slip past the guard at all six sites
+ * fixed above. Matching against the WHOLE file text (not line-by-line) is the
+ * point: the original bug was invisible to line-anchored `grep` because the
+ * call and the `??` operator sat on different lines.
+ */
+const NULLISH_SLUG_GUARD_PATTERN = /generateSlugInternal\((?:[^()]|\([^()]*\))*\)\s*\?\?/g;
+
+function scanTextForNullishSlugGuard(label, text) {
+  const offenders = [];
+  let m;
+  while ((m = NULLISH_SLUG_GUARD_PATTERN.exec(text)) !== null) {
+    const line = text.slice(0, m.index).split('\n').length;
+    offenders.push(`${label}:${line}`);
+  }
+  return offenders;
+}
+
+/** Files that legitimately call generateSlugInternal (canon excluded — it defines it). */
+const SLUG_GENERATOR_CALLER_FILES = [
+  'commands.cts', 'gsd2-import.cts', 'init.cts', 'phase-id.cts',
+  'phase-locator.cts', 'phase.cts', 'template.cts', 'workstream.cts',
+];
+
+describe('slug generation does not reintroduce the #2908 nullish-coalescing gap', () => {
+  test('the generator still has a name and at least one caller — otherwise the scan below is a vacuous zero', () => {
+    const canon = fs.readFileSync(path.join(SRC_DIR, 'core-utils.cts'), 'utf-8');
+    assert.ok(
+      /function generateSlugInternal\b|generateSlugInternal\s*[:=]/.test(canon),
+      'generateSlugInternal is no longer defined in the canonical module — renaming it would silently zero out the scan below',
+    );
+    const callers = SLUG_GENERATOR_CALLER_FILES.filter((name) => {
+      const p = path.join(SRC_DIR, name);
+      return fs.existsSync(p) && fs.readFileSync(p, 'utf-8').includes('generateSlugInternal');
+    });
+    assert.ok(
+      callers.length > 0,
+      'no listed caller file mentions generateSlugInternal anymore — the subject was lost, and a green zero below would be meaningless',
+    );
+  });
+
+  test('no src/*.cts file reintroduces "generateSlugInternal(...) ??", including a two-line split', () => {
+    const offenders = [];
+    for (const entry of fs.readdirSync(SRC_DIR)) {
+      if (!entry.endsWith('.cts')) continue;
+      const text = fs.readFileSync(path.join(SRC_DIR, entry), 'utf-8');
+      offenders.push(...scanTextForNullishSlugGuard(`src/${entry}`, text));
+    }
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `the nullish-coalescing guard was reintroduced at: ${offenders.join(', ')}`,
+    );
+  });
+
+  test('the scan catches a two-line reintroduction that a line-anchored grep would miss', () => {
+    const planted = [
+      'function cmdProbe(name) {',
+      '  const slug = generateSlugInternal(name)',
+      '    ?? error(`probe has no slug-safe characters: ${JSON.stringify(name)}`);',
+      '  return slug;',
+      '}',
+    ].join('\n');
+
+    const structural = scanTextForNullishSlugGuard('planted-probe.cts', planted);
+    assert.strictEqual(
+      structural.length,
+      1,
+      'the whole-file scan must catch a construction split across two lines',
+    );
+    assert.strictEqual(
+      structural[0],
+      'planted-probe.cts:2',
+      'offender must name the file and the line the call starts on',
+    );
+
+    // The same probe reproduces the #2908 review trap: a plain, line-anchored
+    // grep for `") ?? error("` sees neither line (the call ends without `??`
+    // on line 2; `??` opens line 3 without the call on it), so it reports
+    // zero — a false-clean result on a file that structural scanning above
+    // correctly flags.
+    const lineAnchoredHits = planted.split('\n').filter((line) => /"\)\s*\?\?\s*error\(/.test(line));
+    assert.deepStrictEqual(
+      lineAnchoredHits,
+      [],
+      'the planted probe must be invisible to a single-line grep, or it does not reproduce the review trap',
+    );
   });
 });
 
