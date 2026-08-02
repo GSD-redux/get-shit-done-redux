@@ -245,8 +245,11 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // present — exactly the false-pass this check closes. The contract is read
   // from the sibling installed .md (<codex_agent_role> header or frontmatter).
   // Agents without a .toml, without a sandbox_mode key (sandboxTier "none"),
-  // or without a readable contract are skipped, keeping the check a no-op for
-  // runtimes that do not emit TOML sandboxes.
+  // or without a readable contract are skipped — and the whole check is gated
+  // to the codex runtime (#2566 review), because `sandbox_mode` is Codex's
+  // vocabulary: only the Codex installer emits it, so on any other runtime a
+  // `sandbox_mode`-bearing .toml is not GSD's artifact and its semantics are
+  // not ours to judge.
   //
   // The inverse direction — workspace-write on a contract declaring no write
   // tool — is checked symmetrically (#2540 direction 3, review round 4). It
@@ -264,7 +267,8 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
   // clean. Nothing else re-derives the live TOML's privilege against the
   // current contract in that direction.
   const sandboxViolations: SandboxViolation[] = [];
-  for (const agent of expectedAgents) {
+  const sandboxCheckAgents = resolvedRuntime === 'codex' ? expectedAgents : [];
+  for (const agent of sandboxCheckAgents) {
     const tomlPath = path.join(agentsDir, `${agent}.toml`);
     if (!fs.existsSync(tomlPath)) continue;
     let toml: string;
@@ -280,8 +284,9 @@ function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsIns
       // A Codex install always writes the .md beside the .toml, so a missing
       // contract source there is an incomplete install, not a silent skip —
       // otherwise this semantic check goes vacuous exactly where it matters
-      // (#2540). Other runtimes may legitimately ship .toml-only layouts.
-      if (resolvedRuntime === 'codex' && !incomplete.includes(agent)) {
+      // (#2540). Other runtimes may legitimately ship .toml-only layouts, but
+      // they never reach here: the whole loop is codex-gated above.
+      if (!incomplete.includes(agent)) {
         incomplete.push(agent);
       }
       continue;

@@ -481,6 +481,19 @@ describe('#2540 regression: sandbox_mode weaker than declared tool contract is r
     assert.strictEqual(result.agents_installed, false, 'semantic violation fails the install check');
   });
 
+  test('#2566 review: the semantic check is codex-scoped — the same violating pair on another runtime does not misfire', () => {
+    // `sandbox_mode` is Codex's vocabulary; only the Codex installer emits it.
+    // A sandbox_mode-bearing TOML seen under a different runtime is not GSD's
+    // artifact, so the identical fixture that IS a violation on codex must
+    // produce silence — not a violation, not a failed install — elsewhere.
+    fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit, Bash'));
+    fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+
+    const result = agentInstallCheck.checkAgentsInstalled('opencode');
+    assert.deepStrictEqual(result.sandbox_violations, [], 'non-codex runtime must not run the codex sandbox check');
+    assert.strictEqual(result.agents_installed, true);
+  });
+
   test('workspace-write TOML for a Write-tool role is clean', () => {
     fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit, Bash'));
     fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('workspace-write'));

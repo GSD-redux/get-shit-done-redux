@@ -727,7 +727,12 @@ describe('#2540 regression: validate agents --raw exposes sandbox_violations', (
       `name = "${target}"\ndescription = "Test agent"\nsandbox_mode = "read-only"\n`
     );
 
-    const result = runGsdTools('validate agents --raw', tmpDir, { GSD_AGENTS_DIR: agentsDir });
+    const result = runGsdTools('validate agents --raw', tmpDir, {
+      GSD_AGENTS_DIR: agentsDir,
+      // The semantic check is codex-scoped (#2566 review) — the fixture pair
+      // above is Codex's artifact shape, so the runtime must say so.
+      GSD_RUNTIME: 'codex',
+    });
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);
