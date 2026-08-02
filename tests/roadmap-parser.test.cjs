@@ -32,6 +32,7 @@ const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
   getMilestonePhaseFilter,
+  isMilestoneShippedInRoadmap,
   withPhaseSection,
 } = roadmapParser;
 
@@ -479,6 +480,38 @@ describe('roadmap-parser: getMilestoneInfo #2135 — milestone_name clobber', ()
   });
 });
 
+// ─── isMilestoneShippedInRoadmap ──────────────────────────────────────────────
+
+// #2562: this module owns milestone-heading classification, so its own shipped
+// detection is unit-tested here rather than only through the workstream
+// inventory that consumes it.
+describe('roadmap-parser: isMilestoneShippedInRoadmap', () => {
+  test('a shipped marker on the milestone heading counts', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## v2.0 Launch — ✅ SHIPPED\n', 'v2.0'), true);
+  });
+
+  test('a collapsed <summary> shipped marker counts', () => {
+    const roadmap = '<details><summary>✅ v2.0 Launch — SHIPPED</summary>\n\ncontent\n</details>\n';
+    assert.strictEqual(isMilestoneShippedInRoadmap(roadmap, 'v2.0'), true);
+  });
+
+  test('a bullet merely naming the version does NOT count', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('- ✅ v2.0 Launch — SHIPPED\n', 'v2.0'), false);
+  });
+
+  test('version tokens are boundary-matched (v2.0.1 is not v2.0)', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## v2.0.1 Patch — ✅ SHIPPED\n', 'v2.0'), false);
+  });
+
+  test('an in-progress marker on the heading beats a shipped one', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## 🚧 v2.0 Launch — ✅ SHIPPED\n', 'v2.0'), false);
+  });
+
+  test('another milestone being shipped says nothing about this one', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## v1.0 Old — ✅ SHIPPED\n', 'v2.0'), false);
+  });
+});
+
 // ─── getMilestonePhaseFilter ──────────────────────────────────────────────────
 
 describe('roadmap-parser: getMilestonePhaseFilter', () => {
@@ -491,6 +524,46 @@ describe('roadmap-parser: getMilestonePhaseFilter', () => {
     const filter = getMilestonePhaseFilter(tmpDir);
     assert.strictEqual(filter.phaseCount, 0);
     assert.strictEqual(filter('anything'), true);
+  });
+
+  // #2562 added a trailing optional `ws` param. Every pre-existing call site in
+  // the codebase passes 1–3 args, so what has to hold is that omitting the 4th
+  // is INDISTINGUISHABLE from the prior resolution — including its
+  // `GSD_WORKSTREAM` env fallback. Characterises the legacy call surface
+  // directly; it does not stand in for coverage of the individual callers.
+  test('#2562: omitting the ws param preserves the prior path resolution exactly', () => {
+    const ROADMAP = ['## v1.0: Launch', '### Phase 1: Setup', '**Goal:** setup'].join('\n');
+    writeRoadmap(tmpDir, ROADMAP);
+
+    const omitted = getMilestonePhaseFilter(tmpDir);
+    const explicitUndefined = getMilestonePhaseFilter(tmpDir, undefined, undefined, undefined);
+    const explicitNull = getMilestonePhaseFilter(tmpDir, null, null, null);
+
+    for (const [label, filter] of [['omitted', omitted], ['undefined', explicitUndefined], ['null', explicitNull]]) {
+      assert.strictEqual(filter.phaseCount, 1, `${label}: same phase count`);
+      assert.strictEqual(filter('01-setup'), true, `${label}: same membership`);
+      assert.strictEqual(filter('02-other'), false, `${label}: same exclusion`);
+      assert.strictEqual(typeof filter.versionScoped, 'boolean', `${label}: new flag is present, not undefined`);
+    }
+  });
+
+  test('#2562: the GSD_WORKSTREAM env fallback still resolves when ws is omitted', () => {
+    const wsRoadmap = ['## v1.0: WS', '### Phase 7: Only', '**Goal:** only'].join('\n');
+    const wsDir = path.join(tmpDir, '.planning', 'workstreams', 'alpha');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), wsRoadmap);
+    writeRoadmap(tmpDir, ['## v1.0: Root', '### Phase 1: Setup', '**Goal:** setup'].join('\n'));
+
+    const previous = process.env.GSD_WORKSTREAM;
+    process.env.GSD_WORKSTREAM = 'alpha';
+    try {
+      const filter = getMilestonePhaseFilter(tmpDir);
+      assert.strictEqual(filter('07-only'), true, 'env fallback must still reach the workstream roadmap');
+      assert.strictEqual(filter('01-setup'), false, 'and must not read the root roadmap');
+    } finally {
+      if (previous === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = previous;
+    }
   });
 
   test('basic milestone phase filter — matches dirs by phase number', () => {
