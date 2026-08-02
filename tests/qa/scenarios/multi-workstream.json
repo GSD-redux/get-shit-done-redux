@@ -1,0 +1,72 @@
+{
+  "name": "multi-workstream",
+  "fixture": "greenfield",
+  "notes": "The point of this scenario is workstream isolation: create two workstreams, populate only one, and prove progress stays isolated per-`--ws` in both directions (populated vs empty, and switching back and forth). No payload field names the active workstream, so monotonic-progress's oracle derives scope from the invocation's own `--ws <name>` argv token — a workstream switch is a scope change, so an apparent counter reset when switching to an untouched workstream is a SMELL, never a VIOLATION. Do not trim/reorder these steps to dodge the oracle — the isolation crossing IS the scenario.",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "plan:pre",
+      "run": [
+        ["workstream", "create", "alpha"],
+        ["workstream", "create", "beta"]
+      ]
+    },
+    {
+      "at": "plan:post",
+      "run": [["--ws", "beta", "progress"]],
+      "expect": [
+        { "path": "total_plans", "is": 0 }
+      ]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/workstreams/alpha/ROADMAP.md": "@roadmap/three-phase",
+          ".planning/workstreams/alpha/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer"
+        }
+      },
+      "run": [["--ws", "alpha", "progress"]],
+      "expect": [
+        { "path": "total_plans", "is": 1 }
+      ]
+    },
+    {
+      "at": "plan:post",
+      "run": [["--ws", "beta", "progress"]],
+      "expect": [
+        { "path": "total_plans", "is": 0 }
+      ]
+    },
+    {
+      "at": "execute:post",
+      "agent": {
+        "write": {
+          ".planning/workstreams/alpha/phases/01-parser/01-01-SUMMARY.md": "@summary/tokenizer-complete"
+        }
+      },
+      "run": [["--ws", "alpha", "progress"]],
+      "expect": [
+        { "path": "total_plans", "is": 1 },
+        { "path": "total_summaries", "is": 1 },
+        { "path": "percent", "is": 100 }
+      ]
+    },
+    {
+      "at": "execute:post",
+      "run": [["progress"]],
+      "expect": [
+        { "path": "total_plans", "is": 0 }
+      ]
+    }
+  ]
+}

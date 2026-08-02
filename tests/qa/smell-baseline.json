@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "smells": [
+    {
+      "key": "0cad2954807d::soft-error-exit-zero|greenfield-happy-path|state-snapshot|(subject-with-no-stable-discriminator)",
+      "id": "soft-error-exit-zero",
+      "scenario": "greenfield-happy-path",
+      "issue": 2980,
+      "reason": "state-snapshot uses the documented soft-failure idiom (output({error:...}) while exiting 0) when STATE.md does not exist yet on a greenfield project. 42 call sites across the engine use this idiom; oracles.cjs rates changing it CRITICAL blast radius — tracked as a known trade-off in #2980."
+    },
+    {
+      "key": "373270350622::soft-error-exit-zero|perturbation-delete-artifact|roadmap get-phase 1|(subject-with-no-stable-discriminator)",
+      "id": "soft-error-exit-zero",
+      "scenario": "perturbation-delete-artifact",
+      "issue": 2980,
+      "reason": "`roadmap get-phase 1` reports ROADMAP.md not found via the same output({error:...})-exit-0 soft-failure idiom after the perturbation deletes the artifact — same known trade-off as the state-snapshot occurrences above, tracked in #2980."
+    },
+    {
+      "key": "383aca0b3b13::soft-error-exit-zero|perturbation-unicode-headings|roadmap get-phase 1|(subject-with-no-stable-discriminator)",
+      "id": "soft-error-exit-zero",
+      "scenario": "perturbation-unicode-headings",
+      "issue": 2980,
+      "reason": "Same roadmap get-phase soft-failure idiom as perturbation-delete-artifact, fired here because the unicode-heading perturbation leaves the phase unresolvable — tracked in #2980."
+    },
+    {
+      "key": "8ff1a5363a3f::untyped-success|greenfield-happy-path|smart-entry|(subject-with-no-stable-discriminator)",
+      "id": "untyped-success",
+      "scenario": "greenfield-happy-path",
+      "issue": 2979,
+      "reason": "smart-entry emits KIND.PROSE unconditionally, with no typed JSON surface for the harness to assert on — a real product gap tracked in #2979, not a QA-harness defect."
+    },
+    {
+      "key": "92b6b4718571::soft-error-exit-zero|out-of-order|state-snapshot|(subject-with-no-stable-discriminator)",
+      "id": "soft-error-exit-zero",
+      "scenario": "out-of-order",
+      "issue": 2980,
+      "reason": "Same state-snapshot soft-failure idiom as greenfield-happy-path, fired here because the out-of-order walk reaches state-snapshot before STATE.md exists — tracked in #2980."
+    }
+  ]
+}

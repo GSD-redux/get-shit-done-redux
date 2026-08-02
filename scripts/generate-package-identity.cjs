@@ -7,8 +7,10 @@
  * `deriveIdentity(pkg)` is the pure core: it turns a parsed package.json into
  * the coordinate record every consumer needs. The generated runtime module
  * `gsd-core/bin/lib/package-identity.cjs` bakes those values at build
- * time, because the installed tree carries only a synthetic
- * `{"type":"commonjs"}` package.json (no `.name`) — so a runtime
+ * time, because the installed tree carries no package.json with a `.name` —
+ * the only ones GSD stages are synthetic `{"type":"commonjs"}` markers, which
+ * since #2544 live inside GSD's own directories (`hooks/`, and the native
+ * plugin dir) rather than at the config root — so a runtime
  * `require('package.json').name` resolves to `undefined` (the #378 bug this
  * seam retires). Baking from package.json reconciles #378 (renames survive)
  * with #2992 (the value is never an LLM runtime choice).

@@ -1034,6 +1034,7 @@ const JS_HOOKS = [
   { name: 'gsd-read-guard.js',        registrationAnchor: 'hasReadGuardHook' },
   { name: 'gsd-workflow-guard.js',    registrationAnchor: 'hasWorkflowGuardHook' },
   { name: 'gsd-worktree-path-guard.js', registrationAnchor: 'hasWorktreePathGuardHook' },
+  { name: 'gsd-write-guard.js',         registrationAnchor: 'hasWriteGuardHook' },
 ];
 
 describe('bug #1754: .js hook registration guards', () => {
@@ -2784,6 +2785,7 @@ const JS_HOOKS = [
   { name: 'gsd-read-guard.js',        registrationAnchor: 'hasReadGuardHook' },
   { name: 'gsd-workflow-guard.js',    registrationAnchor: 'hasWorkflowGuardHook' },
   { name: 'gsd-worktree-path-guard.js', registrationAnchor: 'hasWorktreePathGuardHook' },
+  { name: 'gsd-write-guard.js',         registrationAnchor: 'hasWriteGuardHook' },
 ];
 
 describe('bug #1754: .js hook registration guards', () => {

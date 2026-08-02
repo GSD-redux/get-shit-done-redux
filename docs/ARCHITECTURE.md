@@ -355,6 +355,32 @@ The `CONTEXT.md` predicate fact-store — every backtick-wrapped `CLASS.subkey=v
 
 The committed index intentionally carries **no `line` field** for any predicate (ADR-1671 open question 4, resolved by #2928) — committed-but-uncompared metadata goes silently stale, the same defect class the drift-guard exists to catch, with the alarm removed. The live `gsd-tools query context-predicates` parse still returns `line`/`section` for callers that want to cite a source location. See [ADR-1671](adr/1671-dynamic-context-management-platform.md) and [CLI Tools Reference](CLI-TOOLS.md#query-context-predicates).
 
+### Workflow Fragmentization and Emission (`src/workflow-fragments.cts`, ADR-1671)
+
+Workflow markdown under `gsd-core/workflows/*.md` can mark one or more sections with an
+in-file `<!-- gsd:section id="<id>" when="<when>" -->` / `<!-- /gsd:section -->` pair. A
+compiled parser/composer seam (generated to `gsd-core/bin/lib/workflow-fragments.cjs` per
+ADR-457) partitions a marked document into fragments and recomposes them through the shared
+`context-composer.cjs` budget seam (ADR-1671, #2929) before any per-runtime converter sees the
+text — so a marker attribute can never be corrupted by a `.claude/` → `.windsurf/`-style
+path-rewrite regex. `bin/install.js`'s `copyWithPathReplacement` calls `composeWorkflow` on
+every workflow file at emit time; an unmarked file (88 of the 89 shipped workflows today)
+parses to a single implicit fragment and round-trips byte-identical, so this is a no-op for
+every workflow that hasn't opted in yet.
+
+Every fragment in this phase carries the `verbatim` strategy, so composition is structurally
+non-lossy — nothing is trimmed regardless of budget. Fence and HTML-comment interleaving
+reuses the same LOCAL, single-pass, mutually-suppressing scan discipline as
+`context-predicates.cts` (see above), so a marker-shaped line inside a fenced code block or an
+unrelated comment is never misread as structural. Markers are **stripped at emit** — the
+installed artifact carries no build metadata and is smaller than the source by exactly the
+stripped marker bytes.
+
+See [Reference: Workflow fragments](reference/workflow-fragments.md) for the full marker
+grammar, the frozen `when=` vocabulary, and fail-closed authoring rules, and
+[ADR-1671](adr/1671-dynamic-context-management-platform.md) (open questions 1 and 2) for why
+in-file markers were chosen over separate fragment files or a sidecar manifest.
+
 ### CLI Tools (`gsd-core/bin/`)
 
 Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core/bin/lib/` (see [`docs/INVENTORY.md`](INVENTORY.md#cli-modules) for the authoritative roster):

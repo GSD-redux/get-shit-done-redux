@@ -1673,6 +1673,15 @@ test('shipped installer-migration checksums are locked to a committed baseline (
     // old path drops out of the manifest and uninstall can never remove it.
     '2026-07-20-pi-extension-cjs-to-js':
       'sha256:185fa926ae24d83cbdd95c31a9ad2cc8d123e176ad543669b3b0ed75e6ca6f4a',
+    // Migration 007 (NEW, added here per this test's own sanctioned "adding a new
+    // migration" case — not a shipped-body edit): retire the pre-#2544
+    // {"type":"commonjs"} marker at the runtime config root. #2544 moved that
+    // marker into the directories GSD fills, so without this an upgraded install
+    // keeps both and the config root stays pinned to CommonJS. Ownership is proven
+    // by exact content match rather than the manifest — the config-root marker was
+    // never manifest-recorded — so the action declares its own classification.
+    '2026-07-28-retire-config-root-commonjs-marker':
+      'sha256:8f2140cbe8f2dd8f7dfd52a0f6957c5edfe966c52d7e6e4d74ec7366930e0e1d',
   };
 
   const { DEFAULT_MIGRATIONS_DIR, migrationChecksum: computeChecksum } = require('../gsd-core/bin/lib/installer-migrations.cjs');

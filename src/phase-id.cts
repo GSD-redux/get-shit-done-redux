@@ -568,6 +568,69 @@ function phaseTokenMatches(dirName: string, normalized: string): boolean {
   return false;
 }
 
+// ─── Canonical phase KEY surface (#2562) ─────────────────────────────────────
+//
+// A phase "key" is the padding-, case- and project-code-insensitive identity of
+// a phase, for use as a Map/Set key when two independently-derived phase
+// references (a ROADMAP table cell and a phase directory name, say) must be
+// compared. Promoted here from a local pair in state.cts (#2445) so every
+// consumer derives BOTH sides of a comparison from the SAME function — deriving
+// one side with a bespoke regex is the #2562 defect class (a `01` table cell
+// never matching a `1-slug` directory, silently zeroing a rollup).
+
+/**
+ * Canonical key for an already-extracted phase TOKEN (`"5"`, `"05"`, `"005"`,
+ * `"12A"`, `"30.1"`, `"PROJ-05"`). Padding- and case-insensitive: every
+ * spelling of a number collapses to one key.
+ *
+ * Leading zeros are stripped per hyphen-separated segment BEFORE
+ * `normalizePhaseName` pads to the 2-digit convention. Padding alone is not a
+ * normalisation — `padStart(2)` is a no-op once the input is already ≥2
+ * characters, so `5` yielded `05` while `005` stayed `005` and the two never
+ * compared equal. The strip is deliberately confined to this key surface:
+ * `normalizePhaseName` itself is a RENDERING function whose verbatim treatment
+ * of wide IDs (`001.10`) is relied on by plan-ID capture and wave assignment.
+ * Arithmetic is avoided (`parseInt` would lose precision on a long digit run).
+ */
+function phaseKeyFromToken(token: unknown): string {
+  const stripped = String(token)
+    .split('-')
+    .map(segment => segment.replace(/^0+(?=\d)/, ''))
+    .join('-');
+  return normalizePhaseName(stripped).toUpperCase();
+}
+
+/**
+ * Canonical key for a phase DIRECTORY name (`"05-schedule-8"` → `"05"`,
+ * `"PROJ-5-x"` → `"05"`, `"30.1-follow-up"` → `"30.1"`).
+ */
+function phaseKeyFromDir(dirName: string): string {
+  return phaseKeyFromToken(extractPhaseToken(dirName));
+}
+
+/**
+ * Canonical key for a phase referenced in PROSE — a ROADMAP `## Progress` table
+ * cell (`"30. Schedule 8 rollout"`, `"**05.1 Follow-up**"`) or a STATE.md
+ * `Phase:` value. Markdown emphasis is stripped first so a bolded cell is not
+ * mistaken for a non-phase. Returns null when the value does not BEGIN with a
+ * phase token (`parsePhaseFromProse` anchoring, #2111).
+ */
+function phaseKeyFromProse(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const { phase } = parsePhaseFromProse(String(value).replace(/[*_`~]/g, ''));
+  return phase === null ? null : phaseKeyFromToken(phase);
+}
+
+/**
+ * The PARENT phase key of a sub-phase key (`"30.1"` → `"30"`), or null for a
+ * top-level phase. A sub-phase directory inserted mid-milestone frequently has
+ * no ROADMAP row of its own and inherits its parent's milestone (#2562).
+ */
+function parentPhaseKey(key: string): string | null {
+  const dot = key.indexOf('.');
+  return dot === -1 ? null : key.slice(0, dot);
+}
+
 // ─── #2121 canonical surface (ADR-2121) ──────────────────────────────────────
 
 /**
@@ -711,6 +774,10 @@ export = {
   comparePhaseNum,
   extractPhaseToken,
   phaseTokenMatches,
+  phaseKeyFromToken,
+  phaseKeyFromDir,
+  phaseKeyFromProse,
+  parentPhaseKey,
   parsePhaseFromProse,
   stripConfiguredProjectCodePrefix,
   isForeignPrefixedPhaseQuery,

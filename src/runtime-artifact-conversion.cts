@@ -30,11 +30,14 @@ import { posixNormalize } from './shell-command-projection.cjs';
 // `require('../../../package.json')`. That require ran at module load on every
 // gsd-tools invocation (this module sits in the gsd-tools loader chain) and
 // threw `Cannot find module '../../../package.json'` on runtimes whose root has
-// no package.json — notably Codex, where the installer omits the synthetic root
-// package.json — taking the entire CLI down before it did anything. And even
-// where it resolved (Claude's synthetic `{"type":"commonjs"}`), there is no
-// `version` field, so the single consumer below already emitted
-// `version: undefined`. Resolve lazily and defensively instead:
+// no package.json — originally just Codex, where the installer never wrote the
+// synthetic root package.json; since #2544 that is true of EVERY runtime, as
+// GSD's markers moved into `hooks/` and the native plugin dir and the config
+// root is no longer written at all — taking the entire CLI down before it did
+// anything. And even where it used to resolve (the synthetic
+// `{"type":"commonjs"}`), there is no `version` field, so the single consumer
+// below already emitted `version: undefined`. Resolve lazily and defensively
+// instead:
 //   1. Installed trees carry <root>/gsd-core/VERSION (written by the installer);
 //      this module lives at <root>/gsd-core/bin/lib, so VERSION is two dirs up.
 //   2. The source / npm-package tree has no gsd-core/VERSION but carries a real
@@ -932,8 +935,9 @@ function convertClaudeToCursorMarkdown(content) {
   // Remove Claude Code-specific bug workarounds before brand replacement
   converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
   converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  // Replace "Claude Code" brand references with "Cursor"
-  converted = converted.replace(/\bClaude Code\b/g, 'Cursor');
+  // Replace "Claude Code" brand references with "Cursor" — #2284(b): skips
+  // <runtime_compatibility> comparison-table content (protected region).
+  converted = applyClaudeCodeBrandSwap(converted, 'Cursor');
   return converted;
 }
 
@@ -1013,6 +1017,32 @@ function convertClaudeCommandToCursorCommand(content, _commandName) {
 // Windsurf uses a tool set similar to Cursor.
 // Config lives in .windsurf/ (local) and ~/.codeium/windsurf/ (global).
 
+// #2931: ported from bin/install.js's local Windsurf converter copy, which had
+// picked up the #2284(b) protected-region fix that this exported source never
+// received. Binding bin/install.js's Windsurf family to these exports (see
+// tests/install-runtime-artifacts.test.cjs reference-identity assertions)
+// without this would have silently regressed live installs: `Claude Code`
+// mentions inside a `<runtime_compatibility>` comparison table would start
+// getting brand-swapped again. Split `content` on the protected-block regex,
+// brand-swap only the gap text between (and around) matches, then rejoin
+// gap+block alternately — no placeholder/sentinel token involved.
+const RUNTIME_COMPATIBILITY_BLOCK_RE = /<runtime_compatibility>[\s\S]*?<\/runtime_compatibility>/g;
+function applyClaudeCodeBrandSwap(content, brandName) {
+  if (!brandName) return content;
+  let result = '';
+  let lastIndex = 0;
+  RUNTIME_COMPATIBILITY_BLOCK_RE.lastIndex = 0; // reset shared global-regex state before each use
+  let m;
+  while ((m = RUNTIME_COMPATIBILITY_BLOCK_RE.exec(content))) {
+    const gap = content.slice(lastIndex, m.index);
+    result += gap.replace(/\bClaude Code\b/g, brandName);
+    result += m[0]; // protected block, verbatim — never brand-swapped
+    lastIndex = m.index + m[0].length;
+  }
+  result += content.slice(lastIndex).replace(/\bClaude Code\b/g, brandName);
+  return result;
+}
+
 function convertSlashCommandsToWindsurfSkillMentions(content) {
   // Keep leading "/" for slash commands; only normalize gsd: -> gsd-.
   return content.replace(/gsd:/gi, 'gsd-');
@@ -1044,8 +1074,9 @@ function convertClaudeToWindsurfMarkdown(content) {
   // Remove Claude Code-specific bug workarounds before brand replacement
   converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
   converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  // Replace "Claude Code" brand references with "Windsurf"
-  converted = converted.replace(/\bClaude Code\b/g, 'Windsurf');
+  // Replace "Claude Code" brand references with "Windsurf" — #2284(b): skips
+  // <runtime_compatibility> comparison-table content (protected region).
+  converted = applyClaudeCodeBrandSwap(converted, 'Windsurf');
   return converted;
 }
 
@@ -1086,11 +1117,49 @@ function convertClaudeCommandToWindsurfSkill(content, skillName) {
     }
   }
   description = toSingleLine(description);
-  const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
+  // #2931: code-point-safe truncation (see truncateWindsurfWorkflowDescription
+  // below) — a raw UTF-16 `slice(0, 177)` can bisect a surrogate pair and
+  // emit a lone surrogate on re-encode. Same exact bounds as before (>180
+  // chars -> first 177 code points + '...'), just harmonized with the
+  // sibling Windsurf workflow converter's helper instead of duplicating the
+  // surrogate-splitting idiom here.
+  const shortDescription = truncateWindsurfWorkflowDescription(description);
   const adapter = getWindsurfSkillAdapterHeader(skillName);
 
   return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
 }
+
+// #2931: cap on the Windsurf workflow's only unbounded input (the frontmatter
+// `description`). Shared (not just mirrored) by convertClaudeCommandToWindsurfSkill
+// above — both converters call truncateWindsurfWorkflowDescription below so
+// there is exactly one code-point-safe truncation idiom, not two.
+const WINDSURF_WORKFLOW_DESCRIPTION_MAX = 180;
+
+function truncateWindsurfWorkflowDescription(description) {
+  // Multi-byte safe: slice by Unicode code points (`Array.from`), never by
+  // raw UTF-16 index — an index-based slice can bisect a surrogate pair and
+  // emit a lone surrogate / U+FFFD on re-encode. See #2931.
+  const codePoints = Array.from(description);
+  if (codePoints.length <= WINDSURF_WORKFLOW_DESCRIPTION_MAX) return description;
+  return `${codePoints.slice(0, WINDSURF_WORKFLOW_DESCRIPTION_MAX - 3).join('')}...`;
+}
+
+// #2931: SEPARATE size control from the #1615 security regex below — do not
+// fold the two together or make either conditional on the other. The #1615
+// regex constrains commandName's CHARACTER CLASS but not its LENGTH, and
+// commandName is interpolated into the emitted template three times (the
+// `# <commandName>` heading, the `@.../<stem>.md` @-reference target, and the
+// trailing "after /<commandName>" mention) — so an unbounded commandName
+// reopens the byte-cap hole the removed 12000-byte throw used to close
+// (verified: commandName length 246 -> 900 bytes, 5000 -> 15,162 bytes,
+// 20000 -> 60,162 bytes — all silently over the old 12000 cap). THROW rather
+// than truncate: a truncated commandName would silently point the workflow's
+// `@~/.claude/gsd-core/commands/gsd/<stem>.md` reference at a file that does
+// not exist (see DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED) — a name
+// too long to represent is a genuine error, not something to degrade. 128 is
+// deliberately generous: the longest real shipped command name is
+// `gsd-plan-review-convergence` at 27 characters.
+const WINDSURF_COMMAND_NAME_MAX = 128;
 
 function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
   // #1615 security: commandName flows unsanitized into a markdown body that
@@ -1100,6 +1169,10 @@ function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
   // Pattern: optional gsd- prefix + lowercase alphanumeric + dashes; rejects
   // everything else. See DEFECT.PROMPT-INJECTION-SCAN-COLLISION and the
   // PR #1622 security review.
+  // #2931: this is a SECURITY control, not a size control — do not weaken,
+  // reorder, or make it conditional on the description-truncation logic
+  // added below. Keep the two concerns independent even though both happen
+  // to run in this function.
   if (typeof commandName !== 'string' || !/^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(commandName)) {
     const preview = typeof commandName === 'string' ? JSON.stringify(commandName.slice(0, 60)) : String(commandName);
     throw new Error(
@@ -1107,16 +1180,36 @@ function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
       'must match /^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/ (no slashes, backslashes, spaces, dots, trailing dash, or control chars — prevents prompt injection and path-component injection into the workflow body)'
     );
   }
+  // #2931: SEPARATE size control — see WINDSURF_COMMAND_NAME_MAX above for
+  // why this exists and why it throws instead of truncating. Kept as an
+  // independent check from the #1615 regex above (not folded into it, not
+  // conditional on it).
+  if (commandName.length > WINDSURF_COMMAND_NAME_MAX) {
+    const preview = JSON.stringify(commandName.slice(0, 60));
+    throw new Error(
+      `convertClaudeCommandToWindsurfWorkflow: commandName too long (${commandName.length} chars, ` +
+      `preview ${preview}...); max ${WINDSURF_COMMAND_NAME_MAX} chars (see WINDSURF_COMMAND_NAME_MAX)`
+    );
+  }
   const converted = convertClaudeToWindsurfMarkdown(content);
   const { frontmatter } = extractFrontmatterAndBody(converted);
-  const description = frontmatter ? extractFrontmatterField(frontmatter, 'description') : '';
+  const rawDescription = frontmatter ? extractFrontmatterField(frontmatter, 'description') : '';
+  // #2931: a whitespace-only description is truthy (`description || fallback`
+  // would keep it) but toSingleLine() collapses it to ''. Treat it as absent
+  // so the fallback is used instead of emitting a blank line.
+  const singleLineDescription = rawDescription ? toSingleLine(rawDescription) : '';
+  const effectiveDescription = truncateWindsurfWorkflowDescription(singleLineDescription || `Run ${commandName}.`);
   const stem = commandName.startsWith('gsd-') ? commandName.slice(4) : commandName;
-  const workflow = `# ${commandName}\n\n${toSingleLine(description || `Run ${commandName}.`)}\n\nRead and execute the GSD command at @~/.claude/gsd-core/commands/gsd/${stem}.md end-to-end. Treat the user's message after /${commandName} as the command arguments.`;
-  const byteLength = Buffer.byteLength(workflow, 'utf8');
-  if (byteLength > 12000) {
-    throw new Error(`Windsurf workflow ${commandName} exceeds 12000 bytes (${byteLength}); extract references before installing`);
-  }
-  return workflow;
+  // #2931: total emission size is bounded by (fixed template text) +
+  // (3 x WINDSURF_COMMAND_NAME_MAX, one per commandName/stem interpolation
+  // above) + (WINDSURF_WORKFLOW_DESCRIPTION_MAX Unicode code points, up to 4
+  // UTF-8 bytes each). Both inputs are validated/truncated above — commandName
+  // is length-capped-and-thrown by WINDSURF_COMMAND_NAME_MAX, description is
+  // truncated by truncateWindsurfWorkflowDescription — so this bound holds by
+  // construction, not by measurement. The 12000-byte figure itself lives in
+  // exactly one place — the cap table in tests/helpers/emitted-caps.cjs —
+  // this comment only justifies why the actual emitted size stays under it.
+  return `# ${commandName}\n\n${effectiveDescription}\n\nRead and execute the GSD command at @~/.claude/gsd-core/commands/gsd/${stem}.md end-to-end. Treat the user's message after /${commandName} as the command arguments.`;
 }
 
 // --- Augment converters ---
@@ -1147,8 +1240,9 @@ function convertClaudeToAugmentMarkdown(content) {
   // Remove Claude Code-specific bug workarounds before brand replacement
   converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
   converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  // Replace "Claude Code" brand references with "Augment"
-  converted = converted.replace(/\bClaude Code\b/g, 'Augment');
+  // Replace "Claude Code" brand references with "Augment" — #2284(b): skips
+  // <runtime_compatibility> comparison-table content (protected region).
+  converted = applyClaudeCodeBrandSwap(converted, 'Augment');
   return converted;
 }
 
@@ -1232,7 +1326,8 @@ function convertClaudeToTraeMarkdown(content) {
   converted = converted.replace(/\bCLAUDE_CONFIG_DIR\b/g, 'TRAE_CONFIG_DIR');
   converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
   converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  converted = converted.replace(/\bClaude Code\b/g, 'Trae');
+  // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
+  converted = applyClaudeCodeBrandSwap(converted, 'Trae');
   return converted;
 }
 
@@ -1288,7 +1383,8 @@ function convertClaudeToCodebuddyMarkdown(content) {
   converted = converted.replace(/\.claude\//g, '.codebuddy/');
   converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
   converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  converted = converted.replace(/\bClaude Code\b/g, 'CodeBuddy');
+  // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
+  converted = applyClaudeCodeBrandSwap(converted, 'CodeBuddy');
   return converted;
 }
 
@@ -1369,7 +1465,8 @@ function convertClaudeToCliineMarkdown(content) {
   converted = converted.replace(/\bCLAUDE_CONFIG_DIR\b/g, 'CLINE_CONFIG_DIR');
   converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
   converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  converted = converted.replace(/\bClaude Code\b/g, 'Cline');
+  // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
+  converted = applyClaudeCodeBrandSwap(converted, 'Cline');
   return converted;
 }
 
@@ -2220,7 +2317,8 @@ function convertClaudeAgentToQwenAgent(content) {
   const _b = _hostBehaviors('qwen').brandingRewrites || {};
   let converted = content;
   if (_b['CLAUDE.md']) converted = converted.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
-  if (_b['Claude Code']) converted = converted.replace(/\bClaude Code\b/g, _b['Claude Code']);
+  // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
+  if (_b['Claude Code']) converted = applyClaudeCodeBrandSwap(converted, _b['Claude Code']);
   if (_b['.claude/']) converted = converted.replace(/\.claude\//g, _b['.claude/']);
 
   const { frontmatter, body } = extractFrontmatterAndBody(converted);
@@ -2570,7 +2668,8 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       const _b = _hostBehaviors(runtime).brandingRewrites;
       if (_b) {
         content = content.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
-        content = content.replace(/\bClaude Code\b/g, _b['Claude Code']);
+        // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
+        content = applyClaudeCodeBrandSwap(content, _b['Claude Code']);
       }
       content = content.replace(/~\/\.claude\//g, pathPrefix);
       content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
@@ -2595,7 +2694,8 @@ function _applyRuntimeRewrites(content, runtime, pathPrefix, isGlobal = false, a
       const _b = _hostBehaviors(runtime).brandingRewrites;
       if (_b) {
         content = content.replace(/CLAUDE\.md/g, _b['CLAUDE.md']);
-        content = content.replace(/\bClaude Code\b/g, _b['Claude Code']);
+        // #2284(b): skips <runtime_compatibility> comparison-table content (protected region).
+        content = applyClaudeCodeBrandSwap(content, _b['Claude Code']);
       }
       content = content.replace(/~\/\.claude\//g, pathPrefix);
       content = content.replace(/\$HOME\/\.claude\//g, pathPrefix);
@@ -2889,6 +2989,12 @@ export = {
   convertClaudeToWindsurfMarkdown,
   convertClaudeCommandToWindsurfSkill,
   convertClaudeCommandToWindsurfWorkflow,
+  // #2931: single-sourced brand-swap helper (was duplicated verbatim in
+  // bin/install.js — the exact drift class this PR exists to reduce). Used
+  // internally by convertClaudeToWindsurfMarkdown/convertClaudeToAugmentMarkdown
+  // above and bound from here by the remaining bin/install.js converters
+  // (Cursor/Trae/CodeBuddy/Cline) that still brand-swap inline.
+  applyClaudeCodeBrandSwap,
   convertClaudeToAugmentMarkdown,
   convertClaudeCommandToAugmentSkill,
   convertClaudeToTraeMarkdown,
