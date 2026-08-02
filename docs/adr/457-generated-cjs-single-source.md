@@ -49,9 +49,14 @@ lint config that already advertises — in a comment and in a 12-file ignore lis
 This distinction is the crux of the decision, and the earlier draft erased it:
 
 - **Value baking (exists, forced).** `package-identity.cjs` must be generated
-  because the *installed* tree ships a synthetic `{"type":"commonjs"}`
-  `package.json` with no `.name`, so a runtime `require('package.json').name`
-  is `undefined` (bug #378). The values literally cannot be read at runtime;
+  because the *installed* tree carries no `package.json` with a `.name`. The
+  only ones GSD stages are synthetic `{"type":"commonjs"}` markers — and since
+  #2544 those sit inside the directories GSD owns (`hooks/`, and the native
+  plugin dir), not at the runtime config root — so a runtime
+  `require('package.json').name` is `undefined` where it resolves at all, and
+  a `MODULE_NOT_FOUND` where it does not (bug #378; see also the Codex case in
+  `src/runtime-artifact-conversion.cts`, whose root never carried one). The
+  values literally cannot be read at runtime;
   baking them at build time is the only option. **Deletion test:** remove the
   generator and the complexity reappears across every consumer. It is a deep
   seam and earns its keep.

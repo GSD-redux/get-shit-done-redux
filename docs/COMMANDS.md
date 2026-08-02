@@ -454,6 +454,24 @@ Archive milestone, tag release.
 /gsd-complete-milestone
 ```
 
+**Pre-close artifact audit.** Before archiving, the workflow runs `gsd-tools audit-open` and reports every unresolved item across nine categories:
+
+| Category | Source | Open when |
+|----------|--------|-----------|
+| Debug sessions | `.planning/debug/` | status not `resolved` / `complete` |
+| Quick tasks | `.planning/quick/` | SUMMARY missing or not `complete` |
+| Threads | `.planning/threads/` | status not terminal |
+| Pending todos | `.planning/todos/pending/` | present |
+| Seeds | `.planning/seeds/` | not yet implemented |
+| UAT gaps | `*-UAT.md` | scenarios still pending |
+| Verification gaps | `*-VERIFICATION.md` | verdict `gaps_found` / `human_needed` |
+| CONTEXT questions | `*-CONTEXT.md` | questions left open |
+| **Deferred items** | `deferred-items.md` | entry lacks `status: resolved` |
+
+If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowledge all` / `[C] Cancel`. `[A]` records the items to `STATE.md` under its own `## Deferred Items` heading and closes as `override_closeout`; an all-clear closes as `verified_closeout`.
+
+> **Note:** the `deferred-items.md` category is the per-phase SCOPE BOUNDARY log a phase agent writes when it finds a defect it should not fix. It is a different artifact from the `## Deferred Items` section `[A]` writes into `STATE.md`, which records what you acknowledged at close.
+
 ---
 
 ### `/gsd-milestone-summary`

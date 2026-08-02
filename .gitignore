@@ -67,6 +67,7 @@ build/
 # by `npm run build:lib`). Source of truth is src/; these are emitted, never edited.
 # Published via prepublishOnly; built before test via pretest. Grows as modules migrate.
 /tsconfig.build.tsbuildinfo
+/gsd-core/bin/lib/commonjs-marker.cjs
 /gsd-core/bin/lib/broken-windows.cjs
 /gsd-core/bin/lib/host-integration.cjs
 /gsd-core/bin/lib/host-integration-sdk.cjs
@@ -159,6 +160,7 @@ build/
 /gsd-core/bin/lib/installer-migrations/004-prune-stale-pristine-snapshots.cjs
 /gsd-core/bin/lib/installer-migrations/005-opencode-baseline-commands-dir.cjs
 /gsd-core/bin/lib/installer-migrations/006-pi-extension-cjs-to-js.cjs
+/gsd-core/bin/lib/installer-migrations/007-retire-config-root-commonjs-marker.cjs
 /gsd-core/bin/lib/observability/logger.cjs
 /gsd-core/bin/lib/active-workstream-store.cjs
 /gsd-core/bin/lib/adr-parser.cjs
