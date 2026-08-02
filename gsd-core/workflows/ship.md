@@ -457,7 +457,8 @@ would otherwise trigger (GitHub honors `[ci skip]` / `[skip ci]`):
 gsd_run query commit "docs(${padded_phase}): ship phase ${PHASE_NUMBER} — PR #${PR_NUMBER} [ci skip]" --files .planning/STATE.md
 git push origin ${CURRENT_BRANCH} 2>&1 || echo "⚠ track_shipping: ship-note push failed — it is local-only; rerun: git push origin ${CURRENT_BRANCH}"
 
-# If the push succeeds, check if the [ci skip] trailer wedged the PR due to required status checks (#2783).
+# Preserve the skip-token optimization for repositories without a required-check
+# wedge; only synthesize a second CI-triggering commit when GitHub reports one (#2783).
 # Poll mergeStateStatus with backoff to avoid racing GitHub's async state computation.
 # Note: Skip tokens recognized by GitHub Actions are [skip ci], [ci skip], [no ci], [skip actions], [actions skip], and skip-checks:true.
 # The recovery commit message MUST NOT contain any of these tokens.
@@ -475,12 +476,12 @@ done
 if [ "$STATUS" = "BLOCKED" ] && [ "$CHECKS" = "0" ]; then
   echo "⚠ PR is BLOCKED with zero checks. The [ci skip] trailer wedged the PR due to required checks."
   echo "Pushing an empty commit to trigger the required pipelines..."
+  # gsd_run query commit requires a file list; use git directly for this intentionally empty commit.
   git commit --allow-empty -m "chore: trigger CI (recover from ship-note skip-token)"
   git push origin ${CURRENT_BRANCH} 2>&1 || echo "⚠ track_shipping: recovery push failed — rerun: git push origin ${CURRENT_BRANCH}"
 elif [ "$STATUS" = "UNKNOWN" ]; then
   echo "⚠ track_shipping: PR mergeStateStatus is UNKNOWN after polling; PR may require manual check re-trigger."
 fi
-```
 ```
 </step>
 

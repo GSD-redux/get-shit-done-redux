@@ -2,6 +2,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { stripFencedCode } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const SHIP_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ship.md');
 
@@ -33,6 +34,17 @@ describe('#2783 ship.md track_shipping self-heals wedged PRs', () => {
     assert.ok(
       /trigger CI/.test(step) || /allow-empty/.test(step),
       'track_shipping must push a recovery commit to trigger CI when wedged (#2783)'
+    );
+  });
+
+  test('track_shipping and the following step remain outside balanced code fences', () => {
+    const content = fs.readFileSync(SHIP_MD, 'utf8');
+    const stripped = stripFencedCode(content);
+    assert.strictEqual(stripped.unterminatedFence, false, 'ship.md must not contain an unterminated code fence');
+    assert.match(
+      stripped.text,
+      /<step name="track_shipping">[\s\S]*?<\/step>\s*<step name="ship_post_capability_dispatch">/,
+      'the track_shipping boundary and following step must remain visible after stripping code fences',
     );
   });
 });
