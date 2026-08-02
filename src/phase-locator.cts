@@ -136,7 +136,15 @@ function findPhaseInternal(cwd: string, phase: unknown): PhaseSearchResult | nul
   const current = searchPhaseInDir(phasesDir, relPhasesDir, normalized);
   if (current) return current;
 
-  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  // #2855: scope the archived-milestone fallback to the SAME workstream as the
+  // active-phase search above (planningDir(cwd) resolves GSD_WORKSTREAM/GSD_PROJECT
+  // the identical way both places), not the hardcoded project-root tree. Archived
+  // phases genuinely live under a workstream's own `.planning/workstreams/<ws>/
+  // milestones/` — that is where archivePhaseDirectories (milestone.cts) writes
+  // them via the same planningDir(cwd) resolution. Hardcoding root here let a
+  // pending workstream phase resolve to an unrelated workstream's (or a flat-mode
+  // project's) archived phase that merely shares a phase number.
+  const milestonesDir = path.join(planningDir(cwd), 'milestones');
   if (!fs.existsSync(milestonesDir)) return null;
 
   try {
@@ -151,7 +159,7 @@ function findPhaseInternal(cwd: string, phase: unknown): PhaseSearchResult | nul
       const versionMatch = archiveName.match(/^(v[\d.]+)-phases$/);
       const version = versionMatch![1];
       const archivePath = path.join(milestonesDir, archiveName);
-      const relBase = '.planning/milestones/' + archiveName;
+      const relBase = toPosixPath(path.relative(cwd, archivePath));
       const result = searchPhaseInDir(archivePath, relBase, normalized);
       if (result) {
         result.archived = version;
@@ -164,7 +172,10 @@ function findPhaseInternal(cwd: string, phase: unknown): PhaseSearchResult | nul
 }
 
 function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
-  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  // #2855: same workstream-scoped resolution as findPhaseInternal above — see
+  // that function's comment. `phase.list --include-archived` (the primary
+  // non-init consumer) must not leak a different workstream's archive either.
+  const milestonesDir = path.join(planningDir(cwd), 'milestones');
   const results: ArchivedPhaseDir[] = [];
 
   if (!fs.existsSync(milestonesDir)) return results;
@@ -187,7 +198,7 @@ function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
         results.push({
           name: dir,
           milestone: version,
-          basePath: path.join('.planning', 'milestones', archiveName),
+          basePath: path.relative(cwd, archivePath),
           fullPath: path.join(archivePath, dir),
         });
       }
