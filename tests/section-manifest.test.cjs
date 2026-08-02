@@ -31,7 +31,7 @@ const BRANCH_SECTIONS = Object.freeze([
 ]);
 
 function facts(overrides) {
-  return { waveFlag: false, phaseNumber: null, hasPriorPhases: false, ...overrides };
+  return { flags: new Set(), phaseNumber: null, hasPriorPhases: false, ...overrides };
 }
 
 // ─── Rows 1-8: happy path + combinations over W/D/P ─────────────────────────
@@ -44,7 +44,7 @@ describe('W/D/P combination matrix (design doc behavior table rows 1-8)', () => 
   });
 
   test('includesPartialWaveWhenWaveFlagPresent', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']) }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave']);
     assert.deepEqual(result.excluded, ['gap-closure-artifacts', 'regression-gate']);
   });
@@ -62,13 +62,13 @@ describe('W/D/P combination matrix (design doc behavior table rows 1-8)', () => 
   });
 
   test('includesBothWaveAndGapClosureWhenBothHold', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true, phaseNumber: '3.1' }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']), phaseNumber: '3.1' }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave', 'gap-closure-artifacts']);
     assert.deepEqual(result.excluded, ['regression-gate']);
   });
 
   test('includesBothWaveAndRegressionWhenBothHold', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true, hasPriorPhases: true }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']), hasPriorPhases: true }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave', 'regression-gate']);
     assert.deepEqual(result.excluded, ['gap-closure-artifacts']);
   });
@@ -80,7 +80,7 @@ describe('W/D/P combination matrix (design doc behavior table rows 1-8)', () => 
   });
 
   test('includesEveryBranchSectionWhenAllFactsHold', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true, phaseNumber: '3.1', hasPriorPhases: true }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']), phaseNumber: '3.1', hasPriorPhases: true }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave', 'gap-closure-artifacts', 'regression-gate']);
     assert.deepEqual(result.excluded, []);
   });
@@ -146,7 +146,7 @@ describe('boundary section-list sizes (limit-1 / limit / limit+1)', () => {
       { id: 's5', when: 'always' },
       { id: 's6', when: 'state:has-prior-phases' },
     ];
-    const result = selectSections(sections, facts({ waveFlag: true }));
+    const result = selectSections(sections, facts({ flags: new Set(['--wave']) }));
     assert.deepEqual(result.included, ['s0', 's1', 's2', 's3', 's5']);
     assert.deepEqual(result.excluded, ['s4', 's6']);
   });
@@ -183,7 +183,7 @@ describe('determinism and input non-mutation', () => {
       { id: 'b', when: 'flag:--wave' },
     ];
     const snapshotBefore = sections.map((s) => ({ ...s }));
-    const f = facts({ waveFlag: true });
+    const f = facts({ flags: new Set(['--wave']) });
 
     const first = selectSections(sections, f);
     const second = selectSections(sections, f);
@@ -218,6 +218,63 @@ describe('WHEN_PREDICATES and WHEN_VOCABULARY parity (DEFECT.GENERATIVE-FIX)', (
     const widenedVocabulary = [...WHEN_VOCABULARY, 'state:not-yet-real'];
     const missing = widenedVocabulary.filter((when) => typeof WHEN_PREDICATES[when] !== 'function');
     assert.deepEqual(missing, ['state:not-yet-real']);
+  });
+});
+
+// ─── B11: atom↔flag-string desync (#2992 — "the key new test") ─────────────
+// For EVERY 'flag:--X' atom in the frozen WHEN_VOCABULARY, the predicate must
+// be true iff `flags={--X}` and false for `flags={}`. Derived FROM the
+// vocabulary export (never a hand-copied local list of flag names), so a
+// typo in WHEN_PREDICATES' hand-written literal map (e.g. matching the wrong
+// token) is caught behaviorally instead of only by eyeballing the diff.
+
+describe('atom<->flag-string desync guard (#2992 row B11)', () => {
+  const flagAtoms = WHEN_VOCABULARY.filter((w) => w.startsWith('flag:--'));
+
+  test('everyFlagAtomHasAtLeastOneEntryToGuard', () => {
+    // Sanity: this guard is vacuous if the vocabulary somehow shipped zero
+    // flag atoms — fail loudly rather than silently passing on an empty loop.
+    assert.ok(flagAtoms.length > 0, 'expected at least one flag: atom in WHEN_VOCABULARY');
+  });
+
+  for (const atom of flagAtoms) {
+    // The atom's own token, derived ONLY for use as the flags-Set member in
+    // this TEST (never fed back into production, which forbids exactly this
+    // derivation in WHEN_PREDICATES itself — see the module doc comment).
+    const token = atom.slice('flag:'.length);
+
+    test(`predicateForAtomMatchesItsOwnToken_${atom}`, () => {
+      const included = selectSections([{ id: 'x', when: atom }], facts({ flags: new Set([token]) }));
+      assert.deepEqual(included, { included: ['x'], excluded: [] }, `expected "${atom}" included when flags={${token}}`);
+
+      const excluded = selectSections([{ id: 'x', when: atom }], facts({ flags: new Set() }));
+      assert.deepEqual(excluded, { included: [], excluded: ['x'] }, `expected "${atom}" excluded when flags={}`);
+    });
+  }
+});
+
+// ─── B14: flags set cardinality boundary (0 / 1 / many) ────────────────────
+
+describe('flags set cardinality (#2992 row B14)', () => {
+  const sections = Object.freeze([
+    { id: 'a', when: 'flag:--auto' },
+    { id: 'b', when: 'flag:--discuss' },
+    { id: 'c', when: 'flag:--full' },
+  ]);
+
+  test('zeroFlagsExcludesEveryFlagSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set() }));
+    assert.deepEqual(result, { included: [], excluded: ['a', 'b', 'c'] });
+  });
+
+  test('oneFlagIncludesOnlyItsOwnSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--discuss']) }));
+    assert.deepEqual(result, { included: ['b'], excluded: ['a', 'c'] });
+  });
+
+  test('manyFlagsIncludeEveryMatchingSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--auto', '--discuss', '--full', '--irrelevant']) }));
+    assert.deepEqual(result, { included: ['a', 'b', 'c'], excluded: [] });
   });
 });
 

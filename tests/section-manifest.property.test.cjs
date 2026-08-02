@@ -66,8 +66,14 @@ const phaseNumberArb = fc.oneof(
   fc.stringMatching(/^[0-9]{1,2}\.[0-9]{1,2}$/),
 );
 
+// Flag atoms drawn from the module's own frozen WHEN_VOCABULARY re-export
+// (DEFECT.GENERATIVE-FIX — never a hardcoded local copy of flag names).
+const FLAG_TOKENS = WHEN_VOCABULARY.filter((w) => w.startsWith('flag:--')).map((w) => w.slice('flag:'.length));
+
+const flagsArb = fc.subarray(FLAG_TOKENS).map((tokens) => new Set(tokens));
+
 const factsArb = fc.record({
-  waveFlag: fc.boolean(),
+  flags: flagsArb,
   phaseNumber: phaseNumberArb,
   hasPriorPhases: fc.boolean(),
 });
@@ -121,7 +127,7 @@ describe('property: never throws for vocabulary-valid when and arbitrary facts',
   test('neverThrowsWhenFactsAreMissingKeysEntirely', () => {
     // Totality also over PARTIAL facts objects (row 19's property-level
     // twin): dropping zero or more of the three fact keys must never throw.
-    const factKeys = ['waveFlag', 'phaseNumber', 'hasPriorPhases'];
+    const factKeys = ['flags', 'phaseNumber', 'hasPriorPhases'];
     fc.assert(
       fc.property(sectionsArb, factsArb, fc.subarray(factKeys), (sections, facts, keysToKeep) => {
         const partialFacts = {};
@@ -165,6 +171,27 @@ describe('property: prototype-shaped when values always fail closed', () => {
           assert.equal(caught.reason, REASON.UNKNOWN_WHEN);
         },
       ),
+    );
+  });
+});
+
+// ─── B18: flag monotonicity — more flags never yields fewer included ───────
+
+describe('property: adding more flags never yields fewer included sections (#2992 row B18)', () => {
+  test('flagSupersetNeverShrinksIncluded', () => {
+    fc.assert(
+      fc.property(sectionsArb, flagsArb, fc.subarray(FLAG_TOKENS), factsArb, (sections, baseFlags, extraTokens, restFacts) => {
+        const supersetFlags = new Set([...baseFlags, ...extraTokens]);
+        const baseResult = selectSections(sections, { ...restFacts, flags: baseFlags });
+        const supersetResult = selectSections(sections, { ...restFacts, flags: supersetFlags });
+
+        for (const id of baseResult.included) {
+          assert.ok(
+            supersetResult.included.includes(id),
+            `id "${id}" included under a flags subset must remain included under a flags superset`,
+          );
+        }
+      }),
     );
   });
 });

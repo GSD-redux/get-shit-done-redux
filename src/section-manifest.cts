@@ -15,11 +15,19 @@
  * ## The evaluator is a LOOKUP, not a parser
  *
  * Derived from Greenspun's Tenth Rule (ADR-1671:69 cites it by name) and
- * binding on this implementation: `when=` is a closed, 4-entry vocabulary.
- * {@link WHEN_PREDICATES} is a total map from each frozen vocabulary entry
- * to exactly one predicate over {@link InvocationFacts}. It MUST NOT
- * tokenize, split on operators, or interpret structure in the `when=`
- * string — the moment it parses, the ad-hoc language has begun. An
+ * binding on this implementation: `when=` is a closed vocabulary, widened
+ * from 4 to 20 entries via the ADR-1671 amendment for #2992 (epic #1671
+ * Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
+ * 40-design.md`). {@link WHEN_PREDICATES} is a total map from each frozen
+ * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
+ * It MUST NOT tokenize, split on operators, or interpret structure in the
+ * `when=` string — the moment it parses, the ad-hoc language has begun.
+ * Every entry below is therefore a HAND-WRITTEN LITERAL: deriving a
+ * predicate's flag/state name from its atom string (e.g. slicing `--fix`
+ * out of `'flag:--fix'`) is tokenization relocated into this map and is
+ * forbidden even though it would be shorter — the redundancy between each
+ * key and its literal token is deliberate, and the bidirectional parity
+ * test below catches any desync a hand-written entry could introduce. An
  * unrecognized `when=` value fails closed via {@link selectSections}
  * throwing a `TypeError` carrying `.reason = REASON.UNKNOWN_WHEN`; it is
  * never silently excluded (Postel's Law: liberal on FORMAT elsewhere in the
@@ -54,12 +62,24 @@ import workflowFragments = require('./workflow-fragments.cjs');
  * the caller (the init CLI seam) before {@link selectSections} is invoked.
  */
 export interface InvocationFacts {
-  /** Whether the `--wave` flag's literal token was present on the invocation (token-presence, not value-truthiness). */
-  readonly waveFlag: boolean;
+  /**
+   * The literal `--<name>` tokens present on the invocation (token-presence,
+   * not value-truthiness — an option whose value is `false` or a string is
+   * still present; an option whose value is `undefined` is not). A
+   * `ReadonlySet<string>` rather than a plain object: `.has()` carries no
+   * prototype hazard, whereas a plain object's key lookup does.
+   */
+  readonly flags: ReadonlySet<string>;
   /** The invocation's phase number, or `null` when absent. A decimal (`X.Y`) phase number is a gap-closure phase. */
   readonly phaseNumber: string | null;
   /** Whether prior phases exist for this invocation. */
   readonly hasPriorPhases: boolean;
+  /** Whether a codebase map is needed (init JSON). Absent/undefined is falsy, never throws. */
+  readonly needsCodebaseMap?: boolean;
+  /** Whether the current phase is in MVP mode (ROADMAP.md `**Mode:** mvp`). Absent/undefined is falsy, never throws. */
+  readonly phaseMvpMode?: boolean;
+  /** Whether worktrees are enabled (`.planning/config.json` `workflow.use_worktrees`). Absent/undefined is falsy, never throws. */
+  readonly worktreesEnabled?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -109,12 +129,26 @@ function fail(reason: string, message: string): never {
 }
 
 /**
+ * Safely tests whether `facts.flags` contains `flag`, tolerating an absent,
+ * `null`, or non-`Set` (e.g. array) `flags` value without throwing —
+ * `.has` is checked to be callable before it is called, rather than
+ * assuming every {@link InvocationFacts.flags} is a real `Set` (totality
+ * over facts; not duck-typed — an array `flags` degrades to "not present",
+ * it is never iterated or `.includes`-checked).
+ */
+function hasFlag(facts: InvocationFacts, flag: string): boolean {
+  return typeof facts.flags?.has === 'function' && facts.flags.has(flag) === true;
+}
+
+/**
  * Total map from each frozen {@link workflowFragments.WHEN_VOCABULARY}
  * entry to exactly one predicate over {@link InvocationFacts}. This is a
  * LOOKUP, never a parser — see the module doc comment's "The evaluator is a
- * LOOKUP, not a parser" section. Semantics confirmed against the section
- * bodies themselves (design doc "Semantics confirmed against the section
- * bodies themselves, not inferred from the id"):
+ * LOOKUP, not a parser" section. Every entry is a hand-written literal; see
+ * the module doc comment for why deriving a predicate from its atom string
+ * is forbidden. Semantics confirmed against the section bodies themselves
+ * (design doc "Semantics confirmed against the section bodies themselves,
+ * not inferred from the id"):
  *
  * - `gap-closure-artifacts` — "For decimal/polish phases only (X.Y
  *   pattern) … Skip if phase number has no decimal" -> `state:gap-closure-phase`.
@@ -125,10 +159,20 @@ function fail(reason: string, message: string): never {
 export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) => boolean>> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, (facts: InvocationFacts) => boolean>, {
     always: () => true,
-    'flag:--wave': (facts: InvocationFacts) => facts.waveFlag === true,
+    'flag:--wave': (facts: InvocationFacts) => hasFlag(facts, '--wave'),
     'state:gap-closure-phase': (facts: InvocationFacts) =>
       typeof facts.phaseNumber === 'string' && facts.phaseNumber.includes('.'),
     'state:has-prior-phases': (facts: InvocationFacts) => facts.hasPriorPhases === true,
+    'flag:--auto': (facts: InvocationFacts) => hasFlag(facts, '--auto'),
+    'flag:--discuss': (facts: InvocationFacts) => hasFlag(facts, '--discuss'),
+    'flag:--forensic': (facts: InvocationFacts) => hasFlag(facts, '--forensic'),
+    'flag:--full': (facts: InvocationFacts) => hasFlag(facts, '--full'),
+    'flag:--research': (facts: InvocationFacts) => hasFlag(facts, '--research'),
+    'flag:--reset-phase-numbers': (facts: InvocationFacts) => hasFlag(facts, '--reset-phase-numbers'),
+    'flag:--validate': (facts: InvocationFacts) => hasFlag(facts, '--validate'),
+    'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
+    'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
+    'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,
   }),
 );
 
@@ -143,6 +187,19 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
 for (const when of workflowFragments.WHEN_VOCABULARY) {
   if (!Object.hasOwn(WHEN_PREDICATES, when)) {
     throw new Error(`section-manifest: WHEN_VOCABULARY entry "${when}" has no predicate in WHEN_PREDICATES`);
+  }
+}
+
+// Reverse half of the same coordinated-change guard: every own key of
+// WHEN_PREDICATES must also appear in WHEN_VOCABULARY. Without this, a
+// predicate key with no vocabulary entry would let the evaluator accept an
+// atom that the parser (classifyMarker) rejects — a real divergence between
+// the two shared-constant halves (DEFECT.GENERATIVE-FIX; B9/B10 in
+// `.gsd/phase/chore-2992-widen-when-vocabulary/50-test-matrix.md`).
+const VOCABULARY_SET = new Set(workflowFragments.WHEN_VOCABULARY);
+for (const predicateKey of Object.keys(WHEN_PREDICATES)) {
+  if (!VOCABULARY_SET.has(predicateKey)) {
+    throw new Error(`section-manifest: WHEN_PREDICATES entry "${predicateKey}" has no matching WHEN_VOCABULARY entry`);
   }
 }
 
