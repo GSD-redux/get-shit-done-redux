@@ -1,4 +1,4 @@
-// allow-test-rule: source-text-is-the-product
+// allow-test-rule: source-text-is-the-product (#1700)
 // spike.md / spike-wrap-up.md / artifact-types.md / sketch.md are workflow and reference
 // markdown — their text IS the contract loaded by the agent at runtime. Testing text content
 // tests the deployed contract; there is no build step, CLI entrypoint, or generated code to
