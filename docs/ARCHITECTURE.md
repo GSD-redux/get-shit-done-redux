@@ -381,6 +381,29 @@ grammar, the frozen `when=` vocabulary, and fail-closed authoring rules, and
 [ADR-1671](adr/1671-dynamic-context-management-platform.md) (open questions 1 and 2) for why
 in-file markers were chosen over separate fragment files or a sidecar manifest.
 
+### Section Manifest (`src/section-manifest.cts`, ADR-1671 Phase 5)
+
+Two seams turn a workflow's `gsd:section` markers into per-invocation applicability data.
+`scripts/gen-section-manifest.cjs --write` (wired into `build` after `build:lib`, and into
+`lint:generated-sync`) scans `gsd-core/workflows/*.md` and writes the committed
+`gsd-core/workflows/section-manifest.json`: a `{id, when, read}` triple per marked section,
+where `read` is the path of the step file the section's body was extracted to. It reuses
+`parseWorkflowSections` unchanged rather than re-implementing marker parsing, and fails closed
+(`--check`) on a marker naming a step file that does not exist or a step file no marker
+references.
+
+A separate pure evaluator, `src/section-manifest.cts` (compiled to
+`gsd-core/bin/lib/section-manifest.cjs` per ADR-457), maps one invocation's facts —
+`{waveFlag, phaseNumber, hasPriorPhases}` — to an included/excluded partition of section ids
+via `selectSections`. Per Greenspun's Tenth Rule, this is a total lookup over the frozen
+`when=` vocabulary, never a parser: it never tokenizes or interprets `when=` structure, and an
+unrecognized value fails closed rather than being silently excluded.
+
+`execute-phase.md`'s `partial-wave` and `gap-closure-artifacts` sections — previously inlined
+directly per #2930's pilot — now delegate to dedicated step files under
+`gsd-core/workflows/execute-phase/steps/`, the same pattern the pre-existing `regression-gate`
+section already used.
+
 ### CLI Tools (`gsd-core/bin/`)
 
 Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core/bin/lib/` (see [`docs/INVENTORY.md`](INVENTORY.md#cli-modules) for the authoritative roster):

@@ -452,6 +452,37 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
 
 // ─── Row 36: a malformed marker fails install loudly, with no partial emit ─
 
+// ─── Row 63 (50-test-matrix.md, issue #2932 Phase 5): extracting
+// execute-phase.md's 3 sections must not perturb any OTHER workflow's
+// emission — independence guard for the CRITICAL blast radius Phase 5's own
+// design doc calls out. Pure-function check (no spawn needed): composeWorkflow
+// is a documented no-op for every unmarked file, so any file other than the
+// one Phase 5 migrates must still compose to itself, byte-identical. ────────
+
+test('leavesUnmarkedWorkflowEmissionByteIdentical', () => {
+  const workflowsDir = path.join(REPO_ROOT, 'gsd-core', 'workflows');
+  const workflowFiles = fs
+    .readdirSync(workflowsDir, { withFileTypes: true })
+    .filter((d) => d.isFile() && d.name.endsWith('.md'))
+    .map((d) => d.name);
+  assert.ok(workflowFiles.length > 1, 'sanity: there must be more than the pilot workflow on disk');
+
+  let checkedCount = 0;
+  for (const fileName of workflowFiles) {
+    if (fileName === 'execute-phase.md') continue; // the one file #2932 Phase 5 migrates
+    const filePath = path.join(workflowsDir, fileName);
+    const source = fs.readFileSync(filePath, 'utf8');
+    const composed = composeWorkflow(source, { sourcePath: filePath });
+    assert.equal(
+      composed,
+      source,
+      `${fileName}: emission drifted — Phase 5's execute-phase.md extraction must not touch any other workflow`,
+    );
+    checkedCount += 1;
+  }
+  assert.equal(checkedCount, workflowFiles.length - 1, 'every workflow file except execute-phase.md must have been checked');
+});
+
 test('malformedMarkersFailInstallWithoutPartialEmit', () => {
   const malformed = '<!-- gsd:section id="broken" when="always" -->\nnever closed\n';
   const overlayRepo = buildOverlayRepo({ 'gsd-core/workflows/execute-phase.md': malformed });
