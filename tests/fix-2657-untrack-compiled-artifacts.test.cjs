@@ -48,42 +48,41 @@ function git(args) {
   return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
 }
 
+// Shared shape for both "none of the nine should still be in state X" checks
+// below: derive the still-bad subset via `isBad`, then assert it's empty.
+function assertNoneStillBad(isBad, failureLabel) {
+  const stillBad = NINE_ARTIFACTS.filter(isBad);
+  assert.deepEqual(
+    stillBad,
+    [],
+    `expected none of the nine ${failureLabel}; still: ${stillBad.join(', ') || '(none)'}`,
+  );
+}
+
 describe('fix-2657: compiled .cjs artifacts are gitignored, not tracked (ADR-457)', () => {
   test('none of the nine ADR-457 migration-gap artifacts are tracked by git', () => {
     const tracked = new Set(git(['ls-files', LIB_DIR]).split('\n').filter(Boolean));
-    const stillTracked = NINE_ARTIFACTS.filter((p) => tracked.has(p));
-    assert.deepEqual(
-      stillTracked,
-      [],
-      `expected none of the nine to be tracked; still tracked: ${stillTracked.join(', ') || '(none)'}`,
-    );
+    assertNoneStillBad((p) => tracked.has(p), 'to be tracked');
   });
 
   test('every one of the nine paths matches a .gitignore pattern', () => {
     // --no-index bypasses git-check-ignore(1)'s "a tracked path is never
     // reported ignored" special-case, so this is accurate independent of
     // whether git rm --cached has (yet) run — it checks pattern match only.
-    const unmatched = [];
-    for (const artifact of NINE_ARTIFACTS) {
+    const isUnmatched = (artifact) => {
       try {
         git(['check-ignore', '--no-index', '-q', artifact]);
+        return false;
       } catch {
-        unmatched.push(artifact);
+        return true;
       }
-    }
-    assert.deepEqual(
-      unmatched,
-      [],
-      `expected all nine to match a .gitignore pattern; unmatched: ${unmatched.join(', ') || '(none)'}`,
-    );
+    };
+    assertNoneStillBad(isUnmatched, 'to be unmatched by .gitignore');
   });
 
   test('trackedCompiledArtifacts() reports the ADR-457 empty-set end state for the nine', () => {
-    const pairs = trackedCompiledArtifacts();
-    const stillPresent = pairs
-      .map((p) => p.artifact)
-      .filter((artifact) => NINE_ARTIFACTS.includes(artifact));
-    assert.deepEqual(stillPresent, []);
+    const stillPresentArtifacts = new Set(trackedCompiledArtifacts().map((p) => p.artifact));
+    assertNoneStillBad((p) => stillPresentArtifacts.has(p), 'to appear in trackedCompiledArtifacts()');
   });
 
   test('lint-compiled-artifact-sync exits 0 with nothing left to check', () => {
