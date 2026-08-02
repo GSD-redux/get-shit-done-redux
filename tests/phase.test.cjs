@@ -2755,6 +2755,81 @@ Plans:
       "surviving row's Plans/Status/Completed cells stay byte-identical; only its leading ordinal renumbers 3->2",
     );
   });
+
+  // ─── #2640: state_updated must reflect actual content change, and progress
+  // frontmatter must be resync'd even when the body lacks 'Total Phases:'. ──
+
+  test('#2640 — state_updated reflects actual content change (not just file existence)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: A\n**Goal:** x\n\n### Phase 2: B\n**Goal:** y\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), { recursive: true });
+    // STATE.md with 'Total Phases:' body field + progress frontmatter
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: 1.0\ncurrent_phase: 1\nprogress:\n  total_phases: 2\n  completed_phases: 0\n  percent: 0\n---\n\n# State\n\nTotal Phases: 2\n`,
+    );
+
+    const result = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.state_updated, true, 'state_updated must be true when STATE.md content changed');
+    // Body 'Total Phases:' must be decremented from 2 to 1.
+    const afterState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const bodyMatch = afterState.match(/^Total Phases:\s*(\d+)/m);
+    assert.ok(bodyMatch, 'body must have Total Phases field after remove');
+    assert.strictEqual(bodyMatch[1], '1', `body 'Total Phases:' must be 1 after removing one of 2 phases; got ${bodyMatch[1]}`);
+    // Frontmatter progress.total_phases must agree.
+    const fmMatch = afterState.match(/total_phases:\s*(\d+)/);
+    assert.ok(fmMatch, 'frontmatter must have total_phases');
+    assert.strictEqual(fmMatch[1], '1', `frontmatter progress.total_phases must be 1; got ${fmMatch[1]}`);
+  });
+
+  test('#2640 — progress.total_phases resync\'d even when body lacks Total Phases', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: A\n**Goal:** x\n\n### Phase 2: B\n**Goal:** y\n\n### Phase 3: C\n**Goal:** z\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-c'), { recursive: true });
+    // STATE.md with NO 'Total Phases:' body field, but with progress frontmatter
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: 1.0\ncurrent_phase: 1\nprogress:\n  total_phases: 3\n  completed_phases: 0\n  percent: 0\n---\n\n# State\n\nNo body phase count here.\n`,
+    );
+
+    const beforeState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const beforeMatch = beforeState.match(/total_phases:\s*(\d+)/);
+    assert.ok(beforeMatch && beforeMatch[1] === '3', 'precondition: total_phases should be 3');
+
+    const result = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const afterState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const afterMatch = afterState.match(/total_phases:\s*(\d+)/);
+    assert.ok(afterMatch, `STATE.md frontmatter must still have total_phases after remove; got:\n${afterState}`);
+    // Must be exactly 2 — 3 phases minus 1 removed. Asserting the exact value
+    // catches a wrong count (not just "not 3").
+    assert.strictEqual(afterMatch[1], '2',
+      `total_phases must be exactly 2 after removing one of 3 phases; got ${afterMatch[1]}`);
+  });
+
+  test('#2640 — state_updated is false when STATE.md does not exist', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: A\n**Goal:** x\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    // No STATE.md
+
+    const result = runGsdTools('phase remove 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.state_updated, false, 'state_updated must be false when no STATE.md exists');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

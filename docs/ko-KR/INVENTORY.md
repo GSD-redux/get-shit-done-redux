@@ -475,6 +475,7 @@
 | `gsd-read-guard.js` | `PreToolUse` | 읽지 않은 파일에 대한 Edit/Write를 방지하는 어드바이저리 가드 |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | 도구 Read 결과에서 프롬프트 주입 패턴 스캔 (v1.36+, PR #2201) |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 워크트리 루트 외부의 절대 경로로 Edit/Write/MultiEdit를 하드 차단 (PR #579, #260) |
+| `gsd-write-guard.js` | `PreToolUse` | 큐레이션된 `.planning/` 아티팩트(ROADMAP.md, 마일스톤 로드맵, STATE.md)를 치명적으로 축소하는 전체 파일 `Write`를 하드 차단. 일회용 센티널 `.planning/.gsd-allow-shrink`(워크플로 단계) 또는 `GSD_ALLOW_PLANNING_SHRINK=1`(대화형)로 우회 가능 (#2255, #973의 수정 3) |
 | `gsd-session-state.sh` | `PostToolUse` | 셸 기반 런타임을 위한 세션 상태 추적 |
 | `gsd-validate-commit.sh` | `PostToolUse` | 컨벤셔널 커밋 적용을 위한 커밋 검증 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 워크플로우 전환을 위한 단계 경계 감지 |

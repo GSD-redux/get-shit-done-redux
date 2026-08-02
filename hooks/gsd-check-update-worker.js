@@ -15,9 +15,12 @@ const { isSemverNewer } = require('../gsd-core/bin/lib/semver-compare.cjs');
 // Latest-version lookup is delegated to the single deterministic adapter
 // (#498). checkLatestVersion() owns the npm-view call, the timeout/semver
 // policy, and the package name — sourced from the baked Package Identity seam.
-// The previous `require('../package.json').name` (#378) resolved to undefined
-// in the installed tree (only a {"type":"commonjs"} marker ships), so the
-// background check never reported updates.
+// The previous `require('../package.json').name` (#378) never yielded a name in
+// the installed tree — at the time it resolved to the synthetic
+// {"type":"commonjs"} marker GSD wrote at the config root, which has no `.name`,
+// so the background check never reported updates. Since #2544 GSD writes no
+// marker there at all, so that require would now fail to resolve outright.
+// Either way the name must come from the baked seam, never a walk-up.
 const { checkLatestVersion } = require('../gsd-core/bin/check-latest-version.cjs');
 const { PACKAGE_NAME } = require('../gsd-core/bin/lib/package-identity.cjs');
 // Authoritative list of managed hooks — shared with tests to retire source-grep

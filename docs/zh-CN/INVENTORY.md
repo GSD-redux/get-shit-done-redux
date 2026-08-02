@@ -475,6 +475,7 @@
 | `gsd-read-guard.js` | `PreToolUse` | 防止对未读文件执行 Edit/Write 的建议性守卫 |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | 扫描工具 Read 结果中的提示注入模式（v1.36+，PR #2201） |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 硬性阻止对 worktree 根目录之外绝对路径执行 Edit/Write/MultiEdit（PR #579，#260） |
+| `gsd-write-guard.js` | `PreToolUse` | 硬性阻止将精选的 `.planning/` 工件（ROADMAP.md、里程碑路线图、STATE.md）灾难性缩减的整文件 `Write`；可通过一次性哨兵文件 `.planning/.gsd-allow-shrink`（工作流步骤）或 `GSD_ALLOW_PLANNING_SHRINK=1`（交互式）覆盖（#2255，#973 的修复 3） |
 | `gsd-session-state.sh` | `PostToolUse` | 基于 shell 运行时的会话状态跟踪 |
 | `gsd-validate-commit.sh` | `PostToolUse` | 常规提交强制执行的提交验证 |
 | `gsd-phase-boundary.sh` | `PostToolUse` | 工作流过渡的阶段边界检测 |

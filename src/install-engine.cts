@@ -30,6 +30,7 @@ import installProfiles = require('./install-profiles.cjs');
 import installerMigrations = require('./installer-migrations.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 import { isPathConfined } from './external-descriptor-trust.cjs';
+import { ensureCommonJsMarker } from './commonjs-marker.cjs';
 
 const { processAttribution } = runtimeArtifactConversion;
 // resolveRuntimeArtifactLayout: accessed via module ref (not destructured) so
@@ -1121,6 +1122,33 @@ function _installNativePluginIfDeclared(
       );
       fs.mkdirSync(path.dirname(destPath), { recursive: true });
       fs.copyFileSync(pluginSrc, destPath);
+      // #2544: the staged adapter is a `.js` file, so Node decides its module
+      // type by walking up for the nearest package.json. It used to find the
+      // marker the installer wrote at the config root — the write that
+      // clobbered user-authored files. Pin it from the plugin's own directory
+      // instead, leaving the config root alone. The marker cannot disturb
+      // plugin discovery: OpenCode auto-discovers `plugins/*.{ts,js}` and pi's
+      // isExtensionFile() accepts only `.ts`/`.js` (see installer-migration
+      // 006), so a package.json here is never treated as a plugin. Never
+      // written over a package.json GSD does not own — but when one is already
+      // there, say so: the adapter is CommonJS and will not load under a
+      // foreign `"type": "module"`, and a silent no-op would leave every guard
+      // the adapter spawns dead with no diagnostic (the #2305 failure shape).
+      const markerOutcome = ensureCommonJsMarker(path.dirname(destPath));
+      if (markerOutcome === 'preserved-foreign') {
+        console.warn(
+          `  ⚠  ${np.dir}/package.json is not GSD's CommonJS marker — left untouched. `
+          + `If it declares "type": "module", ${np.file} will not load.`,
+        );
+      } else if (markerOutcome === 'failed') {
+        // Best-effort, never fatal: an unwritable plugin dir must not abort the
+        // install. Same warn-and-continue posture as the foreign-marker branch —
+        // the adapter is staged either way, it just may not resolve as CommonJS.
+        console.warn(
+          `  ⚠  Could not write ${np.dir}/package.json (CommonJS marker) — install continued. `
+          + `If the config root declares "type": "module", ${np.file} will not load.`,
+        );
+      }
     }
   }
 }

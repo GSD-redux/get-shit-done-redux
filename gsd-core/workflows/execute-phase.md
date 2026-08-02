@@ -301,7 +301,9 @@ else
   else
     git switch --quiet "$DEFAULT_BRANCH" 2>/dev/null && git merge --ff-only --quiet "origin/$DEFAULT_BRANCH" 2>/dev/null || true
   fi
-  # Pinned base (#2916); --no-track (#2498) so default autoSetupMerge doesn't wire upstream to origin/$DEFAULT_BRANCH.
+  # Pinned base (#2916); --no-track (#2498). #2639: warn if local ahead of origin.
+  AHEAD=$(git rev-list --count "origin/$DEFAULT_BRANCH..$DEFAULT_BRANCH" 2>/dev/null || echo 0)
+  [ "$AHEAD" != "0" ] && [ -n "$AHEAD" ] && echo "WARNING: $DEFAULT_BRANCH is $AHEAD ahead of origin — '$BRANCH_NAME' won't include those commits (#2639)." >&2
   git checkout -b "$BRANCH_NAME" "origin/$DEFAULT_BRANCH" --no-track \
     || { echo "ERROR: Could not create '$BRANCH_NAME' from origin/$DEFAULT_BRANCH (#2916)." >&2; exit 1; }
 fi
@@ -1171,6 +1173,7 @@ If an active secure-phase step hook exists AND SECURITY.md exists: check frontma
 ```
 </step>
 
+<!-- gsd:section id="partial-wave" when="flag:--wave" -->
 <step name="handle_partial_wave_execution">
 If `WAVE_FILTER` was used, re-run plan discovery after execution:
 
@@ -1201,6 +1204,7 @@ Selected wave finished successfully. This phase still has incomplete plans, so p
 - continue with the normal phase-level verification and completion flow below
 - this means the selected wave happened to be the last remaining work in the phase
 </step>
+<!-- /gsd:section -->
 
 <step name="code_review_gate" required="true">
 **This step is REQUIRED to evaluate the capability hook.** When the code-review capability is active, auto-invoke code review on the phase's source changes. Advisory only — never blocks execution flow. Also dispatches advisory execute:post gate hooks (e.g. tdd.review-checkpoint).
@@ -1255,6 +1259,7 @@ Resolve and re-run /gsd execute-phase, or override with /gsd execute-phase {phas
 **Proceed rule:** If `MVP_MODE && TDD_MODE && GATE_RESULT.block == true` for `tdd.review-checkpoint`: STOP — do NOT proceed to `close_parent_artifacts`, `regression_gate`, `verify_phase_goal`, or `phase.complete`. Otherwise proceed normally.
 </step>
 
+<!-- gsd:section id="gap-closure-artifacts" when="state:gap-closure-phase" -->
 <step name="close_parent_artifacts">
 **For decimal/polish phases only (X.Y pattern):** Close the feedback loop by resolving parent UAT and debug artifacts.
 
@@ -1304,7 +1309,9 @@ mv .planning/debug/{slug}.md .planning/debug/resolved/
 gsd_run query commit "docs(phase-${PARENT_PHASE}): resolve UAT gaps and debug sessions after ${PHASE_NUMBER} gap closure" --files .planning/phases/*${PARENT_PHASE}*/*-UAT.md .planning/debug/resolved/*.md
 ```
 </step>
+<!-- /gsd:section -->
 
+<!-- gsd:section id="regression-gate" when="state:has-prior-phases" -->
 <step name="regression_gate">
 Run prior phases' test suites to catch cross-phase regressions BEFORE verification.
 
@@ -1353,6 +1360,7 @@ Options:
 
 If `TEXT_MODE` is true, present as a plain-text numbered list and ask the user to type their choice number. Otherwise, use AskUserQuestion to present the options.
 </step>
+<!-- /gsd:section -->
 
 <step name="verify_phase_goal">
 Verify phase achieved its GOAL, not just completed tasks.

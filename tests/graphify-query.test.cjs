@@ -9,6 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createTempProject, cleanup } = require('./helpers.cjs');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const {
   graphifyQuery,
@@ -19,6 +20,13 @@ const {
   seedAndExpand,
   applyBudget,
 } = require('../gsd-core/bin/lib/graphify.cjs');
+
+// The emitter itself, not a local re-implementation of it — the whole point of
+// the #2738 budget-outcome pin below is that these two must never drift.
+const { serializeForOutput } = require('../gsd-core/bin/lib/io.cjs');
+
+/** Tokens of a response as `output()` actually emits it. */
+const emittedTokens = (result) => Math.ceil(serializeForOutput(result).length / 4);
 
 const {
   enableGraphify,
@@ -237,6 +245,60 @@ describe('query', () => {
       assert.ok(/\d+ edges omitted/.test(result.trimmed), 'trimmed contains edge count');
       assert.ok(/\d+ nodes unreachable/.test(result.trimmed), 'trimmed contains node count');
     });
+
+    // #2738: seeds are an unconditional floor, so an unmeetable budget must be
+    // reported as a miss instead of silently returning the seed-set payload.
+    test('reports budget_met=false and budget_estimate when the seed floor blocks the budget (#2738)', () => {
+      const input = { nodes: SAMPLE_GRAPH.nodes, edges: SAMPLE_GRAPH.edges, seeds: new Set(['n1']) };
+      const result = applyBudget(input, 1);
+      assert.strictEqual(result.budget_met, false, 'budget cannot be met below the seed floor');
+      assert.strictEqual(typeof result.budget_estimate, 'number');
+      assert.ok(result.budget_estimate > 1, 'estimate reflects the actual returned payload');
+    });
+
+    test('reports budget_met=true when the result fits the budget (#2738)', () => {
+      const input = { nodes: SAMPLE_GRAPH.nodes, edges: SAMPLE_GRAPH.edges, seeds: new Set(['n1']) };
+      const result = applyBudget(input, 100000);
+      assert.strictEqual(result.budget_met, true);
+      assert.ok(result.budget_estimate <= 100000);
+    });
+
+    // #2738 secondary defect: the tier loop estimated against the full pre-filter
+    // node set, so a tier removal that already satisfied the budget (once its
+    // orphaned nodes are excluded) still triggered the next, higher-confidence
+    // tier drop. The INFERRED edge here must survive: dropping AMBIGUOUS orphans
+    // the heavy nodes and the pruned result fits.
+    test('stops dropping tiers once the post-pruning result fits (#2738)', () => {
+      const heavy = 'x'.repeat(400);
+      const nodes = [
+        { id: 's', label: 'Seed', description: 'seed node', type: 'service' },
+        { id: 'k', label: 'Kept', description: 'small neighbor', type: 'service' },
+        ...Array.from({ length: 10 }, (_, i) => (
+          { id: `h${i}`, label: `Heavy${i}`, description: heavy, type: 'service' }
+        )),
+      ];
+      const edges = [
+        { source: 's', target: 'k', label: 'links', confidence: 'INFERRED' },
+        ...Array.from({ length: 10 }, (_, i) => (
+          { source: 's', target: `h${i}`, label: 'links', confidence: 'AMBIGUOUS' }
+        )),
+      ];
+      const result = applyBudget({ nodes, edges, seeds: new Set(['s']) }, 200);
+      assert.ok(
+        result.edges.some(e => e.confidence === 'INFERRED'),
+        'INFERRED edge survives: dropping AMBIGUOUS already satisfied the budget',
+      );
+      assert.strictEqual(result.budget_met, true);
+    });
+
+    // #2738: --budget 0 is a valid parsed budget the CLI forwards; truthiness
+    // treated it as "no budget" and silently returned the unbounded result.
+    test('honors a budget of 0 instead of treating it as no budget (#2738)', () => {
+      const input = { nodes: SAMPLE_GRAPH.nodes, edges: SAMPLE_GRAPH.edges, seeds: new Set(['n1']) };
+      const result = applyBudget(input, 0);
+      assert.ok('budget_met' in result, 'budget 0 goes through the budget path');
+      assert.strictEqual(result.budget_met, false, 'a zero budget is unmeetable and reported as such');
+    });
   });
 
   describe('graphifyQuery', () => {
@@ -308,6 +370,100 @@ describe('query', () => {
       assert.ok(result.trimmed !== null, 'trimmed should indicate budget was applied');
     });
 
+    // #2738: budget outcome surfaces through the query response
+    test('surfaces budget_met and budget_estimate when a budget was requested (#2738)', () => {
+      enableGraphify(planningDir);
+      writeGraphJson(planningDir, SAMPLE_GRAPH);
+      const result = graphifyQuery(tmpDir, 'auth', { budget: 50 });
+      assert.strictEqual(typeof result.budget_met, 'boolean');
+      assert.strictEqual(typeof result.budget_estimate, 'number');
+    });
+
+    // NOTE: this one passes on `next` too — before the fix graphifyQuery never
+    // set these keys, so both assertions already held. It is a forward guard
+    // against the spread leaking budget fields into a no-budget response, NOT
+    // the failing-first regression proof for #2738; do not count it toward
+    // RULESET.TESTS.regression-must-fail-first. The failing-first tests are the
+    // tier-loop and budget-outcome ones above.
+    test('omits budget fields when no budget was requested (#2738)', () => {
+      enableGraphify(planningDir);
+      writeGraphJson(planningDir, SAMPLE_GRAPH);
+      const result = graphifyQuery(tmpDir, 'auth');
+      assert.ok(!('budget_met' in result), 'budget_met absent without --budget');
+      assert.ok(!('budget_estimate' in result), 'budget_estimate absent without --budget');
+    });
+
+    // #2738 Blocker: budget_estimate must measure the payload the caller is
+    // actually handed — output() pretty-prints with 2-space indent and emits the
+    // wrapper keys too. Estimating a compact {nodes, edges} understated a 12-node
+    // response by ~1.5x, so `--budget N` could report budget_met: true while
+    // returning well over N tokens. This pins estimator to emitter so the two
+    // cannot silently re-diverge if output() ever changes its indentation.
+    test('budget_estimate equals the tokens actually emitted (#2738)', () => {
+      enableGraphify(planningDir);
+      writeGraphJson(planningDir, SAMPLE_GRAPH);
+      const result = graphifyQuery(tmpDir, 'auth', { budget: 100000 });
+      assert.strictEqual(
+        result.budget_estimate,
+        emittedTokens(result),
+        'reported estimate must equal the serialized-for-output token count',
+      );
+    });
+
+    test('a met budget is honest about the emitted size (#2738)', () => {
+      enableGraphify(planningDir);
+      writeGraphJson(planningDir, SAMPLE_GRAPH);
+      const probe = graphifyQuery(tmpDir, 'auth', { budget: 100000 });
+      // Budget exactly at the untrimmed size: met, and genuinely within it.
+      const result = graphifyQuery(tmpDir, 'auth', { budget: probe.budget_estimate });
+      assert.strictEqual(result.budget_met, true);
+      assert.ok(
+        emittedTokens(result) <= probe.budget_estimate,
+        `emitted ${emittedTokens(result)} must not exceed the granted ${probe.budget_estimate}`,
+      );
+    });
+
+    // RULESET.TESTS.boundary-coverage: the decision point is `estimate <= budget`,
+    // so the inputs that matter are estimate-1 / estimate / estimate+1 — an
+    // off-by-one in that comparison flips budget_met and nothing else catches it.
+    test('boundary coverage around budget === estimate (#2738)', () => {
+      enableGraphify(planningDir);
+      writeGraphJson(planningDir, SAMPLE_GRAPH);
+      const e = graphifyQuery(tmpDir, 'auth', { budget: 100000 }).budget_estimate;
+
+      const atLimit = graphifyQuery(tmpDir, 'auth', { budget: e });
+      assert.strictEqual(atLimit.budget_met, true, 'budget === estimate is met (<=, not <)');
+      assert.strictEqual(atLimit.budget_estimate, e, 'no trimming needed at the limit');
+
+      const overLimit = graphifyQuery(tmpDir, 'auth', { budget: e + 1 });
+      assert.strictEqual(overLimit.budget_met, true, 'limit+1 is met');
+      assert.strictEqual(overLimit.budget_estimate, e, 'no trimming needed above the limit');
+
+      const underLimit = graphifyQuery(tmpDir, 'auth', { budget: e - 1 });
+      // limit-1 forces the loop to act; whatever it returns, the report must be
+      // consistent with what it returns.
+      assert.strictEqual(
+        underLimit.budget_met,
+        underLimit.budget_estimate <= e - 1,
+        'budget_met must agree with the reported estimate at limit-1',
+      );
+      assert.strictEqual(underLimit.budget_estimate, emittedTokens(underLimit));
+    });
+
+    // Nit #2738: NaN must not reach the budget comparisons — every `estimate <= NaN`
+    // is false, so the loop would strip all three tiers and return a seeds-only
+    // payload indistinguishable from a legitimate aggressive trim. Unreachable via
+    // the CLI (the router rejects non-numeric --budget), reachable module-level.
+    test('a non-finite budget is treated as no budget (#2738)', () => {
+      enableGraphify(planningDir);
+      writeGraphJson(planningDir, SAMPLE_GRAPH);
+      for (const budget of [NaN, Infinity, -Infinity]) {
+        const result = graphifyQuery(tmpDir, 'auth', { budget });
+        assert.ok(!('budget_met' in result), `budget ${budget} takes the no-budget path`);
+        assert.ok(!('budget_estimate' in result), `budget ${budget} reports no estimate`);
+      }
+    });
+
     // QUERY-01: returns total_nodes and total_edges counts
     test('returns total_nodes and total_edges counts', () => {
       enableGraphify(planningDir);
@@ -315,6 +471,137 @@ describe('query', () => {
       const result = graphifyQuery(tmpDir, 'auth');
       assert.strictEqual(typeof result.total_nodes, 'number');
       assert.strictEqual(typeof result.total_edges, 'number');
+    });
+  });
+
+  // RULESET.TESTS.property-based-testing — applyBudget is a budget-limit
+  // contract, and #2738 turns it into a *reporting* contract, which is what
+  // properties express well. These hold for any graph and any budget >= 0.
+  describe('graphifyQuery budget properties (#2738)', () => {
+    let tmpDir;
+    let planningDir;
+    // Surfaced-config-dir fixture: makes positive-path tests deterministic.
+    // See module-level comment for rationale.
+    let surfacedConfigDir;
+    let savedEnv;
+
+    beforeEach(() => {
+      tmpDir = createTempProject();
+      planningDir = path.join(tmpDir, '.planning');
+      surfacedConfigDir = makeSurfacedConfigDir();
+      savedEnv = saveSurfacedEnv();
+      delete process.env.GSD_RUNTIME;
+      process.env.CLAUDE_CONFIG_DIR = surfacedConfigDir;
+      delete process.env.GSD_WORKSTREAM;
+      delete process.env.GSD_PROJECT;
+      enableGraphify(planningDir);
+    });
+
+    afterEach(() => {
+      savedEnv.restore();
+      cleanup(surfacedConfigDir);
+      cleanup(tmpDir);
+    });
+
+    /**
+     * A small arbitrary graph that always seeds on 'auth'.
+     *
+     * seedAndExpand matches on `label` and `description` (case-insensitive
+     * substring) — NOT on `id` or `name` — so the seed node has to carry the
+     * term in its label or the whole graph expands to nothing.
+     */
+    const arbGraph = fc
+      .array(
+        fc.record({
+          label: fc.string({ minLength: 1, maxLength: 6 }),
+          type: fc.constantFrom('module', 'service', 'doc'),
+        }),
+        { minLength: 0, maxLength: 8 },
+      )
+      .map((extra) => {
+        const nodes = [
+          { id: 'n0', label: 'AuthService', description: 'handles authentication', type: 'service' },
+          ...extra.map((n, i) => ({
+            id: `n${i + 1}`,
+            label: n.label,
+            description: '',
+            type: n.type,
+          })),
+        ];
+        const edges = nodes.slice(1).map((n, i) => ({
+          source: nodes[i].id,
+          target: n.id,
+          label: `e${i}`,
+          confidence: ['AMBIGUOUS', 'INFERRED', 'EXTRACTED'][i % 3],
+        }));
+        return { nodes, edges };
+      });
+
+    test('budget_met agrees with budget_estimate against the requested budget', () => {
+      fc.assert(
+        fc.property(arbGraph, fc.nat({ max: 5000 }), (graph, budget) => {
+          writeGraphJson(planningDir, graph);
+          const r = graphifyQuery(tmpDir, 'auth', { budget });
+          assert.strictEqual(r.budget_met, r.budget_estimate <= budget);
+        }),
+      );
+    });
+
+    test('budget_estimate always measures the emitted payload', () => {
+      fc.assert(
+        fc.property(arbGraph, fc.nat({ max: 5000 }), (graph, budget) => {
+          writeGraphJson(planningDir, graph);
+          const r = graphifyQuery(tmpDir, 'auth', { budget });
+          assert.strictEqual(r.budget_estimate, emittedTokens(r));
+        }),
+      );
+    });
+
+    test('the seed set is a floor the reduction never goes below', () => {
+      fc.assert(
+        fc.property(arbGraph, fc.nat({ max: 5000 }), (graph, budget) => {
+          writeGraphJson(planningDir, graph);
+          const r = graphifyQuery(tmpDir, 'auth', { budget });
+          assert.ok(r.nodes.some((n) => n.id === 'n0'), 'seed survives any budget');
+        }),
+      );
+    });
+
+    test('total_nodes and total_edges always match the returned arrays', () => {
+      fc.assert(
+        fc.property(arbGraph, fc.nat({ max: 5000 }), (graph, budget) => {
+          writeGraphJson(planningDir, graph);
+          const r = graphifyQuery(tmpDir, 'auth', { budget });
+          assert.strictEqual(r.total_nodes, r.nodes.length);
+          assert.strictEqual(r.total_edges, r.edges.length);
+        }),
+      );
+    });
+
+    // Monotonicity is asserted over the PAYLOAD, not over budget_estimate.
+    // budget_estimate measures the emitted bytes exactly, and `budget_met`
+    // renders as "false" (5 chars) or "true" (4), so the identical payload can
+    // measure one token larger when the budget is missed. That is the estimate
+    // being honest, not a monotonicity break — so the invariant is stated over
+    // the thing a caller actually cares about: how much graph came back.
+    test('a larger budget never yields a smaller payload', () => {
+      fc.assert(
+        fc.property(arbGraph, fc.nat({ max: 2000 }), fc.nat({ max: 2000 }), (graph, a, b) => {
+          writeGraphJson(planningDir, graph);
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+          const rLo = graphifyQuery(tmpDir, 'auth', { budget: lo });
+          const rHi = graphifyQuery(tmpDir, 'auth', { budget: hi });
+          assert.ok(
+            rLo.total_edges <= rHi.total_edges,
+            `edges must be monotone in the budget (${lo}:${rLo.total_edges} > ${hi}:${rHi.total_edges})`,
+          );
+          assert.ok(
+            rLo.total_nodes <= rHi.total_nodes,
+            `nodes must be monotone in the budget (${lo}:${rLo.total_nodes} > ${hi}:${rHi.total_nodes})`,
+          );
+        }),
+      );
     });
   });
 

@@ -11,6 +11,7 @@
 //   node scripts/run-tests.cjs --suite integration # *.integration.test.cjs
 //   node scripts/run-tests.cjs --suite install     # *.install.test.cjs
 //   node scripts/run-tests.cjs --suite slow        # *.slow.test.cjs
+//   node scripts/run-tests.cjs --suite qa          # *.qa.test.cjs
 //   node scripts/run-tests.cjs --files "a.test.cjs b.test.cjs"
 //   node scripts/run-tests.cjs --files-from /tmp/selected-tests.txt
 //   node scripts/run-tests.cjs --suite unit --shard 1/3   # shard 1 of 3 (#1212)
@@ -39,7 +40,7 @@ const { join, basename } = require('path');
 const { execFileSync } = require('child_process');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 
-const SUITES = ['all', 'unit', 'integration', 'install', 'security', 'slow'];
+const SUITES = ['all', 'unit', 'integration', 'install', 'security', 'slow', 'qa'];
 
 // ADR-457 build-at-publish: gsd-core/bin/lib/*.cjs is generated from
 // src/*.cts and gitignored, so on a clean checkout (fresh CI, before any build)
@@ -169,7 +170,7 @@ function ensureBuiltHooks(overrides = {}) {
     runBuild();
   }
 }
-const MARKED_SUITES = ['integration', 'install', 'security', 'slow'];
+const MARKED_SUITES = ['integration', 'install', 'security', 'slow', 'qa'];
 
 // Recursively collect *.test.cjs files under dir, returning paths relative to dir.
 // Skips node_modules to avoid accidentally picking up decoy files.
