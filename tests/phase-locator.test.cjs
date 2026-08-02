@@ -288,7 +288,11 @@ describe('getArchivedPhaseDirs', () => {
     const entry = result[0];
     assert.strictEqual(entry.name, '03-auth');
     assert.strictEqual(entry.milestone, 'v2.1.0');
-    assert.strictEqual(entry.basePath, path.join('.planning', 'milestones', 'v2.1.0-phases'));
+    // #2855: basePath is posix-normalized (toPosixPath), matching the sibling
+    // `directory` field's contract — a hardcoded forward-slash literal is the
+    // correct expectation on every platform, not path.join (which would emit
+    // backslashes on Windows and break this assertion there).
+    assert.strictEqual(entry.basePath, '.planning/milestones/v2.1.0-phases');
     assert.strictEqual(entry.fullPath, path.join(archiveDir, '03-auth'));
   });
 

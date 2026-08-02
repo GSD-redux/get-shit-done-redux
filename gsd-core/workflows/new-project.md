@@ -101,6 +101,7 @@ Derive `RUNTIME` from the invoking prompt's `execution_context` path:
 - Path contains `/.codex/` → `RUNTIME=codex`
 - Path contains `/.gemini/` → `RUNTIME=gemini`
 - Path contains `/.config/opencode/` or `/.opencode/` → `RUNTIME=opencode`
+- Path contains `/.trae/` → `RUNTIME=trae`
 - Otherwise → `RUNTIME=claude`
 
 If `execution_context` path is not available, fall back to env vars:
@@ -108,6 +109,7 @@ If `execution_context` path is not available, fall back to env vars:
 if [ -n "$CODEX_HOME" ]; then RUNTIME="codex"
 elif [ -n "$GEMINI_CONFIG_DIR" ]; then RUNTIME="gemini"
 elif [ -n "$OPENCODE_CONFIG_DIR" ] || [ -n "$OPENCODE_CONFIG" ]; then RUNTIME="opencode"
+elif [ -n "$TRAE_CONFIG_DIR" ]; then RUNTIME="trae"
 else RUNTIME="claude"; fi
 ```
 
