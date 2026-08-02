@@ -679,6 +679,19 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
   const pending: CleanupManifestEntry[] = [];
   let ok = true;
 
+  // #2852: every per-entry failure site marks the SAME shape — status='blocked',
+  // a reason code, the captured stderr, push to results, flip the overall `ok`
+  // flag — and then either `continue` (isolate, the default) or, for the one
+  // repo-level-failure carve-out, `break`. Factored out so the 8 call sites below
+  // don't repeat the assembly; each site still owns its own control-flow decision.
+  function blockEntry(result: WaveCleanupEntryResult, reason: string, stderr: string): void {
+    result.status = 'blocked';
+    result.reason = reason;
+    result.stderr = stderr;
+    results.push(result);
+    ok = false;
+  }
+
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i];
     const result: WaveCleanupEntryResult = {
@@ -690,11 +703,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
 
     const branchCheck = execGit(['-C', entry.worktree_path, 'rev-parse', '--abbrev-ref', 'HEAD'], { cwd: plan.repoRoot });
     if (!gitResultOk(branchCheck) || branchCheck.stdout.trim() !== entry.branch) {
-      result.status = 'blocked';
-      result.reason = 'branch_mismatch';
-      result.stderr = branchCheck?.stderr || '';
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'branch_mismatch', branchCheck?.stderr || '');
       // #2852: isolate — this entry's problem does not touch repoRoot's git state,
       // so every remaining entry is still independently evaluated.
       continue;
@@ -705,21 +714,13 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       ? entry.allowed_bases
       : [entry.expected_base];
     if (!gitResultOk(mergeBase) || !allowedBases.includes(mergeBase.stdout.trim())) {
-      result.status = 'blocked';
-      result.reason = 'base_mismatch';
-      result.stderr = mergeBase?.stderr || '';
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'base_mismatch', mergeBase?.stderr || '');
       continue; // #2852: isolate
     }
 
     const deletions = execGit(['diff', '--diff-filter=D', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
     if (!gitResultOk(deletions)) {
-      result.status = 'blocked';
-      result.reason = 'deletion_check_failed';
-      result.stderr = deletions?.stderr || '';
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'deletion_check_failed', deletions?.stderr || '');
       continue; // #2852: isolate
     }
     if (deletions.stdout) {
@@ -728,11 +729,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       // product decision (issue #2852's own triage scoped it out — tracked in #3003);
       // this fix only isolates the block to this one entry (#2852) instead of aborting
       // the rest of the wave, same as every other block reason below.
-      result.status = 'blocked';
-      result.reason = 'branch_contains_deletions';
-      result.stderr = deletions.stdout;
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'branch_contains_deletions', deletions.stdout);
       continue; // #2852: isolate
     }
 
@@ -741,21 +738,13 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
     // orchestrator commits it.  Mirrors quick.md shell fallback (#2296, #2070, #2838, #3804).
     const { rescuedRelPaths, failures: rescueFailures } = rescueSummaryArtifacts(entry.worktree_path, plan.repoRoot, deps);
     if (rescueFailures.length > 0) {
-      result.status = 'blocked';
-      result.reason = 'summary_rescue_failed';
-      result.stderr = rescueFailures.map((f) => `${f.relPath}: ${f.error}`).join('; ');
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'summary_rescue_failed', rescueFailures.map((f) => `${f.relPath}: ${f.error}`).join('; '));
       continue; // #2852: isolate
     }
 
     const worktreeStatus = execGit(['-C', entry.worktree_path, 'status', '--porcelain', '--untracked-files=all'], { cwd: plan.repoRoot });
     if (!gitResultOk(worktreeStatus)) {
-      result.status = 'blocked';
-      result.reason = 'worktree_dirty';
-      result.stderr = worktreeStatus?.stderr || '';
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'worktree_dirty', worktreeStatus?.stderr || '');
       continue; // #2852: isolate
     }
     // Filter rescued SUMMARY paths out of the porcelain output before deciding dirty.
@@ -770,21 +759,13 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
         return !rescuedRelPaths.has(filePath);
       });
     if (dirtyLines.length > 0) {
-      result.status = 'blocked';
-      result.reason = 'worktree_dirty';
-      result.stderr = dirtyLines.join('\n');
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'worktree_dirty', dirtyLines.join('\n'));
       continue; // #2852: isolate
     }
 
     const merge = execGit(['merge', entry.branch, '--no-ff', '--no-edit', '-m', `chore: merge executor worktree (${entry.branch})`], { cwd: plan.repoRoot });
     if (!gitResultOk(merge)) {
-      result.status = 'blocked';
-      result.reason = 'merge_failed';
-      result.stderr = merge?.stderr || merge?.stdout || '';
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'merge_failed', merge?.stderr || merge?.stdout || '');
       // #2852: a failed --no-ff merge can leave repoRoot itself mid-merge (MERGE_HEAD
       // set, conflict markers in the tree) — unlike every other block reason above,
       // that state is NOT scoped to this one entry: a second `git merge` cannot even
@@ -809,11 +790,7 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       remove = execGit(['worktree', 'remove', entry.worktree_path, '--force'], { cwd: plan.repoRoot });
     }
     if (!gitResultOk(remove)) {
-      result.status = 'blocked';
-      result.reason = 'worktree_remove_failed';
-      result.stderr = remove?.stderr || '';
-      results.push(result);
-      ok = false;
+      blockEntry(result, 'worktree_remove_failed', remove?.stderr || '');
       // #2852: isolate — the merge already landed on repoRoot; only this entry's
       // worktree/branch teardown is affected.
       continue;
