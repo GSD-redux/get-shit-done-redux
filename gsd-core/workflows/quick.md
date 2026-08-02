@@ -819,10 +819,10 @@ SUMMARY.md and stop — the user must rerun with worktrees disabled.
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
 
-If the executor ran with `isolation="worktree"`, append its returned `{agent_id, worktree_path, branch, expected_base, allowed_bases}` metadata to `QUICK_WORKTREE_MANIFEST` before cleanup. Set `expected_base` to `${EXPECTED_BASE}` and `allowed_bases` to `["${EXPECTED_BASE}", "${QUICK_PLAN_PARENT}"]` with duplicates removed. If any required field is unavailable, stop and ask for recovery; do not discover global worktrees.
+If the executor ran isolated (`ISOLATION = "harness-worktree"` at dispatch), append its returned `{agent_id, worktree_path, branch, expected_base, allowed_bases}` metadata to `QUICK_WORKTREE_MANIFEST` before cleanup. Set `expected_base` to `${EXPECTED_BASE}` and `allowed_bases` to `["${EXPECTED_BASE}", "${QUICK_PLAN_PARENT}"]` with duplicates removed. If any required field is unavailable, stop and ask for recovery; do not discover global worktrees.
 
 After executor returns:
-1. **Worktree cleanup:** If the executor ran with `isolation="worktree"`, merge the worktree branch back and clean up:
+1. **Worktree cleanup:** If the executor ran isolated (`ISOLATION = "harness-worktree"` at dispatch), merge the worktree branch back and clean up:
    ```bash
    QUICK_WORKTREE_MANIFEST=${QUICK_WORKTREE_MANIFEST:-$WAVE_WORKTREE_MANIFEST}
    [ -n "${QUICK_WORKTREE_MANIFEST:-}" ] && [ -f "$QUICK_WORKTREE_MANIFEST" ] || {
@@ -836,7 +836,7 @@ After executor returns:
    # Fail closed: SDK refusal (safety guard #3174/#3384) must surface — do not swallow exit 1.
    gsd_run query worktree.cleanup-wave --manifest "$QUICK_WORKTREE_MANIFEST" || exit 1
    ```
-   If `workflow.use_worktrees` is `false`, skip this step.
+   If `ISOLATION` was not `"harness-worktree"` at dispatch (including a #2649 base-check degrade), skip this step.
 
    > **ISOLATED-RUN RECOVERY — FAIL SAFE (#1292):** When an isolated (worktree) run is *rejected* — the user declines to merge it, the orchestrator surfaces recovery guidance for a blocked/halted plan, or the run over-reached the requested scope — the worktree-isolation contract MUST hold through recovery. Do **NOT** propose continuing on `main`/the primary checkout as the default or recommended recovery path. Default to a **safe halt** and offer: (a) re-attempt in a **fresh, narrowly-scoped worktree**, or (b) inspect or discard the rejected worktree without merging. Any path that edits the primary checkout requires an **explicit, clearly-labeled confirmation** from the user first — editing `main` directly is never the proposed or default option for a run the user configured to be isolated.
 

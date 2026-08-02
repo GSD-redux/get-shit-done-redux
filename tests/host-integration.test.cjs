@@ -2122,4 +2122,90 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
         offenders.join('\n'),
     );
   });
+
+  // #2728 review Blocker — the ISOLATION_TOKEN regex above treats
+  // `isolation="worktree"` as a legitimate isolation marker, so the runtime-gate
+  // detector cannot catch a *conditional* keyed on that literal. But the literal
+  // is Claude Code's own rendering of {harnessFlag}; Cursor's rendering is
+  // `--worktree`, so any post-dispatch step gated on the literal is a silent
+  // no-op for a correctly-isolated Cursor run (quick.md's manifest append and
+  // worktree merge-back were exactly this — isolated work never merged, never
+  // cleaned up). Post-dispatch bookkeeping must key on the negotiated ISOLATION
+  // value instead (dispatch-isolation-gate.md's "never hardcode" rule).
+  const LITERAL_CONDITION = /\bIf\b[^.\n]*`isolation="worktree"`/g;
+
+  function literalConditionOffenders(text, label) {
+    const hits = [];
+    let m;
+    const re = new RegExp(LITERAL_CONDITION.source, 'g');
+    while ((m = re.exec(text)) !== null) {
+      const line = text.slice(0, m.index).split('\n').length;
+      hits.push(`${label}:${line}: ${m[0].trim()}`);
+    }
+    return hits;
+  }
+
+  test('the literal-condition detector flags the pre-fix quick.md shapes (discrimination proof)', () => {
+    const preFix = {
+      'manifest append':
+        'If the executor ran with `isolation="worktree"`, append its returned metadata to `QUICK_WORKTREE_MANIFEST` before cleanup.',
+      'worktree cleanup':
+        '1. **Worktree cleanup:** If the executor ran with `isolation="worktree"`, merge the worktree branch back and clean up:',
+    };
+    for (const [name, snippet] of Object.entries(preFix)) {
+      assert.equal(
+        literalConditionOffenders(snippet, 'mutation').length,
+        1,
+        `detector must flag the pre-fix "${name}" conditional — otherwise the guard below proves nothing`,
+      );
+    }
+    // Explanatory prose that merely *names* the literal (no conditional) stays legal.
+    assert.deepEqual(
+      literalConditionOffenders(
+        'Claude Code\'s `isolation="worktree"` forks new worktrees from `origin/HEAD`.',
+        'benign',
+      ),
+      [],
+    );
+  });
+
+  test('no dispatch site conditions post-dispatch behavior on the Claude-rendered literal', () => {
+    const offenders = [];
+    for (const file of dispatchSites) {
+      offenders.push(
+        ...literalConditionOffenders(
+          fs.readFileSync(file, 'utf-8'),
+          path.relative(REPO_ROOT, file).replace(/\\/g, '/'),
+        ),
+      );
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'post-dispatch steps must key on `ISOLATION = "harness-worktree"`, never on ' +
+        'Claude Code\'s rendered `isolation="worktree"` literal (a Cursor dispatch renders ' +
+        '`--worktree` and would silently skip these steps):\n' + offenders.join('\n'),
+    );
+  });
+
+  test('quick.md post-dispatch bookkeeping keys on the negotiated ISOLATION value', () => {
+    const quick = fs.readFileSync(
+      path.join(REPO_ROOT, 'gsd-core', 'workflows', 'quick.md'), 'utf-8',
+    );
+    assert.match(
+      quick,
+      /If the executor ran isolated \(`ISOLATION = "harness-worktree"` at dispatch\), append its returned/,
+      'the QUICK_WORKTREE_MANIFEST append must be gated on ISOLATION',
+    );
+    assert.match(
+      quick,
+      /\*\*Worktree cleanup:\*\* If the executor ran isolated \(`ISOLATION = "harness-worktree"` at dispatch\)/,
+      'the worktree merge-back/cleanup must be gated on ISOLATION',
+    );
+    assert.match(
+      quick,
+      /If `ISOLATION` was not `"harness-worktree"` at dispatch[^\n]*skip this step/,
+      'the cleanup skip clause must mirror the same ISOLATION gate (USE_WORKTREES stays true on an isolated Cursor run)',
+    );
+  });
 });

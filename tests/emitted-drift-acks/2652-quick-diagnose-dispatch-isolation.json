@@ -1,7 +1,7 @@
 {
   "version": 1,
   "paths": {
-    "quick.md": "#2652 — same migration. Growth is minimized deliberately: the resolution block lives in gsd-core/references/dispatch-isolation-gate.md and this file reads it, because quick.md is at its prompt-stuffing size limit (SIZE_ONLY_WORKFLOWS on next). Net +230 bytes is the reference pointer plus the ISOLATION=none degrade pairing.",
+    "quick.md": "#2652 — same migration. Growth is minimized deliberately: the resolution block lives in gsd-core/references/dispatch-isolation-gate.md and this file reads it, because quick.md is at its prompt-stuffing size limit (SIZE_ONLY_WORKFLOWS on next). Net +342 bytes is the reference pointer, the ISOLATION=none degrade pairing, and the post-dispatch bookkeeping conditions re-keyed from the Claude-rendered literal onto ISOLATION (review Blocker).",
     "diagnose-issues.md": "#2652 — migrates the dispatch site off the pre-#2584 RUNTIME != \"claude\" gate onto the negotiated dispatch.isolation seam. Growth is the ISOLATION resolution, the orchestrator-worktree degrade, and the ISOLATION-conditional WORKTREE_GUARD/{harnessFlag} substitution instructions this file had no equivalent of.",
     "execute-plan.md": "#2652 — the fifth dispatch site, converted after review: Pattern A hardcoded isolation=\"worktree\" (Claude Code's literal) gated only on workflow.use_worktrees, with no capability negotiation. Growth is +795 bytes after the #2649 rebase merged its base-check into this paragraph: the USE_WORKTREES/RUNTIME config reads and the pointer at gsd-core/references/dispatch-isolation-gate.md, the resolution block itself living in that reference rather than inline here."
   }
