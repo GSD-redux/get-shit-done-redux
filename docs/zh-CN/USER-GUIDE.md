@@ -381,8 +381,8 @@ AI 编码工具会幻觉出包名。攻击者会在 npm、PyPI 和 crates.io 上
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -394,7 +394,7 @@ AI 编码工具会幻觉出包名。攻击者会在 npm、PyPI 和 crates.io 上
 
 **执行期间** — 如果安装失败，执行器会显示检查点并停止，而不是静默尝试替代方案。
 
-**Slopcheck 判定：**
+**合法性判定：**
 
 | 判定 | 含义 | GSD 操作 |
 |---------|---------|------------|
