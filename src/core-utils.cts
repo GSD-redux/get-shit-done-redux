@@ -155,7 +155,12 @@ function generateSlugInternal(
   const ascii = transliterated.normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
   const collapsed = ascii.replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
   const points = Array.from(collapsed);
-  const cut = points.length <= maxLength ? collapsed : points.slice(0, maxLength).join('');
+  // Clamp a negative limit to 0 rather than letting `.slice(0, maxLength)`
+  // read it as "count back from the end" — a negative limit is a caller bug,
+  // not a request for the last N characters, and treating it as the latter
+  // silently trimmed the trailing character instead of refusing everything.
+  const clampedMaxLength = Math.max(0, maxLength);
+  const cut = points.length <= clampedMaxLength ? collapsed : points.slice(0, clampedMaxLength).join('');
   // Contract preserved from next, which pins it in tests: a FALSY input yields
   // null (handled above), while a non-empty input whose characters are all
   // separators yields '' — not null and not a stray '-'. This PR consolidates

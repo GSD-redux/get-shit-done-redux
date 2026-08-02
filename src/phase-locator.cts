@@ -112,9 +112,12 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       directory: toPosixPath(path.join(relBase, match)),
       phase_number: phaseNumber,
       phase_name: phaseName,
-      // `null` (not `''`) when the name yields no slug: an absent slug is
-      // reported as absent, never as an empty string a caller could concatenate
-      // into a nameless path segment (#2848).
+      // Can be `''` when phaseName has no slug-safe characters — the
+      // generator's contract returns the empty string for that case, not
+      // `null` (`null` only means the input itself was falsy). A caller that
+      // concatenates this into a path segment without checking for `''` gets
+      // a nameless directory; every writer of phase_slug already guards
+      // against that separately (#2848).
       phase_slug: generateSlugInternal(phaseName),
       plans,
       summaries,

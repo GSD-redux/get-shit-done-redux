@@ -203,6 +203,20 @@ describe('generateSlugInternal', () => {
     assert.ok(result !== null && result.length <= 60);
   });
 
+  // ─── negative maxLength must not read as "count back from the end". ───────
+  // `.slice(0, -1)` drops the last element instead of returning nothing;
+  // generateSlugInternal must clamp a negative limit to 0 rather than
+  // inheriting that Array.prototype.slice reading.
+
+  test('a negative maxLength refuses everything instead of silently dropping the last character', () => {
+    assert.strictEqual(coreUtils.generateSlugInternal('abcdef ghij', 60), 'abcdef-ghij');
+    assert.strictEqual(coreUtils.generateSlugInternal('abcdef ghij', 5), 'abcde');
+    assert.strictEqual(coreUtils.generateSlugInternal('abcdef ghij', 1), 'a');
+    assert.strictEqual(coreUtils.generateSlugInternal('abcdef ghij', 0), '');
+    assert.strictEqual(coreUtils.generateSlugInternal('abcdef ghij', -1), '');
+    assert.strictEqual(coreUtils.generateSlugInternal('abcdef ghij', -5), '');
+  });
+
   // ─── #2849: trailing hyphen must not survive 60-char truncation. ───────────
   // The strip ran before .substring(0, 60), so a cut landing on a separator
   // produced a slug ending in `-`. The strip must run after truncation.
