@@ -475,6 +475,7 @@
 | `gsd-read-guard.js` | `PreToolUse` | 未読ファイルへの Edit/Write を防ぐアドバイザリーガード |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | ツール Read 結果のプロンプトインジェクションパターンをスキャン（v1.36+、PR #2201） |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | ワークツリールート外の絶対パスを持つ Edit/Write/MultiEdit をハードブロック（PR #579、#260） |
+| `gsd-write-guard.js` | `PreToolUse` | キュレーションされた `.planning/` アーティファクト（ROADMAP.md、マイルストーンロードマップ、STATE.md）を大幅に縮小するファイル全体の `Write` をハードブロック。使い捨てセンチネル `.planning/.gsd-allow-shrink`（ワークフローステップ）または `GSD_ALLOW_PLANNING_SHRINK=1`（対話時）でオーバーライド（#2255、#973 の修正 3） |
 | `gsd-session-state.sh` | `PostToolUse` | シェルベースランタイム向けのセッション状態追跡 |
 | `gsd-validate-commit.sh` | `PostToolUse` | Conventional Commit 適用のためのコミットバリデーション |
 | `gsd-phase-boundary.sh` | `PostToolUse` | ワークフロー遷移のためのフェーズ境界検出 |

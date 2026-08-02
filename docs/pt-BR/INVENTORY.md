@@ -475,6 +475,7 @@ Listagem completa: `hooks/`.
 | `gsd-read-guard.js` | `PreToolUse` | Guarda consultiva que impede Edit/Write em arquivos não lidos |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Varre resultados de Read de ferramenta em busca de padrões de injeção de prompt (v1.36+, PR #2201) |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Bloqueia rigorosamente Edit/Write/MultiEdit com caminhos absolutos fora da raiz do worktree (PR #579, #260) |
+| `gsd-write-guard.js` | `PreToolUse` | Bloqueia rigorosamente um `Write` de arquivo inteiro que encolhe catastroficamente um artefato curado de `.planning/` (ROADMAP.md, roadmaps de milestone, STATE.md); override via o sentinela de uso único `.planning/.gsd-allow-shrink` (passos de workflow) ou `GSD_ALLOW_PLANNING_SHRINK=1` (interativo) (#2255, correção 3 de #973) |
 | `gsd-session-state.sh` | `PostToolUse` | Rastreamento de estado de sessão para runtimes baseados em shell |
 | `gsd-validate-commit.sh` | `PostToolUse` | Validação de commit para aplicação de conventional-commit |
 | `gsd-phase-boundary.sh` | `PostToolUse` | Detecção de limite de fase para transições de workflow |

@@ -1,0 +1,5 @@
+---
+type: Fixed
+pr: 2593
+---
+**Installing or updating GSD no longer destroys a user-authored `package.json` at the runtime config root** — the CommonJS marker (`{"type":"commonjs"}`) that pins GSD's staged `.js` scripts is now written into the directories GSD itself fills (`hooks/`, and `plugins/`/`extensions/` for the runtimes with a native plugin adapter) instead of over `<configRoot>/package.json`. Previously every install and every `/gsd-update` re-install overwrote that file unconditionally — no existence check, no merge, no backup — permanently destroying any `name`, `type`, `dependencies`, or `scripts` the user or host tool had put there. This hit 11 runtimes and was worst on OpenCode and Kilo, where the config-root `package.json` is the documented place to declare local-plugin npm dependencies. Install and uninstall now share one ownership predicate, so a `package.json` GSD did not write is never overwritten and never removed; uninstall still retires the marker left behind by earlier versions. (#2544)

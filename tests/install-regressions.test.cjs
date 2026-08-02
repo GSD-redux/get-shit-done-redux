@@ -70,6 +70,41 @@ function stubHooksIntoDir(targetDir, hookNames) {
   }
 }
 
+describe('#2429 regression: Codex local skills stay project-scoped', () => {
+  test('--codex --local --profile=core installs under .codex without writing to HOME', (t) => {
+    const root = createTempDir('gsd 2429 ');
+    const projectDir = path.join(root, 'project with spaces');
+    const homeDir = path.join(root, 'home with spaces');
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.mkdirSync(homeDir, { recursive: true });
+    t.after(() => cleanup(root));
+
+    const env = { ...process.env, HOME: homeDir, USERPROFILE: homeDir };
+    delete env.GSD_TEST_MODE;
+    delete env.CODEX_HOME;
+
+    const result = spawnSync(
+      process.execPath,
+      [INSTALL_SCRIPT, '--codex', '--local', '--profile=core'],
+      { cwd: projectDir, encoding: 'utf8', env, timeout: 60_000 },
+    );
+
+    assert.strictEqual(
+      result.status,
+      0,
+      `installer exited ${result.status}\n${result.stdout}\n${result.stderr}`,
+    );
+    assert.ok(
+      fs.existsSync(path.join(projectDir, '.codex', 'skills', 'gsd-help', 'SKILL.md')),
+      'Codex local install must write gsd-help under the project .codex directory',
+    );
+    assert.ok(
+      !fs.existsSync(path.join(homeDir, '.agents', 'skills', 'gsd-help', 'SKILL.md')),
+      'Codex local install must not write gsd-help under the global .agents directory',
+    );
+  });
+});
+
 // ─── Defect #1 — Hermes upgrade: bare-stem dirs from #3664 era become stale ──
 //
 // #947 REVERSES #3664: the canonical layout is now skills/gsd/gsd-<stem>/ again.

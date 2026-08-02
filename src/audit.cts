@@ -92,6 +92,22 @@ interface ContextQuestionItem {
   scan_error?: boolean;
 }
 
+interface DeferredItem {
+  phase: string;
+  file: string;
+  text: string;
+  scan_error?: boolean;
+}
+
+/**
+ * Minimal structural view of `uat.cjs` — only the export `scanDeferredItems`
+ * lazily requires. Mirrors the local-interface convention in
+ * `audit-command-router.cts`, which types its lazy requires the same way.
+ */
+interface UatDeferredModule {
+  parseDeferredItems(content: string): Array<{ name: string }>;
+}
+
 interface AuditCounts {
   debug_sessions: number;
   quick_tasks: number;
@@ -101,6 +117,7 @@ interface AuditCounts {
   uat_gaps: number;
   verification_gaps: number;
   context_questions: number;
+  deferred_items: number;
   total: number;
 }
 
@@ -117,8 +134,13 @@ interface AuditResult {
     uat_gaps: UatGapItem[];
     verification_gaps: VerificationGapItem[];
     context_questions: ContextQuestionItem[];
+    deferred_items: DeferredItem[];
   };
 }
+
+// The SCOPE BOUNDARY convention's filename (`agents/gsd-executor.md`), shared
+// verbatim with the #2287 phase-boundary reader in `uat.cts`.
+const DEFERRED_ITEMS_FILENAME = 'deferred-items.md';
 
 // Terminal UAT states: `complete` (legacy) and `resolved` (post-gap-closure
 // per workflows/execute-phase.md). Hoisted outside scanUatGaps so the Set is
@@ -680,6 +702,78 @@ function scanContextQuestions(planDir: string): ContextQuestionItem[] {
   return results;
 }
 
+// ─── scanDeferredItems ────────────────────────────────────────────────────────
+
+/**
+ * Scan phase directories for UNRESOLVED entries in `deferred-items.md` (#2646).
+ *
+ * The SCOPE BOUNDARY convention (`agents/gsd-executor.md`) has a phase agent
+ * log an out-of-scope discovery here rather than fix it. #2287 made that file
+ * readable at the PHASE boundary (`/gsd-progress` check 7, `audit-uat`); this
+ * scanner closes the remaining reader gap one boundary up, so an entry still
+ * unresolved at MILESTONE close surfaces in the pre-close audit alongside the
+ * other eight categories and the existing `[R]/[A]/[C]` prompt applies to it.
+ * Without this, phase directories archive to `milestones/vX.Y-phases/` (#1871)
+ * and the entry leaves the live tree having never been triaged.
+ *
+ * The resolved/unresolved predicate is NOT reimplemented here: `uat.cjs`
+ * already exports `parseDeferredItems`, which owns the parsing rule (entries
+ * under a `## Deferred Items` level-2 heading, else the whole file fail-safe;
+ * RESOLVED only on an explicit case-insensitive `status: resolved` field).
+ * Duplicating that inequality is how two readers of the same file drift into
+ * disagreeing about what "open" means. The require is deliberately LAZY,
+ * inside the scan, to preserve `audit-command-router.cts`'s property that a
+ * route never loads the module it does not need.
+ */
+function scanDeferredItems(planDir: string): DeferredItem[] {
+  const phasesDir = path.join(planDir, 'phases');
+  if (!fs.existsSync(phasesDir)) return [];
+
+  let dirs: string[];
+  try {
+    dirs = fs.readdirSync(phasesDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+      .sort();
+  } catch {
+    return [{ scan_error: true, phase: '', file: '', text: '' }];
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-unsafe-assignment
+  const uat: UatDeferredModule = require('./uat.cjs');
+
+  const results: DeferredItem[] = [];
+
+  for (const dir of dirs) {
+    const phaseDir = path.join(phasesDir, dir);
+    const phaseMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
+    const phaseNum = phaseMatch ? phaseMatch[1] : dir;
+
+    const filePath = path.join(phaseDir, DEFERRED_ITEMS_FILENAME);
+    if (!fs.existsSync(filePath)) continue;
+
+    let safeFilePath: string;
+    try {
+      safeFilePath = requireSafePath(filePath, planDir, 'deferred items file', { allowAbsolute: true });
+    } catch {
+      continue;
+    }
+
+    const content = platformReadSync(safeFilePath);
+    if (content === null) continue;
+
+    for (const item of uat.parseDeferredItems(content)) {
+      results.push({
+        phase: sanitizeForDisplay(phaseNum),
+        file: DEFERRED_ITEMS_FILENAME,
+        text: sanitizeForDisplay(item.name),
+      });
+    }
+  }
+
+  return results;
+}
+
 // ─── auditOpenArtifacts ───────────────────────────────────────────────────────
 
 /**
@@ -723,6 +817,10 @@ function auditOpenArtifacts(cwd: string): AuditResult {
     try { return scanContextQuestions(planDir); } catch { return [{ scan_error: true, phase: '', file: '', question_count: 0, questions: [] }]; }
   })();
 
+  const deferredItems = (() => {
+    try { return scanDeferredItems(planDir); } catch { return [{ scan_error: true, phase: '', file: '', text: '' }]; }
+  })();
+
   // Count real items (not scan_error sentinels)
   const countReal = (arr: Array<{ scan_error?: boolean; _remainder_count?: number }>) =>
     arr.filter(i => !i.scan_error && !i._remainder_count).length;
@@ -736,9 +834,10 @@ function auditOpenArtifacts(cwd: string): AuditResult {
     uat_gaps: countReal(uatGaps),
     verification_gaps: countReal(verificationGaps),
     context_questions: countReal(contextQuestions),
+    deferred_items: countReal(deferredItems),
     total: 0,
   };
-  counts.total = counts.debug_sessions + counts.quick_tasks + counts.threads + counts.todos + counts.seeds + counts.uat_gaps + counts.verification_gaps + counts.context_questions;
+  counts.total = counts.debug_sessions + counts.quick_tasks + counts.threads + counts.todos + counts.seeds + counts.uat_gaps + counts.verification_gaps + counts.context_questions + counts.deferred_items;
 
   return {
     scanned_at: new Date().toISOString(),
@@ -753,6 +852,7 @@ function auditOpenArtifacts(cwd: string): AuditResult {
       uat_gaps: uatGaps,
       verification_gaps: verificationGaps,
       context_questions: contextQuestions,
+      deferred_items: deferredItems,
     },
   };
 }
@@ -866,6 +966,16 @@ function formatAuditReport(auditResult: AuditResult): string {
       for (const q of item.questions) {
         lines.push(`     - ${q}`);
       }
+    }
+  }
+
+  // Deferred items (deferred decisions — blue). Out-of-scope discoveries a
+  // phase agent recorded rather than fixed, still unresolved at close (#2646).
+  if (counts.deferred_items > 0) {
+    lines.push('');
+    lines.push(`🔵 Deferred Items (${counts.deferred_items} unresolved)`);
+    for (const item of items.deferred_items.filter(i => !i.scan_error)) {
+      lines.push(`   • Phase ${item.phase}: ${item.text}`);
     }
   }
 

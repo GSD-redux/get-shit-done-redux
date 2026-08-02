@@ -1598,24 +1598,56 @@ function cmdPhaseRemove(
   );
 
   const statePath = path.join(planningDir(cwd), 'STATE.md');
+  let stateUpdated = false;
   if (fs.existsSync(statePath)) {
-    readModifyWriteStateMd(
+    // #2640: report whether STATE.md content actually changed, not just file
+    // existence (fs.existsSync was trivially true). Also ensure the body
+    // transform produces a diff so readModifyWriteStateMd's no-op guard
+    // (#948) doesn't skip the frontmatter resync — without that, the
+    // progress.* frontmatter block stays stale when the body has no
+    // 'Total Phases:' or 'of N' phrase.
+    stateUpdated = readModifyWriteStateMd(
       statePath,
       (stateContent: string) => {
-        const totalRaw = stateExtractField(stateContent, 'Total Phases');
+        let modified = stateContent;
+        const totalRaw = stateExtractField(modified, 'Total Phases');
         if (totalRaw) {
-          stateContent =
-            stateReplaceField(stateContent, 'Total Phases', String(parseInt(totalRaw, 10) - 1)) ||
-            stateContent;
+          modified =
+            stateReplaceField(modified, 'Total Phases', String(parseInt(totalRaw, 10) - 1)) ||
+            modified;
         }
-        const ofMatch = stateContent.match(/(\bof\s+)(\d+)(\s*(?:\(|phases?))/i);
+        const ofMatch = modified.match(/(\bof\s+)(\d+)(\s*(?:\(|phases?))/i);
         if (ofMatch) {
-          stateContent = stateContent.replace(
+          modified = modified.replace(
             /(\bof\s+)(\d+)(\s*(?:\(|phases?))/i,
             `$1${parseInt(ofMatch[2], 10) - 1}$3`,
           );
         }
-        return stateContent;
+        // #2640: if neither body field was found, the transform is a no-op.
+        // readModifyWriteStateMd's no-op guard (#948) would then skip the
+        // frontmatter resync, leaving progress.* stale. Force a body diff
+        // ONLY when a phase directory was actually removed (targetDir !== null)
+        // so the guard passes and syncStateFrontmatter rebuilds the frontmatter
+        // from the post-deletion disk/ROADMAP state. Without the targetDir gate,
+        // a no-op removal (ROADMAP-only phase, no directory) would inject a
+        // spurious 'Total Phases:' line into a body that intentionally lacked one.
+        if (targetDir && modified === stateContent) {
+          // subdirs was read before the deletion; excluding the removed target
+          // gives the remaining count. Renumbering changes names but not count.
+          const remainingPhases = subdirs.filter(
+            (d) => phaseTokenMatches(d, normalized) === false,
+          ).length;
+          if (totalRaw) {
+            modified =
+              stateReplaceField(modified, 'Total Phases', String(remainingPhases)) || modified;
+          } else {
+            // No 'Total Phases:' field in the body — append one so the no-op
+            // guard sees a diff. syncStateFrontmatter will then rebuild the
+            // frontmatter progress.* block from the real disk/ROADMAP count.
+            modified = `Total Phases: ${remainingPhases}\n` + modified;
+          }
+        }
+        return modified;
       },
       cwd,
     );
@@ -1628,7 +1660,7 @@ function cmdPhaseRemove(
       renamed_directories: renamedDirs,
       renamed_files: renamedFiles,
       roadmap_updated: true,
-      state_updated: fs.existsSync(statePath),
+      state_updated: stateUpdated,
     },
     raw,
   );

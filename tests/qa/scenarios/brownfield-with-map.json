@@ -1,0 +1,52 @@
+{
+  "name": "brownfield-with-map",
+  "fixture": "greenfield",
+  "steps": [
+    {
+      "at": "discuss:pre",
+      "run": [["init", "new-project"]],
+      "readOnly": true,
+      "expect": [
+        { "path": "is_brownfield", "is": false },
+        { "path": "has_codebase_map", "is": false }
+      ]
+    },
+    {
+      "at": "discuss:pre",
+      "agent": {
+        "write": {
+          "src/index.js": "@code/sample-source"
+        }
+      },
+      "run": [["init", "new-project"]],
+      "readOnly": true,
+      "expect": [
+        { "path": "is_brownfield", "is": true },
+        { "path": "has_codebase_map", "is": false },
+        { "path": "needs_codebase_map", "is": true }
+      ]
+    },
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/codebase/STACK.md": "@codebase/STACK",
+          ".planning/codebase/ARCHITECTURE.md": "@codebase/ARCHITECTURE",
+          ".planning/codebase/STRUCTURE.md": "@codebase/STRUCTURE",
+          ".planning/codebase/CONVENTIONS.md": "@codebase/CONVENTIONS",
+          ".planning/codebase/TESTING.md": "@codebase/TESTING",
+          ".planning/codebase/INTEGRATIONS.md": "@codebase/INTEGRATIONS",
+          ".planning/codebase/CONCERNS.md": "@codebase/CONCERNS",
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]],
+      "expect": [
+        { "path": "is_brownfield", "is": true },
+        { "path": "has_codebase_map", "is": true },
+        { "path": "needs_codebase_map", "is": false }
+      ]
+    }
+  ]
+}
