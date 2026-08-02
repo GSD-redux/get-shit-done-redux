@@ -679,6 +679,26 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
   const pending: CleanupManifestEntry[] = [];
   let ok = true;
 
+  // #2852: memoized per-entry "what did this branch change overall" set, used only
+  // when ANOTHER entry in the wave has a deletion and we need to know whether this
+  // entry's branch still touches the deleted path. Computed lazily via `HEAD...branch`
+  // (same merge-base-relative form already used for the deletion check below) so a
+  // wave with no deletions never pays for the extra git call, and an already-merged
+  // sibling's diff stays stable even after its own merge has moved `repoRoot` HEAD —
+  // the merge-base between the (now-advanced) HEAD and an independent sibling branch
+  // is unaffected by that sibling's own merge commit.
+  const repoRoot = plan.repoRoot;
+  const changedFilesCache = new Map<number, Set<string> | null>();
+  function getEntryChangedFiles(k: number): Set<string> | null {
+    if (changedFilesCache.has(k)) return changedFilesCache.get(k) as Set<string> | null;
+    const diffResult = execGit(['diff', '--name-only', `HEAD...${entries[k].branch}`], { cwd: repoRoot });
+    const value = gitResultOk(diffResult)
+      ? new Set(diffResult.stdout.split('\n').map((l) => l.trim()).filter(Boolean))
+      : null; // unknown — treated conservatively (fail-closed) by the caller
+    changedFilesCache.set(k, value);
+    return value;
+  }
+
   for (let i = 0; i < entries.length; i += 1) {
     const entry = entries[i];
     const result: WaveCleanupEntryResult = {
@@ -694,9 +714,10 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'branch_mismatch';
       result.stderr = branchCheck?.stderr || '';
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      // #2852: isolate — this entry's problem does not touch repoRoot's git state,
+      // so every remaining entry is still independently evaluated.
+      continue;
     }
 
     const mergeBase = execGit(['merge-base', 'HEAD', entry.branch], { cwd: plan.repoRoot });
@@ -708,9 +729,8 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'base_mismatch';
       result.stderr = mergeBase?.stderr || '';
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      continue; // #2852: isolate
     }
 
     const deletions = execGit(['diff', '--diff-filter=D', '--name-only', `HEAD...${entry.branch}`], { cwd: plan.repoRoot });
@@ -719,18 +739,39 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'deletion_check_failed';
       result.stderr = deletions?.stderr || '';
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      continue; // #2852: isolate
     }
     if (deletions.stdout) {
-      result.status = 'blocked';
-      result.reason = 'branch_contains_deletions';
-      result.stderr = deletions.stdout;
-      results.push(result);
-      pending.push(...entries.slice(i + 1));
-      ok = false;
-      break;
+      // #2852: a deletion is only a genuine risk when ANOTHER entry in this same wave
+      // still touches the deleted path — merging it first could silently drop or
+      // conflict with that entry's changes once it is processed. A deletion nothing
+      // else in the wave depends on (the reported repro: folding a test file into a
+      // sibling) is safe to let through. Unknown overlap (a sibling's diff could not
+      // be determined) fails closed — block, matching the pre-fix conservative default.
+      const deletedFiles = deletions.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
+      let stillDependedOn = false;
+      let overlapUnknown = false;
+      for (let k = 0; k < entries.length; k += 1) {
+        if (k === i) continue;
+        const otherFiles = getEntryChangedFiles(k);
+        if (otherFiles === null) {
+          overlapUnknown = true;
+          continue;
+        }
+        if (deletedFiles.some((f) => otherFiles.has(f))) {
+          stillDependedOn = true;
+        }
+      }
+      if (stillDependedOn || overlapUnknown) {
+        result.status = 'blocked';
+        result.reason = 'branch_contains_deletions';
+        result.stderr = deletions.stdout;
+        results.push(result);
+        ok = false;
+        continue; // #2852: isolate
+      }
+      // else: no other wave member depends on the deleted path(s) — safe, fall through.
     }
 
     // Safety net: rescue uncommitted SUMMARY.md artifacts before the dirty check.
@@ -742,9 +783,8 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'summary_rescue_failed';
       result.stderr = rescueFailures.map((f) => `${f.relPath}: ${f.error}`).join('; ');
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      continue; // #2852: isolate
     }
 
     const worktreeStatus = execGit(['-C', entry.worktree_path, 'status', '--porcelain', '--untracked-files=all'], { cwd: plan.repoRoot });
@@ -753,9 +793,8 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'worktree_dirty';
       result.stderr = worktreeStatus?.stderr || '';
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      continue; // #2852: isolate
     }
     // Filter rescued SUMMARY paths out of the porcelain output before deciding dirty.
     // A line like "?? .planning/q1-SUMMARY.md" should not block when the SUMMARY
@@ -773,9 +812,8 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'worktree_dirty';
       result.stderr = dirtyLines.join('\n');
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      continue; // #2852: isolate
     }
 
     const merge = execGit(['merge', entry.branch, '--no-ff', '--no-edit', '-m', `chore: merge executor worktree (${entry.branch})`], { cwd: plan.repoRoot });
@@ -784,9 +822,20 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'merge_failed';
       result.stderr = merge?.stderr || merge?.stdout || '';
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      // #2852: a failed --no-ff merge can leave repoRoot itself mid-merge (MERGE_HEAD
+      // set, conflict markers in the tree) — unlike every other block reason above,
+      // that state is NOT scoped to this one entry: a second `git merge` cannot even
+      // start while one is in progress, so every remaining entry would be corrupted by
+      // it. Recover by aborting; only genuine recovery failure — repoRoot left in an
+      // unrecoverable state — legitimately halts the rest of the wave (the brief's
+      // "infrastructure-level failure affecting the repo itself" carve-out).
+      const abort = execGit(['merge', '--abort'], { cwd: plan.repoRoot });
+      if (!gitResultOk(abort)) {
+        pending.push(...entries.slice(i + 1));
+        break;
+      }
+      continue; // #2852: isolate — repoRoot recovered, remaining entries unaffected
     }
 
     let remove = execGit(['worktree', 'remove', entry.worktree_path, '--force'], { cwd: plan.repoRoot });
@@ -802,9 +851,10 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
       result.reason = 'worktree_remove_failed';
       result.stderr = remove?.stderr || '';
       results.push(result);
-      pending.push(...entries.slice(i + 1));
       ok = false;
-      break;
+      // #2852: isolate — the merge already landed on repoRoot; only this entry's
+      // worktree/branch teardown is affected.
+      continue;
     }
 
     const branchDelete = execGit(['branch', '-D', entry.branch], { cwd: plan.repoRoot });
