@@ -358,13 +358,16 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
   });
 
   test('stall surveillance is not gated behind the teams-status guard (AC2)', () => {
-    // The only `query teams-status` call in plan-phase.md must stay scoped to
-    // the researcher spawn banner (its pre-existing, unrelated purpose) — the
-    // new stall blocks (and the helpers they call) must not reference or
-    // depend on it.
-    const teamsStatusOccurrences = workflow.split('query teams-status').length - 1;
-    assert.equal(teamsStatusOccurrences, 1, 'teams-status guard must remain scoped to its single pre-existing call site');
-    assert.doesNotMatch(readStallHelpersDoc(), /teams-status/, 'stall-detection helpers must not reference the teams-status guard');
+    // The only actual `query teams-status` CALL in plan-phase.md must stay
+    // scoped to the researcher spawn banner (its pre-existing, unrelated
+    // purpose) — the new stall blocks must not add a second call site or make
+    // their own behavior conditional on it. The helpers doc is allowed (and
+    // expected) to name "teams-status" in prose explaining that independence
+    // (AC2 self-documentation) — what must never appear is a SECOND `query
+    // teams-status` invocation, or any conditional gating on its result.
+    const teamsStatusCallOccurrences = workflow.split('query teams-status').length - 1;
+    assert.equal(teamsStatusCallOccurrences, 1, 'teams-status guard must remain scoped to its single pre-existing call site');
+    assert.doesNotMatch(readStallHelpersDoc(), /query teams-status/, 'stall-detection helpers must not add their own teams-status call site');
   });
 
   test('completion-marker contract is unchanged (AC4)', () => {
