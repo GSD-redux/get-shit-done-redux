@@ -1782,10 +1782,108 @@ describe('executeWorktreeWaveCleanupPlan', () => {
   // #2852: this test previously asserted the wave-abort BUG — that a merge conflict on
   // entry 1 left entry 2 stranded in `pending`, untouched. That is exactly the defect
   // reported in #2852 (part b): one blocked branch must not abort the rest of the wave.
-  // The corrected contract is exercised as two rows of the #2852 test matrix below:
-  // "recovered merge_failed isolates to entry 1" (this scenario, `git merge --abort`
-  // succeeds) and "unrecoverable merge_failed legitimately halts the wave" (abort itself
-  // fails — the one case that genuinely corrupts repoRoot for every remaining entry).
+  // The corrected contract is exercised as three rows of the #2852 test matrix below:
+  // "an ordinary merge_failed without entering a merge state" (no MERGE_HEAD was ever
+  // created — the common case, e.g. "your local changes would be overwritten" — isolate),
+  // "a recovered merge_failed" (a real conflict, `git merge --abort` clears MERGE_HEAD —
+  // isolate), and "an unrecoverable merge_failed" (MERGE_HEAD is STILL present after the
+  // abort attempt — the one case that genuinely corrupts repoRoot for every remaining
+  // entry — halt).
+  //
+  // CORRECTNESS NOTE (caught in review): `git merge --abort`'s own exit code is NOT the
+  // right signal for "unrecoverable". git legitimately fails abort with "There is no
+  // merge to abort (MERGE_HEAD missing)?" in the SAFE case too — whenever the original
+  // merge never entered a merge state in the first place (no conflict, just a refused
+  // merge). An earlier version of this fix trusted abort's exit code alone, which
+  // misclassified that common safe case as unrecoverable and stranded the rest of the
+  // wave — the exact bug #2852 exists to fix, reintroduced through the recovery path.
+  // The fix checks repoRoot's ACTUAL state via `git rev-parse --verify -q MERGE_HEAD`.
+
+  test('#2852: an ordinary merge_failed without entering a merge state does not abort the wave', () => {
+    // No MERGE_HEAD is ever created here — git refuses the merge outright (e.g. local
+    // changes would be overwritten). `git merge --abort` therefore legitimately fails
+    // with "There is no merge to abort", but repoRoot's tree was never touched, so this
+    // is an ORDINARY per-entry failure — entry 2 must still be evaluated and merge.
+    const plan = {
+      ok: true,
+      repoRoot: '/repo/main',
+      action: 'cleanup_wave',
+      discovery: 'manifest',
+      entries: [
+        {
+          agent_id: 'a1',
+          worktree_path: '/repo/.claude/worktrees/agent-a1',
+          branch: 'worktree-agent-a1',
+          expected_base: 'abc123',
+        },
+        {
+          agent_id: 'a2',
+          worktree_path: '/repo/.claude/worktrees/agent-a2',
+          branch: 'worktree-agent-a2',
+          expected_base: 'abc123',
+        },
+      ],
+    };
+    const result = executeWorktreeWaveCleanupPlan(plan, {
+      execGit: (args) => {
+        const key = args.join(' ');
+        if (key === '-C /repo/.claude/worktrees/agent-a1 rev-parse --abbrev-ref HEAD') {
+          return { exitCode: 0, stdout: 'worktree-agent-a1', stderr: '' };
+        }
+        if (key === 'merge-base HEAD worktree-agent-a1') {
+          return { exitCode: 0, stdout: 'abc123', stderr: '' };
+        }
+        if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key.startsWith('merge worktree-agent-a1')) {
+          // No conflict — git refuses the merge outright. No MERGE_HEAD is created.
+          return { exitCode: 1, stdout: '', stderr: 'error: Your local changes to the following files would be overwritten by merge' };
+        }
+        if (key === 'merge --abort') {
+          // Legitimately fails — there was never a merge to abort. NOT a signal of
+          // repo corruption; the wave-isolation decision must not trust this exit code.
+          return { exitCode: 1, stdout: '', stderr: 'fatal: There is no merge to abort (MERGE_HEAD missing)?' };
+        }
+        if (key === 'rev-parse --verify -q MERGE_HEAD') {
+          // repoRoot is NOT mid-merge — the ref simply doesn't exist.
+          return { exitCode: 1, stdout: '', stderr: '' };
+        }
+        // Entry 2 must still be evaluated independently.
+        if (key === '-C /repo/.claude/worktrees/agent-a2 rev-parse --abbrev-ref HEAD') {
+          return { exitCode: 0, stdout: 'worktree-agent-a2', stderr: '' };
+        }
+        if (key === 'merge-base HEAD worktree-agent-a2') {
+          return { exitCode: 0, stdout: 'abc123', stderr: '' };
+        }
+        if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a2') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === '-C /repo/.claude/worktrees/agent-a2 status --porcelain --untracked-files=all') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key.startsWith('merge worktree-agent-a2')) {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === 'worktree remove /repo/.claude/worktrees/agent-a2 --force') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === 'branch -D worktree-agent-a2') {
+          return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        throw new Error(`unexpected git call: ${key}`);
+      },
+    });
+    assert.equal(result.ok, false, 'overall ok is false because entry 1 blocked');
+    assert.equal(result.entries[0].status, 'blocked');
+    assert.equal(result.entries[0].reason, 'merge_failed');
+    assert.equal(result.entries[1].status, 'merged_removed', 'entry 2 must still merge — no merge state was ever entered');
+    assert.deepEqual(result.pending, [], 'pending must be empty — every entry was evaluated');
+  });
+
   test('#2852: a recovered merge_failed isolates to entry 1, entry 2 still merges', () => {
     const calls = [];
     const plan = {
@@ -1825,10 +1923,15 @@ describe('executeWorktreeWaveCleanupPlan', () => {
           return { exitCode: 0, stdout: '', stderr: '' };
         }
         if (key.startsWith('merge worktree-agent-a1')) {
+          // A real conflict — MERGE_HEAD IS created.
           return { exitCode: 1, stdout: '', stderr: 'CONFLICT' };
         }
         if (key === 'merge --abort') {
           return { exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (key === 'rev-parse --verify -q MERGE_HEAD') {
+          // abort succeeded — repoRoot is no longer mid-merge.
+          return { exitCode: 1, stdout: '', stderr: '' };
         }
         // Entry 2 must still be evaluated independently after recovery.
         if (key === '-C /repo/.claude/worktrees/agent-a2 rev-parse --abbrev-ref HEAD') {
@@ -1860,10 +1963,10 @@ describe('executeWorktreeWaveCleanupPlan', () => {
     assert.equal(result.entries[0].reason, 'merge_failed');
     assert.equal(result.entries[1].status, 'merged_removed', 'entry 2 must still merge — isolation, not wave-abort');
     assert.deepEqual(result.pending, [], 'pending must be empty — every entry was evaluated');
-    assert.ok(calls.includes('merge --abort'), 'a failed merge must be recovered with git merge --abort');
+    assert.ok(calls.includes('merge --abort'), 'a failed merge must attempt recovery with git merge --abort');
   });
 
-  test('#2852: an unrecoverable merge_failed (abort fails too) legitimately halts the remaining wave', () => {
+  test('#2852: an unrecoverable merge_failed (repoRoot STILL mid-merge after abort) legitimately halts the remaining wave', () => {
     const plan = {
       ok: true,
       repoRoot: '/repo/main',
@@ -1903,8 +2006,12 @@ describe('executeWorktreeWaveCleanupPlan', () => {
           return { exitCode: 1, stdout: '', stderr: 'CONFLICT' };
         }
         if (key === 'merge --abort') {
-          // repoRoot cannot be recovered — a genuine infrastructure-level failure.
-          return { exitCode: 1, stdout: '', stderr: 'fatal: There is no merge to abort (MERGE_HEAD missing)?' };
+          return { exitCode: 1, stdout: '', stderr: 'fatal: unable to abort' };
+        }
+        if (key === 'rev-parse --verify -q MERGE_HEAD') {
+          // repoRoot IS genuinely still mid-merge — the abort attempt did not clear it.
+          // This, not abort's own exit code, is what legitimately halts the wave.
+          return { exitCode: 0, stdout: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef', stderr: '' };
         }
         throw new Error(`unexpected git call — repoRoot is unrecoverable, entry 2 must not be evaluated: ${key}`);
       },

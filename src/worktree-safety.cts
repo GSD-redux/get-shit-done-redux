@@ -520,6 +520,36 @@ function gitResultOk(result: GitResult | null | undefined): boolean {
 }
 
 /**
+ * #2852: after a failed `git merge` + a `git merge --abort` attempt, determine
+ * whether `repoRoot` is STILL mid-merge — the only condition that genuinely
+ * invalidates the rest of a cleanup wave.
+ *
+ * `git merge --abort`'s own exit code is NOT a reliable signal here: git refuses
+ * many merges (e.g. "your local changes to the following files would be
+ * overwritten by merge") WITHOUT ever creating a `MERGE_HEAD`, in which case
+ * `repoRoot`'s tree was never touched and `git merge --abort` correctly fails
+ * with "fatal: There is no merge to abort (MERGE_HEAD missing)?" — a SAFE
+ * outcome, not a broken one. Trusting that exit code alone would misclassify an
+ * ordinary per-entry merge failure as a repo-level one and strand the rest of
+ * the wave (caught in review).
+ *
+ * Checked directly via `git rev-parse --verify -q MERGE_HEAD` against the git
+ * ref itself rather than the filesystem: exit 0 means a merge is genuinely still
+ * in progress (unrecoverable — halt); exit 1 (the ref simply doesn't exist) means
+ * repoRoot is clean, whether because no merge state was ever entered or because
+ * abort successfully cleared it (safe — isolate and continue). Anything else
+ * (a timeout, or an unexpected git error) is treated conservatively as "still
+ * mid-merge" — degrade to the safe/halting answer rather than throw or guess.
+ */
+function repoRootStillMidMerge(execGit: ExecGitFn, repoRoot: string): boolean {
+  const check = execGit(['rev-parse', '--verify', '-q', 'MERGE_HEAD'], { cwd: repoRoot });
+  if (check.timedOut) return true; // fail closed — cannot confirm safety
+  if (check.exitCode === 0) return true; // MERGE_HEAD exists — genuinely still mid-merge
+  if (check.exitCode === 1) return false; // ref not found — repoRoot is not mid-merge
+  return true; // any other exit code (e.g. a fatal git error) — fail closed
+}
+
+/**
  * Walk <worktreePath>/.planning/ recursively and collect absolute paths of
  * all files whose names match *SUMMARY.md.  Returns [] when the directory
  * does not exist or cannot be read.
@@ -766,19 +796,25 @@ function executeWorktreeWaveCleanupPlan(plan: WaveCleanupPlan | null, deps: Work
     const merge = execGit(['merge', entry.branch, '--no-ff', '--no-edit', '-m', `chore: merge executor worktree (${entry.branch})`], { cwd: plan.repoRoot });
     if (!gitResultOk(merge)) {
       blockEntry(result, 'merge_failed', merge?.stderr || merge?.stdout || '');
-      // #2852: a failed --no-ff merge can leave repoRoot itself mid-merge (MERGE_HEAD
-      // set, conflict markers in the tree) — unlike every other block reason above,
-      // that state is NOT scoped to this one entry: a second `git merge` cannot even
-      // start while one is in progress, so every remaining entry would be corrupted by
-      // it. Recover by aborting; only genuine recovery failure — repoRoot left in an
-      // unrecoverable state — legitimately halts the rest of the wave (the brief's
-      // "infrastructure-level failure affecting the repo itself" carve-out).
-      const abort = execGit(['merge', '--abort'], { cwd: plan.repoRoot });
-      if (!gitResultOk(abort)) {
+      // #2852: a failed --no-ff merge MIGHT leave repoRoot itself mid-merge
+      // (MERGE_HEAD set, conflict markers in the tree) — unlike every other block
+      // reason above, that specific state is NOT scoped to this one entry: a second
+      // `git merge` cannot even start while one is in progress, so every remaining
+      // entry would be corrupted by it. But git also refuses many merges WITHOUT ever
+      // entering a merge state (e.g. "your local changes would be overwritten by
+      // merge") — in that case repoRoot's tree was never touched and this failure is
+      // scoped to this entry, same as everything else. Attempt the abort as a
+      // best-effort cleanup, then check repoRoot's ACTUAL state directly — not
+      // `git merge --abort`'s own exit code, which fails "There is no merge to abort"
+      // in the safe case too and would misclassify it as unrecoverable (caught in
+      // review). Only a repo genuinely still mid-merge afterward legitimately halts
+      // the rest of the wave (the brief's "infrastructure-level failure" carve-out).
+      execGit(['merge', '--abort'], { cwd: plan.repoRoot });
+      if (repoRootStillMidMerge(execGit, plan.repoRoot)) {
         pending.push(...entries.slice(i + 1));
         break;
       }
-      continue; // #2852: isolate — repoRoot recovered, remaining entries unaffected
+      continue; // #2852: isolate — repoRoot is not (or no longer) mid-merge
     }
 
     let remove = execGit(['worktree', 'remove', entry.worktree_path, '--force'], { cwd: plan.repoRoot });
