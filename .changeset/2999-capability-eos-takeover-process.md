@@ -1,6 +1,6 @@
 ---
 type: Added
-pr: 0
+pr: 3000
 ---
 **New how-to: [Take over a capability, reviewer lane, or EoS integration](../docs/how-to/take-over-a-capability-or-eos.md).** The capability ecosystem documented a complete forward lifecycle — develop, publish, version, import, update, remove, turn off — but nothing covering a change of *maintainer* for an entry that already exists. There is no `gsd capability transfer` command and no rename tooling, and `docs/registries/README.md` specifies submission and the narrow removal policy but never transfer, so a would-be adopter had no documented path and a reviewing maintainer had no stated bar.
 
