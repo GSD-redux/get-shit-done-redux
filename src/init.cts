@@ -2201,8 +2201,21 @@ function buildAgentSkillsBlock(
 
     const skillMdPath = path.join(projectRoot, skillPath, 'SKILL.md');
     if (!fs.existsSync(skillMdPath)) {
+      // #2941: if the bare name matches a global skill, hint at the global: prefix.
+      // The bare name resolves as project-relative (which doesn't exist), but the
+      // user likely meant to reference a global skill. getGlobalSkillDir is already
+      // imported for the global: branch above; guard on globalSkillsBase being non-null
+      // since runtimes without a skills directory don't support the prefix.
+      let hint = '';
+      if (globalSkillsBase !== null) {
+        const baseName = path.basename(skillPath);
+        const globalDir = getGlobalSkillDir(runtime, baseName) as string;
+        if (globalDir && fs.existsSync(path.join(globalDir, 'SKILL.md'))) {
+          hint = ` — a global skill named "${baseName}" exists; use "global:${baseName}" to reference it`;
+        }
+      }
       warn(
-        `[agent-skills] WARNING: Skill not found at "${skillPath}/SKILL.md" — skipping\n`,
+        `[agent-skills] WARNING: Skill not found at "${skillPath}/SKILL.md"${hint} — skipping\n`,
       );
       continue;
     }

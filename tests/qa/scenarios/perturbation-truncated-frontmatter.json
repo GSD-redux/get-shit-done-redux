@@ -1,0 +1,21 @@
+{
+  "name": "perturbation-truncated-frontmatter",
+  "fixture": "greenfield",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "plan:pre",
+      "mutate": { "id": "truncate-frontmatter", "target": ".planning/ROADMAP.md" },
+      "run": [["roadmap", "get-phase", "1"]]
+    }
+  ]
+}

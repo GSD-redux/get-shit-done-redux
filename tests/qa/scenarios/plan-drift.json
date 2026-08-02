@@ -1,0 +1,56 @@
+{
+  "name": "plan-drift",
+  "fixture": "greenfield",
+  "steps": [
+    {
+      "at": "discuss:post",
+      "agent": {
+        "write": {
+          ".planning/PROJECT.md": "@project/minimal",
+          ".planning/ROADMAP.md": "@roadmap/three-phase"
+        }
+      },
+      "run": [["init", "new-project"]]
+    },
+    {
+      "at": "plan:post",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer"
+        }
+      },
+      "run": [["progress"]]
+    },
+    {
+      "at": "execute:pre",
+      "run": [["progress"]],
+      "readOnly": true
+    },
+    {
+      "at": "execute:wave:pre",
+      "agent": {
+        "write": {
+          ".planning/phases/01-parser/01-01-PLAN.md": "@plan/tokenizer-drifted"
+        }
+      },
+      "run": [
+        ["progress"],
+        ["roadmap", "get-phase", "1"]
+      ]
+    },
+    {
+      "at": "execute:wave:post",
+      "run": [["drift-guard", "severity", "--status", "VERIFIED"]],
+      "readOnly": true,
+      "expect": [
+        { "path": "severity", "is": "none" },
+        { "path": "hardBlock", "is": false }
+      ]
+    },
+    {
+      "at": "execute:post",
+      "run": [["drift-guard", "severity", "--status", "MISSING"]],
+      "readOnly": true
+    }
+  ]
+}

@@ -466,6 +466,7 @@
       "verification.cjs",
       "verify-command-router.cjs",
       "verify.cjs",
+      "workflow-fragments.cjs",
       "workstream-inventory-builder.cjs",
       "workstream-inventory.cjs",
       "workstream-name-policy.cjs",

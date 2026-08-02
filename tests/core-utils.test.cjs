@@ -203,6 +203,58 @@ describe('generateSlugInternal', () => {
     assert.ok(result !== null && result.length <= 60);
   });
 
+  // ─── #2849: trailing hyphen must not survive 60-char truncation. ───────────
+  // The strip ran before .substring(0, 60), so a cut landing on a separator
+  // produced a slug ending in `-`. The strip must run after truncation.
+
+  test('#2849 — trailing hyphen is stripped after 60-char truncation', () => {
+    // 59 a's + space + "tail" → "aaaa…aaa-tail" (64 chars). Truncating at 60
+    // lands on the separator → "aaaa…aaa-" (ends in `-`) without the fix.
+    const slug = coreUtils.generateSlugInternal('a'.repeat(59) + ' tail');
+    assert.ok(slug !== null, 'slug must not be null');
+    assert.ok(!slug.endsWith('-'), `slug must not end with a hyphen; got: ${JSON.stringify(slug)}`);
+    assert.ok(slug.length <= 60, `slug must be at most 60 chars; got length ${slug?.length}`);
+    // The tail word is truncated away — the slug is the 59 a's with no separator.
+    assert.strictEqual(slug, 'a'.repeat(59));
+  });
+
+  test('#2849 — truncation landing before a separator keeps a clean boundary', () => {
+    // 58 a's + space + "b" = 60 chars exactly. Truncation keeps all 60 → "aaa…aa-b".
+    const slug = coreUtils.generateSlugInternal('a'.repeat(58) + ' b');
+    assert.ok(slug !== null);
+    assert.ok(!slug.endsWith('-'), `slug must not end with a hyphen; got: ${JSON.stringify(slug)}`);
+    assert.strictEqual(slug?.length, 60);
+    assert.strictEqual(slug, 'a'.repeat(58) + '-b');
+  });
+
+  test('#2849 — leading hyphens are still stripped after the truncation reorder', () => {
+    // Leading punctuation becomes a hyphen, then is stripped. Truncation runs
+    // after the strip; the leading-hyphen guarantee must survive the reorder.
+    const slug = coreUtils.generateSlugInternal('!!!' + 'a'.repeat(60));
+    assert.ok(slug !== null);
+    assert.ok(!slug.startsWith('-'), `slug must not start with a hyphen; got: ${JSON.stringify(slug)}`);
+    assert.ok(!slug.endsWith('-'), `slug must not end with a hyphen; got: ${JSON.stringify(slug)}`);
+    assert.ok((slug?.length ?? 0) <= 60);
+  });
+
+  test('#2849 — long Cyrillic transliterates and truncates without a trailing hyphen', () => {
+    // Transliteration expands Cyrillic; the result can exceed 60 chars and land
+    // on a separator when truncated. The post-truncation strip must still fire.
+    const slug = coreUtils.generateSlugInternal('Объект день '.repeat(10).trim());
+    assert.ok(slug !== null);
+    assert.ok(!slug.includes('Объект'), 'non-ASCII must be transliterated away');
+    assert.ok(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug), `slug must be ASCII-only and well-formed; got: ${slug}`);
+    assert.ok(!slug.endsWith('-'), `slug must not end with a hyphen; got: ${JSON.stringify(slug)}`);
+    assert.ok((slug?.length ?? 0) <= 60);
+  });
+
+  test('#2849 — all-separator input collapses to empty, not a stray hyphen', () => {
+    // Input that is entirely separators must reduce to '' (not null, not '-'),
+    // both short and when truncated past 60 chars.
+    assert.strictEqual(coreUtils.generateSlugInternal('!!!'), '');
+    assert.strictEqual(coreUtils.generateSlugInternal('!'.repeat(70)), '');
+  });
+
   test('unicode characters are replaced with hyphens', () => {
     const result = coreUtils.generateSlugInternal('中文phase');
     assert.ok(typeof result === 'string');

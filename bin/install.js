@@ -45,6 +45,9 @@ const {
 } = require('../gsd-core/bin/lib/worktree-base-ref.cjs');
 const { resolveInstallPlan } = require('../gsd-core/bin/lib/runtime-config-adapter-registry.cjs');
 const { createImperativeAdapter } = require('../gsd-core/bin/lib/adapter-imperative.cjs');
+// #2930 (epic #1671 Phase 3): strips `<!-- gsd:section -->` markers from
+// workflow .md content at emit time, before any per-runtime rewrite runs.
+const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 // Canonical set of hook files shipped to users. Imported here so writeManifest()
 // records exactly the same set that build-hooks.js copies to hooks/dist/, making
@@ -952,6 +955,31 @@ const applyRuntimeContentRewritesForCommandsInPlace = runtimeArtifactConversion.
 const convertClaudeToAugmentMarkdown = runtimeArtifactConversion.convertClaudeToAugmentMarkdown;
 const convertClaudeCommandToAugmentSkill = runtimeArtifactConversion.convertClaudeCommandToAugmentSkill;
 const convertClaudeAgentToAugmentAgent = runtimeArtifactConversion.convertClaudeAgentToAugmentAgent;
+// #2931 (ADR-1508): the windsurf converter family is single-sourced in the
+// conversion module, same pattern as the #1675 Augment dedup above. install.js
+// re-binds (does not re-define) these so there is exactly one body — the
+// generative-drift hazard the dedup removes. The two private helpers
+// (getWindsurfSkillAdapterHeader, convertSlashCommandsToWindsurfSkillMentions)
+// live only in the conversion module now; they are no longer duplicated here.
+// The reference-identity parity guard lives in
+// tests/install-runtime-artifacts.test.cjs (single-owner reference-identity
+// guard describe block), not tests/enh-1511-rewrite-engine-relocation.test.cjs
+// as the Augment comment above stated — that reference was stale.
+// (All call sites are below this line → no TDZ hazard.)
+const convertClaudeToWindsurfMarkdown = runtimeArtifactConversion.convertClaudeToWindsurfMarkdown;
+const convertClaudeCommandToWindsurfSkill = runtimeArtifactConversion.convertClaudeCommandToWindsurfSkill;
+const convertClaudeCommandToWindsurfWorkflow = runtimeArtifactConversion.convertClaudeCommandToWindsurfWorkflow;
+const convertClaudeAgentToWindsurfAgent = runtimeArtifactConversion.convertClaudeAgentToWindsurfAgent;
+// #2931 (ADR-1508): single-sourced in the conversion module — was a second,
+// unlinked verbatim copy here (used by the local Cursor/Trae/CodeBuddy/Cline
+// converters below), the exact drift class this PR exists to reduce. Verified
+// behaviorally identical (no block / one block / adjacent blocks / whole-
+// content block / unclosed opening tag / nested-looking tags / repeated
+// sequential calls for global-regex lastIndex leakage) before merging.
+// install.js re-binds (does not re-define) — RUNTIME_COMPATIBILITY_BLOCK_RE
+// is no longer duplicated here either. (All call sites are below this line
+// → no TDZ hazard.)
+const applyClaudeCodeBrandSwap = runtimeArtifactConversion.applyClaudeCodeBrandSwap;
 
 function rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts) {
   return hooksSurface.rewriteLegacyManagedNodeHookCommands(settings, absoluteRunner, opts);
@@ -2501,56 +2529,6 @@ function extractFrontmatterField(frontmatter, fieldName) {
   return match[1].trim().replace(/^['"]|['"]$/g, '');
 }
 
-// #2284 finding (b): the `<runtime_compatibility>` block appearing in
-// gsd-core/workflows/{plan-phase,execute-phase}.md is a runtime-COMPARISON
-// table ("**Claude Code:** Uses `Agent(...)`" / "a backgrounded Claude Code
-// agent" / "top-level Claude Code") — every "Claude Code" mention inside it
-// is a COMPARED-RUNTIME LABEL, not a host self-reference. The brand swap
-// below (`Claude Code` → the installing runtime's own display name) is
-// meant only for host self-references; applying it inside this block
-// mislabels the comparison (e.g. Windsurf installs would read "**Windsurf:**
-// Uses `Agent(...)`" describing what is actually Claude Code's behavior).
-// This is cross-cutting across every runtime that brand-swaps workflow
-// content (cursor/windsurf/trae/cline/codebuddy hardcoded; qwen/hermes
-// descriptor-driven via hostBehaviors.brandingRewrites) — confirmed to
-// reproduce on unmodified Windsurf, not Hermes-specific.
-const RUNTIME_COMPATIBILITY_BLOCK_RE = /<runtime_compatibility>[\s\S]*?<\/runtime_compatibility>/g;
-
-/**
- * Rewrite bare "Claude Code" self-references in workflow content to
- * `brandName`, EXCEPT inside `<runtime_compatibility>...</runtime_compatibility>`
- * blocks, which are left byte-for-byte verbatim. Every other content
- * transform in a runtime's `.md` converter (tool-name renames, path
- * rewrites, etc.) is unaffected — only this literal brand-name swap is
- * protected-region-aware, since only it risks mislabeling a
- * runtime-comparison table.
- *
- * Implementation: SPLIT `content` on the protected-block regex, brand-swap
- * only the GAP text between (and around) matches, then rejoin gap+block
- * alternately. No placeholder/sentinel token of any kind is substituted in
- * — a prior version used a sentinel-token mask/restore, which is exactly the
- * kind of invisible landmine this rewrite eliminates (a sentinel string, no
- * matter how obscure, is a theoretical collision risk with real content and
- * is easy to silently reintroduce in a future edit without it showing in a
- * diff). Behavior-identical to the removed sentinel-token version — verified
- * via `npm run gen:golden` producing zero further diff.
- */
-function applyClaudeCodeBrandSwap(content, brandName) {
-  if (!brandName) return content;
-  let result = '';
-  let lastIndex = 0;
-  RUNTIME_COMPATIBILITY_BLOCK_RE.lastIndex = 0; // reset shared global-regex state before each use
-  let m;
-  while ((m = RUNTIME_COMPATIBILITY_BLOCK_RE.exec(content))) {
-    const gap = content.slice(lastIndex, m.index);
-    result += gap.replace(/\bClaude Code\b/g, brandName);
-    result += m[0]; // protected block, verbatim — never brand-swapped
-    lastIndex = m.index + m[0].length;
-  }
-  result += content.slice(lastIndex).replace(/\bClaude Code\b/g, brandName);
-  return result;
-}
-
 // Tool name mapping from Claude Code to Cursor CLI
 const claudeToCursorTools = {
   Bash: 'Shell',
@@ -2681,142 +2659,16 @@ function convertClaudeAgentToCursorAgent(content) {
 }
 
 // --- Windsurf converters ---
-// Windsurf uses a tool set similar to Cursor.
-// Config lives in .windsurf/ (local) and ~/.codeium/windsurf/ (global).
-
-// Tool name mapping from Claude Code to Windsurf Cascade
-const claudeToWindsurfTools = {
-  Bash: 'Shell',
-  Edit: 'StrReplace',
-  AskUserQuestion: null, // No direct equivalent — use conversational prompting
-  SlashCommand: null,    // No equivalent — skills are auto-discovered
-};
-
-function convertSlashCommandsToWindsurfSkillMentions(content) {
-  // Keep leading "/" for slash commands; only normalize gsd: -> gsd-.
-  return content.replace(/gsd:/gi, 'gsd-');
-}
-
-function convertClaudeToWindsurfMarkdown(content) {
-  let converted = convertSlashCommandsToWindsurfSkillMentions(content);
-  // Replace tool name references in body text
-  converted = converted.replace(/\bBash\(/g, 'Shell(');
-  converted = converted.replace(/\bEdit\(/g, 'StrReplace(');
-  converted = converted.replace(/\bAskUserQuestion\b/g, 'conversational prompting');
-  // Replace subagent_type from Claude to Windsurf format
-  converted = converted.replace(/subagent_type="general-purpose"/g, 'subagent_type="generalPurpose"');
-  converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
-  // Replace project-level Claude conventions with Windsurf equivalents.
-  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.windsurf/rules`');
-  converted = converted.replace(/\.\/CLAUDE\.md/g, '.windsurf/rules');
-  converted = converted.replace(/`CLAUDE\.md`/g, '`.windsurf/rules`');
-  converted = converted.replace(/\bCLAUDE\.md\b/g, '.windsurf/rules');
-  converted = converted.replace(/\.claude\/skills\//g, '.windsurf/skills/');
-  converted = converted.replace(/\.\/\.claude\//g, './.windsurf/');
-  converted = converted.replace(/\.claude\//g, '.windsurf/');
-  // Bare forms (no trailing slash) — after slash forms to avoid double-rewrite.
-  // Use negative lookahead (?![\w-]) to preserve .claude-plugin and .claudeignore.
-  converted = converted.replace(/~\/\.claude(?![\w-])/g, '~/.windsurf');
-  converted = converted.replace(/\$HOME\/\.claude(?![\w-])/g, '$HOME/.windsurf');
-  // Environment variable name rewrite
-  converted = converted.replace(/\bCLAUDE_CONFIG_DIR\b/g, 'WINDSURF_CONFIG_DIR');
-  // Remove Claude Code-specific bug workarounds before brand replacement
-  converted = converted.replace(/\*\*Known Claude Code bug \(classifyHandoffIfNeeded\):\*\*[^\n]*\n/g, '');
-  converted = converted.replace(/- \*\*classifyHandoffIfNeeded false failure:\*\*[^\n]*\n/g, '');
-  // Replace "Claude Code" brand references with "Windsurf" — #2284(b): skips
-  // <runtime_compatibility> comparison-table content (protected region).
-  converted = applyClaudeCodeBrandSwap(converted, 'Windsurf');
-  return converted;
-}
-
-function getWindsurfSkillAdapterHeader(skillName) {
-  return `<windsurf_skill_adapter>
-## A. Skill Invocation
-- This skill is invoked when the user mentions \`${skillName}\` or describes a task matching this skill.
-- Treat all user text after the skill mention as \`{{GSD_ARGS}}\`.
-- If no arguments are present, treat \`{{GSD_ARGS}}\` as empty.
-
-## B. User Prompting
-When the workflow needs user input, prompt the user conversationally:
-- Present options as a numbered list in your response text
-- Ask the user to reply with their choice
-- For multi-select, ask for comma-separated numbers
-
-## C. Tool Usage
-Use these Windsurf tools when executing GSD workflows:
-- \`Shell\` for running commands (terminal operations)
-- \`StrReplace\` for editing existing files
-- \`Read\`, \`Write\`, \`Glob\`, \`Grep\`, \`Task\`, \`WebSearch\`, \`WebFetch\`, \`TodoWrite\` as needed
-
-## D. Subagent Spawning
-When the workflow needs to spawn a subagent:
-- Use \`Task(subagent_type="generalPurpose", ...)\`
-- The \`model\` parameter maps to Windsurf's model options (e.g., "fast")
-</windsurf_skill_adapter>`;
-}
-
-function convertClaudeCommandToWindsurfSkill(content, skillName) {
-  const converted = convertClaudeToWindsurfMarkdown(content);
-  const { frontmatter, body } = extractFrontmatterAndBody(converted);
-  let description = `Run GSD workflow ${skillName}.`;
-  if (frontmatter) {
-    const maybeDescription = extractFrontmatterField(frontmatter, 'description');
-    if (maybeDescription) {
-      description = maybeDescription;
-    }
-  }
-  description = toSingleLine(description);
-  const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
-  const adapter = getWindsurfSkillAdapterHeader(skillName);
-
-  return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
-}
-
-function convertClaudeCommandToWindsurfWorkflow(content, commandName) {
-  // #1615 security: commandName flows unsanitized into a markdown body that
-  // Windsurf loads as an LLM-readable workflow. Validate at entry to prevent
-  // (a) prompt injection via newlines / markdown structure in the filename,
-  // (b) path-component injection via .., /, \ in stem → @-reference target.
-  // Pattern: optional gsd- prefix + lowercase alphanumeric + dashes; rejects
-  // everything else. See DEFECT.PROMPT-INJECTION-SCAN-COLLISION and the
-  // PR #1622 security review.
-  if (typeof commandName !== 'string' || !/^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(commandName)) {
-    const preview = typeof commandName === 'string' ? JSON.stringify(commandName.slice(0, 60)) : String(commandName);
-    throw new Error(
-      `convertClaudeCommandToWindsurfWorkflow: rejected commandName ${preview}; ` +
-      'must match /^(?:gsd-)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/ (no slashes, backslashes, spaces, dots, trailing dash, or control chars — prevents prompt injection and path-component injection into the workflow body)'
-    );
-  }
-  const converted = convertClaudeToWindsurfMarkdown(content);
-  const { frontmatter } = extractFrontmatterAndBody(converted);
-  const description = frontmatter ? extractFrontmatterField(frontmatter, 'description') : '';
-  const stem = commandName.startsWith('gsd-') ? commandName.slice(4) : commandName;
-  const workflow = `# ${commandName}\n\n${toSingleLine(description || `Run ${commandName}.`)}\n\nRead and execute the GSD command at @~/.claude/gsd-core/commands/gsd/${stem}.md end-to-end. Treat the user's message after /${commandName} as the command arguments.`;
-  const byteLength = Buffer.byteLength(workflow, 'utf8');
-  if (byteLength > 12000) {
-    throw new Error(`Windsurf workflow ${commandName} exceeds 12000 bytes (${byteLength}); extract references before installing`);
-  }
-  return workflow;
-}
-
-/**
- * Convert Claude Code agent markdown to Windsurf agent format.
- * Strips frontmatter fields Windsurf doesn't support (color, skills),
- * converts tool references, and adds a role context header.
- */
-function convertClaudeAgentToWindsurfAgent(content) {
-  let converted = convertClaudeToWindsurfMarkdown(content);
-
-  const { frontmatter, body } = extractFrontmatterAndBody(converted);
-  if (!frontmatter) return converted;
-
-  const name = extractFrontmatterField(frontmatter, 'name') || 'unknown';
-  const description = extractFrontmatterField(frontmatter, 'description') || '';
-
-  const cleanFrontmatter = `---\nname: ${yamlIdentifier(name)}\ndescription: ${yamlQuote(toSingleLine(description))}\n---`;
-
-  return `${cleanFrontmatter}\n${body}`;
-}
+// #2931 (ADR-1508): single-sourced in runtimeArtifactConversion, bound near
+// the top of this file alongside the #1675 Augment family. This block
+// previously carried byte-identical local duplicates of
+// convertSlashCommandsToWindsurfSkillMentions, convertClaudeToWindsurfMarkdown,
+// getWindsurfSkillAdapterHeader, convertClaudeCommandToWindsurfSkill,
+// convertClaudeCommandToWindsurfWorkflow, and convertClaudeAgentToWindsurfAgent,
+// plus an unused claudeToWindsurfTools table. Deleted here; the two
+// unexported helpers (getWindsurfSkillAdapterHeader,
+// convertSlashCommandsToWindsurfSkillMentions) now live only in the
+// conversion module, with no other caller in this file.
 
 // --- Augment converters ---
 // Augment uses a tool set similar to Cursor/Windsurf.
@@ -7786,6 +7638,32 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       // Replace ~/.claude/ and $HOME/.claude/ and ./.claude/ with runtime-appropriate paths
       // Skip generic replacement for Copilot/Antigravity — their converters handle all paths
       let content = fs.readFileSync(srcPath, 'utf8');
+
+      // #2930 (epic #1671 Phase 3): strip `<!-- gsd:section -->` markers
+      // BEFORE any per-runtime rewrite so a `.claude/` -> `.windsurf/` regex
+      // (or any other converter below) never reaches inside a marker
+      // attribute and corrupts it. composeWorkflow is a no-op (byte-identical
+      // return) for the 88+ workflows and every non-workflow .md that carries
+      // no markers, and for a malformed marker it throws loudly naming
+      // srcPath — never emit a half-composed workflow.
+      //
+      // Scoped to gsd-core/workflows/ ONLY (two independent reviewers,
+      // chore/2930): copyWithPathReplacement is the emit path for every .md
+      // under gsd-core/, skills/, and commands/ (see the three call sites),
+      // not just workflows. A doc that merely DOCUMENTS the marker syntax
+      // with an unfenced example (docs/reference/workflow-fragments.md is
+      // the live instance of this class, though not under the install tree
+      // today) would otherwise get silently mis-parsed as a real marker and
+      // that line lossily dropped — a file class issue #2930 never scoped
+      // to. Path is normalized UNCONDITIONALLY (backslash paths arrive on
+      // Linux too — CONTEXT.md path-separator rule) and checked as a
+      // path-segment match so the recursive descent (srcPath may be several
+      // directory levels below gsd-core/workflows/) is still caught.
+      const normalizedSrcPath = srcPath.replace(/\\/g, '/');
+      if (/(?:^|\/)gsd-core\/workflows\//.test(normalizedSrcPath)) {
+        content = composeWorkflow(content, { sourcePath: srcPath });
+      }
+
       if (!dispatch.mdSkipGenericRewrite) {
         const globalClaudeRegex = /~\/\.claude\//g;
         const globalClaudeHomeRegex = /\$HOME\/\.claude\//g;

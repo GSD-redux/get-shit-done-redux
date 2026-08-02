@@ -4446,6 +4446,52 @@ describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2)', () 
       'install.js must bind convertClaudeAgentToAugmentAgent from conversion (not a duplicate body)',
     );
   });
+
+  // #2931 (ADR-1508): the windsurf converter family is single-sourced in the
+  // conversion module, same pattern as the #1675 Augment dedup above.
+  test('installJsBindsWindsurfConvertersByReference — convertClaudeCommandToWindsurfWorkflow (single converter)', () => {
+    assert.strictEqual(
+      install.convertClaudeCommandToWindsurfWorkflow,
+      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
+      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
+    );
+  });
+
+  test('installJsBindsEntireWindsurfFamilyByReference — every windsurf converter member', () => {
+    assert.strictEqual(
+      install.convertClaudeToWindsurfMarkdown,
+      conversionCjs.convertClaudeToWindsurfMarkdown,
+      'install.js must bind convertClaudeToWindsurfMarkdown from conversion (not a duplicate body)',
+    );
+    assert.strictEqual(
+      install.convertClaudeCommandToWindsurfSkill,
+      conversionCjs.convertClaudeCommandToWindsurfSkill,
+      'install.js must bind convertClaudeCommandToWindsurfSkill from conversion (not a duplicate body)',
+    );
+    assert.strictEqual(
+      install.convertClaudeCommandToWindsurfWorkflow,
+      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
+      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
+    );
+    assert.strictEqual(
+      install.convertClaudeAgentToWindsurfAgent,
+      conversionCjs.convertClaudeAgentToWindsurfAgent,
+      'install.js must bind convertClaudeAgentToWindsurfAgent from conversion (not a duplicate body)',
+    );
+  });
+
+  // #2931 (ADR-1508): applyClaudeCodeBrandSwap + RUNTIME_COMPATIBILITY_BLOCK_RE
+  // were duplicated verbatim in install.js (used by the local Cursor/Trae/
+  // CodeBuddy/Cline converters) alongside the conversion module's copy —
+  // exactly the unlinked-duplicate-implementation class this guard exists to
+  // catch. install.js now re-binds (does not re-define) it.
+  test('install.applyClaudeCodeBrandSwap === conversion.applyClaudeCodeBrandSwap (single implementation)', () => {
+    assert.strictEqual(
+      install.applyClaudeCodeBrandSwap,
+      conversionCjs.applyClaudeCodeBrandSwap,
+      'install.js must bind applyClaudeCodeBrandSwap from conversion (not a duplicate body)',
+    );
+  });
 });
   });
 }
