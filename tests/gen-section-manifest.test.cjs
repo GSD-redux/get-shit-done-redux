@@ -138,10 +138,11 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
       markerSource('handle-x', 'always', 'handle-x.md'),
       { 'handle-x.md': '<step name="handle_x">\nbody\n</step>\n' },
     );
-    // Stale: valid shape, but "when" no longer matches the source's marker.
+    // Stale: valid {workflows:{...}} shape, but "when" no longer matches the
+    // source's marker (must reach FAIL_STALE, not trip the shape check).
     fs.writeFileSync(
       manifestPath,
-      JSON.stringify({ sections: [{ id: 'handle-x', when: 'flag:--wave', read: 'gsd-core/workflows/sample/steps/handle-x.md' }] }, null, 2) + '\n',
+      JSON.stringify({ workflows: { sample: [{ id: 'handle-x', when: 'flag:--wave', read: 'gsd-core/workflows/sample/steps/handle-x.md' }] } }, null, 2) + '\n',
       'utf8',
     );
 
@@ -248,6 +249,36 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     }
   });
 
+  test('rejectsPre6_1FlatSectionsShapeAsMalformed (upgrade-path supplemental: an installed tree still carrying the old flat {sections:[...]} artifact)', (t) => {
+    const tmpRoot = createTempDir('gen-section-manifest-');
+    t.after(() => cleanup(tmpRoot));
+
+    const { workflowsDir, manifestPath } = buildFixture(
+      tmpRoot,
+      'sample',
+      markerSource('handle-x', 'always', 'handle-x.md'),
+      { 'handle-x.md': '<step name="handle_x">\nbody\n</step>\n' },
+    );
+
+    // Pre-6.1 committed artifact shape: a flat `{sections:[...]}` array with
+    // no `workflows` key at all. Must be rejected as malformed, never
+    // silently attributed to whichever workflow asks first (design row C4).
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ sections: [{ id: 'handle-x', when: 'always', read: 'gsd-core/workflows/sample/steps/handle-x.md' }] }, null, 2) + '\n',
+      'utf8',
+    );
+
+    const r = runGenSectionManifest([
+      '--check', '--json', '--workflows-dir', workflowsDir, '--manifest-path', manifestPath, '--repo-root', tmpRoot,
+    ]);
+    assert.equal(r.code, 1);
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'a pre-6.1 flat manifest must not crash the generator');
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_MANIFEST_MALFORMED_SHAPE, 'pre-6.1 flat {sections:[...]} shape must be rejected, not mistaken for up-to-date or stale');
+  });
+
   test('checkFailsWhenMarkerReferencesMissingStepFile (row 35)', (t) => {
     const tmpRoot = createTempDir('gen-section-manifest-');
     t.after(() => cleanup(tmpRoot));
@@ -324,7 +355,7 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     );
 
     const fresh = buildFreshManifest(workflowsDir, tmpRoot);
-    assert.equal(fresh.sections.length, 1);
+    assert.equal(fresh.workflows.sample.length, 1);
     fs.writeFileSync(manifestPath, JSON.stringify(fresh, null, 2) + '\n', 'utf8');
 
     const r = runGenSectionManifest([
@@ -381,8 +412,8 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     });
 
     const fresh = buildFreshManifest(workflowsDir, tmpRoot);
-    assert.equal(fresh.sections.length, 1, 'the fenced marker-shaped lines must not produce a section');
-    assert.equal(fresh.sections[0].id, 'handle-x');
+    assert.equal(fresh.workflows.sample.length, 1, 'the fenced marker-shaped lines must not produce a section');
+    assert.equal(fresh.workflows.sample[0].id, 'handle-x');
 
     fs.writeFileSync(manifestPath, JSON.stringify(fresh, null, 2) + '\n', 'utf8');
     const r = runGenSectionManifest([
@@ -411,8 +442,8 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     });
 
     const fresh = buildFreshManifest(workflowsDir, tmpRoot);
-    assert.equal(fresh.sections.length, 1, 'gsd:loop-host must never be treated as a gsd:section marker');
-    assert.equal(fresh.sections[0].id, 'handle-x');
+    assert.equal(fresh.workflows.sample.length, 1, 'gsd:loop-host must never be treated as a gsd:section marker');
+    assert.equal(fresh.workflows.sample[0].id, 'handle-x');
 
     fs.writeFileSync(manifestPath, JSON.stringify(fresh, null, 2) + '\n', 'utf8');
     const r = runGenSectionManifest([
