@@ -278,7 +278,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     t.after(() => cleanup(tmp));
     const outputFile = path.join(tmp, 'agent-output.txt');
     fs.writeFileSync(outputFile, 'some agent output\n## PLANNING COMPLETE\nmore text\n');
-    const glob = path.join(tmp, '*-PLAN.md');
+    const glob = `${tmp.replace(/\\/g, '/')}/*-PLAN.md`;
     const now = Math.floor(Date.now() / 1000);
     const result = runWatch(0, 10, now, outputFile, glob, ['## PLANNING COMPLETE']);
     assert.equal(result.status, 0, result.stderr);
@@ -289,7 +289,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-watch-'));
     t.after(() => cleanup(tmp));
     const missingOutputFile = path.join(tmp, 'never-written.txt');
-    const glob = path.join(tmp, '*-PLAN.md'); // matches nothing -> no fresh activity
+    const glob = `${tmp.replace(/\\/g, '/')}/*-PLAN.md`; // the tmp dir contains no *-PLAN.md files -> no fresh activity
     const longAgo = Math.floor(Date.now() / 1000) - 999999;
     const result = runWatch(0, 0, longAgo, missingOutputFile, glob, ['## PLANNING COMPLETE']);
     assert.equal(result.status, 0, result.stderr);
@@ -300,7 +300,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-watch-'));
     t.after(() => cleanup(tmp));
     const missingOutputFile = path.join(tmp, 'never-written.txt');
-    const glob = path.join(tmp, '*-PLAN.md');
+    const glob = `${tmp.replace(/\\/g, '/')}/*-PLAN.md`;
     const now = Math.floor(Date.now() / 1000);
     const result = runWatch(0, 10, now, missingOutputFile, glob, ['## PLANNING COMPLETE']);
     assert.equal(result.status, 0, result.stderr);
