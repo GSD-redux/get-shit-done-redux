@@ -187,6 +187,44 @@ function readFileNormalized(filePath) {
 }
 
 /**
+ * Read a workflow .md file plus every .md file under its sibling
+ * `<workflow-basename>/steps/` directory, concatenated in document order
+ * (host file first, then step files sorted by filename).
+ *
+ * ADR-1671's workflow fragmentization (#2930/#2932/#2993 et al.) moves whole
+ * sections out of a host workflow (e.g. `plan-phase.md`) into lazily-loaded
+ * step files under `gsd-core/workflows/<name>/steps/*.md`. A structural or
+ * drift guard that reads the host file alone goes blind the moment a
+ * section it cares about moves out — this is exactly the shape #2650's own
+ * regression tests hit when #2993 relocated plan-phase.md's chunked-planning
+ * spawn sites into `plan-phase/steps/chunked-planning-mode.md`. Any test
+ * that needs to see the FULL picture (counting markers, asserting a marker
+ * exists somewhere in the workflow) should read through this helper instead
+ * of `fs.readFileSync(workflowPath)` alone, so the next relocation doesn't
+ * silently blind it again. Originally local to
+ * tests/plan-phase-drift-guard.test.cjs (readPlanPhaseCombined) — promoted
+ * here so a second, divergent copy is never written (Generative Fix
+ * Divergence class).
+ *
+ * @param {string} workflowPath - absolute path to the host workflow .md file.
+ * @returns {string} host content, then '\n' + each step file's content in
+ *   sorted-filename order. An absent steps directory degrades to the host
+ *   content alone (not an error — most workflows have no steps/ dir).
+ */
+function readWorkflowCombined(workflowPath) {
+  let combined = readFileNormalized(workflowPath);
+  const stepsDir = path.join(path.dirname(workflowPath), path.basename(workflowPath, '.md'), 'steps');
+  if (fs.existsSync(stepsDir)) {
+    for (const entry of fs.readdirSync(stepsDir).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + readFileNormalized(path.join(stepsDir, entry));
+      }
+    }
+  }
+  return combined;
+}
+
+/**
  * Parse a Markdown frontmatter block into a flat key→value map.
  *
  * Handles the YAML scalar forms emitted by the install converters:
@@ -516,4 +554,4 @@ function clearSessionEnv() {
   for (const k of SESSION_ENV_KEYS) delete process.env[k];
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };

@@ -41,16 +41,30 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const fc = require('fast-check');
-const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { cleanup, readFileNormalized, readWorkflowCombined } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLAN_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
 const STALL_HELPERS_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase', 'steps', 'stall-detection-helpers.md');
+const CHUNKED_PLANNING_MODE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase', 'steps', 'chunked-planning-mode.md');
 const CONFIG_SCHEMA_MANIFEST_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared', 'config-schema.manifest.json');
 const CONFIGURATION_DOCS_PATH = path.join(REPO_ROOT, 'docs', 'CONFIGURATION.md');
 
 function readPlanPhase() {
   return readFileNormalized(PLAN_PHASE_PATH);
+}
+
+// #2993 relocated plan-phase.md's chunked-planning-mode spawn sites into this
+// lazily-loaded step file. Read directly rather than via the generic
+// readWorkflowCombined() blob when a test needs to slice a SPECIFIC section by
+// heading-to-heading boundaries: chunked-planning-mode.md is small and
+// self-contained (8.5.1 immediately followed by 8.5.2, nothing else), so its
+// own heading boundaries stay precise, whereas the combined multi-file blob's
+// ordering (host file, then every steps/*.md sorted by filename) would put an
+// unrelated step file's content between "### 8.5.2 Per-Plan Tasks" and any
+// downstream anchor a slice tried to search for.
+function readChunkedPlanningMode() {
+  return readFileNormalized(CHUNKED_PLANNING_MODE_PATH);
 }
 
 function readStallHelpersDoc() {
@@ -424,28 +438,51 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
   test('standard planner spawn (step 8) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
     const idx = workflow.indexOf('## 8. Spawn gsd-planner Agent');
     assert.notEqual(idx, -1);
-    const nextSectionIdx = workflow.indexOf('## 8.5. Chunked Planning Mode', idx);
+    // #2993 moved "## 8.5. Chunked Planning Mode" itself out of plan-phase.md
+    // (now a <!-- gsd:section --> pointer to steps/chunked-planning-mode.md,
+    // asserted separately below) — bound this slice at the next heading that
+    // still actually exists in plan-phase.md instead.
+    const nextSectionIdx = workflow.indexOf('## 9. Handle Planner Return', idx);
     const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'standard planner spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'standard planner spawn must invoke the bounded stall watcher');
     assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'standard planner spawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
   });
 
+  test('plan-phase.md points at the lazily-loaded chunked-planning-mode.md step file (8.5, #2993)', () => {
+    // #2993 (epic #1671 Phase 6.2, unrelated to #2650) extracted the whole
+    // "Chunked Planning Mode" section into gsd-core/workflows/plan-phase/steps/
+    // chunked-planning-mode.md, leaving a <!-- gsd:section --> pointer behind.
+    // The two stall-watch spawn sites that used to live inline (8.5.1 outline,
+    // 8.5.2 per-plan) moved with it — asserted directly against that file below.
+    assert.match(workflow, /gsd-core\/workflows\/plan-phase\/steps\/chunked-planning-mode\.md/);
+  });
+
   test('chunked outline spawn (8.5.1) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
-    const idx = workflow.indexOf('### 8.5.1 Outline Phase');
+    // Lives in the extracted steps/chunked-planning-mode.md since #2993, not
+    // in plan-phase.md itself — read that file directly (see
+    // readChunkedPlanningMode()'s doc comment for why not the generic
+    // combined-blob reader).
+    const chunkedDoc = readChunkedPlanningMode();
+    const idx = chunkedDoc.indexOf('### 8.5.1 Outline Phase');
     assert.notEqual(idx, -1);
-    const nextSectionIdx = workflow.indexOf('### 8.5.2 Per-Plan Tasks', idx);
-    const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
+    const nextSectionIdx = chunkedDoc.indexOf('### 8.5.2 Per-Plan Tasks', idx);
+    const section = chunkedDoc.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'chunked outline spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'chunked outline spawn must invoke the bounded stall watcher');
     assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'chunked outline spawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
   });
 
   test('chunked per-plan spawn (8.5.2) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
-    const idx = workflow.indexOf('### 8.5.2 Per-Plan Tasks');
+    // Same relocation as the outline spawn above (#2993) — read
+    // steps/chunked-planning-mode.md directly. 8.5.2 is the LAST section in
+    // that file, so an unbounded slice to EOF is precise here (unlike slicing
+    // the generic multi-file combined blob, which would run on into whatever
+    // step file sorts next after this one).
+    const chunkedDoc = readChunkedPlanningMode();
+    const idx = chunkedDoc.indexOf('### 8.5.2 Per-Plan Tasks');
     assert.notEqual(idx, -1);
-    const nextSectionIdx = workflow.indexOf('## 9. Handle Planner Return', idx);
-    const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
+    const section = chunkedDoc.slice(idx);
     assert.match(section, /run_in_background\s*=\s*true/, 'chunked per-plan spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'chunked per-plan spawn must invoke the bounded stall watcher');
     assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'chunked per-plan spawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
@@ -491,6 +528,25 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     // production wiring the previous tests never exercised).
     assert.doesNotMatch(workflow, /\$PLANNER_OUTPUT_FILE\b/, 'plan-phase.md must not reference an unassigned $PLANNER_OUTPUT_FILE bash variable');
     assert.doesNotMatch(workflow, /\$CHECKER_OUTPUT_FILE\b/, 'plan-phase.md must not reference an unassigned $CHECKER_OUTPUT_FILE bash variable');
+    // #2993 moved two of the five spawn sites into steps/chunked-planning-mode.md
+    // — check there too, not just plan-phase.md, now that it's a separate file.
+    const chunkedDoc = readChunkedPlanningMode();
+    assert.doesNotMatch(chunkedDoc, /\$PLANNER_OUTPUT_FILE\b/, 'chunked-planning-mode.md must not reference an unassigned $PLANNER_OUTPUT_FILE bash variable');
+    assert.doesNotMatch(chunkedDoc, /\$CHECKER_OUTPUT_FILE\b/, 'chunked-planning-mode.md must not reference an unassigned $CHECKER_OUTPUT_FILE bash variable');
+  });
+
+  test('exactly five gsd_stall_watch spawn-site invocations exist across plan-phase.md and its steps/*.md files', () => {
+    // The whole point of #2650 is that EVERY planner/plan-checker spawn is
+    // bounded — not "at least one". #2993 relocated two of the five call
+    // sites (chunked outline, chunked per-plan) into
+    // steps/chunked-planning-mode.md; this counts across the combined
+    // surface so a future relocation can't silently drop a site without a
+    // test noticing (mirrors tests/plan-phase-drift-guard.test.cjs's #913
+    // ORCHESTRATOR RULE label count, which already does this).
+    const combined = readWorkflowCombined(PLAN_PHASE_PATH);
+    const callCount = (combined.match(/gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/g) || []).length;
+    assert.equal(callCount, 5,
+      `expected exactly 5 gsd_stall_watch "$TS" "{outputFile}" spawn-site invocations across plan-phase.md + steps/*.md, found ${callCount}`);
   });
 
   test('step 7.99 documents that {outputFile} must be bound from the real Agent() return (not passed literally)', () => {

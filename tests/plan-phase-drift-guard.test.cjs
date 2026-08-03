@@ -23,6 +23,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { readWorkflowCombined } = require('./helpers.cjs');
 
 const WORKFLOW_PATH = path.join(
   __dirname,
@@ -32,25 +33,19 @@ const WORKFLOW_PATH = path.join(
   'plan-phase.md'
 );
 
-const PLAN_PHASE_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase', 'steps');
-
 /**
  * plan-phase.md was fragmented (#2993) into gsd-core/workflows/plan-phase/steps/*.md.
  * Content this drift guard asserts on may now live in the host file, an extracted
  * step file, or be split across both (e.g. a rule-label count). Guards that need to
  * see the full picture read this combined blob instead of `workflow` alone so they
- * don't go blind the next time a section moves out of the host.
+ * don't go blind the next time a section moves out of the host. Delegates to the
+ * shared tests/helpers.cjs readWorkflowCombined() — kept as a same-named local
+ * wrapper so every existing call site here is unchanged (Generative Fix Divergence:
+ * this was the original implementation, now promoted to a shared helper so
+ * tests/fix-2650-plan-phase-stall-detection.test.cjs doesn't need a second copy).
  */
 function readPlanPhaseCombined() {
-  let combined = fs.readFileSync(WORKFLOW_PATH, 'utf8');
-  if (fs.existsSync(PLAN_PHASE_STEPS_DIR)) {
-    for (const entry of fs.readdirSync(PLAN_PHASE_STEPS_DIR).sort()) {
-      if (entry.endsWith('.md')) {
-        combined += '\n' + fs.readFileSync(path.join(PLAN_PHASE_STEPS_DIR, entry), 'utf8');
-      }
-    }
-  }
-  return combined;
+  return readWorkflowCombined(WORKFLOW_PATH);
 }
 
 // ─── Fixture ──────────────────────────────────────────────────────────────────
