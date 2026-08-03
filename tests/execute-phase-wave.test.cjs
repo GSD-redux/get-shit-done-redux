@@ -75,16 +75,31 @@ describe('execute-phase workflow: wave filtering', () => {
 
   test('workflow has partial-wave completion guardrail', () => {
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    // handle_partial_wave_execution was extracted to
+    // gsd-core/workflows/execute-phase/steps/partial-wave.md. The parent now only
+    // references it via a <gsd:section> pointer, so assert the pointer is present here
+    // and then read the actual step body from the extracted file below.
     assert.ok(
-      content.includes('<step name="handle_partial_wave_execution">'),
+      content.includes('gsd-core/workflows/execute-phase/steps/partial-wave.md'),
+      'workflow should reference the extracted partial-wave step file'
+    );
+
+    const PARTIAL_WAVE_STEP_PATH = path.join(
+      __dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'partial-wave.md'
+    );
+    assert.ok(fs.existsSync(PARTIAL_WAVE_STEP_PATH), 'partial-wave step file should exist');
+    const stepContent = fs.readFileSync(PARTIAL_WAVE_STEP_PATH, 'utf-8');
+
+    assert.ok(
+      stepContent.includes('<step name="handle_partial_wave_execution">'),
       'workflow should have a partial wave handling step'
     );
     assert.ok(
-      content.includes('Do NOT run phase verification'),
+      stepContent.includes('Do NOT run phase verification'),
       'partial wave step should skip phase verification'
     );
     assert.ok(
-      content.includes('Do NOT mark the phase complete'),
+      stepContent.includes('Do NOT mark the phase complete'),
       'partial wave step should skip phase completion'
     );
   });
