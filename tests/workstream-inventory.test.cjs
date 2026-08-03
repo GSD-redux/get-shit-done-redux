@@ -11,7 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { cleanup } = require('./helpers.cjs');
 const { createFixture, seedWorkstream } = require('./fixtures/index.cjs');
-const { buildWorkstreamInventory, isCompletedInventory } = require('../gsd-core/bin/lib/workstream-inventory-builder.cjs');
+const { buildWorkstreamInventory, isCompletedInventory, pickRollupWinners } = require('../gsd-core/bin/lib/workstream-inventory-builder.cjs');
 const { inspectWorkstream } = require('../gsd-core/bin/lib/workstream-inventory.cjs');
 const { VERIFIER_STATUSES } = require('../gsd-core/bin/lib/verification.cjs');
 const { phaseKeyFromDir, phaseKeyFromProse, phaseKeyFromToken } = require('../gsd-core/bin/lib/phase-id.cjs');
@@ -1427,12 +1427,20 @@ describe('#2645 — deleting a verification report must not raise completeness',
 
   // Row 11 — fault injection per CONTRIBUTING.md: read-only target directory
   // / partial write failure. Monkeypatch `fs.writeFileSync` to throw only for
-  // the ledger path (delegating everything else to the real implementation,
-  // since STATE.md/ROADMAP.md/phase files also go through the same fs
-  // module) — `inspectWorkstream` must still return a valid inventory rather
-  // than propagating the write failure. Restored via `t.after()` (never
-  // `try/finally` in a test body — CONTRIBUTING.md:344 — and never
-  // `chmod 0o000`, which root bypasses in CI).
+  // the ledger's WRITE TARGET (delegating everything else to the real
+  // implementation, since STATE.md/ROADMAP.md/phase files also go through
+  // the same fs module) — `inspectWorkstream` must still return a valid
+  // inventory rather than propagating the write failure. Restored via
+  // `t.after()` (never `try/finally` in a test body — CONTRIBUTING.md:344 —
+  // and never `chmod 0o000`, which root bypasses in CI).
+  //
+  // #2645 review: the write target is the ledger's TEMP file
+  // (`<ledgerPath>.<pid>.tmp`), not `ledgerPath` itself — the write is
+  // atomic (temp file + rename, #2645 review). Matching only the exact
+  // final path here made this mock a no-op once atomicity landed (the real
+  // write always succeeded, so the assertion that follows failed): fixed to
+  // match anything starting with `ledgerPath`, which covers the temp file
+  // regardless of its exact suffix.
   test('a write failure on the ledger file does not break inspectWorkstream (#2645)', (t) => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-write-fail' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
@@ -1444,7 +1452,7 @@ describe('#2645 — deleting a verification report must not raise completeness',
 
     const originalWriteFileSync = fs.writeFileSync;
     fs.writeFileSync = (targetPath, ...rest) => {
-      if (typeof targetPath === 'string' && targetPath === ledgerPath) {
+      if (typeof targetPath === 'string' && targetPath.startsWith(ledgerPath)) {
         throw new Error('injected: simulated read-only target directory');
       }
       return originalWriteFileSync(targetPath, ...rest);
@@ -1456,6 +1464,8 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.ok(inv);
     assert.equal(inv.phases[0].status, 'in_progress', 'the inventory is still correct even though persistence failed');
     assert.ok(!fs.existsSync(ledgerPath), 'the failed write must not have left a partial/corrupt ledger file');
+    const leftoverTmp = fs.readdirSync(wsDir).filter(name => name.startsWith('.verification-ledger.json.') && name.endsWith('.tmp'));
+    assert.deepEqual(leftoverTmp, [], 'a failed temp-file write must not leave an orphaned temp file behind');
   });
 
   // Row 12 — the read-side counterpart: a read failure on the ledger path
@@ -1583,5 +1593,102 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.ok(!fs.existsSync(ledgerPath), 'a failed rename must not leave a ledger file at the final path');
     const leftoverTmp = fs.readdirSync(wsDir).filter(name => name.startsWith('.verification-ledger.json.') && name.endsWith('.tmp'));
     assert.deepEqual(leftoverTmp, [], 'a failed rename must not leave an orphaned temp file behind');
+  });
+
+  // Row 18 — BLOCKER regression, unit level. `pickRollupWinners`
+  // (`workstream-inventory-builder.cts`) is the SINGLE shared implementation
+  // both `buildWorkstreamInventory`'s `rollupDirByKey` and
+  // `inspectWorkstream`'s ledger-winner selection now call. An earlier
+  // version of the ledger selection was a SEPARATE hand-written copy that
+  // omitted the `includeItem` (milestone-scoping) filter — so in a scoped
+  // workstream, a stale OUT-of-milestone directory sharing a phase key with
+  // the live IN-milestone one, with a newer mtime (plausible after a
+  // checkout/rebase resets mtimes), could win the LEDGER's selection while
+  // losing the BUILDER's. `isLedgerWinner` would then be false for the live
+  // directory, so deleting ITS `*-VERIFICATION.md` would never consult the
+  // ledger — reopening #2645's hole for the phase that actually counts
+  // toward `completed_phases`, reachable with a plain `rm`, no ledger
+  // tampering. This test proves the CURRENT shared implementation applies
+  // the filter BEFORE comparing mtimes, with synthetic data under full
+  // control (not tied to roadmap-parser's directory-name regex, which could
+  // not be coaxed into producing a natural "same rollup key, different
+  // milestone membership" pair for an integration-level reproduction — see
+  // Row 19 for the integration-level proof that the REAL ledger read/write
+  // path threads the scoping flag through correctly).
+  test('pickRollupWinners: an excluded (out-of-milestone) item can never win over an included one, even with a newer mtime (#2645)', () => {
+    const liveInMilestone = { key: 'shared', mtimeMs: 100, inMilestone: true, label: 'live' };
+    const staleOutOfMilestone = { key: 'shared', mtimeMs: 999999, inMilestone: false, label: 'stale' }; // far newer mtime, but excluded
+    const scoped = true;
+
+    const winners = pickRollupWinners(
+      [liveInMilestone, staleOutOfMilestone], // pre-sorted input, as both real call sites provide
+      (item) => item.key,
+      (item) => item.mtimeMs,
+      (item) => !(scoped && item.inMilestone === false),
+    );
+
+    assert.equal(winners.get('shared'), liveInMilestone,
+      'the excluded stale directory must never win the key, regardless of its mtime advantage');
+    assert.equal(winners.get('shared').label, 'live');
+
+    // The mirror image, sorted the OTHER way — order-of-iteration must not
+    // matter once the filter is applied; only inclusion + mtime should.
+    const winnersReversed = pickRollupWinners(
+      [staleOutOfMilestone, liveInMilestone],
+      (item) => item.key,
+      (item) => item.mtimeMs,
+      (item) => !(scoped && item.inMilestone === false),
+    );
+    assert.equal(winnersReversed.get('shared'), liveInMilestone);
+
+    // Unscoped (scoped=false): the exclusion never engages, so the newer
+    // mtime wins normally — pinning that the filter is scoping-conditional,
+    // not an unconditional "in-milestone always wins" rule.
+    const unscoped = false;
+    const winnersUnscoped = pickRollupWinners(
+      [liveInMilestone, staleOutOfMilestone],
+      (item) => item.key,
+      (item) => item.mtimeMs,
+      (item) => !(unscoped && item.inMilestone === false),
+    );
+    assert.equal(winnersUnscoped.get('shared'), staleOutOfMilestone,
+      'when scoping is off, the plain newest-mtime rule applies with no exclusion');
+  });
+
+  // Row 19 — BLOCKER regression, integration level. In a genuinely SCOPED
+  // workstream (roadmap has a Milestone column, STATE.md carries
+  // `milestone:`), an out-of-milestone phase's real verdict must never be
+  // written into the ledger at all — `pickRollupWinners`'s `includeItem`
+  // filter must exclude it from `ledgerWinnerByKey` before `inspectWorkstream`
+  // ever considers persisting its status. This proves the REAL read/write
+  // path (not just the extracted helper in isolation, Row 18) threads
+  // `scoped`/`inMilestone` through correctly.
+  test('milestone scoping: an out-of-milestone phase is never written into the ledger (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-scoped-ledger' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), 'milestone: v2.0\nstatus: executing\n');
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
+      '# Roadmap', '', '## Progress', '',
+      '| Phase | Milestone | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- | --- |',
+      '| 1. Old | v1.0 | 1/1 | Complete | - |',
+      '| 2. New | v2.0 | 1/1 | In Progress | - |',
+      '',
+    ].join('\n'));
+    writePhase(wsDir, '1-old', { plans: 1, summaries: 1, verification: 'gaps_found' }); // prior milestone
+    writePhase(wsDir, '2-new', { plans: 1, summaries: 1, verification: 'gaps_found' }); // current milestone
+
+    const inv = inspectWorkstream(tmpDir, 'ws-2645-scoped-ledger', { active: null });
+    assert.ok(inv);
+    // Guard: confirm scoping is actually active and phase 1 really is
+    // excluded from the rollup — otherwise this test would not exercise
+    // anything.
+    assert.equal(inv.roadmap_phase_count, 1, 'guard: denominator = v2.0 phases only, scoping is active');
+
+    const ledgerRaw = fs.readFileSync(path.join(wsDir, '.verification-ledger.json'), 'utf-8');
+    const ledger = JSON.parse(ledgerRaw);
+    assert.ok(!('01' in ledger) && !('1' in ledger),
+      'the out-of-milestone phase (1-old) must never be written into the ledger, regardless of its key form');
+    assert.ok(('02' in ledger) || ('2' in ledger),
+      'the in-milestone phase (2-new) must be recorded normally');
   });
 });

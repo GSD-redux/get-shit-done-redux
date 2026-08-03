@@ -34,7 +34,7 @@ const { phaseKeyFromDir, phaseKeyFromProse, parentPhaseKey } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestonePhaseFilter, isMilestoneShippedInRoadmap } = roadmapParserMod;
-import { buildWorkstreamInventory, isCompletedInventory } from './workstream-inventory-builder.cjs';
+import { buildWorkstreamInventory, isCompletedInventory, pickRollupWinners } from './workstream-inventory-builder.cjs';
 import type { WorkstreamInventory, StateProjection, MilestoneShippedSignal } from './workstream-inventory-builder.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -300,8 +300,17 @@ function readVerificationLedger(wsDir: string): VerificationLedgerRead {
       try {
         fs.lstatSync(ledgerPath);
         return { state: 'corrupt', entries: {} }; // a symlink entry exists; its target does not
-      } catch {
-        return { state: 'absent', entries: {} }; // truly nothing at this path
+      } catch (lstatErr) {
+        // #2645 review: every OTHER failure path in this function fails
+        // CLOSED — this one must too. A failed `lstatSync` is only proof of
+        // absence when IT ALSO reports `ENOENT`; anything else (a raced
+        // permission change, a path component that became inaccessible
+        // between the two calls, …) is not evidence the file was never
+        // there, and a bare `catch {}` here would silently fall OPEN exactly
+        // like the two-state design this fix replaced.
+        const lstatCode = (lstatErr as NodeJS.ErrnoException)?.code;
+        if (lstatCode === 'ENOENT') return { state: 'absent', entries: {} }; // truly nothing at this path
+        return { state: 'corrupt', entries: {} };
       }
     }
     // Any OTHER read failure (EACCES, EISDIR, …) also means the path EXISTS
@@ -585,23 +594,32 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   });
 
   // #2645: only the directory Bug #2445's de-dup rollup would actually pick
-  // for a phase key (newest mtime; first-in-sort-order on a tie — the SAME
-  // rule buildWorkstreamInventory's `rollupDirByKey` applies, now that both
-  // walk `[...phaseDirNames].sort()`) may read or write that key's ledger
-  // entry. Letting every same-keyed directory (including a stale leftover)
-  // write would let a stale duplicate's stale verdict clobber the live
-  // directory's remembered one. Not extracted into a helper shared with
-  // `rollupDirByKey`: that function also folds in milestone-scoping
-  // exclusion (`scoped && entry?.inMilestone === false`), which is
-  // `workstream-inventory-builder.cts`'s #2562/#2588 concern and explicitly
-  // out of scope for this fix to touch; duplicating the smaller, scoping-free
-  // tie-break rule here — kept in lockstep by the shared sort order above —
-  // is the narrower change.
-  const ledgerWinnerByKey = new Map<string, typeof rawPhaseEntries[number]>();
-  for (const entry of rawPhaseEntries) {
-    const incumbent = ledgerWinnerByKey.get(entry.phaseKey);
-    if (!incumbent || entry.mtimeMs > incumbent.mtimeMs) ledgerWinnerByKey.set(entry.phaseKey, entry);
-  }
+  // for a phase key may read or write that key's ledger entry. Letting every
+  // same-keyed directory (including a stale leftover) write would let a
+  // stale duplicate's stale verdict clobber the live directory's remembered
+  // one.
+  //
+  // #2645 review — CORRECTED: an earlier version of this comment claimed the
+  // milestone-scoping exclusion (`scoped && entry.inMilestone === false`)
+  // was safe to drop here as "out of scope", and hand-wrote a scoping-free
+  // tie-break rule. That was a real bug, not a scope call: in a SCOPED
+  // workstream, a stale OUT-of-milestone directory sharing a phase key with
+  // the live IN-milestone one can have a newer mtime (plausible after a
+  // checkout/rebase resets mtimes) and would then win THIS selection while
+  // the builder's own `rollupDirByKey` — which DOES apply the scoping filter
+  // — picks the live directory instead. `isLedgerWinner` would then be false
+  // for the live directory, so deleting ITS `*-VERIFICATION.md` would never
+  // consult the ledger and would reopen #2645's exact hole for the phase
+  // that actually counts toward `completed_phases` — reachable with a plain
+  // `rm`, no ledger tampering required. Fixed by calling the SAME shared
+  // `pickRollupWinners` the builder's `rollupDirByKey` now also calls, with
+  // the identical scoping filter, rather than a second hand-written copy.
+  const ledgerWinnerByKey = pickRollupWinners(
+    rawPhaseEntries,
+    (entry) => entry.phaseKey,
+    (entry) => entry.mtimeMs,
+    (entry) => !(scoped && entry.inMilestone === false),
+  );
 
   const ledgerRead = readVerificationLedger(wsDir);
   // Both `'corrupt'` and `'ok'` start from whatever entries could actually be
