@@ -23,7 +23,9 @@
  * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
  * (epic #1671 Phase 6.3), then from 20 to 23 via a further #2994 amendment
  * fragmentizing `code-review.md` and `complete-milestone.md`, then from 23
- * to 24 via a still further #2994 amendment fragmentizing `autonomous.md`.
+ * to 24 via a still further #2994 amendment fragmentizing `autonomous.md`,
+ * then from 24 to 26 via a still further #2994 amendment fragmentizing
+ * `review.md` and `discuss-phase-assumptions.md`.
  * {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
@@ -139,6 +141,25 @@ export interface InvocationFacts {
    * Absent/undefined is falsy, never throws.
    */
   readonly planStrategyConverge?: boolean;
+  /**
+   * Whether `review.md`'s `review.reviewer_instances` config surface is
+   * configured — present AND non-empty (#2994). Resolved by the caller
+   * (`cmdInitReview`, the init seam) via `readConfigJsonValue`; the same
+   * fact backs both `reviewer-instances-note-1` and `reviewer-instances-note-2`
+   * (two sections sharing one atom — legal, mirrors `plan-phase.md`'s
+   * `research-only-*` pair). Absent/undefined is falsy, never throws.
+   */
+  readonly reviewerInstancesConfigured?: boolean;
+  /**
+   * Whether `discuss-phase-assumptions.md`'s `auto_advance` step should
+   * dispatch (#2994): `--auto` flag OR a consolidated auto-mode config fact
+   * (`workflow._auto_chain_active` OR `workflow.auto_advance`). Same
+   * discipline as {@link chunkedMode} — the disjunction is resolved by the
+   * caller (`cmdInitDiscussPhaseAssumptions`, the init seam) into this
+   * single boolean BEFORE it reaches this module. Absent/undefined is
+   * falsy, never throws.
+   */
+  readonly autoAdvanceActive?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -234,12 +255,14 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'flag:--reset-phase-numbers': (facts: InvocationFacts) => hasFlag(facts, '--reset-phase-numbers'),
     'flag:--reviews': (facts: InvocationFacts) => hasFlag(facts, '--reviews'),
     'flag:--validate': (facts: InvocationFacts) => hasFlag(facts, '--validate'),
+    'state:auto-advance-active': (facts: InvocationFacts) => facts.autoAdvanceActive === true,
     'state:chunked-mode': (facts: InvocationFacts) => facts.chunkedMode === true,
     'state:fallow-enabled': (facts: InvocationFacts) => facts.fallowEnabled === true,
     'state:git-create-tag': (facts: InvocationFacts) => facts.gitCreateTag === true,
     'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
     'state:plan-strategy-converge': (facts: InvocationFacts) => facts.planStrategyConverge === true,
+    'state:reviewer-instances-configured': (facts: InvocationFacts) => facts.reviewerInstancesConfigured === true,
     'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,
   }),

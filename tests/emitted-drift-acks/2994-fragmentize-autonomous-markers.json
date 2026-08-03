@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "autonomous.md": "#2994 (epic #1671 Phase 6.3, commit 80799211c): fragmentizes autonomous.md onto the marker grammar, admitting `state:plan-strategy-converge` (five sections sharing one atom: converge-fail-fast, converge-banner, converge-dispatch-bg, converge-dispatch-inline, converge-loop) and a new dedicated `init.autonomous` entry point (cmdInitAutonomous). Growth is +737 bytes (42,724 -> 43,461): the additive `INIT_AUTONOMOUS=$(gsd_run query init.autonomous ...)` call plus its CONVERGE_PARAM/CROSS_AI_PARAM extraction, and five `<!-- gsd:section -->` marker-pair stubs, together outweigh the prose each stub replaces (most of which is short — a single display line for converge-banner, a short Agent()/Skill() block per converge-dispatch-* — while the marker+read-instruction stub text is comparably sized or larger per site, and the pre-existing PLAN_STRATEGY resolver is retained unchanged). This ack backfills a gap in that commit's own history — no fragment acknowledged the growth when it landed, which would otherwise block the push gate for every subsequent commit on this branch."
+  }
+}

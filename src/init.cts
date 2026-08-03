@@ -670,7 +670,14 @@ function buildSectionManifestField(
   phaseInfo: Record<string, unknown> | null,
   options: Record<string, unknown>,
   workflow: string,
-  overrides: { needsCodebaseMap?: boolean; fallowEnabled?: boolean; gitCreateTag?: boolean; planStrategyConverge?: boolean } = {},
+  overrides: {
+    needsCodebaseMap?: boolean;
+    fallowEnabled?: boolean;
+    gitCreateTag?: boolean;
+    planStrategyConverge?: boolean;
+    reviewerInstancesConfigured?: boolean;
+    autoAdvanceActive?: boolean;
+  } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
   if (!sections) return null;
@@ -709,6 +716,8 @@ function buildSectionManifestField(
     fallowEnabled: overrides.fallowEnabled,
     gitCreateTag: overrides.gitCreateTag,
     planStrategyConverge: overrides.planStrategyConverge,
+    reviewerInstancesConfigured: overrides.reviewerInstancesConfigured,
+    autoAdvanceActive: overrides.autoAdvanceActive,
   };
 
   try {
@@ -1518,6 +1527,206 @@ function cmdInitCodeReview(
   };
   result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, sectionManifestOptions, 'code-review', {
     fallowEnabled: fallow.enabled,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `review.md`'s dedicated init entry point (#2994, epic #1671 Phase 6.3
+ * amendment). `review.md` previously routed through the shared, 20+-caller
+ * `init.phase-op` (`cmdInitPhaseOp` below), reading only 3 of its fields
+ * (`phase_dir`, `phase_number`, `padded_phase` — verified against the
+ * workflow's own "Read from init" line in `gather_context`). `cmdInitPhaseOp`
+ * is CRITICAL blast radius (179 dependents across 24 processes) and is never
+ * modified for this — this function resolves phase info itself via the SAME
+ * shared primitives `cmdInitPhaseOp` calls (`guardedFindPhase`/
+ * `guardedGetRoadmapPhase`), producing the identical 3-field shape rather
+ * than a second, hand-maintained copy of `cmdInitPhaseOp`'s full ~60-field
+ * bundle.
+ *
+ * One further fact is resolved and exposed here that `init.phase-op` never
+ * carried: whether reviewer instances are configured
+ * (`.planning/config.json`'s `review.reviewer_instances`, present AND
+ * non-empty — `state:reviewer-instances-configured`), reusing
+ * `readConfigJsonValue` (added for `detectFallowConfig`) rather than a
+ * second, divergence-prone config reader (DEFECT.GENERATIVE-FIX).
+ */
+function cmdInitReview(
+  cwd: string,
+  phase: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+  let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+
+  if (phaseInfo?.['archived']) {
+    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+    if (roadmapPhase?.['found']) {
+      phaseInfo = {
+        found: true,
+        directory: null,
+        phase_number: roadmapPhase['phase_number'],
+        phase_name: roadmapPhase['phase_name'],
+      };
+    }
+  }
+
+  if (!phaseInfo) {
+    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+    if (roadmapPhase?.['found']) {
+      phaseInfo = {
+        found: true,
+        directory: null,
+        phase_number: roadmapPhase['phase_number'],
+        phase_name: roadmapPhase['phase_name'],
+      };
+    }
+  }
+
+  const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
+  const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
+
+  // #2994: `state:reviewer-instances-configured` ground truth — present AND
+  // non-empty `review.reviewer_instances` object. A missing key, a non-object
+  // value, or an empty object all resolve to `false` (fail-closed, matching
+  // the workflow's own pre-hoist prose gate — "Unconfigured -> default path
+  // unchanged").
+  const rawReviewerInstances = readConfigJsonValue(cwd, ['review', 'reviewer_instances']);
+  const reviewerInstancesConfigured =
+    rawReviewerInstances !== null &&
+    typeof rawReviewerInstances === 'object' &&
+    !Array.isArray(rawReviewerInstances) &&
+    Object.keys(rawReviewerInstances).length > 0;
+
+  const result: Record<string, unknown> = {
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
+    phase_dir: phaseDir ? toPosixPath(path.join(cwd, phaseDir)) : null,
+    phase_number: phaseNumber,
+    padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, options, 'review', {
+    reviewerInstancesConfigured,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `discuss-phase-assumptions.md`'s dedicated init entry point (#2994, epic
+ * #1671 Phase 6.3 amendment). Previously routed through the shared,
+ * 20+-caller `init.phase-op` (`cmdInitPhaseOp` below), reading 14 of its
+ * fields (`commit_docs`, `phase_found`, `phase_dir`, `phase_number`,
+ * `phase_name`, `phase_slug`, `padded_phase`, `has_research`, `has_context`,
+ * `has_plans`, `has_verification`, `plan_count`, `roadmap_exists`,
+ * `planning_exists` — verified against the workflow's own "Parse JSON for"
+ * line). `cmdInitPhaseOp` is CRITICAL blast radius (179 dependents across 24
+ * processes) and is never modified for this — this function resolves phase
+ * info itself via the SAME shared primitives `cmdInitPhaseOp` calls
+ * (`guardedFindPhase`/`guardedGetRoadmapPhase`), reproducing the identical
+ * archived/not-found fallback shape (`plans: []`, `has_research: false`,
+ * `has_context: false`, `has_verification: false`) rather than a second,
+ * hand-maintained copy of `cmdInitPhaseOp`'s full ~60-field bundle.
+ *
+ * One further fact is resolved and exposed here that `init.phase-op` never
+ * carried: `state:auto-advance-active` — the workflow's own `auto_advance`
+ * step resolves `--auto` OR a consolidated `check auto-mode --pick active`
+ * fact (itself `workflow._auto_chain_active` OR `workflow.auto_advance`) via
+ * a runtime `gsd_run` call; that identical disjunction is folded into ONE
+ * boolean FACT here (same discipline as `state:chunked-mode` /
+ * `state:plan-strategy-converge`), exposed as `auto_advance_active`.
+ */
+function cmdInitDiscussPhaseAssumptions(
+  cwd: string,
+  phase: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+  let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+
+  if (phaseInfo?.['archived']) {
+    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+    if (roadmapPhase?.['found']) {
+      const phaseName = roadmapPhase['phase_name'] as string | null;
+      phaseInfo = {
+        found: true,
+        directory: null,
+        phase_number: roadmapPhase['phase_number'],
+        phase_name: phaseName,
+        phase_slug: phaseName
+          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+          : null,
+        plans: [],
+        has_research: false,
+        has_context: false,
+        has_verification: false,
+      };
+    }
+  }
+
+  if (!phaseInfo) {
+    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+    if (roadmapPhase?.['found']) {
+      const phaseName = roadmapPhase['phase_name'] as string | null;
+      phaseInfo = {
+        found: true,
+        directory: null,
+        phase_number: roadmapPhase['phase_number'],
+        phase_name: phaseName,
+        phase_slug: phaseName
+          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+          : null,
+        plans: [],
+        has_research: false,
+        has_context: false,
+        has_verification: false,
+      };
+    }
+  }
+
+  const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
+  const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
+  const phaseName = (phaseInfo?.['phase_name'] as string | undefined) || null;
+
+  // #2994: mirrors discuss-phase-assumptions.md's own auto_advance step
+  // resolver — `--auto` flag OR the consolidated `check auto-mode --pick
+  // active` fact (workflow._auto_chain_active OR workflow.auto_advance).
+  const autoAdvanceActive =
+    options['auto'] === true ||
+    readConfigJsonBoolean(cwd, ['workflow', '_auto_chain_active']) ||
+    readConfigJsonBoolean(cwd, ['workflow', 'auto_advance']);
+
+  const result: Record<string, unknown> = {
+    commit_docs: config.commit_docs,
+
+    phase_found: !!phaseInfo,
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
+    phase_dir: phaseDir ? toPosixPath(path.join(cwd, phaseDir)) : null,
+    phase_number: phaseNumber,
+    phase_name: phaseName,
+    phase_slug: phaseInfo?.['phase_slug'] || null,
+    padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
+
+    has_research: phaseInfo?.['has_research'] || false,
+    has_context: phaseInfo?.['has_context'] || false,
+    has_plans: ((phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0) > 0,
+    has_verification: phaseInfo?.['has_verification'] || false,
+    plan_count: (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0,
+
+    roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
+    planning_exists: fs.existsSync(planningDir(cwd)),
+  };
+
+  // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
+  const sectionManifestOptions: Record<string, unknown> = {
+    ...options,
+    auto: options['auto'] || undefined,
+  };
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, sectionManifestOptions, 'discuss-phase-assumptions', {
+    autoAdvanceActive,
   });
 
   output(withProjectRoot(cwd, result), raw);
@@ -3322,6 +3531,8 @@ export = {
   cmdInitVerifyWork,
   cmdInitPhaseOp,
   cmdInitCodeReview,
+  cmdInitReview,
+  cmdInitDiscussPhaseAssumptions,
   cmdInitTodos,
   cmdInitMilestoneOp,
   cmdInitMapCodebase,

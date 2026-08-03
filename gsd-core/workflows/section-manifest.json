@@ -46,6 +46,13 @@
         "read": "gsd-core/workflows/complete-milestone/steps/git-tag.md"
       }
     ],
+    "discuss-phase-assumptions": [
+      {
+        "id": "auto-advance-dispatch",
+        "when": "state:auto-advance-active",
+        "read": "gsd-core/workflows/discuss-phase-assumptions/steps/auto-advance-dispatch.md"
+      }
+    ],
     "execute-phase": [
       {
         "id": "partial-wave",
@@ -151,6 +158,18 @@
         "id": "quick-verification",
         "when": "flag:--validate",
         "read": "gsd-core/workflows/quick/steps/quick-verification.md"
+      }
+    ],
+    "review": [
+      {
+        "id": "reviewer-instances-note-1",
+        "when": "state:reviewer-instances-configured",
+        "read": "gsd-core/workflows/review/steps/reviewer-instances-note-1.md"
+      },
+      {
+        "id": "reviewer-instances-note-2",
+        "when": "state:reviewer-instances-configured",
+        "read": "gsd-core/workflows/review/steps/reviewer-instances-note-2.md"
       }
     ],
     "verify-work": [

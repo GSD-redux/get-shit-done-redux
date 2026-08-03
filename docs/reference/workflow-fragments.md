@@ -46,13 +46,15 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 24 atoms (widened from 4 to 14 via the ADR-1671
+`when=` takes exactly one of 26 atoms (widened from 4 to 14 via the ADR-1671
 amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
 ADR-1671 amendment for #2993, epic #1671 Phase 6.2, then from 19 to 20 via
 the ADR-1671 amendment for #2994, epic #1671 Phase 6.3, then from 20 to 23
 via a further #2994 amendment fragmentizing `code-review.md` and
 `complete-milestone.md`, then from 23 to 24 via a still further #2994
-amendment fragmentizing `autonomous.md`):
+amendment fragmentizing `autonomous.md`, then from 24 to 26 via a still
+further #2994 amendment fragmentizing `review.md` and
+`discuss-phase-assumptions.md`):
 
 | Value | Meaning |
 |---|---|
@@ -72,12 +74,14 @@ amendment fragmentizing `autonomous.md`):
 | `flag:--reset-phase-numbers` | Applicable when the workflow runs with `--reset-phase-numbers`. |
 | `flag:--reviews` | Applicable when the workflow runs with `--reviews`. |
 | `flag:--validate` | Applicable when the workflow runs with `--validate`. |
+| `state:auto-advance-active` | Applicable when `discuss-phase-assumptions.md`'s `auto_advance` step should dispatch — `--auto` flag OR a consolidated auto-mode config fact (see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below). |
 | `state:chunked-mode` | Applicable when chunked planning mode is active — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:fallow-enabled` | Applicable when `.planning/config.json`'s `code_quality.fallow.enabled` is `true` (fail-closed default `false`). |
 | `state:git-create-tag` | Applicable when `.planning/config.json`'s `git.create_tag` is not `false` (fail-OPEN default `true`). |
 | `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
 | `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
 | `state:plan-strategy-converge` | Applicable when `autonomous.md`'s planning step should route through plan-review convergence instead of `gsd-plan-phase` — the workflow runs with `--converge`, or its documented alias `--cross-ai` (`autonomous.md`'s own `PLAN_STRATEGY` resolver folds both). |
+| `state:reviewer-instances-configured` | Applicable when `.planning/config.json`'s `review.reviewer_instances` is present AND non-empty. |
 | `state:ui-phase-active` | Applicable when the phase's active `plan:pre` loop hooks include the `ui-phase` step, OR the phase directory already contains a `*-UI-SPEC.md` file — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:worktrees-enabled` | Applicable when `.planning/config.json`'s `workflow.use_worktrees` is enabled. |
 
@@ -124,7 +128,11 @@ for the same reason and never shipped under that name: a still further
 `state:plan-strategy-converge` instead — `--cross-ai` is a documented alias
 for `--converge` (`autonomous.md`'s own `PLAN_STRATEGY` resolver folds
 both), so a `flag:--converge`-only atom would have left a `--cross-ai`-only
-invocation silently excluded from the same sections.
+invocation silently excluded from the same sections. `state:reviewer-instances-configured`
+and `state:auto-advance-active` were withheld the same way until a still
+further #2994 amendment gave `review` and `discuss-phase-assumptions` their
+own dedicated `cmdInit*` entry points (`cmdInitReview`,
+`cmdInitDiscussPhaseAssumptions`).
 
 ### Compound conditions are resolved in the fact, never the grammar
 
@@ -168,6 +176,17 @@ identical disjunction — `flags.has('--converge') || flags.has('--cross-ai')`
 — into `InvocationFacts.planStrategyConverge`, so
 `WHEN_PREDICATES['state:plan-strategy-converge']` reads only that one field,
 never `--converge`/`--cross-ai` separately.
+
+`state:auto-advance-active` (#2994) is the same shape once more:
+`discuss-phase-assumptions.md`'s own `auto_advance` step already resolves
+`--auto` OR a consolidated `check auto-mode --pick active` fact (itself
+`workflow._auto_chain_active` OR `workflow.auto_advance`) via a runtime
+`gsd_run` call before deciding whether to dispatch. `cmdInitDiscussPhaseAssumptions`
+mirrors that identical disjunction — `options['auto'] === true ||
+readConfigJsonBoolean(cwd, ['workflow', '_auto_chain_active']) ||
+readConfigJsonBoolean(cwd, ['workflow', 'auto_advance'])` — into
+`InvocationFacts.autoAdvanceActive`, so `WHEN_PREDICATES['state:auto-advance-active']`
+reads only that one field, never the flag and the two config keys separately.
 
 ## Fails closed
 
@@ -263,15 +282,16 @@ At init time, a separate pure evaluator, `src/section-manifest.cts`
 `included`/`excluded` id lists against one invocation's
 `InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
 phaseMvpMode?, worktreesEnabled?, chunkedMode?, uiPhaseActive?, fallowEnabled?,
-gitCreateTag?, planStrategyConverge?}`. Only a workflow with a **dedicated
+gitCreateTag?, planStrategyConverge?, reviewerInstancesConfigured?,
+autoAdvanceActive?}`. Only a workflow with a **dedicated
 `cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
 it, because only that entry point can assemble `InvocationFacts` from its own
 parsed CLI options and `.planning/` state reads — this is admission gate 2
 from [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above,
-applied per-workflow rather than per-atom. Ten entry points are wired today:
-`execute-phase`, `plan-phase`, `new-project`, `new-milestone`, `quick`,
-`progress`, `verify-work`, `code-review`, `complete-milestone`, and
-`autonomous`.
+applied per-workflow rather than per-atom. Twelve entry points are wired
+today: `execute-phase`, `plan-phase`, `new-project`, `new-milestone`,
+`quick`, `progress`, `verify-work`, `code-review`, `complete-milestone`,
+`autonomous`, `review`, and `discuss-phase-assumptions`.
 
 `InvocationFacts.flags` is a `ReadonlySet<string>` of the literal `--<name>`
 tokens seen on the invocation, and **membership is token-presence, not
@@ -288,8 +308,8 @@ that were actually seen.
 
 ## Piloted on execute-phase.md, then rolled out across the wired workflows
 
-Ten workflows carry markers today, all of them the workflows with a dedicated
-`cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
+Twelve workflows carry markers today, all of them the workflows with a
+dedicated `cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
 above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
 `gsd-core/workflows/plan-phase.md` (#2993, epic #1671 Phase 6.2),
 `gsd-core/workflows/progress.md`, `gsd-core/workflows/new-project.md`,
@@ -297,8 +317,10 @@ above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
 four, #2994, epic #1671 Phase 6.3), `gsd-core/workflows/verify-work.md`
 (also #2994, epic #1671 Phase 6.3), `gsd-core/workflows/code-review.md` /
 `gsd-core/workflows/complete-milestone.md` (a further #2994 amendment, epic
-#1671 Phase 6.3), and `gsd-core/workflows/autonomous.md` (a still further
-#2994 amendment, epic #1671 Phase 6.3). The marker grammar and composer seam
+#1671 Phase 6.3), `gsd-core/workflows/autonomous.md` (a still further
+#2994 amendment, epic #1671 Phase 6.3), and `gsd-core/workflows/review.md` /
+`gsd-core/workflows/discuss-phase-assumptions.md` (a still further #2994
+amendment, epic #1671 Phase 6.3). The marker grammar and composer seam
 are general-purpose across any workflow file; rollout to the remaining
 `docs-update` workflow is gated on that workflow gaining its own dedicated
 `cmdInit*` entry point (see the two-atoms-withheld note in [The frozen
@@ -438,6 +460,38 @@ the identical disjunction into `InvocationFacts.planStrategyConverge`, and
 removed, none modified) purely to carry `section_manifest`; like
 `complete-milestone.md`'s entry point, it has no phase-listing logic of its
 own to delegate.
+
+`review.md` marks two sections, both sharing the single
+`state:reviewer-instances-configured` atom (legal and precedented —
+`plan-phase.md`'s `research-only-*` pair already shares
+`flag:--research-phase`): `reviewer-instances-note-1` and
+`reviewer-instances-note-2`, two peripheral additive notes in the
+`detect_clis` and `invoke_reviewers` steps respectively. Neither note is
+part of the workflow's core reviewer-lane dispatch — that dispatch is the
+workflow's primary always-evaluated logic and is never gated. `review.md`
+previously routed through the shared, 20+-caller `init.phase-op`, reading
+only 3 of its ~60 fields (`phase_dir`, `phase_number`, `padded_phase`);
+`cmdInitReview` now resolves those 3 fields itself via the same
+`guardedFindPhase`/`guardedGetRoadmapPhase` primitives, plus the
+`review.reviewer_instances` config-presence fact (reusing
+`readConfigJsonValue`, added for `detectFallowConfig` — no second config
+reader).
+
+`discuss-phase-assumptions.md` marks one section: `auto-advance-dispatch`
+(`state:auto-advance-active`), inside the `auto_advance` step. The step's
+own `--auto`-flag parse, chain-flag sync, and consolidated `AUTO_MODE`
+resolver (all of which must always run) stay OUTSIDE the marker; only the
+flag-present display-banner-and-launch body is gated, and the flag-absent
+"End here" fallback stays OUTSIDE the marker too, directly after it — gating
+the whole step would delete the fallback text needed exactly when `--auto`
+is absent, the same class of hazard `verify-work.md`'s MVP false-branch note
+and `code-review.md`'s fallow-disabled fallback both document. `discuss-phase-assumptions.md`
+previously routed through `init.phase-op`, reading 14 of its fields;
+`cmdInitDiscussPhaseAssumptions` now resolves those 14 fields itself (via
+the same shared primitives, reproducing `cmdInitPhaseOp`'s archived/not-found
+fallback shape), plus `state:auto-advance-active` — `--auto` flag OR a
+consolidated auto-mode config fact, resolved to one boolean the same way
+`state:chunked-mode` is.
 
 **`plan-phase.md` was originally retargeted away from the #2930 pilot,
 then fragmentized here once the blocker cleared.** Issue #2930's own

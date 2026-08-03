@@ -353,6 +353,22 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "init.review",
+    "aliases": [
+      "init review"
+    ],
+    "subcommand": "review",
+    "mutation": false
+  },
+  {
+    "canonical": "init.discuss-phase-assumptions",
+    "aliases": [
+      "init discuss-phase-assumptions"
+    ],
+    "subcommand": "discuss-phase-assumptions",
+    "mutation": false
+  },
+  {
     "canonical": "init.todos",
     "aliases": [
       "init todos"

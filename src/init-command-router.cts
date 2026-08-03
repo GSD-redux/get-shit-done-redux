@@ -35,6 +35,8 @@ interface InitModule {
   cmdInitVerifyWork(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitPhaseOp(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitCodeReview(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitReview(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitDiscussPhaseAssumptions(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitTodos(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitMilestoneOp(cwd: string, raw: boolean): void;
   cmdInitMapCodebase(cwd: string, raw: boolean): void;
@@ -136,6 +138,11 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       'code-review': () => {
         const namedArgs = parseNamedArgs(args, [], ['fix']);
         init.cmdInitCodeReview(cwd, args[2], raw, { fix: namedArgs['fix'] });
+      },
+      review: () => init.cmdInitReview(cwd, args[2], raw, {}),
+      'discuss-phase-assumptions': () => {
+        const namedArgs = parseNamedArgs(args, [], ['auto']);
+        init.cmdInitDiscussPhaseAssumptions(cwd, args[2], raw, { auto: namedArgs['auto'] });
       },
       todos: () => init.cmdInitTodos(cwd, args[2], raw),
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
