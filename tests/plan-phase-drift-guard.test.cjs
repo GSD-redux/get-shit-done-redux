@@ -32,6 +32,27 @@ const WORKFLOW_PATH = path.join(
   'plan-phase.md'
 );
 
+const PLAN_PHASE_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase', 'steps');
+
+/**
+ * plan-phase.md was fragmented (#2993) into gsd-core/workflows/plan-phase/steps/*.md.
+ * Content this drift guard asserts on may now live in the host file, an extracted
+ * step file, or be split across both (e.g. a rule-label count). Guards that need to
+ * see the full picture read this combined blob instead of `workflow` alone so they
+ * don't go blind the next time a section moves out of the host.
+ */
+function readPlanPhaseCombined() {
+  let combined = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  if (fs.existsSync(PLAN_PHASE_STEPS_DIR)) {
+    for (const entry of fs.readdirSync(PLAN_PHASE_STEPS_DIR).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + fs.readFileSync(path.join(PLAN_PHASE_STEPS_DIR, entry), 'utf8');
+      }
+    }
+  }
+  return combined;
+}
+
 // ─── Fixture ──────────────────────────────────────────────────────────────────
 
 const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
@@ -185,11 +206,15 @@ describe('plan-phase workflow: top-level spawn guard (#913)', () => {
   });
 
   test('workflow contains ALL RUNTIMES orchestrator rule labels (count preserved)', () => {
-    // Must have all 7 agent-spawn wait rules still present (none dropped during rename)
-    const allRuntimesCount = (workflow.match(/ORCHESTRATOR RULE — ALL RUNTIMES/g) || []).length;
+    // Must have all 7 agent-spawn wait rules still present (none dropped during rename).
+    // #2993 fragmentization moved some spawn sites (e.g. chunked planning) into
+    // gsd-core/workflows/plan-phase/steps/*.md, so the count is taken across the
+    // host file AND every extracted step file — not the host alone.
+    const combined = readPlanPhaseCombined();
+    const allRuntimesCount = (combined.match(/ORCHESTRATOR RULE — ALL RUNTIMES/g) || []).length;
     assert.ok(
       allRuntimesCount >= 7,
-      `plan-phase must have at least 7 "ORCHESTRATOR RULE — ALL RUNTIMES" labels (one per agent spawn site); found ${allRuntimesCount} (#913)`
+      `plan-phase (host + plan-phase/steps/*.md) must have at least 7 "ORCHESTRATOR RULE — ALL RUNTIMES" labels (one per agent spawn site); found ${allRuntimesCount} (#913)`
     );
   });
 });
@@ -780,12 +805,17 @@ describe('plan-phase.md — chunked mode flag and config (#2310)', () => {
 });
 
 describe('plan-phase.md — chunked mode implementation (#2310)', () => {
-  const content = fs.readFileSync(PLAN_PHASE, 'utf-8');
+  // #2993 fragmentization moved §8.5 (chunked planning mode) out of the host file
+  // into gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md. These
+  // assertions now read the combined host + step-files blob (readPlanPhaseCombined,
+  // defined at module scope) so they keep guarding the same property regardless of
+  // which file the content physically lives in.
+  const content = readPlanPhaseCombined();
 
   test('step 8.5 chunked planning section exists', () => {
     assert.ok(
       content.includes('## 8.5.'),
-      'plan-phase.md must have a step 8.5 section for chunked planning mode'
+      'plan-phase.md (or its extracted plan-phase/steps/*.md) must have a step 8.5 section for chunked planning mode'
     );
   });
 
@@ -942,16 +972,22 @@ describe('enh #3209: plan-phase ADR ingest express path', () => {
     );
   });
 
+  // #2993 fragmentization moved the ADR ingest express-path step (former §3.6) out
+  // of the host file into gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md.
+  // These three tests read the combined host + step-files blob (readPlanPhaseCombined,
+  // defined at module scope) so they keep guarding the same property regardless of
+  // which file the content physically lives in.
+
   test('workflow defines an ADR ingest express-path step', () => {
-    const workflow = read(WORKFLOW_PATH);
+    const workflow = readPlanPhaseCombined();
     assert.ok(/##\s*(?:\d+(?:\.\d+)*)?\.?\s*Handle ADR Ingest Express Path/i.test(workflow),
-      'plan-phase workflow must include a dedicated ADR ingest express-path step');
+      'plan-phase workflow (host + plan-phase/steps/*.md) must include a dedicated ADR ingest express-path step');
     assert.ok(workflow.includes('ADR Ingest Express Path'),
       'workflow must display ADR ingest express-path banner text');
   });
 
   test('ADR ingest context template includes scope fence and ADR source attribution', () => {
-    const workflow = read(WORKFLOW_PATH);
+    const workflow = readPlanPhaseCombined();
     assert.ok(workflow.includes('<scope_fence>'),
       'ADR ingest context template must include <scope_fence> for hard out-of-scope exclusions');
     assert.ok(workflow.includes('Source:** ADR Ingest Express Path'),
@@ -959,7 +995,7 @@ describe('enh #3209: plan-phase ADR ingest express path', () => {
   });
 
   test('workflow documents status gate and no-decisions fallback', () => {
-    const workflow = read(WORKFLOW_PATH);
+    const workflow = readPlanPhaseCombined();
     assert.ok(
       workflow.includes('Reject `superseded`/`rejected`/`deprecated`') ||
       workflow.includes('reject `superseded`/`rejected`/`deprecated`') ||
