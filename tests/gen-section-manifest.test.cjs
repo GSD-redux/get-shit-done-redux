@@ -576,6 +576,85 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
   });
 });
 
+// ─── #2993 (epic #1671 Phase 6.2) rows C1/C2: the shipped, committed
+// gsd-core/workflows/section-manifest.json artifact itself — never a
+// regenerated fixture — gains a `plan-phase` key with all 6 sections in
+// document order (C1), while `execute-phase`'s own entry stays
+// BYTE-IDENTICAL (C2, a Hyrum gate: #2932/#2992's 3 pre-existing sections
+// must not shift shape just because a sibling workflow key was added).
+
+describe('shipped gsd-core/workflows/section-manifest.json (#2993 rows C1/C2)', () => {
+  const SHIPPED_MANIFEST_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'section-manifest.json');
+
+  function readShippedManifest() {
+    return JSON.parse(fs.readFileSync(SHIPPED_MANIFEST_PATH, 'utf8'));
+  }
+
+  test('planPhaseKeyHasAllSixSectionsInDocumentOrder (row C1)', () => {
+    const manifest = readShippedManifest();
+    assert.deepEqual(manifest.workflows['plan-phase'], [
+      {
+        id: 'reviews-prerequisite',
+        when: 'flag:--reviews',
+        read: 'gsd-core/workflows/plan-phase/steps/reviews-prerequisite.md',
+      },
+      {
+        id: 'prd-express-gate',
+        when: 'flag:--prd',
+        read: 'gsd-core/workflows/plan-phase/steps/prd-express-gate.md',
+      },
+      {
+        id: 'adr-ingest-express-path',
+        when: 'flag:--ingest',
+        read: 'gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md',
+      },
+      {
+        id: 'research-only-modifiers',
+        when: 'flag:--research-phase',
+        read: 'gsd-core/workflows/plan-phase/steps/research-only-modifiers.md',
+      },
+      {
+        id: 'research-only-early-exit',
+        when: 'flag:--research-phase',
+        read: 'gsd-core/workflows/plan-phase/steps/research-only-early-exit.md',
+      },
+      {
+        id: 'chunked-planning-mode',
+        when: 'state:chunked-mode',
+        read: 'gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md',
+      },
+    ]);
+  });
+
+  test('executePhaseKeyIsByteIdenticalToBeforeThisChange (row C2 — Hyrum gate)', () => {
+    const manifest = readShippedManifest();
+    assert.deepEqual(manifest.workflows['execute-phase'], [
+      {
+        id: 'partial-wave',
+        when: 'flag:--wave',
+        read: 'gsd-core/workflows/execute-phase/steps/partial-wave.md',
+      },
+      {
+        id: 'gap-closure-artifacts',
+        when: 'state:gap-closure-phase',
+        read: 'gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md',
+      },
+      {
+        id: 'regression-gate',
+        when: 'state:has-prior-phases',
+        read: 'gsd-core/workflows/execute-phase/steps/regression-gate.md',
+      },
+    ]);
+  });
+
+  test('shippedManifestPassesTheRealCheckAgainstTheRealRepo (idempotency, mirrors row 29)', () => {
+    const r = runGenSectionManifest([
+      '--check', '--workflows-dir', path.join(ROOT, 'gsd-core', 'workflows'), '--manifest-path', SHIPPED_MANIFEST_PATH, '--repo-root', ROOT,
+    ]);
+    assert.equal(r.code, 0, `the shipped manifest must already be up to date; stderr: ${r.stderr}`);
+  });
+});
+
 // ─── REASON enum shape lock (mirrors gen-context-index.cjs precedent) ──────
 
 describe('gen-section-manifest.cjs REASON enum', () => {

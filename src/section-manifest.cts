@@ -18,6 +18,8 @@
  * binding on this implementation: `when=` is a closed vocabulary, widened
  * from 4 to 14 entries via the ADR-1671 amendment for #2992 (epic #1671
  * Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
+ * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
+ * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
  * 40-design.md`). {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
@@ -80,6 +82,16 @@ export interface InvocationFacts {
   readonly phaseMvpMode?: boolean;
   /** Whether worktrees are enabled (`.planning/config.json` `workflow.use_worktrees`). Absent/undefined is falsy, never throws. */
   readonly worktreesEnabled?: boolean;
+  /**
+   * Whether plan-phase chunked mode is active: `--chunked` flag OR
+   * `.planning/config.json` `workflow.plan_chunked` (#2993). The disjunction
+   * is resolved by the caller (the init seam) into this single boolean
+   * BEFORE it reaches this module — `state:chunked-mode`'s predicate below
+   * reads only this field, never `--chunked` and the config value
+   * separately, which is what keeps the `when=` grammar operator-free.
+   * Absent/undefined is falsy, never throws.
+   */
+  readonly chunkedMode?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -167,9 +179,14 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'flag:--discuss': (facts: InvocationFacts) => hasFlag(facts, '--discuss'),
     'flag:--forensic': (facts: InvocationFacts) => hasFlag(facts, '--forensic'),
     'flag:--full': (facts: InvocationFacts) => hasFlag(facts, '--full'),
+    'flag:--ingest': (facts: InvocationFacts) => hasFlag(facts, '--ingest'),
+    'flag:--prd': (facts: InvocationFacts) => hasFlag(facts, '--prd'),
     'flag:--research': (facts: InvocationFacts) => hasFlag(facts, '--research'),
+    'flag:--research-phase': (facts: InvocationFacts) => hasFlag(facts, '--research-phase'),
     'flag:--reset-phase-numbers': (facts: InvocationFacts) => hasFlag(facts, '--reset-phase-numbers'),
+    'flag:--reviews': (facts: InvocationFacts) => hasFlag(facts, '--reviews'),
     'flag:--validate': (facts: InvocationFacts) => hasFlag(facts, '--validate'),
+    'state:chunked-mode': (facts: InvocationFacts) => facts.chunkedMode === true,
     'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,

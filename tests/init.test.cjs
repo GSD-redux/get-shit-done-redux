@@ -3613,28 +3613,256 @@ describe('init section manifest', () => {
   // execute-phase-only to per-workflow (`buildSectionManifestField` now wires
   // into `cmdInitPlanPhase`/`cmdInitNewProject`/`cmdInitNewMilestone`/
   // `cmdInitQuick`/`cmdInitProgress` too — src/init.cts:740/787/839/885/1810).
-  // The OLD assertion here ("section_manifest must be execute-phase-only")
-  // is stale: plan-phase's field is now PRESENT, but `null` — the shipped
-  // gsd-core/workflows/section-manifest.json still keys only `execute-phase`
-  // (design row C3: a workflow absent from the artifact's `workflows` map
-  // degrades to `null`, never an absent field). `resume` has no dedicated
-  // `cmdInit*` manifest wiring at all (design's withheld-atom survey), so its
-  // field truly remains absent — that half of the guard is unchanged.
+  // #2993 (epic #1671 Phase 6.2) makes the OLD assertion here doubly stale:
+  // plan-phase's field is no longer `null` at all — the shipped
+  // gsd-core/workflows/section-manifest.json now keys `plan-phase` too, with
+  // 6 real sections (row C1). A no-flag invocation excludes every one of
+  // them (none of the 5 governing flags/state were supplied). `resume` has
+  // no dedicated `cmdInit*` manifest wiring at all (design's withheld-atom
+  // survey), so its field truly remains absent — that half of the guard is
+  // unchanged.
 
-  describe('init dispatch: other subcommands unaffected (#2932/#2992 row 59, CRITICAL radius guard)', () => {
-    test('planPhaseEmitsANullManifestNotAnAbsentField (row C3/C16 — absence is not empty)', (t) => {
+  describe('init dispatch: other subcommands unaffected (#2932/#2992/#2993 row 59, CRITICAL radius guard)', () => {
+    test('planPhaseEmitsARealComputedManifestNotNull (#2993 — the shipped artifact now has a plan-phase key)', (t) => {
       const dir = seedSinglePhaseProject(t, 'gsd-e59-');
 
       const planPhase = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'plan-phase');
       assert.equal(planPhase.phase_found, true);
-      assert.ok('section_manifest' in planPhase, 'section_manifest field must be present (computed, degraded to null) for plan-phase');
-      assert.equal(planPhase.section_manifest, null, 'plan-phase has no key in the shipped artifact, so it must degrade to null, never {included:[]}');
+      assert.ok('section_manifest' in planPhase, 'section_manifest field must be present for plan-phase');
+      assert.deepStrictEqual(planPhase.section_manifest, {
+        workflow: 'plan-phase',
+        included: [],
+        excluded: [
+          'reviews-prerequisite',
+          'prd-express-gate',
+          'adr-ingest-express-path',
+          'research-only-modifiers',
+          'research-only-early-exit',
+          'chunked-planning-mode',
+        ],
+        read: [],
+      });
     });
 
     test('resumeNeverEmitsASectionManifestField', (t) => {
       const dir = seedSinglePhaseProject(t, 'gsd-e59-resume-');
       const resume = parseOkJson(runSectionManifestCli(['init.resume'], dir), 'resume');
       assert.ok(!('section_manifest' in resume), 'section_manifest must never leak into resume — resume has no cmdInit* manifest wiring at all');
+    });
+  });
+
+  // ── C6 (#2993): plan-phase's section_manifest degrades to null under a
+  // missing/malformed manifest artifact, exactly like execute-phase's own
+  // E57/E58 rows — the "safe superset" contract (all 6 sections read) is
+  // documented per-section in plan-phase.md's own stub prose ("If
+  // `section_manifest` is `null` or `"<id>"` is in its `included` list:
+  // read ... Otherwise skip"), verified for each of the 6 ids below; this
+  // test proves the JS-side half — that plan-phase really does receive
+  // `null`, never a stale/partial selection, under a degraded artifact.
+
+  describe('init plan-phase: section_manifest degrades to null (#2993 row C6)', () => {
+    test('degradesToNullManifestWhenArtifactMissing', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c6-missing-');
+      const missingPath = path.join(dir, 'does-not-exist-section-manifest.json');
+      const result = runSectionManifestCli(['init.plan-phase', '1'], dir, { GSD_SECTION_MANIFEST: missingPath });
+      assert.equal(result.status, 0, `expected exit 0 despite missing manifest artifact, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'plan-phase-manifest-missing');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null);
+    });
+
+    test('degradesToNullManifestWhenArtifactMalformed', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c6-malformed-');
+      const badPath = path.join(dir, 'bad-section-manifest.json');
+      fs.writeFileSync(badPath, '{ this is not valid json');
+      const result = runSectionManifestCli(['init.plan-phase', '1'], dir, { GSD_SECTION_MANIFEST: badPath });
+      assert.equal(result.status, 0, `expected exit 0 despite malformed manifest artifact, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'plan-phase-manifest-malformed');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null);
+    });
+
+    test('everyPlanPhaseSectionsHostStubDocumentsTheNullSafeSuperset (doc-level half of row C6)', () => {
+      const planPhasePath = path.join(GSD_ROOT, 'workflows', 'plan-phase.md');
+      const content = fs.readFileSync(planPhasePath, 'utf-8');
+      const ids = [
+        'reviews-prerequisite',
+        'prd-express-gate',
+        'adr-ingest-express-path',
+        'research-only-modifiers',
+        'research-only-early-exit',
+        'chunked-planning-mode',
+      ];
+      for (const id of ids) {
+        const expectedGate = `If \`section_manifest\` is \`null\` or \`"${id}"\` is in its \`included\` list:`;
+        assert.ok(
+          content.includes(expectedGate),
+          `plan-phase.md must document the null-safe-superset gate for "${id}": expected to find "${expectedGate}"`,
+        );
+      }
+    });
+  });
+
+  // ── #2993 (epic #1671 Phase 6.2) rows B1-B11: plan-phase facts assembly,
+  // driven through the REAL CLI (prod-shape — matrix section B header) ─────
+
+  describe('init plan-phase: new flag facts assembly (#2993 rows B1-B6)', () => {
+    function runPlanPhase(phaseArgs, cwd, env = {}) {
+      return runSectionManifestCli(['init.plan-phase', ...phaseArgs], cwd, env);
+    }
+
+    test('reviewsFlagPresentIncludesOnlyReviewsPrerequisite (row B1)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b1-present-');
+      const body = parseOkJson(runPlanPhase(['1', '--reviews'], dir), 'b1-present');
+      assert.deepStrictEqual(body.section_manifest.included, ['reviews-prerequisite']);
+    });
+
+    test('reviewsFlagAbsentExcludesReviewsPrerequisite (row B1)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b1-absent-');
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b1-absent');
+      assert.ok(!body.section_manifest.included.includes('reviews-prerequisite'));
+      assert.ok(body.section_manifest.excluded.includes('reviews-prerequisite'));
+    });
+
+    test('prdFlagWithValuePresentIncludesOnlyPrdExpressGate (row B2)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b2-present-');
+      const body = parseOkJson(runPlanPhase(['1', '--prd', 'some-prd.md'], dir), 'b2-present');
+      assert.deepStrictEqual(body.section_manifest.included, ['prd-express-gate']);
+    });
+
+    test('prdFlagAbsentExcludesPrdExpressGate (row B2 — value flag absence is null)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b2-absent-');
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b2-absent');
+      assert.ok(!body.section_manifest.included.includes('prd-express-gate'));
+      assert.ok(body.section_manifest.excluded.includes('prd-express-gate'));
+    });
+
+    test('ingestFlagWithValuePresentIncludesOnlyAdrIngestExpressPath (row B3)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b3-present-');
+      const body = parseOkJson(runPlanPhase(['1', '--ingest', 'some-adr.md'], dir), 'b3-present');
+      assert.deepStrictEqual(body.section_manifest.included, ['adr-ingest-express-path']);
+    });
+
+    test('ingestFlagAbsentExcludesAdrIngestExpressPath (row B3)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b3-absent-');
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b3-absent');
+      assert.ok(!body.section_manifest.included.includes('adr-ingest-express-path'));
+      assert.ok(body.section_manifest.excluded.includes('adr-ingest-express-path'));
+    });
+
+    test('researchPhaseFlagWithValuePresentIncludesBothResearchOnlySections (row B4)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b4-present-');
+      const body = parseOkJson(runPlanPhase(['1', '--research-phase', '3'], dir), 'b4-present');
+      assert.deepStrictEqual(body.section_manifest.included, ['research-only-modifiers', 'research-only-early-exit']);
+    });
+
+    test('researchPhaseFlagAbsentExcludesBothResearchOnlySections (row B4)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b4-absent-');
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b4-absent');
+      assert.ok(!body.section_manifest.included.includes('research-only-modifiers'));
+      assert.ok(!body.section_manifest.included.includes('research-only-early-exit'));
+    });
+
+    test('emptyPrdValueIsFalsyAndTreatedAsAbsent (row B5 — no spurious inclusion)', (t) => {
+      // `--prd` immediately followed by another flag token (no value token
+      // present at all) resolves to `null` in parseNamedArgs — the "empty
+      // value" shape for a value flag. Combined with a second, independently
+      // gated flag to prove ONLY the second flag's section activates.
+      const dir = seedSinglePhaseProject(t, 'gsd-b5-');
+      const body = parseOkJson(runPlanPhase(['1', '--prd', '--reviews'], dir), 'b5');
+      assert.ok(!body.section_manifest.included.includes('prd-express-gate'), '--prd with no value must never spuriously include prd-express-gate');
+      assert.deepStrictEqual(body.section_manifest.included, ['reviews-prerequisite']);
+    });
+
+    test('chunkedFlagPresentIncludesChunkedPlanningMode (row B6)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b6-');
+      const body = parseOkJson(runPlanPhase(['1', '--chunked'], dir), 'b6');
+      assert.deepStrictEqual(body.section_manifest.included, ['chunked-planning-mode']);
+    });
+  });
+
+  describe('init plan-phase: state:chunked-mode disjunction — flag OR config (#2993 rows B7-B11)', () => {
+    function runPlanPhase(phaseArgs, cwd, env = {}) {
+      return runSectionManifestCli(['init.plan-phase', ...phaseArgs], cwd, env);
+    }
+
+    function writeConfig(dir, workflowConfig) {
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: workflowConfig }));
+    }
+
+    test('chunkedFlagAbsentConfigTrueIncludesChunkedPlanningMode (row B7 — config arm of the disjunction)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b7-');
+      writeConfig(dir, { plan_chunked: true });
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b7');
+      assert.deepStrictEqual(body.section_manifest.included, ['chunked-planning-mode']);
+    });
+
+    test('chunkedFlagAbsentConfigFalseExcludesChunkedPlanningMode (row B8)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b8-false-');
+      writeConfig(dir, { plan_chunked: false });
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b8-false');
+      assert.ok(!body.section_manifest.included.includes('chunked-planning-mode'));
+    });
+
+    test('chunkedFlagAbsentConfigAbsentExcludesChunkedPlanningMode (row B8)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b8-absent-');
+      writeConfig(dir, {});
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b8-absent');
+      assert.ok(!body.section_manifest.included.includes('chunked-planning-mode'));
+    });
+
+    test('chunkedFlagAbsentConfigFileMissingExcludesChunkedPlanningMode (row B8)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b8-nofile-');
+      assert.equal(fs.existsSync(path.join(dir, '.planning', 'config.json')), false, 'sanity: no config.json');
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b8-nofile');
+      assert.ok(!body.section_manifest.included.includes('chunked-planning-mode'));
+    });
+
+    test('configStringTrueDegradesToFalse (row B9 — strict === true, never coerced)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b9-');
+      writeConfig(dir, { plan_chunked: 'true' });
+      const body = parseOkJson(runPlanPhase(['1'], dir), 'b9');
+      assert.ok(
+        !body.section_manifest.included.includes('chunked-planning-mode'),
+        'a string "true" config value must never coerce to boolean true',
+      );
+    });
+
+    test('configReadThrowsDegradesToFalseBoundedNeverPropagates (row B10)', (t) => {
+      // `readConfigJsonBoolean` (src/init.cts) is private and reads
+      // `.planning/config.json` via `fs.readFileSync`, so its `catch` clause
+      // cannot be exercised via an in-process fs monkeypatch across the
+      // spawned-CLI process boundary this suite otherwise drives (the whole
+      // matrix section is prod-shape: "drive the real CLI"). A directory at
+      // the config path forces a REAL, deterministic, cross-platform fs
+      // fault (EISDIR-class on every OS `fs.readFileSync` targets) through
+      // the real CLI — never a chmod/permission trick — landing on the same
+      // bounded, non-throwing degrade path a monkeypatched throw would.
+      const dir = seedSinglePhaseProject(t, 'gsd-b10-');
+      // sanity: seedSinglePhaseProject never writes a config.json, so this is
+      // the fixture's own natural state, not a removal.
+      assert.equal(fs.existsSync(path.join(dir, '.planning', 'config.json')), false);
+      fs.mkdirSync(path.join(dir, '.planning', 'config.json'));
+      const result = runPlanPhase(['1'], dir);
+      assert.equal(result.status, 0, `expected exit 0 despite an unreadable config.json, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'config-read-throws');
+      const body = JSON.parse(result.stdout);
+      assert.ok(!body.section_manifest.included.includes('chunked-planning-mode'), 'a config read fault must degrade chunkedMode to false, never throw or propagate');
+    });
+
+    test('nonObjectConfigJsonDegradesToFalse (row B11)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-b11-');
+      for (const hostileJson of ['0', '"s"', '[]', 'null', 'true']) {
+        fs.writeFileSync(path.join(dir, '.planning', 'config.json'), hostileJson);
+        const result = runPlanPhase(['1'], dir);
+        assert.equal(result.status, 0, `hostile config JSON ${hostileJson}: expected exit 0 (stderr: ${result.stderr})`);
+        assertNoStackTrace(result.stderr, `hostile-config-json:${hostileJson}`);
+        const body = JSON.parse(result.stdout);
+        assert.ok(
+          !body.section_manifest.included.includes('chunked-planning-mode'),
+          `hostile config JSON ${hostileJson} must degrade chunkedMode to false`,
+        );
+      }
     });
   });
 

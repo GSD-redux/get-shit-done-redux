@@ -82,6 +82,10 @@ const factsArb = fc.record({
   needsCodebaseMap: fc.boolean(),
   phaseMvpMode: fc.boolean(),
   worktreesEnabled: fc.boolean(),
+  // #2993 (epic #1671 Phase 6.2): chunkedMode is a shape addition to
+  // InvocationFacts — must also participate in the partition/totality
+  // properties below, not just the six pre-existing fact keys.
+  chunkedMode: fc.boolean(),
 });
 
 // ─── Row 25: exact partition ────────────────────────────────────────────────
@@ -132,8 +136,8 @@ describe('property: never throws for vocabulary-valid when and arbitrary facts',
 
   test('neverThrowsWhenFactsAreMissingKeysEntirely', () => {
     // Totality also over PARTIAL facts objects (row 19's property-level
-    // twin): dropping zero or more of the six fact keys must never throw.
-    const factKeys = ['flags', 'phaseNumber', 'hasPriorPhases', 'needsCodebaseMap', 'phaseMvpMode', 'worktreesEnabled'];
+    // twin): dropping zero or more of the seven fact keys must never throw.
+    const factKeys = ['flags', 'phaseNumber', 'hasPriorPhases', 'needsCodebaseMap', 'phaseMvpMode', 'worktreesEnabled', 'chunkedMode'];
     fc.assert(
       fc.property(sectionsArb, factsArb, fc.subarray(factKeys), (sections, facts, keysToKeep) => {
         const partialFacts = {};

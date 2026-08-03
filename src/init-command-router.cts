@@ -76,11 +76,20 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
         });
       },
       'plan-phase': () => {
-        const namedArgs = parseNamedArgs(args, ['granularity'], ['validate', 'tdd']);
+        const namedArgs = parseNamedArgs(
+          args,
+          ['granularity', 'prd', 'ingest', 'research-phase'],
+          ['validate', 'tdd', 'reviews', 'chunked'],
+        );
         init.cmdInitPlanPhase(cwd, args[2], raw, {
           validate: namedArgs['validate'],
           tdd: namedArgs['tdd'],
           granularity: namedArgs['granularity'],
+          prd: namedArgs['prd'],
+          ingest: namedArgs['ingest'],
+          'research-phase': namedArgs['research-phase'],
+          reviews: namedArgs['reviews'],
+          chunked: namedArgs['chunked'],
         });
       },
       'new-project': () => {
