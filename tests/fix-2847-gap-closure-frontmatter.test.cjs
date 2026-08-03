@@ -76,7 +76,7 @@ function extractStep(content, stepName) {
  * if no fenced bash block is found.
  */
 function extractFirstBashBlock(stepText) {
-  const m = /```bash\n([\s\S]*?)```/.exec(stepText);
+  const m = /```bash\r?\n([\s\S]*?)```/.exec(stepText);
   return m ? m[1] : null;
 }
 
@@ -152,7 +152,7 @@ describe('#2847: gsd-planner.md validate_plan step BINDS --schema to gap_closure
     // The SAME variable name the bash block reads must appear in the step's prose
     // (outside the bash block) — otherwise the "binding" is a variable nothing
     // ever explains how to set, which is not meaningfully better than a literal.
-    const proseOutsideBash = validateStep.replace(/```bash\n[\s\S]*?```/, '');
+    const proseOutsideBash = validateStep.replace(/```bash\r?\n[\s\S]*?```/, '');
     assert.ok(
       proseOutsideBash.includes(`$${varName}`) || proseOutsideBash.includes(`\`$${varName}\``),
       `step prose must explain how $${varName} is set — the bash block references it but nothing binds it`
@@ -160,11 +160,15 @@ describe('#2847: gsd-planner.md validate_plan step BINDS --schema to gap_closure
 
     // Both concrete schema names this variable can resolve to must be named
     // somewhere in the step, and gap_closure mode must be the stated condition
-    // for choosing between them.
+    // for choosing between them. Match the plain `plan` schema as a standalone
+    // backtick-quoted token (`` `plan` ``), not the bare substring "plan" —
+    // a bare-substring check is satisfied incidentally by "verify.plan-structure"
+    // a few lines below even if the plain-plan branch were deleted entirely from
+    // the prose, which would make this assertion unable to ever fail.
     assert.ok(validateStep.includes('plan-gap-closure'), 'step must name the plan-gap-closure schema');
     assert.ok(
-      /\bplan\b(?!-gap-closure)/.test(validateStep.replace('plan-gap-closure', '')),
-      'step must name the plain plan schema as the other branch'
+      /`plan`/.test(validateStep),
+      'step must name the plain plan schema, as a standalone `plan` token, as the other branch'
     );
     assert.ok(/gap_closure mode/i.test(validateStep), 'step must condition the choice on gap_closure mode by name');
   });

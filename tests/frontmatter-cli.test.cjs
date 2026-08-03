@@ -388,8 +388,16 @@ body`;
     assert.ok(parsed.present.includes('gap_closure'));
   });
 
-  // Row 6 — presence-vs-truthiness boundary: documents existing, consistent validator semantics.
-  test('gap_closure: false satisfies the schema (presence check, matching every other required field)', () => {
+  // Row 6 — gap_closure: false must be REJECTED, not merely present.
+  //
+  // #2847 review finding: --gaps-only filters strictly on gap_closure === true
+  // (execute-phase.md, partial-wave.md). A presence-only check (matching every
+  // other required field) lets `gap_closure: false` validate as valid:true,
+  // which is #2847's exact reported symptom — --gaps-only still spawns zero
+  // executors — one value away. plan-gap-closure's requiredValues entry closes
+  // this: gap_closure must be present AND equal "true" (extractFrontmatter
+  // parses every scalar as a string; FrontmatterValue has no boolean member).
+  test('gap_closure: false is rejected — plan-gap-closure requires the value true, not mere presence', () => {
     const content = `---
 phase: 01
 plan: 01
@@ -408,10 +416,9 @@ body`;
     const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
     assert.ok(result.success, `Command failed: ${result.error}`);
     const parsed = JSON.parse(result.output);
-    // The validator checks presence (fm[f] !== undefined), not truthiness — same contract as
-    // every other required field (e.g. `autonomous`). This is not new behavior introduced by
-    // #2847; it documents the existing schema-validation contract for the new schema too.
-    assert.strictEqual(parsed.valid, true);
+    assert.strictEqual(parsed.valid, false, 'gap_closure: false must NOT satisfy plan-gap-closure');
+    assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure must be reported missing when its value is false');
+    assert.ok(!parsed.present.includes('gap_closure'), 'gap_closure must not be reported present when its value is false');
     assert.ok(parsed.present.includes('gap_closure'));
   });
 });

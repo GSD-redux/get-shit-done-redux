@@ -904,6 +904,23 @@ describe("FRONTMATTER_SCHEMAS['plan-gap-closure'] (#2847)", () => {
   test('plan schema (standard/reviews mode) does NOT include gap_closure — unaffected by #2847 fix', () => {
     assert.ok(!FRONTMATTER_SCHEMAS.plan.required.includes('gap_closure'));
   });
+
+  // requiredValues (#2847 review finding): presence alone let `gap_closure: false`
+  // validate as valid:true — --gaps-only filters strictly on gap_closure === true,
+  // so that was a live reproduction of #2847's reported symptom, one value away.
+  test('plan-gap-closure requires the value "true" for gap_closure, not mere presence', () => {
+    assert.ok('requiredValues' in FRONTMATTER_SCHEMAS['plan-gap-closure']);
+    assert.equal(FRONTMATTER_SCHEMAS['plan-gap-closure'].requiredValues.gap_closure, 'true');
+  });
+
+  test('plan schema has no requiredValues — every field is presence-only, unaffected by #2847 fix', () => {
+    assert.equal(FRONTMATTER_SCHEMAS.plan.requiredValues, undefined);
+  });
+
+  test('summary and verification schemas have no requiredValues — presence-only, unaffected', () => {
+    assert.equal(FRONTMATTER_SCHEMAS.summary.requiredValues, undefined);
+    assert.equal(FRONTMATTER_SCHEMAS.verification.requiredValues, undefined);
+  });
 });
 
 // ─── Tight branch / boundary tests ───────────────────────────────────────────

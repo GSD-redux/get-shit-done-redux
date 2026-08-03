@@ -612,15 +612,30 @@ function parseMustHavesBlock(content: string, blockName: string): unknown[] {
 // FRONTMATTER_SCHEMAS cannot refer to itself mid-initialization (TDZ).
 const PLAN_REQUIRED_FIELDS = ['phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves'];
 
-const FRONTMATTER_SCHEMAS: Record<string, { required: string[] }> = {
+// `requiredValues` is optional per schema: when a field name is a key here, the
+// field must be PRESENT AND strictly equal (===) to the given value to satisfy
+// the schema — presence alone is not enough. Every other required field (no
+// entry in requiredValues) keeps the original presence-only contract.
+const FRONTMATTER_SCHEMAS: Record<string, { required: string[]; requiredValues?: Record<string, FrontmatterValue> }> = {
   plan: { required: PLAN_REQUIRED_FIELDS },
   // #2847: gap-closure plans carry every 'plan' field PLUS gap_closure — the flag
   // execute-phase --gaps-only filters on. A separate schema (not a change to
   // 'plan') so standard/reviews-mode plans stay unaffected: they validate against
   // 'plan' and are never required to declare or be checked for gap_closure.
   // Derived from PLAN_REQUIRED_FIELDS (never hand-duplicated) so the two can't drift.
+  //
+  // requiredValues.gap_closure = true (not just presence): --gaps-only filters
+  // strictly on gap_closure === true (execute-phase.md, partial-wave.md), so a
+  // plan carrying `gap_closure: false` would pass a presence-only check and
+  // still be silently skipped at execute time — the exact symptom #2847
+  // reports, one value away. Presence-only was flagged in review as a live
+  // reproduction of the bug this schema exists to close.
   'plan-gap-closure': {
     required: [...PLAN_REQUIRED_FIELDS, 'gap_closure'],
+    // extractFrontmatter parses every scalar as a string (FrontmatterValue has
+    // no boolean member — `gap_closure: true` in YAML becomes the JS string
+    // "true", not the boolean true), so the required value is the string here.
+    requiredValues: { gap_closure: 'true' },
   },
   summary: { required: ['phase', 'plan', 'subsystem', 'tags', 'duration', 'completed'] },
   verification: { required: ['phase', 'verified', 'status', 'score'] },
@@ -741,8 +756,21 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
   // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
   // per file rather than per content digest (#1882, ADR-1411 wiring clause).
   const fm = extractFrontmatter(content, fullPath);
-  const missing = schema.required.filter(f => fm[f] === undefined);
-  const present = schema.required.filter(f => fm[f] !== undefined);
+  const requiredValues = schema.requiredValues || {};
+  // A field satisfies the schema when it is present AND — for fields with a
+  // requiredValues entry — strictly equal to that value. Absent and
+  // wrong-value both surface as `missing`: from a caller's perspective (the
+  // planner reading this JSON to decide whether to fix the plan) both mean
+  // "this field does not yet satisfy the schema," and folding them together
+  // keeps `missing`/`present` a full partition of `required` (existing
+  // invariant every caller already relies on) without adding a new field.
+  const satisfies = (f: string): boolean => {
+    if (fm[f] === undefined) return false;
+    if (Object.prototype.hasOwnProperty.call(requiredValues, f) && fm[f] !== requiredValues[f]) return false;
+    return true;
+  };
+  const missing = schema.required.filter(f => !satisfies(f));
+  const present = schema.required.filter(f => satisfies(f));
   output({ valid: missing.length === 0, missing, present, schema: schemaName }, raw, missing.length === 0 ? 'valid' : 'invalid');
 }
 
