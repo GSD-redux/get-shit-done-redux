@@ -90,12 +90,52 @@ import contextComposer = require('./context-composer.cjs');
  * Frozen, CLOSED applicability vocabulary for the `when=` attribute.
  * Extending this list requires an ADR amendment, not an organic edit
  * (Greenspun's Tenth Rule — see the module doc comment).
+ *
+ * Widened from 4 to 14 entries via the ADR-1671 amendment for #2992 (epic
+ * #1671 Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
+ * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
+ * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
+ * 40-design.md`). The vocabulary remains CLOSED: no operators, no negation,
+ * no nesting. Cardinality is not expressiveness — a 19-entry flat list with
+ * no composition is still not a language.
+ *
+ * Held at 14, not wider: an atom whose fact is never computed always
+ * evaluates FALSE, so a section marked with it would silently never
+ * include — a silent-exclusion bug, not a feature. Six further atoms
+ * (`flag:--converge`, `flag:--fix`, `flag:--verify-only`,
+ * `state:fallow-enabled`, `state:git-create-tag`, `state:is-monorepo`) were
+ * surveyed and are justified in principle, but their workflows
+ * (docs-update, autonomous, code-review, complete-milestone) have no
+ * dedicated `cmdInit*` entry point yet to compute the backing fact, so they
+ * are withheld until that entry point exists (#2992 / ADR-1671 Phase 6.1).
+ *
+ * The #2993 widening adds 5 entries fragmentizing `plan-phase.md`:
+ * `flag:--ingest`, `flag:--prd`, `flag:--research-phase`, `flag:--reviews`,
+ * `state:chunked-mode`. `state:chunked-mode` is a disjunction (`--chunked`
+ * flag OR `.planning/config.json` `workflow.plan_chunked`) resolved to a
+ * single boolean FACT by the init seam (`src/init.cts`) — the grammar still
+ * sees exactly one atom with no operator, preserving the same guard.
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
   'flag:--wave',
   'state:gap-closure-phase',
   'state:has-prior-phases',
+  'flag:--auto',
+  'flag:--discuss',
+  'flag:--forensic',
+  'flag:--full',
+  'flag:--ingest',
+  'flag:--prd',
+  'flag:--research',
+  'flag:--research-phase',
+  'flag:--reset-phase-numbers',
+  'flag:--reviews',
+  'flag:--validate',
+  'state:chunked-mode',
+  'state:needs-codebase-map',
+  'state:phase-mvp-mode',
+  'state:worktrees-enabled',
 ]);
 
 /**

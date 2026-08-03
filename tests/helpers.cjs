@@ -155,6 +155,76 @@ function cleanup(tmpDir) {
 }
 
 /**
+ * Read a text file with CRLF normalized to LF.
+ *
+ * DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE (CONTEXT.md; recurring since #1700):
+ * a test that reads a workflow/agent/reference `.md` file, slices or
+ * regex-matches a fenced code block out of it, and hands that block to
+ * `spawnSync('bash', ...)` breaks on a Windows checkout — `.gitattributes`
+ * `eol=lf` is not always honored by `actions/checkout` on `windows-latest`,
+ * so `readFileSync` can return `\r\n` line endings. Bash then treats the
+ * trailing `\r` on every line as part of the token; an opening quote never
+ * finds its match and the parser dies mid-script with "unexpected EOF while
+ * looking for matching `"'" or a bare syntax error at the next `{`/`)`.
+ *
+ * `.split(/\r?\n/)` on the FENCE DELIMITER alone does not fix this — it only
+ * protects the boundary match, not the captured body between the fences,
+ * which still carries embedded `\r` characters (the exact bug #2650's
+ * verification round found in tests/fix-2650-plan-phase-stall-detection.test.cjs,
+ * despite that file's fence regex already using `\r?\n`).
+ *
+ * Normalizing ONCE at the read boundary, before any slicing/regex/fence
+ * parsing runs, is cheaper and safer than normalizing at each extraction
+ * call site: every downstream `indexOf`/`slice`/regex/`spawnSync` then
+ * operates on LF-only content by construction, and a new `.md`-extraction
+ * test is correct by default just by reading through this helper.
+ *
+ * @param {string} filePath - Absolute or relative path to a text file.
+ * @returns {string} File content with every `\r\n` replaced by `\n`.
+ */
+function readFileNormalized(filePath) {
+  return fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
+}
+
+/**
+ * Read a workflow .md file plus every .md file under its sibling
+ * `<workflow-basename>/steps/` directory, concatenated in document order
+ * (host file first, then step files sorted by filename).
+ *
+ * ADR-1671's workflow fragmentization (#2930/#2932/#2993 et al.) moves whole
+ * sections out of a host workflow (e.g. `plan-phase.md`) into lazily-loaded
+ * step files under `gsd-core/workflows/<name>/steps/*.md`. A structural or
+ * drift guard that reads the host file alone goes blind the moment a
+ * section it cares about moves out — this is exactly the shape #2650's own
+ * regression tests hit when #2993 relocated plan-phase.md's chunked-planning
+ * spawn sites into `plan-phase/steps/chunked-planning-mode.md`. Any test
+ * that needs to see the FULL picture (counting markers, asserting a marker
+ * exists somewhere in the workflow) should read through this helper instead
+ * of `fs.readFileSync(workflowPath)` alone, so the next relocation doesn't
+ * silently blind it again. Originally local to
+ * tests/plan-phase-drift-guard.test.cjs (readPlanPhaseCombined) — promoted
+ * here so a second, divergent copy is never written (Generative Fix
+ * Divergence class).
+ *
+ * @param {string} workflowPath - absolute path to the host workflow .md file.
+ * @returns {string} host content, then '\n' + each step file's content in
+ *   sorted-filename order. An absent steps directory degrades to the host
+ *   content alone (not an error — most workflows have no steps/ dir).
+ */
+function readWorkflowCombined(workflowPath) {
+  let combined = readFileNormalized(workflowPath);
+  const stepsDir = path.join(path.dirname(workflowPath), path.basename(workflowPath, '.md'), 'steps');
+  if (fs.existsSync(stepsDir)) {
+    for (const entry of fs.readdirSync(stepsDir).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + readFileNormalized(path.join(stepsDir, entry));
+      }
+    }
+  }
+  return combined;
+}
+
+/**
  * Parse a Markdown frontmatter block into a flat key→value map.
  *
  * Handles the YAML scalar forms emitted by the install converters:
@@ -450,4 +520,38 @@ function resetRuntimeWarningCaches() {
   modelResolver._resetModelOverrideWarningCacheForTests();
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, TOOLS_PATH };
+/**
+ * Env vars that influence workstream-session identity (getWorkstreamSessionKey
+ * in active-workstream-store.cjs) or workstream/project resolution (planningDir).
+ * Single source of truth for tests that need a deterministic, session-key-free
+ * and workstream/project-free process.env — save/clear before, restore after.
+ * Union of the sets previously hand-duplicated in
+ * tests/active-workstream-store.unit.test.cjs and tests/gsd-statusline.test.cjs
+ * (#2850 code review finding: the two copies had already silently diverged).
+ */
+const SESSION_ENV_KEYS = [
+  'GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SSE_PORT',
+  'OPENCODE_SESSION_ID', 'GEMINI_SESSION_ID', 'CURSOR_SESSION_ID', 'WINDSURF_SESSION_ID',
+  'TERM_SESSION_ID', 'WT_SESSION', 'TMUX_PANE', 'ZELLIJ_SESSION_NAME',
+  'TTY', 'SSH_TTY', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'GSD_WORKSTREAM', 'GSD_PROJECT',
+];
+
+function saveSessionEnv() {
+  const saved = {};
+  for (const k of SESSION_ENV_KEYS) saved[k] = process.env[k];
+  return saved;
+}
+
+function restoreSessionEnv(saved) {
+  for (const k of SESSION_ENV_KEYS) {
+    if (saved[k] === undefined) delete process.env[k];
+    else process.env[k] = saved[k];
+  }
+}
+
+function clearSessionEnv() {
+  for (const k of SESSION_ENV_KEYS) delete process.env[k];
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };

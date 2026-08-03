@@ -235,6 +235,10 @@ function cmdWorkstreamList(cwd: string, raw: boolean): void {
     has_roadmap: ws.files.roadmap,
     has_state: ws.files.state,
     status: ws.status,
+    // #2562: a refused shipped marker must reach the surface. Projecting
+    // `status` without it renders the refusal invisible at the CLI, which is
+    // the silent-collapse defect this issue is about.
+    milestone_shipped_unverified: ws.milestone_shipped_unverified,
     current_phase: ws.current_phase,
     phase_count: ws.phase_count,
     completed_phases: ws.completed_phases,
@@ -272,6 +276,7 @@ function cmdWorkstreamStatus(cwd: string, name: string | null | undefined, raw: 
     phase_count: inv.phase_count,
     completed_phases: inv.completed_phases,
     status: inv.status,
+    milestone_shipped_unverified: inv.milestone_shipped_unverified,
     current_phase: inv.current_phase,
     last_activity: inv.last_activity,
   }, raw, undefined);
@@ -386,6 +391,7 @@ function cmdWorkstreamProgress(cwd: string, raw: boolean): void {
     name: ws.name,
     active: ws.active,
     status: ws.status,
+    milestone_shipped_unverified: ws.milestone_shipped_unverified,
     current_phase: ws.current_phase ?? null,
     phases: `${ws.completed_phases}/${ws.roadmap_phase_count}`,
     plans: `${ws.completed_plans}/${ws.total_plans}`,

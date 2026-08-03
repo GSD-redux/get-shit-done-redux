@@ -437,6 +437,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `clusters.cjs` | Skill cluster definitions for the runtime surface module (ADR-0011 Phase 2) |
 | `code-review-flags.cjs` | Typed flag parser for `/gsd:code-review`; exports `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) and `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); canonical dispatch seam for `--fix`/`--all`/`--auto` routing |
 | `command-aliases.cjs` | Alias/subcommand metadata for manifest-backed family routers |
+| `commonjs-marker.cjs` | Ownership-guarded `{"type":"commonjs"}` marker used to pin GSD's staged `.js` scripts to CommonJS; exports `classifyMarker` (absent/gsd-owned/foreign, fail-closed), `ensureCommonJsMarker`, and `removeCommonJsMarker` so install and uninstall share one predicate and never touch a user-authored `package.json` (#2544) |
 | `command-arg-projection.cjs` | Typed flag and positional argument projection helpers shared across command-family routers |
 | `command-roster.cjs` | Read-only discovery of canonical `commands/gsd/*.md` command stems for runtime artifact conversion and namespace rewrites |
 | `command-routing-hub.cjs` | Pure-result dispatch hub that centralizes mode decision (SDK vs CJS), error taxonomy, and no-throw contract for all command-family routers (#3788) |
@@ -527,6 +528,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `runtime-slash.cjs` | Runtime-aware slash-command formatter — single source of truth for emitting `/gsd-<cmd>` (skills-based runtimes) and `$gsd-<cmd>` (codex) in user-facing output and persisted artifacts (#3584) |
 | `schema-detect.cjs` | Schema-drift detection for ORM patterns (Prisma, Drizzle, Supabase, TypeORM, Payload); exports `detectSchemaFiles`, `detectSchemaOrm`, `checkSchemaDrift`, `SCHEMA_PATTERNS`, `ORM_INFO` |
 | `secrets.cjs` | Secret-config masking convention (`****<last-4>`) for integration keys; exports `SECRET_CONFIG_KEYS`, `isSecretKey`, `maskSecret`, `maskIfSecret` |
+| `section-manifest.cjs` | Pure `when=` evaluator over `InvocationFacts` (ADR-1671, epic #1671 Phase 5, #2932) — `selectSections` partitions a document-order list of parsed `gsd:section` sections into `included`/`excluded` id arrays for one concrete invocation, via `WHEN_PREDICATES`, a total lookup (never a parser) over the frozen `WHEN_VOCABULARY` imported unchanged from `workflow-fragments.cjs`; an unrecognized `when=` value fails closed (`REASON.UNKNOWN_WHEN`), and a coordinated-change guard at module load throws if a vocabulary entry has no predicate. Compiled from `src/section-manifest.cts` |
 | `semver-compare.cjs` | Shared semver comparison policy helpers (`compareSemverCore`, stable-triplet validation, normalized tuple parsing) consumed by update-check hooks, statusline dev-install detection, and changeset extract range logic (#10) |
 | `security.cjs` | Path traversal prevention, prompt injection detection, safe JSON/shell helpers |
 | `shell-command-projection.cjs` | Runtime-aware shell command projection for managed hook serialization: decides PowerShell call-operator usage by runtime/platform and normalizes Windows script path tokens |
@@ -586,6 +588,7 @@ Full listing: `hooks/`.
 | `gsd-read-guard.js` | `PreToolUse` | Advisory guard preventing Edit/Write on unread files |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Scans tool Read results for prompt-injection patterns (v1.36+, PR #2201) |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Hard-blocks Edit/Write/MultiEdit with absolute paths outside the worktree root (PR #579, #260) |
+| `gsd-write-guard.js` | `PreToolUse` | Hard-blocks a whole-file `Write` that catastrophically shrinks a curated `.planning/` artifact (ROADMAP.md, milestone roadmaps, STATE.md); override via the single-use sentinel `.planning/.gsd-allow-shrink` (workflow steps) or `GSD_ALLOW_PLANNING_SHRINK=1` (interactive) (#2255, fix 3 of #973) |
 | `gsd-config-reload.js` | `FileChanged` | Hot-reloads GSD config context when `.planning/config.json` changes mid-session (#770) |
 | `gsd-ensure-canonical-path.js` | `SessionStart` | Symlinks `~/.claude/gsd-core/{bin,contexts,references,templates,workflows}` to the plugin's bundled tree so `@~/.claude/gsd-core/...` includes resolve in marketplace plugin installs; no-op in classic installs, self-heals after `claude plugin update` (#997) |
 | `gsd-session-state.sh` | `PostToolUse` | Session-state tracking for shell-based runtimes |

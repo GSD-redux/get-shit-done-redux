@@ -179,13 +179,14 @@ describe('B: hooks/hooks.json', () => {
     }
   });
 
-  test('all six always-on hooks are wired', (t) => {
+  test('all seven always-on hooks are wired', (t) => {
     if (!hooksConfig) { t.skip('hooks.json could not be parsed'); return; }
     const REQUIRED_HOOKS = [
       'gsd-check-update.js',
       'gsd-prompt-guard.js',
       'gsd-read-guard.js',
       'gsd-worktree-path-guard.js',
+      'gsd-write-guard.js',
       'gsd-context-monitor.js',
       'gsd-read-injection-scanner.js',
     ];
@@ -484,6 +485,22 @@ describe('D: always-on hook contract drift guard', () => {
     );
     assert.equal(hooks[0].script, 'gsd-worktree-path-guard.js', 'hook must be gsd-worktree-path-guard.js');
     assert.equal(hooks[0].timeout, 5, 'gsd-worktree-path-guard.js must have timeout 5');
+  });
+
+  test('PreToolUse Write group: gsd-write-guard.js (timeout 5)', () => {
+    const map = buildHookMap();
+    const groups = map['PreToolUse'];
+    assert.ok(groups, 'PreToolUse must be present in hooks.json');
+    // #2255: catastrophic-shrink guard for curated .planning/ writes — its own
+    // matcher group because it guards Write payloads only (Edit/MultiEdit are
+    // scoped by construction and out of scope by design).
+    const hooks = groups['Write'];
+    assert.ok(
+      Array.isArray(hooks) && hooks.length === 1,
+      `PreToolUse Write must have exactly 1 hook; got: ${JSON.stringify(hooks)}`
+    );
+    assert.equal(hooks[0].script, 'gsd-write-guard.js', 'hook must be gsd-write-guard.js');
+    assert.equal(hooks[0].timeout, 5, 'gsd-write-guard.js must have timeout 5');
   });
 
   test('PostToolUse Bash|Edit|Write|MultiEdit|Agent|Task group: gsd-context-monitor.js (timeout 10)', () => {

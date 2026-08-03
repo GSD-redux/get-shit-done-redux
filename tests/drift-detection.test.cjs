@@ -824,15 +824,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const GATE_MD = path.join(
   __dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'codebase-drift-gate.md',
 );
 const SNIPPET_FILE = path.join(__dirname, '..', 'gsd-core', 'workflows', '_runtime-launcher.snippet.sh');
 
+// readFileNormalized() strips \r\n -> \n before bashBlock() slices a fence
+// out of the result and hands it to execFileSync('bash', ...) below — an
+// un-normalized read on a Windows checkout would break bash mid-script
+// (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
 function readGate() {
-  return fs.readFileSync(GATE_MD, 'utf8');
+  return readFileNormalized(GATE_MD);
 }
 
 // Extract the Nth (0-based) ```bash fenced block body from the file.
@@ -877,7 +881,7 @@ describe('bug #619 — codebase-drift-gate resolves gsd-tools via the runtime sh
 
   test('exactly one canonical launcher preamble, in the drift-check block, before any launcher call (#619)', () => {
     const content = readGate();
-    const snippet = fs.readFileSync(SNIPPET_FILE, 'utf8').replace(/\r?\n$/, '');
+    const snippet = readFileNormalized(SNIPPET_FILE).replace(/\n$/, '');
 
     // Count canonical preamble occurrences across the whole file (parity: exactly one).
     let count = 0;

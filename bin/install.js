@@ -49,6 +49,11 @@ const { createImperativeAdapter } = require('../gsd-core/bin/lib/adapter-imperat
 // workflow .md content at emit time, before any per-runtime rewrite runs.
 const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+// #2544: the CommonJS marker's single source of truth. classifyMarker() backs
+// BOTH ensureCommonJsMarker() (install) and removeCommonJsMarker() (uninstall),
+// so the write side can no longer clobber a package.json the remove side would
+// correctly refuse to delete.
+const { ensureCommonJsMarker, removeCommonJsMarker } = require('../gsd-core/bin/lib/commonjs-marker.cjs');
 // Canonical set of hook files shipped to users. Imported here so writeManifest()
 // records exactly the same set that build-hooks.js copies to hooks/dist/, making
 // the manifest and the installed hooks/ dir structurally identical. Avoids the
@@ -2696,10 +2701,55 @@ function convertClaudeToTraeMarkdown(content) {
   // Replace general-purpose subagent type with Trae's equivalent "general_purpose_task"
   converted = converted.replace(/subagent_type="general-purpose"/g, 'subagent_type="general_purpose_task"');
   converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
-  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.trae/rules/`');
-  converted = converted.replace(/\.\/CLAUDE\.md/g, '.trae/rules/');
-  converted = converted.replace(/`CLAUDE\.md`/g, '`.trae/rules/`');
-  converted = converted.replace(/\bCLAUDE\.md\b/g, '.trae/rules/');
+  // #2658: full-path forms (with a leading dot-claude-slash prefix) MUST be
+  // replaced before the bare Claude-instruction-file pattern and before the
+  // generic dot-claude-slash rewrite below — otherwise the bare pattern
+  // consumes only the instruction-filename tail, leaving that prefix stale
+  // in place, and the generic rewrite then mutates the stale leftover too,
+  // producing a doubled trae-prefix segment ahead of the rules path instead
+  // of a single clean one. (Deliberately never spelling the instruction
+  // filename as one contiguous "CLAUDE" + dot + "md" token, and never
+  // spelling either malformed shape out as a literal contiguous string, in
+  // ANY comment in this function: this file ships verbatim into local
+  // `--trae` installs, where it is itself run through this same class of
+  // find/replace — a literal instruction-filename token sitting in a
+  // comment gets "fixed" right along with real code, and the emitted-content
+  // regression test added alongside this fix asserts neither malformed
+  // shape appears anywhere in the installed tree, comments included; this
+  // bit the fix itself twice during development.) All forms converge on the
+  // same concrete file (never a bare directory) so this stays in parity
+  // with the `trae.js` RUNTIME_CONTENT_DISPATCH entry.
+  converted = converted.replace(/`\.\/\.claude\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.\/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  converted = converted.replace(/`\.claude\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  // #2658 (found via the end-to-end install regression test, not the static
+  // trace above): `copyWithPathReplacement` runs a GENERIC dot-claude-slash
+  // -> runtime-config-dir rewrite on every .md file before calling this
+  // converter — for `~/.claude/`, `$HOME/.claude/`, AND `./.claude/` alike —
+  // substituting a runtime-appropriate `pathPrefix` this function is never
+  // given and cannot itself compute (it differs per install invocation: a
+  // relative `./.trae/` for a project-local install, an arbitrary absolute
+  // path for a local install rooted elsewhere, `~/.trae/` for a global one).
+  // So for source using any of those prefixed forms, the patterns above
+  // never fire here — this converter only ever sees the ALREADY-rewritten
+  // "<runtime-config-dir>/" + instruction-filename shape, with whatever
+  // prefix the install actually used. The generic pattern below preserves
+  // that prefix verbatim (via the capture group) and only fixes the
+  // filename suffix, rather than assuming a fixed `./.trae/` shape — a
+  // narrower fixed-prefix version of this pattern shipped first and still
+  // left the doubled-prefix defect live for the `$HOME/.claude/` and
+  // `~/.claude/` forms specifically (found the same way, one regression-test
+  // run later). Scoped to a `.trae/` tail so it cannot also swallow the
+  // unprefixed `./CLAUDE.md` form the very next pattern handles differently
+  // (discarding the prefix entirely, not preserving it). Must run before
+  // the bare pattern for the same consume-the-full-match-first reason.
+  converted = converted.replace(/`([^\s`]*\.trae\/)CLAUDE\.md`/g, '`$1rules/rules.md`');
+  converted = converted.replace(/([^\s`]*\.trae\/)CLAUDE\.md/g, '$1rules/rules.md');
+  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  converted = converted.replace(/`CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\bCLAUDE\.md\b/g, '.trae/rules/rules.md');
   converted = converted.replace(/\.claude\/skills\//g, '.trae/skills/');
   converted = converted.replace(/\.\/\.claude\//g, './.trae/');
   converted = converted.replace(/\.claude\//g, '.trae/');
@@ -7520,7 +7570,18 @@ const RUNTIME_CONTENT_DISPATCH = {
         return `/gsd-${commandName}`;
       });
       content = content.replace(/\.claude\/skills\//g, '.trae/skills/');
-      content = content.replace(/CLAUDE\.md/g, '.trae/rules/');
+      // #2658: the full dot-claude-slash-prefixed instruction-file path must
+      // be replaced before the bare instruction-filename fallback, or the
+      // bare regex only rewrites that filename and leaves the prefix stale
+      // in place, producing a malformed doubled-prefix path (see the longer
+      // note in convertClaudeToTraeMarkdown above — the instruction filename
+      // and either malformed shape are deliberately never spelled out
+      // contiguously here either, for the same reason: this file ships
+      // verbatim). Both forms target the same concrete file (never a bare
+      // directory), matching the `.md` converter (convertClaudeToTraeMarkdown)
+      // so js/cjs and md content agree on one canonical path.
+      content = content.replace(/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+      content = content.replace(/CLAUDE\.md/g, '.trae/rules/rules.md');
       content = content.replace(/\bClaude Code\b/g, 'Trae');
       return content;
     },
@@ -8097,23 +8158,24 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
         }
       }
 
+      // #2544: the marker now lives inside kimi's hooks/ dir — remove it
+      // before the emptiness check below, or the dir would never prune.
+      if (removeCommonJsMarker(kimiHooksDir)) {
+        removedCount++;
+        console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksDir}`);
+      }
+
       try {
         if (fs.readdirSync(kimiHooksDir).length === 0) fs.rmdirSync(kimiHooksDir);
       } catch (_) { /* not empty — leave it */ }
     }
 
-    const kimiPkgJsonPath = path.join(kimiHooksRoot, 'package.json');
-    if (fs.existsSync(kimiPkgJsonPath)) {
-      try {
-        const content = fs.readFileSync(kimiPkgJsonPath, 'utf8').trim();
-        if (content === '{"type":"commonjs"}') {
-          fs.unlinkSync(kimiPkgJsonPath);
-          removedCount++;
-          console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksRoot}`);
-        }
-      } catch (e) {
-        // Ignore read errors
-      }
+    // Retire the pre-#2544 marker at kimi's root (~/.kimi), where the bundle
+    // used to write it. Exact content match — a user's own package.json in
+    // kimi's native config home is never touched.
+    if (removeCommonJsMarker(kimiHooksRoot)) {
+      removedCount++;
+      console.log(`  ${green}✓${reset} Removed GSD package.json from ${kimiHooksRoot} (pre-#2544 marker)`);
     }
   }
 
@@ -8421,13 +8483,18 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
       }
     }
 
-    // #2717: remove the CommonJS marker GSD wrote into hooks/ for runtimes that
-    // stage .js hooks via dedicated paths (cursor/windsurf/codex) — but ONLY if
-    // it still carries GSD's exact content (a user-authored package.json is
-    // never deleted). Safe no-op for runtimes whose marker lives at the config
-    // root (the shared-bundle path) or that never received one.
+    // Retire the CommonJS marker staged into hooks/. hooks/ is shared space and
+    // is deliberately never rmdir'd here, so the marker must be removed
+    // explicitly or it would be left behind. Removed ONLY when it still carries
+    // GSD's exact content — a user-authored package.json is never deleted.
+    //
+    // #2717 reaches the runtimes that stage .js hooks via dedicated paths
+    // (cursor/windsurf/codex); #2544 reaches the shared-bundle runtimes, whose
+    // marker this PR moves out of the config root and into hooks/. Both land in
+    // the same directory, so one guarded call covers both.
     try {
       if (hooksSurface.removeCommonJsMarkerIfGsdOwned(hooksDir)) {
+        removedCount++;
         console.log(`  ${green}✓${reset} Removed GSD hooks/package.json (CommonJS marker)`);
       }
     } catch { /* best-effort */ }
@@ -8442,12 +8509,38 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   if (_np) {
     const pluginsDir = path.join(targetDir, _np.dir);
     const pluginPath = path.join(pluginsDir, _np.file);
+    // Tracks whether GSD actually removed anything from pluginsDir. The rmdir
+    // below is gated on it: pruning a directory GSD never wrote to is the same
+    // "don't touch territory GSD didn't fill" violation this issue is about,
+    // just inverted — a user-created but empty plugin/ or extensions/ dir is
+    // theirs, and an uninstall that never removed anything has no business
+    // deleting it.
+    let removedFromPluginsDir = false;
     if (fs.existsSync(pluginPath)) {
       try {
         fs.unlinkSync(pluginPath);
         removedCount++;
+        removedFromPluginsDir = true;
         console.log(`  ${green}✓${reset} Removed native plugin adapter (${runtime})`);
       } catch (_) { /* best-effort */ }
+    }
+    // #2544: the adapter's CommonJS marker sits beside it. Cleaned up OUTSIDE
+    // the adapter-exists guard above — a partial install (or a hand-deleted
+    // adapter) would otherwise strand GSD's marker forever and keep the dir
+    // from ever pruning. Conditioned on the adapter being GONE, though: if the
+    // unlink above failed, pulling the marker out from under a still-present
+    // CommonJS adapter would leave it unloadable. The exact content match
+    // still leaves any user-authored package.json in place.
+    if (!fs.existsSync(pluginPath) && removeCommonJsMarker(pluginsDir)) {
+      removedCount++;
+      removedFromPluginsDir = true;
+      console.log(`  ${green}✓${reset} Removed GSD package.json from ${_np.dir}/`);
+    }
+    // Only prune a dir GSD emptied. Pre-fix this rmdir sat inside the
+    // adapter-exists guard, so it could never fire on a dir GSD had not
+    // written to; hoisting it out to catch the marker-only case must not
+    // silently widen it to "any empty plugin dir".
+    if (removedFromPluginsDir) {
       try { fs.rmdirSync(pluginsDir); } catch (_) { /* not empty — user plugins present */ }
     }
   }
@@ -8508,19 +8601,14 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   }
 
   // 5. Remove GSD package.json (CommonJS mode marker)
-  const pkgJsonPath = path.join(targetDir, 'package.json');
-  if (fs.existsSync(pkgJsonPath)) {
-    try {
-      const content = fs.readFileSync(pkgJsonPath, 'utf8').trim();
-      // Only remove if it's our minimal CommonJS marker
-      if (content === '{"type":"commonjs"}') {
-        fs.unlinkSync(pkgJsonPath);
-        removedCount++;
-        console.log(`  ${green}✓${reset} Removed GSD package.json`);
-      }
-    } catch (e) {
-      // Ignore read errors
-    }
+  // Since #2544 the marker is staged into hooks/ (and the nativePlugin dir,
+  // handled at 4z above) rather than at targetDir. The targetDir removal is
+  // retained to retire the marker written by pre-#2544 installs — same exact
+  // content match as before, so a user-authored package.json is still never
+  // touched.
+  if (removeCommonJsMarker(targetDir)) {
+    removedCount++;
+    console.log(`  ${green}✓${reset} Removed GSD package.json (pre-#2544 config-root marker)`);
   }
 
   // 6. Clean up settings.json (remove GSD hooks and statusline)
@@ -10984,14 +11072,16 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // a safe no-op when the dir is already present.
     fs.mkdirSync(destRootDir, { recursive: true });
 
-    // Write package.json to force CommonJS mode for GSD scripts
-    // Prevents "require is not defined" errors when project has "type": "module"
-    // Node.js walks up looking for package.json - this stops inheritance from project
-    const pkgJsonDest = path.join(destRootDir, 'package.json');
-    fs.writeFileSync(pkgJsonDest, '{"type":"commonjs"}\n');
-    console.log(`  ${green}✓${reset} Wrote package.json (CommonJS mode)`);
+    // #2544: the CommonJS marker is NOT written here (destRootDir is the
+    // runtime's shared config root — user-writable territory on OpenCode and
+    // Kilo, where it is the documented place to declare local-plugin npm
+    // dependencies). It is written into hooks/ below, the directory GSD
+    // creates and fills with its own .js scripts, once that directory exists.
 
     let hooksOk = true;
+    // #2544: true once GSD has actually written into destRootDir/hooks/, which
+    // is what licenses the CommonJS marker below.
+    let stagedHooks = false;
 
     // Copy hooks from dist/ (bundled with dependencies)
     // Template paths for the target runtime (replaces '.claude' with correct config dir)
@@ -11000,6 +11090,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const hooksDest = path.join(destRootDir, 'hooks');
       fs.mkdirSync(hooksDest, { recursive: true });
       const hookEntries = fs.readdirSync(hooksSrc);
+      if (hookEntries.some((e) => fs.statSync(path.join(hooksSrc, e)).isFile())) stagedHooks = true;
       const configDirReplacement = getConfigDirFromHome(runtime, isGlobal);
       for (const entry of hookEntries) {
         const srcFile = path.join(hooksSrc, entry);
@@ -11094,7 +11185,45 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const hooksLibDest = path.join(destRootDir, 'hooks', 'lib');
       fs.mkdirSync(hooksLibDest, { recursive: true });
       copyLibDir(hooksLibSrc, hooksLibDest, GSD_HOOK_LIB_FILES);
+      if (GSD_HOOK_LIB_FILES.some((f) => fs.existsSync(path.join(hooksLibDest, f)))) stagedHooks = true;
       console.log(`  ${green}✓${reset} Installed hooks/lib/ helpers (git-cmd, graphify-rebuild, ...)`);
+    }
+
+    // #2544: pin the staged hook scripts to CommonJS from inside hooks/ — the
+    // directory GSD just created and filled — instead of from destRootDir.
+    // Scoping the marker to GSD's own directory keeps `require` working in
+    // hooks/*.js and hooks/lib/*.js under any ambient "type": "module", while
+    // leaving the shared config root untouched.
+    //
+    // Gated on `stagedHooks`, NOT on the directory merely existing: hooks/ is
+    // shared space, so an existence check would drop a GSD marker into a
+    // hooks/ directory the user created and GSD never wrote to — the same
+    // write-into-someone-else's-territory this issue is about. And never
+    // written over a package.json GSD does not own.
+    //
+    // ALSO gated on `hooksOk`: `stagedHooks` is computed from the SOURCE
+    // listing before the copy loop, so it stays true when the copies land but
+    // `verifyInstalled` then fails. Marking a hooks/ GSD did not successfully
+    // populate as CommonJS claims an ownership the install did not earn — the
+    // two flags answer different questions ("did we intend to fill it" vs "is
+    // it actually filled"), and the marker needs both.
+    const hooksMarkerDir = path.join(destRootDir, 'hooks');
+    if (stagedHooks && hooksOk) {
+      switch (ensureCommonJsMarker(hooksMarkerDir)) {
+        case 'written':
+          console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
+          break;
+        case 'preserved-foreign':
+          console.warn(`  ${yellow}⚠${reset}  Left existing hooks/package.json untouched (not GSD's marker) — GSD hooks may not resolve as CommonJS`);
+          break;
+        case 'failed':
+          // Best-effort: a read-only or full config dir must not abort the
+          // install with a raw stack trace. The hooks themselves are staged.
+          console.warn(`  ${yellow}⚠${reset}  Could not write hooks/package.json (CommonJS mode) — install continued; GSD hooks may not resolve as CommonJS`);
+          break;
+        default:
+          break;
+      }
     }
 
     return hooksOk;
@@ -11545,6 +11674,10 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       const codexHooksDest = path.join(targetDir, 'hooks');
       fs.mkdirSync(codexHooksDest, { recursive: true });
       const configDirReplacement = getConfigDirFromHome(runtime, isGlobal);
+      // #2544: track whether anything was actually staged. hooks/dist existing
+      // is not the same as an allowlisted file landing in it — see the marker
+      // gate below.
+      let codexStagedHooks = false;
       for (const entry of fs.readdirSync(codexHooksSrc)) {
         if (!CODEX_HOOKS_TO_COPY.includes(entry)) continue;
         const srcFile = path.join(codexHooksSrc, entry);
@@ -11578,6 +11711,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
           fs.copyFileSync(srcFile, destFile);
           try { fs.chmodSync(destFile, 0o755); } catch (e) { /* Windows */ }
         }
+        codexStagedHooks = true;
       }
       console.log(`  ${green}✓${reset} Installed hooks (Codex)`);
       // #2717: write the CommonJS marker into hooks/ alongside the staged .js
@@ -11588,7 +11722,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // gsd-context-monitor.js as ESM and their require() calls fail silently.
       // Reuses the same helper the Cursor/Windsurf writers call so the marker
       // content + user-file-preservation contract is identical everywhere.
-      if (hooksSurface.ensureCommonJsMarker(codexHooksDest)) {
+      //
+      // #2544: gated on codexStagedHooks, mirroring installSharedHooksBundle's
+      // `stagedHooks`. The enclosing guard only proves hooks/dist EXISTS; if it
+      // holds none of CODEX_HOOKS_TO_COPY, this block mkdirs hooks/ and stages
+      // nothing, and an ungated marker would claim a directory GSD did not fill.
+      if (codexStagedHooks && hooksSurface.ensureCommonJsMarker(codexHooksDest)) {
         console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
       }
     }
@@ -11838,6 +11977,20 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       // leaves kimi's skills/agents artifacts installed correctly.
       if (!installSharedHooksBundle(kimiHooksRoot)) {
         console.warn(`  ${yellow}⚠${reset}  Kimi hook bundle did not verify at ${path.join(kimiHooksRoot, 'hooks')} — GSD lifecycle hooks may be incomplete`);
+      }
+      // #2544: retire the pre-fix marker at kimi's root. installSharedHooksBundle
+      // used to write {"type":"commonjs"} at destRootDir itself; it now writes it
+      // under destRootDir/hooks/, so on an upgrade the old root file is stale and
+      // would keep ~/.kimi pinned to CommonJS.
+      //
+      // Done HERE rather than in installer-migration 007 (which retires the same
+      // stale marker for every other runtime) because kimi's hook root is
+      // ~/.kimi — resolved by resolveKimiHooksTomlDir, OUTSIDE kimi's configDir.
+      // Migration relPaths are structurally confined to configDir, so the
+      // framework cannot address this path at all. Same exact-content predicate
+      // either way, so a user-authored ~/.kimi/package.json is never touched.
+      if (removeCommonJsMarker(kimiHooksRoot)) {
+        console.log(`  ${green}✓${reset} Removed stale package.json from ${kimiHooksRoot} (pre-#2544 marker)`);
       }
       const kimiHookOpts = { portableHooks: hasPortableHooks, runtime };
       const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');

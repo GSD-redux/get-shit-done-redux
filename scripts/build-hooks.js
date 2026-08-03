@@ -58,6 +58,8 @@ const HOOKS_TO_COPY = [
   'gsd-update-banner.js',
   'gsd-workflow-guard.js',
   'gsd-worktree-path-guard.js',
+  // Catastrophic-shrink guard for curated .planning/ artifacts (#2255, fix 3 of #973)
+  'gsd-write-guard.js',
   // Community hooks (bash, opt-in via .planning/config.json hooks.community)
   'gsd-session-state.sh',
   'gsd-validate-commit.sh',

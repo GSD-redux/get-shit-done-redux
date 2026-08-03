@@ -397,6 +397,7 @@ GSD generates markdown files that become LLM system prompts. This means any user
 
 - `gsd-prompt-guard.js` — Scans Write/Edit calls to `.planning/` for injection patterns (always active, advisory-only)
 - `gsd-workflow-guard.js` — Warns on file edits outside GSD workflow context (opt-in via `hooks.workflow_guard`)
+- `gsd-write-guard.js` — Hard-blocks a whole-file `Write` that catastrophically shrinks a curated `.planning/` artifact (`ROADMAP.md`, milestone roadmaps, `STATE.md`) below 40% of its on-disk line count; files under 40 lines are exempt. The check is stateless per Write, comparing each payload against the file's *current* on-disk size — a single-shot collapse (the #973 shape) is blocked, but a sequence of individually-tolerated shrinks that erodes the file across several Writes is not detected. For a legitimate milestone reset or large deletion, bypass once with the single-use sentinel — write the target's path into `.planning/.gsd-allow-shrink` (fresh within 15 minutes; consumed by the allowed write) — or, interactively, with `GSD_ALLOW_PLANNING_SHRINK=1` in the runtime's environment. Scope the guarantee accordingly: this stops accidental and single-shot collapse, and is not a defense against a determined agent — the sentinel is a plain file, so anything with shell access can arm one; what it buys is that the bypass becomes a deliberate, path-bound, single-use and auditable action rather than a sentence to reason past (always active, blocking; #2255, fix 3 of #973)
 
 **CI Scanner:** `prompt-injection-scan.security.test.cjs` scans all agent, workflow, and command files for embedded injection vectors.
 
@@ -411,8 +412,8 @@ AI coding tools hallucinate package names. Attackers pre-register those names on
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -424,7 +425,7 @@ AI coding tools hallucinate package names. Attackers pre-register those names on
 
 **During execution** — if an install fails, the executor surfaces a checkpoint and stops rather than silently trying an alternative.
 
-**Slopcheck verdicts:**
+**Legitimacy verdicts:**
 
 | Verdict | Meaning | GSD action |
 |---------|---------|------------|
@@ -432,12 +433,10 @@ AI coding tools hallucinate package names. Attackers pre-register those names on
 | `[SUS]` | Suspicious signals | Flagged; planner adds `checkpoint:human-verify` |
 | `[SLOP]` | High-confidence hallucination | Removed from RESEARCH.md; never reaches planner |
 
-To install slopcheck manually:
-
-```bash
-pip install slopcheck
-# verify: slopcheck install express --json
-```
+Verdicts are computed from live registry APIs (npm, PyPI, crates.io) — there
+is no separate tool to install. `slopcheck` is an optional escalate-only
+adapter (it can raise a verdict but never lower one); no shipped
+configuration wires it, and its absence does not change the gate's behavior.
 
 ---
 

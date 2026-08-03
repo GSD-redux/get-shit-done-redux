@@ -67,6 +67,7 @@ build/
 # by `npm run build:lib`). Source of truth is src/; these are emitted, never edited.
 # Published via prepublishOnly; built before test via pretest. Grows as modules migrate.
 /tsconfig.build.tsbuildinfo
+/gsd-core/bin/lib/commonjs-marker.cjs
 /gsd-core/bin/lib/broken-windows.cjs
 /gsd-core/bin/lib/host-integration.cjs
 /gsd-core/bin/lib/host-integration-sdk.cjs
@@ -87,6 +88,7 @@ build/
 /gsd-core/bin/lib/context-composer.cjs
 /gsd-core/bin/lib/context-predicates.cjs
 /gsd-core/bin/lib/workflow-fragments.cjs
+/gsd-core/bin/lib/section-manifest.cjs
 /gsd-core/bin/lib/capability-loader.cjs
 /gsd-core/bin/lib/capability-source.cjs
 /gsd-core/bin/lib/capability-ledger.cjs
@@ -95,8 +97,21 @@ build/
 /gsd-core/bin/lib/capability-consent.cjs
 /gsd-core/bin/lib/capability-lock.cjs
 /gsd-core/bin/lib/markdown-sectionizer.cjs
+# #2657: these two (markdown-table.cjs, write-set.cjs) already had the
+# pattern below since #2248, but stayed tracked because `git rm --cached`
+# was never run — same untracking fix as the seven lines that follow.
 /gsd-core/bin/lib/markdown-table.cjs
 /gsd-core/bin/lib/write-set.cjs
+# #2657: ADR-457 migration gap — these seven (of nine total; the two above
+# are the other two) never got a .gitignore entry when their modules moved
+# into src/*.cts, and were also never untracked.
+/gsd-core/bin/lib/api-coverage.cjs
+/gsd-core/bin/lib/assumption-delta.cjs
+/gsd-core/bin/lib/claude-orchestration.cjs
+/gsd-core/bin/lib/claude-orchestration-command-router.cjs
+/gsd-core/bin/lib/external-job.cjs
+/gsd-core/bin/lib/runtime-artifact-install-plan.cjs
+/gsd-core/bin/lib/state-transition.cjs
 /gsd-core/bin/lib/resolution.cjs
 /gsd-core/bin/lib/research-store.cjs
 /gsd-core/bin/lib/research-provider.cjs
@@ -159,6 +174,7 @@ build/
 /gsd-core/bin/lib/installer-migrations/004-prune-stale-pristine-snapshots.cjs
 /gsd-core/bin/lib/installer-migrations/005-opencode-baseline-commands-dir.cjs
 /gsd-core/bin/lib/installer-migrations/006-pi-extension-cjs-to-js.cjs
+/gsd-core/bin/lib/installer-migrations/007-retire-config-root-commonjs-marker.cjs
 /gsd-core/bin/lib/observability/logger.cjs
 /gsd-core/bin/lib/active-workstream-store.cjs
 /gsd-core/bin/lib/adr-parser.cjs

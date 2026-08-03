@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
 const { writeState } = require('./fixtures/index.cjs');
 
 describe('phases clear command', () => {
@@ -574,7 +574,11 @@ test('execute-phase.md: awk extracts resolves_phase from YAML frontmatter', () =
 // ────────────────────────────────────────────────────────────────────────
 describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
   const workflowPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'new-milestone.md');
-  const content = fs.readFileSync(workflowPath, 'utf8');
+  // readFileNormalized() strips \r\n -> \n before either extractor below slices
+  // a fence out of `content` — both fences are handed to execFileSync('bash', ...)
+  // in runStep1/runStep6Commit, so an un-normalized read on a Windows checkout
+  // would break bash mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
+  const content = readFileNormalized(workflowPath);
 
   // Locate the first ```bash fence strictly between two headings.
   function extractFenceBetween(markdown, startHeading, endHeading) {

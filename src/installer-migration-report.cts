@@ -52,6 +52,7 @@ export const BUNDLED_GSD_HOOK_FILES: ReadonlySet<string> = Object.freeze(new Set
   'hooks/gsd-validate-commit.sh',
   'hooks/gsd-workflow-guard.js',
   'hooks/gsd-worktree-path-guard.js',
+  'hooks/gsd-write-guard.js',
 ]));
 
 // ── Internal action types ─────────────────────────────────────────────────────

@@ -1036,8 +1036,7 @@ const capabilities = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToCodexSkill",
-            "home": ".agents"
+            "converter": "convertClaudeCommandToCodexSkill"
           }
         ]
       },
@@ -3385,7 +3384,8 @@ const capabilities = {
       },
       "hostBehaviors": {
         "skipSharedHooksInstall": true,
-        "soloStageMetadata": "workflow"
+        "soloStageMetadata": "workflow",
+        "projectInstructionFile": ".trae/rules/rules.md"
       }
     }
   },
@@ -5389,8 +5389,7 @@ const runtimes = {
             "prefix": "gsd-",
             "nesting": "flat",
             "recursive": false,
-            "converter": "convertClaudeCommandToCodexSkill",
-            "home": ".agents"
+            "converter": "convertClaudeCommandToCodexSkill"
           }
         ]
       },
@@ -6614,7 +6613,8 @@ const runtimes = {
       },
       "hostBehaviors": {
         "skipSharedHooksInstall": true,
-        "soloStageMetadata": "workflow"
+        "soloStageMetadata": "workflow",
+        "projectInstructionFile": ".trae/rules/rules.md"
       }
     }
   },

@@ -68,7 +68,12 @@ Load all context in one call (paths only to minimize orchestrator context):
 ```bash
 _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 GRAN_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--granularity[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then GRAN_PARAM="--granularity ${BASH_REMATCH[2]}"; fi
-INIT=$(gsd_run query init.plan-phase "$PHASE" $GRAN_PARAM)
+PRD_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--prd[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then PRD_PARAM="--prd ${BASH_REMATCH[2]}"; fi
+INGEST_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--ingest[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then INGEST_PARAM="--ingest ${BASH_REMATCH[2]}"; fi
+RESEARCH_PHASE_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--research-phase[[:space:]]+([^[:space:]-][^[:space:]]*) ]]; then RESEARCH_PHASE_PARAM="--research-phase ${BASH_REMATCH[2]}"; fi
+REVIEWS_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--reviews([[:space:]]|$) ]]; then REVIEWS_PARAM="--reviews"; fi
+CHUNKED_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--chunked([[:space:]]|$) ]]; then CHUNKED_PARAM="--chunked"; fi
+INIT=$(gsd_run query init.plan-phase "$PHASE" $GRAN_PARAM $PRD_PARAM $INGEST_PARAM $RESEARCH_PHASE_PARAM $REVIEWS_PARAM $CHUNKED_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-phase-researcher)
 AGENT_SKILLS_PLANNER=$(gsd_run query agent-skills gsd-planner)
@@ -182,23 +187,9 @@ if [[ "$ARGUMENTS" =~ --chunked ]] || [[ "$CHUNKED_CFG" == "true" ]]; then
 fi
 ```
 
-## 2.5. Validate `--reviews` Prerequisite
-
-**Skip if:** No `--reviews` flag.
-
-**If `--reviews` AND `--gaps`:** Error — cannot combine `--reviews` with `--gaps`. These are conflicting modes.
-
-**If `--reviews` AND `has_reviews` is false (no REVIEWS.md in phase dir):**
-
-Error:
-```
-No REVIEWS.md found for Phase {N}. Run reviews first:
-
-/gsd:review --phase {N}
-
-Then re-run /gsd:plan-phase {N} --reviews
-```
-Exit workflow.
+<!-- gsd:section id="reviews-prerequisite" when="flag:--reviews" -->
+If `section_manifest` is `null` or `"reviews-prerequisite"` is in its `included` list: read and execute `gsd-core/workflows/plan-phase/steps/reviews-prerequisite.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 ## 3. Validate Phase
 
@@ -213,28 +204,13 @@ Now that `PHASE` is finalized, resolve MVP mode:
 MVP_MODE=$(gsd_run query phase.mvp-mode "${PHASE}" $MVP_FLAG_ARG --pick active)
 ```
 
-## 3.5. Handle PRD Express Path
+<!-- gsd:section id="prd-express-gate" when="flag:--prd" -->
+If `section_manifest` is `null` or `"prd-express-gate"` is in its `included` list: read and execute `gsd-core/workflows/plan-phase/steps/prd-express-gate.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
-**Skip if:** No `--prd` flag in arguments.
-
-**If `--prd <filepath>` provided:**
-
-Read and execute `gsd-core/workflows/plan-phase/steps/prd-express-path.md` — it reads the PRD (`$PRD_FILE`), generates `CONTEXT.md` (every PRD requirement/story/criterion → locked decision, uncovered areas → "Claude's Discretion", canonical refs extracted from ROADMAP.md + PRD-referenced specs), commits it, sets `context_content`, and bypasses step 4 (Load CONTEXT.md). The rest of the workflow proceeds normally with the PRD-derived context.
-
-## 3.6. Handle ADR Ingest Express Path
-
-**Skip if:** No `--ingest` flag in arguments.
-
-**If `--ingest <path-or-glob>` provided:**
-
-1. Display banner: `GSD ► ADR Ingest Express Path` with `{INGEST_PATH}` and `{INGEST_FORMAT}`.
-2. Parse each resolved ADR through `gsd-core/bin/lib/adr-parser.cjs` (`--input`, `--format`) and collect normalized records.
-3. Status gate: reject `superseded`/`rejected`/`deprecated`; warn on `proposed`; missing status defaults to `accepted`.
-4. Empty-decisions fallback: if all parsed ADRs have zero `decisions[]`, emit `ADR ingest produced no locked decisions; fall back to discuss-phase for this phase.` and exit with `/gsd:discuss-phase {N}` guidance.
-5. Generate CONTEXT.md using `<domain>`, `<decisions>`, `<canonical_refs>`, `<specifics>`, `<deferred>`, `<scope_fence>`, map `consequences_positive[]` to Success Criteria and `consequences_negative[]` to Risk Summary, and include `**Source:** ADR Ingest Express Path ({INGEST_PATH})`.
-6. Commit with `gsd-tools.cjs query commit "docs(${padded_phase}): generate context from ADR ingest" --files "${phase_dir}/${padded_phase}-CONTEXT.md"` and set `context_content`; continue to step 5.
-
-**Effect:** This bypasses step 4 (Load CONTEXT.md) since CONTEXT.md was synthesized from ADR input.
+<!-- gsd:section id="adr-ingest-express-path" when="flag:--ingest" -->
+If `section_manifest` is `null` or `"adr-ingest-express-path"` is in its `included` list: read and execute `gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 ## 4. Load CONTEXT.md
 
@@ -305,22 +281,9 @@ If `AI_SPEC_FILE` is non-empty, pass `AI_SPEC_PATH` and `FRAMEWORK_LINE` to the 
 
 **Skip if:** `--gaps` flag or `--skip-research` flag or `--reviews` flag.
 
-### 5.0. Research-Only Modifiers (`--view`, `--research`)
-
-**Skip if:** `RESEARCH_ONLY` is `false`.
-
-Three branches in research-only mode (`--research-phase <N>`):
-
-1. **`--view`**: print `RESEARCH.md` to stdout, no spawn, exit. If `RESEARCH.md` is missing, error with: `--view requires an existing RESEARCH.md; drop --view to spawn the researcher.`
-2. **`--research`** (force-refresh): re-spawn researcher unconditionally — fall through to "Spawn gsd-phase-researcher" below.
-3. **Neither flag AND `has_research=true`:** auto-use the existing research and exit cleanly — do not prompt, do not re-spawn. Emit `RESEARCH.md already exists for Phase ${PHASE}, using it. To force-refresh, re-invoke with --research; to print, re-invoke with --view. Path: ${research_path}` then exit. The explicit-flag escape hatches cover any deviation; this matches §5.1's promptless auto-use of existing research, removing the §5.0/§5.1 inconsistency (#159).
-
-```bash
-if [[ "$VIEW_ONLY" == "true" ]]; then
-  [[ -f "$research_path" ]] || { echo "Error: --view requires an existing RESEARCH.md (Phase ${PHASE}). Drop --view to spawn the researcher."; exit 1; }
-  cat "$research_path"; exit 0
-fi
-```
+<!-- gsd:section id="research-only-modifiers" when="flag:--research-phase" -->
+If `section_manifest` is `null` or `"research-only-modifiers"` is in its `included` list: read and execute `gsd-core/workflows/plan-phase/steps/research-only-modifiers.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 ### 5.1. Standard Research Decision
 
@@ -408,23 +371,9 @@ Agent(
 - **`## RESEARCH COMPLETE`:** Display confirmation, continue to step 6
 - **`## RESEARCH BLOCKED`:** Display blocker, offer: 1) Provide context, 2) Skip research, 3) Abort
 
-### Research-Only Early Exit (`--research-phase`)
-
-**Skip if:** `RESEARCH_ONLY` is `false` (the default).
-
-**If `RESEARCH_ONLY=true`:** the user invoked `/gsd:plan-phase --research-phase <N>` for research-only mode. Do **not** continue to Section 5.5+ (validation strategy, planner, plan-checker, verification, gaps, bounce, post-planning-gaps). Print the research-complete summary and exit cleanly:
-
-```text
-✓ Research-only mode complete (#3042)
-
-  Phase:       ${PHASE}
-  RESEARCH.md: ${research_path}
-
-Re-run /gsd:plan-phase ${PHASE} to plan the phase using this research,
-or /gsd:plan-phase ${PHASE} --research to refresh research and plan.
-```
-
-This exits the workflow. The planner / plan-checker / verifier blocks below are skipped.
+<!-- gsd:section id="research-only-early-exit" when="flag:--research-phase" -->
+If `section_manifest` is `null` or `"research-only-early-exit"` is in its `included` list: read and execute `gsd-core/workflows/plan-phase/steps/research-only-early-exit.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 ## 5.5. Create Validation Strategy
 
@@ -718,6 +667,12 @@ after `$SPEC_FILE` (Step 7), before the gsd-planner spawn (Step 8).
 disabled or no requirement IDs; §A deterministic edge probe → `$COVERAGE` when `EDGE_ABSENT`; §B
 prohibition recall in the planner). Pass `$COVERAGE` and `$SPECLESS_FALLBACK_DISABLED` into Step 8.
 
+## 7.99. Bounded Stall-Detection Helpers (#2650)
+
+Read+execute `gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md` (defines
+`gsd_stall_should_recover`/`gsd_stall_watch`, and how `{outputFile}` below is bound;
+independent of the teams-status guard above, AC2).
+
 ## 8. Spawn gsd-planner Agent
 
 Display banner:
@@ -881,120 +836,18 @@ Agent(
   prompt=filled_prompt,
   subagent_type="gsd-planner",
   model="{planner_model}",
-  description="Plan Phase {phase}"
+  description="Plan Phase {phase}",
+  run_in_background=true
 )
 ```
 
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md' "## PLANNING COMPLETE" "## PHASE SPLIT RECOMMENDED" "## ⚠ Source Audit" "## CHECKPOINT REACHED" "## PLANNING INCONCLUSIVE")` while waiting/active — `marker_received` -> step 9; `stalled` -> 9a.
 
 **If `CHUNKED_MODE` is `true`:** Skip the Agent() call above — proceed to step 8.5 instead.
 
-## 8.5. Chunked Planning Mode
-
-**Skip if `CHUNKED_MODE` is `false`.**
-
-Chunked mode splits the single planner run into a short outline run + N short per-plan
-runs (~3–5 min each), committing each plan individually for crash resilience. Rerunning
-`/gsd:plan-phase {N} --chunked` resumes from the last committed plan.
-
-For recovering plans from a prior *non-chunked* run, use step 6's "Add more plans" or
-proceed to `/gsd:execute-phase` — don't start a fresh chunked run over them.
-
-### 8.5.1 Outline Phase (outline-only mode, ~2 min)
-
-**Resume detection:** If `${PHASE_DIR}/${PADDED_PHASE}-PLAN-OUTLINE.md` exists and contains
-the `## OUTLINE COMPLETE` marker (written by the outline agent — #2762), skip to 8.5.2.
-
-```bash
-OUTLINE_FILE="${PHASE_DIR}/${PADDED_PHASE}-PLAN-OUTLINE.md"
-if [[ -f "$OUTLINE_FILE" ]] && grep -q "^## OUTLINE COMPLETE" "$OUTLINE_FILE"; then
-  # reuse existing outline — skip to 8.5.2
-fi
-```
-
-Display:
-```text
-◆ Chunked mode: spawning outline planner... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
-```
-
-Spawn the planner in **outline-only** mode — it must write only the outline manifest, not any
-PLAN.md files:
-
-```javascript
-Agent(
-  prompt="{same planning_context as step 8, plus:}
-
-  **Chunked mode: outline-only.**
-  Do NOT write any PLAN.md files in this Task.
-  Write only: {PHASE_DIR}/{PADDED_PHASE}-PLAN-OUTLINE.md
-
-  The outline must be a markdown table with columns:
-  Plan ID | Objective | Wave | Depends On | Requirements
-
-  End the file with a final line `## OUTLINE COMPLETE` — §8.5.1's resume-check greps
-  the file for it, so it MUST be written here, not just returned.
-  Return: ## OUTLINE COMPLETE with plan count.",
-  subagent_type="gsd-planner",
-  model="{planner_model}",
-  description="Outline Phase {phase} (chunked)"
-)
-```
-
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
-
-Handle return:
-- **`## OUTLINE COMPLETE`:** Read `PLAN-OUTLINE.md`, extract plan list. Continue to 8.5.2.
-- **Any other return or empty:** Display error. Offer: 1) Retry outline, 2) Stop.
-
-### 8.5.2 Per-Plan Tasks (single-plan mode, ~3-5 min each)
-
-For each plan entry extracted from `PLAN-OUTLINE.md`:
-
-1. **Resume check:** Skip if `${PHASE_DIR}/{plan_id}-PLAN.md` exists with valid frontmatter
-   (resume safety) — UNLESS `--reviews` is set, whose purpose is to REPLAN with review
-   feedback (§6), so existing plans are overwritten, not skipped (#2762).
-
-   ```bash
-   PLAN_FILE="${PHASE_DIR}/${plan_id}-PLAN.md"
-   if [[ -f "$PLAN_FILE" ]] && head -1 "$PLAN_FILE" | grep -q '^---' && [[ "$ARGUMENTS" != *"--reviews"* ]]; then
-     continue  # resume safety — NOT under --reviews (replan)
-   fi
-   ```
-
-2. Display:
-   ```text
-   ◆ Chunked mode: planning {plan_id} ({k}/{N})... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)
-   ```
-
-3. Spawn the planner in **single-plan** mode — it must write exactly one PLAN.md file:
-   ```javascript
-   Agent(
-     prompt="{same planning_context as step 8, plus:}
-
-     **Chunked mode: single-plan.**
-     Write exactly ONE plan file: {PHASE_DIR}/{plan_id}-PLAN.md
-     Plan to write: {plan_id} — {objective}
-     Wave: {wave} | Depends on: {depends_on}
-     Phase requirement IDs to cover in this plan: {plan_requirements}
-
-     Return: ## PLAN COMPLETE with the plan ID.",
-     subagent_type="gsd-planner",
-     model="{planner_model}",
-     description="Plan {plan_id} (chunked {k}/{N})"
-   )
-   ```
-
-   > **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
-
-4. **Verify disk:** Check `${PHASE_DIR}/{plan_id}-PLAN.md` exists. If missing: offer 1) Retry, 2) Stop.
-
-5. **Commit per-plan:**
-   ```bash
-   gsd_run query commit "docs(${PADDED_PHASE}): plan ${plan_id} (chunked)" --files "${PHASE_DIR}/${plan_id}-PLAN.md"
-   ```
-
-After all N plans are written and committed, treat this as `## PLANNING COMPLETE` and continue
-to step 9.
+<!-- gsd:section id="chunked-planning-mode" when="state:chunked-mode" -->
+If `section_manifest` is `null` or `"chunked-planning-mode"` is in its `included` list: read and execute `gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 ## 9. Handle Planner Return
 
@@ -1146,16 +999,18 @@ Agent(
   prompt=checker_prompt,
   subagent_type="gsd-plan-checker",
   model="{checker_model}",
-  description="Verify Phase {phase} plans"
+  description="Verify Phase {phase} plans",
+  run_in_background=true
 )
 ```
 
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `CHECKER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md' "## VERIFICATION PASSED" "## ISSUES FOUND")` while waiting/active.
 
 ## 11. Handle Checker Return
 
-- **`## VERIFICATION PASSED`:** Display confirmation, proceed to step 13.
-- **`## ISSUES FOUND`:** Display issues, check iteration count, proceed to step 12.
+- **`marker_received` + `## VERIFICATION PASSED`:** Display confirmation, proceed to step 13.
+- **`marker_received` + `## ISSUES FOUND`:** Display issues, check iteration count, proceed to step 12.
+- **`stalled`:** Automatically surface 11a's recovery choice (Accept verification / Retry checker / Stop) — no manual interrupt needed.
 - **Empty / truncated / no recognized marker:** → Filesystem fallback (step 11a).
 
 **Thinking partner for architectural tradeoffs (conditional):**
@@ -1261,11 +1116,12 @@ Agent(
   prompt=revision_prompt,
   subagent_type="gsd-planner",
   model="{planner_model}",
-  description="Revise Phase {phase} plans"
+  description="Revise Phase {phase} plans",
+  run_in_background=true
 )
 ```
 
-> **ORCHESTRATOR RULE — ALL RUNTIMES**: After calling Agent() above, stop working on this task immediately. Do not read more files, edit code, or run tests related to this task while the subagent is active. Wait for the subagent to return its result. This prevents duplicate work, conflicting edits, and wasted context. Only resume when the subagent result is available.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

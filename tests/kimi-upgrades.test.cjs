@@ -118,8 +118,13 @@ test('kimi --global: native config.toml [[hooks]] bus wired at <HOME>/.kimi/conf
     'hooks/ must NOT be installed under the generic Agent-Skills configDir for kimi');
   assert.ok(!fs.existsSync(path.join(root, 'package.json')),
     'package.json (CommonJS marker) must NOT be installed under the generic Agent-Skills configDir for kimi');
-  assert.ok(fs.existsSync(path.join(root, '.kimi', 'package.json')),
-    'package.json (CommonJS marker) must be installed alongside config.toml under ~/.kimi');
+  // #2544: the marker moved INSIDE hooks/ — the directory GSD itself creates
+  // and fills — so kimi's own config home (~/.kimi) is never written to. The
+  // pre-#2544 root marker is retired by uninstall; a fresh install writes none.
+  assert.ok(fs.existsSync(path.join(hooksDir, 'package.json')),
+    'package.json (CommonJS marker) must be installed inside ~/.kimi/hooks — the GSD-owned dir (#2544)');
+  assert.ok(!fs.existsSync(path.join(root, '.kimi', 'package.json')),
+    'package.json (CommonJS marker) must NOT be written at ~/.kimi root — kimi\'s config home is not GSD territory (#2544)');
 });
 
 test('kimi --global: reinstalling is idempotent — the GSD [[hooks]] block is not duplicated', (t) => {

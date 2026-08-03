@@ -1,0 +1,53 @@
+{
+  "workflows": {
+    "execute-phase": [
+      {
+        "id": "partial-wave",
+        "when": "flag:--wave",
+        "read": "gsd-core/workflows/execute-phase/steps/partial-wave.md"
+      },
+      {
+        "id": "gap-closure-artifacts",
+        "when": "state:gap-closure-phase",
+        "read": "gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md"
+      },
+      {
+        "id": "regression-gate",
+        "when": "state:has-prior-phases",
+        "read": "gsd-core/workflows/execute-phase/steps/regression-gate.md"
+      }
+    ],
+    "plan-phase": [
+      {
+        "id": "reviews-prerequisite",
+        "when": "flag:--reviews",
+        "read": "gsd-core/workflows/plan-phase/steps/reviews-prerequisite.md"
+      },
+      {
+        "id": "prd-express-gate",
+        "when": "flag:--prd",
+        "read": "gsd-core/workflows/plan-phase/steps/prd-express-gate.md"
+      },
+      {
+        "id": "adr-ingest-express-path",
+        "when": "flag:--ingest",
+        "read": "gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md"
+      },
+      {
+        "id": "research-only-modifiers",
+        "when": "flag:--research-phase",
+        "read": "gsd-core/workflows/plan-phase/steps/research-only-modifiers.md"
+      },
+      {
+        "id": "research-only-early-exit",
+        "when": "flag:--research-phase",
+        "read": "gsd-core/workflows/plan-phase/steps/research-only-early-exit.md"
+      },
+      {
+        "id": "chunked-planning-mode",
+        "when": "state:chunked-mode",
+        "read": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md"
+      }
+    ]
+  }
+}

@@ -30,11 +30,14 @@ import { posixNormalize } from './shell-command-projection.cjs';
 // `require('../../../package.json')`. That require ran at module load on every
 // gsd-tools invocation (this module sits in the gsd-tools loader chain) and
 // threw `Cannot find module '../../../package.json'` on runtimes whose root has
-// no package.json — notably Codex, where the installer omits the synthetic root
-// package.json — taking the entire CLI down before it did anything. And even
-// where it resolved (Claude's synthetic `{"type":"commonjs"}`), there is no
-// `version` field, so the single consumer below already emitted
-// `version: undefined`. Resolve lazily and defensively instead:
+// no package.json — originally just Codex, where the installer never wrote the
+// synthetic root package.json; since #2544 that is true of EVERY runtime, as
+// GSD's markers moved into `hooks/` and the native plugin dir and the config
+// root is no longer written at all — taking the entire CLI down before it did
+// anything. And even where it used to resolve (the synthetic
+// `{"type":"commonjs"}`), there is no `version` field, so the single consumer
+// below already emitted `version: undefined`. Resolve lazily and defensively
+// instead:
 //   1. Installed trees carry <root>/gsd-core/VERSION (written by the installer);
 //      this module lives at <root>/gsd-core/bin/lib, so VERSION is two dirs up.
 //   2. The source / npm-package tree has no gsd-core/VERSION but carries a real
@@ -1308,10 +1311,55 @@ function convertClaudeToTraeMarkdown(content) {
   // Replace general-purpose subagent type with Trae's equivalent "general_purpose_task"
   converted = converted.replace(/subagent_type="general-purpose"/g, 'subagent_type="general_purpose_task"');
   converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
-  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.trae/rules/`');
-  converted = converted.replace(/\.\/CLAUDE\.md/g, '.trae/rules/');
-  converted = converted.replace(/`CLAUDE\.md`/g, '`.trae/rules/`');
-  converted = converted.replace(/\bCLAUDE\.md\b/g, '.trae/rules/');
+  // #2658: full-path forms (with a leading dot-claude-slash prefix) MUST be
+  // replaced before the bare Claude-instruction-file pattern and before the
+  // generic dot-claude-slash rewrite below — otherwise the bare pattern
+  // consumes only the instruction-filename tail, leaving that prefix stale
+  // in place, and the generic rewrite then mutates the stale leftover too,
+  // producing a doubled trae-prefix segment ahead of the rules path instead
+  // of a single clean one. (Deliberately never spelling the instruction
+  // filename as one contiguous "CLAUDE" + dot + "md" token, and never
+  // spelling either malformed shape out as a literal contiguous string, in
+  // ANY comment in this function: this file ships verbatim into local
+  // `--trae` installs, where it is itself run through this same class of
+  // find/replace — a literal instruction-filename token sitting in a
+  // comment gets "fixed" right along with real code, and the emitted-content
+  // regression test added alongside this fix asserts neither malformed
+  // shape appears anywhere in the installed tree, comments included; this
+  // bit the fix itself twice during development.) All forms converge on the
+  // same concrete file (never a bare directory) so this stays in parity
+  // with the `trae.js` RUNTIME_CONTENT_DISPATCH entry.
+  converted = converted.replace(/`\.\/\.claude\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.\/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  converted = converted.replace(/`\.claude\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  // #2658 (found via the end-to-end install regression test, not the static
+  // trace above): `copyWithPathReplacement` runs a GENERIC dot-claude-slash
+  // -> runtime-config-dir rewrite on every .md file before calling this
+  // converter — for `~/.claude/`, `$HOME/.claude/`, AND `./.claude/` alike —
+  // substituting a runtime-appropriate `pathPrefix` this function is never
+  // given and cannot itself compute (it differs per install invocation: a
+  // relative `./.trae/` for a project-local install, an arbitrary absolute
+  // path for a local install rooted elsewhere, `~/.trae/` for a global one).
+  // So for source using any of those prefixed forms, the patterns above
+  // never fire here — this converter only ever sees the ALREADY-rewritten
+  // "<runtime-config-dir>/" + instruction-filename shape, with whatever
+  // prefix the install actually used. The generic pattern below preserves
+  // that prefix verbatim (via the capture group) and only fixes the
+  // filename suffix, rather than assuming a fixed `./.trae/` shape — a
+  // narrower fixed-prefix version of this pattern shipped first and still
+  // left the doubled-prefix defect live for the `$HOME/.claude/` and
+  // `~/.claude/` forms specifically (found the same way, one regression-test
+  // run later). Scoped to a `.trae/` tail so it cannot also swallow the
+  // unprefixed `./CLAUDE.md` form the very next pattern handles differently
+  // (discarding the prefix entirely, not preserving it). Must run before
+  // the bare pattern for the same consume-the-full-match-first reason.
+  converted = converted.replace(/`([^\s`]*\.trae\/)CLAUDE\.md`/g, '`$1rules/rules.md`');
+  converted = converted.replace(/([^\s`]*\.trae\/)CLAUDE\.md/g, '$1rules/rules.md');
+  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  converted = converted.replace(/`CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\bCLAUDE\.md\b/g, '.trae/rules/rules.md');
   converted = converted.replace(/\.claude\/skills\//g, '.trae/skills/');
   converted = converted.replace(/\.\/\.claude\//g, './.trae/');
   converted = converted.replace(/\.claude\//g, '.trae/');

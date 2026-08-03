@@ -134,7 +134,7 @@ If spikes exist for this project, read them to ground the sketches in reality. M
 
 **a.** Glob for `./.claude/skills/spike-findings-*/SKILL.md` and read any that exist, plus their `references/*.md`. These contain validated patterns and requirements.
 
-**b.** Read `.planning/spikes/MANIFEST.md` if it exists — check the Requirements section for non-negotiable design constraints (e.g., "must support streaming", "must render markdown"). These requirements should be visible in the mockup even though the mockup doesn't implement them for real.
+**b.** Read `.planning/spikes/MANIFEST.md` if it exists — it may hold separate `### {idea-key}` sections for several unrelated ideas. Check the Requirements list of the idea key relevant to this sketch's design direction (or all of them if none clearly matches) for non-negotiable design constraints (e.g., "must support streaming", "must render markdown"). These requirements should be visible in the mockup even though the mockup doesn't implement them for real.
 
 **c.** Read `.planning/spikes/CONVENTIONS.md` if it exists — the established stack informs what's buildable and what interaction patterns are idiomatic.
 

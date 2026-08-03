@@ -99,7 +99,10 @@ const VERIFY_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'v
 const AUDIT_FIX_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'audit-fix.md');
 // #1857: execute-phase's regression-gate test-command resolution was extracted
 // to this step file (execute-phase.md is size-frozen — phase-6 capstone).
-const REGRESSION_GATE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'regression-gate.md');
+// #2932: steps/regression-gate.md now only discovers prior-phase test files and
+// delegates (via "Read and execute") to steps/regression-gate-run.md, which
+// carries the actual test-command resolution (Makefile/config-get priority).
+const REGRESSION_GATE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase', 'steps', 'regression-gate-run.md');
 
 function assertMakefileCheckBeforeNpmTest(filePath, label) {
   const content = fs.readFileSync(filePath, 'utf-8');
