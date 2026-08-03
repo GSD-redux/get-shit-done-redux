@@ -610,9 +610,13 @@ describe('frozen when= vocabulary', () => {
     // catch a value being silently renamed). See the dispatch report for
     // this deliberate deviation from the test matrix's literal wording.
     //
-    // #2993 (epic #1671 Phase 6.2, matrix row A3) widens this lock 14 -> 19:
+    // #2993 (epic #1671 Phase 6.2, matrix row A3) widened this lock 14 -> 19:
     // flag:--ingest, flag:--prd, flag:--research-phase, flag:--reviews,
-    // state:chunked-mode. This is the row the lock exists to force — a
+    // state:chunked-mode. #2994 (epic #1671 Phase 6.3) widened it 19 -> 20
+    // (state:ui-phase-active, verify-work.md), then a further #2994 amendment
+    // widened it 20 -> 23 (flag:--fix, state:fallow-enabled,
+    // state:git-create-tag, fragmentizing code-review.md and
+    // complete-milestone.md). This is the row the lock exists to force — a
     // deliberate, coordinated update, never a silent drift (Greenspun's
     // Tenth Rule / ADR-1671:69).
     assert.equal(Object.isFrozen(WHEN_VOCABULARY), true);
@@ -622,6 +626,7 @@ describe('frozen when= vocabulary', () => {
         'always',
         'flag:--auto',
         'flag:--discuss',
+        'flag:--fix',
         'flag:--forensic',
         'flag:--full',
         'flag:--ingest',
@@ -633,13 +638,44 @@ describe('frozen when= vocabulary', () => {
         'flag:--validate',
         'flag:--wave',
         'state:chunked-mode',
+        'state:fallow-enabled',
         'state:gap-closure-phase',
+        'state:git-create-tag',
         'state:has-prior-phases',
         'state:needs-codebase-map',
         'state:phase-mvp-mode',
+        'state:ui-phase-active',
         'state:worktrees-enabled',
       ],
     );
+  });
+});
+
+// ─── A further #2994 widening (epic #1671 Phase 6.3): code-review.md /
+// complete-milestone.md (3 atoms) ────────────────────────────────────────
+
+describe('widened when= vocabulary (#2994 code-review/complete-milestone)', () => {
+  const NET_NEW_ATOMS_2994B = Object.freeze([
+    'flag:--fix',
+    'state:fallow-enabled',
+    'state:git-create-tag',
+  ]);
+
+  test('everyNetNewAtomIsInWhenVocabulary', () => {
+    for (const atom of NET_NEW_ATOMS_2994B) {
+      assert.ok(WHEN_VOCABULARY.includes(atom), `expected "${atom}" in WHEN_VOCABULARY`);
+    }
+  });
+
+  test('acceptsEveryWidenedAtom', () => {
+    for (const when of NET_NEW_ATOMS_2994B) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      const sections = parseWorkflowSections(source);
+      const explicitSections = sections.filter((s) => s.explicit);
+      assert.equal(explicitSections.length, 1, `expected acceptance for when="${when}"`);
+      assert.equal(explicitSections[0].when, when);
+      assert.equal(composeWorkflow(source), 'body\n');
+    }
   });
 });
 
