@@ -576,8 +576,8 @@ selection has to run in the workflow's own shell before any `gsd_run`
 round-trip.
 
 `transition.md` marks one section: `workstream-collision-check`
-(`state:workstream-active`) — an internal workflow (no user-facing
-`/gsd-transition` command) that previously called NO `init.*` command at
+(`state:workstream-active`) — an internal workflow (it has no user-facing
+slash command of its own) that previously called NO `init.*` command at
 all. It already establishes `gsd_run()` via the canonical launcher preamble
 in its `update_roadmap_and_state` step, before this call's insertion point
 in `offer_next_phase`, so no second preamble copy is needed. The section's

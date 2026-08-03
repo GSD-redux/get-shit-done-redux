@@ -193,20 +193,27 @@ describe('bug #3381: verify-work forwards workstream context', () => {
       }
     }
 
+    // The --ws capture character class was deliberately narrowed from
+    // `[^[:space:]]+` to `[A-Za-z0-9._-]+` (workstream slugs are
+    // alphanumeric/dot/underscore/hyphen; the old class captured any
+    // non-space run, including shell metacharacters). Forwarding itself
+    // (GSD_WS reaching every workstream-sensitive query below) is
+    // unaffected by the narrower class, so only the literal pattern here
+    // is updated — the asserted forwarding property is unchanged.
     assert.match(workflow, /GSD_WS=""/, 'verify-work must initialize GSD_WS');
     assert.match(
       workflow,
-      /grep -qE -- '--ws\[\[:space:\]\]\+\[\^\[:space:\]\]\+'/,
+      /grep -qE -- '--ws\[\[:space:\]\]\+\[A-Za-z0-9\._-\]\+'/,
       'verify-work must detect --ws in $ARGUMENTS',
     );
     assert.match(
       workflow,
-      /grep -oE -- '--ws\[\[:space:\]\]\+\[\^\[:space:\]\]\+'/,
+      /grep -oE -- '--ws\[\[:space:\]\]\+\[A-Za-z0-9\._-\]\+'/,
       'verify-work must extract the --ws flag pair from $ARGUMENTS',
     );
     assert.match(
       workflow,
-      /PHASE_ARG=\$\(echo "\$ARGUMENTS" \| sed -E 's\/--ws\[\[:space:\]\]\+\[\^\[:space:\]\]\+\/\/g' \| xargs\)/,
+      /PHASE_ARG=\$\(echo "\$ARGUMENTS" \| sed -E 's\/--ws\[\[:space:\]\]\+\[A-Za-z0-9\._-\]\+\/\/g' \| xargs\)/,
       'verify-work must derive PHASE_ARG after removing --ws',
     );
     // After #3797 architectural fix, callsites use gsd_run

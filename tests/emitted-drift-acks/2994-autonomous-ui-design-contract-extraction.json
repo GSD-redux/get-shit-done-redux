@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-core/references/autonomous-ui-design-contract.md": "#2994 (epic #1671 Phase 6.3): new reference file created to pull autonomous.md's inline 3a.5 UI Design Contract step body (previously ~1995 chars in-place, unconditionally read) out to a reference, following the pre-existing autonomous-smart-discuss.md precedent. This is required to bring autonomous.md back under the 40,960-char Read-tool cap regression test (tests/autonomous-decomposition.test.cjs) after the branch's five `<!-- gsd:section -->` marker-pair stubs (converge-fail-fast/converge-banner/converge-dispatch-bg/converge-dispatch-inline/converge-loop) pushed it over. The host now carries a short pointer paragraph plus 'Read and execute: $HOME/.claude/gsd-core/references/autonomous-ui-design-contract.md' in place of the extracted body; installed behavior is unchanged, since the reference file is copied verbatim (gsd-core-verbatim rule) to every runtime that ships gsd-core/references/."
+  }
+}

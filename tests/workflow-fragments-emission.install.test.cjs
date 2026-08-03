@@ -465,10 +465,33 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
 
 test('leavesUnmarkedWorkflowEmissionByteIdentical', () => {
   const workflowsDir = path.join(REPO_ROOT, 'gsd-core', 'workflows');
-  // execute-phase.md (#2932 Phase 5) and plan-phase.md (#2993 Phase 6.2) are
-  // the two files this repo has fragmentized with gsd:section markers — both
-  // excluded here since composeWorkflow is deliberately NOT a no-op for them.
-  const MARKED_WORKFLOWS = new Set(['execute-phase.md', 'plan-phase.md']);
+  // execute-phase.md (#2932 Phase 5), plan-phase.md (#2993 Phase 6.2), and
+  // the thirteen workflows #2994 (epic #1671 Phase 6.3) fragmentizes onto the
+  // marker grammar are the files this repo has fragmentized with gsd:section
+  // markers — all excluded here since composeWorkflow is deliberately NOT a
+  // no-op for them. This set is DELIBERATELY hardcoded rather than derived
+  // from "does the file contain a marker": deriving it would make the guard
+  // tautological — a marker that LEAKED into an unrelated file via a bad
+  // extraction would just get silently excluded instead of failing the
+  // independence check this test exists to enforce. Update this list by hand
+  // whenever a workflow is legitimately marked.
+  const MARKED_WORKFLOWS = new Set([
+    'autonomous.md',
+    'code-review.md',
+    'complete-milestone.md',
+    'discuss-phase-assumptions.md',
+    'docs-update.md',
+    'execute-phase.md',
+    'new-milestone.md',
+    'new-project.md',
+    'plan-phase.md',
+    'progress.md',
+    'quick.md',
+    'review.md',
+    'transition.md',
+    'update.md',
+    'verify-work.md',
+  ]);
   const workflowFiles = fs
     .readdirSync(workflowsDir, { withFileTypes: true })
     .filter((d) => d.isFile() && d.name.endsWith('.md'))
