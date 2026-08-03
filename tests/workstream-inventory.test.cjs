@@ -1534,6 +1534,64 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.equal(inv.completed_phases, 0, 'the percentage must not rise because the ledger became a broken symlink');
   });
 
+  // Row 15b — pins the lstat fail-closed fix specifically. The broken-symlink
+  // disambiguation in `readVerificationLedger` calls `fs.lstatSync` after
+  // `fs.readFileSync` reports `ENOENT`, to tell "genuinely absent" from "a
+  // symlink entry exists, its target does not". A REVIEW caught that the
+  // `catch` around that `lstatSync` call originally treated ANY lstat
+  // failure as proof of absence — but only `lstatSync` ITSELF reporting
+  // `ENOENT` is genuine proof; a DIFFERENT lstat failure (a raced permission
+  // change, a path component that became inaccessible between the two
+  // calls, …) is not evidence the file was never there, and must fail
+  // CLOSED like every other path in that function. Double-fault both calls
+  // to pin this: `readFileSync` throws `ENOENT` (as it does for a genuinely
+  // missing path or file), `lstatSync` throws something else (`EACCES`) —
+  // this combination is impossible to produce with a real filesystem state
+  // (if the path is genuinely gone, `lstatSync` reports `ENOENT` too), so it
+  // is monkeypatched directly rather than constructed on disk; this is what
+  // "a future edit could re-widen that catch and fall open again silently"
+  // means without a test — the double-fault CANNOT be exercised any other
+  // way. Restored via `t.after()`.
+  test('a non-ENOENT lstat failure during broken-symlink disambiguation fails closed, not open (#2645)', (t) => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-lstat-double-fault' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    const before = inspectWorkstream(tmpDir, 'ws-2645-lstat-double-fault', { active: null }); // adopt
+    assert.equal(before.completed_phases, 0, 'guard: gated by the live gaps_found verdict');
+    fs.unlinkSync(path.join(wsDir, 'phases', '1-foo', '01-VERIFICATION.md'));
+
+    const originalReadFileSync = fs.readFileSync;
+    const originalLstatSync = fs.lstatSync;
+    fs.readFileSync = (targetPath, ...rest) => {
+      if (typeof targetPath === 'string' && targetPath === ledgerPath) {
+        throw Object.assign(new Error('injected: simulated missing ledger'), { code: 'ENOENT' });
+      }
+      return originalReadFileSync(targetPath, ...rest);
+    };
+    fs.lstatSync = (targetPath, ...rest) => {
+      if (typeof targetPath === 'string' && targetPath === ledgerPath) {
+        throw Object.assign(new Error('injected: simulated raced permission fault'), { code: 'EACCES' });
+      }
+      return originalLstatSync(targetPath, ...rest);
+    };
+    t.after(() => {
+      fs.readFileSync = originalReadFileSync;
+      fs.lstatSync = originalLstatSync;
+    });
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-lstat-double-fault', { active: null }); });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress',
+      'a non-ENOENT lstat failure is not proof of absence — it must fail closed (corrupt), not fall open (absent)');
+    assert.equal(inv.completed_phases, 0, 'the percentage must not rise because of an ambiguous double-fault read');
+  });
+
   // Row 16 — CONTRIBUTING.md fault-injection: missing/uncreatable parent
   // directory for the write side. Monkeypatch `fs.mkdirSync` to throw only
   // for the workstream directory (delegating everything else), simulating a
@@ -1595,26 +1653,37 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.deepEqual(leftoverTmp, [], 'a failed rename must not leave an orphaned temp file behind');
   });
 
-  // Row 18 — BLOCKER regression, unit level. `pickRollupWinners`
-  // (`workstream-inventory-builder.cts`) is the SINGLE shared implementation
-  // both `buildWorkstreamInventory`'s `rollupDirByKey` and
-  // `inspectWorkstream`'s ledger-winner selection now call. An earlier
-  // version of the ledger selection was a SEPARATE hand-written copy that
-  // omitted the `includeItem` (milestone-scoping) filter — so in a scoped
-  // workstream, a stale OUT-of-milestone directory sharing a phase key with
-  // the live IN-milestone one, with a newer mtime (plausible after a
-  // checkout/rebase resets mtimes), could win the LEDGER's selection while
-  // losing the BUILDER's. `isLedgerWinner` would then be false for the live
-  // directory, so deleting ITS `*-VERIFICATION.md` would never consult the
-  // ledger — reopening #2645's hole for the phase that actually counts
-  // toward `completed_phases`, reachable with a plain `rm`, no ledger
-  // tampering. This test proves the CURRENT shared implementation applies
-  // the filter BEFORE comparing mtimes, with synthetic data under full
-  // control (not tied to roadmap-parser's directory-name regex, which could
-  // not be coaxed into producing a natural "same rollup key, different
-  // milestone membership" pair for an integration-level reproduction — see
-  // Row 19 for the integration-level proof that the REAL ledger read/write
-  // path threads the scoping flag through correctly).
+  // Row 18 — BLOCKER regression, and THIS IS THE ONLY ROW THAT PROVES IT
+  // END TO END. `pickRollupWinners` (`workstream-inventory-builder.cts`) is
+  // the SINGLE shared implementation both `buildWorkstreamInventory`'s
+  // `rollupDirByKey` and `inspectWorkstream`'s ledger-winner selection now
+  // call. An earlier version of the ledger selection was a SEPARATE
+  // hand-written copy that omitted the `includeItem` (milestone-scoping)
+  // filter — so in a scoped workstream, a stale OUT-of-milestone directory
+  // sharing a phase key with the live IN-milestone one, with a newer mtime
+  // (plausible after a checkout/rebase resets mtimes), could win the
+  // LEDGER's selection while losing the BUILDER's. `isLedgerWinner` would
+  // then be false for the live directory, so deleting ITS
+  // `*-VERIFICATION.md` would never consult the ledger — reopening #2645's
+  // hole for the phase that actually counts toward `completed_phases`,
+  // reachable with a plain `rm`, no ledger tampering.
+  //
+  // This test constructs that EXACT collision directly — one synthetic key
+  // shared by two entries, one included (in-milestone) and one excluded
+  // (out-of-milestone), the excluded one given the larger mtime — and
+  // proves `pickRollupWinners` applies the filter BEFORE comparing mtimes.
+  //
+  // Row 19 (below) does NOT reproduce this same-key collision through the
+  // real `phaseKeyFromDir` / `isDirInCurrentMilestone` pipeline — extensive
+  // probing (documented in `10-diagnosis.md`'s "Fourth note") found no
+  // directory-naming pair that shares a rollup key while diverging in
+  // milestone membership under the CURRENT roadmap-parser implementation;
+  // every membership-determining path collapses to the same phase-number
+  // extraction the rollup key already uses. Row 19 instead pins a narrower,
+  // real, DISTINCTLY-keyed guarantee (an out-of-milestone phase's verdict is
+  // never written into the ledger at all) — genuinely useful coverage, but
+  // NOT a substitute for this row: it does not exercise the collision path,
+  // and the pre-fix code would have passed it too.
   test('pickRollupWinners: an excluded (out-of-milestone) item can never win over an included one, even with a newer mtime (#2645)', () => {
     const liveInMilestone = { key: 'shared', mtimeMs: 100, inMilestone: true, label: 'live' };
     const staleOutOfMilestone = { key: 'shared', mtimeMs: 999999, inMilestone: false, label: 'stale' }; // far newer mtime, but excluded
@@ -1655,15 +1724,16 @@ describe('#2645 — deleting a verification report must not raise completeness',
       'when scoping is off, the plain newest-mtime rule applies with no exclusion');
   });
 
-  // Row 19 — BLOCKER regression, integration level. In a genuinely SCOPED
-  // workstream (roadmap has a Milestone column, STATE.md carries
-  // `milestone:`), an out-of-milestone phase's real verdict must never be
-  // written into the ledger at all — `pickRollupWinners`'s `includeItem`
-  // filter must exclude it from `ledgerWinnerByKey` before `inspectWorkstream`
-  // ever considers persisting its status. This proves the REAL read/write
-  // path (not just the extracted helper in isolation, Row 18) threads
-  // `scoped`/`inMilestone` through correctly.
-  test('milestone scoping: an out-of-milestone phase is never written into the ledger (#2645)', () => {
+  // Row 19 — NOT the collision blocker (see Row 18's comment — this does
+  // not reproduce it and the pre-fix code would pass this too). What this
+  // DOES cover: in a genuinely SCOPED workstream (roadmap has a Milestone
+  // column, STATE.md carries `milestone:`), a DISTINCTLY-keyed
+  // out-of-milestone phase's real verdict must never be written into the
+  // ledger at all — proving the REAL `inspectWorkstream` read/write path
+  // threads `scoped`/`inMilestone` into the ledger write gate correctly, end
+  // to end, for the (much more common) non-colliding case. `1-old` (v1.0)
+  // and `2-new` (v2.0) are DIFFERENT phase keys, not a shared one.
+  test('milestone scoping: a distinctly-keyed out-of-milestone phase is never written into the ledger (#2645)', () => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-scoped-ledger' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), 'milestone: v2.0\nstatus: executing\n');
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), [
