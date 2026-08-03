@@ -95,14 +95,15 @@ function extractStallHelpersBash() {
   if (!body.includes('gsd_stall_watch')) {
     throw new Error('extractStallHelpersBash: sanity check failed — extracted block does not also define gsd_stall_watch');
   }
-  // No CRLF normalization needed here: readStallHelpersDoc() reads through
-  // helpers.cjs's readFileNormalized(), which strips \r\n -> \n at the read
-  // boundary, before any slicing above runs. On a Windows checkout, an
-  // un-normalized read would leave every extracted line carrying a trailing
-  // \r; bash then treats that \r as part of the token, an opening quote never
-  // finds its match, and the parser dies with "unexpected EOF while looking
-  // for matching `"'" partway through the script (#2650 Windows CI — this is
-  // the repo's recurring CRLF-in-extracted-source defect class, see #1700).
+  // readStallHelpersDoc() reads through helpers.cjs's readFileNormalized(),
+  // which strips \r\n -> \n at the read boundary before any slicing above
+  // runs. That guards against the repo's general CRLF-in-extracted-source
+  // defect class (#1700) and is worth keeping on its own merits (a bare \n
+  // regex against readFileSync content is fragile either way), but it is
+  // NOT what caused the #2650 Windows CI failure: .gitattributes forces
+  // `eol=lf` on this file, so a Windows checkout never receives CRLF here
+  // in the first place. The real cause was runShouldRecover()'s `bash -c`
+  // argv-transport mangling — see that function's doc comment.
   return body;
 }
 
@@ -110,15 +111,40 @@ function extractStallHelpersBash() {
  * Run gsd_stall_should_recover with the given args inside the extracted
  * script and return its stdout (trimmed). No real sleeping happens — the
  * function is pure and synchronous.
+ *
+ * The script is written to a temp file and run as `bash <file> <args...>`
+ * rather than `bash -c <script> <arg0> <args...>` (#2650 Windows CI). The
+ * `-c`-with-extra-positional-args form serializes a 70+ line, quote-dense
+ * script PLUS four more argv elements into one CreateProcess command-line
+ * string on Windows (Node has no execve there); Git Bash's MSYS layer then
+ * re-splits and unescapes that string with its own rules, and the boundary
+ * between the script and the trailing args is not stable across that round
+ * trip (confirmed live: one failure's stderr was prefixed
+ * `gsd_stall_should_recover_test:` — arg0 arrived — and another
+ * `/usr/bin/bash:` — arg0 did not). Passing a bare file path as the sole
+ * quote-free argv element before the four plain numeric/boolean-string args
+ * removes the script itself from that transport entirely. This mirrors
+ * tests/quick-branching.test.cjs's extractStep25Bash/runStep, which already
+ * uses this exact temp-file shape and is green on Windows on `next`;
+ * tests/worktree-cleanup.test.cjs's extractCwdGuardBash/runGuard stays on
+ * `bash -c` but — also green on Windows — never appends extra positional
+ * args beyond the script itself, so it never hits the same boundary.
  */
 function runShouldRecover(helpersBash, elapsedSeconds, thresholdMinutes, markerFound, artifactFresh) {
   const script = `${helpersBash}\ngsd_stall_should_recover "$1" "$2" "$3" "$4"\n`;
-  const result = spawnSync('bash', ['-c', script, 'gsd_stall_should_recover_test',
-    String(elapsedSeconds), String(thresholdMinutes), String(markerFound), String(artifactFresh)], {
-    encoding: 'utf-8',
-  });
-  assert.equal(result.status, 0, `gsd_stall_should_recover exited non-zero: ${result.stderr}`);
-  return result.stdout.trim();
+  const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-recover-'));
+  try {
+    const scriptPath = path.join(scriptDir, 'should-recover.sh');
+    fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
+    const result = spawnSync('bash', [scriptPath,
+      String(elapsedSeconds), String(thresholdMinutes), String(markerFound), String(artifactFresh)], {
+      encoding: 'utf-8',
+    });
+    assert.equal(result.status, 0, `gsd_stall_should_recover exited non-zero: ${result.stderr}`);
+    return result.stdout.trim();
+  } finally {
+    cleanup(scriptDir);
+  }
 }
 
 describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pure decision function)', () => {
@@ -255,13 +281,46 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'waiting');
   });
-  // Note: the mtime-based "fresh artifact activity -> active" transition is
-  // deliberately NOT integration-tested against a real clock here (it would
-  // require either a real ~60s sleep to get a reliable -newermt window, which
-  // is too slow for this suite, or a sub-minute window at the mercy of
-  // whole-second `date +%s` truncation, which is flaky by construction — see
-  // "No flaky races" policy). That transition IS covered deterministically at
-  // the pure-function level above ("fresh artifact activity keeps waiting...").
+
+  test('real `find ... -mmin` correctly detects a fresh artifact -> active (CR: BSD find -newermt "@epoch" is unparseable on macOS)', (t) => {
+    // Regression for a production (not test-only) defect a review surfaced:
+    // the shipped freshness check used to be `find $glob -newermt "@$(( ...
+    // ))" ` — GNU find's "@<epoch>" shorthand for -newermt, which the
+    // BSD find(1) actually shipped on macOS does NOT understand ("Can't
+    // parse date/time: @<epoch>", verified live against /usr/bin/find). With
+    // the `2>/dev/null` beside it, that failed silently and permanently
+    // degraded artifact_fresh to "false" on every macOS run — a real
+    // plan-checker or planner actively writing plan files could still be
+    // reported "stalled". Fixed to `find $glob -mmin -N` ("modified less
+    // than N minutes ago"), which needs no date-string parsing and is
+    // supported identically by GNU find and BSD find.
+    //
+    // This runs the REAL shipped gsd_stall_watch (not a hand-copied
+    // find invocation — see this file's header on Generative Fix
+    // Divergence), with `sleep` shadowed to a no-op bash function so the
+    // test does not actually wait a real PLANNER_STALL_INTERVAL_MINUTES;
+    // the `find ... -mmin` line itself still executes for real. threshold
+    // is set absurdly high so "stalled" cannot fire independently — the
+    // ONLY path to "active" is a correctly-working freshness check.
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-fresh-'));
+    t.after(() => cleanup(tmp));
+    fs.writeFileSync(path.join(tmp, 'x-PLAN.md'), 'freshly written\n');
+    const glob = path.join(tmp, '*-PLAN.md');
+    const missingOutputFile = path.join(tmp, 'never-written.txt');
+    const now = Math.floor(Date.now() / 1000);
+    const overrides = 'sleep() { :; }\nPLANNER_STALL_INTERVAL_MINUTES=1\nPLANNER_STALL_THRESHOLD_MINUTES=99999\n';
+    const call = `gsd_stall_watch ${JSON.stringify(String(now))} ${JSON.stringify(missingOutputFile)} ${JSON.stringify(glob)}` +
+      ` ${JSON.stringify('## PLANNING COMPLETE')}`;
+    const script = `${helpersBash}\n${overrides}${call}\n`;
+    const result = spawnSync('bash', ['-c', script], { encoding: 'utf-8', timeout: 10000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'active');
+  });
+  // Note: this platform's real find(1) is exercised by the test above via a
+  // stubbed `sleep`, not a real ~60s wait. The mtime-based transition is
+  // ALSO covered deterministically at the pure-function level above
+  // ("fresh artifact activity keeps waiting...") for the classification
+  // logic downstream of a given artifact_fresh value.
 });
 
 describe('bug #2650 config schema — planner.stall_* keys mirror executor.stall_*', () => {

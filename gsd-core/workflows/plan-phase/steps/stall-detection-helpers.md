@@ -131,8 +131,17 @@ gsd_stall_watch() {
       if grep -qF "$m" "$output_file" 2>/dev/null; then marker_found="true"; break; fi
     done
   fi
+  # -mmin -N ("modified less than N minutes ago"), not -newermt "@<epoch>":
+  # -newermt's "@<epoch>" shorthand is a GNU-date convenience the shipped
+  # BSD find(1) on macOS does NOT understand ("Can't parse date/time:
+  # @<epoch>", verified live) — with the 2>/dev/null below that failed
+  # silently and permanently degraded artifact_fresh to false on every
+  # macOS run. -mmin -N needs no epoch/date-string conversion at all and is
+  # supported identically by GNU find (Linux, Git-for-Windows' bundled
+  # findutils) and BSD find (macOS). $artifact_glob stays intentionally
+  # unquoted — the shell, not find, expands it into the matching file list.
   artifact_fresh="false"
-  if [ -n "$(find $artifact_glob -newermt "@$(( now - PLANNER_STALL_INTERVAL_MINUTES * 60 ))" 2>/dev/null)" ]; then
+  if [ -n "$(find $artifact_glob -mmin "-${PLANNER_STALL_INTERVAL_MINUTES}" 2>/dev/null)" ]; then
     artifact_fresh="true"
   fi
   gsd_stall_should_recover "$elapsed" "$PLANNER_STALL_THRESHOLD_MINUTES" "$marker_found" "$artifact_fresh"
