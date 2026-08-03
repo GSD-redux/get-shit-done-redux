@@ -331,10 +331,26 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     // `bash -c` call — this test builds its own script inline (the `sleep`
     // stub isn't something runWatch() supports), so it needs the same
     // transport seam explicitly rather than inheriting it for free.
+    // Windows CR: production's own glob (plan-phase.md:895 et al.,
+    // `"${PHASE_DIR}"'/*-PLAN.md'`) is always forward-slash — PHASE_DIR is a
+    // POSIX-style `.planning/phases/NN-slug` value, never a native Windows
+    // path, and this all runs under Git Bash regardless of host OS. This
+    // test previously built the glob with `path.join(tmp, '*-PLAN.md')`,
+    // which on Windows yields a backslash path
+    // (`C:\Users\RUNNER~1\...\*-PLAN.md`). In bash pathname expansion a
+    // backslash escapes the next character, so that pattern can never
+    // match anything — `find` silently returned empty and the test failed
+    // with 'waiting' instead of 'active'. Confirmed as a TEST artifact, not
+    // a production defect: production never constructs the glob this way.
+    // Fixed by forward-slashing the tmp dir before building the glob — the
+    // same `.replace(/\\/g, '/')` idiom this repo already uses elsewhere —
+    // so the test matches what production actually passes, while still
+    // exercising the real shipped `find` line. Do not "simplify" this back
+    // to a bare `path.join`; that silently reintroduces the failure.
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-fresh-'));
     t.after(() => cleanup(tmp));
     fs.writeFileSync(path.join(tmp, 'x-PLAN.md'), 'freshly written\n');
-    const glob = path.join(tmp, '*-PLAN.md');
+    const glob = `${tmp.replace(/\\/g, '/')}/*-PLAN.md`;
     const missingOutputFile = path.join(tmp, 'never-written.txt');
     const now = Math.floor(Date.now() / 1000);
     const overrides = 'sleep() { :; }\nPLANNER_STALL_INTERVAL_MINUTES=1\nPLANNER_STALL_THRESHOLD_MINUTES=99999\n';
