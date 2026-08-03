@@ -102,6 +102,32 @@ model".
 - `timeout` present but not a positive finite number.
 - Unknown `kind`.
 
+### `artifact-frontmatter-equals`
+
+Reads a Markdown file with YAML frontmatter from the current phase directory (or falls back to the project root for project-level artifacts) and compares a field's value to the declared expectation. The value is matched using loosely typed string comparison or exact matching, where numeric expectations will safely match stringified numeric frontmatter values.
+
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `kind` | string | yes | — | Must be `"artifact-frontmatter-equals"` |
+| `artifact` | string | yes | — | Suffix or exact filename (e.g. `WINDOWS.md`) |
+| `field` | string | yes | — | Frontmatter key to read |
+| `equals` | any | yes | — | Expected value (compared with string coercion) |
+
+**Result mapping.**
+
+| Command outcome | `block` | `message` |
+|---|---|---|
+| Value matches `equals` | `false` | `Frontmatter field "<field>" matches expected value (<expected>)` |
+| Value mismatch | `true` | `Frontmatter field "<field>" in <artifact> is <actual>, expected <expected>` |
+| Artifact file not found | `true` | `Artifact matching <artifact> not found in <targetDir>` |
+
+**Validation errors (throw → check-command failure → Step-1 / `onError`).**
+
+- Missing or empty `artifact` string.
+- Missing or empty `field` string.
+- Missing `equals` value.
+- File read or YAML parsing failure (I/O errors).
+
 ## Extensibility
 
 The evaluator dispatches through a `KIND_TABLE`. Adding a new built-in kind is

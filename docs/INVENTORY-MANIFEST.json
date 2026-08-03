@@ -422,6 +422,7 @@
       "research-provider.cjs",
       "research-store.cjs",
       "resolution.cjs",
+      "retired-artifact-cleanup.cjs",
       "review-lane-descriptor.cjs",
       "review-lane-invocation.cjs",
       "review-lane-runner.cjs",
