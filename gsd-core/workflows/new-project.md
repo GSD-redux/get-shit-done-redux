@@ -104,24 +104,9 @@ All subsequent references to the project instruction file use `$INSTRUCTION_FILE
 
 **If auto mode:** Skip to Step 4 (assume greenfield, synthesize PROJECT.md from provided document).
 
-**If `needs_codebase_map` is true** (from init — existing code detected but no codebase map):
-
-**Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
-Use AskUserQuestion:
-
-- header: "Codebase"
-- question: "I detected existing code in this directory. Would you like to map the codebase first?"
-- options:
-  - "Map codebase first" — Run /gsd:map-codebase to understand existing architecture (Recommended)
-  - "Skip mapping" — Proceed with project initialization
-
-**If "Map codebase first":**
-
-```
-Run `/gsd:map-codebase` first, then return to `/gsd:new-project`
-```
-
-Exit command.
+<!-- gsd:section id="codebase-map-offer" when="state:needs-codebase-map" -->
+If `section_manifest` is `null` or `"codebase-map-offer"` is in its `included` list: read and execute `gsd-core/workflows/new-project/steps/codebase-map-offer.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 **If "Skip mapping" OR `needs_codebase_map` is false:** Continue to Step 3.
 

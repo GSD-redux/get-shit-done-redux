@@ -46,7 +46,7 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 30 atoms (widened from 4 to 14 via the ADR-1671
+`when=` takes exactly one of 29 atoms (widened from 4 to 14 via the ADR-1671
 amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
 ADR-1671 amendment for #2993, epic #1671 Phase 6.2, then from 19 to 20 via
 the ADR-1671 amendment for #2994, epic #1671 Phase 6.3, then from 20 to 23
@@ -57,7 +57,11 @@ further #2994 amendment fragmentizing `review.md` and
 `discuss-phase-assumptions.md`, then from 26 to 30 via the FINAL #2994
 amendment fragmentizing `docs-update.md`, `update.md`, `transition.md`, and
 `new-milestone.md` — the last four of the 13 workflows targeted by
-ADR-1671):
+ADR-1671 — then from 30 to 29 via a dead-vocabulary cleanup: `flag:--full`
+was removed (no `when=` marker ever consumed it — `quick.md` folds `--full`
+into the `--discuss`/`--research`/`--validate` facts before evaluation) and
+`state:needs-codebase-map` gained its first real consumer,
+`new-project.md`'s `codebase-map-offer` section):
 
 | Value | Meaning |
 |---|---|
@@ -69,7 +73,6 @@ ADR-1671):
 | `flag:--discuss` | Applicable when the workflow runs with `--discuss`. |
 | `flag:--fix` | Applicable when the workflow runs with `--fix` (`code-review.md`'s resolved fix decision — `--fix` itself, or `--all`/`--auto` implying it via `code-review-flags.cjs`). |
 | `flag:--forensic` | Applicable when the workflow runs with `--forensic`. |
-| `flag:--full` | Applicable when the workflow runs with `--full`. |
 | `flag:--ingest` | Applicable when the workflow runs with `--ingest <path-or-glob>`. |
 | `flag:--prd` | Applicable when the workflow runs with `--prd <file>`. |
 | `flag:--research` | Applicable when the workflow runs with `--research`. |

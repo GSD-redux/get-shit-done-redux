@@ -687,6 +687,7 @@ function buildSectionManifestField(
     nextChannel?: boolean;
     workstreamActive?: boolean;
     flatMode?: boolean;
+    uiPhaseActive?: boolean;
   } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
@@ -722,7 +723,7 @@ function buildSectionManifestField(
     phaseMvpMode: detectPhaseMvpMode(cwd, phaseNumber),
     needsCodebaseMap: overrides.needsCodebaseMap,
     chunkedMode,
-    uiPhaseActive: detectUiPhaseActive(cwd, phaseInfo),
+    uiPhaseActive: overrides.uiPhaseActive,
     fallowEnabled: overrides.fallowEnabled,
     gitCreateTag: overrides.gitCreateTag,
     planStrategyConverge: overrides.planStrategyConverge,
@@ -1429,6 +1430,7 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
         policy: { requireVerification: true },
       })
     : null;
+  const uiPhaseActive = detectUiPhaseActive(cwd, phaseInfo);
 
   const result: Record<string, unknown> = {
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
@@ -1455,13 +1457,25 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
       uat_blockers: uatReport?.blockers ?? [],
       ready_to_transition: completion.phase_complete && (uatReport?.passed ?? false),
     },
+
+    // #2994 (resolver-hoist-guard G5): hoisted `state:ui-phase-active` ground
+    // truth (previously re-derived inline inside the automated_ui_verification
+    // step body via its own `gsd_run loop render-hooks plan:pre --raw` call —
+    // a circular, self-disabling resolver, since the section is only read
+    // when this same fact is already true). Resolved once here, exposed so
+    // the step body can consume it directly instead of recomputing it.
+    ui_phase_active: uiPhaseActive,
   };
 
   // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
   // phaseInfo is passed through directly (mirrors cmdInitExecutePhase / cmdInitPlanPhase)
-  // so buildSectionManifestField's internal detectPhaseMvpMode/detectUiPhaseActive calls
-  // get a real phase_number/directory rather than permanently-false facts.
-  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, {}, 'verify-work');
+  // so buildSectionManifestField's internal detectPhaseMvpMode call gets a real
+  // phase_number/directory rather than permanently-false facts. uiPhaseActive is
+  // computed once above (not re-derived here) and threaded through via overrides,
+  // mirroring the fallow/git-create-tag hoist pattern.
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, {}, 'verify-work', {
+    uiPhaseActive,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }

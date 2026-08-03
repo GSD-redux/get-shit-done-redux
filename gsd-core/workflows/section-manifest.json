@@ -96,6 +96,11 @@
         "read": "gsd-core/workflows/new-project/steps/auto-mode-detection.md"
       },
       {
+        "id": "codebase-map-offer",
+        "when": "state:needs-codebase-map",
+        "read": "gsd-core/workflows/new-project/steps/codebase-map-offer.md"
+      },
+      {
         "id": "auto-mode-config",
         "when": "flag:--auto",
         "read": "gsd-core/workflows/new-project/steps/auto-mode-config.md"

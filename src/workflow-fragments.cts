@@ -213,7 +213,6 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'flag:--discuss',
   'flag:--fix',
   'flag:--forensic',
-  'flag:--full',
   'flag:--ingest',
   'flag:--prd',
   'flag:--research',
