@@ -14,7 +14,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-const MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
+// #2993 fragmentization moved §8.5 (chunked planning mode, including §8.5.1 /
+// §8.5.2) out of plan-phase.md into gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md.
+// Read that step file directly — it is the sole remaining source of the §8.5.1/§8.5.2
+// content these regression guards assert on.
+const MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase', 'steps', 'chunked-planning-mode.md');
 const read = () => fs.readFileSync(MD, 'utf8');
 
 test('§8.5.1 outline agent writes the resume marker into the file (#2762 defect A)', () => {

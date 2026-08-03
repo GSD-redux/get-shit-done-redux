@@ -382,8 +382,8 @@ AI コーディングツールはパッケージ名を幻覚することがあ�
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -395,7 +395,7 @@ AI コーディングツールはパッケージ名を幻覚することがあ�
 
 **実行中** — インストールが失敗した場合、エグゼキューターはチェックポイントを提示して停止し、代替案をサイレントに試みません。
 
-**スロップチェックの判定:**
+**正当性の判定:**
 
 | 判定 | 意味 | GSD のアクション |
 |---------|---------|------------|
@@ -403,12 +403,7 @@ AI コーディングツールはパッケージ名を幻覚することがあ�
 | `[SUS]` | 疑わしいシグナル | フラグ付き; プランナーが `checkpoint:human-verify` を追加 |
 | `[SLOP]` | 高確信度の幻覚 | RESEARCH.md から削除; プランナーに到達しない |
 
-slopcheck を手動でインストールするには:
-
-```bash
-pip install slopcheck
-# verify: slopcheck install express --json
-```
+判定はライブのレジストリ API（npm、PyPI、crates.io）から計算されます — 個別にインストールするツールはありません。`slopcheck` はオプションのエスカレート専用アダプター（判定を引き上げることはできますが、引き下げることはできません）です。出荷される設定はこれを配線しておらず、その不在によってゲートの動作が変わることはありません。
 
 ---
 

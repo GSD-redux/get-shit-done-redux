@@ -4,7 +4,10 @@
 /**
  * gen-section-manifest.cjs — generates gsd-core/workflows/section-manifest.json
  * from the `<!-- gsd:section -->` markers in gsd-core/workflows/*.md (ADR-1671
- * epic #1671, Phase 5 / issue #2932, `.gsd/phase/chore-2932-init-section-manifest/40-design.md`).
+ * epic #1671; Phase 5 / issue #2932 introduced the artifact,
+ * `.gsd/phase/chore-2932-init-section-manifest/40-design.md`; Phase 6.1 /
+ * issue #2992 generalized it from single-workflow to PER-WORKFLOW,
+ * `.gsd/phase/chore-2992-widen-when-vocabulary/40-design.md`).
  *
  * Reuses `parseWorkflowSections` from the compiled `workflow-fragments.cjs`
  * (src/workflow-fragments.cts, Phase 3 / #2930) UNCHANGED — this module never
@@ -14,17 +17,29 @@
  * The committed artifact is placed INSIDE the `gsd-core/` tree (not `docs/`,
  * unlike `docs/CONTEXT-INDEX.json`/`docs/INVENTORY-MANIFEST.json`) because it
  * must SHIP: `bin/install.js`'s `copyWithPathReplacement` only copies
- * `gsd-core/`, and Phase 5's run-time selection (a later commit) reads this
- * artifact from the INSTALLED tree, not the dev repo. `copyWithPathReplacement`
+ * `gsd-core/`, and the init CLI's run-time selection reads this artifact
+ * from the INSTALLED tree, not the dev repo. `copyWithPathReplacement`
  * only runs `composeWorkflow`/converters on `*.md` — a `.json` leaf falls
  * through to a plain `fs.copyFileSync`, so the artifact ships byte-identical.
  *
- * Per design's "Rejected" list, the manifest carries NEITHER section content
- * (would duplicate every section's bytes, fighting Phase 4's emitted-byte
- * caps) NOR line numbers (re-drifts on any line shift, and per-runtime
- * converters rewrite text so ranges would differ per runtime). It carries
- * only `{id, when, read}` triples — `read` is a POSIX-normalized path,
- * relative to the repo root, of the step file the section body was moved to.
+ * Shape (#2992 Phase 6.1): `{ "workflows": { "<workflow-name>": [{id, when,
+ * read}, ...], ... } }`, where `<workflow-name>` is a source `.md` file's
+ * basename without extension. A workflow with zero explicit sections
+ * contributes NO key at all (absence, not `[]` — an init caller for that
+ * workflow must degrade to `null`, never be attributed some OTHER workflow's
+ * sections). Keys are serialized in sorted (filename) order; each workflow's
+ * own sections stay in document order. The pre-6.1 shape was a single flat
+ * `{ sections: [...] }` array with no workflow key at all — `isValidManifestShape`
+ * REJECTS that shape outright so a stale committed artifact can never be
+ * mis-attributed to whichever workflow asks first (design row C4).
+ *
+ * Per design's "Rejected" list, a workflow's section list carries NEITHER
+ * section content (would duplicate every section's bytes, fighting Phase 4's
+ * emitted-byte caps) NOR line numbers (re-drifts on any line shift, and
+ * per-runtime converters rewrite text so ranges would differ per runtime).
+ * It carries only `{id, when, read}` triples — `read` is a POSIX-normalized
+ * path, relative to the repo root, of the step file the section body was
+ * moved to.
  *
  * Usage:
  *   node scripts/gen-section-manifest.cjs                 # print to stdout
@@ -40,7 +55,7 @@
  * Only `.md` files directly inside `--workflows-dir` are scanned (not files
  * already inside a `<workflow>/steps/` subdirectory — those are MOVED-TO
  * output, never source-with-markers). A workflow with zero explicit sections
- * (88 of 89 today) contributes nothing to the manifest and is never
+ * (most workflows today) contributes no key to `workflows` and is never
  * orphan-checked — orphan-checking is scoped only to a workflow's OWN
  * `steps/` directory, and only for workflows that declare at least one
  * `gsd:section` marker.
@@ -225,14 +240,18 @@ class ManifestBuildError extends ExitError {
 
 /**
  * Scan `workflowsDir` for `.md` files carrying `gsd:section` markers and
- * build the live (freshly-derived) manifest: `{ sections: [{id, when, read}] }`,
- * in document order (files sorted by filename, sections in each file's own
- * document order). Throws `ManifestBuildError` on any fail-closed condition
- * (missing step file, orphan step file, unparseable source).
+ * build the live (freshly-derived) manifest: `{ workflows: { <name>:
+ * [{id, when, read}], ... } }` (#2992 Phase 6.1). Workflow keys are
+ * serialized in sorted (filename) order; a workflow's own sections stay in
+ * document order. A workflow with zero explicit sections contributes NO key
+ * at all — absence, not `[]` (design row C4/C11: absence must degrade to
+ * `null` at the init seam, never be confused with "computed, no sections").
+ * Throws `ManifestBuildError` on any fail-closed condition (missing step
+ * file, orphan step file, unparseable source).
  *
  * @param {string} workflowsDir - defaults to the real repo-root gsd-core/workflows/
  * @param {string} repoRoot - root `read` paths are computed relative to
- * @returns {{ sections: Array<{id: string, when: string, read: string}> }}
+ * @returns {{ workflows: Record<string, Array<{id: string, when: string, read: string}>> }}
  */
 function buildFreshManifest(workflowsDir = WORKFLOWS_DIR, repoRoot = ROOT) {
   const { parseWorkflowSections } = loadWorkflowFragmentsLib();
@@ -243,7 +262,7 @@ function buildFreshManifest(workflowsDir = WORKFLOWS_DIR, repoRoot = ROOT) {
     .map((d) => d.name)
     .sort();
 
-  const sections = [];
+  const workflows = {};
 
   for (const fileName of workflowFiles) {
     const filePath = path.join(workflowsDir, fileName);
@@ -267,6 +286,7 @@ function buildFreshManifest(workflowsDir = WORKFLOWS_DIR, repoRoot = ROOT) {
 
     const workflowName = fileName.replace(/\.md$/, '');
     const stepsDir = path.join(workflowsDir, workflowName, 'steps');
+    const sections = [];
 
     for (const section of explicitSections) {
       const stepFileAbs = path.join(stepsDir, `${section.id}.md`);
@@ -294,15 +314,17 @@ function buildFreshManifest(workflowsDir = WORKFLOWS_DIR, repoRoot = ROOT) {
         `${relOrphanPath} is not referenced by any gsd:section marker or reachable "steps/" reference in ${relSourcePath}`,
       );
     }
+
+    workflows[workflowName] = sections;
   }
 
-  return { sections };
+  return { workflows };
 }
 
 // ─── Serialization ────────────────────────────────────────────────────────────
 
 /**
- * @param {{ sections: Array<{id: string, when: string, read: string}> }} manifest
+ * @param {{ workflows: Record<string, Array<{id: string, when: string, read: string}>> }} manifest
  * @returns {string}
  */
 function serializeManifest(manifest) {
@@ -310,18 +332,41 @@ function serializeManifest(manifest) {
 }
 
 /**
- * True when `parsed` has the expected committed-manifest shape: a plain
- * object (not an array, not null) carrying a `sections` array of
- * `{id, when, read}` string triples. Rejects `0`, `"s"`, `[]`, `null`, `true`.
+ * Workflow-count / section-count pair for a manifest's `workflows` map, used
+ * by the `--write` stdout summary and the `--check` OK message.
+ *
+ * @param {{ workflows: Record<string, Array<{id: string, when: string, read: string}>> }} manifest
+ * @returns {{ workflowCount: number, sectionCount: number }}
+ */
+function countManifest(manifest) {
+  const workflowNames = Object.keys(manifest.workflows);
+  const sectionCount = workflowNames.reduce((sum, name) => sum + manifest.workflows[name].length, 0);
+  return { workflowCount: workflowNames.length, sectionCount };
+}
+
+/**
+ * True when `parsed` has the expected committed-manifest shape (#2992 Phase
+ * 6.1): a plain object (not an array, not null) carrying a `workflows` plain
+ * object (not an array, not null) whose every own value is an array of
+ * `{id, when, read}` string triples. Rejects `0`, `"s"`, `[]`, `null`, `true`
+ * — AND rejects the pre-6.1 flat `{sections:[...]}` shape (no `workflows`
+ * key ⇒ `parsed.workflows` is `undefined`, which fails the object check),
+ * so a stale committed artifact can never be silently mis-attributed to
+ * whichever workflow asks first (design row C4).
  *
  * @param {unknown} parsed
  * @returns {boolean}
  */
 function isValidManifestShape(parsed) {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
-  if (!Array.isArray(parsed.sections)) return false;
-  return parsed.sections.every(
-    (s) => s !== null && typeof s === 'object' && typeof s.id === 'string' && typeof s.when === 'string' && typeof s.read === 'string',
+  const workflows = parsed.workflows;
+  if (workflows === null || typeof workflows !== 'object' || Array.isArray(workflows)) return false;
+  return Object.values(workflows).every(
+    (sections) =>
+      Array.isArray(sections) &&
+      sections.every(
+        (s) => s !== null && typeof s === 'object' && typeof s.id === 'string' && typeof s.when === 'string' && typeof s.read === 'string',
+      ),
   );
 }
 
@@ -425,7 +470,7 @@ function checkReport(workflowsDir = WORKFLOWS_DIR, manifestPath = MANIFEST_PATH,
       ok: false,
       reason: REASON.FAIL_MANIFEST_MALFORMED_SHAPE,
       subject: manifestPath,
-      message: `${manifestPath} is valid JSON but does not have the expected {sections:[{id,when,read}]} shape.\n` +
+      message: `${manifestPath} is valid JSON but does not have the expected {workflows:{<name>:[{id,when,read}]}} shape.\n` +
         'Run:\n  node scripts/gen-section-manifest.cjs --write\n',
     };
   }
@@ -439,11 +484,12 @@ function checkReport(workflowsDir = WORKFLOWS_DIR, manifestPath = MANIFEST_PATH,
     };
   }
 
+  const { workflowCount, sectionCount } = countManifest(live);
   return {
     ok: true,
     reason: REASON.OK_UP_TO_DATE,
     subject: null,
-    message: `${manifestPath} is up to date (${live.sections.length} section${live.sections.length === 1 ? '' : 's'}).\n`,
+    message: `${manifestPath} is up to date (${workflowCount} workflow${workflowCount === 1 ? '' : 's'}, ${sectionCount} section${sectionCount === 1 ? '' : 's'}).\n`,
   };
 }
 
@@ -556,7 +602,8 @@ function main() {
         : { ok: true, reason: REASON.OK_UP_TO_DATE, subject: null },
     ) + '\n');
   } else if (!writeErr) {
-    process.stdout.write(`Wrote ${opts.manifestPath}\n  ${manifest.sections.length} section${manifest.sections.length === 1 ? '' : 's'}\n`);
+    const { workflowCount, sectionCount } = countManifest(manifest);
+    process.stdout.write(`Wrote ${opts.manifestPath}\n  ${workflowCount} workflow${workflowCount === 1 ? '' : 's'}, ${sectionCount} section${sectionCount === 1 ? '' : 's'}\n`);
   }
 
   if (writeErr) {
@@ -571,6 +618,7 @@ module.exports = {
   findOrphanStepFiles,
   buildFreshManifest,
   serializeManifest,
+  countManifest,
   isValidManifestShape,
   writeManifestAtomically,
   checkReport,

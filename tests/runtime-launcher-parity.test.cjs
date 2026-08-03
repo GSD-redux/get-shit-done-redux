@@ -1434,6 +1434,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { readFileNormalized } = require('./helpers.cjs');
 
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'next.md');
 
@@ -1448,8 +1449,8 @@ const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'next.
  *   lines — scan to the closing `fi`.
  */
 function extractResolverSnippet() {
-  const content = fs.readFileSync(WORKFLOW_PATH, 'utf8');
-  const lines = content.split(/\r?\n/);
+  const content = readFileNormalized(WORKFLOW_PATH);
+  const lines = content.split('\n');
 
   // Find the canonical preamble — prefer _GSD_SHIM_NAME= line (handles both forms)
   let start = lines.findIndex((line) => /^_GSD_SHIM_NAME=/.test(line.trim()));
