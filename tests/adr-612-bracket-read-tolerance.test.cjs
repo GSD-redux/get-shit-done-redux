@@ -735,3 +735,112 @@ describe('#612 PR-2: a bracket sentinel in the CHECKLIST index is suppressed too
     assert.match(w[0], /Phase 01/);
   });
 });
+
+// ─── Adversarial malformed bracket tokens ───────────────────────────────────
+
+/**
+ * A tolerant reader's worst input is not a well-formed id it should reject —
+ * that is what the emit-grammar tests above cover — but a token that is
+ * STRUCTURALLY broken: the milestone is not a number, the bracket never closes,
+ * or a bracket is nested inside another. Each one is a plausible hand-edit or a
+ * half-finished migration, and each reaches every widened reader in this PR.
+ *
+ * The contract is the same for all three: no phantom phase, no throw, and the
+ * answer is IDENTICAL to what a non-opted-in repo gives, because none of these
+ * is in the emit grammar. A malformed bracket must not be "partly" read — a
+ * reader that recovers the `01` out of `[GSD.02] 01:` but not out of
+ * `[GSD.AB] 01:` is fine; one that recovers it from BOTH has invented a phase
+ * the ROADMAP does not declare.
+ */
+describe('#612 PR-2: malformed bracket tokens produce no phantom phase', () => {
+  const validate = require('../gsd-core/bin/lib/validate.cjs');
+
+  beforeEach(() => { tmpDir = createTempProject('adr-612-malformed-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const MALFORMED = [
+    ['non-numeric milestone', '### [GSD.AB] 01: Broken'],
+    ['unclosed bracket', '### [GSD.02 01: Broken'],
+    ['nested bracket', '### [GSD.[02]] 01: Broken'],
+    ['empty bracket', '### [] 01: Broken'],
+    ['bracket with no dot', '### [GSD02] 01: Broken'],
+    ['dot but empty milestone', '### [GSD.] 01: Broken'],
+    ['milestone is a float', '### [GSD.0.2] 01: Broken'],
+    ['negative milestone', '### [GSD.-2] 01: Broken'],
+    ['whitespace milestone', '### [GSD. ] 01: Broken'],
+    ['double dot', '### [GSD..02] 01: Broken'],
+  ];
+
+  for (const [label, heading] of MALFORMED) {
+    test(`${label} is read as a phase by NO convention`, () => {
+      const doc = `### Phase 5: Real work\n${heading}\n`;
+      const opted = [...validate.buildRoadmapPhaseVariants(doc, 'bracket').roadmapPhases].sort();
+      const legacy = [...validate.buildRoadmapPhaseVariants(doc).roadmapPhases].sort();
+      assert.deepEqual(opted, ['5'], `${label}: bracket repo invented a phase — ${JSON.stringify(opted)}`);
+      assert.deepEqual(opted, legacy, `${label}: opted-in and legacy repos must agree`);
+    });
+  }
+
+  test('the malformed corpus reaches roadmap analyze without inventing a phase', () => {
+    write(`# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: Real one
+**Goal:** a
+
+${MALFORMED.map(([, h]) => `${h}\n**Goal:** x\n`).join('\n')}`, 'bracket');
+    assert.deepEqual(analyze().phases.map(p => p.number), ['01']);
+  });
+
+  test('a malformed bracket DIRECTORY is not recognized, and never throws', () => {
+    const dirs = [
+      'GSD.AB-01-broken', 'GSD.02-01-ok', 'GSD.[02]-01-broken', 'GSD.-01-broken',
+      'GSD..02-01-broken', '.02-01-broken', 'GSD.02--01-broken', 'GSD.0.2-01-broken',
+    ];
+    for (const dir of dirs) {
+      for (const convention of [undefined, null, 'milestone-prefixed', 'bracket']) {
+        assert.doesNotThrow(() => validate.isPhaseDirName(dir, convention), `${dir} / ${convention}`);
+        assert.doesNotThrow(() => validate.phaseTokenFromDir(dir, convention), `${dir} / ${convention}`);
+      }
+      if (dir === 'GSD.02-01-ok') continue;
+      assert.equal(validate.isPhaseDirName(dir, 'bracket'), false, `${dir} must not be a bracket dir`);
+    }
+    assert.equal(validate.isPhaseDirName('GSD.02-01-ok', 'bracket'), true, 'control');
+  });
+
+  test('the not-started variant builder agrees with the roadmap builder on the corpus', () => {
+    // Two builders, one grammar. If only one widens, `validate consistency`
+    // reports a phase the health check does not — the #3242 Bug B shape.
+    for (const [label, heading] of MALFORMED) {
+      const doc = `- [ ] **Phase 5: Real**\n${heading.replace('### ', '- [ ] **')}**\n`;
+      const a = [...validate.buildNotStartedPhaseVariants(doc, 'bracket')].sort();
+      const b = [...validate.buildNotStartedPhaseVariants(doc)].sort();
+      assert.deepEqual(a, b, `${label}: the two conventions disagreed — ${JSON.stringify([a, b])}`);
+    }
+  });
+
+  test('pathological bracket input terminates promptly (no catastrophic backtracking)', () => {
+    // Every widened pattern is built from BRACKET_ID_SRC, whose milestone field
+    // is a bounded alternation. Nested quantifiers over a long unclosed bracket
+    // are the classic ReDoS shape, so bound it rather than trust the reading.
+    const attacks = [
+      `### [${'A'.repeat(5000)} 01: x`,
+      `### [GSD.${'0'.repeat(5000)} 01: x`,
+      `### ${'['.repeat(2000)}GSD.02] 01: x`,
+      `### [GSD.${'9'.repeat(5000)}] ${'1'.repeat(5000)}: x`,
+      `### [${'A.02] ['.repeat(1000)}A.02] 01: x`,
+    ];
+    for (const doc of attacks) {
+      const started = process.hrtime.bigint();
+      assert.doesNotThrow(() => {
+        validate.buildRoadmapPhaseVariants(doc, 'bracket');
+        validate.buildNotStartedPhaseVariants(doc, 'bracket');
+        validate.isPhaseDirName(doc, 'bracket');
+        validate.phaseTokenFromDir(doc, 'bracket');
+      });
+      const ms = Number(process.hrtime.bigint() - started) / 1e6;
+      assert.ok(ms < 1000, `pathological input took ${ms.toFixed(1)}ms: ${doc.slice(0, 40)}…`);
+    }
+  });
+});

@@ -437,3 +437,95 @@ Some prose.
     assert.deepEqual(w021(), [], 'the phantom must not be counted as unstarted');
   });
 });
+
+// ─── G3: adversarial malformed bracket tokens reaching the coherence check ──
+
+/**
+ * `checkBracketCoherence` compares a phase's OWN bracket milestone against the
+ * milestone of the section enclosing it, so it consumes two independently
+ * matched brackets. A structurally broken one — non-numeric, unclosed, nested —
+ * is the input most likely to make those two disagree about what they matched,
+ * and W021 is a check that can fail a repo.
+ *
+ * The contract: a malformed token is not a phase and not a section, so it can
+ * neither raise a W021 of its own nor re-scope the W021s around it (the G2
+ * failure mode, arrived at from a different shape), and `validate health` still
+ * exits cleanly. G2 above pins the unpadded case; these pin the broken ones.
+ */
+describe('#612 PR-2: malformed bracket tokens neither warn nor re-scope', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-malformed-w021-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const BROKEN_HEADINGS = [
+    ['non-numeric milestone', '### [GSD.AB] 05: Broken'],
+    ['unclosed bracket', '### [GSD.02 05: Broken'],
+    ['nested bracket', '### [GSD.[02]] 05: Broken'],
+    ['empty bracket', '### [] 05: Broken'],
+    ['dot, no milestone', '### [GSD.] 05: Broken'],
+    ['double dot', '### [GSD..02] 05: Broken'],
+  ];
+
+  for (const [label, broken] of BROKEN_HEADINGS) {
+    test(`${label}: raises no W021 of its own`, () => {
+      writeProject({ roadmap: `# Roadmap
+
+## [GSD.02] v2.0 — Expansion
+
+${broken}
+**Goal:** a
+`, convention: 'bracket' });
+      assert.deepEqual(w021(), [], `${label} warned`);
+    });
+
+    test(`${label}: does not re-scope the W021 that follows it`, () => {
+      // The G2 shape: a heading that is not a phase but IS read as a section
+      // silently moves every later warning onto the wrong milestone.
+      writeProject({ roadmap: `# Roadmap
+
+## [GSD.02] v2.0 — Expansion
+
+${broken}
+**Goal:** a
+
+### [GSD.07] 06: Real mismatch
+**Goal:** b
+`, convention: 'bracket' });
+      const mismatch = w021().filter(x => /does not match its section milestone/.test(x));
+      assert.equal(mismatch.length, 1, `${label}: ${JSON.stringify(w021())}`);
+      assert.match(mismatch[0], /section milestone 02/, `${label}: scope moved off the real section`);
+    });
+  }
+
+  test('the whole broken corpus in one ROADMAP leaves validate health clean', () => {
+    writeProject({ roadmap: `# Roadmap
+
+## [GSD.02] v2.0 — Expansion
+
+${BROKEN_HEADINGS.map(([, h]) => `${h}\n**Goal:** x\n`).join('\n')}
+### [GSD.02] 05: Real work
+**Goal:** ok
+`, convention: 'bracket', phaseDirs: ['GSD.02-05-real-work'] });
+    const r = runGsdTools(['validate', 'health'], tmpDir);
+    assert.ok(r.success, `validate health failed on the broken corpus: ${r.error}`);
+    assert.deepEqual(w021(), []);
+  });
+
+  test('a pathological unclosed bracket does not stall validate health', () => {
+    writeProject({ roadmap: `# Roadmap
+
+## [GSD.02] v2.0 — Expansion
+
+### [${'A'.repeat(4000)} 05: Attack
+**Goal:** a
+
+### [GSD.02] 05: Real work
+**Goal:** ok
+`, convention: 'bracket', phaseDirs: ['GSD.02-05-real-work'] });
+    const started = Date.now();
+    const r = runGsdTools(['validate', 'health'], tmpDir);
+    const ms = Date.now() - started;
+    assert.ok(r.success, `validate health failed: ${r.error}`);
+    assert.ok(ms < 20000, `validate health took ${ms}ms on a pathological bracket`);
+    assert.deepEqual(w021(), []);
+  });
+});
