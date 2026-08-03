@@ -3720,6 +3720,26 @@ describe('ADR-1016 phase 5a: validateArtifactLayout unit tests', () => {
     });
     assert.deepEqual(errors, []);
   });
+
+  test('#2777: home override is accepted globally and rejected locally', () => {
+    const entry = {
+      kind: 'skills',
+      destSubpath: 'skills',
+      prefix: 'gsd-',
+      nesting: 'flat',
+      recursive: false,
+      converter: null,
+      home: '.agents',
+    };
+
+    assert.deepEqual(validateArtifactLayout('test', { global: [entry], local: [] }), []);
+
+    const errors = validateArtifactLayout('test', { global: [], local: [entry] });
+    assert.ok(
+      errors.some((error) => error.includes('artifactLayout.local[0].home') && error.includes('project-scoped')),
+      'Expected local home override rejection, got: ' + JSON.stringify(errors),
+    );
+  });
 });
 
 // ── 24d-extra. FIX 3: tightened validateRuntimeBody / validateConfigHome ──────

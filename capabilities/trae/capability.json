@@ -86,7 +86,8 @@
     },
     "hostBehaviors": {
       "skipSharedHooksInstall": true,
-      "soloStageMetadata": "workflow"
+      "soloStageMetadata": "workflow",
+      "projectInstructionFile": ".trae/rules/rules.md"
     }
   }
 }

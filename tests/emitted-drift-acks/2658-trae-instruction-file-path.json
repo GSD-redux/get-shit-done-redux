@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-core/references/checkpoints.md": "#2658: mentions CLAUDE.md in prose. convertClaudeToTraeMarkdown's CLAUDE.md replacement target changed from the bare directory '.trae/rules/' to the concrete file '.trae/rules/rules.md' for every CLAUDE.md mention (bare, ./-prefixed, backtick-wrapped, and the buggy .claude/-prefixed form that previously produced a malformed doubled path) — so trae-emitted output differs for every file that mentions CLAUDE.md, not only the ones that hit the reported bug. Content is otherwise byte-identical.",
+    "gsd-core/references/debugger-bug-taxonomy.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/references/debugger-fix-acceptance.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/references/debugger-repro-hardening.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/references/debugger-sbfl.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/references/git-integration.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/references/planner-human-verify-mode.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/templates/README.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/templates/claude-md.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/templates/codebase/structure.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/execute-phase.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/execute-plan.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/help/modes/full.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/milestone-summary.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/plan-phase.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/profile-user.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/progress.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/quick.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/sketch-wrap-up.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/spike-wrap-up.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "gsd-core/workflows/update.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
+    "skills/gsd-ns-project/skills/profile-user/SKILL.md": "#2658: derived (via commands/gsd/profile-user.md, which mentions CLAUDE.md) through convertClaudeToTraeMarkdown; same replacement-target change as checkpoints.md above.",
+    "skills/gsd-ns-review/skills/code-review/SKILL.md": "#2658: derived (via commands/gsd/code-review.md, which mentions CLAUDE.md) through convertClaudeToTraeMarkdown; same replacement-target change as checkpoints.md above.",
+    "ingest-docs.md": "#2658: runtime-detection block gained a `/.trae/` path-based line and a `TRAE_CONFIG_DIR` env-var fallback line (the same trae-detection gap found in new-project.md, fixed here too since it is the identical defect in a sibling workflow).",
+    "new-project.md": "#2658: runtime-detection block gained a `/.trae/` path-based line and a `TRAE_CONFIG_DIR` env-var fallback line, so trae resolves to RUNTIME=trae instead of falling through to the claude default."
+  }
+}

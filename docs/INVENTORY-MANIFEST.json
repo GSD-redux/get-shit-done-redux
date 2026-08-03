@@ -440,6 +440,7 @@
       "runtime-slash.cjs",
       "schema-detect.cjs",
       "secrets.cjs",
+      "section-manifest.cjs",
       "security.cjs",
       "semver-compare.cjs",
       "shell-command-projection.cjs",

@@ -374,7 +374,7 @@ Output: [Artifacts created]
 |-----------|----------|-----------|----------|-------------|-----------------|
 | T-{phase}-01 | {S/T/R/I/D/E} | {function/endpoint/file} | {critical\|high\|medium\|low} | mitigate | {specific mitigation action} |
 | T-{phase}-02 | {category} | {component} | low | accept | {rationale for acceptance} |
-| T-{phase}-SC | Tampering | npm/pip/cargo installs | high | mitigate | slopcheck + blocking human checkpoint for [ASSUMED]/[SUS] |
+| T-{phase}-SC | Tampering | npm/pip/cargo installs | high | mitigate | package-legitimacy gate + blocking human checkpoint for [ASSUMED]/[SUS] |
 </threat_model>
 
 <verification>
@@ -869,18 +869,15 @@ Include all frontmatter fields.
 </step>
 
 <step name="validate_plan">
-Validate each created PLAN.md using `gsd-tools query`:
+`$SCHEMA`: `plan-gap-closure` in gap_closure mode, else `plan`. `gap_closure` must be literal lowercase `true`.
 
 ```bash
-VALID=$(gsd_run query frontmatter.validate "$PLAN_PATH" --schema plan)
+VALID=$(gsd_run query frontmatter.validate "$PLAN_PATH" --schema "$SCHEMA")
 ```
 
-Returns JSON: `{ valid, missing, present, schema }`
+Returns JSON: `{ valid, missing, present, invalidValue, schema }`
 
-**If `valid=false`:** Fix missing required fields before proceeding.
-
-Required plan frontmatter fields:
-- `phase`, `plan`, `type`, `wave`, `depends_on`, `files_modified`, `autonomous`, `must_haves`
+**If `valid=false`:** `missing` = absent fields, `invalidValue` = present but wrong-valued. Fix either before proceeding.
 
 Also validate plan structure:
 

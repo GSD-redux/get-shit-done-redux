@@ -185,7 +185,7 @@ v1.40 中，六个命名空间路由器作为第一阶段入口点随附发布�
 - 加 `--view`：将现有 RESEARCH.md 打印到标准输出，不生成新报告。RESEARCH.md 不存在时报错。
 
 **包合法性检查门（v1.42.1）：**
-当研究者推荐外部包时，会对每个包运行 `slopcheck install <pkg> --json` 并在 RESEARCH.md 中写入 `## Package Legitimacy Audit` 表格，记录注册表、年龄、下载量、源码仓库和 slopcheck 裁决。裁决结果：
+当研究者推荐外部包时，会对每个包运行 `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates> <pkg>` 并在 RESEARCH.md 中写入 `## Package Legitimacy Audit` 表格，记录注册表、年龄、下载量、源码仓库和合法性裁决。裁决结果：
 
 - `[SLOP]` — 包从 RESEARCH.md 中完全移除，永远不会进入规划器
 - `[SUS]` — 包被标记；规划器在安装任务前插入 `checkpoint:human-verify`
