@@ -12,8 +12,9 @@
  * already descriptor-driven except for two residual `isCodebuddy` branches
  * in bin/install.js:
  *   1. a duplicate `commands/` slash-command output report (byte-identical
- *      to the generic `hostBehaviors.reportCommandsDir` block already used
- *      by Cursor) — folded onto `hostBehaviors.reportCommandsDir` and deleted.
+ *      to the generic `hostBehaviors.reportCommandsDir` block) — folded onto
+ *      `hostBehaviors.reportCommandsDir` and deleted. Cursor retired that
+ *      parallel commands surface later in #2644.
  *   2. a dead legacy agent-converter dispatch arm in the inline agent-copy
  *      loop, unreachable because codebuddy is a member of
  *      `_DESCRIPTOR_AGENTS_RUNTIMES` (installRuntimeArtifacts already wrote

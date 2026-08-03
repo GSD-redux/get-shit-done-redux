@@ -707,7 +707,6 @@ const VALID_CONVERTER_NAMES = new Set([
   'convertClaudeCommandToCodebuddySkill',
   'convertClaudeCommandToCodexSkill',
   'convertClaudeCommandToCopilotSkill',
-  'convertClaudeCommandToCursorCommand',
   'convertClaudeCommandToCursorSkill',
   'convertClaudeCommandToKiloSkill',
   'convertClaudeCommandToKimiSkill',
