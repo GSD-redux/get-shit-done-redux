@@ -167,7 +167,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pur
     );
   });
 
-  test('a malformed threshold_minutes value degrades to the safe default instead of crashing the watcher', () => {
+  test('a malformed threshold_minutes value degrades to the safe default instead of crashing the watcher', (t) => {
     // A security review initially flagged this as a command-injection path
     // (bash arithmetic recursively re-evaluating a `$(cmd)`-shaped string).
     // Empirically disproven: bash's arithmetic evaluator hard-errors on such
@@ -181,17 +181,14 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pur
     // degrades to a safe default instead of erroring.
     const marker = `gsd-2650-untouched-${process.pid}-${Date.now()}`;
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-malformed-'));
-    try {
-      const payload = `$(touch ${path.join(tmp, marker)})`;
-      const result = runShouldRecover(helpersBash, 0, payload, 'false', 'false');
-      // Must not error (proves the guard prevents the bash-abort), must not
-      // have run the embedded command either way, and must fall back to the
-      // safe default classification (threshold_minutes -> 10 -> elapsed 0 < 600 -> waiting).
-      assert.equal(result, 'waiting');
-      assert.equal(fs.existsSync(path.join(tmp, marker)), false, 'payload must not execute (also true without the guard — bash hard-errors on it instead)');
-    } finally {
-      cleanup(tmp);
-    }
+    t.after(() => cleanup(tmp));
+    const payload = `$(touch ${path.join(tmp, marker)})`;
+    const result = runShouldRecover(helpersBash, 0, payload, 'false', 'false');
+    // Must not error (proves the guard prevents the bash-abort), must not
+    // have run the embedded command either way, and must fall back to the
+    // safe default classification (threshold_minutes -> 10 -> elapsed 0 < 600 -> waiting).
+    assert.equal(result, 'waiting');
+    assert.equal(fs.existsSync(path.join(tmp, marker)), false, 'payload must not execute (also true without the guard — bash hard-errors on it instead)');
   });
 });
 
@@ -319,6 +316,7 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'standard planner spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'standard planner spawn must invoke the bounded stall watcher');
+    assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'standard planner spawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
   });
 
   test('chunked outline spawn (8.5.1) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
@@ -328,6 +326,7 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'chunked outline spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'chunked outline spawn must invoke the bounded stall watcher');
+    assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'chunked outline spawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
   });
 
   test('chunked per-plan spawn (8.5.2) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
@@ -337,6 +336,7 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'chunked per-plan spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'chunked per-plan spawn must invoke the bounded stall watcher');
+    assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'chunked per-plan spawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
   });
 
   test('plan-checker spawn (step 10) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
@@ -346,6 +346,7 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'plan-checker spawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'plan-checker spawn must invoke the bounded stall watcher');
+    assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'plan-checker spawn must bind {outputFile} into the stall watcher call — this is the ONLY completion signal on a clean PASS, since a passing checker touches no *-PLAN.md files');
   });
 
   test('revision-loop planner respawn (step 12) dispatches with run_in_background=true and calls gsd_stall_watch', () => {
@@ -355,6 +356,45 @@ describe('bug #2650 plan-phase — all five planner/plan-checker spawns dispatch
     const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
     assert.match(section, /run_in_background\s*=\s*true/, 'revision-loop planner respawn must set run_in_background=true');
     assert.match(section, /gsd_stall_watch/, 'revision-loop planner respawn must invoke the bounded stall watcher');
+    assert.match(section, /gsd_stall_watch\s+"\$TS"\s+"\{outputFile\}"/, 'revision-loop planner respawn must bind {outputFile} into the stall watcher call, not a dead bash variable');
+  });
+
+  test('no spawn site references an unbound $PLANNER_OUTPUT_FILE / $CHECKER_OUTPUT_FILE bash variable', () => {
+    // Regression for the blocker an independent review found: the original
+    // design named PLANNER_OUTPUT_FILE/CHECKER_OUTPUT_FILE as bash variables
+    // in the gsd_stall_watch calls, but nothing in plan-phase.md ever ASSIGNED
+    // them — with the variable permanently empty, `[ -f "$output_file" ]` is
+    // always false, marker_found can never become true, and marker_received is
+    // unreachable. Worse for the plan-checker spawn specifically: a checker
+    // that PASSES touches no *-PLAN.md files, so it has NO working completion
+    // signal at all without the marker path — a healthy, already-succeeded
+    // checker would be reported as stalled. The fix replaces the dead bash
+    // variable with the `{outputFile}` orchestrator-substitution token (the
+    // same convention docs-update.md:471 already uses for a real
+    // run_in_background=true Agent() return). This test proves the dead
+    // variable name is gone from every spawn site, not just that
+    // gsd_stall_watch behaves correctly when handed a valid argument
+    // (tests/fix-2650-plan-phase-stall-detection.test.cjs's gsd_stall_watch
+    // describe block below already covers that half — this covers the
+    // production wiring the previous tests never exercised).
+    assert.doesNotMatch(workflow, /\$PLANNER_OUTPUT_FILE\b/, 'plan-phase.md must not reference an unassigned $PLANNER_OUTPUT_FILE bash variable');
+    assert.doesNotMatch(workflow, /\$CHECKER_OUTPUT_FILE\b/, 'plan-phase.md must not reference an unassigned $CHECKER_OUTPUT_FILE bash variable');
+  });
+
+  test('step 7.99 documents that {outputFile} must be bound from the real Agent() return (not passed literally)', () => {
+    const idx = workflow.indexOf('## 7.99. Bounded Stall-Detection Helpers');
+    assert.notEqual(idx, -1);
+    const nextSectionIdx = workflow.indexOf('## 8. Spawn gsd-planner Agent', idx);
+    const section = workflow.slice(idx, nextSectionIdx === -1 ? undefined : nextSectionIdx);
+    assert.match(section, /\{outputFile\}/, 'step 7.99 must mention {outputFile} so a reader knows it is a binding token, not literal text');
+    // The full binding contract (docs-update.md precedent, why a bash variable
+    // does not work, and the plan-checker completion-signal implication) lives
+    // in the lazily-loaded reference file to stay under the PRE_PHASE6 cap —
+    // verify it is actually there, not just gestured at.
+    const helpersDoc = readStallHelpersDoc();
+    assert.match(helpersDoc, /\{outputFile\}/, 'stall-detection-helpers.md must explain the {outputFile} binding contract');
+    assert.match(helpersDoc, /docs-update\.md/i, 'stall-detection-helpers.md must cite the docs-update.md precedent for {outputFile} substitution');
+    assert.match(helpersDoc, /plan-checker/i, 'stall-detection-helpers.md must explain why binding {outputFile} is load-bearing for the plan-checker spawn specifically');
   });
 
   test('stall surveillance is not gated behind the teams-status guard (AC2)', () => {

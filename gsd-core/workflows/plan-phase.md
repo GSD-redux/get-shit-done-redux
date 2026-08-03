@@ -721,7 +721,8 @@ prohibition recall in the planner). Pass `$COVERAGE` and `$SPECLESS_FALLBACK_DIS
 ## 7.99. Bounded Stall-Detection Helpers (#2650)
 
 Read+execute `gsd-core/workflows/plan-phase/steps/stall-detection-helpers.md` (defines
-`gsd_stall_should_recover`/`gsd_stall_watch`; independent of the teams-status guard above, AC2).
+`gsd_stall_should_recover`/`gsd_stall_watch`, and how `{outputFile}` below is bound;
+independent of the teams-status guard above, AC2).
 
 ## 8. Spawn gsd-planner Agent
 
@@ -891,7 +892,7 @@ Agent(
 )
 ```
 
-**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md' "## PLANNING COMPLETE" "## PHASE SPLIT RECOMMENDED" "## ⚠ Source Audit" "## CHECKPOINT REACHED" "## PLANNING INCONCLUSIVE")` while waiting/active — `marker_received` -> step 9; `stalled` -> 9a.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md' "## PLANNING COMPLETE" "## PHASE SPLIT RECOMMENDED" "## ⚠ Source Audit" "## CHECKPOINT REACHED" "## PLANNING INCONCLUSIVE")` while waiting/active — `marker_received` -> step 9; `stalled` -> 9a.
 
 **If `CHUNKED_MODE` is `true`:** Skip the Agent() call above — proceed to step 8.5 instead.
 
@@ -947,7 +948,7 @@ Agent(
 )
 ```
 
-**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "$OUTLINE_FILE" "## OUTLINE COMPLETE")` while waiting/active.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "$OUTLINE_FILE" "## OUTLINE COMPLETE")` while waiting/active.
 
 Handle return:
 - **`marker_received`:** Read `PLAN-OUTLINE.md`, extract plan list. Continue to 8.5.2.
@@ -992,7 +993,7 @@ For each plan entry extracted from `PLAN-OUTLINE.md`:
    )
    ```
 
-   **ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "$PLAN_FILE" "## PLAN COMPLETE")` while waiting/active — `stalled` falls into step 4 (preserves prior committed chunks).
+   **ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "$PLAN_FILE" "## PLAN COMPLETE")` while waiting/active — `stalled` falls into step 4 (preserves prior committed chunks).
 
 4. **Verify disk:** Check `${PHASE_DIR}/{plan_id}-PLAN.md` exists. If missing: offer 1) Retry, 2) Stop.
 
@@ -1159,7 +1160,7 @@ Agent(
 )
 ```
 
-**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `CHECKER_STALL_RESULT=$(gsd_stall_watch "$TS" "$CHECKER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md' "## VERIFICATION PASSED" "## ISSUES FOUND")` while waiting/active.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** `TS=$(date +%s)`; repeat `CHECKER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md' "## VERIFICATION PASSED" "## ISSUES FOUND")` while waiting/active.
 
 ## 11. Handle Checker Return
 
@@ -1276,7 +1277,7 @@ Agent(
 )
 ```
 
-**ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "$PLANNER_OUTPUT_FILE" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
+**ORCHESTRATOR RULE — ALL RUNTIMES:** (7.99; no marker, mtimes only) `TS=$(date +%s)`; repeat `PLANNER_STALL_RESULT=$(gsd_stall_watch "$TS" "{outputFile}" "${PHASE_DIR}"'/*-PLAN.md')` while waiting/active — `stalled` -> 1) Accept as revised, to step 13, 2) Retry, 3) Stop.
 
 After planner returns -> spawn checker again (step 10), increment iteration_count.
 

@@ -11,6 +11,32 @@ issued as its own tool call, so it returns control to the orchestrator on
 its own schedule regardless of whether the backgrounded agent's own
 completion notification ever arrives.
 
+**Binding `{outputFile}` (load-bearing, not optional):** every `gsd_stall_watch`
+call below takes `{outputFile}` as its second argument — a literal token the
+orchestrator must substitute with the REAL path from the immediately preceding
+`run_in_background=true` Agent() call's returned `async_launched` result,
+exactly as `docs-update.md:471` already does ("Read tool: file_path: `{outputFile
+from README agent result}`"). This is NOT a bash variable the snippet below
+assigns — there is nothing upstream that assigns one, so a bash variable
+reference here would silently stay empty forever. With `{outputFile}` correctly
+substituted, `[ -f "$output_file" ]` can find the real file and the
+`marker_received` path is reachable; left as a literal (or as an unbound bash
+variable), `marker_found` can never become `true` and every spawn silently
+falls back to the mtime-only path — for the plan-checker spawn specifically,
+that fallback is broken (see next paragraph), so binding this correctly there
+is not a nice-to-have.
+
+**Plan-checker's artifact glob needs the marker, not just mtimes:** the
+plan-checker spawn watches `*-PLAN.md` for freshness, but a checker that
+PASSES touches none of those files — no fresh mtime, ever, on a clean run.
+Without `{outputFile}` correctly bound to the real completion output, a
+healthy plan-checker that returns `## VERIFICATION PASSED` in two minutes
+would still be declared `stalled` once `planner.stall_threshold_minutes`
+elapses — reporting a succeeded agent as hung, which is worse than the
+original unbounded wait. The marker path (via `{outputFile}`) is the ONLY
+working completion signal for that spawn; the artifact glob is secondary
+there.
+
 **Single-cycle by design, not one long-lived loop:** `gsd_stall_watch` sleeps
 for exactly one `PLANNER_STALL_INTERVAL_MINUTES` and returns — it does NOT
 loop internally for the full `PLANNER_STALL_THRESHOLD_MINUTES`. A single Bash
