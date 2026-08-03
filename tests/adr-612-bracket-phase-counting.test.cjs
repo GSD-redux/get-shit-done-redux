@@ -931,3 +931,114 @@ describe('#612 PR-2: extractCurrentMilestone never throws on a poisoned env', ()
     }
   });
 });
+
+// ─── CHARACTERIZATION: the version-less bracket milestone heading ───────────
+
+/**
+ * KNOWN DEFECT, pinned rather than fixed here. Every other bracket fixture in
+ * this repo writes its milestone heading as `## [GSD.02] v2.0: Current` — with a
+ * version. ADR-612's canonical form is a NAME and no version
+ * (`## [GSD.02] Foundation`), which `isMilestoneBounded`'s own doc comment in
+ * state.cts calls out as canonical, and on THAT form the disk-side filter does
+ * not scope: directories from BOTH the prior and the later milestone are
+ * admitted into the current one.
+ *
+ * Mechanism, in `extractCurrentMilestone` (roadmap-parser.cts):
+ *   - the bracket scope branch selects the right `currentSection`, but
+ *   - `preambleCutoff` is driven by `anyMilestonePattern`, which requires
+ *     `v\d+\.\d+` or a status emoji. A version-less roadmap matches none, so the
+ *     cutoff falls back to the CURRENT milestone's own offset and every PRIOR
+ *     milestone lands in the preamble — whose phase-stripping regex only strips
+ *     `Phase N:`-labelled headings, so bracket phase headings survive it; and
+ *   - `computeSectionEnd` accepts a boundary only if the heading carries a
+ *     version or emoji, so with none present the section runs to EOF and every
+ *     LATER milestone is swept in too.
+ *
+ * The leak is therefore bidirectional and has two sites. A gated fix is
+ * available — both sites take a `#{1,2}\s+\[CODE.MM\]` boundary when the bracket
+ * scope branch has fired; `#{1,2}` is the discriminator because bracket PHASE
+ * headings are `###` and carry the same `[CODE.MM]` prefix (a `#{1,3}` pattern
+ * matches both, which is why the scope branch's own matcher returns the phase
+ * headings as well). It is deliberately NOT applied in this commit: it changes
+ * milestone scoping, which is shared with the legacy path.
+ *
+ * These tests assert TODAY's reading. When the fix lands they must be inverted,
+ * not deleted — that inversion is the fix's regression proof.
+ */
+describe('#612 PR-2 CHARACTERIZATION: a version-less bracket milestone does not scope', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-versionless-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const VERSIONLESS = `# Roadmap
+
+## [GSD.01] Prior Milestone
+
+### [GSD.01] 01: Old one
+**Goal:** a
+
+## [GSD.02] Current Milestone
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.03] Later Milestone
+
+### [GSD.03] 01: Later one
+**Goal:** d
+`;
+  // Same roadmap, milestone headings carrying their version — the shape every
+  // other fixture in this file uses, and the control that proves the difference
+  // is the VERSION STRING and nothing else.
+  const VERSIONED = VERSIONLESS
+    .replace('## [GSD.01] Prior Milestone', '## [GSD.01] v1.0: Prior Milestone')
+    .replace('## [GSD.02] Current Milestone', '## [GSD.02] v2.0: Current Milestone')
+    .replace('## [GSD.03] Later Milestone', '## [GSD.03] v3.0: Later Milestone');
+
+  const DIRS = ['GSD.01-01-old-one', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later-one'];
+
+  const accepts = () => {
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    return Object.fromEntries(DIRS.map(d => [d, !!f(d)]));
+  };
+
+  test('CONTROL: with a version in the heading, scoping works in both directions', () => {
+    writeProject(VERSIONED, 'bracket', DIRS);
+    assert.deepEqual(accepts(), {
+      'GSD.01-01-old-one': false,
+      'GSD.02-01-one': true,
+      'GSD.02-02-two': true,
+      'GSD.03-01-later-one': false,
+    });
+  });
+
+  test('DEFECT: without a version, the PRIOR milestone leaks in (preambleCutoff)', () => {
+    writeProject(VERSIONLESS, 'bracket', DIRS);
+    assert.equal(accepts()['GSD.01-01-old-one'], true,
+      'pinning today\'s reading — invert this assertion when the scoping fix lands');
+  });
+
+  test('DEFECT: without a version, the LATER milestone leaks in (computeSectionEnd)', () => {
+    writeProject(VERSIONLESS, 'bracket', DIRS);
+    assert.equal(accepts()['GSD.03-01-later-one'], true,
+      'pinning today\'s reading — invert this assertion when the scoping fix lands');
+  });
+
+  test('DEFECT: total_phases counts the whole disk, not the asserted milestone', () => {
+    writeProject(VERSIONLESS, 'bracket', DIRS);
+    // 4 directories on disk, 2 phases in the milestone STATE.md asserts.
+    assert.equal(readTotal(), 4, 'pinning today\'s reading — the fix makes this 2');
+  });
+
+  test('the current milestone\'s own dirs are admitted either way (no under-count)', () => {
+    // The defect is over-inclusive, never under-inclusive: whatever else leaks,
+    // the milestone's real phases must always resolve.
+    writeProject(VERSIONLESS, 'bracket', DIRS);
+    const a = accepts();
+    assert.equal(a['GSD.02-01-one'], true);
+    assert.equal(a['GSD.02-02-two'], true);
+  });
+});
