@@ -185,13 +185,13 @@ GSD ワークスペースを管理 — リポジトリコピーと独立した `
 - `--view` 付き: 既存の RESEARCH.md を標準出力に表示し、起動なし。RESEARCH.md がない場合はエラー。
 
 **パッケージ正当性ゲート（v1.42.1）:**
-リサーチャーが外部パッケージを推奨する場合、各パッケージに対して `slopcheck install <pkg> --json` を実行し、Registry、Age、Downloads、Source Repo、および slopcheck の評決を記録した `## Package Legitimacy Audit` テーブルを RESEARCH.md に書き込みます。評決:
+リサーチャーが外部パッケージを推奨する場合、各パッケージに対して `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates> <pkg>` を実行し、Registry、Age、Downloads、Source Repo、および正当性評決を記録した `## Package Legitimacy Audit` テーブルを RESEARCH.md に書き込みます。評決はライブのレジストリ API（npm、PyPI、crates.io）から計算されます:
 
 - `[SLOP]` — パッケージは RESEARCH.md から完全に削除され、プランナーには届かない
 - `[SUS]` — パッケージにフラグが付けられ、プランナーはインストールタスクの前に `checkpoint:human-verify` を挿入
 - `[OK]` — パッケージが承認され、チェックポイントは追加されない
 
-WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` ではない）とタグ付けされ、`[SUS]` と同様に扱われます — インストール前に人間によるチェックポイントが設けられます。`slopcheck` がインストールできない場合、すべての推奨パッケージは `[ASSUMED]` とタグ付けされ、ゲートが設けられます。
+WebSearch から取得したパッケージは `[ASSUMED]`（`[VERIFIED]` ではない）とタグ付けされ、`[SUS]` と同様に扱われます — インストール前に人間によるチェックポイントが設けられます。レジストリルックアップが失敗した場合はスローせず `[SUS]` にデグレードされるため、サイレントに承認されることはありません。`slopcheck` はオプションのエスカレート専用アダプターであり、出荷される設定では配線されていません。ゲートの動作に必須ではありません。
 
 詳細については、[ユーザーガイドのパッケージ正当性ゲート](../USER-GUIDE.md#package-legitimacy-gate-v1421)（チェックポイント形式、評決テーブル、トラブルシューティングを含む）を参照してください。
 

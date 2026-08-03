@@ -9,9 +9,10 @@
 > questions 1 and 2).
 
 Workflow authors can mark one or more sections of a `gsd-core/workflows/*.md` file
-so that `bin/install.js`'s emission path can compose them per runtime. Today this
-is an authoring model with no run-time effect yet — see
-[Not acted on yet](#not-acted-on-yet) below.
+so that `bin/install.js`'s emission path can compose them per runtime, and so that
+a separate init-time seam can select which sections apply to one concrete
+invocation — see [The manifest artifact and per-workflow
+keying](#the-manifest-artifact-and-per-workflow-keying) below.
 
 ## Marker syntax
 
@@ -45,7 +46,8 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of:
+`when=` takes exactly one of 14 atoms (widened from 4 via the ADR-1671
+amendment for #2992, epic #1671 Phase 6.1):
 
 | Value | Meaning |
 |---|---|
@@ -53,12 +55,49 @@ gap fragment and composes back byte-identical to its source.
 | `flag:--wave` | Applicable when the workflow runs with `--wave`. |
 | `state:gap-closure-phase` | Applicable when the phase number is a gap-closure phase (has a decimal, e.g. `4.1`). |
 | `state:has-prior-phases` | Applicable when prior phases (and their `VERIFICATION.md` files) exist. |
+| `flag:--auto` | Applicable when the workflow runs with `--auto`. |
+| `flag:--discuss` | Applicable when the workflow runs with `--discuss`. |
+| `flag:--forensic` | Applicable when the workflow runs with `--forensic`. |
+| `flag:--full` | Applicable when the workflow runs with `--full`. |
+| `flag:--research` | Applicable when the workflow runs with `--research`. |
+| `flag:--reset-phase-numbers` | Applicable when the workflow runs with `--reset-phase-numbers`. |
+| `flag:--validate` | Applicable when the workflow runs with `--validate`. |
+| `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
+| `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
+| `state:worktrees-enabled` | Applicable when `.planning/config.json`'s `workflow.use_worktrees` is enabled. |
 
 This list is **closed by design** (Greenspun's Tenth Rule): left open-ended,
 `when=` would acquire boolean operators, negation, precedence, and
 runtime/capability predicates one edit at a time, becoming an ad-hoc,
 informally-specified applicability language. Widening the vocabulary is a
-coordinated ADR amendment to ADR-1671, never an organic edit to the parser.
+coordinated ADR amendment to ADR-1671, never an organic edit to the parser —
+`when=` remains exactly one atom per marker: no operators, no negation, no
+nesting, regardless of how many atoms the frozen list holds. An unknown value
+still throws (see [Fails closed](#fails-closed)).
+
+An atom only ships once it clears **two independent admission gates**, both
+required:
+
+1. **A named consuming section.** Some workflow's marked section actually
+   needs the condition — an atom with no section that uses it is dead
+   vocabulary, and dead vocabulary is how a closed list rots into an open
+   one.
+2. **A fact the init seam can actually compute.** Only a workflow with a
+   dedicated `cmdInit*` entry point (see [The manifest
+   artifact](#the-manifest-artifact-and-per-workflow-keying) below) can carry
+   a manifest, and only a condition that entry point can resolve at init time
+   — from parsed CLI options or from `.planning/` state — may become an atom.
+   An atom without a computable fact would always evaluate `false`, so a
+   section marked with it would silently never include: the exact
+   silent-wrong-answer class this gate exists to prevent.
+
+Six further atoms (`flag:--converge`, `flag:--fix`, `flag:--verify-only`,
+`state:fallow-enabled`, `state:git-create-tag`, `state:is-monorepo`) satisfy
+gate 1 but not yet gate 2 — their workflows (`autonomous`, `code-review`,
+`complete-milestone`, `docs-update`) route through shared generic init entry
+points invoked by 20+ other workflows, so a dedicated `cmdInit*` seam does
+not yet exist to compute their facts. They are withheld pending that seam,
+not rejected.
 
 ## Fails closed
 
@@ -119,13 +158,61 @@ The pre-existing `<!-- gsd:loop-host ... -->` marker family (consumed by
 `scripts/gen-loop-host-contract.cjs`) is a different, already-established
 marker and is never treated as a `gsd:section` marker.
 
-## Not acted on yet
+## The manifest artifact and per-workflow keying
 
-`when=` is parsed and validated today, but applicability selection — actually
-choosing which sections apply to a given invocation — is not implemented in
-this phase. Every fragment composes into the output regardless of its `when=`
-value; only the marker lines are stripped. Run-time selection is planned for
-a later phase of ADR-1671's epic.
+`bin/install.js`'s emission path always composes every fragment into the
+output regardless of its `when=` value — marker lines are stripped, nothing
+else changes there. Applicability selection is a separate, later seam:
+`scripts/gen-section-manifest.cjs --write` scans `gsd-core/workflows/*.md` for
+`gsd:section` markers and generates a committed artifact,
+`gsd-core/workflows/section-manifest.json`, shaped as
+`{"workflows": {"<workflow-name>": [{"id", "when", "read"}, ...], ...}}`,
+where `<workflow-name>` is a source `.md` file's basename without extension
+and `read` is the POSIX-normalized, repo-root-relative path of the step file
+the section body was extracted to. This is a per-workflow superset of the
+pre-#2992 shape, which was a single flat `{"sections": [...]}` array with no
+workflow key — that shape is now rejected outright rather than mis-parsed, so
+a stale committed artifact can never be silently attributed to whichever
+workflow asks first.
+
+A workflow key's **presence vs. absence is meaningful, not cosmetic**:
+
+- The key is **absent** when the workflow has zero marked sections. A caller
+  for that workflow must treat this as degraded/unknown (`null`) — safe
+  superset, read everything.
+- The key is **present with an empty array** when the workflow's sections
+  were evaluated and none applied to this invocation — genuinely nothing to
+  read, not "unknown."
+
+Collapsing these two states inverts behavior on the degraded path: `null`
+means "I don't know, so include everything"; `[]` means "I computed this,
+and the answer is nothing."
+
+At init time, a separate pure evaluator, `src/section-manifest.cts`
+(`selectSections`), partitions a workflow's manifest sections into
+`included`/`excluded` id lists against one invocation's
+`InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
+phaseMvpMode?, worktreesEnabled?}`. Only a workflow with a **dedicated
+`cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
+it, because only that entry point can assemble `InvocationFacts` from its own
+parsed CLI options and `.planning/` state reads — this is admission gate 2
+from [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above,
+applied per-workflow rather than per-atom. Six entry points are wired today:
+`execute-phase`, `plan-phase`, `new-project`, `new-milestone`, `quick`, and
+`progress`.
+
+`InvocationFacts.flags` is a `ReadonlySet<string>` of the literal `--<name>`
+tokens seen on the invocation, and **membership is token-presence, not
+value-truthiness**. This matters because `parseNamedArgs`'s `booleanFlags`
+always materializes the key in its result object — `true` when the token was
+seen, `false` otherwise, never `undefined`. A caller that passed a
+boolean-flag's own `false` straight through as an "option value" would add it
+to `flags` anyway (any non-`undefined` value counts as present for a
+*value* flag), making that `flag:` atom permanently true regardless of the
+actual command line — the fix is that every boolean-flag call site folds its
+own `false` into `undefined` (`namedArgs['wave'] || undefined`) before
+handing options to the facts builder, so `flags` only ever contains tokens
+that were actually seen.
 
 ## Piloted on one workflow so far
 
@@ -173,3 +260,9 @@ for how both limits get addressed.
 - `src/workflow-fragments.cts` — the compiled parser/composer source.
 - `src/context-composer.cts` — the shared budget-composition seam consumed by
   `composeWorkflow`.
+- `src/section-manifest.cts` — the pure `when=` evaluator (`selectSections`,
+  `InvocationFacts`) consumed by the init seam.
+- `scripts/gen-section-manifest.cjs` — generates the committed
+  `gsd-core/workflows/section-manifest.json` artifact from markers.
+- `src/init.cts` — `buildSectionManifestField` and the six wired
+  `cmdInit*` entry points.

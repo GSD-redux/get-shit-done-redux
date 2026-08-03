@@ -450,4 +450,38 @@ function resetRuntimeWarningCaches() {
   modelResolver._resetModelOverrideWarningCacheForTests();
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, TOOLS_PATH };
+/**
+ * Env vars that influence workstream-session identity (getWorkstreamSessionKey
+ * in active-workstream-store.cjs) or workstream/project resolution (planningDir).
+ * Single source of truth for tests that need a deterministic, session-key-free
+ * and workstream/project-free process.env — save/clear before, restore after.
+ * Union of the sets previously hand-duplicated in
+ * tests/active-workstream-store.unit.test.cjs and tests/gsd-statusline.test.cjs
+ * (#2850 code review finding: the two copies had already silently diverged).
+ */
+const SESSION_ENV_KEYS = [
+  'GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SSE_PORT',
+  'OPENCODE_SESSION_ID', 'GEMINI_SESSION_ID', 'CURSOR_SESSION_ID', 'WINDSURF_SESSION_ID',
+  'TERM_SESSION_ID', 'WT_SESSION', 'TMUX_PANE', 'ZELLIJ_SESSION_NAME',
+  'TTY', 'SSH_TTY', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'GSD_WORKSTREAM', 'GSD_PROJECT',
+];
+
+function saveSessionEnv() {
+  const saved = {};
+  for (const k of SESSION_ENV_KEYS) saved[k] = process.env[k];
+  return saved;
+}
+
+function restoreSessionEnv(saved) {
+  for (const k of SESSION_ENV_KEYS) {
+    if (saved[k] === undefined) delete process.env[k];
+    else process.env[k] = saved[k];
+  }
+}
+
+function clearSessionEnv() {
+  for (const k of SESSION_ENV_KEYS) delete process.env[k];
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };

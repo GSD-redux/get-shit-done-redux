@@ -413,7 +413,7 @@ ui-phase → UI-SPEC.md (디자인 계약, 선택적)
 plan-phase
     ├── 리서치 게이트 (RESEARCH.md에 미해결 공개 질문이 있으면 차단)
     ├── 단계 리서처 → RESEARCH.md
-    │       └── 패키지 적법성 게이트: 모든 패키지에 slopcheck; [SLOP] 제거,
+    │       └── 패키지 적법성 게이트: 모든 패키지에 대한 레지스트리 API 판정; [SLOP] 제거,
     │           [SUS]/[ASSUMED] 플래그; 감사 테이블을 RESEARCH.md에 작성
     ├── 플래너 (도달 가능성 검사 포함) → PLAN.md 파일
     │       └── [ASSUMED]/[SUS] 설치 전에 checkpoint:human-verify 삽입;
@@ -656,7 +656,7 @@ UI-SPEC.md (단계별) ───────────────────
 
 | 계층 | 컴포넌트 | 동작 |
 |-------|-----------|--------|
-| 리서치 | `gsd-phase-researcher` | `slopcheck install <pkgs> --json` 실행; `## Package Legitimacy Audit` 테이블을 RESEARCH.md에 작성; RESEARCH.md가 작성되기 전에 `[SLOP]` 패키지 제거 |
+| 리서치 | `gsd-phase-researcher` | `gsd-tools query package-legitimacy check --ecosystem <npm\|pypi\|crates> <pkgs>` 실행; `## Package Legitimacy Audit` 테이블을 RESEARCH.md에 작성; RESEARCH.md가 작성되기 전에 `[SLOP]` 패키지 제거 |
 | 계획 | `gsd-planner` | 감사 테이블 읽기; `[ASSUMED]` 또는 `[SUS]` 설치 작업 전에 `checkpoint:human-verify` 삽입; `<threat_model>`에 `T-{phase}-SC` STRIDE 공급망 행 추가 |
 | 실행 | `gsd-executor` | RULE 3은 패키지 설치를 자동 수정 범위에서 제외; 실패한 설치는 체크포인트로 표시되며 절대 자동 대체하지 않음 |
 
