@@ -25,7 +25,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
+// #2932: the regression-gate step was split — steps/regression-gate.md now only
+// discovers prior-phase test files and delegates (via "Read and execute") to
+// steps/regression-gate-run.md, which carries the actual command resolution,
+// normalize-test-command call, timeout bound, and watch-mode abort mechanics.
 const REGRESSION_GATE = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'regression-gate.md');
+const REGRESSION_GATE_RUN = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'regression-gate-run.md');
 const POST_MERGE_GATE = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase', 'steps', 'post-merge-gate.md');
 const AUDIT_FIX = path.join(ROOT, 'gsd-core', 'workflows', 'audit-fix.md');
 const VERIFY_PHASE = path.join(ROOT, 'gsd-core', 'workflows', 'verify-phase.md');
@@ -34,8 +39,9 @@ const EXECUTE_PHASE = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md
 function read(p) { return fs.readFileSync(p, 'utf-8'); }
 
 // The three gates that were unbounded/silently-continued: full normalize + configured timeout.
+// Regression gate's mechanics now live in the delegated regression-gate-run.md (#2932).
 const FULL_GATES = [
-  ['regression gate', REGRESSION_GATE],
+  ['regression gate', REGRESSION_GATE_RUN],
   ['post-merge gate', POST_MERGE_GATE],
   ['audit-fix gate', AUDIT_FIX],
 ];
@@ -86,7 +92,7 @@ describe('#1857: test gates normalize to one-shot and bound with a timeout', () 
   test('the gates share ONE normalizer — the helper is a single source of truth', () => {
     // The behaviour lives in src/normalize-test-command.cts; every gate invokes it
     // by the same verb name, so a change to watch-defeat logic touches one place.
-    for (const file of [REGRESSION_GATE, POST_MERGE_GATE, AUDIT_FIX, VERIFY_PHASE]) {
+    for (const file of [REGRESSION_GATE_RUN, POST_MERGE_GATE, AUDIT_FIX, VERIFY_PHASE]) {
       assert.match(read(file), /gsd_run query normalize-test-command/);
     }
   });
@@ -109,7 +115,7 @@ describe('#2350: every gate resolves build/test commands with --raw', () => {
   // build a shell command it then runs. Add new gates here as they appear.
   const GATE_FILES = [
     ['post-merge gate', POST_MERGE_GATE],
-    ['regression gate', REGRESSION_GATE],
+    ['regression gate', REGRESSION_GATE_RUN],
     ['verify-phase gate', VERIFY_PHASE],
     ['audit-fix gate', AUDIT_FIX],
   ];
