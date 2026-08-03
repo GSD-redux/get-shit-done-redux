@@ -41,7 +41,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const fc = require('fast-check');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const PLAN_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'plan-phase.md');
@@ -50,11 +50,11 @@ const CONFIG_SCHEMA_MANIFEST_PATH = path.join(REPO_ROOT, 'gsd-core', 'bin', 'sha
 const CONFIGURATION_DOCS_PATH = path.join(REPO_ROOT, 'docs', 'CONFIGURATION.md');
 
 function readPlanPhase() {
-  return fs.readFileSync(PLAN_PHASE_PATH, 'utf-8');
+  return readFileNormalized(PLAN_PHASE_PATH);
 }
 
 function readStallHelpersDoc() {
-  return fs.readFileSync(STALL_HELPERS_PATH, 'utf-8');
+  return readFileNormalized(STALL_HELPERS_PATH);
 }
 
 /**
@@ -95,6 +95,14 @@ function extractStallHelpersBash() {
   if (!body.includes('gsd_stall_watch')) {
     throw new Error('extractStallHelpersBash: sanity check failed — extracted block does not also define gsd_stall_watch');
   }
+  // No CRLF normalization needed here: readStallHelpersDoc() reads through
+  // helpers.cjs's readFileNormalized(), which strips \r\n -> \n at the read
+  // boundary, before any slicing above runs. On a Windows checkout, an
+  // un-normalized read would leave every extracted line carrying a trailing
+  // \r; bash then treats that \r as part of the token, an opening quote never
+  // finds its match, and the parser dies with "unexpected EOF while looking
+  // for matching `"'" partway through the script (#2650 Windows CI — this is
+  // the repo's recurring CRLF-in-extracted-source defect class, see #1700).
   return body;
 }
 

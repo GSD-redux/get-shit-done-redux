@@ -32,6 +32,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
+const { readFileNormalized } = require('./helpers.cjs');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'plan-review-convergence.md');
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-review-convergence.md');
@@ -256,7 +257,15 @@ describe('plan-review-convergence: --agy/--antigravity reviewer whitelist (#2293
 // ─── #2315: bare invocation respects review.default_reviewers ──────────────
 
 describe('plan-review-convergence: #2315 respects review.default_reviewers (no-flag default)', () => {
-  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  // readFileNormalized() strips \r\n -> \n before the two behavioral tests
+  // below slice a bash block out of `workflow` and hand it to
+  // execFileSync('bash', ...) — an un-normalized read on a Windows checkout
+  // would break bash mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE,
+  // #2650). Those two tests already skip on win32 for an unrelated POSIX-
+  // shell-extraction reason, but `workflow` is shared with non-skipped
+  // structural assertions in this same describe block, so normalizing here
+  // is the single correct fix rather than a per-test patch.
+  const workflow = readFileNormalized(WORKFLOW_PATH);
   const command = fs.readFileSync(COMMAND_PATH, 'utf8');
   const SKILL_PATH = path.join(__dirname, '..', 'skills', 'gsd-plan-review-convergence', 'SKILL.md');
   const skill = fs.readFileSync(SKILL_PATH, 'utf8');

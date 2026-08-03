@@ -155,6 +155,38 @@ function cleanup(tmpDir) {
 }
 
 /**
+ * Read a text file with CRLF normalized to LF.
+ *
+ * DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE (CONTEXT.md; recurring since #1700):
+ * a test that reads a workflow/agent/reference `.md` file, slices or
+ * regex-matches a fenced code block out of it, and hands that block to
+ * `spawnSync('bash', ...)` breaks on a Windows checkout — `.gitattributes`
+ * `eol=lf` is not always honored by `actions/checkout` on `windows-latest`,
+ * so `readFileSync` can return `\r\n` line endings. Bash then treats the
+ * trailing `\r` on every line as part of the token; an opening quote never
+ * finds its match and the parser dies mid-script with "unexpected EOF while
+ * looking for matching `"'" or a bare syntax error at the next `{`/`)`.
+ *
+ * `.split(/\r?\n/)` on the FENCE DELIMITER alone does not fix this — it only
+ * protects the boundary match, not the captured body between the fences,
+ * which still carries embedded `\r` characters (the exact bug #2650's
+ * verification round found in tests/fix-2650-plan-phase-stall-detection.test.cjs,
+ * despite that file's fence regex already using `\r?\n`).
+ *
+ * Normalizing ONCE at the read boundary, before any slicing/regex/fence
+ * parsing runs, is cheaper and safer than normalizing at each extraction
+ * call site: every downstream `indexOf`/`slice`/regex/`spawnSync` then
+ * operates on LF-only content by construction, and a new `.md`-extraction
+ * test is correct by default just by reading through this helper.
+ *
+ * @param {string} filePath - Absolute or relative path to a text file.
+ * @returns {string} File content with every `\r\n` replaced by `\n`.
+ */
+function readFileNormalized(filePath) {
+  return fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
+}
+
+/**
  * Parse a Markdown frontmatter block into a flat key→value map.
  *
  * Handles the YAML scalar forms emitted by the install converters:
@@ -450,4 +482,4 @@ function resetRuntimeWarningCaches() {
   modelResolver._resetModelOverrideWarningCacheForTests();
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, TOOLS_PATH };
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, TOOLS_PATH };
