@@ -164,6 +164,53 @@ function guardedGetRoadmapPhase(
   return roadmapPhase;
 }
 
+// #2994: `phase_slug` is re-derived from a roadmap-only `phase_name` (no disk
+// directory exists yet) identically at every synthetic-fallback call site
+// below — factored out once so the slugification formula itself cannot drift.
+function slugifyPhaseName(phaseName: string | null): string | null {
+  return phaseName
+    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    : null;
+}
+
+/**
+ * #2994 (review finding, DEFECT.GENERATIVE-FIX): shared archived/not-found
+ * fallback applied identically by `cmdInitExecutePhase`, `cmdInitPlanPhase`,
+ * `cmdInitVerifyWork`, `cmdInitCodeReview`, `cmdInitReview`, and
+ * `cmdInitDiscussPhaseAssumptions` — 6 call sites previously reproducing the
+ * exact same two-branch control flow verbatim (only the synthetic
+ * replacement object's field set differs per caller, supplied here via
+ * `buildFallback`). `cmdInitPhaseOp` is deliberately left untouched (CRITICAL
+ * blast radius, 179 dependents) even though it follows the same shape, since
+ * its own fallback object differs by one field (`has_reviews` absent) and is
+ * not a byte-identical copy.
+ *
+ * Behavior-preserving by construction: every original call site either (a)
+ * unconditionally computed `roadmapPhase` once up front and then applied
+ * `phaseInfo?.archived && roadmapPhase?.found -> null` followed by
+ * `!phaseInfo && roadmapPhase?.found -> fallback`, or (b) computed
+ * `roadmapPhase` lazily inside each of those same two conditions. Because
+ * `guardedGetRoadmapPhase` is a pure, side-effect-free read for a given
+ * `(cwd, phase, projectCode)` within one command invocation, both shapes
+ * return identical results for identical inputs — so passing one
+ * unconditionally-resolved `roadmapPhase` in here (mirroring shape (a))
+ * reproduces shape (b)'s output exactly, just without the redundant second
+ * disk read shape (b) performed when the first branch already resolved it.
+ */
+function applyRoadmapFallback(
+  phaseInfo: Record<string, unknown> | null,
+  roadmapPhase: Record<string, unknown> | null,
+  buildFallback: (roadmapPhase: Record<string, unknown>) => Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (phaseInfo?.['archived'] && roadmapPhase?.['found']) {
+    phaseInfo = null;
+  }
+  if (!phaseInfo && roadmapPhase?.['found']) {
+    phaseInfo = buildFallback(roadmapPhase);
+  }
+  return phaseInfo;
+}
+
 function listPhaseSummaryFiles(phaseDir: string): string[] {
   return (scanPhasePlans(phaseDir) as unknown as Record<string, string[]>)['summaryFiles'];
 }
@@ -766,21 +813,14 @@ function cmdInitExecutePhase(
   const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
 
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived'] && roadmapPhase?.['found']) {
-    phaseInfo = null;
-  }
-
-  if (!phaseInfo && roadmapPhase?.['found']) {
-    const phaseName = roadmapPhase['phase_name'] as string | null;
-    phaseInfo = {
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const phaseName = rp['phase_name'] as string | null;
+    return {
       found: true,
       directory: null,
-      phase_number: roadmapPhase['phase_number'],
+      phase_number: rp['phase_number'],
       phase_name: phaseName,
-      phase_slug: phaseName
-        ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-        : null,
+      phase_slug: slugifyPhaseName(phaseName),
       plans: [],
       summaries: [],
       incomplete_plans: [],
@@ -789,7 +829,7 @@ function cmdInitExecutePhase(
       has_verification: false,
       has_reviews: false,
     };
-  }
+  });
   const reqMatch = (roadmapPhase?.['section'] as string | undefined)?.match(REQUIREMENTS_HEADER_RE);
   const reqExtracted = reqMatch
     ? reqMatch[1].replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
@@ -904,21 +944,14 @@ function cmdInitPlanPhase(
   // #2056/#2104: foreign-prefixed queries must not collapse to numeric phases.
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived'] && roadmapPhase?.['found']) {
-    phaseInfo = null;
-  }
-
-  if (!phaseInfo && roadmapPhase?.['found']) {
-    const phaseName = roadmapPhase['phase_name'] as string | null;
-    phaseInfo = {
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const phaseName = rp['phase_name'] as string | null;
+    return {
       found: true,
       directory: null,
-      phase_number: roadmapPhase['phase_number'],
+      phase_number: rp['phase_number'],
       phase_name: phaseName,
-      phase_slug: phaseName
-        ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-        : null,
+      phase_slug: slugifyPhaseName(phaseName),
       plans: [],
       summaries: [],
       incomplete_plans: [],
@@ -927,7 +960,7 @@ function cmdInitPlanPhase(
       has_verification: false,
       has_reviews: false,
     };
-  }
+  });
   const reqMatch = (roadmapPhase?.['section'] as string | undefined)?.match(REQUIREMENTS_HEADER_RE);
   const reqExtracted = reqMatch
     ? reqMatch[1].replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
@@ -1384,35 +1417,23 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
   const config = loadConfig(cwd);
   const _slashRuntime = resolveRuntime(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived']) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      phaseInfo = null;
-    }
-  }
-
-  if (!phaseInfo) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      const phaseName = roadmapPhase['phase_name'] as string | null;
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
-        plans: [],
-        summaries: [],
-        incomplete_plans: [],
-        has_research: false,
-        has_context: false,
-        has_verification: false,
-      };
-    }
-  }
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const phaseName = rp['phase_name'] as string | null;
+    return {
+      found: true,
+      directory: null,
+      phase_number: rp['phase_number'],
+      phase_name: phaseName,
+      phase_slug: slugifyPhaseName(phaseName),
+      plans: [],
+      summaries: [],
+      incomplete_plans: [],
+      has_research: false,
+      has_context: false,
+      has_verification: false,
+    };
+  });
 
   const phaseDir = (phaseInfo?.['directory'] as string | null | undefined) || null;
   const planCount = (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0;
@@ -1490,12 +1511,14 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
  * across 24 processes per the #2994 dispatch) and is never modified for
  * this — this function resolves phase info itself via the SAME shared
  * primitives `cmdInitPhaseOp` calls (`guardedFindPhase`/
- * `guardedGetRoadmapPhase`, already reused independently by 4 other
- * `cmdInit*` entry points in this file: execute-phase, plan-phase,
- * verify-work, phase-op), producing the identical 6-field shape rather than
- * a second, hand-maintained copy of `cmdInitPhaseOp`'s full ~60-field
- * bundle. See `tests/init-code-review-parity.test.cjs` for the
- * DEFECT.GENERATIVE-FIX parity guard between the two.
+ * `guardedGetRoadmapPhase`, plus the shared `applyRoadmapFallback` archived/
+ * not-found fallback also used by execute-phase, plan-phase, verify-work
+ * and review — see `applyRoadmapFallback`'s own doc comment; `cmdInitPhaseOp`
+ * is deliberately excluded from that shared helper), producing the identical
+ * 6-field shape rather than a second, hand-maintained copy of
+ * `cmdInitPhaseOp`'s full ~60-field bundle. See
+ * `tests/init-code-review-parity.test.cjs` for the DEFECT.GENERATIVE-FIX
+ * parity guard between the two.
  *
  * Two further facts are resolved and exposed here that `init.phase-op`
  * never carried: the fallow structural-pre-pass config gate
@@ -1511,38 +1534,17 @@ function cmdInitCodeReview(
 ): void {
   const config = loadConfig(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived']) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      const phaseName = roadmapPhase['phase_name'] as string | null;
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
-      };
-    }
-  }
-
-  if (!phaseInfo) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      const phaseName = roadmapPhase['phase_name'] as string | null;
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
-      };
-    }
-  }
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const rpName = rp['phase_name'] as string | null;
+    return {
+      found: true,
+      directory: null,
+      phase_number: rp['phase_number'],
+      phase_name: rpName,
+      phase_slug: slugifyPhaseName(rpName),
+    };
+  });
 
   const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
   const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
@@ -1591,9 +1593,10 @@ function cmdInitCodeReview(
  * is CRITICAL blast radius (179 dependents across 24 processes) and is never
  * modified for this — this function resolves phase info itself via the SAME
  * shared primitives `cmdInitPhaseOp` calls (`guardedFindPhase`/
- * `guardedGetRoadmapPhase`), producing the identical 3-field shape rather
- * than a second, hand-maintained copy of `cmdInitPhaseOp`'s full ~60-field
- * bundle.
+ * `guardedGetRoadmapPhase`), plus the shared `applyRoadmapFallback`
+ * archived/not-found fallback (see its own doc comment), producing the
+ * identical 3-field shape rather than a second, hand-maintained copy of
+ * `cmdInitPhaseOp`'s full ~60-field bundle.
  *
  * One further fact is resolved and exposed here that `init.phase-op` never
  * carried: whether reviewer instances are configured
@@ -1610,30 +1613,13 @@ function cmdInitReview(
 ): void {
   const config = loadConfig(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived']) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: roadmapPhase['phase_name'],
-      };
-    }
-  }
-
-  if (!phaseInfo) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: roadmapPhase['phase_name'],
-      };
-    }
-  }
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => ({
+    found: true,
+    directory: null,
+    phase_number: rp['phase_number'],
+    phase_name: rp['phase_name'],
+  }));
 
   const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
   const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
@@ -1675,10 +1661,12 @@ function cmdInitReview(
  * line). `cmdInitPhaseOp` is CRITICAL blast radius (179 dependents across 24
  * processes) and is never modified for this — this function resolves phase
  * info itself via the SAME shared primitives `cmdInitPhaseOp` calls
- * (`guardedFindPhase`/`guardedGetRoadmapPhase`), reproducing the identical
- * archived/not-found fallback shape (`plans: []`, `has_research: false`,
- * `has_context: false`, `has_verification: false`) rather than a second,
- * hand-maintained copy of `cmdInitPhaseOp`'s full ~60-field bundle.
+ * (`guardedFindPhase`/`guardedGetRoadmapPhase`), plus the shared
+ * `applyRoadmapFallback` archived/not-found fallback (see its own doc
+ * comment) producing the identical fallback shape (`plans: []`,
+ * `has_research: false`, `has_context: false`, `has_verification: false`)
+ * rather than a second, hand-maintained copy of `cmdInitPhaseOp`'s full
+ * ~60-field bundle.
  *
  * One further fact is resolved and exposed here that `init.phase-op` never
  * carried: `state:auto-advance-active` — the workflow's own `auto_advance`
@@ -1696,46 +1684,21 @@ function cmdInitDiscussPhaseAssumptions(
 ): void {
   const config = loadConfig(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived']) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      const phaseName = roadmapPhase['phase_name'] as string | null;
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
-        plans: [],
-        has_research: false,
-        has_context: false,
-        has_verification: false,
-      };
-    }
-  }
-
-  if (!phaseInfo) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      const phaseName = roadmapPhase['phase_name'] as string | null;
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
-        plans: [],
-        has_research: false,
-        has_context: false,
-        has_verification: false,
-      };
-    }
-  }
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const rpName = rp['phase_name'] as string | null;
+    return {
+      found: true,
+      directory: null,
+      phase_number: rp['phase_number'],
+      phase_name: rpName,
+      phase_slug: slugifyPhaseName(rpName),
+      plans: [],
+      has_research: false,
+      has_context: false,
+      has_verification: false,
+    };
+  });
 
   const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
   const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
