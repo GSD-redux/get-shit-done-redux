@@ -41,6 +41,7 @@ interface InitModule {
   cmdInitProgress(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitManager(cwd: string, raw: boolean): void;
   cmdInitCompleteMilestone(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitAutonomous(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
   cmdInitRemoveWorkspace(cwd: string, name: string | undefined, raw: boolean): void;
@@ -147,6 +148,13 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       // (e.g. $gsd-* for codex) stays consistent with runtime-slash helpers.
       manager: () => init.cmdInitManager(cwd, raw),
       'complete-milestone': () => init.cmdInitCompleteMilestone(cwd, raw),
+      autonomous: () => {
+        const namedArgs = parseNamedArgs(args, [], ['converge', 'cross-ai']);
+        init.cmdInitAutonomous(cwd, raw, {
+          converge: namedArgs['converge'],
+          'cross-ai': namedArgs['cross-ai'],
+        });
+      },
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
       'remove-workspace': () => init.cmdInitRemoveWorkspace(cwd, args[2], raw),

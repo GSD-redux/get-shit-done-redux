@@ -16,6 +16,14 @@ const WORKFLOW_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'autonomous.
 const COMMANDS_DOC_PATH = path.join(REPO_ROOT, 'docs', 'COMMANDS.md');
 const HOW_TO_PATH = path.join(REPO_ROOT, 'docs', 'how-to', 'run-phases-autonomously.md');
 const TOOLS = path.join(REPO_ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
+// #2994: fragmentization moved the five converge-gated regions out of the host
+// autonomous.md into dedicated step files (state:plan-strategy-converge) —
+// see docs/reference/workflow-fragments.md. Tests that assert on this moved
+// content read the step file directly rather than the host.
+const STEP_FAIL_FAST_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'autonomous', 'steps', 'converge-fail-fast.md');
+const STEP_DISPATCH_BG_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'autonomous', 'steps', 'converge-dispatch-bg.md');
+const STEP_DISPATCH_INLINE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'autonomous', 'steps', 'converge-dispatch-inline.md');
+const STEP_LOOP_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'autonomous', 'steps', 'converge-loop.md');
 
 function read(filePath) {
   return fs.readFileSync(filePath, 'utf8');
@@ -47,30 +55,50 @@ describe('autonomous --converge flag (#711)', () => {
   });
 
   test('workflow fails fast when convergence is requested but disabled', () => {
+    // #2994: this check lives in the converge-fail-fast step file now
+    // (state:plan-strategy-converge) — the host only carries the gated
+    // conditional-read stub.
     const workflow = read(WORKFLOW_PATH);
+    const step = read(STEP_FAIL_FAST_PATH);
 
     assert.match(
       workflow,
-      /config-get workflow\.plan_review_convergence/,
-      'workflow should check workflow.plan_review_convergence before planning',
+      /gsd:section id="converge-fail-fast" when="state:plan-strategy-converge"/,
+      'workflow should gate the fail-fast check behind state:plan-strategy-converge',
     );
     assert.match(
-      workflow,
+      step,
+      /config-get workflow\.plan_review_convergence/,
+      'converge-fail-fast step should check workflow.plan_review_convergence before planning',
+    );
+    assert.match(
+      step,
       /gsd config-set workflow\.plan_review_convergence true/,
-      'workflow should print the enable command instead of silently downgrading',
+      'converge-fail-fast step should print the enable command instead of silently downgrading',
     );
   });
 
   test('workflow routes planning through plan-review-convergence when enabled', () => {
+    // #2994: the converge dispatch/loop bodies live in dedicated step files
+    // now (state:plan-strategy-converge) — only the local-planning fallback
+    // remains inline in the host.
     const workflow = read(WORKFLOW_PATH);
+    const dispatchInline = read(STEP_DISPATCH_INLINE_PATH);
+    const loop = read(STEP_LOOP_PATH);
+    const dispatchBg = read(STEP_DISPATCH_BG_PATH);
 
     assert.match(
-      workflow,
+      dispatchInline,
       /Skill\(skill="gsd-plan-review-convergence", args="\$\{PHASE_NUM\} \$\{CONVERGENCE_ARGS\}"\)/,
-      'non-interactive converge mode should call gsd-plan-review-convergence',
+      'inline converge dispatch step should call gsd-plan-review-convergence',
     );
     assert.match(
-      workflow,
+      loop,
+      /Skill\(skill="gsd-plan-review-convergence", args="\$\{PHASE_NUM\} \$\{CONVERGENCE_ARGS\}"\)/,
+      'default converge loop step should call gsd-plan-review-convergence',
+    );
+    assert.match(
+      dispatchBg,
       /Run plan convergence for phase \$\{PHASE_NUM\}: Skill\(skill=\\"gsd-plan-review-convergence\\"/,
       'interactive converge mode should dispatch plan convergence in the background agent',
     );

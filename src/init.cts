@@ -670,7 +670,7 @@ function buildSectionManifestField(
   phaseInfo: Record<string, unknown> | null,
   options: Record<string, unknown>,
   workflow: string,
-  overrides: { needsCodebaseMap?: boolean; fallowEnabled?: boolean; gitCreateTag?: boolean } = {},
+  overrides: { needsCodebaseMap?: boolean; fallowEnabled?: boolean; gitCreateTag?: boolean; planStrategyConverge?: boolean } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
   if (!sections) return null;
@@ -708,6 +708,7 @@ function buildSectionManifestField(
     uiPhaseActive: detectUiPhaseActive(cwd, phaseInfo),
     fallowEnabled: overrides.fallowEnabled,
     gitCreateTag: overrides.gitCreateTag,
+    planStrategyConverge: overrides.planStrategyConverge,
   };
 
   try {
@@ -2278,6 +2279,43 @@ function cmdInitCompleteMilestone(
   output(withProjectRoot(cwd, result), raw);
 }
 
+/**
+ * `autonomous.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3). Additive alongside the workflow's existing `init.milestone-op`
+ * (`cmdInitMilestoneOp`), `init.manager` (`cmdInitManager`), and
+ * `init.phase-op` (`cmdInitPhaseOp`) calls — all three are CRITICAL blast
+ * radius (179 dependents across 24 processes) and are never modified for
+ * this; `autonomous.md` keeps every one of those calls exactly as it had
+ * them. `cmdInitAutonomous` carries NO phase-listing logic of its own to
+ * delegate — its only job is the `PLAN_STRATEGY` disjunction the workflow's
+ * own bash resolver (`PLAN_STRATEGY="converge"` on `--converge` OR
+ * `--cross-ai`) already computes at the top of the `initialize` step, now
+ * mirrored here as a single boolean FACT (same discipline as
+ * `state:chunked-mode`/`state:ui-phase-active`: the disjunction is resolved
+ * ONCE, in fact computation, never in the `when=` grammar), exposed as
+ * `plan_strategy_converge`, plus the `section_manifest` field none of the
+ * three existing calls carries.
+ */
+function cmdInitAutonomous(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const planStrategyConverge = options['converge'] === true || options['cross-ai'] === true;
+
+  const result: Record<string, unknown> = {
+    // #2994: mirrors autonomous.md's own PLAN_STRATEGY resolver
+    // (--converge OR its documented alias --cross-ai).
+    plan_strategy_converge: planStrategyConverge,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'autonomous', {
+    planStrategyConverge,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
 function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   try {
     (pruneOrphanedWorktrees as (cwd: string) => void)(cwd);
@@ -3290,6 +3328,7 @@ export = {
   cmdInitProgress,
   cmdInitManager,
   cmdInitCompleteMilestone,
+  cmdInitAutonomous,
   cmdInitNewWorkspace,
   cmdInitListWorkspaces,
   cmdInitRemoveWorkspace,

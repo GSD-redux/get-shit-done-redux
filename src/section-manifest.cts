@@ -22,7 +22,9 @@
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
  * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
  * (epic #1671 Phase 6.3), then from 20 to 23 via a further #2994 amendment
- * fragmentizing `code-review.md` and `complete-milestone.md`. {@link WHEN_PREDICATES} is a total map from each frozen
+ * fragmentizing `code-review.md` and `complete-milestone.md`, then from 23
+ * to 24 via a still further #2994 amendment fragmentizing `autonomous.md`.
+ * {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
  * `when=` string — the moment it parses, the ad-hoc language has begun.
@@ -126,6 +128,17 @@ export interface InvocationFacts {
    * `git-tag` section will incorrectly evaluate to excluded.
    */
   readonly gitCreateTag?: boolean;
+  /**
+   * Whether `autonomous.md`'s planning step should route through plan-review
+   * convergence instead of `gsd-plan-phase` (#2994): `--converge` flag OR its
+   * documented alias `--cross-ai`. Same discipline as {@link chunkedMode} /
+   * {@link uiPhaseActive} — the disjunction is resolved by the caller
+   * (`cmdInitAutonomous`, the init seam) into this single boolean BEFORE it
+   * reaches this module; `state:plan-strategy-converge`'s predicate below
+   * reads only this field, never `--converge`/`--cross-ai` separately.
+   * Absent/undefined is falsy, never throws.
+   */
+  readonly planStrategyConverge?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -226,6 +239,7 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'state:git-create-tag': (facts: InvocationFacts) => facts.gitCreateTag === true,
     'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
+    'state:plan-strategy-converge': (facts: InvocationFacts) => facts.planStrategyConverge === true,
     'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,
   }),

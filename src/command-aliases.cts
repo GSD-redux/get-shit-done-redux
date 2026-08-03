@@ -401,6 +401,14 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "init.autonomous",
+    "aliases": [
+      "init autonomous"
+    ],
+    "subcommand": "autonomous",
+    "mutation": false
+  },
+  {
     "canonical": "init.new-workspace",
     "aliases": [
       "init new-workspace"

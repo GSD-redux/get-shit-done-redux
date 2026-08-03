@@ -97,22 +97,30 @@ import contextComposer = require('./context-composer.cjs');
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
  * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
  * (epic #1671 Phase 6.3, `verify-work.md`), then from 20 to 23 via a further
- * #2994 amendment fragmentizing `code-review.md` and `complete-milestone.md`.
- * The vocabulary remains CLOSED: no operators, no negation, no nesting.
- * Cardinality is not expressiveness — a 23-entry flat list with no
- * composition is still not a language.
+ * #2994 amendment fragmentizing `code-review.md` and `complete-milestone.md`,
+ * then from 23 to 24 via a further #2994 amendment fragmentizing
+ * `autonomous.md`. The vocabulary remains CLOSED: no operators, no negation,
+ * no nesting. Cardinality is not expressiveness — a 24-entry flat list with
+ * no composition is still not a language.
  *
  * Held at 14, not wider: an atom whose fact is never computed always
  * evaluates FALSE, so a section marked with it would silently never
- * include — a silent-exclusion bug, not a feature. Three further atoms
- * (`flag:--converge`, `flag:--verify-only`, `state:is-monorepo`) were
- * surveyed and are justified in principle, but their workflows (`autonomous`,
- * `docs-update`) have no dedicated `cmdInit*` entry point yet to compute the
- * backing fact, so they are withheld until that entry point exists (#2992 /
- * ADR-1671 Phase 6.1). `flag:--fix`, `state:fallow-enabled`, and
- * `state:git-create-tag` were withheld for the same reason until this
- * amendment gave `code-review` and `complete-milestone` their own dedicated
- * `cmdInit*` entry points (`cmdInitCodeReview`, `cmdInitCompleteMilestone`).
+ * include — a silent-exclusion bug, not a feature. Two further atoms
+ * (`flag:--verify-only`, `state:is-monorepo`) were surveyed and are
+ * justified in principle, but their workflow (`docs-update`) has no
+ * dedicated `cmdInit*` entry point yet to compute the backing fact, so they
+ * are withheld until that entry point exists (#2992 / ADR-1671 Phase 6.1).
+ * `flag:--fix`, `state:fallow-enabled`, and `state:git-create-tag` were
+ * withheld for the same reason until a further #2994 amendment gave
+ * `code-review` and `complete-milestone` their own dedicated `cmdInit*`
+ * entry points (`cmdInitCodeReview`, `cmdInitCompleteMilestone`). The
+ * originally-surveyed `flag:--converge` never shipped under that name: once
+ * `autonomous` gained its own dedicated `cmdInitAutonomous` entry point, the
+ * admitted atom is `state:plan-strategy-converge` instead — `--cross-ai` is
+ * a documented alias for `--converge` (`autonomous.md`'s own `PLAN_STRATEGY`
+ * resolver folds both into one value), so a `flag:--converge`-only atom
+ * would have left `--cross-ai`-only invocations silently excluded from the
+ * same sections; see the `state:plan-strategy-converge` paragraph below.
  *
  * The #2993 widening adds 5 entries fragmentizing `plan-phase.md`:
  * `flag:--ingest`, `flag:--prd`, `flag:--research-phase`, `flag:--reviews`,
@@ -135,6 +143,17 @@ import contextComposer = require('./context-composer.cjs');
  * as top-level `fallow_*` init-bundle fields), and `state:git-create-tag`
  * (`git-tag` section — the `git.create_tag` config-gate resolver is hoisted
  * into `cmdInitCompleteMilestone`).
+ *
+ * A still further #2994 widening (epic #1671 Phase 6.3) adds 1 entry
+ * fragmentizing `autonomous.md`: `state:plan-strategy-converge`, gating five
+ * sections (`converge-fail-fast`, `converge-banner`, `converge-dispatch-bg`,
+ * `converge-dispatch-inline`, `converge-loop`) that all share the same atom
+ * — legal and precedented (`plan-phase.md`'s `research-only-*` pair already
+ * shares `flag:--research-phase`). It is a disjunction — `--converge` OR its
+ * documented alias `--cross-ai` — resolved to a single boolean FACT by the
+ * new `cmdInitAutonomous` entry point (`flags.has('--converge') ||
+ * flags.has('--cross-ai')`) before it ever reaches this grammar, same
+ * discipline as `state:chunked-mode`/`state:ui-phase-active` above.
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
@@ -158,6 +177,7 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'state:git-create-tag',
   'state:needs-codebase-map',
   'state:phase-mvp-mode',
+  'state:plan-strategy-converge',
   'state:ui-phase-active',
   'state:worktrees-enabled',
 ]);

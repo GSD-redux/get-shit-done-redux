@@ -1,5 +1,32 @@
 {
   "workflows": {
+    "autonomous": [
+      {
+        "id": "converge-fail-fast",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-fail-fast.md"
+      },
+      {
+        "id": "converge-banner",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-banner.md"
+      },
+      {
+        "id": "converge-dispatch-bg",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-dispatch-bg.md"
+      },
+      {
+        "id": "converge-dispatch-inline",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-dispatch-inline.md"
+      },
+      {
+        "id": "converge-loop",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-loop.md"
+      }
+    ],
     "code-review": [
       {
         "id": "structural-pre-pass",

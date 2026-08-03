@@ -44,6 +44,15 @@ PLAN_STRATEGY="local"
 if echo "$ARGUMENTS" | grep -qE '(^|[[:space:]])\-\-(converge|cross-ai)([[:space:]]|$)'; then
   PLAN_STRATEGY="converge"
 fi
+
+CONVERGE_PARAM=""
+if echo "$ARGUMENTS" | grep -qE '(^|[[:space:]])\-\-converge([[:space:]]|$)'; then
+  CONVERGE_PARAM="--converge"
+fi
+CROSS_AI_PARAM=""
+if echo "$ARGUMENTS" | grep -qE '(^|[[:space:]])\-\-cross-ai([[:space:]]|$)'; then
+  CROSS_AI_PARAM="--cross-ai"
+fi
 ```
 
 When `--only` is set, also set `FROM_PHASE` to the same value so existing filter logic applies.
@@ -58,7 +67,11 @@ Bootstrap via milestone-level init:
 _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
 INIT=$(gsd_run query init.milestone-op)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
+INIT_AUTONOMOUS=$(gsd_run query init.autonomous $CONVERGE_PARAM $CROSS_AI_PARAM)
+if [[ "$INIT_AUTONOMOUS" == @file:* ]]; then INIT_AUTONOMOUS=$(cat "${INIT_AUTONOMOUS#@file:}"); fi
 ```
+
+Extract `section_manifest` from `INIT_AUTONOMOUS` (used by the `converge-*` sections below and in step 3).
 
 If `PLAN_STRATEGY` is `converge`, fail fast unless the existing convergence feature gate is enabled:
 
@@ -79,22 +92,11 @@ if echo "$ARGUMENTS" | grep -qE '\-\-max-cycles\s+[0-9]+'; then
   MAX_CYCLES_ARG=$(echo "$ARGUMENTS" | grep -oE '\-\-max-cycles\s+[0-9]+' | awk '{print $2}')
   CONVERGENCE_ARGS="${CONVERGENCE_ARGS} --max-cycles ${MAX_CYCLES_ARG}"
 fi
-
-if [ "$PLAN_STRATEGY" = "converge" ]; then
-  CONVERGENCE_ENABLED=$(gsd_run query config-get workflow.plan_review_convergence 2>/dev/null || echo "false")
-  if [ "$CONVERGENCE_ENABLED" != "true" ]; then
-    printf '%s\n' \
-      'gsd-autonomous --converge is disabled (workflow.plan_review_convergence=false).' \
-      '' \
-      'Enable plan convergence with:' \
-      '' \
-      '  gsd config-set workflow.plan_review_convergence true' \
-      '' \
-      'Then re-run the autonomous command with --converge.'
-    exit 1
-  fi
-fi
 ```
+
+<!-- gsd:section id="converge-fail-fast" when="state:plan-strategy-converge" -->
+If `section_manifest` is `null` or `"converge-fail-fast"` is in its `included` list: read and execute `gsd-core/workflows/autonomous/steps/converge-fail-fast.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 Parse JSON for: `milestone_version`, `milestone_name`, `phase_count`, `completed_phases`, `roadmap_exists`, `state_exists`, `commit_docs`.
 
@@ -116,7 +118,9 @@ If `ONLY_PHASE` is set, display: `Single phase mode: Phase ${ONLY_PHASE}`
 Else if `FROM_PHASE` is set, display: `Starting from phase ${FROM_PHASE}`
 If `TO_PHASE` is set, display: `Stopping after phase ${TO_PHASE}`
 If `INTERACTIVE` is set, display: `Mode: Interactive (discuss inline, plan+execute inline — background on Codex only)`
-If `PLAN_STRATEGY` is `converge`, display: `Planning: Plan-review convergence enabled`
+<!-- gsd:section id="converge-banner" when="state:plan-strategy-converge" -->
+If `section_manifest` is `null` or `"converge-banner"` is in its `included` list: read and execute `gsd-core/workflows/autonomous/steps/converge-banner.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 **Agent skills (delegated agents self-load):** This workflow delegates plan/execute/review via flat `Skill()` invocations rather than resolving `agent_skills` itself. Each consumer agent (`gsd-planner`, `gsd-executor`, `gsd-plan-checker`, `gsd-verifier`, …) self-loads its configured `.planning/config.json` `agent_skills` in its own mandatory init step per `@~/.claude/gsd-core/references/agent-skills-bootstrap.md`. This is the durable path that works on every runtime — including Cursor, where `Skill()`-delegated workflow bash init does not reliably execute. No per-delegation injection is needed here. See open-gsd/gsd-core#1866.
 
@@ -379,15 +383,9 @@ FLATTEN=$(gsd_run query dispatch-should-flatten --raw 2>/dev/null || echo "true"
 
 - **If `FLATTEN` is `false`:** Dispatch plan as a background agent to keep the main context lean. While plan runs, the workflow can immediately start discussing the next phase (see step 4).
 
-  - If `PLAN_STRATEGY=converge`, print: `◆ Spawning background plan-convergence loop for phase ${PHASE_NUM}... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)`
-
-  ```
-  Agent(
-    description="Plan convergence phase ${PHASE_NUM}: ${PHASE_NAME}",
-    run_in_background=true,
-    prompt="Run plan convergence for phase ${PHASE_NUM}: Skill(skill=\"gsd-plan-review-convergence\", args=\"${PHASE_NUM} ${CONVERGENCE_ARGS}\")"
-  )
-  ```
+  <!-- gsd:section id="converge-dispatch-bg" when="state:plan-strategy-converge" -->
+  If `section_manifest` is `null` or `"converge-dispatch-bg"` is in its `included` list: read and execute `gsd-core/workflows/autonomous/steps/converge-dispatch-bg.md`. Otherwise skip — do not read the file.
+  <!-- /gsd:section -->
 
   - Otherwise, print: `◆ Spawning background planner for phase ${PHASE_NUM}... (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)`
 
@@ -403,11 +401,9 @@ FLATTEN=$(gsd_run query dispatch-should-flatten --raw 2>/dev/null || echo "true"
 
 - **Otherwise (`FLATTEN` is `true` — run inline):** Run plan **inline** (do NOT background) so the plan-checker runs. The next phase's discuss does not overlap planning here — correctness over overlap.
 
-  - If `PLAN_STRATEGY=converge`:
-
-  ```
-  Skill(skill="gsd-plan-review-convergence", args="${PHASE_NUM} ${CONVERGENCE_ARGS}")
-  ```
+  <!-- gsd:section id="converge-dispatch-inline" when="state:plan-strategy-converge" -->
+  If `section_manifest` is `null` or `"converge-dispatch-inline"` is in its `included` list: read and execute `gsd-core/workflows/autonomous/steps/converge-dispatch-inline.md`. Otherwise skip — do not read the file.
+  <!-- /gsd:section -->
 
   - Otherwise (local planning):
 
@@ -417,11 +413,9 @@ FLATTEN=$(gsd_run query dispatch-should-flatten --raw 2>/dev/null || echo "true"
 
 **If `INTERACTIVE` is NOT set (default):** Run plan inline.
 
-If `PLAN_STRATEGY=converge`, run the convergence loop:
-
-```
-Skill(skill="gsd-plan-review-convergence", args="${PHASE_NUM} ${CONVERGENCE_ARGS}")
-```
+<!-- gsd:section id="converge-loop" when="state:plan-strategy-converge" -->
+If `section_manifest` is `null` or `"converge-loop"` is in its `included` list: read and execute `gsd-core/workflows/autonomous/steps/converge-loop.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 If `PLAN_STRATEGY=local`, run the regular planner:
 

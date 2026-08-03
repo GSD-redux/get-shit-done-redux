@@ -46,12 +46,13 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 23 atoms (widened from 4 to 14 via the ADR-1671
+`when=` takes exactly one of 24 atoms (widened from 4 to 14 via the ADR-1671
 amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
 ADR-1671 amendment for #2993, epic #1671 Phase 6.2, then from 19 to 20 via
 the ADR-1671 amendment for #2994, epic #1671 Phase 6.3, then from 20 to 23
 via a further #2994 amendment fragmentizing `code-review.md` and
-`complete-milestone.md`):
+`complete-milestone.md`, then from 23 to 24 via a still further #2994
+amendment fragmentizing `autonomous.md`):
 
 | Value | Meaning |
 |---|---|
@@ -76,6 +77,7 @@ via a further #2994 amendment fragmentizing `code-review.md` and
 | `state:git-create-tag` | Applicable when `.planning/config.json`'s `git.create_tag` is not `false` (fail-OPEN default `true`). |
 | `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
 | `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
+| `state:plan-strategy-converge` | Applicable when `autonomous.md`'s planning step should route through plan-review convergence instead of `gsd-plan-phase` — the workflow runs with `--converge`, or its documented alias `--cross-ai` (`autonomous.md`'s own `PLAN_STRATEGY` resolver folds both). |
 | `state:ui-phase-active` | Applicable when the phase's active `plan:pre` loop hooks include the `ui-phase` step, OR the phase directory already contains a `*-UI-SPEC.md` file — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:worktrees-enabled` | Applicable when `.planning/config.json`'s `workflow.use_worktrees` is enabled. |
 
@@ -104,18 +106,25 @@ required:
    section marked with it would silently never include: the exact
    silent-wrong-answer class this gate exists to prevent.
 
-Three further atoms (`flag:--converge`, `flag:--verify-only`,
-`state:is-monorepo`) satisfy gate 1 but not yet gate 2 — their workflows
-(`autonomous`, `docs-update`) route through shared generic init entry points
-invoked by 20+ other workflows, so a dedicated `cmdInit*` seam does not yet
-exist to compute their facts. They are withheld pending that seam, not
-rejected. `flag:--fix`, `state:fallow-enabled`, and `state:git-create-tag`
-were withheld for the same reason until a further #2994 amendment gave
-`code-review` and `complete-milestone` their own dedicated `cmdInit*` entry
-points (`cmdInitCodeReview`, `cmdInitCompleteMilestone`) — see [Piloted on
-execute-phase.md, then rolled out across the wired
+Two further atoms (`flag:--verify-only`, `state:is-monorepo`) satisfy gate 1
+but not yet gate 2 — their workflow (`docs-update`) routes through shared
+generic init entry points invoked by 20+ other workflows, so a dedicated
+`cmdInit*` seam does not yet exist to compute their facts. They are withheld
+pending that seam, not rejected. `flag:--fix`, `state:fallow-enabled`, and
+`state:git-create-tag` were withheld for the same reason until a further
+#2994 amendment gave `code-review` and `complete-milestone` their own
+dedicated `cmdInit*` entry points (`cmdInitCodeReview`,
+`cmdInitCompleteMilestone`) — see [Piloted on execute-phase.md, then rolled
+out across the wired
 workflows](#piloted-on-execute-phasemd-then-rolled-out-across-the-wired-workflows)
-below.
+below. A third atom, originally surveyed as `flag:--converge`, was withheld
+for the same reason and never shipped under that name: a still further
+#2994 amendment gave `autonomous` its own dedicated `cmdInit*` entry point
+(`cmdInitAutonomous`), and the atom that shipped is
+`state:plan-strategy-converge` instead — `--cross-ai` is a documented alias
+for `--converge` (`autonomous.md`'s own `PLAN_STRATEGY` resolver folds
+both), so a `flag:--converge`-only atom would have left a `--cross-ai`-only
+invocation silently excluded from the same sections.
 
 ### Compound conditions are resolved in the fact, never the grammar
 
@@ -150,6 +159,15 @@ of time — `resolveLoopHooks({point: 'plan:pre', ...}).activeHooks` filtered to
 `kind === 'step' && ref.skill === 'ui-phase'`, OR'd with a `*-UI-SPEC.md`
 existence check under the phase directory — into `InvocationFacts.uiPhaseActive`,
 so `WHEN_PREDICATES['state:ui-phase-active']` again reads only that one field.
+
+`state:plan-strategy-converge` (#2994) is the same shape again:
+`autonomous.md`'s own bash `PLAN_STRATEGY` resolver already folds `--converge`
+OR its documented alias `--cross-ai` into a single `"converge"`/`"local"`
+value at the top of the `initialize` step. `cmdInitAutonomous` mirrors that
+identical disjunction — `flags.has('--converge') || flags.has('--cross-ai')`
+— into `InvocationFacts.planStrategyConverge`, so
+`WHEN_PREDICATES['state:plan-strategy-converge']` reads only that one field,
+never `--converge`/`--cross-ai` separately.
 
 ## Fails closed
 
@@ -245,14 +263,15 @@ At init time, a separate pure evaluator, `src/section-manifest.cts`
 `included`/`excluded` id lists against one invocation's
 `InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
 phaseMvpMode?, worktreesEnabled?, chunkedMode?, uiPhaseActive?, fallowEnabled?,
-gitCreateTag?}`. Only a workflow with a **dedicated
+gitCreateTag?, planStrategyConverge?}`. Only a workflow with a **dedicated
 `cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
 it, because only that entry point can assemble `InvocationFacts` from its own
 parsed CLI options and `.planning/` state reads — this is admission gate 2
 from [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above,
-applied per-workflow rather than per-atom. Nine entry points are wired today:
+applied per-workflow rather than per-atom. Ten entry points are wired today:
 `execute-phase`, `plan-phase`, `new-project`, `new-milestone`, `quick`,
-`progress`, `verify-work`, `code-review`, and `complete-milestone`.
+`progress`, `verify-work`, `code-review`, `complete-milestone`, and
+`autonomous`.
 
 `InvocationFacts.flags` is a `ReadonlySet<string>` of the literal `--<name>`
 tokens seen on the invocation, and **membership is token-presence, not
@@ -269,21 +288,22 @@ that were actually seen.
 
 ## Piloted on execute-phase.md, then rolled out across the wired workflows
 
-Nine workflows carry markers today, all of them the workflows with a dedicated
+Ten workflows carry markers today, all of them the workflows with a dedicated
 `cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
 above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
 `gsd-core/workflows/plan-phase.md` (#2993, epic #1671 Phase 6.2),
 `gsd-core/workflows/progress.md`, `gsd-core/workflows/new-project.md`,
 `gsd-core/workflows/quick.md`, `gsd-core/workflows/new-milestone.md` (those
 four, #2994, epic #1671 Phase 6.3), `gsd-core/workflows/verify-work.md`
-(also #2994, epic #1671 Phase 6.3), and `gsd-core/workflows/code-review.md` /
+(also #2994, epic #1671 Phase 6.3), `gsd-core/workflows/code-review.md` /
 `gsd-core/workflows/complete-milestone.md` (a further #2994 amendment, epic
-#1671 Phase 6.3). The marker grammar and composer seam are general-purpose
-across any workflow file; rollout to the remaining
-`autonomous`/`docs-update` workflows is gated on those workflows gaining
-their own dedicated `cmdInit*` entry point (see the three-atoms-withheld
-note in [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above),
-not scheduled as later work on the marker grammar itself.
+#1671 Phase 6.3), and `gsd-core/workflows/autonomous.md` (a still further
+#2994 amendment, epic #1671 Phase 6.3). The marker grammar and composer seam
+are general-purpose across any workflow file; rollout to the remaining
+`docs-update` workflow is gated on that workflow gaining its own dedicated
+`cmdInit*` entry point (see the two-atoms-withheld note in [The frozen
+`when=` vocabulary](#the-frozen-when-vocabulary) above), not scheduled as
+later work on the marker grammar itself.
 
 `execute-phase.md` marks three `<step>` blocks: `partial-wave`
 (`flag:--wave`), `gap-closure-artifacts` (`state:gap-closure-phase`), and
@@ -384,6 +404,41 @@ alongside its pre-existing `init.manager` and `init.execute-phase` calls,
 neither of which is removed) purely to carry `git_create_tag` and
 `section_manifest` — it has no phase-listing logic of its own to delegate.
 
+`autonomous.md` marks five sections, all sharing the single
+`state:plan-strategy-converge` atom (legal and precedented — `plan-phase.md`'s
+`research-only-*` pair already shares `flag:--research-phase`): `converge-fail-fast`
+(the `workflow.plan_review_convergence` feature-gate check, split out of the
+surrounding `CONVERGENCE_ARGS` bash block — that block's reviewer-flag/`--max-cycles`
+parsing stays UNGATED, directly before the marker, because it always needs to
+run regardless of `PLAN_STRATEGY`, and only the `if [ "$PLAN_STRATEGY" =
+"converge" ]` fail-fast check moves into the step file), `converge-banner`
+(a single display line — still a legitimate section per [Marker
+syntax](#marker-syntax) above; `scripts/gen-section-manifest.cjs`'s
+`FAIL_MISSING_STEP_FILE` check requires a step file for every explicit marker
+regardless of body size, so the stub+step-file round trip is not optional
+here even though the body is trivially small), `converge-dispatch-bg` and
+`converge-dispatch-inline` (the `PLAN_STRATEGY=converge` branch of step 3b's
+background/inline `FLATTEN` dispatch — an ORTHOGONAL condition interleaved in
+the same list; each converge branch is independently contiguous and the
+sibling `- Otherwise, print: ...`/`- Otherwise (local planning):` fallback
+bullets stay OUTSIDE the marker, immediately after it, because they are the
+`PLAN_STRATEGY=local` default that must always render), and `converge-loop`
+(the unconditional-`INTERACTIVE` bottom-of-3b convergence dispatch, with the
+`PLAN_STRATEGY=local` regular-planner fallback again staying outside).
+`autonomous.md` keeps its own bash `PLAN_STRATEGY` resolver (`"local"` vs.
+`"converge"`, folding `--converge` OR `--cross-ai`) in the UNCONDITIONAL
+`initialize` step — never moved or removed — because ungated content later
+in the same step (the "local" planning bullets) still references
+`$PLAN_STRATEGY` as a runtime variable, same discipline as
+`verify-work.md`'s retained `$MVP_MODE` resolver. `cmdInitAutonomous` mirrors
+the identical disjunction into `InvocationFacts.planStrategyConverge`, and
+`autonomous.md` gains an ADDITIVE `init.autonomous` call (in the
+`initialize` step, alongside its pre-existing `init.milestone-op`,
+`init.manager`, and `init.phase-op` calls — CRITICAL blast radius, none
+removed, none modified) purely to carry `section_manifest`; like
+`complete-milestone.md`'s entry point, it has no phase-listing logic of its
+own to delegate.
+
 **`plan-phase.md` was originally retargeted away from the #2930 pilot,
 then fragmentized here once the blocker cleared.** Issue #2930's own
 motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
@@ -424,5 +479,5 @@ question 1's resolution for the full record.
   `InvocationFacts`) consumed by the init seam.
 - `scripts/gen-section-manifest.cjs` — generates the committed
   `gsd-core/workflows/section-manifest.json` artifact from markers.
-- `src/init.cts` — `buildSectionManifestField` and the nine wired
+- `src/init.cts` — `buildSectionManifestField` and the ten wired
   `cmdInit*` entry points.
