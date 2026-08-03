@@ -54,7 +54,44 @@ interface ArchivedPhaseDir {
   fullPath: string;
 }
 
+interface ArchiveVersionDir {
+  version: string;
+  archivePath: string;
+}
+
 // ─── Phase search helpers ─────────────────────────────────────────────────────
+
+/**
+ * #2855: single source of truth for resolving and enumerating a project's
+ * (or, when a workstream is active, that workstream's OWN) archived-milestone
+ * directories — `<planningDir(cwd)>/milestones/vX.Y-phases/`. Both
+ * `findPhaseInternal`'s archive fallback and `getArchivedPhaseDirs` used to
+ * carry independent copies of this resolve-then-enumerate logic, which is
+ * exactly the shape that let the original #2855 bug (hardcoded root path)
+ * exist in one copy and not the other. Sharing this seam means a future
+ * change to how the archive tree is located only needs to happen once.
+ * Most-recent-milestone-first order (reverse-sorted directory names).
+ * Never throws: an absent/unreadable milestones/ dir yields [].
+ */
+function listArchiveVersionDirs(cwd: string): ArchiveVersionDir[] {
+  const milestonesDir = path.join(planningDir(cwd), 'milestones');
+  if (!fs.existsSync(milestonesDir)) return [];
+
+  try {
+    const milestoneEntries = fs.readdirSync(milestonesDir, { withFileTypes: true });
+    return milestoneEntries
+      .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
+      .map(e => e.name)
+      .sort()
+      .reverse()
+      .map(archiveName => ({
+        version: archiveName.match(/^(v[\d.]+)-phases$/)![1],
+        archivePath: path.join(milestonesDir, archiveName),
+      }));
+  } catch {
+    return [];
+  }
+}
 
 function searchPhaseInDir(baseDir: string, relBase: string, normalized: string): PhaseSearchResult | null {
   try {
@@ -136,63 +173,46 @@ function findPhaseInternal(cwd: string, phase: unknown): PhaseSearchResult | nul
   const current = searchPhaseInDir(phasesDir, relPhasesDir, normalized);
   if (current) return current;
 
-  const milestonesDir = path.join(cwd, '.planning', 'milestones');
-  if (!fs.existsSync(milestonesDir)) return null;
-
-  try {
-    const milestoneEntries = fs.readdirSync(milestonesDir, { withFileTypes: true });
-    const archiveDirs = milestoneEntries
-      .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
-      .map(e => e.name)
-      .sort()
-      .reverse();
-
-    for (const archiveName of archiveDirs) {
-      const versionMatch = archiveName.match(/^(v[\d.]+)-phases$/);
-      const version = versionMatch![1];
-      const archivePath = path.join(milestonesDir, archiveName);
-      const relBase = '.planning/milestones/' + archiveName;
-      const result = searchPhaseInDir(archivePath, relBase, normalized);
-      if (result) {
-        result.archived = version;
-        return result;
-      }
+  // #2855: scope the archived-milestone fallback to the SAME workstream as the
+  // active-phase search above (planningDir(cwd) resolves GSD_WORKSTREAM/GSD_PROJECT
+  // the identical way both places), not the hardcoded project-root tree. Archived
+  // phases genuinely live under a workstream's own `.planning/workstreams/<ws>/
+  // milestones/` — that is where archivePhaseDirectories (milestone.cts) writes
+  // them via the same planningDir(cwd) resolution. Hardcoding root here let a
+  // pending workstream phase resolve to an unrelated workstream's (or a flat-mode
+  // project's) archived phase that merely shares a phase number. Shared with
+  // getArchivedPhaseDirs via listArchiveVersionDirs (see its doc comment).
+  for (const { version, archivePath } of listArchiveVersionDirs(cwd)) {
+    const relBase = toPosixPath(path.relative(cwd, archivePath));
+    const result = searchPhaseInDir(archivePath, relBase, normalized);
+    if (result) {
+      result.archived = version;
+      return result;
     }
-  } catch { /* intentionally empty */ }
+  }
 
   return null;
 }
 
 function getArchivedPhaseDirs(cwd: string): ArchivedPhaseDir[] {
-  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  // #2855: same workstream-scoped resolution as findPhaseInternal above, via
+  // the shared listArchiveVersionDirs helper. `phase.list --include-archived`
+  // (the primary non-init consumer) must not leak a different workstream's
+  // archive either.
   const results: ArchivedPhaseDir[] = [];
 
-  if (!fs.existsSync(milestonesDir)) return results;
+  for (const { version, archivePath } of listArchiveVersionDirs(cwd)) {
+    const dirs = readSubdirectories(archivePath, true);
 
-  try {
-    const milestoneEntries = fs.readdirSync(milestonesDir, { withFileTypes: true });
-    const phaseDirs = milestoneEntries
-      .filter(e => e.isDirectory() && /^v[\d.]+-phases$/.test(e.name))
-      .map(e => e.name)
-      .sort()
-      .reverse();
-
-    for (const archiveName of phaseDirs) {
-      const versionMatch = archiveName.match(/^(v[\d.]+)-phases$/);
-      const version = versionMatch![1];
-      const archivePath = path.join(milestonesDir, archiveName);
-      const dirs = readSubdirectories(archivePath, true);
-
-      for (const dir of dirs) {
-        results.push({
-          name: dir,
-          milestone: version,
-          basePath: path.join('.planning', 'milestones', archiveName),
-          fullPath: path.join(archivePath, dir),
-        });
-      }
+    for (const dir of dirs) {
+      results.push({
+        name: dir,
+        milestone: version,
+        basePath: toPosixPath(path.relative(cwd, archivePath)),
+        fullPath: path.join(archivePath, dir),
+      });
     }
-  } catch { /* intentionally empty */ }
+  }
 
   return results;
 }
