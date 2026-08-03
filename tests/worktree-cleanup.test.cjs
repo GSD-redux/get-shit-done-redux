@@ -331,7 +331,15 @@ describe('bug #2924: worktree HEAD attachment + destructive recovery', () => {
   });
 
   describe('quick.md pre-dispatch plan commit no longer hard-codes --no-verify', () => {
-    const content = fs.readFileSync(QUICK_PATH, 'utf-8');
+    // #2994 fragmentization moved the pre-dispatch plan commit block out of
+    // quick.md into gsd-core/workflows/quick/steps/worktree-pre-dispatch-commit.md
+    // behind a section marker. Read host + step file combined so the fenced
+    // code block search below still finds it.
+    const content = fs.readFileSync(QUICK_PATH, 'utf-8') +
+      '\n' + fs.readFileSync(
+        path.join(REPO_ROOT, 'gsd-core', 'workflows', 'quick', 'steps', 'worktree-pre-dispatch-commit.md'),
+        'utf-8'
+      );
     const codeBlocks = extractFencedCodeBlocks(content);
     // Find the bash block containing the pre-dispatch plan commit
     const target = codeBlocks.find(({ body }) =>

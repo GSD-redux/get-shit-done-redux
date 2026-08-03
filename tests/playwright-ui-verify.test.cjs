@@ -7,14 +7,25 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// #2994 fragmentization moved the automated_ui_verification step out of
+// verify-work.md into gsd-core/workflows/verify-work/steps/automated-ui-verification.md
+// behind a section marker (`state:ui-phase-active`). The host no longer
+// contains any "playwright" mention at all — reading the host alone now
+// only passes these two assertions via unrelated substring coincidences
+// ("automated"/"UI" from the section-marker id and an unrelated "User-facing
+// changes - UI" bullet; "fall back" from an unrelated subagent-dispatch
+// line), which is vacuous. Read the step file directly — it is the sole
+// remaining source of the real Playwright content.
+const AUTOMATED_UI_VERIFICATION_STEP_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'workflows', 'verify-work', 'steps', 'automated-ui-verification.md'
+);
+
 describe('Playwright-MCP UI verification integration', () => {
   test('verify-work.md mentions automated UI verification', () => {
-    const content = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md'), 'utf-8'
-    );
+    const content = fs.readFileSync(AUTOMATED_UI_VERIFICATION_STEP_PATH, 'utf-8');
     assert.ok(
       content.toLowerCase().includes('playwright') || content.includes('automated') && content.includes('UI'),
-      'verify-work.md should mention automated UI verification option'
+      'verify-work.md (or its extracted verify-work/steps/automated-ui-verification.md) should mention automated UI verification option'
     );
   });
 
@@ -39,9 +50,7 @@ describe('Playwright-MCP UI verification integration', () => {
   });
 
   test('automated verification is optional/conditional (falls back to manual)', () => {
-    const verifyContent = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md'), 'utf-8'
-    );
+    const verifyContent = fs.readFileSync(AUTOMATED_UI_VERIFICATION_STEP_PATH, 'utf-8');
     // Must include a fallback / "if available" conditional
     const hasConditional =
       verifyContent.includes('if available') ||

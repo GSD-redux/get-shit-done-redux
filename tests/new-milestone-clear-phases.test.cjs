@@ -580,6 +580,18 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
   // would break bash mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
   const content = readFileNormalized(workflowPath);
 
+  // #2994 fragmentization moved the 7.5 reset-phase-safety section (including
+  // its "/gsd:new-milestone --reset-phase-numbers ${GSD_WS}" rerun hint) out
+  // of new-milestone.md into gsd-core/workflows/new-milestone/steps/reset-phase-safety.md
+  // behind a section marker. Only the routing-interpolation test below needs
+  // that moved text, so it reads host + step file combined instead of
+  // widening `content` (used for host-only fence extraction elsewhere in
+  // this describe block).
+  const contentWithSteps = content + '\n' + fs.readFileSync(
+    path.join(__dirname, '..', 'gsd-core', 'workflows', 'new-milestone', 'steps', 'reset-phase-safety.md'),
+    'utf8'
+  );
+
   // Locate the first ```bash fence strictly between two headings.
   function extractFenceBetween(markdown, startHeading, endHeading) {
     const startIdx = markdown.indexOf(startHeading);
@@ -677,7 +689,7 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
 
   test('routing interpolations still propagate ${GSD_WS} at the documented lines', () => {
     assert.ok(
-      content.includes('/gsd:new-milestone --reset-phase-numbers ${GSD_WS}'),
+      contentWithSteps.includes('/gsd:new-milestone --reset-phase-numbers ${GSD_WS}'),
       'reset-phase-numbers rerun hint should propagate ${GSD_WS}'
     );
     assert.ok(

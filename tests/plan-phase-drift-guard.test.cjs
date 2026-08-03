@@ -1161,12 +1161,22 @@ describe('feat-22-surfacing-docs', () => {
   });
 
   test('new-project workflow has Drift Guard default-yes option', () => {
-    const content = fs.readFileSync(NEW_PROJECT_PATH, 'utf-8');
+    // #2994 fragmentization moved the Step 2a auto-mode AI/Drift-Guard
+    // AskUserQuestion block (the sole holder of this exact phrasing, even
+    // pre-fragmentization — Step 5's interactive block uses different wording)
+    // out of new-project.md into
+    // gsd-core/workflows/new-project/steps/auto-mode-config.md. Read host +
+    // step combined so this count is preserved across the split.
+    const content = fs.readFileSync(NEW_PROJECT_PATH, 'utf-8') +
+      '\n' + fs.readFileSync(
+        path.join(ROOT, 'gsd-core', 'workflows', 'new-project', 'steps', 'auto-mode-config.md'),
+        'utf-8'
+      );
     // Both question blocks (auto and interactive) should have the yes option
     const count = (content.match(/Yes \(Recommended\).*catches hallucinated names/g) || []).length;
     assert.ok(
       count >= 1,
-      'new-project.md must have at least one Drift Guard "Yes (Recommended)" option'
+      'new-project.md (host + new-project/steps/*.md) must have at least one Drift Guard "Yes (Recommended)" option'
     );
   });
 

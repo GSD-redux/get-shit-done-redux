@@ -177,10 +177,21 @@ describe('bug #1716: resume_from_file routes to complete_session when no [pendin
 
 describe('bug #3381: verify-work forwards workstream context', () => {
   test('workflow forwards ${GSD_WS} to workstream-sensitive SDK queries', () => {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md'),
-      'utf8',
-    );
+    // #2994 fragmentization moved the roadmap.get-phase user-story-format-guard
+    // bash block out of verify-work.md into
+    // gsd-core/workflows/verify-work/steps/mvp-uat-framing.md behind a section
+    // marker (`state:phase-mvp-mode`). Read host + every step file combined so
+    // this GSD_WS-forwarding guard keeps seeing the moved query.
+    const VERIFY_WORK_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md');
+    const VERIFY_WORK_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work', 'steps');
+    let workflow = fs.readFileSync(VERIFY_WORK_MD, 'utf8');
+    if (fs.existsSync(VERIFY_WORK_STEPS_DIR)) {
+      for (const entry of fs.readdirSync(VERIFY_WORK_STEPS_DIR).sort()) {
+        if (entry.endsWith('.md')) {
+          workflow += '\n' + fs.readFileSync(path.join(VERIFY_WORK_STEPS_DIR, entry), 'utf8');
+        }
+      }
+    }
 
     assert.match(workflow, /GSD_WS=""/, 'verify-work must initialize GSD_WS');
     assert.match(
