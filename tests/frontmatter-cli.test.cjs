@@ -419,7 +419,6 @@ body`;
     assert.strictEqual(parsed.valid, false, 'gap_closure: false must NOT satisfy plan-gap-closure');
     assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure must be reported missing when its value is false');
     assert.ok(!parsed.present.includes('gap_closure'), 'gap_closure must not be reported present when its value is false');
-    assert.ok(parsed.present.includes('gap_closure'));
   });
 });
 
