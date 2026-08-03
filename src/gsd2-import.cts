@@ -28,8 +28,11 @@ import { realClock } from './clock.cjs';
 import coreUtilsMod = require('./core-utils.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
+import frontmatterMod = require('./frontmatter.cjs');
 const { output } = ioMod;
 const { transliterateForSlug } = coreUtilsMod;
+const { stripFrontmatter } = frontmatterMod;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -290,9 +293,22 @@ function buildPlanMd(task: TaskInfo, phasePrefix: string, planPrefix: string, ph
  */
 function buildSummaryMd(task: TaskInfo, phasePrefix: string, planPrefix: string): string {
   const raw = task.summary || '';
-  // Strip GSD-2 frontmatter block (--- ... ---) if present
-  const bodyMatch = raw.match(/^---[\s\S]*?---\n+([\s\S]*)$/);
-  const body = bodyMatch ? bodyMatch[1].trim() : raw.trim();
+  // Strip the GSD-2 frontmatter block via the canonical primitive (#2703). The
+  // previous local regex required a bare `\n` after the closing `---`, so a
+  // CRLF-authored summary never matched, fell through to the untouched-raw
+  // branch, and had its frontmatter emitted a second time inside the body of
+  // the document this function then wrapped in a fresh v1 block.
+  //
+  // `extractFrontmatter` — which the issue names — returns only the parsed
+  // object and never the body, so it cannot serve this call site;
+  // `stripFrontmatter` is the same module's canonical body primitive.
+  //
+  // `once` is load-bearing. A GSD-2 summary is an arbitrary user-authored
+  // document, not a GSD artefact with a known frontmatter-doubling failure
+  // mode, so a body opening with a thematic-break-delimited section
+  // (`---` / heading / `---`) is far likelier than a corrupt second header —
+  // and the default greedy loop would delete it without a trace.
+  const body = stripFrontmatter(raw, { once: true }).trim();
 
   return [
     '---',

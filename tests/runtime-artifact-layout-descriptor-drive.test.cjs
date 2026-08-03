@@ -61,14 +61,13 @@ const GOLDEN = {
   // Old switch: BOTH scopes returned [skills, commands] (no scope branch).
   // 5b backfill: local == global.
   // ADR-1235 step 1 (#1763): agents kind added.
+  // #2644: commands are deliberately retired so Cursor exposes a single skills surface.
   'cursor/global': [
     { kind: 'skills',   destSubpath: 'skills',   prefix: 'gsd-' },
-    { kind: 'commands', destSubpath: 'commands',  prefix: 'gsd-' },
     { kind: 'agents',   destSubpath: 'agents',   prefix: 'gsd-' },
   ],
   'cursor/local': [
     { kind: 'skills',   destSubpath: 'skills',   prefix: 'gsd-' },
-    { kind: 'commands', destSubpath: 'commands',  prefix: 'gsd-' },
     { kind: 'agents',   destSubpath: 'agents',   prefix: 'gsd-' },
   ],
 

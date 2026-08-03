@@ -21,8 +21,60 @@ function toPosixPath(p: string): string {
  * EXPLICIT failing verdicts the verifier emits — `missing`/`unknown` (verifier
  * off / not yet run) and `stale` (mtime-derived, #2348) are intentionally left
  * untouched so verifier-disabled projects do not regress to never-complete.
+ *
+ * #2645: `'unrecorded'` is NOT a verdict the verifier itself ever emits — it
+ * is an internal sentinel `workstream-inventory.cts`'s verification-deletion
+ * ledger substitutes for `'missing'` once that workstream has ADOPTED the
+ * ledger (a `.verification-ledger.json` file exists for it) but has no
+ * remembered entry for this specific phase. Pre-adoption (no ledger file at
+ * all) still resolves to plain `'missing'`, which stays OUTSIDE this set —
+ * that is what keeps a project untouched by this fix until it actually uses
+ * the verifier at least once. Post-adoption, an unrecorded phase fails
+ * CLOSED (counted here) rather than open, so a corrupt or evidence-absent
+ * ledger entry can no longer be read as "safe to complete" the way a bare
+ * `'missing'` sentinel is.
  */
-const FAILING_VERIFICATION_STATUSES = new Set<string>(['gaps_found', 'human_needed']);
+const FAILING_VERIFICATION_STATUSES = new Set<string>(['gaps_found', 'human_needed', 'unrecorded']);
+
+/**
+ * #2562 / Bug #2445 / #2645 review: pick ONE winning item per key from a
+ * PRE-SORTED list — newest `mtimeMs` wins; on an exact tie the incumbent
+ * (first-in-sort-order) wins, since only a STRICTLY greater mtime replaces
+ * it. `includeItem` lets a caller exclude items before comparison (e.g.
+ * out-of-milestone directories) — critically, the filter runs BEFORE the
+ * mtime comparison, so an excluded item can never win a tie or a comparison
+ * against an included one.
+ *
+ * Extracted as the SINGLE shared implementation after a #2645 review found
+ * two independently-written copies of this exact rule had silently
+ * diverged: `workstream-inventory.cts`'s ledger-winner selection compared
+ * raw mtimes with no scoping filter, while this module's own `rollupDirByKey`
+ * (below) filtered out-of-milestone directories first. A stale out-of-
+ * milestone directory with a newer mtime than the live in-milestone one
+ * (plausible after a checkout/rebase resets mtimes) could then win the
+ * LEDGER's selection while losing the BUILDER's — reopening #2645's own
+ * hole for the phase that actually counts toward `completed_phases`,
+ * reachable with a plain `rm` and no ledger tampering. A comment asserting
+ * two hand-written copies "use the same rule" is not a guarantee they do;
+ * one shared function is.
+ */
+export function pickRollupWinners<T>(
+  sortedItems: T[],
+  keyOf: (item: T) => string,
+  mtimeOf: (item: T) => number,
+  includeItem: (item: T) => boolean = () => true,
+): Map<string, T> {
+  const winners = new Map<string, T>();
+  for (const item of sortedItems) {
+    if (!includeItem(item)) continue;
+    const key = keyOf(item);
+    const incumbent = winners.get(key);
+    if (incumbent === undefined || mtimeOf(item) > mtimeOf(incumbent)) {
+      winners.set(key, item);
+    }
+  }
+  return winners;
+}
 
 export function isCompletedInventory(status: unknown): boolean {
   const s = (typeof status === 'string'
@@ -220,20 +272,16 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
   // each add to the numerator while the denominator counts distinct phases —
   // pushing completed_phases past it, where the old `Math.min` cap silently
   // rounded the result up to 100% and hid an unstarted phase. Newest-on-disk
-  // wins, mirroring state.cts's #2445 de-duplication.
-  const rollupDirByKey = new Map<string, string>();
-  for (const dir of [...phaseDirNames].sort()) {
-    const entry = countsMap.get(dir);
-    if (scoped && entry?.inMilestone === false) continue;
-    const key = entry?.phaseKey ?? dir;
-    const incumbent = rollupDirByKey.get(key);
-    if (incumbent === undefined) {
-      rollupDirByKey.set(key, dir);
-      continue;
-    }
-    const incumbentMtime = countsMap.get(incumbent)?.mtimeMs ?? 0;
-    if ((entry?.mtimeMs ?? 0) > incumbentMtime) rollupDirByKey.set(key, dir);
-  }
+  // wins, mirroring state.cts's #2445 de-duplication. `pickRollupWinners` is
+  // the SHARED implementation `workstream-inventory.cts`'s ledger-winner
+  // selection also calls, so the two can never independently diverge again
+  // (#2645 review).
+  const rollupDirByKey = pickRollupWinners(
+    [...phaseDirNames].sort(),
+    (dir) => countsMap.get(dir)?.phaseKey ?? dir,
+    (dir) => countsMap.get(dir)?.mtimeMs ?? 0,
+    (dir) => !(scoped && countsMap.get(dir)?.inMilestone === false),
+  );
   const rollupDirs = new Set(rollupDirByKey.values());
 
   const phases: PhaseStatus[] = [];

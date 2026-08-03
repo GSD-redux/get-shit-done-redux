@@ -433,7 +433,7 @@ const capabilities = {
     "role": "feature",
     "version": "1.9.1",
     "title": "Broken-windows ledger",
-    "description": "Cross-phase defect register accumulating stubs, TODOs, skipped tests, unrun verifies, and unmet truths into .planning/WINDOWS.md. Blocks /gsd-ship while any window is open unless explicitly waived with a recorded reason. Operationalizes GSD's no-defer discipline as a tracked, enforced artifact (issue #1950).",
+    "description": "Cross-phase defect register accumulating stubs, TODOs, skipped tests, unrun verifies, and unmet truths into .planning/WINDOWS.md. When enforcement is enabled, it blocks /gsd-ship while any window is open unless explicitly waived with a recorded reason. Operationalizes GSD's no-defer discipline as a tracked artifact (issue #1950).",
     "tier": "full",
     "requires": [],
     "engines": {
@@ -1233,7 +1233,7 @@ const capabilities = {
     "role": "runtime",
     "version": "1.9.1",
     "title": "Cursor",
-    "description": "Cursor IDE — skills + converted commands artifact layout; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
+    "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -1260,14 +1260,6 @@ const capabilities = {
             "converter": "convertClaudeCommandToCursorSkill"
           },
           {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
-          },
-          {
             "kind": "agents",
             "destSubpath": "agents",
             "prefix": "gsd-",
@@ -1284,14 +1276,6 @@ const capabilities = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToCursorSkill"
-          },
-          {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
           },
           {
             "kind": "agents",
@@ -1337,7 +1321,13 @@ const capabilities = {
         "frontmatterDialect": "cursor",
         "hooksJsonSurface": true,
         "skipSharedHooksInstall": true,
-        "reportCommandsDir": true,
+        "retiredArtifacts": [
+          {
+            "destSubpath": "commands",
+            "prefix": "gsd-",
+            "suffix": ".md"
+          }
+        ],
         "skipUpdateBannerCommand": true,
         "skipSettingsUi": true,
         "managedHookEvents": [
@@ -3384,7 +3374,8 @@ const capabilities = {
       },
       "hostBehaviors": {
         "skipSharedHooksInstall": true,
-        "soloStageMetadata": "workflow"
+        "soloStageMetadata": "workflow",
+        "projectInstructionFile": ".trae/rules/rules.md"
       }
     }
   },
@@ -5585,7 +5576,7 @@ const runtimes = {
     "role": "runtime",
     "version": "1.9.1",
     "title": "Cursor",
-    "description": "Cursor IDE — skills + converted commands artifact layout; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
+    "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
     "tier": "core",
     "requires": [],
     "engines": {
@@ -5612,14 +5603,6 @@ const runtimes = {
             "converter": "convertClaudeCommandToCursorSkill"
           },
           {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
-          },
-          {
             "kind": "agents",
             "destSubpath": "agents",
             "prefix": "gsd-",
@@ -5636,14 +5619,6 @@ const runtimes = {
             "nesting": "flat",
             "recursive": true,
             "converter": "convertClaudeCommandToCursorSkill"
-          },
-          {
-            "kind": "commands",
-            "destSubpath": "commands",
-            "prefix": "gsd-",
-            "nesting": "flat",
-            "recursive": false,
-            "converter": "convertClaudeCommandToCursorCommand"
           },
           {
             "kind": "agents",
@@ -5689,7 +5664,13 @@ const runtimes = {
         "frontmatterDialect": "cursor",
         "hooksJsonSurface": true,
         "skipSharedHooksInstall": true,
-        "reportCommandsDir": true,
+        "retiredArtifacts": [
+          {
+            "destSubpath": "commands",
+            "prefix": "gsd-",
+            "suffix": ".md"
+          }
+        ],
         "skipUpdateBannerCommand": true,
         "skipSettingsUi": true,
         "managedHookEvents": [
@@ -6612,7 +6593,8 @@ const runtimes = {
       },
       "hostBehaviors": {
         "skipSharedHooksInstall": true,
-        "soloStageMetadata": "workflow"
+        "soloStageMetadata": "workflow",
+        "projectInstructionFile": ".trae/rules/rules.md"
       }
     }
   },

@@ -84,9 +84,10 @@ git init
 - execution_context path `/.codex/` → `RUNTIME=codex`
 - `/.gemini/` → `RUNTIME=gemini`
 - `/.opencode/` or `/.config/opencode/` → `RUNTIME=opencode`
+- `/.trae/` → `RUNTIME=trae`
 - else → `RUNTIME=claude`
 
-Fall back to env vars (`CODEX_HOME`, `GEMINI_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`) if execution_context is unavailable.
+Fall back to env vars (`CODEX_HOME`, `GEMINI_CONFIG_DIR`, `OPENCODE_CONFIG_DIR`, `TRAE_CONFIG_DIR`) if execution_context is unavailable.
 
 </step>
 

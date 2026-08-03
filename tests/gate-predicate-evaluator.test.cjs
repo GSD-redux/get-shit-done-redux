@@ -274,9 +274,10 @@ describe('evaluatePredicate — malformed predicate throws (maps to check-cmd fa
 // ─── contract surface ─────────────────────────────────────────────────────────
 
 describe('evaluatePredicate — exported contract surface', () => {
-  test('EVALUATOR_KINDS advertises command-exit-zero', () => {
+  test('EVALUATOR_KINDS advertises every built-in predicate kind', () => {
     assert.ok(Array.isArray(EVALUATOR_KINDS));
     assert.ok(EVALUATOR_KINDS.includes('command-exit-zero'));
+    assert.ok(EVALUATOR_KINDS.includes('artifact-frontmatter-equals'));
   });
 
   test('default timeout is 30s', () => {

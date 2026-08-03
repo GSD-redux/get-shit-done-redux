@@ -47,6 +47,8 @@ import verificationMod = require('./verification.cjs');
 import uatPredicateMod = require('./uat-predicate.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- section-manifest.cjs is compiled from section-manifest.cts's named exports; imported as a namespace to read selectSections/SelectableSection/InvocationFacts off module.exports directly (#2932).
+import sectionManifest = require('./section-manifest.cjs');
 const { checkAgentsInstalled } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- git-base-branch.cjs is an export= CommonJS module
 import gitBaseBranch = require('./git-base-branch.cjs');
@@ -322,6 +324,273 @@ function getInitGitState(cwd: string): GitState {
   };
 }
 
+// #2932 (Phase 5, ADR-1671): shipped, generated artifact — see
+// scripts/gen-section-manifest.cjs and gsd-core/workflows/section-manifest.json.
+// Resolved the same way model-catalog.cts resolves model-catalog.json: relative
+// to the compiled module's own directory (gsd-core/bin/lib -> gsd-core/workflows),
+// with a GSD_SECTION_MANIFEST env override so tests can point at a temp fixture
+// (missing/malformed-JSON degraded-path coverage) without mutating the shipped
+// artifact — the shipped file is a shared, concurrently-read resource across
+// parallel test runs and must never be moved/corrupted in place.
+const _sectionManifestCandidatePath = (): string =>
+  process.env['GSD_SECTION_MANIFEST']
+    ? path.resolve(process.env['GSD_SECTION_MANIFEST'])
+    : path.resolve(__dirname, '..', '..', 'workflows', 'section-manifest.json');
+
+/** A manifest entry as shipped on disk: {@link sectionManifest.SelectableSection} plus the `read` step-file path. */
+interface ManifestSection extends sectionManifest.SelectableSection {
+  readonly read: string;
+}
+
+/**
+ * Defense-in-depth shape check for a manifest entry's `read` field, which is
+ * documented as a POSIX-normalized, repo-root-RELATIVE path (never a
+ * filesystem escape). Rejects any absolute path (POSIX leading `/`, a
+ * Windows drive prefix like `C:\`/`C:/`, or a Windows UNC/rooted path
+ * starting with `\`) and any path containing a `..` segment (checked on
+ * BOTH separators — the artifact is generated as POSIX-normalized, but this
+ * validates the raw field defensively rather than trusting that invariant).
+ * `false` here is the only accept path in {@link loadSectionManifestSections};
+ * a `true` degrades the WHOLE load to `null`, same as every other shape
+ * violation — never throws, never partially loads.
+ */
+function isUnsafeManifestReadPath(readPath: string): boolean {
+  if (readPath.startsWith('/') || readPath.startsWith('\\')) return true;
+  if (/^[a-zA-Z]:[\\/]/.test(readPath)) return true;
+  return readPath.split(/[\\/]/).includes('..');
+}
+
+/**
+ * Loads and shape-validates the generated section manifest, then returns the
+ * document-order section array for exactly one named `workflow` (#2992 Phase
+ * 6.1: the artifact is now `{ workflows: { <name>: [...] } }`, keyed by
+ * `.md` basename — see `scripts/gen-section-manifest.cjs`). Returns `null`
+ * — never throws — when the artifact is missing, unreadable, malformed
+ * JSON, valid JSON of the wrong shape (INCLUDING the pre-6.1 flat
+ * `{sections:[...]}` shape, which must never be mis-attributed to any
+ * workflow — design row C4), or when `workflow` has no key in `workflows`.
+ * `Object.hasOwn` guards the key lookup so a hostile workflow name
+ * (`constructor`, `toString`, `__proto__`) can never resolve via the
+ * prototype chain instead of a genuine own key. Each entry's `read` field is
+ * additionally validated by {@link isUnsafeManifestReadPath} (rejects an
+ * absolute path or a `..` segment) — a single unsafe entry degrades the
+ * WHOLE load to `null`, all-or-nothing like every other shape violation.
+ */
+function loadSectionManifestSections(workflow: string): ManifestSection[] | null {
+  try {
+    const raw = fs.readFileSync(_sectionManifestCandidatePath(), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const workflows = (parsed as Record<string, unknown>)['workflows'];
+    if (workflows === null || typeof workflows !== 'object' || Array.isArray(workflows)) return null;
+    if (!Object.hasOwn(workflows, workflow)) return null;
+    const sections = (workflows as Record<string, unknown>)[workflow];
+    if (!Array.isArray(sections)) return null;
+    for (const section of sections) {
+      const readValue = (section as Record<string, unknown> | null)?.['read'];
+      if (
+        !section ||
+        typeof section !== 'object' ||
+        typeof (section as Record<string, unknown>)['id'] !== 'string' ||
+        typeof (section as Record<string, unknown>)['when'] !== 'string' ||
+        typeof readValue !== 'string' ||
+        isUnsafeManifestReadPath(readValue)
+      ) {
+        return null;
+      }
+    }
+    return sections as ManifestSection[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `state:has-prior-phases` ground truth (design doc §Behavior table, regression-gate
+ * body: "Skip if: this is the first phase (no prior phases)"): TRUE when at least
+ * one OTHER phase directory under `.planning/phases/` contains a `*-VERIFICATION.md`
+ * file. Bounded, non-throwing — an unreadable phases directory degrades to `false`
+ * rather than surfacing an error from an init query.
+ */
+function detectHasPriorPhases(cwd: string, phaseInfo: Record<string, unknown> | null): boolean {
+  const phasesDir = path.join(planningDir(cwd), 'phases');
+  const currentDirName = phaseInfo?.['directory']
+    ? path.basename(phaseInfo['directory'] as string)
+    : null;
+  try {
+    if (!fs.existsSync(phasesDir)) return false;
+    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name === currentDirName) continue;
+      let files: string[];
+      try {
+        files = fs.readdirSync(path.join(phasesDir, entry.name));
+      } catch {
+        continue;
+      }
+      if (files.some((f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md')) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Strict-boolean, bounded, non-throwing read of a dotted key path from
+ * `.planning/config.json` (design rows D7-D10): absent file, unreadable
+ * file (fs error), malformed JSON, a non-object intermediate segment, or a
+ * present-but-non-boolean value (e.g. the string `"true"`) all degrade to
+ * `false` — strict `=== true`, never coerced, mirrors `detectHasPriorPhases`'s
+ * degrade-to-false discipline. `keyPath` is always a fixed literal supplied
+ * by this module, never attacker/user input, so a plain bracket traversal
+ * carries no prototype hazard here.
+ */
+function readConfigJsonBoolean(cwd: string, keyPath: readonly string[]): boolean {
+  try {
+    const raw = fs.readFileSync(path.join(planningDir(cwd), 'config.json'), 'utf8');
+    let cursor: unknown = JSON.parse(raw);
+    for (const segment of keyPath) {
+      if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return false;
+      cursor = (cursor as Record<string, unknown>)[segment];
+    }
+    return cursor === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `state:phase-mvp-mode` ground truth (design doc §Behavior table: ROADMAP.md
+ * `**Mode:** mvp` for the CURRENT phase). Bounded, non-throwing — an absent
+ * `phaseNumber`, an absent ROADMAP.md, an absent phase heading, or a phase
+ * section with no `**Mode:**` line (or a `**Mode:**` value other than the
+ * literal `mvp` token, case-insensitively) all degrade to `false` (D11; "a
+ * phase with no `**Mode:**` line and an absent ROADMAP are both false, but
+ * neither may throw"). Self-contained rather than reusing `phase.cts`'s
+ * private `getRoadmapModeForPhase` (unexported, and importing it here would
+ * be a cross-module surface change outside this task's scope) — but derived
+ * from the SAME extraction primitives (`extractCurrentMilestone`,
+ * `PHASE_NUMBER_TOKEN_SOURCE`-adjacent `escapeRegex`) already used by this
+ * file's own `cmdInitProgress` MVP-heading scan, so it is not a second
+ * ROADMAP-heading parser invented from scratch.
+ */
+function detectPhaseMvpMode(cwd: string, phaseNumber: string | null): boolean {
+  if (!phaseNumber) return false;
+  try {
+    const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
+    if (!fs.existsSync(roadmapPath)) return false;
+    const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
+    const content = extractCurrentMilestone(rawContent, cwd);
+    const escapedPhase = escapeRegex(phaseNumber);
+    const phaseHeader = new RegExp(`#{2,4}\\s*Phase\\s+${escapedPhase}(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'i');
+    const headerMatch = content.match(phaseHeader);
+    if (!headerMatch || headerMatch.index === undefined) return false;
+    const sectionStart = headerMatch.index;
+    const rest = content.slice(sectionStart + headerMatch[0].length);
+    const nextHeaderMatch = rest.match(/\n#{2,4}\s+Phase\s+\S/i);
+    const sectionEnd = nextHeaderMatch
+      ? sectionStart + headerMatch[0].length + (nextHeaderMatch.index as number)
+      : content.length;
+    const section = content.slice(sectionStart, sectionEnd);
+    const modeMatch = section.match(/\*\*Mode:\*\*\s*([^\n]+)/i);
+    return modeMatch ? modeMatch[1].trim().toLowerCase() === 'mvp' : false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds the `section_manifest` init-bundle field (#2932 Deliverable 2): resolves
+ * {@link sectionManifest.InvocationFacts} from this invocation, loads the generated
+ * manifest, and partitions it via the pure {@link sectionManifest.selectSections}
+ * evaluator. Returns `null` on any degraded condition (missing/malformed artifact,
+ * or an unexpected throw from the evaluator itself) — this field is additive and
+ * optional, never load-bearing for dispatch (Hyrum's Law: 22 direct init-bundle
+ * dependents must be unaffected by its absence).
+ *
+ * `flags` (D1-D5): built from `options`'s OWN keys, gated on VALUE TRUTHINESS
+ * — not merely `!== undefined`. `parseNamedArgs` (src/command-arg-projection.cts)
+ * never yields `undefined` for an absent flag of either kind: a value-flag's
+ * absence is `null`, a booleanFlag's absence is `false`. An `undefined`-only
+ * absence check therefore lets BOTH kinds of absent flag leak into `flags` as
+ * present. A present value-flag is always a non-empty string, and a present
+ * booleanFlag is always `true` — so skipping any falsy value (`undefined`,
+ * `null`, `false`, `''`, `0`) is a safe, single-rule absence test for both
+ * flag kinds; `--wave 0` still resolves to `true` via `booleanFlags`, so
+ * truthiness never misclassifies a real invocation as absent. `Object.keys`
+ * + a plain `new Set()` so a hostile option key (e.g. `constructor`) can
+ * never leak via the prototype chain.
+ *
+ * `needsCodebaseMap` is not computed in this shared facts-assembly scope —
+ * `isBrownfield && !hasCodebaseMap` is only meaningful for `new-project`
+ * (`cmdInitNewProject` already computes both operands for its own result
+ * object). Rather than recomputing it here (a second, divergence-prone
+ * codebase-map scan) or widening every call site's positional signature,
+ * callers that HAVE the fact pass it via the optional `overrides` param;
+ * every other caller passes nothing and gets `undefined` (falsy per
+ * `WHEN_PREDICATES`, never invented, never throws).
+ */
+function buildSectionManifestField(
+  cwd: string,
+  phaseInfo: Record<string, unknown> | null,
+  options: Record<string, unknown>,
+  workflow: string,
+  overrides: { needsCodebaseMap?: boolean } = {},
+): Record<string, unknown> | null {
+  const sections = loadSectionManifestSections(workflow);
+  if (!sections) return null;
+
+  const rawPhaseNumber = phaseInfo?.['phase_number'];
+  const phaseNumber =
+    typeof rawPhaseNumber === 'string'
+      ? rawPhaseNumber
+      : typeof rawPhaseNumber === 'number'
+        ? String(rawPhaseNumber)
+        : null;
+
+  const flags = new Set<string>();
+  for (const key of Object.keys(options)) {
+    if (!options[key]) continue;
+    flags.add(`--${key}`);
+  }
+
+  // `state:chunked-mode` (#2993) is a disjunction — `--chunked` flag OR
+  // `.planning/config.json` `workflow.plan_chunked` — resolved to ONE
+  // boolean HERE, in fact computation, never in the `when=` grammar itself
+  // (WHEN_PREDICATES['state:chunked-mode'] reads only `facts.chunkedMode`).
+  // That separation is what keeps ADR-1671:69's Greenspun guard intact: the
+  // grammar still sees exactly one atom with no operator.
+  const chunkedMode = flags.has('--chunked') || readConfigJsonBoolean(cwd, ['workflow', 'plan_chunked']);
+
+  const facts: sectionManifest.InvocationFacts = {
+    flags,
+    phaseNumber,
+    hasPriorPhases: detectHasPriorPhases(cwd, phaseInfo),
+    worktreesEnabled: readConfigJsonBoolean(cwd, ['workflow', 'use_worktrees']),
+    phaseMvpMode: detectPhaseMvpMode(cwd, phaseNumber),
+    needsCodebaseMap: overrides.needsCodebaseMap,
+    chunkedMode,
+  };
+
+  try {
+    const selection = sectionManifest.selectSections(sections, facts);
+    const readById = new Map(sections.map((s) => [s.id, s.read]));
+    return {
+      workflow,
+      included: selection.included,
+      excluded: selection.excluded,
+      read: selection.included
+        .map((id) => readById.get(id))
+        .filter((p): p is string => typeof p === 'string'),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function cmdInitExecutePhase(
   cwd: string,
   phase: string,
@@ -454,6 +723,9 @@ function cmdInitExecutePhase(
       /* intentionally empty */
     }
   }
+
+  // #2932/#2992 (Phase 5/6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, options, 'execute-phase');
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -645,10 +917,13 @@ function cmdInitPlanPhase(
     }
   }
 
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, options, 'plan-phase');
+
   output(withProjectRoot(cwd, result), raw);
 }
 
-function cmdInitNewProject(cwd: string, raw: boolean): void {
+function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
 
   const homedir = os.homedir();
@@ -699,10 +974,18 @@ function cmdInitNewProject(cwd: string, raw: boolean): void {
     research_dir: toPosixPath(path.join(planningRoot(cwd), 'research')),
   };
 
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  // needsCodebaseMap is threaded from this scope's own isBrownfield/hasCodebaseMap
+  // computation (see `needs_codebase_map` above) so `state:needs-codebase-map` is
+  // genuinely computed for this workflow, not left permanently false.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'new-project', {
+    needsCodebaseMap: isBrownfield && !hasCodebaseMap,
+  });
+
   output(withProjectRoot(cwd, result), raw);
 }
 
-function cmdInitNewMilestone(cwd: string, raw: boolean): void {
+function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
   const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
   const latestCompleted = getLatestCompletedMilestone(cwd);
@@ -758,10 +1041,18 @@ function cmdInitNewMilestone(cwd: string, raw: boolean): void {
     milestones_path: toPosixPath(path.join(planningDir(cwd), 'MILESTONES.md')),
   };
 
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'new-milestone');
+
   output(withProjectRoot(cwd, result), raw);
 }
 
-function cmdInitQuick(cwd: string, description: string | undefined, raw: boolean): void {
+function cmdInitQuick(
+  cwd: string,
+  description: string | undefined,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
   const config = loadConfig(cwd);
   const now = new Date();
   const slug = description ? generateSlugInternal(description)?.substring(0, 40) : null;
@@ -811,6 +1102,9 @@ function cmdInitQuick(cwd: string, description: string | undefined, raw: boolean
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
     planning_exists: fs.existsSync(planningRoot(cwd)),
   };
+
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'quick');
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -1694,7 +1988,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   output(withProjectRoot(cwd, result), raw);
 }
 
-function cmdInitProgress(cwd: string, raw: boolean): void {
+function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   try {
     (pruneOrphanedWorktrees as (cwd: string) => void)(cwd);
   } catch {
@@ -1902,6 +2196,9 @@ function cmdInitProgress(cwd: string, raw: boolean): void {
     project_path: toPosixPath(path.join(planningDir(cwd), 'PROJECT.md')),
     config_path: toPosixPath(path.join(planningDir(cwd), 'config.json')),
   };
+
+  // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'progress');
 
   output(withProjectRoot(cwd, result), raw);
 }

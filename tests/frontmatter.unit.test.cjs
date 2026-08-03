@@ -21,6 +21,7 @@ const {
   extractFrontmatter,
   reconstructFrontmatter,
   spliceFrontmatter,
+  stripFrontmatter,
   noOpObjectListSetError,
   parseMustHavesBlock,
   FRONTMATTER_SCHEMAS,
@@ -832,8 +833,11 @@ describe('FRONTMATTER_SCHEMAS', () => {
     ]);
   });
 
-  test('three schemas exist: plan, summary, verification', () => {
-    assert.deepEqual(Object.keys(FRONTMATTER_SCHEMAS).sort(), ['plan', 'summary', 'verification']);
+  test('four schemas exist: plan, plan-gap-closure, summary, verification (#2847)', () => {
+    assert.deepEqual(
+      Object.keys(FRONTMATTER_SCHEMAS).sort(),
+      ['plan', 'plan-gap-closure', 'summary', 'verification']
+    );
   });
 
   test('plan includes phase field', () => {
@@ -858,6 +862,55 @@ describe('FRONTMATTER_SCHEMAS', () => {
 
   test('verification does not include completed field', () => {
     assert.ok(!FRONTMATTER_SCHEMAS.verification.required.includes('completed'));
+  });
+});
+
+// ─── FRONTMATTER_SCHEMAS['plan-gap-closure'] (#2847) ──────────────────────────
+//
+// #2847: --gaps does not load planner-gap-closure.md's requirement into the
+// only machine-checked gate — gap-closure plans could pass validation
+// without `gap_closure: true`, so a subsequent `--gaps-only` execute run
+// silently matched zero plans. Fix: a dedicated schema that requires every
+// 'plan' field plus `gap_closure`, kept separate so standard/reviews-mode
+// plans (validated against 'plan', asserted unchanged above) are unaffected.
+
+describe("FRONTMATTER_SCHEMAS['plan-gap-closure'] (#2847)", () => {
+  // #2847 review: "has required field", "has exactly 9 required fields",
+  // "includes gap_closure field", and "is a superset of every plan-required
+  // field" were deleted here. Each was strictly subsumed by the deepEqual
+  // exact-list test below (a 9-element array that deepEquals a literal
+  // containing 'gap_closure' trivially has 9 elements, a 'required' key,
+  // and includes 'gap_closure' — none of those checks could ever fail
+  // independently of the deepEqual one). The "superset" test was additionally
+  // tautological on its own: plan-gap-closure.required is LITERALLY
+  // `[...PLAN_REQUIRED_FIELDS, 'gap_closure']` (src/frontmatter.cts), so it
+  // cannot fail while that spread exists, regardless of what the deepEqual
+  // test above catches.
+  test('plan-gap-closure schema required fields are exact', () => {
+    assert.deepEqual(FRONTMATTER_SCHEMAS['plan-gap-closure'].required, [
+      'phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves', 'gap_closure',
+    ]);
+  });
+
+  test('plan schema (standard/reviews mode) does NOT include gap_closure — unaffected by #2847 fix', () => {
+    assert.ok(!FRONTMATTER_SCHEMAS.plan.required.includes('gap_closure'));
+  });
+
+  // requiredValues (#2847 review finding): presence alone let `gap_closure: false`
+  // validate as valid:true — --gaps-only filters strictly on gap_closure === true,
+  // so that was a live reproduction of #2847's reported symptom, one value away.
+  test('plan-gap-closure requires the value "true" for gap_closure, not mere presence', () => {
+    assert.ok('requiredValues' in FRONTMATTER_SCHEMAS['plan-gap-closure']);
+    assert.equal(FRONTMATTER_SCHEMAS['plan-gap-closure'].requiredValues.gap_closure, 'true');
+  });
+
+  test('plan schema has no requiredValues — every field is presence-only, unaffected by #2847 fix', () => {
+    assert.equal(FRONTMATTER_SCHEMAS.plan.requiredValues, undefined);
+  });
+
+  test('summary and verification schemas have no requiredValues — presence-only, unaffected', () => {
+    assert.equal(FRONTMATTER_SCHEMAS.summary.requiredValues, undefined);
+    assert.equal(FRONTMATTER_SCHEMAS.verification.requiredValues, undefined);
   });
 });
 
@@ -1303,5 +1356,56 @@ describe('noOpObjectListSetError (#1660)', () => {
     assert.ok(msg.includes('had no effect'), msg);
     assert.ok(msg.includes('object-list'), msg);
     assert.ok(msg.includes('Edit the file directly'), msg);
+  });
+});
+
+// ─── stripFrontmatter ─────────────────────────────────────────────────────────
+
+describe('stripFrontmatter', () => {
+  const stacked = ['---', 'a: 1', '---', '---', 'b: 2', '---', '', 'Real body.'].join('\n');
+
+  test('strips a single block', () => {
+    assert.strictEqual(stripFrontmatter(['---', 'a: 1', '---', '', 'Body.'].join('\n')), 'Body.');
+  });
+
+  test('is CRLF-tolerant', () => {
+    const crlf = ['---', 'a: 1', '---', '', 'Body.'].join('\r\n');
+    assert.strictEqual(stripFrontmatter(crlf), 'Body.');
+  });
+
+  test('defaults to stripping every stacked block (corruption recovery)', () => {
+    assert.strictEqual(stripFrontmatter(stacked), 'Real body.');
+  });
+
+  test('an omitted options argument keeps the greedy default', () => {
+    // Back-compat: state.cts and state-transition.cts call this with one arg.
+    assert.strictEqual(stripFrontmatter(stacked, {}), 'Real body.');
+  });
+
+  test('once: true stops after the first block', () => {
+    assert.strictEqual(
+      stripFrontmatter(stacked, { once: true }),
+      ['---', 'b: 2', '---', '', 'Real body.'].join('\n'),
+    );
+  });
+
+  test('once: false is the greedy default', () => {
+    assert.strictEqual(stripFrontmatter(stacked, { once: false }), 'Real body.');
+  });
+
+  test('returns content unchanged when there is no frontmatter', () => {
+    const plain = ['Just prose.', '', 'More prose.'].join('\n');
+    assert.strictEqual(stripFrontmatter(plain), plain);
+    assert.strictEqual(stripFrontmatter(plain, { once: true }), plain);
+  });
+
+  test('leaves an unterminated block alone under both modes', () => {
+    const unterminated = ['---', 'a: 1', 'b: 2'].join('\n');
+    assert.strictEqual(stripFrontmatter(unterminated), unterminated);
+    assert.strictEqual(stripFrontmatter(unterminated, { once: true }), unterminated);
+  });
+
+  test('empty string round-trips', () => {
+    assert.strictEqual(stripFrontmatter(''), '');
   });
 });

@@ -17,11 +17,10 @@
  * non-zero check-command exit, which the workflow's two-step gate contract treats
  * as a step-1 command failure (routed per the gate's `onError`).
  *
- * Built-in kind (v1): `command-exit-zero` — run a declared command in a bounded
- * `sh -c` subprocess at the project root, inheriting the process env; exit 0 =>
- * pass, non-zero => block, timeout => block. The production runBoundedShell
- * binding is shell-command-projection.execTool (bounded spawnSync). See ADR-2008
- * for the full sandbox contract.
+ * Built-in kinds: `command-exit-zero` runs a declared command in a bounded
+ * `sh -c` subprocess; `artifact-frontmatter-equals` compares a declared value
+ * with frontmatter read through injected artifact dependencies. See ADR-2008
+ * for the full contracts.
  *
  * This is a leaf pure module: no fs, no child_process, no config — the subprocess
  * seam is injected so the evaluator is trivially testable without spawning.
@@ -39,7 +38,7 @@ const COMMAND_MAX_OUTPUT_CHARS = 2000;
 const COMMAND_MAX_LENGTH = 4096;
 
 /** Predicate kinds this evaluator recognises (extensible — add to KIND_TABLE). */
-const EVALUATOR_KINDS = Object.freeze(['command-exit-zero']);
+const EVALUATOR_KINDS = Object.freeze(['command-exit-zero', 'artifact-frontmatter-equals']);
 
 /** Placeholders interpolated into a declared command, in addition to sh's own vars. */
 const INTERPOLATION_VAR_NAMES = Object.freeze(['PHASE_NUMBER', 'PHASE_DIR', 'PHASE_REQ_IDS']);
@@ -64,6 +63,8 @@ interface BoundedShellResult {
 
 interface PredicateDeps {
   runBoundedShell(opts: { command: string; cwd: string; timeoutMs: number }): BoundedShellResult;
+  findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null;
+  readFrontmatter(filePath: string): Record<string, unknown>;
 }
 
 interface PredicateResult {
@@ -149,10 +150,64 @@ function evaluateCommandExitZero(
   };
 }
 
+// ─── Kind: artifact-frontmatter-equals ──────────────────────────────────────────
+
+function evaluateArtifactFrontmatterEquals(
+  predicate: Record<string, unknown>,
+  ctx: PredicateContext,
+  deps: PredicateDeps,
+): PredicateResult {
+  const artifactSuffix = predicate['artifact'];
+  if (!isNonEmptyString(artifactSuffix)) {
+    throw new Error('artifact-frontmatter-equals predicate requires a non-empty string "artifact"');
+  }
+  const field = predicate['field'];
+  if (!isNonEmptyString(field)) {
+    throw new Error('artifact-frontmatter-equals predicate requires a non-empty string "field"');
+  }
+  const expectedValue = predicate['equals'];
+  if (expectedValue === undefined) {
+    throw new Error('artifact-frontmatter-equals predicate requires an "equals" key');
+  }
+  const targetDir = isNonEmptyString(ctx.phaseDir) ? ctx.phaseDir : ctx.cwd;
+  const filePath = deps.findPhaseArtifact(targetDir, artifactSuffix);
+  if (!filePath) {
+    return {
+      block: true,
+      message: `Artifact matching ${artifactSuffix} not found in ${targetDir}`,
+      details: { kind: 'artifact-frontmatter-equals', artifactNotFound: true },
+    };
+  }
+
+  const fm = deps.readFrontmatter(filePath);
+
+  const actualValue = fm[field];
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  const expectedStr = typeof expectedValue === 'object' ? JSON.stringify(expectedValue) : String(expectedValue);
+  // eslint-disable-next-line @typescript-eslint/no-base-to-string
+  const actualStr = typeof actualValue === 'object' ? JSON.stringify(actualValue) : String(actualValue);
+
+  const matches = actualValue === expectedValue || (actualValue !== undefined && actualValue !== null && actualStr === expectedStr);
+  if (matches) {
+    return {
+      block: false,
+      message: `Frontmatter field "${field}" matches expected value (${expectedStr})`,
+      details: { kind: 'artifact-frontmatter-equals', match: true },
+    };
+  }
+
+  return {
+    block: true,
+    message: `Frontmatter field "${field}" in ${artifactSuffix} is ${actualStr}, expected ${expectedStr}`,
+    details: { kind: 'artifact-frontmatter-equals', match: false, actual: actualValue, expected: expectedValue },
+  };
+}
+
 // ─── Kind dispatch table ──────────────────────────────────────────────────────
 
 const KIND_TABLE: Record<string, (p: Record<string, unknown>, ctx: PredicateContext, deps: PredicateDeps) => PredicateResult> = {
   'command-exit-zero': evaluateCommandExitZero,
+  'artifact-frontmatter-equals': evaluateArtifactFrontmatterEquals,
 };
 
 // ─── Public entry point ───────────────────────────────────────────────────────
@@ -183,6 +238,14 @@ function evaluatePredicate(predicate: unknown, context: unknown, deps: unknown):
   const kind = pred['kind'];
   if (typeof kind !== 'string' || kind.length === 0) {
     throw new Error('predicate.kind must be a non-empty string');
+  }
+  if (kind === 'artifact-frontmatter-equals') {
+    if (typeof d.findPhaseArtifact !== 'function') {
+      throw new Error('predicate deps require a "findPhaseArtifact" function');
+    }
+    if (typeof d.readFrontmatter !== 'function') {
+      throw new Error('predicate deps require a "readFrontmatter" function');
+    }
   }
 
   const handler = KIND_TABLE[kind];

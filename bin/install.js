@@ -2612,36 +2612,11 @@ function convertClaudeCommandToCursorSkill(content, skillName) {
   const shortDescription = description.length > 180 ? `${description.slice(0, 177)}...` : description;
   const adapter = getCursorSkillAdapterHeader(skillName);
 
-  // #2341: mark user-invocable:false so the skill is NOT shown in Cursor's '/'
-  // menu (it defaults to true). Cursor also writes a commands/ surface (#785),
-  // and surfacing both duplicated every /gsd-* entry. This mirrors the #789
-  // CodeBuddy de-dup: the commands/ surface is the sole '/' entry point; skills
-  // stay model-invocable background knowledge. (user-invocable:false hides from
-  // '/' while keeping model invocation — distinct from disable-model-invocation.)
-  return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\nuser-invocable: false\n---\n\n${adapter}\n\n${body.trimStart()}`;
-}
-
-/**
- * Convert a Claude Code command to a Cursor 1.6 slash command (#785).
- *
- * Cursor slash commands live in `.cursor/commands/<name>.md` and are
- * plain markdown — no YAML frontmatter, no adapter header. The filename
- * becomes the command name (e.g. `gsd-help.md` → `/gsd-help`).
- *
- * Applies the same `convertClaudeToCursorMarkdown` transforms as the skill
- * converter (tool renames, brand substitution, slash-command normalisation),
- * then strips the YAML frontmatter block so only the prose body remains.
- *
- * @param {string} content   raw Claude Code command markdown (may have frontmatter)
- * @param {string} _commandName  the target command name (unused; present for
- *   API symmetry with other converters so the runtime-artifact-layout stage
- *   function can call it uniformly)
- * @returns {string} plain markdown body, no frontmatter
- */
-function convertClaudeCommandToCursorCommand(content, _commandName) {
-  const converted = convertClaudeToCursorMarkdown(content);
-  const { body } = extractFrontmatterAndBody(converted);
-  return body.trimStart();
+  // Cursor skills are both slash-invocable and model-invocable. Do not emit the
+  // unsupported `user-invocable` field: it is ignored by Cursor and previously
+  // hid the real cause of duplicate entries, the parallel commands/ surface
+  // retired in #2644.
+  return `---\nname: ${yamlIdentifier(skillName)}\ndescription: ${yamlQuote(shortDescription)}\n---\n\n${adapter}\n\n${body.trimStart()}`;
 }
 
 /**
@@ -2701,10 +2676,55 @@ function convertClaudeToTraeMarkdown(content) {
   // Replace general-purpose subagent type with Trae's equivalent "general_purpose_task"
   converted = converted.replace(/subagent_type="general-purpose"/g, 'subagent_type="general_purpose_task"');
   converted = converted.replace(/\$ARGUMENTS\b/g, '{{GSD_ARGS}}');
-  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.trae/rules/`');
-  converted = converted.replace(/\.\/CLAUDE\.md/g, '.trae/rules/');
-  converted = converted.replace(/`CLAUDE\.md`/g, '`.trae/rules/`');
-  converted = converted.replace(/\bCLAUDE\.md\b/g, '.trae/rules/');
+  // #2658: full-path forms (with a leading dot-claude-slash prefix) MUST be
+  // replaced before the bare Claude-instruction-file pattern and before the
+  // generic dot-claude-slash rewrite below — otherwise the bare pattern
+  // consumes only the instruction-filename tail, leaving that prefix stale
+  // in place, and the generic rewrite then mutates the stale leftover too,
+  // producing a doubled trae-prefix segment ahead of the rules path instead
+  // of a single clean one. (Deliberately never spelling the instruction
+  // filename as one contiguous "CLAUDE" + dot + "md" token, and never
+  // spelling either malformed shape out as a literal contiguous string, in
+  // ANY comment in this function: this file ships verbatim into local
+  // `--trae` installs, where it is itself run through this same class of
+  // find/replace — a literal instruction-filename token sitting in a
+  // comment gets "fixed" right along with real code, and the emitted-content
+  // regression test added alongside this fix asserts neither malformed
+  // shape appears anywhere in the installed tree, comments included; this
+  // bit the fix itself twice during development.) All forms converge on the
+  // same concrete file (never a bare directory) so this stays in parity
+  // with the `trae.js` RUNTIME_CONTENT_DISPATCH entry.
+  converted = converted.replace(/`\.\/\.claude\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.\/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  converted = converted.replace(/`\.claude\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  // #2658 (found via the end-to-end install regression test, not the static
+  // trace above): `copyWithPathReplacement` runs a GENERIC dot-claude-slash
+  // -> runtime-config-dir rewrite on every .md file before calling this
+  // converter — for `~/.claude/`, `$HOME/.claude/`, AND `./.claude/` alike —
+  // substituting a runtime-appropriate `pathPrefix` this function is never
+  // given and cannot itself compute (it differs per install invocation: a
+  // relative `./.trae/` for a project-local install, an arbitrary absolute
+  // path for a local install rooted elsewhere, `~/.trae/` for a global one).
+  // So for source using any of those prefixed forms, the patterns above
+  // never fire here — this converter only ever sees the ALREADY-rewritten
+  // "<runtime-config-dir>/" + instruction-filename shape, with whatever
+  // prefix the install actually used. The generic pattern below preserves
+  // that prefix verbatim (via the capture group) and only fixes the
+  // filename suffix, rather than assuming a fixed `./.trae/` shape — a
+  // narrower fixed-prefix version of this pattern shipped first and still
+  // left the doubled-prefix defect live for the `$HOME/.claude/` and
+  // `~/.claude/` forms specifically (found the same way, one regression-test
+  // run later). Scoped to a `.trae/` tail so it cannot also swallow the
+  // unprefixed `./CLAUDE.md` form the very next pattern handles differently
+  // (discarding the prefix entirely, not preserving it). Must run before
+  // the bare pattern for the same consume-the-full-match-first reason.
+  converted = converted.replace(/`([^\s`]*\.trae\/)CLAUDE\.md`/g, '`$1rules/rules.md`');
+  converted = converted.replace(/([^\s`]*\.trae\/)CLAUDE\.md/g, '$1rules/rules.md');
+  converted = converted.replace(/`\.\/CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\.\/CLAUDE\.md/g, '.trae/rules/rules.md');
+  converted = converted.replace(/`CLAUDE\.md`/g, '`.trae/rules/rules.md`');
+  converted = converted.replace(/\bCLAUDE\.md\b/g, '.trae/rules/rules.md');
   converted = converted.replace(/\.claude\/skills\//g, '.trae/skills/');
   converted = converted.replace(/\.\/\.claude\//g, './.trae/');
   converted = converted.replace(/\.claude\//g, '.trae/');
@@ -7525,7 +7545,18 @@ const RUNTIME_CONTENT_DISPATCH = {
         return `/gsd-${commandName}`;
       });
       content = content.replace(/\.claude\/skills\//g, '.trae/skills/');
-      content = content.replace(/CLAUDE\.md/g, '.trae/rules/');
+      // #2658: the full dot-claude-slash-prefixed instruction-file path must
+      // be replaced before the bare instruction-filename fallback, or the
+      // bare regex only rewrites that filename and leaves the prefix stale
+      // in place, producing a malformed doubled-prefix path (see the longer
+      // note in convertClaudeToTraeMarkdown above — the instruction filename
+      // and either malformed shape are deliberately never spelled out
+      // contiguously here either, for the same reason: this file ships
+      // verbatim). Both forms target the same concrete file (never a bare
+      // directory), matching the `.md` converter (convertClaudeToTraeMarkdown)
+      // so js/cjs and md content agree on one canonical path.
+      content = content.replace(/\.claude\/CLAUDE\.md/g, '.trae/rules/rules.md');
+      content = content.replace(/CLAUDE\.md/g, '.trae/rules/rules.md');
       content = content.replace(/\bClaude Code\b/g, 'Trae');
       return content;
     },
@@ -10565,8 +10596,9 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
         }
       }
 
-      // Descriptor-driven commands/ output report (#785 — Cursor 1.6 slash commands).
-      // Gated by hostBehaviors.reportCommandsDir, not a hardcoded `isCursor` branch (#2089).
+      // Descriptor-driven commands/ output report (currently CodeBuddy).
+      // Cursor retired this parallel surface in #2644 because its skills are
+      // already slash-menu entries as well as model-invocable context.
       if (_hostBehaviors(runtime).reportCommandsDir) {
         const commandsDir = path.join(targetDir, 'commands');
         if (fs.existsSync(commandsDir)) {
@@ -13270,7 +13302,6 @@ module.exports = {
     applyRuntimeContentRewritesInPlace,
     getCodexSkillAdapterHeader,
     convertClaudeCommandToCursorSkill,
-    convertClaudeCommandToCursorCommand,
     convertClaudeAgentToCursorAgent,
     convertClaudeAgentToCodexAgent,
     generateCodexAgentToml,

@@ -375,7 +375,7 @@ ui-phase → UI-SPEC.md (design contract, optional)
 plan-phase
     ├── Research gate (blocks if RESEARCH.md has unresolved open questions)
     ├── Phase Researcher → RESEARCH.md
-    │       └── Package Legitimacy Gate: slopcheck on every package; [SLOP] removed,
+    │       └── Package Legitimacy Gate: registry-API verdict on every package; [SLOP] removed,
     │           [SUS]/[ASSUMED] flagged; Audit table written to RESEARCH.md
     ├── Planner (with reachability check) → PLAN.md files
     │       └── checkpoint:human-verify injected before [ASSUMED]/[SUS] installs;
@@ -598,7 +598,7 @@ Runtime Engine (Claude Code / Gemini CLI)
 
 | レイヤー | コンポーネント | アクション |
 |-------|-----------|--------|
-| 調査 | `gsd-phase-researcher` | `slopcheck install <pkgs> --json` を実行；`## Package Legitimacy Audit` テーブルを RESEARCH.md に書き込む；RESEARCH.md が書かれる前に `[SLOP]` パッケージを除去 |
+| 調査 | `gsd-phase-researcher` | `gsd-tools query package-legitimacy check --ecosystem <npm\|pypi\|crates> <pkgs>` を実行；`## Package Legitimacy Audit` テーブルを RESEARCH.md に書き込む；RESEARCH.md が書かれる前に `[SLOP]` パッケージを除去 |
 | 計画 | `gsd-planner` | 監査テーブルを読み取る；任意の `[ASSUMED]` または `[SUS]` インストールタスクの前に `checkpoint:human-verify` を挿入；`<threat_model>` に `T-{phase}-SC` STRIDE サプライチェーン行を追加 |
 | 実行 | `gsd-executor` | RULE 3 はパッケージインストールを自動修正スコープから除外；失敗したインストールはチェックポイントとして表面化し、サイレントな代替なし |
 

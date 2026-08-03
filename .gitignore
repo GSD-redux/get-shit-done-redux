@@ -88,6 +88,7 @@ build/
 /gsd-core/bin/lib/context-composer.cjs
 /gsd-core/bin/lib/context-predicates.cjs
 /gsd-core/bin/lib/workflow-fragments.cjs
+/gsd-core/bin/lib/section-manifest.cjs
 /gsd-core/bin/lib/capability-loader.cjs
 /gsd-core/bin/lib/capability-source.cjs
 /gsd-core/bin/lib/capability-ledger.cjs
@@ -96,8 +97,21 @@ build/
 /gsd-core/bin/lib/capability-consent.cjs
 /gsd-core/bin/lib/capability-lock.cjs
 /gsd-core/bin/lib/markdown-sectionizer.cjs
+# #2657: these two (markdown-table.cjs, write-set.cjs) already had the
+# pattern below since #2248, but stayed tracked because `git rm --cached`
+# was never run — same untracking fix as the seven lines that follow.
 /gsd-core/bin/lib/markdown-table.cjs
 /gsd-core/bin/lib/write-set.cjs
+# #2657: ADR-457 migration gap — these seven (of nine total; the two above
+# are the other two) never got a .gitignore entry when their modules moved
+# into src/*.cts, and were also never untracked.
+/gsd-core/bin/lib/api-coverage.cjs
+/gsd-core/bin/lib/assumption-delta.cjs
+/gsd-core/bin/lib/claude-orchestration.cjs
+/gsd-core/bin/lib/claude-orchestration-command-router.cjs
+/gsd-core/bin/lib/external-job.cjs
+/gsd-core/bin/lib/runtime-artifact-install-plan.cjs
+/gsd-core/bin/lib/state-transition.cjs
 /gsd-core/bin/lib/resolution.cjs
 /gsd-core/bin/lib/research-store.cjs
 /gsd-core/bin/lib/research-provider.cjs
@@ -144,6 +158,8 @@ build/
 /gsd-core/bin/lib/installer-migration-authoring.cjs
 /gsd-core/bin/lib/update-context.cjs
 /gsd-core/bin/lib/installer-migrations/000-first-time-baseline.cjs
+/gsd-core/bin/lib/installer-migrations/008-cursor-retire-commands-surface.cjs
+/gsd-core/bin/lib/retired-artifact-cleanup.cjs
 /gsd-core/bin/lib/runtime-homes.cjs
 /gsd-core/bin/lib/model-catalog.cjs
 /gsd-core/bin/lib/configuration.cjs

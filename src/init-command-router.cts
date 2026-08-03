@@ -24,12 +24,12 @@ import { parseNamedArgs } from './command-arg-projection.cjs';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface InitModule {
-  cmdInitExecutePhase(cwd: string, phase: string | undefined, raw: boolean, opts: Record<string, string | boolean | null>): void;
-  cmdInitPlanPhase(cwd: string, phase: string | undefined, raw: boolean, opts: Record<string, string | boolean | null>): void;
-  cmdInitNewProject(cwd: string, raw: boolean): void;
-  cmdInitNewMilestone(cwd: string, raw: boolean): void;
+  cmdInitExecutePhase(cwd: string, phase: string | undefined, raw: boolean, opts: Record<string, string | boolean | null | undefined>): void;
+  cmdInitPlanPhase(cwd: string, phase: string | undefined, raw: boolean, opts: Record<string, string | boolean | null | undefined>): void;
+  cmdInitNewProject(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitNewMilestone(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitOnboard(cwd: string, raw: boolean, opts?: Record<string, string | boolean | null>): void;
-  cmdInitQuick(cwd: string, name: string, raw: boolean): void;
+  cmdInitQuick(cwd: string, name: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitIngestDocs(cwd: string, raw: boolean): void;
   cmdInitResume(cwd: string, raw: boolean): void;
   cmdInitVerifyWork(cwd: string, phase: string | undefined, raw: boolean): void;
@@ -37,7 +37,7 @@ interface InitModule {
   cmdInitTodos(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitMilestoneOp(cwd: string, raw: boolean): void;
   cmdInitMapCodebase(cwd: string, raw: boolean): void;
-  cmdInitProgress(cwd: string, raw: boolean): void;
+  cmdInitProgress(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitManager(cwd: string, raw: boolean): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
@@ -62,21 +62,59 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
     error,
     unknownMessage: (_subcommand: string, available: string[]) => `Unknown init workflow: ${_subcommand}\nAvailable: ${available.join(', ')}`,
     handlers: {
+      // #2932/#2992: `parseNamedArgs` never yields `undefined` for an absent
+      // flag (value-flags default to `null`, booleanFlags default to `false`);
+      // `buildSectionManifestField`'s flags-Set builder (src/init.cts) is the
+      // single source of truth for flag ABSENCE and gates on value truthiness,
+      // so `namedArgs` is passed through here uncoerced.
       'execute-phase': () => {
-        const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd']);
-        init.cmdInitExecutePhase(cwd, args[2], raw, { validate: namedArgs['validate'], tdd: namedArgs['tdd'] });
+        const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd', 'wave']);
+        init.cmdInitExecutePhase(cwd, args[2], raw, {
+          validate: namedArgs['validate'],
+          tdd: namedArgs['tdd'],
+          wave: namedArgs['wave'],
+        });
       },
       'plan-phase': () => {
-        const namedArgs = parseNamedArgs(args, ['granularity'], ['validate', 'tdd']);
-        init.cmdInitPlanPhase(cwd, args[2], raw, { validate: namedArgs['validate'], tdd: namedArgs['tdd'], granularity: namedArgs['granularity'] });
+        const namedArgs = parseNamedArgs(
+          args,
+          ['granularity', 'prd', 'ingest', 'research-phase'],
+          ['validate', 'tdd', 'reviews', 'chunked'],
+        );
+        init.cmdInitPlanPhase(cwd, args[2], raw, {
+          validate: namedArgs['validate'],
+          tdd: namedArgs['tdd'],
+          granularity: namedArgs['granularity'],
+          prd: namedArgs['prd'],
+          ingest: namedArgs['ingest'],
+          'research-phase': namedArgs['research-phase'],
+          reviews: namedArgs['reviews'],
+          chunked: namedArgs['chunked'],
+        });
       },
-      'new-project': () => init.cmdInitNewProject(cwd, raw),
-      'new-milestone': () => init.cmdInitNewMilestone(cwd, raw),
+      'new-project': () => {
+        const namedArgs = parseNamedArgs(args, [], ['auto']);
+        init.cmdInitNewProject(cwd, raw, { auto: namedArgs['auto'] });
+      },
+      'new-milestone': () => {
+        const namedArgs = parseNamedArgs(args, [], ['reset-phase-numbers']);
+        init.cmdInitNewMilestone(cwd, raw, {
+          'reset-phase-numbers': namedArgs['reset-phase-numbers'],
+        });
+      },
       onboard: () => {
         const namedArgs = parseNamedArgs(args, [], ['fast', 'text']);
         init.cmdInitOnboard(cwd, raw, { fast: namedArgs['fast'], text: namedArgs['text'] });
       },
-      quick: () => init.cmdInitQuick(cwd, args.slice(2).join(' '), raw),
+      quick: () => {
+        const namedArgs = parseNamedArgs(args, [], ['discuss', 'research', 'validate', 'full']);
+        init.cmdInitQuick(cwd, args.slice(2).join(' '), raw, {
+          discuss: namedArgs['discuss'],
+          research: namedArgs['research'],
+          validate: namedArgs['validate'],
+          full: namedArgs['full'],
+        });
+      },
       'ingest-docs': () => init.cmdInitIngestDocs(cwd, raw),
       resume: () => init.cmdInitResume(cwd, raw),
       'verify-work': () => init.cmdInitVerifyWork(cwd, args[2], raw),
@@ -84,7 +122,10 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       todos: () => init.cmdInitTodos(cwd, args[2], raw),
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
       'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),
-      progress: () => init.cmdInitProgress(cwd, raw),
+      progress: () => {
+        const namedArgs = parseNamedArgs(args, [], ['forensic']);
+        init.cmdInitProgress(cwd, raw, { forensic: namedArgs['forensic'] });
+      },
       // Keep manager on CJS for now so runtime-specific command rendering
       // (e.g. $gsd-* for codex) stays consistent with runtime-slash helpers.
       manager: () => init.cmdInitManager(cwd, raw),

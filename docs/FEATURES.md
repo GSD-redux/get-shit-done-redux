@@ -2900,7 +2900,7 @@ Source commit: abc1234 (3 commits behind HEAD)
 - Executor install failures stop for human verification instead of auto-trying similarly named packages.
 
 **Requirements:**
-- REQ-PKG-GATE-01: Research MUST record package registry, age, download/source signals, slopcheck verdict, and disposition.
+- REQ-PKG-GATE-01: Research MUST record package registry, age, download/source signals, legitimacy verdict, and disposition.
 - REQ-PKG-GATE-02: Planner MUST gate unverified or suspicious package installs before execution.
 - REQ-PKG-GATE-03: Executor MUST NOT auto-substitute package names after failed package-manager installs.
 

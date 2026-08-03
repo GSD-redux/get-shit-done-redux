@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-planner.md": "#2775: the STRIDE supply-chain row for npm/pip/cargo installs was rewritten from 'slopcheck + blocking human checkpoint for [ASSUMED]/[SUS]' to 'package-legitimacy gate + blocking human checkpoint for [ASSUMED]/[SUS]', matching ADR-0656 (registry-API verdicts are the gate; slopcheck is an optional escalate-only adapter no shipped configuration wires). The +14 bytes is the corrected mitigation description agents read at plan time, not incidental prose growth."
+  }
+}

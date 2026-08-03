@@ -118,6 +118,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/installer-migration-authoring.cjs',
       'gsd-core/bin/lib/update-context.cjs',
       'gsd-core/bin/lib/installer-migrations/000-first-time-baseline.cjs',
+      'gsd-core/bin/lib/installer-migrations/008-cursor-retire-commands-surface.cjs',
+      'gsd-core/bin/lib/retired-artifact-cleanup.cjs',
       'gsd-core/bin/lib/runtime-homes.cjs',
       'gsd-core/bin/lib/model-catalog.cjs',
       'gsd-core/bin/lib/configuration.cjs',
@@ -245,6 +247,8 @@ export default tseslint.config(
       'gsd-core/bin/lib/context-composer.cjs',
       // ADR-1671 (#2930): tsc-generated runtime artifact — lint the src/workflow-fragments.cts source.
       'gsd-core/bin/lib/workflow-fragments.cjs',
+      // ADR-1671 Phase 5 (#2932): tsc-generated runtime artifact — lint the src/section-manifest.cts source.
+      'gsd-core/bin/lib/section-manifest.cjs',
     ],
   },
 

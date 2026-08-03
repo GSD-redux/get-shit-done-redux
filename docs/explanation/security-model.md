@@ -54,11 +54,15 @@ researcher → planner → executor pipeline and eventually run as
 The gate operates across three pipeline stages:
 
 **Research stage.** When `gsd-phase-researcher` recommends external packages,
-it runs `slopcheck install <pkgs> --json` against each one. The results are
-written to a `## Package Legitimacy Audit` table in `RESEARCH.md`. Packages
-tagged `[SLOP]` (high-confidence hallucination or attacker-registered) are
-**stripped from `RESEARCH.md` entirely** before the file is saved. They never
-reach the planner.
+it runs `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates>
+<pkgs>` against each one. Verdicts (`OK|SUS|SLOP`) are computed from live
+registry APIs against thresholds `{ minAgeDays: 30, minWeeklyDownloads: 1000,
+requireRepo: true }`, plus terminal short-circuits for non-existence and
+suspicious `postinstall` scripts. The results are written to a `## Package
+Legitimacy Audit` table in `RESEARCH.md`. Packages tagged `[SLOP]`
+(high-confidence hallucination or attacker-registered) are **stripped from
+`RESEARCH.md` entirely** before the file is saved. They never reach the
+planner.
 
 **Planning stage.** `gsd-planner` reads the Audit table. For any package
 tagged `[SUS]` (suspicious: newly registered, low download count, no source
@@ -85,12 +89,13 @@ gets a human review before installation.
 
 ### Ecosystem coverage
 
-The researcher uses registry-specific verification commands rather than a
-single generic check:
+The gate resolves signals directly from each ecosystem's registry API rather
+than a single generic check:
 
-- Node.js: `npm view`
-- Python: `pip index versions`
-- Rust: `cargo search`
+- Node.js: `registry.npmjs.org` (age, repository URL, `postinstall` script)
+  plus `api.npmjs.org/downloads` (weekly downloads)
+- Python: `pypi.org/pypi/<pkg>/json` (age, repository URL)
+- Rust: the crates.io API (age, weekly downloads, repository URL)
 
 This covers cross-ecosystem hallucination, which occurs at roughly 9 %
 according to 2025 USENIX research — cases where an AI recommends a package
@@ -98,17 +103,18 @@ that exists in one ecosystem but not the one actually in use.
 
 ### Graceful degradation
 
-If `slopcheck` is unavailable (not installed, or the pip install fails at
-research time), GSD applies the strictest possible fallback: **every
-recommended package is tagged `[ASSUMED]`**, and the planner gates every
-install with a `checkpoint:human-verify` task. Research and planning proceed
-normally — the system never hard-fails on a missing tool dependency. This
-is intentionally stricter than the normal flow: slopcheck unavailability means
-every package install gets a human checkpoint.
+Each registry adapter has a 5-second timeout and returns degraded (all-null)
+signals on a failed lookup rather than throwing. Missing signals surface as
+`unknown-age` / `unknown-downloads` reasons, which push a package to `[SUS]`
+— and `[SUS]` is gated behind the same `checkpoint:human-verify` task as
+`[ASSUMED]`. The gate fails toward human review, not silence, and research
+and planning proceed normally: nothing here hard-fails on a network or tool
+outage.
 
-The `slopcheck` tool is MIT-licensed and pip-installable. If it is ever
-abandoned, the `[ASSUMED]`-gate fallback ensures human-checkpoint coverage is
-maintained regardless.
+`slopcheck` is an optional adapter that can only escalate a verdict, never
+lower it, and is not the install-or-degrade gate. No shipped configuration
+wires it; its absence leaves registry-API verdicts intact rather than
+downgrading everything to `[ASSUMED]`.
 
 ---
 
@@ -242,9 +248,9 @@ attack.
 
 **What the Package Legitimacy Gate does not eliminate:** A legitimate package
 that is later compromised (account takeover, dependency confusion in its own
-tree) is not caught by slopcheck, which checks registration signals at
-research time. Lock files and `npm audit` at the dependency-integrity layer
-are the controls for that class of attack.
+tree) is not caught by the registry-API gate, which checks registration
+signals at research time. Lock files and `npm audit` at the
+dependency-integrity layer are the controls for that class of attack.
 
 **What the prompt injection defences reduce:** The probability that
 user-controlled text in planning artifacts successfully overrides agent

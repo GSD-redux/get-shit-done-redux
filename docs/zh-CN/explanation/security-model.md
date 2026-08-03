@@ -24,7 +24,7 @@ Slopsquatting 的隐蔽之处在于，通过 `npm view` 验证的幻觉名称*�
 
 门控机制跨三个流水线阶段运行：
 
-**研究阶段。** 当 `gsd-phase-researcher` 推荐外部软件包时，它会对每个软件包运行 `slopcheck install <pkgs> --json`。结果会以 `## Package Legitimacy Audit` 表格的形式写入 `RESEARCH.md`。标记为 `[SLOP]`（高置信度幻觉或攻击者注册）的软件包在保存前会**从 `RESEARCH.md` 中完全删除**，永远不会到达规划员。
+**研究阶段。** 当 `gsd-phase-researcher` 推荐外部软件包时，它会对每个软件包运行 `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates> <pkgs>`。结果会以 `## Package Legitimacy Audit` 表格的形式写入 `RESEARCH.md`。标记为 `[SLOP]`（高置信度幻觉或攻击者注册）的软件包在保存前会**从 `RESEARCH.md` 中完全删除**，永远不会到达规划员。
 
 **规划阶段。** `gsd-planner` 读取审计表。对于任何标记为 `[SUS]`（可疑：新注册、下载量低、无源代码仓库，或命名模式接近某热门软件包）或 `[ASSUMED]`（来自 WebSearch 而非直接注册表验证）的软件包，规划员会在安装步骤之前**插入一个 `checkpoint:human-verify` 任务**。该检查点包含指向注册表页面的直接链接，以及需要重点核查的内容：维护者历史、问题跟踪器活动、是否存在可疑的安装脚本。
 
