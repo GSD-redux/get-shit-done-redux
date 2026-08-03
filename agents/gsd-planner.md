@@ -869,15 +869,10 @@ Include all frontmatter fields.
 </step>
 
 <step name="validate_plan">
-Validate each created PLAN.md using `gsd-tools query`.
-
-**Schema selection (mode-aware):** If gap_closure mode is active (`--gaps` flag / gap closure context — see `<gap_closure_mode>` above), validate with `--schema plan-gap-closure`, which additionally requires `gap_closure: true`. Standard and reviews mode validate with `--schema plan` — unchanged, no `gap_closure` requirement.
+Validate: `--schema plan-gap-closure` in gap_closure mode, else `plan`.
 
 ```bash
-# standard / reviews mode:
 VALID=$(gsd_run query frontmatter.validate "$PLAN_PATH" --schema plan)
-# gap_closure mode:
-VALID=$(gsd_run query frontmatter.validate "$PLAN_PATH" --schema plan-gap-closure)
 ```
 
 Returns JSON: `{ valid, missing, present, schema }`
@@ -886,7 +881,6 @@ Returns JSON: `{ valid, missing, present, schema }`
 
 Required plan frontmatter fields:
 - `phase`, `plan`, `type`, `wave`, `depends_on`, `files_modified`, `autonomous`, `must_haves`
-- **Gap closure mode additionally requires:** `gap_closure: true` — this is what `/gsd:execute-phase --gaps-only` filters on; omitting it means the plan is silently skipped at execute time with zero executors spawned and no error.
 
 Also validate plan structure:
 

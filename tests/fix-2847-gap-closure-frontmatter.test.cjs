@@ -151,8 +151,15 @@ describe('#2847: plan-phase.md is deliberately unmodified by this fix (byte-cap 
     // change adds gap_closure prose here, the PRE_PHASE6 test is the gate that must be
     // satisfied first (shrink elsewhere or raise the frozen ceiling deliberately).
     const workflowContent = readFile(PLAN_PHASE_PATH);
-    const start = workflowContent.indexOf('<downstream_consumer>');
-    const end = workflowContent.indexOf('</downstream_consumer>', start);
+    // Anchor on the tag starting its own line — plan-phase.md's prose elsewhere refers to
+    // "the `<downstream_consumer>` lift below" (backtick-quoted, mid-sentence) TWICE before
+    // the real opening tag. A plain indexOf('<downstream_consumer>') matches the first prose
+    // mention instead of the real tag, producing a wildly over-broad slice that swallows
+    // unrelated content (including the `**Mode:** {standard | gap_closure | reviews}` line) —
+    // exactly the false failure this anchor prevents.
+    const openMatch = /^<downstream_consumer>$/m.exec(workflowContent);
+    const start = openMatch ? openMatch.index : -1;
+    const end = start === -1 ? -1 : workflowContent.indexOf('</downstream_consumer>', start);
     const downstreamBlock = start === -1 || end === -1
       ? ''
       : workflowContent.slice(start, end + '</downstream_consumer>'.length);
