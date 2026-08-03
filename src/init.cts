@@ -47,6 +47,8 @@ import verificationMod = require('./verification.cjs');
 import uatPredicateMod = require('./uat-predicate.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- agent-install-check.cjs is an export= CommonJS module
 import agentInstallCheck = require('./agent-install-check.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- section-manifest.cjs is compiled from section-manifest.cts's named exports; imported as a namespace to read selectSections/SelectableSection/InvocationFacts off module.exports directly (#2932).
+import sectionManifest = require('./section-manifest.cjs');
 const { checkAgentsInstalled } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- git-base-branch.cjs is an export= CommonJS module
 import gitBaseBranch = require('./git-base-branch.cjs');
@@ -323,6 +325,134 @@ function getInitGitState(cwd: string): GitState {
   };
 }
 
+// #2932 (Phase 5, ADR-1671): shipped, generated artifact — see
+// scripts/gen-section-manifest.cjs and gsd-core/workflows/section-manifest.json.
+// Resolved the same way model-catalog.cts resolves model-catalog.json: relative
+// to the compiled module's own directory (gsd-core/bin/lib -> gsd-core/workflows),
+// with a GSD_SECTION_MANIFEST env override so tests can point at a temp fixture
+// (missing/malformed-JSON degraded-path coverage) without mutating the shipped
+// artifact — the shipped file is a shared, concurrently-read resource across
+// parallel test runs and must never be moved/corrupted in place.
+const _sectionManifestCandidatePath = (): string =>
+  process.env['GSD_SECTION_MANIFEST']
+    ? path.resolve(process.env['GSD_SECTION_MANIFEST'])
+    : path.resolve(__dirname, '..', '..', 'workflows', 'section-manifest.json');
+
+/** A manifest entry as shipped on disk: {@link sectionManifest.SelectableSection} plus the `read` step-file path. */
+interface ManifestSection extends sectionManifest.SelectableSection {
+  readonly read: string;
+}
+
+/**
+ * Loads and shape-validates the generated section manifest's `sections` array.
+ * Returns `null` — never throws — when the artifact is missing, unreadable,
+ * malformed JSON, or valid JSON of the wrong shape (matrix rows 13/14/57/58:
+ * a missing derived artifact must not break dispatch).
+ */
+function loadSectionManifestSections(): ManifestSection[] | null {
+  try {
+    const raw = fs.readFileSync(_sectionManifestCandidatePath(), 'utf8');
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    const sections = (parsed as Record<string, unknown>)['sections'];
+    if (!Array.isArray(sections)) return null;
+    for (const section of sections) {
+      if (
+        !section ||
+        typeof section !== 'object' ||
+        typeof (section as Record<string, unknown>)['id'] !== 'string' ||
+        typeof (section as Record<string, unknown>)['when'] !== 'string' ||
+        typeof (section as Record<string, unknown>)['read'] !== 'string'
+      ) {
+        return null;
+      }
+    }
+    return sections as ManifestSection[];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `state:has-prior-phases` ground truth (design doc §Behavior table, regression-gate
+ * body: "Skip if: this is the first phase (no prior phases)"): TRUE when at least
+ * one OTHER phase directory under `.planning/phases/` contains a `*-VERIFICATION.md`
+ * file. Bounded, non-throwing — an unreadable phases directory degrades to `false`
+ * rather than surfacing an error from an init query.
+ */
+function detectHasPriorPhases(cwd: string, phaseInfo: Record<string, unknown> | null): boolean {
+  const phasesDir = path.join(planningDir(cwd), 'phases');
+  const currentDirName = phaseInfo?.['directory']
+    ? path.basename(phaseInfo['directory'] as string)
+    : null;
+  try {
+    if (!fs.existsSync(phasesDir)) return false;
+    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.name === currentDirName) continue;
+      let files: string[];
+      try {
+        files = fs.readdirSync(path.join(phasesDir, entry.name));
+      } catch {
+        continue;
+      }
+      if (files.some((f) => f.endsWith('-VERIFICATION.md') || f === 'VERIFICATION.md')) {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Builds the `section_manifest` init-bundle field (#2932 Deliverable 2): resolves
+ * {@link sectionManifest.InvocationFacts} from this invocation, loads the generated
+ * manifest, and partitions it via the pure {@link sectionManifest.selectSections}
+ * evaluator. Returns `null` on any degraded condition (missing/malformed artifact,
+ * or an unexpected throw from the evaluator itself) — this field is additive and
+ * optional, never load-bearing for dispatch (Hyrum's Law: 22 direct init-bundle
+ * dependents must be unaffected by its absence).
+ */
+function buildSectionManifestField(
+  cwd: string,
+  phaseInfo: Record<string, unknown> | null,
+  options: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const sections = loadSectionManifestSections();
+  if (!sections) return null;
+
+  const rawPhaseNumber = phaseInfo?.['phase_number'];
+  const phaseNumber =
+    typeof rawPhaseNumber === 'string'
+      ? rawPhaseNumber
+      : typeof rawPhaseNumber === 'number'
+        ? String(rawPhaseNumber)
+        : null;
+
+  const facts: sectionManifest.InvocationFacts = {
+    waveFlag: options['wave'] === true,
+    phaseNumber,
+    hasPriorPhases: detectHasPriorPhases(cwd, phaseInfo),
+  };
+
+  try {
+    const selection = sectionManifest.selectSections(sections, facts);
+    const readById = new Map(sections.map((s) => [s.id, s.read]));
+    return {
+      workflow: 'execute-phase',
+      included: selection.included,
+      excluded: selection.excluded,
+      read: selection.included
+        .map((id) => readById.get(id))
+        .filter((p): p is string => typeof p === 'string'),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function cmdInitExecutePhase(
   cwd: string,
   phase: string,
@@ -455,6 +585,9 @@ function cmdInitExecutePhase(
       /* intentionally empty */
     }
   }
+
+  // #2932 (Phase 5): additive, optional field — degrades to null, never throws.
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, options);
 
   output(withProjectRoot(cwd, result), raw);
 }

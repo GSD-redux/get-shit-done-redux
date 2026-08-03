@@ -6,9 +6,11 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, cleanup, absPlanningPath } = require('./helpers.cjs');
+const { spawnSync } = require('node:child_process');
+const { runGsdTools, cleanup, absPlanningPath, TOOLS_PATH } = require('./helpers.cjs');
 const { createFixture, seedPhase } = require('./fixtures/index.cjs');
 const { createTempProject, createTempDir } = require('./helpers.cjs');
+const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
 
 describe('init commands', () => {
   let tmpDir;
@@ -2972,3 +2974,342 @@ test('bug-3491: new-project.md gates `git init` on in_nested_subdir, not just ha
 });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Folded from tests/init-section-manifest.test.cjs — #2932 (epic #1671 Phase 5)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// init CLI negative matrix for `section_manifest`. Covers
+// `.gsd/phase/chore-2932-init-section-manifest/50-test-matrix.md` section E
+// (rows 42-59) plus row 62. Drives the REAL CLI through the dispatch seam
+// (`spawnSync(process.execPath, [...])` with argv ARRAYS — never shell strings) so
+// hostile inputs (rows 55/56) prove no shell interpolation and no path escape.
+//
+// Each test asserts: exit status, structured JSON result, absence of project-tree
+// fs mutation, and no stack trace in non-debug stderr — never substring-matching
+// rendered prose (local/no-source-grep).
+
+describe('init section manifest', () => {
+  const GSD_ROOT = path.join(__dirname, '..', 'gsd-core');
+  const COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
+
+  // ── Drivers ─────────────────────────────────────────────────────────────
+
+  /**
+   * Invokes the real CLI dispatch seam with an argv ARRAY (never a shell string),
+   * so shell metacharacters in an argument (rows 55/56) can never be interpreted
+   * by a shell — spawnSync with an array bypasses the shell entirely. Always runs
+   * with GSD_JSON_ERRORS=1 so an error path yields a typed `{ ok, reason, message }`
+   * envelope instead of prose, per CONTRIBUTING.md "Prohibited: Raw Text Matching".
+   */
+  function runSectionManifestCli(args, cwd, env = {}) {
+    const result = spawnSync(process.execPath, [TOOLS_PATH, 'query', ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, GSD_JSON_ERRORS: '1', ...env },
+      timeout: 30000,
+    });
+    let stdout = result.stdout || '';
+    // output() spills payloads over 50KB to a tmpfile and prints "@file:<path>"
+    // (src/io.cts) — dereference it exactly as the workflow itself does.
+    if (stdout.startsWith('@file:')) {
+      stdout = fs.readFileSync(stdout.slice('@file:'.length).trim(), 'utf8');
+    }
+    return { status: result.status, stdout, stderr: result.stderr || '' };
+  }
+
+  function runExecutePhase(phaseArgs, cwd, env = {}) {
+    return runSectionManifestCli(['init.execute-phase', ...phaseArgs], cwd, env);
+  }
+
+  function parseOkJson(result, label) {
+    assert.equal(result.status, 0, `${label}: expected exit 0, got ${result.status} (stderr: ${result.stderr})`);
+    assertNoStackTrace(result.stderr, label);
+    return JSON.parse(result.stdout);
+  }
+
+  function parseErrorJson(result, label) {
+    assert.notEqual(result.status, 0, `${label}: expected non-zero exit`);
+    assertNoStackTrace(result.stderr, label);
+    return JSON.parse(result.stderr);
+  }
+
+  /** Node stack-trace frames look like "\n    at fn (file:line:col)" — a structural
+   * signal, not a content match on any file's prose. */
+  function assertNoStackTrace(text, label) {
+    assert.ok(!/\n\s+at\s+\S+/.test(text || ''), `${label}: unexpected stack trace: ${text}`);
+  }
+
+  /** Recursive, sorted snapshot of a directory's structure — name/size/mtime triples,
+   * used to assert a read-only `query` command mutates nothing under the project tree. */
+  function snapshotSectionManifestTree(dir) {
+    const out = [];
+    function walk(d, rel) {
+      let entries;
+      try {
+        entries = fs.readdirSync(d, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      entries.sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        const relPath = rel ? `${rel}/${entry.name}` : entry.name;
+        const full = path.join(d, entry.name);
+        if (entry.isDirectory()) {
+          out.push(`D:${relPath}`);
+          walk(full, relPath);
+        } else {
+          const st = fs.statSync(full);
+          out.push(`F:${relPath}:${st.size}`);
+        }
+      }
+    }
+    walk(dir, '');
+    return out;
+  }
+
+  function seedSinglePhaseProject(t, prefix) {
+    const dir = createTempProject(prefix);
+    t.after(() => cleanup(dir));
+    seedPhase(dir, '01-widgets', {});
+    return dir;
+  }
+
+  // ── E42-43: baseline manifest emission, with/without --wave ─────────────
+
+  describe('init execute-phase: section_manifest emission (#2932)', () => {
+    test('emitsSectionManifestWithoutWaveFlag', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e42-');
+      const before = snapshotSectionManifestTree(dir);
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'no-flag');
+      assert.deepStrictEqual(snapshotSectionManifestTree(dir), before, 'query command must not mutate the project tree');
+
+      assert.ok(body.section_manifest, 'section_manifest must be present');
+      assert.equal(body.section_manifest.workflow, 'execute-phase');
+      assert.ok(!body.section_manifest.included.includes('partial-wave'), 'partial-wave must be excluded without --wave');
+      assert.ok(body.section_manifest.excluded.includes('partial-wave'));
+      assert.deepStrictEqual(body.section_manifest.read, []);
+    });
+
+    test('emitsSectionManifestIncludingPartialWaveWithWaveFlag (#2932 headline acceptance criterion)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e43-');
+      const body = parseOkJson(runExecutePhase(['1', '--wave', '1'], dir), 'with-wave');
+
+      assert.ok(body.section_manifest);
+      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+      assert.ok(!body.section_manifest.excluded.includes('partial-wave'));
+      assert.deepStrictEqual(body.section_manifest.read, [
+        'gsd-core/workflows/execute-phase/steps/partial-wave.md',
+      ]);
+    });
+  });
+
+  // ── E44-46: phase argument boundary ────────────────────────────────────
+
+  describe('init execute-phase: phase argument boundary (#2932)', () => {
+    test('failsWhenPhaseArgumentMissing', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e44-');
+      const err = parseErrorJson(runExecutePhase([], dir), 'missing-phase');
+      assert.equal(err.ok, false);
+      assert.equal(typeof err.reason, 'string');
+      assert.equal(typeof err.message, 'string');
+    });
+
+    test('failsOnEmptyPhaseArgument', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e45-');
+      const err = parseErrorJson(runExecutePhase([''], dir), 'empty-phase');
+      assert.equal(err.ok, false);
+    });
+
+    test('failsOnWhitespaceOnlyPhaseArgument', (t) => {
+      // Test-matrix row 46 names "non-zero" as expected. Empirically, cmdInitExecutePhase's
+      // guard is `if (!phase)`, which is false for a non-empty whitespace string — this
+      // pre-existing idiom is SHARED by every phase-taking init subcommand (plan-phase,
+      // todos, phase-op, ...), not introduced by #2932, and changing it here would be a
+      // blast-radius violation of the CRITICAL routeInitCommand rating (37 affected files).
+      // "   " instead falls through to guardedFindPhase, which returns no match — the same
+      // graceful "not found" degrade the path-traversal/shell-metachar rows (55/56) require,
+      // not a crash. This test locks the REAL, current, exit-0 "not found" behavior rather
+      // than the matrix's a-priori assumption; see the dispatch report for this reconciliation.
+      const dir = seedSinglePhaseProject(t, 'gsd-e46-');
+      const body = parseOkJson(runExecutePhase(['   '], dir), 'whitespace-phase');
+      assert.equal(body.phase_found, false);
+      assert.ok(body.section_manifest, 'manifest is still emitted — it does not depend on phase_found');
+    });
+  });
+
+  // ── E47-52: --wave token-presence semantics ──────────────────────────────
+
+  describe('init execute-phase: --wave token-presence semantics (#2932)', () => {
+    test('treatsValuelessWaveFlagAsPresent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e47-');
+      const body = parseOkJson(runExecutePhase(['1', '--wave'], dir), 'valueless-wave');
+      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+    });
+
+    test('treatsWaveZeroAsPresent', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e48-');
+      const body = parseOkJson(runExecutePhase(['1', '--wave', '0'], dir), 'wave-zero');
+      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+    });
+
+    test('treatsDuplicateWaveFlagsIdempotently', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e49-');
+      const body = parseOkJson(runExecutePhase(['1', '--wave', '1', '--wave', '2'], dir), 'dup-wave');
+      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+    });
+
+    test('handlesMalformedWaveAssignments', (t) => {
+      // Documented handling (decision made during this dispatch): parseNamedArgs's
+      // booleanFlags check is an EXACT token match against the literal "--wave" —
+      // "--wave=" and "--wave==1" are different literal tokens, so neither activates
+      // the flag. No crash either way; this is the same exact-match discipline that
+      // keeps "--waves"/"--wave-filter" from false-activating (row 52).
+      const dir = seedSinglePhaseProject(t, 'gsd-e50-');
+      for (const token of ['--wave=', '--wave==1']) {
+        const body = parseOkJson(runExecutePhase(['1', token], dir), `malformed-wave:${token}`);
+        assert.ok(!body.section_manifest.included.includes('partial-wave'), `"${token}" must not activate --wave`);
+      }
+    });
+
+    test('doesNotConsumeFollowingFlagAsWaveValue', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e51-');
+      const body = parseOkJson(runExecutePhase(['1', '--wave', '--weird'], dir), 'wave-then-weird');
+      // Boolean-flag semantics: --wave never reads a following token as its value,
+      // so an adjacent flag-shaped token is simply ignored, not eaten or mis-parsed.
+      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+    });
+
+    test('nearMissFlagNamesDoNotActivateWave', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e52-');
+      for (const flag of ['--waves', '--wave-filter']) {
+        const body = parseOkJson(runExecutePhase(['1', flag], dir), `near-miss:${flag}`);
+        assert.ok(!body.section_manifest.included.includes('partial-wave'), `"${flag}" must not activate --wave`);
+      }
+    });
+  });
+
+  // ── E53: unknown subcommand ───────────────────────────────────────────────
+
+  describe('init dispatch: unknown subcommand (#2932 row 53)', () => {
+    test('reportsUnknownInitSubcommand', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e53-');
+      const err = parseErrorJson(runSectionManifestCli(['init.frobnicate'], dir), 'unknown-subcommand');
+      assert.equal(err.ok, false);
+      assert.equal(err.reason, 'sdk_unknown_command');
+    });
+  });
+
+  // ── E54-56: hostile inputs ────────────────────────────────────────────────
+
+  describe('init execute-phase: hostile inputs (#2932)', () => {
+    test('handlesVeryLongAndUnicodeValues', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e54-');
+      const longUnicodeValue = 'x'.repeat(20000) + '你好\u{1f600}';
+      const result = runExecutePhase(['1', '--wave', longUnicodeValue], dir);
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'long-unicode-value');
+      const body = JSON.parse(result.stdout);
+      assert.deepStrictEqual(body.section_manifest.included, ['partial-wave']);
+
+      const longPhaseResult = runExecutePhase(['1' + 'z'.repeat(20000)], dir);
+      assert.equal(longPhaseResult.status, 0);
+      assertNoStackTrace(longPhaseResult.stderr, 'long-phase-value');
+    });
+
+    test('doesNotInterpolateShellMetacharactersInPhase', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e55-');
+      const sentinel = path.join(dir, 'pwned-sentinel');
+      const hostilePhase = `1; touch ${sentinel}; $(touch ${sentinel}) \`touch ${sentinel}\` && touch ${sentinel} || touch ${sentinel}`;
+      const result = runExecutePhase([hostilePhase], dir);
+      assert.equal(result.status, 0, `expected exit 0 (no shell execution), got ${result.status}`);
+      assertNoStackTrace(result.stderr, 'shell-metachars');
+      assert.ok(!fs.existsSync(sentinel), 'shell metacharacters in the phase argument must never be interpreted — argv array bypasses the shell entirely');
+    });
+
+    test('rejectsPathTraversalStylePhaseValue', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e56-');
+      const before = snapshotSectionManifestTree(dir);
+      const body = parseOkJson(runExecutePhase(['../../../../etc/passwd'], dir), 'path-traversal');
+      assert.deepStrictEqual(snapshotSectionManifestTree(dir), before, 'no fs mutation from a traversal-shaped phase value');
+      assert.equal(body.phase_found, false, 'a traversal-shaped value must never resolve to a real phase');
+      assert.ok(
+        !String(body.phase_dir || '').includes('etc/passwd'),
+        'phase_dir must never resolve outside the project tree',
+      );
+    });
+  });
+
+  // ── E57-58: degraded path — manifest artifact missing/malformed ─────────
+
+  describe('init execute-phase: section_manifest degrades to null (#2932)', () => {
+    test('degradesToNullManifestWhenArtifactMissing', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e57-');
+      const missingPath = path.join(dir, 'does-not-exist-section-manifest.json');
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: missingPath });
+      assert.equal(result.status, 0, `expected exit 0 despite missing manifest artifact, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'manifest-missing');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null);
+    });
+
+    test('degradesToNullManifestWhenArtifactMalformed', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e58-');
+      const badPath = path.join(dir, 'bad-section-manifest.json');
+      fs.writeFileSync(badPath, '{ this is not valid json');
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: badPath });
+      assert.equal(result.status, 0, `expected exit 0 despite malformed manifest artifact, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'manifest-malformed');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null);
+    });
+
+    test('degradesToNullManifestWhenArtifactWrongShape', (t) => {
+      // Extends row 58: valid JSON, wrong shape (design doc + init.cts loadSectionManifestSections
+      // both name this as a degraded case distinct from "not JSON at all").
+      const dir = seedSinglePhaseProject(t, 'gsd-e58b-');
+      const wrongShapePath = path.join(dir, 'wrong-shape-section-manifest.json');
+      fs.writeFileSync(wrongShapePath, JSON.stringify([1, 2, 3]));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: wrongShapePath });
+      assert.equal(result.status, 0);
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null);
+    });
+  });
+
+  // ── E59: independence — other init subcommands unaffected ───────────────
+
+  describe('init dispatch: other subcommands unaffected (#2932 row 59, CRITICAL radius guard)', () => {
+    test('leavesOtherInitSubcommandsUnchanged', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e59-');
+
+      const planPhase = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'plan-phase');
+      assert.equal(planPhase.phase_found, true);
+      assert.ok(!('section_manifest' in planPhase), 'section_manifest must be execute-phase-only, never leak into plan-phase');
+
+      const resume = parseOkJson(runSectionManifestCli(['init.resume'], dir), 'resume');
+      assert.ok(!('section_manifest' in resume), 'section_manifest must never leak into resume');
+    });
+  });
+
+  // ── Row 62: stub <execution_context> @-refs still resolve (ADR-0002) ────
+
+  describe('commands/gsd/execute-phase.md: <execution_context> @-refs resolve (#2932 row 62)', () => {
+    test('stubExecutionContextRefStillResolves', () => {
+      const stubPath = path.join(COMMANDS_DIR, 'execute-phase.md');
+      const content = fs.readFileSync(stubPath, 'utf-8');
+      const refs = executionContextRefs(content);
+      assert.ok(refs.length > 0, 'execute-phase.md stub must declare at least one execution_context @-ref');
+
+      const workflowRef = refs.find((r) => r.normalized === 'workflows/execute-phase.md');
+      assert.ok(workflowRef, 'execute-phase.md stub must @-reference workflows/execute-phase.md');
+
+      for (const ref of refs) {
+        assert.ok(
+          fs.existsSync(path.join(GSD_ROOT, ref.normalized)),
+          `execution_context @-ref "${ref.normalized}" must resolve to a file that exists on disk`,
+        );
+      }
+    });
+  });
+});

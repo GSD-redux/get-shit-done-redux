@@ -63,8 +63,12 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
     unknownMessage: (_subcommand: string, available: string[]) => `Unknown init workflow: ${_subcommand}\nAvailable: ${available.join(', ')}`,
     handlers: {
       'execute-phase': () => {
-        const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd']);
-        init.cmdInitExecutePhase(cwd, args[2], raw, { validate: namedArgs['validate'], tdd: namedArgs['tdd'] });
+        // #2932: 'wave' is boolean/token-presence (parseNamedArgs's booleanFlags
+        // semantics already match the design's token-presence rule: `--wave` alone,
+        // `--wave 0`, and duplicate `--wave 1 --wave 2` all resolve to `true`;
+        // near-miss tokens `--waves`/`--wave-filter` never match the exact `--wave` token).
+        const namedArgs = parseNamedArgs(args, [], ['validate', 'tdd', 'wave']);
+        init.cmdInitExecutePhase(cwd, args[2], raw, { validate: namedArgs['validate'], tdd: namedArgs['tdd'], wave: namedArgs['wave'] });
       },
       'plan-phase': () => {
         const namedArgs = parseNamedArgs(args, ['granularity'], ['validate', 'tdd']);
