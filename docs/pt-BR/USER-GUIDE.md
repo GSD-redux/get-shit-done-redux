@@ -382,8 +382,8 @@ Ferramentas de codificação com IA alucinam nomes de pacotes. Atacantes pré-re
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -395,7 +395,7 @@ Pacotes com `[SLOP]` são removidos do RESEARCH.md inteiramente e nunca chegam a
 
 **Durante a execução** — se uma instalação falhar, o executor apresenta um checkpoint e para em vez de tentar silenciosamente uma alternativa.
 
-**Veredictos do slopcheck:**
+**Veredictos de legitimidade:**
 
 | Veredicto | Significado | Ação do GSD |
 |---------|---------|------------|

@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, saveSessionEnv, restoreSessionEnv, clearSessionEnv } = require('./helpers.cjs');
 
 const {
   validateWorkstreamName,
@@ -29,30 +29,10 @@ const {
 } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-const SESSION_ENV_KEYS = [
-  'GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SSE_PORT',
-  'OPENCODE_SESSION_ID', 'GEMINI_SESSION_ID', 'CURSOR_SESSION_ID', 'WINDSURF_SESSION_ID',
-  'TERM_SESSION_ID', 'WT_SESSION', 'TMUX_PANE', 'ZELLIJ_SESSION_NAME',
-  'TTY', 'SSH_TTY', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
-];
-
-function clearSessionEnv() {
-  for (const k of SESSION_ENV_KEYS) delete process.env[k];
-}
-
-function saveSessionEnv() {
-  const saved = {};
-  for (const k of SESSION_ENV_KEYS) saved[k] = process.env[k];
-  return saved;
-}
-
-function restoreSessionEnv(saved) {
-  for (const k of SESSION_ENV_KEYS) {
-    if (saved[k] === undefined) delete process.env[k];
-    else process.env[k] = saved[k];
-  }
-}
+//
+// saveSessionEnv/restoreSessionEnv/clearSessionEnv now live in tests/helpers.cjs
+// (single source of truth — #2850 code review finding: this file's local copy
+// had already silently diverged from tests/gsd-statusline.test.cjs's copy).
 
 function makePlanningDir(base, ...workstreams) {
   const wsDir = path.join(base, '.planning', 'workstreams');
