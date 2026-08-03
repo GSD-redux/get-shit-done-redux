@@ -1,6 +1,6 @@
 'use strict';
 
-// allow-test-rule: source-text-is-the-product — G5 below asserts that an
+// allow-test-rule: source-text-is-the-product see #2994 — G5 below asserts that an
 // extracted step file's raw text does not contain the literal resolver call
 // for the SAME fact that gates its own admission (a circular, self-disabling
 // section). There is no typed/structural representation of "this step body

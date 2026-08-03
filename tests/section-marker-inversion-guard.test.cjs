@@ -1,6 +1,6 @@
 'use strict';
 
-// allow-test-rule: source-text-is-the-product — this file asserts that
+// allow-test-rule: source-text-is-the-product see #2994 — this file asserts that
 // specific prose/resolver LINES remain physically outside a `<!-- gsd:section
 // -->` marker pair in the HOST workflow .md files. The deployed contract IS
 // the exact text and its position relative to the marker boundary (a runtime
