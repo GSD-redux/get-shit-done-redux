@@ -92,12 +92,6 @@ function isPhaseContinuationSegment(seg: string): boolean {
   return PHASE_CONTINUATION_SEGMENT_PREFIX_RE.test(seg);
 }
 
-// #2528: the #2043 slug-word class (a segment whose leading digit run has
-// width exactly 1) used as a RETROACTIVE signal by consumers that can inspect
-// the following segment.
-const SINGLE_DIGIT_RUN_SEGMENT_SOURCE = '\\d(?!\\d)';
-const SINGLE_DIGIT_RUN_SEGMENT_RE = new RegExp(`^${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`);
-
 // #612 (PR-1): bracket-convention token/heading sources, kept next to the M-NN
 // PHASE_NUMBER_TOKEN_SOURCE so this owner file stays the single origin of every
 // phase-token grammar. `src/phase-id.cts` is exempt from the #2128 drift guard
@@ -158,7 +152,7 @@ const BRACKET_PHASE_TOKEN_SOURCE =
   `\\d+[A-Z]?` +
   `(?:-${BRACKET_CANONICAL_NUMERIC_SOURCE}(?!\\d))?` +
   `(?:\\.${BRACKET_CANONICAL_NUMERIC_SOURCE}(?!\\d))?` +
-  `(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))?` +
+  `(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE})?` +
   `(?=-|$)`;
 
 // A phase HEADING intro under bracket is either a `[...]` bracket (optionally
@@ -556,7 +550,6 @@ function extractPhaseToken(dirName: string, convention?: string): string {
   // because of punctuation (e.g. "P0.3-2"), whose single-digit continuation is
   // intentionally preserved (unchanged from prior behaviour).
   let firstLetterPrefixed = false;
-  let scanStoppedAt = -1;
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     if (i === 0) {
@@ -574,7 +567,6 @@ function extractPhaseToken(dirName: string, convention?: string): string {
     ) {
       tokenSegments.push(seg);
     } else {
-      scanStoppedAt = i;
       break;
     }
   }
@@ -583,29 +575,26 @@ function extractPhaseToken(dirName: string, convention?: string): string {
     return dirName;
   }
 
-  // #2528: a 2-digit slug word is indistinguishable from a genuine zero-padded
-  // continuation by width alone (both are exactly 2 digits — the gap between
-  // #2043's 1-digit and #2232's ≥3-digit guards). The tie-breaker is what
-  // FOLLOWS the absorbed run: a slug is contiguous, so when the segment that
-  // terminated the scan is a 1-digit word (#2043's slug-word class — the
-  // "24/7"/"80/20"/"30-Day" naming family: phase 10 named "24/7 Autonomy" →
-  // dir "10-24-7[-autonomy]"), the absorbed run re-opens as slug and the token
-  // rewinds by one absorbed continuation, keeping the phase resolvable without
-  // discarding an earlier, unambiguous continuation in a deeper token. A
-  // ≥2-digit-run terminator does NOT rewind: the
-  // year-leading-slug shape after a genuine sub-phase ("14-06-2026-photos" →
-  // "14-06") is locked by the #2232 metamorphic round-trip tests. The
-  // firstLetterPrefixed family keeps its intentionally-preserved single-digit
-  // continuations (e.g. "P0.3-2") and is exempt.
-  if (
-    !firstLetterPrefixed &&
-    tokenSegments.length > 1 &&
-    scanStoppedAt !== -1 &&
-    SINGLE_DIGIT_RUN_SEGMENT_RE.test(segments[scanStoppedAt])
-  ) {
-    tokenSegments.pop();
-  }
-
+  // #2528 (re-review): the tokenizer deliberately does NOT try to tell a 2-digit
+  // slug word ("24" of "24/7 Autonomy") from a genuine zero-padded continuation
+  // ("24" of sub-phase 10.24) — by width alone they are the same string, the gap
+  // between #2043's 1-digit and #2232's ≥3-digit guards, and no LOCAL signal
+  // separates them. An earlier revision of this fix rewound the token when the
+  // segment that stopped the scan was a 1-digit word, which reads
+  // "10-24-7-autonomy" correctly but silently re-tokenizes the equally real
+  // "10-24-7-zip" (sub-phase 10.24 named "7-Zip …") from "10-24" to "10" — it
+  // trades the reported ambiguity for the symmetric one a level down, on a
+  // CRITICAL 15-caller chokepoint whose output feeds query-less derivations
+  // (STATE.md phase counts, W007, the #2562 key surface).
+  //
+  // So the token stays the LITERAL reading of the name, and disambiguation lives
+  // ONE layer up, in matchPhaseDirs, where a QUERY exists to disambiguate
+  // against: a bare-integer lookup falls back to the directory's leading digit
+  // run and resolves "10-24-7-autonomy" for "10" without touching what the
+  // directory's own token is. That is the same bounded mechanism the
+  // "05-80-20-cleanup" shape already uses — one rule for the whole
+  // digit-leading-slug family instead of two overlapping ones.
+  //
   // A generated slug is lowercase. If the owner admitted a two-digit prefix
   // from a digit+letter slug segment ("10x", "25abc"), remove only that final
   // segment. Uppercase suffixes remain available to the established plan-ID
@@ -919,7 +908,6 @@ export = {
   CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE,
   CASE_FLEXIBLE_PHASE_NUMBER_TOKEN_SOURCE,
   PHASE_CONTINUATION_SEGMENT_SOURCE,
-  SINGLE_DIGIT_RUN_SEGMENT_SOURCE,
   isPhaseContinuationSegment,
   BRACKET_PHASE_TOKEN_SOURCE,
   PHASE_HEADING_PREFIX_SRC,

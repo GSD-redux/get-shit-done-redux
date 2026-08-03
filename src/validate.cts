@@ -42,7 +42,6 @@ const {
   CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE,
   CASE_FLEXIBLE_PHASE_NUMBER_TOKEN_SOURCE,
   PHASE_CONTINUATION_SEGMENT_SOURCE,
-  SINGLE_DIGIT_RUN_SEGMENT_SOURCE,
 } = phaseIdMod;
 
 // ── Issue #26: regex constants (W005, W006-archived) ────────────────────────
@@ -62,18 +61,18 @@ export const phaseDirNameRe = new RegExp(
 // NOT absorbed — it captures "46", not "46-6". #2232: the continuation width is
 // exactly 2 (PHASE_CONTINUATION_SEGMENT_SOURCE), so a ≥3-digit slug word (a year:
 // "14-2026-photos-…") is not absorbed either — it captures "14", not "14-2026".
-// #2528: a two-digit segment immediately followed by a single-digit-run slug
-// segment is also left out of the token ("10-24-7-autonomy" captures "10").
-// The negative lookahead is built from the same owner source used by
-// extractPhaseToken's rewind rule so the regex and imperative surfaces agree.
-// The first component stays "\d+"
+// #2528: this regex stays the LITERAL reading of the name and does NOT try to
+// re-classify an absorbed 2-digit continuation as a slug word — see the
+// extractPhaseToken doc comment for why that is a resolution-layer job
+// (matchPhaseDirs), not a tokenizer one. The two surfaces must agree, and they
+// agree on the literal reading. The first component stays "\d+"
 // (with the "[A-Z]?" suffix) so single-digit letter-suffixed phase ids ("1A") and
 // milestone-prefixed single-digit sub-phases ("M1-2" → prefix "M1-" stripped, then
 // "2") still match. The trailing boundary "(?:-|$)" (was "(?:-[a-z]|$)") lets a slug
 // that starts with a digit terminate the token.
 export const PHASE_TOKEN_FROM_DIR_RE = new RegExp(
   `^(${CASE_FLEXIBLE_PROJECT_CODE_PREFIX_SOURCE}` +
-  `\\d+[A-Za-z]?(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}))*(?:\\.\\d+)*)(?:-|$)`,
+  `\\d+[A-Za-z]?(?:-${PHASE_CONTINUATION_SEGMENT_SOURCE}[A-Z]?)*(?:\\.\\d+)*)(?:-|$)`,
 );
 export const MILESTONE_ARCHIVE_DIR_RE = /^v\d+.*-phases$/i;
 
@@ -86,19 +85,10 @@ export function canonicalPlanStem(stem: string): string {
   const m = stem.match(
     new RegExp(
       `^(${CASE_FLEXIBLE_PHASE_NUMBER_TOKEN_SOURCE}-${PHASE_CONTINUATION_SEGMENT_SOURCE})` +
-      `(?!-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE})(?=[A-Z](?:-|$)|-|$)`,
+      `(?=[A-Z](?:-|$)|-|$)`,
     ),
   );
-  if (m) return m[1];
-
-  // A two-digit segment followed by a one-digit slug segment is a phase-name
-  // collision ("10-24-7-autonomy"), not a plan pair.
-  const collision = stem.match(
-    new RegExp(
-      `^(${CASE_FLEXIBLE_PHASE_NUMBER_TOKEN_SOURCE})-${PHASE_CONTINUATION_SEGMENT_SOURCE}-${SINGLE_DIGIT_RUN_SEGMENT_SOURCE}`,
-    ),
-  );
-  return collision ? collision[1] : stem;
+  return m ? m[1] : stem;
 }
 
 /** Result of buildRoadmapPhaseVariants. */
