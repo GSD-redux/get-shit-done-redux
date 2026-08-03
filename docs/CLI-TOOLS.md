@@ -511,6 +511,9 @@ node gsd-tools.cjs init progress
 node gsd-tools.cjs init manager
 node gsd-tools.cjs init complete-milestone
 node gsd-tools.cjs init autonomous [--converge] [--cross-ai]
+node gsd-tools.cjs init docs-update
+node gsd-tools.cjs init update [--next] [--rc]
+node gsd-tools.cjs init transition
 
 # Workstream-scoped init (`--ws` flag)
 node gsd-tools.cjs init execute-phase <phase> --ws <name>

@@ -425,6 +425,30 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "init.docs-update",
+    "aliases": [
+      "init docs-update"
+    ],
+    "subcommand": "docs-update",
+    "mutation": false
+  },
+  {
+    "canonical": "init.update",
+    "aliases": [
+      "init update"
+    ],
+    "subcommand": "update",
+    "mutation": false
+  },
+  {
+    "canonical": "init.transition",
+    "aliases": [
+      "init transition"
+    ],
+    "subcommand": "transition",
+    "mutation": false
+  },
+  {
     "canonical": "init.new-workspace",
     "aliases": [
       "init new-workspace"

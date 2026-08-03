@@ -55,6 +55,12 @@ import loopResolverMod = require('./loop-resolver.cjs');
 import capabilityLoaderMod = require('./capability-loader.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-state.cjs is an export= CommonJS module
 import capabilityStateMod = require('./capability-state.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- docs.cjs is an export= CommonJS module
+import docsMod = require('./docs.cjs');
+const { detectMonorepoWorkspaces } = docsMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- workstream-inventory.cjs is an export= CommonJS module
+import workstreamInventoryMod = require('./workstream-inventory.cjs');
+const { getOtherActiveWorkstreamInventories } = workstreamInventoryMod;
 const { checkAgentsInstalled } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- git-base-branch.cjs is an export= CommonJS module
 import gitBaseBranch = require('./git-base-branch.cjs');
@@ -677,6 +683,10 @@ function buildSectionManifestField(
     planStrategyConverge?: boolean;
     reviewerInstancesConfigured?: boolean;
     autoAdvanceActive?: boolean;
+    isMonorepo?: boolean;
+    nextChannel?: boolean;
+    workstreamActive?: boolean;
+    flatMode?: boolean;
   } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
@@ -718,6 +728,10 @@ function buildSectionManifestField(
     planStrategyConverge: overrides.planStrategyConverge,
     reviewerInstancesConfigured: overrides.reviewerInstancesConfigured,
     autoAdvanceActive: overrides.autoAdvanceActive,
+    isMonorepo: overrides.isMonorepo,
+    nextChannel: overrides.nextChannel,
+    workstreamActive: overrides.workstreamActive,
+    flatMode: overrides.flatMode,
   };
 
   try {
@@ -1186,8 +1200,30 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
     milestones_path: toPosixPath(path.join(planningDir(cwd), 'MILESTONES.md')),
   };
 
+  // `state:flat-mode` (#2994): whether NO workstream is active — the inverse
+  // of `state:workstream-active` (introduced for `cmdInitTransition` below).
+  // `new-milestone.md`'s Step 4 Part A (milestone-state write) runs ONLY in
+  // flat mode; a workstream's own `.planning/workstreams/<name>/STATE.md`/
+  // `ROADMAP.md`/`REQUIREMENTS.md` already carry the milestone state, so
+  // writing the shared `## Current Milestone` heading here would clobber it
+  // (#2308). The `when=` grammar has no negation operator (ADR-1671:69), so
+  // Part A's condition — "skip when a workstream IS active" — cannot be
+  // expressed by negating `state:workstream-active` in the marker; a
+  // SEPARATE, positively-phrased atom whose fact is the inverse is the
+  // sanctioned resolution (same discipline as `state:chunked-mode` folding
+  // an OR — never an operator in the grammar itself). Same authoritative
+  // source as `cmdInitTransition`: `GSD_WORKSTREAM` env, falling back to the
+  // stored active-workstream pointer (mirrors `cmdInitProgress`'s own
+  // resolution above).
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  const workstreamActive = !!resolvedWorkstream;
+  const flatMode = !workstreamActive;
+
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'new-milestone');
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'new-milestone', {
+    workstreamActive,
+    flatMode,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -2525,6 +2561,121 @@ function cmdInitAutonomous(
   output(withProjectRoot(cwd, result), raw);
 }
 
+/**
+ * `docs-update.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3 — final slice). `docs-update.md` previously carried NO `gsd_run query
+ * init.*` call at all: its own `docs-init` command (`cmdDocsInit`,
+ * src/docs.cts) is a SEPARATE, pre-existing entry point outside this
+ * `init.*` family and is left untouched here. This function's only job is
+ * the `section_manifest` field neither `docs-init` nor any other call
+ * carries, gating `docs-update.md`'s `dispatch-monorepo-packages` section.
+ *
+ * `state:is-monorepo` ground truth: the project's monorepo workspaces list
+ * is non-empty — reuses `detectMonorepoWorkspaces` (src/docs.cts, exported
+ * for this purpose) rather than a second, divergence-prone workspace-glob
+ * scan (DEFECT.GENERATIVE-FIX dual surface); this is the SAME detector that
+ * already backs `docs-init`'s own `monorepo_workspaces` field.
+ */
+function cmdInitDocsUpdate(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const isMonorepo = detectMonorepoWorkspaces(cwd).length > 0;
+
+  const result: Record<string, unknown> = {};
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'docs-update', {
+    isMonorepo,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `update.md`'s dedicated init entry point (#2994, epic #1671 Phase 6.3 —
+ * final slice). `update.md` previously carried NO `gsd_run query init.*`
+ * call at all: it resolves `gsd-tools.cjs` itself (its own bespoke
+ * `PREFERRED_CONFIG_DIR`/`PREFERRED_RUNTIME`-aware `$GSD_TOOLS` cascade,
+ * `update.md` ~lines 13-45) because the update workflow must run BEFORE any
+ * install can be assumed resolvable — the canonical launcher preamble's
+ * fixed candidate list is not a substitute for that cascade, and both
+ * resolutions assign the identical `$GSD_TOOLS` shell variable, so copying
+ * the canonical preamble in ADDITION to the existing cascade would silently
+ * clobber the value `backup_custom_files`/`restore_custom_files` (later
+ * steps) still depend on. This function is invoked via that ALREADY
+ * resolved `$GSD_TOOLS`, not a redundant `gsd_run()` shell function.
+ *
+ * `state:next-channel` ground truth: `--next` OR its documented alias
+ * `--rc` (same disjunction-to-one-boolean discipline as
+ * `state:chunked-mode`/`state:plan-strategy-converge`). This DELIBERATELY
+ * does not replace `update.md`'s own `parse_update_channel` case-statement
+ * (`TAG="next"`/`TAG="latest"`) — issue #815's regression test
+ * (`tests/issue-815-update-next-channel.test.cjs`) asserts that literal
+ * case-statement text stays in `update.md` verbatim (the npm dist-tag
+ * selection has to run in the workflow's own shell before any `gsd_run`
+ * round-trip), so `next_channel` exists purely to gate the `channel-banner`
+ * section's admission — a parallel, consistent-but-not-replacing
+ * resolution of the same flags.
+ */
+function cmdInitUpdate(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const nextChannel = options['next'] === true || options['rc'] === true;
+
+  const result: Record<string, unknown> = {
+    next_channel: nextChannel,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'update', {
+    nextChannel,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `transition.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3 — final slice). `transition.md` is an internal workflow (no
+ * user-facing `/gsd-transition` command) that previously carried NO
+ * `gsd_run query init.*` call at all; it already establishes `gsd_run()`
+ * via the canonical launcher preamble in its `update_roadmap_and_state`
+ * step (before this call's insertion point in `offer_next_phase`), so no
+ * second preamble copy is needed in the host file.
+ *
+ * `state:workstream-active` ground truth: a workstream is active — resolved
+ * via `GSD_WORKSTREAM` env, falling back to the stored active-workstream
+ * pointer (mirrors `cmdInitProgress`'s own `_resolvedWorkstream` resolution
+ * above, the established authoritative source for "is a workstream active"
+ * in this file).
+ *
+ * `other_active_workstreams` hoists the resolver-in-body hazard out of
+ * `transition.md`'s `workstream-collision-check` step: that step's body
+ * previously re-derived this via an inline `gsd_run query workstream.list
+ * --raw` call gated on the identical `if [ -n "$GSD_WORKSTREAM" ]`
+ * condition that now backs this section's OWN admission — resolving it here
+ * instead reuses `getOtherActiveWorkstreamInventories` (src/workstream-
+ * inventory.cts), the SAME primitive `workstream.list` itself calls
+ * (`cmdWorkstreamList`, src/workstream.cts), pre-filtered exactly as the
+ * step's own prose described (excludes the current workstream and any
+ * workstream whose status contains "milestone complete" or "archived",
+ * case-insensitively — `isCompletedInventory`), so the step body becomes a
+ * pure JSON consumer with no `gsd_run` call of its own.
+ */
+function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  const workstreamActive = !!resolvedWorkstream;
+
+  const result: Record<string, unknown> = {
+    other_active_workstreams: workstreamActive
+      ? getOtherActiveWorkstreamInventories(cwd, resolvedWorkstream).map((inv) => ({
+          name: inv.name,
+          status: inv.status,
+        }))
+      : [],
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'transition', {
+    workstreamActive,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
 function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   try {
     (pruneOrphanedWorktrees as (cwd: string) => void)(cwd);
@@ -3540,6 +3691,9 @@ export = {
   cmdInitManager,
   cmdInitCompleteMilestone,
   cmdInitAutonomous,
+  cmdInitDocsUpdate,
+  cmdInitUpdate,
+  cmdInitTransition,
   cmdInitNewWorkspace,
   cmdInitListWorkspaces,
   cmdInitRemoveWorkspace,

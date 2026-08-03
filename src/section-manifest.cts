@@ -25,7 +25,9 @@
  * fragmentizing `code-review.md` and `complete-milestone.md`, then from 23
  * to 24 via a still further #2994 amendment fragmentizing `autonomous.md`,
  * then from 24 to 26 via a still further #2994 amendment fragmentizing
- * `review.md` and `discuss-phase-assumptions.md`.
+ * `review.md` and `discuss-phase-assumptions.md`, then from 26 to 30 via the
+ * final #2994 slice fragmentizing `docs-update.md`, `update.md`,
+ * `transition.md`, and `new-milestone.md`.
  * {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
@@ -160,6 +162,48 @@ export interface InvocationFacts {
    * falsy, never throws.
    */
   readonly autoAdvanceActive?: boolean;
+  /**
+   * Whether the project is a monorepo with a non-empty workspaces list
+   * (#2994, final slice): the SAME `monorepo_workspaces` glob list
+   * `docs-init` (`src/docs.cts`) already produces, resolved by the caller
+   * (`cmdInitDocsUpdate`, the init seam) via the exported
+   * `detectMonorepoWorkspaces` detector rather than a second scan. Absent/
+   * undefined is falsy, never throws.
+   */
+  readonly isMonorepo?: boolean;
+  /**
+   * Whether `update.md`'s release channel is `next` (#2994, final slice):
+   * `--next` flag OR its documented alias `--rc`. Same disjunction-to-one-
+   * boolean discipline as {@link chunkedMode} — resolved by the caller
+   * (`cmdInitUpdate`, the init seam) into this single boolean BEFORE it
+   * reaches this module. This fact exists purely to gate the
+   * `channel-banner` section's admission; it deliberately does NOT replace
+   * `update.md`'s own `TAG="next"`/`TAG="latest"` case-statement (issue
+   * #815's regression test asserts that literal text stays in the
+   * workflow). Absent/undefined is falsy, never throws.
+   */
+  readonly nextChannel?: boolean;
+  /**
+   * Whether a workstream is active (#2994, final slice): `GSD_WORKSTREAM`
+   * env, falling back to the stored active-workstream pointer — resolved by
+   * the caller (`cmdInitTransition`/`cmdInitNewMilestone`, the init seam),
+   * mirroring `cmdInitProgress`'s own established resolution of the same
+   * question. Shared across two workflows' `cmdInit*` entry points (not
+   * redefined per-caller). Absent/undefined is falsy, never throws.
+   */
+  readonly workstreamActive?: boolean;
+  /**
+   * Whether NO workstream is active — the positively-phrased INVERSE of
+   * {@link workstreamActive} (#2994, final slice). The `when=` grammar has
+   * no negation operator (ADR-1671:69), so a section whose true condition is
+   * "skip when a workstream IS active" (`new-milestone.md`'s Step 4 Part A)
+   * cannot negate `state:workstream-active` in its marker; a separate atom
+   * whose fact is independently resolved to the inverse is the sanctioned
+   * pattern instead. Resolved by the caller (`cmdInitNewMilestone`, the init
+   * seam) as `!workstreamActive` from the SAME authoritative source.
+   * Absent/undefined is falsy, never throws.
+   */
+  readonly flatMode?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -265,6 +309,10 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'state:reviewer-instances-configured': (facts: InvocationFacts) => facts.reviewerInstancesConfigured === true,
     'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,
+    'state:is-monorepo': (facts: InvocationFacts) => facts.isMonorepo === true,
+    'state:next-channel': (facts: InvocationFacts) => facts.nextChannel === true,
+    'state:workstream-active': (facts: InvocationFacts) => facts.workstreamActive === true,
+    'state:flat-mode': (facts: InvocationFacts) => facts.flatMode === true,
   }),
 );
 

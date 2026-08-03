@@ -44,6 +44,9 @@ interface InitModule {
   cmdInitManager(cwd: string, raw: boolean): void;
   cmdInitCompleteMilestone(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitAutonomous(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitDocsUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitTransition(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
   cmdInitRemoveWorkspace(cwd: string, name: string | undefined, raw: boolean): void;
@@ -162,6 +165,12 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
           'cross-ai': namedArgs['cross-ai'],
         });
       },
+      'docs-update': () => init.cmdInitDocsUpdate(cwd, raw, {}),
+      update: () => {
+        const namedArgs = parseNamedArgs(args, [], ['next', 'rc']);
+        init.cmdInitUpdate(cwd, raw, { next: namedArgs['next'], rc: namedArgs['rc'] });
+      },
+      transition: () => init.cmdInitTransition(cwd, raw, {}),
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
       'remove-workspace': () => init.cmdInitRemoveWorkspace(cwd, args[2], raw),

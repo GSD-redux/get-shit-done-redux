@@ -100,18 +100,29 @@ import contextComposer = require('./context-composer.cjs');
  * #2994 amendment fragmentizing `code-review.md` and `complete-milestone.md`,
  * then from 23 to 24 via a further #2994 amendment fragmentizing
  * `autonomous.md`, then from 24 to 26 via a still further #2994 amendment
- * fragmentizing `review.md` and `discuss-phase-assumptions.md`. The
- * vocabulary remains CLOSED: no operators, no negation, no nesting.
- * Cardinality is not expressiveness — a 26-entry flat list with no
+ * fragmentizing `review.md` and `discuss-phase-assumptions.md`, then from 26
+ * to 30 via the FINAL #2994 slice (epic #1671 Phase 6.3) fragmentizing
+ * `docs-update.md`, `update.md`, `transition.md`, and `new-milestone.md` —
+ * every one of the 13 workflows targeted by ADR-1671 is now on the fragment
+ * model. The vocabulary remains CLOSED: no operators, no negation, no nesting.
+ * Cardinality is not expressiveness — a 30-entry flat list with no
  * composition is still not a language.
  *
  * Held at 14, not wider: an atom whose fact is never computed always
  * evaluates FALSE, so a section marked with it would silently never
- * include — a silent-exclusion bug, not a feature. Two further atoms
- * (`flag:--verify-only`, `state:is-monorepo`) were surveyed and are
- * justified in principle, but their workflow (`docs-update`) has no
- * dedicated `cmdInit*` entry point yet to compute the backing fact, so they
- * are withheld until that entry point exists (#2992 / ADR-1671 Phase 6.1).
+ * include — a silent-exclusion bug, not a feature. One further atom
+ * (`flag:--verify-only`) was surveyed but is NOT admitted even now that
+ * `docs-update` has its own `cmdInit*` entry point (`cmdInitDocsUpdate`):
+ * the flag's control flow is INTERLEAVED across three non-contiguous
+ * touch-points in `docs-update.md` (an inline early-exit check in
+ * `init_context` — "If `--verify-only` is present…skip to
+ * verify_only_report" — a "Skip condition" note embedded in another step's
+ * body, and the `verify_only_report` step itself) rather than a single
+ * contiguous, whole-line, purely-additive region — admitting the atom to
+ * gate only the `verify_only_report` step would leave the other two
+ * touch-points as un-migrated raw `$ARGUMENTS` checks. `state:is-monorepo`
+ * (`dispatch-monorepo-packages` section) IS admitted in this slice — see the
+ * paragraph below.
  * `flag:--fix`, `state:fallow-enabled`, and `state:git-create-tag` were
  * withheld for the same reason until a further #2994 amendment gave
  * `code-review` and `complete-milestone` their own dedicated `cmdInit*`
@@ -171,6 +182,27 @@ import contextComposer = require('./context-composer.cjs');
  * fact, resolved to a single boolean FACT by the new
  * `cmdInitDiscussPhaseAssumptions` entry point before it ever reaches this
  * grammar, same discipline as `state:chunked-mode` above).
+ *
+ * The FINAL #2994 widening (epic #1671 Phase 6.3) adds 4 entries, closing
+ * out the last four workflows on ADR-1671's fragmentization list —
+ * `docs-update.md`, `update.md`, `transition.md`, `new-milestone.md` — none
+ * of which carried a `gsd_run query init.*` call before this slice:
+ * `state:is-monorepo` (`dispatch-monorepo-packages` section, new
+ * `cmdInitDocsUpdate` entry point — reuses `docs.cts`'s own
+ * `detectMonorepoWorkspaces` detector rather than a second scan);
+ * `state:next-channel` (`channel-banner` section, new `cmdInitUpdate` entry
+ * point — `--next` OR its documented alias `--rc`, resolved in PARALLEL
+ * with, not in place of, `update.md`'s own `TAG="next"` case-statement,
+ * which issue #815's regression test requires to stay literal in the
+ * workflow); `state:workstream-active` (`workstream-collision-check`
+ * section, new `cmdInitTransition` entry point — a workstream is active,
+ * `GSD_WORKSTREAM` env falling back to the stored active-workstream
+ * pointer, the same authoritative source `cmdInitProgress` already uses);
+ * and `state:flat-mode` (`project-md-milestone-write` section,
+ * `cmdInitNewMilestone` — the positively-phrased INVERSE of
+ * `state:workstream-active`, introduced because the grammar has no negation
+ * operator and `new-milestone.md`'s Step 4 Part A is gated on the OPPOSITE
+ * condition from `transition.md`'s section).
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
@@ -191,13 +223,17 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'flag:--validate',
   'state:chunked-mode',
   'state:fallow-enabled',
+  'state:flat-mode',
   'state:git-create-tag',
+  'state:is-monorepo',
   'state:needs-codebase-map',
+  'state:next-channel',
   'state:phase-mvp-mode',
   'state:auto-advance-active',
   'state:plan-strategy-converge',
   'state:reviewer-instances-configured',
   'state:ui-phase-active',
+  'state:workstream-active',
   'state:worktrees-enabled',
 ]);
 

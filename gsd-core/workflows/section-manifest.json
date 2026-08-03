@@ -53,6 +53,13 @@
         "read": "gsd-core/workflows/discuss-phase-assumptions/steps/auto-advance-dispatch.md"
       }
     ],
+    "docs-update": [
+      {
+        "id": "dispatch-monorepo-packages",
+        "when": "state:is-monorepo",
+        "read": "gsd-core/workflows/docs-update/steps/dispatch-monorepo-packages.md"
+      }
+    ],
     "execute-phase": [
       {
         "id": "partial-wave",
@@ -71,6 +78,11 @@
       }
     ],
     "new-milestone": [
+      {
+        "id": "project-md-milestone-write",
+        "when": "state:flat-mode",
+        "read": "gsd-core/workflows/new-milestone/steps/project-md-milestone-write.md"
+      },
       {
         "id": "reset-phase-safety",
         "when": "flag:--reset-phase-numbers",
@@ -170,6 +182,20 @@
         "id": "reviewer-instances-note-2",
         "when": "state:reviewer-instances-configured",
         "read": "gsd-core/workflows/review/steps/reviewer-instances-note-2.md"
+      }
+    ],
+    "transition": [
+      {
+        "id": "workstream-collision-check",
+        "when": "state:workstream-active",
+        "read": "gsd-core/workflows/transition/steps/workstream-collision-check.md"
+      }
+    ],
+    "update": [
+      {
+        "id": "channel-banner",
+        "when": "state:next-channel",
+        "read": "gsd-core/workflows/update/steps/channel-banner.md"
       }
     ],
     "verify-work": [

@@ -46,7 +46,7 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 26 atoms (widened from 4 to 14 via the ADR-1671
+`when=` takes exactly one of 30 atoms (widened from 4 to 14 via the ADR-1671
 amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
 ADR-1671 amendment for #2993, epic #1671 Phase 6.2, then from 19 to 20 via
 the ADR-1671 amendment for #2994, epic #1671 Phase 6.3, then from 20 to 23
@@ -54,7 +54,10 @@ via a further #2994 amendment fragmentizing `code-review.md` and
 `complete-milestone.md`, then from 23 to 24 via a still further #2994
 amendment fragmentizing `autonomous.md`, then from 24 to 26 via a still
 further #2994 amendment fragmentizing `review.md` and
-`discuss-phase-assumptions.md`):
+`discuss-phase-assumptions.md`, then from 26 to 30 via the FINAL #2994
+amendment fragmentizing `docs-update.md`, `update.md`, `transition.md`, and
+`new-milestone.md` — the last four of the 13 workflows targeted by
+ADR-1671):
 
 | Value | Meaning |
 |---|---|
@@ -77,12 +80,16 @@ further #2994 amendment fragmentizing `review.md` and
 | `state:auto-advance-active` | Applicable when `discuss-phase-assumptions.md`'s `auto_advance` step should dispatch — `--auto` flag OR a consolidated auto-mode config fact (see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below). |
 | `state:chunked-mode` | Applicable when chunked planning mode is active — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:fallow-enabled` | Applicable when `.planning/config.json`'s `code_quality.fallow.enabled` is `true` (fail-closed default `false`). |
+| `state:flat-mode` | Applicable when NO workstream is active — the positively-phrased inverse of `state:workstream-active` (the grammar has no negation operator). |
 | `state:git-create-tag` | Applicable when `.planning/config.json`'s `git.create_tag` is not `false` (fail-OPEN default `true`). |
+| `state:is-monorepo` | Applicable when the project's `monorepo_workspaces` list is non-empty. |
 | `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
+| `state:next-channel` | Applicable when `update.md`'s release channel is `next` — the workflow runs with `--next`, or its documented alias `--rc`. |
 | `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
 | `state:plan-strategy-converge` | Applicable when `autonomous.md`'s planning step should route through plan-review convergence instead of `gsd-plan-phase` — the workflow runs with `--converge`, or its documented alias `--cross-ai` (`autonomous.md`'s own `PLAN_STRATEGY` resolver folds both). |
 | `state:reviewer-instances-configured` | Applicable when `.planning/config.json`'s `review.reviewer_instances` is present AND non-empty. |
 | `state:ui-phase-active` | Applicable when the phase's active `plan:pre` loop hooks include the `ui-phase` step, OR the phase directory already contains a `*-UI-SPEC.md` file — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
+| `state:workstream-active` | Applicable when a workstream is active — `GSD_WORKSTREAM` env, falling back to the stored active-workstream pointer. |
 | `state:worktrees-enabled` | Applicable when `.planning/config.json`'s `workflow.use_worktrees` is enabled. |
 
 This list is **closed by design** (Greenspun's Tenth Rule): left open-ended,
@@ -110,11 +117,21 @@ required:
    section marked with it would silently never include: the exact
    silent-wrong-answer class this gate exists to prevent.
 
-Two further atoms (`flag:--verify-only`, `state:is-monorepo`) satisfy gate 1
-but not yet gate 2 — their workflow (`docs-update`) routes through shared
-generic init entry points invoked by 20+ other workflows, so a dedicated
-`cmdInit*` seam does not yet exist to compute their facts. They are withheld
-pending that seam, not rejected. `flag:--fix`, `state:fallow-enabled`, and
+One further atom, `flag:--verify-only`, is surveyed but NOT admitted even now
+that `docs-update` has its own dedicated `cmdInit*` entry point
+(`cmdInitDocsUpdate`) — it fails gate 1, not gate 2: the flag's control flow
+is INTERLEAVED across three non-contiguous touch-points in `docs-update.md`
+(an inline early-exit check in `init_context`, a "Skip condition" note
+embedded in another step's body, and the `verify_only_report` step itself)
+rather than a single contiguous, whole-line, purely-additive region.
+Admitting the atom to gate only the `verify_only_report` step would leave
+the other two touch-points as un-migrated raw `$ARGUMENTS` checks — an atom
+whose consuming section covers only PART of the flag's real behavior is not
+a clean win. `state:is-monorepo` IS admitted (`dispatch-monorepo-packages`
+section, `cmdInitDocsUpdate`) — see [Piloted on execute-phase.md, then rolled
+out across the wired
+workflows](#piloted-on-execute-phasemd-then-rolled-out-across-the-wired-workflows)
+below. `flag:--fix`, `state:fallow-enabled`, and
 `state:git-create-tag` were withheld for the same reason until a further
 #2994 amendment gave `code-review` and `complete-milestone` their own
 dedicated `cmdInit*` entry points (`cmdInitCodeReview`,
@@ -132,7 +149,12 @@ invocation silently excluded from the same sections. `state:reviewer-instances-c
 and `state:auto-advance-active` were withheld the same way until a still
 further #2994 amendment gave `review` and `discuss-phase-assumptions` their
 own dedicated `cmdInit*` entry points (`cmdInitReview`,
-`cmdInitDiscussPhaseAssumptions`).
+`cmdInitDiscussPhaseAssumptions`). The FINAL #2994 amendment gives
+`docs-update`, `update`, `transition`, and `new-milestone` their own atoms —
+`state:is-monorepo`, `state:next-channel`, `state:workstream-active`, and
+`state:flat-mode` — backed by three brand-new dedicated entry points
+(`cmdInitDocsUpdate`, `cmdInitUpdate`, `cmdInitTransition`) plus an extension
+of the pre-existing `cmdInitNewMilestone`.
 
 ### Compound conditions are resolved in the fact, never the grammar
 
@@ -283,15 +305,17 @@ At init time, a separate pure evaluator, `src/section-manifest.cts`
 `InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
 phaseMvpMode?, worktreesEnabled?, chunkedMode?, uiPhaseActive?, fallowEnabled?,
 gitCreateTag?, planStrategyConverge?, reviewerInstancesConfigured?,
-autoAdvanceActive?}`. Only a workflow with a **dedicated
+autoAdvanceActive?, isMonorepo?, nextChannel?, workstreamActive?, flatMode?}`.
+Only a workflow with a **dedicated
 `cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
 it, because only that entry point can assemble `InvocationFacts` from its own
 parsed CLI options and `.planning/` state reads — this is admission gate 2
 from [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above,
-applied per-workflow rather than per-atom. Twelve entry points are wired
+applied per-workflow rather than per-atom. Fifteen entry points are wired
 today: `execute-phase`, `plan-phase`, `new-project`, `new-milestone`,
 `quick`, `progress`, `verify-work`, `code-review`, `complete-milestone`,
-`autonomous`, `review`, and `discuss-phase-assumptions`.
+`autonomous`, `review`, `discuss-phase-assumptions`, `docs-update`, `update`,
+and `transition`.
 
 `InvocationFacts.flags` is a `ReadonlySet<string>` of the literal `--<name>`
 tokens seen on the invocation, and **membership is token-presence, not
@@ -308,7 +332,7 @@ that were actually seen.
 
 ## Piloted on execute-phase.md, then rolled out across the wired workflows
 
-Twelve workflows carry markers today, all of them the workflows with a
+Fifteen workflows carry markers today, all of them the workflows with a
 dedicated `cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
 above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
 `gsd-core/workflows/plan-phase.md` (#2993, epic #1671 Phase 6.2),
@@ -318,14 +342,15 @@ four, #2994, epic #1671 Phase 6.3), `gsd-core/workflows/verify-work.md`
 (also #2994, epic #1671 Phase 6.3), `gsd-core/workflows/code-review.md` /
 `gsd-core/workflows/complete-milestone.md` (a further #2994 amendment, epic
 #1671 Phase 6.3), `gsd-core/workflows/autonomous.md` (a still further
-#2994 amendment, epic #1671 Phase 6.3), and `gsd-core/workflows/review.md` /
+#2994 amendment, epic #1671 Phase 6.3), `gsd-core/workflows/review.md` /
 `gsd-core/workflows/discuss-phase-assumptions.md` (a still further #2994
-amendment, epic #1671 Phase 6.3). The marker grammar and composer seam
-are general-purpose across any workflow file; rollout to the remaining
-`docs-update` workflow is gated on that workflow gaining its own dedicated
-`cmdInit*` entry point (see the two-atoms-withheld note in [The frozen
-`when=` vocabulary](#the-frozen-when-vocabulary) above), not scheduled as
-later work on the marker grammar itself.
+amendment, epic #1671 Phase 6.3), and finally
+`gsd-core/workflows/docs-update.md` / `gsd-core/workflows/update.md` /
+`gsd-core/workflows/transition.md` (the LAST #2994 amendment, epic #1671
+Phase 6.3 — none of these three carried a `gsd_run query init.*` call before
+this slice). Every one of the 13 workflows ADR-1671 targeted is now on the
+fragment model; the marker grammar and composer seam remain general-purpose
+across any future workflow file, but no further rollout is scheduled.
 
 `execute-phase.md` marks three `<step>` blocks: `partial-wave`
 (`flag:--wave`), `gap-closure-artifacts` (`state:gap-closure-phase`), and
@@ -365,8 +390,29 @@ fold) before `buildSectionManifestField` builds its flags Set, so a bare
 `--full` invocation still includes the three flag-gated sections without the
 grammar ever seeing an OR.
 
-`new-milestone.md` marks one section: `reset-phase-safety`
-(`flag:--reset-phase-numbers`).
+`new-milestone.md` marks two sections: `reset-phase-safety`
+(`flag:--reset-phase-numbers`) and, from the final #2994 slice,
+`project-md-milestone-write` (`state:flat-mode`) — Step 4's "Part A"
+milestone-state write, which must run ONLY when NO workstream is active
+(#2308: an active workstream's own `.planning/workstreams/<name>/STATE.md`/
+`ROADMAP.md`/`REQUIREMENTS.md` already carry this milestone's state, so
+writing the shared `## Current Milestone` heading here would clobber it).
+Part A's true condition is the NEGATION of "a workstream is active", and the
+grammar has no negation operator, so `state:flat-mode` is a SEPARATE,
+positively-phrased atom (fact `= !workstreamActive`) rather than a negated
+`state:workstream-active` — see `transition.md` below for the atom this one
+inverts. Part B ("Evolution structural repair", always runs regardless of
+workstream mode) stays OUTSIDE the marker, directly after it, for the same
+reason every other flag-absent/state-false fallback in this document does.
+`cmdInitNewMilestone` computes both `workstreamActive` and `flatMode` from
+the SAME authoritative source `cmdInitProgress` already established
+(`GSD_WORKSTREAM` env, falling back to the stored active-workstream
+pointer). Because Step 4 (where the marker lives) runs well before
+`new-milestone.md`'s pre-existing `init.new-milestone` call (Step 7, kept
+AFTER Step 6's phase archival so its `phase_dir_count`/`roadmap_exists`
+fields reflect POST-archival state), a SECOND, section-manifest-only
+`init.new-milestone` call is added early in Step 1 — `init.new-milestone`
+is a pure read with no mutation, so calling it twice is side-effect-free.
 
 `verify-work.md` marks two sections: `automated-ui-verification`
 (the new `state:ui-phase-active`, #2994 — see [Compound conditions are
@@ -493,6 +539,57 @@ fallback shape), plus `state:auto-advance-active` — `--auto` flag OR a
 consolidated auto-mode config fact, resolved to one boolean the same way
 `state:chunked-mode` is.
 
+`docs-update.md` marks one section: `dispatch-monorepo-packages`
+(`state:is-monorepo`) — the whole `dispatch_monorepo_packages` `<step>`,
+which already carried a hand-written `condition="monorepo_workspaces is
+non-empty"` attribute identifying it as the gated region before this slice.
+`docs-update.md` previously called `docs-init` (`cmdDocsInit`, `src/docs.cts`)
+only — a SEPARATE, pre-existing entry point outside the `init.*` family,
+left untouched. The new `cmdInitDocsUpdate` is purely ADDITIVE, carrying only
+`section_manifest`; its `isMonorepo` fact reuses `detectMonorepoWorkspaces`
+(exported from `src/docs.cts` for this purpose) rather than a second,
+divergence-prone workspace-glob scan — the SAME detector that already backs
+`docs-init`'s own `monorepo_workspaces` field.
+
+`update.md` marks one section: `channel-banner` (`state:next-channel`) — the
+"Only when `TAG=next`" channel-banner paragraph in `compare_versions`.
+`update.md` previously called NO `init.*` command at all; it resolves
+`gsd-tools.cjs` itself via a bespoke `PREFERRED_CONFIG_DIR`/
+`PREFERRED_RUNTIME`-aware `$GSD_TOOLS` cascade (`get_installed_version`,
+~lines 13-45) because the update workflow must run before any install can be
+assumed resolvable. The new `init.update` call REUSES that already-resolved
+`$GSD_TOOLS` (dual `.cjs`/PATH-shim invocation style, matching the
+pre-existing `update-context` call) rather than copying the canonical
+launcher preamble — both resolutions assign the identical `$GSD_TOOLS` shell
+variable, and the canonical preamble would silently clobber the value later
+steps (`backup_custom_files`, `restore_custom_files`) still depend on.
+`cmdInitUpdate`'s `nextChannel` fact (`--next` OR its documented alias
+`--rc`) is resolved in PARALLEL with, not in place of, `update.md`'s own
+`TAG="next"`/`TAG="latest"` case-statement in `parse_update_channel`, which
+stays byte-identical — issue #815's regression test
+(`tests/issue-815-update-next-channel.test.cjs`) asserts that literal
+case-statement text remains in the workflow, since the npm dist-tag
+selection has to run in the workflow's own shell before any `gsd_run`
+round-trip.
+
+`transition.md` marks one section: `workstream-collision-check`
+(`state:workstream-active`) — an internal workflow (no user-facing
+`/gsd-transition` command) that previously called NO `init.*` command at
+all. It already establishes `gsd_run()` via the canonical launcher preamble
+in its `update_roadmap_and_state` step, before this call's insertion point
+in `offer_next_phase`, so no second preamble copy is needed. The section's
+body previously re-derived its own gating condition via an inline `gsd_run
+query workstream.list --raw` call wrapped in `if [ -n "$GSD_WORKSTREAM" ]`
+— the identical condition that now backs the section's own admission (the
+same resolver-in-body hazard `code-review.md`'s `structural-pre-pass` and
+`complete-milestone.md`'s `git-tag` documented). `cmdInitTransition` hoists
+this via `getOtherActiveWorkstreamInventories` (`src/workstream-inventory.cts`
+— the SAME primitive `workstream.list` itself calls), pre-filtered exactly
+as the step's own prose described (excludes the current workstream and any
+workstream whose status contains "milestone complete" or "archived",
+case-insensitively), exposed as `other_active_workstreams`; the step body is
+now a pure JSON consumer with no `gsd_run` call of its own.
+
 **`plan-phase.md` was originally retargeted away from the #2930 pilot,
 then fragmentized here once the blocker cleared.** Issue #2930's own
 motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
@@ -533,5 +630,5 @@ question 1's resolution for the full record.
   `InvocationFacts`) consumed by the init seam.
 - `scripts/gen-section-manifest.cjs` — generates the committed
   `gsd-core/workflows/section-manifest.json` artifact from markers.
-- `src/init.cts` — `buildSectionManifestField` and the ten wired
+- `src/init.cts` — `buildSectionManifestField` and the fifteen wired
   `cmdInit*` entry points.

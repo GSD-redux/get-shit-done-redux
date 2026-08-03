@@ -102,6 +102,21 @@ esac
 ```
 
 `TAG` is restricted to `latest`/`next` by `check-latest-version.cjs` (it rejects any other value with exit 2), so no arbitrary dist-tag can leak through. Omitting `--next`/`--rc` reproduces the prior behavior exactly: `TAG=latest`.
+
+**Section-manifest gate (#2994):** reuse the `$GSD_TOOLS` already resolved by `get_installed_version` above — do NOT copy the canonical launcher preamble here, it assigns the SAME `$GSD_TOOLS` variable via a different (fixed-candidate) resolution and would silently override the value `backup_custom_files`/`restore_custom_files` (later steps) still depend on. Forward `--next`/`--rc` from `$ARGUMENTS` so `init.update`'s `state:next-channel` fact matches this step's own case-statement:
+
+```bash
+INIT_UPDATE=""
+if [ -n "$GSD_TOOLS" ]; then
+  case "$GSD_TOOLS" in
+    *.cjs) INIT_UPDATE="$(node "$GSD_TOOLS" query init.update $([ "$TAG" = "next" ] && echo --next) 2>/dev/null)" ;;
+    *)     INIT_UPDATE="$("$GSD_TOOLS" query init.update $([ "$TAG" = "next" ] && echo --next) 2>/dev/null)" ;;
+  esac
+fi
+if [[ "$INIT_UPDATE" == @file:* ]]; then INIT_UPDATE=$(cat "${INIT_UPDATE#@file:}"); fi
+```
+
+Extract `section_manifest` from `INIT_UPDATE` — gates the `channel-banner` section in `compare_versions` below.
 </step>
 
 <step name="check_latest_version">
@@ -152,13 +167,9 @@ Exit.
 <step name="compare_versions">
 Compare installed vs latest:
 
-**Only when `TAG=next`** (the user passed `--next`/`--rc`), prepend a channel banner so they know they are leaving the stable line — add this line immediately after the `**Latest:**` line in whichever output block renders:
-
-**Channel:** {CHANNEL_LABEL}
-
-On the default stable channel (`TAG=latest`), do NOT add a channel line — the output must match the prior stable behavior exactly.
-
-When `TAG=next`, the "latest" value is the release candidate published under `@next` (e.g. `1.4.0-rc.1`). Apply standard semver precedence for prereleases (`1.4.0-rc.1` is newer than `1.3.1` but older than the final `1.4.0`). Do NOT treat an `-rc.N` suffix as a dev install or as "behind" — offer it as an available update.
+<!-- gsd:section id="channel-banner" when="state:next-channel" -->
+If `section_manifest` (from `INIT_UPDATE`) is `null` or `"channel-banner"` is in its `included` list: read and execute `gsd-core/workflows/update/steps/channel-banner.md`. Otherwise (default stable channel) skip — do not read the file; the output must match the prior stable behavior exactly, with no channel line.
+<!-- /gsd:section -->
 
 **If installed == latest:**
 ```

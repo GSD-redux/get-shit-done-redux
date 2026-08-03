@@ -35,6 +35,17 @@ GSD_WS=""
 echo "$ARGUMENTS" | grep -qE -- '--ws[[:space:]]+[^[:space:]]+' && GSD_WS=$(echo "$ARGUMENTS" | grep -oE -- '--ws[[:space:]]+[^[:space:]]+')
 MILESTONE_ARG=$(echo "$ARGUMENTS" | sed -E 's/--ws[[:space:]]+[^[:space:]]+//g' | xargs)
 RESPONSE_LANGUAGE=$(gsd_run query config-get response_language --default "" 2>/dev/null || echo "")
+# #2994: EARLY, section-manifest-only init.new-milestone call — needed here
+# (before Step 4) to gate the project-md-milestone-write section. This is
+# DELIBERATELY separate from Step 7's full init.new-milestone call below,
+# which must stay AFTER Step 6's phase archival/phases.clear so its
+# phase_dir_count / roadmap_exists / latest_completed_milestone fields
+# reflect POST-archival state — moving that call here would compute those
+# fields too early and corrupt the roadmapper's phase-numbering context.
+# init.new-milestone is a pure read (no mutation), so calling it twice is
+# safe; only `section_manifest` is consumed from this early call.
+INIT_EARLY=$(gsd_run query init.new-milestone)
+if [[ "$INIT_EARLY" == @file:* ]]; then INIT_EARLY=$(cat "${INIT_EARLY#@file:}"); fi
 ```
 
 `GSD_WS` must chain to every downstream routing suggestion in this workflow (Step 4's shared-file guard, and the `/gsd:discuss-phase`/`/gsd:plan-phase` routing hints below) per the routing-propagation contract in `references/workstream-flag.md` — never let it silently drop.
@@ -151,22 +162,9 @@ AskUserQuestion:
 
 PROJECT.md is shared across workstreams (`references/workstream-flag.md` marks it `# Shared` in the directory diagram). This step has two independently-scoped parts — only Part A is workstream-guarded.
 
-**Part A — milestone-state write (skip when a workstream is active).** Skip Part A if `GSD_WS` is non-empty (parsed in Step 1). The active workstream's own `.planning/workstreams/<name>/STATE.md`/`ROADMAP.md`/`REQUIREMENTS.md` already carry this milestone's state. Writing a `## Current Milestone` heading here would clobber the shared file, and with parallel milestones across workstreams, whichever workstream runs `new-milestone` last would silently win the shared heading (#2308). In flat mode (`GSD_WS` empty), run Part A exactly as before:
-
-Add/update:
-
-```markdown
-## Current Milestone: v[X.Y] [Name]
-
-**Goal:** [One sentence describing milestone focus]
-
-**Target features:**
-- [Feature 1]
-- [Feature 2]
-- [Feature 3]
-```
-
-Update Active requirements section and "Last updated" footer.
+<!-- gsd:section id="project-md-milestone-write" when="state:flat-mode" -->
+If `section_manifest` (from `INIT_EARLY`) is `null` or `"project-md-milestone-write"` is in its `included` list: read and execute `gsd-core/workflows/new-milestone/steps/project-md-milestone-write.md`. Otherwise (a workstream is active) skip — do not read the file; Part B below still runs regardless of `GSD_WS`.
+<!-- /gsd:section -->
 
 **Part B — Evolution structural repair (always runs, regardless of `GSD_WS`).** `## Evolution` is a shared, idempotent structural section, not workstream state — a pre-Evolution project must be backfilled whether or not a workstream is active, so this part is NOT covered by Part A's skip. Ensure the `## Evolution` section exists in PROJECT.md. If missing (projects created before this feature), add it before the footer:
 
