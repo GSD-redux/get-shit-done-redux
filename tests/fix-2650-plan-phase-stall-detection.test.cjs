@@ -147,7 +147,7 @@ function runBashScript(script, args = [], opts = {}) {
   try {
     const scriptPath = path.join(scriptDir, 'script.sh');
     fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
-    return spawnSync('bash', [scriptPath, ...args], { encoding: 'utf-8', ...opts });
+    return spawnSync('bash', [scriptPath, ...args], { encoding: 'utf-8', timeout: 10000, ...opts });
   } finally {
     cleanup(scriptDir);
   }
