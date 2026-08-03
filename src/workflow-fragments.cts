@@ -101,11 +101,12 @@ import contextComposer = require('./context-composer.cjs');
  * then from 23 to 24 via a further #2994 amendment fragmentizing
  * `autonomous.md`, then from 24 to 26 via a still further #2994 amendment
  * fragmentizing `review.md` and `discuss-phase-assumptions.md`, then from 26
- * to 30 via the FINAL #2994 slice (epic #1671 Phase 6.3) fragmentizing
+ * to 30 (then 29; `flag:--full` retired as dead vocabulary) via the FINAL
+ * #2994 slice (epic #1671 Phase 6.3) fragmentizing
  * `docs-update.md`, `update.md`, `transition.md`, and `new-milestone.md` —
  * every one of the 13 workflows targeted by ADR-1671 is now on the fragment
  * model. The vocabulary remains CLOSED: no operators, no negation, no nesting.
- * Cardinality is not expressiveness — a 30-entry flat list with no
+ * Cardinality is not expressiveness — a 29-entry flat list with no
  * composition is still not a language.
  *
  * Held at 14, not wider: an atom whose fact is never computed always

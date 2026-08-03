@@ -25,7 +25,8 @@
  * fragmentizing `code-review.md` and `complete-milestone.md`, then from 23
  * to 24 via a still further #2994 amendment fragmentizing `autonomous.md`,
  * then from 24 to 26 via a still further #2994 amendment fragmentizing
- * `review.md` and `discuss-phase-assumptions.md`, then from 26 to 30 via the
+ * `review.md` and `discuss-phase-assumptions.md`, then from 26 to 30 — and
+ * finally to 29, `flag:--full` having been retired as dead vocabulary — via the
  * final #2994 slice fragmentizing `docs-update.md`, `update.md`,
  * `transition.md`, and `new-milestone.md`.
  * {@link WHEN_PREDICATES} is a total map from each frozen
