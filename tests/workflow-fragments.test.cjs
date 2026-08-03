@@ -616,9 +616,17 @@ describe('frozen when= vocabulary', () => {
     // (state:ui-phase-active, verify-work.md), then a further #2994 amendment
     // widened it 20 -> 23 (flag:--fix, state:fallow-enabled,
     // state:git-create-tag, fragmentizing code-review.md and
-    // complete-milestone.md). This is the row the lock exists to force — a
-    // deliberate, coordinated update, never a silent drift (Greenspun's
-    // Tenth Rule / ADR-1671:69).
+    // complete-milestone.md), then further #2994 amendments widened it to 30
+    // (autonomous.md, review.md, discuss-phase-assumptions.md, docs-update.md,
+    // update.md, transition.md, new-milestone.md — see
+    // docs/reference/workflow-fragments.md's own widening history). A final
+    // #2994 dead-vocabulary cleanup then narrowed it 30 -> 29: `flag:--full`
+    // was removed (never consumed by any `when=` marker — `quick.md` folds
+    // `--full` into `--discuss`/`--research`/`--validate` before evaluation),
+    // and `state:needs-codebase-map` gained its first real consumer
+    // (`new-project.md`'s `codebase-map-offer` section). This is the row the
+    // lock exists to force — a deliberate, coordinated update, never a
+    // silent drift (Greenspun's Tenth Rule / ADR-1671:69).
     assert.equal(Object.isFrozen(WHEN_VOCABULARY), true);
     assert.deepEqual(
       [...WHEN_VOCABULARY].sort(),
@@ -628,7 +636,6 @@ describe('frozen when= vocabulary', () => {
         'flag:--discuss',
         'flag:--fix',
         'flag:--forensic',
-        'flag:--full',
         'flag:--ingest',
         'flag:--prd',
         'flag:--research',
@@ -637,14 +644,21 @@ describe('frozen when= vocabulary', () => {
         'flag:--reviews',
         'flag:--validate',
         'flag:--wave',
+        'state:auto-advance-active',
         'state:chunked-mode',
         'state:fallow-enabled',
+        'state:flat-mode',
         'state:gap-closure-phase',
         'state:git-create-tag',
         'state:has-prior-phases',
+        'state:is-monorepo',
         'state:needs-codebase-map',
+        'state:next-channel',
         'state:phase-mvp-mode',
+        'state:plan-strategy-converge',
+        'state:reviewer-instances-configured',
         'state:ui-phase-active',
+        'state:workstream-active',
         'state:worktrees-enabled',
       ],
     );
@@ -744,11 +758,19 @@ describe('widened when= vocabulary (#2992)', () => {
   // (Object.keys-style derivation of the diff would be tokenization of the
   // vocabulary itself, so this list is a deliberate hand-written literal,
   // mirroring the discipline WHEN_PREDICATES already applies).
+  //
+  // `flag:--full` was ONE of the original 10 (#2992) but a later #2994
+  // dead-vocabulary cleanup removed it from WHEN_VOCABULARY entirely — it
+  // never gained a consuming `when=` marker (`quick.md` folds `--full` into
+  // `--discuss`/`--research`/`--validate` before evaluation, so no section
+  // ever gates on the raw flag). Dropped here too so this list stays a
+  // faithful subset of the LIVE frozen export (the parser now throws
+  // REASON.UNKNOWN_WHEN for `when="flag:--full"`, which `acceptsEveryWidenedAtom`
+  // below would otherwise incorrectly assert acceptance for).
   const NET_NEW_ATOMS = Object.freeze([
     'flag:--auto',
     'flag:--discuss',
     'flag:--forensic',
-    'flag:--full',
     'flag:--research',
     'flag:--reset-phase-numbers',
     'flag:--validate',

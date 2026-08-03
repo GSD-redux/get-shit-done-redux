@@ -300,6 +300,7 @@
   "gsd-core/workflows/new-project.md",
   "gsd-core/workflows/new-project/steps/auto-mode-config.md",
   "gsd-core/workflows/new-project/steps/auto-mode-detection.md",
+  "gsd-core/workflows/new-project/steps/codebase-map-offer.md",
   "gsd-core/workflows/new-workspace.md",
   "gsd-core/workflows/next.md",
   "gsd-core/workflows/node-repair.md",
