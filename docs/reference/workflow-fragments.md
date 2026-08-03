@@ -46,9 +46,10 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 19 atoms (widened from 4 to 14 via the ADR-1671
+`when=` takes exactly one of 20 atoms (widened from 4 to 14 via the ADR-1671
 amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
-ADR-1671 amendment for #2993, epic #1671 Phase 6.2):
+ADR-1671 amendment for #2993, epic #1671 Phase 6.2, then from 19 to 20 via
+the ADR-1671 amendment for #2994, epic #1671 Phase 6.3):
 
 | Value | Meaning |
 |---|---|
@@ -70,6 +71,7 @@ ADR-1671 amendment for #2993, epic #1671 Phase 6.2):
 | `state:chunked-mode` | Applicable when chunked planning mode is active — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
 | `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
+| `state:ui-phase-active` | Applicable when the phase's active `plan:pre` loop hooks include the `ui-phase` step, OR the phase directory already contains a `*-UI-SPEC.md` file — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:worktrees-enabled` | Applicable when `.planning/config.json`'s `workflow.use_worktrees` is enabled. |
 
 This list is **closed by design** (Greenspun's Tenth Rule): left open-ended,
@@ -129,6 +131,15 @@ widening the grammar itself to express `OR`/`AND`/negation is exactly the
 Greenspun's Tenth Rule drift [The frozen `when=`
 vocabulary](#the-frozen-when-vocabulary) above exists to prevent, regardless
 of how reasonable a single compound condition looks in isolation.
+
+`state:ui-phase-active` (#2994) is the same shape: `verify-work.md`'s
+`automated_ui_verification` step originally computed its own OR at RUNTIME
+(`UI_PHASE_ACTIVE` from `gsd_run loop render-hooks plan:pre` OR a `*-UI-SPEC.md`
+file check). `cmdInitVerifyWork` now resolves the identical disjunction ahead
+of time — `resolveLoopHooks({point: 'plan:pre', ...}).activeHooks` filtered to
+`kind === 'step' && ref.skill === 'ui-phase'`, OR'd with a `*-UI-SPEC.md`
+existence check under the phase directory — into `InvocationFacts.uiPhaseActive`,
+so `WHEN_PREDICATES['state:ui-phase-active']` again reads only that one field.
 
 ## Fails closed
 
@@ -223,14 +234,14 @@ At init time, a separate pure evaluator, `src/section-manifest.cts`
 (`selectSections`), partitions a workflow's manifest sections into
 `included`/`excluded` id lists against one invocation's
 `InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
-phaseMvpMode?, worktreesEnabled?, chunkedMode?}`. Only a workflow with a **dedicated
+phaseMvpMode?, worktreesEnabled?, chunkedMode?, uiPhaseActive?}`. Only a workflow with a **dedicated
 `cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
 it, because only that entry point can assemble `InvocationFacts` from its own
 parsed CLI options and `.planning/` state reads — this is admission gate 2
 from [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above,
-applied per-workflow rather than per-atom. Six entry points are wired today:
-`execute-phase`, `plan-phase`, `new-project`, `new-milestone`, `quick`, and
-`progress`.
+applied per-workflow rather than per-atom. Seven entry points are wired today:
+`execute-phase`, `plan-phase`, `new-project`, `new-milestone`, `quick`,
+`progress`, and `verify-work`.
 
 `InvocationFacts.flags` is a `ReadonlySet<string>` of the literal `--<name>`
 tokens seen on the invocation, and **membership is token-presence, not
@@ -247,13 +258,14 @@ that were actually seen.
 
 ## Piloted on execute-phase.md, then rolled out across the wired workflows
 
-Six workflows carry markers today, all of them the workflows with a dedicated
+Seven workflows carry markers today, all of them the workflows with a dedicated
 `cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
 above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
 `gsd-core/workflows/plan-phase.md` (#2993, epic #1671 Phase 6.2),
 `gsd-core/workflows/progress.md`, `gsd-core/workflows/new-project.md`,
-`gsd-core/workflows/quick.md`, and `gsd-core/workflows/new-milestone.md`
-(the last four, #2994, epic #1671 Phase 6.3). The marker grammar and composer
+`gsd-core/workflows/quick.md`, `gsd-core/workflows/new-milestone.md` (those
+four, #2994, epic #1671 Phase 6.3), and `gsd-core/workflows/verify-work.md`
+(also #2994, epic #1671 Phase 6.3). The marker grammar and composer
 seam are general-purpose across any workflow file; rollout to the remaining
 `autonomous`/`code-review`/`complete-milestone`/`docs-update` workflows is
 gated on those workflows gaining their own dedicated `cmdInit*` entry point
@@ -302,6 +314,25 @@ grammar ever seeing an OR.
 `new-milestone.md` marks one section: `reset-phase-safety`
 (`flag:--reset-phase-numbers`).
 
+`verify-work.md` marks two sections: `automated-ui-verification`
+(the new `state:ui-phase-active`, #2994 — see [Compound conditions are
+resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar)
+above) and `mvp-uat-framing` (`state:phase-mvp-mode`, sharing the atom
+already computed for `progress.md`'s `mvp-display`). `mvp-uat-framing`'s
+extraction is narrower than `progress.md`'s `mvp-display`: only the
+true-branch prose (the three ordered UAT sections plus the User Story format
+guard) moves into the step file — the false-branch note ("When `MVP_MODE=false`
+… fall back to the standard UAT generation path") stays OUTSIDE the marker,
+directly after it, because gating it away with the rest of the section would
+delete the exact text needed on every invocation where the atom is `false`
+(the common, non-MVP case). Unlike `progress.md`'s `mvp-display`, `verify-work.md`
+keeps its own `MVP_MODE=$(gsd_run query phase.mvp-mode ...)` runtime resolver
+(in the unconditional `initialize` step, not inside the gated section) — it is
+not circular/self-disabling the way `progress.md`'s inline resolver was,
+because the un-marked false-branch note and the step-file prose both still
+reference `$MVP_MODE` as a runtime variable, so the resolver keeps a live
+consumer outside the gate.
+
 **`plan-phase.md` was originally retargeted away from the #2930 pilot,
 then fragmentized here once the blocker cleared.** Issue #2930's own
 motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
@@ -342,5 +373,5 @@ question 1's resolution for the full record.
   `InvocationFacts`) consumed by the init seam.
 - `scripts/gen-section-manifest.cjs` — generates the committed
   `gsd-core/workflows/section-manifest.json` artifact from markers.
-- `src/init.cts` — `buildSectionManifestField` and the six wired
+- `src/init.cts` — `buildSectionManifestField` and the seven wired
   `cmdInit*` entry points.

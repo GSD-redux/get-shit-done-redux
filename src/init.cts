@@ -49,6 +49,12 @@ import uatPredicateMod = require('./uat-predicate.cjs');
 import agentInstallCheck = require('./agent-install-check.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- section-manifest.cjs is compiled from section-manifest.cts's named exports; imported as a namespace to read selectSections/SelectableSection/InvocationFacts off module.exports directly (#2932).
 import sectionManifest = require('./section-manifest.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- loop-resolver.cjs is an export= CommonJS module
+import loopResolverMod = require('./loop-resolver.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-loader.cjs is compiled from capability-loader.cts's named exports; imported as a namespace to read loadRegistry off module.exports directly.
+import capabilityLoaderMod = require('./capability-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-state.cjs is an export= CommonJS module
+import capabilityStateMod = require('./capability-state.cjs');
 const { checkAgentsInstalled } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- git-base-branch.cjs is an export= CommonJS module
 import gitBaseBranch = require('./git-base-branch.cjs');
@@ -92,6 +98,9 @@ const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
 const { readVerificationStatus } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
+const { resolveLoopHooks } = loopResolverMod;
+const { loadRegistry } = capabilityLoaderMod;
+const { resolveCapabilityRuntimeState } = capabilityStateMod;
 
 // Unused but imported for structural parity
 void stripShippedMilestones;
@@ -503,6 +512,59 @@ function detectPhaseMvpMode(cwd: string, phaseNumber: string | null): boolean {
 }
 
 /**
+ * `state:ui-phase-active` ground truth (#2994): whether the phase's active
+ * `plan:pre` loop hooks include the `ui-phase` step (`capabilities/ui/
+ * capability.json`'s `plan:pre` step, `ref.skill: "ui-phase"`, gated on
+ * config `workflow.ui_phase`), OR the phase directory already contains a
+ * `*-UI-SPEC.md` file. The disjunction is resolved to ONE boolean here —
+ * same discipline as `chunkedMode` above — so the `when=` grammar never
+ * sees an OR. Mirrors `cmdLoopRenderHooks`'s own registry/capability-state
+ * setup (`src/loop-resolver.cts`) rather than reinventing a second loop-hook
+ * resolution path. Bounded, non-throwing: any failure in loop-hook /
+ * registry / capability-state resolution degrades that half of the OR to
+ * `false`, never throws; the UI-SPEC file check is independently bounded.
+ */
+function detectUiPhaseActive(cwd: string, phaseInfo: Record<string, unknown> | null): boolean {
+  let hasActiveUiStep = false;
+  try {
+    const config = loadConfig(cwd);
+    const state = resolveCapabilityRuntimeState(cwd, undefined, config) as {
+      capabilities: Array<{ id: string; enabled?: boolean; active: boolean }>;
+    };
+    const registry = loadRegistry({ includeInstalled: true, cwd, gsdHome: process.env['GSD_HOME'] });
+    const capabilityStatesById = new Map<string, { enabled?: boolean; active: boolean }>();
+    for (const cap of state.capabilities || []) {
+      capabilityStatesById.set(cap.id, cap);
+    }
+    const resolved = resolveLoopHooks({ point: 'plan:pre', registry, config, cwd, capabilityStatesById }) as {
+      activeHooks: Array<{ kind?: string; ref?: { skill?: string } }>;
+    };
+    hasActiveUiStep = resolved.activeHooks.some(
+      (h) => h.kind === 'step' && h.ref?.skill === 'ui-phase',
+    );
+  } catch {
+    hasActiveUiStep = false;
+  }
+
+  let hasUiSpecFile = false;
+  const rawDir = phaseInfo?.['directory'];
+  if (typeof rawDir === 'string' && rawDir) {
+    try {
+      // Re-derive under planningDir(cwd)/phases/<basename> rather than trusting
+      // rawDir's own absolute/relative-ness (callers mix both — see the #2376
+      // comments elsewhere in this file), same technique as detectHasPriorPhases above.
+      const dirName = path.basename(rawDir);
+      const files = fs.readdirSync(path.join(planningDir(cwd), 'phases', dirName));
+      hasUiSpecFile = files.some((f) => f.endsWith('-UI-SPEC.md') || f === 'UI-SPEC.md');
+    } catch {
+      hasUiSpecFile = false;
+    }
+  }
+
+  return hasActiveUiStep || hasUiSpecFile;
+}
+
+/**
  * Builds the `section_manifest` init-bundle field (#2932 Deliverable 2): resolves
  * {@link sectionManifest.InvocationFacts} from this invocation, loads the generated
  * manifest, and partitions it via the pure {@link sectionManifest.selectSections}
@@ -573,6 +635,7 @@ function buildSectionManifestField(
     phaseMvpMode: detectPhaseMvpMode(cwd, phaseNumber),
     needsCodebaseMap: overrides.needsCodebaseMap,
     chunkedMode,
+    uiPhaseActive: detectUiPhaseActive(cwd, phaseInfo),
   };
 
   try {
@@ -1275,6 +1338,12 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
       ready_to_transition: completion.phase_complete && (uatReport?.passed ?? false),
     },
   };
+
+  // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
+  // phaseInfo is passed through directly (mirrors cmdInitExecutePhase / cmdInitPlanPhase)
+  // so buildSectionManifestField's internal detectPhaseMvpMode/detectUiPhaseActive calls
+  // get a real phase_number/directory rather than permanently-false facts.
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, {}, 'verify-work');
 
   output(withProjectRoot(cwd, result), raw);
 }

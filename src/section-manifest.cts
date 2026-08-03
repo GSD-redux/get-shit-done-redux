@@ -20,7 +20,8 @@
  * Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
  * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
- * 40-design.md`). {@link WHEN_PREDICATES} is a total map from each frozen
+ * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
+ * (epic #1671 Phase 6.3). {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
  * `when=` string — the moment it parses, the ad-hoc language has begun.
@@ -92,6 +93,15 @@ export interface InvocationFacts {
    * Absent/undefined is falsy, never throws.
    */
   readonly chunkedMode?: boolean;
+  /**
+   * Whether the current phase's UI-phase surface is active (#2994):
+   * the phase's active `plan:pre` loop hooks include the `ui-phase` step OR
+   * the phase directory already contains a `*-UI-SPEC.md` file. Same
+   * discipline as {@link chunkedMode} — the disjunction is resolved by the
+   * caller (the init seam) into this single boolean BEFORE it reaches this
+   * module. Absent/undefined is falsy, never throws.
+   */
+  readonly uiPhaseActive?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -189,6 +199,7 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'state:chunked-mode': (facts: InvocationFacts) => facts.chunkedMode === true,
     'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
+    'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,
   }),
 );

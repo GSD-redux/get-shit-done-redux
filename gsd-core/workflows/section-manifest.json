@@ -106,6 +106,18 @@
         "when": "flag:--validate",
         "read": "gsd-core/workflows/quick/steps/quick-verification.md"
       }
+    ],
+    "verify-work": [
+      {
+        "id": "automated-ui-verification",
+        "when": "state:ui-phase-active",
+        "read": "gsd-core/workflows/verify-work/steps/automated-ui-verification.md"
+      },
+      {
+        "id": "mvp-uat-framing",
+        "when": "state:phase-mvp-mode",
+        "read": "gsd-core/workflows/verify-work/steps/mvp-uat-framing.md"
+      }
     ]
   }
 }

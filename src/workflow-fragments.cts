@@ -95,9 +95,10 @@ import contextComposer = require('./context-composer.cjs');
  * #1671 Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
  * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
- * 40-design.md`). The vocabulary remains CLOSED: no operators, no negation,
- * no nesting. Cardinality is not expressiveness — a 19-entry flat list with
- * no composition is still not a language.
+ * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
+ * (epic #1671 Phase 6.3, `verify-work.md`). The vocabulary remains CLOSED:
+ * no operators, no negation, no nesting. Cardinality is not expressiveness —
+ * a 20-entry flat list with no composition is still not a language.
  *
  * Held at 14, not wider: an atom whose fact is never computed always
  * evaluates FALSE, so a section marked with it would silently never
@@ -115,6 +116,12 @@ import contextComposer = require('./context-composer.cjs');
  * flag OR `.planning/config.json` `workflow.plan_chunked`) resolved to a
  * single boolean FACT by the init seam (`src/init.cts`) — the grammar still
  * sees exactly one atom with no operator, preserving the same guard.
+ *
+ * The #2994 widening adds 1 entry fragmentizing `verify-work.md`:
+ * `state:ui-phase-active`. Like `state:chunked-mode`, it is a disjunction —
+ * the phase's active `plan:pre` loop hooks include the `ui-phase` step OR
+ * the phase directory already contains a `*-UI-SPEC.md` — resolved to a
+ * single boolean FACT by the init seam before it ever reaches this grammar.
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
@@ -135,6 +142,7 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'state:chunked-mode',
   'state:needs-codebase-map',
   'state:phase-mvp-mode',
+  'state:ui-phase-active',
   'state:worktrees-enabled',
 ]);
 
