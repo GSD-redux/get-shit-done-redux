@@ -55,8 +55,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const PLANNER_AGENT_PATH = path.join(__dirname, '..', 'agents', 'gsd-planner.md');
-const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
-const GAP_CLOSURE_REF_PATH = path.join(__dirname, '..', 'gsd-core', 'references', 'planner-gap-closure.md');
 
 function readFile(p) {
   return fs.readFileSync(p, 'utf-8');
@@ -116,6 +114,15 @@ describe('#2847: gsd-planner.md validate_plan step BINDS --schema to gap_closure
   });
 
   test('the --schema argument in the bash invocation is NOT a hardcoded literal', () => {
+    // Precondition: both regex checks below use `.test(invocationLine)`, and
+    // RegExp#test coerces a null/undefined argument to the STRING "null"/
+    // "undefined" rather than throwing — neither hardcoded-literal pattern
+    // matches that string, so both negative assertions would pass vacuously
+    // (reporting "not hardcoded") even if the step or its bash block were
+    // deleted entirely. Fail loudly on that precondition first so a deleted
+    // step is reported as exactly that, not as a false "fix confirmed".
+    assert.ok(invocationLine, 'precondition: invocationLine must be found (see the first test in this block)');
+
     // This is the exact regression: a prior revision had this line read
     // `--schema plan)` verbatim — a plain, hardcoded, always-the-same-value
     // literal that an agent executes as-is regardless of mode. Reject BOTH
@@ -197,47 +204,17 @@ describe('#2847: schema name consistency between gsd-planner.md and src/frontmat
   });
 });
 
-// ─── Existing gap-closure-mode reference file is unmodified and still correct ─
-// (Not-the-bug per diagnosis: planner-gap-closure.md's YAML template already
-// documented gap_closure: true correctly — that file was never the defect.)
-
-describe('#2847: planner-gap-closure.md reference is untouched and still documents gap_closure: true', () => {
-  test('planner-gap-closure.md YAML template still shows gap_closure: true', () => {
-    const content = readFile(GAP_CLOSURE_REF_PATH);
-    assert.ok(
-      content.includes('gap_closure: true'),
-      'gsd-core/references/planner-gap-closure.md must still document gap_closure: true in its plan-frontmatter template'
-    );
-  });
-});
-
-// ─── plan-phase.md is deliberately untouched (ADR-857 PRE_PHASE6 byte ceiling) ─
-
-describe('#2847: plan-phase.md is deliberately unmodified by this fix (byte-cap conflict)', () => {
-  test('plan-phase.md downstream_consumer block does not gain a gap_closure mention', () => {
-    // This is a NEGATIVE assertion pinning a deliberate design choice, not a symptom of
-    // the bug: plan-phase.md sits within 36 bytes of the hard PRE_PHASE6 ceiling
-    // (tests/phase6-capstone-conformance.test.cjs), so the fix for #2847 lives entirely
-    // in gsd-planner.md's validate_plan step (the actual call site) instead. If a future
-    // change adds gap_closure prose here, the PRE_PHASE6 test is the gate that must be
-    // satisfied first (shrink elsewhere or raise the frozen ceiling deliberately).
-    const workflowContent = readFile(PLAN_PHASE_PATH);
-    // Anchor on the tag starting its own line — plan-phase.md's prose elsewhere refers to
-    // "the `<downstream_consumer>` lift below" (backtick-quoted, mid-sentence) TWICE before
-    // the real opening tag. A plain indexOf('<downstream_consumer>') matches the first prose
-    // mention instead of the real tag, producing a wildly over-broad slice that swallows
-    // unrelated content (including the `**Mode:** {standard | gap_closure | reviews}` line) —
-    // exactly the false failure this anchor prevents.
-    const openMatch = /^<downstream_consumer>$/m.exec(workflowContent);
-    const start = openMatch ? openMatch.index : -1;
-    const end = start === -1 ? -1 : workflowContent.indexOf('</downstream_consumer>', start);
-    const downstreamBlock = start === -1 || end === -1
-      ? ''
-      : workflowContent.slice(start, end + '</downstream_consumer>'.length);
-    assert.ok(downstreamBlock.length > 0, '<downstream_consumer> block must still exist in plan-phase.md');
-    assert.ok(
-      !downstreamBlock.includes('gap_closure'),
-      'plan-phase.md downstream_consumer must not mention gap_closure — see the file-level comment above for why'
-    );
-  });
-});
+// #2847 review: two describe blocks previously lived here —
+// "planner-gap-closure.md reference is untouched" and "plan-phase.md is
+// deliberately unmodified by this fix" — both deleted. Neither file is
+// touched by this fix, so both assertions were already GREEN at the RED
+// commit (5e5897cd2f17ebf2fc55757bae651bbbeb236289): they pinned untouched
+// files rather than providing regression coverage for anything this change
+// altered. The plan-phase.md one was worse than merely unhelpful — it
+// permanently forbade any FUTURE legitimate `gap_closure` mention in
+// plan-phase.md, a trap for whoever eventually frees up that file's byte
+// budget and has a real reason to add one. The design decision itself (why
+// plan-phase.md is untouched — the ADR-857 PRE_PHASE6 byte ceiling) remains
+// documented in the file-level comment above and in
+// .gsd/bug/fix-2847-gap-closure-frontmatter/10-diagnosis.md; it just isn't
+// asserted as a permanent negative here.

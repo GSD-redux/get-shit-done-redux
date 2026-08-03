@@ -743,8 +743,19 @@ function cmdFrontmatterMerge(cwd: string, filePath: string, data: string | undef
 function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: string | undefined, raw: boolean): void {
   if (!filePath || !schemaName) { error('file and schema required'); }
   if (filePath.includes('\0')) { error('file path contains null bytes'); }
+  // Guard against prototype-chain keys (__proto__, constructor, toString, hasOwnProperty,
+  // valueOf, ...): a bare FRONTMATTER_SCHEMAS[schemaName] lookup resolves those to
+  // Object.prototype members instead of undefined, so a `!schema` check on the raw
+  // lookup never fires and the code crashes later on `schema.required.filter` with an
+  // uncaught TypeError instead of the intended "Unknown schema" message. Confirmed live
+  // with --schema __proto__. Now that --schema is agent-bound (agents/gsd-planner.md's
+  // $SCHEMA), this is reachable from prompt state, not just an unreachable literal.
+  // Checked and rejected BEFORE the lookup (rather than `?? undefined`-ing the lookup
+  // itself) so `schema`'s inferred type stays non-optional and needs no assertion below.
+  if (!Object.prototype.hasOwnProperty.call(FRONTMATTER_SCHEMAS, schemaName as string)) {
+    error(`Unknown schema: ${schemaName}. Available: ${Object.keys(FRONTMATTER_SCHEMAS).join(', ')}`);
+  }
   const schema = FRONTMATTER_SCHEMAS[schemaName as string];
-  if (!schema) { error(`Unknown schema: ${schemaName}. Available: ${Object.keys(FRONTMATTER_SCHEMAS).join(', ')}`); }
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
@@ -759,19 +770,23 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
   const requiredValues = schema.requiredValues || {};
   // A field satisfies the schema when it is present AND — for fields with a
   // requiredValues entry — strictly equal to that value. Absent and
-  // wrong-value both surface as `missing`: from a caller's perspective (the
-  // planner reading this JSON to decide whether to fix the plan) both mean
-  // "this field does not yet satisfy the schema," and folding them together
-  // keeps `missing`/`present` a full partition of `required` (existing
-  // invariant every caller already relies on) without adding a new field.
-  const satisfies = (f: string): boolean => {
-    if (fm[f] === undefined) return false;
-    if (Object.prototype.hasOwnProperty.call(requiredValues, f) && fm[f] !== requiredValues[f]) return false;
-    return true;
-  };
+  // wrong-value both surface as `missing` (existing `missing`/`present`
+  // partition of `required` is unchanged — no consumer reads `present` to
+  // mean "physically exists regardless of value," confirmed by searching
+  // every caller before choosing this). But #2847 review: folding silently
+  // made "missing" misleading for a WRONG-valued field the plan author can
+  // plainly see in the file (e.g. `gap_closure: True`) — nothing told them
+  // the field is present but the VALUE is wrong, so they could loop trying
+  // to add a field that is already there. `invalidValue` names exactly that
+  // subset (present, but not the required value) so the message stays
+  // actionable without changing what `missing`/`present` mean.
+  const wrongValue = (f: string): boolean =>
+    fm[f] !== undefined && Object.prototype.hasOwnProperty.call(requiredValues, f) && fm[f] !== requiredValues[f];
+  const satisfies = (f: string): boolean => fm[f] !== undefined && !wrongValue(f);
   const missing = schema.required.filter(f => !satisfies(f));
   const present = schema.required.filter(f => satisfies(f));
-  output({ valid: missing.length === 0, missing, present, schema: schemaName }, raw, missing.length === 0 ? 'valid' : 'invalid');
+  const invalidValue = schema.required.filter(wrongValue);
+  output({ valid: missing.length === 0, missing, present, invalidValue, schema: schemaName }, raw, missing.length === 0 ? 'valid' : 'invalid');
 }
 
 export = {

@@ -874,31 +874,21 @@ describe('FRONTMATTER_SCHEMAS', () => {
 // plans (validated against 'plan', asserted unchanged above) are unaffected.
 
 describe("FRONTMATTER_SCHEMAS['plan-gap-closure'] (#2847)", () => {
-  test('plan-gap-closure schema has required field', () => {
-    assert.ok('required' in FRONTMATTER_SCHEMAS['plan-gap-closure']);
-  });
-
-  test('plan-gap-closure schema has exactly 9 required fields', () => {
-    assert.equal(FRONTMATTER_SCHEMAS['plan-gap-closure'].required.length, 9);
-  });
-
+  // #2847 review: "has required field", "has exactly 9 required fields",
+  // "includes gap_closure field", and "is a superset of every plan-required
+  // field" were deleted here. Each was strictly subsumed by the deepEqual
+  // exact-list test below (a 9-element array that deepEquals a literal
+  // containing 'gap_closure' trivially has 9 elements, a 'required' key,
+  // and includes 'gap_closure' — none of those checks could ever fail
+  // independently of the deepEqual one). The "superset" test was additionally
+  // tautological on its own: plan-gap-closure.required is LITERALLY
+  // `[...PLAN_REQUIRED_FIELDS, 'gap_closure']` (src/frontmatter.cts), so it
+  // cannot fail while that spread exists, regardless of what the deepEqual
+  // test above catches.
   test('plan-gap-closure schema required fields are exact', () => {
     assert.deepEqual(FRONTMATTER_SCHEMAS['plan-gap-closure'].required, [
       'phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves', 'gap_closure',
     ]);
-  });
-
-  test('plan-gap-closure includes gap_closure field', () => {
-    assert.ok(FRONTMATTER_SCHEMAS['plan-gap-closure'].required.includes('gap_closure'));
-  });
-
-  test('plan-gap-closure is a superset of every plan-required field', () => {
-    for (const field of FRONTMATTER_SCHEMAS.plan.required) {
-      assert.ok(
-        FRONTMATTER_SCHEMAS['plan-gap-closure'].required.includes(field),
-        `plan-gap-closure must include every 'plan' required field; missing "${field}"`
-      );
-    }
   });
 
   test('plan schema (standard/reviews mode) does NOT include gap_closure — unaffected by #2847 fix', () => {
