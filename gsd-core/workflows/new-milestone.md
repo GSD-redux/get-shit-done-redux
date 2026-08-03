@@ -273,7 +273,8 @@ gsd_run query commit "docs: start milestone v[X.Y] [Name]" --files .planning/PRO
 ## 7. Load Context and Resolve Models
 
 ```bash
-INIT=$(gsd_run query init.new-milestone)
+RESET_PHASE_NUMBERS_PARAM=""; if [[ "$ARGUMENTS" =~ (^|[[:space:]])--reset-phase-numbers([[:space:]]|$) ]]; then RESET_PHASE_NUMBERS_PARAM="--reset-phase-numbers"; fi
+INIT=$(gsd_run query init.new-milestone $RESET_PHASE_NUMBERS_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS_RESEARCHER=$(gsd_run query agent-skills gsd-project-researcher)
 AGENT_SKILLS_SYNTHESIZER=$(gsd_run query agent-skills gsd-research-synthesizer)
@@ -296,25 +297,9 @@ Proceeding without research subagents — roadmap will be generated inline.
 ```
 Skip the parallel research spawn step and generate the roadmap inline.
 
-## 7.5 Reset-phase safety (only when `--reset-phase-numbers`)
-
-If `--reset-phase-numbers` is active:
-
-1. Set starting phase number to `1` for the upcoming roadmap.
-2. If `phase_dir_count > 0`, archive the old phase directories before roadmapping so new `01-*` / `02-*` directories cannot collide with stale milestone directories.
-
-If `phase_dir_count > 0` and `phase_archive_path` is available:
-
-```bash
-mkdir -p "${phase_archive_path}"
-find .planning/phases -mindepth 1 -maxdepth 1 -type d -exec mv {} "${phase_archive_path}/" \;
-```
-
-Then verify `.planning/phases/` no longer contains old milestone directories before continuing.
-
-If `phase_dir_count > 0` but `phase_archive_path` is missing:
-- Stop and explain that reset numbering is unsafe without a completed milestone archive target.
-- Tell the user to complete/archive the previous milestone first, then rerun `/gsd:new-milestone --reset-phase-numbers ${GSD_WS}`.
+<!-- gsd:section id="reset-phase-safety" when="flag:--reset-phase-numbers" -->
+If `section_manifest` is `null` or `"reset-phase-safety"` is in its `included` list: read and execute `gsd-core/workflows/new-milestone/steps/reset-phase-safety.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 ## 8. Research Decision
 

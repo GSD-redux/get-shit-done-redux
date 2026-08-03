@@ -108,7 +108,18 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       quick: () => {
         const namedArgs = parseNamedArgs(args, [], ['discuss', 'research', 'validate', 'full']);
-        init.cmdInitQuick(cwd, args.slice(2).join(' '), raw, {
+        // #2994: `args.slice(2)` is the free-text description, but section-manifest
+        // gating (buildSectionManifestField, src/init.cts) now requires forwarding
+        // --discuss/--research/--validate/--full alongside it — a plain `.join(' ')`
+        // would otherwise fold those recognized flag tokens straight into the
+        // description text. Strip them before joining so the description stays
+        // exactly what it was before this workflow started forwarding flags.
+        const quickFlagTokens = new Set(['--discuss', '--research', '--validate', '--full']);
+        const description = args
+          .slice(2)
+          .filter((token) => !quickFlagTokens.has(token))
+          .join(' ');
+        init.cmdInitQuick(cwd, description, raw, {
           discuss: namedArgs['discuss'],
           research: namedArgs['research'],
           validate: namedArgs['validate'],

@@ -245,13 +245,21 @@ own `false` into `undefined` (`namedArgs['wave'] || undefined`) before
 handing options to the facts builder, so `flags` only ever contains tokens
 that were actually seen.
 
-## Piloted on execute-phase.md, then rolled out to plan-phase.md
+## Piloted on execute-phase.md, then rolled out across the wired workflows
 
-Two workflows carry markers today: `gsd-core/workflows/execute-phase.md` (the
-#2930/Phase-3 pilot) and `gsd-core/workflows/plan-phase.md` (#2993, epic
-#1671 Phase 6.2). The marker grammar and composer seam are general-purpose
-across any workflow file; rollout to further LARGE/XL workflows remains
-sequenced as later work.
+Six workflows carry markers today, all of them the workflows with a dedicated
+`cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
+above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
+`gsd-core/workflows/plan-phase.md` (#2993, epic #1671 Phase 6.2),
+`gsd-core/workflows/progress.md`, `gsd-core/workflows/new-project.md`,
+`gsd-core/workflows/quick.md`, and `gsd-core/workflows/new-milestone.md`
+(the last four, #2994, epic #1671 Phase 6.3). The marker grammar and composer
+seam are general-purpose across any workflow file; rollout to the remaining
+`autonomous`/`code-review`/`complete-milestone`/`docs-update` workflows is
+gated on those workflows gaining their own dedicated `cmdInit*` entry point
+(see the six-atoms-withheld note in [The frozen `when=`
+vocabulary](#the-frozen-when-vocabulary) above), not scheduled as later work
+on the marker grammar itself.
 
 `execute-phase.md` marks three `<step>` blocks: `partial-wave`
 (`flag:--wave`), `gap-closure-artifacts` (`state:gap-closure-phase`), and
@@ -263,6 +271,36 @@ sequenced as later work.
 `flag:--research-phase` — two consumers sharing one atom, gated by the same
 `RESEARCH_ONLY` condition, so they include/exclude together), and
 `chunked-planning-mode` (`state:chunked-mode`).
+
+`progress.md` marks two sections: `forensic-audit` (`flag:--forensic`, #2994
+forensic audit) and `mvp-display` (`state:phase-mvp-mode`). `mvp-display`'s
+own body used to re-resolve its own gating fact via a `gsd_run query
+phase.mvp-mode` call — circular, since a section's body re-deriving the exact
+condition that gated its own inclusion is self-disabling the moment the init
+seam's computation and the body's computation drift. `cmdInitProgress` now
+computes `phaseMvpMode` for the CURRENT phase directly (threading a real
+`phase_number` into `buildSectionManifestField`, where before it passed
+`null` and the fact was permanently `false`) and exposes it as a top-level
+`phase_mvp_mode` init-bundle field, so the step body consumes an
+already-resolved fact instead of recomputing it.
+
+`new-project.md` marks two sections, both `flag:--auto`: `auto-mode-detection`
+(the `<auto_mode>` tag itself stays outside the marker — only its body is
+extracted) and `auto-mode-config` (`## 2a. Auto Mode Config`).
+
+`quick.md` marks five sections: `discussion-phase` (`flag:--discuss`),
+`research-phase` (`flag:--research`), `plan-checker-loop` and
+`quick-verification` (both `flag:--validate` — two consumers sharing one
+atom, mirroring `plan-phase.md`'s `research-only-*` pair), and
+`worktree-pre-dispatch-commit` (`state:worktrees-enabled`). `quick.md`'s
+`--full` flag IMPLIES `--discuss`/`--research`/`--validate` — folded into the
+facts inside `cmdInitQuick` (mirroring `state:chunked-mode`'s disjunction
+fold) before `buildSectionManifestField` builds its flags Set, so a bare
+`--full` invocation still includes the three flag-gated sections without the
+grammar ever seeing an OR.
+
+`new-milestone.md` marks one section: `reset-phase-safety`
+(`flag:--reset-phase-numbers`).
 
 **`plan-phase.md` was originally retargeted away from the #2930 pilot,
 then fragmentized here once the blocker cleared.** Issue #2930's own

@@ -1103,8 +1103,22 @@ function cmdInitQuick(
     planning_exists: fs.existsSync(planningRoot(cwd)),
   };
 
+  // #2994: `--full` IMPLIES `--discuss`/`--research`/`--validate` — resolved to
+  // ONE set of facts HERE, in fact computation, never in the `when=` grammar
+  // itself (mirrors `state:chunked-mode`'s disjunction fold at
+  // `buildSectionManifestField`'s `chunkedMode` computation above). The three
+  // implied tokens are folded into the flags BEFORE `buildSectionManifestField`
+  // builds its `InvocationFacts.flags` Set, so `discussion-phase`/`research-phase`/
+  // `plan-checker-loop`/`quick-verification` (all gated on their own single
+  // `flag:--discuss`/`flag:--research`/`flag:--validate` atom) include correctly
+  // for a bare `/gsd:quick --full` invocation that never passed the individual
+  // tokens — the grammar still sees exactly one atom per marker, no OR.
+  const sectionManifestOptions: Record<string, unknown> = options['full']
+    ? { ...options, discuss: true, research: true, validate: true }
+    : options;
+
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'quick');
+  result['section_manifest'] = buildSectionManifestField(cwd, null, sectionManifestOptions, 'quick');
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -2166,6 +2180,20 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     if (pauseMatch) pausedAt = pauseMatch[1].trim();
   }
 
+  // #2994: the CURRENT phase's number, used both to expose `phase_mvp_mode`
+  // at the top level (so the `mvp-display` step body can consume an
+  // already-resolved fact instead of re-invoking `gsd_run query
+  // phase.mvp-mode` itself — that inline resolver would otherwise gate a
+  // section on a fact the section's own body recomputes, which is circular
+  // and self-disabling) and to thread a real `phase_number` into
+  // `buildSectionManifestField` below so `state:phase-mvp-mode` is genuinely
+  // computed for this workflow rather than permanently false (the previous
+  // `buildSectionManifestField(cwd, null, ...)` call passed no phase info at
+  // all, so `detectPhaseMvpMode` always short-circuited on the `!phaseNumber`
+  // guard).
+  const currentPhaseNumber = (currentPhase?.['number'] as string | undefined) ?? null;
+  const phaseMvpMode = detectPhaseMvpMode(cwd, currentPhaseNumber);
+
   const result: Record<string, unknown> = {
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
@@ -2186,6 +2214,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     next_phase: nextPhase,
     paused_at: pausedAt,
     has_work_in_progress: !!currentPhase,
+    phase_mvp_mode: phaseMvpMode,
 
     project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
@@ -2198,7 +2227,12 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   };
 
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'progress');
+  result['section_manifest'] = buildSectionManifestField(
+    cwd,
+    currentPhaseNumber ? { phase_number: currentPhaseNumber } : null,
+    options,
+    'progress',
+  );
 
   output(withProjectRoot(cwd, result), raw);
 }

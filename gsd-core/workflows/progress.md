@@ -18,7 +18,7 @@ INIT=$(gsd_run query init.progress $FORENSIC_PARAM)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 ```
 
-Extract from init JSON: `project_exists`, `roadmap_exists`, `state_exists`, `phases`, `current_phase`, `next_phase`, `milestone_version`, `completed_count`, `phase_count`, `paused_at`, `state_path`, `roadmap_path`, `project_path`, `config_path`.
+Extract from init JSON: `project_exists`, `roadmap_exists`, `state_exists`, `phases`, `current_phase`, `next_phase`, `milestone_version`, `completed_count`, `phase_count`, `paused_at`, `state_path`, `roadmap_path`, `project_path`, `config_path`, `phase_mvp_mode`.
 
 ```bash
 DISCUSS_MODE=$(gsd_run query config-get workflow.discuss_mode 2>/dev/null || echo "discuss")
@@ -105,7 +105,7 @@ PROGRESS_BAR=$(gsd_run query progress.bar --raw)
 
 Present:
 
-```
+````
 # [Project Name]
 
 **Progress:** {PROGRESS_BAR}
@@ -151,34 +151,13 @@ Render `Open Windows` only when `$WINDOWS_OPEN` is greater than `0` (or `$WINDOW
 
 ## What's Next
 [Next phase/plan objective from roadmap analyze]
-```
+````
 
 </step>
 
-<step name="mvp_display">
-**MVP-mode display (when phase has `**Mode:** mvp` in ROADMAP.md).**
-
-Resolve `MVP_MODE` per phase via the centralized resolver. progress has no `--mvp` CLI flag (mode is inherited from the planned phase), so we omit `--cli-flag`:
-
-```bash
-MVP_MODE=$(gsd_run query phase.mvp-mode "${PHASE_NUMBER}" --pick active)
-```
-
-When `MVP_MODE=true`, the per-phase progress block adds a **user-flow status** sub-block sourced from the phase's PLAN.md task names. Each task whose name reads like a user-visible capability (e.g., "Register flow", "Login flow", "Password reset") is rendered as a status line:
-
-```
-Phase 1 — User Auth MVP
-  ✅ Walking Skeleton complete           ← from SKELETON.md existence
-  ✅ Register flow working               ← from PLAN.md task with summary
-  ✅ Login flow working                  ← from PLAN.md task with summary
-  🔄 Password reset (in progress)        ← from PLAN.md task without summary
-  ⬜ Email verification                  ← from PLAN.md task not yet started
-```
-
-**User-flow filter:** Tasks whose names are technical-sounding ("Wire DB schema", "Create migration", "Bump deps") are NOT rendered as user-flow status lines. Heuristic: a task name is user-flow-shaped if it ends in "flow", "page", "screen", or starts with a verb the user would recognize ("Register", "Login", "Upload", "View"). Tasks that fail the heuristic still count toward the standard task progress total but don't appear in the user-flow sub-block.
-
-When `MVP_MODE=false` (mode is null, absent, or the phase has no `**Mode:**` line), fall back to the standard display path — no behavioral change.
-</step>
+<!-- gsd:section id="mvp-display" when="state:phase-mvp-mode" -->
+If `section_manifest` is `null` or `"mvp-display"` is in its `included` list: read and execute `gsd-core/workflows/progress/steps/mvp-display.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 <step name="route">
 **Determine next action based on verified counts.**

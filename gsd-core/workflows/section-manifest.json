@@ -17,6 +17,25 @@
         "read": "gsd-core/workflows/execute-phase/steps/regression-gate.md"
       }
     ],
+    "new-milestone": [
+      {
+        "id": "reset-phase-safety",
+        "when": "flag:--reset-phase-numbers",
+        "read": "gsd-core/workflows/new-milestone/steps/reset-phase-safety.md"
+      }
+    ],
+    "new-project": [
+      {
+        "id": "auto-mode-detection",
+        "when": "flag:--auto",
+        "read": "gsd-core/workflows/new-project/steps/auto-mode-detection.md"
+      },
+      {
+        "id": "auto-mode-config",
+        "when": "flag:--auto",
+        "read": "gsd-core/workflows/new-project/steps/auto-mode-config.md"
+      }
+    ],
     "plan-phase": [
       {
         "id": "reviews-prerequisite",
@@ -51,9 +70,41 @@
     ],
     "progress": [
       {
+        "id": "mvp-display",
+        "when": "state:phase-mvp-mode",
+        "read": "gsd-core/workflows/progress/steps/mvp-display.md"
+      },
+      {
         "id": "forensic-audit",
         "when": "flag:--forensic",
         "read": "gsd-core/workflows/progress/steps/forensic-audit.md"
+      }
+    ],
+    "quick": [
+      {
+        "id": "discussion-phase",
+        "when": "flag:--discuss",
+        "read": "gsd-core/workflows/quick/steps/discussion-phase.md"
+      },
+      {
+        "id": "research-phase",
+        "when": "flag:--research",
+        "read": "gsd-core/workflows/quick/steps/research-phase.md"
+      },
+      {
+        "id": "plan-checker-loop",
+        "when": "flag:--validate",
+        "read": "gsd-core/workflows/quick/steps/plan-checker-loop.md"
+      },
+      {
+        "id": "worktree-pre-dispatch-commit",
+        "when": "state:worktrees-enabled",
+        "read": "gsd-core/workflows/quick/steps/worktree-pre-dispatch-commit.md"
+      },
+      {
+        "id": "quick-verification",
+        "when": "flag:--validate",
+        "read": "gsd-core/workflows/quick/steps/quick-verification.md"
       }
     ]
   }
