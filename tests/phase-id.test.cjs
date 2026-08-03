@@ -785,15 +785,22 @@ describe('#2232 continuation cap — properties', () => {
 // ─── #2528 two-digit slug words + canonical dir-match selection ──────────────
 
 describe('#2528 two-digit numeric slug words', () => {
-  test('a 2-digit slug word followed by a 1-digit word rewinds to the bare phase number', () => {
-    // Phase 10 named "24/7 Autonomy" → dir "10-24-7[-autonomy]". "24" is
-    // exactly 2 digits (the gap between #2043's 1-digit and #2232's ≥3-digit
-    // guards), but the 1-digit "7" that follows marks the run as a slug.
-    assert.strictEqual(phaseId.extractPhaseToken('10-24-7'), '10');
-    assert.strictEqual(phaseId.extractPhaseToken('10-24-7-autonomy'), '10');
-    assert.ok(phaseId.phaseTokenMatches('10-24-7', phaseId.normalizePhaseName('10')));
-    // Milestone-prefixed variant rewinds the same way.
-    assert.strictEqual(phaseId.extractPhaseToken('M1-10-24-7'), 'M1-10');
+  test('a 2-digit slug word is NOT re-read by the tokenizer, at any depth', () => {
+    // Phase 10 named "24/7 Autonomy" → dir "10-24-7[-autonomy]". "24" is exactly
+    // 2 digits (the gap between #2043's 1-digit and #2232's ≥3-digit guards) and
+    // the 1-digit "7" that follows is the ONLY local signal that it might be a
+    // slug word — but that signal cannot tell this dir apart from sub-phase 10.24
+    // named "7-Zip Integration". Both readings are real, so the tokenizer commits
+    // to neither: it reports the literal token and lets matchPhaseDirs (which has
+    // a query) break the tie.
+    for (const dir of ['10-24-7', '10-24-7-autonomy', '10-24-7-zip', '10-24-3d-printer']) {
+      assert.strictEqual(phaseId.extractPhaseToken(dir), '10-24');
+      assert.ok(
+        phaseId.phaseTokenMatches(dir, phaseId.normalizePhaseName('10-24')),
+        `${dir} must stay resolvable by its own literal id`,
+      );
+    }
+    assert.strictEqual(phaseId.extractPhaseToken('M1-10-24-7'), 'M1-10-24');
   });
 
   test('a digit+letter slug word is not absorbed as a continuation', () => {
@@ -820,9 +827,11 @@ describe('#2528 two-digit numeric slug words', () => {
   });
 
   // Metamorphic: any phase name of the "NN/D …" family (24/7, 80/20 with a
-  // 1-digit second word) slugifies to "NN-D-…", and the resulting plain phase
-  // dir must round-trip to the bare phase number.
-  test('metamorphic: a 2-digit/1-digit name family round-trips to the bare phase number', () => {
+  // 1-digit second word) slugifies to "NN-D-…". The dir must be REACHABLE by the
+  // bare phase number — which is what #2528 reported — and the property is stated
+  // on the resolution result, not on the token, because the token is exactly the
+  // part no surface can decide from the name alone.
+  test('metamorphic: a 2-digit/1-digit name family resolves from the bare phase number', () => {
     fc.assert(
       fc.property(
         fc.integer({ min: 1, max: 99 }),
@@ -831,10 +840,8 @@ describe('#2528 two-digit numeric slug words', () => {
         (phase, w2, w1) => {
           const lead = String(phase).padStart(2, '0');
           const dir = `${lead}-${w2}-${w1}-autonomy`;
-          return (
-            phaseId.extractPhaseToken(dir) === lead &&
-            phaseId.phaseTokenMatches(dir, phaseId.normalizePhaseName(String(phase)))
-          );
+          const { matches } = phaseId.matchPhaseDirs([dir], phaseId.normalizePhaseName(String(phase)));
+          return matches.length === 1 && matches[0] === dir;
         },
       ),
     );
@@ -845,8 +852,14 @@ describe('#2528 matchPhaseDirs — canonical dir-match selection', () => {
   const M = (dirs, q) => phaseId.matchPhaseDirs(dirs, phaseId.normalizePhaseName(q));
 
   test('primary token matches win and never engage the fallback', () => {
-    assert.deepStrictEqual(M(['10-24-7', '11-other'], '10'), {
-      matches: ['10-24-7'],
+    assert.deepStrictEqual(M(['10-ten', '11-other'], '10'), {
+      matches: ['10-ten'],
+      usedBareFallback: false,
+    });
+    // A digit-leading phase NAME never shadows a genuine primary match for the
+    // same number: the fallback runs only when the primary pass found nothing.
+    assert.deepStrictEqual(M(['10-24-7-autonomy', '10-ten'], '10'), {
+      matches: ['10-ten'],
       usedBareFallback: false,
     });
     assert.deepStrictEqual(M(['46-06-rs'], '46-6'), {
@@ -868,6 +881,25 @@ describe('#2528 matchPhaseDirs — canonical dir-match selection', () => {
       matches: ['30-12-factor-refactor'],
       usedBareFallback: true,
     });
+    // The originally reported dir is in the same family and takes the same route.
+    assert.deepStrictEqual(M(['10-24-7-autonomy', '11-other'], '10'), {
+      matches: ['10-24-7-autonomy'],
+      usedBareFallback: true,
+    });
+  });
+
+  // #2528 re-review. The two dirs below are string-indistinguishable — phase 10
+  // named "24/7 Autonomy" and sub-phase 10.24 named "7-Zip Integration" — so the
+  // ONLY sound arrangement is one where each is reachable by its own id and
+  // neither is destroyed to serve the other. That is what splitting the work
+  // between a literal tokenizer and a query-driven fallback buys; a tokenizer
+  // that guesses can satisfy at most one of these four assertions per shape.
+  test('both readings of a digit-leading NN-NN-<digit> name stay reachable', () => {
+    assert.deepStrictEqual(M(['10-24-7-autonomy'], '10').matches, ['10-24-7-autonomy']);
+    assert.deepStrictEqual(M(['10-24-7-zip'], '10').matches, ['10-24-7-zip']);
+    // …and, the case the rewind heuristic silently lost:
+    assert.deepStrictEqual(M(['10-24-7-zip'], '10-24').matches, ['10-24-7-zip']);
+    assert.deepStrictEqual(M(['10-24-7-autonomy'], '10-24').matches, ['10-24-7-autonomy']);
   });
 
   test('fallback collisions surface every candidate for the #2237 ambiguity guard', () => {

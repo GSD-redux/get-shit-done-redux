@@ -110,10 +110,24 @@ const SCENARIOS = [
     expect: '10-24-setup',
   },
   {
-    name: '#2237 ambiguity: two dirs claim the same bare number — every path fails loud',
+    // #2528 re-review: the regression pin. A genuine sub-phase whose slug starts
+    // with a bare digit ("7-Zip Integration") is string-identical to a phase
+    // named "24/7 Autonomy", and must stay resolvable by its OWN id on every
+    // path — the property an earlier tokenizer-side rewind silently broke.
+    name: 'a sub-phase with a digit-leading slug resolves by its full id',
+    dirs: ['10-24-7-zip'],
+    query: '10-24',
+    expect: '10-24-7-zip',
+  },
+  {
+    // The fallback is strictly second: a directory that carries the number in
+    // its token wins outright, and the digit-leading NAME is not a rival
+    // candidate for it. (Fallback-vs-fallback collisions DO go ambiguous — see
+    // the next scenario.)
+    name: 'a primary token match is never shadowed by a digit-leading phase name',
     dirs: ['10-24-7-autonomy', '10-second'],
     query: '10',
-    expect: 'AMBIGUOUS',
+    expect: '10-second',
   },
   {
     name: 'fallback collisions are ambiguous, never a silent first match',
