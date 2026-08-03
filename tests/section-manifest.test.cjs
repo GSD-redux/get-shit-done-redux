@@ -31,7 +31,7 @@ const BRANCH_SECTIONS = Object.freeze([
 ]);
 
 function facts(overrides) {
-  return { waveFlag: false, phaseNumber: null, hasPriorPhases: false, ...overrides };
+  return { flags: new Set(), phaseNumber: null, hasPriorPhases: false, ...overrides };
 }
 
 // ─── Rows 1-8: happy path + combinations over W/D/P ─────────────────────────
@@ -44,7 +44,7 @@ describe('W/D/P combination matrix (design doc behavior table rows 1-8)', () => 
   });
 
   test('includesPartialWaveWhenWaveFlagPresent', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']) }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave']);
     assert.deepEqual(result.excluded, ['gap-closure-artifacts', 'regression-gate']);
   });
@@ -62,13 +62,13 @@ describe('W/D/P combination matrix (design doc behavior table rows 1-8)', () => 
   });
 
   test('includesBothWaveAndGapClosureWhenBothHold', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true, phaseNumber: '3.1' }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']), phaseNumber: '3.1' }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave', 'gap-closure-artifacts']);
     assert.deepEqual(result.excluded, ['regression-gate']);
   });
 
   test('includesBothWaveAndRegressionWhenBothHold', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true, hasPriorPhases: true }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']), hasPriorPhases: true }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave', 'regression-gate']);
     assert.deepEqual(result.excluded, ['gap-closure-artifacts']);
   });
@@ -80,7 +80,7 @@ describe('W/D/P combination matrix (design doc behavior table rows 1-8)', () => 
   });
 
   test('includesEveryBranchSectionWhenAllFactsHold', () => {
-    const result = selectSections(BRANCH_SECTIONS, facts({ waveFlag: true, phaseNumber: '3.1', hasPriorPhases: true }));
+    const result = selectSections(BRANCH_SECTIONS, facts({ flags: new Set(['--wave']), phaseNumber: '3.1', hasPriorPhases: true }));
     assert.deepEqual(result.included, ['preamble', 'partial-wave', 'gap-closure-artifacts', 'regression-gate']);
     assert.deepEqual(result.excluded, []);
   });
@@ -146,7 +146,7 @@ describe('boundary section-list sizes (limit-1 / limit / limit+1)', () => {
       { id: 's5', when: 'always' },
       { id: 's6', when: 'state:has-prior-phases' },
     ];
-    const result = selectSections(sections, facts({ waveFlag: true }));
+    const result = selectSections(sections, facts({ flags: new Set(['--wave']) }));
     assert.deepEqual(result.included, ['s0', 's1', 's2', 's3', 's5']);
     assert.deepEqual(result.excluded, ['s4', 's6']);
   });
@@ -183,7 +183,7 @@ describe('determinism and input non-mutation', () => {
       { id: 'b', when: 'flag:--wave' },
     ];
     const snapshotBefore = sections.map((s) => ({ ...s }));
-    const f = facts({ waveFlag: true });
+    const f = facts({ flags: new Set(['--wave']) });
 
     const first = selectSections(sections, f);
     const second = selectSections(sections, f);
@@ -221,12 +221,143 @@ describe('WHEN_PREDICATES and WHEN_VOCABULARY parity (DEFECT.GENERATIVE-FIX)', (
   });
 });
 
+// ─── B11: atom↔flag-string desync (#2992 — "the key new test") ─────────────
+// For EVERY 'flag:--X' atom in the frozen WHEN_VOCABULARY, the predicate must
+// be true iff `flags={--X}` and false for `flags={}`. Derived FROM the
+// vocabulary export (never a hand-copied local list of flag names), so a
+// typo in WHEN_PREDICATES' hand-written literal map (e.g. matching the wrong
+// token) is caught behaviorally instead of only by eyeballing the diff.
+
+describe('atom<->flag-string desync guard (#2992 row B11)', () => {
+  const flagAtoms = WHEN_VOCABULARY.filter((w) => w.startsWith('flag:--'));
+
+  test('everyFlagAtomHasAtLeastOneEntryToGuard', () => {
+    // Sanity: this guard is vacuous if the vocabulary somehow shipped zero
+    // flag atoms — fail loudly rather than silently passing on an empty loop.
+    assert.ok(flagAtoms.length > 0, 'expected at least one flag: atom in WHEN_VOCABULARY');
+  });
+
+  for (const atom of flagAtoms) {
+    // The atom's own token, derived ONLY for use as the flags-Set member in
+    // this TEST (never fed back into production, which forbids exactly this
+    // derivation in WHEN_PREDICATES itself — see the module doc comment).
+    const token = atom.slice('flag:'.length);
+
+    test(`predicateForAtomMatchesItsOwnToken_${atom}`, () => {
+      const included = selectSections([{ id: 'x', when: atom }], facts({ flags: new Set([token]) }));
+      assert.deepEqual(included, { included: ['x'], excluded: [] }, `expected "${atom}" included when flags={${token}}`);
+
+      const excluded = selectSections([{ id: 'x', when: atom }], facts({ flags: new Set() }));
+      assert.deepEqual(excluded, { included: [], excluded: ['x'] }, `expected "${atom}" excluded when flags={}`);
+    });
+  }
+});
+
+// ─── B14: flags set cardinality boundary (0 / 1 / many) ────────────────────
+
+describe('flags set cardinality (#2992 row B14)', () => {
+  const sections = Object.freeze([
+    { id: 'a', when: 'flag:--auto' },
+    { id: 'b', when: 'flag:--discuss' },
+    { id: 'c', when: 'flag:--full' },
+  ]);
+
+  test('zeroFlagsExcludesEveryFlagSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set() }));
+    assert.deepEqual(result, { included: [], excluded: ['a', 'b', 'c'] });
+  });
+
+  test('oneFlagIncludesOnlyItsOwnSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--discuss']) }));
+    assert.deepEqual(result, { included: ['b'], excluded: ['a', 'c'] });
+  });
+
+  test('manyFlagsIncludeEveryMatchingSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--auto', '--discuss', '--full', '--irrelevant']) }));
+    assert.deepEqual(result, { included: ['a', 'b', 'c'], excluded: [] });
+  });
+});
+
 // ─── Row 24: REASON enum shape is locked ────────────────────────────────────
 
 describe('REASON enum is frozen and its shape is locked', () => {
   test('locksReasonEnumKeySet', () => {
     assert.equal(Object.isFrozen(REASON), true);
     assert.deepEqual(Object.keys(REASON).sort(), ['UNKNOWN_WHEN']);
+  });
+});
+
+// ─── #2992 review finding: state:needs-codebase-map / state:phase-mvp-mode /
+// state:worktrees-enabled predicate coverage ─────────────────────────────
+//
+// These three atoms were shipped (src/section-manifest.cts) with zero
+// direct predicate-level test coverage — `state:phase-mvp-mode` and
+// `state:worktrees-enabled` DO have real prod-shape integration coverage
+// (tests/init.test.cjs "init execute-phase: state:* detector degradation
+// (#2992 rows D9-D11)"), but `state:needs-codebase-map` had none anywhere.
+// Locking all three here at the evaluator level too, matching every other
+// shipped predicate's dedicated matrix test.
+
+describe('state:needs-codebase-map / state:phase-mvp-mode / state:worktrees-enabled predicates', () => {
+  test('needsCodebaseMapTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: true })), true);
+  });
+
+  test('needsCodebaseMapFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: false })), false);
+  });
+
+  test('needsCodebaseMapFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:needs-codebase-map'](facts({})));
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({})), false);
+  });
+
+  test('needsCodebaseMapFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: undefined })));
+    assert.equal(WHEN_PREDICATES['state:needs-codebase-map'](facts({ needsCodebaseMap: undefined })), false);
+  });
+
+  test('phaseMvpModeTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: true })), true);
+  });
+
+  test('phaseMvpModeFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: false })), false);
+  });
+
+  test('phaseMvpModeFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:phase-mvp-mode'](facts({})));
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({})), false);
+  });
+
+  test('phaseMvpModeFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: undefined })));
+    assert.equal(WHEN_PREDICATES['state:phase-mvp-mode'](facts({ phaseMvpMode: undefined })), false);
+  });
+
+  test('worktreesEnabledTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: true })), true);
+  });
+
+  test('worktreesEnabledFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: false })), false);
+  });
+
+  test('worktreesEnabledFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:worktrees-enabled'](facts({})));
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({})), false);
+  });
+
+  test('worktreesEnabledFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: undefined })));
+    assert.equal(WHEN_PREDICATES['state:worktrees-enabled'](facts({ worktreesEnabled: undefined })), false);
+  });
+
+  test('selectSectionsIncludesNeedsCodebaseMapSectionOnlyWhenFactIsTrue', () => {
+    const sections = [{ id: 'needs-map', when: 'state:needs-codebase-map' }];
+    assert.deepEqual(selectSections(sections, facts({ needsCodebaseMap: true })), { included: ['needs-map'], excluded: [] });
+    assert.deepEqual(selectSections(sections, facts({ needsCodebaseMap: false })), { included: [], excluded: ['needs-map'] });
+    assert.deepEqual(selectSections(sections, facts({})), { included: [], excluded: ['needs-map'] });
   });
 });
 
