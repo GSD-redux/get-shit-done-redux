@@ -1,6 +1,0 @@
-{
-  "version": 1,
-  "paths": {
-    "plan-phase.md": "#2993 (epic #1671 Phase 6.2): fragmentizes plan-phase.md — the repo's largest workflow — onto the `<!-- gsd:section -->` marker model #2930/#2932 delivered, widening WHEN_VOCABULARY 14 -> 19 (flag:--ingest, flag:--prd, flag:--research-phase, flag:--reviews, state:chunked-mode). Six gated regions (reviews-prerequisite, prd-express-gate, adr-ingest-express-path, research-only-modifiers, research-only-early-exit, chunked-planning-mode) move from always-inline prose to `gsd-core/workflows/plan-phase/steps/<id>.md`, read only when the invocation's section_manifest includes that section (safe superset when the manifest is null/degraded). SOURCE goes from 94,483 B to 87,575 B; the EMITTED artifact composeWorkflow produces at install shrinks further, to 87,009 B, for an invocation that takes none of the six gated branches — an invocation that DOES take a branch reads the same guidance from its own step file instead, so no content is lost, only relocated and made conditional. See .gsd/phase/chore-2993-fragmentize-plan-phase/40-design.md."
-  }
-}
