@@ -8082,11 +8082,12 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
 
   // 1a-kimi. Non-layout Kimi side-effect (#2095 EoS/kimi Upgrade 1): kimi's
   // native config.toml lives outside targetDir entirely (resolveKimiHooksTomlDir
-  // resolves ~/.kimi, a sibling of targetDir's ~/.config/agents), so its
+  // resolves ~/.kimi for kimi and ~/.kimi-code for kimi-code (#2755), a sibling
+  // of targetDir's ~/.config/agents), so its
   // cleanup can't be driven by anything under targetDir the way every other
   // hook surface above is.
   if (resolveInstallPlan(runtime).hooksSurface === 'kimi-hooks-toml') {
-    const kimiHooksRoot = resolveKimiHooksTomlDir();
+    const kimiHooksRoot = resolveKimiHooksTomlDir({ runtime });
     const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
     const kimiHooksCleanup = removeKimiHooksToml(kimiHooksTomlPath);
     if (kimiHooksCleanup.changed) {
@@ -11924,7 +11925,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // hooks needed. Kimi is also artifact-only for its INSTALL surface (skills +
     // kimi-agents, no settings.json) but #2095 Upgrade 1 gives it its own
     // independent hooksSurface: kimi's native config.toml [[hooks]] array, which
-    // lives outside targetDir entirely (resolveKimiHooksTomlDir resolves ~/.kimi,
+    // lives outside targetDir entirely (resolveKimiHooksTomlDir resolves the
+    // per-runtime root — ~/.kimi for kimi, ~/.kimi-code for kimi-code, #2755 —
     // a sibling of targetDir's ~/.config/agents) — hence writing it here, inside
     // this early-return, rather than requiring installSurface to change.
     //
@@ -11945,7 +11947,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // ~/.kimi/hooks/<script> rather than a script that doesn't exist under
     // targetDir/hooks (which kimi no longer receives).
     if (plan.hooksSurface === 'kimi-hooks-toml' && isGlobal) {
-      const kimiHooksRoot = resolveKimiHooksTomlDir();
+      const kimiHooksRoot = resolveKimiHooksTomlDir({ runtime });
       // Note: the `failures` array's hard-fail gate (`if (failures.length > 0)
       // process.exit(1)`) runs earlier in this function, before this
       // profile-marker-only branch is ever reached — pushing to it here would
@@ -11961,7 +11963,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       //
       // Done HERE rather than in installer-migration 007 (which retires the same
       // stale marker for every other runtime) because kimi's hook root is
-      // ~/.kimi — resolved by resolveKimiHooksTomlDir, OUTSIDE kimi's configDir.
+      // the per-runtime Kimi root — resolved by resolveKimiHooksTomlDir, OUTSIDE the configDir.
       // Migration relPaths are structurally confined to configDir, so the
       // framework cannot address this path at all. Same exact-content predicate
       // either way, so a user-authored ~/.kimi/package.json is never touched.
