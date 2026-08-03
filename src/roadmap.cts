@@ -427,7 +427,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     // dir name — while the same build resolved those same directories correctly
     // in three other places on the same repo (W006/W007 via phaseTokenFromDir,
     // `state json` via the milestone filter, and the W021 milestone-complete read
-    // through this very helper's three-argument form at verify.cts:2229). It
+    // through this very helper's three-argument form at verify.cts:2355). It
     // failed ONLY for the directory shape the convention exists to name: a
     // mid-migration bracket repo carrying legacy `01-one` dirs resolved fine.
     // That is verbatim the asymmetry the note above the W021 site says this PR

@@ -777,7 +777,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       : phaseIdConvention;
     // #612: `capturing` puts the bracket id in group 1, so the token moves to
     // group 1+bg — the same offset idiom the two sibling counters spell
-    // (validate.cts:210, state.cts:1715). A non-bracket convention ignores
+    // (validate.cts:218, state.cts:1752). A non-bracket convention ignores
     // `capturing` inside phaseHeadingPrefixSrcFor and compiles the base source
     // with zero added groups, so bg is 0 and every index below is unmoved.
     // The bracket id is what makes the DIR side able to scope: READING-B puts
