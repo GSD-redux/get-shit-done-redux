@@ -102,49 +102,68 @@ function extractStallHelpersBash() {
   // regex against readFileSync content is fragile either way), but it is
   // NOT what caused the #2650 Windows CI failure: .gitattributes forces
   // `eol=lf` on this file, so a Windows checkout never receives CRLF here
-  // in the first place. The real cause was runShouldRecover()'s `bash -c`
-  // argv-transport mangling — see that function's doc comment.
+  // in the first place. The real cause, confirmed by evidence rather than
+  // argument: passing this file's ~73-line, quote-dense script body as a
+  // single `bash -c <script>` argv element does not survive Windows argv
+  // serialization (Node has no execve there; CreateProcess flattens the
+  // whole argv into one command-line string, and Git Bash's MSYS layer
+  // re-splits and unescapes it with its own rules — the script itself gets
+  // mangled in transit, not just the boundary around it). Proven by an
+  // A/B on real CI: converting only runShouldRecover() to the temp-file
+  // form below took Windows from 11 failures to 4, and flipped
+  // `full test (windows-latest, 22, shard 1/3)` and `shard 2/3` from fail
+  // to pass — while runWatch() (no extra positional args at all, values
+  // embedded directly in the script text) still failed identically to
+  // before, so the trailing-args theory is ruled out: it is script size
+  // and quote density, not argv-element count. `runBashScript()` below
+  // (used by every call site in this file) removes the script from `-c`
+  // transport entirely by writing it to a file and running it by path.
+  // tests/worktree-cleanup.test.cjs's extractCwdGuardBash/runGuard stays on
+  // `bash -c` and is green on Windows only because its script is small
+  // enough to round-trip that transport intact.
   return body;
+}
+
+/**
+ * Write `script` to a fresh temp file and run it as `bash <file> <args...>`
+ * rather than `bash -c <script> <args...>` (#2650 Windows CI — see
+ * extractStallHelpersBash()'s doc comment for the full evidence trail: a
+ * quote-dense multi-line script does not survive Windows argv
+ * serialization when passed as a `-c` argv element, regardless of how many
+ * trailing positional args accompany it). Every bash-invoking call site in
+ * this file routes through this one seam so a future call site cannot
+ * silently reintroduce the transport bug in isolation. Cleans up the temp
+ * dir in `finally` regardless of outcome.
+ *
+ * @param {string} script  the full bash script body (helpers + a final call)
+ * @param {string[]} [args]  positional args passed to the script (become
+ *   $1, $2, ... inside it) — empty when the caller embeds values directly
+ *   into the script text instead (e.g. via JSON.stringify).
+ * @param {object} [opts]  extra spawnSync options (e.g. `{ timeout }`),
+ *   merged over the `{ encoding: 'utf-8' }` default.
+ */
+function runBashScript(script, args = [], opts = {}) {
+  const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-sh-'));
+  try {
+    const scriptPath = path.join(scriptDir, 'script.sh');
+    fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
+    return spawnSync('bash', [scriptPath, ...args], { encoding: 'utf-8', ...opts });
+  } finally {
+    cleanup(scriptDir);
+  }
 }
 
 /**
  * Run gsd_stall_should_recover with the given args inside the extracted
  * script and return its stdout (trimmed). No real sleeping happens — the
  * function is pure and synchronous.
- *
- * The script is written to a temp file and run as `bash <file> <args...>`
- * rather than `bash -c <script> <arg0> <args...>` (#2650 Windows CI). The
- * `-c`-with-extra-positional-args form serializes a 70+ line, quote-dense
- * script PLUS four more argv elements into one CreateProcess command-line
- * string on Windows (Node has no execve there); Git Bash's MSYS layer then
- * re-splits and unescapes that string with its own rules, and the boundary
- * between the script and the trailing args is not stable across that round
- * trip (confirmed live: one failure's stderr was prefixed
- * `gsd_stall_should_recover_test:` — arg0 arrived — and another
- * `/usr/bin/bash:` — arg0 did not). Passing a bare file path as the sole
- * quote-free argv element before the four plain numeric/boolean-string args
- * removes the script itself from that transport entirely. This mirrors
- * tests/quick-branching.test.cjs's extractStep25Bash/runStep, which already
- * uses this exact temp-file shape and is green on Windows on `next`;
- * tests/worktree-cleanup.test.cjs's extractCwdGuardBash/runGuard stays on
- * `bash -c` but — also green on Windows — never appends extra positional
- * args beyond the script itself, so it never hits the same boundary.
  */
 function runShouldRecover(helpersBash, elapsedSeconds, thresholdMinutes, markerFound, artifactFresh) {
   const script = `${helpersBash}\ngsd_stall_should_recover "$1" "$2" "$3" "$4"\n`;
-  const scriptDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-recover-'));
-  try {
-    const scriptPath = path.join(scriptDir, 'should-recover.sh');
-    fs.writeFileSync(scriptPath, `#!/usr/bin/env bash\n${script}`, { mode: 0o755 });
-    const result = spawnSync('bash', [scriptPath,
-      String(elapsedSeconds), String(thresholdMinutes), String(markerFound), String(artifactFresh)], {
-      encoding: 'utf-8',
-    });
-    assert.equal(result.status, 0, `gsd_stall_should_recover exited non-zero: ${result.stderr}`);
-    return result.stdout.trim();
-  } finally {
-    cleanup(scriptDir);
-  }
+  const result = runBashScript(script,
+    [String(elapsedSeconds), String(thresholdMinutes), String(markerFound), String(artifactFresh)]);
+  assert.equal(result.status, 0, `gsd_stall_should_recover exited non-zero: ${result.stderr}`);
+  return result.stdout.trim();
 }
 
 describe('bug #2650 plan-phase stall detection — gsd_stall_should_recover (pure decision function)', () => {
@@ -240,12 +259,18 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     assert.ok(helpersBash.includes('gsd_stall_watch()'));
   });
 
+  // Routed through the shared runBashScript() helper (#2650 Windows CI —
+  // see extractStallHelpersBash()'s doc comment for the full evidence
+  // trail). The call line is still built with JSON.stringify exactly as
+  // before — that part was never the problem and correctly keeps Windows
+  // paths and the injection-guard payload intact; only the transport of
+  // the script itself changes.
   function runWatch(intervalMinutes, thresholdMinutes, dispatchTs, outputFile, artifactGlob, markers) {
     const overrides = `PLANNER_STALL_INTERVAL_MINUTES=${intervalMinutes}\nPLANNER_STALL_THRESHOLD_MINUTES=${thresholdMinutes}\n`;
     const call = `gsd_stall_watch ${JSON.stringify(String(dispatchTs))} ${JSON.stringify(outputFile)} ${JSON.stringify(artifactGlob)}` +
       markers.map((m) => ` ${JSON.stringify(m)}`).join('');
     const script = `${helpersBash}\n${overrides}${call}\n`;
-    return spawnSync('bash', ['-c', script], { encoding: 'utf-8', timeout: 10000 });
+    return runBashScript(script, [], { timeout: 10000 });
   }
 
   test('marker present in the real output file (via real grep, interval=0 so sleep is instant) -> marker_received', (t) => {
@@ -302,6 +327,10 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     // the `find ... -mmin` line itself still executes for real. threshold
     // is set absurdly high so "stalled" cannot fire independently — the
     // ONLY path to "active" is a correctly-working freshness check.
+    // Routed through runBashScript() (#2650 Windows CI) rather than a raw
+    // `bash -c` call — this test builds its own script inline (the `sleep`
+    // stub isn't something runWatch() supports), so it needs the same
+    // transport seam explicitly rather than inheriting it for free.
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2650-fresh-'));
     t.after(() => cleanup(tmp));
     fs.writeFileSync(path.join(tmp, 'x-PLAN.md'), 'freshly written\n');
@@ -312,7 +341,7 @@ describe('bug #2650 plan-phase stall detection — gsd_stall_watch (real executi
     const call = `gsd_stall_watch ${JSON.stringify(String(now))} ${JSON.stringify(missingOutputFile)} ${JSON.stringify(glob)}` +
       ` ${JSON.stringify('## PLANNING COMPLETE')}`;
     const script = `${helpersBash}\n${overrides}${call}\n`;
-    const result = spawnSync('bash', ['-c', script], { encoding: 'utf-8', timeout: 10000 });
+    const result = runBashScript(script, [], { timeout: 10000 });
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'active');
   });
