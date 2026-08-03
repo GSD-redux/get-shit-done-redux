@@ -215,47 +215,180 @@ function countPhaseFiles(phaseDir: string): PhaseFileCounts {
 // ever observed per phase key, in a small ledger file living at the
 // WORKSTREAM directory level — never inside the phase directory whose file
 // is the thing being deleted, so the same `rm` that triggers the hole
-// cannot also erase the memory of it (criterion 4). When a live read comes
-// back 'missing', the ledger is consulted as a fallback; when a live read
-// comes back with a real verdict — including a later 'passed' that
-// supersedes an earlier failing one — the ledger is updated to match, so a
-// genuinely re-verified phase is never permanently pinned. A phase never
-// observed with a report present has no ledger entry, so verifier-disabled
-// projects and genuinely not-yet-verified phases are completely unaffected
-// (criteria 2 and 3 hold by construction, not a special case).
+// cannot also erase the memory of it. When a live read comes back 'missing',
+// the ledger is consulted as a fallback; when a live read comes back with a
+// real verdict — including a later 'passed' that supersedes an earlier
+// failing one — the ledger is updated to match, so a genuinely re-verified
+// phase is never permanently pinned.
+//
+// #2645 review: a NAIVE two-state read ("got entries, or nothing") fails
+// OPEN — any read/parse failure degraded to `{}`, which is indistinguishable
+// from "genuinely never verified", so corrupting the ledger (or deleting it
+// alongside the report) silently reopened the exact hole this fix exists to
+// close, one level up. THREE states, not two:
+//
+//   1. `'absent'`  — no `.verification-ledger.json` for this workstream at
+//      all. This is the ONLY state that behaves exactly as pre-#2645 (a
+//      phase with no live report reads `'missing'`, ungated). Deliberate:
+//      on the day this ships, EVERY existing project is in this state for
+//      EVERY workstream, and gating here would drop them all to
+//      `in_progress` at once. A workstream stays here forever if the
+//      verifier is never actually used on it (criterion 2/3 — no entry is
+//      ever written for a `'missing'` live read, so the file itself is
+//      never created).
+//   2. `'corrupt'` — the file exists but could not be read or parsed (I/O
+//      error, invalid JSON, wrong shape). This is NOT the same as absent:
+//      an unreadable file is evidence something existed. Treated identically
+//      to "present, no entry for this phase" below — fails CLOSED, not open.
+//   3. `'ok'`      — the file exists and parsed. A phase with an entry uses
+//      it; a phase WITHOUT one is "present, no entry" — this workstream has
+//      adopted the ledger (some phase in it has a real verdict on record),
+//      so an unobserved phase can no longer default to the pre-adoption
+//      "ungated" behavior, or the same evidence-erasure hole reopens for
+//      THIS phase specifically. Fails CLOSED: resolves to the `'unrecorded'`
+//      sentinel (`workstream-inventory-builder.cts`'s
+//      `FAILING_VERIFICATION_STATUSES`), not `'missing'`.
+//
+// Corrupt-ledger recovery: a corrupt ledger is NOT a permanent wedge. Any
+// phase with a REAL live verdict on disk still writes/repairs the ledger on
+// this same call (the corrupt content is fully overwritten, never patched),
+// so re-running the verifier for even one phase heals the file. A phase with
+// no live report and no way to re-verify stays `'unrecorded'` (gated) until
+// someone re-verifies it — a deliberate, disclosed cost of failing closed,
+// not an accidental one.
+//
+// Disclosed, ACCEPTED residual gap (not closed by this fix, and not closable
+// by ledger design alone): deleting the ledger FILE ITSELF (not just the
+// phase's report) returns a workstream to state 1 (`'absent'`) and restores
+// pre-#2645 behavior for it. Any durable store that can fail open when
+// absent has this property at its own root — the ledger raises the bar from
+// "delete one file" to "delete two files in two different directories,
+// including one this issue's own reproduction never needed to touch", but a
+// deliberately absent ledger is indistinguishable from a never-adopted one
+// by design (criterion 2/3 depend on that same indistinguishability). Rail B
+// is PROSPECTIVE ONLY: a phase verified and its report deleted BEFORE this
+// fix ships has no ledger entry to fall back on and cannot be retroactively
+// recovered.
 interface VerificationLedger { [phaseKey: string]: string; }
+
+interface VerificationLedgerRead {
+  state: 'absent' | 'corrupt' | 'ok';
+  entries: VerificationLedger;
+}
 
 function verificationLedgerPath(wsDir: string): string {
   return path.join(wsDir, '.verification-ledger.json');
 }
 
-function readVerificationLedger(wsDir: string): VerificationLedger {
+function readVerificationLedger(wsDir: string): VerificationLedgerRead {
+  const ledgerPath = verificationLedgerPath(wsDir);
+  let raw: string;
   try {
-    const raw = fs.readFileSync(verificationLedgerPath(wsDir), 'utf-8');
-    const parsed: unknown = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
-    const out: VerificationLedger = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (typeof value === 'string') out[key] = value;
+    raw = fs.readFileSync(ledgerPath, 'utf-8');
+  } catch (err) {
+    // `fs.readFileSync` FOLLOWS symlinks, so a broken symlink at this path
+    // (the entry exists, its target does not) reports the EXACT SAME
+    // `ENOENT` as genuine absence — `code` alone cannot distinguish
+    // "nothing was ever here" from "something is here and cannot be read".
+    // `fs.lstatSync` does NOT follow symlinks, so it still finds the
+    // symlink entry itself even when its target is gone. Only when NEITHER
+    // call finds anything is this genuinely `'absent'` (pre-adoption); a
+    // present-but-broken symlink is evidence something existed and must
+    // fail CLOSED like any other unreadable ledger, not fall open.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      try {
+        fs.lstatSync(ledgerPath);
+        return { state: 'corrupt', entries: {} }; // a symlink entry exists; its target does not
+      } catch {
+        return { state: 'absent', entries: {} }; // truly nothing at this path
+      }
     }
-    return out;
-  } catch {
-    // No ledger yet, unreadable, or malformed JSON — degrade to "nothing
-    // remembered" rather than throw. This sits in the hot path of
-    // `workstream status`/`list`/`progress`.
-    return {};
+    // Any OTHER read failure (EACCES, EISDIR, …) also means the path EXISTS
+    // in some form but this process cannot see its content right now — that
+    // is corruption from this reader's point of view, not absence, and must
+    // fail closed rather than silently falling back to the ungated
+    // pre-adoption behavior.
+    return { state: 'corrupt', entries: {} };
   }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { state: 'corrupt', entries: {} };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { state: 'corrupt', entries: {} };
+  }
+  const out: VerificationLedger = {};
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value === 'string') out[key] = value;
+  }
+  return { state: 'ok', entries: out };
+}
+
+// #2645 review: Windows can transiently hold the rename target busy (AV
+// scanners, indexers) — the SAME retry shape `broken-windows.cts`'s
+// `writeLedgerAtomic`/`renameWithRetry` already uses for its own ledger
+// write, mirrored here rather than imported (that function is private to
+// its module) so this fix does not widen its own blast radius by exporting
+// a new cross-module utility.
+const LEDGER_RENAME_RETRY_ERRNOS = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const LEDGER_RENAME_MAX_ATTEMPTS = 5;
+const LEDGER_RENAME_BACKOFF_MS = 25;
+
+function renameVerificationLedgerWithRetry(tmpPath: string, finalPath: string): void {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < LEDGER_RENAME_MAX_ATTEMPTS; attempt++) {
+    try {
+      fs.renameSync(tmpPath, finalPath);
+      return;
+    } catch (err: unknown) {
+      lastErr = err;
+      const code = (err && typeof err === 'object' && 'code' in err) ? String((err as { code?: unknown }).code) : '';
+      if (code && LEDGER_RENAME_RETRY_ERRNOS.has(code) && attempt < LEDGER_RENAME_MAX_ATTEMPTS - 1) {
+        // Exponential-ish backoff: 25ms, 50ms, 100ms, 200ms. Transient
+        // Windows locks usually clear well inside that window.
+        const delay = LEDGER_RENAME_BACKOFF_MS * Math.pow(2, attempt);
+        const start = Date.now();
+        while (Date.now() - start < delay) {
+          // Deliberate short busy-wait — no async/timer seam is available
+          // in this synchronous read path.
+        }
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastErr;
 }
 
 function writeVerificationLedger(wsDir: string, ledger: VerificationLedger): void {
+  // #2645 review: atomic write. A crash or a concurrent read mid-write
+  // against `verificationLedgerPath(wsDir)` directly would leave (or briefly
+  // expose) TRUNCATED JSON — and now that `'corrupt'` carries real semantic
+  // weight (it fails CLOSED, holding every phase with no live report at
+  // `'unrecorded'`), producing a corrupt file ourselves is a self-inflicted
+  // version of the exact failure mode this fix exists to survive. Write to a
+  // sibling temp file in the SAME directory (same filesystem — `rename` is
+  // only atomic within one) and rename into place: a reader can only ever
+  // observe the prior complete content or the new complete content.
+  const finalPath = verificationLedgerPath(wsDir);
+  const tmpPath = `${finalPath}.${process.pid}.tmp`;
   try {
     fs.mkdirSync(wsDir, { recursive: true });
-    fs.writeFileSync(verificationLedgerPath(wsDir), `${JSON.stringify(ledger, null, 2)}\n`, 'utf-8');
+    fs.writeFileSync(tmpPath, `${JSON.stringify(ledger, null, 2)}\n`, 'utf-8');
+    renameVerificationLedgerWithRetry(tmpPath, finalPath);
   } catch {
-    // Best-effort persistence: a read-only filesystem or other write
-    // failure must not break inventory reads, which are otherwise pure.
-    // Losing this observation only re-opens the pre-#2645 window for THIS
-    // run; the next successful read while a report is on disk repairs it.
+    // Best-effort persistence: a missing parent directory that `mkdirSync`
+    // itself cannot create, a read-only filesystem, a write failure, or a
+    // rename failure that exhausts its retries must not break inventory
+    // reads, which are otherwise pure. Losing this observation only
+    // re-opens the pre-#2645 window for THIS run; the next successful read
+    // while a report is on disk repairs it. Clean up a half-written temp
+    // file so repeated failures cannot accumulate orphaned
+    // `.verification-ledger.json.<pid>.tmp` files.
+    try { fs.unlinkSync(tmpPath); } catch { /* nothing to clean up, or cleanup itself failed — not fatal */ }
   }
 }
 
@@ -470,7 +603,12 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
     if (!incumbent || entry.mtimeMs > incumbent.mtimeMs) ledgerWinnerByKey.set(entry.phaseKey, entry);
   }
 
-  const verificationLedger = readVerificationLedger(wsDir);
+  const ledgerRead = readVerificationLedger(wsDir);
+  // Both `'corrupt'` and `'ok'` start from whatever entries could actually be
+  // trusted (empty for `'corrupt'` — nothing in an unparseable file is
+  // trusted) and get REPAIRED below by any real verdict this call observes;
+  // only `'absent'` skips the ledger mechanism entirely (pre-adoption).
+  const verificationLedger = ledgerRead.entries;
   let ledgerDirty = false;
   for (const winner of ledgerWinnerByKey.values()) {
     if (winner.liveVerificationStatus === 'missing') continue;
@@ -479,15 +617,29 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       ledgerDirty = true;
     }
   }
+  // A `'corrupt'` read that observes no real verdict this call has nothing to
+  // repair with — writing an empty `{}` would DESTROY whatever the corrupt
+  // file's bytes might still hold (a human could recover it by hand; this
+  // fix must not foreclose that). Only write when there is something real to
+  // persist, exactly as for `'absent'`/`'ok'`.
   if (ledgerDirty) writeVerificationLedger(wsDir, verificationLedger);
 
   const phaseFilesCounts = rawPhaseEntries.map(entry => {
     const isLedgerWinner = ledgerWinnerByKey.get(entry.phaseKey) === entry;
-    const remembered = verificationLedger[entry.phaseKey];
-    const verificationStatus =
-      entry.liveVerificationStatus === 'missing' && isLedgerWinner && remembered !== undefined
-        ? remembered
-        : entry.liveVerificationStatus;
+    let verificationStatus = entry.liveVerificationStatus;
+    if (entry.liveVerificationStatus === 'missing' && isLedgerWinner) {
+      if (ledgerRead.state === 'absent') {
+        // State 1: pre-adoption. Exactly today's behavior — 'missing' is
+        // NOT in FAILING_VERIFICATION_STATUSES, so this does not gate.
+        verificationStatus = 'missing';
+      } else {
+        // States 2/3 ('corrupt' or 'ok'): this workstream has adopted the
+        // ledger. A remembered entry wins; no entry fails CLOSED to the
+        // 'unrecorded' sentinel rather than falling open to 'missing'.
+        const remembered = verificationLedger[entry.phaseKey];
+        verificationStatus = remembered !== undefined ? remembered : 'unrecorded';
+      }
+    }
     return {
       directory: entry.directory,
       phaseKey: entry.phaseKey,

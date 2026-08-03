@@ -21,8 +21,20 @@ function toPosixPath(p: string): string {
  * EXPLICIT failing verdicts the verifier emits — `missing`/`unknown` (verifier
  * off / not yet run) and `stale` (mtime-derived, #2348) are intentionally left
  * untouched so verifier-disabled projects do not regress to never-complete.
+ *
+ * #2645: `'unrecorded'` is NOT a verdict the verifier itself ever emits — it
+ * is an internal sentinel `workstream-inventory.cts`'s verification-deletion
+ * ledger substitutes for `'missing'` once that workstream has ADOPTED the
+ * ledger (a `.verification-ledger.json` file exists for it) but has no
+ * remembered entry for this specific phase. Pre-adoption (no ledger file at
+ * all) still resolves to plain `'missing'`, which stays OUTSIDE this set —
+ * that is what keeps a project untouched by this fix until it actually uses
+ * the verifier at least once. Post-adoption, an unrecorded phase fails
+ * CLOSED (counted here) rather than open, so a corrupt or evidence-absent
+ * ledger entry can no longer be read as "safe to complete" the way a bare
+ * `'missing'` sentinel is.
  */
-const FAILING_VERIFICATION_STATUSES = new Set<string>(['gaps_found', 'human_needed']);
+const FAILING_VERIFICATION_STATUSES = new Set<string>(['gaps_found', 'human_needed', 'unrecorded']);
 
 export function isCompletedInventory(status: unknown): boolean {
   const s = (typeof status === 'string'

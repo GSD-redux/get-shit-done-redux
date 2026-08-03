@@ -1259,8 +1259,23 @@ describe('#2645 — deleting a verification report must not raise completeness',
   // Row 9 — property: whatever sequence of REAL verdicts is observed for a
   // phase key, once the file goes missing the ledger must replay exactly the
   // LAST one observed — never an earlier one, never a synthesized value.
+  //
+  // #2645 review: `'stale'` is deliberately EXCLUDED here, not merely
+  // forgotten. Writing a literal `status: stale` frontmatter value does NOT
+  // round-trip as `'stale'` — `readVerificationStatus`
+  // (`src/verification.cts`) explicitly excludes `'stale'` from its raw-file
+  // routing lookup (`rawStatus !== 'stale'`) and falls through to the
+  // "Unknown value" branch, returning `'unknown'` instead. A genuine
+  // `'stale'` verdict is only reachable via `findStaleVerificationSummary`'s
+  // mtime comparison (a SUMMARY file newer than the VERIFICATION file), not
+  // by writing the word into the file. Including `'stale'` in this array
+  // without accounting for that would silently substitute `'unknown'` on
+  // every iteration and still pass (both are non-failing) — a docstring
+  // claiming "real verdicts" coverage it does not actually exercise.
+  // `'stale'` handling is explicitly out of scope for this issue (#2348) and
+  // is not gated by `FAILING_VERIFICATION_STATUSES` either way.
   test('property: the ledger always replays the most recently observed real verdict after deletion (#2645)', () => {
-    const REAL_STATUSES = ['passed', 'gaps_found', 'human_needed', 'stale', 'unknown'];
+    const REAL_STATUSES = ['passed', 'gaps_found', 'human_needed', 'unknown'];
     const FAILING = new Set(['gaps_found', 'human_needed']);
     fc.assert(fc.property(
       fc.array(fc.constantFrom(...REAL_STATUSES), { minLength: 1, maxLength: 6 }),
@@ -1318,15 +1333,107 @@ describe('#2645 — deleting a verification report must not raise completeness',
     assert.equal(inv.phases[0].status, 'in_progress', 'the live gaps_found read still governs regardless of ledger corruption');
   });
 
+  // Row 10b — the path Row 10 does NOT exercise (a live report is present in
+  // both its cases, so the live read governs regardless of ledger state).
+  // With the report ALSO absent, a corrupt ledger must fail CLOSED — an
+  // unreadable/malformed ledger for an ADOPTED workstream (the ledger file
+  // exists) is treated as "present, no trustworthy entry", exactly like
+  // "present, no entry for this phase", NOT as "absent" (pre-adoption). This
+  // is the fail-open→fail-closed distinction the maintainer's review required.
+  test('a corrupted ledger with no live report fails closed instead of completing (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-corrupt-no-report' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    // Adopt the ledger for real (a genuine observation), matching the shape
+    // of an actually-used workstream, THEN corrupt it and remove the report —
+    // this is the realistic "ledger existed, now can't be trusted, AND the
+    // evidence that would let the live read cover for it is also gone" case.
+    const before = inspectWorkstream(tmpDir, 'ws-2645-corrupt-no-report', { active: null });
+    assert.equal(before.completed_phases, 0, 'guard: starts correctly gated by the live gaps_found verdict');
+
+    fs.unlinkSync(path.join(wsDir, 'phases', '1-foo', '01-VERIFICATION.md'));
+    fs.writeFileSync(ledgerPath, 'not json{{{');
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-corrupt-no-report', { active: null }); });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress',
+      'a corrupt ledger for an adopted workstream must fail closed, not silently permit completion');
+    assert.equal(inv.completed_phases, 0, 'the percentage must not rise just because the ledger became unreadable');
+  });
+
+  // Row 13 — "delete the ledger" case #1: the ledger file is removed, but
+  // the phase's report is STILL PRESENT and still fails verification. This
+  // must never raise completeness (the live read governs regardless of
+  // ledger presence), and the deletion must be SELF-HEALING: the very next
+  // read that observes the still-present real verdict recreates the ledger.
+  test('deleting only the ledger file (report still present) does not raise completeness and self-heals (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-delete-ledger-only' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    inspectWorkstream(tmpDir, 'ws-2645-delete-ledger-only', { active: null }); // adopt
+    assert.ok(fs.existsSync(ledgerPath), 'guard: the ledger must exist before deleting it is meaningful');
+
+    fs.unlinkSync(ledgerPath);
+    const afterLedgerDelete = inspectWorkstream(tmpDir, 'ws-2645-delete-ledger-only', { active: null });
+    assert.equal(afterLedgerDelete.completed_phases, 0,
+      'the still-present gaps_found report must keep this gated regardless of the ledger');
+    assert.ok(fs.existsSync(ledgerPath), 'a read that observes a real verdict must recreate/self-heal the ledger');
+  });
+
+  // Row 14 — the DISCLOSED, ACCEPTED residual gap, pinned deliberately so it
+  // is never mistaken for a silent regression: deleting the report AND the
+  // ledger TOGETHER, after a failing verdict was already observed and
+  // recorded, returns this phase key to the pre-adoption `'absent'` ledger
+  // state — indistinguishable, by design, from a workstream that never used
+  // the verifier at all (criteria 2/3 require exactly that indistinguishability
+  // for a workstream that HASN'T adopted the ledger). This is the "prospective
+  // only" limitation named in the changeset: any durable store that must fail
+  // OPEN when wholly absent (to avoid gating every pre-existing project on
+  // upgrade) has this property at its own root. The bar is raised from "delete
+  // one file" to "delete two files in two different directories, one of which
+  // this issue's own reproduction never needed to touch" — not eliminated.
+  test('deleting the report AND the ledger together reopens the pre-adoption window (documented, not a regression) (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-delete-both' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    inspectWorkstream(tmpDir, 'ws-2645-delete-both', { active: null }); // adopt + observe gaps_found
+    assert.ok(fs.existsSync(ledgerPath));
+
+    fs.unlinkSync(path.join(wsDir, 'phases', '1-foo', '01-VERIFICATION.md'));
+    fs.unlinkSync(ledgerPath);
+
+    const inv = inspectWorkstream(tmpDir, 'ws-2645-delete-both', { active: null });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'complete',
+      'documented limitation: removing BOTH files returns this phase to the pre-adoption/never-verified state — ' +
+      'this is the accepted "prospective only" boundary, not a bug in this fix');
+  });
+
   // Row 11 — fault injection per CONTRIBUTING.md: read-only target directory
   // / partial write failure. Monkeypatch `fs.writeFileSync` to throw only for
   // the ledger path (delegating everything else to the real implementation,
   // since STATE.md/ROADMAP.md/phase files also go through the same fs
   // module) — `inspectWorkstream` must still return a valid inventory rather
-  // than propagating the write failure. Restored in `finally` per this
-  // repo's IO-failure-injection convention (never `chmod 0o000` — root
-  // bypasses mode bits in CI).
-  test('a write failure on the ledger file does not break inspectWorkstream (#2645)', () => {
+  // than propagating the write failure. Restored via `t.after()` (never
+  // `try/finally` in a test body — CONTRIBUTING.md:344 — and never
+  // `chmod 0o000`, which root bypasses in CI).
+  test('a write failure on the ledger file does not break inspectWorkstream (#2645)', (t) => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-write-fail' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1342,21 +1449,19 @@ describe('#2645 — deleting a verification report must not raise completeness',
       }
       return originalWriteFileSync(targetPath, ...rest);
     };
-    try {
-      let inv;
-      assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-write-fail', { active: null }); });
-      assert.ok(inv);
-      assert.equal(inv.phases[0].status, 'in_progress', 'the inventory is still correct even though persistence failed');
-      assert.ok(!fs.existsSync(ledgerPath), 'the failed write must not have left a partial/corrupt ledger file');
-    } finally {
-      fs.writeFileSync = originalWriteFileSync;
-    }
+    t.after(() => { fs.writeFileSync = originalWriteFileSync; });
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-write-fail', { active: null }); });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress', 'the inventory is still correct even though persistence failed');
+    assert.ok(!fs.existsSync(ledgerPath), 'the failed write must not have left a partial/corrupt ledger file');
   });
 
   // Row 12 — the read-side counterpart: a read failure on the ledger path
   // specifically (e.g. permission denied) must also degrade rather than
   // throw, and must not mask the live on-disk verdict for THIS call.
-  test('a read failure on the ledger file does not break inspectWorkstream (#2645)', () => {
+  test('a read failure on the ledger file does not break inspectWorkstream (#2645)', (t) => {
     const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-read-fail' });
     fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
     fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
@@ -1375,17 +1480,108 @@ describe('#2645 — deleting a verification report must not raise completeness',
       }
       return originalReadFileSync(targetPath, ...rest);
     };
-    try {
-      let inv;
-      assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-read-fail', { active: null }); });
-      assert.ok(inv);
-      // The ledger read failed, so this call falls back to "nothing
-      // remembered" for this read — but the report is still live on disk
-      // with a real (non-missing) gaps_found verdict, so the phase is still
-      // correctly in_progress from the LIVE read, not from the ledger.
-      assert.equal(inv.phases[0].status, 'in_progress');
-    } finally {
-      fs.readFileSync = originalReadFileSync;
-    }
+    t.after(() => { fs.readFileSync = originalReadFileSync; });
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-read-fail', { active: null }); });
+    assert.ok(inv);
+    // The ledger read failed (treated as 'corrupt', not 'absent', since the
+    // file DOES exist) — this workstream has adopted the ledger, so this
+    // falls CLOSED. The report is still live on disk with a real
+    // (non-missing) gaps_found verdict though, so the phase is correctly
+    // in_progress from the LIVE read regardless — the fail-closed path isn't
+    // even reached for this phase (its live read isn't 'missing').
+    assert.equal(inv.phases[0].status, 'in_progress');
+  });
+
+  // Row 15 — CONTRIBUTING.md fault-injection: broken symlink. `readFileSync`
+  // FOLLOWS symlinks, so a broken symlink at the ledger path reports the
+  // SAME `ENOENT` as genuine absence via errno alone — `readVerificationLedger`
+  // disambiguates with `lstatSync` (which does NOT follow symlinks) before
+  // concluding `'absent'`. This is the realistic worst case: the durable
+  // memory is unreadable AND there is no live report to fall back on.
+  test('a broken symlink at the ledger path fails closed instead of falling open to pre-adoption (#2645)', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-broken-symlink' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    const before = inspectWorkstream(tmpDir, 'ws-2645-broken-symlink', { active: null }); // adopt
+    assert.equal(before.completed_phases, 0, 'guard: gated by the live gaps_found verdict');
+
+    fs.unlinkSync(path.join(wsDir, 'phases', '1-foo', '01-VERIFICATION.md'));
+    fs.unlinkSync(ledgerPath);
+    fs.symlinkSync(path.join(wsDir, 'does-not-exist-target'), ledgerPath);
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-broken-symlink', { active: null }); });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress',
+      'a broken symlink is evidence something existed — it must fail closed, not fall open to pre-adoption behavior');
+    assert.equal(inv.completed_phases, 0, 'the percentage must not rise because the ledger became a broken symlink');
+  });
+
+  // Row 16 — CONTRIBUTING.md fault-injection: missing/uncreatable parent
+  // directory for the write side. Monkeypatch `fs.mkdirSync` to throw only
+  // for the workstream directory (delegating everything else), simulating a
+  // parent directory `writeVerificationLedger` cannot ensure exists.
+  test('an uncreatable parent directory on write does not break inspectWorkstream (#2645)', (t) => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-no-parent-dir' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    const originalMkdirSync = fs.mkdirSync;
+    fs.mkdirSync = (targetPath, ...rest) => {
+      if (typeof targetPath === 'string' && targetPath === wsDir) {
+        throw new Error('injected: simulated missing/uncreatable parent directory');
+      }
+      return originalMkdirSync(targetPath, ...rest);
+    };
+    t.after(() => { fs.mkdirSync = originalMkdirSync; });
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-no-parent-dir', { active: null }); });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress', 'the live report still governs even though persistence failed');
+    assert.ok(!fs.existsSync(ledgerPath), 'a write that could not ensure its directory must not leave a ledger file');
+  });
+
+  // Row 17 — CONTRIBUTING.md fault-injection: rename failure and temp-file
+  // cleanup, now applicable because the write is atomic (temp file + rename,
+  // #2645 review). Monkeypatch `fs.renameSync` to throw only for the ledger's
+  // rename — the temp file must be written, the rename must fail, and the
+  // orphaned temp file must be cleaned up rather than accumulating.
+  test('a rename failure during the atomic ledger write cleans up the temp file (#2645)', (t) => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-2645-rename-fail' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), FLAT_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), flatRoadmap([
+      '| 1. Foo | 1/1 | In Progress | - |',
+    ]));
+    writePhase(wsDir, '1-foo', { plans: 1, summaries: 1, verification: 'gaps_found' });
+    const ledgerPath = path.join(wsDir, '.verification-ledger.json');
+
+    const originalRenameSync = fs.renameSync;
+    fs.renameSync = (src, dest) => {
+      if (typeof dest === 'string' && dest === ledgerPath) {
+        throw Object.assign(new Error('injected: simulated rename failure'), { code: 'EPERM' });
+      }
+      return originalRenameSync(src, dest);
+    };
+    t.after(() => { fs.renameSync = originalRenameSync; });
+
+    let inv;
+    assert.doesNotThrow(() => { inv = inspectWorkstream(tmpDir, 'ws-2645-rename-fail', { active: null }); });
+    assert.ok(inv);
+    assert.equal(inv.phases[0].status, 'in_progress', 'the live report still governs even though persistence failed');
+    assert.ok(!fs.existsSync(ledgerPath), 'a failed rename must not leave a ledger file at the final path');
+    const leftoverTmp = fs.readdirSync(wsDir).filter(name => name.startsWith('.verification-ledger.json.') && name.endsWith('.tmp'));
+    assert.deepEqual(leftoverTmp, [], 'a failed rename must not leave an orphaned temp file behind');
   });
 });
