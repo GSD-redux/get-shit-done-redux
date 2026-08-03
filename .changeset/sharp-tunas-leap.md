@@ -2,4 +2,4 @@
 type: Changed
 pr: 0
 ---
-**Planning invocations no longer load branch guidance they will not take.** `/gsd-plan-phase` now conditionally reads its PRD-express, ADR-ingest, reviews-prerequisite, research-only, and chunked-planning-mode guidance only when the matching flag or config is active, shrinking a typical invocation's loaded context instead of always inlining all six branches. (#2993)
+**Flag-gated workflow guidance is now actually loaded on demand** — `/gsd-plan-phase` reads its PRD-express, ADR-ingest, reviews-prerequisite, research-only and chunked-planning guidance only when the matching flag or config is active, instead of always inlining all six branches. This also repairs `/gsd-execute-phase --wave`, whose section gating never took effect because the workflow never forwarded the flag to the init bundle, so wave-filtering guidance was silently skipped on every run. (#2993)
