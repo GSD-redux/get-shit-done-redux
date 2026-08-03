@@ -25,9 +25,15 @@
  *   (covered behaviorally in tests/frontmatter-cli.test.cjs and
  *   tests/frontmatter.unit.test.cjs — this file covers the prompt-level wiring
  *   that selects it).
- * - agents/gsd-planner.md `<step name="validate_plan">`: selects
- *   `--schema plan-gap-closure` when gap_closure mode is active, `--schema plan`
- *   otherwise (unchanged for standard/reviews mode).
+ * - agents/gsd-planner.md `<step name="validate_plan">`: the bash invocation
+ *   now reads `--schema "$SCHEMA"` — a real shell-variable reference, bound in
+ *   the same style as the file's existing `"$PLAN_PATH"` convention — instead
+ *   of a hardcoded literal. An earlier revision left the bash line unconditional
+ *   (`--schema plan)`, a copy-executable no-op) while only the prose sentence
+ *   above it mentioned the conditional; that revision satisfied every
+ *   substring-presence check but never actually selected plan-gap-closure at
+ *   runtime. Caught by review, not by tests — see the describe block below for
+ *   the executable-content assertions written specifically to catch it.
  *
  * Deliberately NOT touched: gsd-core/workflows/plan-phase.md's
  * `<downstream_consumer>` block. An earlier draft of this fix added a
@@ -65,50 +71,111 @@ function extractStep(content, stepName) {
   return content.slice(start, end + '</step>'.length);
 }
 
-// ─── agents/gsd-planner.md: validate_plan step is mode-aware (#2847) ─────────
+/**
+ * Extract the FIRST ```bash ... ``` fenced block from a step's text. Returns null
+ * if no fenced bash block is found.
+ */
+function extractFirstBashBlock(stepText) {
+  const m = /```bash\n([\s\S]*?)```/.exec(stepText);
+  return m ? m[1] : null;
+}
 
-describe('#2847: gsd-planner.md validate_plan step selects schema by mode', () => {
+/**
+ * Find the literal line, within a bash block, that invokes `frontmatter.validate`.
+ * Returns null if not found.
+ */
+function findValidateInvocationLine(bashBlock) {
+  if (!bashBlock) return null;
+  return bashBlock.split('\n').find((l) => l.includes('frontmatter.validate')) || null;
+}
+
+// ─── agents/gsd-planner.md: validate_plan step BINDS schema to mode (#2847) ──
+//
+// This describe block asserts on the EXECUTABLE content of the step — the literal
+// argument passed to `--schema` in the fenced bash block the agent actually runs —
+// not on whether explanatory words appear anywhere in the step's prose. A prose
+// sentence like "use plan-gap-closure in gap_closure mode, else plan" sitting next
+// to an UNCONDITIONAL `--schema plan)` line satisfies every substring-presence
+// check imaginable while the agent still only ever executes `--schema plan`. That
+// exact shape shipped in an earlier revision of this fix and was caught by review,
+// not by tests — these tests are written specifically to catch it mechanically:
+// verified RED against that revision (`--schema plan)` hardcoded in the bash
+// block, `--schema plan-gap-closure` only in the prose sentence above it) before
+// the bash block was changed to `--schema "$SCHEMA"`.
+
+describe('#2847: gsd-planner.md validate_plan step BINDS --schema to gap_closure mode (executable content, not prose)', () => {
   const plannerContent = readFile(PLANNER_AGENT_PATH);
   const validateStep = extractStep(plannerContent, 'validate_plan');
+  const bashBlock = extractFirstBashBlock(validateStep || '');
+  const invocationLine = findValidateInvocationLine(bashBlock);
 
-  test('validate_plan step exists', () => {
+  test('validate_plan step exists and has a fenced bash block invoking frontmatter.validate', () => {
     assert.ok(validateStep, '<step name="validate_plan"> must exist in agents/gsd-planner.md');
+    assert.ok(bashBlock, 'validate_plan step must have a ```bash fenced block');
+    assert.ok(invocationLine, 'validate_plan step bash block must invoke frontmatter.validate');
   });
 
-  test('validate_plan step references the plan-gap-closure schema', () => {
+  test('the --schema argument in the bash invocation is NOT a hardcoded literal', () => {
+    // This is the exact regression: a prior revision had this line read
+    // `--schema plan)` verbatim — a plain, hardcoded, always-the-same-value
+    // literal that an agent executes as-is regardless of mode. Reject BOTH
+    // possible hardcoded literals explicitly, not just one, so a fix that
+    // flips the hardcoded default to plan-gap-closure (breaking standard mode
+    // instead of gap_closure mode) is caught too.
     assert.ok(
-      validateStep.includes('plan-gap-closure'),
-      'validate_plan step must reference the plan-gap-closure schema so gap-closure-mode plans are validated against it'
+      !/--schema\s+plan\)/.test(invocationLine),
+      `bash invocation must not hardcode --schema plan — found: ${invocationLine}`
     );
-  });
-
-  test('validate_plan step still references the unmodified plan schema for standard/reviews mode', () => {
-    assert.match(
-      validateStep,
-      /--schema plan\b(?!-)/,
-      'validate_plan step must still validate with --schema plan (not plan-gap-closure) for standard/reviews mode — AC(3)'
-    );
-  });
-
-  test('validate_plan step conditions schema selection on gap_closure mode', () => {
     assert.ok(
-      /gap_closure mode is active/i.test(validateStep) || /gap.closure/i.test(validateStep),
-      'validate_plan step must condition --schema plan-gap-closure selection on gap_closure mode being active, not apply it unconditionally'
+      !/--schema\s+plan-gap-closure\)/.test(invocationLine),
+      `bash invocation must not hardcode --schema plan-gap-closure — found: ${invocationLine}`
     );
   });
 
-  test('validate_plan step documents gap_closure as an additional requirement, not a replacement', () => {
+  test('the --schema argument in the bash invocation IS a shell variable reference', () => {
+    // A variable reference means the value is resolved at execution time from
+    // whatever the agent has bound it to, not printed once in the template and
+    // copy-executed unchanged. Matches --schema "$SCHEMA", --schema $SCHEMA,
+    // or --schema "${SCHEMA}".
+    const varMatch = /--schema\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?\)/.exec(invocationLine);
     assert.ok(
-      validateStep.includes('gap_closure'),
-      'validate_plan step required-fields list must mention gap_closure for gap closure mode'
+      varMatch,
+      `bash invocation's --schema argument must be a shell variable (e.g. --schema "$SCHEMA"), not a literal — found: ${invocationLine}`
     );
-    // The original 8-field list must still be intact (AC(3): no change to the base contract).
-    for (const field of ['phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves']) {
-      assert.ok(
-        validateStep.includes(field),
-        `validate_plan step must still list "${field}" among required plan frontmatter fields`
-      );
-    }
+  });
+
+  test('the bound variable is actually conditioned on gap_closure mode in the step prose, and both target schema names are named', () => {
+    const varMatch = /--schema\s+"?\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"?\)/.exec(invocationLine);
+    assert.ok(varMatch, 'precondition: --schema must reference a variable (see previous test)');
+    const varName = varMatch[1];
+
+    // The SAME variable name the bash block reads must appear in the step's prose
+    // (outside the bash block) — otherwise the "binding" is a variable nothing
+    // ever explains how to set, which is not meaningfully better than a literal.
+    const proseOutsideBash = validateStep.replace(/```bash\n[\s\S]*?```/, '');
+    assert.ok(
+      proseOutsideBash.includes(`$${varName}`) || proseOutsideBash.includes(`\`$${varName}\``),
+      `step prose must explain how $${varName} is set — the bash block references it but nothing binds it`
+    );
+
+    // Both concrete schema names this variable can resolve to must be named
+    // somewhere in the step, and gap_closure mode must be the stated condition
+    // for choosing between them.
+    assert.ok(validateStep.includes('plan-gap-closure'), 'step must name the plan-gap-closure schema');
+    assert.ok(
+      /\bplan\b(?!-gap-closure)/.test(validateStep.replace('plan-gap-closure', '')),
+      'step must name the plain plan schema as the other branch'
+    );
+    assert.ok(/gap_closure mode/i.test(validateStep), 'step must condition the choice on gap_closure mode by name');
+  });
+
+  test('the plan-structure validation call below (unrelated step) is unaffected', () => {
+    // Regression guard for the fix itself: confirm the edit did not touch the
+    // sibling verify.plan-structure invocation in the same step.
+    assert.ok(
+      validateStep.includes('verify.plan-structure "$PLAN_PATH"'),
+      'validate_plan step must still invoke verify.plan-structure unchanged'
+    );
   });
 });
 

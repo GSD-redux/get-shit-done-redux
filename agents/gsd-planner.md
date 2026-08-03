@@ -869,18 +869,15 @@ Include all frontmatter fields.
 </step>
 
 <step name="validate_plan">
-Validate: `--schema plan-gap-closure` in gap_closure mode, else `plan`.
+`$SCHEMA`: `plan-gap-closure` in gap_closure mode, else `plan`.
 
 ```bash
-VALID=$(gsd_run query frontmatter.validate "$PLAN_PATH" --schema plan)
+VALID=$(gsd_run query frontmatter.validate "$PLAN_PATH" --schema "$SCHEMA")
 ```
 
 Returns JSON: `{ valid, missing, present, schema }`
 
-**If `valid=false`:** Fix missing required fields before proceeding.
-
-Required plan frontmatter fields:
-- `phase`, `plan`, `type`, `wave`, `depends_on`, `files_modified`, `autonomous`, `must_haves`
+**If `valid=false`:** Fix missing required fields before proceeding (`missing` names them, including `gap_closure` in gap_closure mode).
 
 Also validate plan structure:
 
