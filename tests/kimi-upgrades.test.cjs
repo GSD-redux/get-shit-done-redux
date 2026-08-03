@@ -41,7 +41,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { runMinimalInstall, INSTALL_SCRIPT, installerEnv } = require('./helpers/install-shared.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir, toPosixPath } = require('./helpers.cjs');
 const {
   negotiateHostCapabilities,
   shouldFlattenDispatch,
@@ -340,28 +340,22 @@ function hasGsdHooksBlock(tomlPath) {
   return stripKimiHooksTomlBlock(content) !== content;
 }
 
-/** Spawn the real installer for one Kimi variant against a sandbox HOME. */
+/** Spawn the real installer for one Kimi variant against a shared sandbox HOME. */
 function runKimiInstall(root, runtime, { extraEnv = {}, uninstall = false } = {}) {
-  const args = [INSTALL_SCRIPT, `--${runtime}`, '--global', '--config-dir', root];
-  if (uninstall) args.push('--uninstall');
-  const result = spawnSync(process.execPath, args, {
-    cwd: process.cwd(),
-    encoding: 'utf8',
-    env: installerEnv({ HOME: root, USERPROFILE: root, ...extraEnv }),
+  return runMinimalInstall({
+    runtime,
+    scope: 'global',
+    root,
+    extraEnv,
+    extraArgs: uninstall ? ['--uninstall'] : [],
   });
-  assert.strictEqual(result.status, 0,
-    `installer exited ${result.status} for --${runtime}${uninstall ? ' --uninstall' : ''}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
-  return result;
 }
 
 function sandboxHome(t, prefix = 'gsd-2755-') {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const root = createTempDir(prefix);
   t.after(() => cleanup(root));
   return root;
 }
-
-/** Windows emits backslashes; compare on a normalized separator. */
-const posix = (p) => String(p).replace(/\\/g, '/');
 
 describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
   test('--kimi-code --global writes its hooks into ~/.kimi-code and never creates ~/.kimi', (t) => {
@@ -396,9 +390,9 @@ describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
     const commandPaths = [...managed.matchAll(/^command = "(.*)"$/gm)].map((m) => m[1]);
     assert.ok(commandPaths.length > 0, 'the managed block must emit at least one command');
     for (const cmd of commandPaths) {
-      assert.ok(posix(cmd).includes('/.kimi-code/hooks/'),
+      assert.ok(toPosixPath(cmd).includes('/.kimi-code/hooks/'),
         `hook command must reference the kimi-code hooks dir: ${cmd}`);
-      assert.ok(!posix(cmd).includes('/.kimi/hooks/'),
+      assert.ok(!toPosixPath(cmd).includes('/.kimi/hooks/'),
         `hook command must not reference Kimi CLI's hooks dir: ${cmd}`);
     }
   });
@@ -469,5 +463,27 @@ describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
       "a --kimi uninstall must leave Kimi Code's config.toml byte-identical");
     assert.ok(!hasGsdHooksBlock(kimiToml),
       "kimi's own block must be removed by its own uninstall");
+  });
+
+  test('KIMI_SHARE_DIR and KIMI_CODE_HOME set together do not interfere', (t) => {
+    // Both products' overrides live in one environment in practice. Each must
+    // honor only its own variable — proven through the real installer, not just
+    // the resolver unit.
+    const root = sandboxHome(t);
+    const kimiAlt = sandboxHome(t, 'gsd-2755-both-kimi-');
+    const codeAlt = sandboxHome(t, 'gsd-2755-both-code-');
+    const both = { KIMI_SHARE_DIR: kimiAlt, KIMI_CODE_HOME: codeAlt };
+
+    runKimiInstall(root, 'kimi', { extraEnv: both });
+    runKimiInstall(root, 'kimi-code', { extraEnv: both });
+
+    assert.ok(hasGsdHooksBlock(path.join(kimiAlt, 'config.toml')),
+      'kimi must honor KIMI_SHARE_DIR while KIMI_CODE_HOME is also set');
+    assert.ok(hasGsdHooksBlock(path.join(codeAlt, 'config.toml')),
+      'kimi-code must honor KIMI_CODE_HOME while KIMI_SHARE_DIR is also set');
+    assert.ok(!fs.existsSync(path.join(root, '.kimi')),
+      'neither default root may be used when both overrides are set');
+    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
+      'neither default root may be used when both overrides are set');
   });
 });

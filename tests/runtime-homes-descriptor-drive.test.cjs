@@ -1296,4 +1296,26 @@ describe('resolveKimiHooksTomlDir — per-runtime hooks root (#2755)', () => {
       at('.kimi'),
     );
   });
+
+  test('every kimi-hooks-toml runtime resolves a distinct hooks root', () => {
+    // Divergence guard (CLAUDE.md → Generative Fix Divergence). The resolver
+    // hardcodes the two Kimi roots while the capability registry independently
+    // decides which runtimes use the kimi-hooks-toml surface. If a third one is
+    // ever added without teaching the resolver its root, it silently inherits
+    // ~/.kimi — which IS the #2755 defect, re-created. This fails the moment
+    // those two surfaces drift apart.
+    const capsDir = path.join(ROOT, 'capabilities');
+    const ids = fs.readdirSync(capsDir).filter((id) => {
+      const file = path.join(capsDir, id, 'capability.json');
+      if (!fs.existsSync(file)) return false;
+      return JSON.parse(fs.readFileSync(file, 'utf8'))?.runtime?.hooksSurface === 'kimi-hooks-toml';
+    });
+
+    assert.deepEqual(ids.sort(), ['kimi', 'kimi-code'],
+      'the kimi-hooks-toml runtime set changed — teach resolveKimiHooksTomlDir the new root, then update this list');
+
+    const roots = ids.map((id) => resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: {}, runtime: id }));
+    assert.equal(new Set(roots).size, roots.length,
+      `each kimi-hooks-toml runtime must resolve its own root; got ${JSON.stringify(roots)}`);
+  });
 });
