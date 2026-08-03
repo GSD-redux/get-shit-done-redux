@@ -48,6 +48,13 @@
         "when": "state:chunked-mode",
         "read": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md"
       }
+    ],
+    "progress": [
+      {
+        "id": "forensic-audit",
+        "when": "flag:--forensic",
+        "read": "gsd-core/workflows/progress/steps/forensic-audit.md"
+      }
     ]
   }
 }
