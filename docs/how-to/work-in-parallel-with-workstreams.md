@@ -60,6 +60,8 @@ Shows all workstreams and which one is currently active in your session.
 
 From this point forward, all GSD workflow commands operate in the `backend-api` context. The switch is session-scoped: when multiple Claude Code terminals are open on the same repo, each session can hold a different active workstream without interfering with the others.
 
+The statusline's GSD-state segment (milestone, phase, progress) reflects whichever workstream resolves as active — the same `GSD_WORKSTREAM` env var / stored pointer precedence every workstream-aware command uses. If no workstream can be resolved in a workstream-mode project, the segment shows `no active workstream` rather than disappearing silently.
+
 Once switched, drive the normal phase workflow:
 
 ```bash

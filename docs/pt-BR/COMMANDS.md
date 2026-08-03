@@ -185,7 +185,7 @@ Pesquisa, planeja e verifica uma fase.
 - Com `--view`: imprime o RESEARCH.md existente no stdout, sem criar agente. Apresenta erro se RESEARCH.md estiver ausente.
 
 **Portão de Legitimidade de Pacotes (v1.42.1):**
-Quando o pesquisador recomenda pacotes externos, executa `slopcheck install <pkg> --json` em cada um e escreve uma tabela `## Package Legitimacy Audit` no RESEARCH.md com os campos Registry, Age, Downloads, Source Repo e veredicto do slopcheck. Veredictos:
+Quando o pesquisador recomenda pacotes externos, executa `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates> <pkg>` em cada um e escreve uma tabela `## Package Legitimacy Audit` no RESEARCH.md com os campos Registry, Age, Downloads, Source Repo e veredicto de legitimidade. Veredictos:
 
 - `[SLOP]` — pacote removido do RESEARCH.md completamente; nunca chega ao planejador
 - `[SUS]` — pacote sinalizado; o planejador insere `checkpoint:human-verify` antes da tarefa de instalação

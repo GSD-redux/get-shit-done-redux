@@ -3275,20 +3275,366 @@ describe('init section manifest', () => {
       const body = JSON.parse(result.stdout);
       assert.equal(body.section_manifest, null);
     });
+
+    // ── C4 (#2992): stale FLAT pre-6.1 artifact must degrade to null and
+    // never be mis-attributed to any workflow — the upgrade-path row.
+
+    test('staleFlatPreWideningArtifactDegradesToNull (row C4)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c4-');
+      const flatPath = path.join(dir, 'flat-section-manifest.json');
+      // The pre-#2932-Phase-6.1 shape: a single top-level `sections` array,
+      // no `workflows` key at all. It even NAMES an execute-phase-shaped
+      // section, so a mis-attribution bug would silently "work".
+      fs.writeFileSync(
+        flatPath,
+        JSON.stringify({
+          sections: [{ id: 'partial-wave', when: 'flag:--wave', read: 'gsd-core/workflows/execute-phase/steps/partial-wave.md' }],
+        }),
+      );
+      const result = runExecutePhase(['1', '--wave', '1'], dir, { GSD_SECTION_MANIFEST: flatPath });
+      assert.equal(result.status, 0, `expected exit 0 despite stale flat artifact, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'stale-flat-artifact');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'a pre-6.1 flat artifact must never be mis-parsed as some workflow\'s sections');
+    });
+
+    // ── C8 (#2992): valid JSON that is not an object — one row each.
+
+    test('nonObjectJsonArtifactDegradesToNull (row C8)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c8-');
+      for (const hostileJson of ['0', '"str"', '[]', 'null', 'true']) {
+        const hostilePath = path.join(dir, `hostile-${Buffer.from(hostileJson).toString('hex')}-section-manifest.json`);
+        fs.writeFileSync(hostilePath, hostileJson);
+        const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: hostilePath });
+        assert.equal(result.status, 0, `hostile JSON ${hostileJson}: expected exit 0 (stderr: ${result.stderr})`);
+        assertNoStackTrace(result.stderr, `hostile-json:${hostileJson}`);
+        const body = JSON.parse(result.stdout);
+        assert.equal(body.section_manifest, null, `hostile JSON ${hostileJson} must degrade to null`);
+      }
+    });
+
+    // ── C9 (#2992): file present but 0 bytes.
+
+    test('emptyZeroByteArtifactFileDegradesToNull (row C9)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c9-');
+      const emptyPath = path.join(dir, 'empty-section-manifest.json');
+      fs.writeFileSync(emptyPath, '');
+      assert.equal(fs.statSync(emptyPath).size, 0, 'sanity: fixture file must be 0 bytes');
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: emptyPath });
+      assert.equal(result.status, 0, `expected exit 0 despite empty artifact file, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'empty-artifact-file');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null);
+    });
+
+    // ── #2992 review finding: an unsafe `read` path degrades the WHOLE
+    // load to null, exactly like every other shape violation above — the
+    // field is documented as a POSIX-normalized, repo-root-RELATIVE path,
+    // so an absolute path, a Windows drive/UNC prefix, or a `..` traversal
+    // segment must never be trusted through to a later `fs.readFileSync`.
+
+    test('degradesToNullWhenReadPathIsAbsolute', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-unsafe-abs-');
+      const manifestPath = path.join(dir, 'unsafe-abs-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: { 'execute-phase': [{ id: 'x', when: 'always', read: '/etc/passwd' }] },
+      }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath });
+      assert.equal(result.status, 0, `expected exit 0 despite an absolute read path, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'unsafe-read-absolute');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'an absolute `read` path must degrade the whole load to null');
+    });
+
+    test('degradesToNullWhenReadPathContainsDotDotTraversal', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-unsafe-dotdot-');
+      const manifestPath = path.join(dir, 'unsafe-dotdot-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: { 'execute-phase': [{ id: 'x', when: 'always', read: '../../etc/passwd' }] },
+      }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath });
+      assert.equal(result.status, 0, `expected exit 0 despite a ../ traversal read path, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'unsafe-read-dotdot');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'a `..` traversal segment in `read` must degrade the whole load to null');
+    });
+
+    test('degradesToNullWhenReadPathIsWindowsDriveAbsolute', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-unsafe-windrive-');
+      const manifestPath = path.join(dir, 'unsafe-windrive-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: { 'execute-phase': [{ id: 'x', when: 'always', read: 'C:\\Windows\\System32\\config' }] },
+      }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath });
+      assert.equal(result.status, 0, `expected exit 0 despite a Windows drive-absolute read path, got ${result.status} (stderr: ${result.stderr})`);
+      assertNoStackTrace(result.stderr, 'unsafe-read-windrive');
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'a Windows drive-absolute `read` path must degrade the whole load to null');
+    });
+  });
+
+  // ── C1/C12/C16/C17 (#2992): shape guarantees on the field itself ────────
+
+  describe('init execute-phase: section_manifest field-shape guarantees (#2992)', () => {
+    test('emptySectionsArrayIsComputedNotDegraded (row C12 — present + empty is not null)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c12-');
+      const emptyWorkflowPath = path.join(dir, 'empty-workflow-section-manifest.json');
+      fs.writeFileSync(emptyWorkflowPath, JSON.stringify({ workflows: { 'execute-phase': [] } }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: emptyWorkflowPath });
+      assert.equal(result.status, 0, `expected exit 0, got ${result.status} (stderr: ${result.stderr})`);
+      const body = JSON.parse(result.stdout);
+      assert.deepStrictEqual(
+        body.section_manifest,
+        { workflow: 'execute-phase', included: [], excluded: [], read: [] },
+        'a workflow key present with sections:[] must compute to an empty-but-present selection, never null',
+      );
+    });
+
+    test('workflowAbsentFromArtifactDegradesToNullNotEmptySections (row C16 — absence is not empty)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-c16-');
+      const otherWorkflowPath = path.join(dir, 'other-workflow-section-manifest.json');
+      fs.writeFileSync(otherWorkflowPath, JSON.stringify({ workflows: { 'plan-phase': [{ id: 'x', when: 'always', read: 'x.md' }] } }));
+      const result = runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: otherWorkflowPath });
+      assert.equal(result.status, 0);
+      const body = JSON.parse(result.stdout);
+      assert.equal(body.section_manifest, null, 'execute-phase has no key in this artifact — must degrade to null, never {included:[]}');
+    });
+
+    test('executePhaseSectionManifestFieldIsByteIdenticalToThePreChangeShape (row C1 — Hyrum gate)', (t) => {
+      // Locks the EXACT shape execute-phase's real, shipped manifest produces
+      // for a plain (no --wave, no gap-closure, no prior phases) invocation —
+      // #2992 widened the vocabulary and generalized the artifact to
+      // per-workflow keying, but execute-phase's own 3 real sections (all
+      // pre-existing atoms) must select IDENTICALLY to before this change.
+      const dir = seedSinglePhaseProject(t, 'gsd-c1-');
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'c1-baseline');
+      assert.deepStrictEqual(body.section_manifest, {
+        workflow: 'execute-phase',
+        included: [],
+        excluded: ['partial-wave', 'gap-closure-artifacts', 'regression-gate'],
+        read: [],
+      });
+    });
+
+    test('restOfTheInitBundleIsUnaffectedByEverySectionManifestDegradedCondition (row C17 — Hyrum gate)', (t) => {
+      // The `section_manifest` field is additive; every OTHER field of the
+      // init-bundle (22 direct dependents per the design doc's blast-radius
+      // table) must be byte-identical regardless of whether the manifest
+      // artifact resolves, is missing, or is malformed.
+      const dir = seedSinglePhaseProject(t, 'gsd-c17-');
+
+      const real = parseOkJson(runExecutePhase(['1'], dir), 'c17-real');
+      const missingPath = path.join(dir, 'does-not-exist-c17.json');
+      const missing = parseOkJson(runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: missingPath }), 'c17-missing');
+      const badPath = path.join(dir, 'bad-c17.json');
+      fs.writeFileSync(badPath, '{ not valid json');
+      const malformed = parseOkJson(runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: badPath }), 'c17-malformed');
+
+      delete real.section_manifest;
+      delete missing.section_manifest;
+      delete malformed.section_manifest;
+      assert.deepStrictEqual(missing, real, 'every other init-bundle field must be unaffected by a missing manifest artifact');
+      assert.deepStrictEqual(malformed, real, 'every other init-bundle field must be unaffected by a malformed manifest artifact');
+    });
+  });
+
+  // ── D4 (#2992, prod-shape): an absent CLI flag is absent from `flags` ────
+  //
+  // #2992 review finding (fixed in this change, src/init-command-router.cts):
+  // `parseNamedArgs`'s booleanFlags ALWAYS populate the option key (`true`
+  // when the token was seen, `false` otherwise — never `undefined`).
+  // `buildSectionManifestField`'s flags-Set builder (src/init.cts) treats
+  // ANY non-`undefined` option value as present (matrix D2/D3, for VALUE
+  // flags whose absence is `null`). Passed through unmodified, a
+  // booleanFlag's own `false` ("--wave" never typed) would still have been
+  // added to `flags`, making `flag:--wave` permanently true regardless of
+  // the actual invocation — verified live pre-fix: `partial-wave` was
+  // INCLUDED with no `--wave` on the command line at all, silently
+  // defeating the gating feature this whole seam exists for. The router now
+  // folds a booleanFlag's own `false` into `undefined` before it reaches
+  // `buildSectionManifestField`, so this test is the regression lock for
+  // that fix — it duplicates the assertion `emitsSectionManifestWithoutWaveFlag`
+  // already makes, under an explicit D4 name for matrix traceability.
+  //
+  // D2 ("option present, value false" as a generically-present option) and
+  // D3 ("option present, string value") and D6 (a hostile literal option
+  // key) are NOT independently prod-shape-testable through the real CLI as
+  // currently wired: `execute-phase`/`plan-phase` are the only two handlers
+  // that feed router-derived options into `buildSectionManifestField`, their
+  // option-key lists are FIXED literals (`validate`/`tdd`/`wave`/
+  // `granularity`) never derived from user input (so a hostile key name can
+  // never reach it for real), none of the 14 shipped vocabulary atoms is
+  // backed by a value-taking CLI flag (so a real string-valued option can
+  // never reach a `flag:` atom yet), and this fix means a booleanFlag's own
+  // `false` never reaches the builder at all anymore. Synthesizing an
+  // options object to force these paths would violate the matrix's own
+  // "(prod-shape) rows must drive the options path" constraint, so they are
+  // left unaddressed here rather than faked — surfaced for the orchestrator.
+  describe('init execute-phase: undefined CLI flag is absent from flags (#2992 row D4)', () => {
+    test('waveOptionAbsentWithoutTheFlagNeverActivatesPartialWave', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-d4-');
+      const body = parseOkJson(runExecutePhase(['1'], dir), 'd4-no-wave');
+      assert.ok(!body.section_manifest.included.includes('partial-wave'), 'an unset --wave must never leak into flags as "present"');
+      assert.deepStrictEqual(body.section_manifest.excluded, ['partial-wave', 'gap-closure-artifacts', 'regression-gate']);
+    });
+  });
+
+  // ── D9/D10/D11 (#2992, prod-shape): state:* detector degradation ─────────
+  // Drives the REAL cmdInitExecutePhase -> buildSectionManifestField ->
+  // readConfigJsonBoolean/detectPhaseMvpMode seam through the real CLI with a
+  // fixture manifest naming the two config-backed atoms, never a hand-built
+  // InvocationFacts (matrix note: "(prod-shape)" rows must drive the options
+  // path). `seedSinglePhaseProject` writes no `.planning/config.json` and no
+  // `.planning/ROADMAP.md` at all, so D9 (absent config) and D11 (absent
+  // ROADMAP) are the fixture's natural, un-monkeypatched state.
+
+  describe('init execute-phase: state:* detector degradation (#2992 rows D9-D11)', () => {
+    function writeDetectorManifest(dir) {
+      const manifestPath = path.join(dir, 'detector-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: {
+          'execute-phase': [
+            { id: 'worktrees-section', when: 'state:worktrees-enabled', read: 'x.md' },
+            { id: 'mvp-section', when: 'state:phase-mvp-mode', read: 'y.md' },
+          ],
+        },
+      }));
+      return manifestPath;
+    }
+
+    test('absentConfigAndAbsentRoadmapDegradeBothStateAtomsToFalse (rows D9/D11)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-d9-');
+      assert.equal(fs.existsSync(path.join(dir, '.planning', 'config.json')), false, 'sanity: no config.json');
+      assert.equal(fs.existsSync(path.join(dir, '.planning', 'ROADMAP.md')), false, 'sanity: no ROADMAP.md');
+      const manifestPath = writeDetectorManifest(dir);
+      const body = parseOkJson(runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath }), 'd9-d11');
+      assert.deepStrictEqual(body.section_manifest.excluded, ['worktrees-section', 'mvp-section']);
+      assert.deepStrictEqual(body.section_manifest.included, []);
+    });
+
+    test('nonBooleanConfigValueDegradesToFalse (row D10 — strict boolean, string "true" is not true)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-d10-');
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: { use_worktrees: 'true' } }));
+      const manifestPath = writeDetectorManifest(dir);
+      const body = parseOkJson(runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath }), 'd10');
+      assert.ok(
+        body.section_manifest.excluded.includes('worktrees-section'),
+        'a string "true" config value must never coerce to boolean true',
+      );
+    });
+
+    test('realBooleanTrueConfigValueIncludesTheSection (independence: the strict check still accepts a real boolean)', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-d10b-');
+      fs.writeFileSync(path.join(dir, '.planning', 'config.json'), JSON.stringify({ workflow: { use_worktrees: true } }));
+      const manifestPath = writeDetectorManifest(dir);
+      const body = parseOkJson(runExecutePhase(['1'], dir, { GSD_SECTION_MANIFEST: manifestPath }), 'd10b');
+      assert.ok(body.section_manifest.included.includes('worktrees-section'));
+    });
+  });
+
+  // ── #2992 review finding: state:needs-codebase-map wiring (real CLI) ─────
+  //
+  // No test anywhere drove `state:needs-codebase-map` (src/section-manifest.cts)
+  // or its `cmdInitNewProject` override wiring (src/init.cts, `overrides.needsCodebaseMap`)
+  // through the real CLI. Drives `init new-project` with a `mkdtempSync`
+  // fixture manifest (via `GSD_SECTION_MANIFEST`) naming a single section
+  // gated on the atom, proving inclusion/exclusion tracks the SAME
+  // isBrownfield/hasCodebaseMap computation `needs_codebase_map` itself uses
+  // — never mutating the shipped gsd-core/workflows/section-manifest.json.
+
+  describe('init new-project: state:needs-codebase-map wiring (#2992 review finding)', () => {
+    function writeNeedsCodebaseMapManifest(dir) {
+      const manifestPath = path.join(dir, 'needs-map-section-manifest.json');
+      fs.writeFileSync(manifestPath, JSON.stringify({
+        workflows: {
+          'new-project': [
+            { id: 'needs-map-section', when: 'state:needs-codebase-map', read: 'z.md' },
+          ],
+        },
+      }));
+      return manifestPath;
+    }
+
+    test('brownfieldWithoutCodebaseMapIncludesTheGatedSection', () => {
+      const dir = createTempProject('gsd-needsmap-true-');
+      try {
+        fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"test"}');
+        const manifestPath = writeNeedsCodebaseMapManifest(dir);
+        const result = runGsdTools('init new-project', dir, { GSD_SECTION_MANIFEST: manifestPath });
+        assert.ok(result.success, `init new-project failed: ${result.error}`);
+        const output = JSON.parse(result.output);
+        assert.strictEqual(output.needs_codebase_map, true, 'sanity: fixture must be brownfield without a codebase map');
+        assert.deepStrictEqual(output.section_manifest.included, ['needs-map-section']);
+        assert.deepStrictEqual(output.section_manifest.excluded, []);
+      } finally {
+        cleanup(dir);
+      }
+    });
+
+    test('greenfieldExcludesTheGatedSection', () => {
+      const dir = createTempProject('gsd-needsmap-false-');
+      try {
+        const manifestPath = writeNeedsCodebaseMapManifest(dir);
+        const result = runGsdTools('init new-project', dir, { GSD_SECTION_MANIFEST: manifestPath });
+        assert.ok(result.success, `init new-project failed: ${result.error}`);
+        const output = JSON.parse(result.output);
+        assert.strictEqual(output.needs_codebase_map, false, 'sanity: fixture must be greenfield');
+        assert.deepStrictEqual(output.section_manifest.included, []);
+        assert.deepStrictEqual(output.section_manifest.excluded, ['needs-map-section']);
+      } finally {
+        cleanup(dir);
+      }
+    });
+
+    test('brownfieldWithExistingCodebaseMapExcludesTheGatedSection', () => {
+      const dir = createTempProject('gsd-needsmap-hascomap-');
+      try {
+        fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"test"}');
+        fs.mkdirSync(path.join(dir, '.planning', 'codebase'), { recursive: true });
+        for (const name of ['STACK', 'ARCHITECTURE', 'STRUCTURE', 'CONVENTIONS', 'TESTING', 'INTEGRATIONS', 'CONCERNS']) {
+          fs.writeFileSync(path.join(dir, '.planning', 'codebase', `${name}.md`), `# ${name}\n`);
+        }
+        const manifestPath = writeNeedsCodebaseMapManifest(dir);
+        const result = runGsdTools('init new-project', dir, { GSD_SECTION_MANIFEST: manifestPath });
+        assert.ok(result.success, `init new-project failed: ${result.error}`);
+        const output = JSON.parse(result.output);
+        assert.strictEqual(output.needs_codebase_map, false, 'sanity: fixture must already have a complete codebase map');
+        assert.deepStrictEqual(output.section_manifest.included, []);
+        assert.deepStrictEqual(output.section_manifest.excluded, ['needs-map-section']);
+      } finally {
+        cleanup(dir);
+      }
+    });
   });
 
   // ── E59: independence — other init subcommands unaffected ───────────────
+  //
+  // #2992 (epic #1671 Phase 6.1) generalized the manifest seam from
+  // execute-phase-only to per-workflow (`buildSectionManifestField` now wires
+  // into `cmdInitPlanPhase`/`cmdInitNewProject`/`cmdInitNewMilestone`/
+  // `cmdInitQuick`/`cmdInitProgress` too — src/init.cts:740/787/839/885/1810).
+  // The OLD assertion here ("section_manifest must be execute-phase-only")
+  // is stale: plan-phase's field is now PRESENT, but `null` — the shipped
+  // gsd-core/workflows/section-manifest.json still keys only `execute-phase`
+  // (design row C3: a workflow absent from the artifact's `workflows` map
+  // degrades to `null`, never an absent field). `resume` has no dedicated
+  // `cmdInit*` manifest wiring at all (design's withheld-atom survey), so its
+  // field truly remains absent — that half of the guard is unchanged.
 
-  describe('init dispatch: other subcommands unaffected (#2932 row 59, CRITICAL radius guard)', () => {
-    test('leavesOtherInitSubcommandsUnchanged', (t) => {
+  describe('init dispatch: other subcommands unaffected (#2932/#2992 row 59, CRITICAL radius guard)', () => {
+    test('planPhaseEmitsANullManifestNotAnAbsentField (row C3/C16 — absence is not empty)', (t) => {
       const dir = seedSinglePhaseProject(t, 'gsd-e59-');
 
       const planPhase = parseOkJson(runSectionManifestCli(['init.plan-phase', '1'], dir), 'plan-phase');
       assert.equal(planPhase.phase_found, true);
-      assert.ok(!('section_manifest' in planPhase), 'section_manifest must be execute-phase-only, never leak into plan-phase');
+      assert.ok('section_manifest' in planPhase, 'section_manifest field must be present (computed, degraded to null) for plan-phase');
+      assert.equal(planPhase.section_manifest, null, 'plan-phase has no key in the shipped artifact, so it must degrade to null, never {included:[]}');
+    });
 
+    test('resumeNeverEmitsASectionManifestField', (t) => {
+      const dir = seedSinglePhaseProject(t, 'gsd-e59-resume-');
       const resume = parseOkJson(runSectionManifestCli(['init.resume'], dir), 'resume');
-      assert.ok(!('section_manifest' in resume), 'section_manifest must never leak into resume');
+      assert.ok(!('section_manifest' in resume), 'section_manifest must never leak into resume — resume has no cmdInit* manifest wiring at all');
     });
   });
 

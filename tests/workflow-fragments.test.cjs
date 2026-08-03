@@ -486,8 +486,133 @@ describe('frozen when= vocabulary', () => {
     assert.equal(Object.isFrozen(WHEN_VOCABULARY), true);
     assert.deepEqual(
       [...WHEN_VOCABULARY].sort(),
-      ['always', 'flag:--wave', 'state:gap-closure-phase', 'state:has-prior-phases'],
+      [
+        'always',
+        'flag:--auto',
+        'flag:--discuss',
+        'flag:--forensic',
+        'flag:--full',
+        'flag:--research',
+        'flag:--reset-phase-numbers',
+        'flag:--validate',
+        'flag:--wave',
+        'state:gap-closure-phase',
+        'state:has-prior-phases',
+        'state:needs-codebase-map',
+        'state:phase-mvp-mode',
+        'state:worktrees-enabled',
+      ],
     );
+  });
+});
+
+// ─── #2992 (epic #1671 Phase 6.1): widened when= vocabulary (14 atoms) ─────
+// 50-test-matrix.md rows A2/A5/A6/A14/A19.
+
+describe('widened when= vocabulary (#2992)', () => {
+  // The 10 net-new atoms shipped by #2992, independent of the pre-existing 4
+  // (Object.keys-style derivation of the diff would be tokenization of the
+  // vocabulary itself, so this list is a deliberate hand-written literal,
+  // mirroring the discipline WHEN_PREDICATES already applies).
+  const NET_NEW_ATOMS = Object.freeze([
+    'flag:--auto',
+    'flag:--discuss',
+    'flag:--forensic',
+    'flag:--full',
+    'flag:--research',
+    'flag:--reset-phase-numbers',
+    'flag:--validate',
+    'state:needs-codebase-map',
+    'state:phase-mvp-mode',
+    'state:worktrees-enabled',
+  ]);
+
+  test('everyNetNewAtomIsInWhenVocabulary', () => {
+    // Sanity that the hand-written NET_NEW_ATOMS list above has not drifted
+    // from the module's own frozen export.
+    for (const atom of NET_NEW_ATOMS) {
+      assert.ok(WHEN_VOCABULARY.includes(atom), `expected "${atom}" in WHEN_VOCABULARY`);
+    }
+  });
+
+  test('acceptsEveryWidenedAtom (row A2)', () => {
+    for (const when of NET_NEW_ATOMS) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      const sections = parseWorkflowSections(source);
+      const explicitSections = sections.filter((s) => s.explicit);
+      assert.equal(explicitSections.length, 1, `expected acceptance for when="${when}"`);
+      assert.equal(explicitSections[0].when, when);
+      assert.equal(composeWorkflow(source), 'body\n');
+    }
+  });
+
+  test('sameAtomOnTwoDifferentSectionsIsLegal (row A19)', () => {
+    // Atom reuse is legal; only `id` must be unique.
+    const source = doc(
+      '<!-- gsd:section id="first" when="flag:--auto" -->',
+      'bodyA',
+      '<!-- /gsd:section -->',
+      '<!-- gsd:section id="second" when="flag:--auto" -->',
+      'bodyB',
+      '<!-- /gsd:section -->',
+    );
+    const sections = parseWorkflowSections(source);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.deepEqual(
+      explicitSections.map((s) => ({ id: s.id, when: s.when })),
+      [
+        { id: 'first', when: 'flag:--auto' },
+        { id: 'second', when: 'flag:--auto' },
+      ],
+    );
+  });
+
+  test('atomMatchIsCaseSensitive (row A5)', () => {
+    // A case variant of a real net-new atom must still throw — exact `===`,
+    // no case folding.
+    for (const when of ['Flag:--auto', 'flag:--Auto', 'FLAG:--AUTO', 'flag:--RESEARCH']) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      assert.throws(
+        () => parseWorkflowSections(source, 'workflow.md'),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
+        `expected throw for when="${when}"`,
+      );
+    }
+  });
+
+  test('atomValueIsNotTrimmed (row A6)', () => {
+    // A padded value must still throw — the value is not trimmed before the
+    // vocabulary membership check.
+    for (const when of [' flag:--auto', 'flag:--auto ', ' state:worktrees-enabled ']) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      assert.throws(
+        () => parseWorkflowSections(source, 'workflow.md'),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
+        `expected throw for when="${when}"`,
+      );
+    }
+  });
+
+  test('crlfMarkerLineCarryingAWidenedAtomRoundTripsExactly (row A14)', () => {
+    const source = [
+      'prose one',
+      '<!-- gsd:section id="x" when="flag:--forensic" -->',
+      'crlf body',
+      '<!-- /gsd:section -->',
+      'prose two',
+    ].join('\r\n');
+    const sections = parseWorkflowSections(source);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.equal(explicitSections.length, 1);
+    assert.equal(explicitSections[0].when, 'flag:--forensic');
+    assert.equal(explicitSections[0].body, 'crlf body\r\n');
+
+    const rendered = composeWorkflow(source);
+    const expected = source
+      .split('\r\n')
+      .filter((line) => !/^<!--\s*\/?gsd:section.*-->\s*$/.test(line))
+      .join('\r\n');
+    assert.equal(rendered, expected);
   });
 });
 
