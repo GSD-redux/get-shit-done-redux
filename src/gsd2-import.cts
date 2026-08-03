@@ -298,7 +298,17 @@ function buildSummaryMd(task: TaskInfo, phasePrefix: string, planPrefix: string)
   // CRLF-authored summary never matched, fell through to the untouched-raw
   // branch, and had its frontmatter emitted a second time inside the body of
   // the document this function then wrapped in a fresh v1 block.
-  const body = stripFrontmatter(raw).trim();
+  //
+  // `extractFrontmatter` — which the issue names — returns only the parsed
+  // object and never the body, so it cannot serve this call site;
+  // `stripFrontmatter` is the same module's canonical body primitive.
+  //
+  // `once` is load-bearing. A GSD-2 summary is an arbitrary user-authored
+  // document, not a GSD artefact with a known frontmatter-doubling failure
+  // mode, so a body opening with a thematic-break-delimited section
+  // (`---` / heading / `---`) is far likelier than a corrupt second header —
+  // and the default greedy loop would delete it without a trace.
+  const body = stripFrontmatter(raw, { once: true }).trim();
 
   return [
     '---',

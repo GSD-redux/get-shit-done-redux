@@ -642,22 +642,29 @@ const FRONTMATTER_SCHEMAS: Record<string, { required: string[]; requiredValues?:
 };
 
 /**
- * Strip ALL frontmatter blocks from the start of `content`.
+ * Strip frontmatter blocks from the start of `content`.
  *
- * Handles CRLF line endings and multiple stacked blocks (corruption
- * recovery): greedily strips consecutive `---...---` blocks separated by
- * optional whitespace, so a doubled/tripled frontmatter header (e.g. from a
- * botched merge) is fully removed, not just the first block.
+ * Handles CRLF line endings and, by default, multiple stacked blocks
+ * (corruption recovery): greedily strips consecutive `---...---` blocks
+ * separated by optional whitespace, so a doubled/tripled frontmatter header
+ * (e.g. from a botched merge) is fully removed, not just the first block.
+ *
+ * Pass `{ once: true }` to stop after the first block. Callers whose input is
+ * an arbitrary user-authored document — rather than a GSD artefact with a
+ * known doubling failure mode — need this: a body that opens with a
+ * thematic-break-delimited section is lexically indistinguishable from a
+ * second frontmatter block, and the greedy loop deletes it silently (#2703).
  *
  * Canonical home for this primitive (#2143 audit dedup): previously
  * duplicated byte-identically in both `state.cts` and `state-transition.cts`.
  */
-function stripFrontmatter(content: string): string {
+function stripFrontmatter(content: string, opts: { once?: boolean } = {}): string {
   let result = content;
   while (true) {
     const stripped = result.replace(/^\s*---\r?\n[\s\S]*?\r?\n---\s*/, '');
     if (stripped === result) break;
     result = stripped;
+    if (opts.once) break;
   }
   return result;
 }

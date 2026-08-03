@@ -21,6 +21,7 @@ const {
   extractFrontmatter,
   reconstructFrontmatter,
   spliceFrontmatter,
+  stripFrontmatter,
   noOpObjectListSetError,
   parseMustHavesBlock,
   FRONTMATTER_SCHEMAS,
@@ -1355,5 +1356,56 @@ describe('noOpObjectListSetError (#1660)', () => {
     assert.ok(msg.includes('had no effect'), msg);
     assert.ok(msg.includes('object-list'), msg);
     assert.ok(msg.includes('Edit the file directly'), msg);
+  });
+});
+
+// ─── stripFrontmatter ─────────────────────────────────────────────────────────
+
+describe('stripFrontmatter', () => {
+  const stacked = ['---', 'a: 1', '---', '---', 'b: 2', '---', '', 'Real body.'].join('\n');
+
+  test('strips a single block', () => {
+    assert.strictEqual(stripFrontmatter(['---', 'a: 1', '---', '', 'Body.'].join('\n')), 'Body.');
+  });
+
+  test('is CRLF-tolerant', () => {
+    const crlf = ['---', 'a: 1', '---', '', 'Body.'].join('\r\n');
+    assert.strictEqual(stripFrontmatter(crlf), 'Body.');
+  });
+
+  test('defaults to stripping every stacked block (corruption recovery)', () => {
+    assert.strictEqual(stripFrontmatter(stacked), 'Real body.');
+  });
+
+  test('an omitted options argument keeps the greedy default', () => {
+    // Back-compat: state.cts and state-transition.cts call this with one arg.
+    assert.strictEqual(stripFrontmatter(stacked, {}), 'Real body.');
+  });
+
+  test('once: true stops after the first block', () => {
+    assert.strictEqual(
+      stripFrontmatter(stacked, { once: true }),
+      ['---', 'b: 2', '---', '', 'Real body.'].join('\n'),
+    );
+  });
+
+  test('once: false is the greedy default', () => {
+    assert.strictEqual(stripFrontmatter(stacked, { once: false }), 'Real body.');
+  });
+
+  test('returns content unchanged when there is no frontmatter', () => {
+    const plain = ['Just prose.', '', 'More prose.'].join('\n');
+    assert.strictEqual(stripFrontmatter(plain), plain);
+    assert.strictEqual(stripFrontmatter(plain, { once: true }), plain);
+  });
+
+  test('leaves an unterminated block alone under both modes', () => {
+    const unterminated = ['---', 'a: 1', 'b: 2'].join('\n');
+    assert.strictEqual(stripFrontmatter(unterminated), unterminated);
+    assert.strictEqual(stripFrontmatter(unterminated, { once: true }), unterminated);
+  });
+
+  test('empty string round-trips', () => {
+    assert.strictEqual(stripFrontmatter(''), '');
   });
 });

@@ -613,32 +613,34 @@ const crlf = (s) => s.replace(/\n/g, '\r\n');
 /** The whole document `buildSummaryMd` is expected to emit for a given body. */
 const expectedDoc = (body) => ['---', 'phase: "01"', 'plan: "01"', '---', '', body, ''].join('\n');
 
+/**
+ * Assert that `summary` — and its CRLF re-encoding — both emit the document
+ * built from `body`. CRLF/LF parity is the invariant this whole block exists
+ * to protect, so every row asserts it the same way rather than restating the
+ * pair by hand.
+ */
+function assertBothEncodings(summary, body) {
+  assert.strictEqual(emitSummary(summary), expectedDoc(body));
+  assert.strictEqual(emitSummary(crlf(summary)), expectedDoc(crlf(body)));
+}
+
 describe('buildSummaryMd frontmatter stripping (#2703)', () => {
   test('strips GSD-2 frontmatter identically under CRLF and LF (#2703)', () => {
     const summary = ['---', 'task: T01', 'status: done', '---', '', 'The task body.'].join('\n');
-
-    // Parity is the invariant: the same logical document must emit the same
-    // artifact regardless of how its line endings were encoded. Before the fix
-    // the CRLF emission carries a second, unstripped frontmatter block.
+    // The bug: the CRLF emission carried a second, unstripped frontmatter block.
     assert.strictEqual(emitSummary(crlf(summary)), emitSummary(summary));
-    assert.strictEqual(emitSummary(crlf(summary)), expectedDoc('The task body.'));
+    assertBothEncodings(summary, 'The task body.');
   });
 
-  test('strips a single LF frontmatter block', () => {
-    const summary = ['---', 'task: T01', '---', '', 'Body one.'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc('Body one.'));
+  test('strips a single frontmatter block', () => {
+    assertBothEncodings(['---', 'task: T01', '---', '', 'Body one.'].join('\n'), 'Body one.');
   });
 
-  test('passes through an LF summary that has no frontmatter', () => {
-    const summary = ['Just prose.', '', 'No frontmatter here.'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc(summary));
-  });
-
-  test('passes through a CRLF summary that has no frontmatter', () => {
-    const summary = ['Just prose.', '', 'No frontmatter here.'].join('\n');
+  test('passes through a summary that has no frontmatter', () => {
     // Body line endings are passed through untouched — stripping frontmatter
     // must not silently re-encode the author's prose.
-    assert.strictEqual(emitSummary(crlf(summary)), expectedDoc(crlf(summary)));
+    const summary = ['Just prose.', '', 'No frontmatter here.'].join('\n');
+    assertBothEncodings(summary, summary);
   });
 
   test('emits no SUMMARY.md at all for an empty summary', () => {
@@ -651,33 +653,43 @@ describe('buildSummaryMd frontmatter stripping (#2703)', () => {
     assert.strictEqual(emitSummary('   \n  \n'), expectedDoc('Task completed (migrated from GSD-2).'));
   });
 
-  test('preserves a leading thematic break in the body', () => {
+  test('preserves a lone thematic break that opens the body', () => {
     const summary = ['---', 'task: T01', '---', '', '---', '', 'Body after a rule.'].join('\n');
-    const body = ['---', '', 'Body after a rule.'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc(body));
-    assert.strictEqual(emitSummary(crlf(summary)), expectedDoc(crlf(body)));
+    assertBothEncodings(summary, ['---', '', 'Body after a rule.'].join('\n'));
+  });
+
+  test('does not eat a thematic-break-delimited section that opens the body', () => {
+    // Regression guard. The canonical stripper's DEFAULT greedy loop deletes
+    // `Some Heading` outright, because `---` / text / `---` is lexically a
+    // second frontmatter block. buildSummaryMd therefore passes `once: true`.
+    // Caught by adversarial review of the first cut of this fix; the old
+    // pre-#2703 regex preserved this content, so eating it would have been a
+    // silent regression shipped alongside the CRLF fix.
+    const summary = ['---', 'task: T01', '---', '---', 'Some Heading', '---', '', 'Body content below.'].join('\n');
+    assertBothEncodings(summary, ['---', 'Some Heading', '---', '', 'Body content below.'].join('\n'));
+  });
+
+  test('strips only the first block when two frontmatter-shaped blocks lead', () => {
+    // Same `once` semantics stated for the YAML-shaped case: a GSD-2 summary is
+    // an arbitrary user document, so a second block is body content, not a
+    // corrupt duplicate header to be recovered from.
+    const summary = ['---', 'a: 1', '---', '---', 'b: 2', '---', '', 'Real body.'].join('\n');
+    assertBothEncodings(summary, ['---', 'b: 2', '---', '', 'Real body.'].join('\n'));
   });
 
   test('does not strip a --- that appears mid-body', () => {
     const summary = ['Intro prose.', '', '---', '', 'More prose.'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc(summary));
-  });
-
-  test('strips stacked frontmatter blocks left by a botched merge', () => {
-    const summary = ['---', 'a: 1', '---', '---', 'b: 2', '---', '', 'Real body.'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc('Real body.'));
-    assert.strictEqual(emitSummary(crlf(summary)), expectedDoc('Real body.'));
+    assertBothEncodings(summary, summary);
   });
 
   test('leaves an unterminated frontmatter block as body text', () => {
     const summary = ['---', 'task: T01', 'status: done'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc(summary));
+    assertBothEncodings(summary, summary);
   });
 
   test('strips frontmatter behind a leading BOM', () => {
     const summary = '﻿' + ['---', 'task: T01', '---', '', 'Body.'].join('\n');
-    assert.strictEqual(emitSummary(summary), expectedDoc('Body.'));
-    assert.strictEqual(emitSummary(crlf(summary)), expectedDoc('Body.'));
+    assertBothEncodings(summary, 'Body.');
   });
 
   test('property: CRLF and LF summaries emit the same SUMMARY.md (#2703)', () => {
