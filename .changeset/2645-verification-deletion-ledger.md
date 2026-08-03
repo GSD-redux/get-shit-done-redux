@@ -1,6 +1,6 @@
 ---
 type: Fixed
-pr: 0
+pr: 3016
 ---
 **Deleting a phase's verification report can no longer inflate workstream completion once that report has been seen.** Removing a `*-VERIFICATION.md` file after a failing `gaps_found` or `human_needed` verdict was recorded used to be indistinguishable from never having verified the phase at all, so `completed_phases` and `progress_percent` silently rose. `workstream status`/`list`/`progress` now remember the last real verdict observed per phase in a new `.verification-ledger.json` file alongside each workstream's `STATE.md`, so a failing verdict a prior read has already seen can't be erased by deleting its report. This adds a small write side effect to those previously read-only commands, and the file is a new tracked artifact under `.planning/workstreams/<name>/` for projects that commit their planning docs.
 
