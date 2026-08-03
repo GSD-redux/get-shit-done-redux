@@ -537,3 +537,67 @@ describe('computeHaltPropagation: graph invariants (#2830)', () => {
     );
   });
 });
+
+// ─── init execute-phase (cmdInitExecutePhase, src/init.cts) ───────────────
+//
+// #2830 names `init execute-phase` as the exact regressed consumer: the
+// locator already computed halted_plans/blocked_by/runnable_plans, but the
+// command built its output by explicit field enumeration, silently dropping
+// all three. This drives the real CLI end to end (not the locator directly)
+// to prove the passthrough, modeled on the "init execute-phase JSON output"
+// fixture shape in tests/tdd-mode.test.cjs (ROADMAP.md + a phase directory
+// resolvable by number).
+
+describe('init execute-phase: halt propagation passthrough (#2830)', () => {
+  let tmpDir;
+  afterEach(() => { if (tmpDir) { cleanup(tmpDir); tmpDir = null; } });
+
+  test('halted_plans, blocked_by, runnable_plans are forwarded; incomplete fields stay byte-identical', () => {
+    tmpDir = createTempProject('gsd-2830-init-');
+    buildBaseFixture(tmpDir);
+
+    const result = runGsdTools(['init', 'execute-phase', '1', '--raw'], tmpDir);
+    assert.ok(result.success, `init execute-phase should succeed: ${result.error}`);
+    const json = JSON.parse(result.output);
+
+    // Guard: if the phase was not resolved, every assertion below is vacuous.
+    assert.strictEqual(json.phase_found, true, 'phase must be found for the rest of this test to be meaningful');
+
+    assert.ok(
+      json.halted_plans.includes('01-01-PLAN.md'),
+      'halted_plans must include the halted plan',
+    );
+
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(json.blocked_by, '01-02-PLAN.md'),
+      'blocked_by must have an entry for the direct dependent',
+    );
+    assert.deepEqual(
+      json.blocked_by['01-02-PLAN.md'],
+      ['01-01'],
+      "blocked_by['01-02-PLAN.md'] must name 01-01 as the blocking cause",
+    );
+
+    assert.ok(
+      !json.runnable_plans.includes('01-02-PLAN.md'),
+      'the dependent must NOT be offered as runnable work',
+    );
+    assert.ok(
+      json.runnable_plans.includes('01-04-PLAN.md'),
+      'the decoupled plan (no dependency on the halted plan) must stay runnable',
+    );
+
+    // Back-compat: incomplete_plans/incomplete_count must be exactly what they
+    // were pre-#2830 — every no-SUMMARY plan, blocked or not, still counted.
+    assert.deepEqual(
+      [...json.incomplete_plans].sort(),
+      ['01-02-PLAN.md', '01-03-PLAN.md', '01-04-PLAN.md'],
+      'incomplete_plans must be unchanged by halt-awareness',
+    );
+    assert.strictEqual(
+      json.incomplete_count,
+      3,
+      'incomplete_count must be unchanged by halt-awareness',
+    );
+  });
+});
