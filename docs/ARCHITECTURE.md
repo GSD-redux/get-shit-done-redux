@@ -381,6 +381,39 @@ grammar, the frozen `when=` vocabulary, and fail-closed authoring rules, and
 [ADR-1671](adr/1671-dynamic-context-management-platform.md) (open questions 1 and 2) for why
 in-file markers were chosen over separate fragment files or a sidecar manifest.
 
+### Section Manifest (`src/section-manifest.cts`, ADR-1671 Phases 5 and 6.1)
+
+Two seams turn a workflow's `gsd:section` markers into per-invocation applicability data.
+`scripts/gen-section-manifest.cjs --write` (wired into `build` after `build:lib`, and into
+`lint:generated-sync`) scans `gsd-core/workflows/*.md` and writes the committed
+`gsd-core/workflows/section-manifest.json`, keyed **per workflow** —
+`{workflows: {"<name>": [{id, when, read}]}}` — where `read` is the path of the step file the
+section's body was extracted to. A workflow with no marked sections contributes **no key at
+all**: an absent key means degraded/unknown (the caller reads every section, the safe superset),
+while a key present with an empty array means "computed, nothing applies". The generator reuses
+`parseWorkflowSections` unchanged rather than re-implementing marker parsing, and fails closed
+(`--check`) on a marker naming a step file that does not exist, a step file no marker
+references, or a committed artifact still carrying the pre-6.1 flat `{sections: [...]}` shape.
+
+A separate pure evaluator, `src/section-manifest.cts` (compiled to
+`gsd-core/bin/lib/section-manifest.cjs` per ADR-457), maps one invocation's facts —
+`{flags, phaseNumber, hasPriorPhases}` plus the optional `needsCodebaseMap`, `phaseMvpMode` and
+`worktreesEnabled` booleans — to an included/excluded partition of section ids via
+`selectSections`. `flags` is a `ReadonlySet<string>` of flag tokens; because `parseNamedArgs`
+always materializes a boolean flag key (`false` when the token was absent, never `undefined`),
+presence is **truthiness**, and the init router folds a boolean flag's own `false` into the
+absent sentinel before the facts are built. Per Greenspun's Tenth Rule, the evaluator is a total
+lookup over the frozen 14-atom `when=` vocabulary, never a parser: `WHEN_PREDICATES` is a
+hand-written literal map that never derives a predicate from its atom string, and an
+unrecognized value fails closed rather than being silently excluded. An atom is admitted only
+when it has both a real consuming section and a fact the init seam actually computes — an atom
+without the latter would evaluate `false` forever and silently disable its own section.
+
+`execute-phase.md`'s `partial-wave` and `gap-closure-artifacts` sections — previously inlined
+directly per #2930's pilot — now delegate to dedicated step files under
+`gsd-core/workflows/execute-phase/steps/`, the same pattern the pre-existing `regression-gate`
+section already used.
+
 ### CLI Tools (`gsd-core/bin/`)
 
 Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core/bin/lib/` (see [`docs/INVENTORY.md`](INVENTORY.md#cli-modules) for the authoritative roster):
@@ -556,7 +589,7 @@ ui-phase → UI-SPEC.md (design contract, optional)
 plan-phase
     ├── Research gate (blocks if RESEARCH.md has unresolved open questions)
     ├── Phase Researcher → RESEARCH.md
-    │       └── Package Legitimacy Gate: slopcheck on every package; [SLOP] removed,
+    │       └── Package Legitimacy Gate: registry-API verdict on every package; [SLOP] removed,
     │           [SUS]/[ASSUMED] flagged; Audit table written to RESEARCH.md
     ├── Planner (with reachability check) → PLAN.md files
     │       └── checkpoint:human-verify injected before [ASSUMED]/[SUS] installs;
@@ -822,17 +855,15 @@ The researcher → planner → executor pipeline includes a supply-chain gate ag
 
 | Layer | Component | Action |
 |-------|-----------|--------|
-| Research | `gsd-phase-researcher` | Runs `slopcheck install <pkgs> --json`; writes `## Package Legitimacy Audit` table to RESEARCH.md; strips `[SLOP]` packages before RESEARCH.md is written |
+| Research | `gsd-phase-researcher` | Runs `gsd-tools query package-legitimacy check --ecosystem <npm\|pypi\|crates> <pkgs>`; writes `## Package Legitimacy Audit` table to RESEARCH.md; strips `[SLOP]` packages before RESEARCH.md is written |
 | Planning | `gsd-planner` | Reads Audit table; inserts `checkpoint:human-verify` before any `[ASSUMED]` or `[SUS]` install task; adds `T-{phase}-SC` STRIDE supply-chain row to `<threat_model>` |
 | Execution | `gsd-executor` | RULE 3 excludes package installation from auto-fix scope; failed installs surface as checkpoints, never silent substitutions |
 
-**Claim provenance integration:** Package names discovered via WebSearch are tagged `[ASSUMED]` (not `[VERIFIED]`) regardless of `npm view` result. This extends the existing `[ASSUMED]` / `[VERIFIED]` / `[CITED]` provenance system by enforcing the provenance tag as a hard gate at the install boundary — `[ASSUMED]` always generates a `checkpoint:human-verify` in PLAN.md.
+**Claim provenance integration:** Package names discovered via WebSearch are tagged `[ASSUMED]` (not `[VERIFIED]`) regardless of the registry-API verdict. This extends the existing `[ASSUMED]` / `[VERIFIED]` / `[CITED]` provenance system by enforcing the provenance tag as a hard gate at the install boundary — `[ASSUMED]` always generates a `checkpoint:human-verify` in PLAN.md.
 
-**Ecosystem coverage:** The researcher uses registry-specific verification commands — `npm view` (Node), `pip index versions` (Python), `cargo search` (Rust) — rather than a single generic check. This catches cross-ecosystem hallucination (~9% rate documented in 2025 USENIX research).
+**Ecosystem coverage:** The gate resolves signals directly from each ecosystem's registry API rather than a single generic check — `registry.npmjs.org` + `api.npmjs.org/downloads` (Node), `pypi.org/pypi/<pkg>/json` (Python), the crates.io API (Rust). This catches cross-ecosystem hallucination (~9% rate documented in 2025 USENIX research).
 
-**Graceful degradation:** If `slopcheck` is unavailable, every recommended package is tagged `[ASSUMED]` and gated with a checkpoint. Research and planning proceed; the system never hard-fails on a missing tool dependency.
-
-**External dependency:** `slopcheck` (MIT, pip-installable). If abandoned, the `[ASSUMED]`-gate fallback maintains human-checkpoint coverage.
+**Graceful degradation:** Each registry adapter degrades to null signals (never throws) on a failed lookup; missing signals push a package to `[SUS]`, which is gated behind the same `checkpoint:human-verify` checkpoint as `[ASSUMED]`. Research and planning proceed; the system never hard-fails on a network or tool outage. `slopcheck` is an optional escalate-only adapter — it can only raise a verdict, never lower it, and is not the install-or-degrade gate. No shipped configuration wires it.
 
 ---
 

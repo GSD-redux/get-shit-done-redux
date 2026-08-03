@@ -102,7 +102,12 @@ describe('ADR-857 phase 6 verification and review capability migration', () => {
 
   test('execute-phase code-review gate resolves execute:post hooks instead of inlining code_review config', () => {
     const content = workflow('execute-phase.md');
-    const section = sectionBetween(content, '<step name="code_review_gate"', '<step name="close_parent_artifacts">');
+    // close_parent_artifacts was extracted to
+    // gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md; the parent now
+    // marks that boundary with a <!-- gsd:section id="gap-closure-artifacts" --> comment
+    // immediately after code_review_gate's closing </step>, so it remains the correct
+    // end-of-step delimiter for isolating this step's body.
+    const section = sectionBetween(content, '<step name="code_review_gate"', '<!-- gsd:section id="gap-closure-artifacts"');
 
     assert.ok(section.includes('loop render-hooks execute:post'));
     assert.ok(section.includes('gsd-${ref.skill}'));

@@ -43,19 +43,23 @@
  *
  * Two complementary guards, neither of which is a tier-max ceiling:
  *
- *   1. Per-file baseline (the anti-creep): every workflow is pinned to its
- *      exact size in `tests/workflow-size-baseline.json`. Any growth fails with
- *      the file and delta; `npm run size:baseline` records a deliberate change
- *      as a one-line reviewable diff. This replaced the tier-max tighten-only
- *      ratchet (#597), which only bound the single largest file per tier and
- *      left the other ~85 files able to grow silently.
+ *   1. Differential attribution size ratchet (the anti-creep): every workflow's
+ *      byte growth against the base ref is reported with its exact delta by
+ *      `tests/emitted-attribution.test.cjs` (via `tests/helpers/emitted-diff.cjs`'s
+ *      size ratchet), which fails unless the growth is acknowledged in
+ *      `tests/emitted-drift-ack.json` (ADR-2719 §4). This REPLACED the per-file
+ *      `tests/workflow-size-baseline.json` snapshot (removed by #2724, ADR-2719
+ *      Phase 4 — it conflicted on 7 of 7 PRs that touched it), which itself had
+ *      replaced the original tier-max tighten-only ratchet (#597), which only
+ *      bound the single largest file per tier and left the other ~85 files able
+ *      to grow silently.
  *
  *   2. Tier hard caps (the outer bound): XL/LARGE/DEFAULT are absolute red
  *      lines with real headroom, never raised in normal work. Crossing one
  *      means lazy extraction (the `workflows/discuss-phase/modes/`
  *      progressive-disclosure pattern), not a +N bump. New workflow files get
  *      the Codex `project_doc_max_bytes` anchor (32 KiB) unless explicitly
- *      tiered in the same PR.
+ *      tiered in the same PR — see `NEW_FILE_CAP` in `tests/helpers/emitted-diff.cjs`.
  *
  * Tiers:
  *   - XL       : top-level orchestrators (e.g., execute-phase, plan-phase)

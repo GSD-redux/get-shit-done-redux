@@ -29,11 +29,17 @@ const {
   REASON,
 } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 const { composeWithinBudget } = require('../gsd-core/bin/lib/context-composer.cjs');
+const { selectSections } = require('../gsd-core/bin/lib/section-manifest.cjs');
 
 const measureBytes = (text) => Buffer.byteLength(text, 'utf8');
 
 /** Compose a document string from an array of lines, joined with '\n'. */
 const doc = (...lines) => lines.join('\n');
+
+/** Minimal InvocationFacts factory for the real-plan-phase.md D4 test below. */
+function facts(overrides) {
+  return { flags: new Set(), phaseNumber: null, hasPriorPhases: false, ...overrides };
+}
 
 // ─── Row 1: unmarked document (the 88/89 production shape) ─────────────────
 
@@ -179,6 +185,126 @@ describe('real execute-phase.md', () => {
     const rendered = composeWorkflow(marked, { sourcePath: pilotPath });
     assert.equal(rendered, composedOriginal);
     assert.equal(measureBytes(rendered), measureBytes(composedOriginal));
+  });
+});
+
+// ─── #2993 (epic #1671 Phase 6.2): real plan-phase.md — C1/D1/D4/D5 ───────
+
+describe('real plan-phase.md (#2993)', () => {
+  const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
+  const STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase', 'steps');
+
+  // The 6 sections the #2993 design survey names, in document order.
+  const EXPECTED_SECTIONS = Object.freeze([
+    { id: 'reviews-prerequisite', when: 'flag:--reviews' },
+    { id: 'prd-express-gate', when: 'flag:--prd' },
+    { id: 'adr-ingest-express-path', when: 'flag:--ingest' },
+    { id: 'research-only-modifiers', when: 'flag:--research-phase' },
+    { id: 'research-only-early-exit', when: 'flag:--research-phase' },
+    { id: 'chunked-planning-mode', when: 'state:chunked-mode' },
+  ]);
+
+  test('parsesExactlySixSectionsInDocumentOrder (row C1)', () => {
+    const source = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+    const sections = parseWorkflowSections(source, PLAN_PHASE_PATH);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.deepEqual(
+      explicitSections.map((s) => ({ id: s.id, when: s.when })),
+      [...EXPECTED_SECTIONS],
+    );
+  });
+
+  test('parsesAndRendersWithoutThrowingAndStripsEveryMarker', () => {
+    const source = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+    const composed = composeWorkflow(source, { sourcePath: PLAN_PHASE_PATH });
+    assert.equal(composed.includes('gsd:section'), false);
+    assert.ok(Buffer.byteLength(composed, 'utf8') < Buffer.byteLength(source, 'utf8'));
+  });
+
+  test('everyExtractedStepFileExistsIsNonEmptyAndTheHostNoLongerCarriesItsBody (row D1)', () => {
+    // Behavioral, never a source-grep substring match: for each of the 6
+    // sections, the step file on disk (1) exists, (2) is non-empty, and (3)
+    // is EXACTLY the section's own parsed body (the bytes the marker pair
+    // wraps in the host) is a stub/reference line, not a re-paste of the
+    // step file's content — the host's marker body and the step file's
+    // content are two DIFFERENT, disjoint pieces of text after the move.
+    const source = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+    const sections = parseWorkflowSections(source, PLAN_PHASE_PATH);
+    const byId = new Map(sections.filter((s) => s.explicit).map((s) => [s.id, s]));
+
+    for (const { id } of EXPECTED_SECTIONS) {
+      const stepPath = path.join(STEPS_DIR, `${id}.md`);
+      assert.ok(fs.existsSync(stepPath), `expected step file to exist: ${stepPath}`);
+      const stepContent = fs.readFileSync(stepPath, 'utf8');
+      assert.ok(stepContent.length > 0, `expected non-empty step file: ${stepPath}`);
+
+      const hostSection = byId.get(id);
+      assert.ok(hostSection, `expected an explicit host section for id="${id}"`);
+      // The host's marker body is a short stub (the conditional read-and-execute
+      // instruction), never the step file's own moved content — proves the
+      // body actually left the host rather than being duplicated in place.
+      assert.ok(
+        hostSection.body.length < stepContent.length,
+        `expected host stub body for "${id}" to be shorter than the extracted step file`,
+      );
+      assert.equal(
+        hostSection.body.includes(stepContent.trim()),
+        false,
+        `host stub body for "${id}" must not still contain the moved step file's content verbatim`,
+      );
+    }
+  });
+
+  test('prdExpressPathIsReadOnlyWhenPrdSectionIsIncluded (row D4)', () => {
+    // prd-express-path.md was previously read unconditionally; the #2993
+    // wrapper (prd-express-gate, when="flag:--prd") is what now actually
+    // gates it. Prove the gate via the real evaluator: absent --prd excludes
+    // prd-express-gate; present --prd includes it.
+    const source = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+    const sections = parseWorkflowSections(source, PLAN_PHASE_PATH).filter((s) => s.explicit);
+    const withoutPrd = selectSections(sections, facts({}));
+    assert.ok(withoutPrd.excluded.includes('prd-express-gate'), 'prd-express-gate must be excluded when --prd is absent');
+    assert.ok(!withoutPrd.included.includes('prd-express-gate'));
+
+    const withPrd = selectSections(sections, facts({ flags: new Set(['--prd']) }));
+    assert.ok(withPrd.included.includes('prd-express-gate'), 'prd-express-gate must be included when --prd is present');
+    assert.ok(!withPrd.excluded.includes('prd-express-gate'));
+
+    // The host's marker body is a stub that reads plan-phase/steps/prd-express-gate.md
+    // ONLY when the section is included; THAT step file (nested, one hop
+    // further — the reachability shape gen-section-manifest.cjs's own
+    // "nested step reference" precedent covers) is what references
+    // prd-express-path.md — proving the express-path read is reachable only
+    // through the now-conditional wrapper, never as a second, independent
+    // unconditional read site elsewhere in the host.
+    const gateSection = sections.find((s) => s.id === 'prd-express-gate');
+    assert.ok(gateSection.body.includes('prd-express-gate.md'), 'prd-express-gate\'s host stub must read its own step file');
+    const gateStepContent = fs.readFileSync(path.join(STEPS_DIR, 'prd-express-gate.md'), 'utf8');
+    assert.ok(
+      gateStepContent.includes('prd-express-path.md'),
+      'prd-express-gate.md must be the (nested) step that references prd-express-path.md',
+    );
+  });
+
+  test('skipIfProseAppearsExactlyOnceAcrossHostAndStepFile (row D5)', () => {
+    // For each section, the "Skip if:" gating prose must live in exactly ONE
+    // place — either the host stub or the step file — never duplicated in
+    // both after the move.
+    const source = fs.readFileSync(PLAN_PHASE_PATH, 'utf8');
+    const sections = parseWorkflowSections(source, PLAN_PHASE_PATH);
+    const byId = new Map(sections.filter((s) => s.explicit).map((s) => [s.id, s]));
+
+    for (const { id } of EXPECTED_SECTIONS) {
+      const stepContent = fs.readFileSync(path.join(STEPS_DIR, `${id}.md`), 'utf8');
+      const hostBody = byId.get(id).body;
+      const hostHasSkipIf = /Skip if:/.test(hostBody);
+      const stepHasSkipIf = /Skip if:/.test(stepContent);
+      assert.notEqual(
+        hostHasSkipIf && stepHasSkipIf,
+        true,
+        `"Skip if:" prose for "${id}" must not appear in BOTH the host stub and the step file`,
+      );
+    }
   });
 });
 
@@ -483,11 +609,204 @@ describe('frozen when= vocabulary', () => {
     // for an array only reflects index positions '0','1',... and would not
     // catch a value being silently renamed). See the dispatch report for
     // this deliberate deviation from the test matrix's literal wording.
+    //
+    // #2993 (epic #1671 Phase 6.2, matrix row A3) widens this lock 14 -> 19:
+    // flag:--ingest, flag:--prd, flag:--research-phase, flag:--reviews,
+    // state:chunked-mode. This is the row the lock exists to force — a
+    // deliberate, coordinated update, never a silent drift (Greenspun's
+    // Tenth Rule / ADR-1671:69).
     assert.equal(Object.isFrozen(WHEN_VOCABULARY), true);
     assert.deepEqual(
       [...WHEN_VOCABULARY].sort(),
-      ['always', 'flag:--wave', 'state:gap-closure-phase', 'state:has-prior-phases'],
+      [
+        'always',
+        'flag:--auto',
+        'flag:--discuss',
+        'flag:--forensic',
+        'flag:--full',
+        'flag:--ingest',
+        'flag:--prd',
+        'flag:--research',
+        'flag:--research-phase',
+        'flag:--reset-phase-numbers',
+        'flag:--reviews',
+        'flag:--validate',
+        'flag:--wave',
+        'state:chunked-mode',
+        'state:gap-closure-phase',
+        'state:has-prior-phases',
+        'state:needs-codebase-map',
+        'state:phase-mvp-mode',
+        'state:worktrees-enabled',
+      ],
     );
+  });
+});
+
+// ─── #2993 (epic #1671 Phase 6.2): widened when= vocabulary (19 atoms) ─────
+// 50-test-matrix.md rows A1/A6.
+
+describe('widened when= vocabulary (#2993)', () => {
+  // The 5 net-new atoms shipped by #2993, fragmentizing plan-phase.md.
+  const NET_NEW_ATOMS_2993 = Object.freeze([
+    'flag:--ingest',
+    'flag:--prd',
+    'flag:--research-phase',
+    'flag:--reviews',
+    'state:chunked-mode',
+  ]);
+
+  test('everyNetNewAtomIsInWhenVocabulary', () => {
+    for (const atom of NET_NEW_ATOMS_2993) {
+      assert.ok(WHEN_VOCABULARY.includes(atom), `expected "${atom}" in WHEN_VOCABULARY`);
+    }
+  });
+
+  test('acceptsEveryWidenedAtom (row A1)', () => {
+    for (const when of NET_NEW_ATOMS_2993) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      const sections = parseWorkflowSections(source);
+      const explicitSections = sections.filter((s) => s.explicit);
+      assert.equal(explicitSections.length, 1, `expected acceptance for when="${when}"`);
+      assert.equal(explicitSections[0].when, when);
+      assert.equal(composeWorkflow(source), 'body\n');
+    }
+  });
+
+  test('researchPhaseAndResearchAreDistinctAtomsAtTheParserLevel (row A6)', () => {
+    // flag:--research-phase (net-new, #2993) and flag:--research (pre-existing,
+    // #2992) are DISTINCT vocabulary entries — the parser must accept both,
+    // as different `when` values, on sections that sit side by side, and must
+    // never conflate one for the other (e.g. via prefix-matching or a shared
+    // token derivation). See section-manifest.test.cjs for the predicate-level
+    // half of this guard (no aliasing at evaluation time).
+    const source = doc(
+      '<!-- gsd:section id="research-section" when="flag:--research" -->',
+      'researchBody',
+      '<!-- /gsd:section -->',
+      '<!-- gsd:section id="research-phase-section" when="flag:--research-phase" -->',
+      'researchPhaseBody',
+      '<!-- /gsd:section -->',
+    );
+    const sections = parseWorkflowSections(source);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.deepEqual(
+      explicitSections.map((s) => ({ id: s.id, when: s.when })),
+      [
+        { id: 'research-section', when: 'flag:--research' },
+        { id: 'research-phase-section', when: 'flag:--research-phase' },
+      ],
+    );
+  });
+});
+
+// ─── #2992 (epic #1671 Phase 6.1): widened when= vocabulary (14 atoms) ─────
+// 50-test-matrix.md rows A2/A5/A6/A14/A19.
+
+describe('widened when= vocabulary (#2992)', () => {
+  // The 10 net-new atoms shipped by #2992, independent of the pre-existing 4
+  // (Object.keys-style derivation of the diff would be tokenization of the
+  // vocabulary itself, so this list is a deliberate hand-written literal,
+  // mirroring the discipline WHEN_PREDICATES already applies).
+  const NET_NEW_ATOMS = Object.freeze([
+    'flag:--auto',
+    'flag:--discuss',
+    'flag:--forensic',
+    'flag:--full',
+    'flag:--research',
+    'flag:--reset-phase-numbers',
+    'flag:--validate',
+    'state:needs-codebase-map',
+    'state:phase-mvp-mode',
+    'state:worktrees-enabled',
+  ]);
+
+  test('everyNetNewAtomIsInWhenVocabulary', () => {
+    // Sanity that the hand-written NET_NEW_ATOMS list above has not drifted
+    // from the module's own frozen export.
+    for (const atom of NET_NEW_ATOMS) {
+      assert.ok(WHEN_VOCABULARY.includes(atom), `expected "${atom}" in WHEN_VOCABULARY`);
+    }
+  });
+
+  test('acceptsEveryWidenedAtom (row A2)', () => {
+    for (const when of NET_NEW_ATOMS) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      const sections = parseWorkflowSections(source);
+      const explicitSections = sections.filter((s) => s.explicit);
+      assert.equal(explicitSections.length, 1, `expected acceptance for when="${when}"`);
+      assert.equal(explicitSections[0].when, when);
+      assert.equal(composeWorkflow(source), 'body\n');
+    }
+  });
+
+  test('sameAtomOnTwoDifferentSectionsIsLegal (row A19)', () => {
+    // Atom reuse is legal; only `id` must be unique.
+    const source = doc(
+      '<!-- gsd:section id="first" when="flag:--auto" -->',
+      'bodyA',
+      '<!-- /gsd:section -->',
+      '<!-- gsd:section id="second" when="flag:--auto" -->',
+      'bodyB',
+      '<!-- /gsd:section -->',
+    );
+    const sections = parseWorkflowSections(source);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.deepEqual(
+      explicitSections.map((s) => ({ id: s.id, when: s.when })),
+      [
+        { id: 'first', when: 'flag:--auto' },
+        { id: 'second', when: 'flag:--auto' },
+      ],
+    );
+  });
+
+  test('atomMatchIsCaseSensitive (row A5)', () => {
+    // A case variant of a real net-new atom must still throw — exact `===`,
+    // no case folding.
+    for (const when of ['Flag:--auto', 'flag:--Auto', 'FLAG:--AUTO', 'flag:--RESEARCH']) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      assert.throws(
+        () => parseWorkflowSections(source, 'workflow.md'),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
+        `expected throw for when="${when}"`,
+      );
+    }
+  });
+
+  test('atomValueIsNotTrimmed (row A6)', () => {
+    // A padded value must still throw — the value is not trimmed before the
+    // vocabulary membership check.
+    for (const when of [' flag:--auto', 'flag:--auto ', ' state:worktrees-enabled ']) {
+      const source = `<!-- gsd:section id="x" when="${when}" -->\nbody\n<!-- /gsd:section -->`;
+      assert.throws(
+        () => parseWorkflowSections(source, 'workflow.md'),
+        (err) => err instanceof TypeError && err.reason === REASON.UNKNOWN_WHEN,
+        `expected throw for when="${when}"`,
+      );
+    }
+  });
+
+  test('crlfMarkerLineCarryingAWidenedAtomRoundTripsExactly (row A14)', () => {
+    const source = [
+      'prose one',
+      '<!-- gsd:section id="x" when="flag:--forensic" -->',
+      'crlf body',
+      '<!-- /gsd:section -->',
+      'prose two',
+    ].join('\r\n');
+    const sections = parseWorkflowSections(source);
+    const explicitSections = sections.filter((s) => s.explicit);
+    assert.equal(explicitSections.length, 1);
+    assert.equal(explicitSections[0].when, 'flag:--forensic');
+    assert.equal(explicitSections[0].body, 'crlf body\r\n');
+
+    const rendered = composeWorkflow(source);
+    const expected = source
+      .split('\r\n')
+      .filter((line) => !/^<!--\s*\/?gsd:section.*-->\s*$/.test(line))
+      .join('\r\n');
+    assert.equal(rendered, expected);
   });
 });
 

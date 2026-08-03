@@ -1475,7 +1475,7 @@ const { execSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -1497,7 +1497,15 @@ const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execut
  * Throws with a clear message if any step fails or sanity checks don't pass.
  */
 function extractCwdGuardBash() {
-  const content = fs.readFileSync(EXECUTE_PHASE_PATH, 'utf-8');
+  // readFileNormalized() strips \r\n -> \n at the read boundary (helpers.cjs;
+  // DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #1700/#2650). The `\r?\n` in the
+  // fence regex below only protects the FENCE DELIMITER match — it does
+  // nothing for `\r` characters embedded in the CAPTURED BODY between the
+  // fences, which is what actually reaches spawnSync('bash', ...) in
+  // runGuard(). A prior version of this comment claimed the regex alone was
+  // "CRLF-safe"; it was not — reading through readFileNormalized() first is
+  // what makes the extracted body itself safe to execute on a Windows checkout.
+  const content = readFileNormalized(EXECUTE_PHASE_PATH);
 
   const stepMarker = '<step name="execute_waves">';
   const stepIdx = content.indexOf(stepMarker);
@@ -1515,8 +1523,12 @@ function extractCwdGuardBash() {
 
   const afterDrift = afterStep.slice(driftIdx + driftMarker.length);
 
-  // Extract the first ```bash|sh fenced block using a CRLF-safe regex.
-  // \r?\n tolerates both LF (Unix) and CRLF (Windows autocrlf=true checkouts).
+  // Fence delimiter match. `content` is already LF-only from
+  // readFileNormalized() above, so `\r?\n` here is redundant, not load-bearing
+  // — kept anyway (harmless on already-normalized input) because a bare `\n`
+  // in a markdown-fence-shaped regex trips the local/no-crlf-fragile-split
+  // ESLint rule (it flags the pattern shape statically and cannot see that
+  // this call site's data already passed through the normalizing read).
   const fenceRe = /```(?:bash|sh)\r?\n([\s\S]*?)```/;
   const fenceMatch = fenceRe.exec(afterDrift);
   if (!fenceMatch) {

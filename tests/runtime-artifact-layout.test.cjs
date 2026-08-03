@@ -23,6 +23,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { resolveRuntimeArtifactLayout, findInstallSourceRoot } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+const capabilityRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const installProfiles = require('../gsd-core/bin/lib/install-profiles.cjs');
 const { install } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -119,6 +120,19 @@ describe('resolveRuntimeArtifactLayout — codex', () => {
     assert.ok(skills.home.includes('.agents'),
       'codex global skills home should point to .agents directory');
   });
+});
+
+test('keeps every built-in local artifact layout project-scoped (#2777)', () => {
+  for (const [runtime, descriptor] of Object.entries(capabilityRegistry.runtimes)) {
+    const localEntries = descriptor.runtime?.artifactLayout?.local ?? [];
+    for (const entry of localEntries) {
+      assert.strictEqual(
+        Object.prototype.hasOwnProperty.call(entry, 'home'),
+        false,
+        `${runtime} local artifact layout entry '${entry.kind}' must not declare home`,
+      );
+    }
+  }
 });
 
 describe('resolveRuntimeArtifactLayout — copilot', () => {

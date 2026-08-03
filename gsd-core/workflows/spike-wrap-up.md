@@ -22,8 +22,12 @@ Read all files referenced by the invoking prompt's execution_context before star
 <step name="gather">
 ## Gather Spike Inventory
 
-1. Read `.planning/spikes/MANIFEST.md` for the overall idea context and requirements
-2. Glob `.planning/spikes/*/README.md` and parse YAML frontmatter from each
+1. Read `.planning/spikes/MANIFEST.md` for the `## Ideas` sections (each idea's paragraph and
+   its own scoped Requirements list) and the `## Spikes` table (its Idea column tells you which
+   idea key each spike row belongs to).
+2. Glob `.planning/spikes/*/README.md` and parse YAML frontmatter from each — each spike's
+   `idea:` field is the idea key that owns it. If a README predates #1700 and has no `idea:`
+   field, resolve its idea key from the matching `## Spikes` table row's Idea column instead.
 3. Check if `./.claude/skills/spike-findings-*/SKILL.md` exists for this project
    - If yes: read its `processed_spikes` list from the metadata section and filter those out
    - If no: all spikes are candidates
@@ -101,7 +105,12 @@ For each feature-area group, write a reference file at `references/[feature-area
 
 ## Requirements
 
-[Non-negotiable design decisions from MANIFEST.md Requirements section that apply to this feature area. These MUST be honored in the real build. E.g., "Must use streaming JSON output", "Must support reconnection".]
+[Non-negotiable design decisions pulled ONLY from the Requirements list of the idea key(s) that
+own the spikes in this feature-area group — match each spike's `idea:` frontmatter (or Idea
+column) to its `### {idea-key}` Requirements list in MANIFEST.md. These MUST be honored in the
+real build. E.g., "Must use streaming JSON output", "Must support reconnection".
+
+Never include a requirement from an idea key that has no spike in this group.]
 
 ## How to Build It
 
@@ -136,7 +145,8 @@ description: Implementation blueprint from spike experiments. Requirements, prov
 <context>
 ## Project: [project-dir-name]
 
-[One paragraph from MANIFEST.md describing the overall idea]
+[One paragraph per idea key represented among the wrapped spikes, taken from that idea's
+`### {idea-key}` section in MANIFEST.md — not the whole MANIFEST.md if it holds unrelated ideas.]
 
 Spike sessions wrapped: [date(s)]
 </context>
@@ -144,7 +154,11 @@ Spike sessions wrapped: [date(s)]
 <requirements>
 ## Requirements
 
-[Copied directly from MANIFEST.md Requirements section. These are non-negotiable design decisions that emerged from the user's choices during spiking. Every feature area reference must honor these.]
+[Union of the Requirements lists for every idea key represented among the spikes being wrapped
+in this session — never the whole MANIFEST.md. These are non-negotiable design decisions that
+emerged from the user's choices while spiking those specific idea(s). Every feature area
+reference must honor these. If this wrap-up spans more than one idea key, group the list by
+idea key so a future reader can tell which requirement belongs to which idea.]
 
 - [requirement 1]
 - [requirement 2]
@@ -299,6 +313,7 @@ After the summary, present next-step options:
 - [ ] Spikes grouped by feature area
 - [ ] Spike-findings skill exists at `./.claude/skills/` with SKILL.md (including requirements), references/, sources/
 - [ ] Reference files are implementation blueprints with Requirements, How to Build It, What to Avoid, Constraints
+- [ ] Requirements in each reference file and in SKILL.md are scoped to the idea key(s) actually represented among the wrapped spikes — never blended with an unrelated idea's requirements
 - [ ] `.planning/spikes/CONVENTIONS.md` created or updated with recurring stack/structure/pattern choices
 - [ ] `.planning/spikes/WRAP-UP-SUMMARY.md` written for project history
 - [ ] Project CLAUDE.md has auto-load routing line

@@ -72,7 +72,7 @@ Full schema and process: [docs/registries/README.md](../../docs/registries/READM
 ## Checklist
 
 - [ ] `npm run validate:registry` passes locally against my entry
-- [ ] `discussion` links to a GitHub Discussion in the `Registry` category (or notes that one will be created on merge, per [docs/registries/README.md](../../docs/registries/README.md))
+- [ ] `discussion` links to a GitHub Discussion in the `EoS Registry` category — which, despite its name, carries threads for all three registries (or notes that one will be created on merge, per [docs/registries/README.md](../../docs/registries/README.md))
 - [ ] `.changeset/` fragment added with an `Added` type describing the new listing
 
 ---
