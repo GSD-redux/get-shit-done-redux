@@ -169,7 +169,7 @@ These govern the system as it stands. Cite these.
 | [ADR-1820](1820-spec-optional-predicate-rail.md) | Spec-Optional Predicate Rail — the Spec-Section Detection Module, the fallback toggle, and the SPEC↔probe precedence contract | Accepted | — |
 | [ADR-1866](1866-agent-skills-dual-injection-contract.md) | agent_skills dual injection — orchestrator-side + agent-side self-load | Accepted | — |
 | [ADR-1990](1990-existing-code-onboarding.md) | Existing Code Onboarding Module owns deterministic repo-state detection and onboarding route selection | Accepted | — |
-| [ADR-2008](2008-command-exit-zero-gate.md) | Generic gate-predicate evaluator (`command-exit-zero`) | Accepted | — |
+| [ADR-2008](2008-command-exit-zero-gate.md) | Generic gate-predicate evaluator | Accepted | — |
 | [ADR-2121](2121-phase-identifier-parsing-consolidation.md) | Phase-Identifier Parsing Consolidation | Accepted | — |
 | [ADR-2143](2143-markdown-table-and-mutation-consolidation.md) | Markdown Table Model, Bounded Mutation, and Fail-Loud Consolidation (#1372 part 2) | Accepted | — |
 | [ADR-2164](2164-statusline-scope-boundary.md) | Statusline draws its data boundary at local, read-only sources | Accepted | — |
