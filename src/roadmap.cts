@@ -484,12 +484,12 @@ function collectAnalyzePhases(
     // `disk_status: "no_directory"` with `plan_count`/`summary_count` 0 —
     // `extractPhaseToken('GSD.02-01-one')` with no convention returns the whole
     // dir name — while the same build resolved those same directories correctly
-    // in three other places on the same repo (W006/W007 via phaseTokenFromDir,
-    // `state json` via the milestone filter, and the W021 milestone-complete read
-    // through this very helper's three-argument form at verify.cts:2229). It
+    // in three other places on the same repo (W006/W007 through their shared
+    // directory matcher, `state json` via the milestone filter, and the W026
+    // milestone-complete read through the same convention-aware owner). It
     // failed ONLY for the directory shape the convention exists to name: a
     // mid-migration bracket repo carrying legacy `01-one` dirs resolved fine.
-    // That is verbatim the asymmetry the note above the W021 site says this PR
+    // That is verbatim the asymmetry the note above the W026 rule says this PR
     // closed — the directory read widens with the heading read, or every bracket
     // phase resolves to nothing.
     // Upstream centralized this choice in `matchPhaseDirs`; thread the same
