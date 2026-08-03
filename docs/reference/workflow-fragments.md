@@ -46,8 +46,9 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 14 atoms (widened from 4 via the ADR-1671
-amendment for #2992, epic #1671 Phase 6.1):
+`when=` takes exactly one of 19 atoms (widened from 4 to 14 via the ADR-1671
+amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
+ADR-1671 amendment for #2993, epic #1671 Phase 6.2):
 
 | Value | Meaning |
 |---|---|
@@ -59,9 +60,14 @@ amendment for #2992, epic #1671 Phase 6.1):
 | `flag:--discuss` | Applicable when the workflow runs with `--discuss`. |
 | `flag:--forensic` | Applicable when the workflow runs with `--forensic`. |
 | `flag:--full` | Applicable when the workflow runs with `--full`. |
+| `flag:--ingest` | Applicable when the workflow runs with `--ingest <path-or-glob>`. |
+| `flag:--prd` | Applicable when the workflow runs with `--prd <file>`. |
 | `flag:--research` | Applicable when the workflow runs with `--research`. |
+| `flag:--research-phase` | Applicable when the workflow runs with `--research-phase <N>`. A distinct atom from `flag:--research` above — neither aliases the other. |
 | `flag:--reset-phase-numbers` | Applicable when the workflow runs with `--reset-phase-numbers`. |
+| `flag:--reviews` | Applicable when the workflow runs with `--reviews`. |
 | `flag:--validate` | Applicable when the workflow runs with `--validate`. |
+| `state:chunked-mode` | Applicable when chunked planning mode is active — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
 | `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
 | `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
 | `state:worktrees-enabled` | Applicable when `.planning/config.json`'s `workflow.use_worktrees` is enabled. |
@@ -98,6 +104,31 @@ gate 1 but not yet gate 2 — their workflows (`autonomous`, `code-review`,
 points invoked by 20+ other workflows, so a dedicated `cmdInit*` seam does
 not yet exist to compute their facts. They are withheld pending that seam,
 not rejected.
+
+### Compound conditions are resolved in the fact, never the grammar
+
+`state:chunked-mode` looks, at the section-body level, like it should be a
+compound condition: plan-phase's chunked planning mode activates on
+`--chunked` **OR** `.planning/config.json`'s `workflow.plan_chunked` being
+`true`. The vocabulary stays operator-free anyway, because the disjunction is
+resolved **before** it ever reaches `when=` — the init seam
+(`buildSectionManifestField` in `src/init.cts`) computes ONE boolean,
+`InvocationFacts.chunkedMode = flags.has('--chunked') ||
+readConfigJsonBoolean(cwd, ['workflow', 'plan_chunked'])`, and
+`WHEN_PREDICATES['state:chunked-mode']` reads only that single field. The
+marker grammar never sees `--chunked`, never sees the config key, and never
+sees an `OR` — it sees exactly one atom with no operator, same as every other
+entry in the frozen list.
+
+This is the general rule for any future atom whose real-world trigger is
+itself a compound expression: **compounding belongs in fact computation
+(`src/init.cts`), never in the `when=` grammar (`src/workflow-fragments.cts` /
+`src/section-manifest.cts`).** A condition that cannot be reduced to one
+boolean fact computed ahead of evaluation is not eligible to become an atom —
+widening the grammar itself to express `OR`/`AND`/negation is exactly the
+Greenspun's Tenth Rule drift [The frozen `when=`
+vocabulary](#the-frozen-when-vocabulary) above exists to prevent, regardless
+of how reasonable a single compound condition looks in isolation.
 
 ## Fails closed
 
@@ -192,7 +223,7 @@ At init time, a separate pure evaluator, `src/section-manifest.cts`
 (`selectSections`), partitions a workflow's manifest sections into
 `included`/`excluded` id lists against one invocation's
 `InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
-phaseMvpMode?, worktreesEnabled?}`. Only a workflow with a **dedicated
+phaseMvpMode?, worktreesEnabled?, chunkedMode?}`. Only a workflow with a **dedicated
 `cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
 it, because only that entry point can assemble `InvocationFacts` from its own
 parsed CLI options and `.planning/` state reads — this is admission gate 2
@@ -214,42 +245,51 @@ own `false` into `undefined` (`namedArgs['wave'] || undefined`) before
 handing options to the facts builder, so `flags` only ever contains tokens
 that were actually seen.
 
-## Piloted on one workflow so far
+## Piloted on execute-phase.md, then rolled out to plan-phase.md
 
-Only `gsd-core/workflows/execute-phase.md` carries markers today. The marker
-grammar and composer seam are general-purpose across any workflow file, but
-rollout to other LARGE/XL workflows is intentionally sequenced as later work,
-not part of this phase.
+Two workflows carry markers today: `gsd-core/workflows/execute-phase.md` (the
+#2930/Phase-3 pilot) and `gsd-core/workflows/plan-phase.md` (#2993, epic
+#1671 Phase 6.2). The marker grammar and composer seam are general-purpose
+across any workflow file; rollout to further LARGE/XL workflows remains
+sequenced as later work.
 
-The pilot marks three `<step>` blocks: `partial-wave` (`flag:--wave`),
-`gap-closure-artifacts` (`state:gap-closure-phase`), and `regression-gate`
-(`state:has-prior-phases`).
+`execute-phase.md` marks three `<step>` blocks: `partial-wave`
+(`flag:--wave`), `gap-closure-artifacts` (`state:gap-closure-phase`), and
+`regression-gate` (`state:has-prior-phases`).
 
-**The pilot was retargeted from `plan-phase.md` mid-phase.** Issue #2930's
-own motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
-`--reviews`) all live in `plan-phase.md`, not `execute-phase.md`. But
-`plan-phase.md` sits only 36 B under an independent, pre-existing size gate
-(`tests/phase6-capstone-conformance.test.cjs`'s `PRE_PHASE6`, an ADR-857
-Phase-6 completion property) and cannot absorb any marker overhead at all —
-so it could not be fragmentized under this phase's grammar regardless of
-branch shape. This is direct evidence for the epic's premise that
-fragmentization pays off, and it also means Phase 4 (moving size caps from
-source bytes to emitted bytes) may need to land before `plan-phase.md`
-itself can be fragmentized. Separately, and independent of the size-gate
-finding, `--mvp` would remain unmarkable by this grammar even if the size
-gate allowed it: its content in `plan-phase.md` is INTERLEAVED with other
-flags rather than living in its own contiguous section (`MVP_MODE`
+`plan-phase.md` marks six sections: `reviews-prerequisite` (`flag:--reviews`),
+`prd-express-gate` (`flag:--prd`), `adr-ingest-express-path` (`flag:--ingest`),
+`research-only-modifiers` and `research-only-early-exit` (both
+`flag:--research-phase` — two consumers sharing one atom, gated by the same
+`RESEARCH_ONLY` condition, so they include/exclude together), and
+`chunked-planning-mode` (`state:chunked-mode`).
+
+**`plan-phase.md` was originally retargeted away from the #2930 pilot,
+then fragmentized here once the blocker cleared.** Issue #2930's own
+motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
+`--reviews`) all live in `plan-phase.md`, not `execute-phase.md`, but at the
+time `plan-phase.md` sat only 36 B under an independent, pre-existing size
+gate (`tests/phase6-capstone-conformance.test.cjs`'s `PRE_PHASE6`, an
+ADR-857 Phase-6 completion property) and could not absorb any marker
+overhead at all. #2993 resolves this **because fragmentizing is net-negative
+on host source, not net-positive**: each gated body moves from always-inline
+prose to a `gsd-core/workflows/plan-phase/steps/<id>.md` step file, leaving
+only a ~200 B conditional-read stub behind — the six extractions trim
+`plan-phase.md` from 94,483 B to 87,575 B, moving the file from 36 B of
+`PRE_PHASE6` headroom to roughly 7,000 B, well clear of the cap.
+
+`--mvp` remains unmarkable by this grammar, unchanged by #2993 and by
+deliberate ADR-1671 decision: its content in `plan-phase.md` is INTERLEAVED
+with other flags rather than living in its own contiguous section (`MVP_MODE`
 resolution shares a single bash block with `--tdd`, `--no-tracer`, and
-`--no-reversibility-gates` handling at `plan-phase.md:125-158`, and
-elsewhere it is inline `${MVP_MODE === 'true' ? ... }` template
-interpolation embedded inside the planner prompt at `plan-phase.md:794-803`)
-— the marker grammar is closed, non-nesting, and whole-line (see
-[Marker syntax](#marker-syntax) above), with no way to wrap part of a line
-or split a shared conditional block without either corrupting the
+`--no-reversibility-gates` handling, and elsewhere it is inline
+`${MVP_MODE === 'true' ? ... }` template interpolation embedded inside the
+planner prompt) — the marker grammar is closed, non-nesting, and whole-line
+(see [Marker syntax](#marker-syntax) above), with no way to wrap part of a
+line or split a shared conditional block without either corrupting the
 conditional or bundling unrelated flags into one section. See
 [ADR-1671](../adr/1671-dynamic-context-management-platform.md) open
-question 1's resolution for the full record, and Phase 6 (LARGE/XL rollout)
-for how both limits get addressed.
+question 1's resolution for the full record.
 
 ## Related
 

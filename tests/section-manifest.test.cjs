@@ -31,7 +31,10 @@ const BRANCH_SECTIONS = Object.freeze([
 ]);
 
 function facts(overrides) {
-  return { flags: new Set(), phaseNumber: null, hasPriorPhases: false, ...overrides };
+  // #2993 (epic #1671 Phase 6.2): chunkedMode is a shape addition to
+  // InvocationFacts — defaulted false here so every pre-existing call site
+  // above keeps its prior behavior unchanged.
+  return { flags: new Set(), phaseNumber: null, hasPriorPhases: false, chunkedMode: false, ...overrides };
 }
 
 // ─── Rows 1-8: happy path + combinations over W/D/P ─────────────────────────
@@ -358,6 +361,85 @@ describe('state:needs-codebase-map / state:phase-mvp-mode / state:worktrees-enab
     assert.deepEqual(selectSections(sections, facts({ needsCodebaseMap: true })), { included: ['needs-map'], excluded: [] });
     assert.deepEqual(selectSections(sections, facts({ needsCodebaseMap: false })), { included: [], excluded: ['needs-map'] });
     assert.deepEqual(selectSections(sections, facts({})), { included: [], excluded: ['needs-map'] });
+  });
+});
+
+// ─── #2993 (epic #1671 Phase 6.2) row A6: flag:--research-phase and
+// flag:--research are DISTINCT atoms — neither aliases the other, each
+// gates only its own sections ─────────────────────────────────────────────
+
+describe('flag:--research-phase and flag:--research do not alias each other (row A6)', () => {
+  const sections = Object.freeze([
+    { id: 'research-section', when: 'flag:--research' },
+    { id: 'research-phase-section', when: 'flag:--research-phase' },
+  ]);
+
+  test('onlyResearchFlagIncludesOnlyTheResearchSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--research']) }));
+    assert.deepEqual(result, { included: ['research-section'], excluded: ['research-phase-section'] });
+  });
+
+  test('onlyResearchPhaseFlagIncludesOnlyTheResearchPhaseSection', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--research-phase']) }));
+    assert.deepEqual(result, { included: ['research-phase-section'], excluded: ['research-section'] });
+  });
+
+  test('bothFlagsIncludeBothSections', () => {
+    const result = selectSections(sections, facts({ flags: new Set(['--research', '--research-phase']) }));
+    assert.deepEqual(result, { included: ['research-section', 'research-phase-section'], excluded: [] });
+  });
+
+  test('neitherFlagExcludesBothSections', () => {
+    const result = selectSections(sections, facts({ flags: new Set() }));
+    assert.deepEqual(result, { included: [], excluded: ['research-section', 'research-phase-section'] });
+  });
+
+  test('predicatesAreIndependentFunctionsNotSharedByToken', () => {
+    // A stronger structural guard than the behavioral ones above: the two
+    // predicates must not literally be the same function reference (which
+    // would make aliasing possible by construction, even if it happened to
+    // pass every input/output check above by coincidence).
+    assert.notEqual(WHEN_PREDICATES['flag:--research'], WHEN_PREDICATES['flag:--research-phase']);
+  });
+});
+
+// ─── #2993 (epic #1671 Phase 6.2) row A8: state:chunked-mode fact true /
+// false / absent ────────────────────────────────────────────────────────
+
+describe('state:chunked-mode predicate (row A8)', () => {
+  test('chunkedModeTrueWhenFactIsTrue', () => {
+    assert.equal(WHEN_PREDICATES['state:chunked-mode'](facts({ chunkedMode: true })), true);
+  });
+
+  test('chunkedModeFalseWhenFactIsFalse', () => {
+    assert.equal(WHEN_PREDICATES['state:chunked-mode'](facts({ chunkedMode: false })), false);
+  });
+
+  test('chunkedModeFalseWhenFactIsAbsent', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:chunked-mode'](facts({})));
+    const { chunkedMode: _omit, ...withoutChunkedMode } = facts({});
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:chunked-mode'](withoutChunkedMode));
+    assert.equal(WHEN_PREDICATES['state:chunked-mode'](withoutChunkedMode), false);
+  });
+
+  test('chunkedModeFalseWhenFactIsUndefined', () => {
+    assert.doesNotThrow(() => WHEN_PREDICATES['state:chunked-mode'](facts({ chunkedMode: undefined })));
+    assert.equal(WHEN_PREDICATES['state:chunked-mode'](facts({ chunkedMode: undefined })), false);
+  });
+
+  test('chunkedModeFalseForTheStringLiteralTrue (strict === true, never coerced)', () => {
+    // Mirrors readConfigJsonBoolean's own strict discipline (src/init.cts):
+    // a truthy-but-non-boolean value must never pass. This is the FACT's own
+    // strictness contract; the config-string-"true" case itself is exercised
+    // at the init seam in tests/init.test.cjs (prod-shape, row B9).
+    assert.equal(WHEN_PREDICATES['state:chunked-mode'](facts({ chunkedMode: 'true' })), false);
+  });
+
+  test('selectSectionsIncludesChunkedPlanningModeSectionOnlyWhenFactIsTrue', () => {
+    const sections = [{ id: 'chunked-section', when: 'state:chunked-mode' }];
+    assert.deepEqual(selectSections(sections, facts({ chunkedMode: true })), { included: ['chunked-section'], excluded: [] });
+    assert.deepEqual(selectSections(sections, facts({ chunkedMode: false })), { included: [], excluded: ['chunked-section'] });
+    assert.deepEqual(selectSections(sections, facts({})), { included: [], excluded: ['chunked-section'] });
   });
 });
 

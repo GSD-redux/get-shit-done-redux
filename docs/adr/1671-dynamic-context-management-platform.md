@@ -115,6 +115,33 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
   Playwright-MCP session), live git repository state, Capability-Registry/hook-resolved conditions,
   interactive answers given mid-run, and UAT/verification runtime results. None is knowable from
   parsed CLI arguments or `.planning/` state at init time.
+
+  **Amended by #2993 (Phase 6.2) — the vocabulary widens 14 → 19, second
+  coordinated amendment.** Rolling the fragment model onto `plan-phase.md` —
+  the largest workflow in the repo — surfaced 5 more atoms, gated by the same
+  two admission tests #2992 established: a named consuming section of at
+  least 400 bytes, and a fact the init seam demonstrably computes. **Shipped
+  (5).** `flag:--ingest`, `flag:--prd`, `flag:--research-phase`,
+  `flag:--reviews` (each a direct `parseNamedArgs` addition to the
+  `plan-phase` router handler; the generic flags-Set builder in `init.cts`
+  picks them up automatically), and `state:chunked-mode`.
+
+  `state:chunked-mode` is the one atom in this batch that is not a bare flag
+  check: `plan-phase.md`'s `CHUNKED_MODE` is true when EITHER `--chunked` is
+  passed OR `.planning/config.json`'s `workflow.plan_chunked` is set — a
+  disjunction of a flag and a config read. That disjunction is resolved to a
+  single boolean **in the fact**, computed once by the init seam
+  (`buildSectionManifestField` in `src/init.cts`) before `selectSections` is
+  ever called; `WHEN_PREDICATES['state:chunked-mode']` reads only
+  `facts.chunkedMode` and contains no `||`. The `when=` grammar therefore
+  still sees exactly one atom with no operator — the same invariant #2992
+  restated is unchanged by this amendment. This generalizes to a rule for
+  every future atom: **any condition that cannot be reduced to a single
+  boolean fact is not an atom** — it is either resolved upstream in fact
+  computation (as here) or it is not eligible for the grammar at all, per
+  the "Rejected" cases (`--auto`/`--chain`/persisted-config interleaving;
+  negated `--skip-bounce` OR `--gaps` OR NOT(...)) recorded in
+  `.gsd/phase/chore-2993-fragmentize-plan-phase/40-design.md`.
 - **Budget unit:** bytes for emission caps (matches `lfByteCount`, deterministic, offline-safe); a token estimate for run-time selection.
 
   **Corrected by #2931 (Phase 4) — the Windsurf cap was never load-bearing.** The Context

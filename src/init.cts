@@ -557,6 +557,14 @@ function buildSectionManifestField(
     flags.add(`--${key}`);
   }
 
+  // `state:chunked-mode` (#2993) is a disjunction — `--chunked` flag OR
+  // `.planning/config.json` `workflow.plan_chunked` — resolved to ONE
+  // boolean HERE, in fact computation, never in the `when=` grammar itself
+  // (WHEN_PREDICATES['state:chunked-mode'] reads only `facts.chunkedMode`).
+  // That separation is what keeps ADR-1671:69's Greenspun guard intact: the
+  // grammar still sees exactly one atom with no operator.
+  const chunkedMode = flags.has('--chunked') || readConfigJsonBoolean(cwd, ['workflow', 'plan_chunked']);
+
   const facts: sectionManifest.InvocationFacts = {
     flags,
     phaseNumber,
@@ -564,6 +572,7 @@ function buildSectionManifestField(
     worktreesEnabled: readConfigJsonBoolean(cwd, ['workflow', 'use_worktrees']),
     phaseMvpMode: detectPhaseMvpMode(cwd, phaseNumber),
     needsCodebaseMap: overrides.needsCodebaseMap,
+    chunkedMode,
   };
 
   try {

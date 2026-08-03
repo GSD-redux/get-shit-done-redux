@@ -63,9 +63,13 @@ const PILOT_REL = path.join('gsd-core', 'workflows', 'execute-phase.md');
 const PILOT_PATH = path.join(REPO_ROOT, PILOT_REL);
 // plan-phase.md was the original #2930 pilot but was reverted to unmarked
 // (chore/2930 retarget: it sits 36 B under the ADR-857 Phase-6 PRE_PHASE6
-// gate and cannot absorb marker overhead) — it is now a genuinely unmarked
-// file again, so row 33 uses it instead of plan-phase.md.
-const UNMARKED_REL = path.join('gsd-core', 'workflows', 'plan-phase.md');
+// gate and cannot absorb marker overhead) — it was a genuinely unmarked
+// file again, so row 33 used it instead of plan-phase.md. #2993 (epic #1671
+// Phase 6.2) now marks plan-phase.md itself (6 sections, the fragmentization
+// this change ships), so it is no longer a valid "genuinely unmarked" fixture
+// either — retargeted a second time to discuss-phase.md, which carries no
+// gsd:section markers as of this change.
+const UNMARKED_REL = path.join('gsd-core', 'workflows', 'discuss-phase.md');
 
 const RUNTIMES = Object.keys(RUNTIME_META);
 
@@ -292,8 +296,8 @@ test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', () => {
         );
         const realPath = path.join(real.configDir, UNMARKED_REL);
         const stubPath = path.join(stub.configDir, UNMARKED_REL);
-        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing plan-phase.md`);
-        assert.ok(fs.existsSync(stubPath), `${runtime}: stub install is missing plan-phase.md`);
+        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing discuss-phase.md`);
+        assert.ok(fs.existsSync(stubPath), `${runtime}: stub install is missing discuss-phase.md`);
 
         // Normalize each side's own randomly-generated temp root out of the
         // content before hashing: some runtimes (opencode) embed the
@@ -306,14 +310,14 @@ test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', () => {
         assert.equal(
           Buffer.byteLength(realText, 'utf8'),
           Buffer.byteLength(stubText, 'utf8'),
-          `${runtime}: plan-phase.md byte size drifted between real compose and identity-stub compose`,
+          `${runtime}: discuss-phase.md byte size drifted between real compose and identity-stub compose`,
         );
         const realHash = crypto.createHash('sha256').update(realText).digest('hex');
         const stubHash = crypto.createHash('sha256').update(stubText).digest('hex');
         assert.equal(
           realHash,
           stubHash,
-          `${runtime}: plan-phase.md content drifted between real compose and identity-stub compose`,
+          `${runtime}: discuss-phase.md content drifted between real compose and identity-stub compose`,
         );
       } finally {
         cleanup(real.root);
@@ -461,26 +465,34 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
 
 test('leavesUnmarkedWorkflowEmissionByteIdentical', () => {
   const workflowsDir = path.join(REPO_ROOT, 'gsd-core', 'workflows');
+  // execute-phase.md (#2932 Phase 5) and plan-phase.md (#2993 Phase 6.2) are
+  // the two files this repo has fragmentized with gsd:section markers — both
+  // excluded here since composeWorkflow is deliberately NOT a no-op for them.
+  const MARKED_WORKFLOWS = new Set(['execute-phase.md', 'plan-phase.md']);
   const workflowFiles = fs
     .readdirSync(workflowsDir, { withFileTypes: true })
     .filter((d) => d.isFile() && d.name.endsWith('.md'))
     .map((d) => d.name);
-  assert.ok(workflowFiles.length > 1, 'sanity: there must be more than the pilot workflow on disk');
+  assert.ok(workflowFiles.length > MARKED_WORKFLOWS.size, 'sanity: there must be more than the marked workflows on disk');
 
   let checkedCount = 0;
   for (const fileName of workflowFiles) {
-    if (fileName === 'execute-phase.md') continue; // the one file #2932 Phase 5 migrates
+    if (MARKED_WORKFLOWS.has(fileName)) continue;
     const filePath = path.join(workflowsDir, fileName);
     const source = fs.readFileSync(filePath, 'utf8');
     const composed = composeWorkflow(source, { sourcePath: filePath });
     assert.equal(
       composed,
       source,
-      `${fileName}: emission drifted — Phase 5's execute-phase.md extraction must not touch any other workflow`,
+      `${fileName}: emission drifted — a marked workflow's extraction must not touch any other workflow`,
     );
     checkedCount += 1;
   }
-  assert.equal(checkedCount, workflowFiles.length - 1, 'every workflow file except execute-phase.md must have been checked');
+  assert.equal(
+    checkedCount,
+    workflowFiles.length - MARKED_WORKFLOWS.size,
+    'every workflow file except the marked ones must have been checked',
+  );
 });
 
 test('malformedMarkersFailInstallWithoutPartialEmit', () => {

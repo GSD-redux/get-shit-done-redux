@@ -576,6 +576,174 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
   });
 });
 
+// ─── #2993 (epic #1671 Phase 6.2) rows C1/C2: the shipped, committed
+// gsd-core/workflows/section-manifest.json artifact itself — never a
+// regenerated fixture — gains a `plan-phase` key with all 6 sections in
+// document order (C1), while `execute-phase`'s own entry stays
+// BYTE-IDENTICAL (C2, a Hyrum gate: #2932/#2992's 3 pre-existing sections
+// must not shift shape just because a sibling workflow key was added).
+
+describe('shipped gsd-core/workflows/section-manifest.json (#2993 rows C1/C2)', () => {
+  const SHIPPED_MANIFEST_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'section-manifest.json');
+
+  function readShippedManifest() {
+    return JSON.parse(fs.readFileSync(SHIPPED_MANIFEST_PATH, 'utf8'));
+  }
+
+  test('planPhaseKeyHasAllSixSectionsInDocumentOrder (row C1)', () => {
+    const manifest = readShippedManifest();
+    assert.deepEqual(manifest.workflows['plan-phase'], [
+      {
+        id: 'reviews-prerequisite',
+        when: 'flag:--reviews',
+        read: 'gsd-core/workflows/plan-phase/steps/reviews-prerequisite.md',
+      },
+      {
+        id: 'prd-express-gate',
+        when: 'flag:--prd',
+        read: 'gsd-core/workflows/plan-phase/steps/prd-express-gate.md',
+      },
+      {
+        id: 'adr-ingest-express-path',
+        when: 'flag:--ingest',
+        read: 'gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md',
+      },
+      {
+        id: 'research-only-modifiers',
+        when: 'flag:--research-phase',
+        read: 'gsd-core/workflows/plan-phase/steps/research-only-modifiers.md',
+      },
+      {
+        id: 'research-only-early-exit',
+        when: 'flag:--research-phase',
+        read: 'gsd-core/workflows/plan-phase/steps/research-only-early-exit.md',
+      },
+      {
+        id: 'chunked-planning-mode',
+        when: 'state:chunked-mode',
+        read: 'gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md',
+      },
+    ]);
+  });
+
+  test('executePhaseKeyIsByteIdenticalToBeforeThisChange (row C2 — Hyrum gate)', () => {
+    const manifest = readShippedManifest();
+    assert.deepEqual(manifest.workflows['execute-phase'], [
+      {
+        id: 'partial-wave',
+        when: 'flag:--wave',
+        read: 'gsd-core/workflows/execute-phase/steps/partial-wave.md',
+      },
+      {
+        id: 'gap-closure-artifacts',
+        when: 'state:gap-closure-phase',
+        read: 'gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md',
+      },
+      {
+        id: 'regression-gate',
+        when: 'state:has-prior-phases',
+        read: 'gsd-core/workflows/execute-phase/steps/regression-gate.md',
+      },
+    ]);
+  });
+
+  test('shippedManifestPassesTheRealCheckAgainstTheRealRepo (idempotency, mirrors row 29)', () => {
+    const r = runGenSectionManifest([
+      '--check', '--workflows-dir', path.join(ROOT, 'gsd-core', 'workflows'), '--manifest-path', SHIPPED_MANIFEST_PATH, '--repo-root', ROOT,
+    ]);
+    assert.equal(r.code, 0, `the shipped manifest must already be up to date; stderr: ${r.stderr}`);
+  });
+});
+
+// ─── Flag-forwarding regression guard (BLOCKER fix, epic #1671 Phase 6.2) ──
+//
+// The workflows never forwarded their flags to the init CLI, so every
+// `flag:--X` atom was permanently FALSE in production and its gated section
+// permanently EXCLUDED (`prd-express-gate` unreachable under `--prd`;
+// `partial-wave` unreachable under `--wave`, pre-existing since #2932 Phase
+// 5). This guard is DERIVED from the shipped manifest — never a hardcoded
+// {workflow, flag} list — so it also catches the NEXT `flag:--X` atom added
+// to any workflow without its own dedicated test.
+
+describe('workflow gsd_run query init.<workflow> invocations forward every flag:--X atom (regression guard)', () => {
+  const SHIPPED_MANIFEST_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'section-manifest.json');
+
+  function readShippedManifest() {
+    return JSON.parse(fs.readFileSync(SHIPPED_MANIFEST_PATH, 'utf8'));
+  }
+
+  /**
+   * All shell variable names assigned (anywhere in `scope`, via a
+   * double-quoted `VAR="..."` assignment) a value whose whitespace-split
+   * tokens include the exact literal `atomFlag` token (e.g. `--prd`).
+   * Whole-token comparison (not substring) so `--research-phase` never
+   * satisfies a check for `--research`, and vice versa.
+   */
+  function varsCarryingFlagToken(scope, atomFlag) {
+    const carriers = new Set();
+    const assignRe = /([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"/g;
+    let m;
+    while ((m = assignRe.exec(scope)) !== null) {
+      const [, varName, rhs] = m;
+      if (rhs.split(/\s+/).includes(atomFlag)) carriers.add(varName);
+    }
+    return carriers;
+  }
+
+  /** `$VAR` / `${VAR}` variable references appearing anywhere in `line`. */
+  function varsReferencedIn(line) {
+    const referenced = new Set();
+    const refRe = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
+    let m;
+    while ((m = refRe.exec(line)) !== null) referenced.add(m[1]);
+    return referenced;
+  }
+
+  const manifest = readShippedManifest();
+  for (const [workflow, sections] of Object.entries(manifest.workflows)) {
+    const flagAtoms = [
+      ...new Set(
+        sections
+          .map((s) => s.when)
+          .filter((when) => when.startsWith('flag:--'))
+          .map((when) => when.slice('flag:'.length)),
+      ),
+    ];
+    if (flagAtoms.length === 0) continue;
+
+    test(`${workflow}.md forwards [${flagAtoms.join(', ')}] to its gsd_run query init.${workflow} invocation`, () => {
+      const workflowMdPath = path.join(ROOT, 'gsd-core', 'workflows', `${workflow}.md`);
+      const content = fs.readFileSync(workflowMdPath, 'utf8');
+
+      const initLineRe = new RegExp(`^.*gsd_run query init\\.${workflow}\\b.*$`, 'm');
+      const initLineMatch = content.match(initLineRe);
+      assert.ok(initLineMatch, `${workflow}.md must contain a "gsd_run query init.${workflow}" invocation line`);
+      const initLine = initLineMatch[0];
+
+      // Everything up to and including the invocation line: real workflows
+      // parse $ARGUMENTS into a param variable earlier in the same bash
+      // block, then reference that variable on the INIT= line itself.
+      const scope = content.slice(0, content.indexOf(initLine) + initLine.length);
+      const referencedVars = varsReferencedIn(initLine);
+
+      for (const atomFlag of flagAtoms) {
+        const directlyPresent = initLine
+          .split(/\s+/)
+          .includes(atomFlag);
+        const carriers = varsCarryingFlagToken(scope, atomFlag);
+        const forwardedViaVar = [...carriers].some((v) => referencedVars.has(v));
+
+        assert.ok(
+          directlyPresent || forwardedViaVar,
+          `${workflow}.md's "gsd_run query init.${workflow}" invocation line must forward a parameter for ` +
+            `${atomFlag} (its gated section is otherwise permanently excluded — see BLOCKER, epic #1671 Phase 6.2). ` +
+            `Invocation line: ${initLine}`,
+        );
+      }
+    });
+  }
+});
+
 // ─── REASON enum shape lock (mirrors gen-context-index.cjs precedent) ──────
 
 describe('gen-section-manifest.cjs REASON enum', () => {
