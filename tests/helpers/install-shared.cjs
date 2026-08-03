@@ -184,7 +184,11 @@ const HOOK_CONFIG_FILES = new Set(['settings.json', 'settings.local.json', 'hook
 // same temp root used as --config-dir, collapsing the two into one directory
 // for the isolated test run. So it is excluded by its exact relative path
 // under that collapsed root, not by basename.
-const HOOK_CONFIG_RELATIVE_PATHS = new Set(['.kimi/config.toml']);
+// Both Kimi products' native config.toml embeds a platform-varying node-runner
+// command, so neither belongs in the golden-tracked emitted manifest. kimi-code
+// resolves its own root since #2755 — listing only `.kimi/config.toml` here made
+// kimi-code's config.toml newly manifest-visible and unattributable.
+const HOOK_CONFIG_RELATIVE_PATHS = new Set(['.kimi/config.toml', '.kimi-code/config.toml']);
 
 // Path prefixes excluded from the parity manifest. `gsd-core/bin/lib/` holds the
 // tsc-built runtime artifacts (compiled from src/*.cts) that the install COPIES
