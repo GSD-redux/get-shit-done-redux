@@ -472,6 +472,76 @@ function readConfigJsonBoolean(cwd: string, keyPath: readonly string[]): boolean
 }
 
 /**
+ * Bounded, non-throwing read of a dotted key path from `.planning/config.json`,
+ * returning the raw resolved value (any JSON type) or `undefined` on any
+ * degraded condition (absent file, unreadable file, malformed JSON, or a
+ * non-object intermediate segment) — the generic sibling of
+ * {@link readConfigJsonBoolean} for callers that need the actual value
+ * (a string like `code_quality.fallow.profile`) rather than a strict
+ * boolean coercion. `keyPath` is always a fixed literal supplied by this
+ * module, never attacker/user input, so a plain bracket traversal carries
+ * no prototype hazard here (same discipline as `readConfigJsonBoolean`).
+ */
+function readConfigJsonValue(cwd: string, keyPath: readonly string[]): unknown {
+  try {
+    const raw = fs.readFileSync(path.join(planningDir(cwd), 'config.json'), 'utf8');
+    let cursor: unknown = JSON.parse(raw);
+    for (const segment of keyPath) {
+      if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined;
+      cursor = (cursor as Record<string, unknown>)[segment];
+    }
+    return cursor;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `state:fallow-enabled` ground truth (#2994): resolves `code-review.md`'s
+ * `structural_pre_pass` fallow config gate — previously re-derived INSIDE the
+ * gated section body itself (`gsd_run query config-get code_quality.fallow.*`),
+ * which is circular/self-disabling the moment a section is gated on a fact
+ * its own body computes (the same hazard `state:chunked-mode` /
+ * `state:ui-phase-active` document for a compound condition). Fail-closed
+ * default `false` for `enabled`/`mcp`, matching the pre-hoist bash resolver's
+ * `2>/dev/null || echo "false"` fallback; `scope`/`profile` default to
+ * `"phase"`/`"standard"` matching that same resolver's `|| echo` fallbacks.
+ * `maxCrap` mirrors the step body's profile->threshold mapping (minimal=50,
+ * strict=15, else standard=30) so the step file never has to re-derive it.
+ */
+function detectFallowConfig(cwd: string): {
+  enabled: boolean;
+  scope: string;
+  profile: string;
+  mcp: boolean;
+  maxCrap: number;
+} {
+  const enabled = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'enabled']) === true;
+  const rawScope = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'scope']);
+  const scope = typeof rawScope === 'string' && rawScope ? rawScope : 'phase';
+  const rawProfile = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'profile']);
+  const profile = typeof rawProfile === 'string' && rawProfile ? rawProfile : 'standard';
+  const mcp = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'mcp']) === true;
+  const maxCrap = profile === 'minimal' ? 50 : profile === 'strict' ? 15 : 30;
+  return { enabled, scope, profile, mcp, maxCrap };
+}
+
+/**
+ * `state:git-create-tag` ground truth (#2994): resolves `complete-milestone.md`'s
+ * `git_tag` step config gate — previously re-derived INSIDE a `<config-check>`
+ * sub-tag at the top of the step itself (`gsd-tools.cjs query config-get
+ * git.create_tag 2>/dev/null || echo "true"`), gating the step's OWN inclusion
+ * on a fact only that same step computed. Fail-OPEN default `true` (an unset
+ * or missing `git.create_tag` key means "create the tag"), matching the
+ * pre-hoist resolver's `|| echo "true"` fallback exactly — this is
+ * deliberately the inverse polarity of `detectFallowConfig`'s fail-closed
+ * default, mirroring the two source resolvers' own opposite defaults.
+ */
+function detectGitCreateTag(cwd: string): boolean {
+  return readConfigJsonValue(cwd, ['git', 'create_tag']) !== false;
+}
+
+/**
  * `state:phase-mvp-mode` ground truth (design doc §Behavior table: ROADMAP.md
  * `**Mode:** mvp` for the CURRENT phase). Bounded, non-throwing — an absent
  * `phaseNumber`, an absent ROADMAP.md, an absent phase heading, or a phase
@@ -600,7 +670,7 @@ function buildSectionManifestField(
   phaseInfo: Record<string, unknown> | null,
   options: Record<string, unknown>,
   workflow: string,
-  overrides: { needsCodebaseMap?: boolean } = {},
+  overrides: { needsCodebaseMap?: boolean; fallowEnabled?: boolean; gitCreateTag?: boolean } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
   if (!sections) return null;
@@ -636,6 +706,8 @@ function buildSectionManifestField(
     needsCodebaseMap: overrides.needsCodebaseMap,
     chunkedMode,
     uiPhaseActive: detectUiPhaseActive(cwd, phaseInfo),
+    fallowEnabled: overrides.fallowEnabled,
+    gitCreateTag: overrides.gitCreateTag,
   };
 
   try {
@@ -1344,6 +1416,108 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
   // so buildSectionManifestField's internal detectPhaseMvpMode/detectUiPhaseActive calls
   // get a real phase_number/directory rather than permanently-false facts.
   result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, {}, 'verify-work');
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `code-review.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3). `code-review.md` previously routed through the shared, 20+-caller
+ * `init.phase-op` (`cmdInitPhaseOp` below), reading only 6 of its fields
+ * (`phase_found`, `phase_dir`, `phase_number`, `phase_name`, `padded_phase`,
+ * `commit_docs` — verified against the workflow's own "Parse from init
+ * JSON" line). `cmdInitPhaseOp` is CRITICAL blast radius (179 dependents
+ * across 24 processes per the #2994 dispatch) and is never modified for
+ * this — this function resolves phase info itself via the SAME shared
+ * primitives `cmdInitPhaseOp` calls (`guardedFindPhase`/
+ * `guardedGetRoadmapPhase`, already reused independently by 4 other
+ * `cmdInit*` entry points in this file: execute-phase, plan-phase,
+ * verify-work, phase-op), producing the identical 6-field shape rather than
+ * a second, hand-maintained copy of `cmdInitPhaseOp`'s full ~60-field
+ * bundle. See `tests/init-code-review-parity.test.cjs` for the
+ * DEFECT.GENERATIVE-FIX parity guard between the two.
+ *
+ * Two further facts are resolved and exposed here that `init.phase-op`
+ * never carried: the fallow structural-pre-pass config gate
+ * (`detectFallowConfig`, `state:fallow-enabled`) and the `--fix` flag
+ * (folded into `options` so `buildSectionManifestField` picks it up as
+ * `flag:--fix`).
+ */
+function cmdInitCodeReview(
+  cwd: string,
+  phase: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+  let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+
+  if (phaseInfo?.['archived']) {
+    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+    if (roadmapPhase?.['found']) {
+      const phaseName = roadmapPhase['phase_name'] as string | null;
+      phaseInfo = {
+        found: true,
+        directory: null,
+        phase_number: roadmapPhase['phase_number'],
+        phase_name: phaseName,
+        phase_slug: phaseName
+          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+          : null,
+      };
+    }
+  }
+
+  if (!phaseInfo) {
+    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+    if (roadmapPhase?.['found']) {
+      const phaseName = roadmapPhase['phase_name'] as string | null;
+      phaseInfo = {
+        found: true,
+        directory: null,
+        phase_number: roadmapPhase['phase_number'],
+        phase_name: phaseName,
+        phase_slug: phaseName
+          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+          : null,
+      };
+    }
+  }
+
+  const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
+  const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
+  const phaseName = (phaseInfo?.['phase_name'] as string | undefined) || null;
+
+  const fallow = detectFallowConfig(cwd);
+
+  const result: Record<string, unknown> = {
+    commit_docs: config.commit_docs,
+
+    phase_found: !!phaseInfo,
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
+    phase_dir: phaseDir ? toPosixPath(path.join(cwd, phaseDir)) : null,
+    phase_number: phaseNumber,
+    phase_name: phaseName,
+    padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
+
+    // #2994: hoisted fallow config-gate resolution (previously re-derived
+    // inline inside code-review.md's structural_pre_pass step body — a
+    // circular self-disabling gate now resolved once here at init time).
+    fallow_enabled: fallow.enabled,
+    fallow_scope: fallow.scope,
+    fallow_profile: fallow.profile,
+    fallow_mcp: fallow.mcp,
+    fallow_max_crap: fallow.maxCrap,
+  };
+
+  // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
+  const sectionManifestOptions: Record<string, unknown> = {
+    ...options,
+    fix: options['fix'] || undefined,
+  };
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, sectionManifestOptions, 'code-review', {
+    fallowEnabled: fallow.enabled,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -2067,6 +2241,39 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     state_exists: true,
     manager_flags: managerFlags,
   };
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `complete-milestone.md`'s dedicated init entry point (#2994, epic #1671
+ * Phase 6.3). Additive alongside the workflow's existing `init.manager`
+ * (readiness/phase-projection, `cmdInitManager` above — CRITICAL blast
+ * radius, never modified) and `init.execute-phase` (branching-strategy
+ * fields) calls; `cmdInitCompleteMilestone` carries NO phase-listing logic
+ * of its own to delegate — its only job is the `git.create_tag` config-gate
+ * fact the `git_tag` step's `<config-check>` sub-tag used to re-derive
+ * inline (gating the step's own inclusion on a fact only that step
+ * computed), now hoisted here and exposed as `git_create_tag`, plus the
+ * `section_manifest` field neither `init.manager` nor `init.execute-phase`
+ * carries.
+ */
+function cmdInitCompleteMilestone(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const gitCreateTag = detectGitCreateTag(cwd);
+
+  const result: Record<string, unknown> = {
+    // #2994: hoisted from complete-milestone.md's git_tag step
+    // <config-check> resolver (git.create_tag, fail-open default true).
+    git_create_tag: gitCreateTag,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'complete-milestone', {
+    gitCreateTag,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -3076,11 +3283,13 @@ export = {
   cmdInitResume,
   cmdInitVerifyWork,
   cmdInitPhaseOp,
+  cmdInitCodeReview,
   cmdInitTodos,
   cmdInitMilestoneOp,
   cmdInitMapCodebase,
   cmdInitProgress,
   cmdInitManager,
+  cmdInitCompleteMilestone,
   cmdInitNewWorkspace,
   cmdInitListWorkspaces,
   cmdInitRemoveWorkspace,

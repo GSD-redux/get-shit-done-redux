@@ -46,10 +46,12 @@ gap fragment and composes back byte-identical to its source.
 
 ## The frozen `when=` vocabulary
 
-`when=` takes exactly one of 20 atoms (widened from 4 to 14 via the ADR-1671
+`when=` takes exactly one of 23 atoms (widened from 4 to 14 via the ADR-1671
 amendment for #2992, epic #1671 Phase 6.1, then from 14 to 19 via the
 ADR-1671 amendment for #2993, epic #1671 Phase 6.2, then from 19 to 20 via
-the ADR-1671 amendment for #2994, epic #1671 Phase 6.3):
+the ADR-1671 amendment for #2994, epic #1671 Phase 6.3, then from 20 to 23
+via a further #2994 amendment fragmentizing `code-review.md` and
+`complete-milestone.md`):
 
 | Value | Meaning |
 |---|---|
@@ -59,6 +61,7 @@ the ADR-1671 amendment for #2994, epic #1671 Phase 6.3):
 | `state:has-prior-phases` | Applicable when prior phases (and their `VERIFICATION.md` files) exist. |
 | `flag:--auto` | Applicable when the workflow runs with `--auto`. |
 | `flag:--discuss` | Applicable when the workflow runs with `--discuss`. |
+| `flag:--fix` | Applicable when the workflow runs with `--fix` (`code-review.md`'s resolved fix decision — `--fix` itself, or `--all`/`--auto` implying it via `code-review-flags.cjs`). |
 | `flag:--forensic` | Applicable when the workflow runs with `--forensic`. |
 | `flag:--full` | Applicable when the workflow runs with `--full`. |
 | `flag:--ingest` | Applicable when the workflow runs with `--ingest <path-or-glob>`. |
@@ -69,6 +72,8 @@ the ADR-1671 amendment for #2994, epic #1671 Phase 6.3):
 | `flag:--reviews` | Applicable when the workflow runs with `--reviews`. |
 | `flag:--validate` | Applicable when the workflow runs with `--validate`. |
 | `state:chunked-mode` | Applicable when chunked planning mode is active — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
+| `state:fallow-enabled` | Applicable when `.planning/config.json`'s `code_quality.fallow.enabled` is `true` (fail-closed default `false`). |
+| `state:git-create-tag` | Applicable when `.planning/config.json`'s `git.create_tag` is not `false` (fail-OPEN default `true`). |
 | `state:needs-codebase-map` | Applicable when a codebase map is needed (init-computed). |
 | `state:phase-mvp-mode` | Applicable when the current phase's `ROADMAP.md` entry declares `**Mode:** mvp`. |
 | `state:ui-phase-active` | Applicable when the phase's active `plan:pre` loop hooks include the `ui-phase` step, OR the phase directory already contains a `*-UI-SPEC.md` file — see [Compound conditions are resolved in the fact, never the grammar](#compound-conditions-are-resolved-in-the-fact-never-the-grammar) below. |
@@ -99,13 +104,18 @@ required:
    section marked with it would silently never include: the exact
    silent-wrong-answer class this gate exists to prevent.
 
-Six further atoms (`flag:--converge`, `flag:--fix`, `flag:--verify-only`,
-`state:fallow-enabled`, `state:git-create-tag`, `state:is-monorepo`) satisfy
-gate 1 but not yet gate 2 — their workflows (`autonomous`, `code-review`,
-`complete-milestone`, `docs-update`) route through shared generic init entry
-points invoked by 20+ other workflows, so a dedicated `cmdInit*` seam does
-not yet exist to compute their facts. They are withheld pending that seam,
-not rejected.
+Three further atoms (`flag:--converge`, `flag:--verify-only`,
+`state:is-monorepo`) satisfy gate 1 but not yet gate 2 — their workflows
+(`autonomous`, `docs-update`) route through shared generic init entry points
+invoked by 20+ other workflows, so a dedicated `cmdInit*` seam does not yet
+exist to compute their facts. They are withheld pending that seam, not
+rejected. `flag:--fix`, `state:fallow-enabled`, and `state:git-create-tag`
+were withheld for the same reason until a further #2994 amendment gave
+`code-review` and `complete-milestone` their own dedicated `cmdInit*` entry
+points (`cmdInitCodeReview`, `cmdInitCompleteMilestone`) — see [Piloted on
+execute-phase.md, then rolled out across the wired
+workflows](#piloted-on-execute-phasemd-then-rolled-out-across-the-wired-workflows)
+below.
 
 ### Compound conditions are resolved in the fact, never the grammar
 
@@ -234,14 +244,15 @@ At init time, a separate pure evaluator, `src/section-manifest.cts`
 (`selectSections`), partitions a workflow's manifest sections into
 `included`/`excluded` id lists against one invocation's
 `InvocationFacts` — `{flags, phaseNumber, hasPriorPhases, needsCodebaseMap?,
-phaseMvpMode?, worktreesEnabled?, chunkedMode?, uiPhaseActive?}`. Only a workflow with a **dedicated
+phaseMvpMode?, worktreesEnabled?, chunkedMode?, uiPhaseActive?, fallowEnabled?,
+gitCreateTag?}`. Only a workflow with a **dedicated
 `cmdInit*` entry point** in `src/init.cts` can have this evaluation run for
 it, because only that entry point can assemble `InvocationFacts` from its own
 parsed CLI options and `.planning/` state reads — this is admission gate 2
 from [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above,
-applied per-workflow rather than per-atom. Seven entry points are wired today:
+applied per-workflow rather than per-atom. Nine entry points are wired today:
 `execute-phase`, `plan-phase`, `new-project`, `new-milestone`, `quick`,
-`progress`, and `verify-work`.
+`progress`, `verify-work`, `code-review`, and `complete-milestone`.
 
 `InvocationFacts.flags` is a `ReadonlySet<string>` of the literal `--<name>`
 tokens seen on the invocation, and **membership is token-presence, not
@@ -258,20 +269,21 @@ that were actually seen.
 
 ## Piloted on execute-phase.md, then rolled out across the wired workflows
 
-Seven workflows carry markers today, all of them the workflows with a dedicated
+Nine workflows carry markers today, all of them the workflows with a dedicated
 `cmdInit*` entry point (see [The manifest artifact](#the-manifest-artifact-and-per-workflow-keying)
 above): `gsd-core/workflows/execute-phase.md` (the #2930/Phase-3 pilot),
 `gsd-core/workflows/plan-phase.md` (#2993, epic #1671 Phase 6.2),
 `gsd-core/workflows/progress.md`, `gsd-core/workflows/new-project.md`,
 `gsd-core/workflows/quick.md`, `gsd-core/workflows/new-milestone.md` (those
-four, #2994, epic #1671 Phase 6.3), and `gsd-core/workflows/verify-work.md`
-(also #2994, epic #1671 Phase 6.3). The marker grammar and composer
-seam are general-purpose across any workflow file; rollout to the remaining
-`autonomous`/`code-review`/`complete-milestone`/`docs-update` workflows is
-gated on those workflows gaining their own dedicated `cmdInit*` entry point
-(see the six-atoms-withheld note in [The frozen `when=`
-vocabulary](#the-frozen-when-vocabulary) above), not scheduled as later work
-on the marker grammar itself.
+four, #2994, epic #1671 Phase 6.3), `gsd-core/workflows/verify-work.md`
+(also #2994, epic #1671 Phase 6.3), and `gsd-core/workflows/code-review.md` /
+`gsd-core/workflows/complete-milestone.md` (a further #2994 amendment, epic
+#1671 Phase 6.3). The marker grammar and composer seam are general-purpose
+across any workflow file; rollout to the remaining
+`autonomous`/`docs-update` workflows is gated on those workflows gaining
+their own dedicated `cmdInit*` entry point (see the three-atoms-withheld
+note in [The frozen `when=` vocabulary](#the-frozen-when-vocabulary) above),
+not scheduled as later work on the marker grammar itself.
 
 `execute-phase.md` marks three `<step>` blocks: `partial-wave`
 (`flag:--wave`), `gap-closure-artifacts` (`state:gap-closure-phase`), and
@@ -333,6 +345,45 @@ because the un-marked false-branch note and the step-file prose both still
 reference `$MVP_MODE` as a runtime variable, so the resolver keeps a live
 consumer outside the gate.
 
+`code-review.md` marks two sections: `structural-pre-pass` (`state:fallow-enabled`)
+and `dispatch-fix` (`flag:--fix`). `structural-pre-pass`'s own body used to
+re-resolve its own gating fact via four `gsd_run query config-get
+code_quality.fallow.*` calls — circular, for the same reason `progress.md`'s
+pre-hoist `mvp-display` was: a section's body re-deriving the exact condition
+that gated its own inclusion is self-disabling the moment the init seam's
+computation and the body's computation drift. `cmdInitCodeReview` now resolves
+`code_quality.fallow.{enabled,scope,profile,mcp}` once (`detectFallowConfig`,
+`src/init.cts`) and exposes them as top-level `fallow_enabled`/`fallow_scope`/
+`fallow_profile`/`fallow_mcp`/`fallow_max_crap` init-bundle fields; the
+unconditional part of the `structural_pre_pass` step now just parses those
+fields, and only the fallow-binary-resolve-and-execute portion (which produces
+`FALLOW.json`) is gated behind the marker — the `FALLOW_JSON_PATH=""`
+disabled-path fallback stays OUTSIDE the marker, directly after it, for the
+same reason `verify-work.md`'s MVP false-branch note does (deleting it would
+break the common, fallow-disabled case). `dispatch-fix` moves the entire
+`--fix`-gated step wholesale (mirroring `progress.md`'s `forensic-audit`
+extraction) — `code-review.md`'s `initialize` step now resolves the RESOLVED
+fix decision (`--fix` itself, or `--all`/`--auto` implying it, via
+`code-review-flags.cjs`) before the `init.code-review` call, so the
+section-manifest gate matches the flags module's own implication logic rather
+than a raw `--fix` token scan.
+
+`complete-milestone.md` marks one section: `git-tag` (`state:git-create-tag`).
+The `git_tag` step's own `<config-check>` sub-tag used to re-resolve
+`git.create_tag` via `gsd-tools.cjs query config-get` to decide whether to
+skip the step — again a section (here, a whole step) gating its own inclusion
+on a fact its own body computed. `cmdInitCompleteMilestone` now resolves it
+once (`detectGitCreateTag`, `src/init.cts`, fail-OPEN default `true` — an
+unset key means "create the tag", the inverse polarity of `detectFallowConfig`'s
+fail-closed default, mirroring the two source resolvers' own opposite
+defaults) and exposes it as the init-bundle's `git_create_tag` field; the
+entire `git_tag` step moves to its step file wholesale, with no
+`<config-check>` left to re-derive. `complete-milestone.md` gains an
+ADDITIVE `init.complete-milestone` call (in the `handle_branches` step,
+alongside its pre-existing `init.manager` and `init.execute-phase` calls,
+neither of which is removed) purely to carry `git_create_tag` and
+`section_manifest` — it has no phase-listing logic of its own to delegate.
+
 **`plan-phase.md` was originally retargeted away from the #2930 pilot,
 then fragmentized here once the blocker cleared.** Issue #2930's own
 motivating mutually-exclusive branches (`--prd`, `--ingest`, `--mvp`,
@@ -373,5 +424,5 @@ question 1's resolution for the full record.
   `InvocationFacts`) consumed by the init seam.
 - `scripts/gen-section-manifest.cjs` — generates the committed
   `gsd-core/workflows/section-manifest.json` artifact from markers.
-- `src/init.cts` — `buildSectionManifestField` and the seven wired
+- `src/init.cts` — `buildSectionManifestField` and the nine wired
   `cmdInit*` entry points.

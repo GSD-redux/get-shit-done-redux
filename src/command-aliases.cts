@@ -345,6 +345,14 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "init.code-review",
+    "aliases": [
+      "init code-review"
+    ],
+    "subcommand": "code-review",
+    "mutation": false
+  },
+  {
     "canonical": "init.todos",
     "aliases": [
       "init todos"
@@ -382,6 +390,14 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
       "init manager"
     ],
     "subcommand": "manager",
+    "mutation": false
+  },
+  {
+    "canonical": "init.complete-milestone",
+    "aliases": [
+      "init complete-milestone"
+    ],
+    "subcommand": "complete-milestone",
     "mutation": false
   },
   {

@@ -21,7 +21,8 @@
  * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
  * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
- * (epic #1671 Phase 6.3). {@link WHEN_PREDICATES} is a total map from each frozen
+ * (epic #1671 Phase 6.3), then from 20 to 23 via a further #2994 amendment
+ * fragmentizing `code-review.md` and `complete-milestone.md`. {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
  * `when=` string — the moment it parses, the ad-hoc language has begun.
@@ -102,6 +103,29 @@ export interface InvocationFacts {
    * module. Absent/undefined is falsy, never throws.
    */
   readonly uiPhaseActive?: boolean;
+  /**
+   * Whether the fallow structural cross-module pre-pass is enabled
+   * (`.planning/config.json` `code_quality.fallow.enabled`, #2994). Fail-closed
+   * default `false` — resolved by the caller (`cmdInitCodeReview`, the init
+   * seam) from the same config key `code-review.md`'s `structural_pre_pass`
+   * step used to re-derive inline (a circular self-disabling gate); the
+   * resolved value is exposed as the init-bundle's `fallow_enabled` field for
+   * the step body to consume directly. Absent/undefined is falsy, never throws.
+   */
+  readonly fallowEnabled?: boolean;
+  /**
+   * Whether git tag creation is enabled on milestone close
+   * (`.planning/config.json` `git.create_tag`, #2994). Fail-OPEN default
+   * `true` (unset/missing config means "create the tag"), matching
+   * `complete-milestone.md`'s pre-hoist `gsd-tools.cjs query config-get
+   * git.create_tag 2>/dev/null || echo "true"` resolver — now hoisted into
+   * `cmdInitCompleteMilestone` and exposed as the init-bundle's
+   * `git_create_tag` field. Absent/undefined is falsy at the PREDICATE level
+   * (per the totality convention every other atom here follows), so a caller
+   * MUST always populate this fact with a real boolean (never omit it) or the
+   * `git-tag` section will incorrectly evaluate to excluded.
+   */
+  readonly gitCreateTag?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -187,6 +211,7 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'state:has-prior-phases': (facts: InvocationFacts) => facts.hasPriorPhases === true,
     'flag:--auto': (facts: InvocationFacts) => hasFlag(facts, '--auto'),
     'flag:--discuss': (facts: InvocationFacts) => hasFlag(facts, '--discuss'),
+    'flag:--fix': (facts: InvocationFacts) => hasFlag(facts, '--fix'),
     'flag:--forensic': (facts: InvocationFacts) => hasFlag(facts, '--forensic'),
     'flag:--full': (facts: InvocationFacts) => hasFlag(facts, '--full'),
     'flag:--ingest': (facts: InvocationFacts) => hasFlag(facts, '--ingest'),
@@ -197,6 +222,8 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'flag:--reviews': (facts: InvocationFacts) => hasFlag(facts, '--reviews'),
     'flag:--validate': (facts: InvocationFacts) => hasFlag(facts, '--validate'),
     'state:chunked-mode': (facts: InvocationFacts) => facts.chunkedMode === true,
+    'state:fallow-enabled': (facts: InvocationFacts) => facts.fallowEnabled === true,
+    'state:git-create-tag': (facts: InvocationFacts) => facts.gitCreateTag === true,
     'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
     'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,

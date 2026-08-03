@@ -1,5 +1,24 @@
 {
   "workflows": {
+    "code-review": [
+      {
+        "id": "structural-pre-pass",
+        "when": "state:fallow-enabled",
+        "read": "gsd-core/workflows/code-review/steps/structural-pre-pass.md"
+      },
+      {
+        "id": "dispatch-fix",
+        "when": "flag:--fix",
+        "read": "gsd-core/workflows/code-review/steps/dispatch-fix.md"
+      }
+    ],
+    "complete-milestone": [
+      {
+        "id": "git-tag",
+        "when": "state:git-create-tag",
+        "read": "gsd-core/workflows/complete-milestone/steps/git-tag.md"
+      }
+    ],
     "execute-phase": [
       {
         "id": "partial-wave",

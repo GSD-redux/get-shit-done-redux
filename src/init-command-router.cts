@@ -34,11 +34,13 @@ interface InitModule {
   cmdInitResume(cwd: string, raw: boolean): void;
   cmdInitVerifyWork(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitPhaseOp(cwd: string, phase: string | undefined, raw: boolean): void;
+  cmdInitCodeReview(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitTodos(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitMilestoneOp(cwd: string, raw: boolean): void;
   cmdInitMapCodebase(cwd: string, raw: boolean): void;
   cmdInitProgress(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitManager(cwd: string, raw: boolean): void;
+  cmdInitCompleteMilestone(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
   cmdInitRemoveWorkspace(cwd: string, name: string | undefined, raw: boolean): void;
@@ -130,6 +132,10 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       resume: () => init.cmdInitResume(cwd, raw),
       'verify-work': () => init.cmdInitVerifyWork(cwd, args[2], raw),
       'phase-op': () => init.cmdInitPhaseOp(cwd, args[2], raw),
+      'code-review': () => {
+        const namedArgs = parseNamedArgs(args, [], ['fix']);
+        init.cmdInitCodeReview(cwd, args[2], raw, { fix: namedArgs['fix'] });
+      },
       todos: () => init.cmdInitTodos(cwd, args[2], raw),
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
       'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),
@@ -140,6 +146,7 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       // Keep manager on CJS for now so runtime-specific command rendering
       // (e.g. $gsd-* for codex) stays consistent with runtime-slash helpers.
       manager: () => init.cmdInitManager(cwd, raw),
+      'complete-milestone': () => init.cmdInitCompleteMilestone(cwd, raw),
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
       'remove-workspace': () => init.cmdInitRemoveWorkspace(cwd, args[2], raw),
