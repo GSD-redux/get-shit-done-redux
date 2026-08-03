@@ -185,7 +185,7 @@ GSD 워크스페이스 관리 — 리포지토리 복사본과 독립적인 `.pl
 - `--view` 사용: 기존 RESEARCH.md를 stdout으로 출력, 생성 없음. RESEARCH.md가 없으면 오류 발생.
 
 **패키지 적법성 게이트 (v1.42.1):**
-리서처가 외부 패키지를 추천하면 각 패키지에 대해 `slopcheck install <pkg> --json`을 실행하고 레지스트리, 출시일, 다운로드 수, 소스 리포지토리, slopcheck 판정이 담긴 `## Package Legitimacy Audit` 테이블을 RESEARCH.md에 작성합니다. 판정:
+리서처가 외부 패키지를 추천하면 각 패키지에 대해 `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates> <pkg>`을 실행하고 레지스트리, 출시일, 다운로드 수, 소스 리포지토리, 적법성 판정이 담긴 `## Package Legitimacy Audit` 테이블을 RESEARCH.md에 작성합니다. 판정:
 
 - `[SLOP]` — 패키지가 RESEARCH.md에서 완전히 제거; 계획자에게 전달되지 않음
 - `[SUS]` — 패키지 플래그 지정; 계획자가 설치 작업 전에 `checkpoint:human-verify` 삽입
