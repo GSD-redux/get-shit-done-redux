@@ -321,6 +321,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { spawnSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 const { cleanup, delay } = require('./helpers.cjs');
 
 const HOOK_PATH = path.resolve(__dirname, '..', 'hooks', 'gsd-context-monitor.js');
@@ -366,14 +367,13 @@ function runHook(sessionId, remainingPct, cwd) {
     hook_event_name: 'PostToolUse',
   });
 
-  const result = spawnSync(process.execPath, [HOOK_PATH], {
+  const result = runHookSeam(HOOK_PATH, [], {
     input,
-    encoding: 'utf-8',
-    timeout: 10000,
+    timeoutMs: 10000,
     env: { ...process.env, HOME: process.env.HOME },
   });
 
-  return { exitCode: result.status, stdout: result.stdout, stderr: result.stderr };
+  return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr };
 }
 
 /**

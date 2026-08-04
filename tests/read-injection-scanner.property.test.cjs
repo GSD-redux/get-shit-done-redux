@@ -26,9 +26,9 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-read-injection-scanner.js');
 
@@ -57,16 +57,11 @@ function runHook(payload) {
     return { exitCode: 0, stdout: '', skipped: true };
   }
 
-  const result = spawnSync(process.execPath, [HOOK_PATH], {
-    input,
-    encoding: 'utf-8',
-    timeout: 30000,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
+  const result = runHookSeam(HOOK_PATH, [], { input, timeoutMs: 30000 });
 
   return {
-    exitCode: result.status ?? 1,
-    stdout: (result.stdout || '').trim(),
+    exitCode: result.exitCode ?? 1,
+    stdout: result.stdout.trim(),
     signal: result.signal,
   };
 }

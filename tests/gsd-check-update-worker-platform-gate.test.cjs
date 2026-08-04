@@ -495,7 +495,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-update-banner.js');
@@ -653,10 +653,16 @@ describe('gsd-update-banner.js end-to-end', () => {
   }
 
   function runHook(home) {
-    return spawnSync(process.execPath, [HOOK_PATH], {
+    // 10000ms: previously UNBOUNDED (no `timeout` option passed to
+    // spawnSync). gsd-update-banner.js only reads a small cache file from
+    // disk and prints JSON — no subprocess/network work — so 10s is
+    // generous headroom over its sub-second worst case even on a
+    // contended CI runner.
+    const r = seamRunHook(HOOK_PATH, [], {
       env: { ...process.env, HOME: home, USERPROFILE: home },
-      encoding: 'utf8',
+      timeoutMs: 10_000,
     });
+    return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   }
 
   function writeCache(home, contents) {
