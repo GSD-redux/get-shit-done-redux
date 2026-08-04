@@ -98,6 +98,20 @@ function buildMsgDiverged(headSha: string | null, forkRef: string | null, forkSh
 
 const MSG_UNKNOWN = `⚠ Cannot determine the worktree fork base (origin/HEAD unresolved). Running this phase sequentially on the main working tree to avoid a base mismatch. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.`;
 
+const MSG_HEAD_UNRESOLVABLE = `⚠ Cannot determine the worktree base (git rev-parse HEAD timed out or could not complete). Running this phase sequentially on the main working tree to avoid an unverified base mismatch. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683, #3050.`;
+
+/**
+ * Returns true when an execGit result indicates the subprocess was killed by
+ * a timeout (SIGTERM + ETIMEDOUT), mirroring the idiom already established in
+ * worktree-safety.cts's execGitDefault. A timeout means the command genuinely
+ * could not complete — it must never be treated the same as a clean non-zero
+ * exit (e.g. "not a git repository"), which DID complete and reported a real
+ * answer.
+ */
+function isExecGitTimeout(result: { signal: string | null; error: unknown }): boolean {
+  return result.signal === 'SIGTERM' && (result.error as NodeJS.ErrnoException | null | undefined)?.code === 'ETIMEDOUT';
+}
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
 /**
@@ -351,6 +365,12 @@ export function evaluateWorktreeBaseDegrade(deps?: {
 
   // b. Resolve HEAD sha.
   const headResult = execGit(['rev-parse', 'HEAD'], cwdOpts);
+  // A TIMEOUT means the command never completed — it is not evidence of "not a
+  // git repository" and must fail closed (distinct from the clean-exit-128
+  // "no-head" case below, which genuinely completed and reported no HEAD).
+  if (isExecGitTimeout(headResult)) {
+    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null };
+  }
   const headStdout = headResult.stdout ? headResult.stdout.trim() : '';
   if (headResult.exitCode !== 0 || !headStdout) {
     return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null };

@@ -1295,6 +1295,11 @@ describe('cmdWorktreeCreate', () => {
     '--path', '/repo/.claude/worktrees/agent-a1',
     '--branch', 'worktree-agent-a1',
     '--base', 'abc123',
+    // #3050: --root is now mandatory (fail-closed confinement) — every test
+    // below that isn't specifically exercising the missing-root case must
+    // supply one. '/repo' confines every okArgs-derived --path used in this
+    // describe block (all live under /repo/.claude/worktrees/...).
+    '--root', '/repo',
   ];
 
   function okExecGit() {
@@ -1330,10 +1335,10 @@ describe('cmdWorktreeCreate', () => {
     assert.match(out.join(''), /"ok": true/);
   });
 
-  // #2627 Phase 3: --root confines the created worktree. Absent the flag the
-  // behavior is exactly Phase 2's (every test above passes unchanged); the
-  // orchestrator-worktree scheduler path always passes it, because Phase 3 is
-  // what starts SPAWNING processes into these directories.
+  // #2627 Phase 3 / #3050: --root confines the created worktree. #3050
+  // hardened this from opt-in to MANDATORY — confinement must not depend on
+  // the caller remembering to pass the flag; omitting it now fails closed
+  // instead of silently creating an unconfined worktree.
   describe('--root confinement', () => {
     const rootedArgs = (wtPath, root) => [
       '--manifest', 'manifest.json',
@@ -1389,15 +1394,17 @@ describe('cmdWorktreeCreate', () => {
       assert.equal(result.reason, 'path_outside_root');
     });
 
-    test('omitting --root preserves Phase-2 behavior (no confinement)', () => {
-      const { result } = run([
+    test('omitting --root fails closed (#3050 — confinement is mandatory, not opt-in)', () => {
+      const { result, gitCalled } = run([
         '--manifest', 'manifest.json',
         '--agent-id', 'a1',
         '--path', '/repo/.claude/worktrees/agent-a1',
         '--branch', 'worktree-agent-a1',
         '--base', 'abc123',
       ]);
-      assert.equal(result.ok, true, 'no --root → unchanged Phase-2 acceptance');
+      assert.equal(result.ok, false, 'no --root → fail closed, never silently unconfined');
+      assert.equal(result.reason, 'root_required');
+      assert.equal(gitCalled, false, 'must fail before any git side effect');
     });
   });
 
@@ -1622,9 +1629,12 @@ describe('cmdWorktreeCreate / cmdWorktreeRecordAgent — on-disk entry parity (#
       '--branch', 'worktree-agent-a1',
       '--base', 'abc123',
     ];
+    // cmdWorktreeCreate now requires --root (#3050); cmdWorktreeRecordAgent has
+    // no --root concept at all, so it's appended only to the create-side args.
+    const createArgs = [...argsFor('--manifest'), '--root', '/repo'];
 
     let createdContent = null;
-    cmdWorktreeCreate('/repo/main', argsFor('--manifest'), {
+    cmdWorktreeCreate('/repo/main', createArgs, {
       readFile: () => '{"worktrees":[]}',
       writeFile: (_p, c) => { createdContent = c; },
       write: () => {},
