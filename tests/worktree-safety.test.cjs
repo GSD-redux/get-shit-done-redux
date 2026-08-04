@@ -15,9 +15,10 @@
  *   - tests/bug-3384-worktree-cleanup-manifest.test.cjs (manifest-scoped cleanup module)
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 const fc = require('fast-check');
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -140,6 +141,149 @@ describe('resolveWorktreeContext', () => {
       'must return effectiveRoot string even on timeout'
     );
   });
+
+  // ─── #3050 DEFECT 2: timeout must be distinguishable from not_git_repo ─────
+  test('git rev-parse --git-dir/--git-common-dir TIMES OUT → reason "git_timed_out" (#3050)', () => {
+    const execGit = (args) => {
+      if (args.includes('--git-dir')) return { ...makeTimeoutStub()(args), timedOut: true };
+      return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', timedOut: false };
+    };
+    const context = resolveWorktreeContext('/repo', { execGit, existsSync: () => false });
+    assert.strictEqual(context.reason, 'git_timed_out');
+    assert.notStrictEqual(context.reason, 'not_git_repo');
+    assert.strictEqual(context.effectiveRoot, '/repo');
+  });
+
+  // ─── #3050 item 7: drive the REAL spawn seam, not a hand-set execGit stub ──
+  // Every test above injects deps.execGit with a hand-set `timedOut`, so the
+  // production execGitDefault → shell-command-projection's execGit →
+  // isSpawnTimeout chain is never actually exercised, and a Windows-shaped
+  // timeout (spawnSync reports no `signal`, only `error.code === 'ETIMEDOUT'`)
+  // is unexercised on this half. This test omits deps.execGit entirely so
+  // resolveWorktreeContext falls through to the real execGitDefault, and
+  // mocks node:child_process.spawnSync — the actual primitive
+  // shell-command-projection.cjs's execGit wraps — to return that exact
+  // Windows shape.
+  describe('execGitDefault (real spawn seam)', () => {
+    afterEach(() => {
+      mock.restoreAll();
+    });
+
+    test('Windows-shaped timeout (no signal, error.code ETIMEDOUT) is detected as a real timeout (#3050)', () => {
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: '',
+        signal: null,
+        error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      }));
+
+      const context = resolveWorktreeContext('/repo', { existsSync: () => false });
+      assert.strictEqual(context.reason, 'git_timed_out');
+      assert.strictEqual(context.effectiveRoot, '/repo');
+    });
+
+    test('POSIX-shaped timeout (SIGTERM + error.code ETIMEDOUT) is also detected as a real timeout', () => {
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: '',
+        signal: 'SIGTERM',
+        error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      }));
+
+      const context = resolveWorktreeContext('/repo', { existsSync: () => false });
+      assert.strictEqual(context.reason, 'git_timed_out');
+    });
+
+    test('externally-delivered SIGTERM with no ETIMEDOUT error is NOT reported as a timeout', () => {
+      // Boundary: the timeout carve-out must not swallow a plain non-zero exit
+      // that merely happens to carry a signal, absent an ETIMEDOUT error.
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        signal: 'SIGTERM',
+        error: null,
+      }));
+
+      const context = resolveWorktreeContext('/repo', { existsSync: () => false });
+      assert.notStrictEqual(context.reason, 'git_timed_out');
+    });
+  });
+});
+
+// ─── #3050 item 4: shared timeout predicate — single source, no divergence ──
+// worktree-safety.cjs's execGitDefault and worktree-base-ref.cjs's
+// isExecGitTimeout both now delegate to shell-command-projection.cjs's
+// isSpawnTimeout. This describe block asserts the parity half of that claim
+// for worktree-base-ref's PUBLIC evaluateWorktreeBaseDegrade — driving it
+// against the same synthetic spawn results the shared predicate is tested
+// with directly, so a future edit that reintroduces a local, diverging copy
+// of the timeout check in worktree-base-ref.cts will make this test fail
+// rather than silently drift. (worktree-safety.cjs's own half of this parity
+// — execGitDefault via resolveWorktreeContext — is covered separately above,
+// by "execGitDefault (real spawn seam)", which drives the real
+// node:child_process.spawnSync primitive rather than a synthetic result.)
+describe('shared isSpawnTimeout predicate — parity for worktree-base-ref evaluateWorktreeBaseDegrade (#3050)', () => {
+  const { isSpawnTimeout } = require(path.join(
+    __dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'
+  ));
+  const { evaluateWorktreeBaseDegrade } = require(path.join(
+    __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-base-ref.cjs'
+  ));
+
+  const cases = [
+    {
+      name: 'SIGTERM + ETIMEDOUT (POSIX shape)',
+      result: { signal: 'SIGTERM', error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }) },
+      expectTimeout: true,
+    },
+    {
+      name: 'no signal + ETIMEDOUT (Windows shape)',
+      result: { signal: null, error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }) },
+      expectTimeout: true,
+    },
+    {
+      name: 'externally-delivered SIGTERM, no error (not a timeout)',
+      result: { signal: 'SIGTERM', error: null },
+      expectTimeout: false,
+    },
+    {
+      name: 'clean non-zero exit, no signal, no error',
+      result: { signal: null, error: null },
+      expectTimeout: false,
+    },
+  ];
+
+  for (const { name, result, expectTimeout } of cases) {
+    test(`isSpawnTimeout(${name}) === ${expectTimeout}, and evaluateWorktreeBaseDegrade agrees`, () => {
+      assert.strictEqual(isSpawnTimeout(result), expectTimeout);
+
+      // exitCode 128 ("not a git repository") is git's own definitive,
+      // completed answer — the ONLY non-timeout, non-success outcome that
+      // does not degrade. Pairing it with each non-timeout signal/error
+      // combination means: if isExecGitTimeout ever mis-classifies one of
+      // these as a timeout, this assertion flips from 'no-head' (no
+      // degrade) to 'head-unresolvable' (degrade) and the test fails —
+      // a real behavioral divergence signal, not a same-reason coincidence.
+      const execGit = () => ({
+        exitCode: expectTimeout ? null : 128,
+        stdout: '',
+        stderr: '',
+        signal: result.signal,
+        error: result.error,
+      });
+      const degradeResult = evaluateWorktreeBaseDegrade({ execGit, effectiveBaseRef: null, cwd: '/repo' });
+      if (expectTimeout) {
+        assert.strictEqual(degradeResult.shouldDegrade, true);
+        assert.strictEqual(degradeResult.reason, 'head-unresolvable');
+      } else {
+        assert.strictEqual(degradeResult.shouldDegrade, false);
+        assert.strictEqual(degradeResult.reason, 'no-head');
+      }
+    });
+  }
 });
 
 // ─── parseWorktreePorcelain ───────────────────────────────────────────────────
@@ -3122,12 +3266,24 @@ describe('worktree-safety: resolveWorktreeRoot and pruneOrphanedWorktrees reloca
 describe('worktree-safety: resolveWorktreeRoot behaviour', () => {
   const worktreeSafety = require(WORKTREE_SAFETY_PATH);
 
-  test('resolveWorktreeRoot(createTempGitProject()) returns a non-empty string', (t) => {
+  test('resolveWorktreeRoot(createTempGitProject()) returns {root, reason} with a non-empty root', (t) => {
     const dir = createTempGitProject('gsd-wt-root-');
     t.after(() => cleanup(dir));
     const result = worktreeSafety.resolveWorktreeRoot(dir);
-    assert.ok(typeof result === 'string' && result.length > 0,
-      `Expected non-empty string, got: ${JSON.stringify(result)}`);
+    assert.ok(result && typeof result === 'object', 'must return an object, not a bare string');
+    assert.ok(typeof result.root === 'string' && result.root.length > 0,
+      `Expected non-empty root string, got: ${JSON.stringify(result)}`);
+    assert.ok(typeof result.reason === 'string' && result.reason.length > 0,
+      `Expected non-empty reason string, got: ${JSON.stringify(result)}`);
+  });
+
+  test('resolveWorktreeRoot propagates git_timed_out via the injected execGit seam (#3050)', () => {
+    const result = worktreeSafety.resolveWorktreeRoot('/repo/wt', {
+      existsSync: () => false,
+      execGit: makeTimeoutStub(),
+    });
+    assert.strictEqual(result.reason, 'git_timed_out');
+    assert.strictEqual(result.root, '/repo/wt');
   });
 });
 

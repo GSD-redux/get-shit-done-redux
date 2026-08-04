@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit as execGitSeam, posixNormalize } from './shell-command-projection.cjs';
+import { execGit as execGitSeam, posixNormalize, isSpawnTimeout } from './shell-command-projection.cjs';
 
 // Default timeout for worktree-related git subprocess calls.
 // 10 s is generous enough for normal git operations on large repos while still
@@ -38,11 +38,13 @@ type ExecGitFn = (args: string[], opts?: { cwd?: string; timeout?: number }) => 
  * (args, opts) shape — see worktree-safety-policy.test.cjs.
  *
  * Return shape: { exitCode, stdout, stderr, timedOut, error, signal }
- *   - timedOut: true when spawnSync reports SIGTERM + ETIMEDOUT
+ *   - timedOut: derived via the shared `isSpawnTimeout` predicate
+ *     (shell-command-projection.cts) — true when spawnSync's `error.code`
+ *     is `ETIMEDOUT`; does not require `signal === 'SIGTERM'` (#3050).
  */
 function execGitDefault(args: string[], opts: { cwd?: string; timeout?: number } = {}): GitResult {
   const result = execGitSeam(args, { ...opts, timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS });
-  const timedOut = result.signal === 'SIGTERM' && (result.error as NodeJS.ErrnoException)?.code === 'ETIMEDOUT';
+  const timedOut = isSpawnTimeout(result);
   return { ...result, timedOut };
 }
 
@@ -1800,15 +1802,22 @@ void parseWorktreeListPaths;
 // ─── Moved from core.cjs (ADR-857 T0 #1268 rehome-core-squatters) ─────────────
 
 /**
- * Resolve the main worktree root when running inside a git worktree.
- * In a linked worktree, .planning/ lives in the main worktree, not in the linked one.
- * Returns the main worktree path, or cwd if not in a worktree.
+ * Resolve the main worktree root when running inside a git worktree, along
+ * with the `reason` that produced it (#3050). Callers MUST inspect `reason`
+ * before trusting `root` unconditionally — a `reason` of `git_timed_out`
+ * means the git subprocess used to distinguish "linked worktree" from
+ * "not a repo" never completed, so `root` is a best-effort fallback (cwd),
+ * not a confirmed worktree root. Degrading to cwd rather than throwing is
+ * intentional (return degraded result on timeout; do not throw) — but the
+ * reason must still reach the caller so it can surface the risk instead of
+ * silently trusting the wrong root.
  */
-function resolveWorktreeRoot(cwd: string): string {
+function resolveWorktreeRoot(cwd: string, deps: WorktreeDeps = {}): { root: string; reason: string } {
   const context = resolveWorktreeContext(cwd, {
-    existsSync: fs.existsSync,
+    existsSync: deps.existsSync || fs.existsSync,
+    execGit: deps.execGit,
   });
-  return context.effectiveRoot;
+  return { root: context.effectiveRoot, reason: context.reason };
 }
 
 /**
