@@ -9,6 +9,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { createTempDir, cleanup, runGsdTools } = require('./helpers.cjs');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const {
   parseSlicesFromRoadmap,
@@ -576,5 +577,145 @@ describe('gsd-tools from-gsd2 CLI', () => {
     assert.ok(fs.existsSync(path.join(tmpDir, '.planning', 'phases', '01-setup', '01-01-SUMMARY.md')));
     // S02/T01 is pending → no SUMMARY
     assert.ok(!fs.existsSync(path.join(tmpDir, '.planning', 'phases', '02-auth-system', '02-01-SUMMARY.md')));
+  });
+});
+
+// ─── SUMMARY.md frontmatter stripping (#2703) ──────────────────────────────
+
+/**
+ * The emitted artifact under test. `buildSummaryMd` is module-private;
+ * `buildPlanningArtifacts` is its only caller and is the shape `cmdFromGsd2`
+ * drives in production, so every row below asserts through that seam rather
+ * than against the private function.
+ */
+const SUMMARY_KEY = 'phases/01-setup/01-01-SUMMARY.md';
+
+function emitSummary(summary) {
+  return buildPlanningArtifacts({
+    projectContent: '# P\n',
+    requirements: null,
+    milestones: [{
+      id: 'M001',
+      title: 'Foundation',
+      slices: [{
+        done: true,
+        id: 'S01',
+        title: 'Setup',
+        tasks: [{ done: true, id: 'T01', title: 'Init', description: '', mustHaves: [], summary }],
+      }],
+    }],
+  }).get(SUMMARY_KEY);
+}
+
+/** Re-encode an LF document with CRLF line endings. */
+const crlf = (s) => s.replace(/\n/g, '\r\n');
+
+/** The whole document `buildSummaryMd` is expected to emit for a given body. */
+const expectedDoc = (body) => ['---', 'phase: "01"', 'plan: "01"', '---', '', body, ''].join('\n');
+
+/**
+ * Assert that `summary` — and its CRLF re-encoding — both emit the document
+ * built from `body`. CRLF/LF parity is the invariant this whole block exists
+ * to protect, so every row asserts it the same way rather than restating the
+ * pair by hand.
+ */
+function assertBothEncodings(summary, body) {
+  assert.strictEqual(emitSummary(summary), expectedDoc(body));
+  assert.strictEqual(emitSummary(crlf(summary)), expectedDoc(crlf(body)));
+}
+
+describe('buildSummaryMd frontmatter stripping (#2703)', () => {
+  test('strips GSD-2 frontmatter identically under CRLF and LF (#2703)', () => {
+    const summary = ['---', 'task: T01', 'status: done', '---', '', 'The task body.'].join('\n');
+    // The bug: the CRLF emission carried a second, unstripped frontmatter block.
+    assert.strictEqual(emitSummary(crlf(summary)), emitSummary(summary));
+    assertBothEncodings(summary, 'The task body.');
+  });
+
+  test('strips a single frontmatter block', () => {
+    assertBothEncodings(['---', 'task: T01', '---', '', 'Body one.'].join('\n'), 'Body one.');
+  });
+
+  test('passes through a summary that has no frontmatter', () => {
+    // Body line endings are passed through untouched — stripping frontmatter
+    // must not silently re-encode the author's prose.
+    const summary = ['Just prose.', '', 'No frontmatter here.'].join('\n');
+    assertBothEncodings(summary, summary);
+  });
+
+  test('emits no SUMMARY.md at all for an empty summary', () => {
+    // buildPlanningArtifacts guards on `task.done && task.summary`, so an empty
+    // summary produces no artifact rather than a default-bodied one.
+    assert.strictEqual(emitSummary(''), undefined);
+  });
+
+  test('falls back to the migration default for a whitespace-only summary', () => {
+    assert.strictEqual(emitSummary('   \n  \n'), expectedDoc('Task completed (migrated from GSD-2).'));
+  });
+
+  test('preserves a lone thematic break that opens the body', () => {
+    const summary = ['---', 'task: T01', '---', '', '---', '', 'Body after a rule.'].join('\n');
+    assertBothEncodings(summary, ['---', '', 'Body after a rule.'].join('\n'));
+  });
+
+  test('does not eat a thematic-break-delimited section that opens the body', () => {
+    // Regression guard. The canonical stripper's DEFAULT greedy loop deletes
+    // `Some Heading` outright, because `---` / text / `---` is lexically a
+    // second frontmatter block. buildSummaryMd therefore passes `once: true`.
+    // Caught by adversarial review of the first cut of this fix; the old
+    // pre-#2703 regex preserved this content, so eating it would have been a
+    // silent regression shipped alongside the CRLF fix.
+    const summary = ['---', 'task: T01', '---', '---', 'Some Heading', '---', '', 'Body content below.'].join('\n');
+    assertBothEncodings(summary, ['---', 'Some Heading', '---', '', 'Body content below.'].join('\n'));
+  });
+
+  test('strips only the first block when two frontmatter-shaped blocks lead', () => {
+    // Same `once` semantics stated for the YAML-shaped case: a GSD-2 summary is
+    // an arbitrary user document, so a second block is body content, not a
+    // corrupt duplicate header to be recovered from.
+    const summary = ['---', 'a: 1', '---', '---', 'b: 2', '---', '', 'Real body.'].join('\n');
+    assertBothEncodings(summary, ['---', 'b: 2', '---', '', 'Real body.'].join('\n'));
+  });
+
+  test('does not strip a --- that appears mid-body', () => {
+    const summary = ['Intro prose.', '', '---', '', 'More prose.'].join('\n');
+    assertBothEncodings(summary, summary);
+  });
+
+  test('leaves an unterminated frontmatter block as body text', () => {
+    const summary = ['---', 'task: T01', 'status: done'].join('\n');
+    assertBothEncodings(summary, summary);
+  });
+
+  test('strips frontmatter behind a leading BOM', () => {
+    const summary = '﻿' + ['---', 'task: T01', '---', '', 'Body.'].join('\n');
+    assertBothEncodings(summary, 'Body.');
+  });
+
+  test('property: CRLF and LF summaries emit the same SUMMARY.md (#2703)', () => {
+    // Body lines are drawn from a charset with no `-`, so a generated body can
+    // never accidentally form a second frontmatter block.
+    const yamlKey = fc.stringMatching(/^[a-z][a-z0-9_]{0,10}$/);
+    const yamlValue = fc.stringMatching(/^[a-zA-Z0-9 ._]{1,20}$/);
+    const bodyLine = fc.stringMatching(/^[a-zA-Z0-9 ._]{1,30}$/);
+
+    fc.assert(
+      fc.property(
+        fc.array(fc.tuple(yamlKey, yamlValue), { minLength: 1, maxLength: 4 }),
+        fc.array(bodyLine, { minLength: 1, maxLength: 4 }),
+        (pairs, bodyLines) => {
+          const doc = [
+            '---',
+            ...pairs.map(([k, v]) => `${k}: ${v}`),
+            '---',
+            '',
+            ...bodyLines,
+          ].join('\n');
+          const fromLf = emitSummary(doc);
+          const fromCrlf = emitSummary(crlf(doc));
+          assert.strictEqual(fromCrlf.replace(/\r\n/g, '\n'), fromLf);
+        },
+      ),
+    );
   });
 });

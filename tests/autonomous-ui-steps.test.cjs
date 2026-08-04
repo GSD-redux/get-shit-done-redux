@@ -12,13 +12,32 @@ const fs = require('fs');
 const path = require('path');
 
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'autonomous.md');
+const UI_DESIGN_CONTRACT_REF_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'references', 'autonomous-ui-design-contract.md'
+);
+
+/**
+ * #2994 fragmentization moved §3a.5's body out of autonomous.md into
+ * gsd-core/references/autonomous-ui-design-contract.md, leaving an
+ * unconditional `Read and execute:` pointer in the host. Splice the
+ * reference file's content back in at the pointer's position so §3a.5
+ * slicing/ordering assertions still see the real step body.
+ */
+function readAutonomousCombined() {
+  const raw = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+  const pointerRe = /Read and execute: `\$HOME\/\.claude\/gsd-core\/references\/autonomous-ui-design-contract\.md`/;
+  assert.ok(pointerRe.test(raw), 'autonomous.md must still contain the §3a.5 reference pointer');
+  const refContent = fs.readFileSync(UI_DESIGN_CONTRACT_REF_PATH, 'utf-8');
+  return raw.replace(pointerRe, refContent);
+}
 
 describe('autonomous workflow ui-phase and ui-review integration (#1375)', () => {
   let content;
 
   beforeEach(() => {
     assert.ok(fs.existsSync(WORKFLOW_PATH), 'workflows/autonomous.md should exist');
-    content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(fs.existsSync(UI_DESIGN_CONTRACT_REF_PATH), 'references/autonomous-ui-design-contract.md should exist');
+    content = readAutonomousCombined();
   });
 
   describe('step 3a.5 — UI design contract before planning', () => {

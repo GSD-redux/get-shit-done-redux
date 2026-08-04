@@ -29,7 +29,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
 
-const { runGsdTools, cleanup } = require('./helpers.cjs');
+const { runGsdTools, cleanup, readFileNormalized } = require('./helpers.cjs');
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -510,8 +510,8 @@ function git(cwd, ...args) {
  * same way a markdown parser would.
  */
 function extractHandleBranchingBash() {
-  const content = fs.readFileSync(EXECUTE_PHASE_PATH, 'utf-8');
-  const lines = content.split(/\r?\n/);
+  const content = readFileNormalized(EXECUTE_PHASE_PATH);
+  const lines = content.split('\n');
 
   let start = -1;
   let end = -1;

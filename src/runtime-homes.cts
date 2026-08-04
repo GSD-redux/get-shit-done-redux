@@ -55,6 +55,16 @@ export interface ResolveKimiOpts {
   existsSync?: (p: string) => boolean;
 }
 
+/**
+ * Options for `resolveKimiHooksTomlDir`. Separate from `ResolveKimiOpts` so the
+ * `runtime` selector is not implied to affect `resolveKimiGlobalDir`, which
+ * resolves the generic Agent-Skills root and is runtime-independent.
+ */
+export interface ResolveKimiHooksTomlOpts extends ResolveKimiOpts {
+  /** Runtime id — `kimi` (default) or `kimi-code`. See #2755. */
+  runtime?: string;
+}
+
 export interface ResolveConfigHomeOpts {
   env?: Record<string, string | undefined>;
   home?: string;
@@ -370,28 +380,45 @@ export function resolveKimiGlobalDir(opts: ResolveKimiOpts = {}): string {
 }
 
 /**
- * Resolve the directory holding Kimi CLI's OWN native config.toml (the file
- * Kimi itself reads for providers/models/hooks/etc — see
- * moonshotai.github.io/kimi-cli/en/configuration/data-locations.html and
- * .../reference/kimi-command.html). Default `~/.kimi`, overridden by
- * `KIMI_SHARE_DIR` per Kimi's own upstream env-var (NOT `KIMI_CONFIG_DIR`,
- * which is a GSD-installer write-location override for the unrelated generic
- * Agent-Skills root resolved by resolveKimiGlobalDir above).
+ * Resolve the directory holding the Kimi product's OWN native config.toml —
+ * the file that product itself reads for providers/models/hooks/etc, and the
+ * one GSD writes its `[[hooks]]` block, hooks bundle and CommonJS marker into.
  *
- * This is deliberately a SEPARATE directory from GSD's kimi configHome
- * (~/.config/agents): Kimi's own docs confirm the Agent-Skills search path is
- * independent of KIMI_SHARE_DIR ("This variable does not affect Agent Skills
- * search paths, which are handled separately"). #2095 Upgrade 1 writes GSD's
- * native [[hooks]] entries into `<this dir>/config.toml`, never into the
- * skills configDir.
+ * The two Kimi runtimes share `hooksSurface: "kimi-hooks-toml"` but are
+ * different products with different roots, and this must be selected by
+ * `runtime` (#2755). Before that fix this function was unparameterized and a
+ * `--kimi-code` install wrote its hooks into Kimi CLI's `~/.kimi`, leaving Kimi
+ * Code with none:
+ *
+ *   kimi       → `~/.kimi`,      overridden by `KIMI_SHARE_DIR`
+ *                (moonshotai.github.io/kimi-cli/en/configuration/data-locations.html)
+ *   kimi-code  → `~/.kimi-code`, overridden by `KIMI_CODE_HOME`
+ *                (moonshotai/kimi-code docs/en/configuration/data-locations.md;
+ *                 its hooks doc places `[[hooks]]` in `~/.kimi-code/config.toml`)
+ *
+ * Each product's env var is scoped to that product: `KIMI_SHARE_DIR` is Kimi
+ * CLI's own upstream variable and must NOT redirect kimi-code, nor vice versa.
+ *
+ * An unrecognised `runtime` (and an omitted one) falls back to `~/.kimi`, which
+ * preserves the pre-#2755 behaviour for every existing caller that passes no
+ * runtime — this function is exported, so that default is a contract.
+ *
+ * For BOTH runtimes this is deliberately a SEPARATE directory from the generic
+ * Agent-Skills root resolved by `resolveKimiGlobalDir` (`~/.config/agents`):
+ * both vendors' docs confirm the Agent-Skills search path is independent of the
+ * data-root env var. GSD's native `[[hooks]]` entries go in
+ * `<this dir>/config.toml`, never into the skills configDir.
  */
-export function resolveKimiHooksTomlDir(opts: ResolveKimiOpts = {}): string {
+export function resolveKimiHooksTomlDir(opts: ResolveKimiHooksTomlOpts = {}): string {
   const env: Record<string, string | undefined> = opts.env ?? process.env;
   const home = opts.home ?? os.homedir();
-  return resolveConfigHomeFromDescriptor(
-    { kind: 'dot-home', name: '.kimi', env: ['KIMI_SHARE_DIR'] },
-    { env, home },
-  );
+  // Explicit comparison rather than an object lookup keyed on `runtime`: the
+  // value originates from argv, and an index would resolve inherited keys
+  // (`constructor`, `__proto__`) to something that is not a descriptor.
+  const descriptor: DotHomeDescriptor = opts.runtime === 'kimi-code'
+    ? { kind: 'dot-home', name: '.kimi-code', env: ['KIMI_CODE_HOME'] }
+    : { kind: 'dot-home', name: '.kimi', env: ['KIMI_SHARE_DIR'] };
+  return resolveConfigHomeFromDescriptor(descriptor, { env, home });
 }
 
 /**

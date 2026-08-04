@@ -105,10 +105,9 @@ user who wants a preferred set has `review.default_reviewers`. Both stay lenient
   preference evaluated across many hosts, so a subset being present is expected, not an error
 - If all configured reviewers are unavailable, fail with an actionable message
 
-**Reviewer instances (#1517, optional):** if `review.reviewer_instances` is configured,
-instance names in `review.default_reviewers` run as independent identities. Resolution rules
-are in `gsd-core/references/reviewer-instances.md` — load it lazily only when instances are
-configured. Unconfigured → default path unchanged.
+<!-- gsd:section id="reviewer-instances-note-1" when="state:reviewer-instances-configured" -->
+If `section_manifest` is `null` or `"reviewer-instances-note-1"` is in its `included` list: read and execute `gsd-core/workflows/review/steps/reviewer-instances-note-1.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 If no CLIs are available:
 ```
@@ -156,7 +155,7 @@ Rules:
 Collect phase artifacts for the review prompt:
 
 ```bash
-INIT=$(gsd_run query init.phase-op "${PHASE_ARG}")
+INIT=$(gsd_run query init.review "${PHASE_ARG}")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 # #2358: ONE run-scoped temp dir (portable via ${TMPDIR:-/tmp}) so overlapping
@@ -306,9 +305,9 @@ An environment that genuinely hits an untrusted-hook prompt surfaces through the
 the empty-output stub as a dropped lane with diagnosable stderr, not silent attrition. Do not
 reintroduce the flag (even spelled out in prose — a regression test bans the literal file-wide).
 
-**Reviewer instances (#1517, optional):** instances resolve *through* a lane and are not lanes
-themselves (ADR-2782 D8). Each selected instance invokes its base `cli` with its own `model`/`agent`
-as opaque argv. Exact invocation in `gsd-core/references/reviewer-instances.md`.
+<!-- gsd:section id="reviewer-instances-note-2" when="state:reviewer-instances-configured" -->
+If `section_manifest` is `null` or `"reviewer-instances-note-2"` is in its `included` list: read and execute `gsd-core/workflows/review/steps/reviewer-instances-note-2.md`. Otherwise skip — do not read the file.
+<!-- /gsd:section -->
 
 Lanes run **sequentially, not in parallel** — concurrent invocation trips provider rate limits.
 

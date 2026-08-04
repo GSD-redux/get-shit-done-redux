@@ -67,6 +67,81 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
 
   **Amended by #2929 (Phase 2).** This ADR originally specified the contract as "priority + binary-search cutoff to a per-runtime budget". Implementing Phase 2 established that a cutoff alone **cannot express the function this platform generalizes**: `prompt-budget.applyBudget` is not a cutoff but a fixed five-step ladder in which each section carries its own shrink strategy, and only three of its eight sections are ever droppable — `PROJECT.md` is head-shrunk to N lines and plans are proportionally tail-truncated with a per-plan floor, while instructions and roadmap are never trimmed at all. A cutoff composer sorts by priority and discards the tail; it has no way to say "shrink this one", "truncate that one but never below its floor", or "these three are the only droppables, in this order". Building to the literal wording and routing `prompt-budget` through it would have silently changed review-prompt output. Shrink strategies are therefore the core abstraction, and **binary-search cutoff becomes one strategy among them** — the right one for per-runtime emission in Phases 3-4, not for this ladder. Ordering is declaration order rather than a numeric priority field. This is an elaboration of the decision's intent, not a reversal of it.
 - **Applicability grammar (added by #2930, Phase 3).** The fragment unit's `when=` attribute is deliberately a CLOSED grammar: exactly one atom from a frozen vocabulary — `always`, `flag:--wave`, `state:gap-closure-phase`, `state:has-prior-phases` — with no boolean operators, negation, or nesting, and an unknown `when=` value throws rather than being ignored. This is a Greenspun's-Tenth-Rule guard: left open-ended, `when=` acquires `&&`/`!`/precedence/runtime-capability predicates and becomes an ad-hoc, informally-specified predicate language grown one condition at a time. Widening the vocabulary requires a coordinated ADR amendment, not an organic edit. `when=` is parsed and validated in Phase 3 but not yet acted on; applicability selection is Phase 5.
+
+  **Amended by #2992 (Phase 6.1) — the vocabulary widens 4 → 14, and the guard is restated.**
+  This is the coordinated amendment this bullet requires; it is not an organic edit. Rolling the
+  fragment model past `execute-phase.md` was impossible without it: three of the original four
+  atoms are execute-phase-specific, so every other LARGE/XL workflow branches on conditions the
+  vocabulary could not express.
+
+  *The guard is composition, not cardinality.* This bullet's own rationale names the hazard
+  precisely — `when=` acquiring `&&`/`!`/precedence and becoming an ad-hoc predicate language. A
+  14-entry list with no operators is not a language; a 4-entry list **with** `&&` would be. Adding
+  atoms therefore does not weaken the guard, and the following invariants are unchanged and
+  binding: exactly one atom per marker, no boolean operators, no negation, no nesting, and an
+  unrecognized `when=` still throws rather than being silently excluded. `WHEN_PREDICATES` remains
+  a **hand-written literal map** — deriving a predicate from its atom string (`atom.slice(5)`) is
+  tokenization, and a parser relocated into a build loop is still a parser. The redundancy between
+  an atom's name and its literal token is deliberate; a behavioral test derived from the vocabulary
+  catches a desync, because a desync silently excludes a section rather than failing loudly.
+
+  *Two independent gates govern admission.* An atom ships only when it has **both** (1) a named
+  consuming section of at least 400 bytes, established by survey, and (2) a fact the init seam
+  demonstrably computes at a real entry point. Gate (2) was learned during implementation and is
+  the more important of the two: an atom whose fact is never computed evaluates `false` forever, so
+  a section marked with it is silently never included — strictly worse than not shipping the atom,
+  because the marker looks like working gating. The same failure mode appeared twice more during
+  this phase and is recorded so it is not rediscovered: `parseNamedArgs` always materializes a
+  boolean flag key (`false` when absent, never `undefined`), so "present in the options record" is
+  **not** token presence; and four workflow handlers passed no options at all. Both were fixed by
+  wiring, not by relaxing the gate.
+
+  **Shipped (14).** `always`, `flag:--wave`, `state:gap-closure-phase`, `state:has-prior-phases`
+  (pre-existing), plus `flag:--auto`, `flag:--discuss`, `flag:--forensic`, `flag:--full`,
+  `flag:--research`, `flag:--reset-phase-numbers`, `flag:--validate`, `state:needs-codebase-map`,
+  `state:phase-mvp-mode`, `state:worktrees-enabled`.
+
+  **Withheld (6), surveyed and justified but not yet computable.** `flag:--verify-only` and
+  `state:is-monorepo` (docs-update), `flag:--converge` (autonomous), `flag:--fix` and
+  `state:fallow-enabled` (code-review), `state:git-create-tag` (complete-milestone). Each fails
+  gate (2): `docs-update` initializes through `cmdDocsInit` in `docs.cts`, and the other three run
+  through the shared generic `init.phase-op` / `init.milestone-op` / `init.manager` entry points,
+  each invoked by 20+ workflows — binding a workflow name into those would misattribute one
+  workflow's sections to every other caller. They land with the entry-point work in the LARGE/XL
+  rollout phase. The survey is recorded so it is not repeated.
+
+  **Permanently ineligible condition classes** (found by survey, not admissible as atoms at any
+  future point without a different mechanism): runtime tool/capability availability (Task tool,
+  Playwright-MCP session), live git repository state, Capability-Registry/hook-resolved conditions,
+  interactive answers given mid-run, and UAT/verification runtime results. None is knowable from
+  parsed CLI arguments or `.planning/` state at init time.
+
+  **Amended by #2993 (Phase 6.2) — the vocabulary widens 14 → 19, second
+  coordinated amendment.** Rolling the fragment model onto `plan-phase.md` —
+  the largest workflow in the repo — surfaced 5 more atoms, gated by the same
+  two admission tests #2992 established: a named consuming section of at
+  least 400 bytes, and a fact the init seam demonstrably computes. **Shipped
+  (5).** `flag:--ingest`, `flag:--prd`, `flag:--research-phase`,
+  `flag:--reviews` (each a direct `parseNamedArgs` addition to the
+  `plan-phase` router handler; the generic flags-Set builder in `init.cts`
+  picks them up automatically), and `state:chunked-mode`.
+
+  `state:chunked-mode` is the one atom in this batch that is not a bare flag
+  check: `plan-phase.md`'s `CHUNKED_MODE` is true when EITHER `--chunked` is
+  passed OR `.planning/config.json`'s `workflow.plan_chunked` is set — a
+  disjunction of a flag and a config read. That disjunction is resolved to a
+  single boolean **in the fact**, computed once by the init seam
+  (`buildSectionManifestField` in `src/init.cts`) before `selectSections` is
+  ever called; `WHEN_PREDICATES['state:chunked-mode']` reads only
+  `facts.chunkedMode` and contains no `||`. The `when=` grammar therefore
+  still sees exactly one atom with no operator — the same invariant #2992
+  restated is unchanged by this amendment. This generalizes to a rule for
+  every future atom: **any condition that cannot be reduced to a single
+  boolean fact is not an atom** — it is either resolved upstream in fact
+  computation (as here) or it is not eligible for the grammar at all, per
+  the "Rejected" cases (`--auto`/`--chain`/persisted-config interleaving;
+  negated `--skip-bounce` OR `--gaps` OR NOT(...)) recorded in
+  `.gsd/phase/chore-2993-fragmentize-plan-phase/40-design.md`.
 - **Budget unit:** bytes for emission caps (matches `lfByteCount`, deterministic, offline-safe); a token estimate for run-time selection.
 
   **Corrected by #2931 (Phase 4) — the Windsurf cap was never load-bearing.** The Context
@@ -192,6 +267,8 @@ Prototype scope notes: the parser is intentionally self-contained for the exampl
 **Resolved by other work — not carried as open.** A fourth question was proposed in review (#1671, 2026-06-25): *what populates the eval-gate assertion set, and is it graded exogenously?* Since that review, the answer has landed as first-class predicate classes rather than remaining a design gap: `PROBE.principle` (`verifier-reach-equals-spec-reach`), `PROBE.family` (edge-probe + prohibition-probe + ui-consideration-probe), `PROBE.protocol` (recall → precision), and `PROHIB.judgment-tier` (exogenous grading) — see ADR-550 D4/D7 and ADR-1606. The `PROHIB.*` predicates live in the same `CONTEXT.md` store this ADR formalizes, which is the single-store property that review asked for.
 
 **Resolved by #2930 (Phase 3) — fragment unit: in-file `<!-- gsd:section id= when= -->` markers.** Question 1 asked separate files vs in-file section markers. Confirmed with the maintainer: separate files are eliminated by this phase's own acceptance criterion — "emitted output byte-identical-or-smaller" — because splitting a workflow into files changes the emitted tree's *shape*, which is neither identical nor smaller, it is different; it also multiplies INVENTORY rows and `@`-ref contract surface for no Phase-3 benefit. A sidecar fragment manifest keyed on heading anchors was also rejected: zero source growth, but it creates a second surface that drifts from the workflow — the exact multi-surface edit pain the epic exists to remove (`DEFECT.GENERATIVE-FIX`), and directly against the epic's "one fragment, not 4 surfaces" thesis. The shipped answer is in-file markers, stripped at emit so the installed artifact carries no build metadata and shrinks; markers are self-anchoring (no line-number keying — Open question 4 already rejected that for the predicate index, and the same reasoning applies here), and the existing `<!-- gsd:loop-host … -->` block at `plan-phase.md:1` is in-repo precedent for the form. Production landed under `src/workflow-fragments.cts` → `gsd-core/bin/lib/workflow-fragments.cjs` (ADR-457 build-at-publish), piloted on `execute-phase.md`. **The pilot was retargeted from `plan-phase.md` mid-phase, and the reason is itself the most important finding here.** The branches the epic names as motivating (`--prd`, `--ingest`, `--mvp`, `--reviews`) all live in `plan-phase.md` — but `plan-phase.md` sits only 36 B under an independent, pre-existing size gate (`tests/phase6-capstone-conformance.test.cjs`'s `PRE_PHASE6`, an ADR-857 Phase-6 completion property that this ADR's own Blast-radius analysis did not enumerate against, catching only the XL cap). It cannot absorb even the smallest marker overhead, so **it could not be fragmentized at all under this phase's grammar**, independent of any shape limitation. The pilot instead proves the mechanism on state- and flag-gated `<step>` blocks in `execute-phase.md` (`partial-wave`/`flag:--wave`, `gap-closure-artifacts`/`state:gap-closure-phase`, `regression-gate`/`state:has-prior-phases`), which has 728 B of real headroom under its own `PRE_PHASE6` gate. This is direct evidence for the epic's premise that fragmentization pays off, but it also means **Phase 4 (moving size caps from source bytes to emitted bytes) may need to land before `plan-phase.md` itself can be fragmentized.** Separately, and independent of the size-gate finding: the marker grammar addresses SECTION-shaped branches only — a whole-line, non-nesting comment pair around a contiguous block — and `--mvp`'s content in `plan-phase.md` is INTERLEAVED rather than sectioned (`MVP_MODE` resolution shares a bash block with `--tdd`/`--no-tracer`/`--no-reversibility-gates` at `plan-phase.md:125-158`, and is inline `${MVP_MODE === 'true' ? ... }` template interpolation at `:794-803`), so `--mvp` would remain unmarkable by this grammar even if the size gate allowed it. Phase 6 must either accept that gap or introduce a finer-grained (sub-line) mechanism for interleaved branches.
+
+**Resolved by #2992 (Phase 6.1) — the gap is ACCEPTED, and it is closed by measurement rather than by mechanism.** Phase 6 initially chose to build the sub-line mechanism. Measuring the two sites first falsified the premise that choice rested on. `plan-phase.md:125-158` is not optional content at all: it is `MVP_MODE` **resolution** (alongside `--tdd` / `--no-tracer` / `--no-reversibility-gates`), which must execute on every invocation in order to resolve the flags — gating it would break the workflow rather than trim it. `plan-phase.md:794-803` is genuinely conditional, but it is roughly **340 bytes** and is *already* a lazy pointer: its body instructs the planner to read `references/planner-mvp-mode.md`, so the heavy content is deferred by the existing `@`-reference model, not carried inline. A sub-line grammar would therefore buy about 340 bytes at one site while the other site must never be gated at all — and it would reintroduce exactly the Greenspun's-Tenth-Rule hazard the applicability-grammar bullet above exists to prevent, in exchange for that. The gap this ADR identified is real as a *shape* observation and inconsequential as a *value* one. `--mvp` remains unmarkable by the section grammar, deliberately and permanently; the section-shaped branches of `plan-phase.md` are still fragmentized normally. Should an interleaved branch later carry genuinely large, genuinely skippable content, that measurement — not this precedent — is what should reopen the question.
 
 **Resolved by #2930 (Phase 3) — build-time emission is the primary surface; per-workflow cutover, no double-write.** Question 2 asked build-time emission vs run-time assembly as the primary surface during migration, and whether that requires a double-write period. Because markers are stripped at emit, an unmarked workflow parses to exactly one implicit fragment and composes back byte-identical by construction — that structural guarantee is what makes a per-workflow cutover safe file-by-file, with no double-write period and no flag day: a workflow can gain markers on its own schedule without touching any other workflow's emission path. Phase 5's run-time selection is planned to consume a build-derived manifest, not markers read at run time, keeping the run-time surface decoupled from the authoring surface.
 

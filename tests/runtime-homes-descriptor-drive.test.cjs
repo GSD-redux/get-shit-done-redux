@@ -27,6 +27,7 @@ const {
   getGlobalSkillsBase,
   resolveAntigravityGlobalDir,
   resolveKimiGlobalDir,
+  resolveKimiHooksTomlDir,
   resolveConfigHomeFromDescriptor,
   resolveSkillsBaseFromDescriptor,
   detectAntigravityDirAmbiguity,
@@ -1226,3 +1227,95 @@ describe('bug #3126: init.cjs uses runtime-homes not hardcoded .claude', () => {
 });
   });
 }
+
+// ── resolveKimiHooksTomlDir: per-runtime hooks root (#2755) ──────────────────
+
+describe('resolveKimiHooksTomlDir — per-runtime hooks root (#2755)', () => {
+  // Pure path computation; the fixture home never needs to exist on disk.
+  const FIXTURE_HOME = path.join(os.tmpdir(), 'gsd-2755-home-fixture');
+  const at = (...seg) => path.join(FIXTURE_HOME, ...seg);
+
+  test('a bare call does not throw', () => {
+    assert.doesNotThrow(() => resolveKimiHooksTomlDir());
+  });
+
+  test('an omitted runtime still resolves Kimi CLI\'s ~/.kimi (back-compat)', () => {
+    // The function is exported; callers and tests outside this diff pass no
+    // runtime, and their destination must not move.
+    assert.equal(resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: {} }), at('.kimi'));
+  });
+
+  test('runtime "kimi" resolves ~/.kimi', () => {
+    assert.equal(
+      resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: {}, runtime: 'kimi' }),
+      at('.kimi'),
+    );
+  });
+
+  test('runtime "kimi-code" resolves ~/.kimi-code', () => {
+    assert.equal(
+      resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: {}, runtime: 'kimi-code' }),
+      at('.kimi-code'),
+    );
+  });
+
+  test('KIMI_SHARE_DIR overrides the kimi root', () => {
+    assert.equal(
+      String(resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: { KIMI_SHARE_DIR: '/share' }, runtime: 'kimi' })).replace(/\\/g, '/'),
+      '/share',
+    );
+  });
+
+  test('KIMI_CODE_HOME overrides the kimi-code root', () => {
+    assert.equal(
+      String(resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: { KIMI_CODE_HOME: '/kcode' }, runtime: 'kimi-code' })).replace(/\\/g, '/'),
+      '/kcode',
+    );
+  });
+
+  test('KIMI_SHARE_DIR does not hijack the kimi-code root', () => {
+    // KIMI_SHARE_DIR is Kimi CLI's own upstream var. Before #2755 it silently
+    // redirected kimi-code too — that accident was the issue's suggested
+    // workaround, and the fix must make it inert.
+    assert.equal(
+      resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: { KIMI_SHARE_DIR: '/share' }, runtime: 'kimi-code' }),
+      at('.kimi-code'),
+    );
+  });
+
+  test('KIMI_CODE_HOME does not hijack the kimi root', () => {
+    assert.equal(
+      resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: { KIMI_CODE_HOME: '/kcode' }, runtime: 'kimi' }),
+      at('.kimi'),
+    );
+  });
+
+  test('an unknown runtime falls back to ~/.kimi', () => {
+    assert.equal(
+      resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: {}, runtime: 'not-a-kimi' }),
+      at('.kimi'),
+    );
+  });
+
+  test('every kimi-hooks-toml runtime resolves a distinct hooks root', () => {
+    // Divergence guard (CLAUDE.md → Generative Fix Divergence). The resolver
+    // hardcodes the two Kimi roots while the capability registry independently
+    // decides which runtimes use the kimi-hooks-toml surface. If a third one is
+    // ever added without teaching the resolver its root, it silently inherits
+    // ~/.kimi — which IS the #2755 defect, re-created. This fails the moment
+    // those two surfaces drift apart.
+    const capsDir = path.join(ROOT, 'capabilities');
+    const ids = fs.readdirSync(capsDir).filter((id) => {
+      const file = path.join(capsDir, id, 'capability.json');
+      if (!fs.existsSync(file)) return false;
+      return JSON.parse(fs.readFileSync(file, 'utf8'))?.runtime?.hooksSurface === 'kimi-hooks-toml';
+    });
+
+    assert.deepEqual(ids.sort(), ['kimi', 'kimi-code'],
+      'the kimi-hooks-toml runtime set changed — teach resolveKimiHooksTomlDir the new root, then update this list');
+
+    const roots = ids.map((id) => resolveKimiHooksTomlDir({ home: FIXTURE_HOME, env: {}, runtime: id }));
+    assert.equal(new Set(roots).size, roots.length,
+      `each kimi-hooks-toml runtime must resolve its own root; got ${JSON.stringify(roots)}`);
+  });
+});

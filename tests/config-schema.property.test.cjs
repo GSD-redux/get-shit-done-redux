@@ -943,48 +943,60 @@ describe('feat-3210 / #1012: code-review workflow invokes fallow with the real C
     path.join(ROOT, 'gsd-core', 'workflows', 'code-review.md'),
     'utf8',
   );
+  // #2994: the actual fallow invocation (audit --format json, --changed-since,
+  // --max-crap, verdict-based exit handling) moved to a marker-gated step file
+  // (gsd-core/workflows/code-review/steps/structural-pre-pass.md, when=
+  // "state:fallow-enabled") — read it for the invocation-specific assertions
+  // below; the negative "removed flags" assertion checks BOTH files.
+  const fallowStepSrc = fs.readFileSync(
+    path.join(ROOT, 'gsd-core', 'workflows', 'code-review', 'steps', 'structural-pre-pass.md'),
+    'utf8',
+  );
+  const combinedSrc = workflowSrc + '\n' + fallowStepSrc;
 
   test('uses audit --format json and --quiet (real fallow 2.x flags)', () => {
     assert.ok(
-      workflowSrc.includes('audit --format json'),
+      fallowStepSrc.includes('audit --format json'),
       'workflow must invoke: audit --format json',
     );
     assert.ok(
-      workflowSrc.includes('--quiet'),
+      fallowStepSrc.includes('--quiet'),
       'workflow must pass --quiet to suppress progress output',
     );
   });
 
   test('does NOT use removed flags: --json , --profile, --stdin-files', () => {
     assert.ok(
-      !workflowSrc.includes('--json '),
+      !combinedSrc.includes('--json '),
       'workflow must not use old --json flag (note trailing space to avoid matching --format json)',
     );
     assert.ok(
-      !workflowSrc.includes('--profile'),
+      !combinedSrc.includes('--profile'),
       'workflow must not use --profile (fallow has no native profile concept)',
     );
     assert.ok(
-      !workflowSrc.includes('--stdin-files'),
+      !combinedSrc.includes('--stdin-files'),
       'workflow must not use --stdin-files (removed in fallow 2.x)',
     );
   });
 
   test('uses --max-crap for threshold control (profile maps to max-crap)', () => {
     assert.ok(
-      workflowSrc.includes('--max-crap'),
+      fallowStepSrc.includes('--max-crap'),
       'workflow must use --max-crap to control threshold (profile mapped to this flag)',
     );
   });
 
   test('scopes phase via --changed-since (native fallow git-ref scoping)', () => {
     assert.ok(
-      workflowSrc.includes('--changed-since'),
+      fallowStepSrc.includes('--changed-since'),
       'workflow must use --changed-since for phase scoping',
     );
   });
 
   test('normalizes fallow output via normalizeFallowReportFile before embedding', () => {
+    // Still in the host (spawn_reviewer step, unconditional) — not gated by
+    // state:fallow-enabled, since the reviewer prompt assembly always runs.
     assert.ok(
       workflowSrc.includes('normalizeFallowReportFile'),
       'workflow must call normalizeFallowReportFile to normalize before embedding into reviewer prompt',
@@ -993,7 +1005,7 @@ describe('feat-3210 / #1012: code-review workflow invokes fallow with the real C
 
   test('exit-handling gates on valid JSON (verdict in o), not on exit code', () => {
     assert.ok(
-      workflowSrc.includes("'verdict' in o"),
+      fallowStepSrc.includes("'verdict' in o"),
       "workflow exit-handling must use 'verdict' in o to decide success (not exit code)",
     );
   });
@@ -1047,6 +1059,13 @@ describe('feat-3210: workflow and config contracts', () => {
   // The workflow .md uses XML-like <step> tags as its runtime DSL; we parse the step block
   // structurally and assert on structural properties, not on prose strings.
   test('code-review workflow structural_pre_pass step is parseable and references FALLOW.json output', () => {
+    // #2994: structural_pre_pass's gated execution (fallow binary resolve + run
+    // + FALLOW.json persistence) moved to a marker-gated step file
+    // (gsd-core/workflows/code-review/steps/structural-pre-pass.md, when=
+    // "state:fallow-enabled"). The config-gate resolver itself — previously an
+    // inline `gsd_run query config-get code_quality.fallow.enabled` call inside
+    // this step's own body (a circular self-disabling gate) — was hoisted into
+    // `detectFallowConfig` (src/init.cts), consumed by `cmdInitCodeReview`.
     const workflow = fs.readFileSync(
       path.join(ROOT, 'gsd-core', 'workflows', 'code-review.md'),
       'utf8',
@@ -1061,16 +1080,30 @@ describe('feat-3210: workflow and config contracts', () => {
 
     const stepBody = stepMatch[1];
 
-    // Structural property: the step body must reference the FALLOW.json output artifact
+    // Structural property: the host stub gates the FALLOW.json-producing
+    // execution behind state:fallow-enabled and points at the step file.
     assert.ok(
-      stepBody.includes('FALLOW.json'),
-      'structural_pre_pass step body must reference the FALLOW.json output artifact',
+      stepBody.includes('when="state:fallow-enabled"') &&
+        stepBody.includes('gsd-core/workflows/code-review/steps/structural-pre-pass.md'),
+      'structural_pre_pass step must gate its FALLOW.json-producing execution behind state:fallow-enabled',
     );
 
-    // Structural property: the step body must gate on the fallow enabled config key
+    const stepFile = fs.readFileSync(
+      path.join(ROOT, 'gsd-core', 'workflows', 'code-review', 'steps', 'structural-pre-pass.md'),
+      'utf8',
+    );
     assert.ok(
-      stepBody.includes('code_quality.fallow.enabled'),
-      'structural_pre_pass step body must gate on code_quality.fallow.enabled',
+      stepFile.includes('FALLOW.json'),
+      'structural-pre-pass.md step file must reference the FALLOW.json output artifact',
+    );
+
+    // Structural property: the config-gate fact is resolved from the real
+    // code_quality.fallow.enabled config key — checked against the resolver
+    // it was hoisted into (src/init.cts's detectFallowConfig).
+    const initSource = fs.readFileSync(path.join(ROOT, 'src', 'init.cts'), 'utf8');
+    assert.ok(
+      /detectFallowConfig[\s\S]{0,600}'code_quality'[\s\S]{0,40}'fallow'[\s\S]{0,40}'enabled'/.test(initSource),
+      'detectFallowConfig (src/init.cts) must gate on code_quality.fallow.enabled',
     );
   });
 

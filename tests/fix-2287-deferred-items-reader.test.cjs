@@ -228,7 +228,11 @@ describe('#2287 cmdAuditUat: deferred-items.md awareness', () => {
 
 // ─── forensic_audit workflow-prose source-contract guard ──────────────────
 
-const PROGRESS_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md');
+// #2994 fragmentization moved the --forensic-gated forensic_audit step out of
+// progress.md into gsd-core/workflows/progress/steps/forensic-audit.md behind
+// a section marker. Read that step file directly — it is the sole remaining
+// source of the forensic_audit step body these guards assert on.
+const PROGRESS_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress', 'steps', 'forensic-audit.md');
 
 describe('#2287 progress.md forensic_audit: deferred-items.md contract', () => {
   const content = fs.readFileSync(PROGRESS_MD, 'utf-8');
@@ -237,7 +241,7 @@ describe('#2287 progress.md forensic_audit: deferred-items.md contract', () => {
   const section = stepStart !== -1 && stepEnd !== -1 ? content.slice(stepStart, stepEnd) : '';
 
   test('forensic_audit step exists', () => {
-    assert.notEqual(stepStart, -1, 'progress.md must contain the forensic_audit step');
+    assert.notEqual(stepStart, -1, 'progress.md (or its extracted progress/steps/forensic-audit.md) must contain the forensic_audit step');
   });
 
   test('forensic_audit now runs 7 checks (was 6) and globs deferred-items.md', () => {

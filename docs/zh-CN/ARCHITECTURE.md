@@ -413,7 +413,7 @@ ui-phase → UI-SPEC.md (design contract, optional)
 plan-phase
     ├── Research gate (blocks if RESEARCH.md has unresolved open questions)
     ├── Phase Researcher → RESEARCH.md
-    │       └── Package Legitimacy Gate: slopcheck on every package; [SLOP] removed,
+    │       └── Package Legitimacy Gate: registry-API verdict on every package; [SLOP] removed,
     │           [SUS]/[ASSUMED] flagged; Audit table written to RESEARCH.md
     ├── Planner (with reachability check) → PLAN.md files
     │       └── checkpoint:human-verify injected before [ASSUMED]/[SUS] installs;
@@ -655,7 +655,7 @@ Runtime Engine (Claude Code / Gemini CLI)
 
 | 层次 | 组件 | 操作 |
 |-------|-----------|--------|
-| 研究 | `gsd-phase-researcher` | 运行 `slopcheck install <pkgs> --json`；向 RESEARCH.md 写入 `## Package Legitimacy Audit` 表格；在写入 RESEARCH.md 之前剥离 `[SLOP]` 软件包 |
+| 研究 | `gsd-phase-researcher` | 运行 `gsd-tools query package-legitimacy check --ecosystem <npm\|pypi\|crates> <pkgs>`；向 RESEARCH.md 写入 `## Package Legitimacy Audit` 表格；在写入 RESEARCH.md 之前剥离 `[SLOP]` 软件包 |
 | 规划 | `gsd-planner` | 读取审计表；在任何 `[ASSUMED]` 或 `[SUS]` 安装任务之前插入 `checkpoint:human-verify`；向 `<threat_model>` 添加 `T-{phase}-SC` STRIDE 供应链行 |
 | 执行 | `gsd-executor` | 规则 3 将软件包安装排除在自动修复范围之外；失败的安装以检查点形式呈现，而非静默替换 |
 
