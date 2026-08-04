@@ -202,6 +202,10 @@ function makeCwd() {
  */
 function writeReviewerCapSource(id, bodyOverrides = {}) {
   const src = cliTmpDir(`rev2927-src-${id}-`);
+  // A `role:"reviewer"` manifest carries ONLY id/role/version/title/description/
+  // tier/requires/engines/reviewer (+ optional config) — skills/agents/steps/
+  // contributions/gates/hooks/runtimeCompat are feature-only fields the validator
+  // rejects for a reviewer (mirrors the shipped `capabilities/lm-studio` shape).
   const cap = {
     id,
     role: 'reviewer',
@@ -210,14 +214,6 @@ function writeReviewerCapSource(id, bodyOverrides = {}) {
     description: 'test third-party reviewer lane for #2927',
     tier: 'standard',
     requires: [],
-    runtimeCompat: { supported: ['*'], unsupported: [] },
-    skills: [],
-    agents: [],
-    hooks: [],
-    config: {},
-    steps: [],
-    contributions: [],
-    gates: [],
     engines: { gsd: '>=1.9.0' },
     reviewer: {
       slug: id,
@@ -272,28 +268,39 @@ describe('review-lane CLI overlay invocation (#2927, rows 9–10)', () => {
     assert.equal(overlayRow, 'rev2927lane\trev2927lane review');
 
     // Row 9 / acceptance #3: plan --selected <overlay-slug> resolves ok (NOT
-    // malformed_lane / no such declared lane — the pre-fix failure).
+    // malformed_lane / no such declared lane — the pre-fix failure). The `plan`
+    // subcommand renders an ARRAY of {slug, ok, section, transport, ...} (it strips
+    // the nested invocation `plan` object before output), so assert on element [0].
     const plan = runGsdTools(
       ['review-lane', 'plan', '--selected', 'rev2927lane', '--run-dir', cwd, '--repo-root', cwd],
       cwd,
       scopeEnv(home),
     );
     const planOut = JSON.parse(plan);
-    assert.equal(planOut.ok, true, `overlay plan did not resolve ok:\n${plan}`);
-    assert.equal(planOut.slug, 'rev2927lane');
-    assert.ok(planOut.plan, 'plan carries a usable invocation plan');
+    assert.ok(Array.isArray(planOut), `plan output is not an array:\n${plan}`);
+    const overlayPlan = planOut.find((p) => p.slug === 'rev2927lane');
+    assert.ok(overlayPlan, `overlay plan entry missing:\n${plan}`);
+    assert.equal(overlayPlan.ok, true, `overlay plan did not resolve ok:\n${plan}`);
+    assert.equal(overlayPlan.section, 'rev2927lane review');
+    assert.equal(overlayPlan.transport, 'spawn');
   });
 
-  test('cliFlagsIncludeOverlayAndFilterMalformed', () => {
-    // Acceptance #2 + negative-space: the overlay's well-formed --flag appears in
-    // `flags`, AND a malformed overlay flag (--foo bar / glob) is filtered out by
-    // the existing shape filter, never reaching the unquoted shell consumer.
+  test('cliFlagsIncludeOverlayFlag', () => {
+    // Acceptance #2: the overlay's declared --flag appears in `flags` output.
+    //
+    // NOTE on the negative-space "malformed flag filtered" case: the capability
+    // validator enforces the /^--[a-z0-9][a-z0-9-]*$/ flag grammar AT INSTALL TIME
+    // (capability-validator rejects a reviewer.flags entry that fails it), so a lane
+    // carrying a malformed flag (e.g. `--bad flag`, `*.js`) can never be installed
+    // and therefore never reaches the `flags` shape filter. That filter is
+    // defense-in-depth over an input class the validator already excludes; it is
+    // not independently reachable through a validated install, so it is not asserted
+    // here. A lane declaring two well-formed flags (mirroring antigravity's
+    // --antigravity/--agy) proves the per-lane flag array is preserved, not flattened.
     const home = cliTmpDir('rev2927-home-');
     const cwd = makeCwd();
-    // A lane declaring a WELL-FORMED flag plus a malformed one (space-separated,
-    // which the /^--[a-z0-9][a-z0-9-]*$/ filter must reject) and a glob token.
     const src = writeReviewerCapSource('rev2927flag', {
-      flags: ['--rev2927flag', '--bad flag', '*.js'],
+      flags: ['--rev2927flag', '--rev2927alt'],
     });
     const install = runGsdTools(
       ['capability', 'install', src, '--scope', 'global', '--yes', '--raw'],
@@ -304,8 +311,7 @@ describe('review-lane CLI overlay invocation (#2927, rows 9–10)', () => {
 
     const flags = runGsdTools(['review-lane', 'flags'], cwd, scopeEnv(home));
     const flagLines = flags.split('\n').filter(Boolean);
-    assert.ok(flagLines.includes('--rev2927flag'), `well-formed overlay flag missing:\n${flags}`);
-    assert.ok(!flagLines.includes('--bad flag'), 'malformed space-containing flag leaked through');
-    assert.ok(!flagLines.includes('*.js'), 'glob flag leaked through the shape filter');
+    assert.ok(flagLines.includes('--rev2927flag'), `overlay flag missing from flags output:\n${flags}`);
+    assert.ok(flagLines.includes('--rev2927alt'), 'second well-formed overlay flag missing (flag array flattened?)');
   });
 });
