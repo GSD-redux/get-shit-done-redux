@@ -467,7 +467,7 @@ git push origin ${CURRENT_BRANCH} 2>&1 || echo "⚠ track_shipping: ship-note pu
 STATUS="UNKNOWN"
 CHECKS=0
 REVIEW_DECISION=""
-for i in 1 2 3 4 5; do
+for i in {1..5}; do
   PR_STATE=$(gh pr view ${PR_NUMBER} --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision -q '{head: .headRefOid, status: .mergeStateStatus, checks: ((.statusCheckRollup // []) | length), review: (.reviewDecision // "")}' 2>/dev/null || echo '{"head":"","status":"UNKNOWN","checks":0,"review":""}')
   HEAD_OID=$(echo "$PR_STATE" | jq -r .head)
   if [ "$HEAD_OID" = "$SHIP_NOTE_SHA" ]; then
