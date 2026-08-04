@@ -6928,7 +6928,16 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
   const codexGsdPath = `${path.resolve(targetDir, 'gsd-core').replace(/\\/g, '/')}/`;
 
   for (const file of agentEntries) {
-    let content = fs.readFileSync(path.join(agentsSrc, file), 'utf8');
+    const agentTomlSourcePath = path.join(agentsSrc, file);
+    let content = fs.readFileSync(agentTomlSourcePath, 'utf8');
+    // #2995 (epic #1671 Phase 6.4): Codex embeds each agent's prompt into a
+    // per-agent `.toml`, reading the source .md independently of the inline
+    // agent loop — a separate emission path that must strip gsd:section
+    // markers too, or a marked agent ships its markers inside the TOML.
+    // Found by the exhaustive per-runtime emission sweep in
+    // tests/agent-fragments-emission.install.test.cjs, not by call-graph
+    // analysis, which is why that guard is behavioral rather than structural.
+    content = composeWorkflow(content, { sourcePath: agentTomlSourcePath });
     // Replace full .claude/gsd-core prefix so path resolves to the Codex
     // GSD install before generic .claude → .codex conversion rewrites it.
     content = content.replace(/~\/\.claude\/gsd-core\//g, codexGsdPath);
@@ -10864,7 +10873,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     const agentEntries = fs.readdirSync(agentsSrc, { withFileTypes: true });
     for (const entry of agentEntries) {
       if (entry.isFile() && entry.name.endsWith('.md')) {
-        let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf8');
+        const agentSourcePath = path.join(agentsSrc, entry.name);
+        let content = fs.readFileSync(agentSourcePath, 'utf8');
+        // #2995 (epic #1671 Phase 6.4): strip `<!-- gsd:section -->` markers BEFORE
+        // the path-rewrite regexes below, so a rewrite can never reach inside a
+        // marker attribute. No-op (byte-identical) for an unmarked agent.
+        content = composeWorkflow(content, { sourcePath: agentSourcePath });
         // Replace ~/.claude/ and $HOME/.claude/ as they are the source of truth in the repo
         const dirRegex = /~\/\.claude\//g;
         const homeDirRegex = /\$HOME\/\.claude\//g;

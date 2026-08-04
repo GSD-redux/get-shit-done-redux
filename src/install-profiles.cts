@@ -28,6 +28,16 @@ const {
   readGsdCommandNames: () => string[];
 };
 
+// #2995 (epic #1671 Phase 6.4): agent bodies join the fragment model. Markers are
+// stripped at emit BEFORE any path rewrite or converter runs, so a `.claude/` ->
+// `.windsurf/` regex can never reach inside a marker attribute and corrupt it —
+// the same ordering #2930 established for workflows.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import workflowFragmentsModule = require('./workflow-fragments.cjs');
+const { composeWorkflow: _composeWorkflow } = workflowFragmentsModule as {
+  composeWorkflow: (content: string, opts?: { sourcePath?: string }) => string;
+};
+
 // ---------------------------------------------------------------------------
 // Profile definitions
 // ---------------------------------------------------------------------------
@@ -834,7 +844,13 @@ function stageAgentsForRuntimeWithConverter(
           continue;
         }
       }
-      let content = fs.readFileSync(path.join(srcAgentsDir, entry.name), 'utf8');
+      const agentSourcePath = path.join(srcAgentsDir, entry.name);
+      let content = fs.readFileSync(agentSourcePath, 'utf8');
+      // #2995: strip gsd:section markers FIRST — before path rewrites, attribution,
+      // and the per-runtime converter. Byte-identical (no-op) for an unmarked agent;
+      // throws loudly naming the file for a malformed marker, never emitting a
+      // half-composed agent.
+      content = _composeWorkflow(content, { sourcePath: agentSourcePath });
       if (agentCtx) {
         // ADR-1235 §1: pre-converter cross-cutting (matches inline loop order exactly)
         // Step 1: path rewrites (4 base ~/.claude/ regexes; skipped for copilot/antigravity)
