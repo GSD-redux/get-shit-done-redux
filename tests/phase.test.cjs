@@ -10159,3 +10159,81 @@ open_count: 0
     cleanup(tmpDir);
   }
 });
+
+test('phase complete stage 3 retains an unchecked real Phase 0 below the completed phase', () => {
+  const tmpDir = createTempProject();
+  try {
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 0: Foundation',
+        '- [ ] Phase 1: Active Work',
+        '',
+        '### Phase 0: Foundation',
+        '**Goal:** real work',
+        '',
+        '### Phase 1: Active Work',
+        '**Goal:** complete this',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(planningDir, 'STATE.md'),
+      ['---', 'current_phase: "1"', '---', '# State', ''].join('\n'),
+    );
+    fs.mkdirSync(path.join(planningDir, 'phases', '01-active-work'), { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'WINDOWS.md'),
+      ['---', 'schema_version: 1', 'open_count: 0', '---', ''].join('\n'),
+    );
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1'], tmpDir);
+    assert.equal(result.success, true, `phase complete failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.equal(output.is_last_phase, false, 'an unchecked real Phase 0 keeps the milestone incomplete');
+    assert.equal(output.next_phase, '0', 'stage 3 must retain the unchecked real Phase 0');
+  } finally {
+    cleanup(tmpDir);
+  }
+});
+
+test('phase complete stage 3 ignores an unchecked Phase 999 backlog below Phase 1000', () => {
+  const tmpDir = createTempProject();
+  try {
+    const planningDir = path.join(tmpDir, '.planning');
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      [
+        '# Roadmap',
+        '',
+        '- [ ] Phase 999: Backlog',
+        '- [ ] Phase 1000: Active Work',
+        '',
+        '### Phase 999: Backlog',
+        '**Goal:** deferred',
+        '',
+        '### Phase 1000: Active Work',
+        '**Goal:** complete this',
+      ].join('\n'),
+    );
+    fs.writeFileSync(
+      path.join(planningDir, 'STATE.md'),
+      ['---', 'current_phase: "1000"', '---', '# State', ''].join('\n'),
+    );
+    fs.mkdirSync(path.join(planningDir, 'phases', '1000-active-work'), { recursive: true });
+    fs.writeFileSync(
+      path.join(planningDir, 'WINDOWS.md'),
+      ['---', 'schema_version: 1', 'open_count: 0', '---', ''].join('\n'),
+    );
+
+    const result = runVerifiedPhaseComplete(['phase', 'complete', '1000'], tmpDir);
+    assert.equal(result.success, true, `phase complete failed: ${result.error || result.output}`);
+    const output = JSON.parse(result.output);
+    assert.equal(output.is_last_phase, true, 'Phase 999 backlog must not keep the milestone incomplete');
+    assert.equal(output.next_phase, null, 'Phase 999 backlog must not become next_phase through stage 3');
+  } finally {
+    cleanup(tmpDir);
+  }
+});

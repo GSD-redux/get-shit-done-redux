@@ -158,6 +158,23 @@ describe('W021 — milestone-prefixed phase ID convention', () => {
     assert.strictEqual(w021.length, 0, 'pre-milestone sentinel (0-xx) should be exempt from W021');
   });
 
+  test('DEFECT.GENERATIVE-FIX: W021 does not prefix-match the non-sentinel phase 9990-01', () => {
+    buildRoadmap(tmpDir, [
+      {
+        version: 'v1.0',
+        label: 'Foundation',
+        phases: [{ id: '9990-01', name: 'Large real milestone' }],
+      },
+    ]);
+
+    const result = runGsdTools(['roadmap', 'validate'], tmpDir);
+    assert.ok(result.success, `roadmap validate failed: ${result.error}`);
+
+    const out = JSON.parse(result.output);
+    const w021 = (out.warnings || []).filter(w => w.code === 'W021');
+    assert.strictEqual(w021.length, 1, '9990 is a real phase prefix and must still be validated');
+  });
+
   // ── 4. null convention disables W021 ─────────────────────────────────────
 
   test('W021 does NOT fire when phase_id_convention is null (free-form roadmap)', () => {

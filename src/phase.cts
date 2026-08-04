@@ -34,6 +34,7 @@ const {
   normalizePhaseName,
   phaseMarkdownRegexSource,
   comparePhaseNum,
+  isBacklogPhaseId,
   isSentinelPhaseId,
   phaseTokenMatches,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
@@ -2575,7 +2576,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           let lowestOutstanding: { num: string; name: string } | null = null;
           while ((cbm = cbPattern.exec(milestoneScope)) !== null) {
             const isChecked = cbm[1].toLowerCase() === 'x';
-            if (!isChecked && comparePhaseNum(cbm[2], phaseNum) < 0) {
+            if (!isChecked && !isBacklogPhaseId(cbm[2]) && comparePhaseNum(cbm[2], phaseNum) < 0) {
               if (lowestOutstanding === null || comparePhaseNum(cbm[2], lowestOutstanding.num) < 0) {
                 lowestOutstanding = {
                   num: cbm[2],

@@ -482,6 +482,32 @@ describe('isSentinelPhaseId', () => {
       ),
     );
   });
+
+  test('keeps the unambiguous backlog range distinct from context-dependent Phase 0', () => {
+    for (const token of ['999', '0999', '999.1', '0999.1']) {
+      assert.equal(phaseId.isBacklogPhaseId(token), true, token);
+    }
+    for (const token of ['0', '00', '0.1', '1', '998', '9990', '1000']) {
+      assert.equal(phaseId.isBacklogPhaseId(token), false, token);
+    }
+  });
+
+  test('backlog classification stays a strict subset of the sentinel classification', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 1200 }),
+        fc.integer({ min: 0, max: 4 }),
+        fc.option(fc.integer({ min: 0, max: 999 }), { nil: undefined }),
+        (major, padding, decimal) => {
+          const token = `${'0'.repeat(padding)}${major}${decimal === undefined ? '' : `.${decimal}`}`;
+          assert.equal(phaseId.isBacklogPhaseId(token), major === 999, token);
+          if (phaseId.isBacklogPhaseId(token)) {
+            assert.equal(phaseId.isSentinelPhaseId(token), true, token);
+          }
+        },
+      ),
+    );
+  });
 });
 
 // ─── getPhaseDirFromPhaseId ───────────────────────────────────────────────────

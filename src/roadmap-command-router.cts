@@ -21,6 +21,9 @@ const { planningDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseIdMod = require('./phase-id.cjs');
+const { isSentinelPhaseId } = phaseIdMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -60,8 +63,6 @@ interface W021Warning {
 function checkW021(content: string): W021Warning[] {
   const warnings: W021Warning[] = [];
 
-  // Sentinel milestone integers exempt from W021
-  const SENTINELS = new Set([0, 999]);
   const MIGRATION_CMD = 'gsd-tools roadmap upgrade --convention milestone-prefixed';
 
   // Milestone section heading: ## [GSD] v2.0 — Label  OR  ## v2.0: Label  OR  ## Roadmap v2.0
@@ -89,7 +90,7 @@ function checkW021(content: string): W021Warning[] {
     const phaseMatch = line.match(PHASE_RE);
     if (phaseMatch) {
       const phaseMajor = parseInt(phaseMatch[1], 10);
-      if (SENTINELS.has(phaseMajor)) continue; // exempt
+      if (isSentinelPhaseId(phaseMatch[1])) continue; // exempt
 
       if (currentMilestoneMajor !== null && phaseMajor !== currentMilestoneMajor) {
         const phaseId = `${phaseMatch[1]}-${phaseMatch[2]}`;
@@ -112,8 +113,7 @@ function checkW021(content: string): W021Warning[] {
       // Skip if it matched PHASE_RE already (it didn't reach here in that case)
       // Also skip if it looks like a bare integer whose prefix matches the section
       // — those pass; only non-matching or non-prefixed forms fire W021.
-      const numericMajor = parseInt(rawId, 10);
-      if (!SENTINELS.has(numericMajor)) {
+      if (!isSentinelPhaseId(rawId)) {
         warnings.push({
           code: 'W021',
           message:

@@ -371,11 +371,12 @@ function toDir(id: PhaseId, slug: string): string {
   return `${id.project}.${id.milestone}-${id.phase}${sub}-${safeSlug}`;
 }
 
-// Milestone integers reserved as non-milestone sentinels (0.x backlog / 999.x
-// icebox); a phase id in these ranges has no real milestone.
+// Milestone integers reserved by sentinel-aware surfaces. Phase 0 / 0.x is
+// context-dependent (foundation/inserted work in some roadmaps); 999.x is the
+// unambiguous backlog/icebox range.
 const SENTINEL_RANGES: readonly number[] = Object.freeze([0, 999]);
 
-function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
+function getSentinelRange(phaseId: unknown, convention?: string): number | null {
   const s = String(phaseId);
   // Bracket milestone lives in the `{CODE}.{MM}` prefix. GATED on
   // convention === 'bracket' for the same reason as extractPhaseToken below and
@@ -386,11 +387,25 @@ function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
   // existing reader gains a false positive; the bracket reading is opt-in.
   if (convention === 'bracket') {
     const bracket = s.match(/^[A-Z][A-Z0-9_]*\.(\d+)/); // bracket: milestone in the prefix
-    if (bracket) return SENTINEL_RANGES.includes(parseInt(bracket[1], 10));
+    if (bracket) {
+      const range = parseInt(bracket[1], 10);
+      return SENTINEL_RANGES.includes(range) ? range : null;
+    }
   }
   const legacy = stripProjectCodePrefix(s).match(/^0*(\d+)/); // legacy/bare: leading int
-  if (!legacy) return false;
-  return SENTINEL_RANGES.includes(parseInt(legacy[1], 10));
+  if (!legacy) return null;
+  const range = parseInt(legacy[1], 10);
+  return SENTINEL_RANGES.includes(range) ? range : null;
+}
+
+function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
+  return getSentinelRange(phaseId, convention) !== null;
+}
+
+// Phase 0 / 0.x is context-dependent: some roadmaps use it for real foundation
+// or inserted work. Phase 999 / 999.x is the unambiguous backlog range.
+function isBacklogPhaseId(phaseId: unknown, convention?: string): boolean {
+  return getSentinelRange(phaseId, convention) === 999;
 }
 
 /**
@@ -769,6 +784,7 @@ export = {
   toDir,
   SENTINEL_RANGES,
   isSentinelPhaseId,
+  isBacklogPhaseId,
   phaseMarkdownRegexSource,
   phaseMarkdownRegexSourceExact,
   comparePhaseNum,

@@ -10480,6 +10480,9 @@ describe('bug #1445 — state json excludes 999.x phase headings from total_phas
   const ROADMAP = [
     '## Milestone v1.0: Test Milestone',
     '',
+    '### Phase 0.1: Inserted Urgent Work',
+    '**Goal:** real zero-range work',
+    '',
     '### Phase 01: Alpha',
     '**Goal:** first',
     '',
@@ -10494,6 +10497,9 @@ describe('bug #1445 — state json excludes 999.x phase headings from total_phas
     '',
     '### Phase 999.2: Backlog Item B',
     '**Goal:** another future idea',
+    '',
+    '### Phase 9990.1: Large Real Phase',
+    '**Goal:** real non-sentinel control',
   ].join('\n');
 
   beforeEach(() => {
@@ -10520,7 +10526,7 @@ describe('bug #1445 — state json excludes 999.x phase headings from total_phas
     );
     fs.writeFileSync(path.join(planning, 'config.json'), '{}', 'utf-8');
 
-    for (const d of ['01-alpha', '02-beta', '03-gamma']) {
+    for (const d of ['01-alpha', '02-beta', '03-gamma', '9990.1-large-real']) {
       const dir = path.join(planning, 'phases', d);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, 'PLAN.md'), '# Plan\n', 'utf-8');
@@ -10535,15 +10541,15 @@ describe('bug #1445 — state json excludes 999.x phase headings from total_phas
     cleanup(tmpDir);
   });
 
-  test('state json total_phases is 3, not 5 (999.x dirs and headings excluded)', () => {
+  test('DEFECT.GENERATIVE-FIX: state phase count excludes 999 but retains 0.1 and 9990 controls', () => {
     const result = runGsdTools(['state', 'json'], tmpDir);
     assert.ok(result.success, `state json failed: ${result.error}`);
     const state = JSON.parse(result.output);
     assert.ok(state.progress, 'state json must return a progress block');
     assert.equal(
       state.progress.total_phases,
-      3,
-      `total_phases must be 3 (not 5). 999.x backlog phases must be excluded. Got ${state.progress.total_phases}`,
+      5,
+      `total_phases must be 5: 999 backlog excluded and real 0.1/9990 phases retained. Got ${state.progress.total_phases}`,
     );
   });
 });
@@ -10567,6 +10573,8 @@ describe('fix #1580 — milestone complete ignores the 999 backlog sentinel', ()
         '## Phase Details',
         '### Phase 1: Foundation',
         '**Goal:** build it',
+        '### Phase 0: Pre-Milestone Sentinel',
+        '**Goal:** reserved, never executed',
         '### Phase 999: Backlog / Someday',
         '**Goal:** deferred, never executed',
       ].join('\n'),
@@ -10586,7 +10594,7 @@ describe('fix #1580 — milestone complete ignores the 999 backlog sentinel', ()
     cleanup(tmpDir);
   });
 
-  test('completes WITHOUT --force despite a Phase 999 backlog heading', () => {
+  test('DEFECT.GENERATIVE-FIX: completes without --force despite Phase 0 and 999 sentinel headings', () => {
     const result = runGsdTools(
       ['milestone', 'complete', 'v1.0', '--name', 'Regression'],
       tmpDir,
@@ -10599,6 +10607,22 @@ describe('fix #1580 — milestone complete ignores the 999 backlog sentinel', ()
       !/Cannot mark milestone complete/.test(result.error || ''),
       `the unstarted-phase guard must not fire on Phase 999. Got: ${result.error}`,
     );
+  });
+
+  test('does not exempt the non-sentinel Phase 9990 control from the unstarted-phase guard', () => {
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    fs.appendFileSync(
+      roadmapPath,
+      '\n### Phase 9990: Large Real Phase\n**Goal:** requires a real directory\n',
+      'utf8',
+    );
+
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression'],
+      tmpDir,
+    );
+    assert.equal(result.success, false, 'a directory-less non-sentinel phase must block completion');
+    assert.match(result.error || '', /Cannot mark milestone complete/);
   });
 });
 

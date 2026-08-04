@@ -248,7 +248,7 @@ describe('roadmap-parser: getRoadmapPhaseInternal', () => {
     assert.strictEqual(getRoadmapPhaseInternal(tmpDir, 0), null);
   });
 
-  test('returns null for zero-padded sentinel phase IDs', () => {
+  test('returns null for zero-padded backlog phase IDs', () => {
     writeRoadmap(tmpDir, '### Phase 0999.1: Backlog\n**Goal:** deferred\n');
     assert.strictEqual(getRoadmapPhaseInternal(tmpDir, '0999.1'), null);
   });
@@ -588,7 +588,7 @@ describe('roadmap-parser: getMilestonePhaseFilter', () => {
     assert.strictEqual(filter('03-deploy'), false, '03-deploy not in milestone');
   });
 
-  test('excludes zero-padded sentinel headings and bullet entries', () => {
+  test('excludes zero-padded backlog headings and bullet entries', () => {
     writeRoadmap(tmpDir, [
       '## v1.0: Launch',
       '### Phase 1: Setup',

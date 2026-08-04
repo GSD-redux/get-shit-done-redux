@@ -22,6 +22,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { deriveProgressFromRoadmap, clampPercent } = require('../gsd-core/bin/lib/phase-lifecycle.cjs');
+const { isBacklogPhaseId } = require('../gsd-core/bin/lib/phase-id.cjs');
 
 describe('deriveProgressFromRoadmap', () => {
   test('parses the 4-column flat Progress table (behaviour preserved)', () => {
@@ -105,6 +106,24 @@ describe('deriveProgressFromRoadmap', () => {
       `total_phases must be 2 (not 3) — 999.1 backlog row must be excluded. Got ${result.totalPhases}`,
     );
     assert.equal(result.completedPhases, 1, `completed_phases must be 1. Got ${result.completedPhases}`);
+  });
+
+  test('DEFECT.GENERATIVE-FIX: phase-count filtering excludes only the unambiguous backlog range', () => {
+    for (const phase of ['0.1', '000.2', '999.1', '0999.2', '1', '998.1', '9990.1', '1000']) {
+      const roadmap = [
+        '## Progress',
+        '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '| --- | --- | --- | --- |',
+        `| ${phase} Candidate | 0/0 | Planned | |`,
+      ].join('\n');
+      const expected = isBacklogPhaseId(phase) ? null : 1;
+      assert.equal(
+        deriveProgressFromRoadmap(roadmap).totalPhases,
+        expected,
+        `phase-lifecycle sentinel parity failed for ${phase}`,
+      );
+    }
   });
 
   test('non-table content returns all-null (no throw)', () => {

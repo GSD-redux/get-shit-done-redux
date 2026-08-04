@@ -21,6 +21,9 @@
  */
 
 import { findTableWithColumns } from './markdown-table.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseIdMod = require('./phase-id.cjs');
+const { isBacklogPhaseId } = phaseIdMod;
 
 /** Result of deriveProgressFromRoadmap. */
 export interface RoadmapProgress {
@@ -90,10 +93,10 @@ export function deriveProgressFromRoadmap(roadmapContent: string): RoadmapProgre
     const completed = allRows.filter((r) => /^complete$/i.test((r['Status'] ?? '').trim())).length;
     completedPhases = completed > 0 ? completed : null;
 
-    // Data rows only (exclude 999.x backlog phases). Mirrors init.cts /^999(?:\.|$)/ filter.
+    // Phase 0 / 0.x can be real work (#2554); only 999.x is always backlog.
     const dataRows = allRows.filter((r) => {
       const phase = (r['Phase'] ?? '').trim();
-      return /^\d/.test(phase) && !/^999\b/.test(phase);
+      return /^\d/.test(phase) && !isBacklogPhaseId(phase);
     });
     totalPhases = dataRows.length > 0 ? dataRows.length : null;
 

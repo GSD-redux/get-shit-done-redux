@@ -16,7 +16,14 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir } = phaseIdMod;
+const {
+  escapeRegex,
+  isBacklogPhaseId,
+  parsePhaseFromProse,
+  PHASE_NUMBER_TOKEN_SOURCE,
+  phaseKeyFromToken,
+  phaseKeyFromDir,
+} = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone } = roadmapParserMod;
@@ -1710,8 +1717,8 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
               // Only count tokens that contain at least one digit — excludes
               // pure-word section headings (Overview, Details) while keeping
               // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-              // Also exclude 999.x backlog phases. Mirrors init.cts filter.
-              if (!/\d/.test(m[1]) || /^999\b/.test(m[1])) continue;
+              // Phase 0 / 0.x can be real work (#2554); only 999.x is always backlog.
+              if (!/\d/.test(m[1]) || isBacklogPhaseId(m[1])) continue;
               // #1514: retired/folded phases are struck through in the ROADMAP;
               // exclude them from the denominator (they can never be completed).
               if (retiredPhaseNums.has(phaseKeyFromToken(m[1]))) continue;

@@ -22,7 +22,7 @@ import path from 'node:path';
 import phaseIdModule = require('./phase-id.cjs');
 const {
   escapeRegex,
-  isSentinelPhaseId,
+  isBacklogPhaseId,
   phaseMarkdownRegexSource,
   stripProjectCodePrefix,
   OPTIONAL_PHASE_TAG_SOURCE,
@@ -390,7 +390,7 @@ function findRoadmapBulletPhaseInContent(content: string, phaseNum: unknown, pha
 function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseResult | null {
   if (!phaseNum) return null;
   const normalizedPhase = stripProjectCodePrefix(phaseNum);
-  if (isSentinelPhaseId(normalizedPhase)) return null;
+  if (isBacklogPhaseId(normalizedPhase)) return null;
   // Resolved INSIDE the try for the same reason as getMilestoneInfo below: planningDir
   // throws a plain Error for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and resolving
   // it outside let that escape uncaught, crashing every caller for a malformed workstream
@@ -691,8 +691,9 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     for (const h of tokenizeHeadings(roadmap)) {
       if (h.level < 2 || h.level > 4) continue;
       const pm = phaseHeadingPattern.exec(h.text);
-      // Exclude reserved sentinel phases from the milestone phase set.
-      if (pm && !isSentinelPhaseId(pm[1])) milestonePhaseNums.add(pm[1]);
+      // Phase 0 / 0.x may be real foundation or inserted work (#2554); only the
+      // unambiguous 999.x backlog range is excluded from milestone membership.
+      if (pm && !isBacklogPhaseId(pm[1])) milestonePhaseNums.add(pm[1]);
     }
     // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
     // so a bullet-house-style ROADMAP populates the milestone phase set instead of
@@ -701,7 +702,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       let bm: RegExpExecArray | null;
       const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
       while ((bm = scanner.exec(roadmap)) !== null) {
-        if (!isSentinelPhaseId(bm[1])) milestonePhaseNums.add(bm[1]);
+        if (!isBacklogPhaseId(bm[1])) milestonePhaseNums.add(bm[1]);
       }
     }
   } catch {
