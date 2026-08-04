@@ -10365,19 +10365,52 @@ function installAndRead(runtime) {
 // RED tests: these MUST FAIL before the copyWithPathReplacement wiring is added
 // ---------------------------------------------------------------------------
 
-test('real install: codex-emitted execute-phase.md resolves runtime=codex and defaults worktrees off (#1521)', () => {
+test('real install: codex-emitted execute-phase.md resolves runtime=codex and leaves worktrees to the isolation negotiation (#1521, #2652)', () => {
+  // End-to-end counterpart of the unit coverage in
+  // tests/runtime-converters.test.cjs. #1521 asserted `--default false` here
+  // because worktree isolation *was* Claude Code's isolation="worktree" spawn
+  // parameter and no other host honored it. #2584 replaced that premise with
+  // the negotiated `dispatch.isolation` capability, and codex declares
+  // `orchestrator-worktree` — GSD creates the worktree and spawns
+  // `codex exec --cd <worktree>`. Keeping the stamp would resolve
+  // USE_WORKTREES=false before `gsd_run query dispatch-isolation` was ever
+  // consulted, re-deciding isolation by runtime name (#2652's Blocker).
+  //
+  // The runtime-identity stamp is unaffected and still asserted below — only
+  // the use_worktrees half moved.
   const c = installAndRead('codex');
   assert.ok(
     c.includes('config-get runtime --default codex --raw'),
     'codex runtime default not stamped in real install',
   );
   assert.ok(
-    c.includes('config-get workflow.use_worktrees --default false --raw'),
-    'codex use_worktrees not defaulted false in real install',
+    !c.includes('config-get workflow.use_worktrees --default false --raw'),
+    'codex install stamped use_worktrees=false, which pre-empts the dispatch.isolation negotiation for a host that declares orchestrator-worktree (#2652)',
+  );
+  assert.ok(
+    c.includes('config-get workflow.use_worktrees --raw 2>/dev/null || echo "true"'),
+    'codex install lost the unstamped use_worktrees read — the isolation gate has nothing left to negotiate',
   );
   assert.ok(
     !c.includes('config-get runtime --default claude --raw'),
     'residual claude default in codex install',
+  );
+});
+
+test('real install: an isolation-none runtime still gets use_worktrees stamped false (#1521 preserved, #2652 scoped)', () => {
+  // The other arm: #2652 narrowed the stamp, it did not remove it. windsurf
+  // declares `dispatch.isolation: none`, so the false default it writes is the
+  // outcome the resolver reaches anyway, and #1521's protection stays intact
+  // for every host that genuinely cannot isolate. Without this arm the change
+  // above could silently become "never stamp" and nothing would notice.
+  const c = installAndRead('windsurf');
+  assert.ok(
+    c.includes('config-get workflow.use_worktrees --default false --raw'),
+    'windsurf declares isolation=none and must still receive the #1521 false stamp',
+  );
+  assert.ok(
+    c.includes('config-get runtime --default windsurf --raw'),
+    'windsurf runtime default not stamped in real install',
   );
 });
 
