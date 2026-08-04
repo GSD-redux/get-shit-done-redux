@@ -24,7 +24,7 @@ const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const fc = require('fast-check');
+const fc = require('./helpers/fast-check-setup.cjs');
 
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
@@ -497,23 +497,30 @@ describe('computeHaltPropagation: graph invariants (#2830)', () => {
     assert.strictEqual(withPrecomputed.visited, 3);
   });
 
-  test('fast-check — blocked set matches reachability from halted nodes', () => {
-    // Generate a random DAG over N nodes: edges only point from a lower index
-    // to a higher index (guarantees acyclicity by construction, independent
-    // of the code under test), with a random halted flag per node.
-    const dagArb = fc.integer({ min: 1, max: 12 }).chain((n) => {
-      const ids = Array.from({ length: n }, (_, i) => `N${i}`);
-      const edgeArb = fc.array(
-        fc.record({
-          from: fc.integer({ min: 0, max: n - 1 }),
-          to: fc.integer({ min: 0, max: n - 1 }),
-        }).filter(({ from, to }) => from < to), // from depends_on to (to is "earlier"/upstream)
-        { maxLength: n * 2 },
-      );
-      const haltedArb = fc.array(fc.boolean(), { minLength: n, maxLength: n });
-      return fc.record({ ids: fc.constant(ids), edges: edgeArb, halted: haltedArb });
-    });
+  // Generate a random DAG over N nodes: edges only point from a lower index
+  // to a higher index (guarantees acyclicity by construction, independent of
+  // the code under test), with a random halted flag per node.
+  //
+  // Acyclic BY CONSTRUCTION: `to` is always drawn strictly above `from`, so
+  // no `.filter()` is involved. A filter here is not merely slower — with
+  // n === 1 the predicate `from < to` is unsatisfiable and fast-check retries
+  // generation forever, which hung the whole suite (the runner sets
+  // --test-timeout=0, so it never dies). Hoisted to describe scope so the
+  // regression test below can sample the identical arbitrary.
+  const dagArb = fc.integer({ min: 1, max: 12 }).chain((n) => {
+    const ids = Array.from({ length: n }, (_, i) => `N${i}`);
+    const edgeArb = n < 2
+      ? fc.constant([])
+      : fc.array(
+          fc.integer({ min: 0, max: n - 2 }).chain((from) =>
+            fc.integer({ min: from + 1, max: n - 1 }).map((to) => ({ from, to }))),
+          { maxLength: n * 2 },
+        );
+    const haltedArb = fc.array(fc.boolean(), { minLength: n, maxLength: n });
+    return fc.record({ ids: fc.constant(ids), edges: edgeArb, halted: haltedArb });
+  });
 
+  test('fast-check — blocked set matches reachability from halted nodes', () => {
     fc.assert(
       fc.property(dagArb, ({ ids, edges, halted }) => {
         const dependsOn = new Map(ids.map((id) => [id, []]));
@@ -554,6 +561,20 @@ describe('computeHaltPropagation: graph invariants (#2830)', () => {
       }),
       { numRuns: 50 },
     );
+  });
+
+  test('the DAG generator terminates on the degenerate single-node case (regression: unsatisfiable filter hung the suite)', () => {
+    // Bounded, non-hanging sample: if edgeArb regresses to a `.filter(from < to)`
+    // over a forced-equal {from, to} pair (n === 1), fast-check would retry
+    // generation forever and this assertion would never run. A small,
+    // explicit numRuns/seed keeps the check itself deterministic and fast.
+    const samples = fc.sample(dagArb, { numRuns: 20, seed: 7 });
+    assert.ok(samples.length === 20, 'fc.sample must return the requested number of samples without hanging');
+    const singleNodeSamples = samples.filter(({ ids }) => ids.length === 1);
+    assert.ok(singleNodeSamples.length > 0, 'the sample must include at least one degenerate single-node case');
+    for (const { edges } of singleNodeSamples) {
+      assert.deepEqual(edges, [], 'the single-node case must yield an empty edge list, not an unsatisfiable filter');
+    }
   });
 });
 
