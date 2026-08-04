@@ -26,7 +26,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'code-review.md');
@@ -592,7 +592,11 @@ describe('Bug 4 (#2352) — compute_file_scope tilde-path expansion', () => {
   // here: it only matches relative planning-artifact paths and is orthogonal
   // to tilde expansion (see code-review.md step 2, "Apply exclusions").
   function extractPostProcessingScript() {
-    const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+    // readFileNormalized() strips \r\n -> \n before either fence below is
+    // sliced out and later spawned via spawnSync('bash', ...) in
+    // runPostProcessing() — an un-normalized read on a Windows checkout would
+    // break bash mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
+    const src = readFileNormalized(WORKFLOW_PATH);
     const postProcessingIdx = src.indexOf('**Post-processing (all tiers):**');
     assert.ok(postProcessingIdx !== -1, 'code-review.md must have a "Post-processing (all tiers)" section');
 

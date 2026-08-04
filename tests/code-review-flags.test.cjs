@@ -235,6 +235,18 @@ describe('#3727 — parseCodeReviewFlags: typed IR for code-review argv', () => 
 
 describe('#3727 — code-review.md structural dispatch contract', () => {
   const src = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  // #2994: dispatch_fix moved wholly into a marker-gated step file
+  // (gsd-core/workflows/code-review/steps/dispatch-fix.md, when="flag:--fix")
+  // — the host now carries only the gsd:section marker + read-or-skip stub.
+  const DISPATCH_FIX_STEP_PATH = path.join(
+    ROOT,
+    'gsd-core',
+    'workflows',
+    'code-review',
+    'steps',
+    'dispatch-fix.md',
+  );
+  const dispatchFixSrc = fs.readFileSync(DISPATCH_FIX_STEP_PATH, 'utf8');
 
   test('initialize step references code-review-flags.cjs for flag parsing', () => {
     const initStart = src.indexOf('<step name="initialize">');
@@ -247,20 +259,21 @@ describe('#3727 — code-review.md structural dispatch contract', () => {
     );
   });
 
-  test('workflow has a <step name="dispatch_fix"> step', () => {
+  test('workflow gates a dispatch-fix section (flag:--fix) whose step file has the dispatch_fix step', () => {
     assert.ok(
-      src.includes('<step name="dispatch_fix">'),
-      'code-review.md must have a dispatch_fix step (missing = --fix is silently no-op)'
+      src.includes('<!-- gsd:section id="dispatch-fix" when="flag:--fix" -->') &&
+        src.includes('gsd-core/workflows/code-review/steps/dispatch-fix.md'),
+      'code-review.md must gate a dispatch-fix section pointing at dispatch-fix.md (missing = --fix is silently no-op)'
+    );
+    assert.ok(
+      dispatchFixSrc.includes('<step name="dispatch_fix">'),
+      'dispatch-fix.md step file must contain the dispatch_fix step'
     );
   });
 
   test('dispatch_fix step delegates to code-review-fix.md when fix flag is true', () => {
-    const stepStart = src.indexOf('<step name="dispatch_fix">');
-    const stepEnd = src.indexOf('</step>', stepStart);
-    assert.ok(stepStart !== -1, 'dispatch_fix step must exist');
-    const stepSection = src.slice(stepStart, stepEnd);
     assert.ok(
-      stepSection.includes('code-review-fix.md'),
+      dispatchFixSrc.includes('code-review-fix.md'),
       'dispatch_fix step must reference code-review-fix.md workflow'
     );
   });
@@ -268,11 +281,8 @@ describe('#3727 — code-review.md structural dispatch contract', () => {
   test('dispatch_fix step references gsd-code-fixer agent (via code-review-fix.md chain)', () => {
     // The dispatch step must show that fixing will occur, either directly or
     // by loading code-review-fix.md (which in turn spawns gsd-code-fixer).
-    const stepStart = src.indexOf('<step name="dispatch_fix">');
-    const stepEnd = src.indexOf('</step>', stepStart);
-    const stepSection = src.slice(stepStart, stepEnd);
     assert.ok(
-      stepSection.includes('gsd-code-fixer') || stepSection.includes('code-review-fix.md'),
+      dispatchFixSrc.includes('gsd-code-fixer') || dispatchFixSrc.includes('code-review-fix.md'),
       'dispatch_fix step must reference gsd-code-fixer agent or code-review-fix.md workflow'
     );
   });

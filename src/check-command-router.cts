@@ -20,7 +20,11 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
 import { extractDecisions } from './decisions.cjs';
 import type { Decision } from './decisions.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import frontmatterMod = require('./frontmatter.cjs');
+const { extractFrontmatter } = frontmatterMod;
 import { stripFencedCode, collectSections } from './markdown-sectionizer.cjs';
+import { validatePath } from './security.cjs';
 import { checkUiPresence } from './ui-safety-gate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import verifyModule = require('./verify.cjs');
@@ -38,7 +42,7 @@ const { evaluatePredicate } = gatePredicateEval;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import apiCoverageMod = require('./api-coverage.cjs');
 const { detectApiIntegration, validateCoverageMatrix } = apiCoverageMod;
-import { execTool, posixNormalize } from './shell-command-projection.cjs';
+import { execTool, platformReadSync, posixNormalize } from './shell-command-projection.cjs';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -967,6 +971,42 @@ function buildPredicateDeps() {
         timedOut: r.signal === 'SIGTERM',
       };
     },
+    findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null {
+      if (!fs.existsSync(phaseDir)) return null;
+      if (
+        artifactSuffix === '.' ||
+        artifactSuffix === '..' ||
+        artifactSuffix.includes('\0') ||
+        path.basename(artifactSuffix) !== artifactSuffix ||
+        path.win32.basename(artifactSuffix) !== artifactSuffix
+      ) {
+        return null;
+      }
+      const directPath = validatePath(artifactSuffix, phaseDir);
+      if (directPath.safe && fs.existsSync(directPath.resolved) && fs.statSync(directPath.resolved).isFile()) {
+        return directPath.resolved;
+      }
+      const planningPath = validatePath(path.join('.planning', artifactSuffix), phaseDir);
+      if (planningPath.safe && fs.existsSync(planningPath.resolved) && fs.statSync(planningPath.resolved).isFile()) {
+        return planningPath.resolved;
+      }
+      try {
+        const files = fs.readdirSync(phaseDir);
+        for (const f of files) {
+          if (f.endsWith('-' + artifactSuffix) || f === artifactSuffix) {
+            const candidate = validatePath(f, phaseDir);
+            if (candidate.safe && fs.statSync(candidate.resolved).isFile()) return candidate.resolved;
+          }
+        }
+      } catch { /* ignore */ }
+      return null;
+    },
+    readFrontmatter(filePath: string): Record<string, unknown> {
+      const content = platformReadSync(filePath);
+      if (content === null) throw new Error(`predicate artifact disappeared before it could be read: ${filePath}`);
+      const parsed = extractFrontmatter(content, filePath) as Record<string, unknown>;
+      return parsed;
+    }
   };
 }
 

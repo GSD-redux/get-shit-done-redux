@@ -301,8 +301,24 @@ const { cleanup } = require('./helpers.cjs');
 const HELPER_PATH = path.join(__dirname, '..', 'bin', 'lib', 'ui-safety-gate.cjs');
 const PLAN_PHASE_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
 const AUTONOMOUS_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'autonomous.md');
+const AUTONOMOUS_UI_DESIGN_CONTRACT_REF_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'references', 'autonomous-ui-design-contract.md'
+);
 
 const { checkUiPresence } = require(HELPER_PATH);
+
+/**
+ * #2994 fragmentization moved §3a.5's body out of autonomous.md into
+ * gsd-core/references/autonomous-ui-design-contract.md, leaving an
+ * unconditional `Read and execute:` pointer in the host. Read host +
+ * reference file combined so the structural guards below still see the
+ * real §3a.5 body (and its absence of the retired ui-safety-gate.cjs /
+ * RUNTIME_DIR / LC_ALL=C grep patterns).
+ */
+function readAutonomousCombined() {
+  return fs.readFileSync(AUTONOMOUS_PATH, 'utf-8') +
+    '\n' + fs.readFileSync(AUTONOMOUS_UI_DESIGN_CONTRACT_REF_PATH, 'utf-8');
+}
 
 // ── Helper ────────────────────────────────────────────────────────────────────
 
@@ -362,7 +378,7 @@ describe('Workflow .md structural guard (#3718)', () => {
   // was intentionally removed — cross-shell portability is provided by the CLI layer.
   test('autonomous.md must invoke check ui-plan-gate (capability-driven UI gate — #1031)', () => {
     const label = 'autonomous.md';
-    const content = fs.readFileSync(AUTONOMOUS_PATH, 'utf-8');
+    const content = readAutonomousCombined();
 
     // §3a.5 must delegate to the capability-driven gate, not inline shell code
     assert.ok(

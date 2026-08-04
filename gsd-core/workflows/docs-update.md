@@ -18,6 +18,10 @@ _GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-pars
 INIT=$(gsd_run query docs-init)
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 AGENT_SKILLS=$(gsd_run query agent-skills gsd-doc-writer)
+# #2994: dedicated init.docs-update call — additive to docs-init above, carries
+# only the section_manifest field (gates dispatch_monorepo_packages).
+INIT_DOCS_UPDATE=$(gsd_run query init.docs-update)
+if [[ "$INIT_DOCS_UPDATE" == @file:* ]]; then INIT_DOCS_UPDATE=$(cat "${INIT_DOCS_UPDATE#@file:}"); fi
 ```
 
 Extract from init JSON:
@@ -27,6 +31,7 @@ Extract from init JSON:
 - `project_type` — object with boolean signals: `has_package_json`, `has_api_routes`, `has_cli_bin`, `is_open_source`, `has_deploy_config`, `is_monorepo`, `has_tests`
 - `doc_tooling` — object with booleans: `docusaurus`, `vitepress`, `mkdocs`, `storybook`
 - `monorepo_workspaces` — array of workspace glob patterns (empty if not a monorepo)
+- `section_manifest` — parsed from `INIT_DOCS_UPDATE` (not `INIT`); gates the `dispatch-monorepo-packages` section below
 - `project_root` — absolute path to the project root
 - `response_language` — if set, present all user-facing questions, prompts, and explanations in this workflow in that language; technical terms, code, file paths, and subagent prompts stay in English
 </step>
@@ -710,57 +715,9 @@ If any agent failed or its file is missing, note the failure and continue. Missi
 Continue to dispatch_monorepo_packages (if monorepo_workspaces is non-empty) or commit_docs.
 </step>
 
-<step name="dispatch_monorepo_packages" condition="monorepo_workspaces is non-empty">
-After Wave 2 collection, generate per-package READMEs for each monorepo workspace.
-
-**Condition:** Only run this step if `monorepo_workspaces` from the init JSON is non-empty.
-
-**Resolve workspace packages from glob patterns:**
-
-```bash
-# Expand workspace globs to actual package directories
-for pattern in {monorepo_workspaces}; do
-  ls -d $pattern 2>/dev/null
-done
-```
-
-**For each resolved directory that contains a `package.json`:**
-
-Determine mode:
-- If `{package_dir}/README.md` exists: mode = `update`, read existing content
-- Else: mode = `create`
-
-Spawn a `gsd-doc-writer` agent with `run_in_background=true`:
-
-```
-Agent(
-  subagent_type="gsd-doc-writer",
-  model="{doc_writer_model}",
-  run_in_background=true,
-  description="Generate per-package README for {package_dir}",
-  prompt="<doc_assignment>
-type: readme
-mode: {create|update}
-scope: per_package
-package_dir: {absolute path to package directory}
-project_context: {INIT JSON with project_root set to package directory}
-{existing_content: | (include full README.md content here if mode is update, else omit)}
-</doc_assignment>
-
-{AGENT_SKILLS}
-
-Write {package_dir}/README.md directly. Return confirmation only — do not return doc content."
-)
-```
-
-> **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling all per-package Agent() calls above with `run_in_background=true`, do NOT generate any package READMEs independently while the subagents are active. Wait for all agents to complete before proceeding. This prevents duplicate work and wasted context.
-
-Collect confirmations by reading each package agent's `outputFile` once it reports completion — each `run_in_background=true` Agent call returns an `async_launched` result carrying an `outputFile` path (with `canReadOutputFile: true`). Note failures in the final report.
-
-**Fallback when Task tool is unavailable:** Generate per-package READMEs sequentially inline after the `sequential_generation` step. For each package directory with a `package.json`, construct the equivalent `doc_assignment` block and generate the README following gsd-doc-writer instructions.
-
-Continue to commit_docs.
-</step>
+<!-- gsd:section id="dispatch-monorepo-packages" when="state:is-monorepo" -->
+If `section_manifest` (from `INIT_DOCS_UPDATE`) is `null` or `"dispatch-monorepo-packages"` is in its `included` list: read and execute `gsd-core/workflows/docs-update/steps/dispatch-monorepo-packages.md`. Otherwise skip — do not read the file; continue to commit_docs.
+<!-- /gsd:section -->
 
 <step name="sequential_generation" condition="Task tool is NOT available (e.g. Antigravity, Gemini CLI, Codex, Copilot)">
 **Read the work manifest first:** `Read .planning/tmp/docs-work-manifest.json` — use `canonical_queue` items for generation order. Update `status` after each doc is generated. Write the updated manifest back to disk after all docs are complete.

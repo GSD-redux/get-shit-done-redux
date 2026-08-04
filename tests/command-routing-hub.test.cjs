@@ -1672,10 +1672,16 @@ describe('bug-853 — manager/autonomous gate background dispatch by runtime', (
     assert.match(AUTONOMOUS, /If `FLATTEN` is `false`[\s\S]{0,1200}?run_in_background=true[\s\S]{0,600}?gsd-plan-phase/);
     // Background block: run_in_background=true appears within the FLATTEN=false branch and gsd-execute-phase is nearby
     assert.match(AUTONOMOUS, /If `FLATTEN` is `false`[\s\S]{0,3000}?run_in_background=true[\s\S]{0,200}?gsd-execute-phase/);
-    // Inline is the otherwise/else branch for plan — anchored on FLATTEN=true language (not runtime name)
+    // Inline is the otherwise/else branch for plan — anchored on FLATTEN=true language (not runtime name).
+    // #2994: the window between `FLATTEN` and the inline Skill() call widened
+    // past manager.md's 400 because this branch now carries a
+    // state:plan-strategy-converge conditional-read stub (converge-dispatch-inline,
+    // gsd-core/workflows/autonomous/steps/converge-dispatch-inline.md) ahead of
+    // the local-planning fallback — the stub's full step-file path is more
+    // verbose than the terse `Skill()` call it replaced.
     assert.match(
       AUTONOMOUS,
-      /Otherwise[\s\S]{0,100}?`FLATTEN`[\s\S]{0,400}?Skill\(skill="gsd-plan-phase"/,
+      /Otherwise[\s\S]{0,100}?`FLATTEN`[\s\S]{0,700}?Skill\(skill="gsd-plan-phase"/,
     );
     // Inline is the otherwise/else branch for execute — anchored on FLATTEN=true language (not runtime name)
     assert.match(

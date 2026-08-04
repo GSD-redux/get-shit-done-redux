@@ -53,8 +53,27 @@ describe('new-project — MVP mode prompt', () => {
 // the #3784 two-question split already shipped for /gsd:settings. new-project.md has no
 // <step> tags, so blocks are located by the `header: "AI Models"` marker.
 
+// #2994 fragmentization moved the Step 2a "AI Models" auto-mode prompt (and its
+// config-new-project example payload) out of new-project.md into
+// gsd-core/workflows/new-project/steps/auto-mode-config.md behind a section
+// marker (Step 5's interactive prompt stays in the host). Read host + every
+// step file combined so the "at least two AI Models prompts" / "both example
+// payloads" counts are preserved across the split rather than reduced.
+const NEW_PROJECT_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'new-project', 'steps');
+function readNewProjectCombined() {
+  let combined = fs.readFileSync(WORKFLOW, 'utf8');
+  if (fs.existsSync(NEW_PROJECT_STEPS_DIR)) {
+    for (const entry of fs.readdirSync(NEW_PROJECT_STEPS_DIR).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + fs.readFileSync(path.join(NEW_PROJECT_STEPS_DIR, entry), 'utf8');
+      }
+    }
+  }
+  return combined;
+}
+
 describe('bug #1516: new-project AI Models prompt exposes all 5 model profiles', () => {
-  const content = fs.readFileSync(WORKFLOW, 'utf-8');
+  const content = readNewProjectCombined();
 
   // Locate every `header: "AI Models"` AskUserQuestion block and grab a window large
   // enough to include its conditional Q2 successor (the standard-tier picker).

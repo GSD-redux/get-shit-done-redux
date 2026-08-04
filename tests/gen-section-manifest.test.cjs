@@ -138,10 +138,11 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
       markerSource('handle-x', 'always', 'handle-x.md'),
       { 'handle-x.md': '<step name="handle_x">\nbody\n</step>\n' },
     );
-    // Stale: valid shape, but "when" no longer matches the source's marker.
+    // Stale: valid {workflows:{...}} shape, but "when" no longer matches the
+    // source's marker (must reach FAIL_STALE, not trip the shape check).
     fs.writeFileSync(
       manifestPath,
-      JSON.stringify({ sections: [{ id: 'handle-x', when: 'flag:--wave', read: 'gsd-core/workflows/sample/steps/handle-x.md' }] }, null, 2) + '\n',
+      JSON.stringify({ workflows: { sample: [{ id: 'handle-x', when: 'flag:--wave', read: 'gsd-core/workflows/sample/steps/handle-x.md' }] } }, null, 2) + '\n',
       'utf8',
     );
 
@@ -248,6 +249,36 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     }
   });
 
+  test('rejectsPre6_1FlatSectionsShapeAsMalformed (upgrade-path supplemental: an installed tree still carrying the old flat {sections:[...]} artifact)', (t) => {
+    const tmpRoot = createTempDir('gen-section-manifest-');
+    t.after(() => cleanup(tmpRoot));
+
+    const { workflowsDir, manifestPath } = buildFixture(
+      tmpRoot,
+      'sample',
+      markerSource('handle-x', 'always', 'handle-x.md'),
+      { 'handle-x.md': '<step name="handle_x">\nbody\n</step>\n' },
+    );
+
+    // Pre-6.1 committed artifact shape: a flat `{sections:[...]}` array with
+    // no `workflows` key at all. Must be rejected as malformed, never
+    // silently attributed to whichever workflow asks first (design row C4).
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ sections: [{ id: 'handle-x', when: 'always', read: 'gsd-core/workflows/sample/steps/handle-x.md' }] }, null, 2) + '\n',
+      'utf8',
+    );
+
+    const r = runGenSectionManifest([
+      '--check', '--json', '--workflows-dir', workflowsDir, '--manifest-path', manifestPath, '--repo-root', tmpRoot,
+    ]);
+    assert.equal(r.code, 1);
+    assert.doesNotMatch(r.stderr, STACK_FRAME_RE, 'a pre-6.1 flat manifest must not crash the generator');
+    const report = parseJsonReport(r.stdout);
+    assert.equal(report.ok, false);
+    assert.equal(report.reason, REASON.FAIL_MANIFEST_MALFORMED_SHAPE, 'pre-6.1 flat {sections:[...]} shape must be rejected, not mistaken for up-to-date or stale');
+  });
+
   test('checkFailsWhenMarkerReferencesMissingStepFile (row 35)', (t) => {
     const tmpRoot = createTempDir('gen-section-manifest-');
     t.after(() => cleanup(tmpRoot));
@@ -324,7 +355,7 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     );
 
     const fresh = buildFreshManifest(workflowsDir, tmpRoot);
-    assert.equal(fresh.sections.length, 1);
+    assert.equal(fresh.workflows.sample.length, 1);
     fs.writeFileSync(manifestPath, JSON.stringify(fresh, null, 2) + '\n', 'utf8');
 
     const r = runGenSectionManifest([
@@ -381,8 +412,8 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     });
 
     const fresh = buildFreshManifest(workflowsDir, tmpRoot);
-    assert.equal(fresh.sections.length, 1, 'the fenced marker-shaped lines must not produce a section');
-    assert.equal(fresh.sections[0].id, 'handle-x');
+    assert.equal(fresh.workflows.sample.length, 1, 'the fenced marker-shaped lines must not produce a section');
+    assert.equal(fresh.workflows.sample[0].id, 'handle-x');
 
     fs.writeFileSync(manifestPath, JSON.stringify(fresh, null, 2) + '\n', 'utf8');
     const r = runGenSectionManifest([
@@ -411,8 +442,8 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     });
 
     const fresh = buildFreshManifest(workflowsDir, tmpRoot);
-    assert.equal(fresh.sections.length, 1, 'gsd:loop-host must never be treated as a gsd:section marker');
-    assert.equal(fresh.sections[0].id, 'handle-x');
+    assert.equal(fresh.workflows.sample.length, 1, 'gsd:loop-host must never be treated as a gsd:section marker');
+    assert.equal(fresh.workflows.sample[0].id, 'handle-x');
 
     fs.writeFileSync(manifestPath, JSON.stringify(fresh, null, 2) + '\n', 'utf8');
     const r = runGenSectionManifest([
@@ -543,6 +574,185 @@ describe('gen-section-manifest.cjs --check / --write (matrix D)', () => {
     assert.equal(report.reason, REASON.FAIL_LIB_NOT_BUILT);
     assert.equal(report.subject, 'gsd-core/bin/lib/workflow-fragments.cjs');
   });
+});
+
+// ─── #2993 (epic #1671 Phase 6.2) rows C1/C2: the shipped, committed
+// gsd-core/workflows/section-manifest.json artifact itself — never a
+// regenerated fixture — gains a `plan-phase` key with all 6 sections in
+// document order (C1), while `execute-phase`'s own entry stays
+// BYTE-IDENTICAL (C2, a Hyrum gate: #2932/#2992's 3 pre-existing sections
+// must not shift shape just because a sibling workflow key was added).
+
+describe('shipped gsd-core/workflows/section-manifest.json (#2993 rows C1/C2)', () => {
+  const SHIPPED_MANIFEST_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'section-manifest.json');
+
+  function readShippedManifest() {
+    return JSON.parse(fs.readFileSync(SHIPPED_MANIFEST_PATH, 'utf8'));
+  }
+
+  test('planPhaseKeyHasAllSixSectionsInDocumentOrder (row C1)', () => {
+    const manifest = readShippedManifest();
+    assert.deepEqual(manifest.workflows['plan-phase'], [
+      {
+        id: 'reviews-prerequisite',
+        when: 'flag:--reviews',
+        read: 'gsd-core/workflows/plan-phase/steps/reviews-prerequisite.md',
+      },
+      {
+        id: 'prd-express-gate',
+        when: 'flag:--prd',
+        read: 'gsd-core/workflows/plan-phase/steps/prd-express-gate.md',
+      },
+      {
+        id: 'adr-ingest-express-path',
+        when: 'flag:--ingest',
+        read: 'gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md',
+      },
+      {
+        id: 'research-only-modifiers',
+        when: 'flag:--research-phase',
+        read: 'gsd-core/workflows/plan-phase/steps/research-only-modifiers.md',
+      },
+      {
+        id: 'research-only-early-exit',
+        when: 'flag:--research-phase',
+        read: 'gsd-core/workflows/plan-phase/steps/research-only-early-exit.md',
+      },
+      {
+        id: 'chunked-planning-mode',
+        when: 'state:chunked-mode',
+        read: 'gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md',
+      },
+    ]);
+  });
+
+  test('executePhaseKeyIsByteIdenticalToBeforeThisChange (row C2 — Hyrum gate)', () => {
+    const manifest = readShippedManifest();
+    assert.deepEqual(manifest.workflows['execute-phase'], [
+      {
+        id: 'partial-wave',
+        when: 'flag:--wave',
+        read: 'gsd-core/workflows/execute-phase/steps/partial-wave.md',
+      },
+      {
+        id: 'gap-closure-artifacts',
+        when: 'state:gap-closure-phase',
+        read: 'gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md',
+      },
+      {
+        id: 'regression-gate',
+        when: 'state:has-prior-phases',
+        read: 'gsd-core/workflows/execute-phase/steps/regression-gate.md',
+      },
+    ]);
+  });
+
+  test('shippedManifestPassesTheRealCheckAgainstTheRealRepo (idempotency, mirrors row 29)', () => {
+    const r = runGenSectionManifest([
+      '--check', '--workflows-dir', path.join(ROOT, 'gsd-core', 'workflows'), '--manifest-path', SHIPPED_MANIFEST_PATH, '--repo-root', ROOT,
+    ]);
+    assert.equal(r.code, 0, `the shipped manifest must already be up to date; stderr: ${r.stderr}`);
+  });
+});
+
+// ─── Flag-forwarding regression guard (BLOCKER fix, epic #1671 Phase 6.2) ──
+//
+// The workflows never forwarded their flags to the init CLI, so every
+// `flag:--X` atom was permanently FALSE in production and its gated section
+// permanently EXCLUDED (`prd-express-gate` unreachable under `--prd`;
+// `partial-wave` unreachable under `--wave`, pre-existing since #2932 Phase
+// 5). This guard is DERIVED from the shipped manifest — never a hardcoded
+// {workflow, flag} list — so it also catches the NEXT `flag:--X` atom added
+// to any workflow without its own dedicated test.
+
+describe('workflow gsd_run query init.<workflow> invocations forward every flag:--X atom (regression guard)', () => {
+  const SHIPPED_MANIFEST_PATH = path.join(ROOT, 'gsd-core', 'workflows', 'section-manifest.json');
+
+  function readShippedManifest() {
+    return JSON.parse(fs.readFileSync(SHIPPED_MANIFEST_PATH, 'utf8'));
+  }
+
+  /**
+   * All shell variable names assigned (anywhere in `scope`, via a
+   * double-quoted `VAR="..."` assignment) a value whose whitespace-split
+   * tokens include the exact literal `atomFlag` token (e.g. `--prd`).
+   * Whole-token comparison (not substring) so `--research-phase` never
+   * satisfies a check for `--research`, and vice versa.
+   */
+  function varsCarryingFlagToken(scope, atomFlag) {
+    const carriers = new Set();
+    const assignRe = /([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"/g;
+    let m;
+    while ((m = assignRe.exec(scope)) !== null) {
+      const [, varName, rhs] = m;
+      if (rhs.split(/\s+/).includes(atomFlag)) carriers.add(varName);
+    }
+    return carriers;
+  }
+
+  /** `$VAR` / `${VAR}` variable references appearing anywhere in `line`. */
+  function varsReferencedIn(line) {
+    const referenced = new Set();
+    const refRe = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g;
+    let m;
+    while ((m = refRe.exec(line)) !== null) referenced.add(m[1]);
+    return referenced;
+  }
+
+  const manifest = readShippedManifest();
+  for (const [workflow, sections] of Object.entries(manifest.workflows)) {
+    const flagAtoms = [
+      ...new Set(
+        sections
+          .map((s) => s.when)
+          .filter((when) => when.startsWith('flag:--'))
+          .map((when) => when.slice('flag:'.length)),
+      ),
+    ];
+    if (flagAtoms.length === 0) continue;
+
+    test(`${workflow}.md forwards [${flagAtoms.join(', ')}] to its gsd_run query init.${workflow} invocation`, () => {
+      const workflowMdPath = path.join(ROOT, 'gsd-core', 'workflows', `${workflow}.md`);
+      const content = fs.readFileSync(workflowMdPath, 'utf8');
+
+      // A workflow may call `gsd_run query init.<workflow>` more than once
+      // (e.g. new-milestone.md's early INIT_EARLY call, whose section_manifest
+      // gates ONLY project-md-milestone-write per its own prose, followed by
+      // a later full INIT call that gates every other flag-gated section and
+      // does forward the flag). Every occurrence is a candidate carrier —
+      // a flagAtom only needs forwarding by AT LEAST ONE invocation line,
+      // not necessarily the first.
+      const initLineRe = new RegExp(`^.*gsd_run query init\\.${workflow}\\b.*$`, 'mg');
+      const initLineMatches = [...content.matchAll(initLineRe)];
+      assert.ok(initLineMatches.length > 0, `${workflow}.md must contain a "gsd_run query init.${workflow}" invocation line`);
+
+      for (const atomFlag of flagAtoms) {
+        const forwardedByAnyInvocation = initLineMatches.some((match) => {
+          const initLine = match[0];
+          // Everything up to and including this invocation line: real
+          // workflows parse $ARGUMENTS into a param variable earlier in the
+          // same bash block, then reference that variable on the INIT= line
+          // itself.
+          const scope = content.slice(0, match.index + initLine.length);
+          const referencedVars = varsReferencedIn(initLine);
+
+          const directlyPresent = initLine
+            .split(/\s+/)
+            .includes(atomFlag);
+          const carriers = varsCarryingFlagToken(scope, atomFlag);
+          const forwardedViaVar = [...carriers].some((v) => referencedVars.has(v));
+          return directlyPresent || forwardedViaVar;
+        });
+
+        assert.ok(
+          forwardedByAnyInvocation,
+          `${workflow}.md's "gsd_run query init.${workflow}" invocation line(s) must forward a parameter for ` +
+            `${atomFlag} (its gated section is otherwise permanently excluded — see BLOCKER, epic #1671 Phase 6.2). ` +
+            `Invocation line(s): ${initLineMatches.map((m) => m[0]).join(' | ')}`,
+        );
+      }
+    });
+  }
 });
 
 // ─── REASON enum shape lock (mirrors gen-context-index.cjs precedent) ──────

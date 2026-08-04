@@ -417,33 +417,20 @@ ROADMAP=$(gsd_run query roadmap.analyze)
 
 This returns all phases with goals, disk status, and completion info.
 
----
-
-**Workstream collision check (when `is_last_phase: true`):**
-
-Before routing to Route B, check whether other workstreams are still active.
-This prevents one workstream from advancing or completing the milestone while
-other workstreams are still working on their phases.
-
-**Skip this check if NOT in workstream mode** (i.e., `GSD_WORKSTREAM` is not set / flat mode).
-In flat mode, go directly to **Route B**.
+**Section-manifest gate (#2994):** `gsd_run` is already established above (`update_roadmap_and_state` step) — fetch the dedicated `init.transition` bundle for the workstream-collision-check gate below:
 
 ```bash
-# Only check if we're in workstream mode
-if [ -n "$GSD_WORKSTREAM" ]; then
-  WS_LIST=$(gsd_run query workstream.list --raw)
-fi
+INIT_TRANSITION=$(gsd_run query init.transition)
+if [[ "$INIT_TRANSITION" == @file:* ]]; then INIT_TRANSITION=$(cat "${INIT_TRANSITION#@file:}"); fi
 ```
 
-Parse the JSON result. The output has `{ mode, workstreams: [...] }`.
-Each workstream entry has: `name`, `status`, `current_phase`, `phase_count`, `completed_phases`.
+Extract from `INIT_TRANSITION`: `other_active_workstreams`, `section_manifest`.
 
-Filter out the current workstream (`$GSD_WORKSTREAM`) and any workstreams with
-status containing "milestone complete" or "archived" (case-insensitive).
-The remaining entries are **other active workstreams**.
+---
 
-- **If other active workstreams exist** → Go to **Route B1**
-- **If NO other active workstreams** (or flat mode) → Go to **Route B**
+<!-- gsd:section id="workstream-collision-check" when="state:workstream-active" -->
+If `section_manifest` (from `INIT_TRANSITION`) is `null` or `"workstream-collision-check"` is in its `included` list: read and execute `gsd-core/workflows/transition/steps/workstream-collision-check.md`. Otherwise (flat mode) skip — do not read the file; go directly to **Route B**.
+<!-- /gsd:section -->
 
 ---
 

@@ -607,29 +607,64 @@ function parseMustHavesBlock(content: string, blockName: string): unknown[] {
 
 // ─── Frontmatter CRUD commands ────────────────────────────────────────────────
 
-const FRONTMATTER_SCHEMAS: Record<string, { required: string[] }> = {
-  plan: { required: ['phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves'] },
+// Shared base for 'plan' and 'plan-gap-closure' below — a plain array reference (not
+// FRONTMATTER_SCHEMAS.plan.required) because the object literal that defines
+// FRONTMATTER_SCHEMAS cannot refer to itself mid-initialization (TDZ).
+const PLAN_REQUIRED_FIELDS = ['phase', 'plan', 'type', 'wave', 'depends_on', 'files_modified', 'autonomous', 'must_haves'];
+
+// `requiredValues` is optional per schema: when a field name is a key here, the
+// field must be PRESENT AND strictly equal (===) to the given value to satisfy
+// the schema — presence alone is not enough. Every other required field (no
+// entry in requiredValues) keeps the original presence-only contract.
+const FRONTMATTER_SCHEMAS: Record<string, { required: string[]; requiredValues?: Record<string, FrontmatterValue> }> = {
+  plan: { required: PLAN_REQUIRED_FIELDS },
+  // #2847: gap-closure plans carry every 'plan' field PLUS gap_closure — the flag
+  // execute-phase --gaps-only filters on. A separate schema (not a change to
+  // 'plan') so standard/reviews-mode plans stay unaffected: they validate against
+  // 'plan' and are never required to declare or be checked for gap_closure.
+  // Derived from PLAN_REQUIRED_FIELDS (never hand-duplicated) so the two can't drift.
+  //
+  // requiredValues.gap_closure = true (not just presence): --gaps-only filters
+  // strictly on gap_closure === true (execute-phase.md, partial-wave.md), so a
+  // plan carrying `gap_closure: false` would pass a presence-only check and
+  // still be silently skipped at execute time — the exact symptom #2847
+  // reports, one value away. Presence-only was flagged in review as a live
+  // reproduction of the bug this schema exists to close.
+  'plan-gap-closure': {
+    required: [...PLAN_REQUIRED_FIELDS, 'gap_closure'],
+    // extractFrontmatter parses every scalar as a string (FrontmatterValue has
+    // no boolean member — `gap_closure: true` in YAML becomes the JS string
+    // "true", not the boolean true), so the required value is the string here.
+    requiredValues: { gap_closure: 'true' },
+  },
   summary: { required: ['phase', 'plan', 'subsystem', 'tags', 'duration', 'completed'] },
   verification: { required: ['phase', 'verified', 'status', 'score'] },
 };
 
 /**
- * Strip ALL frontmatter blocks from the start of `content`.
+ * Strip frontmatter blocks from the start of `content`.
  *
- * Handles CRLF line endings and multiple stacked blocks (corruption
- * recovery): greedily strips consecutive `---...---` blocks separated by
- * optional whitespace, so a doubled/tripled frontmatter header (e.g. from a
- * botched merge) is fully removed, not just the first block.
+ * Handles CRLF line endings and, by default, multiple stacked blocks
+ * (corruption recovery): greedily strips consecutive `---...---` blocks
+ * separated by optional whitespace, so a doubled/tripled frontmatter header
+ * (e.g. from a botched merge) is fully removed, not just the first block.
+ *
+ * Pass `{ once: true }` to stop after the first block. Callers whose input is
+ * an arbitrary user-authored document — rather than a GSD artefact with a
+ * known doubling failure mode — need this: a body that opens with a
+ * thematic-break-delimited section is lexically indistinguishable from a
+ * second frontmatter block, and the greedy loop deletes it silently (#2703).
  *
  * Canonical home for this primitive (#2143 audit dedup): previously
  * duplicated byte-identically in both `state.cts` and `state-transition.cts`.
  */
-function stripFrontmatter(content: string): string {
+function stripFrontmatter(content: string, opts: { once?: boolean } = {}): string {
   let result = content;
   while (true) {
     const stripped = result.replace(/^\s*---\r?\n[\s\S]*?\r?\n---\s*/, '');
     if (stripped === result) break;
     result = stripped;
+    if (opts.once) break;
   }
   return result;
 }
@@ -715,8 +750,19 @@ function cmdFrontmatterMerge(cwd: string, filePath: string, data: string | undef
 function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: string | undefined, raw: boolean): void {
   if (!filePath || !schemaName) { error('file and schema required'); }
   if (filePath.includes('\0')) { error('file path contains null bytes'); }
+  // Guard against prototype-chain keys (__proto__, constructor, toString, hasOwnProperty,
+  // valueOf, ...): a bare FRONTMATTER_SCHEMAS[schemaName] lookup resolves those to
+  // Object.prototype members instead of undefined, so a `!schema` check on the raw
+  // lookup never fires and the code crashes later on `schema.required.filter` with an
+  // uncaught TypeError instead of the intended "Unknown schema" message. Confirmed live
+  // with --schema __proto__. Now that --schema is agent-bound (agents/gsd-planner.md's
+  // $SCHEMA), this is reachable from prompt state, not just an unreachable literal.
+  // Checked and rejected BEFORE the lookup (rather than `?? undefined`-ing the lookup
+  // itself) so `schema`'s inferred type stays non-optional and needs no assertion below.
+  if (!Object.prototype.hasOwnProperty.call(FRONTMATTER_SCHEMAS, schemaName as string)) {
+    error(`Unknown schema: ${schemaName}. Available: ${Object.keys(FRONTMATTER_SCHEMAS).join(', ')}`);
+  }
   const schema = FRONTMATTER_SCHEMAS[schemaName as string];
-  if (!schema) { error(`Unknown schema: ${schemaName}. Available: ${Object.keys(FRONTMATTER_SCHEMAS).join(', ')}`); }
   const fullPath = path.isAbsolute(filePath) ? filePath : path.join(cwd, filePath);
   const content = safeReadFile(fullPath);
   if (!content) { output({ error: 'File not found', path: filePath }, raw, undefined); return; }
@@ -728,9 +774,26 @@ function cmdFrontmatterValidate(cwd: string, filePath: string, schemaName: strin
   // Pass the resolved path so a truncated file is named in the diagnostic and deduplicated
   // per file rather than per content digest (#1882, ADR-1411 wiring clause).
   const fm = extractFrontmatter(content, fullPath);
-  const missing = schema.required.filter(f => fm[f] === undefined);
-  const present = schema.required.filter(f => fm[f] !== undefined);
-  output({ valid: missing.length === 0, missing, present, schema: schemaName }, raw, missing.length === 0 ? 'valid' : 'invalid');
+  const requiredValues = schema.requiredValues || {};
+  // A field satisfies the schema when it is present AND — for fields with a
+  // requiredValues entry — strictly equal to that value. Absent and
+  // wrong-value both surface as `missing` (existing `missing`/`present`
+  // partition of `required` is unchanged — no consumer reads `present` to
+  // mean "physically exists regardless of value," confirmed by searching
+  // every caller before choosing this). But #2847 review: folding silently
+  // made "missing" misleading for a WRONG-valued field the plan author can
+  // plainly see in the file (e.g. `gap_closure: True`) — nothing told them
+  // the field is present but the VALUE is wrong, so they could loop trying
+  // to add a field that is already there. `invalidValue` names exactly that
+  // subset (present, but not the required value) so the message stays
+  // actionable without changing what `missing`/`present` mean.
+  const wrongValue = (f: string): boolean =>
+    fm[f] !== undefined && Object.prototype.hasOwnProperty.call(requiredValues, f) && fm[f] !== requiredValues[f];
+  const satisfies = (f: string): boolean => fm[f] !== undefined && !wrongValue(f);
+  const missing = schema.required.filter(f => !satisfies(f));
+  const present = schema.required.filter(f => satisfies(f));
+  const invalidValue = schema.required.filter(wrongValue);
+  output({ valid: missing.length === 0, missing, present, invalidValue, schema: schemaName }, raw, missing.length === 0 ? 'valid' : 'invalid');
 }
 
 export = {

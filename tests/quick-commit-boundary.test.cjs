@@ -77,13 +77,39 @@ const fs = require('fs');
 const path = require('path');
 
 const QUICK_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md');
+const REPO_ROOT_FOR_SECTIONS = path.join(__dirname, '..');
+
+/**
+ * #2994 fragmentization moved Steps 4.5/4.75/5.5/5.6/6.5 out of quick.md into
+ * gsd-core/workflows/quick/steps/*.md behind section markers. A plain
+ * `content.indexOf('Step 5.6')` against the host now matches an unrelated
+ * later CROSS-REFERENCE to "Step 5.6" (a mention inside the worktree-branch
+ * guard prose), not the real heading — silently vacuous, since that
+ * mis-anchored slice still happens to contain USE_WORKTREES/commit_docs/
+ * PLAN.md/git add/git commit substrings from unrelated surrounding text.
+ * Expand each `<!-- gsd:section id="X" ... -->...<!-- /gsd:section -->`
+ * marker IN PLACE with its step file's content so Step 5.5/5.6/6/6.5 land
+ * back at their original logical positions and ordering/slicing assertions
+ * see the real step bodies again.
+ */
+function expandWorkflowSections(workflowPath) {
+  const raw = fs.readFileSync(workflowPath, 'utf8');
+  const markerRe = /<!-- gsd:section id="[\w-]+" when="[^"]*" -->[\s\S]*?<!-- \/gsd:section -->/g;
+  return raw.replace(markerRe, (block) => {
+    const pathMatch = block.match(/`([^`]+\.md)`/);
+    if (!pathMatch) return block;
+    const stepPath = path.join(REPO_ROOT_FOR_SECTIONS, pathMatch[1]);
+    if (!fs.existsSync(stepPath)) return block;
+    return fs.readFileSync(stepPath, 'utf8');
+  });
+}
 
 describe('quick.md pre-dispatch PLAN.md commit (#2432)', () => {
   let content;
 
   test('quick.md exists', () => {
     assert.ok(fs.existsSync(QUICK_MD), 'gsd-core/workflows/quick.md must exist');
-    content = fs.readFileSync(QUICK_MD, 'utf-8');
+    content = expandWorkflowSections(QUICK_MD);
   });
 
   test('Step 5.6 exists between Step 5.5 and Step 6', () => {
