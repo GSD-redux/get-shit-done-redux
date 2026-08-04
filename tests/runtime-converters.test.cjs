@@ -1339,6 +1339,60 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       }
     });
 
+    // -----------------------------------------------------------------------
+    // Merge-order enforcement (#2486 review round 3)
+    // -----------------------------------------------------------------------
+    //
+    // settings.md now presents the Worktrees question and persists
+    // `workflow.use_worktrees: true` for every runtime whose declared
+    // dispatch.isolation is not `none` — cursor (harness-worktree) and
+    // codex/opencode/kimi/kimi-code (orchestrator-worktree).
+    //
+    // quick.md and diagnose-issues.md are the two workflows that consume that
+    // value at dispatch time, and while they still gate on the runtime NAME
+    // they FATAL for all five. A user steered into the recommended setting by
+    // this PR would hit a hard failure minutes later — #2486's own shape,
+    // reintroduced for the exact runtimes this change exists to help, with the
+    // added indignity that it is now the recommended path that breaks them.
+    //
+    // #2728 migrates both gates to dispatch.isolation. This test is what makes
+    // that ordering STRUCTURAL rather than advisory: it is red while either
+    // sibling is still name-gated and goes green the moment #2728 lands. A
+    // "Depends on #2728" note in a PR body is not a gate — it is prose that an
+    // automated batch merge never reads. This is the gate.
+    //
+    // It also closes W024's coverage window. W024 only fires when ISOLATION is
+    // `none`, so it is structurally blind to these five runtimes: /gsd:health
+    // would report healthy right up until quick.md FATALs. W024 cannot see the
+    // hazard, so the hazard is prevented here instead — by making the unsafe
+    // ordering unmergeable rather than by warning about it after the fact.
+    const SIBLING_DISPATCH_WORKFLOWS = ['quick.md', 'diagnose-issues.md'];
+    const ISOLATION_GATE_REFERENCE = 'gsd-core/references/dispatch-isolation-gate.md';
+
+    test('the sibling dispatch workflows are capability-gated before settings.md may recommend worktrees (#2486 — enforces the #2728 merge order)', () => {
+      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
+      for (const wf of SIBLING_DISPATCH_WORKFLOWS) {
+        const src = readWorkflow(wf);
+
+        // The runtime IDENTITY read (`RUNTIME=$(... config-get runtime ...)`)
+        // is legitimate and survives; only a RUNTIME-vs-"claude" COMPARISON is
+        // the name gate. The pattern below matches the latter and not the
+        // former — verified against both the pre-#2728 and post-#2728 sources.
+        const nameGates = src.match(/RUNTIME"?\s*(!=|=)\s*"?claude/g);
+        assert.ok(
+          !nameGates,
+          `${wf}: still gates worktree isolation on the runtime name (${JSON.stringify(nameGates)}), so it FATALs for cursor/codex/opencode/kimi/kimi-code — the five runtimes settings.md now recommends use_worktrees:true for. This PR must not merge ahead of #2728, which migrates this gate to dispatch.isolation.`,
+        );
+
+        // And it must actually reach the negotiated capability — either the
+        // inline canonical read or the shared reference that carries it.
+        assert.ok(
+          src.includes(ISOLATION_LINE) || src.includes(ISOLATION_GATE_REFERENCE),
+          `${wf}: no dispatch-isolation resolution — expected the canonical read or a reference to ${ISOLATION_GATE_REFERENCE}`,
+        );
+      }
+    });
+
     test('settings.md and health.md resolve isolation with the canonical capability read', () => {
       // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
       for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
@@ -1441,6 +1495,23 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     });
 
     test('W024 does not collide with the W-code namespace owned by src/verify.cts', () => {
+      // KNOWN GAP, stated rather than hidden (#2486 review round 3). This is a
+      // source-text match, the shape `local/no-source-grep` exists to
+      // discourage, and it is declared here instead of quietly passing lint.
+      //
+      // The behavioral alternative does not exist yet: verify.cts emits its
+      // W-codes as inline string literals inside ~25 separate `addIssue(...)`
+      // calls and exports no enumerable warning-code registry, so there is
+      // nothing to require() and assert against. Building one means refactoring
+      // a shared module well outside this fix's scope. Until that registry
+      // exists, reading the source is the only way to check the namespace claim
+      // at all, and an unchecked claim is worse than a declared-imperfect one.
+      //
+      // What this costs: a rename or reformat of the 'W024' literal breaks
+      // nothing this test needs to know about, and a code embedded in a larger
+      // token could slip past. Accepted deliberately.
+      //
+      // allow-test-rule: no enumerable W-code registry exists to assert against; namespace-collision check must read the source (#2486)
       const verifySrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'verify.cts'), 'utf8');
       // Quote-agnostic: verify.cts could emit the code single- or double-quoted.
       assert.ok(
