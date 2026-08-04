@@ -269,6 +269,26 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 
 > **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `verify-phase.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`.
 
+### Workflow Sub-Files
+
+A workflow may own two kinds of sub-file. Both live under `gsd-core/workflows/<workflow>/` and
+neither is separately invocable — the parent workflow reaches them.
+
+| Subdirectory | What it holds | Manifest family | Roster |
+|---|---|---|---|
+| `<workflow>/steps/*.md` | Gated section bodies extracted by the fragment model (ADR-1671, epic #1671 Phases 6.1–6.3). The parent carries a `section_manifest`-gated stub; `gsd-core/workflows/section-manifest.json` names which step a given invocation reads. | `workflow_steps` | 15 workflows — see the manifest for the authoritative per-file list |
+| `<workflow>/modes/*.md` | Progressive-disclosure mode files (#717). The parent dispatches to exactly one; `discuss-phase/modes/` is the canonical example. | `workflow_modes` | `discuss-phase`, `sketch` |
+
+Both families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because two
+workflows may each own a step of the same name — `families.workflows` uses bare basenames and
+cannot represent these without collision.
+
+**Adding a step or mode file requires no hand-written row here.** Run
+`node scripts/gen-inventory-manifest.cjs --write` (after `build:lib`) and the manifest picks it up;
+`tests/inventory-manifest-sync.test.cjs` fails if you forget. The per-file roster deliberately lives
+in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 60 rows that must be
+hand-maintained in lockstep with a generated artifact is the drift this file exists to catch.
+
 ---
 
 ## References
