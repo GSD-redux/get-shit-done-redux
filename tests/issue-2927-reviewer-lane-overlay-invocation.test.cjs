@@ -257,30 +257,33 @@ describe('review-lane CLI overlay invocation (#2927, rows 9–10)', () => {
       cwd,
       scopeEnv(home),
     );
-    const installOut = JSON.parse(install);
-    assert.equal(installOut.status, 'installed', `install failed: ${install}`);
+    assert.equal(install.success, true, `install failed: ${install.error || install.output}`);
+    const installOut = JSON.parse(install.output);
+    assert.equal(installOut.status, 'installed', `install did not report installed: ${install.output}`);
 
     // Row 9 / acceptance #1: sections includes the overlay slug + reviewsSection.
     const sections = runGsdTools(['review-lane', 'sections'], cwd, scopeEnv(home));
-    const sectionRows = sections.split('\n').filter(Boolean);
+    assert.equal(sections.success, true, `sections failed: ${sections.error || sections.output}`);
+    const sectionRows = sections.output.split('\n').filter(Boolean);
     const overlayRow = sectionRows.find((r) => r.startsWith('rev2927lane\t'));
-    assert.ok(overlayRow, `overlay lane missing from sections output:\n${sections}`);
+    assert.ok(overlayRow, `overlay lane missing from sections output:\n${sections.output}`);
     assert.equal(overlayRow, 'rev2927lane\trev2927lane review');
 
     // Row 9 / acceptance #3: plan --selected <overlay-slug> resolves ok (NOT
     // malformed_lane / no such declared lane — the pre-fix failure). The `plan`
     // subcommand renders an ARRAY of {slug, ok, section, transport, ...} (it strips
-    // the nested invocation `plan` object before output), so assert on element [0].
+    // the nested invocation `plan` object before output), so find the overlay entry.
     const plan = runGsdTools(
       ['review-lane', 'plan', '--selected', 'rev2927lane', '--run-dir', cwd, '--repo-root', cwd],
       cwd,
       scopeEnv(home),
     );
-    const planOut = JSON.parse(plan);
-    assert.ok(Array.isArray(planOut), `plan output is not an array:\n${plan}`);
+    assert.equal(plan.success, true, `plan failed: ${plan.error || plan.output}`);
+    const planOut = JSON.parse(plan.output);
+    assert.ok(Array.isArray(planOut), `plan output is not an array:\n${plan.output}`);
     const overlayPlan = planOut.find((p) => p.slug === 'rev2927lane');
-    assert.ok(overlayPlan, `overlay plan entry missing:\n${plan}`);
-    assert.equal(overlayPlan.ok, true, `overlay plan did not resolve ok:\n${plan}`);
+    assert.ok(overlayPlan, `overlay plan entry missing:\n${plan.output}`);
+    assert.equal(overlayPlan.ok, true, `overlay plan did not resolve ok:\n${plan.output}`);
     assert.equal(overlayPlan.section, 'rev2927lane review');
     assert.equal(overlayPlan.transport, 'spawn');
   });
@@ -307,11 +310,13 @@ describe('review-lane CLI overlay invocation (#2927, rows 9–10)', () => {
       cwd,
       scopeEnv(home),
     );
-    assert.equal(JSON.parse(install).status, 'installed', `install failed: ${install}`);
+    assert.equal(install.success, true, `install failed: ${install.error || install.output}`);
+    assert.equal(JSON.parse(install.output).status, 'installed', `install did not report installed: ${install.output}`);
 
     const flags = runGsdTools(['review-lane', 'flags'], cwd, scopeEnv(home));
-    const flagLines = flags.split('\n').filter(Boolean);
-    assert.ok(flagLines.includes('--rev2927flag'), `overlay flag missing from flags output:\n${flags}`);
+    assert.equal(flags.success, true, `flags failed: ${flags.error || flags.output}`);
+    const flagLines = flags.output.split('\n').filter(Boolean);
+    assert.ok(flagLines.includes('--rev2927flag'), `overlay flag missing from flags output:\n${flags.output}`);
     assert.ok(flagLines.includes('--rev2927alt'), 'second well-formed overlay flag missing (flag array flattened?)');
   });
 });
