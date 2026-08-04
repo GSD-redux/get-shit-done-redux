@@ -1,6 +1,7 @@
 [
   ".gsd-profile",
   ".gsd/defaults.json",
+  ".kimi-code/hooks/gsd-agent-isolation-guard.js",
   ".kimi-code/hooks/gsd-check-update-worker.js",
   ".kimi-code/hooks/gsd-check-update.js",
   ".kimi-code/hooks/gsd-config-reload.js",

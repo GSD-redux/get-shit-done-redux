@@ -37,6 +37,7 @@ const EXPECTED_SH_HOOKS = [
 ];
 
 const EXPECTED_ALL_HOOKS = [
+  'gsd-agent-isolation-guard.js',
   'gsd-check-update.js',
   'gsd-config-reload.js',
   'gsd-context-monitor.js',

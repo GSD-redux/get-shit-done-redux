@@ -440,6 +440,7 @@
   "gsd-core/workflows/verify-work.md",
   "gsd-core/workflows/verify-work/steps/automated-ui-verification.md",
   "gsd-core/workflows/verify-work/steps/mvp-uat-framing.md",
+  "hooks/gsd-agent-isolation-guard.js",
   "hooks/gsd-check-update-worker.js",
   "hooks/gsd-check-update.js",
   "hooks/gsd-config-reload.js",
