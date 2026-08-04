@@ -144,6 +144,14 @@ test('row 13b — a missing root contributes nothing rather than throwing', () =
 // ─── Row 13c: an unstattable entry is skipped, not fatal ─────────────────────
 
 test('row 13c — a dangling symlink under the subdirectory does not crash the walk', (t) => {
+  // fs.symlinkSync throws EPERM on Windows without elevation or Developer Mode.
+  // A genuine t.skip(), never a bare `return` — a bare return is a PASS in
+  // node:test and would hide the gap rather than report it.
+  if (process.platform === 'win32') {
+    t.skip('symlink creation requires elevation on Windows; the unstattable-entry path is asserted on macOS + Linux');
+    return;
+  }
+
   const root = buildTree({ alpha: { steps: ['real.md'] } });
   t.after(() => cleanup(root));
   fs.symlinkSync(path.join(root, 'alpha', 'steps', 'nope.md'), path.join(root, 'alpha', 'steps', 'dangling.md'));
