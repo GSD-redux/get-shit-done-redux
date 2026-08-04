@@ -1050,3 +1050,76 @@ describe('#2617: the phase-complete error path projects too', () => {
     });
   }
 });
+
+// ─── #2868: stranded-phase detection via `verification status` ────────────────
+//
+// execute-phase's `discover_and_group_plans` step resumes at the phase gates
+// when every plan is summarized but no *-VERIFICATION.md exists yet. That
+// resume decision is driven by `gsd_run query verification status <phaseDir>
+// --pick status` reading `missing`. These tests pin the CLI query's behavior
+// on the exact fixture shapes the workflow branches on, via the real CLI
+// (runGsdTools), not the in-process readVerificationStatus() helper used above.
+describe('#2868: verification status CLI drives the execute-phase stranded-phase resume', () => {
+  const { runGsdTools, createTempGitProject } = require('./helpers.cjs');
+
+  test('D1: all plans summarized, no *-VERIFICATION.md → status is missing', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+
+      const res = runGsdTools(['verification', 'status', phaseDir, '--pick', 'status'], projectDir);
+      assert.equal(res.success, true, `verification status should succeed: ${res.error}`);
+      assert.equal(res.output, 'missing', 'no VERIFICATION.md at all → status must be missing');
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('D2: same fixture plus a passed *-VERIFICATION.md → status is not missing', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
+      fs.writeFileSync(
+        path.join(phaseDir, '01-VERIFICATION.md'),
+        '---\nstatus: passed\n---\n\n# Verification\n',
+      );
+
+      const res = runGsdTools(['verification', 'status', phaseDir, '--pick', 'status'], projectDir);
+      assert.equal(res.success, true, `verification status should succeed: ${res.error}`);
+      assert.notEqual(res.output, 'missing', 'a passed VERIFICATION.md must not read as missing');
+      assert.equal(res.output, 'passed');
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+
+  test('D3: one plan lacking a SUMMARY and no verification → still missing (not conflated with "stranded")', () => {
+    const projectDir = createTempGitProject();
+    try {
+      const phaseDir = path.join(projectDir, '.planning', 'phases', '01-example');
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan 1\n');
+      fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary 1\n');
+      // 01-02 has a PLAN but no SUMMARY — plan work is still outstanding, which is
+      // a different condition from the phase being "stranded" (all plans done,
+      // verification never ran). The query must not conflate the two.
+      fs.writeFileSync(path.join(phaseDir, '01-02-PLAN.md'), '# Plan 2\n');
+
+      const res = runGsdTools(['verification', 'status', phaseDir, '--pick', 'status'], projectDir);
+      assert.equal(res.success, true, `verification status should succeed: ${res.error}`);
+      assert.equal(
+        res.output,
+        'missing',
+        'outstanding plan work must not change verification status away from missing',
+      );
+    } finally {
+      cleanup(projectDir);
+    }
+  });
+});
