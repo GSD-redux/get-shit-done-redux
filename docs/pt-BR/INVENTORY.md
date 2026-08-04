@@ -382,7 +382,7 @@ Listagem completa: `gsd-core/bin/lib/*.cjs`.
 | `cjs-command-router-adapter.cjs` | Adaptador de compatibilidade compartilhado para roteadores de família de comandos CJS com suporte de manifesto |
 | `clock.cjs` | Costura de relógio injetável (now/sleep) para teste determinístico de bloqueio |
 | `clusters.cjs` | Definições de cluster de habilidades para o módulo de superfície de runtime (ADR-0011 Fase 2) |
-| `code-review-flags.cjs` | Analisador de flags tipado para `/gsd:code-review`; exporta `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) e `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); costura de despacho canônica para roteamento de `--fix`/`--all`/`--auto` |
+| `code-review-flags.cjs` | Analisador de flags tipado para `/gsd-code-review`; exporta `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) e `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); costura de despacho canônica para roteamento de `--fix`/`--all`/`--auto` |
 | `command-aliases.cjs` | Metadados de alias/subcomando para roteadores de família com suporte de manifesto |
 | `command-arg-projection.cjs` | Auxiliares de projeção de flag tipada e argumento posicional compartilhados entre roteadores de família de comandos |
 | `command-routing-hub.cjs` | Hub de despacho de resultado puro que centraliza a decisão de modo (SDK vs CJS), taxonomia de erros e contrato sem lançamento para todos os roteadores de família de comandos (#3788) |
@@ -444,7 +444,7 @@ Listagem completa: `gsd-core/bin/lib/*.cjs`.
 | `template.cjs` | Seleção e preenchimento de template com substituição de variáveis |
 | `uat.cjs` | Análise de arquivo UAT, rastreamento de dívida de verificação, suporte audit-uat |
 | `ui-safety-gate.cjs` | Detector de token de UI de limite de palavra sem shell (#3706, #3718); lê texto de seção de fase do stdin, sai com 0 (UI encontrada) ou 1 (sem UI); também implantado em `gsd-core/bin/lib/` para que o instalador GSD o entregue em `$RUNTIME_DIR` (#448) |
-| `update-context.cjs` | Resolvedor de contexto de instalação puro para `/gsd:update` — detecção de runtime/escopo/config-dir/versão (LOCAL/GLOBAL/UNKNOWN) portada do bash de update.md; sustenta `gsd-tools update-context` (#498) |
+| `update-context.cjs` | Resolvedor de contexto de instalação puro para `/gsd-update` — detecção de runtime/escopo/config-dir/versão (LOCAL/GLOBAL/UNKNOWN) portada do bash de update.md; sustenta `gsd-tools update-context` (#498) |
 | `validate-command-router.cjs` | Adaptador de roteador de subcomando CJS fino para `gsd-tools validate` |
 | `validate.cjs` | Auxiliares de normalização de variante de fase puros (`phaseVariants`, `buildRoadmapPhaseVariants`, `buildNotStartedPhaseVariants`) usados por `verify.cjs` para verificações W006/W007; sem I/O, sem async |
 | `verify-command-router.cjs` | Adaptador de roteador de subcomando CJS fino para `gsd-tools verify` |

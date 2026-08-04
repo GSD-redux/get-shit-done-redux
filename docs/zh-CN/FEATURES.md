@@ -2840,7 +2840,7 @@ Source commit: abc1234 (3 commits behind HEAD)
 | `standard` | 核心加常用阶段管理命令 |
 | `full` | 完整界面；默认 |
 
-**运行时控制：** `/gsd:surface` 列出配置文件状态，无需重新安装即可启用、禁用或重置技能集群。
+**运行时控制：** `/gsd-surface` 列出配置文件状态，无需重新安装即可启用、禁用或重置技能集群。
 
 **需求：**
 - REQ-SURFACE-01：安装器必须解析 `--profile=<name>` 并将活跃配置文件持久化在 `.gsd-profile` 中。

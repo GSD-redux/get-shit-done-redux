@@ -14,7 +14,7 @@
 
 例如：`.planning/phases/03-post-feed/03-02-PLAN.md`（第 3 阶段，第 2 计划）。
 
-计划由 `gsd-planner` 代理生成（由 `/gsd:plan-phase` 触发），并由 `execute-phase` 消费。一个阶段通常包含一到四个计划；同一阶段内的计划被分配到执行波次，以便独立工作并行运行。
+计划由 `gsd-planner` 代理生成（由 `/gsd-plan-phase` 触发），并由 `execute-phase` 消费。一个阶段通常包含一到四个计划；同一阶段内的计划被分配到执行波次，以便独立工作并行运行。
 
 ---
 

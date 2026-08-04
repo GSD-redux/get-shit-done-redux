@@ -1,6 +1,6 @@
 # Referência do esquema CONTEXT.md
 
-Um `CONTEXT.md` por fase é o mecanismo do GSD Core para capturar decisões de implementação durante `/gsd:discuss-phase`. É a principal entrada upstream para os agentes de pesquisa e planejamento. Esta página documenta sua estrutura. Consulte o [índice de documentação](../README.md).
+Um `CONTEXT.md` por fase é o mecanismo do GSD Core para capturar decisões de implementação durante `/gsd-discuss-phase`. É a principal entrada upstream para os agentes de pesquisa e planejamento. Esta página documenta sua estrutura. Consulte o [índice de documentação](../README.md).
 
 ---
 
@@ -107,7 +107,7 @@ Um CONTEXT.md cujas decisões sobrevivem aos planos é considerado conforme. Um 
 
 ## Integração com SPEC.md
 
-Quando `/gsd:spec-phase` foi executado antes de discutir uma fase, a etapa `check_spec` encontra o arquivo `*-SPEC.md` e ativa o `<spec_lock>`:
+Quando `/gsd-spec-phase` foi executado antes de discutir uma fase, a etapa `check_spec` encontra o arquivo `*-SPEC.md` e ativa o `<spec_lock>`:
 
 ```markdown
 <spec_lock>

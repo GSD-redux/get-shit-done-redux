@@ -14,7 +14,7 @@
 
 예: `.planning/phases/03-post-feed/03-02-PLAN.md` (Phase 3, Plan 2).
 
-플랜은 `gsd-planner` 에이전트(`/gsd:plan-phase`에 의해 생성됨)가 만들고 `execute-phase`가 소비합니다. 페이즈는 보통 1~4개의 플랜을 포함하며, 페이즈 내의 플랜은 독립적인 작업이 병렬로 실행되도록 실행 웨이브에 할당됩니다.
+플랜은 `gsd-planner` 에이전트(`/gsd-plan-phase`에 의해 생성됨)가 만들고 `execute-phase`가 소비합니다. 페이즈는 보통 1~4개의 플랜을 포함하며, 페이즈 내의 플랜은 독립적인 작업이 병렬로 실행되도록 실행 웨이브에 할당됩니다.
 
 ---
 
