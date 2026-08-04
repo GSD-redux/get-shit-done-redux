@@ -40,6 +40,10 @@ grep -n -E "return.*json\(\s*\[\]|return.*json\(\s*\{\}" "$source_file" 2>/dev/n
 grep -r -A 3 "<${COMPONENT_NAME}" "${search_path:-src/}" --include="*.tsx" 2>/dev/null | grep -E "=\{(\[\]|\{\}|null|''|\"\")\}"
 ```
 
+> These two status tables are intentionally mirrored in `agents/gsd-verifier.md`.
+> The status vocabulary is load-bearing verifier output and must remain in the
+> agent body (#2995); this copy is here so the procedure below reads standalone.
+
 **Data-flow status:**
 
 | Data Source | Produces Real Data | Status |

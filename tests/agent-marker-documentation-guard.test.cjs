@@ -97,15 +97,22 @@ test('row 12 — no shipped agent carries an unfenced gsd:section marker', () =>
   );
 });
 
-// ─── Row 12b: the guard is not vacuous — an unfenced marker IS detected ───────
+// ─── Row 12b: the guard is not vacuous — a whole-line unfenced marker IS a marker ──
+//
+// Refined by a real failure: the grammar is WHOLE-LINE only. An open marker placed
+// INLINE inside a sentence is NOT recognised as an open — so the hazard row 12
+// guards against is specifically an unfenced marker on its OWN line, which is
+// exactly how a documentation example is normally written.
 
-test('row 12b — an unfenced marker example in agent prose is detected as a real marker', () => {
+test('row 12b — a whole-line unfenced marker in agent prose is detected as a real marker', () => {
   const doc = [
     '---',
     'name: gsd-example',
     '---',
     '',
-    'Write <!-- gsd:section id="demo" when="always" --> to open a section.',
+    'To open a section, write:',
+    '',
+    '<!-- gsd:section id="demo" when="always" -->',
     'body',
     '<!-- /gsd:section -->',
     '',
@@ -115,7 +122,27 @@ test('row 12b — an unfenced marker example in agent prose is detected as a rea
   assert.deepStrictEqual(
     explicit.map((s) => s.id),
     ['demo'],
-    'an UNFENCED marker-shaped line must parse as a real marker — this is precisely why row 12 ' +
+    'a whole-line UNFENCED marker must parse as a real marker — this is precisely why row 12 ' +
       'exists; if this assertion ever fails, row 12 is guarding against nothing',
+  );
+});
+
+// ─── Row 12c: an INLINE marker-shaped span is not a marker ───────────────────
+
+test('row 12c — an inline marker-shaped span mid-sentence is not treated as an open marker', () => {
+  const doc = [
+    '---',
+    'name: gsd-example',
+    '---',
+    '',
+    'Write <!-- gsd:section id="demo" when="always" --> to open a section.',
+    '',
+  ].join('\n');
+
+  const explicit = parseWorkflowSections(doc, 'agents/gsd-example.md').filter((s) => s.explicit);
+  assert.deepStrictEqual(
+    explicit.map((s) => s.id),
+    [],
+    'an inline marker-shaped span is prose, not a marker — the grammar is whole-line only',
   );
 });

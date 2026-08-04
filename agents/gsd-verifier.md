@@ -291,6 +291,25 @@ recipes: @gsd-core/references/verifier-wiring-patterns.md
 Flag any value whose chain terminates in a static return, a hardcoded literal, or
 a mock rather than a real query.
 
+**Data-flow status vocabulary:**
+
+| Data source | Flows | Status |
+| ----------- | ----- | ------ |
+| DB query found | Yes | ✓ FLOWING |
+| Fetch exists, static fallback only | No | ⚠️ STATIC |
+| No data source found | N/A | ✗ DISCONNECTED |
+| Props hardcoded empty at call site | No | ✗ HOLLOW_PROP |
+
+**Final Artifact Status (updated with Level 4):**
+
+| Exists | Substantive | Wired | Data Flows | Status |
+| ------ | ----------- | ----- | ---------- | ------ |
+| ✓ | ✓ | ✓ | ✓ | ✓ VERIFIED |
+| ✓ | ✓ | ✓ | ✗ | ⚠️ HOLLOW — wired but data disconnected |
+| ✓ | ✓ | ✗ | - | ⚠️ ORPHANED |
+| ✓ | ✗ | - | - | ✗ STUB |
+| ✗ | - | - | - | ✗ MISSING |
+
 ## Step 5: Verify Key Links (Wiring)
 
 Key links are critical connections. If broken, the goal fails even with all artifacts present.
