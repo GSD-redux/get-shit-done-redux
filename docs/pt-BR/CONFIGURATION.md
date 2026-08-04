@@ -471,8 +471,8 @@ O namespace `plan_review.*` controla o guardião de deriva de plano, que verific
 
 | Configuração | Tipo | Padrão | Descrição |
 |---------|------|---------|-------------|
-| `plan_review.source_grounding` | boolean | `true` | Habilita o guardião de deriva de plano. Quando `true` (padrão), a revisão de plano resolve cada referência de símbolo citada em um PLAN.md em relação à árvore de fontes ativa. Planos que citam uma função, classe, decorador ou flag CLI inexistente produzem um aviso `needs-acknowledgement` antes do plano ser aprovado. Desabilite com `false` para ignorar completamente a verificação de símbolo. Ative durante a configuração (`/gsd:new-project`) ou a qualquer momento via `/gsd:settings`. |
-| `plan_review.source_grounding_authority` | enum | `grep` | Seleciona o adaptador de resolução usado para verificar a existência de símbolos. Valores permitidos: `grep` (padrão — busca ripgrep/grep de arquivos de fonte, funciona em qualquer projeto sem ferramental adicional), `intel` (consulta o índice `.planning/intel/api-map.json` construído por `/gsd:map-codebase`; requer `intel.enabled: true`), `treesitter` (reservado para adaptador tree-sitter futuro), `lsp` (reservado para adaptador LSP futuro), `scip` (reservado para adaptador SCIP/LSIF futuro). Use `intel` quando tiver executado `/gsd:map-codebase` e quiser a busca mais rápida e pré-indexada. Todos os outros valores além de `grep` e `intel` são reservados e não têm efeito na versão atual. |
+| `plan_review.source_grounding` | boolean | `true` | Habilita o guardião de deriva de plano. Quando `true` (padrão), a revisão de plano resolve cada referência de símbolo citada em um PLAN.md em relação à árvore de fontes ativa. Planos que citam uma função, classe, decorador ou flag CLI inexistente produzem um aviso `needs-acknowledgement` antes do plano ser aprovado. Desabilite com `false` para ignorar completamente a verificação de símbolo. Ative durante a configuração (`/gsd-new-project`) ou a qualquer momento via `/gsd-settings`. |
+| `plan_review.source_grounding_authority` | enum | `grep` | Seleciona o adaptador de resolução usado para verificar a existência de símbolos. Valores permitidos: `grep` (padrão — busca ripgrep/grep de arquivos de fonte, funciona em qualquer projeto sem ferramental adicional), `intel` (consulta o índice `.planning/intel/api-map.json` construído por `/gsd-map-codebase`; requer `intel.enabled: true`), `treesitter` (reservado para adaptador tree-sitter futuro), `lsp` (reservado para adaptador LSP futuro), `scip` (reservado para adaptador SCIP/LSIF futuro). Use `intel` quando tiver executado `/gsd-map-codebase` e quiser a busca mais rápida e pré-indexada. Todos os outros valores além de `grep` e `intel` são reservados e não têm efeito na versão atual. |
 
 <a id="graphify-settings"></a>
 ### Configurações do Graphify
@@ -1210,7 +1210,7 @@ Isso resolve `gsd-planner` → `gpt-5.6-sol` (xhigh), `gsd-executor` → `gpt-5.
 
 > **[#49](https://github.com/open-gsd/gsd-core/issues/49)** — superfície de configuração de política de modelo neutra em relação ao provedor. Resolve antes do legado `model_profile_overrides`.
 
-`model_policy` fornece uma maneira mais simples e neutra em relação ao provedor de configurar níveis de modelo entre runtimes. É a superfície preferida para runtimes não-Anthropic onde `model_profile_overrides` exigiria conhecer manualmente os IDs de modelo corretos. Configure via `/gsd:settings` → Seção 8 (Model Policy).
+`model_policy` fornece uma maneira mais simples e neutra em relação ao provedor de configurar níveis de modelo entre runtimes. É a superfície preferida para runtimes não-Anthropic onde `model_profile_overrides` exigiria conhecer manualmente os IDs de modelo corretos. Configure via `/gsd-settings` → Seção 8 (Model Policy).
 
 ### Predefinição de provedor conhecido
 

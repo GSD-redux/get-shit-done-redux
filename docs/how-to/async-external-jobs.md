@@ -29,7 +29,7 @@ node scripts/slurm-adapter.cjs submit \
   --plan 3.1 --phase 3 \
   --expected Artifacts/jobs/12345/result.h5,Artifacts/jobs/12345/metrics.json \
   --verify "python -m verify.py 12345" \
-  --resume "/gsd:execute-phase 3" \
+  --resume "/gsd-execute-phase 3" \
   -- sbatch --parsable --output=Artifacts/jobs/%j/out.log ./train.sh
 ```
 
@@ -87,7 +87,7 @@ node scripts/slurm-adapter.cjs show --job 12345
 `show` prints the status and lists `submit_command`, `verification_command`,
 and `resume_command` for explicit confirmation. After you run the verification
 command yourself and confirm the `expected_artifacts` exist, write `SUMMARY.md`
-and close the plan (`/gsd:execute-phase 3` reconciles and lifts the deferral).
+and close the plan (`/gsd-execute-phase 3` reconciles and lifts the deferral).
 
 ## 5. Handle terminal failure
 

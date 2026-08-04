@@ -124,7 +124,7 @@ These six routers are descriptor-only entries that the model picks first; the bo
 
 | Command | Role | Source |
 |---------|------|--------|
-| `/gsd:next` | State-aware smart-entry launcher — reads project state, shows a contextual menu, and dispatches one existing GSD command. | [commands/gsd/next.md](../commands/gsd/next.md) |
+| `/gsd-next` | State-aware smart-entry launcher — reads project state, shows a contextual menu, and dispatches one existing GSD command. | [commands/gsd/next.md](../commands/gsd/next.md) |
 | `/gsd-progress` | Check project progress, show context, and route to next action; use `--next` to advance automatically or `--do` to run a freeform task. | [commands/gsd/progress.md](../commands/gsd/progress.md) |
 | `/gsd-capture` | Capture ideas, tasks, notes, and seeds — todo (default), `--note`, `--backlog`, `--seed`, or `--list` pending todos. | [commands/gsd/capture.md](../commands/gsd/capture.md) |
 | `/gsd-stats` | Display project statistics — phases, plans, requirements, git metrics, timeline. | [commands/gsd/stats.md](../commands/gsd/stats.md) |
@@ -435,7 +435,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `cjs-command-router-adapter.cjs` | Shared compatibility adapter for manifest-backed CJS command-family routers |
 | `clock.cjs` | Injectable clock seam (now/sleep) for deterministic lock testing |
 | `clusters.cjs` | Skill cluster definitions for the runtime surface module (ADR-0011 Phase 2) |
-| `code-review-flags.cjs` | Typed flag parser for `/gsd:code-review`; exports `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) and `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); canonical dispatch seam for `--fix`/`--all`/`--auto` routing |
+| `code-review-flags.cjs` | Typed flag parser for `/gsd-code-review`; exports `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) and `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); canonical dispatch seam for `--fix`/`--all`/`--auto` routing |
 | `command-aliases.cjs` | Alias/subcommand metadata for manifest-backed family routers |
 | `commonjs-marker.cjs` | Ownership-guarded `{"type":"commonjs"}` marker used to pin GSD's staged `.js` scripts to CommonJS; exports `classifyMarker` (absent/gsd-owned/foreign, fail-closed), `ensureCommonJsMarker`, and `removeCommonJsMarker` so install and uninstall share one predicate and never touch a user-authored `package.json` (#2544) |
 | `command-arg-projection.cjs` | Typed flag and positional argument projection helpers shared across command-family routers |
@@ -546,7 +546,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `uat-predicate.cjs` | UAT-passed predicate — markdown-aware evaluation of HUMAN-UAT results; returns pass only when all required checks pass; ignores false-positive contexts (frontmatter, fenced code, blockquotes, HTML comments) |
 | `ui-consideration-probe.cjs` | Spec-completeness UI-consideration probe (compiled from `src/ui-consideration-probe.cts`, gitignored) — the third adapter of the `probe-core` resolution model (ADR-550 Decision 7): element-kind classification, applicable-category relevance filter, consideration proposal, `proposeElements`/`autoResolve` (propose-then-confirm + the `--auto` never-dismiss floor), and the `{explicit, backstop}` validators; delegates merge/rollup/CLI to `probe-core`; exports `classifyElement`, `applicableCategories`, `proposeConsiderations`, `proposeElements`, `autoResolve`, `analyzeCoverage`, `UI_TAXONOMY` (#1867) |
 | `ui-safety-gate.cjs` | Shell-free word-boundary UI token detector (#3706, #3718); reads phase-section text from stdin, exits 0 (UI found) or 1 (no UI); also deployed to `gsd-core/bin/lib/` so the GSD installer ships it to `$RUNTIME_DIR` (#448) |
-| `update-context.cjs` | Pure install-context resolver for `/gsd:update` — runtime/scope/config-dir/version detection (LOCAL/GLOBAL/UNKNOWN) ported from update.md bash; backs `gsd-tools update-context` (#498) |
+| `update-context.cjs` | Pure install-context resolver for `/gsd-update` — runtime/scope/config-dir/version detection (LOCAL/GLOBAL/UNKNOWN) ported from update.md bash; backs `gsd-tools update-context` (#498) |
 | `validate-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools validate` |
 | `validate.cjs` | Pure phase variant normalization helpers (`phaseVariants`, `buildRoadmapPhaseVariants`, `buildNotStartedPhaseVariants`) used by `verify.cjs` for W006/W007 checks; no I/O, no async |
 | `verification-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools verification` |

@@ -182,7 +182,7 @@ For a minimal `role: "runtime"` example, see [ADR-1016 §Decision 8](../adr/1016
 
 ## Reviewer body (`role: "reviewer"`, or on any role)
 
-[ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) introduces the *reviewer lane*: one external CLI or model endpoint that `/gsd:review` hands a plan to for independent review.
+[ADR-2782](../adr/2782-reviewer-lane-capability-surface.md) introduces the *reviewer lane*: one external CLI or model endpoint that `/gsd-review` hands a plan to for independent review.
 
 To declare one, follow [Ship a reviewer lane in your capability](../how-to/ship-a-reviewer-lane.md). This section is the field reference behind that guide.
 
@@ -227,7 +227,7 @@ An unknown field inside a `reviewer` body is a **non-fatal warning on stderr, ne
   "role": "reviewer",
   "version": "1.8.0",
   "title": "CodeRabbit",
-  "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts).",
+  "description": "CodeRabbit CLI — cross-AI /gsd-review reviewer lane only; not a GSD install target (no runtime body, no artifacts).",
   "tier": "full",
   "requires": [],
   "engines": { "gsd": ">=1.8.0" },

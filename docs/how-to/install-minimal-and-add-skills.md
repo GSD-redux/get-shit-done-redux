@@ -67,7 +67,7 @@ npx @opengsd/gsd-core@latest --claude --global --profile=core,audit
 From inside your runtime, list the current surface, the disabled clusters, and the token cost of each:
 
 ```bash
-/gsd:surface list
+/gsd-surface list
 ```
 
 The skills are grouped into clusters you can toggle as a unit:
@@ -78,25 +78,25 @@ The skills are grouped into clusters you can toggle as a unit:
 
 ## Add skills later without reinstalling
 
-If you installed minimal and now need more, you do not have to re-run the installer. `/gsd:surface` changes the live surface and persists the change in a separate `.gsd-surface.json` file, leaving your install-time profile marker untouched.
+If you installed minimal and now need more, you do not have to re-run the installer. `/gsd-surface` changes the live surface and persists the change in a separate `.gsd-surface.json` file, leaving your install-time profile marker untouched.
 
 To switch to a wider profile in place:
 
 ```bash
-/gsd:surface profile standard
+/gsd-surface profile standard
 ```
 
 To turn on just one cluster while keeping your base profile:
 
 ```bash
-/gsd:surface enable audit_review
+/gsd-surface enable audit_review
 ```
 
 To turn a cluster back off, or to discard all your live changes and return to the profile you installed:
 
 ```bash
-/gsd:surface disable utility
-/gsd:surface reset
+/gsd-surface disable utility
+/gsd-surface reset
 ```
 
 Surface changes take effect in your next session — restart the runtime to pick them up.
@@ -105,7 +105,7 @@ Surface changes take effect in your next session — restart the runtime to pick
 
 ## Add skills by reinstalling
 
-`/gsd:surface` is the right tool for occasional, reversible adjustments. If you have decided you want the wider surface permanently, change the install-time profile instead so every future `/gsd-update` keeps it:
+`/gsd-surface` is the right tool for occasional, reversible adjustments. If you have decided you want the wider surface permanently, change the install-time profile instead so every future `/gsd-update` keeps it:
 
 ```bash
 # Re-run the installer without --minimal to record `full` as your profile
