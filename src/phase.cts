@@ -795,7 +795,17 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     const plan: Record<string, unknown> = {
       id: rawPlan.id,
       wave: effectiveWave,
-      depends_on: rawPlan.dependsOn.map((dep) => resolveDependencyId(String(dep), planMap, canonicalToId) ?? dep),
+      // DELIBERATELY not `resolveDependencyId`: the emitted field is a DISPLAY
+      // mapping, not the DAG resolution. It rewrites a dep only when it names a
+      // plan directly (planMap) and otherwise passes it through verbatim — a
+      // short canonical prefix like `24-01` stays `24-01` rather than becoming
+      // `24-01-auth-hardening`. #3785 pins that contract. Full resolution via
+      // canonicalToId is used for the wave DAG and #2830 halt propagation only;
+      // routing this line through it too silently changed the output shape.
+      depends_on: rawPlan.dependsOn.map((dep) => {
+        const lower = String(dep).toLowerCase();
+        return planMap.has(lower) ? (planMap.get(lower) as RawPlan).id : dep;
+      }),
       autonomous: rawPlan.autonomous,
       objective: rawPlan.objective,
       files_modified: rawPlan.filesModified,
