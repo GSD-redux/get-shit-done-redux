@@ -157,3 +157,155 @@ describe('mergeReviewerLanes (#2927)', () => {
     assert.deepEqual(merged.map((l) => l.slug), FP_SLUGS, 'malformed bodies admitted no lane');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rows 9–10: the WIRING defect this PR exists to close. The eight rows above
+// guard the pure helper, but the actual bug was that `routeReviewLane` never
+// CALLED any merge — so a revert of the one-line wiring change would leave every
+// helper test green. These rows exercise the real CLI end-to-end: install a
+// global-scope `role:"reviewer"` overlay (global scope is trusted without a
+// consent record, CONTEXT.md capability-loader predicate), then assert
+// `review-lane sections|flags|plan` actually see it through loadRegistry →
+// mergeReviewerLanes → the lane map. This is acceptance criteria #1–#3.
+// ---------------------------------------------------------------------------
+
+const fs = require('node:fs');
+const os = require('node:os');
+const nodePath = require('node:path');
+const { runGsdTools, cleanup } = require('./helpers.cjs');
+
+const cliTmps = [];
+function cliTmpDir(prefix) {
+  const d = fs.mkdtempSync(nodePath.join(os.tmpdir(), prefix));
+  cliTmps.push(d);
+  return d;
+}
+test.after(() => { for (const d of cliTmps) cleanup(d); });
+
+/** A GSD_HOME-sandboxed env that neutralizes ambient GSD_ vars (hermeticity). */
+function scopeEnv(home) {
+  return { GSD_HOME: home, GSD_WORKSTREAM: '', GSD_PROJECT: '' };
+}
+
+/** A cwd with a .planning/ root so findProjectRoot resolves cleanly. */
+function makeCwd() {
+  const cwd = cliTmpDir('rev2927-cwd-');
+  fs.mkdirSync(nodePath.join(cwd, '.planning'), { recursive: true });
+  fs.writeFileSync(nodePath.join(cwd, '.planning', 'config.json'), '{}');
+  return cwd;
+}
+
+/**
+ * Write a conformant `role:"reviewer"` capability source dir whose `reviewer`
+ * body is a valid SpawnLane (ADR-2782 D1 shape). Returns the source path,
+ * usable as a `capability install <spec>` argument.
+ */
+function writeReviewerCapSource(id, bodyOverrides = {}) {
+  const src = cliTmpDir(`rev2927-src-${id}-`);
+  const cap = {
+    id,
+    role: 'reviewer',
+    version: '1.0.0',
+    title: `${id} test lane`,
+    description: 'test third-party reviewer lane for #2927',
+    tier: 'standard',
+    requires: [],
+    runtimeCompat: { supported: ['*'], unsupported: [] },
+    skills: [],
+    agents: [],
+    hooks: [],
+    config: {},
+    steps: [],
+    contributions: [],
+    gates: [],
+    engines: { gsd: '>=1.9.0' },
+    reviewer: {
+      slug: id,
+      flags: [`--${id}`],
+      transport: 'spawn',
+      probe: { kind: 'command-exists', binary: id },
+      invoke: {
+        binary: id,
+        args: ['{{model}}', '-p', '{{prompt}}'],
+        promptChannel: 'stdin',
+        outputChannel: 'stdout',
+        modelArg: '--model',
+        effortChannel: 'none',
+      },
+      timeoutFloorMs: 600000,
+      emptyOutput: 'stub-with-stderr',
+      reviewsSection: `${id} review`,
+      evidenceClass: 'source-grounded',
+      requiresBinaries: [],
+      promptBudgetKey: null,
+      modelConfigKey: `review.models.${id}`,
+      handler: null,
+      ...bodyOverrides,
+    },
+  };
+  fs.writeFileSync(nodePath.join(src, 'capability.json'), JSON.stringify(cap, null, 2));
+  return src;
+}
+
+describe('review-lane CLI overlay invocation (#2927, rows 9–10)', () => {
+  test('cliSectionsAndPlanSeeOverlayLane', () => {
+    // Acceptance #1 + #3: an installed overlay lane appears in `sections` and
+    // `plan --selected <slug>` returns ok:true with a usable plan.
+    const home = cliTmpDir('rev2927-home-');
+    const cwd = makeCwd();
+    const src = writeReviewerCapSource('rev2927lane');
+    // Global scope is trusted without a consent record; --yes acknowledges the
+    // executable reviewer surface; --raw emits JSON.
+    const install = runGsdTools(
+      ['capability', 'install', src, '--scope', 'global', '--yes', '--raw'],
+      cwd,
+      scopeEnv(home),
+    );
+    const installOut = JSON.parse(install);
+    assert.equal(installOut.status, 'installed', `install failed: ${install}`);
+
+    // Row 9 / acceptance #1: sections includes the overlay slug + reviewsSection.
+    const sections = runGsdTools(['review-lane', 'sections'], cwd, scopeEnv(home));
+    const sectionRows = sections.split('\n').filter(Boolean);
+    const overlayRow = sectionRows.find((r) => r.startsWith('rev2927lane\t'));
+    assert.ok(overlayRow, `overlay lane missing from sections output:\n${sections}`);
+    assert.equal(overlayRow, 'rev2927lane\trev2927lane review');
+
+    // Row 9 / acceptance #3: plan --selected <overlay-slug> resolves ok (NOT
+    // malformed_lane / no such declared lane — the pre-fix failure).
+    const plan = runGsdTools(
+      ['review-lane', 'plan', '--selected', 'rev2927lane', '--run-dir', cwd, '--repo-root', cwd],
+      cwd,
+      scopeEnv(home),
+    );
+    const planOut = JSON.parse(plan);
+    assert.equal(planOut.ok, true, `overlay plan did not resolve ok:\n${plan}`);
+    assert.equal(planOut.slug, 'rev2927lane');
+    assert.ok(planOut.plan, 'plan carries a usable invocation plan');
+  });
+
+  test('cliFlagsIncludeOverlayAndFilterMalformed', () => {
+    // Acceptance #2 + negative-space: the overlay's well-formed --flag appears in
+    // `flags`, AND a malformed overlay flag (--foo bar / glob) is filtered out by
+    // the existing shape filter, never reaching the unquoted shell consumer.
+    const home = cliTmpDir('rev2927-home-');
+    const cwd = makeCwd();
+    // A lane declaring a WELL-FORMED flag plus a malformed one (space-separated,
+    // which the /^--[a-z0-9][a-z0-9-]*$/ filter must reject) and a glob token.
+    const src = writeReviewerCapSource('rev2927flag', {
+      flags: ['--rev2927flag', '--bad flag', '*.js'],
+    });
+    const install = runGsdTools(
+      ['capability', 'install', src, '--scope', 'global', '--yes', '--raw'],
+      cwd,
+      scopeEnv(home),
+    );
+    assert.equal(JSON.parse(install).status, 'installed', `install failed: ${install}`);
+
+    const flags = runGsdTools(['review-lane', 'flags'], cwd, scopeEnv(home));
+    const flagLines = flags.split('\n').filter(Boolean);
+    assert.ok(flagLines.includes('--rev2927flag'), `well-formed overlay flag missing:\n${flags}`);
+    assert.ok(!flagLines.includes('--bad flag'), 'malformed space-containing flag leaked through');
+    assert.ok(!flagLines.includes('*.js'), 'glob flag leaked through the shape filter');
+  });
+});

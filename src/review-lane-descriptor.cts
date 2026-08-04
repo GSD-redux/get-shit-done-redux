@@ -640,7 +640,16 @@ export function mergeReviewerLanes(
     // `sections`/`flags` are both tolerant of a partial body (flags filters by
     // shape; sections reads slug/reviewsSection which a non-string cap simply
     // renders as undefined). Admitting the body keeps the merge a pure merge.
-    const lane = body as ReviewerLane;
+    //
+    // The slug is normalized to its trimmed value on the stored lane so the merge
+    // and the selection roster (`deriveReviewerSlugs`, which trims before adding)
+    // agree on the canonical key — otherwise a body declaring `slug: '  x  '`
+    // would key the map on `'x'` but emit the raw `'  x  '` in `sections` and fail
+    // to match a `--selected` value coming from the roster. (The capability
+    // validator's grammar check rejects surrounding whitespace before this is
+    // reachable through a real install, so this is belt-and-braces parity with the
+    // roster, not a live-input guard.)
+    const lane = { ...(body as object), slug } as ReviewerLane;
     bySlug.set(slug, lane);
     ordered.push(lane);
   }
