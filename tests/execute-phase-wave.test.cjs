@@ -166,6 +166,65 @@ describe('execute-phase workflow: #2868 stranded-phase resume on discover_and_gr
       'filter-active branch should mention WAVE_FILTER'
     );
   });
+
+  test('W4: the resume decision is gated on the absence of blocked_by-skipped plans', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    // Scope to the resume-decision text specifically (from the "If all filtered" marker
+    // onward), not the pre-existing #2830 filtering prose above it that already mentions
+    // blocked_by unconditionally — otherwise this assertion would be vacuous.
+    const decisionIdx = discoverSection.indexOf('If all filtered');
+    assert.ok(decisionIdx >= 0, 'discover_and_group_plans should have an all-filtered decision block');
+    const decisionText = discoverSection.substring(decisionIdx);
+
+    assert.ok(
+      decisionText.includes('blocked_by'),
+      'the resume-decision text must reference blocked_by so an all-blocked phase is never ' +
+        'reported as finished (#2868 finding 1)'
+    );
+    assert.ok(
+      /stuck/i.test(decisionText),
+      'the resume-decision text must call out the blocked-and-incomplete case as stuck, ' +
+        'distinct from genuinely finished'
+    );
+  });
+
+  test('W5: the resume path enters at aggregate_results, not code_review_gate', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    const continueMatch = discoverSection.match(/continue (?:directly )?at\s+`([a-zA-Z_]+)`/);
+    assert.ok(continueMatch, 'resume decision should state which step it continues at');
+    assert.strictEqual(
+      continueMatch[1],
+      'aggregate_results',
+      'the resume path must enter at aggregate_results (the only step running the ' +
+        'SECURITY_FILE / secure-phase threats-open gate), not code_review_gate — skipping ' +
+        'aggregate_results silently drops the only security gate (#2868 finding 3)'
+    );
+    assert.notStrictEqual(
+      continueMatch[1],
+      'code_review_gate',
+      'resume entry point must not be code_review_gate'
+    );
+  });
+
+  test('W6: RESUME_TAIL_ONLY (dead, write-only state) must not appear anywhere in the workflow', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(
+      !content.includes('RESUME_TAIL_ONLY'),
+      'RESUME_TAIL_ONLY was set but never read anywhere in the workflow or its steps files ' +
+        '(#2868 finding 2) — remove it; the imperative instruction at the decision point is ' +
+        'what actually carries control flow'
+    );
+  });
 });
 
 describe('execute-phase docs: user-facing wave flag', () => {
