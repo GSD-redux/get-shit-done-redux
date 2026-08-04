@@ -1340,3 +1340,78 @@ describe('codex skills-kind destination: home override (#2911)', () => {
     );
   });
 });
+
+// ─── installOpencodeFamilySkills destination parity (#2911 sibling coverage) ─
+//
+// installOpencodeFamilySkills (src/install-engine.cts) is a FOURTH destination-
+// computation writer, alongside _copyStaged, the inline guard in
+// installRuntimeArtifacts, and createRuntimeArtifactUninstallPlan — all three of
+// which honor `skillsKindEntry.home ?? <install root>`. This writer originally did
+// not, and would silently reproduce the #2911 duplicate-tree symptom the moment
+// any combined-family runtime (opencode, kilo) gains a `home` override. Neither
+// declares one today, so this test exercises the REAL production code path
+// (installOpencodeFamilySkills, via the module-ref call convention documented at
+// src/install-engine.cts:37-38) under a synthetic `home` override injected by
+// monkeypatching resolveRuntimeArtifactLayout's shared module export — the same
+// object install-engine.cjs calls through at runtime — rather than re-deriving
+// the destination formula by hand. This proves discrimination even though no
+// registry runtime exercises it yet, and will catch a future divergence the
+// moment a combined-family runtime's descriptor grows a `home` override.
+describe('installOpencodeFamilySkills destination parity (#2911 sibling coverage)', () => {
+  const installEngine = require('../gsd-core/bin/lib/install-engine.cjs');
+  const runtimeArtifactLayoutModule = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+
+  function stageRawCommands(runtime, configDir) {
+    const layout = resolveRuntimeArtifactLayout(runtime, configDir, 'global');
+    const commandsKind = layout.kinds.find((k) => k.kind === 'commands');
+    return commandsKind.stage(resolveProfile({ modes: ['core'], manifest: loadSkillsManifest(REAL_COMMANDS_DIR) }));
+  }
+
+  for (const runtime of ['opencode', 'kilo']) {
+    test(`${runtime}: installOpencodeFamilySkills honors a skills-kind home override instead of always resolving against configDir (#2911 sibling)`, (t) => {
+      const configDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2911-ocfs-${runtime}-`));
+      const fakeHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-2911-ocfs-home-${runtime}-`));
+      t.after(() => { cleanup(configDir); cleanup(fakeHomeOverride); });
+
+      const originalResolve = runtimeArtifactLayoutModule.resolveRuntimeArtifactLayout;
+      // Capture the real destSubpath before patching so the assertion below
+      // never hardcodes a literal path fragment.
+      const realLayout = originalResolve(runtime, configDir, 'global');
+      const skillsKindReal = realLayout.kinds.find((k) => k.kind === 'skills');
+      assert.ok(skillsKindReal, `pre-condition: ${runtime} global layout has a skills kind`);
+
+      runtimeArtifactLayoutModule.resolveRuntimeArtifactLayout = function (rt, targetDir, scope) {
+        const layout = originalResolve(rt, targetDir, scope);
+        if (rt === runtime) {
+          const patchedKinds = layout.kinds.map((k) => (k.kind === 'skills' ? { ...k, home: fakeHomeOverride } : k));
+          return { ...layout, kinds: patchedKinds };
+        }
+        return layout;
+      };
+
+      try {
+        const raw = stageRawCommands(runtime, configDir);
+        const count = installEngine.installOpencodeFamilySkills(runtime, configDir, raw, `${configDir}/`);
+        assert.ok(count >= 1, `${runtime}: installOpencodeFamilySkills should report installed skills`);
+
+        const overrideDest = path.join(fakeHomeOverride, skillsKindReal.destSubpath);
+        assert.ok(
+          fs.existsSync(overrideDest) && fs.readdirSync(overrideDest).length > 0,
+          `${runtime}: installOpencodeFamilySkills must write skills-kind output under the home override ` +
+          `"${overrideDest}" — it must not always resolve against configDir.`,
+        );
+
+        // If the home override is not honored, output lands under the legacy
+        // configDir/destSubpath location instead (the #2911 duplicate-tree symptom).
+        const legacyDest = path.join(configDir, skillsKindReal.destSubpath);
+        assert.ok(
+          !fs.existsSync(legacyDest) || fs.readdirSync(legacyDest).length === 0,
+          `${runtime}: installOpencodeFamilySkills must NOT ALSO write a second tree at the legacy location ` +
+          `"${legacyDest}" once a home override is declared.`,
+        );
+      } finally {
+        runtimeArtifactLayoutModule.resolveRuntimeArtifactLayout = originalResolve;
+      }
+    });
+  }
+});

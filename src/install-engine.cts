@@ -932,13 +932,20 @@ function installOpencodeFamilySkills(
     );
   }
 
-  const dest = runtimeArtifactInstallPlan.assertDestWithinConfigHome(targetDir, skillsKindEntry.destSubpath);
-  // Symlink-escape guard: reject if any path component between targetDir and
-  // dest is a symlink that would redirect writes outside the config root.
+  // #2911: same destination-root defect as _copyStaged/migrateLegacyDevPreferencesToSkill
+  // — honor skillsKindEntry.home as a FALLBACK-preferred override (e.g. Codex skills
+  // -> $HOME/.agents) instead of always resolving against targetDir, so this bespoke
+  // OpenCode/Kilo writer lands in the SAME tree the installer and surface-apply use.
+  // Runtimes with no `home` override (opencode, kilo today) are unaffected. Must stay
+  // in lockstep with the sibling writers — the destination-parity test enforces it.
+  const installRoot: string = skillsKindEntry.home ?? targetDir;
+  const dest = runtimeArtifactInstallPlan.assertDestWithinConfigHome(installRoot, skillsKindEntry.destSubpath);
+  // Symlink-escape guard: reject if any path component between installRoot and
+  // dest is a symlink that would redirect writes outside the install root.
   // #2393: honor GSD_ALLOW_SYMLINKED_DEST for intentional user-owned symlink layouts.
-  if (hasExistingSymlinkBetween(path.resolve(targetDir), dest, { allowOptInFollow: isSymlinkedDestOptIn() })) {
+  if (hasExistingSymlinkBetween(path.resolve(installRoot), dest, { allowOptInFollow: isSymlinkedDestOptIn() })) {
     throw new Error(
-      `installOpencodeFamilySkills: destDir "${dest}" contains a symlink the install root "${targetDir}" does not trust — refusing to write. If this is an intentional user-owned symlink layout, re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
+      `installOpencodeFamilySkills: destDir "${dest}" contains a symlink the install root "${installRoot}" does not trust — refusing to write. If this is an intentional user-owned symlink layout, re-run with GSD_ALLOW_SYMLINKED_DEST=1.`,
     );
   }
   fs.mkdirSync(dest, { recursive: true });
