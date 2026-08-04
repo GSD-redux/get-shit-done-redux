@@ -253,12 +253,17 @@ test('UPGRADE 2: capabilities/kimi/capability.json declares dispatch.background 
   assert.equal(d.backgroundDispatch, true);
 });
 
-test('UPGRADE 2: negotiateHostCapabilities against kimi axes yields effective.dispatch.backgroundDispatch === true, and shouldFlattenDispatch is false (background now allowed)', () => {
+test('UPGRADE 2: negotiateHostCapabilities against kimi axes yields effective.dispatch.backgroundDispatch === true, but shouldFlattenDispatch is true (#2939: nested:false cannot host a nesting orchestrator)', () => {
   const KIMI_AXES = KIMI_CAP.runtime.hostIntegration;
   const { effective } = negotiateHostCapabilities(KIMI_AXES);
+  // UPGRADE 2 still holds: the descriptor declares backgroundDispatch:true (kimi CAN background
+  // a single agent). #2939 changes only the FLATTEN consequence: kimi's nested:false means a
+  // backgrounded kimi agent cannot itself nest the plan-checker/executor/verifier pipeline the
+  // workflows require, so the orchestrator must run inline (flatten) even though backgrounding
+  // a single agent is possible.
   assert.equal(effective.dispatch.backgroundDispatch, true);
-  assert.equal(shouldFlattenDispatch(effective.dispatch), false,
-    'kimi may now background — dispatch must not be flattened to inline');
+  assert.equal(shouldFlattenDispatch(effective.dispatch), true,
+    '#2939: kimi nested:false → a backgrounded orchestrator cannot nest the pipeline → flatten');
 });
 
 test('UPGRADE 2: a corrupted/undeclared dispatch still fails closed to inline (shouldFlattenDispatch === true)', () => {

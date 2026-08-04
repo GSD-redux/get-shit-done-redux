@@ -572,7 +572,7 @@ function negotiateHostCapabilities(
  * orchestrator that still has room to delegate to a leaf — i.e. ALL of:
  *   - `background === true` AND `backgroundDispatch === true` (it can background at all), AND
  *   - `nested === true` AND `subagentToolkit === 'full'` (it can host a nesting orchestrator), AND
- *   - a depth budget greater than 1, or unbounded (`maxDepth === -1`): a budget of exactly 1
+ *   - a depth budget greater than 1, or unbounded (`maxDepth < 0`): a budget of exactly 1
  *     is consumed by the backgrounded orchestrator itself (depth 1) and leaves no room for the
  *     delegated leaf (depth 2) its own contract would require.
  *
@@ -582,14 +582,21 @@ function negotiateHostCapabilities(
  * produced a depth-2 tree its declared contract cannot support.
  *
  * The depth-budget test mirrors the convention already used elsewhere in the codebase:
- * `degradationFor` (same file) treats `nested && depth >= 2` as full-depth and `maxDepth === 1`
- * as flat, and `bin/install.js`'s `_normalizeDispatchCallSpan` uses
- * `subagentToolkit === 'full' && (maxDepth === -1 || maxDepth > 1)`. Reusing that exact shape
- * here keeps the three sites in agreement rather than introducing a third ad-hoc rule.
+ * `degradationFor` (same file) treats `nested && depth >= 2` as full-depth, `maxDepth === 1`
+ * as flat, and any `maxDepth < 0` as unbounded; `negotiateHostCapabilities` (same file) also
+ * treats `maxDepth < 0` as unbounded; `bin/install.js`'s `_normalizeDispatchCallSpan` uses
+ * `subagentToolkit === 'full' && (maxDepth === -1 || maxDepth > 1)`. This function adopts the
+ * broader `maxDepth < 0` = unbounded convention from `degradationFor`/`negotiateHostCapabilities`
+ * (every shipped descriptor uses `-1` for unbounded, so the two conventions agree on live input).
+ * It is STRICTER than `_normalizeDispatchCallSpan` in one respect: it also requires `nested === true`,
+ * because a host that cannot nest cannot host a backgrounded orchestrator that delegates —
+ * `_normalizeDispatchCallSpan` runs per-call after the dispatch decision and does not need that gate.
  *
  * This graduates the #853 prose rule (originally `RUNTIME === 'codex'`, then
- * extended to cursor) to a typed, documentation-sourced decision; codex AND
- * cursor are both background-eligible in the registry. See
+ * extended to cursor) to a typed, documentation-sourced decision; of the shipped
+ * background-capable hosts only cursor (`maxDepth:2`) remains background-eligible under the
+ * depth-aware rule — codex (`maxDepth:1`), kimi (`nested:false`), and kimi-code
+ * (`built-in-only` toolkit) now correctly flatten. See
  * docs/reference/host-integration-capability-matrix.md.
  *
  * Null-safety: if dispatch is null, undefined, or not an object, returns true
@@ -603,13 +610,13 @@ function shouldFlattenDispatch(dispatch: UnvalidatedDispatch): boolean {
   const canBackground = dispatch.background === true && dispatch.backgroundDispatch === true;
   if (!canBackground) return true;
   // #2939: can background a NESTING orchestrator with room to delegate. A depth budget of 1
-  // is consumed by the backgrounded orchestrator itself; it needs > 1 (or unbounded -1) to host
-  // a delegated leaf at depth 2. Non-finite/missing maxDepth fails closed (no budget → flatten),
-  // mirroring degradationFor's treatment of non-finite depth as 0.
+  // is consumed by the backgrounded orchestrator itself; it needs > 1 (or unbounded, maxDepth < 0)
+  // to host a delegated leaf at depth 2. Non-finite/missing maxDepth fails closed (no budget →
+  // flatten), mirroring degradationFor's treatment of non-finite depth as 0.
   const canNest = dispatch.nested === true && dispatch.subagentToolkit === 'full';
   if (!canNest) return true;
   const depth = typeof dispatch.maxDepth === 'number' && Number.isFinite(dispatch.maxDepth) ? dispatch.maxDepth : 0;
-  const depthSufficient = depth === -1 || depth > 1;
+  const depthSufficient = depth < 0 || depth > 1;
   return !depthSufficient;
 }
 
