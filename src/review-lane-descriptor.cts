@@ -649,7 +649,7 @@ export function mergeReviewerLanes(
     // validator's grammar check rejects surrounding whitespace before this is
     // reachable through a real install, so this is belt-and-braces parity with the
     // roster, not a live-input guard.)
-    const lane = { ...(body as object), slug } as ReviewerLane;
+    const lane = { ...body, slug } as ReviewerLane;
     bySlug.set(slug, lane);
     ordered.push(lane);
   }
