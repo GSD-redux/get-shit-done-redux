@@ -121,7 +121,7 @@ function spawnInstall(repoRoot, runtime, scope) {
     path.join(repoRoot, 'bin', 'install.js'),
     `--${runtime}`,
   ];
-  let cwd = root;
+  const cwd = root;
   if (scope === 'global') args.push('--global', '--config-dir', root);
   else args.push('--local');
   const result = spawnSync(process.execPath, args, {

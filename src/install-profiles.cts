@@ -371,14 +371,18 @@ function stageSkillsForProfile(srcDir: string, resolvedProfile: ResolvedProfile)
  * is in resolvedProfile.agents — which is populated by resolveProfile() from
  * the _calls_agents_* entries in the manifest.
  *
- * ⚠️ NOT AN EMISSION PATH (#2995). This stager performs a RAW `fs.copyFileSync`
- * and — under the default `full` profile — short-circuits and returns the real
- * source directory unstaged. It therefore does NOT strip `gsd:section` markers.
- * It is retained as a public, directly-unit-tested seam, but it has no production
- * caller: `agentsKind` and `kimiAgentsKind` both route through
- * `stageAgentsForRuntimeWithConverter`, which composes. Any NEW caller that emits
- * agent content to a runtime must use the composing stager instead, or it will
- * ship markers verbatim.
+ * ⚠️ RAW STAGER — ITS OUTPUT IS NOT EMISSION-READY (#2995). This stager performs a
+ * plain `fs.copyFileSync` and — under the default `full` profile — short-circuits
+ * and returns the real source directory unstaged. It does NOT strip `gsd:section`
+ * markers. It is still called, by `bin/install.js`'s `_stageAgents`, whose output
+ * feeds the inline agent loop and `installCodexConfig`; both of those compose the
+ * content themselves before writing, so the raw output never reaches disk. What
+ * changed in #2995 is that `agentsKind` and `kimiAgentsKind` no longer use it —
+ * they route through `stageAgentsForRuntimeWithConverter`, which composes.
+ *
+ * The invariant to preserve: anything that takes this function's output and WRITES
+ * it as a runtime artifact must call `composeWorkflow` on each file first, or it
+ * ships markers verbatim.
  */
 function stageAgentsForProfile(srcAgentsDir: string, resolvedProfile: ResolvedProfile): string {
   if (resolvedProfile.skills === '*') return srcAgentsDir;
