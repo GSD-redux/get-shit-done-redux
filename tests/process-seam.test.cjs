@@ -65,6 +65,14 @@ const FIXTURE_ECHO_STDIN = [
   '});',
 ].join('\n');
 
+// Kills its own process with SIGKILL — simulates an external kill (OOM
+// killer, `process.kill(pid, 'SIGKILL')` from outside) that spawnSync does
+// NOT populate `result.error` for on this runtime.
+const FIXTURE_SUICIDE = [
+  "process.kill(process.pid, 'SIGKILL');",
+  'setTimeout(() => {}, 5000);',
+].join('\n');
+
 // argv: [exitCode?] — writes well past the 1MB default maxBuffer, then
 // attempts a clean exit with exitCode (which the overflow kill preempts).
 const FIXTURE_OVERFLOW = [
@@ -331,11 +339,13 @@ describe('process-seam', () => {
     assert.deepStrictEqual(Object.keys(OUTCOME).sort(), [
       'BUFFER_OVERFLOW',
       'EXITED',
+      'KILLED',
       'SPAWN_FAILED',
       'TIMED_OUT',
     ]);
     assert.deepStrictEqual(OUTCOME, {
       EXITED: 'exited',
+      KILLED: 'killed',
       TIMED_OUT: 'timed_out',
       BUFFER_OVERFLOW: 'buffer_overflow',
       SPAWN_FAILED: 'spawn_failed',
@@ -343,6 +353,20 @@ describe('process-seam', () => {
     assert.throws(() => {
       OUTCOME.EXITED = 'nope';
     }, TypeError);
+  });
+
+  test('a child killed by an external signal is KILLED, not EXITED', (t) => {
+    if (process.platform === 'win32') {
+      t.skip('signal semantics differ on win32 — see design doc row on Windows signals');
+      return;
+    }
+    const fixture = writeFixture(tmpDir, 'suicide.cjs', FIXTURE_SUICIDE);
+    const result = runNode([fixture], { timeoutMs: 5000 });
+    assert.equal(result.outcome, OUTCOME.KILLED);
+    assert.equal(result.killed, true);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.signal, 'SIGKILL');
+    assert.equal(result.exitCode, null);
   });
 
   // Smoke coverage for runHook's export (matches the invocation shape used by
@@ -520,6 +544,66 @@ describe('runGsdTools adapter (process-seam parity)', () => {
         const result = runGsdTools(['x'], tmpDir);
         assert.equal(result.success, true);
         assert.equal(result.output, 'ok');
+        assert.equal(getCallCount(), 2);
+      }
+    );
+  });
+
+  test('adapter retries once on KILLED, mirroring TIMED_OUT', () => {
+    withMockedRunNode(
+      (callCount) => (callCount === 1
+        ? {
+          outcome: OUTCOME.KILLED,
+          exitCode: null,
+          stdout: '',
+          stderr: '',
+          timedOut: false,
+          signal: 'SIGKILL',
+          killed: true,
+          code: null,
+        }
+        : {
+          outcome: OUTCOME.EXITED,
+          exitCode: 0,
+          stdout: 'ok\n',
+          stderr: '',
+          timedOut: false,
+          signal: null,
+          killed: false,
+          code: null,
+        }),
+      (getCallCount) => {
+        const result = runGsdTools(['x'], tmpDir);
+        assert.equal(result.success, true);
+        assert.equal(result.output, 'ok');
+        assert.equal(getCallCount(), 2);
+      }
+    );
+  });
+
+  test('adapter throws resource-starvation when KILLED persists after retry', () => {
+    withMockedRunNode(
+      () => ({
+        outcome: OUTCOME.KILLED,
+        exitCode: null,
+        stdout: 'partial-out',
+        stderr: 'partial-err',
+        timedOut: false,
+        signal: 'SIGKILL',
+        killed: true,
+        code: null,
+      }),
+      (getCallCount) => {
+        const expected =
+          `[runGsdTools: resource-starvation / subprocess-kill after retry] ` +
+          `gsd-tools was killed before completion ` +
+          `(signal=SIGKILL, code=null, killed=true). ` +
+          `This indicates host OOM or scheduler contention, not a product bug. ` +
+          `stdout=partial-out stderr=partial-err`;
+        assert.throws(
+          () => runGsdTools(['x'], tmpDir),
+          (err) => err instanceof Error && err.message === expected
+        );
         assert.equal(getCallCount(), 2);
       }
     );

@@ -106,9 +106,14 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
       };
     }
     if (result.outcome === processSeam.OUTCOME.BUFFER_OVERFLOW) {
-      // Never retried (the child ran fine and produced too much output —
-      // retrying wastes 60s and fails identically) and never coerced to
-      // exitCode:1, unlike the pre-seam helper.
+      // Never retried and never coerced to exitCode:1. This is a DELIBERATE
+      // divergence from the old execFileSync-based helper, not an oversight:
+      // the old code saw a maxBuffer overflow as `err.signal === 'SIGTERM'`,
+      // which made the old `isKilled(err)` true and triggered a retry. The
+      // new seam classifies overflow as its own BUFFER_OVERFLOW outcome
+      // specifically so it stops being conflated with a kill — the child ran
+      // fine and produced too much output, so retrying wastes 60s and fails
+      // identically every time.
       return {
         success: false,
         output: (result.stdout || '').trim(),
@@ -116,8 +121,24 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
         exitCode: null,
       };
     }
-    // SPAWN_FAILED: the process never started. Never retried — retrying is
-    // pointless — and never coerced to exitCode:1.
+    if (result.outcome === processSeam.OUTCOME.KILLED) {
+      // Defensive only: the retry loop below always retries KILLED once and
+      // throws throwResourceStarvation() if it is still KILLED afterward, so
+      // this function is never actually invoked with a KILLED result that
+      // has not already survived a retry. It is handled explicitly (instead
+      // of falling into the SPAWN_FAILED catch-all below, whose message
+      // would be misleading) so a KILLED result can never silently render as
+      // a generic {success:false, exitCode:1}-shaped spawn failure.
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error: `gsd-tools was killed by signal (signal=${result.signal}, code=${result.code})`,
+        exitCode: null,
+      };
+    }
+    // SPAWN_FAILED: the process never started (matches old behavior — ENOENT
+    // carries no signal, so the old `isKilled(err)` was false). Never
+    // retried — retrying is pointless — and never coerced to exitCode:1.
     return {
       success: false,
       output: (result.stdout || '').trim(),
@@ -127,12 +148,18 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
   }
 
   // Kill-signal discrimination (#969): transient OOM/contention usually
-  // succeeds on retry; retry ONCE before surfacing the labeled error. Only
-  // TIMED_OUT is retried — BUFFER_OVERFLOW and SPAWN_FAILED are not kills.
+  // succeeds on retry; retry ONCE before surfacing the labeled error.
+  // TIMED_OUT and KILLED are retried — together they reproduce the OLD
+  // execFileSync-based `isKilled(err)` semantics exactly:
+  //   old = err.killed || err.signal != null || err.code === 'ETIMEDOUT'
+  // TIMED_OUT covers the timeout case; KILLED covers a child terminated by a
+  // signal nobody in the seam sent (e.g. an external OOM kill) — the exact
+  // #969 case this retry exists for. BUFFER_OVERFLOW and SPAWN_FAILED are
+  // not kills and are never retried (see their branches in toLegacyShape).
   const first = attempt();
-  if (first.outcome === processSeam.OUTCOME.TIMED_OUT) {
+  if (first.outcome === processSeam.OUTCOME.TIMED_OUT || first.outcome === processSeam.OUTCOME.KILLED) {
     const retry = attempt();
-    if (retry.outcome === processSeam.OUTCOME.TIMED_OUT) {
+    if (retry.outcome === processSeam.OUTCOME.TIMED_OUT || retry.outcome === processSeam.OUTCOME.KILLED) {
       // Still killed after retry — persistent resource starvation, throw.
       throwResourceStarvation(retry);
     }

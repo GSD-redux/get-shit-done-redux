@@ -22,10 +22,18 @@
  * design doc's stated error-code assumptions do not match observed
  * behavior on this platform/Node version):
  *
- *   - No `result.error` at all           -> EXITED (includes a clean exit
- *     AND a child that terminated itself via a signal nobody but the child
- *     sent — spawnSync does not populate `.error` for that case, so it is
- *     never mistaken for our own timeout).
+ *   - No `result.error` and `signal === null` -> EXITED (a clean or
+ *     non-zero exit with no signal involved).
+ *   - No `result.error` but `signal !== null` -> KILLED. A child terminated
+ *     by a signal nobody in this seam sent (e.g. an external OOM killer, or
+ *     `process.kill(pid, 'SIGKILL')` from outside) does NOT populate
+ *     `result.error` on this runtime — verified empirically: `spawnSync`
+ *     returns `{status: null, signal: 'SIGKILL', error: undefined}` for an
+ *     externally-killed child. Treating that as EXITED would report
+ *     `exitCode: null` under an EXITED outcome, an incoherent shape, and
+ *     would silently drop the #969 kill-discrimination retry for the exact
+ *     case it exists to catch. KILLED is reported as its own outcome so the
+ *     `runGsdTools` adapter can retry it exactly like TIMED_OUT.
  *   - `result.error.code` is a buffer-overflow code (`ENOBUFS` on this
  *     runtime, or the `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` code documented
  *     for the async exec()/execFile() family, accepted defensively in case
@@ -46,6 +54,7 @@ const DEFAULT_TIMEOUT_MS = 60000;
 
 const OUTCOME = Object.freeze({
   EXITED: 'exited',
+  KILLED: 'killed',
   TIMED_OUT: 'timed_out',
   BUFFER_OVERFLOW: 'buffer_overflow',
   SPAWN_FAILED: 'spawn_failed',
@@ -80,7 +89,7 @@ function toSeamResult(result) {
 
   let outcome;
   if (!error) {
-    outcome = OUTCOME.EXITED;
+    outcome = signal === null ? OUTCOME.EXITED : OUTCOME.KILLED;
   } else if (BUFFER_OVERFLOW_CODES.has(errorCode)) {
     outcome = OUTCOME.BUFFER_OVERFLOW;
   } else if (errorCode === 'ENOENT') {
@@ -95,6 +104,10 @@ function toSeamResult(result) {
   }
 
   const timedOut = outcome === OUTCOME.TIMED_OUT;
+  // KILLED always has signal !== null by construction (see the branch
+  // above), so this single check also satisfies "killed is true for both
+  // KILLED and TIMED_OUT" without narrowing existing behavior for the other
+  // outcomes (e.g. a signaled BUFFER_OVERFLOW kill).
   const killed = timedOut || signal !== null;
 
   return {
