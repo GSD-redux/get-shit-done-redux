@@ -59,6 +59,19 @@ function captureStdout(fn) {
   return chunks.join('');
 }
 
+function readShippedStateTemplateBody(replacements) {
+  const templatePath = path.join(__dirname, '..', 'gsd-core', 'templates', 'state.md');
+  const template = fs.readFileSync(templatePath, 'utf-8');
+  const fencedDocument = template.match(/```markdown\r?\n([\s\S]*?)```/);
+  assert.ok(fencedDocument, 'gsd-core/templates/state.md must contain a fenced markdown document');
+
+  let body = fencedDocument[1];
+  for (const [target, replacement] of replacements) {
+    assert.ok(body.includes(target), `shipped state template must contain replacement target: ${target}`);
+    body = body.replace(target, replacement);
+  }
+  return body;
+}
 describe('state-snapshot command', () => {
   let tmpDir;
 
@@ -3190,6 +3203,50 @@ describe('state validate command', () => {
 
   afterEach(() => {
     cleanup(tmpDir);
+  });
+
+  test('template frontmatter phase reaches passed-verification drift on disk', () => {
+    const stateContent = readShippedStateTemplateBody([
+      ['status: planning', ['current_phase: 2', 'status: executing'].join('\n')],
+      ['Phase: [X] of [Y] ([Phase name])', 'Phase: 2 of 2 (State Validation Drift Diagnostics)'],
+      ['Status: [Ready to plan / Planning / Ready to execute / In progress / Phase complete]', 'Status: Executing Phase 2'],
+    ]);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-state-validation-drift-diagnostics');
+    fs.mkdirSync(phaseDir, { recursive: true });
+    writePassedVerification(tmpDir, '02-state-validation-drift-diagnostics', '02');
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, false, 'passed verification must invalidate executing state');
+    assert.ok(output.warnings.length > 0, 'passed verification drift must emit a warning');
+    assert.deepStrictEqual(
+      output.drift.verification_status,
+      { state_status: 'executing', verification: 'passed' },
+      'template frontmatter phase must reach the existing disk-backed verification drift check',
+    );
+  });
+
+  test('template-equivalent phase identities remain clean without disk drift', () => {
+    const stateContent = readShippedStateTemplateBody([
+      ['status: planning', ['current_phase: 2', 'status: planning'].join('\n')],
+      ['Phase: [X] of [Y] ([Phase name])', 'Phase: 02 of 2 (State Validation Drift Diagnostics)'],
+      ['Status: [Ready to plan / Planning / Ready to execute / In progress / Phase complete]', 'Status: Planning'],
+    ]);
+    fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), stateContent);
+    fs.mkdirSync(
+      path.join(tmpDir, '.planning', 'phases', '02-state-validation-drift-diagnostics'),
+      { recursive: true },
+    );
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, true, 'equivalent phase identities without disk drift must stay valid');
+    assert.deepStrictEqual(output.warnings, [], 'clean control must not emit warnings');
+    assert.deepStrictEqual(output.drift, {}, 'clean control must not report drift');
   });
 
   test('STATE says executing + VERIFICATION.md shows passed emits warning', () => {
