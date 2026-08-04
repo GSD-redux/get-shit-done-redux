@@ -105,6 +105,69 @@ describe('execute-phase workflow: wave filtering', () => {
   });
 });
 
+// #2868: a phase whose plans are ALL summarized but which never reached
+// verify_phase_goal (most commonly a retired checkpoint plan that still wrote a
+// SUMMARY) must resume at the phase gates instead of exiting unconditionally —
+// the prior behavior made `code_review_gate`, `regression_gate`, and
+// `verify_phase_goal` (the only producer of *-VERIFICATION.md) unreachable.
+describe('execute-phase workflow: #2868 stranded-phase resume on discover_and_group_plans', () => {
+  test('W1: all-filtered outcome is no longer an unconditional exit; it consults verification status', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(
+      !content.includes('If all filtered: "No matching incomplete plans" → exit.'),
+      'the old unconditional all-filtered exit line must be gone (#2868)'
+    );
+    assert.ok(
+      content.includes('VERIFY_STATUS'),
+      'discover_and_group_plans should consult VERIFY_STATUS before exiting on all-filtered'
+    );
+    assert.ok(
+      content.includes('verification status'),
+      'discover_and_group_plans should call the verification status query'
+    );
+  });
+
+  test('W2: the resume path names both code_review_gate and regression_gate', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    assert.ok(
+      discoverSection.includes('code_review_gate'),
+      'discover_and_group_plans should name code_review_gate as the resume target'
+    );
+    assert.ok(
+      discoverSection.includes('regression_gate'),
+      'discover_and_group_plans should name regression_gate so a future rename breaks this test ' +
+        'instead of silently orphaning the resume path'
+    );
+  });
+
+  test('W3: the resume path is gated off when a filter is active (--gaps-only or WAVE_FILTER)', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    const filterIdx = discoverSection.indexOf('A filter is active');
+    assert.ok(filterIdx >= 0, 'discover_and_group_plans should describe a filter-active branch');
+    // Both flags must be mentioned near the filter-active branch, not merely
+    // anywhere in the step (e.g. in the pre-existing filtering prose above).
+    const filterClause = discoverSection.substring(filterIdx, filterIdx + 200);
+    assert.ok(
+      filterClause.includes('--gaps-only'),
+      'filter-active branch should mention --gaps-only'
+    );
+    assert.ok(
+      filterClause.includes('WAVE_FILTER'),
+      'filter-active branch should mention WAVE_FILTER'
+    );
+  });
+});
+
 describe('execute-phase docs: user-facing wave flag', () => {
   test('COMMANDS.md documents --wave usage', () => {
     const content = fs.readFileSync(COMMANDS_DOC_PATH, 'utf-8');

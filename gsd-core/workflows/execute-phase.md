@@ -340,7 +340,30 @@ Parse JSON for: `phase`, `plans[]` (each with `id`, `wave`, `autonomous`, `objec
 
 **Wave safety check:** If `WAVE_FILTER` is set and there are still incomplete plans in any lower wave that match the current execution mode, STOP and tell the user to finish earlier waves first. Do not let Wave 2+ execute while prerequisite earlier-wave plans remain incomplete.
 
-If all filtered: "No matching incomplete plans" → exit.
+**If all filtered — do NOT exit unconditionally (#2868).** "No plan work left" and "phase fully
+done" are different conditions: a run can be interrupted between the final wave's SUMMARY and
+`verify_phase_goal` (most commonly by a checkpoint plan that is retired but still writes a SUMMARY),
+leaving a phase that looks complete from every index yet never produced `*-VERIFICATION.md`.
+
+```bash
+VERIFY_STATUS=$(gsd_run query verification status "${PHASE_DIR}" --pick status)
+```
+
+- **A filter is active** (`--gaps-only`, or `WAVE_FILTER` set): report "No matching incomplete
+  plans" → exit, unchanged. A filtered run finding nothing left in ITS slice says nothing about
+  whether the phase as a whole is done, and must never jump to verification.
+- **`VERIFY_STATUS` is anything other than `missing`**: the phase genuinely finished. Report "No
+  matching incomplete plans" → exit, unchanged.
+- **`VERIFY_STATUS == missing`** and no filter is active: the plans are all summarized but the run
+  never reached the tail gates. Report:
+  `"All {plan_count} plans are summarized but no VERIFICATION.md exists — resuming at the phase gates (#2868)."`
+  Set `RESUME_TAIL_ONLY=true`, then SKIP `cross_ai_delegation`, `execute_waves`,
+  `checkpoint_handling` and `aggregate_results` — there is no wave work to do — and continue at
+  `code_review_gate`. From there the run proceeds exactly as a normal one: `code_review_gate` →
+  `close_parent_artifacts` → `regression_gate` → `verify_phase_goal` → `update_roadmap`. Never skip
+  `code_review_gate` or `regression_gate` on this path; the manual workaround this replaces skipped
+  both, and that gap is the reason this route exists rather than telling users to spawn the verifier
+  by hand.
 
 Report:
 ```
