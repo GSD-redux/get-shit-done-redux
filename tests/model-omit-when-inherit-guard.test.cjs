@@ -13,7 +13,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const fc = require('./helpers/fast-check-setup.cjs');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, cleanup, readWorkflowCombined } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOWS = path.join(ROOT, 'gsd-core', 'workflows');
@@ -49,12 +49,20 @@ function statesOmitRule(content) {
  * reported green across 15 non-compliant files for no better reason than that
  * nobody had added them to it. Deriving the set is what makes a 16th file
  * impossible to add silently.
+ *
+ * #2994: `content` is read via `readWorkflowCombined` (host + its
+ * `workflows/<wf>/steps/*.md` fragments), not the bare host file. The
+ * fragment model can move a workflow's own omit-rule prose (e.g.
+ * quick.md's rule lives in `quick/steps/research-phase.md` behind a
+ * `<!-- gsd:section -->` stub) out of the host without moving its
+ * `model="{…}"` dispatch site, so a host-only read would report a
+ * false positive for a workflow that still documents the rule.
  */
 function workflowsThatDispatchWithAModel() {
   return fs
     .readdirSync(WORKFLOWS)
     .filter((f) => f.endsWith('.md'))
-    .map((f) => ({ file: f, content: fs.readFileSync(path.join(WORKFLOWS, f), 'utf8') }))
+    .map((f) => ({ file: f, content: readWorkflowCombined(path.join(WORKFLOWS, f)) }))
     .filter((w) => /model="\{/.test(w.content));
 }
 

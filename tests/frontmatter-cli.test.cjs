@@ -268,11 +268,212 @@ body`;
     assert.ok(result.error.includes('Unknown schema'), 'Error should mention unknown schema');
   });
 
+  // #2847 review finding: a bare FRONTMATTER_SCHEMAS[schemaName] lookup resolves
+  // prototype-chain keys to Object.prototype members instead of undefined, so the
+  // `!schema` guard never fires and the command crashes with an uncaught TypeError
+  // ("Cannot read properties of undefined (reading 'filter')") and a stack trace
+  // instead of reporting "Unknown schema". Now that --schema is an agent-bound
+  // variable ($SCHEMA in agents/gsd-planner.md's validate_plan step) rather than a
+  // fixed literal, this is reachable from prompt state.
+  for (const schemaName of ['__proto__', 'constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+    test(`--schema ${schemaName} reports Unknown schema, not a crash`, () => {
+      const file = writeTempFile('---\nphase: 01\n---\n');
+      const result = runGsdTools(['frontmatter', 'validate', file, '--schema', schemaName]);
+      assert.ok(!result.success, `--schema ${schemaName} should fail with a non-zero exit code, not crash`);
+      assert.ok(
+        result.error.includes('Unknown schema'),
+        `--schema ${schemaName} error should be "Unknown schema...", not a TypeError stack trace; got: ${result.error}`
+      );
+      assert.ok(
+        !result.error.includes('TypeError') && !result.error.includes('Cannot read properties'),
+        `--schema ${schemaName} must not surface a raw TypeError; got: ${result.error}`
+      );
+    });
+  }
+
   test('returns error for missing file', () => {
     const result = runGsdTools('frontmatter validate /nonexistent/file.md --schema plan');
     assert.ok(result.success, 'Command should exit 0 with error JSON');
     const parsed = JSON.parse(result.output);
     assert.ok(parsed.error, 'Should have error field');
+  });
+});
+
+// ─── frontmatter validate: plan-gap-closure schema (#2847) ───────────────────
+//
+// Regression coverage for #2847: "--gaps does not load planner-gap-closure.md,
+// so generated gap plans may miss gap_closure metadata". A gap-closure plan
+// with every other required field but no `gap_closure` used to report
+// `valid: true` against the only schema the planner validated against
+// (`plan`). Row 1 below is the failing-first regression test: it fails on
+// pre-fix `FRONTMATTER_SCHEMAS` (no `plan-gap-closure` key exists — the CLI
+// exits 1 with "Unknown schema: plan-gap-closure") and passes after the fix.
+
+describe('frontmatter validate: plan-gap-closure schema (#2847)', () => {
+  const PLAN_BODY_NO_GAP_CLOSURE = `---
+phase: 01
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+files_modified: [src/auth.ts]
+autonomous: true
+must_haves:
+  truths:
+    - "All tests pass"
+---
+body`;
+
+  // Row 1 — failing-first regression test.
+  test('rejects plan-gap-closure frontmatter missing gap_closure (#2847)', () => {
+    const file = writeTempFile(PLAN_BODY_NO_GAP_CLOSURE);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, false, 'Should be invalid: gap_closure is missing');
+    assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure should be reported missing');
+    assert.strictEqual(parsed.missing.length, 1, 'Only gap_closure should be missing; all other fields are present');
+    assert.deepStrictEqual(parsed.invalidValue, [], 'gap_closure is ABSENT here, not wrong-valued — invalidValue must stay empty');
+    assert.strictEqual(parsed.schema, 'plan-gap-closure');
+  });
+
+  // Row 2 — happy path.
+  test('accepts complete plan-gap-closure frontmatter', () => {
+    const content = `---
+phase: 01
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+files_modified: [src/auth.ts]
+autonomous: true
+must_haves:
+  truths:
+    - "All tests pass"
+gap_closure: true
+---
+body`;
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'Should be valid: gap_closure is present');
+    assert.deepStrictEqual(parsed.missing, []);
+    assert.ok(parsed.present.includes('gap_closure'));
+    assert.deepStrictEqual(parsed.invalidValue, [], 'gap_closure has the correct value here — invalidValue must be empty');
+    assert.strictEqual(parsed.schema, 'plan-gap-closure');
+  });
+
+  // Row 3 — empty/near-empty input boundary.
+  test('reports all plan-gap-closure fields missing except phase for near-empty frontmatter', () => {
+    const file = writeTempFile('---\nphase: 01\n---\nbody');
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, false);
+    // plan-gap-closure requires 9 fields; phase is present, so 8 should be missing.
+    assert.strictEqual(parsed.missing.length, 8, 'Should have 8 missing required fields');
+    assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure should be among the missing fields');
+  });
+
+  // Row 4 — negative space: standard-mode ('plan' schema) plans are unaffected by #2847's fix.
+  test('plan schema (standard/reviews mode) still reports valid without gap_closure — unaffected by #2847 fix', () => {
+    const file = writeTempFile(PLAN_BODY_NO_GAP_CLOSURE);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'plan schema must not require gap_closure (AC(3): standard mode unaffected)');
+    assert.deepStrictEqual(parsed.missing, []);
+    assert.strictEqual(parsed.schema, 'plan');
+  });
+
+  // Row 5 — CRLF cross-platform newline handling.
+  test('parses plan-gap-closure frontmatter with CRLF line endings', () => {
+    const content = [
+      '---',
+      'phase: 01',
+      'plan: 01',
+      'type: execute',
+      'wave: 1',
+      'depends_on: []',
+      'files_modified: [src/auth.ts]',
+      'autonomous: true',
+      'must_haves:',
+      '  truths:',
+      '    - "All tests pass"',
+      'gap_closure: true',
+      '---',
+      'body',
+    ].join('\r\n');
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, true, 'CRLF frontmatter must parse identically to LF for plan-gap-closure');
+    assert.ok(parsed.present.includes('gap_closure'));
+  });
+
+  // Row 6 — gap_closure: false must be REJECTED, not merely present.
+  //
+  // #2847 review finding: --gaps-only filters strictly on gap_closure === true
+  // (execute-phase.md, partial-wave.md). A presence-only check (matching every
+  // other required field) lets `gap_closure: false` validate as valid:true,
+  // which is #2847's exact reported symptom — --gaps-only still spawns zero
+  // executors — one value away. plan-gap-closure's requiredValues entry closes
+  // this: gap_closure must be present AND equal "true" (extractFrontmatter
+  // parses every scalar as a string; FrontmatterValue has no boolean member).
+  test('gap_closure: false is rejected — plan-gap-closure requires the value true, not mere presence', () => {
+    const content = `---
+phase: 01
+plan: 01
+type: execute
+wave: 1
+depends_on: []
+files_modified: [src/auth.ts]
+autonomous: true
+must_haves:
+  truths:
+    - "All tests pass"
+gap_closure: false
+---
+body`;
+    const file = writeTempFile(content);
+    const result = runGsdTools(['frontmatter', 'validate', file, '--schema', 'plan-gap-closure']);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.valid, false, 'gap_closure: false must NOT satisfy plan-gap-closure');
+    assert.ok(parsed.missing.includes('gap_closure'), 'gap_closure must be reported missing when its value is false');
+    assert.ok(!parsed.present.includes('gap_closure'), 'gap_closure must not be reported present when its value is false');
+    // #2847 review: presence alone is not the whole story here — the field IS in the
+    // file, just wrong-valued. invalidValue distinguishes that from a genuinely absent
+    // field (Row 1) so a caller (or a human) gets an actionable "the value is wrong",
+    // not "this field is missing" for a field they can plainly see in the plan.
+    assert.ok(
+      parsed.invalidValue.includes('gap_closure'),
+      'gap_closure must be reported in invalidValue — present but wrong-valued, distinct from genuinely absent'
+    );
+  });
+
+  // Row 7 — invalidValue vs missing distinction, spelled out directly (not just
+  // implied by Rows 1/2/6 individually).
+  test('invalidValue distinguishes "present but wrong value" from "absent" for the same missing-reporting field', () => {
+    const absentResult = JSON.parse(
+      runGsdTools(['frontmatter', 'validate', writeTempFile(PLAN_BODY_NO_GAP_CLOSURE), '--schema', 'plan-gap-closure']).output
+    );
+    const wrongValueContent = PLAN_BODY_NO_GAP_CLOSURE.replace('---\nbody', 'gap_closure: TRUE\n---\nbody');
+    const wrongValueResult = JSON.parse(
+      runGsdTools(['frontmatter', 'validate', writeTempFile(wrongValueContent), '--schema', 'plan-gap-closure']).output
+    );
+
+    // Both report gap_closure as missing (the field does not satisfy the schema either way)...
+    assert.ok(absentResult.missing.includes('gap_closure'));
+    assert.ok(wrongValueResult.missing.includes('gap_closure'));
+    // ...but only the wrong-VALUE case appears in invalidValue.
+    assert.deepStrictEqual(absentResult.invalidValue, [], 'a genuinely absent field must not appear in invalidValue');
+    assert.ok(
+      wrongValueResult.invalidValue.includes('gap_closure'),
+      'gap_closure: TRUE (capitalized YAML boolean, rejected — the validator requires the exact literal lowercase true) must appear in invalidValue'
+    );
   });
 });
 

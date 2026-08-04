@@ -53,7 +53,8 @@ If no `.planning/spikes/` directory exists, tell the user there's nothing to ana
 
 Otherwise, load in this order:
 
-**a. MANIFEST.md** — the overall idea, requirements, and spike table with verdicts.
+**a. MANIFEST.md** — every idea section under `## Ideas` (each idea's paragraph and its own
+scoped Requirements) and the `## Spikes` table with verdicts (each row tagged by idea).
 
 **b. Findings skills** — glob `./.claude/skills/spike-findings-*/SKILL.md` and read any that exist, plus their `references/*.md`. These contain curated knowledge from prior wrap-ups.
 
@@ -74,7 +75,8 @@ If integration risks exist, present them as concrete proposed spikes with names 
 
 ### Analyze for Frontier Spikes
 
-Think laterally about the overall idea from MANIFEST.md and what's been proven so far. Consider:
+Think laterally about every idea section from MANIFEST.md and what's been proven so far for
+each. Consider:
 
 - **Gaps in the vision:** Capabilities assumed but unproven.
 - **Discovered dependencies:** Findings that reveal new questions.
@@ -86,7 +88,7 @@ Present frontier spikes as concrete proposals numbered from the highest existing
 
 ### Get Alignment and Execute
 
-Present all integration and frontier candidates, then ask which to run. When the user picks spikes, write definitions into `.planning/spikes/MANIFEST.md` (appending to existing table) and proceed directly to building them starting at `research`.
+Present all integration and frontier candidates, then ask which to run. When the user picks spikes, write definitions into `.planning/spikes/MANIFEST.md` (appending to the existing table, with each row's Idea column set to the idea key(s) it extends or validates) and proceed directly to building them starting at `research`.
 </step>
 
 <step name="setup_directory">
@@ -212,33 +214,63 @@ If 2+ credible approaches exist, plan to build quick variants within the spike a
 </step>
 
 <step name="create_manifest">
-Create or update `.planning/spikes/MANIFEST.md`:
+Create or update `.planning/spikes/MANIFEST.md`.
+
+**Assign an idea key.** Derive a short, stable, kebab-case slug (2-4 words) summarizing the
+idea being spiked right now, e.g. `realtime-llm-streaming`. Reuse the exact same idea key for
+every spike in this session and any later session that continues the same idea. Only mint a
+new idea key when the current idea is not a continuation of one already indexed in
+MANIFEST.md — never reuse an existing idea key for an unrelated idea, and never merge two
+different ideas under one key.
+
+If `.planning/spikes/MANIFEST.md` doesn't exist, create it:
 
 ```markdown
 # Spike Manifest
 
-## Idea
-[One paragraph describing the overall idea being explored]
+## Ideas
 
-## Requirements
-[Design decisions that emerged from the user's choices during spiking. Non-negotiable for the real build. Updated as spikes progress.]
+### {idea-key}
+[One paragraph describing this idea]
+
+**Requirements:**
+[Design decisions that emerged from the user's choices while spiking THIS idea. Non-negotiable
+for the real build of this idea. Updated as spikes progress. Never copy or merge requirements
+from a different idea key into this list.]
 
 - [e.g., "Must use streaming JSON output, not single-response"]
 - [e.g., "Must support reconnection on network failure"]
 
 ## Spikes
 
-| # | Name | Type | Validates | Verdict | Tags |
-|---|------|------|-----------|---------|------|
+| # | Idea | Name | Type | Validates | Verdict | Tags |
+|---|------|------|------|-----------|---------|------|
 ```
 
-**Track requirements as they emerge.** When the user expresses a preference during spiking, add it to the Requirements section immediately.
+If `.planning/spikes/MANIFEST.md` already exists:
+
+- **Same idea key already has a `### {idea-key}` section under `## Ideas`:** append to that
+  section's Requirements list as new requirements emerge. Never overwrite or rewrite its
+  `## Idea` paragraph.
+- **New idea key, not yet present:** append a new `### {idea-key}` subsection under `## Ideas`,
+  after any existing idea sections. Never touch, merge into, or delete another idea's section.
+- **A pre-#1700 MANIFEST.md with the old flat shape** (a single top-level `## Idea` / `##
+  Requirements` pair, no `## Ideas` heading): treat its existing content as one implicit idea.
+  Derive an idea key from its `## Idea` paragraph, migrate it in place to `## Ideas` >
+  `### {idea-key}` — preserving the paragraph and every existing Requirements bullet and
+  Spikes row verbatim — then continue as above. Do this migration once; do not repeat it once
+  `## Ideas` exists.
+
+Every row appended to `## Spikes` carries an **Idea** column set to the idea key it belongs to.
+
+**Track requirements as they emerge.** When the user expresses a preference during spiking, add
+it to the current idea's Requirements list immediately — never to a different idea's list.
 </step>
 
 <step name="reground">
 ## Re-Ground Before Each Spike
 
-Before starting each spike (not just the first), re-read `.planning/spikes/MANIFEST.md` and `.planning/spikes/CONVENTIONS.md` to prevent drift within long sessions. Check the Requirements section — make sure the spike doesn't contradict any established requirements.
+Before starting each spike (not just the first), re-read `.planning/spikes/MANIFEST.md` and `.planning/spikes/CONVENTIONS.md` to prevent drift within long sessions. Check the current idea's `### {idea-key}` Requirements list — make sure the spike doesn't contradict any established requirement for this idea. Do not apply another idea's requirements.
 </step>
 
 <step name="build_spikes">
@@ -287,6 +319,7 @@ Multiple files per spike are expected for complex questions (e.g., `test-basic.j
 ```markdown
 ---
 spike: NNN
+idea: {idea-key}
 name: descriptive-name
 type: standard
 validates: "Given [precondition], when [action], then [expected outcome]"
@@ -337,7 +370,8 @@ tags: [tag1, tag2]
 → Does this match what you expected? Describe what you see.
 ──────────────────────────────────────────────────────────────
 
-**h.** Update `.planning/spikes/MANIFEST.md` with the spike's row.
+**h.** Update `.planning/spikes/MANIFEST.md` with the spike's row, setting the Idea column to
+this spike's idea key.
 
 **i.** Commit (if `COMMIT_DOCS` is true):
 ```bash
@@ -450,10 +484,10 @@ gsd_run query commit "docs(spikes): update conventions" --files .planning/spikes
 - [ ] Depth over speed — edge cases tested, surprising findings followed, investigation trail documented
 - [ ] Comparison spikes built back-to-back with head-to-head verdict
 - [ ] Spikes needing human interaction have forensic log layer
-- [ ] Requirements tracked in MANIFEST.md as they emerge from user choices
+- [ ] Requirements tracked in MANIFEST.md, scoped to the idea key that produced them, as they emerge from user choices
 - [ ] CONVENTIONS.md created or updated with patterns that emerged
-- [ ] Each spike README has complete frontmatter, Investigation Trail, and Results
-- [ ] MANIFEST.md is current (with Type column and Requirements section)
+- [ ] Each spike README has complete frontmatter (including its idea key), Investigation Trail, and Results
+- [ ] MANIFEST.md is current (with Idea and Type columns, and each idea's own scoped Requirements section)
 - [ ] Commits use `docs(spike-NNN): [VERDICT]` format
 - [ ] Consolidated report presented with next-step routing
 </success_criteria>

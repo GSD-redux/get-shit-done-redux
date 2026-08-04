@@ -345,6 +345,30 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "init.code-review",
+    "aliases": [
+      "init code-review"
+    ],
+    "subcommand": "code-review",
+    "mutation": false
+  },
+  {
+    "canonical": "init.review",
+    "aliases": [
+      "init review"
+    ],
+    "subcommand": "review",
+    "mutation": false
+  },
+  {
+    "canonical": "init.discuss-phase-assumptions",
+    "aliases": [
+      "init discuss-phase-assumptions"
+    ],
+    "subcommand": "discuss-phase-assumptions",
+    "mutation": false
+  },
+  {
     "canonical": "init.todos",
     "aliases": [
       "init todos"
@@ -382,6 +406,46 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
       "init manager"
     ],
     "subcommand": "manager",
+    "mutation": false
+  },
+  {
+    "canonical": "init.complete-milestone",
+    "aliases": [
+      "init complete-milestone"
+    ],
+    "subcommand": "complete-milestone",
+    "mutation": false
+  },
+  {
+    "canonical": "init.autonomous",
+    "aliases": [
+      "init autonomous"
+    ],
+    "subcommand": "autonomous",
+    "mutation": false
+  },
+  {
+    "canonical": "init.docs-update",
+    "aliases": [
+      "init docs-update"
+    ],
+    "subcommand": "docs-update",
+    "mutation": false
+  },
+  {
+    "canonical": "init.update",
+    "aliases": [
+      "init update"
+    ],
+    "subcommand": "update",
+    "mutation": false
+  },
+  {
+    "canonical": "init.transition",
+    "aliases": [
+      "init transition"
+    ],
+    "subcommand": "transition",
     "mutation": false
   },
   {

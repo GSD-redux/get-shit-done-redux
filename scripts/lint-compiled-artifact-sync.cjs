@@ -43,7 +43,12 @@ const REASON = Object.freeze({
 });
 
 function git(args) {
-  return execFileSync('git', args, { cwd: REPO_ROOT, encoding: 'utf8' });
+  // -c safe.directory=REPO_ROOT: containerized CI checkouts are frequently
+  // owned by a different uid than the one running the test process, and git
+  // refuses to operate at all on such a repo ("detected dubious ownership")
+  // unless explicitly trusted. Scoped per-invocation (not written to any
+  // config file) so this never widens trust beyond this one call.
+  return execFileSync('git', ['-c', `safe.directory=${REPO_ROOT}`, ...args], { cwd: REPO_ROOT, encoding: 'utf8' });
 }
 
 /**

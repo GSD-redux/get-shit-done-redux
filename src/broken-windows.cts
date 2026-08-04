@@ -1,10 +1,10 @@
 /**
- * Broken-windows ledger — enforced cross-phase defect register (issue #1950).
+ * Broken-windows ledger — optionally enforced cross-phase defect register (issue #1950).
  *
  * Manages `.planning/WINDOWS.md`: a cross-phase ledger of small defects (stubs,
  * TODOs, skipped tests, lint warnings, unrun verifies, unmet truths, deviations).
- * `/gsd-ship` blocks while any entry is `open`; an entry can be `waived` only
- * with a recorded reason or `fixed`.
+ * When `workflow.windows_enforce` is true, `/gsd-ship` blocks while any entry is
+ * `open`; an entry can be `waived` only with a recorded reason or `fixed`.
  *
  * LEAF MODULE — imports ONLY: node:fs, node:path. No other src/ imports.
  *
@@ -596,7 +596,7 @@ export function renderLedger(ledger: Ledger): string {
   const header = [
     '# Broken Windows Ledger',
     '',
-    '> Cross-phase defect register. `/gsd-ship` blocks while `open_count > 0`.',
+    '> Cross-phase defect register. With `workflow.windows_enforce` enabled, `/gsd-ship` blocks while `open_count > 0`.',
     '> Waive with `gsd-tools windows waive <id> "<reason>"` (reason required).',
     '> Mark fixed with `gsd-tools windows fixed <id>`.',
     '',

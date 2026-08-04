@@ -66,10 +66,44 @@ const phaseNumberArb = fc.oneof(
   fc.stringMatching(/^[0-9]{1,2}\.[0-9]{1,2}$/),
 );
 
+// Flag atoms drawn from the module's own frozen WHEN_VOCABULARY re-export
+// (DEFECT.GENERATIVE-FIX — never a hardcoded local copy of flag names).
+const FLAG_TOKENS = WHEN_VOCABULARY.filter((w) => w.startsWith('flag:--')).map((w) => w.slice('flag:'.length));
+
+const flagsArb = fc.subarray(FLAG_TOKENS).map((tokens) => new Set(tokens));
+
 const factsArb = fc.record({
-  waveFlag: fc.boolean(),
+  flags: flagsArb,
   phaseNumber: phaseNumberArb,
   hasPriorPhases: fc.boolean(),
+  // #2992 review finding: the three newer state:* booleans (needsCodebaseMap,
+  // phaseMvpMode, worktreesEnabled) must also participate in the partition
+  // invariant, not just the original three W/D/P facts.
+  needsCodebaseMap: fc.boolean(),
+  phaseMvpMode: fc.boolean(),
+  worktreesEnabled: fc.boolean(),
+  // #2993 (epic #1671 Phase 6.2): chunkedMode is a shape addition to
+  // InvocationFacts — must also participate in the partition/totality
+  // properties below, not just the six pre-existing fact keys.
+  chunkedMode: fc.boolean(),
+  // #2994 (epic #1671 Phase 6.3, matrix §K gap-fill): ten further boolean
+  // facts shipped alongside the widened WHEN_VOCABULARY (30 atoms total).
+  // Without these, `whenArb` (drawn from the FULL WHEN_VOCABULARY) can still
+  // generate sections gated on e.g. `state:plan-strategy-converge`, but every
+  // generated `facts` value left that field `undefined` — falsy under
+  // totality — so those sections were NEVER driven into `included` by this
+  // property, silently narrowing the partition/order-preservation coverage
+  // to the pre-#2994 atom set even though `whenArb` claimed full coverage.
+  uiPhaseActive: fc.boolean(),
+  fallowEnabled: fc.boolean(),
+  gitCreateTag: fc.boolean(),
+  planStrategyConverge: fc.boolean(),
+  reviewerInstancesConfigured: fc.boolean(),
+  autoAdvanceActive: fc.boolean(),
+  isMonorepo: fc.boolean(),
+  nextChannel: fc.boolean(),
+  workstreamActive: fc.boolean(),
+  flatMode: fc.boolean(),
 });
 
 // ─── Row 25: exact partition ────────────────────────────────────────────────
@@ -120,8 +154,12 @@ describe('property: never throws for vocabulary-valid when and arbitrary facts',
 
   test('neverThrowsWhenFactsAreMissingKeysEntirely', () => {
     // Totality also over PARTIAL facts objects (row 19's property-level
-    // twin): dropping zero or more of the three fact keys must never throw.
-    const factKeys = ['waveFlag', 'phaseNumber', 'hasPriorPhases'];
+    // twin): dropping zero or more of the fact keys must never throw.
+    const factKeys = [
+      'flags', 'phaseNumber', 'hasPriorPhases', 'needsCodebaseMap', 'phaseMvpMode', 'worktreesEnabled', 'chunkedMode',
+      'uiPhaseActive', 'fallowEnabled', 'gitCreateTag', 'planStrategyConverge', 'reviewerInstancesConfigured',
+      'autoAdvanceActive', 'isMonorepo', 'nextChannel', 'workstreamActive', 'flatMode',
+    ];
     fc.assert(
       fc.property(sectionsArb, factsArb, fc.subarray(factKeys), (sections, facts, keysToKeep) => {
         const partialFacts = {};
@@ -165,6 +203,27 @@ describe('property: prototype-shaped when values always fail closed', () => {
           assert.equal(caught.reason, REASON.UNKNOWN_WHEN);
         },
       ),
+    );
+  });
+});
+
+// ─── B18: flag monotonicity — more flags never yields fewer included ───────
+
+describe('property: adding more flags never yields fewer included sections (#2992 row B18)', () => {
+  test('flagSupersetNeverShrinksIncluded', () => {
+    fc.assert(
+      fc.property(sectionsArb, flagsArb, fc.subarray(FLAG_TOKENS), factsArb, (sections, baseFlags, extraTokens, restFacts) => {
+        const supersetFlags = new Set([...baseFlags, ...extraTokens]);
+        const baseResult = selectSections(sections, { ...restFacts, flags: baseFlags });
+        const supersetResult = selectSections(sections, { ...restFacts, flags: supersetFlags });
+
+        for (const id of baseResult.included) {
+          assert.ok(
+            supersetResult.included.includes(id),
+            `id "${id}" included under a flags subset must remain included under a flags superset`,
+          );
+        }
+      }),
     );
   });
 });

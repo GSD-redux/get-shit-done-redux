@@ -26,6 +26,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const { readWorkflowCombined } = require('./helpers.cjs');
 
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
 const LIVENESS_PHRASE = 'runs in a subagent';
@@ -84,11 +85,24 @@ describe('spawn-liveness-banner', () => {
   });
 
   test('every workflow that dispatches a subagent contains the liveness phrase somewhere', () => {
-    const mdFiles = findMdFiles(WORKFLOWS_DIR);
+    // #2994: scoped to HOST workflow files only (top-level gsd-core/workflows/*.md),
+    // each read via readWorkflowCombined (host + its workflows/<wf>/steps/*.md
+    // fragments). The fragment model can move a subagent dispatch site into a step
+    // file while the host still carries the liveness phrase elsewhere for its other
+    // dispatches (e.g. docs-update.md). A raw recursive `findMdFiles` walk treats
+    // that step fragment as an independent "workflow" and reports a false positive
+    // — it is not a standalone workflow, it is part of its host's contract. The
+    // asserted property (every workflow that dispatches a subagent documents the
+    // liveness phrase somewhere in that workflow) is unchanged; only the file
+    // boundary the check honors is corrected.
+    const hostFiles = fs
+      .readdirSync(WORKFLOWS_DIR, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+      .map((entry) => path.join(WORKFLOWS_DIR, entry.name));
     const presenceViolations = [];
 
-    for (const filePath of mdFiles) {
-      const content = fs.readFileSync(filePath, 'utf-8');
+    for (const filePath of hostFiles) {
+      const content = readWorkflowCombined(filePath);
       const rel = path.relative(WORKFLOWS_DIR, filePath);
 
       if (content.includes('subagent_type') && !content.includes(LIVENESS_PHRASE)) {

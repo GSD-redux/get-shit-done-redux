@@ -412,8 +412,8 @@ AI coding tools hallucinate package names. Attackers pre-register those names on
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -425,7 +425,7 @@ AI coding tools hallucinate package names. Attackers pre-register those names on
 
 **During execution** — if an install fails, the executor surfaces a checkpoint and stops rather than silently trying an alternative.
 
-**Slopcheck verdicts:**
+**Legitimacy verdicts:**
 
 | Verdict | Meaning | GSD action |
 |---------|---------|------------|
@@ -433,12 +433,10 @@ AI coding tools hallucinate package names. Attackers pre-register those names on
 | `[SUS]` | Suspicious signals | Flagged; planner adds `checkpoint:human-verify` |
 | `[SLOP]` | High-confidence hallucination | Removed from RESEARCH.md; never reaches planner |
 
-To install slopcheck manually:
-
-```bash
-pip install slopcheck
-# verify: slopcheck install express --json
-```
+Verdicts are computed from live registry APIs (npm, PyPI, crates.io) — there
+is no separate tool to install. `slopcheck` is an optional escalate-only
+adapter (it can raise a verdict but never lower one); no shipped
+configuration wires it, and its absence does not change the gate's behavior.
 
 ---
 

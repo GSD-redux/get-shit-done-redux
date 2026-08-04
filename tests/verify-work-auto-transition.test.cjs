@@ -177,25 +177,43 @@ describe('bug #1716: resume_from_file routes to complete_session when no [pendin
 
 describe('bug #3381: verify-work forwards workstream context', () => {
   test('workflow forwards ${GSD_WS} to workstream-sensitive SDK queries', () => {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md'),
-      'utf8',
-    );
+    // #2994 fragmentization moved the roadmap.get-phase user-story-format-guard
+    // bash block out of verify-work.md into
+    // gsd-core/workflows/verify-work/steps/mvp-uat-framing.md behind a section
+    // marker (`state:phase-mvp-mode`). Read host + every step file combined so
+    // this GSD_WS-forwarding guard keeps seeing the moved query.
+    const VERIFY_WORK_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md');
+    const VERIFY_WORK_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work', 'steps');
+    let workflow = fs.readFileSync(VERIFY_WORK_MD, 'utf8');
+    if (fs.existsSync(VERIFY_WORK_STEPS_DIR)) {
+      for (const entry of fs.readdirSync(VERIFY_WORK_STEPS_DIR).sort()) {
+        if (entry.endsWith('.md')) {
+          workflow += '\n' + fs.readFileSync(path.join(VERIFY_WORK_STEPS_DIR, entry), 'utf8');
+        }
+      }
+    }
 
+    // The --ws capture character class was deliberately narrowed from
+    // `[^[:space:]]+` to `[A-Za-z0-9._-]+` (workstream slugs are
+    // alphanumeric/dot/underscore/hyphen; the old class captured any
+    // non-space run, including shell metacharacters). Forwarding itself
+    // (GSD_WS reaching every workstream-sensitive query below) is
+    // unaffected by the narrower class, so only the literal pattern here
+    // is updated — the asserted forwarding property is unchanged.
     assert.match(workflow, /GSD_WS=""/, 'verify-work must initialize GSD_WS');
     assert.match(
       workflow,
-      /grep -qE -- '--ws\[\[:space:\]\]\+\[\^\[:space:\]\]\+'/,
+      /grep -qE -- '--ws\[\[:space:\]\]\+\[A-Za-z0-9\._-\]\+'/,
       'verify-work must detect --ws in $ARGUMENTS',
     );
     assert.match(
       workflow,
-      /grep -oE -- '--ws\[\[:space:\]\]\+\[\^\[:space:\]\]\+'/,
+      /grep -oE -- '--ws\[\[:space:\]\]\+\[A-Za-z0-9\._-\]\+'/,
       'verify-work must extract the --ws flag pair from $ARGUMENTS',
     );
     assert.match(
       workflow,
-      /PHASE_ARG=\$\(echo "\$ARGUMENTS" \| sed -E 's\/--ws\[\[:space:\]\]\+\[\^\[:space:\]\]\+\/\/g' \| xargs\)/,
+      /PHASE_ARG=\$\(echo "\$ARGUMENTS" \| sed -E 's\/--ws\[\[:space:\]\]\+\[A-Za-z0-9\._-\]\+\/\/g' \| xargs\)/,
       'verify-work must derive PHASE_ARG after removing --ws',
     );
     // After #3797 architectural fix, callsites use gsd_run

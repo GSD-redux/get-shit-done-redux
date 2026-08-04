@@ -116,7 +116,13 @@ describe('ADR-857 phase 6 verification and review capability migration', () => {
 
   test('quick full-mode code review resolves execute:post hooks instead of inlining code_review config', () => {
     const content = workflow('quick.md');
-    const section = sectionBetween(content, '**Step 6.25: Code review (auto)**', '**Step 6.5: Verification');
+    // #2994 fragmentization moved Step 6.5 (Verification) out of quick.md into
+    // gsd-core/workflows/quick/steps/quick-verification.md; the parent now marks
+    // that boundary with a `<!-- gsd:section id="quick-verification" -->` comment
+    // immediately after Step 6.25's content, so it remains the correct
+    // end-of-step delimiter (mirrors the execute-phase.md gap-closure-artifacts
+    // pattern above) instead of bleeding to end-of-file.
+    const section = sectionBetween(content, '**Step 6.25: Code review (auto)**', '<!-- gsd:section id="quick-verification"');
 
     assert.ok(section.includes('loop render-hooks execute:post'));
     assert.ok(section.includes('gsd-code-reviewer'));

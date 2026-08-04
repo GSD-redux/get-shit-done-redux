@@ -184,7 +184,11 @@ const HOOK_CONFIG_FILES = new Set(['settings.json', 'settings.local.json', 'hook
 // same temp root used as --config-dir, collapsing the two into one directory
 // for the isolated test run. So it is excluded by its exact relative path
 // under that collapsed root, not by basename.
-const HOOK_CONFIG_RELATIVE_PATHS = new Set(['.kimi/config.toml']);
+// Both Kimi products' native config.toml embeds a platform-varying node-runner
+// command, so neither belongs in the golden-tracked emitted manifest. kimi-code
+// resolves its own root since #2755 — listing only `.kimi/config.toml` here made
+// kimi-code's config.toml newly manifest-visible and unattributable.
+const HOOK_CONFIG_RELATIVE_PATHS = new Set(['.kimi/config.toml', '.kimi-code/config.toml']);
 
 // Path prefixes excluded from the parity manifest. `gsd-core/bin/lib/` holds the
 // tsc-built runtime artifacts (compiled from src/*.cts) that the install COPIES
@@ -521,9 +525,14 @@ function installerEnv(overrides = {}) {
  *   measure a DIFFERENT tree's installer — e.g. the differential baseline builder
  *   pointing at a `git worktree` checked out at the base ref, so the emitted manifest it
  *   produces reflects that ref's own installer code, not the PR checkout's.
+ * @param {string} [opts.root] - Reuse an existing sandbox HOME instead of creating one.
+ *   When supplied, the caller owns its lifetime and it is NOT removed on failure.
+ * @param {object} [opts.extraEnv] - Extra environment variables merged over the
+ *   installer env (after HOME/USERPROFILE), e.g. a runtime's config-home override.
  */
-function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INSTALL_SCRIPT }) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-${runtime}-${scope}-`));
+function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INSTALL_SCRIPT, root: providedRoot = null, extraEnv = {} }) {
+  const ownsRoot = providedRoot === null;
+  const root = providedRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), `gsd-${runtime}-${scope}-`));
   try {
     const LOCAL_DIR_NAME = {
       claude: '.claude', opencode: '.opencode', kilo: '.kilo',
@@ -545,7 +554,7 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
     args.push(...extraArgs);
     const result = spawnSync(process.execPath, args, {
       cwd, encoding: 'utf8',
-      env: installerEnv({ HOME: root, USERPROFILE: root }),
+      env: installerEnv({ HOME: root, USERPROFILE: root, ...extraEnv }),
     });
     assert.strictEqual(result.status, 0,
       `installer exited with status ${result.status} for ${runtime} --${scope}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
@@ -555,7 +564,10 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
       : null;
     return { manifest, configDir, root, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
-    fs.rmSync(root, { recursive: true, force: true });
+    // Only reclaim a root this call created. A caller-supplied root may be
+    // shared across several installs (e.g. two runtimes into one HOME), so
+    // tearing it down here would destroy the caller's other fixtures.
+    if (ownsRoot) fs.rmSync(root, { recursive: true, force: true });
     throw err;
   }
 }
