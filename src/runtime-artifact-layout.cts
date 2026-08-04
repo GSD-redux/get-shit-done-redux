@@ -202,9 +202,12 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
     // staged via stageAgentsForProfile — a RAW byte copy that never reads content
     // into JS, so gsd:section markers shipped verbatim. Route through the
     // composing stager with an identity converter instead: same output as the raw
-    // copy for an unmarked agent, markers stripped for a marked one. This keeps
-    // agent composition to exactly TWO call sites repo-wide (here via the stager,
-    // and bin/install.js's inline loop) rather than four parallel surfaces.
+    // copy for an unmarked agent, markers stripped for a marked one. Routing both
+    // agent kinds through the stager collapses what were five independent agent
+    // read points down to three compose call sites: this stager, bin/install.js's
+    // inline agent loop, and installCodexConfig's per-agent .toml writer. The
+    // exhaustive per-runtime sweep in tests/agent-fragments-emission.install.test.cjs
+    // is what keeps a fourth from appearing uncomposed.
     stage: (resolved) => stageAgentsForRuntimeWithConverter(
       findAgentsSourceRoot(configDir),
       resolved,
