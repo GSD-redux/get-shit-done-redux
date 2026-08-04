@@ -152,6 +152,19 @@ describe('resolveWorktreeContext — git-dir resolution timeout (#3050 DEFECT 2)
 // ─── DEFECT 3: worktree create root confinement must not be skippable ───────
 
 describe('cmdWorktreeCreate — root confinement is mandatory (#3050 DEFECT 3)', () => {
+  // process.exitCode is global; cmdWorktreeCreate sets it as a side effect on
+  // its failure paths (it doubles as the CLI entry point). Calling it directly
+  // in-process — rather than through a spawned subprocess — means that side
+  // effect leaks into THIS test file's own process.exitCode, which makes the
+  // whole file exit non-zero even though every assertion passes (mirrors the
+  // documented hazard + `withExitCode` guard in tests/worktree-safety.test.cjs
+  // around cmdWorktreeRecordAgent). Save/restore it so this test can assert
+  // on the failure path without poisoning the file's own exit status.
+  function withExitCode(fn) {
+    const saved = process.exitCode;
+    try { return fn(); } finally { process.exitCode = saved; }
+  }
+
   test('omitting --root fails closed instead of silently skipping confinement', () => {
     const deps = {
       readFile: () => JSON.stringify({ orchestrator_root: '/repo', worktrees: [] }),
@@ -160,13 +173,13 @@ describe('cmdWorktreeCreate — root confinement is mandatory (#3050 DEFECT 3)',
       write: () => {},
       writeErr: () => {},
     };
-    const result = cmdWorktreeCreate('/repo', [
+    const result = withExitCode(() => cmdWorktreeCreate('/repo', [
       '--manifest', 'manifest.json',
       '--agent-id', 'agent-1',
       '--path', '/repo/.claude/worktrees/agent-1',
       '--branch', 'worktree-agent-agent-1',
       '--base', 'abc1234',
-    ], deps);
+    ], deps));
     assert.strictEqual(result.ok, false);
     assert.notStrictEqual(result.reason, 'created');
   });
