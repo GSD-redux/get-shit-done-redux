@@ -455,6 +455,7 @@ would otherwise trigger (GitHub honors `[ci skip]` / `[skip ci]`):
 
 ```bash
 gsd_run query commit "docs(${padded_phase}): ship phase ${PHASE_NUMBER} — PR #${PR_NUMBER} [ci skip]" --files .planning/STATE.md
+SHIP_NOTE_SHA=$(git rev-parse HEAD)
 git push origin ${CURRENT_BRANCH} 2>&1 || echo "⚠ track_shipping: ship-note push failed — it is local-only; rerun: git push origin ${CURRENT_BRANCH}"
 
 # Preserve the skip-token optimization for repositories without a required-check
@@ -463,17 +464,24 @@ git push origin ${CURRENT_BRANCH} 2>&1 || echo "⚠ track_shipping: ship-note pu
 # Note: Skip tokens recognized by GitHub Actions are [skip ci], [ci skip], [no ci], [skip actions], [actions skip], and skip-checks:true.
 # The recovery commit message MUST NOT contain any of these tokens.
 
+STATUS="UNKNOWN"
+CHECKS=0
+REVIEW_DECISION=""
 for i in 1 2 3 4 5; do
-  MERGE_STATE=$(gh pr view ${PR_NUMBER} --json mergeStateStatus,statusCheckRollup -q 'if .statusCheckRollup == null then {status: .mergeStateStatus, checks: 0} else {status: .mergeStateStatus, checks: (.statusCheckRollup | length)} end' 2>/dev/null || echo '{"status":"UNKNOWN","checks":0}')
-  STATUS=$(echo "$MERGE_STATE" | jq -r .status)
-  CHECKS=$(echo "$MERGE_STATE" | jq -r .checks)
-  if [ "$STATUS" != "UNKNOWN" ]; then
+  PR_STATE=$(gh pr view ${PR_NUMBER} --json headRefOid,mergeStateStatus,statusCheckRollup,reviewDecision -q '{head: .headRefOid, status: .mergeStateStatus, checks: ((.statusCheckRollup // []) | length), review: (.reviewDecision // "")}' 2>/dev/null || echo '{"head":"","status":"UNKNOWN","checks":0,"review":""}')
+  HEAD_OID=$(echo "$PR_STATE" | jq -r .head)
+  if [ "$HEAD_OID" = "$SHIP_NOTE_SHA" ]; then
+    STATUS=$(echo "$PR_STATE" | jq -r .status)
+    CHECKS=$(echo "$PR_STATE" | jq -r .checks)
+    REVIEW_DECISION=$(echo "$PR_STATE" | jq -r .review)
+  fi
+  if [ "$HEAD_OID" = "$SHIP_NOTE_SHA" ] && [ "$STATUS" != "UNKNOWN" ]; then
     break
   fi
   sleep 3
 done
 
-if [ "$STATUS" = "BLOCKED" ] && [ "$CHECKS" = "0" ]; then
+if [ "$STATUS" = "BLOCKED" ] && [ "$CHECKS" = "0" ] && [ "$REVIEW_DECISION" != "REVIEW_REQUIRED" ] && [ "$REVIEW_DECISION" != "CHANGES_REQUESTED" ]; then
   echo "⚠ PR is BLOCKED with zero checks. The [ci skip] trailer wedged the PR due to required checks."
   echo "Pushing an empty commit to trigger the required pipelines..."
   # gsd_run query commit requires a file list; use git directly for this intentionally empty commit.
