@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFixture } = require('./fixtures/index.cjs');
+const processSeam = require('./helpers/process-seam.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TEST_ENV_BASE = {
@@ -44,72 +45,100 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
     : (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
         .map(t => t.replace(/"([^"]*)"/g, '$1').replace(/'([^']*)'/g, '$1'));
 
+  // Adapter over tests/helpers/process-seam.cjs (#3055). The seam returns a
+  // typed { outcome, exitCode, stdout, stderr, timedOut, signal, killed, code }
+  // result — never throws for a kill/timeout/buffer-overflow/spawn-failure.
+  // This adapter is the ONLY place that retries and the ONLY place that
+  // reconstructs runGsdTools's legacy { success, output, error, exitCode }
+  // shape, so all 136 callers keep their existing contract byte-identically.
+  //
+  // `processSeam.runNode` is looked up on the module object (not destructured
+  // at require time) so tests can `mock.method(processSeam, 'runNode', fn)`
+  // to inject TIMED_OUT / BUFFER_OVERFLOW / SPAWN_FAILED without waiting on
+  // real subprocess timers.
   function attempt() {
-    // Split shell-style string into argv, stripping surrounding quotes, so we
-    // can invoke execFileSync with process.execPath instead of relying on
-    // `node` being on PATH (it isn't in Claude Code shell sessions).
-    // Apply shell-style quote removal: strip surrounding quotes from quoted
-    // sequences anywhere in a token (handles both "foo bar" and --"foo bar").
-    return execFileSync(process.execPath, [TOOLS_PATH, ...argv], {
+    return processSeam.runNode([TOOLS_PATH, ...argv], {
       cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
-      timeout: 60000,
+      timeoutMs: 60000,
     });
   }
 
-  // isKilled: true when the subprocess was terminated by a signal or timed out.
-  // This indicates host resource starvation (OOM, scheduler contention), NOT a
-  // product assertion failure.
-  function isKilled(err) {
-    return err.killed || err.signal != null || err.code === 'ETIMEDOUT';
-  }
-
-  function throwResourceStarvation(err) {
+  function throwResourceStarvation(result) {
     throw new Error(
       `[runGsdTools: resource-starvation / subprocess-kill after retry] ` +
       `gsd-tools was killed before completion ` +
-      `(signal=${err.signal}, code=${err.code}, killed=${err.killed}). ` +
+      `(signal=${result.signal}, code=${result.code}, killed=${result.killed}). ` +
       `This indicates host OOM or scheduler contention, not a product bug. ` +
-      `stdout=${err.stdout?.toString().trim() || ''} ` +
-      `stderr=${err.stderr?.toString().trim() || ''}`
+      `stdout=${(result.stdout || '').trim()} ` +
+      `stderr=${(result.stderr || '').trim()}`
     );
   }
 
-  try {
-    const result = attempt();
-    return { success: true, output: result.trim(), exitCode: 0 };
-  } catch (firstErr) {
-    // Kill-signal discrimination (#969): transient OOM/contention usually
-    // succeeds on retry; retry ONCE before surfacing the labeled error.
-    if (isKilled(firstErr)) {
-      try {
-        const result = attempt();
-        return { success: true, output: result.trim(), exitCode: 0 };
-      } catch (retryErr) {
-        // Still killed after retry — persistent resource starvation, throw.
-        throwResourceStarvation(retryErr);
+  function toLegacyShape(result) {
+    if (result.outcome === processSeam.OUTCOME.EXITED) {
+      if (result.exitCode === 0) {
+        return { success: true, output: (result.stdout || '').trim(), exitCode: 0 };
       }
+      // Clean non-zero exit (real command error, no kill signal, no spawn
+      // failure): return normally. No retry, no throw — preserves existing
+      // test behavior that asserts on error shape.
+      const stderrRaw = (result.stderr || '').trim();
+      // Prefer actual stderr content; fall back to the same "Command failed:
+      // <argv0> <args...>" message Node's execFileSync used to synthesize
+      // for a clean non-zero exit with no stderr (verified against this
+      // runtime's child_process internals: checkExecSyncError() only builds
+      // that message when `ret.error` is absent and `ret.status !== 0`, and
+      // never appends stderr when it is empty). If stderr is empty, append a
+      // note so CI logs show "stderr: (empty)" rather than silently losing
+      // the fact that the child process produced no error output — empty
+      // stderr with a non-zero exit code is a signal of OS-level crash (OOM
+      // kill, worker thread fatal error) rather than a gsd-tools application
+      // error.
+      const commandLine = [process.execPath, TOOLS_PATH, ...argv].join(' ');
+      const error = stderrRaw
+        || `Command failed: ${commandLine} [stderr: (empty) exit:${result.exitCode ?? 1}]`;
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error,
+        exitCode: result.exitCode ?? 1,
+      };
     }
-    // Clean non-zero exit (real command error, no kill signal): return normally.
-    // No retry, no throw — preserves existing test behavior that asserts on
-    // error shape.
-    const stderrRaw = firstErr.stderr?.toString().trim() || '';
-    // Prefer actual stderr content; fall back to err.message (which contains
-    // the command invocation). If stderr is empty, append a note so CI logs
-    // show "stderr: (empty)" rather than silently losing the fact that the
-    // child process produced no error output — empty stderr with a non-zero
-    // exit code is a signal of OS-level crash (OOM kill, worker thread fatal
-    // error) rather than a gsd-tools application error.
-    const error = stderrRaw || `${firstErr.message} [stderr: (empty) exit:${firstErr.status ?? 1}]`;
+    if (result.outcome === processSeam.OUTCOME.BUFFER_OVERFLOW) {
+      // Never retried (the child ran fine and produced too much output —
+      // retrying wastes 60s and fails identically) and never coerced to
+      // exitCode:1, unlike the pre-seam helper.
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error: `gsd-tools output exceeded the subprocess buffer limit (code=${result.code})`,
+        exitCode: null,
+      };
+    }
+    // SPAWN_FAILED: the process never started. Never retried — retrying is
+    // pointless — and never coerced to exitCode:1.
     return {
       success: false,
-      output: firstErr.stdout?.toString().trim() || '',
-      error,
-      exitCode: firstErr.status ?? 1,
+      output: (result.stdout || '').trim(),
+      error: `gsd-tools failed to spawn (code=${result.code})`,
+      exitCode: null,
     };
   }
+
+  // Kill-signal discrimination (#969): transient OOM/contention usually
+  // succeeds on retry; retry ONCE before surfacing the labeled error. Only
+  // TIMED_OUT is retried — BUFFER_OVERFLOW and SPAWN_FAILED are not kills.
+  const first = attempt();
+  if (first.outcome === processSeam.OUTCOME.TIMED_OUT) {
+    const retry = attempt();
+    if (retry.outcome === processSeam.OUTCOME.TIMED_OUT) {
+      // Still killed after retry — persistent resource starvation, throw.
+      throwResourceStarvation(retry);
+    }
+    return toLegacyShape(retry);
+  }
+  return toLegacyShape(first);
 }
 
 // Create a bare temp directory (no .planning/ structure)
@@ -333,7 +362,11 @@ function captureConsole(fn) {
     console.error = origError;
   }
   if (threw) throw threw;
-  const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  // Built via String.fromCharCode (not a literal control character in a
+  // regex, which `no-control-regex` rejects) so the ESC byte itself is
+  // matched at runtime — this strips real ANSI color codes, not a decoy.
+  const ansiPattern = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
+  const strip = (s) => s.replace(ansiPattern, '');
   return {
     stdout: stdout.map(strip).join('\n'),
     stderr: stderr.map(strip).join('\n'),
