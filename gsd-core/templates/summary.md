@@ -68,7 +68,7 @@ coverage:
 # Metrics
 duration: Xmin
 completed: YYYY-MM-DD
-status: complete  # or: halted — this plan reached a designed stop and intentionally left tasks unfinished (#2830)
+status: complete
 ---
 
 # Phase [X]: [Name] Summary

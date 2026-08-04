@@ -32,7 +32,7 @@ import frontmatterModule = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatterModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planDependencyGraphModule = require('./plan-dependency-graph.cjs');
-const { computeHaltPropagation, isHaltedStatus, buildSummaryFileIndex } = planDependencyGraphModule;
+const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = planDependencyGraphModule;
 
 // ─── Phase search types ───────────────────────────────────────────────────────
 
@@ -69,28 +69,6 @@ interface PhaseSearchResult {
    * keeps its pre-#2830 meaning ("no matching SUMMARY yet") unchanged.
    */
   runnable_plans: string[];
-}
-
-/**
- * #2830: read a completed plan's SUMMARY frontmatter `status` key. Returns
- * false — never throws — on a missing/unreadable/malformed SUMMARY, so an
- * unreadable file degrades to the pre-#2830 behavior ("has a SUMMARY =
- * complete") rather than breaking phase lookup — this primitive is consumed
- * by ~50 symbols across 5 command routers and must never throw on a plan
- * directory it can otherwise read. The "does this value mean halted"
- * decision itself is `isHaltedStatus` in the shared plan-dependency-graph
- * module — phase.cts's equivalent read calls the same predicate, so the two
- * can never disagree on what "halted" means.
- */
-function isSummaryHaltedFile(phaseDir: string, summaryFile: string): boolean {
-  try {
-    const summaryPath = path.join(phaseDir, summaryFile);
-    const content = fs.readFileSync(summaryPath, 'utf-8');
-    const fm = extractFrontmatter(content, summaryPath);
-    return isHaltedStatus(fm['status']);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -235,7 +213,7 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       const planId = planIds[i];
       const canonical = extractCanonicalPlanId(p);
       const summaryFile = summaryFileByPlanId.get(planId) ?? summaryFileByPlanId.get(canonical);
-      const halted = summaryFile !== undefined && isSummaryHaltedFile(phaseDir, summaryFile);
+      const halted = summaryFile !== undefined && isSummaryFileHalted(path.join(phaseDir, summaryFile));
       const resolvedDependsOn = parsePlanDependsOn(phaseDir, p)
         .map((dep) => {
           const lower = dep.toLowerCase();

@@ -26,8 +26,16 @@
  * identically — the exact "two implementations, one drifts" failure mode
  * this fix exists to close. Each caller still owns its own file I/O (the
  * actual `fs.readFileSync` + `extractFrontmatter` calls); only the
- * interpretive logic is centralized here.
+ * interpretive logic is centralized here — except the SUMMARY-file
+ * read+extract wrapper itself (`isSummaryFileHalted`), which both callers
+ * previously duplicated near-identically and which is now centralized here
+ * too, for the same reason.
  */
+
+import fs from 'node:fs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
+import frontmatterMod = require('./frontmatter.cjs');
+const { extractFrontmatter } = frontmatterMod;
 
 /**
  * The one place "does this SUMMARY status value mean halted" is decided.
@@ -37,7 +45,51 @@
  * "halted" cannot drift between the two readers.
  */
 function isHaltedStatus(status: unknown): boolean {
-  return typeof status === 'string' && status.trim().toLowerCase() === 'halted';
+  if (typeof status !== 'string') return false;
+  // #2830 review (defect 2): strip an unquoted trailing YAML comment (a run
+  // of whitespace followed by `#` and the rest of the line) before
+  // trimming/lowercasing. YAML scalars don't need quoting to carry an inline
+  // comment (`status: halted # designed stop`), but `extractFrontmatter`
+  // does not strip one — and all four summary templates literally show that
+  // spelling as guidance on the value line. Without this, an executor that
+  // mimics the template's own presentation would write a halt that silently
+  // reads back as not-halted. A `#` with no preceding whitespace is NOT a
+  // YAML comment start, so `halted#nospace` intentionally still fails to match.
+  const withoutTrailingComment = status.replace(/\s+#.*$/, '');
+  return withoutTrailingComment.trim().toLowerCase() === 'halted';
+}
+
+/**
+ * Read a plan's SUMMARY file and report whether it declares `status: halted`
+ * (a designed stop, not an ordinary completion). Returns false — never
+ * throws — on a missing/unreadable/malformed SUMMARY, so an unreadable file
+ * degrades to the pre-#2830 behavior ("has a SUMMARY = complete") rather
+ * than breaking either caller.
+ *
+ * Two callers share this wrapper: `phase.cts`'s `cmdPhasePlanIndex` and
+ * `phase-locator.cts`'s `searchPhaseInDir` (the phase-location primitive
+ * consumed by ~50 symbols across five command routers). Both previously
+ * carried a near-identical local copy (read file -> `extractFrontmatter` ->
+ * `isHaltedStatus` -> swallow errors) that this module's own header comment
+ * calls out as the exact "two implementations, one drifts" failure mode it
+ * exists to prevent — centralizing the read+extract wrapper here, not just
+ * the `isHaltedStatus` predicate, closes that gap.
+ *
+ * Takes a single resolved `summaryPath` (not a `dir` + `filename` pair) —
+ * `phase-locator.cts`'s prior local copy took the two parts separately and
+ * `path.join`'d them internally; that caller now does the join itself
+ * before calling in, so both callers share one signature.
+ *
+ * @param summaryPath - absolute or relative path to a `*-SUMMARY.md` file.
+ */
+function isSummaryFileHalted(summaryPath: string): boolean {
+  try {
+    const content = fs.readFileSync(summaryPath, 'utf-8');
+    const fm = extractFrontmatter(content, summaryPath);
+    return isHaltedStatus(fm['status']);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -177,7 +229,28 @@ function computeHaltPropagation(nodes: PlanHaltNode[], precomputedOrder?: string
     if (causes.size > 0) blockedBy.set(id, Array.from(causes));
   }
 
+  // #2830 review (defect 1): a node involved in a depends_on cycle (or
+  // downstream of one) never reaches indegree 0, so it never appears in
+  // `order` and the forward pass above never visits it — it would otherwise
+  // end up absent from BOTH `blockedBy` and any cycle diagnostic, i.e.
+  // reported as ordinary runnable. A node whose position in the topological
+  // order is undecidable cannot be shown to be safe to run: silently
+  // dropping it is the exact silent-disappearance failure #2830 exists to
+  // prevent. Fail closed — give every such non-halted node an explicit,
+  // non-empty `blockedBy` entry so no consumer (present or future) can
+  // re-admit it as runnable merely by checking "absent from blockedBy".
+  // (A node that is itself halted is not "blocked" — it IS the blocker —
+  // so it is left out here exactly as the normal forward pass leaves it out.)
+  if (order.length < nodes.length) {
+    const orderSet = new Set(order);
+    for (const n of nodes) {
+      if (orderSet.has(n.id) || n.halted) continue;
+      const causes = Array.from(new Set(n.resolvedDependsOn.filter((depId) => byId.has(depId)))).sort();
+      blockedBy.set(n.id, causes.length > 0 ? causes : [n.id]);
+    }
+  }
+
   return { order, visited, blockedBy };
 }
 
-export = { computeHaltPropagation, isHaltedStatus, buildSummaryFileIndex };
+export = { computeHaltPropagation, isHaltedStatus, buildSummaryFileIndex, isSummaryFileHalted };

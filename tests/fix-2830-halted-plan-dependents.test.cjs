@@ -323,8 +323,27 @@ describe('phase-plan-index: halt propagation (#2830)', () => {
     ]);
 
     const result = runGsdTools(['phase-plan-index', '8', '--raw'], tmpDir);
+    // CONTRIBUTING.md "Prohibited: Raw Text Matching on Test Outputs" bans
+    // regex-matching a child process's human-readable stderr/reason prose —
+    // assert on the typed failure signal (`result.success`) instead. To keep
+    // this test specific to the CYCLE (not "failed for any reason"), pair it
+    // with a differential fixture: the identical dependency shape with the
+    // cycle edge removed must succeed, isolating the cycle as the cause of
+    // the failure above without parsing error prose.
     assert.strictEqual(result.success, false, 'a dependency cycle must still fail the command');
-    assert.match(result.error || '', /cycle/i, 'the error must still name the cycle, unaffected by the new halt code path');
+
+    const acyclicDir = path.join(tmpDir, '.planning', 'phases', '09-nocycle');
+    fs.mkdirSync(acyclicDir, { recursive: true });
+    writePlan(acyclicDir, '09-01-PLAN.md', ['wave: 1', 'objective: No cycle A', 'autonomous: true']);
+    writePlan(acyclicDir, '09-02-PLAN.md', [
+      'wave: 1', 'objective: No cycle B', 'autonomous: true', 'depends_on:', '  - 09-01',
+    ]);
+    const acyclicResult = runGsdTools(['phase-plan-index', '9', '--raw'], tmpDir);
+    assert.strictEqual(
+      acyclicResult.success,
+      true,
+      `the identical dependency shape without the cycle edge must succeed, isolating the cycle as the cause of the failure above: ${acyclicResult.error}`,
+    );
   });
 });
 
@@ -599,5 +618,126 @@ describe('init execute-phase: halt propagation passthrough (#2830)', () => {
       3,
       'incomplete_count must be unchanged by halt-awareness',
     );
+  });
+});
+
+// ─── #2830 review findings ─────────────────────────────────────────────────
+//
+// Adversarial review of the #2830 fix found two confirmed defects:
+//   1. (BLOCKER) computeHaltPropagation's Kahn pass silently drops cycle
+//      participants (and anything downstream of them) from BOTH `order` and
+//      `blockedBy` — phase.cts hard-fails on a cycle before this ever
+//      matters, but phase-locator.cts (consumed by `init execute-phase`)
+//      does not pre-check, so a plan directly depends_on-ing a halted plan
+//      inside a cycle was reported as ordinary runnable.
+//   2. (MAJOR) the summary templates presented `status: halted` as a
+//      trailing `#`-comment on the value line, but `extractFrontmatter`
+//      does not strip trailing YAML comments — an executor mimicking the
+//      template's own presentation wrote a halt that silently read back as
+//      not-halted.
+
+describe('#2830 review findings', () => {
+  let tmpDir;
+  afterEach(() => { if (tmpDir) { cleanup(tmpDir); tmpDir = null; } });
+
+  test('defect 1: cycle repro — 08-02 depends_on [halted 08-01, 08-03]; 08-03 depends_on [08-02]', () => {
+    tmpDir = createTempProject('gsd-2830-review-cycle-');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '08-cyclehalt');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    writePlan(phaseDir, '08-01-PLAN.md', ['wave: 1', 'objective: Halted upstream', 'autonomous: true']);
+    writeSummary(phaseDir, '08-01-SUMMARY.md', 'halted');
+    writePlan(phaseDir, '08-02-PLAN.md', [
+      'wave: 2', 'objective: Depends on halted + cyclic peer', 'autonomous: true',
+      'depends_on:', '  - 08-01', '  - 08-03',
+    ]);
+    writePlan(phaseDir, '08-03-PLAN.md', [
+      'wave: 2', 'objective: Cyclic peer of 08-02', 'autonomous: true', 'depends_on:', '  - 08-02',
+    ]);
+
+    const result = runGsdTools(['init', 'execute-phase', '8', '--raw'], tmpDir);
+    assert.ok(result.success, `init execute-phase should succeed: ${result.error}`);
+    const json = JSON.parse(result.output);
+    assert.strictEqual(json.phase_found, true, 'phase must be found for the rest of this test to be meaningful');
+
+    assert.ok(
+      !json.runnable_plans.includes('08-02-PLAN.md'),
+      'a plan that directly depends_on a halted plan must never be offered as runnable, cycle or not',
+    );
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(json.blocked_by, '08-02-PLAN.md'),
+      'a plan must never silently vanish from both runnable_plans and blocked_by',
+    );
+    assert.ok(
+      Array.isArray(json.blocked_by['08-02-PLAN.md']) && json.blocked_by['08-02-PLAN.md'].length > 0,
+      'blocked_by entry must be non-empty, not a vacuous placeholder',
+    );
+  });
+
+  test('defect 1: self-dependency (A depends_on A, nothing halted) must not be silently runnable', () => {
+    tmpDir = createTempProject('gsd-2830-review-self-');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '09-selfdep');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    writePlan(phaseDir, '09-01-PLAN.md', [
+      'wave: 1', 'objective: Depends on itself', 'autonomous: true', 'depends_on:', '  - 09-01',
+    ]);
+
+    const result = runGsdTools(['init', 'execute-phase', '9', '--raw'], tmpDir);
+    assert.ok(result.success, `init execute-phase should succeed: ${result.error}`);
+    const json = JSON.parse(result.output);
+    assert.strictEqual(json.phase_found, true, 'phase must be found for the rest of this test to be meaningful');
+
+    assert.ok(
+      !json.runnable_plans.includes('09-01-PLAN.md'),
+      'a self-dependent plan must not be silently offered as runnable',
+    );
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(json.blocked_by, '09-01-PLAN.md'),
+      'a self-dependent plan must never silently vanish from both runnable_plans and blocked_by',
+    );
+  });
+
+  test('defect 2: SUMMARY status with an inline YAML comment still blocks the dependent', () => {
+    tmpDir = createTempProject('gsd-2830-review-comment-');
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '10-inlinecomment');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    writePlan(phaseDir, '10-01-PLAN.md', ['wave: 1', 'objective: Halted, recorded with an inline comment', 'autonomous: true']);
+    writeSummary(phaseDir, '10-01-SUMMARY.md', 'halted # designed stop');
+    writePlan(phaseDir, '10-02-PLAN.md', [
+      'wave: 2', 'objective: Depends on the inline-commented halt', 'autonomous: true', 'depends_on:', '  - 10-01',
+    ]);
+
+    const result = runGsdTools(['init', 'execute-phase', '10', '--raw'], tmpDir);
+    assert.ok(result.success, `init execute-phase should succeed: ${result.error}`);
+    const json = JSON.parse(result.output);
+    assert.strictEqual(json.phase_found, true, 'phase must be found for the rest of this test to be meaningful');
+
+    assert.ok(
+      json.halted_plans.includes('10-01-PLAN.md'),
+      'status: halted # designed stop must still be recognized as halted',
+    );
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(json.blocked_by, '10-02-PLAN.md'),
+      'the dependent of an inline-commented halt must be blocked',
+    );
+    assert.ok(
+      !json.runnable_plans.includes('10-02-PLAN.md'),
+      'the dependent of an inline-commented halt must not be offered as runnable',
+    );
+  });
+
+  test('defect 2: isHaltedStatus strips an unquoted trailing YAML comment before comparing', () => {
+    const { isHaltedStatus } = planDependencyGraph;
+    assert.strictEqual(isHaltedStatus('halted'), true);
+    assert.strictEqual(isHaltedStatus('Halted'), true);
+    assert.strictEqual(isHaltedStatus('halted  '), true);
+    assert.strictEqual(isHaltedStatus('halted # designed stop'), true);
+    assert.strictEqual(isHaltedStatus('halted#nospace'), false, 'a `#` with no preceding whitespace is not a YAML comment');
+    assert.strictEqual(isHaltedStatus('complete'), false);
+    assert.strictEqual(isHaltedStatus('complete # done'), false);
+    assert.strictEqual(isHaltedStatus(''), false);
+    assert.strictEqual(isHaltedStatus(undefined), false);
   });
 });

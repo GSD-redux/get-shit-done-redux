@@ -70,7 +70,7 @@ import verifyMod = require('./verify.cjs');
 const { readVerificationStatus } = verificationMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-dependency-graph.cjs is an export= CommonJS module
 import planDependencyGraphMod = require('./plan-dependency-graph.cjs');
-const { computeHaltPropagation, isHaltedStatus, buildSummaryFileIndex } = planDependencyGraphMod;
+const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = planDependencyGraphMod;
 
 const { planningDir, withPlanningLock, listAvailableWorkstreams, getActiveWorkstream } =
   planningWorkspace;
@@ -519,25 +519,6 @@ interface RawPlan {
 }
 
 /**
- * #2830: read a completed plan's SUMMARY frontmatter `status` key. Returns
- * false — never throws — on a missing/unreadable/malformed SUMMARY, so an
- * unreadable file degrades to the pre-#2830 behavior ("has a SUMMARY =
- * complete") rather than breaking plan-index. The "does this value mean
- * halted" decision itself is `isHaltedStatus` in the shared
- * plan-dependency-graph module — phase-locator.cts's equivalent read calls
- * the same predicate, so the two can never disagree on what "halted" means.
- */
-function isSummaryHalted(summaryPath: string): boolean {
-  try {
-    const content = fs.readFileSync(summaryPath, 'utf-8');
-    const fm = extractFrontmatter(content, summaryPath);
-    return isHaltedStatus(fm['status']);
-  } catch {
-    return false;
-  }
-}
-
-/**
  * Resolve a raw `depends_on` token to the `RawPlan.id` it refers to
  * (case-folded exact match, falling back to canonical-id matching). Returns
  * `null` when the token does not resolve to any plan in this phase (a typo
@@ -716,7 +697,7 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
     const summaryFile =
       summaryFileByPlanId.get(planId) ?? summaryFileByPlanId.get(extractCanonicalPlanId(planFile));
     const halted = hasSummary && summaryFile !== undefined
-      ? isSummaryHalted(path.join(phaseDir, summaryFile))
+      ? isSummaryFileHalted(path.join(phaseDir, summaryFile))
       : false;
 
     rawPlans.push({
