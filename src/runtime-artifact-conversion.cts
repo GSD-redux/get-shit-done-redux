@@ -24,6 +24,7 @@ const { readGsdCommandNames, transformContentToHyphen } = commandRoster;
 import runtimeNamePolicy = require('./runtime-name-policy.cjs');
 const { getDirName } = runtimeNamePolicy;
 import capabilityRegistry = require('./capability-registry.cjs');
+import hostIntegration = require('./host-integration.cjs');
 import { posixNormalize } from './shell-command-projection.cjs';
 
 // #1383: resolve GSD's version WITHOUT a top-level
@@ -2522,19 +2523,75 @@ const NON_CLAUDE_RUNTIMES: string[] = Object.keys(capabilityRegistry.runtimes)
   .sort();
 
 /**
+ * #2652: The isolation a runtime can actually negotiate at dispatch time,
+ * resolved from the registry exactly as `gsd_run query dispatch-isolation`
+ * resolves it at runtime (`routeDispatchIsolation`, gsd-core/bin/gsd-tools.cjs):
+ * the declared value must be in the closed vocabulary, a `harness-worktree`
+ * host must also declare the flag the scheduler passes, and an
+ * `orchestrator-worktree` host must carry a descriptor that resolves. Anything
+ * else — unknown runtime, `undocumented`, out-of-vocabulary, a throw — is
+ * `none` (ADR-1239, "Fail-closed").
+ *
+ * Install time cannot know the worktree path a future dispatch will target, so
+ * the descriptor is probed with a placeholder; `resolveOrchestratorExec` fails
+ * only on descriptor shape, never on a well-formed target's value.
+ *
+ * @private — exported as `_negotiatedDispatchIsolation` for tests.
+ */
+function _negotiatedDispatchIsolation(runtime: string): string {
+  try {
+    const runtimeEntry = capabilityRegistry?.runtimes?.[runtime] ?? null;
+    const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
+
+    if (declared === 'harness-worktree') {
+      const declaredFlag = runtimeEntry?.runtime?.harnessIsolationFlag ?? null;
+      return typeof declaredFlag === 'string' && declaredFlag.length > 0
+        ? 'harness-worktree'
+        : 'none';
+    }
+
+    if (declared === 'orchestrator-worktree') {
+      return hostIntegration.resolveOrchestratorExec(
+        runtimeEntry?.runtime?.orchestratorExec,
+        '/gsd-orchestrator-worktree-probe',
+      ).ok
+        ? 'orchestrator-worktree'
+        : 'none';
+    }
+
+    return 'none';
+  } catch {
+    return 'none';
+  }
+}
+
+/**
  * #1521: Every non-Claude runtime resolves its own runtime identity from a
- * runtime-neutral config, and defaults workflow.use_worktrees to false —
- * GSD's worktree isolation uses Claude Code's isolation="worktree" spawn
- * parameter, which no other runtime honors. Stamped into the emitted
- * workflow runtime-resolution blocks. (Generalizes the Codex-only #1515 fix.)
+ * runtime-neutral config. Stamped into the emitted workflow runtime-resolution
+ * blocks. (Generalizes the Codex-only #1515 fix.)
+ *
+ * #1521 also stamped `workflow.use_worktrees` to default false for every
+ * non-Claude runtime, because GSD's worktree isolation was Claude Code's
+ * `isolation="worktree"` spawn parameter and no other runtime honored it.
+ * #2584 removed that premise: isolation is now a negotiated capability
+ * (`dispatch.isolation`), and Cursor declares `harness-worktree` while Codex,
+ * OpenCode, Kimi and Kimi Code declare `orchestrator-worktree`. Stamping the
+ * false default for those hosts resolved `USE_WORKTREES=false` before
+ * `dispatch.isolation` was ever consulted, so a runtime that declares worktree
+ * support still got `ISOLATION=none` — judged by its name after all, which is
+ * the defect #2652 exists to remove. The stamp is therefore scoped to the
+ * runtimes whose negotiated isolation really is `none`, where the default it
+ * writes is the outcome the resolver would reach anyway.
  *
  * @private — exported as `_stampNonClaudeRuntimeDefaults` for tests.
  */
 function _stampNonClaudeRuntimeDefaults(content: string, runtime: string): string {
-  content = content.replace(
-    /config-get workflow\.use_worktrees --raw 2>\/dev\/null \|\| echo "true"/g,
-    'config-get workflow.use_worktrees --default false --raw 2>/dev/null || echo "false"',
-  );
+  if (_negotiatedDispatchIsolation(runtime) === 'none') {
+    content = content.replace(
+      /config-get workflow\.use_worktrees --raw 2>\/dev\/null \|\| echo "true"/g,
+      'config-get workflow.use_worktrees --default false --raw 2>/dev/null || echo "false"',
+    );
+  }
   content = content.replace(
     /config-get runtime --default claude --raw 2>\/dev\/null \|\| echo "claude"/g,
     `config-get runtime --default ${runtime} --raw 2>/dev/null || echo "${runtime}"`,
@@ -3072,6 +3129,8 @@ export = {
   _computePathPrefix: computePathPrefix,
   _applyRuntimeRewrites,
   _stampNonClaudeRuntimeDefaults,
+  // #2652: registry-resolved dispatch isolation, mirroring routeDispatchIsolation
+  _negotiatedDispatchIsolation,
   // #1521: canonical non-Claude runtime list for test files and tooling
   NON_CLAUDE_RUNTIMES,
 };
