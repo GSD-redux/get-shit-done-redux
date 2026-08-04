@@ -603,7 +603,7 @@ Full listing: `hooks/`.
 | `gsd-cursor-post-tool.js` | Cursor `postToolUse` | Cursor-native STATE.md update monitor after tool calls (issue #777) |
 | `gsd-cursor-pre-tool.js` | Cursor `preToolUse` | Cursor-native write-path guard for `.planning/` (ADR-1239 / #2089) |
 | `gsd-cursor-stop.js` | Cursor `stop` | Cursor-native verify-work reminder on agent stop (ADR-1239 / #2089) |
-| `gsd-cursor-subagent-start.js` | Cursor `subagentStart` | Cursor-native subagent context injection (ADR-1239 / #2089) |
+| `gsd-cursor-subagent-start.js` | Cursor `subagentStart` | Cursor-native subagent context injection (ADR-1239 / #2089); hard-blocks an executor subagent whose session is not actually isolated when the project resolves to `harness-worktree` (#3045) |
 | `gsd-cursor-subagent-stop.js` | Cursor `subagentStop` | Cursor-native subagent completion reminder (ADR-1239 / #2089) |
 | `gsd-windsurf-pre-write.js` | Windsurf/Cascade `pre_write_code` | Blocking (exit-code-2) write-path guard — blocks a write resolving to a different git root than cwd, or inside `.git/` internals (ADR-1239 / #2100) |
 | `gsd-windsurf-pre-command.js` | Windsurf/Cascade `pre_run_command` | Blocking (exit-code-2) destructive-command guard — conservative deny-list (`rm -rf` root/home wipes, force-push to a protected branch) (ADR-1239 / #2100) |

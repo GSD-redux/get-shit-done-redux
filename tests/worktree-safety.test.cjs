@@ -31,6 +31,7 @@ const CORE_PATH = path.join(
 
 const {
   resolveWorktreeContext,
+  resolveWorktreeLinkage,
   parseWorktreePorcelain,
   planWorktreePrune,
   executeWorktreePrunePlan,
@@ -210,6 +211,59 @@ describe('resolveWorktreeContext', () => {
       const context = resolveWorktreeContext('/repo', { existsSync: () => false });
       assert.notStrictEqual(context.reason, 'git_timed_out');
     });
+  });
+});
+
+// ─── resolveWorktreeLinkage (#3045) ──────────────────────────────────────────
+// resolveWorktreeContext's `has_local_planning` shortcut answers "is there a
+// usable project root right here", not "is this a linked worktree" — a linked
+// worktree created to isolate an executor is a full checkout, so it normally
+// has its OWN checked-out .planning/ too. resolveWorktreeLinkage is the
+// shortcut-free primitive the isolation guard (hooks/gsd-cursor-subagent-start.js)
+// needs instead: it must report "linked_worktree_root" for such a worktree even
+// though .planning exists locally — exactly the case that would defeat the guard
+// if resolveWorktreeContext were reused as-is.
+describe('resolveWorktreeLinkage', () => {
+  test('reports linked_worktree_root even when .planning exists locally (the case resolveWorktreeContext would misclassify)',
+    { skip: isWindows ? 'POSIX-rooted fixture paths cannot be expressed on Windows path.resolve' : false },
+    () => {
+      // deliberately no `existsSync` dep at all — resolveWorktreeLinkage must
+      // never consult the filesystem for .planning; only git-dir comparison.
+      const linkage = resolveWorktreeLinkage('/repo/wt', {
+        execGit: (args) => {
+          if (args[1] === '--git-dir') return { exitCode: 0, stdout: '.git/worktrees/wt', stderr: '' };
+          if (args[1] === '--git-common-dir') return { exitCode: 0, stdout: '../.git', stderr: '' };
+          return { exitCode: 1, stdout: '', stderr: '' };
+        },
+      });
+      assert.strictEqual(linkage.mode, 'linked_worktree_root');
+      assert.strictEqual(linkage.reason, 'linked_worktree');
+      assert.strictEqual(linkage.effectiveRoot, '/repo');
+    });
+
+  test('reports main_worktree for the primary checkout', () => {
+    const linkage = resolveWorktreeLinkage('/repo/main', {
+      execGit: (args) => {
+        if (args[1] === '--git-dir') return { exitCode: 0, stdout: '.git', stderr: '' };
+        if (args[1] === '--git-common-dir') return { exitCode: 0, stdout: '.git', stderr: '' };
+        return { exitCode: 1, stdout: '', stderr: '' };
+      },
+    });
+    assert.strictEqual(linkage.mode, 'current_directory');
+    assert.strictEqual(linkage.reason, 'main_worktree');
+  });
+
+  test('git timeout → git_timed_out, never throws', () => {
+    const linkage = resolveWorktreeLinkage('/repo', { execGit: makeTimeoutStub() });
+    assert.strictEqual(linkage.reason, 'git_timed_out');
+    assert.strictEqual(linkage.effectiveRoot, '/repo');
+  });
+
+  test('not a git repo → not_git_repo', () => {
+    const linkage = resolveWorktreeLinkage('/repo', {
+      execGit: () => ({ exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' }),
+    });
+    assert.strictEqual(linkage.reason, 'not_git_repo');
   });
 });
 
