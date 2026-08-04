@@ -43,6 +43,13 @@ reads is inert — the consumption mechanism is what gives an artifact meaning.
 - **Lifecycle**: Created at plan completion → Read by subsequent plans in same phase
 - **Location**: `.planning/phases/XX-name/XX-YY-SUMMARY.md`
 - **Consumed by**: Orchestrator (progress), planner (context for future plans), `milestone-summary`
+- **`status:`** — `complete` (default) or **`halted`**. `halted` records a *designed stop*:
+  the plan ran and answered its question, but the answer means the work it was gating cannot
+  proceed (a spike that returns "no", for example). It is a success, not a failure — the plan
+  did its job. Marking a SUMMARY `halted` propagates transitively over `depends_on`: every
+  plan that depends on it, directly or through a chain, is reported as **blocked** rather than
+  offered to the executor as ordinary incomplete work, and is named with its cause. Any other
+  value — including no `status:` field at all — reads as complete. (#2830)
 
 ### HANDOFF.json / .continue-here.md
 - **Shape**: Structured pause state (JSON machine-readable + Markdown human-readable)
