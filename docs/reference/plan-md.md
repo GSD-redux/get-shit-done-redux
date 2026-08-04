@@ -14,7 +14,7 @@ Plans live inside phase directories at:
 
 For example: `.planning/phases/03-post-feed/03-02-PLAN.md` (Phase 3, Plan 2).
 
-Plans are produced by the `gsd-planner` agent (spawned by `/gsd:plan-phase`) and consumed by `execute-phase`. A phase typically contains between one and four plans; plans within a phase are assigned to execution waves so that independent work runs in parallel.
+Plans are produced by the `gsd-planner` agent (spawned by `/gsd-plan-phase`) and consumed by `execute-phase`. A phase typically contains between one and four plans; plans within a phase are assigned to execution waves so that independent work runs in parallel.
 
 ---
 
@@ -219,7 +219,7 @@ Full emission rules, anti-patterns ("the system is ready" is not checkable; do n
 
 **Autonomy:** inserting a `checkpoint:decision` means the plan contains a checkpoint, so its frontmatter must set `autonomous: false`.
 
-**Override:** `/gsd:plan-phase --no-reversibility-gates` (`REVERSIBILITY_GATES=false`) suppresses checkpoint insertion for intentionally-unattended runs. Ratings are still recorded and `costly` items are still flagged — the override changes what stops the run, not what the plan remembers.
+**Override:** `/gsd-plan-phase --no-reversibility-gates` (`REVERSIBILITY_GATES=false`) suppresses checkpoint insertion for intentionally-unattended runs. Ratings are still recorded and `costly` items are still flagged — the override changes what stops the run, not what the plan remembers.
 
 Full taxonomy, emission rules, and anti-patterns (chiefly: rating everything `one-way` produces checkpoint fatigue; prefer *removing* irreversibility over gating it): see `gsd-core/references/planner-reversibility.md`.
 

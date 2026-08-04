@@ -494,7 +494,7 @@ claude --dangerously-skip-permissions
 
 **needs-acknowledgement の動作。** ガードが欠損シンボルを発見すると、ハードブロックではなく `needs-acknowledgement` 通知をプランレビュー出力に出力します。承認して続行（シンボルが意図的に新規の場合）するか、プランの修正を要求できます。ガードはプランを自動拒否しません — 人間の判断のためのシグナルを提示します。
 
-**intel なしでも動作。** デフォルトではガードは `grep`/`ripgrep` を使用してソースファイルを検索します — 事前インデックスは不要です。`intel.enabled: true` で `/gsd:map-codebase` を実行済みの場合、`plan_review.source_grounding_authority: intel` を設定すると、より高速な事前構築済みの `api-map.json` インデックスを使用できます。
+**intel なしでも動作。** デフォルトではガードは `grep`/`ripgrep` を使用してソースファイルを検索します — 事前インデックスは不要です。`intel.enabled: true` で `/gsd-map-codebase` を実行済みの場合、`plan_review.source_grounding_authority: intel` を設定すると、より高速な事前構築済みの `api-map.json` インデックスを使用できます。
 
 ```bash
 # Enable/disable (default: on)
@@ -506,7 +506,7 @@ claude --dangerously-skip-permissions
 /gsd-settings plan_review.source_grounding_authority intel  # pre-indexed api-map.json
 ```
 
-プロジェクト設定時（`/gsd:new-project` がワークフロー設定中に尋ねます）または `/gsd:settings`（Planning セクション → Drift Guard）経由でいつでも切り替えられます。
+プロジェクト設定時（`/gsd-new-project` がワークフロー設定中に尋ねます）または `/gsd-settings`（Planning セクション → Drift Guard）経由でいつでも切り替えられます。
 
 ### クイックバグ修正
 

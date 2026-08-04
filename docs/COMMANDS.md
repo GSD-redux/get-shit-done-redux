@@ -125,7 +125,7 @@ Clarify WHAT a phase delivers through Socratic questioning with quantitative amb
 
 **Edge Coverage (Step 5.5):** After the ambiguity gate passes, spec-phase runs an edge-completeness probe over each requirement. It raises only applicable categories from a closed 8-category taxonomy (boundary, adjacency, empty, encoding, ordering, precision, idempotency, concurrency), proposes one concrete candidate edge per category, and records each as `covered` / `dismissed` (reason required) / `backstop` / `unresolved` in a `## Edge Coverage` SPEC section. Unresolved applicable edges soft-gate the spec (Resolve / Write-anyway-flagged / Keep-probing); `covered` and `backstop` edges are later lifted into plan-phase `must_haves`. Under `--auto` the probe **never auto-dismisses** — it auto-covers where a defensible acceptance criterion exists, otherwise auto-backstops.
 
-**Prohibition Coverage (Step 5.6):** After the edge probe, spec-phase runs a prohibition-completeness probe — a two-stage prose pass (adversarial recall → precision classifier) that surfaces the unwritten *must-NOT* constraints (values/safety/ethics) the spec never forbids. Each is resolved to `resolved` (a NEGATIVE acceptance criterion, carrying a `test` or `judgment` verification tier) / `dismissed` (reason required) / `unresolved`, recorded in a `## Prohibitions (must-NOT)` SPEC section. Resolved prohibitions are lifted into plan-phase `must_haves.prohibitions`; judgment-tier items soft-gate at verify time (never silent, never hard-halt) and unwired test-tier items fail closed. Under `--auto` the probe **never auto-dismisses**; canon-bound concerns (OWASP / GDPR / fairness) are referred to `/gsd:secure-phase`.
+**Prohibition Coverage (Step 5.6):** After the edge probe, spec-phase runs a prohibition-completeness probe — a two-stage prose pass (adversarial recall → precision classifier) that surfaces the unwritten *must-NOT* constraints (values/safety/ethics) the spec never forbids. Each is resolved to `resolved` (a NEGATIVE acceptance criterion, carrying a `test` or `judgment` verification tier) / `dismissed` (reason required) / `unresolved`, recorded in a `## Prohibitions (must-NOT)` SPEC section. Resolved prohibitions are lifted into plan-phase `must_haves.prohibitions`; judgment-tier items soft-gate at verify time (never silent, never hard-halt) and unwired test-tier items fail closed. Under `--auto` the probe **never auto-dismisses**; canon-bound concerns (OWASP / GDPR / fairness) are referred to `/gsd-secure-phase`.
 
 **Prerequisites:** `.planning/ROADMAP.md` exists
 **Produces:** `{phase}-SPEC.md` (with a `## Edge Coverage` section)
@@ -388,9 +388,9 @@ Create PR from completed phase work with auto-generated body.
 - Key decisions
 - Optional configured PRD-style sections from `ship.pr_body_sections`
 
-**Ship gates (capability-driven):** `/gsd:ship` runs every active `ship:pre` gate from the capability registry. Two are on by default:
+**Ship gates (capability-driven):** `/gsd-ship` runs every active `ship:pre` gate from the capability registry. Two are on by default:
 
-- **Security** (`security` capability): blocks while `SECURITY.md` reports `threats_open > 0`. Resolve via `/gsd:secure-phase {n}`.
+- **Security** (`security` capability): blocks while `SECURITY.md` reports `threats_open > 0`. Resolve via `/gsd-secure-phase {n}`.
 - **Broken-windows ledger** (`broken-windows` capability, issue #1950): when `workflow.windows_enforce=true` is set, blocks while `.planning/WINDOWS.md` reports any `open` entry. The ledger accumulates stubs, TODOs, skipped tests, unrun verifies, and unmet truths across phases. Resolve an entry with `gsd-tools windows fixed <id>` (defect resolved) or `gsd-tools windows waive <id> "<reason>"` (justified deferral — reason is required and recorded). Inspect via `gsd-tools windows status`. Enforcement is **opt-in** (default `workflow.windows_enforce=false`): enable with `gsd config-set workflow.windows_enforce true`; tracking continues regardless.
 
 See [Custom PR Body Sections](ship-pr-body-sections.md) for onboarding, examples, and validation rules.
@@ -624,7 +624,7 @@ node gsd-tools.cjs phase uat-passed 3 --raw                  # Machine-readable 
 
 ## Navigation Commands
 
-### `/gsd:next`
+### `/gsd-next`
 
 Open the state-aware smart-entry launcher. It reads `.planning/STATE.md`, `ROADMAP.md`, verification artifacts, and git status, classifies the current situation, shows a short menu, then dispatches exactly one existing GSD command.
 
@@ -633,12 +633,12 @@ This is a launcher/router only — it never performs project work directly. Dete
 **Situations detected:** no project, paused work, blockers, failed verification, first-phase setup, planning, executing, pending verification, idle stranded work, complete milestone, or unknown state.
 
 ```bash
-/gsd:next                          # Detect state and route to the best next action
+/gsd-next                          # Detect state and route to the best next action
 ```
 
 ### `/gsd-progress`
 
-Show status, next steps, and automatically advance to the next logical workflow step. Reads project state and determines the appropriate action. Use `/gsd:next` when you want an interactive smart-entry menu before dispatch; use `/gsd-progress --next` when you want GSD to advance directly.
+Show status, next steps, and automatically advance to the next logical workflow step. Reads project state and determines the appropriate action. Use `/gsd-next` when you want an interactive smart-entry menu before dispatch; use `/gsd-progress --next` when you want GSD to advance directly.
 
 | Flag | Description |
 |------|-------------|

@@ -562,7 +562,7 @@ claude --dangerously-skip-permissions
 
 **Needs-acknowledgement behavior.** When the guard finds a missing symbol, it emits a `needs-acknowledgement` notice in the plan review output rather than hard-blocking. You can acknowledge and proceed (the symbol may be intentionally new) or request a plan revision. The guard does not auto-reject plans — it surfaces signal for human decision.
 
-**Works without intel.** By default the guard uses `grep`/`ripgrep` to search source files — no pre-indexing required. If you have run `/gsd:map-codebase` with `intel.enabled: true`, set `plan_review.source_grounding_authority: intel` to use the faster pre-built `api-map.json` index instead.
+**Works without intel.** By default the guard uses `grep`/`ripgrep` to search source files — no pre-indexing required. If you have run `/gsd-map-codebase` with `intel.enabled: true`, set `plan_review.source_grounding_authority: intel` to use the faster pre-built `api-map.json` index instead.
 
 ```bash
 # Enable/disable (default: on)
@@ -574,7 +574,7 @@ claude --dangerously-skip-permissions
 /gsd-settings plan_review.source_grounding_authority intel  # pre-indexed api-map.json
 ```
 
-Toggle at project setup (`/gsd:new-project` asks during workflow preferences) or any time via `/gsd:settings` (Planning section → Drift Guard).
+Toggle at project setup (`/gsd-new-project` asks during workflow preferences) or any time via `/gsd-settings` (Planning section → Drift Guard).
 
 ### Quick Bug Fix
 

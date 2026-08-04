@@ -1,6 +1,6 @@
 # CONTEXT.md スキーマリファレンス
 
-フェーズごとの `CONTEXT.md` は、`/gsd:discuss-phase` 中に収集された実装上の意思決定を格納する GSD Core のキャリアファイルです。リサーチエージェントとプランニングエージェントの両方にとって主要な上流インプットです。このページではそのスキーマを説明します。[ドキュメントインデックス](../../README.md) も参照してください。
+フェーズごとの `CONTEXT.md` は、`/gsd-discuss-phase` 中に収集された実装上の意思決定を格納する GSD Core のキャリアファイルです。リサーチエージェントとプランニングエージェントの両方にとって主要な上流インプットです。このページではそのスキーマを説明します。[ドキュメントインデックス](../../README.md) も参照してください。
 
 ---
 
@@ -107,7 +107,7 @@ No external specs — requirements fully captured in decisions above
 
 ## SPEC.md との統合
 
-フェーズをディスカッションする前に `/gsd:spec-phase` が実行された場合、`check_spec` ステップが `*-SPEC.md` ファイルを見つけ `<spec_lock>` を有効にします：
+フェーズをディスカッションする前に `/gsd-spec-phase` が実行された場合、`check_spec` ステップが `*-SPEC.md` ファイルを見つけ `<spec_lock>` を有効にします：
 
 ```markdown
 <spec_lock>

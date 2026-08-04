@@ -67,12 +67,12 @@ before surface and config**, not after them.
    capability that fails any composition gate — consent included — never enters the
    registry the rest of GSD reads, so it cannot reach the later stages at all.
 3. **Surface** decides which of the *composed* registry's skills are projected into the
-   host runtime. This is the install-profile and `/gsd:surface` layer — a capability's
+   host runtime. This is the install-profile and `/gsd-surface` layer — a capability's
    skills can be on the surface or held back without uninstalling it. It only ever sees
    capabilities that already cleared composition.
 4. **Config activation** decides, per loop hook, whether it fires. A hook's `when`
    key (a dotted config key) gates it: a `step` or `gate` whose key is falsy does not
-   run. This is the `gsd capability set <id> --gate <key>=<bool>` and `/gsd:settings`
+   run. This is the `gsd capability set <id> --gate <key>=<bool>` and `/gsd-settings`
    layer — again, only for capabilities that survived composition.
 
 This document is about what `loadRegistry` does at the moment of composition — stage 2,

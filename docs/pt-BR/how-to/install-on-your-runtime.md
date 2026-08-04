@@ -8,7 +8,7 @@ Instale o GSD Core (`@opengsd/gsd-core`) no ambiente de codificação com IA que
 
 ## Por que o instalador é necessário
 
-O GSD Core distribui arquivos de agente e comando no formato nativo de frontmatter do Claude Code. Cada ambiente suportado espera um schema, layout de diretório e sintaxe de invocação de comandos diferente. O instalador realiza as transformações necessárias — por exemplo, convertendo listas de ferramentas e valores de cor para o OpenCode, escrevendo entradas TOML de agente para o Codex e reescrevendo o corpo de cada comando do formato com hífen (`/gsd-update`) para o formato com dois-pontos (`/gsd:update`) para o Gemini CLI.
+O GSD Core distribui arquivos de agente e comando no formato nativo de frontmatter do Claude Code. Cada ambiente suportado espera um schema, layout de diretório e sintaxe de invocação de comandos diferente. O instalador realiza as transformações necessárias — por exemplo, convertendo listas de ferramentas e valores de cor para o OpenCode, escrevendo entradas TOML de agente para o Codex e reescrevendo o corpo de cada comando do formato com hífen (`/gsd-update`) para o formato com dois-pontos (`/gsd-update`) para o Gemini CLI.
 
 **Não copie arquivos de `agents/` ou `commands/` diretamente.** Fazer isso ignora as transformações e produz erros de validação de schema ou comandos ausentes.
 
@@ -50,7 +50,7 @@ CLAUDE_CONFIG_DIR=~/.claude-alt npx @opengsd/gsd-core@latest --claude --global
 npx @opengsd/gsd-core@latest --gemini --global
 ```
 
-As habilidades são instaladas em `~/.gemini/`. O instalador reescreve todos os corpos de comando para o namespace de dois-pontos do Gemini (`/gsd:update`, `/gsd:config`, etc.). Reinicie o Gemini CLI após a instalação.
+As habilidades são instaladas em `~/.gemini/`. O instalador reescreve todos os corpos de comando para o namespace de dois-pontos do Gemini (`/gsd-update`, `/gsd-config`, etc.). Reinicie o Gemini CLI após a instalação.
 
 **Substituir o diretório de instalação:**
 

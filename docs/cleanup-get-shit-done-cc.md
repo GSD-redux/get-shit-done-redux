@@ -1,6 +1,6 @@
 # Cleaning Up get-shit-done-cc
 
-Use this procedure when you see a persistent `⬆ /gsd:update` indicator in
+Use this procedure when you see a persistent `⬆ /gsd-update` indicator in
 your statusline even though `@opengsd/gsd-core` is already up to date.  It
 removes leftover files from the old `get-shit-done-cc` package that was
 renamed to `@opengsd/gsd-core` in issue [#607](https://github.com/open-gsd/gsd-core/issues/607).
@@ -89,7 +89,7 @@ prefer to clean up by hand:
 
 ### 4. Verify
 
-Open a new terminal session (or restart your AI runtime).  The `⬆ /gsd:update`
+Open a new terminal session (or restart your AI runtime).  The `⬆ /gsd-update`
 indicator should no longer appear in the statusline.  You can confirm the
 installed version with:
 

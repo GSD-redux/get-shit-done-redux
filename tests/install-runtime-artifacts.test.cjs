@@ -4762,6 +4762,80 @@ describe('Bug #2973: installer migrates existing legacy dev-preferences.md to sk
   });
 });
 
+// ─── #2911: migrateLegacyDevPreferencesToSkill is the latent instance of the ──
+// ─── same installer-vs-surface destination-root defect ───────────────────────
+//
+// migrateLegacyDevPreferencesToSkill (src/install-engine.cts) resolved the
+// skill dir as `assertDestWithinConfigHome(targetDir, skillsKindEntry.destSubpath)`
+// — always against targetDir (configDir), ignoring skillsKindEntry.home. For
+// codex/global (the only current `home`-override runtime/scope), a legacy
+// dev-preferences.md migration would have landed under $CODEX_HOME/skills
+// instead of the canonical $HOME/.agents/skills tree used by both the
+// installer's _copyStaged and (post-#2911-fix) applySurface. Fixed the same
+// way: `skillsKindEntry.home ?? targetDir`.
+describe('Bug #2911: migrateLegacyDevPreferencesToSkill honors the skills-kind home override (codex)', () => {
+  const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+
+  function withFakeHome(fakeHome, fn) {
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      return fn();
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+    }
+  }
+
+  test('codex + global: migration writes SKILL.md under $HOME/.agents/skills, NOT under $CODEX_HOME/skills', () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2911-mig-home-'));
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2911-mig-codexhome-'));
+    try {
+      withFakeHome(fakeHome, () => {
+        const inst = installEngine;
+        const layout = resolveRuntimeArtifactLayout('codex', codexHome, 'global');
+        const skillsKindEntry = layout.kinds.find((k) => k.kind === 'skills');
+        assert.equal(skillsKindEntry.home, path.join(fakeHome, '.agents'), 'pre-condition: codex global skills kind declares the $HOME/.agents override');
+
+        const saved = new Map([['dev-preferences.md', '# my legacy preferences\n']]);
+        const migrated = inst.migrateLegacyDevPreferencesToSkill(codexHome, saved, 'codex', 'global');
+        assert.equal(migrated, true, 'expected migration to succeed when no SKILL.md exists');
+
+        const correctSkillFile = path.join(fakeHome, '.agents', 'skills', 'gsd-dev-preferences', 'SKILL.md');
+        assert.equal(fs.existsSync(correctSkillFile), true, `expected SKILL.md at ${correctSkillFile}`);
+        assert.equal(fs.readFileSync(correctSkillFile, 'utf-8'), '# my legacy preferences\n');
+
+        const legacySkillFile = path.join(codexHome, 'skills', 'gsd-dev-preferences', 'SKILL.md');
+        assert.equal(fs.existsSync(legacySkillFile), false, `migration must NOT also write a second copy at the legacy location ${legacySkillFile}`);
+      });
+    } finally {
+      cleanup(fakeHome);
+      cleanup(codexHome);
+    }
+  });
+
+  test('codex + local: no home override — migration destination is unchanged ($CODEX_HOME/skills)', () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2911-mig-local-'));
+    try {
+      const inst = installEngine;
+      const layout = resolveRuntimeArtifactLayout('codex', codexHome, 'local');
+      const skillsKindEntry = layout.kinds.find((k) => k.kind === 'skills');
+      assert.equal(skillsKindEntry.home, undefined, 'pre-condition: codex local scope declares NO home override');
+
+      const saved = new Map([['dev-preferences.md', '# my legacy preferences\n']]);
+      const migrated = inst.migrateLegacyDevPreferencesToSkill(codexHome, saved, 'codex', 'local');
+      assert.equal(migrated, true);
+
+      const skillFile = path.join(codexHome, 'skills', 'gsd-dev-preferences', 'SKILL.md');
+      assert.equal(fs.existsSync(skillFile), true, `expected SKILL.md at ${skillFile} (unchanged, no home override)`);
+    } finally {
+      cleanup(codexHome);
+    }
+  });
+});
+
 // ─── #3003 CR follow-up: installRuntimeArtifacts preserves user-owned skills ──
 //
 // Production install() calls installRuntimeArtifacts() without a prior

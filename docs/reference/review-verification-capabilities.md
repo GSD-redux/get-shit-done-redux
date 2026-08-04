@@ -62,9 +62,9 @@ In that output, `configured` reflects config/default resolution, while `active` 
 
 Direct command workflows self-gate the same way:
 
-- `/gsd:code-review` resolves the active `execute:post` hook whose `ref.skill == "code-review"`.
-- `/gsd:secure-phase` resolves the active `verify:post` hook whose `ref.skill == "secure-phase"`.
-- `/gsd:validate-phase` resolves the active `verify:post` hook whose `ref.skill == "validate-phase"`.
+- `/gsd-code-review` resolves the active `execute:post` hook whose `ref.skill == "code-review"`.
+- `/gsd-secure-phase` resolves the active `verify:post` hook whose `ref.skill == "secure-phase"`.
+- `/gsd-validate-phase` resolves the active `verify:post` hook whose `ref.skill == "validate-phase"`.
 
 ## Authoring Notes
 
