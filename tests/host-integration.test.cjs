@@ -955,9 +955,12 @@ describe('Phase B: shouldFlattenDispatch — contract pin', () => {
       'shouldFlattenDispatch must be exported from host-integration module');
   });
 
-  test('{background:true, backgroundDispatch:true} → false (background OK)', () => {
-    assert.strictEqual(shouldFlattenDispatch({ background: true, backgroundDispatch: true }), false,
-      'canBackground=true when both background===true AND backgroundDispatch===true → flatten=false');
+  test('{background:true, backgroundDispatch:true} → true (no depth budget declared → fail-closed/flatten)', () => {
+    // #2939: can background AT ALL, but declares no nested/toolkit/maxDepth, so the depth
+    // budget is unknown → fail-closed to inline (flatten). A real background-eligible host
+    // also carries nested:true + subagentToolkit:"full" + a sufficient maxDepth.
+    assert.strictEqual(shouldFlattenDispatch({ background: true, backgroundDispatch: true }), true,
+      'canBackground=true but no depth budget declared → fail-closed/flatten=true');
   });
 
   test('{background:true, backgroundDispatch:false} → true (must flatten)', () => {
@@ -1003,12 +1006,24 @@ describe('Phase B: shouldFlattenDispatch — contract pin', () => {
       'non-object dispatch (string) must fail-closed to true');
   });
 
-  // #853 codex-like profile: full dispatch including backgroundDispatch:true → background OK
-  test('#853 codex-like: {namedDispatch:true,nested:true,maxDepth:1,background:true,subagentToolkit:"full",backgroundDispatch:true} → false (background OK)', () => {
+  // #2939: the codex-like profile with maxDepth:1 now FLATTENS. A depth budget of 1 is consumed
+  // by the backgrounded orchestrator itself (depth 1) and leaves no room for the delegated leaf
+  // (depth 2) its own contract requires. This corrects the prior pin, which asserted the buggy
+  // shouldFlatten:false output that permitted a depth-2 tree the descriptor cannot support.
+  test('#2939 codex-like: {namedDispatch:true,nested:true,maxDepth:1,background:true,subagentToolkit:"full",backgroundDispatch:true} → true (flatten — depth budget insufficient)', () => {
     assert.strictEqual(
       shouldFlattenDispatch({ namedDispatch: true, nested: true, maxDepth: 1, background: true, subagentToolkit: 'full', backgroundDispatch: true }),
+      true,
+      'maxDepth:1 is insufficient for a backgrounded orchestrator plus a delegated leaf → flatten=true',
+    );
+  });
+
+  // #2939 negative-space: the same codex-like profile with a SUFFICIENT depth budget backgrounds.
+  test('#2939 codex-like maxDepth:2 → false (background OK — depth budget sufficient)', () => {
+    assert.strictEqual(
+      shouldFlattenDispatch({ namedDispatch: true, nested: true, maxDepth: 2, background: true, subagentToolkit: 'full', backgroundDispatch: true }),
       false,
-      'codex-like dispatch with backgroundDispatch:true must be background-OK (flatten=false)',
+      'maxDepth:2 leaves room for a backgrounded orchestrator plus a leaf → background OK',
     );
   });
 

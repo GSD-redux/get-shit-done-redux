@@ -569,9 +569,23 @@ function negotiateHostCapabilities(
  * may be backgrounded.
  *
  * A host may background only if it can reliably background a nesting-capable
- * orchestrator — i.e. both `background` AND `backgroundDispatch` are
- * explicitly `true`. Any other value (false, missing, 'undocumented') fails
- * closed to inline (the always-safe path).
+ * orchestrator that still has room to delegate to a leaf — i.e. ALL of:
+ *   - `background === true` AND `backgroundDispatch === true` (it can background at all), AND
+ *   - `nested === true` AND `subagentToolkit === 'full'` (it can host a nesting orchestrator), AND
+ *   - a depth budget greater than 1, or unbounded (`maxDepth === -1`): a budget of exactly 1
+ *     is consumed by the backgrounded orchestrator itself (depth 1) and leaves no room for the
+ *     delegated leaf (depth 2) its own contract would require.
+ *
+ * Any other value (false, missing, 'undocumented', or an insufficient depth budget) fails closed
+ * to inline (the always-safe path). This closes #2939, where a `maxDepth:1` descriptor
+ * (the live Codex capability) was told it may background a nesting orchestrator that then
+ * produced a depth-2 tree its declared contract cannot support.
+ *
+ * The depth-budget test mirrors the convention already used elsewhere in the codebase:
+ * `degradationFor` (same file) treats `nested && depth >= 2` as full-depth and `maxDepth === 1`
+ * as flat, and `bin/install.js`'s `_normalizeDispatchCallSpan` uses
+ * `subagentToolkit === 'full' && (maxDepth === -1 || maxDepth > 1)`. Reusing that exact shape
+ * here keeps the three sites in agreement rather than introducing a third ad-hoc rule.
  *
  * This graduates the #853 prose rule (originally `RUNTIME === 'codex'`, then
  * extended to cursor) to a typed, documentation-sourced decision; codex AND
@@ -585,8 +599,18 @@ type UnvalidatedDispatch = (Partial<DispatchCapability> & { background?: unknown
 
 function shouldFlattenDispatch(dispatch: UnvalidatedDispatch): boolean {
   if (!dispatch || typeof dispatch !== 'object') return true;
+  // Can background at all: both background flags must be explicitly true.
   const canBackground = dispatch.background === true && dispatch.backgroundDispatch === true;
-  return !canBackground;
+  if (!canBackground) return true;
+  // #2939: can background a NESTING orchestrator with room to delegate. A depth budget of 1
+  // is consumed by the backgrounded orchestrator itself; it needs > 1 (or unbounded -1) to host
+  // a delegated leaf at depth 2. Non-finite/missing maxDepth fails closed (no budget → flatten),
+  // mirroring degradationFor's treatment of non-finite depth as 0.
+  const canNest = dispatch.nested === true && dispatch.subagentToolkit === 'full';
+  if (!canNest) return true;
+  const depth = typeof dispatch.maxDepth === 'number' && Number.isFinite(dispatch.maxDepth) ? dispatch.maxDepth : 0;
+  const depthSufficient = depth === -1 || depth > 1;
+  return !depthSufficient;
 }
 
 // ---------------------------------------------------------------------------
