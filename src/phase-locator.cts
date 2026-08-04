@@ -27,6 +27,12 @@ const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPa
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import frontmatterModule = require('./frontmatter.cjs');
+const { extractFrontmatter } = frontmatterModule;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planDependencyGraphModule = require('./plan-dependency-graph.cjs');
+const { computeHaltPropagation, buildSummaryFileIndex, isSummaryFileHalted } = planDependencyGraphModule;
 
 // ─── Phase search types ───────────────────────────────────────────────────────
 
@@ -45,6 +51,44 @@ interface PhaseSearchResult {
   has_reviews: boolean;
   archived?: string;
   ambiguous_matches?: string[];
+  /**
+   * #2830: plan filenames (from `plans`) whose own SUMMARY declares
+   * `status: halted` — a designed stop, not an ordinary completion.
+   */
+  halted_plans: string[];
+  /**
+   * #2830: plan filename -> the halted plan id(s) (canonical, e.g. "01-02")
+   * transitively blocking it, for every entry in `incomplete_plans` that is
+   * blocked by an upstream halt. A plan filename absent from this map is not
+   * blocked (either not incomplete, or incomplete with no halted upstream).
+   */
+  blocked_by: Record<string, string[]>;
+  /**
+   * #2830: the runnable-only view — `incomplete_plans` filtered to exclude
+   * anything present as a key in `blocked_by`. `incomplete_plans` itself
+   * keeps its pre-#2830 meaning ("no matching SUMMARY yet") unchanged.
+   */
+  runnable_plans: string[];
+}
+
+/**
+ * #2830: parse a plan file's `depends_on` frontmatter. Returns [] — never
+ * throws — on a missing/unreadable/malformed plan or absent field, matching
+ * this primitive's existing fail-safe posture (a plan directory this
+ * primitive can otherwise read must never throw here).
+ */
+function parsePlanDependsOn(phaseDir: string, planFile: string): string[] {
+  try {
+    const planPath = path.join(phaseDir, planFile);
+    const content = fs.readFileSync(planPath, 'utf-8');
+    const fm = extractFrontmatter(content, planPath);
+    const fmDeps = fm['depends_on'];
+    if (Array.isArray(fmDeps)) return fmDeps.map(String);
+    if (typeof fmDeps === 'string' && fmDeps.trim() !== '') return [fmDeps];
+    return [];
+  } catch {
+    return [];
+  }
 }
 
 interface ArchivedPhaseDir {
@@ -117,6 +161,9 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
         has_verification: false,
         has_reviews: false,
         ambiguous_matches: matches,
+        halted_plans: [],
+        blocked_by: {},
+        runnable_plans: [],
       };
     }
 
@@ -144,6 +191,54 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       return !completedPlanIds.has(planId) && !completedPlanIds.has(canonical);
     });
 
+    // #2830: reverse lookup from a completed plan's id (exact or canonical) to
+    // its actual summary filename. Shared builder (also used by phase.cts's
+    // cmdPhasePlanIndex) so the two can never disagree about which summary
+    // belongs to which plan.
+    const summaryFileByPlanId = buildSummaryFileIndex(summaries, extractCanonicalPlanId);
+
+    // #2830: this primitive previously never parsed depends_on at all — see
+    // src/plan-dependency-graph.cts's file header. Build the same
+    // PlanHaltNode[] shape phase.cts's cmdPhasePlanIndex builds (id resolution
+    // mirrors its planMap/canonicalToId pattern) and hand it to the ONE
+    // shared halt-propagation traversal so this reader and the wave-grouping
+    // reader can never diverge on the halt rule again.
+    const planIds = plans.map(p => p.replace('-PLAN.md', '').replace('PLAN.md', ''));
+    const planIdByLower = new Map(planIds.map(id => [id.toLowerCase(), id]));
+    const canonicalToPlanId = new Map(
+      plans.map((p, i) => [extractCanonicalPlanId(p).toLowerCase(), planIds[i]]),
+    );
+
+    const haltNodes = plans.map((p, i) => {
+      const planId = planIds[i];
+      const canonical = extractCanonicalPlanId(p);
+      const summaryFile = summaryFileByPlanId.get(planId) ?? summaryFileByPlanId.get(canonical);
+      const halted = summaryFile !== undefined && isSummaryFileHalted(path.join(phaseDir, summaryFile));
+      const resolvedDependsOn = parsePlanDependsOn(phaseDir, p)
+        .map((dep) => {
+          const lower = dep.toLowerCase();
+          return planIdByLower.get(lower) ?? canonicalToPlanId.get(lower) ?? null;
+        })
+        .filter((id): id is string => id !== null);
+      return { id: planId, resolvedDependsOn, halted };
+    });
+    const { blockedBy } = computeHaltPropagation(haltNodes);
+
+    const haltedPlans = plans.filter((_, i) => haltNodes[i].halted);
+    const incompletePlanSet = new Set(incompletePlans);
+    const blockedByFiles: Record<string, string[]> = {};
+    const runnablePlans: string[] = [];
+    for (let i = 0; i < plans.length; i++) {
+      const p = plans[i];
+      if (!incompletePlanSet.has(p)) continue;
+      const causes = blockedBy.get(planIds[i]) ?? [];
+      if (causes.length > 0) {
+        blockedByFiles[p] = causes;
+      } else {
+        runnablePlans.push(p);
+      }
+    }
+
     return {
       found: true,
       directory: toPosixPath(path.join(relBase, match)),
@@ -157,6 +252,9 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
       has_context: hasContext,
       has_verification: hasVerification,
       has_reviews: hasReviews,
+      halted_plans: haltedPlans,
+      blocked_by: blockedByFiles,
+      runnable_plans: runnablePlans,
     };
   } catch {
     return null;

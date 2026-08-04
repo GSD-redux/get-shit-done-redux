@@ -824,6 +824,9 @@ function cmdInitExecutePhase(
       plans: [],
       summaries: [],
       incomplete_plans: [],
+      halted_plans: [],
+      blocked_by: {},
+      runnable_plans: [],
       has_research: false,
       has_context: false,
       has_verification: false,
@@ -868,6 +871,16 @@ function cmdInitExecutePhase(
     incomplete_plans: phaseInfo?.['incomplete_plans'] || [],
     plan_count: (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0,
     incomplete_count: (phaseInfo?.['incomplete_plans'] as unknown[] | undefined)?.length || 0,
+
+    // #2830: the halt-aware view, forwarded from the shared computation in
+    // phase-locator. Additive — `incomplete_plans`/`incomplete_count` above keep
+    // their exact name, type and semantics. Without this passthrough the shared
+    // truth is computed and then dropped at this consumer, which is the path the
+    // issue reports as regressed.
+    halted_plans: phaseInfo?.['halted_plans'] || [],
+    blocked_by: phaseInfo?.['blocked_by'] || {},
+    runnable_plans: phaseInfo?.['runnable_plans'] || [],
+    runnable_count: (phaseInfo?.['runnable_plans'] as unknown[] | undefined)?.length || 0,
 
     branch_name:
       config.branching_strategy === 'phase' && phaseInfo

@@ -334,13 +334,54 @@ Load plan inventory with wave grouping in one call:
 PLAN_INDEX=$(gsd_run query phase-plan-index "${PHASE_NUMBER}")
 ```
 
-Parse JSON for: `phase`, `plans[]` (each with `id`, `wave`, `autonomous`, `objective`, `files_modified`, `task_count`, `has_summary`), `waves` (map of wave number → plan IDs), `incomplete`, `has_checkpoints`.
+Parse JSON for: `phase`, `plans[]` (each with `id`, `wave`, `autonomous`, `objective`, `files_modified`, `task_count`, `has_summary`, `halted`, `blocked_by`), `waves` (map of wave number → plan IDs), `incomplete`, `runnable`, `has_checkpoints`.
 
-**Filtering:** Skip plans where `has_summary: true`. If `--gaps-only`: also skip non-gap_closure plans. If `WAVE_FILTER` is set: also skip plans whose `wave` does not equal `WAVE_FILTER`.
+**Filtering:** Skip plans where `has_summary: true`. Additionally skip any plan whose `blocked_by` array is non-empty (#2830) — it depends, directly or transitively, on a plan that halted at a designed stop rather than completing — and report it by name: "Skipping {plan.id}: blocked by halted {blocked_by.join(', ')}". Never silently drop a blocked plan from the report; it must appear by name with its reason, not merely vanish from the executable list. This rule is additive to the `has_summary` skip, not a replacement for it. If `--gaps-only`: also skip non-gap_closure plans. If `WAVE_FILTER` is set: also skip plans whose `wave` does not equal `WAVE_FILTER`.
 
 **Wave safety check:** If `WAVE_FILTER` is set and there are still incomplete plans in any lower wave that match the current execution mode, STOP and tell the user to finish earlier waves first. Do not let Wave 2+ execute while prerequisite earlier-wave plans remain incomplete.
 
-If all filtered: "No matching incomplete plans" → exit.
+**If all filtered — do NOT exit unconditionally (#2868).** "No plan work left" and "phase fully
+done" are different conditions: a run can be interrupted between the final wave's SUMMARY and
+`verify_phase_goal` (most commonly by a checkpoint plan that is retired but still writes a SUMMARY),
+leaving a phase that looks complete from every index yet never produced `*-VERIFICATION.md`. A
+third condition looks identical to the first two by plan_count alone but is neither: some filtered
+plans were filtered because they are **blocked** (non-empty `blocked_by`, #2830), not because they
+are done. Blocked-and-incomplete must never be reported as finished.
+
+```bash
+VERIFY_STATUS=$(gsd_run query verification status "${PHASE_DIR}" --pick status)
+```
+
+Evaluate in this exact order — the first matching condition decides the outcome; do not evaluate
+later conditions once one matches:
+
+1. **A filter is active** (`--gaps-only`, or `WAVE_FILTER` set): report "No matching incomplete
+   plans" → exit, unchanged. A filtered run finding nothing left in ITS slice says nothing about
+   whether the phase as a whole is done, and must never jump to verification.
+2. **No filter is active, and at least one filtered plan was skipped because of a non-empty
+   `blocked_by`** (irrespective of `VERIFY_STATUS`): the phase is NOT finished — it is **stuck on a
+   halt**. A plan with no SUMMARY and no dispatched work must never be treated as done merely
+   because nothing was left to filter. Report:
+   `"Phase stuck: {blocked plan ids} blocked by halted {their blocked_by ids} — resolve the halt, do not resume verification."`
+   → exit. Do not fall through to condition 3; this is not a completion state.
+3. **No filter is active, and every filtered plan was filtered by `has_summary` alone** (no
+   blocked-plan skip occurred):
+   - **`VERIFY_STATUS` is anything other than `missing`**: the phase genuinely finished. Report
+     "No matching incomplete plans" → exit, unchanged.
+   - **`VERIFY_STATUS == missing`**: the plans are all summarized but the run never reached the
+     tail gates. Report:
+     `"All {plan_count} plans are summarized but no VERIFICATION.md exists — resuming at the phase gates (#2868)."`
+     SKIP `cross_ai_delegation`, `execute_waves` and `checkpoint_handling` — there is no wave work
+     to do — and continue directly at `aggregate_results`, NOT `code_review_gate`. `aggregate_results`
+     is the only step that runs the `SECURITY_FILE` / secure-phase threats-open gate, and it reads
+     exclusively from on-disk `${PHASE_DIR}` artifacts (`*-SUMMARY.md`, `*-SECURITY.md` via `ls`) and
+     independent `gsd_run` calls — nothing it reads is produced only by `execute_waves` or
+     `checkpoint_handling` — so it tolerates having executed no plans in this run. From there the
+     run proceeds exactly as a normal one: `aggregate_results` → `code_review_gate` →
+     `close_parent_artifacts` → `regression_gate` → `verify_phase_goal` → `update_roadmap`. Never
+     skip `aggregate_results`, `code_review_gate` or `regression_gate` on this path — the manual
+     workaround this replaces skipped all three, and that gap is the reason this route exists
+     rather than telling users to spawn the verifier by hand.
 
 Report:
 ```

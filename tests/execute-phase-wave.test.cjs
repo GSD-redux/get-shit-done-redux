@@ -105,6 +105,128 @@ describe('execute-phase workflow: wave filtering', () => {
   });
 });
 
+// #2868: a phase whose plans are ALL summarized but which never reached
+// verify_phase_goal (most commonly a retired checkpoint plan that still wrote a
+// SUMMARY) must resume at the phase gates instead of exiting unconditionally —
+// the prior behavior made `code_review_gate`, `regression_gate`, and
+// `verify_phase_goal` (the only producer of *-VERIFICATION.md) unreachable.
+describe('execute-phase workflow: #2868 stranded-phase resume on discover_and_group_plans', () => {
+  test('W1: all-filtered outcome is no longer an unconditional exit; it consults verification status', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(
+      !content.includes('If all filtered: "No matching incomplete plans" → exit.'),
+      'the old unconditional all-filtered exit line must be gone (#2868)'
+    );
+    assert.ok(
+      content.includes('VERIFY_STATUS'),
+      'discover_and_group_plans should consult VERIFY_STATUS before exiting on all-filtered'
+    );
+    assert.ok(
+      content.includes('verification status'),
+      'discover_and_group_plans should call the verification status query'
+    );
+  });
+
+  test('W2: the resume path names both code_review_gate and regression_gate', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    assert.ok(
+      discoverSection.includes('code_review_gate'),
+      'discover_and_group_plans should name code_review_gate as the resume target'
+    );
+    assert.ok(
+      discoverSection.includes('regression_gate'),
+      'discover_and_group_plans should name regression_gate so a future rename breaks this test ' +
+        'instead of silently orphaning the resume path'
+    );
+  });
+
+  test('W3: the resume path is gated off when a filter is active (--gaps-only or WAVE_FILTER)', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    const filterIdx = discoverSection.indexOf('A filter is active');
+    assert.ok(filterIdx >= 0, 'discover_and_group_plans should describe a filter-active branch');
+    // Both flags must be mentioned near the filter-active branch, not merely
+    // anywhere in the step (e.g. in the pre-existing filtering prose above).
+    const filterClause = discoverSection.substring(filterIdx, filterIdx + 200);
+    assert.ok(
+      filterClause.includes('--gaps-only'),
+      'filter-active branch should mention --gaps-only'
+    );
+    assert.ok(
+      filterClause.includes('WAVE_FILTER'),
+      'filter-active branch should mention WAVE_FILTER'
+    );
+  });
+
+  test('W4: the resume decision is gated on the absence of blocked_by-skipped plans', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    // Scope to the resume-decision text specifically (from the "If all filtered" marker
+    // onward), not the pre-existing #2830 filtering prose above it that already mentions
+    // blocked_by unconditionally — otherwise this assertion would be vacuous.
+    const decisionIdx = discoverSection.indexOf('If all filtered');
+    assert.ok(decisionIdx >= 0, 'discover_and_group_plans should have an all-filtered decision block');
+    const decisionText = discoverSection.substring(decisionIdx);
+
+    assert.ok(
+      decisionText.includes('blocked_by'),
+      'the resume-decision text must reference blocked_by so an all-blocked phase is never ' +
+        'reported as finished (#2868 finding 1)'
+    );
+    assert.ok(
+      /stuck/i.test(decisionText),
+      'the resume-decision text must call out the blocked-and-incomplete case as stuck, ' +
+        'distinct from genuinely finished'
+    );
+  });
+
+  test('W5: the resume path enters at aggregate_results, not code_review_gate', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    const discoverIdx = content.indexOf('<step name="discover_and_group_plans">');
+    const discoverEnd = content.indexOf('</step>', discoverIdx) + '</step>'.length;
+    assert.ok(discoverIdx >= 0, 'discover_and_group_plans step should exist');
+    const discoverSection = content.substring(discoverIdx, discoverEnd);
+
+    const continueMatch = discoverSection.match(/continue (?:directly )?at\s+`([a-zA-Z_]+)`/);
+    assert.ok(continueMatch, 'resume decision should state which step it continues at');
+    assert.strictEqual(
+      continueMatch[1],
+      'aggregate_results',
+      'the resume path must enter at aggregate_results (the only step running the ' +
+        'SECURITY_FILE / secure-phase threats-open gate), not code_review_gate — skipping ' +
+        'aggregate_results silently drops the only security gate (#2868 finding 3)'
+    );
+    assert.notStrictEqual(
+      continueMatch[1],
+      'code_review_gate',
+      'resume entry point must not be code_review_gate'
+    );
+  });
+
+  test('W6: RESUME_TAIL_ONLY (dead, write-only state) must not appear anywhere in the workflow', () => {
+    const content = fs.readFileSync(WORKFLOW_PATH, 'utf-8');
+    assert.ok(
+      !content.includes('RESUME_TAIL_ONLY'),
+      'RESUME_TAIL_ONLY was set but never read anywhere in the workflow or its steps files ' +
+        '(#2868 finding 2) — remove it; the imperative instruction at the decision point is ' +
+        'what actually carries control flow'
+    );
+  });
+});
+
 describe('execute-phase docs: user-facing wave flag', () => {
   test('COMMANDS.md documents --wave usage', () => {
     const content = fs.readFileSync(COMMANDS_DOC_PATH, 'utf-8');
