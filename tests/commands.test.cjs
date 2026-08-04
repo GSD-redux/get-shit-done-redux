@@ -3838,3 +3838,56 @@ describe('gsd-tools.cjs dispatch/help/skip-list parity (DEFECT.GENERATIVE-FIX, #
     assert.equal(typeof gsdTools.skipsRootResolution, 'function');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// resolveMainWorktreeCwd — #3050: gsd-tools must surface (not silently
+// swallow) a git_timed_out worktree-root resolution, since writing planning
+// artifacts to the wrong tree is the exact fail-open the issue names.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('gsd-tools.cjs resolveMainWorktreeCwd (#3050)', () => {
+  const { resolveMainWorktreeCwd } = require('../gsd-core/bin/gsd-tools.cjs');
+
+  test('emits a WARNING to stderr and still resolves the fallback root on git_timed_out', () => {
+    const warnings = [];
+    const resolved = resolveMainWorktreeCwd('/repo/wt', {
+      existsSync: () => false,
+      resolveWorktreeRoot: () => ({ root: '/repo/wt', reason: 'git_timed_out' }),
+      writeWarning: (msg) => warnings.push(msg),
+    });
+    assert.equal(resolved, '/repo/wt');
+    assert.equal(warnings.length, 1, 'must emit exactly one warning on git_timed_out');
+    assert.match(warnings[0], /git timed out/i);
+    assert.match(warnings[0], /wrong tree/i);
+  });
+
+  test('does NOT warn on a benign reason (linked_worktree)', () => {
+    const warnings = [];
+    const resolved = resolveMainWorktreeCwd('/repo/wt', {
+      existsSync: () => false,
+      resolveWorktreeRoot: () => ({ root: '/repo', reason: 'linked_worktree' }),
+      writeWarning: (msg) => warnings.push(msg),
+    });
+    assert.equal(resolved, '/repo');
+    assert.deepEqual(warnings, [], 'must not warn for a benign, definitive resolution');
+  });
+
+  test('does NOT warn on a benign reason (not_git_repo)', () => {
+    const warnings = [];
+    const resolved = resolveMainWorktreeCwd('/repo/wt', {
+      existsSync: () => false,
+      resolveWorktreeRoot: () => ({ root: '/repo/wt', reason: 'not_git_repo' }),
+      writeWarning: (msg) => warnings.push(msg),
+    });
+    assert.equal(resolved, '/repo/wt');
+    assert.deepEqual(warnings, []);
+  });
+
+  test('short-circuits (never calls resolveWorktreeRoot) when .planning already exists in cwd', () => {
+    const resolved = resolveMainWorktreeCwd('/repo/wt', {
+      existsSync: () => true,
+      resolveWorktreeRoot: () => { throw new Error('must not be called when .planning exists locally'); },
+      writeWarning: () => { throw new Error('must not warn when short-circuited'); },
+    });
+    assert.equal(resolved, '/repo/wt');
+  });
+});

@@ -3355,6 +3355,37 @@ function skipsRootResolution(command) {
   return SKIP_ROOT_RESOLUTION.has(command);
 }
 
+/**
+ * Resolve the worktree root for a given cwd, warning to stderr when git
+ * could not determine it (reason 'git_timed_out') rather than silently
+ * trusting a best-effort fallback (#3050). Extracted from main() so it can
+ * be driven directly in tests via injected deps.
+ *
+ * @param {string} cwd
+ * @param {{ existsSync?: (p: string) => boolean, resolveWorktreeRoot?: (cwd: string) => { root: string, reason: string }, writeWarning?: (msg: string) => void }} [deps]
+ * @returns {string} resolved cwd
+ */
+function resolveMainWorktreeCwd(cwd, deps = {}) {
+  const existsSync = deps.existsSync || fs.existsSync;
+  const resolveWorktreeRoot = deps.resolveWorktreeRoot || require('./lib/worktree-safety.cjs').resolveWorktreeRoot;
+  const writeWarning = deps.writeWarning || ((msg) => process.stderr.write(msg));
+
+  if (existsSync(path.join(cwd, '.planning'))) {
+    return cwd;
+  }
+  const { root: worktreeRoot, reason: worktreeRootReason } = resolveWorktreeRoot(cwd);
+  if (worktreeRootReason === 'git_timed_out') {
+    writeWarning(
+      'WARNING: could not determine the git worktree root (git timed out). ' +
+      'Planning artifacts (STATE.md, ROADMAP.md, etc.) may be written to the ' +
+      `wrong tree — proceeding with "${worktreeRoot}" as a best-effort fallback. ` +
+      'Retry the command; if this persists, check for a stalled filesystem mount ' +
+      'or a stale git index lock (.git/index.lock) in this worktree.\n'
+    );
+  }
+  return worktreeRoot;
+}
+
 async function main() {
   let args = process.argv.slice(2);
 
@@ -3412,13 +3443,7 @@ async function main() {
   // Resolve worktree root: in a linked worktree, .planning/ lives in the main worktree.
   // However, in monorepo worktrees where the subdirectory itself owns .planning/,
   // skip worktree resolution — the CWD is already the correct project root.
-  const { resolveWorktreeRoot } = require('./lib/worktree-safety.cjs');
-  if (!fs.existsSync(path.join(cwd, '.planning'))) {
-    const worktreeRoot = resolveWorktreeRoot(cwd);
-    if (worktreeRoot !== cwd) {
-      cwd = worktreeRoot;
-    }
-  }
+  cwd = resolveMainWorktreeCwd(cwd);
 
   // Optional workstream override for parallel milestone work.
   // Priority: --ws flag > GSD_WORKSTREAM env var > session/shared pointer > null.
@@ -3678,5 +3703,6 @@ module.exports = {
   HOST_COMMAND_ROUTERS,
   TOP_LEVEL_USAGE,
   skipsRootResolution,
+  resolveMainWorktreeCwd,
 };
 

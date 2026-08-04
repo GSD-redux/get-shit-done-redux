@@ -1,9 +1,10 @@
 'use strict';
 
-const { describe, test, beforeEach, afterEach } = require('node:test');
+const { describe, test, beforeEach, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
+const childProcess = require('node:child_process');
 
 const {
   execGit,
@@ -113,7 +114,7 @@ describe('dispatchGsdCommand', () => {
   let tmpDir;
 
   beforeEach(() => { tmpDir = createTempDir(); });
-  afterEach(() => { cleanup(tmpDir); });
+  afterEach(() => { cleanup(tmpDir); mock.restoreAll(); });
 
   test('resolveGsdToolsPath resolves to the real gsd-tools.cjs on disk', () => {
     const toolsPath = resolveGsdToolsPath();
@@ -170,6 +171,26 @@ describe('dispatchGsdCommand', () => {
       assert.equal(result.ok, false);
       assert.equal(result.timedOut, true);
     });
+  });
+
+  // #3050 item 4: this site (dispatchGsdCommand's `timedOut` derivation) now
+  // routes through the shared isSpawnTimeout predicate, which drops the
+  // `signal === 'SIGTERM'` requirement — a Windows-shaped timeout (no signal,
+  // only error.code === 'ETIMEDOUT') must still be detected. The real-timeout
+  // test above only exercises whatever shape THIS OS's spawnSync happens to
+  // produce (SIGTERM on POSIX); mocking spawnSync proves the Windows shape too.
+  test('Windows-shaped timeout (no signal, error.code ETIMEDOUT) is still reported as timedOut:true (#3050)', () => {
+    mock.method(childProcess, 'spawnSync', () => ({
+      status: null,
+      stdout: '',
+      stderr: '',
+      signal: null,
+      error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+    }));
+
+    const result = dispatchGsdCommand({ family: 'progress', subcommand: 'json', cwd: tmpDir });
+    assert.equal(result.ok, false);
+    assert.equal(result.timedOut, true);
   });
 });
 
