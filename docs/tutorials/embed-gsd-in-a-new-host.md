@@ -53,7 +53,7 @@ const { effective, points, warnings } = SDK.handleHandshakeRequest(req);
 ## Step 4 — Run a GSD command through the embedded engine
 
 The imperative adapter exposes the engine surface; your host binds its command
-surface (slash commands, palette, chat) to it. A user invoking `/gsd:phase` in
+surface (slash commands, palette, chat) to it. A user invoking `/gsd-phase` in
 your host dispatches through the embedded engine exactly as it would in a
 first-party host — that is the parity the interface guarantees.
 

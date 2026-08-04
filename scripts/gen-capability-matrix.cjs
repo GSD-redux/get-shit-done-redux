@@ -190,7 +190,7 @@ ${runtimeTable}
 ### Reviewer capabilities (role: reviewer) — ${reviewerCount}
 
 Reviewer capabilities declare a cross-AI **reviewer lane** — one external CLI or
-model endpoint \`/gsd:review\` hands a plan to (ADR-2782 D3). They are not install
+model endpoint \`/gsd-review\` hands a plan to (ADR-2782 D3). They are not install
 targets: they emit no skills, agents, hooks or surface files, so their
 extension-point and hook-kind cells are \`—\`. A host that is *also* a reviewer
 (Claude, Codex, Cursor, OpenCode, Qwen, Antigravity) keeps one manifest and

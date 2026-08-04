@@ -499,7 +499,7 @@ claude --dangerously-skip-permissions
 
 **Comportamento de needs-acknowledgement.** Quando o protetor encontra um símbolo ausente, ele emite um aviso de needs-acknowledgement na saída da revisão do plano em vez de bloquear permanentemente. Você pode reconhecer e prosseguir (o símbolo pode ser intencionalmente novo) ou solicitar uma revisão do plano. O protetor não rejeita planos automaticamente — ele apresenta sinais para decisão humana.
 
-**Funciona sem intel.** Por padrão, o protetor usa `grep`/`ripgrep` para pesquisar arquivos de código-fonte — não requer pré-indexação. Se você executou `/gsd:map-codebase` com `intel.enabled: true`, defina `plan_review.source_grounding_authority: intel` para usar o índice pré-construído `api-map.json` mais rápido.
+**Funciona sem intel.** Por padrão, o protetor usa `grep`/`ripgrep` para pesquisar arquivos de código-fonte — não requer pré-indexação. Se você executou `/gsd-map-codebase` com `intel.enabled: true`, defina `plan_review.source_grounding_authority: intel` para usar o índice pré-construído `api-map.json` mais rápido.
 
 ```bash
 # Enable/disable (default: on)
@@ -511,7 +511,7 @@ claude --dangerously-skip-permissions
 /gsd-settings plan_review.source_grounding_authority intel  # pre-indexed api-map.json
 ```
 
-Alterne na configuração do projeto (`/gsd:new-project` pergunta durante as preferências de workflow) ou a qualquer momento via `/gsd:settings` (seção Planning → Drift Guard).
+Alterne na configuração do projeto (`/gsd-new-project` pergunta durante as preferências de workflow) ou a qualquer momento via `/gsd-settings` (seção Planning → Drift Guard).
 
 ### Correção rápida de bug
 

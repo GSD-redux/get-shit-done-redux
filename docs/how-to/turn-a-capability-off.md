@@ -11,7 +11,7 @@ GSD resolves one capability state from three places: whether the capability is i
 >
 > The rest of this guide covers first-party capabilities. For installed overlays, jump to [Turn off an installed third-party capability](#turn-off-an-installed-third-party-capability).
 
-The reliable, fully general way to change first-party capability state is the `capability` command. The `/gsd:surface` and `/gsd:settings` slash commands are convenient interactive front-ends, but they operate on **skill clusters**, not arbitrary capabilities — so reach for the CLI when you want a precise, scriptable, per-capability switch.
+The reliable, fully general way to change first-party capability state is the `capability` command. The `/gsd-surface` and `/gsd-settings` slash commands are convenient interactive front-ends, but they operate on **skill clusters**, not arbitrary capabilities — so reach for the CLI when you want a precise, scriptable, per-capability switch.
 
 ---
 
@@ -85,18 +85,18 @@ gsd capability remove my-overlay --scope project   # for a project-scoped instal
 
 `--scope` defaults to `global`, so pass `--scope project` for a project install. Add `--purge-data` to also delete the overlay's persisted data. If the id is not installed in the chosen scope you get `capability "my-overlay" is not installed in <scope> scope`. (Trying to `remove` a first-party id instead reports that it cannot be removed here — use the product uninstaller, `gsd --uninstall`.)
 
-> The `/gsd:surface` clusters described below are derived from the **built-in** capability registry, so they cover first-party skill-owning capabilities. For an installed overlay, `remove` is the off-switch.
+> The `/gsd-surface` clusters described below are derived from the **built-in** capability registry, so they cover first-party skill-owning capabilities. For an installed overlay, `remove` is the off-switch.
 
 See [Remove a capability](remove-a-capability.md) for the full removal flow and [`gsd capability remove`](../reference/gsd-capability-command.md#remove) for every flag and output field.
 
 ---
 
-## The interactive paths (`/gsd:surface` and `/gsd:settings`)
+## The interactive paths (`/gsd-surface` and `/gsd-settings`)
 
 The slash commands are the interactive equivalents, useful when you are working inside an agent session rather than scripting:
 
-- **`/gsd:surface disable <cluster>`** toggles a whole skill **cluster** on or off and re-stages the surface. Its argument is validated against the fixed set of cluster names — one of `core_loop`, `audit_review`, `milestone`, `research_ideate`, `workspace_state`, `docs`, `ui`, `ai_eval`, `ns_meta`, `utility` (the command rejects anything else and lists these). A few of these names coincide with first-party skill-owning capability ids (for example `ui`), so `/gsd:surface disable ui` works — but the command does **not** accept an arbitrary capability id, including an installed overlay's id. To switch off a specific capability by id, use the CLI (`gsd capability disable <id>` for first-party, `gsd capability remove <id>` for an installed overlay). Reverse a cluster with `/gsd:surface enable <cluster>`.
-- **`/gsd:settings`** is the interactive prompt for GSD's workflow toggles (the `workflow.*` config keys that gate hooks). Use it to turn workflow features on or off conversationally; it writes the same config keys that `gsd capability set … --gate` writes.
+- **`/gsd-surface disable <cluster>`** toggles a whole skill **cluster** on or off and re-stages the surface. Its argument is validated against the fixed set of cluster names — one of `core_loop`, `audit_review`, `milestone`, `research_ideate`, `workspace_state`, `docs`, `ui`, `ai_eval`, `ns_meta`, `utility` (the command rejects anything else and lists these). A few of these names coincide with first-party skill-owning capability ids (for example `ui`), so `/gsd-surface disable ui` works — but the command does **not** accept an arbitrary capability id, including an installed overlay's id. To switch off a specific capability by id, use the CLI (`gsd capability disable <id>` for first-party, `gsd capability remove <id>` for an installed overlay). Reverse a cluster with `/gsd-surface enable <cluster>`.
+- **`/gsd-settings`** is the interactive prompt for GSD's workflow toggles (the `workflow.*` config keys that gate hooks). Use it to turn workflow features on or off conversationally; it writes the same config keys that `gsd capability set … --gate` writes.
 
 For anything you want to be exact about — a specific capability id, a single named gate, or a step in a script or CI job — prefer the CLI.
 

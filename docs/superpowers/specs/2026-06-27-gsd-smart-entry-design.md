@@ -8,11 +8,11 @@
 
 ## Summary
 
-A `/gsd:next` command that acts as gsd-core's **state-aware front door**. It reads project + workflow state, classifies the user's situation, and presents a small menu of the right next actions — then dispatches to an existing command. The "smart" part is deterministic detection living in Node (a new `gsd-tools smart-entry` subcommand); the presentation is an idiomatic markdown command + workflow using `AskUserQuestion` with a `--text` fallback for non-Claude runtimes.
+A `/gsd-next` command that acts as gsd-core's **state-aware front door**. It reads project + workflow state, classifies the user's situation, and presents a small menu of the right next actions — then dispatches to an existing command. The "smart" part is deterministic detection living in Node (a new `gsd-tools smart-entry` subcommand); the presentation is an idiomatic markdown command + workflow using `AskUserQuestion` with a `--text` fallback for non-Claude runtimes.
 
 This is a **launcher / router**, not an executor. It never does the work itself.
 
-> **Implementation note (command name):** the command-contract (ADR-0002) requires `name:` to be `gsd:*` or `gsd-*` prefixed; a bare `/gsd` is not expressible. The command is therefore `gsd:next` → `/gsd:next` (file `commands/gsd/next.md`, backed by `gsd-core/workflows/smart-entry.md`). The "smart entry" concept and behavior are unchanged; only the surfaced name differs from the original `/gsd` sketch.
+> **Implementation note (command name):** the command-contract (ADR-0002) requires `name:` to be `gsd:*` or `gsd-*` prefixed; a bare `/gsd` is not expressible. The frontmatter is therefore `name: gsd:next`, surfacing as `/gsd-next` (file `commands/gsd/next.md`, backed by `gsd-core/workflows/smart-entry.md`). The "smart entry" concept and behavior are unchanged; only the surfaced name differs from the original `/gsd` sketch.
 
 ---
 
@@ -34,13 +34,13 @@ These were chosen during brainstorming and are fixed inputs to this spec:
 
 3. **Richness: phase + smart signals.** The classifier branches on gsd-core's phase loop **and** richer gsd-pi-style signals (blocked/recover, idle/stranded, paused, complete). All 10 situations below are in scope.
 
-4. **Relationship to `/gsd-progress`: complementary, not redundant.** `/gsd:next` is the **front door / launcher** — a state-aware *menu* the user picks the next action from. `/gsd-progress` remains the **detailed situational report + auto-advance** (`--next` chaining). `/gsd:next` will frequently recommend `/gsd:progress`; it does not replace or deprecate it.
+4. **Relationship to `/gsd-progress`: complementary, not redundant.** `/gsd-next` is the **front door / launcher** — a state-aware *menu* the user picks the next action from. `/gsd-progress` remains the **detailed situational report + auto-advance** (`--next` chaining). `/gsd-next` will frequently recommend `/gsd-progress`; it does not replace or deprecate it.
 
 ---
 
 ## Non-goals
 
-- **No init/onboarding wizard.** `/gsd-new-project` already owns first-run project setup. `/gsd:next` routes to it.
+- **No init/onboarding wizard.** `/gsd-new-project` already owns first-run project setup. `/gsd-next` routes to it.
 - **No new prompt/TUI library.** `AskUserQuestion` (Claude) + `--text` numbered-list fallback (other runtimes) — matching repo convention. No inquirer/clack/ink.
 - **No copy of gsd-pi's branch tree.** gsd-pi's milestone/slice/task model does not exist here. The situation table is **redesigned for gsd-core's phase loop** (`.planning/`).
 - **No execution.** Pure launcher. Picked action dispatches to an existing command and stops.
@@ -51,7 +51,7 @@ These were chosen during brainstorming and are fixed inputs to this spec:
 ## Architecture
 
 ```text
-/gsd:next   (commands/gsd/next.md — thin markdown dispatcher)
+/gsd-next   (commands/gsd/next.md — thin markdown dispatcher)
   │
   ▼
 workflow: gsd-core/workflows/smart-entry.md        ◄── presentation + dispatch
@@ -154,10 +154,10 @@ unknown          → progress*, "progress --next", quick, help
     "blockers": []
   },
   "actions": [
-    { "id": "execute-phase", "label": "Continue executing phase 2", "command": "/gsd:execute-phase", "recommended": true },
-    { "id": "progress-next", "label": "Advance to the next step", "command": "/gsd:progress --next", "recommended": false },
-    { "id": "quick", "label": "Quick task", "command": "/gsd:quick", "recommended": false },
-    { "id": "code-review", "label": "Review recent work", "command": "/gsd:code-review", "recommended": false }
+    { "id": "execute-phase", "label": "Continue executing phase 2", "command": "/gsd-execute-phase", "recommended": true },
+    { "id": "progress-next", "label": "Advance to the next step", "command": "/gsd-progress --next", "recommended": false },
+    { "id": "quick", "label": "Quick task", "command": "/gsd-quick", "recommended": false },
+    { "id": "code-review", "label": "Review recent work", "command": "/gsd-code-review", "recommended": false }
   ]
 }
 ```
@@ -165,7 +165,7 @@ unknown          → progress*, "progress --next", quick, help
 - `situation`, `recommended`, `actions[]` are the contract the workflow depends on.
 - `signals` is informational (shown in the summary banner); the workflow does not branch on it.
 - `summary` is a one-line human string; the workflow may show it verbatim or reformat.
-- `actions[].command` is the full slash command string the workflow dispatches, including flags (e.g. `/gsd:progress --next`).
+- `actions[].command` is the full slash command string the workflow dispatches, including flags (e.g. `/gsd-progress --next`).
 
 ---
 
@@ -176,7 +176,7 @@ unknown          → progress*, "progress --next", quick, help
 Thin dispatcher, modeled on `commands/gsd/progress.md` and `commands/gsd/help.md`. Backed by `gsd-core/workflows/smart-entry.md` (named for the `smart-entry` classifier + `gsd-tools smart-entry` subcommand; does not collide with the existing `workflows/next.md`, which is the progress `--next` sub-workflow).
 
 Frontmatter:
-- `name: gsd:next` (surfaces as `/gsd:next`; the command-contract requires a `gsd:*`/`gsd-*` prefix — a bare `/gsd` is not expressible, see ADR-0002)
+- `name: gsd:next` (surfaces as `/gsd-next`; the command-contract requires a `gsd:*`/`gsd-*` prefix — a bare `/gsd` is not expressible, see ADR-0002)
 - `description:` "GSD smart entry — the state-aware front door. Reads your project state and routes you to the right next action."
 - `argument-hint: ""` (no args for v1; reserved)
 - `effort: low`
@@ -196,7 +196,7 @@ Five steps. **Must stay under 32 KiB (NEW_FILE_CAP)** — lean, because all bran
 ```bash
 SNAPSHOT=$(gsd_run smart-entry --json 2>/dev/null)
 ```
-Parse `SNAPSHOT` as JSON. If missing or unparseable → fall back to `/gsd:progress` (Step 5, with a one-line note "smart-entry unavailable — showing progress"). The agent never gets stuck.
+Parse `SNAPSHOT` as JSON. If missing or unparseable → fall back to `/gsd-progress` (Step 5, with a one-line note "smart-entry unavailable — showing progress"). The agent never gets stuck.
 
 **Step 3 — `present` (render the menu):**
 
@@ -225,13 +225,13 @@ The `--text` fallback is mandatory and is the reason we keep menus small and log
 | failure | behavior |
 |---|---|
 | `gsd_run` shim not found | the shim block itself errors with the standard install hint (from `do.md:29`); not our concern |
-| `smart-entry` command missing (older gsd-core) | workflow sees empty/unparseable output → falls back to `/gsd:progress` with a note |
-| `smart-entry` throws | same: caught by the `2>/dev/null` + parse check → fallback to `/gsd:progress` |
+| `smart-entry` command missing (older gsd-core) | workflow sees empty/unparseable output → falls back to `/gsd-progress` with a note |
+| `smart-entry` throws | same: caught by the `2>/dev/null` + parse check → fallback to `/gsd-progress` |
 | `.planning/` absent | `smart-entry` returns `situation: "no-project"` → menu offers `new-project` |
 | git unavailable / not a repo | classifier swallows git errors; works without git signals |
 | `AskUserQuestion` unavailable (non-Claude) | TEXT_MODE numbered list |
 
-**Invariant:** `/gsd` always produces *some* actionable menu and never strands the user. The ultimate fallback is `/gsd:progress`, which is always safe and always exists.
+**Invariant:** `/gsd` always produces *some* actionable menu and never strands the user. The ultimate fallback is `/gsd-progress`, which is always safe and always exists.
 
 ---
 
@@ -279,7 +279,7 @@ Invariants over the markdown layer (these are structural/format assertions on sh
 | `src/smart-entry.cts` | NEW — detection + classifier; `--json` + human output | — |
 | `gsd-core/bin/lib/smart-entry.cjs` | generated by `build:lib` (gitignored) | — |
 | `gsd-core/bin/gsd-tools.cjs` | add `case 'smart-entry':` (~2 lines) | — |
-| `commands/gsd/next.md` | NEW — thin dispatcher command (`gsd:next` → `/gsd:next`) | small |
+| `commands/gsd/next.md` | NEW — thin dispatcher command (`name: gsd:next` → `/gsd-next`) | small |
 | `gsd-core/workflows/smart-entry.md` | NEW — presentation + dispatch | < 32 KiB |
 | `tests/smart-entry.unit.test.cjs` | NEW — classifier behavior | — |
 | `tests/gsd-workflow.structure.test.cjs` | NEW — markdown-layer invariants | — |
@@ -305,6 +305,6 @@ None blocking. Two noted for the implementer's judgment (not spec-level):
 - [ ] `/gsd` in a real project shows a situation-appropriate menu and dispatches the chosen command.
 - [ ] `/gsd` pre-project offers `new-project`.
 - [ ] `/gsd` works under TEXT_MODE (no `AskUserQuestion`).
-- [ ] Any `smart-entry` failure falls back to `/gsd:progress` without erroring.
+- [ ] Any `smart-entry` failure falls back to `/gsd-progress` without erroring.
 - [ ] New workflow under 32 KiB; `size:baseline` updated; coverage gate passes.
 - [ ] No new dependencies; no existing command modified.

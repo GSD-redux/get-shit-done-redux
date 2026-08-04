@@ -1,6 +1,6 @@
 # CONTEXT.md 스키마 참조
 
-페이즈별 `CONTEXT.md`는 `/gsd:discuss-phase` 중 캡처된 구현 결정을 담는 GSD Core의 파일입니다. 이 파일은 리서치 에이전트와 플래닝 에이전트 모두를 위한 주요 업스트림 입력입니다. 이 페이지는 해당 파일의 구조를 설명합니다. [문서 인덱스](../../README.md)를 참조하세요.
+페이즈별 `CONTEXT.md`는 `/gsd-discuss-phase` 중 캡처된 구현 결정을 담는 GSD Core의 파일입니다. 이 파일은 리서치 에이전트와 플래닝 에이전트 모두를 위한 주요 업스트림 입력입니다. 이 페이지는 해당 파일의 구조를 설명합니다. [문서 인덱스](../../README.md)를 참조하세요.
 
 ---
 
@@ -107,7 +107,7 @@ No external specs — requirements fully captured in decisions above
 
 ## SPEC.md 통합
 
-페이즈를 논의하기 전에 `/gsd:spec-phase`가 실행된 경우, `check_spec` 단계에서 `*-SPEC.md` 파일을 찾아 `<spec_lock>`을 활성화합니다:
+페이즈를 논의하기 전에 `/gsd-spec-phase`가 실행된 경우, `check_spec` 단계에서 `*-SPEC.md` 파일을 찾아 `<spec_lock>`을 활성화합니다:
 
 ```markdown
 <spec_lock>

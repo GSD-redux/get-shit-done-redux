@@ -382,7 +382,7 @@
 | `cjs-command-router-adapter.cjs` | 매니페스트 기반 CJS 명령어 패밀리 라우터를 위한 공유 호환성 어댑터 |
 | `clock.cjs` | 결정론적 잠금 테스트를 위한 주입 가능한 클록 심(now/sleep) |
 | `clusters.cjs` | 런타임 표면 모듈을 위한 스킬 클러스터 정의(ADR-0011 Phase 2) |
-| `code-review-flags.cjs` | `/gsd:code-review`를 위한 타입 플래그 파서; `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) 및 `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`) 내보내기; `--fix`/`--all`/`--auto` 라우팅을 위한 표준 디스패치 심 |
+| `code-review-flags.cjs` | `/gsd-code-review`를 위한 타입 플래그 파서; `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) 및 `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`) 내보내기; `--fix`/`--all`/`--auto` 라우팅을 위한 표준 디스패치 심 |
 | `command-aliases.cjs` | 매니페스트 기반 패밀리 라우터를 위한 별칭/하위 명령어 메타데이터 |
 | `command-arg-projection.cjs` | 명령어 패밀리 라우터 전반에 공유되는 타입 플래그 및 위치 인수 프로젝션 헬퍼 |
 | `command-routing-hub.cjs` | 모든 명령어 패밀리 라우터를 위한 모드 결정(SDK vs CJS), 오류 분류, 예외 없음 계약을 집중화하는 순수 결과 디스패치 허브(#3788) |
@@ -444,7 +444,7 @@
 | `template.cjs` | 변수 치환을 통한 템플릿 선택 및 채우기 |
 | `uat.cjs` | UAT 파일 파싱, 검증 부채 추적, audit-uat 지원 |
 | `ui-safety-gate.cjs` | 셸 없는 단어 경계 UI 토큰 감지기(#3706, #3718); stdin에서 단계 섹션 텍스트를 읽어 0(UI 발견) 또는 1(UI 없음) 종료; GSD 설치 프로그램이 `$RUNTIME_DIR`에 배포하도록 `gsd-core/bin/lib/`에도 배포 |
-| `update-context.cjs` | `/gsd:update`를 위한 순수 설치 컨텍스트 해석기 — update.md bash에서 포팅된 런타임/범위/설정 디렉터리/버전 감지(LOCAL/GLOBAL/UNKNOWN); `gsd-tools update-context` 지원(#498) |
+| `update-context.cjs` | `/gsd-update`를 위한 순수 설치 컨텍스트 해석기 — update.md bash에서 포팅된 런타임/범위/설정 디렉터리/버전 감지(LOCAL/GLOBAL/UNKNOWN); `gsd-tools update-context` 지원(#498) |
 | `validate-command-router.cjs` | `gsd-tools validate`를 위한 얇은 CJS 하위 명령어 라우터 어댑터 |
 | `validate.cjs` | 순수 단계 변형 정규화 헬퍼(`phaseVariants`, `buildRoadmapPhaseVariants`, `buildNotStartedPhaseVariants`), W006/W007 확인을 위해 `verify.cjs`에서 사용; I/O 없음, 비동기 없음 |
 | `verify-command-router.cjs` | `gsd-tools verify`를 위한 얇은 CJS 하위 명령어 라우터 어댑터 |

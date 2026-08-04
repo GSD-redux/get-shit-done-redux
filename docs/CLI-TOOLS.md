@@ -95,7 +95,7 @@ Returns JSON with: current position, phase, plan, status, decisions, blockers, m
 
 ### Smart Entry
 
-Read-only situation classifier used by `/gsd:next`.
+Read-only situation classifier used by `/gsd-next`.
 
 ```bash
 node gsd-tools.cjs smart-entry          # Human summary + recommended route
@@ -654,7 +654,7 @@ node gsd-tools.cjs websearch <query> [--limit N] [--freshness day|week|month]
 
 ## Update Backup and Restore
 
-The two halves of `/gsd:update`'s user-added-file protection. `detect-custom-files`
+The two halves of `/gsd-update`'s user-added-file protection. `detect-custom-files`
 lists files that exist inside GSD-managed directories but are absent from
 `gsd-file-manifest.json` — the update workflow copies those into
 `gsd-user-files-backup/` before the clean-install wipe. `restore-custom-files`
