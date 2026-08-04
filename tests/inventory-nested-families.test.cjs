@@ -141,6 +141,20 @@ test('row 13b — a missing root contributes nothing rather than throwing', () =
   );
 });
 
+// ─── Row 13c: an unstattable entry is skipped, not fatal ─────────────────────
+
+test('row 13c — a dangling symlink under the subdirectory does not crash the walk', (t) => {
+  const root = buildTree({ alpha: { steps: ['real.md'] } });
+  t.after(() => cleanup(root));
+  fs.symlinkSync(path.join(root, 'alpha', 'steps', 'nope.md'), path.join(root, 'alpha', 'steps', 'dangling.md'));
+
+  assert.deepStrictEqual(
+    collectNested({ root, subdir: 'steps', filter: MD_ONLY }),
+    ['alpha/steps/real.md'],
+    'one unreadable entry must not take down manifest generation for the whole repo',
+  );
+});
+
 // ─── Determinism ─────────────────────────────────────────────────────────────
 
 test('collectNested is deterministic and sorted', (t) => {

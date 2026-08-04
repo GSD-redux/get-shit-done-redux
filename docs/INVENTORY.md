@@ -276,8 +276,8 @@ neither is separately invocable — the parent workflow reaches them.
 
 | Subdirectory | What it holds | Manifest family | Roster |
 |---|---|---|---|
-| `<workflow>/steps/*.md` | Gated section bodies extracted by the fragment model (ADR-1671, epic #1671 Phases 6.1–6.3). The parent carries a `section_manifest`-gated stub; `gsd-core/workflows/section-manifest.json` names which step a given invocation reads. | `workflow_steps` | 15 workflows — see the manifest for the authoritative per-file list |
-| `<workflow>/modes/*.md` | Progressive-disclosure mode files (#717). The parent dispatches to exactly one; `discuss-phase/modes/` is the canonical example. | `workflow_modes` | `discuss-phase`, `sketch` |
+| `<workflow>/steps/*.md` | Gated section bodies extracted by the fragment model (ADR-1671, epic #1671 Phases 6.1–6.3). The parent carries a `section_manifest`-gated stub; `gsd-core/workflows/section-manifest.json` names which step a given invocation reads. | `workflow_steps` | See `docs/INVENTORY-MANIFEST.json` for the authoritative per-file list |
+| `<workflow>/modes/*.md` | Progressive-disclosure mode files (#717). The parent dispatches to exactly one; `discuss-phase/modes/` is the canonical example. | `workflow_modes` | `discuss-phase`, `help` |
 
 Both families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because two
 workflows may each own a step of the same name — `families.workflows` uses bare basenames and

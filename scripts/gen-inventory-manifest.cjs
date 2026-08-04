@@ -101,17 +101,46 @@ const NESTED_FAMILIES = [
  * committed diff that signals nothing. `statSync().isDirectory()` is checked
  * before every `readdirSync` so a plain FILE named `steps` cannot throw.
  */
+/**
+ * `fs.statSync` throws on a dangling symlink and on an EACCES-denied path. An
+ * entry we cannot stat is, for inventory purposes, not a countable file — the
+ * same disposition as "not a directory" below. Swallowing the throw here keeps
+ * one unreadable entry from taking down `--check` for the entire repo, which is
+ * a manifest generator's worst failure mode: it turns a local filesystem oddity
+ * into a red gate on every PR.
+ */
+function statOrNull(p) {
+  try {
+    return fs.statSync(p);
+  } catch {
+    return null;
+  }
+}
+
 function collectNested({ root, subdir, filter }) {
   if (!fs.existsSync(root)) return [];
   const out = [];
-  for (const parent of fs.readdirSync(root)) {
-    const parentDir = path.join(root, parent);
-    if (!fs.statSync(parentDir).isDirectory()) continue;
-    const nestedDir = path.join(parentDir, subdir);
-    if (!fs.existsSync(nestedDir) || !fs.statSync(nestedDir).isDirectory()) continue;
-    for (const file of fs.readdirSync(nestedDir)) {
-      const full = path.join(nestedDir, file);
-      if (!fs.statSync(full).isFile() || !filter(file)) continue;
+  let parents;
+  try {
+    parents = fs.readdirSync(root);
+  } catch {
+    return [];
+  }
+  for (const parent of parents) {
+    const parentStat = statOrNull(path.join(root, parent));
+    if (!parentStat || !parentStat.isDirectory()) continue;
+    const nestedDir = path.join(root, parent, subdir);
+    const nestedStat = statOrNull(nestedDir);
+    if (!nestedStat || !nestedStat.isDirectory()) continue;
+    let files;
+    try {
+      files = fs.readdirSync(nestedDir);
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      const fileStat = statOrNull(path.join(nestedDir, file));
+      if (!fileStat || !fileStat.isFile() || !filter(file)) continue;
       out.push([parent, subdir, file].join('/'));
     }
   }
@@ -170,7 +199,7 @@ function main() {
   }
 }
 
-/* istanbul ignore next -- CLI entry guard */
+/* c8 ignore next 3 -- CLI entry guard; this repo measures coverage with c8, which does not honor istanbul pragmas */
 if (require.main === module) {
   runMain(main);
 }
