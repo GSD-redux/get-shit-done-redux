@@ -142,6 +142,50 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
   the "Rejected" cases (`--auto`/`--chain`/persisted-config interleaving;
   negated `--skip-bounce` OR `--gaps` OR NOT(...)) recorded in
   `.gsd/phase/chore-2993-fragmentize-plan-phase/40-design.md`.
+
+  **Amended by #2994 (Phase 6.3) — the vocabulary widens 19 → 29, third coordinated
+  amendment.** Rolling the fragment model onto the remaining 13 LARGE/XL workflows
+  surfaced 10 more atoms, admitted under the same two gates #2992 established. This
+  amendment is recorded retroactively by #2995 (Phase 6.4): #2994 shipped the atoms
+  without it, which this bullet's own rule forbids ("Widening the vocabulary requires a
+  coordinated ADR amendment, not an organic edit"). The gap was found by re-running
+  `/adr-phase-coverage` against what actually merged. The atoms each satisfy both
+  admission gates and are not in question; the missing record is.
+
+  **Shipped (10).** `flag:--fix`, `state:auto-advance-active`, `state:fallow-enabled`,
+  `state:flat-mode`, `state:git-create-tag`, `state:is-monorepo`, `state:next-channel`,
+  `state:plan-strategy-converge`, `state:reviewer-instances-configured`,
+  `state:ui-phase-active`, `state:workstream-active`. Compound real-world triggers
+  (`--converge OR --cross-ai`, `--next OR --rc`, `--auto OR` config, `--discuss OR
+  --full`) are each resolved to a single boolean in `src/init.cts` before evaluation, so
+  `when=` still sees one operator-free atom — the `state:chunked-mode` precedent above.
+  `state:flat-mode` is the positively-phrased inverse of `state:workstream-active`,
+  because negation is not in the grammar.
+
+  **`flag:--verify-only` is permanently REJECTED, not pending.** #2992 listed it among
+  six withheld atoms and deferred all six to "the LARGE/XL rollout phase". Five shipped
+  in #2994. `flag:--verify-only` did not, and will not: `docs-update`'s control flow is
+  interleaved across three non-contiguous touch-points, so gating one would leave the
+  other two as raw `$ARGUMENTS` checks. An atom with no genuine consuming section is dead
+  vocabulary — the rot the frozen list exists to prevent. That disposition was recorded
+  only in merged PR #3030's body, leaving this ADR still asserting a hand-off that will
+  never complete; it is recorded here so the withheld list reaches a terminal state.
+
+  **Amended by #2995 (Phase 6.4) — the grammar does NOT extend to `agents/`.**
+  Migration step 7 names agents alongside workflows. Emission does extend: agent bodies
+  now pass through `composeWorkflow` on every emission path, so a marker in an agent is
+  stripped rather than shipped verbatim. **Gating does not.** `when=` selection is
+  consumed from the committed `gsd-core/workflows/section-manifest.json`, which
+  `scripts/gen-section-manifest.cjs` derives from `gsd-core/workflows/*.md` only; its
+  shape is `{workflows: {...}}` and there is no per-agent entry, no per-agent init entry
+  point, and no consumer that could evaluate an agent's `when=`. An agent atom therefore
+  fails admission gate (2) — "a fact the init seam demonstrably computes at a real entry
+  point" — and would be the exact silent-inertness failure that gate exists to prevent: a
+  marker that looks like working gating while evaluating `false` forever. Agents are
+  consequently size-managed by extraction to `gsd-core/references/` (the documented
+  `DEFECT.AGENT-FILE-SIZE-CAP-BREACH` fix-forward), not by `when=` markers. Extending
+  gating to agents would require a per-agent manifest family and a dispatch-time seam to
+  read it; that is a separate decision, not an organic edit, and is not taken here.
 - **Budget unit:** bytes for emission caps (matches `lfByteCount`, deterministic, offline-safe); a token estimate for run-time selection.
 
   **Corrected by #2931 (Phase 4) — the Windsurf cap was never load-bearing.** The Context

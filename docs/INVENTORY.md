@@ -301,6 +301,8 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `debugger-repro-hardening.md` | Regression-test hardening (PBT shrinking + oracle classification + boundary neighbors) loaded by `gsd-debugger`. |
 | `debugger-prevention.md` | Prevention / blameless-postmortem output (5-Whys + why-not-caught + recurrence guard) loaded by `gsd-debugger`. |
 | `debugger-semantic-recall.md` | Semantic knowledge-base recall via MemPalace (keyword-fallback) loaded by `gsd-debugger`. |
+| `debugger-techniques.md` | Full step-by-step bodies for the 10 debugging techniques (binary search, delta debugging, git bisect, …) routed by `gsd-debugger`'s technique-selection table. |
+| `verifier-wiring-patterns.md` | Data-flow trace procedure and the four wiring patterns (Component→API, API→Database, Form→Handler, State→Render) loaded by `gsd-verifier`. |
 | `mandatory-initial-read.md` | Shared required-reading boilerplate injected into agent prompts. |
 | `agent-skills-bootstrap.md` | Shared agent_skills self-load contract (query + Read + dedup guard) injected into all 22 consumer agents. |
 | `project-skills-discovery.md` | Shared project-skills-discovery boilerplate injected into agent prompts. |

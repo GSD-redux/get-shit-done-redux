@@ -1,6 +1,6 @@
 'use strict';
 
-// allow-test-rule: source-text-is-the-product — this suite asserts on the literal bytes of
+// allow-test-rule: source-text-is-the-product see #2995 — this suite asserts on the literal bytes of
 // EMITTED install artifacts, which ARE the deployed contract: a leaked `gsd:section` marker
 // byte ships to every user and is loaded verbatim into a subagent's context on every dispatch.
 // Same exemption basis as tests/workflow-fragments-emission.install.test.cjs (#2930).
