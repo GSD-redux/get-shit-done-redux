@@ -176,7 +176,7 @@ unknown          → progress*, "progress --next", quick, help
 Thin dispatcher, modeled on `commands/gsd/progress.md` and `commands/gsd/help.md`. Backed by `gsd-core/workflows/smart-entry.md` (named for the `smart-entry` classifier + `gsd-tools smart-entry` subcommand; does not collide with the existing `workflows/next.md`, which is the progress `--next` sub-workflow).
 
 Frontmatter:
-- `name: gsd-next` (surfaces as `/gsd-next`; the command-contract requires a `gsd:*`/`gsd-*` prefix — a bare `/gsd` is not expressible, see ADR-0002)
+- `name: gsd:next` (surfaces as `/gsd-next`; the command-contract requires a `gsd:*`/`gsd-*` prefix — a bare `/gsd` is not expressible, see ADR-0002)
 - `description:` "GSD smart entry — the state-aware front door. Reads your project state and routes you to the right next action."
 - `argument-hint: ""` (no args for v1; reserved)
 - `effort: low`
@@ -259,7 +259,7 @@ Fixture-driven: create temp dirs with crafted `.planning/STATE.md` + optional gi
 
 Invariants over the markdown layer (these are structural/format assertions on shipped artifacts, not source-grep of logic — permitted since they test the *contract* the workflow exposes):
 
-- `commands/gsd/next.md` exists with frontmatter `name: gsd-next`, no `requires` field, `allowed-tools` includes `AskUserQuestion`.
+- `commands/gsd/next.md` exists with frontmatter `name: gsd:next`, no `requires` field, `allowed-tools` includes `AskUserQuestion`.
 - `gsd-core/workflows/smart-entry.md` exists and is **under 32 KiB** (NEW_FILE_CAP).
 - Every `command` string referenced by the classifier's action table resolves to a real existing slash command file in `commands/gsd/` (guard against dead routes).
 - The workflow contains the TEXT_MODE fallback clause and the shim-resolution block (contract assertions).

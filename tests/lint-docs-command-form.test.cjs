@@ -133,6 +133,68 @@ describe('lint-docs-command-form — bare colon form flagged', () => {
   });
 });
 
+describe('lint-docs-command-form — name: frontmatter key citation exempt', () => {
+  test('exits 0 when docs quote `name: gsd:next` as a source frontmatter citation', () => {
+    const dir = createTempRepo();
+    try {
+      writeFile(dir, 'commands/gsd/next.md', '---\nname: gsd:next\n---\n');
+      writeFile(
+        dir,
+        'docs/how-to/example.md',
+        'Frontmatter:\n- `name: gsd:next` (surfaces as `/gsd-next`)\n',
+      );
+      gitAdd(dir, 'commands/gsd/next.md');
+      gitAdd(dir, 'docs/how-to/example.md');
+
+      const result = runGuard(dir);
+      assert.equal(
+        result.status,
+        0,
+        `expected exit 0 for a name: frontmatter citation, got ${result.status}; stderr: ${result.stderr}`,
+      );
+      assert.ok(result.stdout.includes('0 violations'), `stdout: ${result.stdout}`);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('lint-docs-command-form — name: exemption is narrow, not a blanket hole', () => {
+  test('exits non-zero when bare gsd:next appears without a preceding name: key', () => {
+    const dir = createTempRepo();
+    try {
+      writeFile(dir, 'commands/gsd/next.md', '---\nname: gsd:next\n---\n');
+      writeFile(dir, 'docs/how-to/example.md', 'Just type gsd:next to run it.\n');
+      gitAdd(dir, 'commands/gsd/next.md');
+      gitAdd(dir, 'docs/how-to/example.md');
+
+      const result = runGuard(dir);
+      assert.notEqual(result.status, 0, `expected non-zero exit, got ${result.status}; stdout: ${result.stdout}`);
+      assert.ok(result.stderr.includes('docs/how-to/example.md'), `stderr should name the file: ${result.stderr}`);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
+describe('lint-docs-command-form — case-insensitive detection', () => {
+  test('exits non-zero when docs contain /GSD:next (mixed case)', () => {
+    const dir = createTempRepo();
+    try {
+      writeFile(dir, 'commands/gsd/next.md', '---\nname: gsd:next\n---\n');
+      writeFile(dir, 'docs/how-to/example.md', 'Run `/GSD:next` to start.\n');
+      gitAdd(dir, 'commands/gsd/next.md');
+      gitAdd(dir, 'docs/how-to/example.md');
+
+      const result = runGuard(dir);
+      assert.notEqual(result.status, 0, `expected non-zero exit, got ${result.status}; stdout: ${result.stdout}`);
+      assert.ok(result.stderr.includes('docs/how-to/example.md'), `stderr should name the file: ${result.stderr}`);
+    } finally {
+      cleanup(dir);
+    }
+  });
+});
+
 describe('lint-docs-command-form — clean docs tree', () => {
   test('exits 0 on a clean fixture repo with no colon-form commands', () => {
     const dir = createTempRepo();

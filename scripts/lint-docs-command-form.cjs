@@ -26,6 +26,22 @@
  *   - commands/gsd/**, gsd-core/workflows/**, agents/** — never touched by this
  *     guard at all; the colon form is correct there.
  *
+ * Exemption — `name:` frontmatter key citations: source command files
+ * (`commands/gsd/*.md`) carry the colon form in their `name:` YAML frontmatter
+ * key (e.g. `name: gsd:next`). A doc that quotes that key verbatim — e.g.
+ * `` `name: gsd:next` `` or `name: gsd:next` — is citing the real source file,
+ * not telling a reader what to type. Rewriting that citation to `gsd-next`
+ * would make the doc lie about the source it's quoting, so a `gsd:<cmd>` token
+ * immediately preceded by `name:` (optionally with a backtick/whitespace in
+ * between) is permitted. This is narrow: it does not exempt `gsd:<cmd>`
+ * anywhere else on the line or file, including the reader-facing `/gsd-<cmd>`
+ * form that may appear later in the same sentence.
+ *
+ * Detection is case-insensitive (`/GSD:next`, `Gsd:Next`, etc. are all
+ * flagged) since the install-time converters and runtimes treat command names
+ * case-insensitively in practice, and a doc typo in casing is still a lie
+ * about the real command form.
+ *
  * Exit 0 if no violations; exit 1 if any are found (with stderr diagnostics).
  */
 
@@ -50,7 +66,15 @@ const COMMANDS_DIR = path.join(REPO_ROOT, 'commands/gsd');
 
 // Matches `/gsd:<cmd>` and bare `gsd:<cmd>` (not part of `/gsd-core:<cmd>`,
 // which does not contain the substring `gsd:` — the hyphen breaks it).
-const COMMAND_FORM_RE = /(^|[^A-Za-z0-9_-])(\/)?gsd:([A-Za-z0-9_-]+)/g;
+// Case-insensitive so `/GSD:next` / `Gsd:Next` are also caught.
+const COMMAND_FORM_RE = /(^|[^A-Za-z0-9_-])(\/)?gsd:([A-Za-z0-9_-]+)/gi;
+
+// A `gsd:<cmd>` token is exempt when it is a citation of a source file's
+// YAML `name:` frontmatter key — i.e. the text immediately before the match
+// (ending exactly where the match begins) is `name:` followed by optional
+// whitespace and/or a backtick. Only applies to the bare (non-`/`) form,
+// since the real frontmatter key never carries a leading slash.
+const NAME_KEY_CITATION_RE = /name:\s*`?\s*$/i;
 
 function loadRoster() {
   let entries;
@@ -88,7 +112,11 @@ function scanContent(relPath, content, roster) {
     let match;
     while ((match = COMMAND_FORM_RE.exec(line)) !== null) {
       const [, pre, slash, cmd] = match;
-      if (!roster.has(cmd)) continue;
+      if (!roster.has(cmd.toLowerCase())) continue;
+      if (!slash) {
+        const preContext = line.slice(0, match.index + pre.length);
+        if (NAME_KEY_CITATION_RE.test(preContext)) continue;
+      }
       const matchedToken = (slash || '') + 'gsd:' + cmd;
       violations.push({
         file: relPath,

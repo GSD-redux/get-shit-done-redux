@@ -61,7 +61,7 @@ This is a **beta of a beta**: ultraplan itself is in research preview, so this c
 ## Command File (`commands/gsd/ultraplan-phase.md`)
 
 Frontmatter:
-- `name: gsd-ultraplan-phase`
+- `name: gsd:ultraplan-phase`
 - `description:` includes `[BETA]` marker
 - `argument-hint: [phase-number]`
 - `allowed-tools:` Read, Bash, Glob, Grep
