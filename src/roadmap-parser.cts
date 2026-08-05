@@ -355,13 +355,18 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   // unresolvable one) leaves `bracketBoundaryActive` false and takes the exact
   // pre-existing code path, byte-identically.
 
+  // #2761 B3: tokenized ONCE and shared by computeSectionEnd and the
+  // preambleCutoff bracket scan below (previously each re-tokenized the whole
+  // document independently, and the preambleCutoff scan didn't tokenize at
+  // all — see that scan's own comment for why that was the Blocker 3 defect).
+  const currentMilestoneHeadings = tokenizeHeadings(content);
+
   const computeSectionEnd = (headingText: string, headingStart: number): number => {
     const level = (headingText.match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
     const afterHeading = headingStart + headingText.length;
-    // Use tokenizeHeadings (fence-aware, offsets into original content) to find
-    // the next stop boundary without re-implementing fence detection. T4 seam migration.
-    const headings = tokenizeHeadings(content);
-    for (const h of headings) {
+    // Fence-aware, offsets into original content — finds the next stop
+    // boundary without re-implementing fence detection. T4 seam migration.
+    for (const h of currentMilestoneHeadings) {
       if (h.offset <= headingStart) continue;
       if (h.offset < afterHeading) continue;
       if (h.level > level) continue;
@@ -379,65 +384,51 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   const sectionEnd = computeSectionEnd(selected[0], sectionStart);
 
   const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
-  let firstMilestoneMatch = content.match(anyMilestonePattern);
+  // #2761 B3: the LEGACY (non-bracket-shaped) half of this "earliest
+  // milestone-shaped heading" search stays a raw `content.match` — byte-
+  // identical to before this fix, including its fence-blindness. That hazard
+  // is real (a fenced `## Milestone v9.0` example in the preamble reads
+  // identically wrong at base, round-1, and HEAD — repro12's LEGACY control)
+  // but is PRE-EXISTING and shared with the ORIGINAL (pre-#612) code path,
+  // not introduced by this branch — fixing it is explicitly out of scope
+  // (round-2 review's own minimal-fix note). Only the BRACKET half — which
+  // this branch introduced, and which regressed a previously-CORRECT
+  // round-1 behaviour (a bracket repo with a fenced bracket example in its
+  // preamble read 2/1/50 at round-1, 4/3/75 at HEAD) — is fixed here.
+  const versionMilestoneMatch = content.match(anyMilestonePattern);
+  let earliestMilestoneIndex: number | null = versionMilestoneMatch ? versionMilestoneMatch.index! : null;
   if (bracketBoundaryActive) {
-    // Same discriminator as computeSectionEnd (isBracketMilestoneBoundary), so
-    // a bracket PHASE heading or a same-milestone CONTINUATION heading is
-    // never mistaken for a milestone boundary here either. matchAll (not a
-    // single `.match`) because the same-milestone exclusion can reject the
-    // textually-earliest bracket-shaped heading, in which case the next
-    // candidate in document order must be considered — the first ACCEPTED
-    // match is the earliest bracket boundary. Earliest-of-either-shape
-    // (bracket vs. version/emoji), so a version-bearing PRIOR milestone in an
-    // otherwise version-less roadmap still cuts the preamble correctly.
+    // #2761 B3: scans the SAME fence-aware `currentMilestoneHeadings` token
+    // list computeSectionEnd consumes, instead of a raw `content.matchAll` —
+    // closes the asymmetry between the two halves of one boundary semantic.
+    // Before this fix, a fenced markdown example containing a bracket
+    // heading (ADR-612's own docs do exactly this) was textually the
+    // earliest `#{1,3} [CODE.MM]` match, so `preambleCutoff` landed INSIDE
+    // the fence, `preamble` ended with an unclosed opener, and
+    // `getMilestonePhaseFilter`'s tokenizeHeadings(scope) call then saw an
+    // unbalanced fence and swallowed every real heading, degrading to a
+    // pass-all filter (repro11). tokenizeHeadings already strips fenced
+    // lines before a heading candidate is ever produced, so a heading INSIDE
+    // a fence is never a candidate here at all.
     //
-    // Deliberately passes `null` for `selectedBracketId` here — NOT
-    // `selectedBracketId` — unlike computeSectionEnd. The same-milestone
-    // exclusion means "this heading only continues the CURRENT milestone's own
-    // section, so don't stop scanning FORWARD here"; preambleCutoff instead
-    // asks "where does the earliest milestone-shaped heading sit, scanning
-    // from the TOP of the document" — and the selected heading's own position
-    // is always a CORRECT answer to that question, same-id or not (it is, by
-    // construction, where the current milestone begins). Excluding it here
-    // discards the "earliest of either" comparison's most common winning
-    // candidate and lets `firstMilestoneMatch` fall through to a stray LATER
-    // heading (a genuinely later, unrelated milestone) that the version/emoji
-    // scan already found earlier in this function — regressing the
-    // then-shipped "level-1 CURRENT milestone" pin
-    // (tests/adr-612-bracket-phase-counting.test.cjs:1178), caught empirically
-    // while validating this fix. Bracket-shaped + (from #2761 B2) phase-tail
-    // still apply uniformly at both sites; only the same-milestone component
-    // is call-site-specific, because it encodes a "keep scanning" instruction
-    // that has no counterpart in a top-of-document search.
-    // #2761 B2: widened from `#{1,2}` to `#{1,3}` in lockstep with
-    // isBracketMilestoneBoundary's depth cap (level > 3) — a level-3 MILESTONE
-    // heading (e.g. a PRIOR milestone written as `### [GSD.01] Prior`) must be
-    // a candidate here too, or it is invisible to this raw scan and its own
-    // phase heading leaks into the preamble un-stripped (the preamble's own
-    // phase-stripping regex only recognises literal `Phase N:`-labelled
-    // headings, not bracket ones) — a real double-count this widening closes.
-    // The outer regex's OWN level ceiling must track the helper's cap; the
-    // helper alone cannot rescue a heading the outer pattern never captures as
-    // a candidate in the first place.
-    const anyBracketMilestonePattern = new RegExp(`^(#{1,3})[ \\t]+(\\[${BRACKET_ID_SRC}\\][^\\n]*)`, 'gim');
-    let bracketMilestoneMatch: RegExpMatchArray | null = null;
-    for (const m of content.matchAll(anyBracketMilestonePattern)) {
-      const candidateLevel = m[1].length;
-      const candidateText = m[2].trim();
-      if (isBracketMilestoneBoundary(candidateText, candidateLevel, null)) {
-        bracketMilestoneMatch = m;
-        break;
+    // `h.text` is ALREADY hash-stripped and trimmed (HeadingToken's own
+    // shape) — isBracketMilestoneBoundary is built to consume exactly that,
+    // so no `^#{1,3}\s+` re-derivation is needed (that spelling would not
+    // match `h.text` — it still carries the hashes in a raw regex match).
+    //
+    // Passes `null` for `selectedBracketId`, same as before this commit —
+    // see the comment on that parameter above; the same-milestone exclusion
+    // is a computeSectionEnd-only concept.
+    for (const h of currentMilestoneHeadings) {
+      if (!isBracketMilestoneBoundary(h.text, h.level, null)) continue;
+      if (earliestMilestoneIndex === null || h.offset < earliestMilestoneIndex) {
+        earliestMilestoneIndex = h.offset;
       }
-    }
-    if (
-      bracketMilestoneMatch &&
-      (firstMilestoneMatch === null || bracketMilestoneMatch.index! < firstMilestoneMatch.index!)
-    ) {
-      firstMilestoneMatch = bracketMilestoneMatch;
+      break;
     }
   }
-  const preambleCutoff = firstMilestoneMatch
-    ? firstMilestoneMatch.index!
+  const preambleCutoff = earliestMilestoneIndex !== null
+    ? earliestMilestoneIndex
     : firstMatch.index;
   const beforeMilestones = content.slice(0, preambleCutoff);
   const currentSection = content.slice(sectionStart, sectionEnd);

@@ -1506,6 +1506,151 @@ describe('#612 PR-2 B2 round-2: the bracket boundary is a CONTENT discriminator,
   });
 });
 
+// ─── #2761 Blocker 3 (round-2 adversarial review): the preamble-cutoff ──────
+// ─── bracket scan is now fence-aware ─────────────────────────────────────────
+//
+// `preambleCutoff`'s bracket branch used a raw `content.match`/`matchAll` —
+// blind to fenced code blocks — while its sibling `computeSectionEnd` (a few
+// lines above it) already consumed `tokenizeHeadings(content)`, which strips
+// fences. A fenced markdown example in the preamble containing a bracket
+// heading (ADR-612's own docs do exactly this) was textually the earliest
+// `#{1,3} [CODE.MM]` match: `preambleCutoff` landed INSIDE the fence,
+// `preamble = content.slice(0, preambleCutoff)` ended with an unclosed
+// opener, and the unbalanced fence then blinded
+// `getMilestonePhaseFilter`'s own `tokenizeHeadings(scope)` call — EVERY
+// heading in the returned scope vanished, `phaseCount` degraded to 0, and the
+// pass-all filter admitted every directory on disk (repro11's mechanism).
+// Regression vs round-1, which had no bracket pattern to blind and so fell
+// back to the correct (non-fenced) heading.
+//
+// Fixed by scanning the SAME `currentMilestoneHeadings` token list
+// computeSectionEnd consumes, instead of a raw regex — closing the asymmetry
+// between the two halves of one boundary semantic.
+describe('#612 PR-2 Blocker 3 round-2: preambleCutoff is fence-aware (bracket branch only)', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-b3fence-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const D = [
+    ['GSD.01-01-stray', true],
+    ['GSD.02-01-one', true],
+    ['GSD.02-02-two', false],
+    ['GSD.03-01-stray', true],
+  ];
+
+  test('RED (repro12 bracket row): a fenced example bracket heading in the preamble no longer blinds the scan — 2/1/50', () => {
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+## [GSD.00] Example milestone heading
+\`\`\`
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 4 before this fix (fence-blind scan degraded phaseCount to 0)');
+  });
+
+  test('mechanism (repro11): the returned scope has an EVEN, balanced fence count and a non-degraded phaseCount', () => {
+    const roadmap = `# Roadmap
+
+Docs for authors:
+
+\`\`\`markdown
+## [GSD.00] Example milestone heading
+### [GSD.00] 01: Example phase
+\`\`\`
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.03] Later
+
+### [GSD.03] 01: Later
+**Goal:** d
+`;
+    const dirs = ['GSD.01-01-old', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later'];
+    writeProject(roadmap, 'bracket', dirs);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const ms = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
+    const scope = rp.extractCurrentMilestone(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      tmpDir,
+    );
+    const fenceCount = (scope.match(/^```/gm) || []).length;
+    assert.equal(fenceCount % 2, 0, 'pinned an ODD (unbalanced) fence count before this fix');
+    const headings = ms.tokenizeHeadings(scope).map((h) => h.text);
+    assert.ok(headings.some((t) => /GSD\.02.*01: One/.test(t)), 'real headings must survive tokenization, not collapse to just "Roadmap"');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.notEqual(f.phaseCount, 0, 'pinned 0 (pass-all degrade) before this fix');
+    assert.deepEqual(
+      Object.fromEntries(dirs.map((d) => [d, !!f(d)])),
+      { 'GSD.01-01-old': false, 'GSD.02-01-one': true, 'GSD.02-02-two': true, 'GSD.03-01-later': false },
+      'pinned every directory admitted (pass-all) before this fix',
+    );
+  });
+
+  test('PIN (repro12 LEGACY control): a fenced version-bearing heading in the preamble is UNCHANGED (pre-existing, out of scope)', () => {
+    // Disclosed, not fixed: the LEGACY (non-bracket) `anyMilestonePattern`
+    // raw-match path shares the same fence-blindness hazard and stays
+    // byte-identical — fixing it is out of scope for this bracket-only fix
+    // (round-2 review's own minimal-fix note). This pin exists so a future
+    // reviewer does not file the pre-existing legacy gap as a NEW regression.
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+## Milestone v9.0: Example
+\`\`\`
+
+## Milestone v2.0: Current
+
+### Phase 01: One
+**Goal:** b
+
+### Phase 02: Two
+**Goal:** c
+`, undefined, [['03-stray', true], ['01-one', true], ['02-two', false], ['04-stray', true]]);
+    assert.equal(readTotal(), 4, 'pre-existing legacy fence-blindness — deliberately unchanged, not a new regression');
+  });
+
+  test('PIN (repro10 A3): a fenced heading INSIDE the current section still must not terminate it', () => {
+    const dirs = ['GSD.01-01-old', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later'];
+    writeProject(`# Roadmap
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+**Goal:** b
+
+\`\`\`markdown
+## [GSD.03] Not a real heading
+\`\`\`
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.03] Later
+
+### [GSD.03] 01: Later
+**Goal:** d
+`, 'bracket', dirs);
+    assert.equal(readTotal(), 2);
+  });
+});
+
 // ─── #2761 B3 (self-caught, round-2 verification): CURRENT version-bearing, ──
 // ─── a sibling milestone is not ──────────────────────────────────────────────
 //
