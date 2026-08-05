@@ -173,14 +173,22 @@ describe('process-seam', () => {
     assert.equal(result.timedOut, true);
   });
 
-  test('partial output survives a timeout', () => {
+  test('a timeout still returns string stdout/stderr (partial content is platform-dependent)', () => {
     const fixture = writeFixture(tmpDir, 'sleeper.cjs', FIXTURE_SLEEPER);
     const marker = JSON.stringify({ partial: true });
     const result = runNode([fixture, '5000', marker], { timeoutMs: 300 });
     assert.equal(result.outcome, OUTCOME.TIMED_OUT);
     assert.equal(result.timedOut, true);
-    assert.ok(result.stdout.length > 0);
-    assert.deepStrictEqual(JSON.parse(result.stdout.trim()), { partial: true });
+    assert.equal(typeof result.stdout, 'string');
+    assert.equal(typeof result.stderr, 'string');
+    // spawnSync preserves partial child output on a timeout on darwin, but discards
+    // it on Linux (verified on node 22 and 24). The seam passes through whatever
+    // spawnSync gives it, so the cross-platform contract is only that these are
+    // strings — the partial content itself is asserted where it is actually available.
+    if (process.platform === 'darwin') {
+      assert.ok(result.stdout.length > 0, 'darwin preserves partial stdout on timeout');
+      assert.deepStrictEqual(JSON.parse(result.stdout.trim()), { partial: true });
+    }
   });
 
   test('maxBuffer overflow is not misreported as exit 1', () => {
@@ -316,7 +324,15 @@ describe('process-seam', () => {
     const fixture = writeFixture(tmpDir, 'sleeper.cjs', FIXTURE_SLEEPER);
     const result = runNode([fixture, '5000', '', 'err-marker'], { timeoutMs: 300 });
     assert.equal(result.outcome, OUTCOME.TIMED_OUT);
-    assert.ok(result.stderr.length > 0);
+    assert.equal(typeof result.stdout, 'string');
+    assert.equal(typeof result.stderr, 'string');
+    // spawnSync preserves partial child output on a timeout on darwin, but discards
+    // it on Linux (verified on node 22 and 24). The seam passes through whatever
+    // spawnSync gives it, so the cross-platform contract is only that these are
+    // strings — the partial content itself is asserted where it is actually available.
+    if (process.platform === 'darwin') {
+      assert.ok(result.stderr.length > 0, 'darwin preserves partial stderr on timeout');
+    }
   });
 
   test('overflow is not masked by an exit code', () => {
