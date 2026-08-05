@@ -50,8 +50,20 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const fc = require('./helpers/fast-check-setup.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS } = require('../hooks/lib/isolation-sentinel.js');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-agent-isolation-guard.js');
+
+/**
+ * Write a #3045 dispatch-isolation sentinel under `dir` (mirrors what
+ * `gsd-tools.cjs record-dispatch-isolation` writes). `writtenAt` defaults to
+ * "now" (fresh); pass an explicit past timestamp to construct a stale one.
+ */
+function writeSentinel(dir, { isolation, harnessFlag = null, phase = null, writtenAt = Date.now() }) {
+  const p = path.join(dir, SENTINEL_RELATIVE_PATH);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ isolation, harness_flag: harnessFlag, phase, written_at: writtenAt }));
+}
 
 /**
  * Run the hook with a given payload against a given cwd.
@@ -273,5 +285,156 @@ describe('gsd-agent-isolation-guard.js: property — deny iff isolation param !=
       ),
       { numRuns: 30 } // each sample spawns the hook process — bound the cost
     );
+  });
+});
+
+describe('gsd-agent-isolation-guard.js: #3045 BLOCKER regression — sentinel is authoritative over registry capability', () => {
+  // These rows pin the exact defect the isolated code review flagged as a
+  // BLOCKER: the guard used to key enforcement on the REGISTRY's
+  // dispatch.isolation (a host CAPABILITY — "this host CAN isolate"), not
+  // the workflow's resolved per-dispatch ISOLATION ("this dispatch SHOULD be
+  // isolated"). Sequential ISOLATION=none legitimately happens even on a
+  // harness-worktree-capable host. Every row below uses `harnessProject`
+  // (registry resolves to harness-worktree for runtime 'claude') so a FAIL
+  // here proves the sentinel is actually consulted, not merely coincidental
+  // with what the registry alone would already allow.
+  let harnessProject;
+  let useWorktreesFalseProject;
+
+  before(() => {
+    harnessProject = mkProject('gsd-aig-sentinel-');
+    writeConfig(harnessProject, JSON.stringify({ runtime: 'claude' }));
+
+    useWorktreesFalseProject = mkProject('gsd-aig-uwf-');
+    writeConfig(useWorktreesFalseProject, JSON.stringify({ runtime: 'claude', workflow: { use_worktrees: false } }));
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+    cleanup(useWorktreesFalseProject);
+  });
+
+  test('sentinel says isolation=none -> ALLOW even though registry resolves harness-worktree (the BLOCKER)', () => {
+    writeSentinel(harnessProject, { isolation: 'none' });
+    try {
+      const r = runHook(agentPayload(), harnessProject); // no isolation param on the dispatch
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(r.stdout, '');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel says isolation=orchestrator-worktree -> ALLOW', () => {
+    writeSentinel(harnessProject, { isolation: 'orchestrator-worktree' });
+    try {
+      const r = runHook(agentPayload(), harnessProject);
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(r.stdout, '');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel says isolation=harness-worktree + dispatch missing the flag -> DENY', () => {
+    writeSentinel(harnessProject, { isolation: 'harness-worktree', harnessFlag: 'isolation="worktree"' });
+    try {
+      const r = runHook(agentPayload(), harnessProject);
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(JSON.parse(r.stdout).decision, 'block');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel says isolation=harness-worktree + dispatch carries the flag -> ALLOW', () => {
+    writeSentinel(harnessProject, { isolation: 'harness-worktree', harnessFlag: 'isolation="worktree"' });
+    try {
+      const r = runHook(
+        agentPayload({ tool_input: { subagent_type: 'gsd-executor', isolation: 'worktree' } }),
+        harnessProject
+      );
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('STALE sentinel (older than SENTINEL_STALE_MS) is ignored -> falls back to registry (DENY, harness-worktree still applies)', () => {
+    // The stale sentinel LIES (says none) — proving the fallback re-derives
+    // from the registry instead of trusting it is exactly the point.
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt: Date.now() - (SENTINEL_STALE_MS + 60000) });
+    try {
+      const r = runHook(agentPayload(), harnessProject);
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(JSON.parse(r.stdout).decision, 'block');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('MALFORMED sentinel (invalid JSON) is treated as stale, never fatal -> falls back to registry (DENY)', () => {
+    const sentinelPath = path.join(harnessProject, SENTINEL_RELATIVE_PATH);
+    fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+    fs.writeFileSync(sentinelPath, '{ this is not valid json');
+    try {
+      const r = runHook(agentPayload(), harnessProject);
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(JSON.parse(r.stdout).decision, 'block');
+      assert.equal(r.stderr.length > 0, true, 'must not crash — a clean block reason, not a stack trace');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('no sentinel + workflow.use_worktrees=false -> ALLOW (project-level opt-out, case (a) from the BLOCKER)', () => {
+    const r = runHook(agentPayload(), useWorktreesFalseProject);
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '');
+  });
+
+  test('no sentinel + workflow.use_worktrees absent + registry harness-worktree -> DENY (conservative fallback still enforces)', () => {
+    const r = runHook(agentPayload(), harnessProject);
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
+  });
+
+  test('tool_name="Task" behaves identically to "Agent" (#3045 MAJOR 1)', () => {
+    const r = runHook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: { subagent_type: 'gsd-executor' } },
+      harnessProject
+    );
+    assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).decision, 'block');
+  });
+
+  test('tool_name="Task" with isolation="worktree" present -> allow, same as "Agent"', () => {
+    const r = runHook(
+      { hook_event_name: 'PreToolUse', tool_name: 'Task', tool_input: { subagent_type: 'gsd-executor', isolation: 'worktree' } },
+      harnessProject
+    );
+    assert.equal(r.status, 0, `stdout: ${r.stdout}`);
+  });
+});
+
+describe('gsd-agent-isolation-guard.js: #3045 MAJOR 2 — undeterminable runtime does not demand the Claude kwarg', () => {
+  let unconfiguredProject;
+
+  before(() => {
+    unconfiguredProject = mkProject('gsd-aig-unconfigured-');
+    // No `runtime` key at all — mirrors gsd-core/templates/config.json,
+    // which ships every new project's scaffold WITHOUT one. GSD_RUNTIME is
+    // deleted by runHook(), so this project has NO explicit runtime signal.
+    writeConfig(unconfiguredProject, JSON.stringify({}));
+  });
+
+  after(() => {
+    cleanup(unconfiguredProject);
+  });
+
+  test('no GSD_RUNTIME override, no config.json runtime key -> ALLOW (cannot-determine degrades to inert, not a guessed "claude" demand)', () => {
+    const r = runHook(agentPayload(), unconfiguredProject);
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stdout, '');
   });
 });

@@ -34,16 +34,26 @@
 // cannot reuse that fail-open default and instead resolves isolation
 // itself, distinguishing "resolved cleanly" from "could not resolve".
 //
-// Resolution mirrors `routeDispatchIsolation` in `gsd-core/bin/gsd-tools.cjs`
-// (resolveRuntime precedence: GSD_RUNTIME env > .planning/config.json
-// `runtime` > 'claude'; then `capability-registry.cjs`
-// runtimes[id].runtime.hostIntegration.dispatch.isolation +
-// harnessIsolationFlag) — read directly, in-process, no subprocess spawn.
+// Isolation resolution (#3045 BLOCKER fix, see hooks/lib/isolation-sentinel.js):
+// prefers the workflow's own PERSISTED per-dispatch decision (a sentinel
+// `record-dispatch-isolation` writes after `executor-isolation-dispatch.md`
+// resolves ISOLATION in shell, applying workflow.use_worktrees, the #2474
+// per-plan submodule degrade, and the #683/#3060 base-check auto-degrade)
+// over re-deriving a host CAPABILITY from the registry. A fresh sentinel is
+// authoritative — `none`/`orchestrator-worktree` ALLOW immediately
+// (sequential/orchestrator-managed dispatch is legitimate, not a bug); an
+// absent/stale sentinel falls back to a conservative registry+config check
+// (GSD_RUNTIME env > .planning/config.json `runtime` — no confident signal
+// degrades to inert rather than guessing 'claude', see resolveRegistryIsolation)
+// gated additionally by `workflow.use_worktrees` — read directly, in-process,
+// no subprocess spawn.
 //
-// Triggers on: Agent tool calls with subagent_type === "gsd-executor"
+// Triggers on: Agent/Task tool calls with subagent_type === "gsd-executor"
+//   (both names accepted — #3045 MAJOR 1: only Agent was previously matched,
+//   silently inert on any host/version whose subagent tool is named Task).
 // Action: BLOCK (exit 2) when isolation should be enforced and is not
-// No-op: any tool other than Agent, non-executor targets, GSD projects whose
-//        resolved isolation is not harness-worktree, non-GSD projects,
+// No-op: any tool other than Agent/Task, non-executor targets, GSD projects
+//        whose resolved isolation is not harness-worktree, non-GSD projects,
 //        malformed payloads, or a dispatch that already carries the correct
 //        isolation parameter.
 
@@ -51,14 +61,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { readSentinel, VALID_ISOLATION } = require('./lib/isolation-sentinel.js');
 
 // No other executor-shaped subagent_type exists in agents/ today
 // (verified: only agents/gsd-executor.md). A Set, not a bare string compare,
 // so a future sibling executor role can be added here without touching the
 // matching logic below.
 const EXECUTOR_SUBAGENT_TYPES = new Set(['gsd-executor']);
-
-const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
 
 /**
  * Parse a registry `harnessIsolationFlag` of the shape `key="value"` (the
@@ -76,6 +85,116 @@ function parseHarnessFlag(flag) {
 }
 
 /**
+ * Resolve this project's declared `runtime` identity WITHOUT defaulting to
+ * 'claude' when no explicit signal exists (#3045 MAJOR 2).
+ *
+ * `gsd-core/templates/config.json` — the actual scaffold used to write every
+ * new project's config.json — ships with NO `runtime` key, so "no signal"
+ * is the COMMON case, not a corner case. Previously this resolution silently
+ * defaulted to 'claude' in that case, which meant every non-Claude runtime
+ * that also installs this hook (any `hostIntegration.hooksSurface ===
+ * 'settings-json'` runtime, not only Claude) had Claude's
+ * `harnessIsolationFlag` ("isolation=\"worktree\"") demanded on its Agent()
+ * -equivalent dispatch — a kwarg that runtime's own tool never accepts.
+ *
+ * Returns `{ runtimeId, confident }`. `confident` is true only when an
+ * explicit signal exists (GSD_RUNTIME env override, or a `runtime` key
+ * literally present in config.json); false means "cannot determine" and
+ * callers must NOT silently substitute 'claude' — see resolveRegistryIsolation.
+ */
+function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates) {
+  const envRuntime = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
+  if (envRuntime) return { runtimeId: envRuntime, confident: true };
+
+  // A throw here (corrupt JSON, EISDIR, permission error) propagates to the
+  // caller's catch as a resolution failure — this function only decides
+  // "confident vs not", never resolution failure.
+  const raw = fs.readFileSync(configPath, 'utf-8');
+  const parsed = JSON.parse(raw);
+  if (parsed && typeof parsed === 'object' && 'runtime' in parsed) {
+    const configRuntime = resolveRuntimeNameFromCandidates(parsed.runtime);
+    if (configRuntime) return { runtimeId: configRuntime, confident: true };
+  }
+  return { runtimeId: null, confident: false };
+}
+
+/**
+ * Resolve the registry-declared `harnessIsolationFlag` descriptor for
+ * `runtimeId` — pure host-CAPABILITY lookup, used both when the sentinel
+ * confirms harness-worktree but omitted the flag, and by the conservative
+ * fallback path. Returns `null` when the host declares no usable flag.
+ */
+function resolveHarnessFlag(runtimeId, runtimes) {
+  const runtimeEntry = runtimes != null ? runtimes[runtimeId] : null;
+  const declaredFlag = runtimeEntry?.runtime?.harnessIsolationFlag ?? null;
+  return (typeof declaredFlag === 'string' && declaredFlag.length > 0) ? declaredFlag : null;
+}
+
+/**
+ * Conservative fallback resolution used when the #3045 sentinel is absent or
+ * stale: re-derive isolation from the registry CAPABILITY, gated by
+ * `workflow.use_worktrees` (config-schema key confirmed present in
+ * gsd-core/bin/shared/config-schema.manifest.json's validKeys, so it survives
+ * loadConfig's whitelist; read directly from the raw config.json here — same
+ * side-effect-free approach cmdConfigGet itself uses, not through loadConfig).
+ *
+ * MAJOR 2: when the runtime cannot be confidently determined (no GSD_RUNTIME
+ * override, no `runtime` key in config.json — the common case, since the
+ * project scaffold ships without one), this resolves to 'none' (inert)
+ * rather than guessing 'claude' and demanding Claude's flag on a host that
+ * may not even be Claude. Denying every dispatch on an undeterminable
+ * runtime would repeat the exact false-positive class the #3045 BLOCKER
+ * itself was — this is the fallback path only (the sentinel-fresh path above
+ * already carries the workflow's own confirmed decision + flag, so this
+ * degrades coverage only for dispatches that happen outside a GSD workflow
+ * run, e.g. a manual Agent() call before any sentinel has been written).
+ */
+function resolveRegistryIsolation(cwd, configPath) {
+  const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+  const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+
+  const { runtimeId, confident } = resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates);
+  if (!confident) {
+    return { isolation: 'none', harnessFlag: null };
+  }
+
+  const runtimeEntry = runtimes != null ? runtimes[runtimeId] : null;
+  const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
+  let isolation = (typeof declared === 'string' && VALID_ISOLATION.has(declared)) ? declared : 'none';
+
+  let harnessFlag = null;
+  if (isolation === 'harness-worktree') {
+    harnessFlag = resolveHarnessFlag(runtimeId, runtimes);
+    if (harnessFlag === null) {
+      // A host claiming harness isolation with no declared flag gives this
+      // guard nothing to check for — degrade to 'none' rather than block on
+      // an unspecifiable requirement.
+      isolation = 'none';
+    }
+  }
+
+  if (isolation === 'harness-worktree') {
+    let useWorktrees = true;
+    try {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      const parsedCfg = JSON.parse(raw);
+      if (parsedCfg && typeof parsedCfg === 'object' && parsedCfg.workflow &&
+          typeof parsedCfg.workflow === 'object' && parsedCfg.workflow.use_worktrees === false) {
+        useWorktrees = false;
+      }
+    } catch {
+      // Unreadable config already propagated to the outer caller's catch
+      // before this point in practice (resolveRuntimeIdentity reads it
+      // first); tolerate defensively and keep the conservative (enforce)
+      // default rather than silently disabling the guard.
+    }
+    if (!useWorktrees) isolation = 'none';
+  }
+
+  return { isolation, harnessFlag };
+}
+
+/**
  * Resolve this project's dispatch isolation mode, distinguishing three
  * outcomes:
  *   - { gsdProject: false }                        — not a GSD project, inert
@@ -88,8 +207,21 @@ function parseHarnessFlag(flag) {
  * sibling registry/policy modules, after that point means "GSD project
  * present, isolation mode unknown" — folded into the DENY path rather than
  * silently defaulting to a mode that happens to look safe.
+ *
+ * #3045 BLOCKER fix: prefer the workflow's own PERSISTED per-dispatch
+ * decision (the sentinel `record-dispatch-isolation` writes) over
+ * re-deriving a host CAPABILITY from the registry. The registry's
+ * harness-worktree entry means "this host CAN isolate", not "this dispatch
+ * SHOULD be isolated" — sequential ISOLATION=none legitimately happens even
+ * on a harness-worktree-capable host (project opt-out, per-plan submodule
+ * intersection, #683/#3060 base-check auto-degrade). A fresh sentinel is
+ * authoritative; an absent/stale one falls back to the conservative
+ * registry+config check via resolveRegistryIsolation.
+ *
+ * `clock` is injectable for the sentinel-staleness check (repo clock-seam
+ * convention); defaults to the real `Date`.
  */
-function resolveIsolationState(cwd) {
+function resolveIsolationState(cwd, { clock = Date } = {}) {
   const configPath = path.join(cwd, '.planning', 'config.json');
   let projectExists;
   try {
@@ -102,46 +234,37 @@ function resolveIsolationState(cwd) {
     return { gsdProject: false, isolation: null, harnessFlag: null, error: null };
   }
 
+  const sentinel = readSentinel(cwd, { clock });
+  if (sentinel.present && !sentinel.stale) {
+    if (sentinel.isolation !== 'harness-worktree') {
+      return { gsdProject: true, isolation: sentinel.isolation, harnessFlag: null, error: null };
+    }
+    if (sentinel.harnessFlag) {
+      return { gsdProject: true, isolation: 'harness-worktree', harnessFlag: sentinel.harnessFlag, error: null };
+    }
+    // Sentinel confirms harness-worktree but (unexpectedly) carries no flag —
+    // fall through to the registry lookup for the flag descriptor only.
+    try {
+      const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+      const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+      const { runtimeId, confident } = resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates);
+      const harnessFlag = confident ? resolveHarnessFlag(runtimeId, runtimes) : null;
+      return {
+        gsdProject: true,
+        isolation: harnessFlag ? 'harness-worktree' : 'none',
+        harnessFlag,
+        error: null,
+      };
+    } catch (err) {
+      return { gsdProject: true, isolation: null, harnessFlag: null, error: err };
+    }
+  }
+
+  // Sentinel absent or stale: conservative fallback (#3045 finding — must
+  // still cover fail-closed case (a): a project that opted out of worktrees
+  // entirely via workflow.use_worktrees).
   try {
-    // Sibling data/policy modules, staged alongside this hook at install time
-    // (same pattern as hooks/gsd-statusline.js's requires of gsd-core/bin/lib/*).
-    const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
-    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
-
-    let runtimeId = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
-    if (!runtimeId) {
-      // Read config.json directly for the `runtime` key (side-effect-free,
-      // same reasoning as runtime-slash.cjs's resolveRuntime). A throw here
-      // (corrupt JSON, EISDIR, permission error) is NOT "no override
-      // configured" — that case is excluded by the existence check above —
-      // it is "GSD project present, config unreadable", and must propagate
-      // to the outer catch as a resolution failure.
-      const raw = fs.readFileSync(configPath, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && 'runtime' in parsed) {
-        runtimeId = resolveRuntimeNameFromCandidates(parsed.runtime) || 'claude';
-      } else {
-        runtimeId = 'claude';
-      }
-    }
-
-    const runtimeEntry = runtimes != null ? runtimes[runtimeId] : null;
-    const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
-    let isolation = (typeof declared === 'string' && VALID_ISOLATION.has(declared)) ? declared : 'none';
-
-    let harnessFlag = null;
-    if (isolation === 'harness-worktree') {
-      const declaredFlag = runtimeEntry?.runtime?.harnessIsolationFlag ?? null;
-      if (typeof declaredFlag === 'string' && declaredFlag.length > 0) {
-        harnessFlag = declaredFlag;
-      } else {
-        // A host claiming harness isolation with no declared flag gives this
-        // guard nothing to check for — degrade to 'none' rather than block
-        // on an unspecifiable requirement.
-        isolation = 'none';
-      }
-    }
-
+    const { isolation, harnessFlag } = resolveRegistryIsolation(cwd, configPath);
     return { gsdProject: true, isolation, harnessFlag, error: null };
   } catch (err) {
     return { gsdProject: true, isolation: null, harnessFlag: null, error: err };
@@ -157,7 +280,11 @@ process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
     if (!data || typeof data !== 'object') { process.exit(0); }
-    if (data.tool_name !== 'Agent') { process.exit(0); }
+    // #3045 MAJOR 1: accept both subagent-dispatch tool names. hooks.json's
+    // matcher is "Agent|Task" (mirroring the repo's own PostToolUse
+    // precedent) so this must match both, or it is silently inert on any
+    // host/version whose subagent tool is named "Task".
+    if (data.tool_name !== 'Agent' && data.tool_name !== 'Task') { process.exit(0); }
 
     const toolInput = (data.tool_input && typeof data.tool_input === 'object') ? data.tool_input : {};
     const subagentType = toolInput.subagent_type;

@@ -1942,7 +1942,10 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
     const agentIsolationGuardFile = path.join(targetDir, 'hooks', 'gsd-agent-isolation-guard.js');
     if (!hasAgentIsolationGuardHook && fs.existsSync(agentIsolationGuardFile) && agentIsolationGuardCommand) {
       settings.hooks[preToolEvent].push({
-        matcher: 'Agent',
+        // #3045 MAJOR 1: widened from "Agent"-only — hooks.json's own
+        // PostToolUse precedent (context-monitor) already hedges both names,
+        // and the hook itself now accepts tool_name "Task" too.
+        matcher: 'Agent|Task',
         hooks: [
           {
             type: 'command',

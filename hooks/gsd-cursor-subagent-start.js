@@ -60,6 +60,7 @@ const path = require('path');
 // hooks/lib/cursor-workspace.js. Staged next to these scripts by
 // writeCursorHooksJson so the require always resolves post-install.
 const { resolveStatePath } = require('./lib/cursor-workspace.js');
+const { readSentinel, VALID_ISOLATION } = require('./lib/isolation-sentinel.js');
 
 const MSG_PRESENT =
   'GSD: Subagent session started — review .planning/STATE.md for the current phase and any blockers before acting.';
@@ -77,80 +78,157 @@ const MSG_ABSENT =
 // executor role can be added here without touching the matching logic below.
 const EXECUTOR_SUBAGENT_TYPES = new Set(['gsd-executor']);
 
-const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+/**
+ * fs.realpathSync, never throwing. A path that cannot be resolved (does not
+ * exist, dangling symlink, ELOOP, ...) yields `null` rather than an
+ * exception — the caller decides what "cannot resolve" means for its own
+ * verdict (#3045 finding 2).
+ */
+function realpathOrNull(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
 
 /**
- * Resolve whether `root` is running in a session Cursor is isolating from the
- * user's primary checkout. Two independent (OR'd) signals:
+ * Resolve whether `root` is running in a session Cursor ISOLATED FOR THIS
+ * DISPATCH — i.e. a worktree the harness itself created and manages, not
+ * merely "some linked git worktree".
  *
- *   1. `resolveWorktreeLinkage` (gsd-core's shortcut-free git-dir-vs-
- *      git-common-dir comparison, #3045) reports `linked_worktree_root` for
- *      `root`. This is deliberately NOT `resolveWorktreeContext` — that
- *      function's `has_local_planning` shortcut would misclassify an
- *      isolated worktree (which normally has its own checked-out
- *      `.planning/`) as "not isolated", the exact false positive that would
- *      make this guard unusable.
- *   2. `root` resolves under Cursor's own managed worktree root
- *      (`<cursor config dir>/worktrees`, i.e. `~/.cursor/worktrees` by
- *      default — `getGlobalConfigDir('cursor')` honors the
- *      `CURSOR_CONFIG_DIR` env override and `~` expansion for free).
+ * #3045 security review (finding 3): "is a linked git worktree" is NOT "is
+ * isolated from the tree the human is using". A developer who opens Cursor
+ * directly in a hand-made `git worktree add` checkout — routine, see
+ * `.claude/worktrees/` in this very repo — is not protected by anything;
+ * nothing stops them from also editing that same checkout by hand. The ONLY
+ * signal that actually proves harness isolation is that `root` resolves
+ * under Cursor's OWN managed worktree root (`<cursor config dir>/worktrees`,
+ * i.e. `~/.cursor/worktrees` by default — `getGlobalConfigDir('cursor')`
+ * honors the `CURSOR_CONFIG_DIR` env override and `~` expansion for free).
+ * That is made NECESSARY AND SUFFICIENT below. Do NOT reinstate
+ * `resolveWorktreeLinkage`'s `linked_worktree_root` mode as an alternative
+ * OR'd proof of isolation — that is precisely the bypass finding 3 closed;
+ * a future "simplification" that merges it back in re-opens unconsented
+ * writes to the human's active checkout.
  *
- * Returns `{ isolated: true|false, cannotDetermine: bool }`. `cannotDetermine`
- * is set only when git itself failed to answer (timeout) AND the managed-root
- * check also did not confirm isolation — a directory that is definitively
- * not a git repo (`not_git_repo`) is a confident negative, not an unknown,
- * since Cursor's worktree mechanism is git-based.
+ * `resolveWorktreeLinkage` is still called, but ONLY as a diagnostic: it
+ * distinguishes "confidently not isolated" from "git could not answer
+ * (timeout) — cannot determine" so the eventual deny reason stays
+ * actionable. Its result never flips `isolated`.
+ *
+ * Both the workspace root and the managed root are realpath'd before
+ * comparison (#3045 finding 2) — lexical `path.relative` alone is spoofable
+ * by a symlink or bind mount at either location, plantable by any process
+ * running with the user's permissions (including an agent already inside a
+ * legitimately isolated worktree, which has shell access by design).
+ * `fs.realpathSync` throwing (nonexistent path) never propagates — it
+ * degrades to "cannot resolve", never to "isolated". realpath also resolves
+ * the `CURSOR_CONFIG_DIR`-derived managed root itself (not just `root`), so a
+ * symlinked or case-differing `CURSOR_CONFIG_DIR` (case-insensitive
+ * filesystems normalize to on-disk casing via realpath's dirent walk, not
+ * string comparison) is covered on BOTH sides of the comparison, not only
+ * `root`'s.
+ *
+ * Returns `{ isolated: true|false, cannotDetermine: bool, notApplicable: bool }`.
+ * `notApplicable` (#3045 MAJOR 3) is true only for a confidently-not-a-git-repo
+ * root — see the `not_git_repo` branch below.
  */
 function resolveIsolationEvidence(root) {
-  let underManagedRoot = false;
+  let managedRoot = null;
   try {
     // Sibling data/policy module, staged alongside this hook at install time
     // (same pattern as hooks/gsd-statusline.js's requires of gsd-core/bin/lib/*).
     const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
-    const managedRoot = path.join(getGlobalConfigDir('cursor'), 'worktrees');
-    const rel = path.relative(managedRoot, root);
-    underManagedRoot = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    managedRoot = path.join(getGlobalConfigDir('cursor'), 'worktrees');
   } catch {
-    // Secondary signal only — degrade to "not confirmed by this signal" and
-    // rely on the git-based linkage check below, which has its own explicit
-    // cannot-determine handling.
-    underManagedRoot = false;
+    managedRoot = null;
   }
 
-  let linkage;
+  const realRoot = realpathOrNull(root);
+  const realManagedRoot = managedRoot === null ? null : realpathOrNull(managedRoot);
+
+  if (realRoot !== null && realManagedRoot !== null) {
+    const rel = path.relative(realManagedRoot, realRoot);
+    const underManagedRoot = rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    if (underManagedRoot) return { isolated: true, cannotDetermine: false, notApplicable: false };
+  }
+
+  // Not proven isolated by the only signal that counts. Resolve the
+  // diagnostic-only linkage check purely to make the deny reason legible —
+  // see the doc comment above; this NEVER flips `isolated`.
+  let linkageReason = null;
   try {
     // Sibling data/policy module, staged alongside this hook at install time.
     const { resolveWorktreeLinkage } = require('../gsd-core/bin/lib/worktree-safety.cjs');
-    linkage = resolveWorktreeLinkage(root);
+    linkageReason = resolveWorktreeLinkage(root).reason;
   } catch {
-    return { isolated: underManagedRoot, cannotDetermine: !underManagedRoot };
+    linkageReason = null;
   }
 
-  if (linkage.mode === 'linked_worktree_root' || underManagedRoot) {
-    return { isolated: true, cannotDetermine: false };
+  if (realRoot === null) {
+    // `root` itself could not be resolved on disk. In the live hook this is
+    // defense in depth rather than a reachable path today: the GSD-project
+    // existence gate in resolveIsolationDecision already requires `root` to
+    // resolve (it must contain a readable `.planning/config.json`) before
+    // evidence is ever consulted, so a workspace root that plainly does not
+    // exist allows earlier as "not a GSD project" — never here. Kept anyway
+    // per finding 2's explicit directive: an unresolvable path must never
+    // silently read as "isolated".
+    return { isolated: false, cannotDetermine: true, notApplicable: false };
   }
-  if (linkage.reason === 'git_timed_out') {
-    return { isolated: false, cannotDetermine: true };
+  if (linkageReason === 'git_timed_out') {
+    return { isolated: false, cannotDetermine: true, notApplicable: false };
   }
-  // 'not_git_repo' or 'main_worktree' (or the shortcut-free primitive's
-  // fallback 'current_directory' shape for any other case) — a confident
-  // negative, not an unknown.
-  return { isolated: false, cannotDetermine: false };
+  if (linkageReason === 'not_git_repo') {
+    // #3045 MAJOR 3: a confidently-non-git `root` has no primary git
+    // checkout to protect from an isolated-worktree bypass — Cursor's
+    // `--worktree` / `/worktree` (the deny message's own remediation) create
+    // a GIT worktree, so telling the user to start one is unactionable
+    // advice for a directory that isn't a git repo at all. Treat as INERT
+    // (allow) rather than a confident negative; this is distinct from
+    // `cannotDetermine` (git responded definitively here, it just said "not
+    // a repo") and from `isolated` (nothing was proven isolated) — it is its
+    // own "this guard's threat model does not apply" outcome.
+    return { isolated: false, cannotDetermine: false, notApplicable: true };
+  }
+  return { isolated: false, cannotDetermine: false, notApplicable: false };
 }
 
 /**
- * Resolve the first non-empty string entry of `workspace_roots` — the real
- * checkout path Cursor is operating on for this hook invocation. Cursor runs
- * hooks with cwd set to its own config dir (~/.cursor), NOT the workspace
- * (hooks/lib/cursor-workspace.js), so `workspace_roots` is the only reliable
- * source for "what directory is this dispatch actually in".
+ * Resolve every non-empty string entry of `workspace_roots` — ALL checkout
+ * paths Cursor is operating on for this hook invocation, not just the first.
+ *
+ * #3045 security review (finding 1): a multi-root Cursor workspace whose
+ * FIRST root is a non-GSD directory (or an isolated worktree) and whose
+ * SECOND root is the GSD project in the primary checkout must still be
+ * caught — every root is a directory the dispatched subagent can reach and
+ * write to, regardless of position. `hooks/lib/cursor-workspace.js` already
+ * established the "scan every root" precedent for its own (different)
+ * purpose; this is a parallel scan for isolation applicability, not a
+ * duplicate of that module's single-root-resolution job (it resolves ONE
+ * root to report state-file presence; this resolves the full set to decide
+ * whether ANY of them is an unconsented write target).
+ *
+ * Cursor runs hooks with cwd set to its own config dir (~/.cursor), NOT the
+ * workspace (hooks/lib/cursor-workspace.js), so `workspace_roots` is the
+ * only reliable source for "what directories is this dispatch actually in".
+ *
+ * #3045 MINOR: a RELATIVE entry is rejected (`path.isAbsolute`), not merely
+ * accepted-and-hoped — every downstream consumer (`.planning/config.json`
+ * existence check, `realpathOrNull`, `resolveWorktreeLinkage`) joins/resolves
+ * it against whatever the CURRENT PROCESS cwd happens to be, which for this
+ * hook is Cursor's own config dir (~/.cursor per the comment above), NOT the
+ * workspace. A relative root would therefore resolve against the wrong
+ * directory and — because a wrong/nonexistent `.planning/config.json` path
+ * reads as "not a GSD project" — silently ALLOW a dispatch this guard should
+ * have evaluated (fail OPEN). Filtering it out here instead makes it "not a
+ * resolvable workspace root", which degrades the SAME way (allow, step 2 of
+ * resolveIsolationDecision's applicability list) but for the honest reason.
  */
-function firstWorkspaceRoot(data) {
+function getWorkspaceRoots(data) {
   const roots = Array.isArray(data.workspace_roots) ? data.workspace_roots : [];
-  for (const r of roots) {
-    if (typeof r === 'string' && r.length > 0) return r;
-  }
-  return null;
+  return roots.filter((r) => typeof r === 'string' && r.length > 0 && path.isAbsolute(r));
 }
 
 /**
@@ -188,23 +266,92 @@ function firstWorkspaceRoot(data) {
  *   - `subagent_type` is missing or not a usable non-empty string on a
  *     dispatch this guard could not rule out as an executor.
  *
- * Runtime resolution mirrors hooks/gsd-agent-isolation-guard.js's
- * resolveIsolationState (GSD_RUNTIME env > .planning/config.json `runtime`
- * key > default) so the same GSD_RUNTIME override technique that hook's own
- * tests use to exercise orchestrator-worktree/none paths works here too —
- * the default is "cursor" (not "claude"), since this script only ever runs
- * under Cursor's own subagentStart event.
+ * Isolation resolution (#3045 BLOCKER fix, see hooks/lib/isolation-sentinel.js):
+ * prefers the workflow's own PERSISTED per-dispatch decision (the sentinel
+ * `record-dispatch-isolation` writes) over re-deriving a host CAPABILITY from
+ * the registry. `none`/`orchestrator-worktree` from a fresh sentinel ALLOW
+ * immediately — sequential/orchestrator-managed dispatch is legitimate. An
+ * absent/stale sentinel falls back to `resolveFallbackIsolation` (registry +
+ * `workflow.use_worktrees`, runtime resolved GSD_RUNTIME env >
+ * .planning/config.json `runtime` key > 'cursor'). The default is
+ * confidently "cursor" here — UNLIKE hooks/gsd-agent-isolation-guard.js's own
+ * fallback, which must treat "no explicit signal" as cannot-determine
+ * because that hook installs across every `hostIntegration.hooksSurface ===
+ * 'settings-json'` runtime — because THIS script only ever runs as Cursor's
+ * own subagentStart hook; there is no other host it could be executing
+ * under, so defaulting to 'cursor' is a confirmed fact of the execution
+ * context, not a guess (#3045 MINOR — this note replaces a prior comment
+ * that inaccurately claimed to "mirror" runtime-slash.cjs's resolveRuntime,
+ * which defaults to 'claude'; the two intentionally diverge).
+ *
+ * #3045 security review (finding 1): applicability step 2 above now means
+ * "a workspace root is resolvable", plural — resolveIsolationDecision
+ * evaluates EVERY entry of `workspace_roots` via evaluateRootIsolation() and
+ * denies on the first one that fails. `subagent_type` is still resolved
+ * exactly once, up front, before any root is touched (applicability step 1
+ * stays a single check, not per-root — an unreadable config on one root must
+ * never even be attempted for a confirmed non-executor dispatch).
  */
-function resolveIsolationDecision(data) {
+function resolveIsolationDecision(data, { clock = Date } = {}) {
   const subagentType = data.subagent_type;
   const isConfirmedNonExecutor = typeof subagentType === 'string'
     && subagentType.length > 0
     && !EXECUTOR_SUBAGENT_TYPES.has(subagentType);
   if (isConfirmedNonExecutor) return { action: 'allow' };
 
-  const root = firstWorkspaceRoot(data);
-  if (!root) return { action: 'allow' };
+  const roots = getWorkspaceRoots(data);
+  if (roots.length === 0) return { action: 'allow' };
 
+  for (const root of roots) {
+    const verdict = evaluateRootIsolation(root, subagentType, { clock });
+    if (verdict.action === 'deny') return verdict;
+  }
+  return { action: 'allow' };
+}
+
+/**
+ * Conservative fallback resolution used when the #3045 sentinel is absent or
+ * stale for `root`: re-derive isolation from the registry CAPABILITY, gated
+ * by `workflow.use_worktrees` (config-schema key confirmed present in
+ * gsd-core/bin/shared/config-schema.manifest.json's validKeys, so it survives
+ * loadConfig's whitelist; read directly from the raw config.json here, same
+ * side-effect-free approach cmdConfigGet itself uses).
+ */
+function resolveFallbackIsolation(root, configPath) {
+  const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
+  const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+
+  let runtimeId = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
+  const rawConfig = fs.readFileSync(configPath, 'utf-8');
+  const parsedConfig = JSON.parse(rawConfig);
+  if (!runtimeId) {
+    if (parsedConfig && typeof parsedConfig === 'object' && 'runtime' in parsedConfig) {
+      runtimeId = resolveRuntimeNameFromCandidates(parsedConfig.runtime) || 'cursor';
+    } else {
+      runtimeId = 'cursor';
+    }
+  }
+
+  const runtimeEntry = runtimes != null ? runtimes[runtimeId] : null;
+  const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
+  let declaredIsolation = (typeof declared === 'string' && VALID_ISOLATION.has(declared)) ? declared : 'none';
+
+  if (declaredIsolation === 'harness-worktree' &&
+      parsedConfig && typeof parsedConfig === 'object' && parsedConfig.workflow &&
+      typeof parsedConfig.workflow === 'object' && parsedConfig.workflow.use_worktrees === false) {
+    declaredIsolation = 'none';
+  }
+
+  return declaredIsolation;
+}
+
+/**
+ * Applicability + isolation verdict for a SINGLE workspace root. Returns
+ * `{ action: 'allow' } | { action: 'deny', reason: string }`. Extracted from
+ * resolveIsolationDecision (#3045 finding 1) so every root in a multi-root
+ * workspace runs the identical check.
+ */
+function evaluateRootIsolation(root, subagentType, { clock = Date } = {}) {
   const configPath = path.join(root, '.planning', 'config.json');
   let isGsdProject;
   try {
@@ -217,24 +364,12 @@ function resolveIsolationDecision(data) {
 
   let declaredIsolation;
   try {
-    // Sibling data/policy modules, staged alongside this hook at install time.
-    const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
-    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
-
-    let runtimeId = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
-    if (!runtimeId) {
-      const rawConfig = fs.readFileSync(configPath, 'utf-8');
-      const parsedConfig = JSON.parse(rawConfig);
-      if (parsedConfig && typeof parsedConfig === 'object' && 'runtime' in parsedConfig) {
-        runtimeId = resolveRuntimeNameFromCandidates(parsedConfig.runtime) || 'cursor';
-      } else {
-        runtimeId = 'cursor';
-      }
-    }
-
-    const runtimeEntry = runtimes != null ? runtimes[runtimeId] : null;
-    const declared = runtimeEntry?.runtime?.hostIntegration?.dispatch?.isolation ?? null;
-    declaredIsolation = (typeof declared === 'string' && VALID_ISOLATION.has(declared)) ? declared : 'none';
+    // #3045 BLOCKER fix: a fresh sentinel is authoritative for THIS
+    // dispatch's actual resolved isolation — see the doc comment above.
+    const sentinel = readSentinel(root, { clock });
+    declaredIsolation = (sentinel.present && !sentinel.stale)
+      ? sentinel.isolation
+      : resolveFallbackIsolation(root, configPath);
   } catch {
     return {
       action: 'deny',
@@ -265,6 +400,7 @@ function resolveIsolationDecision(data) {
 
   const evidence = resolveIsolationEvidence(root);
   if (evidence.isolated) return { action: 'allow' };
+  if (evidence.notApplicable) return { action: 'allow' };
 
   if (evidence.cannotDetermine) {
     return {
@@ -307,6 +443,21 @@ process.stdin.on('end', () => {
     data = null;
   }
 
+  // Resolve the state-reminder context ONCE, up front, so it can ride along
+  // with EITHER outcome below (#3045 MINOR: a deny previously dropped this
+  // reminder entirely — process.stdout.write for the deny branch returned
+  // before the additional_context block ever ran — instead of preserving it
+  // alongside the deny; the subagent still benefits from phase/blocker
+  // context even when its dispatch is refused).
+  let additionalContext = null;
+  try {
+    const statePath = resolveStatePath(raw);
+    const statePresent = fs.existsSync(statePath);
+    additionalContext = statePresent ? MSG_PRESENT : MSG_ABSENT;
+  } catch {
+    additionalContext = null;
+  }
+
   if (data && typeof data === 'object') {
     let decision = { action: 'allow' };
     try {
@@ -319,17 +470,12 @@ process.stdin.on('end', () => {
       decision = { action: 'allow' };
     }
     if (decision.action === 'deny') {
-      process.stdout.write(JSON.stringify({ permission: 'deny', user_message: decision.reason }));
+      const out = { permission: 'deny', user_message: decision.reason };
+      if (additionalContext !== null) out.additional_context = additionalContext;
+      process.stdout.write(JSON.stringify(out));
       return;
     }
   }
 
-  try {
-    const statePath = resolveStatePath(raw);
-    const statePresent = fs.existsSync(statePath);
-    const msg = statePresent ? MSG_PRESENT : MSG_ABSENT;
-    process.stdout.write(JSON.stringify({ additional_context: msg }));
-  } catch {
-    process.stdout.write(JSON.stringify({}));
-  }
+  process.stdout.write(JSON.stringify(additionalContext !== null ? { additional_context: additionalContext } : {}));
 });

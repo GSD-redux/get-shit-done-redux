@@ -30,6 +30,7 @@
   ".kimi-code/hooks/lib/cursor-workspace.js",
   ".kimi-code/hooks/lib/git-cmd.js",
   ".kimi-code/hooks/lib/gsd-graphify-rebuild.sh",
+  ".kimi-code/hooks/lib/isolation-sentinel.js",
   ".kimi-code/hooks/managed-hooks-registry.cjs",
   ".kimi-code/hooks/package.json",
   "agents/gsd-advisor-researcher.md",

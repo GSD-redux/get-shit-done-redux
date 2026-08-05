@@ -29,8 +29,20 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS } = require('../hooks/lib/isolation-sentinel.js');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-cursor-subagent-start.js');
+
+/**
+ * Write a #3045 dispatch-isolation sentinel under `dir` (mirrors what
+ * `gsd-tools.cjs record-dispatch-isolation` writes). `writtenAt` defaults to
+ * "now" (fresh); pass an explicit past timestamp to construct a stale one.
+ */
+function writeSentinel(dir, { isolation, harnessFlag = null, phase = null, writtenAt = Date.now() }) {
+  const p = path.join(dir, SENTINEL_RELATIVE_PATH);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ isolation, harness_flag: harnessFlag, phase, written_at: writtenAt }));
+}
 
 function runHook(payload, extraEnv = {}) {
   const env = { ...process.env };
@@ -82,7 +94,9 @@ function makeGitProject(prefix, configContent) {
 
 describe('gsd-cursor-subagent-start.js: isolation guard applicability (#3045)', () => {
   let harnessProject; // real git repo, config resolves to harness-worktree (default 'cursor')
-  let linkedWorktree; // real `git worktree add` of harnessProject — the isolated case
+  let linkedWorktree; // real `git worktree add` of harnessProject, NOT under Cursor's managed
+                       // worktree root — a hand-made worktree the user opened themselves.
+                       // #3045 finding 3: this is no longer treated as isolation proof.
   let noneProject; // config.json { runtime: 'windsurf' } -> resolves to 'none'
   let orchestratorEnvProject; // exercised via GSD_RUNTIME=codex -> 'orchestrator-worktree'
   let noGsdDir; // no .planning at all
@@ -112,12 +126,20 @@ describe('gsd-cursor-subagent-start.js: isolation guard applicability (#3045)', 
     cleanup(unreadableConfigProject);
   });
 
-  test('isolated (real linked git worktree, still has its own .planning/) + executor -> allow', () => {
+  test('hand-made linked git worktree (real `git worktree add`, own .planning/, NOT under managed root) + executor -> DENY (#3045 finding 3)', () => {
+    // A linked git worktree is not, by itself, proof of harness isolation —
+    // the user can open Cursor directly in one and edit it by hand, same as
+    // any other checkout. Only Cursor's OWN managed worktree root
+    // (<CURSOR_CONFIG_DIR>/worktrees) counts; this repo's own
+    // .claude/worktrees/ is the exact real-world shape of this row. This is
+    // a deliberate tightening from the pre-review C1 row, which incorrectly
+    // treated any linked worktree as isolated — see #3045 security review
+    // finding 3.
     const r = runHook(subagentPayload([linkedWorktree]));
     assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
     const out = JSON.parse(r.stdout);
-    assert.equal(out.permission, undefined, 'must not set permission on allow');
-    assert.equal(out.additional_context !== undefined, true, 'reminder behavior must still fire on allow');
+    assert.equal(out.permission, 'deny');
+    assert.match(out.user_message, /not an isolated Cursor worktree/);
   });
 
   test('not isolated (main checkout, harness-worktree) + executor -> DENY', () => {
@@ -247,11 +269,128 @@ describe('gsd-cursor-subagent-start.js: managed-worktree-root OR-signal (#3045)'
     cleanup(cursorConfigDir);
   });
 
-  test('non-git directory under CURSOR_CONFIG_DIR/worktrees -> allow (isolated via managed-root signal alone)', () => {
+  test('non-git directory under CURSOR_CONFIG_DIR/worktrees -> allow (isolated via managed-root signal alone, realpath-verified)', () => {
     const r = runHook(subagentPayload([managedWorktree]), { CURSOR_CONFIG_DIR: cursorConfigDir });
     assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, undefined);
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: multi-root workspace scan (#3045 finding 1)', () => {
+  let unisolatedProject; // real git repo, harness-worktree, main checkout (not isolated)
+  let benignRoot; // a plain directory with no .planning/ at all
+  let cursorConfigDir;
+  let managedWorktree; // a real isolated root under CURSOR_CONFIG_DIR/worktrees
+
+  before(() => {
+    unisolatedProject = makeGitProject('gsd-cs-multiroot-primary-', JSON.stringify({}));
+    benignRoot = createTempDir('gsd-cs-multiroot-benign-');
+
+    cursorConfigDir = createTempDir('gsd-cs-multiroot-cursorhome-');
+    managedWorktree = path.join(cursorConfigDir, 'worktrees', 'agent-1');
+    fs.mkdirSync(managedWorktree, { recursive: true });
+  });
+
+  after(() => {
+    cleanup(unisolatedProject);
+    cleanup(benignRoot);
+    cleanup(cursorConfigDir);
+  });
+
+  test('root[0] is a benign non-GSD directory, root[1] is the unisolated primary checkout -> DENY', () => {
+    // Prior to the fix, firstWorkspaceRoot() only ever looked at
+    // workspace_roots[0] — a non-GSD root[0] made the guard evaluate nothing
+    // and allow, even though root[1] is the exact project this guard exists
+    // to protect.
+    const r = runHook(subagentPayload([benignRoot, unisolatedProject]), { CURSOR_CONFIG_DIR: cursorConfigDir });
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+    assert.match(out.user_message, /not an isolated Cursor worktree/);
+  });
+
+  test('root[0] is an isolated managed-root directory, root[1] is the unisolated primary checkout -> DENY', () => {
+    // A multi-root workspace where the FIRST root happens to be genuinely
+    // isolated must not let that root's "allow" verdict short-circuit the
+    // scan — every root is independently reachable and writable by the
+    // dispatched subagent.
+    const r = runHook(subagentPayload([managedWorktree, unisolatedProject]), { CURSOR_CONFIG_DIR: cursorConfigDir });
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+    assert.match(out.user_message, /not an isolated Cursor worktree/);
+  });
+
+  test('every root isolated or benign -> allow', () => {
+    const r = runHook(subagentPayload([benignRoot, managedWorktree]), { CURSOR_CONFIG_DIR: cursorConfigDir });
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, undefined);
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: realpath verification against symlink/bind-mount spoofing (#3045 finding 2)', () => {
+  let cursorConfigDir;
+  let primaryCheckout; // real git repo, harness-worktree, main checkout (not isolated)
+  let spoofedManagedPath; // <CURSOR_CONFIG_DIR>/worktrees/<name>, a SYMLINK to primaryCheckout
+
+  before(() => {
+    cursorConfigDir = createTempDir('gsd-cs-symlink-cursorhome-');
+    primaryCheckout = makeGitProject('gsd-cs-symlink-primary-', JSON.stringify({}));
+    fs.mkdirSync(path.join(cursorConfigDir, 'worktrees'), { recursive: true });
+    spoofedManagedPath = path.join(cursorConfigDir, 'worktrees', 'spoofed');
+    fs.symlinkSync(primaryCheckout, spoofedManagedPath, 'dir');
+  });
+
+  after(() => {
+    cleanup(primaryCheckout);
+    cleanup(cursorConfigDir);
+  });
+
+  test('symlink under the managed root pointing OUTSIDE it (at the primary checkout) -> DENY, not isolated', () => {
+    // Lexical path.relative(managedRoot, root) would find `root` textually
+    // "under" managedRoot and misclassify this as isolated. A process with
+    // the user's permissions (including an agent already running in a
+    // legitimately isolated worktree) can plant exactly this symlink.
+    // realpath-verification must resolve the symlink to primaryCheckout,
+    // see that it is OUTSIDE the realpath'd managed root, and deny.
+    const r = runHook(subagentPayload([spoofedManagedPath]), { CURSOR_CONFIG_DIR: cursorConfigDir });
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+    assert.match(out.user_message, /not an isolated Cursor worktree/);
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: nonexistent workspace root does not crash or bypass the scan (#3045)', () => {
+  let unisolatedProject;
+  let nonexistentRoot;
+
+  before(() => {
+    unisolatedProject = makeGitProject('gsd-cs-nonexistent-companion-', JSON.stringify({}));
+    nonexistentRoot = path.join(require('node:os').tmpdir(), 'gsd-cs-does-not-exist-', String(process.pid), 'nope');
+  });
+
+  after(() => {
+    cleanup(unisolatedProject);
+  });
+
+  test('single nonexistent workspace root, executor, no other root -> allow (no GSD project confirmable there; the project-existence gate — not the realpath isolation check — is what makes this allow, and is intentionally NOT a fail-closed trigger, mirroring the existing "no workspace root at all" branch)', () => {
+    const r = runHook(subagentPayload([nonexistentRoot]));
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stderr, '', 'must not crash or log a stack trace on an unresolvable root');
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, undefined);
+  });
+
+  test('nonexistent root paired with a real unisolated harness-worktree project root -> DENY (the bogus root must not short-circuit the scan into allowing)', () => {
+    const r = runHook(subagentPayload([nonexistentRoot, unisolatedProject]));
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stderr, '', 'must not crash or log a stack trace on an unresolvable root');
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+    assert.match(out.user_message, /not an isolated Cursor worktree/);
   });
 });
 
@@ -346,4 +485,141 @@ describe('executor-identity parity: hooks/gsd-agent-isolation-guard.js (Claude) 
       );
     });
   }
+});
+
+describe('gsd-cursor-subagent-start.js: #3045 MAJOR 3 — non-git GSD project is INERT, not a confident negative', () => {
+  let nonGitProject; // .planning/config.json present, but NOT a git repo at all, NOT under managed root
+
+  before(() => {
+    nonGitProject = createTempDir('gsd-cs-notgitrepo-');
+    fs.mkdirSync(path.join(nonGitProject, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(nonGitProject, '.planning', 'config.json'), JSON.stringify({}));
+  });
+
+  after(() => {
+    cleanup(nonGitProject);
+  });
+
+  test('resolveWorktreeLinkage reports not_git_repo -> allow (was DENY before the #3045 MAJOR 3 fix: unactionable "start --worktree" advice for a directory with no git repo to isolate)', () => {
+    const r = runHook(subagentPayload([nonGitProject]));
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, undefined, `expected allow (inert), got: ${r.stdout}`);
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: #3045 MINOR — relative workspace_roots entry does not fail open', () => {
+  test('a relative-path workspace_roots entry is filtered out, not resolved against the hook cwd', () => {
+    // Before the fix, a relative entry joined against process.cwd() (Cursor's
+    // config dir, ~/.cursor for a real invocation) — almost certainly NOT a
+    // GSD project — which read as "not a GSD project" and allowed. The fix
+    // filters relative entries out of getWorkspaceRoots() instead, for the
+    // honest reason (never a resolvable workspace root), but the OBSERVABLE
+    // outcome for this single-relative-root case is still allow either way,
+    // so this test's actual load-bearing assertion is that it does not
+    // throw / does not crash on a relative entry, cross-checked against an
+    // absolute sibling proving the scan itself still works.
+    const r = runHook(subagentPayload(['relative/workspace/root']));
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.equal(r.stderr, '', 'must not crash on a relative workspace root');
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, undefined);
+  });
+
+  test('relative root paired with a real unisolated absolute harness-worktree root still DENIES (relative entry is dropped, not silently trusted)', () => {
+    const unisolatedProject = makeGitProject('gsd-cs-relmix-', JSON.stringify({}));
+    try {
+      const r = runHook(subagentPayload(['relative/workspace/root', unisolatedProject]));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.permission, 'deny');
+    } finally {
+      cleanup(unisolatedProject);
+    }
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: #3045 BLOCKER regression — sentinel is authoritative over registry capability', () => {
+  // Mirrors tests/gsd-agent-isolation-guard.test.cjs's Claude-side pinning
+  // for the same defect: the guard used to key enforcement on the REGISTRY's
+  // dispatch.isolation (a host CAPABILITY), not the workflow's resolved
+  // per-dispatch ISOLATION. `harnessProject` resolves to harness-worktree via
+  // the registry (default 'cursor' runtime), so a FAIL here proves the
+  // sentinel is actually consulted.
+  let harnessProject;
+  let useWorktreesFalseProject;
+
+  before(() => {
+    harnessProject = makeGitProject('gsd-cs-sentinel-', JSON.stringify({}));
+    useWorktreesFalseProject = makeGitProject('gsd-cs-uwf-', JSON.stringify({ workflow: { use_worktrees: false } }));
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+    cleanup(useWorktreesFalseProject);
+  });
+
+  test('sentinel says isolation=none -> ALLOW even in the (unisolated) primary checkout (the BLOCKER)', () => {
+    writeSentinel(harnessProject, { isolation: 'none' });
+    try {
+      const r = runHook(subagentPayload([harnessProject]));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.permission, undefined, `expected allow, got: ${r.stdout}`);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel says isolation=orchestrator-worktree -> ALLOW', () => {
+    writeSentinel(harnessProject, { isolation: 'orchestrator-worktree' });
+    try {
+      const r = runHook(subagentPayload([harnessProject]));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.permission, undefined);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('STALE sentinel (older than SENTINEL_STALE_MS) is ignored -> falls back to registry (DENY, harness-worktree still applies)', () => {
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt: Date.now() - (SENTINEL_STALE_MS + 60000) });
+    try {
+      const r = runHook(subagentPayload([harnessProject]));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.permission, 'deny', `expected deny (stale sentinel ignored), got: ${r.stdout}`);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('MALFORMED sentinel (invalid JSON) is treated as stale, never fatal -> falls back to registry (DENY)', () => {
+    const sentinelPath = path.join(harnessProject, SENTINEL_RELATIVE_PATH);
+    fs.mkdirSync(path.dirname(sentinelPath), { recursive: true });
+    fs.writeFileSync(sentinelPath, '{ not valid json');
+    try {
+      const r = runHook(subagentPayload([harnessProject]));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.permission, 'deny');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('no sentinel + workflow.use_worktrees=false -> ALLOW (project-level opt-out, case (a) from the BLOCKER)', () => {
+    const r = runHook(subagentPayload([useWorktreesFalseProject]));
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, undefined);
+  });
+
+  test('no sentinel + workflow.use_worktrees absent + registry harness-worktree -> DENY (conservative fallback still enforces)', () => {
+    const r = runHook(subagentPayload([harnessProject]));
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+  });
 });

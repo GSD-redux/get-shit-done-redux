@@ -1652,6 +1652,65 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
   }
 
+  function routeRecordDispatchIsolation({ args, cwd, raw, error }) {
+    // #3045 BLOCKER fix: `executor-isolation-dispatch.md`'s "Resolve ISOLATION"
+    // shell block is the SOLE authority for the per-dispatch decision — it
+    // already applies workflow.use_worktrees, the #2474 per-plan submodule
+    // degrade, and the #683/#3060 base-check auto-degrade before this verb
+    // ever runs. This verb's only job is to PERSIST that already-resolved
+    // decision to a run-scoped sentinel file so the isolation guard hooks
+    // (hooks/gsd-agent-isolation-guard.js, hooks/gsd-cursor-subagent-start.js)
+    // can read the actual per-dispatch decision instead of re-deriving a host
+    // CAPABILITY from the registry — the registry's harness-worktree entry
+    // means "this host CAN isolate", not "this dispatch SHOULD be isolated".
+    // Sequential ISOLATION=none is a legitimate, documented outcome even on a
+    // harness-worktree-capable host (execute-phase.md:788-790).
+    //
+    // Best-effort: a write failure here must never fail the workflow — the
+    // guard hooks' own sentinel-absent path degrades to a conservative
+    // registry+config check, so a missing sentinel is safe, just less precise.
+    //
+    // Output: { recorded: true|false, path, error? }
+    const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+    const isoIdx = args.indexOf('--isolation');
+    const isolation = isoIdx !== -1 ? args[isoIdx + 1] : undefined;
+    if (!isolation || !VALID_ISOLATION.has(isolation)) {
+      error(
+        'Usage: record-dispatch-isolation --isolation <harness-worktree|orchestrator-worktree|none> ' +
+        '[--harness-flag <flag>] [--phase <n>]',
+        ERROR_REASON.USAGE,
+      );
+      return;
+    }
+    const flagIdx = args.indexOf('--harness-flag');
+    const harnessFlag = flagIdx !== -1 && args[flagIdx + 1] && !args[flagIdx + 1].startsWith('--')
+      ? args[flagIdx + 1]
+      : null;
+    const phaseIdx = args.indexOf('--phase');
+    const phase = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
+      ? args[phaseIdx + 1]
+      : null;
+
+    const nodePath = require('path');
+    const nodeFs = require('fs');
+    const sentinelDir = nodePath.join(cwd, '.gsd');
+    const sentinelPath = nodePath.join(sentinelDir, 'dispatch-isolation-sentinel.json');
+    const payload = { isolation, harness_flag: harnessFlag, phase, written_at: Date.now() };
+    try {
+      nodeFs.mkdirSync(sentinelDir, { recursive: true });
+      // Atomic write: unique temp file + rename, so a concurrent reader (a
+      // guard hook firing mid-write) never observes a partially-written
+      // sentinel. Unique per-process+time so concurrent orchestrator-worktree
+      // invocations sharing the same sentinelDir never collide on the temp name.
+      const tmpPath = `${sentinelPath}.tmp-${process.pid}-${Date.now()}`;
+      nodeFs.writeFileSync(tmpPath, JSON.stringify(payload));
+      nodeFs.renameSync(tmpPath, sentinelPath);
+      output({ recorded: true, path: '.gsd/dispatch-isolation-sentinel.json' }, raw);
+    } catch (err) {
+      output({ recorded: false, path: '.gsd/dispatch-isolation-sentinel.json', error: err && err.message }, raw);
+    }
+  }
+
   function routeResolveDispatchType({ args, cwd, raw, error }) {
     // #2508 Phase 4 Option A: resolve a requested GSD subagent name to the
            // type an Agent() call should use on the current runtime. On
@@ -3062,6 +3121,7 @@ const HOST_COMMAND_ROUTERS = {
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
+    'record-dispatch-isolation': routeRecordDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
     'agent-skills': routeAgentSkills,
     'skill-manifest': routeSkillManifest,
@@ -3314,7 +3374,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
-  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
+  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +

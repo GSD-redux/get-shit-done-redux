@@ -398,6 +398,7 @@
   "hooks/lib/cursor-workspace.js",
   "hooks/lib/git-cmd.js",
   "hooks/lib/gsd-graphify-rebuild.sh",
+  "hooks/lib/isolation-sentinel.js",
   "hooks/managed-hooks-registry.cjs",
   "hooks/package.json",
   "scripts/changeset/README.md",

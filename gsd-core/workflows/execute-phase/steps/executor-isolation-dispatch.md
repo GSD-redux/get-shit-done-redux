@@ -37,6 +37,17 @@ if [ "$ISOLATION" != "none" ]; then
     ISOLATION=none
   fi
 fi
+
+# Persist the FINAL resolved decision to a run-scoped sentinel (#3045 BLOCKER
+# fix). The isolation guard hooks (hooks/gsd-agent-isolation-guard.js,
+# hooks/gsd-cursor-subagent-start.js) read this instead of re-deriving a host
+# CAPABILITY from the registry — the registry's harness-worktree entry means
+# "this host CAN isolate", not "this dispatch SHOULD be isolated", and every
+# degrade above (project opt-out, the #683 base-check auto-degrade) is a
+# legitimate ISOLATION=none outcome the guards must not treat as a bypass.
+# Best-effort: a write failure here must never fail the wave — the guards'
+# own sentinel-absent fallback is safe, just less precise.
+gsd_run query record-dispatch-isolation --isolation "$ISOLATION" --phase "${PHASE_NUMBER:-}" 2>/dev/null || true
 ```
 
 `ISOLATION` — not `RUNTIME` — selects how the wave fans out. These three values are the only
@@ -63,6 +74,11 @@ Read the flag once before dispatching; it is descriptor data, never hardcoded pe
 HARNESS_FLAG=$(gsd_run query dispatch-isolation --json 2>/dev/null \
   | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(j&&j.harnessFlag?j.harnessFlag:"")}catch{process.stdout.write("")}})')
 [ -n "$HARNESS_FLAG" ] || { echo "FATAL: runtime declares dispatch.isolation=harness-worktree but no harnessIsolationFlag — refusing to dispatch executors that would believe they are isolated." >&2; exit 1; }
+# Re-record the sentinel now that HARNESS_FLAG is known (#3045 BLOCKER fix) —
+# the isolation guard hooks need the exact flag descriptor, not just the mode,
+# to check the Agent()/subagentStart dispatch. Overwrites the mode-only write
+# from the "Resolve ISOLATION" block above; best-effort, same as that write.
+gsd_run query record-dispatch-isolation --isolation "$ISOLATION" --harness-flag "$HARNESS_FLAG" --phase "${PHASE_NUMBER:-}" 2>/dev/null || true
 ```
 
 Substitute `$HARNESS_FLAG`'s value for the `{harnessFlag}` placeholder in the `Agent()` dispatch
