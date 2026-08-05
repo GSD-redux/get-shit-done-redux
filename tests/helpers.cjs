@@ -106,19 +106,31 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
       };
     }
     if (result.outcome === processSeam.OUTCOME.BUFFER_OVERFLOW) {
-      // Never retried and never coerced to exitCode:1. This is a DELIBERATE
-      // divergence from the old execFileSync-based helper, not an oversight:
-      // the old code saw a maxBuffer overflow as `err.signal === 'SIGTERM'`,
-      // which made the old `isKilled(err)` true and triggered a retry. The
-      // new seam classifies overflow as its own BUFFER_OVERFLOW outcome
-      // specifically so it stops being conflated with a kill — the child ran
-      // fine and produced too much output, so retrying wastes 60s and fails
-      // identically every time.
+      // Never retried. This is a DELIBERATE divergence from the old
+      // execFileSync-based helper, not an oversight: the old code saw a
+      // maxBuffer overflow as `err.signal === 'SIGTERM'`, which made the old
+      // `isKilled(err)` true and triggered a retry. The new seam classifies
+      // overflow as its own BUFFER_OVERFLOW outcome specifically so it stops
+      // being conflated with a kill — the child ran fine and produced too
+      // much output, so retrying wastes 60s and fails identically every
+      // time.
+      //
+      // exitCode is coerced to 1 here — RETRACTED claim from an earlier
+      // revision of this comment that it was "never coerced to exitCode:1,
+      // unlike the pre-seam helper": that was wrong. A real caller
+      // (tests/context-predicates-query.test.cjs) asserts
+      // `typeof r.exitCode === 'number'`, matching the old code's
+      // `err.status ?? 1` on every non-retried failure path. The SEAM layer
+      // still reports `exitCode: null` (see toSeamResult) — that typed
+      // result is where the "no numeric exit code exists" information
+      // lives, discriminated via `outcome`. This LEGACY adapter's job is to
+      // preserve the old numeric contract for existing callers, so it
+      // coerces null to 1 here rather than propagating the seam's null.
       return {
         success: false,
         output: (result.stdout || '').trim(),
         error: `gsd-tools output exceeded the subprocess buffer limit (code=${result.code})`,
-        exitCode: null,
+        exitCode: 1,
       };
     }
     if (result.outcome === processSeam.OUTCOME.KILLED) {
@@ -137,13 +149,24 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
       };
     }
     // SPAWN_FAILED: the process never started (matches old behavior — ENOENT
-    // carries no signal, so the old `isKilled(err)` was false). Never
-    // retried — retrying is pointless — and never coerced to exitCode:1.
+    // and friends carry no signal, so the old `isKilled(err)` was false).
+    // Never retried — retrying is pointless.
+    //
+    // exitCode is coerced to 1 here — same retraction as the BUFFER_OVERFLOW
+    // branch above: this was previously described as "never coerced to
+    // exitCode:1," which was wrong for the ADAPTER path. The old
+    // execFileSync-based helper returned `err.status ?? 1` on every
+    // non-retried failure, i.e. always `1` for a spawn failure, and a real
+    // caller depends on `typeof exitCode === 'number'`. The SEAM's own
+    // `toSeamResult` still reports `exitCode: null` for SPAWN_FAILED — that
+    // typed layer is where "no numeric exit code exists" is expressed via
+    // `outcome`; this legacy adapter re-applies the old numeric contract on
+    // top of it.
     return {
       success: false,
       output: (result.stdout || '').trim(),
       error: `gsd-tools failed to spawn (code=${result.code})`,
-      exitCode: null,
+      exitCode: 1,
     };
   }
 

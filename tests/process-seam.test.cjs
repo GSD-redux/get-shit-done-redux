@@ -212,6 +212,22 @@ describe('process-seam', () => {
     assert.equal(result.timedOut, false);
   });
 
+  // Regression for the Windows CI failure on PR #3066: a `status === null`
+  // catch-all previously misclassified this as TIMED_OUT (the process never
+  // even started), which drove the adapter into a pointless retry. An
+  // oversized argv errors at the OS spawn boundary before the child exists
+  // at all — E2BIG on Linux/macOS, ENAMETOOLONG on Windows — and must
+  // classify as SPAWN_FAILED regardless of which errno the platform uses.
+  test('an oversized argv is SPAWN_FAILED, not TIMED_OUT, cross-platform', () => {
+    const fixture = writeFixture(tmpDir, 'echo-argv.cjs', FIXTURE_ECHO_ARGV);
+    const oversizedArg = 'x'.repeat(4 * 1024 * 1024);
+    const result = runNode([fixture, oversizedArg]);
+    assert.equal(result.outcome, OUTCOME.SPAWN_FAILED);
+    assert.equal(result.timedOut, false);
+    assert.equal(typeof result.code, 'string');
+    assert.ok(result.code.length > 0);
+  });
+
   test('omitting timeoutMs still bounds the call', () => {
     const fixture = writeFixture(tmpDir, 'exit.cjs', FIXTURE_EXIT);
     const withDefault = runNode([fixture, '0']);
@@ -709,7 +725,13 @@ describe('runGsdTools adapter (process-seam parity)', () => {
     );
   });
 
-  test('adapter does not retry a buffer overflow', () => {
+  // Legacy-shape contract: the SEAM reports exitCode: null for
+  // BUFFER_OVERFLOW (asserted above, at the seam level), but a real caller
+  // (tests/context-predicates-query.test.cjs) asserts
+  // `typeof r.exitCode === 'number'` on the ADAPTER's legacy shape, matching
+  // the pre-seam execFileSync helper's `err.status ?? 1`. This is the
+  // adapter-level contract, deliberately distinct from the seam-level one.
+  test('adapter does not retry a buffer overflow, and coerces exitCode to a number', () => {
     withMockedRunNode(
       () => ({
         outcome: OUTCOME.BUFFER_OVERFLOW,
@@ -725,12 +747,15 @@ describe('runGsdTools adapter (process-seam parity)', () => {
         const result = runGsdTools(['x'], tmpDir);
         assert.equal(getCallCount(), 1);
         assert.equal(result.success, false);
-        assert.equal(result.exitCode, null);
+        assert.equal(typeof result.exitCode, 'number');
+        assert.equal(result.exitCode, 1);
       }
     );
   });
 
-  test('adapter does not retry a spawn failure', () => {
+  // Same legacy-shape contract as the buffer-overflow test above, for
+  // SPAWN_FAILED (the Windows CI regression case: an oversized argv).
+  test('adapter does not retry a spawn failure, and coerces exitCode to a number', () => {
     withMockedRunNode(
       () => ({
         outcome: OUTCOME.SPAWN_FAILED,
@@ -746,7 +771,8 @@ describe('runGsdTools adapter (process-seam parity)', () => {
         const result = runGsdTools(['x'], tmpDir);
         assert.equal(getCallCount(), 1);
         assert.equal(result.success, false);
-        assert.equal(result.exitCode, null);
+        assert.equal(typeof result.exitCode, 'number');
+        assert.equal(result.exitCode, 1);
       }
     );
   });

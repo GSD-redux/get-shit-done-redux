@@ -38,14 +38,23 @@
  *     runtime, or the `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` code documented
  *     for the async exec()/execFile() family, accepted defensively in case
  *     a different Node version/platform surfaces it here) -> BUFFER_OVERFLOW.
- *   - `result.error.code === 'ENOENT'` -> SPAWN_FAILED.
- *   - Any other populated `result.error` with `status === null` -> TIMED_OUT.
- *     This is process-of-elimination (not everything else, given no exit
- *     status), not a literal `code === 'ETIMEDOUT'` equality check — the
- *     design's rule is honored: `timedOut` is never gated on that string,
- *     and this also makes TIMED_OUT correct on platforms/Node versions
- *     where the timeout errno differs (e.g. Windows, where `signal` can be
- *     `null`).
+ *   - `result.error.code === 'ETIMEDOUT'` OR `signal !== null` -> TIMED_OUT.
+ *     A timeout is identified POSITIVELY now, not by elimination: on this
+ *     runtime spawnSync's own timeout kill reports `ETIMEDOUT`, and on a
+ *     platform whose timeout errno differs, the child is still killed by a
+ *     signal on the way out, so `signal !== null` still catches it. This
+ *     replaces an earlier `status === null` catch-all that was too greedy —
+ *     it also matched a spawn that never started at all (e.g. Windows
+ *     `ENAMETOOLONG` from an oversized argv: `status: null, signal: null`),
+ *     misclassifying a non-retryable spawn failure as a retryable timeout
+ *     and driving the adapter into a retry loop that could never succeed.
+ *   - Any other populated `result.error` -> SPAWN_FAILED. This subsumes the
+ *     `ENOENT` case (binary not found) along with every other spawn-time
+ *     errno (`ENAMETOOLONG`, `E2BIG`, `EACCES`, `EPERM`, …) — none of them
+ *     carry a timeout errno or a signal, so none of them satisfy the
+ *     TIMED_OUT branch above. A dedicated `ENOENT`-only branch was dropped
+ *     since it produced the exact same outcome as this fallback; keeping it
+ *     would have implied ENOENT gets special handling it does not need.
  */
 
 const { spawnSync } = require('child_process');
@@ -92,14 +101,13 @@ function toSeamResult(result) {
     outcome = signal === null ? OUTCOME.EXITED : OUTCOME.KILLED;
   } else if (BUFFER_OVERFLOW_CODES.has(errorCode)) {
     outcome = OUTCOME.BUFFER_OVERFLOW;
-  } else if (errorCode === 'ENOENT') {
-    outcome = OUTCOME.SPAWN_FAILED;
-  } else if (status === null) {
+  } else if (errorCode === 'ETIMEDOUT' || signal !== null) {
     outcome = OUTCOME.TIMED_OUT;
   } else {
-    // Not an observed shape: an error is present but the child also
-    // reported an exit status. Treat conservatively as a spawn failure
-    // rather than trusting a status that arrived alongside an error.
+    // Any other populated `result.error` — ENOENT, ENAMETOOLONG, E2BIG,
+    // EACCES, EPERM, etc. — is a spawn failure: the process never started
+    // (or started and errored in a way that carries neither a timeout
+    // errno nor a signal), so retrying can never succeed.
     outcome = OUTCOME.SPAWN_FAILED;
   }
 
