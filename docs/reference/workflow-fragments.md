@@ -253,6 +253,35 @@ Composition runs **before** the per-runtime converters (the `.claude/` →
 `.windsurf/`-style path and reference rewrites), so a marker's `id`/`when`
 attribute text is never exposed to a rewrite regex.
 
+### Emission covers `agents/` too — gating does not
+
+Since epic #1671 Phase 6.4 (#2995), agent definitions under `agents/` pass
+through the same composition step as workflows. A marker in an agent file is
+stripped at emit rather than shipped verbatim into the runtime, on every path
+that emits agent content:
+
+| Emission path | Runtimes |
+|---|---|
+| `stageAgentsForRuntimeWithConverter` (with the raw `agents` kind and the Kimi agent kind routed through it) | the descriptor-driven runtimes, plus `claude` local and `zcode` |
+| `bin/install.js`'s inline agent loop | every non-descriptor runtime |
+| `installCodexConfig`'s per-agent `.toml` writer | `codex` |
+
+All three compose **before** any path rewrite, for the same reason workflows do.
+
+**What does not extend is `when=` gating.** Selection is read from
+`gsd-core/workflows/section-manifest.json`, which `gen-section-manifest.cjs`
+derives from `gsd-core/workflows/*.md` only — its shape is `{workflows: …}` and
+it has no per-agent key. There is no per-agent init entry point either, so an
+agent atom has no fact to evaluate against and would fail the vocabulary's
+second admission gate ("a fact the init seam demonstrably computes at a real
+entry point"). A `when=` on an agent section would therefore evaluate `false`
+forever while *looking* like working gating — the precise failure the frozen
+vocabulary exists to prevent.
+
+Agents that need to shed bytes do so by extracting reference material to
+`gsd-core/references/` behind an `@`-reference, the documented
+`DEFECT.AGENT-FILE-SIZE-CAP-BREACH` remedy — not by adding markers.
+
 ## Fenced and commented lookalikes are literal
 
 A `<!-- gsd:section ... -->`-shaped line inside a fenced code block (three or

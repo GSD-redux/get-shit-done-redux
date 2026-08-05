@@ -272,28 +272,36 @@ describe('ADR-1239 Phase A: hostIntegration descriptors', () => {
 
   // ─── shouldFlattenDispatch per-host (#853 discriminator) ─────────────────────
 
-  // Expected: false (may background) for codex, cursor, kimi, and kimi-code;
-  // true (must inline) for the other 14.
+  // Expected: false (may background) ONLY for cursor — the one shipped host whose
+  // dispatch declares nested:true + subagentToolkit:"full" + a depth budget > 1.
+  // true (must inline) for the other 17.
+  //
+  // #2939: the depth-aware rule reclassifies codex/kimi/kimi-code, which the old
+  // two-field (background+backgroundDispatch) rule admitted as background-eligible
+  // despite each lacking what a backgrounded nesting orchestrator actually needs:
+  //   - codex: nested:true + full toolkit, BUT maxDepth:1 (no room for a depth-2 leaf)
+  //   - kimi:  nested:false (cannot host a nesting orchestrator at all)
+  //   - kimi-code: subagentToolkit:'built-in-only' (cannot delegate to full subagents)
+  // cursor (maxDepth:2) remains the only background-capable host with a sufficient budget.
   const EXPECTED_FLATTEN = {
     antigravity: true,
     augment:     true,
     claude:      true,
     cline:       true,
     codebuddy:   true,
-    codex:       false,
+    codex:       true,
     copilot:     true,
     cursor:      false,
     hermes:      true,
     kilo:        true,
-    // #2095: Kimi Upgrade 2 — Kimi's Agent tool takes a run_in_background
-    // call-time param (Context7 agents.html) → backgroundDispatch flipped to
-    // true → dispatch.background/backgroundDispatch both true → NOT
-    // force-flattened (mirrors the #2087 OpenCode precedent below).
-    kimi:        false,
-    // #2454: Kimi Code (Node CLI) — same background-dispatch model as Python
-    // kimi-cli per Kimi Code docs (dispatch.background/backgroundDispatch both
-    // true) → NOT force-flattened.
-    'kimi-code': false,
+    // #2095/#2939: Kimi CAN background a single agent (backgroundDispatch:true), BUT
+    // nested:false means a backgrounded kimi agent cannot nest the plan-checker/executor/
+    // verifier pipeline the workflows require → flatten. backgroundDispatch stays true on
+    // the descriptor (UPGRADE 2 holds); only the flatten consequence changes.
+    kimi:        true,
+    // #2454/#2939: Kimi Code declares background/backgroundDispatch both true, BUT
+    // subagentToolkit:'built-in-only' cannot delegate to full subagents → flatten.
+    'kimi-code': true,
     // #2598: OpenCode's background subagents sit behind the opt-in
     // OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS flag (default false), and the
     // session loop still handles one subtask at a time (upstream #29638, OPEN).

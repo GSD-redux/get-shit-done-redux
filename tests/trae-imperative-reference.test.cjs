@@ -101,9 +101,13 @@ test('AC-SPECIFIC: trae real dispatch axes fail CLOSED to inline (shouldFlattenD
   // this fail-closed default without a deliberate test update.
   assert.equal(shouldFlattenDispatch(TRAE_AXES.dispatch), true);
 
-  // Sanity: if backgroundDispatch WERE true (all else equal), the same shape
-  // would NOT flatten — proving backgroundDispatch is what flips the result.
-  assert.equal(shouldFlattenDispatch({ ...TRAE_AXES.dispatch, backgroundDispatch: true }), false);
+  // #2939: flipping ONLY backgroundDispatch to true is NO LONGER sufficient to
+  // background. trae's axes declare nested:'undocumented' (not true) and
+  // subagentToolkit:'undocumented' (not 'full'), so even with backgroundDispatch
+  // true the depth/nesting gate (canNest) fails closed to flatten. A future
+  // doc-sourcing pass must also establish nested:true + subagentToolkit:'full' +
+  // a sufficient maxDepth before trae may background.
+  assert.equal(shouldFlattenDispatch({ ...TRAE_AXES.dispatch, backgroundDispatch: true }), true);
 });
 
 test('a partial/empty trae descriptor degrades to the safe floor, not the programmatic-cli baseline', () => {

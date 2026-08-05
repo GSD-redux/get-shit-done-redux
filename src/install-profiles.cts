@@ -28,6 +28,16 @@ const {
   readGsdCommandNames: () => string[];
 };
 
+// #2995 (epic #1671 Phase 6.4): agent bodies join the fragment model. Markers are
+// stripped at emit BEFORE any path rewrite or converter runs, so a `.claude/` ->
+// `.windsurf/` regex can never reach inside a marker attribute and corrupt it —
+// the same ordering #2930 established for workflows.
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import workflowFragmentsModule = require('./workflow-fragments.cjs');
+const { composeWorkflow: _composeWorkflow } = workflowFragmentsModule as {
+  composeWorkflow: (content: string, opts?: { sourcePath?: string }) => string;
+};
+
 // ---------------------------------------------------------------------------
 // Profile definitions
 // ---------------------------------------------------------------------------
@@ -360,6 +370,19 @@ function stageSkillsForProfile(srcDir: string, resolvedProfile: ResolvedProfile)
  * For tiered profiles, copies only agents whose full stem (e.g. 'gsd-planner')
  * is in resolvedProfile.agents — which is populated by resolveProfile() from
  * the _calls_agents_* entries in the manifest.
+ *
+ * ⚠️ RAW STAGER — ITS OUTPUT IS NOT EMISSION-READY (#2995). This stager performs a
+ * plain `fs.copyFileSync` and — under the default `full` profile — short-circuits
+ * and returns the real source directory unstaged. It does NOT strip `gsd:section`
+ * markers. It is still called, by `bin/install.js`'s `_stageAgents`, whose output
+ * feeds the inline agent loop and `installCodexConfig`; both of those compose the
+ * content themselves before writing, so the raw output never reaches disk. What
+ * changed in #2995 is that `agentsKind` and `kimiAgentsKind` no longer use it —
+ * they route through `stageAgentsForRuntimeWithConverter`, which composes.
+ *
+ * The invariant to preserve: anything that takes this function's output and WRITES
+ * it as a runtime artifact must call `composeWorkflow` on each file first, or it
+ * ships markers verbatim.
  */
 function stageAgentsForProfile(srcAgentsDir: string, resolvedProfile: ResolvedProfile): string {
   if (resolvedProfile.skills === '*') return srcAgentsDir;
@@ -834,7 +857,13 @@ function stageAgentsForRuntimeWithConverter(
           continue;
         }
       }
-      let content = fs.readFileSync(path.join(srcAgentsDir, entry.name), 'utf8');
+      const agentSourcePath = path.join(srcAgentsDir, entry.name);
+      let content = fs.readFileSync(agentSourcePath, 'utf8');
+      // #2995: strip gsd:section markers FIRST — before path rewrites, attribution,
+      // and the per-runtime converter. Byte-identical (no-op) for an unmarked agent;
+      // throws loudly naming the file for a malformed marker, never emitting a
+      // half-composed agent.
+      content = _composeWorkflow(content, { sourcePath: agentSourcePath });
       if (agentCtx) {
         // ADR-1235 §1: pre-converter cross-cutting (matches inline loop order exactly)
         // Step 1: path rewrites (4 base ~/.claude/ regexes; skipped for copilot/antigravity)

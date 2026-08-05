@@ -31,8 +31,13 @@ import contextComposer = require('./context-composer.cjs');
 
 const NOTE_RESERVE_TOKENS = 80;
 
-/** floor per plan when proportionally truncating and for the minimum-set check. */
-const MIN_PLAN_BYTES = 1024;
+/**
+ * Floor per plan when proportionally truncating and for the minimum-set
+ * check. Exported so consumers (notably the load-bearing contract gate,
+ * issue #3065) never need to re-declare this value locally.
+ */
+export const PLAN_FLOOR_CHARS = 1024;
+const MIN_PLAN_BYTES = PLAN_FLOOR_CHARS;
 
 const DEFAULT_NOTE_TEMPLATE = [
   '<note>',
@@ -158,16 +163,22 @@ function assemblePrompt(parts: {
 }
 
 /**
- * Apply a token budget to a set of review prompt sections.
- * Returns the trimmed prompt and structured metadata.
+ * Build the `composeWithinBudget` fragment array for a set of review prompt
+ * sections, with each fragment's declared trim strategy attached.
+ *
+ * Extracted (issue #3065) so the load-bearing contract gate
+ * (tests/load-bearing-contract-gate.test.cjs) can assert directly over the
+ * REAL declared strategies used by `applyBudget`, rather than a hand-copied
+ * duplicate array. A duplicate would let production silently diverge from
+ * the gate (e.g. flipping `roadmap` from `verbatim` to `drop` would keep the
+ * gate green if it read from a copy) — exactly the
+ * `DEFECT.GENERATIVE-FIX` divergence class this extraction exists to
+ * prevent. Pure; performs no I/O and has no side effects.
  */
-export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput): BudgetResult {
-  const {
-    safetyMarginPct = 10,
-    noteTemplate = DEFAULT_NOTE_TEMPLATE,
-    projectMdHeadLines = 40,
-  } = options;
-
+export function buildBudgetFragments(
+  sections: PromptSections,
+  projectMdHeadLines: number
+): contextComposer.Fragment[] {
   const {
     instructions,
     roadmap,
@@ -198,7 +209,7 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
     required: true,
   }));
 
-  const fragments: contextComposer.Fragment[] = [
+  return [
     { id: 'instructions', content: instructions, wrapper: '', strategy: { kind: 'verbatim' }, required: true },
     { id: 'roadmap', content: roadmap, wrapper: '## Roadmap\n\n', strategy: { kind: 'verbatim' }, required: true },
     {
@@ -213,6 +224,27 @@ export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput
     { id: 'research', content: researchRaw ?? '', wrapper: '## Research\n\n', strategy: { kind: 'drop' } },
     { id: 'requirements', content: requirementsRaw ?? '', wrapper: '## Requirements\n\n', strategy: { kind: 'drop' } },
   ];
+}
+
+/**
+ * Apply a token budget to a set of review prompt sections.
+ * Returns the trimmed prompt and structured metadata.
+ */
+export function applyBudget({ sections, budget, options = {} }: ApplyBudgetInput): BudgetResult {
+  const {
+    safetyMarginPct = 10,
+    noteTemplate = DEFAULT_NOTE_TEMPLATE,
+    projectMdHeadLines = 40,
+  } = options;
+
+  const { plans } = sections;
+
+  const fragments: contextComposer.Fragment[] = buildBudgetFragments(sections, projectMdHeadLines);
+
+  // Recover the per-plan fragment ids buildBudgetFragments assigned (in
+  // `plans` declaration order) rather than re-deriving the id-collision
+  // logic here — a single source of truth for id assignment.
+  const planIds: string[] = fragments.filter((f) => f.group === 'plans').map((f) => f.id);
 
   const composed = contextComposer.composeWithinBudget({
     fragments,

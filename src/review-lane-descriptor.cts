@@ -558,6 +558,104 @@ export const REVIEWER_LANES: ReadonlyArray<ReviewerLane> = Object.freeze([
   },
 ].map((lane) => Object.freeze(lane)) as ReviewerLane[]);
 
+/**
+ * Merge the first-party lane set with installed overlay `reviewer` bodies
+ * (ADR-2782 D8: first-party ∪ overlay, first-party wins on slug collision).
+ *
+ * `routeReviewLane` (gsd-core/bin/gsd-tools.cjs) consumes this to build the lane
+ * map its `sections`/`flags`/`plan`/`invoke` subcommands resolve against, so an
+ * installed, consented third-party reviewer capability (`role:"reviewer"` with a
+ * declared `reviewer` body) becomes selectable, plannable, and invocable through
+ * the same surface as a built-in lane — closing #2927, where the overlay was
+ * roster-visible (`deriveReviewerSlugs`) and disclosed at install
+ * (`collectReviewerLaneSurfaces`) but never reached the invocation path.
+ *
+ * ADR-2782 D1 deliberately made the manifest `reviewer` body field-identical to
+ * `ReviewerLaneCommon` so "Phase 2 harvests the shape into the capability manifest
+ * with no translation layer" (CONTEXT.md reviewer-lane-descriptor predicate). The
+ * overlay body IS already `ReviewerLane`-shaped; this function MERGES, it does not
+ * PROJECT — there is no field renaming, no vocabulary translation. That is the
+ * design decision the bug violated by simply never calling anything.
+ *
+ * Pure and TOTAL — never throws on any input, because third-party overlay
+ * manifests are untrusted data reaching this seam at load time. A cap whose
+ * `reviewer` body is absent, non-object, or carries an empty/grammar-invalid slug
+ * is SKIPPED (contributes no lane) rather than crashing, so one malformed overlay
+ * cannot take the whole `review-lane` surface (and every first-party lane with it)
+ * down. The slug grammar (`LANE_SLUG_RE`) is enforced HERE even though
+ * `resolveLanePlan`'s trust boundary re-checks it, because `sections`/`flags` read
+ * lane fields before reaching `resolveLanePlan` — defense in depth against the
+ * path-traversal class the invocation boundary exists for.
+ *
+ * First-party wins: an overlay declaring a slug that already names a first-party
+ * lane is silently superseded (the first-party entry is kept, identity-stable),
+ * never overwritten. The first-party object is returned by reference, not copied.
+ *
+ * @param firstParty The frozen first-party lane set (`REVIEWER_LANES`).
+ * @param registry   The merged capability registry
+ *                   (`loadRegistry({ includeInstalled: true })`); only its
+ *                   `capabilities` map is read. A cap contributes a lane iff it
+ *                   carries an object `reviewer` body with a non-empty,
+ *                   grammar-valid `slug`. The `role:"runtime"` legacy
+ *                   `reviewerCli` alias contributes NO lane here — it has no lane
+ *                   descriptor, and the selection roster (`deriveReviewerSlugs`)
+ *                   is a separate surface.
+ * @returns A NEW array: first-party lanes (in order) followed by accepted overlay
+ *          lanes (in registry iteration order). Callers must not mutate it.
+ */
+export function mergeReviewerLanes(
+  firstParty: ReadonlyArray<ReviewerLane>,
+  registry: { capabilities?: Record<string, unknown> } | null | undefined,
+): ReviewerLane[] {
+  // First-party always wins and is returned by reference (identity-stable), so a
+  // collision cannot perturb the first-party entry a consumer already holds.
+  const bySlug = new Map<string, ReviewerLane>();
+  const ordered: ReviewerLane[] = [];
+  for (const lane of firstParty) {
+    const slug = typeof lane.slug === 'string' ? lane.slug.trim() : '';
+    if (!slug) continue; // unreachable for the shipped frozen set, but this is exported
+    if (!bySlug.has(slug)) {
+      bySlug.set(slug, lane);
+      ordered.push(lane);
+    }
+  }
+
+  const capabilities = (registry && registry.capabilities) || {};
+  for (const cap of Object.values(capabilities)) {
+    if (cap === null || typeof cap !== 'object' || Array.isArray(cap)) continue;
+    const body = (cap as { reviewer?: unknown }).reviewer;
+    // C1/C2 (mirroring collectReviewerLaneSurfaces): a missing, null, or
+    // non-object reviewer body declares no lane — never an error at this layer.
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) continue;
+    const rawSlug = (body as { slug?: unknown }).slug;
+    const slug = typeof rawSlug === 'string' ? rawSlug.trim() : '';
+    // Empty/whitespace slug: nothing to key on. Grammar-invalid slug: the
+    // path-traversal class — skip rather than admit, even though resolveLanePlan
+    // would reject it downstream. Both are skips, not throws.
+    if (!slug || !LANE_SLUG_RE.test(slug)) continue;
+    if (bySlug.has(slug)) continue; // D8: first-party (or an earlier overlay) wins
+    // The body is already ReviewerLane-shaped per ADR-2782 D1. We do NOT
+    // deep-validate every field here: the invocation trust boundary
+    // (resolveLanePlan) is the seam that re-validates a lane before it runs, and
+    // `sections`/`flags` are both tolerant of a partial body (flags filters by
+    // shape; sections reads slug/reviewsSection which a non-string cap simply
+    // renders as undefined). Admitting the body keeps the merge a pure merge.
+    //
+    // The slug is normalized to its trimmed value on the stored lane so the merge
+    // and the selection roster (`deriveReviewerSlugs`, which trims before adding)
+    // agree on the canonical key — otherwise a body declaring `slug: '  x  '`
+    // would key the map on `'x'` but emit the raw `'  x  '` in `sections` and fail
+    // to match a `--selected` value coming from the roster. (The capability
+    // validator's grammar check rejects surrounding whitespace before this is
+    // reachable through a real install, so this is belt-and-braces parity with the
+    // roster, not a live-input guard.)
+    const lane = { ...body, slug } as ReviewerLane;
+    bySlug.set(slug, lane);
+    ordered.push(lane);
+  }
+  return ordered;
+}
+
 /* ------------------------------------------------------------------ *
  * DEFECT.GENERATIVE-FIX parity (CONTEXT.md:797)
  * ------------------------------------------------------------------ */
