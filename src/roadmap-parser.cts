@@ -357,9 +357,30 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
       // roadmapPhaseCount stayed 0 and total_phases fell back to the directory
       // count — the very symptom this scoping fix removes.
       const canonical = String(milestoneInt).padStart(2, '0');
-      headingMatches = [...content.matchAll(new RegExp(
-        `(^#{1,3}\\s+\\[[A-Z][A-Z0-9_]*\\.${canonical}\\][^\\n]*)`, 'gmi',
-      ))];
+      // #612 round-4 (Major 1, F9's selection half): tokenizeHeadings, not a
+      // raw content.matchAll — a FENCED example heading sharing the current
+      // project's own bracket id (ADR-612's own authoring docs illustrate
+      // exactly this shape) could otherwise be SELECTED as the current
+      // milestone, landing `sectionStart` inside a fence. This is the ONE
+      // place this whole round-4 fix touches SELECTION — semantics are
+      // otherwise unchanged: same pattern, same first-match-wins by document
+      // order, only the candidate set is now fence-aware (a heading inside a
+      // fence was never a real heading to begin with). Reconstructs a
+      // match-shaped array ([fullLine, fullLine], with `.index`) so every
+      // downstream consumer of `headingMatches` (computeSectionEnd, the
+      // version-token lookup) sees the exact shape the raw-regex path always
+      // produced — `content.slice(h.offset, lineEnd)` is byte-identical to
+      // what `[^\n]*` would have captured for any UNFENCED heading, since
+      // `h.offset` is the same `#`-character coordinate space
+      // `content.match().index` used.
+      const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
+      headingMatches = tokenizeHeadings(content)
+        .filter((h) => h.level <= 3 && bracketMilestoneHeadingRe.test(h.text))
+        .map((h) => {
+          const lineEnd = content.indexOf('\n', h.offset);
+          const fullLine = content.slice(h.offset, lineEnd === -1 ? content.length : lineEnd);
+          return Object.assign([fullLine, fullLine], { index: h.offset }) as RegExpExecArray;
+        });
     }
   }
 

@@ -1591,7 +1591,17 @@ function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: 
   // Accepting `0*N` here bounded a milestone whose phases were invisible, which
   // un-suppressed a progress percent computed off an unscoped disk count.
   const canonical = String(milestoneInt).padStart(2, '0');
-  return new RegExp(`^#{1,3}\\s+\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'mi').test(roadmapRaw);
+  // #612 round-4 (Major 1, F12): fence-aware via tokenizeHeadings, not a raw
+  // `.test(roadmapRaw)` — a FENCED `[GSD.02]` example heading (the ONLY one
+  // in the document, with no real section for the asserted milestone at
+  // all) previously bounded a milestone that isn't actually in the roadmap,
+  // un-suppressing a percent computed off the wrong (prior-milestone-plus-
+  // whole-disk) phase set. tokenizeHeadings never produces a token for a
+  // fenced line, so a fenced-only example can no longer satisfy this test.
+  const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
+  return tokenizeHeadings(roadmapRaw).some(
+    (h) => h.level <= 3 && bracketMilestoneHeadingRe.test(h.text),
+  );
 }
 
 /**
@@ -1637,6 +1647,97 @@ function extractRetiredPhaseNumbers(scope: string, convention?: string | null): 
     }
   }
   return retired;
+}
+
+/**
+ * #612 (round-4 fix): the single shared implementation for the phase-heading
+ * counter `buildStateFrontmatter` (read path) and `cmdStateSync` (write
+ * path) each built inline as an independent copy. The comment at each call
+ * site already claimed "the two counters must see the same phases or
+ * `state json` and `state sync` report different totals for one repo
+ * (#3242 Bug B)" — this makes that invariant STRUCTURAL (one implementation,
+ * two call sites) instead of two copies a future edit could silently
+ * diverge.
+ *
+ * Two DELIBERATELY DIFFERENT counting strategies, selected by `convention`:
+ *
+ * - BRACKET: counts via `tokenizeHeadings(scope)` at levels 2-4 (mirroring
+ *   `getMilestonePhaseFilter`'s own level bound, `roadmap-parser.cts:1090`),
+ *   testing each heading's (hash-stripped, fence-STRIPPED-by-construction)
+ *   text against the phase-heading-intro grammar directly. Fence-aware by
+ *   construction — `tokenizeHeadings` never produces a token for a fenced
+ *   line — closing round-4's Major 1: a fenced EXAMPLE phase heading in the
+ *   preamble (`` ### [GSD.02] 05: Example phase `` inside a
+ *   ` ```markdown ` block) previously inflated this count via the raw regex
+ *   below, which ran over the whole scope STRING with no fence awareness at
+ *   all (F9, F10 — `total_phases` read 3 where the milestone has 2 real
+ *   phases). The producer (`extractCurrentMilestone`'s returned scope
+ *   string) is deliberately NOT changed — every other consumer of that
+ *   string needs its full content fidelity, and the legacy path's identity
+ *   forbids touching the string all consumers share; this fixes the
+ *   COUNTING, not the scope.
+ *
+ * - LEGACY (any non-bracket convention, including unresolved/null): the
+ *   EXACT PRE-EXISTING raw `content.exec()` loop, byte-for-byte unchanged —
+ *   this path is explicitly out of scope (round-3's own minimal-fix
+ *   precedent: legacy stays byte-identical).
+ *
+ * `includeUnconditional999Check` preserves a PRE-EXISTING asymmetry between
+ * the two call sites that this refactor must NOT silently unify:
+ * `buildStateFrontmatter`'s copy always excluded a bare `/^999\b/` token
+ * (composing with the bracket-sentinel-by-milestone-id rule below); before
+ * this fix, `cmdStateSync`'s copy never did — a deliberate, documented
+ * divergence ("that pre-existing asymmetry is out of scope and changing it
+ * would move legacy totals"). Threaded through as an explicit parameter, per
+ * call site, so sharing the implementation cannot silently move either
+ * total as a side effect.
+ */
+function countRoadmapPhaseHeadings(
+  scope: string,
+  convention: string | null | undefined,
+  retiredPhaseNums: Set<string>,
+  includeUnconditional999Check: boolean,
+): number {
+  let count = 0;
+  if (convention === 'bracket') {
+    const introSrc = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true);
+    const phaseHeadingPattern = new RegExp(`^${introSrc}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'i');
+    for (const h of tokenizeHeadings(scope)) {
+      if (h.level < 2 || h.level > 4) continue;
+      const m = phaseHeadingPattern.exec(h.text);
+      if (!m) continue;
+      const bracketId = m[1];
+      const token = m[2];
+      // Only count tokens that contain at least one digit — excludes
+      // pure-word section headings (Overview, Details) while keeping
+      // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
+      if (!/\d/.test(token)) continue;
+      // #612 READING-B: a bracket heading carries its sentinel in the
+      // bracket, so `### [GSD.999] 01:` is an icebox item even though its
+      // token is `01`.
+      if (isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+      // #612: under bracket the token rule composes with the bracket-id
+      // check as the engine's {0, 999} sentinel set.
+      if (/^0\b/.test(token)) continue;
+      if (includeUnconditional999Check && /^999\b/.test(token)) continue;
+      // #1514: retired/folded phases are struck through in the ROADMAP;
+      // exclude them from the denominator (they can never be completed).
+      if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
+      count++;
+    }
+    return count;
+  }
+  // LEGACY: byte-identical to the pre-round-4 raw exec loop — untouched.
+  const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = phaseHeadingPattern.exec(scope)) !== null) {
+    const token = m[1];
+    if (!/\d/.test(token)) continue;
+    if (includeUnconditional999Check && /^999\b/.test(token)) continue;
+    if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
+    count++;
+  }
+  return count;
 }
 
 /**
@@ -1771,44 +1872,17 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             diskTotalSummaries += summaryCount;
             if (completed) diskCompletedPhases++;
           }
-          // Count phase headings from ROADMAP using a digit-containing pattern
-          // that matches both numeric phases (01, 05.1) and project-code phases
-          // (PROJ-42, CK-05) but excludes pure-word section headers like
-          // `## Phase Overview:` or `## Phase Details:` — single source of
-          // truth for total_phases (#549).
-          let roadmapPhaseCount = 0;
-          if (roadmapScope !== null) {
-            // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-            const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, phaseConvention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
-            const bg = phaseConvention === 'bracket' ? 1 : 0;
-            let m: RegExpExecArray | null;
-            while ((m = phaseHeadingPattern.exec(roadmapScope)) !== null) {
-              // Only count tokens that contain at least one digit — excludes
-              // pure-word section headings (Overview, Details) while keeping
-              // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-              // Also exclude 999.x backlog phases. Mirrors init.cts filter.
-              const bracketId = bg ? m[1] : undefined;
-              const token = m[1 + bg];
-              if (!/\d/.test(token)) continue;
-              // #612 READING-B: a bracket heading carries its sentinel in the
-              // bracket, so `### [GSD.999] 01:` is an icebox item even though its
-              // token is `01`. Legacy headings keep the /^999\b/ token rule.
-              // Composed, not replaced — see the note in roadmap.cts: a bracket
-              // sentinel OR the legacy 999 token rule excludes the heading.
-              if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
-              // #612: under bracket the token rule composes as the full engine
-              // sentinel set {0, 999} so this counter agrees with roadmap analyze,
-              // which has always excluded both. The LEGACY path keeps its
-              // pre-existing 999-only rule — widening it there would move legacy
-              // totals — so the two stay split off the bracket path as they are today.
-              if (phaseConvention === 'bracket' && /^0\b/.test(token)) continue;
-              if (/^999\b/.test(token)) continue;
-              // #1514: retired/folded phases are struck through in the ROADMAP;
-              // exclude them from the denominator (they can never be completed).
-              if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
-              roadmapPhaseCount++;
-            }
-          }
+          // Count phase headings from ROADMAP — single source of truth for
+          // total_phases (#549). #612 round-4: shared with cmdStateSync's
+          // identical-purpose counter via countRoadmapPhaseHeadings (above
+          // extractRetiredPhaseNumbers) — see that function's own comment for
+          // the fence-aware bracket strategy and the preserved legacy
+          // 999-token asymmetry (this call site passes
+          // includeUnconditional999Check=true, this file's pre-existing
+          // read-path behaviour).
+          const roadmapPhaseCount = roadmapScope !== null
+            ? countRoadmapPhaseHeadings(roadmapScope, phaseConvention, retiredPhaseNums, true)
+            : 0;
 
           cached = (() => {
             // #1761 read-path: mirror the cmdStateSync guard (#1794). When the
@@ -3013,39 +3087,17 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   }
 
   // Determine total phases from ROADMAP (may be larger than realized disk dirs).
-  // Mirrors the logic in buildStateFrontmatter so both report consistent percents (#3242 Bug B).
-  // DEAD catch removed (#2245 audit): every operation in this block is a regex
-  // exec/test over an already-read string plus pure Set/Math ops — none of
-  // which can throw — so the try/catch could never be triggered.
+  // #612 round-4: shares countRoadmapPhaseHeadings with buildStateFrontmatter
+  // (defined just above extractRetiredPhaseNumbers) so both report
+  // consistent totals off the SAME implementation, not two independently
+  // maintained copies (#3242 Bug B). This call site passes
+  // includeUnconditional999Check=false, preserving this file's pre-existing,
+  // deliberately-unchanged divergence from the read path (a bare `999` token
+  // is not excluded here — see that function's own comment).
   let syncTotalPhases: number | null = null;
-  let roadmapPhaseCount = 0;
-  if (syncRoadmapScope !== null) {
-    // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    // #612: the SAME selection as buildStateFrontmatter — the two counters must
-    // see the same phases or `state json` and `state sync` report different
-    // totals for one repo (#3242 Bug B).
-    const phaseHeadingPattern = new RegExp(`#{2,4}\\s*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, syncConvention, true)}([\\w][\\w.-]*)(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
-    const sbg = syncConvention === 'bracket' ? 1 : 0;
-    let m: RegExpExecArray | null;
-    while ((m = phaseHeadingPattern.exec(syncRoadmapScope)) !== null) {
-      // Only count tokens that contain at least one digit — excludes
-      // pure-word section headings (Overview, Details) while keeping
-      // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-      const bracketId = sbg ? m[1] : undefined;
-      const token = m[1 + sbg];
-      if (!/\d/.test(token)) continue;
-      // #612: bracket sentinel lives in the bracket (READING-B). The legacy
-      // /^999\b/ token filter its twin carries is deliberately NOT added here —
-      // that pre-existing asymmetry is out of scope and changing it would move
-      // legacy totals.
-      if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
-      // #612: same composed {0, 999} rule as buildStateFrontmatter under bracket.
-      if (syncConvention === 'bracket' && /^0\b/.test(token)) continue;
-      // #1514: retired/folded phases are struck through; exclude from total.
-      if (syncRetiredPhaseNums.has(phaseKeyFromToken(token))) continue;
-      roadmapPhaseCount++;
-    }
-  }
+  const roadmapPhaseCount = syncRoadmapScope !== null
+    ? countRoadmapPhaseHeadings(syncRoadmapScope, syncConvention, syncRetiredPhaseNums, false)
+    : 0;
   if (roadmapPhaseCount > 0) {
     syncTotalPhases = Math.max(entries.length, roadmapPhaseCount);
   } else {

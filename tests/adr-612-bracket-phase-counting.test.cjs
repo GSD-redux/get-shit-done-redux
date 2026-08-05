@@ -2307,3 +2307,194 @@ Prose, no children.
     assert.equal(readTotal(), 2);
   });
 });
+
+// ─── #2761 round-4 Major 1: four fence-blind sites on the bracket path ──────
+//
+// The scope string extractCurrentMilestone returns is fence-BALANCED and
+// fence-STRIPPED-by-tokenizeHeadings only when its CONSUMERS ask it that way.
+// Four sites still read it (or the raw ROADMAP) with a plain regex `.exec`,
+// blind to fences:
+//
+//   (a) roadmapPhaseCount — TWO independent copies, buildStateFrontmatter
+//       (read path) and cmdStateSync (write path). A fenced EXAMPLE phase
+//       heading in the preamble inflated total_phases (F10); on a
+//       version-less roadmap the SAME fence-blindness compounds with (c)
+//       below (F9).
+//   (b) isMilestoneBounded — a raw `.test(roadmapRaw)`. A fenced-ONLY bracket
+//       heading (no real section for the asserted milestone at all) wrongly
+//       BOUNDED a milestone that isn't in the roadmap, un-suppressing a
+//       percent that should stay suppressed (F12).
+//   (c) the bracket-fallback SELECTOR (only reachable when the version-string
+//       selection found nothing) — a raw `content.matchAll`. A fenced example
+//       sharing the CURRENT project's own bracket id could be SELECTED as the
+//       current milestone, landing `sectionStart` inside a fence (F9).
+//
+// Fixed by extracting ONE shared counter (countRoadmapPhaseHeadings, in
+// src/state.cts, immediately above buildStateFrontmatter) used by both (a)
+// copies, and converting (b) and (c) to tokenizeHeadings-based scans. The
+// PRODUCER (extractCurrentMilestone's returned scope string) is deliberately
+// UNCHANGED — every other consumer of that string needs its full content
+// fidelity, and legacy identity forbids touching the shared string. Legacy
+// (non-bracket) behavior at all four sites is byte-identical; this is the
+// ONLY commit in this arc that touches SELECTION.
+describe('#612 PR-2 round-4 Major 1: four fence-blind sites on the bracket path', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r4m1-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const D2 = [['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+
+  function poisonTotalPhasesR4M1() {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+  }
+
+  test('RED (F10): a fenced SAME-id PHASE heading in the preamble no longer inflates roadmapPhaseCount — 2/1/50, not 3/1/33', () => {
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+### [GSD.02] 05: Example phase
+\`\`\`
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D2);
+    assert.equal(readTotal(), 2, 'pinned 3 before this fix — the fenced example phase heading was counted by the fence-blind raw .exec()');
+    poisonTotalPhasesR4M1();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 33 before this fix');
+  });
+
+  test('PIN (F10 LEGACY control): the same fenced-phase shape on a non-bracket repo is unchanged (correct on every build)', () => {
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+### Phase 05: Example phase
+\`\`\`
+
+## Milestone v2.0: Foundation
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, undefined, [['01-one', true], ['02-two', false]]);
+    assert.equal(readTotal(), 2);
+  });
+
+  test('PIN (F10c): same document, fenced line is NOT phase-shaped — unaffected either way', () => {
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+### [GSD.02] Example section
+\`\`\`
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D2);
+    assert.equal(readTotal(), 2);
+  });
+
+  test('RED (F9): version-LESS roadmap + a fenced example sharing the SAME milestone id — both the selector and the counter must be fence-aware — 2/1/50, not 3/1/33', () => {
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+## [GSD.02] Example milestone heading
+### [GSD.02] 05: Example phase
+\`\`\`
+
+## [GSD.02] Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D2);
+    assert.equal(readTotal(), 2, 'pinned 3 before this fix');
+    poisonTotalPhasesR4M1();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 33 before this fix');
+  });
+
+  test('RED (F12): a fenced-ONLY bracket heading no longer bounds a milestone absent from the roadmap — percent stays suppressed', () => {
+    const dirs = [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+\`\`\`markdown
+## [GSD.02] Example milestone heading
+\`\`\`
+
+## [GSD.01] v1.0: Prior
+
+### [GSD.01] 01: Old
+**Goal:** a
+`, 'bracket', dirs);
+    const r = runGsdTools(['state', 'json'], tmpDir);
+    assert.ok(r.success, `state json failed: ${r.error}`);
+    const progress = JSON.parse(r.output).progress;
+    assert.equal(progress?.percent, undefined, 'pinned 67 before this fix — a fenced-only [GSD.02] example wrongly bounded a milestone with no real section');
+    // state sync must not persist a percent either — the body stays at its seed.
+    const syncResult = runGsdTools(['state', 'sync'], tmpDir);
+    assert.ok(syncResult.success);
+    const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.match(raw, /\*\*Progress:\*\*[^\r\n]*?0%/, 'pinned 67% persisted before this fix');
+  });
+
+  test('PIN: unfenced bracket-fallback selection is byte-identical — first real milestone-shaped heading still wins', () => {
+    // No version anywhere, no fences — the selector's plain first-match-wins
+    // behavior over REAL headings must be completely unaffected by routing it
+    // through tokenizeHeadings.
+    const dirs = ['GSD.01-01-old', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later'];
+    writeProject(`# Roadmap
+
+## [GSD.01] Prior Milestone
+
+### [GSD.01] 01: Old
+**Goal:** a
+
+## [GSD.02] Current Milestone
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.03] Later Milestone
+
+### [GSD.03] 01: Later
+**Goal:** d
+`, 'bracket', dirs);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.deepEqual(Object.fromEntries(dirs.map((d) => [d, !!f(d)])), {
+      'GSD.01-01-old': false,
+      'GSD.02-01-one': true,
+      'GSD.02-02-two': true,
+      'GSD.03-01-later': false,
+    });
+    assert.equal(readTotal(), 2);
+  });
+});
