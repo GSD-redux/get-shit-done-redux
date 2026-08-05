@@ -1960,3 +1960,77 @@ Phases are listed under their milestone.
     assert.equal(!!f('GSD.02-02-two'), true);
   });
 });
+
+// ─── #2761 Major 1 (round-3 adversarial re-verify): the version/emoji half ──
+// ─── of preambleCutoff's min() is now fence-aware too, on the bracket ───────
+// ─── branch only ─────────────────────────────────────────────────────────────
+//
+// ff6bf0a8 (round-2 Blocker 3) made the BRACKET half of preambleCutoff's
+// "earliest milestone-shaped heading" search fence-aware, but left the
+// VERSION/emoji half a raw `content.match` even on the bracket branch. A
+// fenced VERSION-BEARING example heading in a bracket repo's preamble
+// (ADR-612's own docs illustrate the LEGACY heading shape this way, inside a
+// fenced authoring-guide block) was still textually the earliest match for
+// that raw regex, winning the min() and un-suppressing a wrong persisted 75%
+// that base correctly suppressed.
+describe('#612 PR-2 Major 1 round-3: preambleCutoff\'s version/emoji half is fence-aware on the bracket branch', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-m1r3-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const D = [
+    ['GSD.02-01-one', true], ['GSD.02-02-two', false],
+    ['GSD.03-01-x', true], ['GSD.03-02-y', true],
+  ];
+
+  test('RED case C1 (rv-attack3c): a fenced VERSION-bearing example heading in a bracket repo\'s preamble — 2/1/50, not 4/3/75', () => {
+    writeProject(`# Roadmap
+
+Authoring guide — a milestone heading looks like:
+
+\`\`\`markdown
+## Milestone v9.0: Example
+\`\`\`
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+### [GSD.02] 02: Two
+
+## [GSD.03] Later
+
+### [GSD.03] 01: X
+### [GSD.03] 02: Y
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 4 before this fix — the fenced VERSION heading won the min() and swallowed everything before it into the preamble unstripped');
+    poisonTotalPhases();
+    assert.equal(syncedPercent(), 50, 'pinned 75 before this fix — base correctly suppressed this percent, HEAD must not resurface it wrong');
+  });
+
+  test('PIN case C2: a fenced BRACKET-shaped heading in the same position (round-2\'s own fix target) stays unchanged at 2/1/50', () => {
+    writeProject(`# Roadmap
+
+Authoring guide — a milestone heading looks like:
+
+\`\`\`markdown
+## [GSD.00] Example
+\`\`\`
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+### [GSD.02] 02: Two
+
+## [GSD.03] Later
+
+### [GSD.03] 01: X
+### [GSD.03] 02: Y
+`, 'bracket', D);
+    assert.equal(readTotal(), 2);
+  });
+
+  function poisonTotalPhases() {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+  }
+});

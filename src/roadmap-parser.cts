@@ -426,19 +426,41 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   const sectionEnd = computeSectionEnd(selected[0], sectionStart);
 
   const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
-  // #2761 B3: the LEGACY (non-bracket-shaped) half of this "earliest
-  // milestone-shaped heading" search stays a raw `content.match` — byte-
-  // identical to before this fix, including its fence-blindness. That hazard
-  // is real (a fenced `## Milestone v9.0` example in the preamble reads
-  // identically wrong at base, round-1, and HEAD — repro12's LEGACY control)
-  // but is PRE-EXISTING and shared with the ORIGINAL (pre-#612) code path,
-  // not introduced by this branch — fixing it is explicitly out of scope
-  // (round-2 review's own minimal-fix note). Only the BRACKET half — which
-  // this branch introduced, and which regressed a previously-CORRECT
-  // round-1 behaviour (a bracket repo with a fenced bracket example in its
-  // preamble read 2/1/50 at round-1, 4/3/75 at HEAD) — is fixed here.
-  const versionMilestoneMatch = content.match(anyMilestonePattern);
-  let earliestMilestoneIndex: number | null = versionMilestoneMatch ? versionMilestoneMatch.index! : null;
+  let earliestMilestoneIndex: number | null;
+  if (!bracketBoundaryActive) {
+    // #2761 B3: the LEGACY (non-bracket-shaped) path stays a raw
+    // `content.match` — byte-identical to before this fix, including its
+    // fence-blindness. That hazard is real (a fenced `## Milestone v9.0`
+    // example in the preamble reads identically wrong at base, round-1, and
+    // HEAD — repro12's LEGACY control) but is PRE-EXISTING and shared with
+    // the ORIGINAL (pre-#612) code path, not introduced by this branch —
+    // fixing it is explicitly out of scope (round-2 review's own
+    // minimal-fix note).
+    const versionMilestoneMatch = content.match(anyMilestonePattern);
+    earliestMilestoneIndex = versionMilestoneMatch ? versionMilestoneMatch.index! : null;
+  } else {
+    // #2761 Major 1 (round-3 fix): on the BRACKET branch, derive the
+    // version/emoji half of "earliest milestone-shaped heading" from the
+    // SAME fence-aware `currentMilestoneHeadings` token list too, instead of
+    // the raw `content.match` above. Round-2 (ff6bf0a8) fixed the BRACKET
+    // half's fence-blindness but left THIS half a raw regex even on this
+    // branch: a fenced VERSION-BEARING example heading in a bracket repo's
+    // preamble (`` ```markdown\n## Milestone v9.0: Example\n``` ``, ADR-612's
+    // own docs illustrate the LEGACY heading shape exactly this way) was
+    // still textually the earliest match for the raw regex, winning the old
+    // min() and un-suppressing a wrong persisted 75% that base correctly
+    // suppressed (rv-attack3c fixture C1) — B3 fixed only the half of the
+    // asymmetry it introduced, not this pre-existing half once it also
+    // started reaching the bracket branch. The predicate below (`h.text`
+    // against the same `/^Phase\s+\S/i` / `/v\d+\.\d+|✅|📋|🚧/i` pair
+    // `computeSectionEnd` already uses) never sees a fenced heading at all,
+    // because tokenizeHeadings never produces a token for one.
+    earliestMilestoneIndex = null;
+    for (const h of currentMilestoneHeadings) {
+      if (/^Phase\s+\S/i.test(h.text)) continue;
+      if (/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) { earliestMilestoneIndex = h.offset; break; }
+    }
+  }
   if (bracketBoundaryActive) {
     // #2761 B3: scans the SAME fence-aware `currentMilestoneHeadings` token
     // list computeSectionEnd consumes, instead of a raw `content.matchAll` —
