@@ -95,7 +95,7 @@ Returns JSON with: current position, phase, plan, status, decisions, blockers, m
 
 ### Smart Entry
 
-Read-only situation classifier used by `/gsd:next`.
+Read-only situation classifier used by `/gsd-next`.
 
 ```bash
 node gsd-tools.cjs smart-entry          # Human summary + recommended route
@@ -501,10 +501,19 @@ node gsd-tools.cjs init quick <description>
 node gsd-tools.cjs init resume
 node gsd-tools.cjs init verify-work <phase>
 node gsd-tools.cjs init phase-op <phase>
+node gsd-tools.cjs init code-review <phase> [--fix]
+node gsd-tools.cjs init review <phase>
+node gsd-tools.cjs init discuss-phase-assumptions <phase> [--auto]
 node gsd-tools.cjs init todos [area]
 node gsd-tools.cjs init milestone-op
 node gsd-tools.cjs init map-codebase
 node gsd-tools.cjs init progress
+node gsd-tools.cjs init manager
+node gsd-tools.cjs init complete-milestone
+node gsd-tools.cjs init autonomous [--converge] [--cross-ai]
+node gsd-tools.cjs init docs-update
+node gsd-tools.cjs init update [--next] [--rc]
+node gsd-tools.cjs init transition
 
 # Workstream-scoped init (`--ws` flag)
 node gsd-tools.cjs init execute-phase <phase> --ws <name>
@@ -645,7 +654,7 @@ node gsd-tools.cjs websearch <query> [--limit N] [--freshness day|week|month]
 
 ## Update Backup and Restore
 
-The two halves of `/gsd:update`'s user-added-file protection. `detect-custom-files`
+The two halves of `/gsd-update`'s user-added-file protection. `detect-custom-files`
 lists files that exist inside GSD-managed directories but are absent from
 `gsd-file-manifest.json` — the update workflow copies those into
 `gsd-user-files-backup/` before the clean-install wipe. `restore-custom-files`
@@ -710,9 +719,22 @@ node gsd-tools.cjs worktree set-baseref
 | `head-matches-fork` | `false` | HEAD and `origin/HEAD` are the same commit |
 | `head-diverged-from-fork` | `true` | Branch is ahead of or diverged from `origin/HEAD` |
 | `fork-ref-unknown` | `true` | `origin/HEAD` could not be resolved |
-| `no-head` | `false` | Not in a git repo (no `HEAD`) |
+| `no-head` | `false` | Not in a git repo (no `HEAD`) — `git rev-parse HEAD` exited 128 (definitive), or exited 0 with empty stdout |
+| `head-unresolvable` | `true` | `git rev-parse HEAD` did not return a definitive answer (timed out, `git` missing, or any other non-128 failure) — fails closed rather than being treated as `no-head` |
 
 **`worktree set-baseref`** applies a no-clobber write of `worktree.baseRef:"head"` to `.claude/settings.local.json`. If the file already contains an explicit `baseRef` value other than `"head"`, the existing value is preserved and `skipped:"explicit-other"` is returned. Malformed JSON causes an error rather than a silent overwrite. Both fresh installs and upgrades of GSD Core run this automatically when `workflow.use_worktrees` is enabled (the default); the command is also available for manual use — for example, to apply the setting when worktrees were toggled on after installation, or to re-apply it after a settings change.
+
+### Worktree creation
+
+```bash
+# Create an agent worktree and atomically record it in the wave cleanup manifest.
+# Returns JSON: { ok, reason, entry, manifest_path } (exit 0), or
+#   { ok:false, reason, hint } with a non-zero exit on a rejected/failed create.
+node gsd-tools.cjs worktree create \
+  --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir>
+```
+
+**`worktree create`** validates and records the manifest entry BEFORE running any git command, then runs `git worktree add` for the validated `{path, branch, base}`, and only on success finalizes the manifest write — a rejected entry or a failed `git worktree add` never leaves a partially-recorded manifest or an unmanifested worktree on disk. `--root` is **mandatory** (#3050): the fail-closed root-confinement check resolves `--path` and `--root` and rejects (`reason:"path_outside_root"`) unless `--path` resolves strictly inside `--root` — this closes a prior gap where an unconfined `--path` (no `--root` check at all) could point a spawned executor's worktree anywhere on the filesystem. Omitting `--root` fails closed with `reason:"root_required"` rather than silently skipping confinement. All other flags share `worktree record-agent`'s validation rules above (`--branch` namespace, non-empty/non-whitespace `--path`/`--branch`/`--base`, `--agent-id` required).
 
 ### Wave-manifest recording
 

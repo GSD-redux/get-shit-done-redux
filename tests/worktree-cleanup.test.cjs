@@ -331,7 +331,15 @@ describe('bug #2924: worktree HEAD attachment + destructive recovery', () => {
   });
 
   describe('quick.md pre-dispatch plan commit no longer hard-codes --no-verify', () => {
-    const content = fs.readFileSync(QUICK_PATH, 'utf-8');
+    // #2994 fragmentization moved the pre-dispatch plan commit block out of
+    // quick.md into gsd-core/workflows/quick/steps/worktree-pre-dispatch-commit.md
+    // behind a section marker. Read host + step file combined so the fenced
+    // code block search below still finds it.
+    const content = fs.readFileSync(QUICK_PATH, 'utf-8') +
+      '\n' + fs.readFileSync(
+        path.join(REPO_ROOT, 'gsd-core', 'workflows', 'quick', 'steps', 'worktree-pre-dispatch-commit.md'),
+        'utf-8'
+      );
     const codeBlocks = extractFencedCodeBlocks(content);
     // Find the bash block containing the pre-dispatch plan commit
     const target = codeBlocks.find(({ body }) =>
@@ -1476,6 +1484,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -1559,11 +1568,17 @@ function extractCwdGuardBash() {
  * Returns { status, stderr }.
  */
 function runGuard(guardBash, cwd) {
-  const result = spawnSync('bash', ['-c', guardBash], {
+  // 30000ms: previously UNBOUNDED (no `timeout` option was passed to
+  // spawnSync). This is the same execute-phase.md cwd-drift guard snippet
+  // exercised by tests/execute-phase-worktree-guard.test.cjs, which already
+  // bounds the identical guard at 30s (a handful of git plumbing calls
+  // against a small fixture repo) — matched here for consistency.
+  const result = runHook('-c', [guardBash], {
+    interpreter: 'bash',
     cwd,
-    encoding: 'utf-8',
+    timeoutMs: 30_000,
   });
-  return { status: result.status, stderr: result.stderr || '' };
+  return { status: result.exitCode, stderr: result.stderr || '' };
 }
 
 // ---------------------------------------------------------------------------

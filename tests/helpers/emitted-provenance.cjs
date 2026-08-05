@@ -40,8 +40,6 @@
 
 const path = require('node:path');
 
-const REPO_ROOT = path.join(__dirname, '..', '..');
-
 const { cleanup } = require('../helpers.cjs');
 const { MANIFEST_FAMILIES, runMinimalInstall, buildParityManifest } = require('./install-shared.cjs');
 
@@ -65,7 +63,7 @@ const EXPECTED_MANIFEST_COUNT = MANIFEST_FAMILIES.length;
 // `skills/gsd/...`, and `.agents/skills` must win over `.agents`.
 
 const SKILLS_ROOTS = ['skills/gsd', '.agents/skills', 'skills'];
-const HOOKS_ROOTS = ['.kimi/hooks', 'hooks'];
+const HOOKS_ROOTS = ['.kimi-code/hooks', '.kimi/hooks', 'hooks'];
 
 /** Source-of-truth command dir every skill/command surface converts from. */
 const COMMANDS_SRC = 'commands/gsd';
@@ -423,7 +421,11 @@ const PROVENANCE_RULES = [
       if (root === 'plugins' || root === 'extensions') {
         return [COMMONJS_MARKER_SRC, INSTALL_ENGINE_SRC];
       }
-      if (root === '.kimi/hooks') return [COMMONJS_MARKER_SRC, INSTALLER_SRC];
+      // Both Kimi products install the shared bundle into their own native hook
+      // root rather than under the generic Agent-Skills configDir (#2755).
+      if (root === '.kimi/hooks' || root === '.kimi-code/hooks') {
+        return [COMMONJS_MARKER_SRC, INSTALLER_SRC];
+      }
       // 'hooks' — written by the shared bundle for most runtimes and by the
       // #2717 dedicated paths for cursor/windsurf/codex.
       return [COMMONJS_MARKER_SRC, INSTALLER_SRC, HOOKS_WINDOWS_SHIM_SRC];
@@ -528,10 +530,11 @@ const PROVENANCE_RULES = [
     id: 'synthesized-install-metadata',
     kind: 'synthesized',
     roots: null,
-    // `.kimi/package.json` is the same literal `{"type":"commonjs"}` CommonJS-mode
-    // marker as the root one, written into Kimi's separate hooks root
-    // (installSharedHooksBundle, install.js:11044-11046).
-    pattern: /^(\.gsd-profile|package\.json|\.kimi\/package\.json|gsd-core\/VERSION|gsd-core\/\.gsd-runtime)$/,
+    // `.kimi/package.json` and `.kimi-code/package.json` are the same literal
+    // `{"type":"commonjs"}` CommonJS-mode marker as the root one, written into
+    // each Kimi product's separate hooks root (installSharedHooksBundle; the
+    // per-runtime root split is #2755).
+    pattern: /^(\.gsd-profile|package\.json|\.kimi(-code)?\/package\.json|gsd-core\/VERSION|gsd-core\/\.gsd-runtime)$/,
     sources: () => [],
   },
   {

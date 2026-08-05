@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "review.md": "#2994 (epic #1671 Phase 6.3, further amendment): fragmentizes review.md onto the marker grammar, admitting `state:reviewer-instances-configured` (shared by two peripheral notes, `reviewer-instances-note-1` in detect_clis and `reviewer-instances-note-2` in invoke_reviewers — the core reviewer-lane dispatch itself stays unmarked). Also retargets the init line from the shared `init.phase-op` to a new dedicated `init.review` entry point (cmdInitReview), which computes the reviewer-instances-configured fact via `review.reviewer_instances` config presence. Net SOURCE growth is +55 bytes (29,063 -> 29,118): two `<!-- gsd:section -->` marker-pair stubs (~331 B and ~195 B) replace their extracted prose bodies (328 B and 277 B respectively, now living in gsd-core/workflows/review/steps/*.md), and `init.phase-op` shrinks by 2 bytes to `init.review` on the gather_context init line. The EMITTED artifact composeWorkflow produces at install time still includes the extracted prose verbatim (markers strip, gap+section bodies re-join byte-for-byte) when the atom is unresolved (section_manifest null -> read-everything fallback), so installed behavior is unchanged; only the SOURCE file's on-disk byte count moves."
+  }
+}

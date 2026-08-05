@@ -86,6 +86,24 @@ const factsArb = fc.record({
   // InvocationFacts — must also participate in the partition/totality
   // properties below, not just the six pre-existing fact keys.
   chunkedMode: fc.boolean(),
+  // #2994 (epic #1671 Phase 6.3, matrix §K gap-fill): ten further boolean
+  // facts shipped alongside the widened WHEN_VOCABULARY (30 atoms total).
+  // Without these, `whenArb` (drawn from the FULL WHEN_VOCABULARY) can still
+  // generate sections gated on e.g. `state:plan-strategy-converge`, but every
+  // generated `facts` value left that field `undefined` — falsy under
+  // totality — so those sections were NEVER driven into `included` by this
+  // property, silently narrowing the partition/order-preservation coverage
+  // to the pre-#2994 atom set even though `whenArb` claimed full coverage.
+  uiPhaseActive: fc.boolean(),
+  fallowEnabled: fc.boolean(),
+  gitCreateTag: fc.boolean(),
+  planStrategyConverge: fc.boolean(),
+  reviewerInstancesConfigured: fc.boolean(),
+  autoAdvanceActive: fc.boolean(),
+  isMonorepo: fc.boolean(),
+  nextChannel: fc.boolean(),
+  workstreamActive: fc.boolean(),
+  flatMode: fc.boolean(),
 });
 
 // ─── Row 25: exact partition ────────────────────────────────────────────────
@@ -136,8 +154,12 @@ describe('property: never throws for vocabulary-valid when and arbitrary facts',
 
   test('neverThrowsWhenFactsAreMissingKeysEntirely', () => {
     // Totality also over PARTIAL facts objects (row 19's property-level
-    // twin): dropping zero or more of the seven fact keys must never throw.
-    const factKeys = ['flags', 'phaseNumber', 'hasPriorPhases', 'needsCodebaseMap', 'phaseMvpMode', 'worktreesEnabled', 'chunkedMode'];
+    // twin): dropping zero or more of the fact keys must never throw.
+    const factKeys = [
+      'flags', 'phaseNumber', 'hasPriorPhases', 'needsCodebaseMap', 'phaseMvpMode', 'worktreesEnabled', 'chunkedMode',
+      'uiPhaseActive', 'fallowEnabled', 'gitCreateTag', 'planStrategyConverge', 'reviewerInstancesConfigured',
+      'autoAdvanceActive', 'isMonorepo', 'nextChannel', 'workstreamActive', 'flatMode',
+    ];
     fc.assert(
       fc.property(sectionsArb, factsArb, fc.subarray(factKeys), (sections, facts, keysToKeep) => {
         const partialFacts = {};

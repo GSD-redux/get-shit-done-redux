@@ -8,7 +8,7 @@ GSD Core（`@opengsd/gsd-core`）を普段使いの AI コーディングラン�
 
 ## インストーラーが必要な理由
 
-GSD Core は Claude Code のネイティブ frontmatter 形式でエージェントファイルとコマンドファイルを提供しています。サポートされている各ランタイムは、異なるスキーマ、ディレクトリ構成、コマンド呼び出し構文を要求します。インストーラーは必要な変換を実行します。たとえば OpenCode 向けのツールリストとカラー値の変換、Codex 向けの TOML エージェントエントリの書き込み、Gemini CLI 向けのすべてのコマンド本文をハイフン形式（`/gsd-update`）からコロン形式（`/gsd:update`）への書き換えなどです。
+GSD Core は Claude Code のネイティブ frontmatter 形式でエージェントファイルとコマンドファイルを提供しています。サポートされている各ランタイムは、異なるスキーマ、ディレクトリ構成、コマンド呼び出し構文を要求します。インストーラーは必要な変換を実行します。たとえば OpenCode 向けのツールリストとカラー値の変換、Codex 向けの TOML エージェントエントリの書き込み、Gemini CLI 向けのすべてのコマンド本文をハイフン形式（`/gsd-update`）からコロン形式（`/gsd-update`）への書き換えなどです。
 
 **`agents/` や `commands/` からファイルを直接コピーしないでください。** そうするとこれらの変換がスキップされ、スキーマ検証エラーやコマンドの欠落が発生します。
 
@@ -50,7 +50,7 @@ CLAUDE_CONFIG_DIR=~/.claude-alt npx @opengsd/gsd-core@latest --claude --global
 npx @opengsd/gsd-core@latest --gemini --global
 ```
 
-スキルは `~/.gemini/` に配置されます。インストーラーはすべてのコマンド本文を Gemini のコロン名前空間（`/gsd:update`、`/gsd:config` など）に書き換えます。インストール後は Gemini CLI を再起動してください。
+スキルは `~/.gemini/` に配置されます。インストーラーはすべてのコマンド本文を Gemini のコロン名前空間（`/gsd-update`、`/gsd-config` など）に書き換えます。インストール後は Gemini CLI を再起動してください。
 
 **インストールディレクトリの上書き:**
 

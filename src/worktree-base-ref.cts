@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { execGit as execGitSeam } from './shell-command-projection.cjs';
+import { execGit as execGitSeam, isSpawnTimeout } from './shell-command-projection.cjs';
 import { getGlobalConfigDir } from './runtime-homes.cjs';
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -85,10 +85,7 @@ function parseJsonc(text: string): unknown {
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
-type ExecGitFn = (
-  args: string[],
-  opts?: { cwd?: string; env?: Record<string, string>; timeout?: number }
-) => { exitCode: number | null; stdout: string; stderr: string; signal: string | null; error: unknown };
+type ExecGitFn = typeof execGitSeam;
 
 // ─── Message constants (verbatim — downstream docs/tests depend on these) ─────
 
@@ -97,6 +94,21 @@ function buildMsgDiverged(headSha: string | null, forkRef: string | null, forkSh
 }
 
 const MSG_UNKNOWN = `⚠ Cannot determine the worktree fork base (origin/HEAD unresolved). Running this phase sequentially on the main working tree to avoid a base mismatch. To keep parallel worktrees, set worktree.baseRef:"head" in .claude/settings.local.json (or run: gsd-tools worktree set-baseref). See #683.`;
+
+const MSG_HEAD_UNRESOLVABLE = `⚠ Cannot determine the worktree base (git rev-parse HEAD did not return a definitive answer). Running this phase sequentially on the main working tree to avoid an unverified base mismatch. Note: worktree.baseRef:"head" would silence this check without verifying the base — it skips the comparison rather than resolving it. Retry; if it persists, check for a stalled filesystem mount or a stale git index lock (.git/index.lock). See #683, #3050.`;
+
+/**
+ * Returns true when an execGit result indicates the subprocess was killed by
+ * a timeout. A timeout means the command genuinely could not complete — it
+ * must never be treated the same as a clean non-zero exit (e.g. "not a git
+ * repository"), which DID complete and reported a real answer.
+ *
+ * Delegates to the single shared predicate in shell-command-projection.cts
+ * (#3050 — "Generative Fix Divergence"); do not reimplement this locally.
+ */
+function isExecGitTimeout(result: { signal: string | null; error: unknown }): boolean {
+  return isSpawnTimeout(result);
+}
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
 
@@ -351,9 +363,35 @@ export function evaluateWorktreeBaseDegrade(deps?: {
 
   // b. Resolve HEAD sha.
   const headResult = execGit(['rev-parse', 'HEAD'], cwdOpts);
+  // A TIMEOUT means the command never completed — it is not evidence of "not a
+  // git repository" and must fail closed (distinct from the clean-exit-128
+  // "no-head" case below, which genuinely completed and reported no HEAD).
+  if (isExecGitTimeout(headResult)) {
+    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null };
+  }
   const headStdout = headResult.stdout ? headResult.stdout.trim() : '';
-  if (headResult.exitCode !== 0 || !headStdout) {
+  // exit 128 is git's definitive "not a git repository" answer — it completed
+  // and genuinely reported no HEAD. Only this specific, confirmed outcome
+  // stays a benign non-degrade; every other non-success outcome below is
+  // NOT a definitive answer from git and must fail closed (#3050).
+  if (headResult.exitCode === 128) {
     return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null };
+  }
+  // Exit 0 with empty stdout is pinned as benign no-degrade by an existing
+  // regression guard (tests/worktree-base-ref.test.cjs — "git rev-parse HEAD
+  // returns empty stdout"). Left unchanged deliberately; flagged in the
+  // #3050 review for a product-intent call rather than silently flipped.
+  if (headResult.exitCode === 0 && !headStdout) {
+    return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null };
+  }
+  if (headResult.exitCode !== 0) {
+    // Any other non-success outcome (e.g. exit 127 — git missing — or any
+    // other non-zero, non-128 exit) is not a definitive "not a repo" answer.
+    // Fail closed instead of silently treating it as benign.
+    // (`!headStdout` was previously OR'd in here but is unreachable: the
+    // exitCode===0 && !headStdout case is already handled above, and every
+    // other branch here has exitCode!==0 already true — #3050 review.)
+    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null };
   }
   const headSha = headStdout;
 

@@ -471,8 +471,8 @@ gsd-tools query config-set agent_skills.gsd-executor '["skills/my-skill"]'
 
 | 设置 | 类型 | 默认值 | 描述 |
 |---------|------|---------|-------------|
-| `plan_review.source_grounding` | boolean | `true` | 启用计划漂移防护。为 `true`（默认）时，计划审查将 PLAN.md 中引用的每个符号与实时源代码树对比解析。引用不存在的函数、类、装饰器或 CLI 标志的计划在计划批准前产生 `needs-acknowledgement` 通知。设为 `false` 完全跳过符号验证。可在设置期间（`/gsd:new-project`）或随时通过 `/gsd:settings` 切换。 |
-| `plan_review.source_grounding_authority` | enum | `grep` | 选择用于验证符号存在性的解析器适配器。允许值：`grep`（默认——对源文件进行 ripgrep/grep 搜索，任何项目无需额外工具即可使用），`intel`（查询 `/gsd:map-codebase` 构建的 `.planning/intel/api-map.json` 索引；需要 `intel.enabled: true`），`treesitter`（保留用于未来的 tree-sitter 适配器），`lsp`（保留用于未来的 LSP 适配器），`scip`（保留用于未来的 SCIP/LSIF 适配器）。当您已运行 `/gsd:map-codebase` 并希望使用更快的预索引查找时，使用 `intel`。`grep` 和 `intel` 之外的所有值均为保留值，在当前版本中无效。 |
+| `plan_review.source_grounding` | boolean | `true` | 启用计划漂移防护。为 `true`（默认）时，计划审查将 PLAN.md 中引用的每个符号与实时源代码树对比解析。引用不存在的函数、类、装饰器或 CLI 标志的计划在计划批准前产生 `needs-acknowledgement` 通知。设为 `false` 完全跳过符号验证。可在设置期间（`/gsd-new-project`）或随时通过 `/gsd-settings` 切换。 |
+| `plan_review.source_grounding_authority` | enum | `grep` | 选择用于验证符号存在性的解析器适配器。允许值：`grep`（默认——对源文件进行 ripgrep/grep 搜索，任何项目无需额外工具即可使用），`intel`（查询 `/gsd-map-codebase` 构建的 `.planning/intel/api-map.json` 索引；需要 `intel.enabled: true`），`treesitter`（保留用于未来的 tree-sitter 适配器），`lsp`（保留用于未来的 LSP 适配器），`scip`（保留用于未来的 SCIP/LSIF 适配器）。当您已运行 `/gsd-map-codebase` 并希望使用更快的预索引查找时，使用 `intel`。`grep` 和 `intel` 之外的所有值均为保留值，在当前版本中无效。 |
 
 <a id="graphify-settings"></a>
 ### Graphify 设置
@@ -1179,7 +1179,7 @@ minimal < low < medium < high < xhigh < max
 
 > **[#49](https://github.com/open-gsd/gsd-core/issues/49)** — 提供商中立的模型策略配置界面。在旧版 `model_profile_overrides` 之前解析。
 
-`model_policy` 提供了一种更简单、提供商中立的方式来跨运行时配置模型层级。对于手动知道正确模型 ID 需要使用 `model_profile_overrides` 的非 Anthropic 运行时，这是首选界面。通过 `/gsd:settings` → 第 8 节（模型策略）配置。
+`model_policy` 提供了一种更简单、提供商中立的方式来跨运行时配置模型层级。对于手动知道正确模型 ID 需要使用 `model_profile_overrides` 的非 Anthropic 运行时，这是首选界面。通过 `/gsd-settings` → 第 8 节（模型策略）配置。
 
 ### 已知提供商预设
 

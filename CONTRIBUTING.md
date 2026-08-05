@@ -373,6 +373,50 @@ const { createTempProject, createTempGitProject, createTempDir, cleanup, runGsdT
 | `cleanup(tmpDir)` | Removes directory recursively | Always use in `afterEach` |
 | `runGsdTools(args, cwd, env?)` | Executes gsd-tools.cjs | Testing CLI commands |
 
+### Spawning a subprocess: use the process seam
+
+Anything that shells out goes through `tests/helpers/process-seam.cjs` — never a hand-rolled
+`spawnSync`/`execFileSync` in your suite.
+
+```javascript
+const { runNode, runGit, runHook, OUTCOME } = require('./helpers/process-seam.cjs');
+
+const r = runHook(HOOK_PATH, [], { input: JSON.stringify(payload), timeoutMs: 5000 });
+assert.equal(r.outcome, OUTCOME.EXITED);
+assert.equal(r.exitCode, 0);
+```
+
+| Primitive | Spawns |
+|---|---|
+| `runNode(argv, opts)` | `process.execPath` |
+| `runGit(argv, opts)` | `git` |
+| `runHook(scriptPath, argv, opts)` | `opts.interpreter` (default `process.execPath`; pass `'bash'` for a shell script) |
+
+`opts`: `{ cwd, env, input, timeoutMs, killSignal, interpreter }`.
+
+Every call returns the same discriminated union — `{ outcome, exitCode, stdout, stderr, timedOut,
+signal, killed, code }` — and **never throws** for a child's exit code, a timeout, a buffer
+overflow, or a spawn failure. All four are data, so you assert on them:
+
+```javascript
+assert.equal(r.outcome, OUTCOME.TIMED_OUT);
+assert.equal(r.timedOut, true);
+```
+
+Two rules the seam enforces for you:
+
+- **Every call is timeout-bounded.** `timeoutMs` defaults to 60s; there is no unbounded path. An
+  unbounded subprocess is an indefinite hang, and it is how macOS CI silently stops reporting.
+- **`outcome` distinguishes cases that look identical.** A timeout and a `maxBuffer` overflow both
+  report `exitCode: null` and `signal: 'SIGTERM'`, differing only in `code` (`ETIMEDOUT` vs
+  `ENOBUFS`). Branch on `outcome`, never on `signal`.
+
+The seam is **not** a fault-injection surface — it cannot tell an injected timeout from a genuine
+bench OOM. Inject faults in-process through a module's `deps` parameter instead.
+
+Per-suite wrappers are still expected and encouraged: bind your fixture (cwd, env, payload) in a
+local helper and delegate the spawn to the seam.
+
 ### Test Structure
 
 ```javascript

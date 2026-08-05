@@ -7,6 +7,27 @@ const fs = require('fs');
 const path = require('path');
 
 const WORKFLOW = path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md');
+const PROGRESS_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress', 'steps');
+
+/**
+ * progress.md was fragmented (#2994) into gsd-core/workflows/progress/steps/*.md.
+ * The mvp_display step (and its MVP-mode display contract) now lives in
+ * progress/steps/mvp-display.md, only read at all when state:phase-mvp-mode is
+ * true. Read host + every step file combined so this contract guard keeps
+ * seeing the full picture regardless of which file the content physically
+ * lives in.
+ */
+function readProgressCombined() {
+  let combined = fs.readFileSync(WORKFLOW, 'utf8');
+  if (fs.existsSync(PROGRESS_STEPS_DIR)) {
+    for (const entry of fs.readdirSync(PROGRESS_STEPS_DIR).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + fs.readFileSync(path.join(PROGRESS_STEPS_DIR, entry), 'utf8');
+      }
+    }
+  }
+  return combined;
+}
 
 function parseProgressContract(content) {
   const lines = content.split(/\r?\n/);
@@ -24,7 +45,7 @@ function parseProgressContract(content) {
 }
 
 describe('progress — MVP mode display', () => {
-  const contract = parseProgressContract(fs.readFileSync(WORKFLOW, 'utf-8'));
+  const contract = parseProgressContract(readProgressCombined());
 
   test('workflow declares MVP_MODE branch', () => {
     assert.ok(contract.hasMvpModeVariable, 'must declare MVP_MODE');

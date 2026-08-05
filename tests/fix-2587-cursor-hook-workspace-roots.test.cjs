@@ -31,6 +31,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const HOOKS = path.join(__dirname, '..', 'hooks');
 const SESSION_START = path.join(HOOKS, 'gsd-cursor-session-start.js');
@@ -49,13 +50,12 @@ const STOP_REMINDER_FRAGMENT = 'Agent stopping';
 
 /** Run a hook script with an explicit cwd and stdin payload; return parsed stdout JSON. */
 function runHook(script, { cwd, payload }) {
-  const stdout = execFileSync(process.execPath, [script], {
+  const r = runHookSeam(script, [], {
     cwd,
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-    encoding: 'utf8',
-    timeout: 20000,
+    timeoutMs: 20000,
   });
-  return JSON.parse(stdout || '{}');
+  return JSON.parse(r.stdout || '{}');
 }
 
 /** A directory containing .planning/STATE.md. */

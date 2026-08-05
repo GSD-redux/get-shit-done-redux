@@ -1145,10 +1145,11 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const cp = require('node:child_process');
     const fsx = require('node:fs');
     const os = require('node:os');
-    const { REVIEWER_LANES } = require('./lib/review-lane-descriptor.cjs');
+    const { REVIEWER_LANES, mergeReviewerLanes } = require('./lib/review-lane-descriptor.cjs');
     const { resolveLanePlan } = require('./lib/review-lane-invocation.cjs');
     const runner = require('./lib/review-lane-runner.cjs');
     const cfgLoader = require('./lib/config-loader.cjs');
+    const capabilityLoader = require('./lib/capability-loader.cjs');
 
     const flag = (name) => {
       const i = args.indexOf(name);
@@ -1176,8 +1177,30 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
     const selected = (flag('--selected') || '')
       .split(',').map((s) => s.trim()).filter(Boolean);
-    const laneBySlug = new Map(REVIEWER_LANES.map((l) => [l.slug, l]));
-    const chosen = selected.length ? selected : REVIEWER_LANES.map((l) => l.slug);
+    // ADR-2782 D8 (#2927): the lane map is first-party ∪ INSTALLED overlay
+    // `reviewer` bodies, first-party winning on slug collision. Before this merge
+    // the map was built from the frozen REVIEWER_LANES array alone, so an installed,
+    // consented third-party reviewer lane was roster-visible (deriveReviewerSlugs)
+    // and disclosed at install (collectReviewerLaneSurfaces) but never selectable,
+    // plannable, or invocable — `sections`/`flags`/`plan`/`invoke` all consumed this
+    // one map. The overlay body is field-identical to a ReviewerLane (ADR-2782 D1,
+    // "no translation layer"), so `mergeReviewerLanes` is a pure merge, not a
+    // projection. loadRegistry is TOTAL and never throws on a malformed overlay
+    // (it skips the cap with a warning), and mergeReviewerLanes is total in turn,
+    // so a bad third-party manifest cannot take the first-party lanes down with it.
+    // `includeInstalled` is what merges project + global overlay caps into the
+    // registry; without it the base is first-party-only and this is a no-op.
+    let mergedLanes = REVIEWER_LANES;
+    try {
+      const registry = capabilityLoader.loadRegistry({ includeInstalled: true, cwd });
+      mergedLanes = mergeReviewerLanes(REVIEWER_LANES, registry);
+    } catch {
+      // A registry load failure must never block first-party review. Degrade to the
+      // static set — identical to pre-fix behavior — rather than crashing review-lane.
+      mergedLanes = REVIEWER_LANES;
+    }
+    const laneBySlug = new Map(mergedLanes.map((l) => [l.slug, l]));
+    const chosen = selected.length ? selected : mergedLanes.map((l) => l.slug);
 
     if (sub === 'sections') {
       const rows = chosen
@@ -1564,6 +1587,24 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `orchestrator-worktree`. It requires `--cwd-target` (the GSD-created
     // worktree path) and optionally `--prompt`; without a target there is
     // nothing to bind, so `exec` is null.
+    //
+    // #3045 CORE REDESIGN: this is now the SOLE resolver of "what isolation
+    // applies to this dispatch", and — as an unconditional side effect — it
+    // PERSISTS that resolved decision (mode + harnessFlag + phase/plan
+    // identifiers, written together in one atomic write) to the sentinel the
+    // guard hooks read. Previously the sentinel was written by prose-gated
+    // shell blocks in `executor-isolation-dispatch.md` that a model was told
+    // to "read and run" — a prose-gated writer for a guard against
+    // prose-gated values is the same defect class the guard exists to close.
+    // The workflow MUST call this query to learn ISOLATION at all, so
+    // recording here is structurally unskippable. `--phase`/`--plan` are
+    // optional identifiers threaded through from the caller (workflow shell
+    // variables); `--force-isolation <mode>` lets a caller that has
+    // additional context this resolver cannot see (the #2474 per-plan
+    // submodule intersection, computed in shell in
+    // `per-plan-worktree-gate.md`) override the naturally-resolved mode
+    // while still going through this single write path. Best-effort: a
+    // sentinel write failure here must never fail the wave.
     const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
     let isolation = 'none';
     let runtimeId = null;
@@ -1622,11 +1663,149 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       harnessFlag = null;
     }
 
+    // `--force-isolation <mode>` overrides the naturally-resolved mode with
+    // context this resolver has no way to see on its own (e.g. the #2474
+    // per-plan submodule intersection). Invalid/unrecognized values are
+    // ignored rather than erroring — this is a best-effort recording call,
+    // not a hard usage gate. Forcing to 'none' clears harnessFlag/exec since
+    // neither applies to sequential dispatch.
+    const forceIdx = args.indexOf('--force-isolation');
+    const forcedIsolation = forceIdx !== -1 ? args[forceIdx + 1] : undefined;
+    if (forcedIsolation && VALID_ISOLATION.has(forcedIsolation)) {
+      isolation = forcedIsolation;
+      if (isolation === 'none') {
+        harnessFlag = null;
+        exec = null;
+      }
+    }
+
+    const phaseIdx = args.indexOf('--phase');
+    const phaseArg = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
+      ? args[phaseIdx + 1]
+      : null;
+    const planIdx = args.indexOf('--plan');
+    const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
+      ? args[planIdx + 1]
+      : null;
+
+    // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
+    // Never allowed to affect this query's own stdout contract or throw.
+    try {
+      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
+    } catch {
+      // writeDispatchIsolationSentinel already swallows its own errors into
+      // a { recorded: false } result; this catch is defense in depth only.
+    }
+
     if (args.indexOf('--json') !== -1) {
       output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
     } else {
       process.stdout.write(isolation);
     }
+  }
+
+  /**
+   * Atomically persist the resolved dispatch-isolation decision to the
+   * run-scoped sentinel both isolation guard hooks read
+   * (hooks/gsd-agent-isolation-guard.js, hooks/gsd-cursor-subagent-start.js;
+   * shared reader hooks/lib/isolation-sentinel.js). Extracted so
+   * `routeDispatchIsolation` (the #3045 CORE REDESIGN primary write path)
+   * and `routeRecordDispatchIsolation` (the explicit verb, kept for the
+   * per-plan degrade call site and back-compat/tests) share exactly one
+   * write implementation. Never throws — returns `{ recorded, path, error? }`.
+   */
+  function writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag = null, phase = null, plan = null }) {
+    const nodePath = require('path');
+    const nodeFs = require('fs');
+    const sentinelDir = nodePath.join(cwd, '.gsd');
+    const sentinelPath = nodePath.join(sentinelDir, 'dispatch-isolation-sentinel.json');
+    const payload = {
+      isolation,
+      harness_flag: harnessFlag || null,
+      phase: phase || null,
+      plan: plan || null,
+      written_at: Date.now(),
+    };
+    try {
+      nodeFs.mkdirSync(sentinelDir, { recursive: true });
+      // Atomic write: unique temp file + rename, so a concurrent reader (a
+      // guard hook firing mid-write) never observes a partially-written
+      // sentinel. Unique per-process+time so concurrent orchestrator-worktree
+      // invocations sharing the same sentinelDir never collide on the temp name.
+      const tmpPath = `${sentinelPath}.tmp-${process.pid}-${Date.now()}`;
+      nodeFs.writeFileSync(tmpPath, JSON.stringify(payload));
+      nodeFs.renameSync(tmpPath, sentinelPath);
+      return { recorded: true, path: '.gsd/dispatch-isolation-sentinel.json' };
+    } catch (err) {
+      return { recorded: false, path: '.gsd/dispatch-isolation-sentinel.json', error: err && err.message };
+    }
+  }
+
+  function routeRecordDispatchIsolation({ args, cwd, raw, error }) {
+    // #3045: `routeDispatchIsolation` (the `dispatch-isolation` query) is now
+    // the PRIMARY write path for the sentinel (CORE REDESIGN) — it records
+    // as an unconditional side effect of resolving ISOLATION, which the
+    // workflow must call to learn the value at all. This verb remains as an
+    // explicit fallback for callers that resolve isolation through some
+    // other means (or need to force a specific value, e.g. a caller with no
+    // access to `--force-isolation` context) and for direct test coverage of
+    // the write primitive. Both verbs share exactly one write implementation
+    // (`writeDispatchIsolationSentinel`) so there is only one atomic-write
+    // code path to reason about.
+    //
+    // Best-effort: a write failure here must never fail the workflow — the
+    // guard hooks' own sentinel-absent path degrades to a conservative
+    // registry+config check, so a missing sentinel is safe, just less precise.
+    //
+    // Output: { recorded: true|false, path, error? }
+    const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
+    const isoIdx = args.indexOf('--isolation');
+    const isolation = isoIdx !== -1 ? args[isoIdx + 1] : undefined;
+    if (!isolation || !VALID_ISOLATION.has(isolation)) {
+      error(
+        'Usage: record-dispatch-isolation --isolation <harness-worktree|orchestrator-worktree|none> ' +
+        '[--harness-flag <flag>|--harness-flag=<flag>] [--phase <n>] [--plan <id>]',
+        ERROR_REASON.USAGE,
+      );
+      return;
+    }
+    // #3045 MAJOR: the space-separated form rejects any value starting with
+    // `--` (to avoid swallowing a missing value followed by another flag),
+    // but that is exactly the shape of Cursor's real `harnessIsolationFlag`
+    // — it declares the bare CLI flag `--worktree`
+    // (gsd-core/bin/lib/capability-registry.cjs), which could therefore
+    // never be persisted. (Windsurf declares NO `harnessIsolationFlag` at
+    // all — its `hostIntegration.dispatch.isolation` is `none`; per
+    // ADR-1239 it "genuinely cannot benefit" from worktree isolation
+    // because it lacks named/concurrent subagent dispatch, so this is not a
+    // gap to close for Windsurf.) The `--harness-flag=<value>` equals form
+    // (mirrors the `--cwd=<path>` convention already used by this
+    // dispatcher's top-level arg parsing above) carries the value
+    // unambiguously and is never subject to that guard — any future runtime
+    // whose registered flag happens to be bare-CLI-shaped benefits the same
+    // way Cursor's does.
+    let harnessFlag = null;
+    const flagEqArg = args.find((a) => a.startsWith('--harness-flag='));
+    if (flagEqArg) {
+      const value = flagEqArg.slice('--harness-flag='.length);
+      harnessFlag = value.length > 0 ? value : null;
+    } else {
+      const flagIdx = args.indexOf('--harness-flag');
+      harnessFlag = flagIdx !== -1 && args[flagIdx + 1] && !args[flagIdx + 1].startsWith('--')
+        ? args[flagIdx + 1]
+        : null;
+    }
+    const phaseIdx = args.indexOf('--phase');
+    const phase = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
+      ? args[phaseIdx + 1]
+      : null;
+    const planIdx = args.indexOf('--plan');
+    const plan = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
+      ? args[planIdx + 1]
+      : null;
+
+    const result = writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase, plan });
+    output(result, raw);
   }
 
   function routeResolveDispatchType({ args, cwd, raw, error }) {
@@ -3039,6 +3218,7 @@ const HOST_COMMAND_ROUTERS = {
     'normalize-test-command': routeNormalizeTestCommand,
     'dispatch-should-flatten': routeDispatchShouldFlatten,
     'dispatch-isolation': routeDispatchIsolation,
+    'record-dispatch-isolation': routeRecordDispatchIsolation,
     'resolve-dispatch-type': routeResolveDispatchType,
     'agent-skills': routeAgentSkills,
     'skill-manifest': routeSkillManifest,
@@ -3291,7 +3471,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'generate-dev-preferences, generate-slug, graphify, history-digest, init, intel, ' +
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
-  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
+  'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
   'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
@@ -3355,6 +3535,37 @@ function skipsRootResolution(command) {
   return SKIP_ROOT_RESOLUTION.has(command);
 }
 
+/**
+ * Resolve the worktree root for a given cwd, warning to stderr when git
+ * could not determine it (reason 'git_timed_out') rather than silently
+ * trusting a best-effort fallback (#3050). Extracted from main() so it can
+ * be driven directly in tests via injected deps.
+ *
+ * @param {string} cwd
+ * @param {{ existsSync?: (p: string) => boolean, resolveWorktreeRoot?: (cwd: string) => { root: string, reason: string }, writeWarning?: (msg: string) => void }} [deps]
+ * @returns {string} resolved cwd
+ */
+function resolveMainWorktreeCwd(cwd, deps = {}) {
+  const existsSync = deps.existsSync || fs.existsSync;
+  const resolveWorktreeRoot = deps.resolveWorktreeRoot || require('./lib/worktree-safety.cjs').resolveWorktreeRoot;
+  const writeWarning = deps.writeWarning || ((msg) => process.stderr.write(msg));
+
+  if (existsSync(path.join(cwd, '.planning'))) {
+    return cwd;
+  }
+  const { root: worktreeRoot, reason: worktreeRootReason } = resolveWorktreeRoot(cwd);
+  if (worktreeRootReason === 'git_timed_out') {
+    writeWarning(
+      'WARNING: could not determine the git worktree root (git timed out). ' +
+      'Planning artifacts (STATE.md, ROADMAP.md, etc.) may be written to the ' +
+      `wrong tree — proceeding with "${worktreeRoot}" as a best-effort fallback. ` +
+      'Retry the command; if this persists, check for a stalled filesystem mount ' +
+      'or a stale git index lock (.git/index.lock) in this worktree.\n'
+    );
+  }
+  return worktreeRoot;
+}
+
 async function main() {
   let args = process.argv.slice(2);
 
@@ -3412,13 +3623,7 @@ async function main() {
   // Resolve worktree root: in a linked worktree, .planning/ lives in the main worktree.
   // However, in monorepo worktrees where the subdirectory itself owns .planning/,
   // skip worktree resolution — the CWD is already the correct project root.
-  const { resolveWorktreeRoot } = require('./lib/worktree-safety.cjs');
-  if (!fs.existsSync(path.join(cwd, '.planning'))) {
-    const worktreeRoot = resolveWorktreeRoot(cwd);
-    if (worktreeRoot !== cwd) {
-      cwd = worktreeRoot;
-    }
-  }
+  cwd = resolveMainWorktreeCwd(cwd);
 
   // Optional workstream override for parallel milestone work.
   // Priority: --ws flag > GSD_WORKSTREAM env var > session/shared pointer > null.
@@ -3678,5 +3883,6 @@ module.exports = {
   HOST_COMMAND_ROUTERS,
   TOP_LEVEL_USAGE,
   skipsRootResolution,
+  resolveMainWorktreeCwd,
 };
 

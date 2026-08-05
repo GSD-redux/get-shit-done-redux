@@ -300,6 +300,86 @@ describe('evaluateWorktreeBaseDegrade', () => {
     assert.strictEqual(result.reason, 'no-head');
   });
 
+  // ─── #3050: fail-closed matrix for git rev-parse HEAD outcomes ─────────────
+  // DECIDED RULE: degrade UNLESS git completed and gave a definitive answer.
+  //   - timeout                       → degrade, reason 'head-unresolvable'
+  //   - exitCode === 128              → NO degrade, reason 'no-head' (unchanged)
+  //   - exit 0 with non-empty sha     → proceed (unchanged)
+  //   - anything else (127, other     → degrade, reason 'head-unresolvable'
+  //     non-zero, exit 0 empty stdout
+  //     is pinned separately above)
+
+  test('git rev-parse HEAD TIMES OUT → shouldDegrade:true, reason "head-unresolvable" (#3050)', () => {
+    const timedOutErr = new Error('spawnSync git ETIMEDOUT');
+    timedOutErr.code = 'ETIMEDOUT';
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeExecGit({
+        'rev-parse HEAD': { exitCode: null, stdout: '', stderr: '', signal: 'SIGTERM', error: timedOutErr },
+      }),
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'head-unresolvable');
+    assert.ok(result.message, 'a fail-closed degrade must carry a non-null explanatory message');
+    assert.strictEqual(result.headSha, null);
+  });
+
+  test('cross-platform: timeout WITHOUT signal set (Windows shape) still degrades (#3050)', () => {
+    // Node.js guarantees error.code === 'ETIMEDOUT' cross-platform when the
+    // spawnSync `timeout` option fires; `signal` reporting is the
+    // platform-fragile half and must not be required to detect a timeout.
+    const timedOutErr = new Error('spawnSync git ETIMEDOUT');
+    timedOutErr.code = 'ETIMEDOUT';
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeExecGit({
+        'rev-parse HEAD': { exitCode: null, stdout: '', stderr: '', signal: null, error: timedOutErr },
+      }),
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'head-unresolvable');
+  });
+
+  test('git missing (exitCode 127) → degrade, reason "head-unresolvable" (#3050)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeExecGit({
+        'rev-parse HEAD': { exitCode: 127, stdout: '', stderr: 'git: not found', signal: null, error: null },
+      }),
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'head-unresolvable');
+  });
+
+  // Boundary coverage: 128 is the ONLY benign non-zero exit (definitive "not a
+  // git repository"). 129 (limit+1) must NOT be swept into that carve-out.
+  test('exitCode 129 (limit+1 boundary, just past the 128 carve-out) → degrade, reason "head-unresolvable" (#3050)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeExecGit({
+        'rev-parse HEAD': { exitCode: 129, stdout: '', stderr: 'fatal: something else', signal: null, error: null },
+      }),
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'head-unresolvable');
+  });
+
+  test('other non-zero, non-128 exit → degrade, reason "head-unresolvable" (#3050)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeExecGit({
+        'rev-parse HEAD': { exitCode: 1, stdout: '', stderr: 'fatal: something else', signal: null, error: null },
+      }),
+    });
+    assert.strictEqual(result.shouldDegrade, true);
+    assert.strictEqual(result.reason, 'head-unresolvable');
+  });
+
+  test('exitCode 128 ("not a git repository") still does NOT degrade (#3050 regression guard)', () => {
+    const result = evaluateWorktreeBaseDegrade({
+      execGit: makeExecGit({
+        'rev-parse HEAD': { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', signal: null, error: null },
+      }),
+    });
+    assert.strictEqual(result.shouldDegrade, false);
+    assert.strictEqual(result.reason, 'no-head');
+  });
+
   test('HEAD == origin/HEAD → no degrade, reason head-matches-fork', () => {
     const HEAD_SHA = 'aabbccdd11223344aabbccdd11223344aabbccdd';
     const result = evaluateWorktreeBaseDegrade({

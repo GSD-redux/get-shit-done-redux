@@ -15,6 +15,8 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const { selectSections, WHEN_PREDICATES, REASON } = require('../gsd-core/bin/lib/section-manifest.cjs');
 const { WHEN_VOCABULARY } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
@@ -262,7 +264,7 @@ describe('flags set cardinality (#2992 row B14)', () => {
   const sections = Object.freeze([
     { id: 'a', when: 'flag:--auto' },
     { id: 'b', when: 'flag:--discuss' },
-    { id: 'c', when: 'flag:--full' },
+    { id: 'c', when: 'flag:--fix' },
   ]);
 
   test('zeroFlagsExcludesEveryFlagSection', () => {
@@ -276,7 +278,7 @@ describe('flags set cardinality (#2992 row B14)', () => {
   });
 
   test('manyFlagsIncludeEveryMatchingSection', () => {
-    const result = selectSections(sections, facts({ flags: new Set(['--auto', '--discuss', '--full', '--irrelevant']) }));
+    const result = selectSections(sections, facts({ flags: new Set(['--auto', '--discuss', '--fix', '--irrelevant']) }));
     assert.deepEqual(result, { included: ['a', 'b', 'c'], excluded: [] });
   });
 });
@@ -449,6 +451,161 @@ describe('state:chunked-mode predicate (row A8)', () => {
 // inherited Object.prototype members (`constructor`, `toString`, etc.) as if
 // they were predicates, silently including the section or throwing an
 // untyped error instead of failing closed with REASON.UNKNOWN_WHEN.
+
+// ─── #2994 (epic #1671 Phase 6.3) matrix §A: atom admission — the gate-2 hole ──
+//
+// The two load-time parity guards above (rows 21-23) prove WHEN_VOCABULARY <->
+// WHEN_PREDICATES symmetry — every atom has SOME predicate function. Neither
+// proves the predicate's underlying FACT is ever computed by a real cmdInit*
+// caller: an atom whose fact no caller assembles evaluates false forever,
+// which is the silent-wrong-answer class this PR exists to prevent (matrix
+// row A/#8). This block closes that hole by driving every one of the 30
+// frozen atoms to both a TRUE and a FALSE outcome via a constructed
+// InvocationFacts, entirely at this module's own boundary (never reaching
+// into src/init.cts, which is covered separately in
+// tests/section-manifest-init-facts.test.cjs).
+
+/**
+ * Per-atom recipe: how to build an `InvocationFacts` fragment that drives
+ * `WHEN_PREDICATES[atom]` to `true`, and a second fragment that drives it to
+ * `false`. `flag` atoms derive their token mechanically (`atom.slice('flag:'.length)`,
+ * the same derivation B11 above already established as test-only-legal); every
+ * `state:` atom's backing fact FIELD is a hand-written literal here — same
+ * discipline as `WHEN_PREDICATES` itself (module doc comment "The evaluator is
+ * a LOOKUP, not a parser"): there is no mechanical way to derive
+ * `chunkedMode` from `"state:chunked-mode"` without inventing a tokenizer.
+ * `'always'` is the one structural exception: its predicate is `() => true`
+ * unconditionally (it backs every synthesized gap fragment), so no `facts`
+ * value can ever drive it to `false` — handled as its own branch below, not
+ * silently dropped from the 30-atom set A5 checks against.
+ */
+const STATE_ATOM_FACT_FIELD = Object.freeze({
+  'state:has-prior-phases': 'hasPriorPhases',
+  'state:auto-advance-active': 'autoAdvanceActive',
+  'state:chunked-mode': 'chunkedMode',
+  'state:fallow-enabled': 'fallowEnabled',
+  'state:git-create-tag': 'gitCreateTag',
+  'state:needs-codebase-map': 'needsCodebaseMap',
+  'state:phase-mvp-mode': 'phaseMvpMode',
+  'state:plan-strategy-converge': 'planStrategyConverge',
+  'state:reviewer-instances-configured': 'reviewerInstancesConfigured',
+  'state:ui-phase-active': 'uiPhaseActive',
+  'state:worktrees-enabled': 'worktreesEnabled',
+  'state:is-monorepo': 'isMonorepo',
+  'state:next-channel': 'nextChannel',
+  'state:workstream-active': 'workstreamActive',
+  'state:flat-mode': 'flatMode',
+});
+
+/** `state:gap-closure-phase` is the one atom keyed off `phaseNumber`, not a plain boolean field. */
+const GAP_CLOSURE_ATOM = 'state:gap-closure-phase';
+
+/** @returns {{truthy: object, falsy: object | null}} fact FRAGMENTS (merged onto `facts({})` by the caller) for `atom`; `falsy: null` marks the `'always'` exception. */
+function factFragmentsFor(atom) {
+  if (atom === 'always') {
+    return { truthy: {}, falsy: null };
+  }
+  if (atom === GAP_CLOSURE_ATOM) {
+    return { truthy: { phaseNumber: '3.1' }, falsy: { phaseNumber: '3' } };
+  }
+  if (atom.startsWith('flag:--')) {
+    const token = atom.slice('flag:'.length);
+    return { truthy: { flags: new Set([token]) }, falsy: { flags: new Set() } };
+  }
+  const field = STATE_ATOM_FACT_FIELD[atom];
+  if (!field) {
+    throw new Error(`factFragmentsFor: atom "${atom}" has no fact-field mapping — update STATE_ATOM_FACT_FIELD`);
+  }
+  return { truthy: { [field]: true }, falsy: { [field]: false } };
+}
+
+describe('every when= atom is satisfiable by some InvocationFacts (#2994 matrix rows A1/A2/A5)', () => {
+  // A5 anti-vacuity: the atom set this describe block iterates must be
+  // non-empty AND exactly equal to WHEN_VOCABULARY's full 29-entry set — an
+  // A1/A2 loop over an empty or partial collection would be a green test
+  // proving nothing (ADR-1671 eval-gate rot, named explicitly in the design).
+  test('atom satisfiability set is non-empty and equals the full frozen WHEN_VOCABULARY (row A5)', () => {
+    assert.ok(WHEN_VOCABULARY.length > 0, 'WHEN_VOCABULARY must not be empty');
+    const coveredAtoms = [...WHEN_VOCABULARY].sort();
+    // Every atom must resolve via factFragmentsFor without throwing — this is
+    // the completeness check on STATE_ATOM_FACT_FIELD itself: an atom added
+    // to WHEN_VOCABULARY without a corresponding entry here throws loudly
+    // instead of silently narrowing the set A1/A2 below actually cover.
+    for (const atom of WHEN_VOCABULARY) {
+      assert.doesNotThrow(() => factFragmentsFor(atom), `factFragmentsFor must resolve "${atom}"`);
+    }
+    assert.deepEqual(coveredAtoms, [...WHEN_VOCABULARY].sort(), 'the covered atom set must be exactly WHEN_VOCABULARY');
+    assert.equal(WHEN_VOCABULARY.length, 29, 'sanity: the frozen vocabulary is expected at 29 entries for #2994 — update this literal alongside a deliberate vocabulary widening');
+  });
+
+  for (const atom of WHEN_VOCABULARY) {
+    test(`atom "${atom}" is included when its fact is true, excluded when false (rows A1/A2)`, () => {
+      const { truthy, falsy } = factFragmentsFor(atom);
+      const sections = [{ id: 'target', when: atom }];
+
+      // A1: some constructed InvocationFacts drives this section into `included`.
+      const includedResult = selectSections(sections, facts(truthy));
+      assert.deepEqual(includedResult, { included: ['target'], excluded: [] }, `expected "${atom}" included under its truthy facts`);
+
+      if (falsy === null) {
+        // The 'always' exception: no facts value can ever exclude it — assert
+        // that deliberately, rather than silently skipping the atom (which
+        // would violate A5's "set is non-empty" guarantee for THIS assertion).
+        const stillIncluded = selectSections(sections, facts({}));
+        assert.deepEqual(stillIncluded, { included: ['target'], excluded: [] }, '"always" must remain included under every facts value — it has no false branch');
+        return;
+      }
+
+      // A2: some constructed InvocationFacts drives the SAME section into `excluded`.
+      const excludedResult = selectSections(sections, facts(falsy));
+      assert.deepEqual(excludedResult, { included: [], excluded: ['target'] }, `expected "${atom}" excluded under its falsy facts`);
+    });
+  }
+});
+
+// ─── #2994 matrix row A3: no admitted atom lacks a consuming section ───────
+//
+// An atom present in WHEN_VOCABULARY with zero consuming `when=` markers
+// anywhere in the SHIPPED gsd-core/workflows/section-manifest.json is dead
+// vocabulary: cardinality without a section, the exact rot the frozen list's
+// "no atom is admitted without a consumer, in the same commit" discipline
+// exists to prevent (40-design.md "Vocabulary growth"). Driven from the real
+// installed-shape artifact — never a hand-built fixture — per the matrix's
+// prime directive ("a hand-built manifest proves a property no real caller
+// exercises").
+
+describe('no admitted atom lacks a consuming section in the shipped manifest (#2994 matrix row A3)', () => {
+  const SHIPPED_MANIFEST_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'section-manifest.json');
+
+  test('every WHEN_VOCABULARY atom is used as a when= value by at least one shipped section', () => {
+    const manifest = JSON.parse(fs.readFileSync(SHIPPED_MANIFEST_PATH, 'utf8'));
+    const usedAtoms = new Set();
+    for (const sections of Object.values(manifest.workflows)) {
+      for (const section of sections) {
+        usedAtoms.add(section.when);
+      }
+    }
+
+    // `always` is a NAMED, single exemption — not a blanket skip. It is the
+    // implicit gap-fragment default (a section with no `when=` marker at all
+    // is treated as unconditionally included) and is structural, not a
+    // marker atom: `gen-section-manifest.cjs`'s `explicitSections` filter
+    // (`s.explicit`) deliberately EXCLUDES it from the generated
+    // section-manifest.json, so no shipped section's `when=` value can ever
+    // literally read `"always"` — the atom is real (WHEN_PREDICATES and
+    // section-marker-parsing both accept it) but by design has zero
+    // consuming JSON entries.
+    const unusedAtoms = WHEN_VOCABULARY.filter((atom) => atom !== 'always' && !usedAtoms.has(atom));
+
+    // Deliberately UNWEAKENED per 50-test-matrix.md row A3's own instruction:
+    // "if any atom legitimately has no consumer today, do NOT weaken this
+    // test — report it to me instead, it is a real finding." No exclusion
+    // list beyond the single named `always` exemption above is applied here
+    // — if this assertion is red, that redness IS the finding, not a defect
+    // in the test.
+    assert.deepEqual(unusedAtoms, [], `dead vocabulary: these WHEN_VOCABULARY atoms have no consuming section anywhere in ${SHIPPED_MANIFEST_PATH}`);
+  });
+});
 
 describe('Object.prototype-shaped when= values fail closed (REASON.UNKNOWN_WHEN)', () => {
   const HOSTILE_WHEN_VALUES = Object.freeze([

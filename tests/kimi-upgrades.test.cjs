@@ -41,7 +41,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
 const { runMinimalInstall, INSTALL_SCRIPT, installerEnv } = require('./helpers/install-shared.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, createTempDir, toPosixPath } = require('./helpers.cjs');
 const {
   negotiateHostCapabilities,
   shouldFlattenDispatch,
@@ -253,12 +253,17 @@ test('UPGRADE 2: capabilities/kimi/capability.json declares dispatch.background 
   assert.equal(d.backgroundDispatch, true);
 });
 
-test('UPGRADE 2: negotiateHostCapabilities against kimi axes yields effective.dispatch.backgroundDispatch === true, and shouldFlattenDispatch is false (background now allowed)', () => {
+test('UPGRADE 2: negotiateHostCapabilities against kimi axes yields effective.dispatch.backgroundDispatch === true, but shouldFlattenDispatch is true (#2939: nested:false cannot host a nesting orchestrator)', () => {
   const KIMI_AXES = KIMI_CAP.runtime.hostIntegration;
   const { effective } = negotiateHostCapabilities(KIMI_AXES);
+  // UPGRADE 2 still holds: the descriptor declares backgroundDispatch:true (kimi CAN background
+  // a single agent). #2939 changes only the FLATTEN consequence: kimi's nested:false means a
+  // backgrounded kimi agent cannot itself nest the plan-checker/executor/verifier pipeline the
+  // workflows require, so the orchestrator must run inline (flatten) even though backgrounding
+  // a single agent is possible.
   assert.equal(effective.dispatch.backgroundDispatch, true);
-  assert.equal(shouldFlattenDispatch(effective.dispatch), false,
-    'kimi may now background — dispatch must not be flattened to inline');
+  assert.equal(shouldFlattenDispatch(effective.dispatch), true,
+    '#2939: kimi nested:false → a backgrounded orchestrator cannot nest the pipeline → flatten');
 });
 
 test('UPGRADE 2: a corrupted/undeclared dispatch still fails closed to inline (shouldFlattenDispatch === true)', () => {
@@ -323,4 +328,167 @@ test('boundary: every capability-declared extendedHookEvent is wired as a real e
     assert.match(toml, new RegExp(`event = "${event}"`),
       `base claude-dialect event ${event} must also be wired for kimi`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #2755: the hooks-TOML root is per-runtime, not a shared ~/.kimi
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether GSD's managed block is present, decided by the module's OWN parser
+ * rather than a substring probe: stripping is a no-op exactly when there is no
+ * block to strip.
+ */
+function hasGsdHooksBlock(tomlPath) {
+  if (!fs.existsSync(tomlPath)) return false;
+  const content = fs.readFileSync(tomlPath, 'utf8');
+  return stripKimiHooksTomlBlock(content) !== content;
+}
+
+/** Spawn the real installer for one Kimi variant against a shared sandbox HOME. */
+function runKimiInstall(root, runtime, { extraEnv = {}, uninstall = false } = {}) {
+  return runMinimalInstall({
+    runtime,
+    scope: 'global',
+    root,
+    extraEnv,
+    extraArgs: uninstall ? ['--uninstall'] : [],
+  });
+}
+
+function sandboxHome(t, prefix = 'gsd-2755-') {
+  const root = createTempDir(prefix);
+  t.after(() => cleanup(root));
+  return root;
+}
+
+describe('kimi vs kimi-code hooks-TOML root (#2755)', () => {
+  test('--kimi-code --global writes its hooks into ~/.kimi-code and never creates ~/.kimi', (t) => {
+    const root = sandboxHome(t);
+    runKimiInstall(root, 'kimi-code');
+
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi-code', 'config.toml')),
+      "the GSD [[hooks]] block must land in Kimi Code's own config.toml");
+    assert.ok(!fs.existsSync(path.join(root, '.kimi')),
+      "a --kimi-code install must not create Kimi CLI's ~/.kimi root at all");
+  });
+
+  test('--kimi-code --global installs its hook bundle under ~/.kimi-code/hooks', (t) => {
+    const root = sandboxHome(t);
+    runKimiInstall(root, 'kimi-code');
+
+    const hooksDir = path.join(root, '.kimi-code', 'hooks');
+    assert.ok(fs.existsSync(path.join(hooksDir, 'gsd-check-update.js')),
+      'the shared hook bundle must be self-contained under the kimi-code root');
+    assert.ok(fs.existsSync(path.join(hooksDir, 'lib')),
+      'hooks/lib must ship alongside it');
+    assert.ok(fs.existsSync(path.join(hooksDir, 'package.json')),
+      "the CommonJS marker must sit under kimi-code's hooks/ dir (#2544 shape)");
+
+    // The emitted [[hooks]] command paths must reference the same root the
+    // bundle was installed into, or every hook resolves to a missing script.
+    const toml = fs.readFileSync(path.join(root, '.kimi-code', 'config.toml'), 'utf8');
+    const managed = toml.slice(
+      toml.indexOf(KIMI_HOOKS_TOML_MARKER_BEGIN),
+      toml.indexOf(KIMI_HOOKS_TOML_MARKER_END),
+    );
+    const commandPaths = [...managed.matchAll(/^command = "(.*)"$/gm)].map((m) => m[1]);
+    assert.ok(commandPaths.length > 0, 'the managed block must emit at least one command');
+    for (const cmd of commandPaths) {
+      assert.ok(toPosixPath(cmd).includes('/.kimi-code/hooks/'),
+        `hook command must reference the kimi-code hooks dir: ${cmd}`);
+      assert.ok(!toPosixPath(cmd).includes('/.kimi/hooks/'),
+        `hook command must not reference Kimi CLI's hooks dir: ${cmd}`);
+    }
+  });
+
+  test('--kimi --global still writes into ~/.kimi and never creates ~/.kimi-code', (t) => {
+    const root = sandboxHome(t);
+    runKimiInstall(root, 'kimi');
+
+    assert.ok(hasGsdHooksBlock(path.join(root, '.kimi', 'config.toml')),
+      "kimi's own destination must be unchanged by #2755");
+    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
+      "a --kimi install must not create Kimi Code's root");
+  });
+
+  test('KIMI_CODE_HOME redirects the kimi-code hooks destination', (t) => {
+    const root = sandboxHome(t);
+    const altHome = sandboxHome(t, 'gsd-2755-kch-');
+    runKimiInstall(root, 'kimi-code', { extraEnv: { KIMI_CODE_HOME: altHome } });
+
+    assert.ok(hasGsdHooksBlock(path.join(altHome, 'config.toml')),
+      'KIMI_CODE_HOME must redirect the hooks block');
+    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
+      'the default kimi-code root must not be used when the env var is set');
+    assert.ok(!fs.existsSync(path.join(root, '.kimi')),
+      "Kimi CLI's root must not be touched either");
+  });
+
+  test('KIMI_SHARE_DIR still redirects the kimi hooks destination', (t) => {
+    const root = sandboxHome(t);
+    const altHome = sandboxHome(t, 'gsd-2755-ksd-');
+    runKimiInstall(root, 'kimi', { extraEnv: { KIMI_SHARE_DIR: altHome } });
+
+    assert.ok(hasGsdHooksBlock(path.join(altHome, 'config.toml')),
+      "KIMI_SHARE_DIR must keep redirecting kimi's hooks block");
+    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
+      "kimi-code's root must not be touched");
+  });
+
+  test('uninstalling kimi-code leaves kimi hooks intact', (t) => {
+    const root = sandboxHome(t);
+    runKimiInstall(root, 'kimi');
+    runKimiInstall(root, 'kimi-code');
+
+    const kimiToml = path.join(root, '.kimi', 'config.toml');
+    const kimiCodeToml = path.join(root, '.kimi-code', 'config.toml');
+    const kimiBefore = fs.readFileSync(kimiToml, 'utf8');
+
+    runKimiInstall(root, 'kimi-code', { uninstall: true });
+
+    assert.equal(fs.readFileSync(kimiToml, 'utf8'), kimiBefore,
+      "a --kimi-code uninstall must leave Kimi CLI's config.toml byte-identical");
+    assert.ok(!hasGsdHooksBlock(kimiCodeToml),
+      "kimi-code's own block must be removed by its own uninstall");
+  });
+
+  test('uninstalling kimi leaves kimi-code hooks intact', (t) => {
+    const root = sandboxHome(t);
+    runKimiInstall(root, 'kimi');
+    runKimiInstall(root, 'kimi-code');
+
+    const kimiToml = path.join(root, '.kimi', 'config.toml');
+    const kimiCodeToml = path.join(root, '.kimi-code', 'config.toml');
+    const kimiCodeBefore = fs.readFileSync(kimiCodeToml, 'utf8');
+
+    runKimiInstall(root, 'kimi', { uninstall: true });
+
+    assert.equal(fs.readFileSync(kimiCodeToml, 'utf8'), kimiCodeBefore,
+      "a --kimi uninstall must leave Kimi Code's config.toml byte-identical");
+    assert.ok(!hasGsdHooksBlock(kimiToml),
+      "kimi's own block must be removed by its own uninstall");
+  });
+
+  test('KIMI_SHARE_DIR and KIMI_CODE_HOME set together do not interfere', (t) => {
+    // Both products' overrides live in one environment in practice. Each must
+    // honor only its own variable — proven through the real installer, not just
+    // the resolver unit.
+    const root = sandboxHome(t);
+    const kimiAlt = sandboxHome(t, 'gsd-2755-both-kimi-');
+    const codeAlt = sandboxHome(t, 'gsd-2755-both-code-');
+    const both = { KIMI_SHARE_DIR: kimiAlt, KIMI_CODE_HOME: codeAlt };
+
+    runKimiInstall(root, 'kimi', { extraEnv: both });
+    runKimiInstall(root, 'kimi-code', { extraEnv: both });
+
+    assert.ok(hasGsdHooksBlock(path.join(kimiAlt, 'config.toml')),
+      'kimi must honor KIMI_SHARE_DIR while KIMI_CODE_HOME is also set');
+    assert.ok(hasGsdHooksBlock(path.join(codeAlt, 'config.toml')),
+      'kimi-code must honor KIMI_CODE_HOME while KIMI_SHARE_DIR is also set');
+    assert.ok(!fs.existsSync(path.join(root, '.kimi')),
+      'neither default root may be used when both overrides are set');
+    assert.ok(!fs.existsSync(path.join(root, '.kimi-code')),
+      'neither default root may be used when both overrides are set');
+  });
 });

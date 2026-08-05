@@ -189,7 +189,7 @@ Notice that `fragment.inline` now holds the materialised text from `fragments/pl
 Planning is driven by a slash command, not a `gsd` subcommand. In your AI assistant, start a planning session for a phase with:
 
 ```text
-/gsd:plan-phase
+/gsd-plan-phase
 ```
 
 When the planner runs, the `plan:pre` hook set is rendered into its prompt, so it receives the `hello-note` contribution and, following the fragment's instruction, records a one-line note in `HELLO.md`.

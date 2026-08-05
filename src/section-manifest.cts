@@ -20,7 +20,16 @@
  * Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
  * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
- * 40-design.md`). {@link WHEN_PREDICATES} is a total map from each frozen
+ * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
+ * (epic #1671 Phase 6.3), then from 20 to 23 via a further #2994 amendment
+ * fragmentizing `code-review.md` and `complete-milestone.md`, then from 23
+ * to 24 via a still further #2994 amendment fragmentizing `autonomous.md`,
+ * then from 24 to 26 via a still further #2994 amendment fragmentizing
+ * `review.md` and `discuss-phase-assumptions.md`, then from 26 to 30 — and
+ * finally to 29, `flag:--full` having been retired as dead vocabulary — via the
+ * final #2994 slice fragmentizing `docs-update.md`, `update.md`,
+ * `transition.md`, and `new-milestone.md`.
+ * {@link WHEN_PREDICATES} is a total map from each frozen
  * vocabulary entry to exactly one predicate over {@link InvocationFacts}.
  * It MUST NOT tokenize, split on operators, or interpret structure in the
  * `when=` string — the moment it parses, the ad-hoc language has begun.
@@ -92,6 +101,110 @@ export interface InvocationFacts {
    * Absent/undefined is falsy, never throws.
    */
   readonly chunkedMode?: boolean;
+  /**
+   * Whether the current phase's UI-phase surface is active (#2994):
+   * the phase's active `plan:pre` loop hooks include the `ui-phase` step OR
+   * the phase directory already contains a `*-UI-SPEC.md` file. Same
+   * discipline as {@link chunkedMode} — the disjunction is resolved by the
+   * caller (the init seam) into this single boolean BEFORE it reaches this
+   * module. Absent/undefined is falsy, never throws.
+   */
+  readonly uiPhaseActive?: boolean;
+  /**
+   * Whether the fallow structural cross-module pre-pass is enabled
+   * (`.planning/config.json` `code_quality.fallow.enabled`, #2994). Fail-closed
+   * default `false` — resolved by the caller (`cmdInitCodeReview`, the init
+   * seam) from the same config key `code-review.md`'s `structural_pre_pass`
+   * step used to re-derive inline (a circular self-disabling gate); the
+   * resolved value is exposed as the init-bundle's `fallow_enabled` field for
+   * the step body to consume directly. Absent/undefined is falsy, never throws.
+   */
+  readonly fallowEnabled?: boolean;
+  /**
+   * Whether git tag creation is enabled on milestone close
+   * (`.planning/config.json` `git.create_tag`, #2994). Fail-OPEN default
+   * `true` (unset/missing config means "create the tag"), matching
+   * `complete-milestone.md`'s pre-hoist `gsd-tools.cjs query config-get
+   * git.create_tag 2>/dev/null || echo "true"` resolver — now hoisted into
+   * `cmdInitCompleteMilestone` and exposed as the init-bundle's
+   * `git_create_tag` field. Absent/undefined is falsy at the PREDICATE level
+   * (per the totality convention every other atom here follows), so a caller
+   * MUST always populate this fact with a real boolean (never omit it) or the
+   * `git-tag` section will incorrectly evaluate to excluded.
+   */
+  readonly gitCreateTag?: boolean;
+  /**
+   * Whether `autonomous.md`'s planning step should route through plan-review
+   * convergence instead of `gsd-plan-phase` (#2994): `--converge` flag OR its
+   * documented alias `--cross-ai`. Same discipline as {@link chunkedMode} /
+   * {@link uiPhaseActive} — the disjunction is resolved by the caller
+   * (`cmdInitAutonomous`, the init seam) into this single boolean BEFORE it
+   * reaches this module; `state:plan-strategy-converge`'s predicate below
+   * reads only this field, never `--converge`/`--cross-ai` separately.
+   * Absent/undefined is falsy, never throws.
+   */
+  readonly planStrategyConverge?: boolean;
+  /**
+   * Whether `review.md`'s `review.reviewer_instances` config surface is
+   * configured — present AND non-empty (#2994). Resolved by the caller
+   * (`cmdInitReview`, the init seam) via `readConfigJsonValue`; the same
+   * fact backs both `reviewer-instances-note-1` and `reviewer-instances-note-2`
+   * (two sections sharing one atom — legal, mirrors `plan-phase.md`'s
+   * `research-only-*` pair). Absent/undefined is falsy, never throws.
+   */
+  readonly reviewerInstancesConfigured?: boolean;
+  /**
+   * Whether `discuss-phase-assumptions.md`'s `auto_advance` step should
+   * dispatch (#2994): `--auto` flag OR a consolidated auto-mode config fact
+   * (`workflow._auto_chain_active` OR `workflow.auto_advance`). Same
+   * discipline as {@link chunkedMode} — the disjunction is resolved by the
+   * caller (`cmdInitDiscussPhaseAssumptions`, the init seam) into this
+   * single boolean BEFORE it reaches this module. Absent/undefined is
+   * falsy, never throws.
+   */
+  readonly autoAdvanceActive?: boolean;
+  /**
+   * Whether the project is a monorepo with a non-empty workspaces list
+   * (#2994, final slice): the SAME `monorepo_workspaces` glob list
+   * `docs-init` (`src/docs.cts`) already produces, resolved by the caller
+   * (`cmdInitDocsUpdate`, the init seam) via the exported
+   * `detectMonorepoWorkspaces` detector rather than a second scan. Absent/
+   * undefined is falsy, never throws.
+   */
+  readonly isMonorepo?: boolean;
+  /**
+   * Whether `update.md`'s release channel is `next` (#2994, final slice):
+   * `--next` flag OR its documented alias `--rc`. Same disjunction-to-one-
+   * boolean discipline as {@link chunkedMode} — resolved by the caller
+   * (`cmdInitUpdate`, the init seam) into this single boolean BEFORE it
+   * reaches this module. This fact exists purely to gate the
+   * `channel-banner` section's admission; it deliberately does NOT replace
+   * `update.md`'s own `TAG="next"`/`TAG="latest"` case-statement (issue
+   * #815's regression test asserts that literal text stays in the
+   * workflow). Absent/undefined is falsy, never throws.
+   */
+  readonly nextChannel?: boolean;
+  /**
+   * Whether a workstream is active (#2994, final slice): `GSD_WORKSTREAM`
+   * env, falling back to the stored active-workstream pointer — resolved by
+   * the caller (`cmdInitTransition`/`cmdInitNewMilestone`, the init seam),
+   * mirroring `cmdInitProgress`'s own established resolution of the same
+   * question. Shared across two workflows' `cmdInit*` entry points (not
+   * redefined per-caller). Absent/undefined is falsy, never throws.
+   */
+  readonly workstreamActive?: boolean;
+  /**
+   * Whether NO workstream is active — the positively-phrased INVERSE of
+   * {@link workstreamActive} (#2994, final slice). The `when=` grammar has
+   * no negation operator (ADR-1671:69), so a section whose true condition is
+   * "skip when a workstream IS active" (`new-milestone.md`'s Step 4 Part A)
+   * cannot negate `state:workstream-active` in its marker; a separate atom
+   * whose fact is independently resolved to the inverse is the sanctioned
+   * pattern instead. Resolved by the caller (`cmdInitNewMilestone`, the init
+   * seam) as `!workstreamActive` from the SAME authoritative source.
+   * Absent/undefined is falsy, never throws.
+   */
+  readonly flatMode?: boolean;
 }
 
 /** A single input to {@link selectSections}: structurally compatible with {@link workflowFragments.WorkflowSection}. */
@@ -177,8 +290,8 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'state:has-prior-phases': (facts: InvocationFacts) => facts.hasPriorPhases === true,
     'flag:--auto': (facts: InvocationFacts) => hasFlag(facts, '--auto'),
     'flag:--discuss': (facts: InvocationFacts) => hasFlag(facts, '--discuss'),
+    'flag:--fix': (facts: InvocationFacts) => hasFlag(facts, '--fix'),
     'flag:--forensic': (facts: InvocationFacts) => hasFlag(facts, '--forensic'),
-    'flag:--full': (facts: InvocationFacts) => hasFlag(facts, '--full'),
     'flag:--ingest': (facts: InvocationFacts) => hasFlag(facts, '--ingest'),
     'flag:--prd': (facts: InvocationFacts) => hasFlag(facts, '--prd'),
     'flag:--research': (facts: InvocationFacts) => hasFlag(facts, '--research'),
@@ -186,9 +299,19 @@ export const WHEN_PREDICATES: Readonly<Record<string, (facts: InvocationFacts) =
     'flag:--reset-phase-numbers': (facts: InvocationFacts) => hasFlag(facts, '--reset-phase-numbers'),
     'flag:--reviews': (facts: InvocationFacts) => hasFlag(facts, '--reviews'),
     'flag:--validate': (facts: InvocationFacts) => hasFlag(facts, '--validate'),
+    'state:auto-advance-active': (facts: InvocationFacts) => facts.autoAdvanceActive === true,
     'state:chunked-mode': (facts: InvocationFacts) => facts.chunkedMode === true,
+    'state:fallow-enabled': (facts: InvocationFacts) => facts.fallowEnabled === true,
+    'state:flat-mode': (facts: InvocationFacts) => facts.flatMode === true,
+    'state:git-create-tag': (facts: InvocationFacts) => facts.gitCreateTag === true,
+    'state:is-monorepo': (facts: InvocationFacts) => facts.isMonorepo === true,
     'state:needs-codebase-map': (facts: InvocationFacts) => facts.needsCodebaseMap === true,
+    'state:next-channel': (facts: InvocationFacts) => facts.nextChannel === true,
     'state:phase-mvp-mode': (facts: InvocationFacts) => facts.phaseMvpMode === true,
+    'state:plan-strategy-converge': (facts: InvocationFacts) => facts.planStrategyConverge === true,
+    'state:reviewer-instances-configured': (facts: InvocationFacts) => facts.reviewerInstancesConfigured === true,
+    'state:ui-phase-active': (facts: InvocationFacts) => facts.uiPhaseActive === true,
+    'state:workstream-active': (facts: InvocationFacts) => facts.workstreamActive === true,
     'state:worktrees-enabled': (facts: InvocationFacts) => facts.worktreesEnabled === true,
   }),
 );

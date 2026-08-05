@@ -491,24 +491,52 @@ export function projectPersistentPathExportActions({ targetDir, platform = proce
 
 // ─── Subprocess dispatch ──────────────────────────────────────────────────────
 
-interface SpawnResultOutput {
+export interface SpawnResultOutput {
   exitCode: number;
   stdout: string;
   stderr: string;
   signal: NodeJS.Signals | null;
   error: Error | null;
+  timedOut: boolean;
+}
+
+/**
+ * Returns true when a spawn/exec result indicates the subprocess was killed
+ * by a timeout, i.e. it never completed and reported a real answer. This is
+ * the single shared definition of "did this subprocess time out" — worktree
+ * safety (src/worktree-safety.cts) and worktree base-ref detection
+ * (src/worktree-base-ref.cts) both call this instead of maintaining their
+ * own copies (#3050 — "Generative Fix Divergence").
+ *
+ * Only `error.code === 'ETIMEDOUT'` is checked. Node.js guarantees this
+ * cross-platform when `spawnSync`'s `timeout` option fires. The `signal ===
+ * 'SIGTERM'` check some earlier code paired with it is platform-fragile —
+ * Windows does not necessarily report SIGTERM the same way — and pairing it
+ * in as a REQUIRED conjunct risks a false NEGATIVE (a timeout that silently
+ * fails to trip the guard) on that platform. There is no false-positive risk
+ * from dropping it: an externally-delivered SIGTERM (not a timeout) leaves
+ * `error` null, so `error.code === 'ETIMEDOUT'` alone still won't match it.
+ */
+export function isSpawnTimeout(result: { error?: unknown }): boolean {
+  return (result.error as NodeJS.ErrnoException | null | undefined)?.code === 'ETIMEDOUT';
 }
 
 function _spawnResult(result: { error?: NodeJS.ErrnoException | null; status?: number | null; stdout?: Buffer | string | null; stderr?: Buffer | string | null; signal?: NodeJS.Signals | null }, program: string): SpawnResultOutput {
   if (result.error && result.error.code === 'ENOENT') {
-    return { exitCode: 127, stdout: '', stderr: `${program}: not found`, signal: null, error: result.error };
+    return { exitCode: 127, stdout: '', stderr: `${program}: not found`, signal: null, error: result.error, timedOut: false };
   }
+  const signal = result.signal ?? null;
+  const error = result.error ?? null;
   return {
     exitCode: result.status ?? 1,
     stdout: (result.stdout ?? '').toString().trim(),
     stderr: (result.stderr ?? '').toString().trim(),
-    signal: result.signal ?? null,
-    error: result.error ?? null,
+    signal,
+    error,
+    // Reuse the single shared timeout predicate (isSpawnTimeout, below) rather
+    // than re-deriving it here — see that function's docstring for why only
+    // error.code === 'ETIMEDOUT' is checked (not signal === 'SIGTERM').
+    timedOut: isSpawnTimeout({ error }),
   };
 }
 
@@ -615,9 +643,9 @@ export function resolveGsdToolsPath(): string {
  * NEVER throws. Degrades to `{ ok:false, ... }` on:
  *   - a missing/invalid "family" (validated locally, no subprocess spawned)
  *   - ENOENT / a missing gsd-tools.cjs (via the injectable `gsdToolsPath`)
- *   - a wall-clock timeout (`timedOut:true`, mirroring the
- *     `signal === 'SIGTERM' && error.code === 'ETIMEDOUT'` idiom already used
- *     by worktree-safety.cts)
+ *   - a wall-clock timeout (`timedOut:true`, via the shared `isSpawnTimeout`
+ *     predicate defined above in this file — also used by worktree-safety.cts
+ *     and worktree-base-ref.cts)
  *   - any other unanticipated throw from the underlying spawn (defensive
  *     try/catch — execTool itself is spawnSync-based and does not throw).
  */
@@ -674,16 +702,9 @@ export function dispatchGsdCommand({
     };
   }
 
-  // Mirrors the established `result.error && (result.error as
-  // NodeJS.ErrnoException).code === ...` idiom (graphify.cts, worktree-safety.cts):
-  // narrow away null via `!== null` FIRST, then cast — asserting `Error | null`
-  // to `NodeJS.ErrnoException | null` directly (paired with optional chaining)
-  // trips a typescript-eslint no-unnecessary-type-assertion false positive for
-  // this exact narrowing shape (all of ErrnoException's extra fields over Error
-  // are optional).
-  const timedOut = result.signal === 'SIGTERM'
-    && result.error !== null
-    && (result.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
+  // Delegates to the single shared predicate defined above in this file
+  // (#3050 — "Generative Fix Divergence") instead of a local inline copy.
+  const timedOut = isSpawnTimeout(result);
 
   return {
     ok: result.exitCode === 0 && !timedOut,

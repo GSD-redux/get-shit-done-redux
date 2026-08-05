@@ -382,7 +382,7 @@
 | `cjs-command-router-adapter.cjs` | 清单支持的 CJS 命令族路由器的共享兼容性适配器 |
 | `clock.cjs` | 用于确定性锁测试的可注入时钟接缝（now/sleep） |
 | `clusters.cjs` | 运行时 surface 模块的技能集群定义（ADR-0011 阶段 2） |
-| `code-review-flags.cjs` | `/gsd:code-review` 的类型化标志解析器；导出 `parseCodeReviewFlags(argv)`（→ `{ fix, all, auto, depth, files }`）和 `resolveCodeReviewWorkflow(flags)`（→ `'code-review.md' \| 'code-review-fix.md'`）；`--fix`/`--all`/`--auto` 路由的规范分发接缝 |
+| `code-review-flags.cjs` | `/gsd-code-review` 的类型化标志解析器；导出 `parseCodeReviewFlags(argv)`（→ `{ fix, all, auto, depth, files }`）和 `resolveCodeReviewWorkflow(flags)`（→ `'code-review.md' \| 'code-review-fix.md'`）；`--fix`/`--all`/`--auto` 路由的规范分发接缝 |
 | `command-aliases.cjs` | 清单支持的族路由器的别名/子命令元数据 |
 | `command-arg-projection.cjs` | 跨命令族路由器共享的类型化标志和位置参数投影帮助器 |
 | `command-routing-hub.cjs` | 纯结果分发中心，集中了所有命令族路由器的模式决策（SDK vs CJS）、错误分类和无抛出契约（#3788） |
@@ -444,7 +444,7 @@
 | `template.cjs` | 带变量替换的模板选择和填充 |
 | `uat.cjs` | UAT 文件解析、验证债务跟踪、audit-uat 支持 |
 | `ui-safety-gate.cjs` | 无 shell 的词边界 UI 令牌检测器（#3706，#3718）；从 stdin 读取阶段章节文本，退出 0（找到 UI）或 1（未找到 UI）；也部署到 `gsd-core/bin/lib/`，以便 GSD 安装程序将其传送到 `$RUNTIME_DIR`（#448） |
-| `update-context.cjs` | `/gsd:update` 的纯安装上下文解析器 — 从 update.md bash 移植的运行时/范围/配置目录/版本检测（LOCAL/GLOBAL/UNKNOWN）；支持 `gsd-tools update-context`（#498） |
+| `update-context.cjs` | `/gsd-update` 的纯安装上下文解析器 — 从 update.md bash 移植的运行时/范围/配置目录/版本检测（LOCAL/GLOBAL/UNKNOWN）；支持 `gsd-tools update-context`（#498） |
 | `validate-command-router.cjs` | `gsd-tools validate` 的轻量 CJS 子命令路由适配器 |
 | `validate.cjs` | 纯阶段变体规范化帮助器（`phaseVariants`、`buildRoadmapPhaseVariants`、`buildNotStartedPhaseVariants`），被 `verify.cjs` 用于 W006/W007 检查；无 I/O，无异步 |
 | `verify-command-router.cjs` | `gsd-tools verify` 的轻量 CJS 子命令路由适配器 |
@@ -475,6 +475,7 @@
 | `gsd-read-guard.js` | `PreToolUse` | 防止对未读文件执行 Edit/Write 的建议性守卫 |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | 扫描工具 Read 结果中的提示注入模式（v1.36+，PR #2201） |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | 硬性阻止对 worktree 根目录之外绝对路径执行 Edit/Write/MultiEdit（PR #579，#260） |
+| `gsd-agent-isolation-guard.js` | `PreToolUse` | 当项目解析出的调度隔离模式为 `harness-worktree` 时，硬性阻止缺少隔离参数的 executor `Agent()` 调度（#3045） |
 | `gsd-write-guard.js` | `PreToolUse` | 硬性阻止将精选的 `.planning/` 工件（ROADMAP.md、里程碑路线图、STATE.md）灾难性缩减的整文件 `Write`；可通过一次性哨兵文件 `.planning/.gsd-allow-shrink`（工作流步骤）或 `GSD_ALLOW_PLANNING_SHRINK=1`（交互式）覆盖（#2255，#973 的修复 3） |
 | `gsd-session-state.sh` | `PostToolUse` | 基于 shell 运行时的会话状态跟踪 |
 | `gsd-validate-commit.sh` | `PostToolUse` | 常规提交强制执行的提交验证 |

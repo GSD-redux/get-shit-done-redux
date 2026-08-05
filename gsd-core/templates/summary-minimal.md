@@ -25,6 +25,8 @@ completed: YYYY-MM-DD
 status: complete
 ---
 
+**Status (#2830):** `status: complete` is the default — the plan finished. Use `status: halted` instead when the plan reached a designed stop (a gate failure, a spike concluding without expanding into the full build, or any other intentional non-completion) and intentionally left tasks unfinished.
+
 # Phase [X]: [Name] Summary (Minimal)
 
 **[Substantive one-liner describing outcome]**

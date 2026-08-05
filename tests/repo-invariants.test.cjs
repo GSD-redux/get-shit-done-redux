@@ -124,59 +124,29 @@ describe('ESLint coverage tracks the bin/lib TS migration (ADR-457 / #537)', () 
 
 
 // ────────────────────────────────────────────────────────────────────────
-// Folded from tests/bug-3054-stale-gsd-next-references.test.cjs — consolidation epic #1969 (B8 #1977)
+// RETIRED: folded:bug-3054-stale-gsd-next-references (consolidation epic #1969 B8 #1977)
 // ────────────────────────────────────────────────────────────────────────
-{
-  const { describe: __foldDescribe } = require('node:test');
-  __foldDescribe("folded:bug-3054-stale-gsd-next-references (consolidation epic #1969 B8 #1977)", () => {
-'use strict';
-
-const { test, describe } = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-
-function walkMd(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) walkMd(full, out);
-    else if (entry.name.endsWith('.md')) out.push(full);
-  }
-  return out;
-}
-
-function extractSlashCommandTokens(markdown) {
-  const tokenRe = /\/gsd-[a-z0-9-]+/gi;
-  const tokens = new Set();
-  let m;
-  while ((m = tokenRe.exec(markdown)) !== null) {
-    tokens.add(m[0]);
-  }
-  return tokens;
-}
-
-describe('bug #3054: user-facing docs should not reference removed /gsd-next command', () => {
-  test('docs, workflows, and README surfaces use /gsd-progress --next instead', () => {
-    const root = path.join(__dirname, '..');
-    const files = [
-      ...walkMd(path.join(root, 'docs')),
-      ...walkMd(path.join(root, 'gsd-core', 'workflows')),
-      ...fs.readdirSync(root).filter((f) => /^README.*\.md$/.test(f)).map((f) => path.join(root, f)),
-    ];
-
-    const offenders = [];
-    for (const file of files) {
-      const content = fs.readFileSync(file, 'utf8');
-      const tokens = extractSlashCommandTokens(content);
-      if (tokens.has('/gsd-next')) offenders.push(path.relative(root, file));
-    }
-
-    assert.deepStrictEqual(offenders, [], `stale /gsd-next references remain in: ${offenders.join(', ')}`);
-  });
-});
-  });
-}
+//
+// This invariant used to fail any docs/workflows/README file that contained
+// the literal string `/gsd-next`, on the premise that `/gsd-next` named a
+// RETIRED workflow-advance command and any occurrence was a stale reference
+// that should have read `/gsd-progress --next` instead.
+//
+// That premise is now obsolete. #2903 established that human-facing docs
+// must use the hyphen command form (`/gsd-<cmd>`), and the maintainer
+// resolved the #3054-vs-#2903 conflict in favor of retiring this invariant
+// (option B) rather than exempting `next` from the #2903 sweep (option A):
+// `/gsd-next` no longer names the retired workflow-advance command — it is
+// the correct, live, user-facing name for the state-aware smart-entry
+// launcher (`commands/gsd/next.md`), exactly as documented by
+// `docs/FEATURES.md`'s REQ-CONSOLIDATE-03 ("`/gsd-next` is not the retired
+// workflow-advance command; it is reserved for the state-aware smart-entry
+// launcher. Workflow advancement remains under `/gsd-progress --next`.").
+//
+// Keeping this scan alive would now contradict the documented command form:
+// it would fail the build the moment `/gsd-next` legitimately appears in
+// docs, which #2903 requires everywhere `next` is referenced. See #3054,
+// #2903, and docs/FEATURES.md REQ-CONSOLIDATE-03.
 
 
 // ────────────────────────────────────────────────────────────────────────

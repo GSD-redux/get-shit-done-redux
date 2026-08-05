@@ -6322,17 +6322,40 @@ function mergeCodexConfig(configPath, gsdBlock) {
   const normalizedGsdBlock = mergedGsdBlock.replace(/\r?\n/g, eol);
   const markerIndex = existing.indexOf(GSD_CODEX_MARKER);
 
-  // Case 2: Has GSD marker — truncate and re-append
+  // Case 2: Has GSD marker — preserve user content on BOTH sides, regenerate the GSD block.
+  //
+  // #2940: the marker delimits where GSD's OWN block begins, NOT where every post-marker byte
+  // is GSD-owned. A fresh install writes the GSD block as the file's entire content, so any
+  // settings the user or Codex CLI later adds ([model], [mcp_servers.*], [profiles.*]) land
+  // AFTER the block. The previous truncate-to-marker logic discarded that trailing region on
+  // every update, destroying user config. The fix routes the trailing region through the
+  // existing AST-based `stripLeakedGsdCodexSections`, which removes GSD's own managed/leaked
+  // sections (the bare [agents] table GSD regenerates, legacy [agents.gsd-*], [[agents]])
+  // while preserving genuine user TOML — so #2406's de-dup still holds AND user content survives.
   if (markerIndex !== -1) {
     let before = existing.substring(0, markerIndex).trimEnd();
     if (before) {
       // Strip any GSD-managed sections that leaked above the marker from previous installs
       before = stripLeakedGsdCodexSections(before).trimEnd();
-
-      atomicWriteFileSync(configPath, before + eol + eol + normalizedGsdBlock + eol);
-    } else {
-      atomicWriteFileSync(configPath, normalizedGsdBlock + eol);
     }
+    // Capture and preserve genuine user content AFTER the GSD-managed region. The whole
+    // post-marker region is passed through stripLeakedGsdCodexSections: GSD's own previously-
+    // emitted [agents] table (regenerated above as normalizedGsdBlock) and any leaked sections
+    // are removed, while user tables ([model], [mcp_servers.*], [profiles.*]) are kept. The
+    // marker comment line itself (and the optional codex_hooks ownership line right under it)
+    // is GSD-owned and is stripped from the trailing region so it is not duplicated alongside
+    // the freshly regenerated block.
+    const rawAfter = existing.substring(markerIndex);
+    const markerStripped = rawAfter
+      .replace(GSD_CODEX_MARKER, '')
+      .replace(/^\r?\n# GSD codex_hooks ownership: (?:section|root_dotted)\r?\n/, '');
+    const afterUser = stripLeakedGsdCodexSections(markerStripped).trim();
+
+    const parts = [];
+    if (before) parts.push(before);
+    parts.push(normalizedGsdBlock);
+    if (afterUser) parts.push(afterUser);
+    atomicWriteFileSync(configPath, parts.join(eol + eol) + eol);
     return;
   }
 
@@ -6928,7 +6951,16 @@ function installCodexConfig(targetDir, agentsSrc, sandboxTier = 'codex-agent-san
   const codexGsdPath = `${path.resolve(targetDir, 'gsd-core').replace(/\\/g, '/')}/`;
 
   for (const file of agentEntries) {
-    let content = fs.readFileSync(path.join(agentsSrc, file), 'utf8');
+    const agentTomlSourcePath = path.join(agentsSrc, file);
+    let content = fs.readFileSync(agentTomlSourcePath, 'utf8');
+    // #2995 (epic #1671 Phase 6.4): Codex embeds each agent's prompt into a
+    // per-agent `.toml`, reading the source .md independently of the inline
+    // agent loop — a separate emission path that must strip gsd:section
+    // markers too, or a marked agent ships its markers inside the TOML.
+    // Found by the exhaustive per-runtime emission sweep in
+    // tests/agent-fragments-emission.install.test.cjs, not by call-graph
+    // analysis, which is why that guard is behavioral rather than structural.
+    content = composeWorkflow(content, { sourcePath: agentTomlSourcePath });
     // Replace full .claude/gsd-core prefix so path resolves to the Codex
     // GSD install before generic .claude → .codex conversion rewrites it.
     content = content.replace(/~\/\.claude\/gsd-core\//g, codexGsdPath);
@@ -8082,11 +8114,12 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
 
   // 1a-kimi. Non-layout Kimi side-effect (#2095 EoS/kimi Upgrade 1): kimi's
   // native config.toml lives outside targetDir entirely (resolveKimiHooksTomlDir
-  // resolves ~/.kimi, a sibling of targetDir's ~/.config/agents), so its
+  // resolves ~/.kimi for kimi and ~/.kimi-code for kimi-code (#2755), a sibling
+  // of targetDir's ~/.config/agents), so its
   // cleanup can't be driven by anything under targetDir the way every other
   // hook surface above is.
   if (resolveInstallPlan(runtime).hooksSurface === 'kimi-hooks-toml') {
-    const kimiHooksRoot = resolveKimiHooksTomlDir();
+    const kimiHooksRoot = resolveKimiHooksTomlDir({ runtime });
     const kimiHooksTomlPath = path.join(kimiHooksRoot, 'config.toml');
     const kimiHooksCleanup = removeKimiHooksToml(kimiHooksTomlPath);
     if (kimiHooksCleanup.changed) {
@@ -10863,7 +10896,12 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     const agentEntries = fs.readdirSync(agentsSrc, { withFileTypes: true });
     for (const entry of agentEntries) {
       if (entry.isFile() && entry.name.endsWith('.md')) {
-        let content = fs.readFileSync(path.join(agentsSrc, entry.name), 'utf8');
+        const agentSourcePath = path.join(agentsSrc, entry.name);
+        let content = fs.readFileSync(agentSourcePath, 'utf8');
+        // #2995 (epic #1671 Phase 6.4): strip `<!-- gsd:section -->` markers BEFORE
+        // the path-rewrite regexes below, so a rewrite can never reach inside a
+        // marker attribute. No-op (byte-identical) for an unmarked agent.
+        content = composeWorkflow(content, { sourcePath: agentSourcePath });
         // Replace ~/.claude/ and $HOME/.claude/ as they are the source of truth in the repo
         const dirRegex = /~\/\.claude\//g;
         const homeDirRegex = /\$HOME\/\.claude\//g;
@@ -11924,7 +11962,8 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // hooks needed. Kimi is also artifact-only for its INSTALL surface (skills +
     // kimi-agents, no settings.json) but #2095 Upgrade 1 gives it its own
     // independent hooksSurface: kimi's native config.toml [[hooks]] array, which
-    // lives outside targetDir entirely (resolveKimiHooksTomlDir resolves ~/.kimi,
+    // lives outside targetDir entirely (resolveKimiHooksTomlDir resolves the
+    // per-runtime root — ~/.kimi for kimi, ~/.kimi-code for kimi-code, #2755 —
     // a sibling of targetDir's ~/.config/agents) — hence writing it here, inside
     // this early-return, rather than requiring installSurface to change.
     //
@@ -11945,7 +11984,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // ~/.kimi/hooks/<script> rather than a script that doesn't exist under
     // targetDir/hooks (which kimi no longer receives).
     if (plan.hooksSurface === 'kimi-hooks-toml' && isGlobal) {
-      const kimiHooksRoot = resolveKimiHooksTomlDir();
+      const kimiHooksRoot = resolveKimiHooksTomlDir({ runtime });
       // Note: the `failures` array's hard-fail gate (`if (failures.length > 0)
       // process.exit(1)`) runs earlier in this function, before this
       // profile-marker-only branch is ever reached — pushing to it here would
@@ -11961,7 +12000,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
       //
       // Done HERE rather than in installer-migration 007 (which retires the same
       // stale marker for every other runtime) because kimi's hook root is
-      // ~/.kimi — resolved by resolveKimiHooksTomlDir, OUTSIDE kimi's configDir.
+      // the per-runtime Kimi root — resolved by resolveKimiHooksTomlDir, OUTSIDE the configDir.
       // Migration relPaths are structurally confined to configDir, so the
       // framework cannot address this path at all. Same exact-content predicate
       // either way, so a user-authored ~/.kimi/package.json is never touched.

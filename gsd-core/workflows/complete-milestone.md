@@ -592,9 +592,11 @@ Use `init milestone-op` for context, or load config directly:
 ```bash
 INIT=$(gsd_run query init.execute-phase "1")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
+INIT_CM=$(gsd_run query init.complete-milestone)
+if [[ "$INIT_CM" == @file:* ]]; then INIT_CM=$(cat "${INIT_CM#@file:}"); fi
 ```
 
-Extract `branching_strategy`, `phase_branch_template`, `milestone_branch_template`, and `commit_docs` from init JSON.
+Extract `branching_strategy`, `phase_branch_template`, `milestone_branch_template`, and `commit_docs` from init JSON. Extract `git_create_tag` and `section_manifest` from `INIT_CM` (used by the `git_tag` step below).
 
 Detect base branch:
 ```bash
@@ -711,40 +713,9 @@ fi
 
 </step>
 
-<step name="git_tag">
-
-<config-check>
-Read `git.create_tag` via `gsd-tools.cjs query config-get git.create_tag 2>/dev/null || echo "true"`.
-If the result is `false` → skip this step entirely and proceed to `git_commit_milestone`.
-</config-check>
-
-Create git tag:
-
-```bash
-# Pre-check: skip if tag already exists (prevents silent failure on retry)
-if git rev-parse "v[X.Y]" >/dev/null 2>&1; then echo "Tag v[X.Y] already exists, skipping"; exit 0; fi
-git tag -a v[X.Y] -m "v[X.Y] [Name]
-
-Delivered: [One sentence]
-
-Key accomplishments:
-- [Item 1]
-- [Item 2]
-- [Item 3]
-
-See .planning/MILESTONES.md for full details."
-```
-
-Confirm: "Tagged: v[X.Y]"
-
-Ask: "Push tag to remote? (y/n)"
-
-If yes:
-```bash
-git push origin v[X.Y]
-```
-
-</step>
+<!-- gsd:section id="git-tag" when="state:git-create-tag" -->
+If `section_manifest` is `null` or `"git-tag"` is in its `included` list: read and execute `gsd-core/workflows/complete-milestone/steps/git-tag.md`. Otherwise skip — do not read the file; proceed to `git_commit_milestone`.
+<!-- /gsd:section -->
 
 <step name="git_commit_milestone">
 

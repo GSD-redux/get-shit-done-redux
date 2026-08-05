@@ -16,6 +16,27 @@ const { runGsdTools, createTempProject, cleanup, absPlanningPath } = require('./
 
 const COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 const WORKFLOWS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows');
+const REPO_ROOT_FOR_SECTIONS = path.join(__dirname, '..');
+
+/**
+ * #2994 fragmentization moved Steps 4.5/4.75/5.5/5.6/6.5 out of quick.md into
+ * gsd-core/workflows/quick/steps/*.md behind section markers. Position-based
+ * slicing here (`indexOf('Step 4.75')` .. `indexOf('Step 5:')`, etc.) needs
+ * those step headings back at their original logical position, not appended
+ * at the end — so expand each `<!-- gsd:section id="X" ... -->...
+ * <!-- /gsd:section -->` marker IN PLACE with its step file's content.
+ */
+function expandWorkflowSections(workflowPath) {
+  const raw = fs.readFileSync(workflowPath, 'utf8');
+  const markerRe = /<!-- gsd:section id="[\w-]+" when="[^"]*" -->[\s\S]*?<!-- \/gsd:section -->/g;
+  return raw.replace(markerRe, (block) => {
+    const pathMatch = block.match(/`([^`]+\.md)`/);
+    if (!pathMatch) return block;
+    const stepPath = path.join(REPO_ROOT_FOR_SECTIONS, pathMatch[1]);
+    if (!fs.existsSync(stepPath)) return block;
+    return fs.readFileSync(stepPath, 'utf8');
+  });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Command frontmatter: --research flag advertised
@@ -67,11 +88,11 @@ describe('quick workflow: research step', () => {
 
   test('workflow file exists', () => {
     assert.ok(fs.existsSync(workflowPath), 'workflows/quick.md should exist');
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
   });
 
   test('purpose mentions --research flag', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     const purposeMatch = content.match(/<purpose>([\s\S]*?)<\/purpose>/);
     assert.ok(purposeMatch, 'should have <purpose> section');
     assert.ok(
@@ -81,7 +102,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('step 1 parses --research flag', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     assert.ok(
       content.includes('$RESEARCH_MODE'),
       'workflow should reference $RESEARCH_MODE variable'
@@ -89,7 +110,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('step 4.75 research phase exists', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     assert.ok(
       content.includes('Step 4.75'),
       'workflow should contain Step 4.75 (research phase)'
@@ -97,7 +118,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('research step spawns gsd-phase-researcher', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     const researchSection = content.substring(
       content.indexOf('Step 4.75'),
       content.indexOf('Step 5:')
@@ -109,7 +130,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('research step writes RESEARCH.md', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     const researchSection = content.substring(
       content.indexOf('Step 4.75'),
       content.indexOf('Step 5:')
@@ -121,7 +142,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('planner context includes RESEARCH.md when research mode', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     const plannerSection = content.substring(
       content.indexOf('Step 5: Spawn planner'),
       content.indexOf('Step 5.5')
@@ -133,7 +154,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('file commit list includes RESEARCH.md', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     const commitSection = content.substring(
       content.indexOf('Step 8:'),
       content.indexOf('</process>')
@@ -145,7 +166,7 @@ describe('quick workflow: research step', () => {
   });
 
   test('success criteria includes research items', () => {
-    content = fs.readFileSync(workflowPath, 'utf-8');
+    content = expandWorkflowSections(workflowPath);
     const criteriaMatch = content.match(/<success_criteria>([\s\S]*?)<\/success_criteria>/);
     assert.ok(criteriaMatch, 'should have <success_criteria> section');
     assert.ok(

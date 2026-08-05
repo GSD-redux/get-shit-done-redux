@@ -27,6 +27,7 @@ const VALID_CHOICES: ReadonlyArray<string> = ['keep', 'remove'];
 // on-disk `hooks/` directory in both directions: whitelist-but-missing
 // AND shipped-but-not-whitelisted both fail CI.
 export const BUNDLED_GSD_HOOK_FILES: ReadonlySet<string> = Object.freeze(new Set([
+  'hooks/gsd-agent-isolation-guard.js',
   'hooks/gsd-check-update-worker.js',
   'hooks/gsd-check-update.js',
   'hooks/gsd-config-reload.js',

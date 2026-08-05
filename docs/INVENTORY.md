@@ -124,7 +124,7 @@ These six routers are descriptor-only entries that the model picks first; the bo
 
 | Command | Role | Source |
 |---------|------|--------|
-| `/gsd:next` | State-aware smart-entry launcher — reads project state, shows a contextual menu, and dispatches one existing GSD command. | [commands/gsd/next.md](../commands/gsd/next.md) |
+| `/gsd-next` | State-aware smart-entry launcher — reads project state, shows a contextual menu, and dispatches one existing GSD command. | [commands/gsd/next.md](../commands/gsd/next.md) |
 | `/gsd-progress` | Check project progress, show context, and route to next action; use `--next` to advance automatically or `--do` to run a freeform task. | [commands/gsd/progress.md](../commands/gsd/progress.md) |
 | `/gsd-capture` | Capture ideas, tasks, notes, and seeds — todo (default), `--note`, `--backlog`, `--seed`, or `--list` pending todos. | [commands/gsd/capture.md](../commands/gsd/capture.md) |
 | `/gsd-stats` | Display project statistics — phases, plans, requirements, git metrics, timeline. | [commands/gsd/stats.md](../commands/gsd/stats.md) |
@@ -269,6 +269,26 @@ Full roster at `gsd-core/workflows/*.md`. Workflows are thin orchestrators that 
 
 > **Note:** Some workflows have no direct user-facing command (e.g. `execute-plan.md`, `verify-phase.md`, `transition.md`, `node-repair.md`, `diagnose-issues.md`) — they are invoked internally by orchestrator workflows. `discovery-phase.md` is an alternate entry for `/gsd-new-project`.
 
+### Workflow Sub-Files
+
+A workflow may own two kinds of sub-file. Both live under `gsd-core/workflows/<workflow>/` and
+neither is separately invocable — the parent workflow reaches them.
+
+| Subdirectory | What it holds | Manifest family | Roster |
+|---|---|---|---|
+| `<workflow>/steps/*.md` | Gated section bodies extracted by the fragment model (ADR-1671, epic #1671 Phases 6.1–6.3). The parent carries a `section_manifest`-gated stub; `gsd-core/workflows/section-manifest.json` names which step a given invocation reads. | `workflow_steps` | See `docs/INVENTORY-MANIFEST.json` for the authoritative per-file list |
+| `<workflow>/modes/*.md` | Progressive-disclosure mode files (#717). The parent dispatches to exactly one; `discuss-phase/modes/` is the canonical example. | `workflow_modes` | `discuss-phase`, `help` |
+
+Both families are keyed by `<workflow>/<subdir>/<file>.md` rather than a bare filename, because two
+workflows may each own a step of the same name — `families.workflows` uses bare basenames and
+cannot represent these without collision.
+
+**Adding a step or mode file requires no hand-written row here.** Run
+`node scripts/gen-inventory-manifest.cjs --write` (after `build:lib`) and the manifest picks it up;
+`tests/inventory-manifest-sync.test.cjs` fails if you forget. The per-file roster deliberately lives
+in `docs/INVENTORY-MANIFEST.json` rather than being duplicated in this table — 60 rows that must be
+hand-maintained in lockstep with a generated artifact is the drift this file exists to catch.
+
 ---
 
 ## References
@@ -301,6 +321,8 @@ Full roster at `gsd-core/references/*.md`. References are shared knowledge docum
 | `debugger-repro-hardening.md` | Regression-test hardening (PBT shrinking + oracle classification + boundary neighbors) loaded by `gsd-debugger`. |
 | `debugger-prevention.md` | Prevention / blameless-postmortem output (5-Whys + why-not-caught + recurrence guard) loaded by `gsd-debugger`. |
 | `debugger-semantic-recall.md` | Semantic knowledge-base recall via MemPalace (keyword-fallback) loaded by `gsd-debugger`. |
+| `debugger-techniques.md` | Full step-by-step bodies for the 10 debugging techniques (binary search, delta debugging, git bisect, …) routed by `gsd-debugger`'s technique-selection table. |
+| `verifier-wiring-patterns.md` | Data-flow trace procedure and the four wiring patterns (Component→API, API→Database, Form→Handler, State→Render) loaded by `gsd-verifier`. |
 | `mandatory-initial-read.md` | Shared required-reading boilerplate injected into agent prompts. |
 | `agent-skills-bootstrap.md` | Shared agent_skills self-load contract (query + Read + dedup guard) injected into all 22 consumer agents. |
 | `project-skills-discovery.md` | Shared project-skills-discovery boilerplate injected into agent prompts. |
@@ -435,7 +457,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `cjs-command-router-adapter.cjs` | Shared compatibility adapter for manifest-backed CJS command-family routers |
 | `clock.cjs` | Injectable clock seam (now/sleep) for deterministic lock testing |
 | `clusters.cjs` | Skill cluster definitions for the runtime surface module (ADR-0011 Phase 2) |
-| `code-review-flags.cjs` | Typed flag parser for `/gsd:code-review`; exports `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) and `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); canonical dispatch seam for `--fix`/`--all`/`--auto` routing |
+| `code-review-flags.cjs` | Typed flag parser for `/gsd-code-review`; exports `parseCodeReviewFlags(argv)` (→ `{ fix, all, auto, depth, files }`) and `resolveCodeReviewWorkflow(flags)` (→ `'code-review.md' \| 'code-review-fix.md'`); canonical dispatch seam for `--fix`/`--all`/`--auto` routing |
 | `command-aliases.cjs` | Alias/subcommand metadata for manifest-backed family routers |
 | `commonjs-marker.cjs` | Ownership-guarded `{"type":"commonjs"}` marker used to pin GSD's staged `.js` scripts to CommonJS; exports `classifyMarker` (absent/gsd-owned/foreign, fail-closed), `ensureCommonJsMarker`, and `removeCommonJsMarker` so install and uninstall share one predicate and never touch a user-authored `package.json` (#2544) |
 | `command-arg-projection.cjs` | Typed flag and positional argument projection helpers shared across command-family routers |
@@ -499,6 +521,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `phase-locator.cjs` | Phase-directory search/location — active + archived phase-dir discovery, phase-id matching against the filesystem (extracted from `core.cjs`, ADR-857) |
 | `phase.cjs` | Phase directory operations, decimal numbering, plan indexing |
 | `phases-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools phases` |
+| `plan-dependency-graph.cjs` | Shared halt-propagation over a plan's `depends_on` DAG — the single topological-order + halt-propagation engine used by both `phase.cjs`'s wave-grouping and `phase-locator.cjs`'s phase-location primitive, so the two can never diverge on which plans a halted plan blocks (#2830) |
 | `plan-scan.cjs` | Canonical phase-plan scanner for detecting plan and summary files in flat and nested layouts (k014) |
 | `planning-workspace.cjs` | Planning path/workstream seam (`planningDir`, `planningPaths`, active-workstream routing, `.planning/.lock` orchestration) |
 | `project-root.cjs` | Resolves a project root from a starting directory using four heuristics (own `.planning/` guard, `sub_repos` config, `multiRepo` flag, `.git` heuristic) |
@@ -545,7 +568,7 @@ Full listing: `gsd-core/bin/lib/*.cjs`.
 | `uat-predicate.cjs` | UAT-passed predicate — markdown-aware evaluation of HUMAN-UAT results; returns pass only when all required checks pass; ignores false-positive contexts (frontmatter, fenced code, blockquotes, HTML comments) |
 | `ui-consideration-probe.cjs` | Spec-completeness UI-consideration probe (compiled from `src/ui-consideration-probe.cts`, gitignored) — the third adapter of the `probe-core` resolution model (ADR-550 Decision 7): element-kind classification, applicable-category relevance filter, consideration proposal, `proposeElements`/`autoResolve` (propose-then-confirm + the `--auto` never-dismiss floor), and the `{explicit, backstop}` validators; delegates merge/rollup/CLI to `probe-core`; exports `classifyElement`, `applicableCategories`, `proposeConsiderations`, `proposeElements`, `autoResolve`, `analyzeCoverage`, `UI_TAXONOMY` (#1867) |
 | `ui-safety-gate.cjs` | Shell-free word-boundary UI token detector (#3706, #3718); reads phase-section text from stdin, exits 0 (UI found) or 1 (no UI); also deployed to `gsd-core/bin/lib/` so the GSD installer ships it to `$RUNTIME_DIR` (#448) |
-| `update-context.cjs` | Pure install-context resolver for `/gsd:update` — runtime/scope/config-dir/version detection (LOCAL/GLOBAL/UNKNOWN) ported from update.md bash; backs `gsd-tools update-context` (#498) |
+| `update-context.cjs` | Pure install-context resolver for `/gsd-update` — runtime/scope/config-dir/version detection (LOCAL/GLOBAL/UNKNOWN) ported from update.md bash; backs `gsd-tools update-context` (#498) |
 | `validate-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools validate` |
 | `validate.cjs` | Pure phase variant normalization helpers (`phaseVariants`, `buildRoadmapPhaseVariants`, `buildNotStartedPhaseVariants`) used by `verify.cjs` for W006/W007 checks; no I/O, no async |
 | `verification-command-router.cjs` | Thin CJS subcommand router adapter for `gsd-tools verification` |
@@ -580,7 +603,7 @@ Full listing: `hooks/`.
 | `gsd-cursor-post-tool.js` | Cursor `postToolUse` | Cursor-native STATE.md update monitor after tool calls (issue #777) |
 | `gsd-cursor-pre-tool.js` | Cursor `preToolUse` | Cursor-native write-path guard for `.planning/` (ADR-1239 / #2089) |
 | `gsd-cursor-stop.js` | Cursor `stop` | Cursor-native verify-work reminder on agent stop (ADR-1239 / #2089) |
-| `gsd-cursor-subagent-start.js` | Cursor `subagentStart` | Cursor-native subagent context injection (ADR-1239 / #2089) |
+| `gsd-cursor-subagent-start.js` | Cursor `subagentStart` | Cursor-native subagent context injection (ADR-1239 / #2089); hard-blocks an executor subagent whose session is not actually isolated when the project resolves to `harness-worktree` (#3045) |
 | `gsd-cursor-subagent-stop.js` | Cursor `subagentStop` | Cursor-native subagent completion reminder (ADR-1239 / #2089) |
 | `gsd-windsurf-pre-write.js` | Windsurf/Cascade `pre_write_code` | Blocking (exit-code-2) write-path guard — blocks a write resolving to a different git root than cwd, or inside `.git/` internals (ADR-1239 / #2100) |
 | `gsd-windsurf-pre-command.js` | Windsurf/Cascade `pre_run_command` | Blocking (exit-code-2) destructive-command guard — conservative deny-list (`rm -rf` root/home wipes, force-push to a protected branch) (ADR-1239 / #2100) |
@@ -589,6 +612,7 @@ Full listing: `hooks/`.
 | `gsd-read-guard.js` | `PreToolUse` | Advisory guard preventing Edit/Write on unread files |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Scans tool Read results for prompt-injection patterns (v1.36+, PR #2201) |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Hard-blocks Edit/Write/MultiEdit with absolute paths outside the worktree root (PR #579, #260) |
+| `gsd-agent-isolation-guard.js` | `PreToolUse` | Hard-blocks an executor `Agent()` dispatch missing its harness isolation parameter when the project's resolved dispatch isolation is `harness-worktree` (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | Hard-blocks a whole-file `Write` that catastrophically shrinks a curated `.planning/` artifact (ROADMAP.md, milestone roadmaps, STATE.md); override via the single-use sentinel `.planning/.gsd-allow-shrink` (workflow steps) or `GSD_ALLOW_PLANNING_SHRINK=1` (interactive) (#2255, fix 3 of #973) |
 | `gsd-config-reload.js` | `FileChanged` | Hot-reloads GSD config context when `.planning/config.json` changes mid-session (#770) |
 | `gsd-ensure-canonical-path.js` | `SessionStart` | Symlinks `~/.claude/gsd-core/{bin,contexts,references,templates,workflows}` to the plugin's bundled tree so `@~/.claude/gsd-core/...` includes resolve in marketplace plugin installs; no-op in classic installs, self-heals after `claude plugin update` (#997) |

@@ -295,4 +295,8 @@ function cmdDocsInit(cwd: string, raw: boolean): void {
   output(result, raw, undefined);
 }
 
-export = { cmdDocsInit };
+// #2994: `detectMonorepoWorkspaces` is additionally exported so
+// `cmdInitDocsUpdate` (src/init.cts) can reuse the SAME detector that backs
+// this command's own `monorepo_workspaces` field, rather than a second,
+// divergence-prone monorepo-glob scan (DEFECT.GENERATIVE-FIX dual surface).
+export = { cmdDocsInit, detectMonorepoWorkspaces };

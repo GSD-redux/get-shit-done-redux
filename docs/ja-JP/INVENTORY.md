@@ -382,7 +382,7 @@
 | `cjs-command-router-adapter.cjs` | マニフェストバックの CJS コマンドファミリールーター向けの共有互換アダプター |
 | `clock.cjs` | 決定論的なロックテスト向けの注入可能なクロックシーム（now/sleep） |
 | `clusters.cjs` | ランタイムサーフェスモジュール向けのスキルクラスター定義（ADR-0011 フェーズ 2） |
-| `code-review-flags.cjs` | `/gsd:code-review` 向けの型付きフラグパーサー。`parseCodeReviewFlags(argv)`（→ `{ fix, all, auto, depth, files }`）と `resolveCodeReviewWorkflow(flags)`（→ `'code-review.md' \| 'code-review-fix.md'`）をエクスポート。`--fix`/`--all`/`--auto` ルーティングの標準ディスパッチシーム |
+| `code-review-flags.cjs` | `/gsd-code-review` 向けの型付きフラグパーサー。`parseCodeReviewFlags(argv)`（→ `{ fix, all, auto, depth, files }`）と `resolveCodeReviewWorkflow(flags)`（→ `'code-review.md' \| 'code-review-fix.md'`）をエクスポート。`--fix`/`--all`/`--auto` ルーティングの標準ディスパッチシーム |
 | `command-aliases.cjs` | マニフェストバックのファミリールーター向けのエイリアス/サブコマンドメタデータ |
 | `command-arg-projection.cjs` | コマンドファミリールーター間で共有される型付きフラグと位置引数のプロジェクションヘルパー |
 | `command-routing-hub.cjs` | すべてのコマンドファミリールーターのモード決定（SDK vs CJS）、エラー分類、ノースロー契約を一元化する純粋結果ディスパッチハブ（#3788） |
@@ -444,7 +444,7 @@
 | `template.cjs` | 変数置換によるテンプレート選択と穴埋め |
 | `uat.cjs` | UAT ファイル解析、検証負債追跡、audit-uat サポート |
 | `ui-safety-gate.cjs` | シェルフリーのワード境界 UI トークン検出器（#3706、#3718）。フェーズセクションテキストを標準入力から読み込み、0（UI 発見）または 1（UI なし）で終了。GSD インストーラーが `$RUNTIME_DIR` に配布するために `gsd-core/bin/lib/` にもデプロイ（#448） |
-| `update-context.cjs` | `/gsd:update` 向けの純粋なインストールコンテキストリゾルバー — ランタイム/スコープ/設定ディレクトリ/バージョン検出（LOCAL/GLOBAL/UNKNOWN）。update.md bash からポート。`gsd-tools update-context` を支える（#498） |
+| `update-context.cjs` | `/gsd-update` 向けの純粋なインストールコンテキストリゾルバー — ランタイム/スコープ/設定ディレクトリ/バージョン検出（LOCAL/GLOBAL/UNKNOWN）。update.md bash からポート。`gsd-tools update-context` を支える（#498） |
 | `validate-command-router.cjs` | `gsd-tools validate` 向けの薄い CJS サブコマンドルーターアダプター |
 | `validate.cjs` | 純粋なフェーズバリアント正規化ヘルパー（`phaseVariants`、`buildRoadmapPhaseVariants`、`buildNotStartedPhaseVariants`）。`verify.cjs` の W006/W007 チェックで使用。I/O なし、非同期なし |
 | `verify-command-router.cjs` | `gsd-tools verify` 向けの薄い CJS サブコマンドルーターアダプター |
@@ -475,6 +475,7 @@
 | `gsd-read-guard.js` | `PreToolUse` | 未読ファイルへの Edit/Write を防ぐアドバイザリーガード |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | ツール Read 結果のプロンプトインジェクションパターンをスキャン（v1.36+、PR #2201） |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | ワークツリールート外の絶対パスを持つ Edit/Write/MultiEdit をハードブロック（PR #579、#260） |
+| `gsd-agent-isolation-guard.js` | `PreToolUse` | プロジェクトの解決済みディスパッチ分離が `harness-worktree` の場合、ハーネス分離パラメータを欠く executor の `Agent()` ディスパッチをハードブロック（#3045） |
 | `gsd-write-guard.js` | `PreToolUse` | キュレーションされた `.planning/` アーティファクト（ROADMAP.md、マイルストーンロードマップ、STATE.md）を大幅に縮小するファイル全体の `Write` をハードブロック。使い捨てセンチネル `.planning/.gsd-allow-shrink`（ワークフローステップ）または `GSD_ALLOW_PLANNING_SHRINK=1`（対話時）でオーバーライド（#2255、#973 の修正 3） |
 | `gsd-session-state.sh` | `PostToolUse` | シェルベースランタイム向けのセッション状態追跡 |
 | `gsd-validate-commit.sh` | `PostToolUse` | Conventional Commit 適用のためのコミットバリデーション |

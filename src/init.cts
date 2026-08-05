@@ -49,6 +49,18 @@ import uatPredicateMod = require('./uat-predicate.cjs');
 import agentInstallCheck = require('./agent-install-check.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- section-manifest.cjs is compiled from section-manifest.cts's named exports; imported as a namespace to read selectSections/SelectableSection/InvocationFacts off module.exports directly (#2932).
 import sectionManifest = require('./section-manifest.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- loop-resolver.cjs is an export= CommonJS module
+import loopResolverMod = require('./loop-resolver.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-loader.cjs is compiled from capability-loader.cts's named exports; imported as a namespace to read loadRegistry off module.exports directly.
+import capabilityLoaderMod = require('./capability-loader.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- capability-state.cjs is an export= CommonJS module
+import capabilityStateMod = require('./capability-state.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- docs.cjs is an export= CommonJS module
+import docsMod = require('./docs.cjs');
+const { detectMonorepoWorkspaces } = docsMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- workstream-inventory.cjs is an export= CommonJS module
+import workstreamInventoryMod = require('./workstream-inventory.cjs');
+const { getOtherActiveWorkstreamInventories } = workstreamInventoryMod;
 const { checkAgentsInstalled } = agentInstallCheck;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- git-base-branch.cjs is an export= CommonJS module
 import gitBaseBranch = require('./git-base-branch.cjs');
@@ -92,6 +104,9 @@ const { determinePhaseStatus } = commandsMod;
 const { extractFrontmatter } = frontmatterMod;
 const { readVerificationStatus } = verificationMod;
 const { evaluateUatPassed } = uatPredicateMod;
+const { resolveLoopHooks } = loopResolverMod;
+const { loadRegistry } = capabilityLoaderMod;
+const { resolveCapabilityRuntimeState } = capabilityStateMod;
 
 // Unused but imported for structural parity
 void stripShippedMilestones;
@@ -147,6 +162,53 @@ function guardedGetRoadmapPhase(
     roadmapPhase = null;
   }
   return roadmapPhase;
+}
+
+// #2994: `phase_slug` is re-derived from a roadmap-only `phase_name` (no disk
+// directory exists yet) identically at every synthetic-fallback call site
+// below — factored out once so the slugification formula itself cannot drift.
+function slugifyPhaseName(phaseName: string | null): string | null {
+  return phaseName
+    ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    : null;
+}
+
+/**
+ * #2994 (review finding, DEFECT.GENERATIVE-FIX): shared archived/not-found
+ * fallback applied identically by `cmdInitExecutePhase`, `cmdInitPlanPhase`,
+ * `cmdInitVerifyWork`, `cmdInitCodeReview`, `cmdInitReview`, and
+ * `cmdInitDiscussPhaseAssumptions` — 6 call sites previously reproducing the
+ * exact same two-branch control flow verbatim (only the synthetic
+ * replacement object's field set differs per caller, supplied here via
+ * `buildFallback`). `cmdInitPhaseOp` is deliberately left untouched (CRITICAL
+ * blast radius, 179 dependents) even though it follows the same shape, since
+ * its own fallback object differs by one field (`has_reviews` absent) and is
+ * not a byte-identical copy.
+ *
+ * Behavior-preserving by construction: every original call site either (a)
+ * unconditionally computed `roadmapPhase` once up front and then applied
+ * `phaseInfo?.archived && roadmapPhase?.found -> null` followed by
+ * `!phaseInfo && roadmapPhase?.found -> fallback`, or (b) computed
+ * `roadmapPhase` lazily inside each of those same two conditions. Because
+ * `guardedGetRoadmapPhase` is a pure, side-effect-free read for a given
+ * `(cwd, phase, projectCode)` within one command invocation, both shapes
+ * return identical results for identical inputs — so passing one
+ * unconditionally-resolved `roadmapPhase` in here (mirroring shape (a))
+ * reproduces shape (b)'s output exactly, just without the redundant second
+ * disk read shape (b) performed when the first branch already resolved it.
+ */
+function applyRoadmapFallback(
+  phaseInfo: Record<string, unknown> | null,
+  roadmapPhase: Record<string, unknown> | null,
+  buildFallback: (roadmapPhase: Record<string, unknown>) => Record<string, unknown>,
+): Record<string, unknown> | null {
+  if (phaseInfo?.['archived'] && roadmapPhase?.['found']) {
+    phaseInfo = null;
+  }
+  if (!phaseInfo && roadmapPhase?.['found']) {
+    phaseInfo = buildFallback(roadmapPhase);
+  }
+  return phaseInfo;
 }
 
 function listPhaseSummaryFiles(phaseDir: string): string[] {
@@ -463,6 +525,76 @@ function readConfigJsonBoolean(cwd: string, keyPath: readonly string[]): boolean
 }
 
 /**
+ * Bounded, non-throwing read of a dotted key path from `.planning/config.json`,
+ * returning the raw resolved value (any JSON type) or `undefined` on any
+ * degraded condition (absent file, unreadable file, malformed JSON, or a
+ * non-object intermediate segment) — the generic sibling of
+ * {@link readConfigJsonBoolean} for callers that need the actual value
+ * (a string like `code_quality.fallow.profile`) rather than a strict
+ * boolean coercion. `keyPath` is always a fixed literal supplied by this
+ * module, never attacker/user input, so a plain bracket traversal carries
+ * no prototype hazard here (same discipline as `readConfigJsonBoolean`).
+ */
+function readConfigJsonValue(cwd: string, keyPath: readonly string[]): unknown {
+  try {
+    const raw = fs.readFileSync(path.join(planningDir(cwd), 'config.json'), 'utf8');
+    let cursor: unknown = JSON.parse(raw);
+    for (const segment of keyPath) {
+      if (cursor === null || typeof cursor !== 'object' || Array.isArray(cursor)) return undefined;
+      cursor = (cursor as Record<string, unknown>)[segment];
+    }
+    return cursor;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `state:fallow-enabled` ground truth (#2994): resolves `code-review.md`'s
+ * `structural_pre_pass` fallow config gate — previously re-derived INSIDE the
+ * gated section body itself (`gsd_run query config-get code_quality.fallow.*`),
+ * which is circular/self-disabling the moment a section is gated on a fact
+ * its own body computes (the same hazard `state:chunked-mode` /
+ * `state:ui-phase-active` document for a compound condition). Fail-closed
+ * default `false` for `enabled`/`mcp`, matching the pre-hoist bash resolver's
+ * `2>/dev/null || echo "false"` fallback; `scope`/`profile` default to
+ * `"phase"`/`"standard"` matching that same resolver's `|| echo` fallbacks.
+ * `maxCrap` mirrors the step body's profile->threshold mapping (minimal=50,
+ * strict=15, else standard=30) so the step file never has to re-derive it.
+ */
+function detectFallowConfig(cwd: string): {
+  enabled: boolean;
+  scope: string;
+  profile: string;
+  mcp: boolean;
+  maxCrap: number;
+} {
+  const enabled = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'enabled']) === true;
+  const rawScope = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'scope']);
+  const scope = typeof rawScope === 'string' && rawScope ? rawScope : 'phase';
+  const rawProfile = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'profile']);
+  const profile = typeof rawProfile === 'string' && rawProfile ? rawProfile : 'standard';
+  const mcp = readConfigJsonValue(cwd, ['code_quality', 'fallow', 'mcp']) === true;
+  const maxCrap = profile === 'minimal' ? 50 : profile === 'strict' ? 15 : 30;
+  return { enabled, scope, profile, mcp, maxCrap };
+}
+
+/**
+ * `state:git-create-tag` ground truth (#2994): resolves `complete-milestone.md`'s
+ * `git_tag` step config gate — previously re-derived INSIDE a `<config-check>`
+ * sub-tag at the top of the step itself (`gsd-tools.cjs query config-get
+ * git.create_tag 2>/dev/null || echo "true"`), gating the step's OWN inclusion
+ * on a fact only that same step computed. Fail-OPEN default `true` (an unset
+ * or missing `git.create_tag` key means "create the tag"), matching the
+ * pre-hoist resolver's `|| echo "true"` fallback exactly — this is
+ * deliberately the inverse polarity of `detectFallowConfig`'s fail-closed
+ * default, mirroring the two source resolvers' own opposite defaults.
+ */
+function detectGitCreateTag(cwd: string): boolean {
+  return readConfigJsonValue(cwd, ['git', 'create_tag']) !== false;
+}
+
+/**
  * `state:phase-mvp-mode` ground truth (design doc §Behavior table: ROADMAP.md
  * `**Mode:** mvp` for the CURRENT phase). Bounded, non-throwing — an absent
  * `phaseNumber`, an absent ROADMAP.md, an absent phase heading, or a phase
@@ -503,6 +635,59 @@ function detectPhaseMvpMode(cwd: string, phaseNumber: string | null): boolean {
 }
 
 /**
+ * `state:ui-phase-active` ground truth (#2994): whether the phase's active
+ * `plan:pre` loop hooks include the `ui-phase` step (`capabilities/ui/
+ * capability.json`'s `plan:pre` step, `ref.skill: "ui-phase"`, gated on
+ * config `workflow.ui_phase`), OR the phase directory already contains a
+ * `*-UI-SPEC.md` file. The disjunction is resolved to ONE boolean here —
+ * same discipline as `chunkedMode` above — so the `when=` grammar never
+ * sees an OR. Mirrors `cmdLoopRenderHooks`'s own registry/capability-state
+ * setup (`src/loop-resolver.cts`) rather than reinventing a second loop-hook
+ * resolution path. Bounded, non-throwing: any failure in loop-hook /
+ * registry / capability-state resolution degrades that half of the OR to
+ * `false`, never throws; the UI-SPEC file check is independently bounded.
+ */
+function detectUiPhaseActive(cwd: string, phaseInfo: Record<string, unknown> | null): boolean {
+  let hasActiveUiStep = false;
+  try {
+    const config = loadConfig(cwd);
+    const state = resolveCapabilityRuntimeState(cwd, undefined, config) as {
+      capabilities: Array<{ id: string; enabled?: boolean; active: boolean }>;
+    };
+    const registry = loadRegistry({ includeInstalled: true, cwd, gsdHome: process.env['GSD_HOME'] });
+    const capabilityStatesById = new Map<string, { enabled?: boolean; active: boolean }>();
+    for (const cap of state.capabilities || []) {
+      capabilityStatesById.set(cap.id, cap);
+    }
+    const resolved = resolveLoopHooks({ point: 'plan:pre', registry, config, cwd, capabilityStatesById }) as {
+      activeHooks: Array<{ kind?: string; ref?: { skill?: string } }>;
+    };
+    hasActiveUiStep = resolved.activeHooks.some(
+      (h) => h.kind === 'step' && h.ref?.skill === 'ui-phase',
+    );
+  } catch {
+    hasActiveUiStep = false;
+  }
+
+  let hasUiSpecFile = false;
+  const rawDir = phaseInfo?.['directory'];
+  if (typeof rawDir === 'string' && rawDir) {
+    try {
+      // Re-derive under planningDir(cwd)/phases/<basename> rather than trusting
+      // rawDir's own absolute/relative-ness (callers mix both — see the #2376
+      // comments elsewhere in this file), same technique as detectHasPriorPhases above.
+      const dirName = path.basename(rawDir);
+      const files = fs.readdirSync(path.join(planningDir(cwd), 'phases', dirName));
+      hasUiSpecFile = files.some((f) => f.endsWith('-UI-SPEC.md') || f === 'UI-SPEC.md');
+    } catch {
+      hasUiSpecFile = false;
+    }
+  }
+
+  return hasActiveUiStep || hasUiSpecFile;
+}
+
+/**
  * Builds the `section_manifest` init-bundle field (#2932 Deliverable 2): resolves
  * {@link sectionManifest.InvocationFacts} from this invocation, loads the generated
  * manifest, and partitions it via the pure {@link sectionManifest.selectSections}
@@ -538,7 +723,19 @@ function buildSectionManifestField(
   phaseInfo: Record<string, unknown> | null,
   options: Record<string, unknown>,
   workflow: string,
-  overrides: { needsCodebaseMap?: boolean } = {},
+  overrides: {
+    needsCodebaseMap?: boolean;
+    fallowEnabled?: boolean;
+    gitCreateTag?: boolean;
+    planStrategyConverge?: boolean;
+    reviewerInstancesConfigured?: boolean;
+    autoAdvanceActive?: boolean;
+    isMonorepo?: boolean;
+    nextChannel?: boolean;
+    workstreamActive?: boolean;
+    flatMode?: boolean;
+    uiPhaseActive?: boolean;
+  } = {},
 ): Record<string, unknown> | null {
   const sections = loadSectionManifestSections(workflow);
   if (!sections) return null;
@@ -573,6 +770,16 @@ function buildSectionManifestField(
     phaseMvpMode: detectPhaseMvpMode(cwd, phaseNumber),
     needsCodebaseMap: overrides.needsCodebaseMap,
     chunkedMode,
+    uiPhaseActive: overrides.uiPhaseActive,
+    fallowEnabled: overrides.fallowEnabled,
+    gitCreateTag: overrides.gitCreateTag,
+    planStrategyConverge: overrides.planStrategyConverge,
+    reviewerInstancesConfigured: overrides.reviewerInstancesConfigured,
+    autoAdvanceActive: overrides.autoAdvanceActive,
+    isMonorepo: overrides.isMonorepo,
+    nextChannel: overrides.nextChannel,
+    workstreamActive: overrides.workstreamActive,
+    flatMode: overrides.flatMode,
   };
 
   try {
@@ -606,30 +813,26 @@ function cmdInitExecutePhase(
   const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
 
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived'] && roadmapPhase?.['found']) {
-    phaseInfo = null;
-  }
-
-  if (!phaseInfo && roadmapPhase?.['found']) {
-    const phaseName = roadmapPhase['phase_name'] as string | null;
-    phaseInfo = {
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const phaseName = rp['phase_name'] as string | null;
+    return {
       found: true,
       directory: null,
-      phase_number: roadmapPhase['phase_number'],
+      phase_number: rp['phase_number'],
       phase_name: phaseName,
-      phase_slug: phaseName
-        ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-        : null,
+      phase_slug: slugifyPhaseName(phaseName),
       plans: [],
       summaries: [],
       incomplete_plans: [],
+      halted_plans: [],
+      blocked_by: {},
+      runnable_plans: [],
       has_research: false,
       has_context: false,
       has_verification: false,
       has_reviews: false,
     };
-  }
+  });
   const reqMatch = (roadmapPhase?.['section'] as string | undefined)?.match(REQUIREMENTS_HEADER_RE);
   const reqExtracted = reqMatch
     ? reqMatch[1].replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
@@ -668,6 +871,16 @@ function cmdInitExecutePhase(
     incomplete_plans: phaseInfo?.['incomplete_plans'] || [],
     plan_count: (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0,
     incomplete_count: (phaseInfo?.['incomplete_plans'] as unknown[] | undefined)?.length || 0,
+
+    // #2830: the halt-aware view, forwarded from the shared computation in
+    // phase-locator. Additive — `incomplete_plans`/`incomplete_count` above keep
+    // their exact name, type and semantics. Without this passthrough the shared
+    // truth is computed and then dropped at this consumer, which is the path the
+    // issue reports as regressed.
+    halted_plans: phaseInfo?.['halted_plans'] || [],
+    blocked_by: phaseInfo?.['blocked_by'] || {},
+    runnable_plans: phaseInfo?.['runnable_plans'] || [],
+    runnable_count: (phaseInfo?.['runnable_plans'] as unknown[] | undefined)?.length || 0,
 
     branch_name:
       config.branching_strategy === 'phase' && phaseInfo
@@ -744,21 +957,14 @@ function cmdInitPlanPhase(
   // #2056/#2104: foreign-prefixed queries must not collapse to numeric phases.
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived'] && roadmapPhase?.['found']) {
-    phaseInfo = null;
-  }
-
-  if (!phaseInfo && roadmapPhase?.['found']) {
-    const phaseName = roadmapPhase['phase_name'] as string | null;
-    phaseInfo = {
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const phaseName = rp['phase_name'] as string | null;
+    return {
       found: true,
       directory: null,
-      phase_number: roadmapPhase['phase_number'],
+      phase_number: rp['phase_number'],
       phase_name: phaseName,
-      phase_slug: phaseName
-        ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-        : null,
+      phase_slug: slugifyPhaseName(phaseName),
       plans: [],
       summaries: [],
       incomplete_plans: [],
@@ -767,7 +973,7 @@ function cmdInitPlanPhase(
       has_verification: false,
       has_reviews: false,
     };
-  }
+  });
   const reqMatch = (roadmapPhase?.['section'] as string | undefined)?.match(REQUIREMENTS_HEADER_RE);
   const reqExtracted = reqMatch
     ? reqMatch[1].replace(/[\[\]]/g, '').split(',').map((s) => s.trim()).filter(Boolean).join(', ')
@@ -1041,8 +1247,30 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
     milestones_path: toPosixPath(path.join(planningDir(cwd), 'MILESTONES.md')),
   };
 
+  // `state:flat-mode` (#2994): whether NO workstream is active — the inverse
+  // of `state:workstream-active` (introduced for `cmdInitTransition` below).
+  // `new-milestone.md`'s Step 4 Part A (milestone-state write) runs ONLY in
+  // flat mode; a workstream's own `.planning/workstreams/<name>/STATE.md`/
+  // `ROADMAP.md`/`REQUIREMENTS.md` already carry the milestone state, so
+  // writing the shared `## Current Milestone` heading here would clobber it
+  // (#2308). The `when=` grammar has no negation operator (ADR-1671:69), so
+  // Part A's condition — "skip when a workstream IS active" — cannot be
+  // expressed by negating `state:workstream-active` in the marker; a
+  // SEPARATE, positively-phrased atom whose fact is the inverse is the
+  // sanctioned resolution (same discipline as `state:chunked-mode` folding
+  // an OR — never an operator in the grammar itself). Same authoritative
+  // source as `cmdInitTransition`: `GSD_WORKSTREAM` env, falling back to the
+  // stored active-workstream pointer (mirrors `cmdInitProgress`'s own
+  // resolution above).
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  const workstreamActive = !!resolvedWorkstream;
+  const flatMode = !workstreamActive;
+
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'new-milestone');
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'new-milestone', {
+    workstreamActive,
+    flatMode,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -1103,8 +1331,22 @@ function cmdInitQuick(
     planning_exists: fs.existsSync(planningRoot(cwd)),
   };
 
+  // #2994: `--full` IMPLIES `--discuss`/`--research`/`--validate` — resolved to
+  // ONE set of facts HERE, in fact computation, never in the `when=` grammar
+  // itself (mirrors `state:chunked-mode`'s disjunction fold at
+  // `buildSectionManifestField`'s `chunkedMode` computation above). The three
+  // implied tokens are folded into the flags BEFORE `buildSectionManifestField`
+  // builds its `InvocationFacts.flags` Set, so `discussion-phase`/`research-phase`/
+  // `plan-checker-loop`/`quick-verification` (all gated on their own single
+  // `flag:--discuss`/`flag:--research`/`flag:--validate` atom) include correctly
+  // for a bare `/gsd:quick --full` invocation that never passed the individual
+  // tokens — the grammar still sees exactly one atom per marker, no OR.
+  const sectionManifestOptions: Record<string, unknown> = options['full']
+    ? { ...options, discuss: true, research: true, validate: true }
+    : options;
+
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'quick');
+  result['section_manifest'] = buildSectionManifestField(cwd, null, sectionManifestOptions, 'quick');
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -1188,35 +1430,23 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
   const config = loadConfig(cwd);
   const _slashRuntime = resolveRuntime(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-
-  if (phaseInfo?.['archived']) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      phaseInfo = null;
-    }
-  }
-
-  if (!phaseInfo) {
-    const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
-    if (roadmapPhase?.['found']) {
-      const phaseName = roadmapPhase['phase_name'] as string | null;
-      phaseInfo = {
-        found: true,
-        directory: null,
-        phase_number: roadmapPhase['phase_number'],
-        phase_name: phaseName,
-        phase_slug: phaseName
-          ? phaseName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
-          : null,
-        plans: [],
-        summaries: [],
-        incomplete_plans: [],
-        has_research: false,
-        has_context: false,
-        has_verification: false,
-      };
-    }
-  }
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const phaseName = rp['phase_name'] as string | null;
+    return {
+      found: true,
+      directory: null,
+      phase_number: rp['phase_number'],
+      phase_name: phaseName,
+      phase_slug: slugifyPhaseName(phaseName),
+      plans: [],
+      summaries: [],
+      incomplete_plans: [],
+      has_research: false,
+      has_context: false,
+      has_verification: false,
+    };
+  });
 
   const phaseDir = (phaseInfo?.['directory'] as string | null | undefined) || null;
   const planCount = (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0;
@@ -1234,6 +1464,7 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
         policy: { requireVerification: true },
       })
     : null;
+  const uiPhaseActive = detectUiPhaseActive(cwd, phaseInfo);
 
   const result: Record<string, unknown> = {
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
@@ -1260,7 +1491,269 @@ function cmdInitVerifyWork(cwd: string, phase: string, raw: boolean): void {
       uat_blockers: uatReport?.blockers ?? [],
       ready_to_transition: completion.phase_complete && (uatReport?.passed ?? false),
     },
+
+    // #2994 (resolver-hoist-guard G5): hoisted `state:ui-phase-active` ground
+    // truth (previously re-derived inline inside the automated_ui_verification
+    // step body via its own `gsd_run loop render-hooks plan:pre --raw` call —
+    // a circular, self-disabling resolver, since the section is only read
+    // when this same fact is already true). Resolved once here, exposed so
+    // the step body can consume it directly instead of recomputing it.
+    ui_phase_active: uiPhaseActive,
   };
+
+  // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
+  // phaseInfo is passed through directly (mirrors cmdInitExecutePhase / cmdInitPlanPhase)
+  // so buildSectionManifestField's internal detectPhaseMvpMode call gets a real
+  // phase_number/directory rather than permanently-false facts. uiPhaseActive is
+  // computed once above (not re-derived here) and threaded through via overrides,
+  // mirroring the fallow/git-create-tag hoist pattern.
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, {}, 'verify-work', {
+    uiPhaseActive,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `code-review.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3). `code-review.md` previously routed through the shared, 20+-caller
+ * `init.phase-op` (`cmdInitPhaseOp` below), reading only 6 of its fields
+ * (`phase_found`, `phase_dir`, `phase_number`, `phase_name`, `padded_phase`,
+ * `commit_docs` — verified against the workflow's own "Parse from init
+ * JSON" line). `cmdInitPhaseOp` is CRITICAL blast radius (179 dependents
+ * across 24 processes per the #2994 dispatch) and is never modified for
+ * this — this function resolves phase info itself via the SAME shared
+ * primitives `cmdInitPhaseOp` calls (`guardedFindPhase`/
+ * `guardedGetRoadmapPhase`, plus the shared `applyRoadmapFallback` archived/
+ * not-found fallback also used by execute-phase, plan-phase, verify-work
+ * and review — see `applyRoadmapFallback`'s own doc comment; `cmdInitPhaseOp`
+ * is deliberately excluded from that shared helper), producing the identical
+ * 6-field shape rather than a second, hand-maintained copy of
+ * `cmdInitPhaseOp`'s full ~60-field bundle. See
+ * `tests/init-code-review-parity.test.cjs` for the DEFECT.GENERATIVE-FIX
+ * parity guard between the two.
+ *
+ * Two further facts are resolved and exposed here that `init.phase-op`
+ * never carried: the fallow structural-pre-pass config gate
+ * (`detectFallowConfig`, `state:fallow-enabled`) and the `--fix` flag
+ * (folded into `options` so `buildSectionManifestField` picks it up as
+ * `flag:--fix`).
+ */
+function cmdInitCodeReview(
+  cwd: string,
+  phase: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+  let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const rpName = rp['phase_name'] as string | null;
+    return {
+      found: true,
+      directory: null,
+      phase_number: rp['phase_number'],
+      phase_name: rpName,
+      phase_slug: slugifyPhaseName(rpName),
+    };
+  });
+
+  const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
+  const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
+  const phaseName = (phaseInfo?.['phase_name'] as string | undefined) || null;
+
+  const fallow = detectFallowConfig(cwd);
+
+  const result: Record<string, unknown> = {
+    commit_docs: config.commit_docs,
+
+    phase_found: !!phaseInfo,
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
+    phase_dir: phaseDir ? toPosixPath(path.join(cwd, phaseDir)) : null,
+    phase_number: phaseNumber,
+    phase_name: phaseName,
+    padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
+
+    // #2994: hoisted fallow config-gate resolution (previously re-derived
+    // inline inside code-review.md's structural_pre_pass step body — a
+    // circular self-disabling gate now resolved once here at init time).
+    fallow_enabled: fallow.enabled,
+    fallow_scope: fallow.scope,
+    fallow_profile: fallow.profile,
+    fallow_mcp: fallow.mcp,
+    fallow_max_crap: fallow.maxCrap,
+  };
+
+  // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
+  const sectionManifestOptions: Record<string, unknown> = {
+    ...options,
+    fix: options['fix'] || undefined,
+  };
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, sectionManifestOptions, 'code-review', {
+    fallowEnabled: fallow.enabled,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `review.md`'s dedicated init entry point (#2994, epic #1671 Phase 6.3
+ * amendment). `review.md` previously routed through the shared, 20+-caller
+ * `init.phase-op` (`cmdInitPhaseOp` below), reading only 3 of its fields
+ * (`phase_dir`, `phase_number`, `padded_phase` — verified against the
+ * workflow's own "Read from init" line in `gather_context`). `cmdInitPhaseOp`
+ * is CRITICAL blast radius (179 dependents across 24 processes) and is never
+ * modified for this — this function resolves phase info itself via the SAME
+ * shared primitives `cmdInitPhaseOp` calls (`guardedFindPhase`/
+ * `guardedGetRoadmapPhase`), plus the shared `applyRoadmapFallback`
+ * archived/not-found fallback (see its own doc comment), producing the
+ * identical 3-field shape rather than a second, hand-maintained copy of
+ * `cmdInitPhaseOp`'s full ~60-field bundle.
+ *
+ * One further fact is resolved and exposed here that `init.phase-op` never
+ * carried: whether reviewer instances are configured
+ * (`.planning/config.json`'s `review.reviewer_instances`, present AND
+ * non-empty — `state:reviewer-instances-configured`), reusing
+ * `readConfigJsonValue` (added for `detectFallowConfig`) rather than a
+ * second, divergence-prone config reader (DEFECT.GENERATIVE-FIX).
+ */
+function cmdInitReview(
+  cwd: string,
+  phase: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+  let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => ({
+    found: true,
+    directory: null,
+    phase_number: rp['phase_number'],
+    phase_name: rp['phase_name'],
+  }));
+
+  const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
+  const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
+
+  // #2994: `state:reviewer-instances-configured` ground truth — present AND
+  // non-empty `review.reviewer_instances` object. A missing key, a non-object
+  // value, or an empty object all resolve to `false` (fail-closed, matching
+  // the workflow's own pre-hoist prose gate — "Unconfigured -> default path
+  // unchanged").
+  const rawReviewerInstances = readConfigJsonValue(cwd, ['review', 'reviewer_instances']);
+  const reviewerInstancesConfigured =
+    rawReviewerInstances !== null &&
+    typeof rawReviewerInstances === 'object' &&
+    !Array.isArray(rawReviewerInstances) &&
+    Object.keys(rawReviewerInstances).length > 0;
+
+  const result: Record<string, unknown> = {
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
+    phase_dir: phaseDir ? toPosixPath(path.join(cwd, phaseDir)) : null,
+    phase_number: phaseNumber,
+    padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, options, 'review', {
+    reviewerInstancesConfigured,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `discuss-phase-assumptions.md`'s dedicated init entry point (#2994, epic
+ * #1671 Phase 6.3 amendment). Previously routed through the shared,
+ * 20+-caller `init.phase-op` (`cmdInitPhaseOp` below), reading 14 of its
+ * fields (`commit_docs`, `phase_found`, `phase_dir`, `phase_number`,
+ * `phase_name`, `phase_slug`, `padded_phase`, `has_research`, `has_context`,
+ * `has_plans`, `has_verification`, `plan_count`, `roadmap_exists`,
+ * `planning_exists` — verified against the workflow's own "Parse JSON for"
+ * line). `cmdInitPhaseOp` is CRITICAL blast radius (179 dependents across 24
+ * processes) and is never modified for this — this function resolves phase
+ * info itself via the SAME shared primitives `cmdInitPhaseOp` calls
+ * (`guardedFindPhase`/`guardedGetRoadmapPhase`), plus the shared
+ * `applyRoadmapFallback` archived/not-found fallback (see its own doc
+ * comment) producing the identical fallback shape (`plans: []`,
+ * `has_research: false`, `has_context: false`, `has_verification: false`)
+ * rather than a second, hand-maintained copy of `cmdInitPhaseOp`'s full
+ * ~60-field bundle.
+ *
+ * One further fact is resolved and exposed here that `init.phase-op` never
+ * carried: `state:auto-advance-active` — the workflow's own `auto_advance`
+ * step resolves `--auto` OR a consolidated `check auto-mode --pick active`
+ * fact (itself `workflow._auto_chain_active` OR `workflow.auto_advance`) via
+ * a runtime `gsd_run` call; that identical disjunction is folded into ONE
+ * boolean FACT here (same discipline as `state:chunked-mode` /
+ * `state:plan-strategy-converge`), exposed as `auto_advance_active`.
+ */
+function cmdInitDiscussPhaseAssumptions(
+  cwd: string,
+  phase: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const config = loadConfig(cwd);
+  let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
+  const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
+  phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
+    const rpName = rp['phase_name'] as string | null;
+    return {
+      found: true,
+      directory: null,
+      phase_number: rp['phase_number'],
+      phase_name: rpName,
+      phase_slug: slugifyPhaseName(rpName),
+      plans: [],
+      has_research: false,
+      has_context: false,
+      has_verification: false,
+    };
+  });
+
+  const phaseDir = (phaseInfo?.['directory'] as string | undefined) || null;
+  const phaseNumber = (phaseInfo?.['phase_number'] as string | undefined) || null;
+  const phaseName = (phaseInfo?.['phase_name'] as string | undefined) || null;
+
+  // #2994: mirrors discuss-phase-assumptions.md's own auto_advance step
+  // resolver — `--auto` flag OR the consolidated `check auto-mode --pick
+  // active` fact (workflow._auto_chain_active OR workflow.auto_advance).
+  const autoAdvanceActive =
+    options['auto'] === true ||
+    readConfigJsonBoolean(cwd, ['workflow', '_auto_chain_active']) ||
+    readConfigJsonBoolean(cwd, ['workflow', 'auto_advance']);
+
+  const result: Record<string, unknown> = {
+    commit_docs: config.commit_docs,
+
+    phase_found: !!phaseInfo,
+    // #2376: absolute — see comment on phase_dir in cmdInitExecutePhase.
+    phase_dir: phaseDir ? toPosixPath(path.join(cwd, phaseDir)) : null,
+    phase_number: phaseNumber,
+    phase_name: phaseName,
+    phase_slug: phaseInfo?.['phase_slug'] || null,
+    padded_phase: phaseNumber ? normalizePhaseName(phaseNumber) : null,
+
+    has_research: phaseInfo?.['has_research'] || false,
+    has_context: phaseInfo?.['has_context'] || false,
+    has_plans: ((phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0) > 0,
+    has_verification: phaseInfo?.['has_verification'] || false,
+    plan_count: (phaseInfo?.['plans'] as unknown[] | undefined)?.length || 0,
+
+    roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
+    planning_exists: fs.existsSync(planningDir(cwd)),
+  };
+
+  // #2994 (Phase 6.3): additive, optional field — degrades to null, never throws.
+  const sectionManifestOptions: Record<string, unknown> = {
+    ...options,
+    auto: options['auto'] || undefined,
+  };
+  result['section_manifest'] = buildSectionManifestField(cwd, phaseInfo, sectionManifestOptions, 'discuss-phase-assumptions', {
+    autoAdvanceActive,
+  });
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -1988,6 +2481,191 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   output(withProjectRoot(cwd, result), raw);
 }
 
+/**
+ * `complete-milestone.md`'s dedicated init entry point (#2994, epic #1671
+ * Phase 6.3). Additive alongside the workflow's existing `init.manager`
+ * (readiness/phase-projection, `cmdInitManager` above — CRITICAL blast
+ * radius, never modified) and `init.execute-phase` (branching-strategy
+ * fields) calls; `cmdInitCompleteMilestone` carries NO phase-listing logic
+ * of its own to delegate — its only job is the `git.create_tag` config-gate
+ * fact the `git_tag` step's `<config-check>` sub-tag used to re-derive
+ * inline (gating the step's own inclusion on a fact only that step
+ * computed), now hoisted here and exposed as `git_create_tag`, plus the
+ * `section_manifest` field neither `init.manager` nor `init.execute-phase`
+ * carries.
+ */
+function cmdInitCompleteMilestone(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const gitCreateTag = detectGitCreateTag(cwd);
+
+  const result: Record<string, unknown> = {
+    // #2994: hoisted from complete-milestone.md's git_tag step
+    // <config-check> resolver (git.create_tag, fail-open default true).
+    git_create_tag: gitCreateTag,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'complete-milestone', {
+    gitCreateTag,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `autonomous.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3). Additive alongside the workflow's existing `init.milestone-op`
+ * (`cmdInitMilestoneOp`), `init.manager` (`cmdInitManager`), and
+ * `init.phase-op` (`cmdInitPhaseOp`) calls — all three are CRITICAL blast
+ * radius (179 dependents across 24 processes) and are never modified for
+ * this; `autonomous.md` keeps every one of those calls exactly as it had
+ * them. `cmdInitAutonomous` carries NO phase-listing logic of its own to
+ * delegate — its only job is the `PLAN_STRATEGY` disjunction the workflow's
+ * own bash resolver (`PLAN_STRATEGY="converge"` on `--converge` OR
+ * `--cross-ai`) already computes at the top of the `initialize` step, now
+ * mirrored here as a single boolean FACT (same discipline as
+ * `state:chunked-mode`/`state:ui-phase-active`: the disjunction is resolved
+ * ONCE, in fact computation, never in the `when=` grammar), exposed as
+ * `plan_strategy_converge`, plus the `section_manifest` field none of the
+ * three existing calls carries.
+ */
+function cmdInitAutonomous(
+  cwd: string,
+  raw: boolean,
+  options: Record<string, unknown> = {},
+): void {
+  const planStrategyConverge = options['converge'] === true || options['cross-ai'] === true;
+
+  const result: Record<string, unknown> = {
+    // #2994: mirrors autonomous.md's own PLAN_STRATEGY resolver
+    // (--converge OR its documented alias --cross-ai).
+    plan_strategy_converge: planStrategyConverge,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'autonomous', {
+    planStrategyConverge,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `docs-update.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3 — final slice). `docs-update.md` previously carried NO `gsd_run query
+ * init.*` call at all: its own `docs-init` command (`cmdDocsInit`,
+ * src/docs.cts) is a SEPARATE, pre-existing entry point outside this
+ * `init.*` family and is left untouched here. This function's only job is
+ * the `section_manifest` field neither `docs-init` nor any other call
+ * carries, gating `docs-update.md`'s `dispatch-monorepo-packages` section.
+ *
+ * `state:is-monorepo` ground truth: the project's monorepo workspaces list
+ * is non-empty — reuses `detectMonorepoWorkspaces` (src/docs.cts, exported
+ * for this purpose) rather than a second, divergence-prone workspace-glob
+ * scan (DEFECT.GENERATIVE-FIX dual surface); this is the SAME detector that
+ * already backs `docs-init`'s own `monorepo_workspaces` field.
+ */
+function cmdInitDocsUpdate(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const isMonorepo = detectMonorepoWorkspaces(cwd).length > 0;
+
+  const result: Record<string, unknown> = {};
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'docs-update', {
+    isMonorepo,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `update.md`'s dedicated init entry point (#2994, epic #1671 Phase 6.3 —
+ * final slice). `update.md` previously carried NO `gsd_run query init.*`
+ * call at all: it resolves `gsd-tools.cjs` itself (its own bespoke
+ * `PREFERRED_CONFIG_DIR`/`PREFERRED_RUNTIME`-aware `$GSD_TOOLS` cascade,
+ * `update.md` ~lines 13-45) because the update workflow must run BEFORE any
+ * install can be assumed resolvable — the canonical launcher preamble's
+ * fixed candidate list is not a substitute for that cascade, and both
+ * resolutions assign the identical `$GSD_TOOLS` shell variable, so copying
+ * the canonical preamble in ADDITION to the existing cascade would silently
+ * clobber the value `backup_custom_files`/`restore_custom_files` (later
+ * steps) still depend on. This function is invoked via that ALREADY
+ * resolved `$GSD_TOOLS`, not a redundant `gsd_run()` shell function.
+ *
+ * `state:next-channel` ground truth: `--next` OR its documented alias
+ * `--rc` (same disjunction-to-one-boolean discipline as
+ * `state:chunked-mode`/`state:plan-strategy-converge`). This DELIBERATELY
+ * does not replace `update.md`'s own `parse_update_channel` case-statement
+ * (`TAG="next"`/`TAG="latest"`) — issue #815's regression test
+ * (`tests/issue-815-update-next-channel.test.cjs`) asserts that literal
+ * case-statement text stays in `update.md` verbatim (the npm dist-tag
+ * selection has to run in the workflow's own shell before any `gsd_run`
+ * round-trip), so `next_channel` exists purely to gate the `channel-banner`
+ * section's admission — a parallel, consistent-but-not-replacing
+ * resolution of the same flags.
+ */
+function cmdInitUpdate(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const nextChannel = options['next'] === true || options['rc'] === true;
+
+  const result: Record<string, unknown> = {
+    next_channel: nextChannel,
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'update', {
+    nextChannel,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
+/**
+ * `transition.md`'s dedicated init entry point (#2994, epic #1671 Phase
+ * 6.3 — final slice). `transition.md` is an internal workflow (no
+ * user-facing `/gsd-transition` command) that previously carried NO
+ * `gsd_run query init.*` call at all; it already establishes `gsd_run()`
+ * via the canonical launcher preamble in its `update_roadmap_and_state`
+ * step (before this call's insertion point in `offer_next_phase`), so no
+ * second preamble copy is needed in the host file.
+ *
+ * `state:workstream-active` ground truth: a workstream is active — resolved
+ * via `GSD_WORKSTREAM` env, falling back to the stored active-workstream
+ * pointer (mirrors `cmdInitProgress`'s own `_resolvedWorkstream` resolution
+ * above, the established authoritative source for "is a workstream active"
+ * in this file).
+ *
+ * `other_active_workstreams` hoists the resolver-in-body hazard out of
+ * `transition.md`'s `workstream-collision-check` step: that step's body
+ * previously re-derived this via an inline `gsd_run query workstream.list
+ * --raw` call gated on the identical `if [ -n "$GSD_WORKSTREAM" ]`
+ * condition that now backs this section's OWN admission — resolving it here
+ * instead reuses `getOtherActiveWorkstreamInventories` (src/workstream-
+ * inventory.cts), the SAME primitive `workstream.list` itself calls
+ * (`cmdWorkstreamList`, src/workstream.cts), pre-filtered exactly as the
+ * step's own prose described (excludes the current workstream and any
+ * workstream whose status contains "milestone complete" or "archived",
+ * case-insensitively — `isCompletedInventory`), so the step body becomes a
+ * pure JSON consumer with no `gsd_run` call of its own.
+ */
+function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const resolvedWorkstream = process.env['GSD_WORKSTREAM'] || getActiveWorkstream(cwd);
+  const workstreamActive = !!resolvedWorkstream;
+
+  const result: Record<string, unknown> = {
+    other_active_workstreams: workstreamActive
+      ? getOtherActiveWorkstreamInventories(cwd, resolvedWorkstream).map((inv) => ({
+          name: inv.name,
+          status: inv.status,
+        }))
+      : [],
+  };
+
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'transition', {
+    workstreamActive,
+  });
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
 function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   try {
     (pruneOrphanedWorktrees as (cwd: string) => void)(cwd);
@@ -2166,6 +2844,20 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     if (pauseMatch) pausedAt = pauseMatch[1].trim();
   }
 
+  // #2994: the CURRENT phase's number, used both to expose `phase_mvp_mode`
+  // at the top level (so the `mvp-display` step body can consume an
+  // already-resolved fact instead of re-invoking `gsd_run query
+  // phase.mvp-mode` itself — that inline resolver would otherwise gate a
+  // section on a fact the section's own body recomputes, which is circular
+  // and self-disabling) and to thread a real `phase_number` into
+  // `buildSectionManifestField` below so `state:phase-mvp-mode` is genuinely
+  // computed for this workflow rather than permanently false (the previous
+  // `buildSectionManifestField(cwd, null, ...)` call passed no phase info at
+  // all, so `detectPhaseMvpMode` always short-circuited on the `!phaseNumber`
+  // guard).
+  const currentPhaseNumber = (currentPhase?.['number'] as string | undefined) ?? null;
+  const phaseMvpMode = detectPhaseMvpMode(cwd, currentPhaseNumber);
+
   const result: Record<string, unknown> = {
     executor_model: resolveModelInternal(cwd, 'gsd-executor'),
     planner_model: resolveModelInternal(cwd, 'gsd-planner'),
@@ -2186,6 +2878,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     next_phase: nextPhase,
     paused_at: pausedAt,
     has_work_in_progress: !!currentPhase,
+    phase_mvp_mode: phaseMvpMode,
 
     project_exists: pathExistsInternal(cwd, '.planning/PROJECT.md'),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
@@ -2198,7 +2891,12 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
   };
 
   // #2992 (Phase 6.1): additive, optional field — degrades to null, never throws.
-  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'progress');
+  result['section_manifest'] = buildSectionManifestField(
+    cwd,
+    currentPhaseNumber ? { phase_number: currentPhaseNumber } : null,
+    options,
+    'progress',
+  );
 
   output(withProjectRoot(cwd, result), raw);
 }
@@ -2973,11 +3671,19 @@ export = {
   cmdInitResume,
   cmdInitVerifyWork,
   cmdInitPhaseOp,
+  cmdInitCodeReview,
+  cmdInitReview,
+  cmdInitDiscussPhaseAssumptions,
   cmdInitTodos,
   cmdInitMilestoneOp,
   cmdInitMapCodebase,
   cmdInitProgress,
   cmdInitManager,
+  cmdInitCompleteMilestone,
+  cmdInitAutonomous,
+  cmdInitDocsUpdate,
+  cmdInitUpdate,
+  cmdInitTransition,
   cmdInitNewWorkspace,
   cmdInitListWorkspaces,
   cmdInitRemoveWorkspace,

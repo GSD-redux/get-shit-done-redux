@@ -29,16 +29,14 @@
  * `gsd-core/workflows/execute-phase.md` (malformed, row 36) or a different
  * `gsd-core/bin/lib/workflow-fragments.cjs` (stubbed to identity, row 33)
  * than this checkout's real files, without paying to copy the ~400 MB
- * repository (mostly node_modules) for every run. `buildOverlayRepo` mirrors
- * the repo tree with real directories (so `copyWithPathReplacement`'s own
- * `entry.isDirectory()` / `entry.isFile()` Dirent checks — which do NOT
- * follow symlinks — see the correct type) and HARD-LINKS every unmodified
- * leaf file (not symlinks: a symlinked leaf file also fails an `isFile()`
- * Dirent check elsewhere in the installer, verified empirically — "Failed
- * to install agents: directory is empty" against a symlink-leaf overlay).
- * Only `node_modules` and `.git` are symlinked at the top level (install.js
- * never walks into either), which is what keeps the overlay build fast.
- * Every overlay-spawned installer runs with `--preserve-symlinks
+ * repository (mostly node_modules) for every run. `buildOverlayRepo` /
+ * `linkOrCopyFile` now live in `./helpers/overlay-repo.cjs` (extracted,
+ * #2933, shared with `tests/fragment-single-edit-propagation.install.test.cjs`
+ * so the mechanism has exactly ONE implementation) — see that file's own doc
+ * comment for the hard-link-mirror mechanism, the Dirent `isFile()`/
+ * `isDirectory()` quirks it works around, the EXDEV/EPERM copy fallback, and
+ * why only `node_modules`/`.git` are symlinked at the top level. Every
+ * overlay-spawned installer below still runs with `--preserve-symlinks
  * --preserve-symlinks-main` as a defensive belt: with an all-hardlink leaf
  * layout this checkout does not currently NEED symlink-preservation for
  * correctness, but the flag is free insurance against a future install.js
@@ -55,6 +53,7 @@ const { spawnSync } = require('node:child_process');
 
 const { cleanup } = require('./helpers.cjs');
 const { RUNTIME_META, runMinimalInstall, installerEnv } = require('./helpers/install-shared.cjs');
+const { buildOverlayRepo } = require('./helpers/overlay-repo.cjs');
 const { executionContextRefs } = require('../scripts/command-contract-helpers.cjs');
 const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 
@@ -73,76 +72,7 @@ const UNMARKED_REL = path.join('gsd-core', 'workflows', 'discuss-phase.md');
 
 const RUNTIMES = Object.keys(RUNTIME_META);
 
-// ─── Overlay-repo builder (rows 33/36) ─────────────────────────────────────
-
-const OVERLAY_SKIP_TOP = new Set(['node_modules', '.git']);
-
-/** Hard-link a file, falling back to a real copy only if the two paths sit on
- *  different filesystems/devices (EXDEV) or linking is denied (EPERM) — both
- *  cross-platform-legitimate, unlike a symlink's Dirent type-detection gap. */
-function linkOrCopyFile(src, dest) {
-  try {
-    fs.linkSync(src, dest);
-  } catch (err) {
-    if (err.code === 'EXDEV' || err.code === 'EPERM') {
-      fs.copyFileSync(src, dest);
-    } else {
-      throw err;
-    }
-  }
-}
-
-/**
- * Build a throwaway mirror of REPO_ROOT with real directories throughout and
- * every unmodified leaf file hard-linked, except the paths named in
- * `fileOverrides` (POSIX-relative-path -> content string), which are written
- * as real files. Returns the mirror's absolute path; caller must
- * `fs.rmSync(..., {recursive:true, force:true})` it away.
- *
- * @param {{[relPath: string]: string}} fileOverrides
- */
-function buildOverlayRepo(fileOverrides) {
-  const tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2930-overlay-'));
-  const entries = Object.entries(fileOverrides).map(([relPath, content]) => ({
-    parts: relPath.split('/'),
-    content,
-  }));
-
-  function place(srcDir, destDir, pending, isTop) {
-    fs.mkdirSync(destDir, { recursive: true });
-    const grouped = new Map();
-    for (const e of pending) {
-      const [head, ...rest] = e.parts;
-      if (!grouped.has(head)) grouped.set(head, []);
-      grouped.get(head).push({ parts: rest, content: e.content });
-    }
-    for (const de of fs.readdirSync(srcDir, { withFileTypes: true })) {
-      if (isTop && OVERLAY_SKIP_TOP.has(de.name)) {
-        fs.symlinkSync(path.join(srcDir, de.name), path.join(destDir, de.name));
-        continue;
-      }
-      const srcPath = path.join(srcDir, de.name);
-      const destPath = path.join(destDir, de.name);
-      const overridden = grouped.get(de.name);
-      const leaf = overridden && overridden.find((s) => s.parts.length === 0);
-      if (leaf) {
-        fs.writeFileSync(destPath, leaf.content);
-        continue;
-      }
-      // fs.statSync follows symlinks (unlike Dirent.isDirectory()), so a
-      // symlinked source directory is still recursed as a REAL directory in
-      // the overlay — the property copyWithPathReplacement itself needs.
-      if (fs.statSync(srcPath).isDirectory()) {
-        place(srcPath, destPath, overridden || [], false);
-      } else {
-        linkOrCopyFile(srcPath, destPath);
-      }
-    }
-  }
-
-  place(REPO_ROOT, tmpRepo, entries, true);
-  return tmpRepo;
-}
+// ─── Overlay-repo builder (rows 33/36) — see ./helpers/overlay-repo.cjs ────
 
 /** Spawn a (possibly overlaid) installScript at global scope. Does NOT
  *  assert success — callers decide (row 36 expects failure). */
@@ -220,7 +150,7 @@ function stripRoot(text, root) {
 // that has nothing to do with composeWorkflow. Normalize each side's own
 // root out of the text before measuring, exactly as row 33 already does.
 
-test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', () => {
+test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', (t) => {
   const source = fs.readFileSync(PILOT_PATH, 'utf8');
   const composed = composeWorkflow(source, { sourcePath: PILOT_PATH });
   const sourceBytes = Buffer.byteLength(source, 'utf8');
@@ -234,36 +164,41 @@ test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', () => {
   const identityStubRepo = buildOverlayRepo({
     'gsd-core/bin/lib/workflow-fragments.cjs': 'module.exports = { composeWorkflow: (c) => c };\n',
   });
-  try {
-    for (const runtime of RUNTIMES) {
-      const real = runMinimalInstall({ runtime, scope: 'global' });
-      const stub = spawnGlobalInstall(path.join(identityStubRepo, 'bin', 'install.js'), runtime);
-      try {
-        assert.equal(
-          stub.result.status,
-          0,
-          `${runtime}: identity-stub install must succeed\nstderr: ${stub.result.stderr}`,
-        );
-        const realPath = path.join(real.configDir, PILOT_REL);
-        const stubPath = path.join(stub.configDir, PILOT_REL);
-        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing execute-phase.md`);
-        assert.ok(fs.existsSync(stubPath), `${runtime}: identity-stub install is missing execute-phase.md`);
-        const realText = stripRoot(fs.readFileSync(realPath, 'utf8'), real.root);
-        const stubText = stripRoot(fs.readFileSync(stubPath, 'utf8'), stub.root);
-        const realBytes = Buffer.byteLength(realText, 'utf8');
-        const stubBytes = Buffer.byteLength(stubText, 'utf8');
-        assert.equal(
-          stubBytes - realBytes,
-          expectedMarkerBytes,
-          `${runtime}: emitted size delta (stub ${stubBytes} - real ${realBytes}, root-normalized) must equal exactly the marker bytes stripped (${expectedMarkerBytes})`,
-        );
-      } finally {
-        cleanup(real.root);
-        cleanup(stub.root);
-      }
-    }
-  } finally {
-    cleanup(identityStubRepo);
+  t.after(() => cleanup(identityStubRepo));
+
+  for (const runtime of RUNTIMES) {
+    // Belt-and-braces cleanup: t.after() is the failure-path safety net (a
+    // thrown assertion still tears the temp install dirs down when the test
+    // returns), but t.after() alone defers EVERY registered cleanup across
+    // all ~18 runtimes until the whole test finishes, so up to 36 full
+    // install trees would coexist on disk at once. The eager cleanup() calls
+    // below bound peak disk to one iteration's trees on the success path;
+    // t.after() still fires afterward as a no-op (cleanup is idempotent on
+    // an already-removed path — see helpers.cjs).
+    const real = runMinimalInstall({ runtime, scope: 'global' });
+    t.after(() => cleanup(real.root));
+    const stub = spawnGlobalInstall(path.join(identityStubRepo, 'bin', 'install.js'), runtime);
+    t.after(() => cleanup(stub.root));
+    assert.equal(
+      stub.result.status,
+      0,
+      `${runtime}: identity-stub install must succeed\nstderr: ${stub.result.stderr}`,
+    );
+    const realPath = path.join(real.configDir, PILOT_REL);
+    const stubPath = path.join(stub.configDir, PILOT_REL);
+    assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing execute-phase.md`);
+    assert.ok(fs.existsSync(stubPath), `${runtime}: identity-stub install is missing execute-phase.md`);
+    const realText = stripRoot(fs.readFileSync(realPath, 'utf8'), real.root);
+    const stubText = stripRoot(fs.readFileSync(stubPath, 'utf8'), stub.root);
+    const realBytes = Buffer.byteLength(realText, 'utf8');
+    const stubBytes = Buffer.byteLength(stubText, 'utf8');
+    assert.equal(
+      stubBytes - realBytes,
+      expectedMarkerBytes,
+      `${runtime}: emitted size delta (stub ${stubBytes} - real ${realBytes}, root-normalized) must equal exactly the marker bytes stripped (${expectedMarkerBytes})`,
+    );
+    cleanup(real.root);
+    cleanup(stub.root);
   }
 });
 
@@ -280,72 +215,67 @@ test('emittedWorkflowShrinksByMarkerBytesForEveryRuntime', () => {
 // difference is attributable ONLY to the compose wiring, never to an
 // unrelated converter (which fires identically on both sides).
 
-test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', () => {
+test('unmarkedWorkflowEmitsByteIdenticalForEveryRuntime', (t) => {
   const identityStubRepo = buildOverlayRepo({
     'gsd-core/bin/lib/workflow-fragments.cjs': 'module.exports = { composeWorkflow: (c) => c };\n',
   });
-  try {
-    for (const runtime of RUNTIMES) {
-      const real = runMinimalInstall({ runtime, scope: 'global' });
-      const stub = spawnGlobalInstall(path.join(identityStubRepo, 'bin', 'install.js'), runtime);
-      try {
-        assert.equal(
-          stub.result.status,
-          0,
-          `${runtime}: identity-stub install must succeed\nstderr: ${stub.result.stderr}`,
-        );
-        const realPath = path.join(real.configDir, UNMARKED_REL);
-        const stubPath = path.join(stub.configDir, UNMARKED_REL);
-        assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing discuss-phase.md`);
-        assert.ok(fs.existsSync(stubPath), `${runtime}: stub install is missing discuss-phase.md`);
+  t.after(() => cleanup(identityStubRepo));
 
-        // Normalize each side's own randomly-generated temp root out of the
-        // content before hashing: some runtimes (opencode) embed the
-        // install's own absolute configDir path in execution_context refs,
-        // and the two installs necessarily used DIFFERENT temp roots — an
-        // unnormalized compare would report a spurious mismatch driven by
-        // temp-path length, not by anything composeWorkflow's wiring did.
-        const realText = stripRoot(fs.readFileSync(realPath, 'utf8'), real.root);
-        const stubText = stripRoot(fs.readFileSync(stubPath, 'utf8'), stub.root);
-        assert.equal(
-          Buffer.byteLength(realText, 'utf8'),
-          Buffer.byteLength(stubText, 'utf8'),
-          `${runtime}: discuss-phase.md byte size drifted between real compose and identity-stub compose`,
-        );
-        const realHash = crypto.createHash('sha256').update(realText).digest('hex');
-        const stubHash = crypto.createHash('sha256').update(stubText).digest('hex');
-        assert.equal(
-          realHash,
-          stubHash,
-          `${runtime}: discuss-phase.md content drifted between real compose and identity-stub compose`,
-        );
-      } finally {
-        cleanup(real.root);
-        cleanup(stub.root);
-      }
-    }
-  } finally {
-    cleanup(identityStubRepo);
+  for (const runtime of RUNTIMES) {
+    const real = runMinimalInstall({ runtime, scope: 'global' });
+    t.after(() => cleanup(real.root));
+    const stub = spawnGlobalInstall(path.join(identityStubRepo, 'bin', 'install.js'), runtime);
+    t.after(() => cleanup(stub.root));
+    assert.equal(
+      stub.result.status,
+      0,
+      `${runtime}: identity-stub install must succeed\nstderr: ${stub.result.stderr}`,
+    );
+    const realPath = path.join(real.configDir, UNMARKED_REL);
+    const stubPath = path.join(stub.configDir, UNMARKED_REL);
+    assert.ok(fs.existsSync(realPath), `${runtime}: real install is missing discuss-phase.md`);
+    assert.ok(fs.existsSync(stubPath), `${runtime}: stub install is missing discuss-phase.md`);
+
+    // Normalize each side's own randomly-generated temp root out of the
+    // content before hashing: some runtimes (opencode) embed the
+    // install's own absolute configDir path in execution_context refs,
+    // and the two installs necessarily used DIFFERENT temp roots — an
+    // unnormalized compare would report a spurious mismatch driven by
+    // temp-path length, not by anything composeWorkflow's wiring did.
+    const realText = stripRoot(fs.readFileSync(realPath, 'utf8'), real.root);
+    const stubText = stripRoot(fs.readFileSync(stubPath, 'utf8'), stub.root);
+    assert.equal(
+      Buffer.byteLength(realText, 'utf8'),
+      Buffer.byteLength(stubText, 'utf8'),
+      `${runtime}: discuss-phase.md byte size drifted between real compose and identity-stub compose`,
+    );
+    const realHash = crypto.createHash('sha256').update(realText).digest('hex');
+    const stubHash = crypto.createHash('sha256').update(stubText).digest('hex');
+    assert.equal(
+      realHash,
+      stubHash,
+      `${runtime}: discuss-phase.md content drifted between real compose and identity-stub compose`,
+    );
+    cleanup(real.root);
+    cleanup(stub.root);
   }
 });
 
 // ─── Row 34: no gsd:section marker survives into any emitted artifact ─────
 
-test('noSectionMarkerLeaksIntoEmittedArtifacts', () => {
+test('noSectionMarkerLeaksIntoEmittedArtifacts', (t) => {
   for (const runtime of RUNTIMES) {
     const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
-    try {
-      const emittedPath = path.join(configDir, PILOT_REL);
-      assert.ok(fs.existsSync(emittedPath), `${runtime}: emitted execute-phase.md is missing`);
-      const emittedText = fs.readFileSync(emittedPath, 'utf8');
-      assert.equal(
-        emittedText.includes('gsd:section'),
-        false,
-        `${runtime}: emitted execute-phase.md still contains a gsd:section marker token`,
-      );
-    } finally {
-      cleanup(root);
-    }
+    t.after(() => cleanup(root));
+    const emittedPath = path.join(configDir, PILOT_REL);
+    assert.ok(fs.existsSync(emittedPath), `${runtime}: emitted execute-phase.md is missing`);
+    const emittedText = fs.readFileSync(emittedPath, 'utf8');
+    assert.equal(
+      emittedText.includes('gsd:section'),
+      false,
+      `${runtime}: emitted execute-phase.md still contains a gsd:section marker token`,
+    );
+    cleanup(root);
   }
 });
 
@@ -377,25 +307,23 @@ function resolveExecutionContextRefTarget(token, root) {
   return path.join(root, stripped);
 }
 
-test('atRefContractStillResolvesAfterComposition', () => {
+test('atRefContractStillResolvesAfterComposition', (t) => {
   for (const runtime of ['claude', 'opencode']) {
     const { configDir, root } = runMinimalInstall({ runtime, scope: 'global' });
-    try {
-      const skillPath = path.join(configDir, 'skills', 'gsd-plan-phase', 'SKILL.md');
-      assert.ok(fs.existsSync(skillPath), `${runtime}: installed gsd-plan-phase SKILL.md is missing`);
-      const skillContent = fs.readFileSync(skillPath, 'utf8');
-      const refs = executionContextRefs(skillContent);
-      assert.ok(refs.length > 0, `${runtime}: SKILL.md has no execution_context @-refs to check`);
-      for (const { token } of refs) {
-        const target = resolveExecutionContextRefTarget(token, root);
-        assert.ok(
-          fs.existsSync(target),
-          `${runtime}: execution_context @-ref "${token}" resolved to "${target}", which does not exist on disk`,
-        );
-      }
-    } finally {
-      cleanup(root);
+    t.after(() => cleanup(root));
+    const skillPath = path.join(configDir, 'skills', 'gsd-plan-phase', 'SKILL.md');
+    assert.ok(fs.existsSync(skillPath), `${runtime}: installed gsd-plan-phase SKILL.md is missing`);
+    const skillContent = fs.readFileSync(skillPath, 'utf8');
+    const refs = executionContextRefs(skillContent);
+    assert.ok(refs.length > 0, `${runtime}: SKILL.md has no execution_context @-refs to check`);
+    for (const { token } of refs) {
+      const target = resolveExecutionContextRefTarget(token, root);
+      assert.ok(
+        fs.existsSync(target),
+        `${runtime}: execution_context @-ref "${token}" resolved to "${target}", which does not exist on disk`,
+      );
     }
+    cleanup(root);
   }
 });
 
@@ -415,7 +343,7 @@ test('atRefContractStillResolvesAfterComposition', () => {
 // intentionally-UNCLOSED marker-shaped line (would throw if composeWorkflow
 // ever touched it) in the SAME install run.
 
-test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
+test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', (t) => {
   const markedWorkflow = '<!-- gsd:section id="a" when="always" -->\nbody\n<!-- /gsd:section -->\n';
   const nonWorkflowDoc =
     '# Marker syntax\n\nExample (deliberately unfenced and unclosed to prove non-composition):\n\n<!-- gsd:section id="x" when="always" -->\nnever closed on purpose\n';
@@ -424,34 +352,31 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
     'gsd-core/workflows/execute-phase.md': markedWorkflow,
     [NON_WORKFLOW_DOC_REL.split(path.sep).join('/')]: nonWorkflowDoc,
   });
-  let dest;
-  try {
-    dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
-    assert.equal(
-      dest.result.status,
-      0,
-      `install must succeed: a non-workflow doc's marker-shaped line must never reach composeWorkflow\nstderr: ${dest.result.stderr}`,
-    );
+  t.after(() => cleanup(overlayRepo));
 
-    const emittedWorkflowPath = path.join(dest.configDir, PILOT_REL);
-    assert.ok(fs.existsSync(emittedWorkflowPath), 'emitted execute-phase.md is missing');
-    assert.equal(
-      fs.readFileSync(emittedWorkflowPath, 'utf8'),
-      'body\n',
-      'gsd-core/workflows/execute-phase.md must still compose (markers stripped)',
-    );
+  const dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
+  t.after(() => cleanup(dest.root));
+  assert.equal(
+    dest.result.status,
+    0,
+    `install must succeed: a non-workflow doc's marker-shaped line must never reach composeWorkflow\nstderr: ${dest.result.stderr}`,
+  );
 
-    const emittedDocPath = path.join(dest.configDir, NON_WORKFLOW_DOC_REL);
-    assert.ok(fs.existsSync(emittedDocPath), 'emitted context-budget.md is missing');
-    assert.equal(
-      fs.readFileSync(emittedDocPath, 'utf8'),
-      nonWorkflowDoc,
-      'a non-workflow .md must pass through composeWorkflow untouched, byte-identical, including its marker-shaped line',
-    );
-  } finally {
-    cleanup(overlayRepo);
-    if (dest) cleanup(dest.root);
-  }
+  const emittedWorkflowPath = path.join(dest.configDir, PILOT_REL);
+  assert.ok(fs.existsSync(emittedWorkflowPath), 'emitted execute-phase.md is missing');
+  assert.equal(
+    fs.readFileSync(emittedWorkflowPath, 'utf8'),
+    'body\n',
+    'gsd-core/workflows/execute-phase.md must still compose (markers stripped)',
+  );
+
+  const emittedDocPath = path.join(dest.configDir, NON_WORKFLOW_DOC_REL);
+  assert.ok(fs.existsSync(emittedDocPath), 'emitted context-budget.md is missing');
+  assert.equal(
+    fs.readFileSync(emittedDocPath, 'utf8'),
+    nonWorkflowDoc,
+    'a non-workflow .md must pass through composeWorkflow untouched, byte-identical, including its marker-shaped line',
+  );
 });
 
 // ─── Row 36: a malformed marker fails install loudly, with no partial emit ─
@@ -465,10 +390,33 @@ test('nonWorkflowMarkdownWithMarkerShapedLineIsNotComposed', () => {
 
 test('leavesUnmarkedWorkflowEmissionByteIdentical', () => {
   const workflowsDir = path.join(REPO_ROOT, 'gsd-core', 'workflows');
-  // execute-phase.md (#2932 Phase 5) and plan-phase.md (#2993 Phase 6.2) are
-  // the two files this repo has fragmentized with gsd:section markers — both
-  // excluded here since composeWorkflow is deliberately NOT a no-op for them.
-  const MARKED_WORKFLOWS = new Set(['execute-phase.md', 'plan-phase.md']);
+  // execute-phase.md (#2932 Phase 5), plan-phase.md (#2993 Phase 6.2), and
+  // the thirteen workflows #2994 (epic #1671 Phase 6.3) fragmentizes onto the
+  // marker grammar are the files this repo has fragmentized with gsd:section
+  // markers — all excluded here since composeWorkflow is deliberately NOT a
+  // no-op for them. This set is DELIBERATELY hardcoded rather than derived
+  // from "does the file contain a marker": deriving it would make the guard
+  // tautological — a marker that LEAKED into an unrelated file via a bad
+  // extraction would just get silently excluded instead of failing the
+  // independence check this test exists to enforce. Update this list by hand
+  // whenever a workflow is legitimately marked.
+  const MARKED_WORKFLOWS = new Set([
+    'autonomous.md',
+    'code-review.md',
+    'complete-milestone.md',
+    'discuss-phase-assumptions.md',
+    'docs-update.md',
+    'execute-phase.md',
+    'new-milestone.md',
+    'new-project.md',
+    'plan-phase.md',
+    'progress.md',
+    'quick.md',
+    'review.md',
+    'transition.md',
+    'update.md',
+    'verify-work.md',
+  ]);
   const workflowFiles = fs
     .readdirSync(workflowsDir, { withFileTypes: true })
     .filter((d) => d.isFile() && d.name.endsWith('.md'))
@@ -495,33 +443,30 @@ test('leavesUnmarkedWorkflowEmissionByteIdentical', () => {
   );
 });
 
-test('malformedMarkersFailInstallWithoutPartialEmit', () => {
+test('malformedMarkersFailInstallWithoutPartialEmit', (t) => {
   const malformed = '<!-- gsd:section id="broken" when="always" -->\nnever closed\n';
   const overlayRepo = buildOverlayRepo({ 'gsd-core/workflows/execute-phase.md': malformed });
-  let dest;
-  try {
-    dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
-    // stderr text is a child process's rendered prose, not a typed value
-    // this test can assert on across the process boundary (CONTRIBUTING.md
-    // "Prohibited: Raw Text Matching on Test Outputs" — err.reason is only
-    // reachable in-process; see tests/workflow-fragments.test.cjs's REASON
-    // assertions for the in-process equivalent of this same failure mode).
-    // Assert typed, observable facts instead: the install process exits
-    // non-zero, and no output file is written for the file that failed to
-    // compose.
-    assert.notEqual(
-      dest.result.status,
-      0,
-      `install must fail loudly on a malformed marker, got exit 0\nstdout: ${dest.result.stdout}`,
-    );
-    const emittedPath = path.join(dest.configDir, PILOT_REL);
-    assert.equal(
-      fs.existsSync(emittedPath),
-      false,
-      'a half-composed execute-phase.md must never be written when composition throws',
-    );
-  } finally {
-    cleanup(overlayRepo);
-    if (dest) cleanup(dest.root);
-  }
+  t.after(() => cleanup(overlayRepo));
+
+  const dest = spawnGlobalInstall(path.join(overlayRepo, 'bin', 'install.js'), 'claude');
+  t.after(() => cleanup(dest.root));
+  // stderr text is a child process's rendered prose, not a typed value
+  // this test can assert on across the process boundary (CONTRIBUTING.md
+  // "Prohibited: Raw Text Matching on Test Outputs" — err.reason is only
+  // reachable in-process; see tests/workflow-fragments.test.cjs's REASON
+  // assertions for the in-process equivalent of this same failure mode).
+  // Assert typed, observable facts instead: the install process exits
+  // non-zero, and no output file is written for the file that failed to
+  // compose.
+  assert.notEqual(
+    dest.result.status,
+    0,
+    `install must fail loudly on a malformed marker, got exit 0\nstdout: ${dest.result.stdout}`,
+  );
+  const emittedPath = path.join(dest.configDir, PILOT_REL);
+  assert.equal(
+    fs.existsSync(emittedPath),
+    false,
+    'a half-composed execute-phase.md must never be written when composition throws',
+  );
 });

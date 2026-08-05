@@ -95,19 +95,50 @@ import contextComposer = require('./context-composer.cjs');
  * #1671 Phase 6.1; see `.gsd/phase/chore-2992-widen-when-vocabulary/
  * 40-design.md`), then from 14 to 19 via the ADR-1671 amendment for #2993
  * (epic #1671 Phase 6.2; see `.gsd/phase/chore-2993-fragmentize-plan-phase/
- * 40-design.md`). The vocabulary remains CLOSED: no operators, no negation,
- * no nesting. Cardinality is not expressiveness — a 19-entry flat list with
- * no composition is still not a language.
+ * 40-design.md`), then from 19 to 20 via the ADR-1671 amendment for #2994
+ * (epic #1671 Phase 6.3, `verify-work.md`), then from 20 to 23 via a further
+ * #2994 amendment fragmentizing `code-review.md` and `complete-milestone.md`,
+ * then from 23 to 24 via a further #2994 amendment fragmentizing
+ * `autonomous.md`, then from 24 to 26 via a still further #2994 amendment
+ * fragmentizing `review.md` and `discuss-phase-assumptions.md`, then from 26
+ * to 30 (then 29; `flag:--full` retired as dead vocabulary) via the FINAL
+ * #2994 slice (epic #1671 Phase 6.3) fragmentizing
+ * `docs-update.md`, `update.md`, `transition.md`, and `new-milestone.md` —
+ * every one of the 13 workflows targeted by ADR-1671 is now on the fragment
+ * model. The vocabulary remains CLOSED: no operators, no negation, no nesting.
+ * Cardinality is not expressiveness — a 29-entry flat list with no
+ * composition is still not a language.
  *
  * Held at 14, not wider: an atom whose fact is never computed always
  * evaluates FALSE, so a section marked with it would silently never
- * include — a silent-exclusion bug, not a feature. Six further atoms
- * (`flag:--converge`, `flag:--fix`, `flag:--verify-only`,
- * `state:fallow-enabled`, `state:git-create-tag`, `state:is-monorepo`) were
- * surveyed and are justified in principle, but their workflows
- * (docs-update, autonomous, code-review, complete-milestone) have no
- * dedicated `cmdInit*` entry point yet to compute the backing fact, so they
- * are withheld until that entry point exists (#2992 / ADR-1671 Phase 6.1).
+ * include — a silent-exclusion bug, not a feature. One further atom
+ * (`flag:--verify-only`) was surveyed but is NOT admitted even now that
+ * `docs-update` has its own `cmdInit*` entry point (`cmdInitDocsUpdate`):
+ * the flag's control flow is INTERLEAVED across three non-contiguous
+ * touch-points in `docs-update.md` (an inline early-exit check in
+ * `init_context` — "If `--verify-only` is present…skip to
+ * verify_only_report" — a "Skip condition" note embedded in another step's
+ * body, and the `verify_only_report` step itself) rather than a single
+ * contiguous, whole-line, purely-additive region — admitting the atom to
+ * gate only the `verify_only_report` step would leave the other two
+ * touch-points as un-migrated raw `$ARGUMENTS` checks. `state:is-monorepo`
+ * (`dispatch-monorepo-packages` section) IS admitted in this slice — see the
+ * paragraph below.
+ * `flag:--fix`, `state:fallow-enabled`, and `state:git-create-tag` were
+ * withheld for the same reason until a further #2994 amendment gave
+ * `code-review` and `complete-milestone` their own dedicated `cmdInit*`
+ * entry points (`cmdInitCodeReview`, `cmdInitCompleteMilestone`). The
+ * originally-surveyed `flag:--converge` never shipped under that name: once
+ * `autonomous` gained its own dedicated `cmdInitAutonomous` entry point, the
+ * admitted atom is `state:plan-strategy-converge` instead — `--cross-ai` is
+ * a documented alias for `--converge` (`autonomous.md`'s own `PLAN_STRATEGY`
+ * resolver folds both into one value), so a `flag:--converge`-only atom
+ * would have left `--cross-ai`-only invocations silently excluded from the
+ * same sections; see the `state:plan-strategy-converge` paragraph below.
+ * `state:reviewer-instances-configured` and `state:auto-advance-active` were
+ * withheld the same way until `review` and `discuss-phase-assumptions`
+ * gained their own dedicated `cmdInit*` entry points (`cmdInitReview`,
+ * `cmdInitDiscussPhaseAssumptions`).
  *
  * The #2993 widening adds 5 entries fragmentizing `plan-phase.md`:
  * `flag:--ingest`, `flag:--prd`, `flag:--research-phase`, `flag:--reviews`,
@@ -115,6 +146,64 @@ import contextComposer = require('./context-composer.cjs');
  * flag OR `.planning/config.json` `workflow.plan_chunked`) resolved to a
  * single boolean FACT by the init seam (`src/init.cts`) — the grammar still
  * sees exactly one atom with no operator, preserving the same guard.
+ *
+ * The #2994 widening adds 1 entry fragmentizing `verify-work.md`:
+ * `state:ui-phase-active`. Like `state:chunked-mode`, it is a disjunction —
+ * the phase's active `plan:pre` loop hooks include the `ui-phase` step OR
+ * the phase directory already contains a `*-UI-SPEC.md` — resolved to a
+ * single boolean FACT by the init seam before it ever reaches this grammar.
+ *
+ * A further #2994 widening (epic #1671 Phase 6.3) adds 3 entries
+ * fragmentizing `code-review.md` and `complete-milestone.md`: `flag:--fix`
+ * (`dispatch-fix` section), `state:fallow-enabled` (`structural-pre-pass`
+ * section — the fallow config-gate resolver, previously re-derived inside
+ * the section body itself, is hoisted into `cmdInitCodeReview` and exposed
+ * as top-level `fallow_*` init-bundle fields), and `state:git-create-tag`
+ * (`git-tag` section — the `git.create_tag` config-gate resolver is hoisted
+ * into `cmdInitCompleteMilestone`).
+ *
+ * A still further #2994 widening (epic #1671 Phase 6.3) adds 1 entry
+ * fragmentizing `autonomous.md`: `state:plan-strategy-converge`, gating five
+ * sections (`converge-fail-fast`, `converge-banner`, `converge-dispatch-bg`,
+ * `converge-dispatch-inline`, `converge-loop`) that all share the same atom
+ * — legal and precedented (`plan-phase.md`'s `research-only-*` pair already
+ * shares `flag:--research-phase`). It is a disjunction — `--converge` OR its
+ * documented alias `--cross-ai` — resolved to a single boolean FACT by the
+ * new `cmdInitAutonomous` entry point (`flags.has('--converge') ||
+ * flags.has('--cross-ai')`) before it ever reaches this grammar, same
+ * discipline as `state:chunked-mode`/`state:ui-phase-active` above.
+ *
+ * A still further #2994 widening (epic #1671 Phase 6.3) adds 2 entries
+ * fragmentizing `review.md` and `discuss-phase-assumptions.md`:
+ * `state:reviewer-instances-configured` (`reviewer-instances-note-1` and
+ * `reviewer-instances-note-2` sections — two peripheral notes sharing one
+ * atom, the same sharing pattern `plan-phase.md`'s `research-only-*` pair
+ * already established) and `state:auto-advance-active` (`auto-advance-dispatch`
+ * section — a disjunction, `--auto` flag OR a consolidated auto-mode config
+ * fact, resolved to a single boolean FACT by the new
+ * `cmdInitDiscussPhaseAssumptions` entry point before it ever reaches this
+ * grammar, same discipline as `state:chunked-mode` above).
+ *
+ * The FINAL #2994 widening (epic #1671 Phase 6.3) adds 4 entries, closing
+ * out the last four workflows on ADR-1671's fragmentization list —
+ * `docs-update.md`, `update.md`, `transition.md`, `new-milestone.md` — none
+ * of which carried a `gsd_run query init.*` call before this slice:
+ * `state:is-monorepo` (`dispatch-monorepo-packages` section, new
+ * `cmdInitDocsUpdate` entry point — reuses `docs.cts`'s own
+ * `detectMonorepoWorkspaces` detector rather than a second scan);
+ * `state:next-channel` (`channel-banner` section, new `cmdInitUpdate` entry
+ * point — `--next` OR its documented alias `--rc`, resolved in PARALLEL
+ * with, not in place of, `update.md`'s own `TAG="next"` case-statement,
+ * which issue #815's regression test requires to stay literal in the
+ * workflow); `state:workstream-active` (`workstream-collision-check`
+ * section, new `cmdInitTransition` entry point — a workstream is active,
+ * `GSD_WORKSTREAM` env falling back to the stored active-workstream
+ * pointer, the same authoritative source `cmdInitProgress` already uses);
+ * and `state:flat-mode` (`project-md-milestone-write` section,
+ * `cmdInitNewMilestone` — the positively-phrased INVERSE of
+ * `state:workstream-active`, introduced because the grammar has no negation
+ * operator and `new-milestone.md`'s Step 4 Part A is gated on the OPPOSITE
+ * condition from `transition.md`'s section).
  */
 export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'always',
@@ -123,8 +212,8 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'state:has-prior-phases',
   'flag:--auto',
   'flag:--discuss',
+  'flag:--fix',
   'flag:--forensic',
-  'flag:--full',
   'flag:--ingest',
   'flag:--prd',
   'flag:--research',
@@ -132,9 +221,19 @@ export const WHEN_VOCABULARY: readonly string[] = Object.freeze([
   'flag:--reset-phase-numbers',
   'flag:--reviews',
   'flag:--validate',
+  'state:auto-advance-active',
   'state:chunked-mode',
+  'state:fallow-enabled',
+  'state:flat-mode',
+  'state:git-create-tag',
+  'state:is-monorepo',
   'state:needs-codebase-map',
+  'state:next-channel',
   'state:phase-mvp-mode',
+  'state:plan-strategy-converge',
+  'state:reviewer-instances-configured',
+  'state:ui-phase-active',
+  'state:workstream-active',
   'state:worktrees-enabled',
 ]);
 

@@ -170,6 +170,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/normalize-test-command.cjs',
       'gsd-core/bin/lib/config-loader.cjs',
       'gsd-core/bin/lib/phase-locator.cjs',
+      'gsd-core/bin/lib/plan-dependency-graph.cjs',
       'gsd-core/bin/lib/roadmap-parser.cjs',
       'gsd-core/bin/lib/drift.cjs',
       'gsd-core/bin/lib/cjs-command-router-adapter.cjs',
@@ -350,7 +351,7 @@ export default tseslint.config(
 
   // ── tests/**/*.test.cjs ─────────────────────────────────────────────────────
   {
-    files: ['tests/**/*.test.cjs'],
+    files: ['tests/**/*.cjs'],
     plugins: {
       'no-only-tests': noOnlyTests,
       local: localPlugin,

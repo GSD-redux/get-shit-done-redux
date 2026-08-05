@@ -715,29 +715,40 @@ describe('workflow gsd_run query init.<workflow> invocations forward every flag:
       const workflowMdPath = path.join(ROOT, 'gsd-core', 'workflows', `${workflow}.md`);
       const content = fs.readFileSync(workflowMdPath, 'utf8');
 
-      const initLineRe = new RegExp(`^.*gsd_run query init\\.${workflow}\\b.*$`, 'm');
-      const initLineMatch = content.match(initLineRe);
-      assert.ok(initLineMatch, `${workflow}.md must contain a "gsd_run query init.${workflow}" invocation line`);
-      const initLine = initLineMatch[0];
-
-      // Everything up to and including the invocation line: real workflows
-      // parse $ARGUMENTS into a param variable earlier in the same bash
-      // block, then reference that variable on the INIT= line itself.
-      const scope = content.slice(0, content.indexOf(initLine) + initLine.length);
-      const referencedVars = varsReferencedIn(initLine);
+      // A workflow may call `gsd_run query init.<workflow>` more than once
+      // (e.g. new-milestone.md's early INIT_EARLY call, whose section_manifest
+      // gates ONLY project-md-milestone-write per its own prose, followed by
+      // a later full INIT call that gates every other flag-gated section and
+      // does forward the flag). Every occurrence is a candidate carrier —
+      // a flagAtom only needs forwarding by AT LEAST ONE invocation line,
+      // not necessarily the first.
+      const initLineRe = new RegExp(`^.*gsd_run query init\\.${workflow}\\b.*$`, 'mg');
+      const initLineMatches = [...content.matchAll(initLineRe)];
+      assert.ok(initLineMatches.length > 0, `${workflow}.md must contain a "gsd_run query init.${workflow}" invocation line`);
 
       for (const atomFlag of flagAtoms) {
-        const directlyPresent = initLine
-          .split(/\s+/)
-          .includes(atomFlag);
-        const carriers = varsCarryingFlagToken(scope, atomFlag);
-        const forwardedViaVar = [...carriers].some((v) => referencedVars.has(v));
+        const forwardedByAnyInvocation = initLineMatches.some((match) => {
+          const initLine = match[0];
+          // Everything up to and including this invocation line: real
+          // workflows parse $ARGUMENTS into a param variable earlier in the
+          // same bash block, then reference that variable on the INIT= line
+          // itself.
+          const scope = content.slice(0, match.index + initLine.length);
+          const referencedVars = varsReferencedIn(initLine);
+
+          const directlyPresent = initLine
+            .split(/\s+/)
+            .includes(atomFlag);
+          const carriers = varsCarryingFlagToken(scope, atomFlag);
+          const forwardedViaVar = [...carriers].some((v) => referencedVars.has(v));
+          return directlyPresent || forwardedViaVar;
+        });
 
         assert.ok(
-          directlyPresent || forwardedViaVar,
-          `${workflow}.md's "gsd_run query init.${workflow}" invocation line must forward a parameter for ` +
+          forwardedByAnyInvocation,
+          `${workflow}.md's "gsd_run query init.${workflow}" invocation line(s) must forward a parameter for ` +
             `${atomFlag} (its gated section is otherwise permanently excluded — see BLOCKER, epic #1671 Phase 6.2). ` +
-            `Invocation line: ${initLine}`,
+            `Invocation line(s): ${initLineMatches.map((m) => m[0]).join(' | ')}`,
         );
       }
     });

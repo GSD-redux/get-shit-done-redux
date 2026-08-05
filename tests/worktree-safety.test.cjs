@@ -15,9 +15,10 @@
  *   - tests/bug-3384-worktree-cleanup-manifest.test.cjs (manifest-scoped cleanup module)
  */
 
-const { describe, test } = require('node:test');
+const { describe, test, afterEach, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const childProcess = require('node:child_process');
 const fc = require('fast-check');
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -30,6 +31,7 @@ const CORE_PATH = path.join(
 
 const {
   resolveWorktreeContext,
+  resolveWorktreeLinkage,
   parseWorktreePorcelain,
   planWorktreePrune,
   executeWorktreePrunePlan,
@@ -140,6 +142,202 @@ describe('resolveWorktreeContext', () => {
       'must return effectiveRoot string even on timeout'
     );
   });
+
+  // ─── #3050 DEFECT 2: timeout must be distinguishable from not_git_repo ─────
+  test('git rev-parse --git-dir/--git-common-dir TIMES OUT → reason "git_timed_out" (#3050)', () => {
+    const execGit = (args) => {
+      if (args.includes('--git-dir')) return { ...makeTimeoutStub()(args), timedOut: true };
+      return { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository', timedOut: false };
+    };
+    const context = resolveWorktreeContext('/repo', { execGit, existsSync: () => false });
+    assert.strictEqual(context.reason, 'git_timed_out');
+    assert.notStrictEqual(context.reason, 'not_git_repo');
+    assert.strictEqual(context.effectiveRoot, '/repo');
+  });
+
+  // ─── #3050 item 7: drive the REAL spawn seam, not a hand-set execGit stub ──
+  // Every test above injects deps.execGit with a hand-set `timedOut`, so the
+  // production execGitDefault → shell-command-projection's execGit →
+  // isSpawnTimeout chain is never actually exercised, and a Windows-shaped
+  // timeout (spawnSync reports no `signal`, only `error.code === 'ETIMEDOUT'`)
+  // is unexercised on this half. This test omits deps.execGit entirely so
+  // resolveWorktreeContext falls through to the real execGitDefault, and
+  // mocks node:child_process.spawnSync — the actual primitive
+  // shell-command-projection.cjs's execGit wraps — to return that exact
+  // Windows shape.
+  describe('execGitDefault (real spawn seam)', () => {
+    afterEach(() => {
+      mock.restoreAll();
+    });
+
+    test('Windows-shaped timeout (no signal, error.code ETIMEDOUT) is detected as a real timeout (#3050)', () => {
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: '',
+        signal: null,
+        error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      }));
+
+      const context = resolveWorktreeContext('/repo', { existsSync: () => false });
+      assert.strictEqual(context.reason, 'git_timed_out');
+      assert.strictEqual(context.effectiveRoot, '/repo');
+    });
+
+    test('POSIX-shaped timeout (SIGTERM + error.code ETIMEDOUT) is also detected as a real timeout', () => {
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: '',
+        signal: 'SIGTERM',
+        error: Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' }),
+      }));
+
+      const context = resolveWorktreeContext('/repo', { existsSync: () => false });
+      assert.strictEqual(context.reason, 'git_timed_out');
+    });
+
+    test('externally-delivered SIGTERM with no ETIMEDOUT error is NOT reported as a timeout', () => {
+      // Boundary: the timeout carve-out must not swallow a plain non-zero exit
+      // that merely happens to carry a signal, absent an ETIMEDOUT error.
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: 'fatal: not a git repository',
+        signal: 'SIGTERM',
+        error: null,
+      }));
+
+      const context = resolveWorktreeContext('/repo', { existsSync: () => false });
+      assert.notStrictEqual(context.reason, 'git_timed_out');
+    });
+  });
+});
+
+// ─── resolveWorktreeLinkage (#3045) ──────────────────────────────────────────
+// resolveWorktreeContext's `has_local_planning` shortcut answers "is there a
+// usable project root right here", not "is this a linked worktree" — a linked
+// worktree created to isolate an executor is a full checkout, so it normally
+// has its OWN checked-out .planning/ too. resolveWorktreeLinkage is the
+// shortcut-free primitive the isolation guard (hooks/gsd-cursor-subagent-start.js)
+// needs instead: it must report "linked_worktree_root" for such a worktree even
+// though .planning exists locally — exactly the case that would defeat the guard
+// if resolveWorktreeContext were reused as-is.
+describe('resolveWorktreeLinkage', () => {
+  test('reports linked_worktree_root even when .planning exists locally (the case resolveWorktreeContext would misclassify)',
+    { skip: isWindows ? 'POSIX-rooted fixture paths cannot be expressed on Windows path.resolve' : false },
+    () => {
+      // deliberately no `existsSync` dep at all — resolveWorktreeLinkage must
+      // never consult the filesystem for .planning; only git-dir comparison.
+      const linkage = resolveWorktreeLinkage('/repo/wt', {
+        execGit: (args) => {
+          if (args[1] === '--git-dir') return { exitCode: 0, stdout: '.git/worktrees/wt', stderr: '' };
+          if (args[1] === '--git-common-dir') return { exitCode: 0, stdout: '../.git', stderr: '' };
+          return { exitCode: 1, stdout: '', stderr: '' };
+        },
+      });
+      assert.strictEqual(linkage.mode, 'linked_worktree_root');
+      assert.strictEqual(linkage.reason, 'linked_worktree');
+      assert.strictEqual(linkage.effectiveRoot, '/repo');
+    });
+
+  test('reports main_worktree for the primary checkout', () => {
+    const linkage = resolveWorktreeLinkage('/repo/main', {
+      execGit: (args) => {
+        if (args[1] === '--git-dir') return { exitCode: 0, stdout: '.git', stderr: '' };
+        if (args[1] === '--git-common-dir') return { exitCode: 0, stdout: '.git', stderr: '' };
+        return { exitCode: 1, stdout: '', stderr: '' };
+      },
+    });
+    assert.strictEqual(linkage.mode, 'current_directory');
+    assert.strictEqual(linkage.reason, 'main_worktree');
+  });
+
+  test('git timeout → git_timed_out, never throws', () => {
+    const linkage = resolveWorktreeLinkage('/repo', { execGit: makeTimeoutStub() });
+    assert.strictEqual(linkage.reason, 'git_timed_out');
+    assert.strictEqual(linkage.effectiveRoot, '/repo');
+  });
+
+  test('not a git repo → not_git_repo', () => {
+    const linkage = resolveWorktreeLinkage('/repo', {
+      execGit: () => ({ exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' }),
+    });
+    assert.strictEqual(linkage.reason, 'not_git_repo');
+  });
+});
+
+// ─── #3050 item 4: shared timeout predicate — single source, no divergence ──
+// worktree-safety.cjs's execGitDefault and worktree-base-ref.cjs's
+// isExecGitTimeout both now delegate to shell-command-projection.cjs's
+// isSpawnTimeout. This describe block asserts the parity half of that claim
+// for worktree-base-ref's PUBLIC evaluateWorktreeBaseDegrade — driving it
+// against the same synthetic spawn results the shared predicate is tested
+// with directly, so a future edit that reintroduces a local, diverging copy
+// of the timeout check in worktree-base-ref.cts will make this test fail
+// rather than silently drift. (worktree-safety.cjs's own half of this parity
+// — execGitDefault via resolveWorktreeContext — is covered separately above,
+// by "execGitDefault (real spawn seam)", which drives the real
+// node:child_process.spawnSync primitive rather than a synthetic result.)
+describe('shared isSpawnTimeout predicate — parity for worktree-base-ref evaluateWorktreeBaseDegrade (#3050)', () => {
+  const { isSpawnTimeout } = require(path.join(
+    __dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'
+  ));
+  const { evaluateWorktreeBaseDegrade } = require(path.join(
+    __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-base-ref.cjs'
+  ));
+
+  const cases = [
+    {
+      name: 'SIGTERM + ETIMEDOUT (POSIX shape)',
+      result: { signal: 'SIGTERM', error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }) },
+      expectTimeout: true,
+    },
+    {
+      name: 'no signal + ETIMEDOUT (Windows shape)',
+      result: { signal: null, error: Object.assign(new Error('x'), { code: 'ETIMEDOUT' }) },
+      expectTimeout: true,
+    },
+    {
+      name: 'externally-delivered SIGTERM, no error (not a timeout)',
+      result: { signal: 'SIGTERM', error: null },
+      expectTimeout: false,
+    },
+    {
+      name: 'clean non-zero exit, no signal, no error',
+      result: { signal: null, error: null },
+      expectTimeout: false,
+    },
+  ];
+
+  for (const { name, result, expectTimeout } of cases) {
+    test(`isSpawnTimeout(${name}) === ${expectTimeout}, and evaluateWorktreeBaseDegrade agrees`, () => {
+      assert.strictEqual(isSpawnTimeout(result), expectTimeout);
+
+      // exitCode 128 ("not a git repository") is git's own definitive,
+      // completed answer — the ONLY non-timeout, non-success outcome that
+      // does not degrade. Pairing it with each non-timeout signal/error
+      // combination means: if isExecGitTimeout ever mis-classifies one of
+      // these as a timeout, this assertion flips from 'no-head' (no
+      // degrade) to 'head-unresolvable' (degrade) and the test fails —
+      // a real behavioral divergence signal, not a same-reason coincidence.
+      const execGit = () => ({
+        exitCode: expectTimeout ? null : 128,
+        stdout: '',
+        stderr: '',
+        signal: result.signal,
+        error: result.error,
+      });
+      const degradeResult = evaluateWorktreeBaseDegrade({ execGit, effectiveBaseRef: null, cwd: '/repo' });
+      if (expectTimeout) {
+        assert.strictEqual(degradeResult.shouldDegrade, true);
+        assert.strictEqual(degradeResult.reason, 'head-unresolvable');
+      } else {
+        assert.strictEqual(degradeResult.shouldDegrade, false);
+        assert.strictEqual(degradeResult.reason, 'no-head');
+      }
+    });
+  }
 });
 
 // ─── parseWorktreePorcelain ───────────────────────────────────────────────────
@@ -1295,6 +1493,11 @@ describe('cmdWorktreeCreate', () => {
     '--path', '/repo/.claude/worktrees/agent-a1',
     '--branch', 'worktree-agent-a1',
     '--base', 'abc123',
+    // #3050: --root is now mandatory (fail-closed confinement) — every test
+    // below that isn't specifically exercising the missing-root case must
+    // supply one. '/repo' confines every okArgs-derived --path used in this
+    // describe block (all live under /repo/.claude/worktrees/...).
+    '--root', '/repo',
   ];
 
   function okExecGit() {
@@ -1330,10 +1533,10 @@ describe('cmdWorktreeCreate', () => {
     assert.match(out.join(''), /"ok": true/);
   });
 
-  // #2627 Phase 3: --root confines the created worktree. Absent the flag the
-  // behavior is exactly Phase 2's (every test above passes unchanged); the
-  // orchestrator-worktree scheduler path always passes it, because Phase 3 is
-  // what starts SPAWNING processes into these directories.
+  // #2627 Phase 3 / #3050: --root confines the created worktree. #3050
+  // hardened this from opt-in to MANDATORY — confinement must not depend on
+  // the caller remembering to pass the flag; omitting it now fails closed
+  // instead of silently creating an unconfined worktree.
   describe('--root confinement', () => {
     const rootedArgs = (wtPath, root) => [
       '--manifest', 'manifest.json',
@@ -1389,15 +1592,17 @@ describe('cmdWorktreeCreate', () => {
       assert.equal(result.reason, 'path_outside_root');
     });
 
-    test('omitting --root preserves Phase-2 behavior (no confinement)', () => {
-      const { result } = run([
+    test('omitting --root fails closed (#3050 — confinement is mandatory, not opt-in)', () => {
+      const { result, gitCalled } = run([
         '--manifest', 'manifest.json',
         '--agent-id', 'a1',
         '--path', '/repo/.claude/worktrees/agent-a1',
         '--branch', 'worktree-agent-a1',
         '--base', 'abc123',
       ]);
-      assert.equal(result.ok, true, 'no --root → unchanged Phase-2 acceptance');
+      assert.equal(result.ok, false, 'no --root → fail closed, never silently unconfined');
+      assert.equal(result.reason, 'root_required');
+      assert.equal(gitCalled, false, 'must fail before any git side effect');
     });
   });
 
@@ -1622,9 +1827,12 @@ describe('cmdWorktreeCreate / cmdWorktreeRecordAgent — on-disk entry parity (#
       '--branch', 'worktree-agent-a1',
       '--base', 'abc123',
     ];
+    // cmdWorktreeCreate now requires --root (#3050); cmdWorktreeRecordAgent has
+    // no --root concept at all, so it's appended only to the create-side args.
+    const createArgs = [...argsFor('--manifest'), '--root', '/repo'];
 
     let createdContent = null;
-    cmdWorktreeCreate('/repo/main', argsFor('--manifest'), {
+    cmdWorktreeCreate('/repo/main', createArgs, {
       readFile: () => '{"worktrees":[]}',
       writeFile: (_p, c) => { createdContent = c; },
       write: () => {},
@@ -3112,12 +3320,24 @@ describe('worktree-safety: resolveWorktreeRoot and pruneOrphanedWorktrees reloca
 describe('worktree-safety: resolveWorktreeRoot behaviour', () => {
   const worktreeSafety = require(WORKTREE_SAFETY_PATH);
 
-  test('resolveWorktreeRoot(createTempGitProject()) returns a non-empty string', (t) => {
+  test('resolveWorktreeRoot(createTempGitProject()) returns {root, reason} with a non-empty root', (t) => {
     const dir = createTempGitProject('gsd-wt-root-');
     t.after(() => cleanup(dir));
     const result = worktreeSafety.resolveWorktreeRoot(dir);
-    assert.ok(typeof result === 'string' && result.length > 0,
-      `Expected non-empty string, got: ${JSON.stringify(result)}`);
+    assert.ok(result && typeof result === 'object', 'must return an object, not a bare string');
+    assert.ok(typeof result.root === 'string' && result.root.length > 0,
+      `Expected non-empty root string, got: ${JSON.stringify(result)}`);
+    assert.ok(typeof result.reason === 'string' && result.reason.length > 0,
+      `Expected non-empty reason string, got: ${JSON.stringify(result)}`);
+  });
+
+  test('resolveWorktreeRoot propagates git_timed_out via the injected execGit seam (#3050)', () => {
+    const result = worktreeSafety.resolveWorktreeRoot('/repo/wt', {
+      existsSync: () => false,
+      execGit: makeTimeoutStub(),
+    });
+    assert.strictEqual(result.reason, 'git_timed_out');
+    assert.strictEqual(result.root, '/repo/wt');
   });
 });
 
@@ -4081,8 +4301,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-worktree-path-guard.js');
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
@@ -4139,11 +4360,17 @@ function makeWorktree(mainRepo, branchName) {
  * Run the hook with a given payload, returning the spawnSync result.
  */
 function runHook(cwd, payload) {
-  return spawnSync(process.execPath, [HOOK_PATH], {
+  // 10000ms: previously UNBOUNDED (no `timeout` option passed to spawnSync).
+  // gsd-worktree-path-guard.js is a synchronous, in-process path-guard hook
+  // (fs/path checks against a JSON stdin payload) — no subprocess or network
+  // work of its own. 10s leaves generous headroom over its sub-second
+  // worst case even on a heavily contended CI runner.
+  const r = seamRunHook(HOOK_PATH, [], {
     cwd,
     input: JSON.stringify(payload),
-    encoding: 'utf8',
+    timeoutMs: 10_000,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 // ---------------------------------------------------------------------------
@@ -5222,6 +5449,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { createTempGitProject, cleanup } = require('./helpers.cjs');
+const { runHook: seamRunHookGate } = require('./helpers/process-seam.cjs');
 
 // Bash snippet extracted from execute-phase.md (the SUBMODULE_PATHS parse +
 // per-plan intersection logic with normalization + bidirectional matching).
@@ -5295,11 +5523,27 @@ const GATE_SNIPPET = [
 ].join('\n');
 
 function runGate(cwd, env) {
-  const out = execFileSync('bash', ['-c', GATE_SNIPPET], {
+  // 30000ms: previously UNBOUNDED (execFileSync had no `timeout` option).
+  // The snippet is pure shell string/array parsing plus one `git config
+  // --file .gitmodules` lookup against a small fixture repo — matched to the
+  // 30s bound already established for the other bash guard snippets in this
+  // suite for consistency, though it does substantially less work than those.
+  const r = seamRunHookGate('-c', [GATE_SNIPPET], {
+    interpreter: 'bash',
     cwd,
-    encoding: 'utf-8',
+    timeoutMs: 30_000,
     env: { ...process.env, ...env },
   });
+  if (r.exitCode !== 0) {
+    // execFileSync THREW on non-zero exit; the seam does not. Reproduce that
+    // failure signal explicitly so a real gate-snippet failure still surfaces
+    // loudly instead of silently falling through to the parse below.
+    throw new Error(
+      `runGate: bash -c GATE_SNIPPET exited ${r.exitCode} (outcome=${r.outcome}). ` +
+      `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`
+    );
+  }
+  const out = r.stdout;
   const lines = out.trim().split('\n');
   const last = lines[lines.length - 1];
   const m = last.match(/^USE_WORKTREES_FOR_PLAN=(true|false)$/);

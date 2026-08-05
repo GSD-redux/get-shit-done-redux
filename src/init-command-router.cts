@@ -34,11 +34,19 @@ interface InitModule {
   cmdInitResume(cwd: string, raw: boolean): void;
   cmdInitVerifyWork(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitPhaseOp(cwd: string, phase: string | undefined, raw: boolean): void;
+  cmdInitCodeReview(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitReview(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitDiscussPhaseAssumptions(cwd: string, phase: string | undefined, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitTodos(cwd: string, phase: string | undefined, raw: boolean): void;
   cmdInitMilestoneOp(cwd: string, raw: boolean): void;
   cmdInitMapCodebase(cwd: string, raw: boolean): void;
   cmdInitProgress(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitManager(cwd: string, raw: boolean): void;
+  cmdInitCompleteMilestone(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitAutonomous(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitDocsUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitUpdate(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
+  cmdInitTransition(cwd: string, raw: boolean, options?: Record<string, string | boolean | null | undefined>): void;
   cmdInitNewWorkspace(cwd: string, raw: boolean): void;
   cmdInitListWorkspaces(cwd: string, raw: boolean): void;
   cmdInitRemoveWorkspace(cwd: string, name: string | undefined, raw: boolean): void;
@@ -108,7 +116,18 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       },
       quick: () => {
         const namedArgs = parseNamedArgs(args, [], ['discuss', 'research', 'validate', 'full']);
-        init.cmdInitQuick(cwd, args.slice(2).join(' '), raw, {
+        // #2994: `args.slice(2)` is the free-text description, but section-manifest
+        // gating (buildSectionManifestField, src/init.cts) now requires forwarding
+        // --discuss/--research/--validate/--full alongside it — a plain `.join(' ')`
+        // would otherwise fold those recognized flag tokens straight into the
+        // description text. Strip them before joining so the description stays
+        // exactly what it was before this workflow started forwarding flags.
+        const quickFlagTokens = new Set(['--discuss', '--research', '--validate', '--full']);
+        const description = args
+          .slice(2)
+          .filter((token) => !quickFlagTokens.has(token))
+          .join(' ');
+        init.cmdInitQuick(cwd, description, raw, {
           discuss: namedArgs['discuss'],
           research: namedArgs['research'],
           validate: namedArgs['validate'],
@@ -119,6 +138,15 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       resume: () => init.cmdInitResume(cwd, raw),
       'verify-work': () => init.cmdInitVerifyWork(cwd, args[2], raw),
       'phase-op': () => init.cmdInitPhaseOp(cwd, args[2], raw),
+      'code-review': () => {
+        const namedArgs = parseNamedArgs(args, [], ['fix']);
+        init.cmdInitCodeReview(cwd, args[2], raw, { fix: namedArgs['fix'] });
+      },
+      review: () => init.cmdInitReview(cwd, args[2], raw, {}),
+      'discuss-phase-assumptions': () => {
+        const namedArgs = parseNamedArgs(args, [], ['auto']);
+        init.cmdInitDiscussPhaseAssumptions(cwd, args[2], raw, { auto: namedArgs['auto'] });
+      },
       todos: () => init.cmdInitTodos(cwd, args[2], raw),
       'milestone-op': () => init.cmdInitMilestoneOp(cwd, raw),
       'map-codebase': () => init.cmdInitMapCodebase(cwd, raw),
@@ -129,6 +157,20 @@ function routeInitCommand({ init, args, cwd, raw, error }: RouteInitCommandOptio
       // Keep manager on CJS for now so runtime-specific command rendering
       // (e.g. $gsd-* for codex) stays consistent with runtime-slash helpers.
       manager: () => init.cmdInitManager(cwd, raw),
+      'complete-milestone': () => init.cmdInitCompleteMilestone(cwd, raw),
+      autonomous: () => {
+        const namedArgs = parseNamedArgs(args, [], ['converge', 'cross-ai']);
+        init.cmdInitAutonomous(cwd, raw, {
+          converge: namedArgs['converge'],
+          'cross-ai': namedArgs['cross-ai'],
+        });
+      },
+      'docs-update': () => init.cmdInitDocsUpdate(cwd, raw, {}),
+      update: () => {
+        const namedArgs = parseNamedArgs(args, [], ['next', 'rc']);
+        init.cmdInitUpdate(cwd, raw, { next: namedArgs['next'], rc: namedArgs['rc'] });
+      },
+      transition: () => init.cmdInitTransition(cwd, raw, {}),
       'new-workspace': () => init.cmdInitNewWorkspace(cwd, raw),
       'list-workspaces': () => init.cmdInitListWorkspaces(cwd, raw),
       'remove-workspace': () => init.cmdInitRemoveWorkspace(cwd, args[2], raw),
