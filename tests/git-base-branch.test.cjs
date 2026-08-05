@@ -30,6 +30,7 @@ const path = require('node:path');
 const { execSync } = require('node:child_process');
 
 const { runGsdTools, cleanup, readFileNormalized } = require('./helpers.cjs');
+const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -298,6 +299,82 @@ describe('#1268 gitWorktreeInfoInternal: relocation to git-base-branch', () => {
     const dir = createTempDir('gsd-wt-info-nothrow-');
     t.after(() => cleanup(dir));
     assert.doesNotThrow(() => gitBaseBranch.gitWorktreeInfoInternal(dir));
+  });
+});
+
+// ─── #3057 B4: last-resort "main" — verified vs unverified ───────────────────
+//
+// `resolveBaseBranch` alone collapses two very different situations into the
+// same `'main'` string: a repository that genuinely has no candidate branch
+// (every git query on tiers 2-4 completed and cleanly answered "nothing"),
+// and a total resolution failure (every query timed out). `resolveBaseBranchDiagnostics`
+// exposes `verified` so a caller can tell them apart; `cmdGitBaseBranch`
+// surfaces the unverified case as a stderr diagnostic without touching its
+// stdout contract (five workflows parse that stdout literally).
+
+describe('#3057 B4: resolveBaseBranchDiagnostics — verified vs unverified last-resort default', () => {
+  test('every tier-2/3/4 git query TIMES OUT → last-resort "main" is UNVERIFIED', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b4-fault-'));
+    t.after(() => cleanup(dir));
+    // No .planning/config.json in this dir → the config-override tier is
+    // skipped naturally (readConfigBaseBranch's real-fs read misses cleanly).
+    const faultyGit = makeFaultyGit({ faults: [{ kind: 'timeout' }] });
+
+    const result = gitBaseBranch.resolveBaseBranchDiagnostics(dir, { execGit: faultyGit });
+
+    assert.strictEqual(result.branch, 'main');
+    assert.strictEqual(result.verified, false);
+  });
+
+  test('every tier-2/3/4 git query cleanly reports no candidate → last-resort "main" is VERIFIED', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b4-clean-'));
+    t.after(() => cleanup(dir));
+    // Default passthrough: exitCode 0, empty stdout for every call — a real,
+    // completed "no answer" from git, not a failure (timedOut:false, error:null).
+    const faultyGit = makeFaultyGit();
+
+    const result = gitBaseBranch.resolveBaseBranchDiagnostics(dir, { execGit: faultyGit });
+
+    assert.strictEqual(result.branch, 'main');
+    assert.strictEqual(result.verified, true);
+  });
+
+  test('resolveBaseBranch (string-returning) is unaffected — both cases still return "main"', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b4-compat-'));
+    t.after(() => cleanup(dir));
+    assert.strictEqual(
+      gitBaseBranch.resolveBaseBranch(dir, { execGit: makeFaultyGit({ faults: [{ kind: 'timeout' }] }) }),
+      'main',
+    );
+    assert.strictEqual(
+      gitBaseBranch.resolveBaseBranch(dir, { execGit: makeFaultyGit() }),
+      'main',
+    );
+  });
+
+  test('cmdGitBaseBranch writes an unverified-fallback diagnostic to stderr ONLY when unverified', (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b4-cmd-'));
+    t.after(() => cleanup(dir));
+
+    let stdoutText = '';
+    let stderrText = '';
+    gitBaseBranch.cmdGitBaseBranch(dir, [], {
+      execGit: makeFaultyGit({ faults: [{ kind: 'timeout' }] }),
+      write: (s) => { stdoutText += s; },
+      writeDiagnostic: (s) => { stderrText += s; },
+    });
+    assert.strictEqual(stdoutText, 'main\n');
+    assert.ok(stderrText.length > 0, 'the unverified fallback must write a stderr diagnostic');
+
+    stdoutText = '';
+    stderrText = '';
+    gitBaseBranch.cmdGitBaseBranch(dir, [], {
+      execGit: makeFaultyGit(),
+      write: (s) => { stdoutText += s; },
+      writeDiagnostic: (s) => { stderrText += s; },
+    });
+    assert.strictEqual(stdoutText, 'main\n');
+    assert.strictEqual(stderrText, '', 'a verified fallback must not write any diagnostic');
   });
 });
 
