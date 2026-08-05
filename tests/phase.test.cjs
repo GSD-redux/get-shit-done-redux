@@ -8388,13 +8388,36 @@ function extractFrontmatterField(stateContent, fieldName) {
 // intercept fd 1, discard fd 2, and pass every OTHER fd through to the real
 // writeSync — cmdPhaseComplete takes the planning lock, which writes its own
 // JSON via a separate fd that must not be swallowed as if it were stdout.
-function capturePhaseComplete(cwd, phaseNum) {
-  // We invoke gsd-tools directly for the full CJS path, but with GSD_DISABLE_SDK_BRIDGE=1
-  // to force the CJS implementation. Since no env var disables bridge, we call cmdPhaseComplete
-  // directly and redirect output capture.
+// #3057-followup: this MUST take the test's `t` and mock via `t.mock.method`,
+// NOT a manual `fs.writeSync = mock; try { } finally { fs.writeSync = orig; }`
+// global reassignment. The manual form directly overwrites the shared `fs`
+// module's exported property for the duration of the call — a window that is
+// synchronous and correctly restored for THIS function alone, but any OTHER
+// synchronous write that happens to route through the SAME public
+// `fs.writeSync` while the property is swapped (confirmed reachable: on a
+// file-backed fd 1 — the common case for a captured/redirected CI child,
+// as opposed to a live TTY/pipe — `process.stdout.write` itself resolves
+// through the public `fs.writeSync`, not an internal/unpatchable binding) is
+// silently captured into `chunks` or dropped instead of reaching the real fd.
+// `t.mock.method` installs the SAME interception but registers it on node:test's
+// own MockTracker, which independently guarantees restoration through the
+// test's normal lifecycle — the identical fd-1 seam tests/io.test.cjs and
+// tests/roadmap.test.cjs already use successfully. Converging on that one
+// proven pattern removes this file's manual save/restore as a second,
+// divergent implementation of the same seam.
+//
+// The explicit `try { … } finally { ctx.mock.restore(); }` below is
+// belt-and-suspenders on TOP of the MockTracker: several call sites invoke
+// this helper more than once per test (T1's double-invocation case, T2's
+// double-invocation case), so restoring THIS call's mock immediately —
+// rather than leaving it installed until the whole test ends — keeps the
+// interception window tight even across repeated calls in one test body.
+// `MockTracker` restoring everything at test end remains the fallback if a
+// future edit ever removes this finally.
+function capturePhaseComplete(t, cwd, phaseNum) {
   const chunks = [];
   const origWriteSync = fs.writeSync.bind(fs);
-  fs.writeSync = (fd, data, offset, length) => {
+  const ctx = t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
     if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
     if (fd !== 1) return origWriteSync(fd, data, offset, length);
     const chunk = Buffer.isBuffer(data)
@@ -8402,11 +8425,11 @@ function capturePhaseComplete(cwd, phaseNum) {
       : String(data);
     chunks.push(chunk);
     return Buffer.byteLength(chunk, 'utf8');
-  };
+  });
   try {
     cmdPhaseComplete(cwd, phaseNum, false);
   } finally {
-    fs.writeSync = origWriteSync;
+    ctx.mock.restore();
   }
   return chunks.join('');
 }
@@ -8424,9 +8447,9 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     cleanup(tmpDir);
   });
 
-  test('T1: double invocation does NOT double-increment Completed Phases in STATE.md body', () => {
+  test('T1: double invocation does NOT double-increment Completed Phases in STATE.md body', (t) => {
     // First call — legitimate completion
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfter1 = readStateMd(tmpDir);
     const completedAfter1Body = extractField(stateAfter1, 'Completed Phases');
@@ -8444,7 +8467,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     );
 
     // Second call on the same phase — must be idempotent
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfter2 = readStateMd(tmpDir);
     const completedAfter2Body = extractField(stateAfter2, 'Completed Phases');
@@ -8484,7 +8507,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     });
 
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => capturePhaseComplete(t, tmpDir, '1'),
       /injected STATE\.md write failure/,
     );
 
@@ -8519,7 +8542,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     });
 
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => capturePhaseComplete(t, tmpDir, '1'),
       /injected REQUIREMENTS\.md write failure/,
     );
 
@@ -8554,7 +8577,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     });
 
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => capturePhaseComplete(t, tmpDir, '1'),
       /injected REQUIREMENTS\.md write failure[\s\S]*WARNING: rollback failed while restoring[\s\S]*injected ROADMAP\.md rollback failure/,
     );
   });
@@ -8597,7 +8620,7 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
       return origStatSync.call(fs, target, ...args);
     });
 
-    const output = JSON.parse(capturePhaseComplete(tmpDir, '1'));
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
 
     // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
     // completes exactly as it would have before #3057 B3.
@@ -8610,8 +8633,8 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     assert.strictEqual(output.has_warnings, true);
   });
 
-  test('a completed staleness check that finds nothing stale does NOT add an indeterminate warning', () => {
-    const output = JSON.parse(capturePhaseComplete(tmpDir, '1'));
+  test('a completed staleness check that finds nothing stale does NOT add an indeterminate warning', (t) => {
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
 
     assert.strictEqual(output.completed_phase, '1');
     assert.ok(
@@ -8648,7 +8671,7 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     // Routing is UNCHANGED — status !== 'passed' already blocked before #3057
     // B3; the note is purely additive to the message text.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '2'),
+      () => capturePhaseComplete(t, tmpDir, '2'),
       /verification is incomplete[\s\S]*staleness check could not complete — see #3057/,
     );
   });
@@ -8954,7 +8977,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — progress percent clamp', () => {
     cleanup(tmpDir);
   });
 
-  test('T2: Progress percent never exceeds 100 after double invocation', () => {
+  test('T2: Progress percent never exceeds 100 after double invocation', (t) => {
     tmpDir = createFixture();
 
     // Pre-load STATE.md with Completed Phases: 1, Total Phases: 1 (already 100%)
@@ -8985,9 +9008,9 @@ describe('issue #4 (CJS): cmdPhaseComplete — progress percent clamp', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
 
     // First call
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
     // Second call — this is the problematic one
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfterBoth = readStateMd(tmpDir);
 
