@@ -19,6 +19,9 @@ const {
 } = require('./helpers.cjs');
 const { withFaultyFs } = require('./helpers/faulty-deps.cjs');
 const stateMod = require('../gsd-core/bin/lib/state.cjs');
+const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+const { parseMarkdownTable } = require('../gsd-core/bin/lib/markdown-table.cjs');
+const { collectSection } = require('../gsd-core/bin/lib/markdown-sectionizer.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 
@@ -204,6 +207,16 @@ function projectWithOnlyPhaseTableDrift() {
  * try/finally restore is CONTRIBUTING-compliant (same shape as
  * `withFaultyFs`).
  */
+/**
+ * Typed presence check for the `## Rebuild Log` audit-log section, shared by
+ * both call sites that need it (CONTRIBUTING: no raw-text `.includes()` on
+ * produced STATE.md text). Built on the existing `collectSection` seam
+ * (markdown-sectionizer.cjs) — a `Section | null`, not string matching.
+ */
+function hasRebuildLogSection(content) {
+  return collectSection(content, (h) => h.text.trim() === 'Rebuild Log') !== null;
+}
+
 function captureStdout(fn) {
   const chunks = [];
   const original = fs.writeSync;
@@ -237,18 +250,21 @@ describe('ADR-1817 Phase 2: `state rebuild` CLI subcommand dispatch (criterion #
 
     // Body fields reconciled with frontmatter.
     const live = readLiveState(cwd);
-    assert.ok(live.includes('**Current Phase:** 2'),
+    assert.strictEqual(stateExtractField(live, 'Current Phase'), '2',
       'body Current Phase must be reconciled to frontmatter value 2');
-    assert.ok(live.includes('**Current Phase Name:** Phase Two'),
+    assert.strictEqual(stateExtractField(live, 'Current Phase Name'), 'Phase Two',
       'body Current Phase Name must be reconciled to frontmatter value');
 
     // Orphan table row dropped (phase 99 is not on disk).
-    assert.ok(!live.includes('| 99 |'),
-      'orphan row for phase 99 must be dropped (phaseInventoryProvider wired to disk scan)');
+    const byPhaseTable = parseMarkdownTable(live);
+    assert.ok(byPhaseTable.ok, `By Phase table must parse; reason: ${byPhaseTable.ok ? '' : byPhaseTable.reason}`);
+    const phaseIds = byPhaseTable.value.rows.map((r) => r.Phase);
+    assert.ok(!phaseIds.includes('99'),
+      `orphan row for phase 99 must be dropped (phaseInventoryProvider wired to disk scan); rows: ${JSON.stringify(phaseIds)}`);
 
     // Audit log appended.
     const fullState = fs.readFileSync(path.join(cwd, '.planning', 'STATE.md'), 'utf8');
-    assert.ok(fullState.includes('## Rebuild Log'),
+    assert.ok(hasRebuildLogSection(fullState),
       'audit log section must be appended');
   });
 
@@ -265,9 +281,12 @@ describe('ADR-1817 Phase 2: `state rebuild` CLI subcommand dispatch (criterion #
       '--dry-run must NOT modify STATE.md on disk');
 
     // The structured output should signal mutations would occur (the fixture
-    // has drift, so mutated=true in dry-run preview).
-    assert.ok(result.output.includes('mutated'),
-      `dry-run output should report mutated flag; output: ${result.output}`);
+    // has drift, so mutated=true in dry-run preview). `state rebuild --dry-run`
+    // emits pure JSON to stdout (src/state.cts:3221 `cmdStateRebuild`'s dry-run
+    // branch: `emit({ ..., mutated, ... })`).
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.mutated, true,
+      `dry-run output should report mutated:true; output: ${result.output}`);
   });
 
   test('`state rebuild --verbose` emits audit-log entries to stderr', (t) => {
@@ -287,10 +306,14 @@ describe('ADR-1817 Phase 2: `state rebuild` CLI subcommand dispatch (criterion #
     // tees the same entries to stderr. The functional guarantee (audit log
     // written) is what matters; the stderr tee is a convenience.
     const after = fs.readFileSync(path.join(cwd, '.planning', 'STATE.md'), 'utf8');
-    assert.ok(after.includes('## Rebuild Log'),
+    assert.ok(hasRebuildLogSection(after),
       '--verbose must still produce the audit log section in STATE.md');
-    assert.ok(stdout.includes('rebuilt'),
-      `--verbose stdout must include the rebuild result; got: ${stdout.slice(0, 200)}`);
+    // The real (non-dry-run) path emits `{ rebuilt: capturedMutated, ... }`
+    // to stdout as pure JSON (src/state.cts:3254 `cmdStateRebuild`). The
+    // fixture has drift, so `rebuilt` must be true.
+    const parsedStdout = JSON.parse(stdout);
+    assert.strictEqual(parsedStdout.rebuilt, true,
+      `--verbose stdout must report rebuilt:true; got: ${stdout.slice(0, 200)}`);
   });
 
   test('`state rebuild` on a clean STATE.md is a no-op (idempotency, end-to-end)', (t) => {
@@ -317,12 +340,18 @@ describe('ADR-1817 Phase 2: `state rebuild` CLI subcommand dispatch (criterion #
     // No STATE.md written.
 
     const result = runGsdTools('state rebuild', cwd);
-    // The command emits an error result but does not crash the process.
-    const combined = `${result.output}\n${result.error || ''}`;
-    assert.ok(combined.includes('STATE.md not found'),
-      'missing STATE.md should produce a clean "STATE.md not found" message');
-    assert.ok(!combined.includes('at Object.'),
-      'no raw stack trace should leak into the output (CONTRIBUTING QA Matrix)');
+    // The command emits a typed JSON error result and exits 0 — it does not
+    // crash the process (src/state.cts:3136 `cmdStateRebuild`'s missing-file
+    // guard: `emit({ error: 'STATE.md not found' }, raw); return;`, no
+    // `process.exit`). `result.success` proves the clean exit (a crash would
+    // flip it to false and populate `result.error` with a raw stack trace
+    // instead); `JSON.parse` proves stdout is exactly the structured payload
+    // with nothing else — including no leaked stack-trace text — mixed in.
+    assert.ok(result.success,
+      `state rebuild on a missing STATE.md should exit cleanly (no crash); stderr: ${result.error || ''}`);
+    const parsed = JSON.parse(result.output);
+    assert.strictEqual(parsed.error, 'STATE.md not found',
+      `missing STATE.md should produce a typed error field; output: ${result.output}`);
   });
 });
 
@@ -365,7 +394,11 @@ describe('#3057 B1: cmdStateRebuild (production adapter) surfaces a real phase-i
     // The orphan row must survive untouched — a failed scan is not a
     // trustworthy inventory to reconcile the table against.
     const live = readLiveState(cwd);
-    assert.ok(live.includes('| 99 |'), 'orphan row for phase 99 must be preserved when the scan failed');
+    const byPhaseTable = parseMarkdownTable(live);
+    assert.ok(byPhaseTable.ok, `By Phase table must parse; reason: ${byPhaseTable.ok ? '' : byPhaseTable.reason}`);
+    const phaseIds = byPhaseTable.value.rows.map((r) => r.Phase);
+    assert.ok(phaseIds.includes('99'),
+      `orphan row for phase 99 must be preserved when the scan failed; rows: ${JSON.stringify(phaseIds)}`);
   });
 
   test('BENIGN path: the same fixture with an unfaulted disk scan reconciles the table and reports no failure', (t) => {

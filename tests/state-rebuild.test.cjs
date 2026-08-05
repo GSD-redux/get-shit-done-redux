@@ -22,6 +22,7 @@ const {
   transitionCore,
 } = require('../gsd-core/bin/lib/state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+const { parseMarkdownTable } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const fixedClock = Object.freeze({
   today: () => '2026-06-29',
@@ -450,9 +451,12 @@ describe('#3057 B1: phaseInventoryProvider scan-failure is distinguishable from 
     assert.strictEqual(result.data.phase_inventory_scan_reason,
       'EACCES: permission denied, readdir .planning/phases',
       'the failure reason must be threaded through to the caller');
-    assert.ok(result.content.includes('| 99 |'),
+    const table = parseMarkdownTable(result.content);
+    assert.ok(table.ok, `By Phase table must parse; reason: ${table.ok ? '' : table.reason}`);
+    const phaseIds = table.value.rows.map((r) => r.Phase);
+    assert.ok(phaseIds.includes('99'),
       'orphan row must be preserved — a failed scan is not a trustworthy inventory to reconcile against');
-    assert.ok(!result.content.includes('kind: by-phase-table-reconciled'),
+    assert.ok(!result.data.log.some((e) => e.kind === 'by-phase-table-reconciled'),
       'a failed scan must not log a by-phase-table-reconciled entry (nothing was actually reconciled)');
   });
 
@@ -466,9 +470,12 @@ describe('#3057 B1: phaseInventoryProvider scan-failure is distinguishable from 
       'a genuinely-empty successful scan must report phase_inventory_scan_failed:false');
     assert.strictEqual(result.data.phase_inventory_scan_reason, undefined,
       'no reason field when the scan did not fail');
-    assert.ok(result.content.includes('| 99 |'),
+    const table = parseMarkdownTable(result.content);
+    assert.ok(table.ok, `By Phase table must parse; reason: ${table.ok ? '' : table.reason}`);
+    const phaseIds = table.value.rows.map((r) => r.Phase);
+    assert.ok(phaseIds.includes('99'),
       'orphan row is preserved (same visible outcome as the failure case — the DATA field is what distinguishes them)');
-    assert.ok(!result.content.includes('kind: by-phase-table-reconciled'),
+    assert.ok(!result.data.log.some((e) => e.kind === 'by-phase-table-reconciled'),
       'an empty inventory logs no reconciliation entry, same as the failure case');
   });
 });

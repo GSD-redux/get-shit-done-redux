@@ -290,7 +290,7 @@ test('an unreadable sibling manifest refuses the write', () => {
   const res = writeManifest(manifest, '.planning', { fs, clock });
   assert.strictEqual(res.ok, false);
   assert.strictEqual(res.kind, 'scan_incomplete');
-  assert.ok(res.message.includes(siblingPath), 'message must name the unreadable file');
+  assert.strictEqual(res.offendingPath, siblingPath, 'offendingPath must name the unreadable file');
 });
 
 test('an unparseable sibling manifest refuses the write', () => {
@@ -303,7 +303,7 @@ test('an unparseable sibling manifest refuses the write', () => {
   const res = writeManifest(manifest, '.planning', { fs, clock });
   assert.strictEqual(res.ok, false);
   assert.strictEqual(res.kind, 'scan_incomplete');
-  assert.ok(res.message.includes(siblingPath), 'message must name the unparseable file');
+  assert.strictEqual(res.offendingPath, siblingPath, 'offendingPath must name the unparseable file');
 });
 
 test('target and sibling failures stay distinct kinds', () => {

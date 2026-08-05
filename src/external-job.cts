@@ -264,7 +264,8 @@ interface FsLike {
 
 type WriteResult =
   | { ok: true; path: string }
-  | { ok: false; kind: 'malformed_existing' | 'duplicate_plan_id' | 'io_error' | 'scan_incomplete'; message: string };
+  | { ok: false; kind: 'malformed_existing' | 'duplicate_plan_id' | 'io_error'; message: string }
+  | { ok: false; kind: 'scan_incomplete'; message: string; offendingPath: string };
 
 /**
  * Pure path projection: `.planning/async-jobs/<job_id>.json`.
@@ -323,6 +324,7 @@ function writeManifest(
         ok: false,
         kind: 'scan_incomplete',
         message: `duplicate scan incomplete: failed to READ sibling manifest ${p} (${(e as Error).message}); quarantine or repair this file before retrying`,
+        offendingPath: p,
       };
     }
     let existing: Record<string, unknown>;
@@ -336,6 +338,7 @@ function writeManifest(
         ok: false,
         kind: 'scan_incomplete',
         message: `duplicate scan incomplete: failed to PARSE sibling manifest ${p} (${(e as Error).message}); quarantine or repair this file before retrying`,
+        offendingPath: p,
       };
     }
     const samePlan = existing.plan_id === manifest.plan_id;
