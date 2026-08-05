@@ -44,14 +44,22 @@ function makeFakeFs(root, files) {
       dirMap.get(dirAbs).set(parts[i], dirEntry(parts[i], !isLast));
     }
   }
+  // Production (`buildCatalog`) resolves paths via `path.join`, which is
+  // backslash-separated on Windows; this fake's maps are keyed POSIX. A real
+  // `fs` accepts both separators, so the fake must too — normalize the
+  // incoming lookup key unconditionally (never process.platform-gated).
+  // Caught by CI on windows-latest: every lookup missed, the fake indexed
+  // zero entries, and the anti-vacuity guards correctly flagged it.
+  const norm = (p) => String(p).replace(/\\/g, '/');
   const readDir = (absPath) => {
-    const m = dirMap.get(absPath);
+    const m = dirMap.get(norm(absPath));
     if (!m) throw new Error(`ENOENT (fake fs): ${absPath}`);
     return [...m.values()];
   };
   const readFile = (absPath) => {
-    if (!fileMap.has(absPath)) throw new Error(`ENOENT (fake fs): ${absPath}`);
-    return fileMap.get(absPath);
+    const key = norm(absPath);
+    if (!fileMap.has(key)) throw new Error(`ENOENT (fake fs): ${absPath}`);
+    return fileMap.get(key);
   };
   return { root, readFile, readDir };
 }

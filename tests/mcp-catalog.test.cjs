@@ -72,8 +72,15 @@ function makeFakeFs(root, files) {
       dirMap.get(dirAbs).set(parts[i], dirEntry(parts[i], !isLast));
     }
   }
+  // Production (`buildCatalog`) resolves paths via `path.join`, which is
+  // backslash-separated on Windows; this fake's maps are keyed POSIX. A real
+  // `fs` accepts both separators, so the fake must too — normalize the
+  // incoming lookup key unconditionally (never process.platform-gated).
+  // Caught by CI on windows-latest: every lookup missed, the fake indexed
+  // zero entries, and the anti-vacuity guards correctly flagged it.
+  const norm = (p) => String(p).replace(/\\/g, '/');
   const readDir = (absPath) => {
-    const m = dirMap.get(absPath);
+    const m = dirMap.get(norm(absPath));
     if (!m) {
       const err = new Error(`ENOENT (fake fs): ${absPath}`);
       throw err;
@@ -81,11 +88,12 @@ function makeFakeFs(root, files) {
     return [...m.values()];
   };
   const readFile = (absPath) => {
-    if (!fileMap.has(absPath)) {
+    const key = norm(absPath);
+    if (!fileMap.has(key)) {
       const err = new Error(`ENOENT (fake fs): ${absPath}`);
       throw err;
     }
-    return fileMap.get(absPath);
+    return fileMap.get(key);
   };
   return { root, readFile, readDir };
 }
@@ -502,7 +510,9 @@ describe('IO faults — injected via the seam, never chmod', () => {
     const badAbsPath = `${fake.root}/gsd-core/workflows/bad.md`;
     const realReadFile = fake.readFile;
     const faultyReadFile = (absPath) => {
-      if (absPath === badAbsPath) throw new Error('injected read failure');
+      // Same separator-normalization as makeFakeFs: a production-supplied
+      // absPath may be backslash-joined on Windows.
+      if (String(absPath).replace(/\\/g, '/') === badAbsPath) throw new Error('injected read failure');
       return realReadFile(absPath);
     };
 
@@ -527,7 +537,9 @@ describe('IO faults — injected via the seam, never chmod', () => {
     const workflowsDirAbs = `${fake.root}/gsd-core/workflows`;
     const realReadDir = fake.readDir;
     const faultyReadDir = (absPath) => {
-      if (absPath === workflowsDirAbs) throw new Error('injected directory read failure');
+      // Same separator-normalization as makeFakeFs: a production-supplied
+      // absPath may be backslash-joined on Windows.
+      if (String(absPath).replace(/\\/g, '/') === workflowsDirAbs) throw new Error('injected directory read failure');
       return realReadDir(absPath);
     };
     assert.throws(
