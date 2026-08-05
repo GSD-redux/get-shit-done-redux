@@ -598,6 +598,80 @@ describe('evaluateUatPassed — policy.requireVerification', () => {
   });
 });
 
+// ─── evaluateUatPassed — #3057 B3: staleness-check indeterminate is surfaced ──
+//
+// readVerificationStatus's internal staleness check can fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3 wiring, the requireVerification
+// policy check used only `.status`, dropping `.staleCheckIndeterminate` on
+// the floor — so cmdPhaseUatPassed's JSON output (which spreads this whole
+// report) could never distinguish "checked; nothing is stale" from "could
+// not check". `verification_stale_check_indeterminate` must never itself gate
+// `passed`/`blockers` — only readVerificationStatus's `.status` may.
+
+describe('#3057 B3: evaluateUatPassed — verification staleness-check indeterminate is surfaced', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    rmDir(tmpDir);
+  });
+
+  function seedVerifiedPhase() {
+    writeFile(tmpDir, 'phase-UAT.md', makePassingUat(1));
+    writeFile(tmpDir, 'phase-VERIFICATION.md', '---\nstatus: passed\n---\n\nOK.');
+    writeFile(tmpDir, 'phase-SUMMARY.md', '# Summary');
+    const verificationPath = path.join(tmpDir, 'phase-VERIFICATION.md');
+    const summaryPath = path.join(tmpDir, 'phase-SUMMARY.md');
+    // Deterministic mtime ordering — never rely on write-order clock ties.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:01:00.000Z');
+    fs.utimesSync(summaryPath, older, older);
+    fs.utimesSync(verificationPath, newer, newer);
+    return { summaryPath, verificationPath };
+  }
+
+  test('an fs failure inside the staleness check sets verification_stale_check_indeterminate:true; passed/blockers unchanged', (t) => {
+    const { summaryPath, verificationPath } = seedVerifiedPhase();
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const report = evaluateUatPassed(tmpDir, { policy: { requireVerification: true } });
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED — `passed`/
+    // `blockers` are exactly what they would be without the injected fault.
+    assert.strictEqual(report.passed, true);
+    assert.deepStrictEqual(report.blockers, []);
+    assert.strictEqual(report.verification_stale_check_indeterminate, true);
+  });
+
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', () => {
+    seedVerifiedPhase();
+
+    const report = evaluateUatPassed(tmpDir, { policy: { requireVerification: true } });
+
+    assert.strictEqual(report.passed, true);
+    assert.strictEqual(report.verification_stale_check_indeterminate, false);
+  });
+
+  test('requireVerification not set → verification_stale_check_indeterminate is always false (readVerificationStatus never reached)', () => {
+    seedVerifiedPhase();
+
+    const report = evaluateUatPassed(tmpDir, { policy: { requireVerification: false } });
+
+    assert.strictEqual(report.verification_stale_check_indeterminate, false);
+  });
+});
+
 // ─── evaluateUatPassed — malformed markdown guard ─────────────────────────────
 
 describe('evaluateUatPassed — malformed markdown blocker', () => {

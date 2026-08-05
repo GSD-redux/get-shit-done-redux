@@ -21,6 +21,7 @@ const path = require('node:path');
 const childProcess = require('node:child_process');
 const fc = require('fast-check');
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
+const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 
 const WORKTREE_SAFETY_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-safety.cjs'
@@ -405,7 +406,36 @@ describe('planWorktreePrune', () => {
       },
     });
     assert.strictEqual(plan.action, 'metadata_prune_only');
-    assert.strictEqual(plan.reason, 'no_worktrees');
+    // #3050/#3057 (B6): a parse failure must NOT collide with the
+    // genuinely-empty-list verdict below ('no_worktrees') — see the paired
+    // test 'reason distinguishes a parse failure from a genuinely empty list'.
+    assert.strictEqual(plan.reason, 'parse_failed');
+  });
+
+  // Counter-test pair (B5/B6 negative-space, #3057): the same 0-worktrees
+  // shape must yield a DIFFERENT reason depending on WHY the list came back
+  // empty — a parser that threw vs a porcelain output that genuinely listed
+  // nothing. Asserting only one of these could not prove they are
+  // distinguishable; asserting both, side by side, proves it.
+  test('reason distinguishes a parse failure from a genuinely empty list', () => {
+    const failurePlan = planWorktreePrune('/repo/main', {}, {
+      execGit: () => ({ exitCode: 0, stdout: 'not-porcelain', stderr: '' }),
+      parseWorktreePorcelain: () => {
+        throw new Error('parse failed');
+      },
+    });
+    assert.strictEqual(failurePlan.action, 'metadata_prune_only');
+    assert.strictEqual(failurePlan.reason, 'parse_failed');
+
+    const benignPlan = planWorktreePrune('/repo/main', {}, {
+      execGit: () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      parseWorktreePorcelain: () => [],
+    });
+    assert.strictEqual(benignPlan.action, 'metadata_prune_only');
+    assert.strictEqual(benignPlan.reason, 'no_worktrees');
+
+    assert.notStrictEqual(failurePlan.reason, benignPlan.reason,
+      'a parse failure must not be reported as the same reason as a genuinely empty worktree list');
   });
 
   // Counter-test: timeout path (Contract 6)
@@ -629,6 +659,41 @@ describe('inspectWorktreeHealth', () => {
     const result = inspectWorktreeHealth('/tmp', {}, { execGit: makeTimeoutStub() });
     assert.strictEqual(Array.isArray(result.findings), true, 'findings must be an array even when ok:false');
   });
+
+  // Counter-test (B5, #3057): a statSync throw must surface as its own
+  // 'unverified' finding, distinct from 'orphan' (the case above, where
+  // existsSync itself says the path is absent). Silently producing NO finding
+  // for an unverifiable worktree would be the fail-open this row exists to close.
+  test('reports an unverified finding (not silently healthy, not orphan) when statSync throws', () => {
+    const health = inspectWorktreeHealth(
+      '/repo/main',
+      { staleAfterMs: 60 * 60 * 1000, nowMs: 2 * 60 * 60 * 1000 },
+      {
+        execGit: () => ({
+          exitCode: 0,
+          stdout: [
+            'worktree /repo/main',
+            'HEAD aaa',
+            'branch refs/heads/main',
+            '',
+            'worktree /repo/wt-unverified',
+            'HEAD bbb',
+            'branch refs/heads/feat-a',
+            '',
+          ].join('\n'),
+          stderr: '',
+        }),
+        existsSync: () => true,
+        statSync: () => {
+          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        },
+      }
+    );
+    assert.strictEqual(health.ok, true);
+    assert.deepStrictEqual(health.findings, [
+      { kind: 'unverified', path: '/repo/wt-unverified' },
+    ]);
+  });
 });
 
 // ─── snapshotWorktreeInventory ────────────────────────────────────────────────
@@ -663,8 +728,8 @@ describe('snapshotWorktreeInventory', () => {
     );
     assert.strictEqual(inventory.ok, true);
     assert.deepStrictEqual(inventory.entries, [
-      { path: '/repo/wt-a', exists: true, isStale: true, ageMinutes: 120 },
-      { path: '/repo/wt-b', exists: false, isStale: false, ageMinutes: null },
+      { path: '/repo/wt-a', exists: 'present', isStale: true, ageMinutes: 120 },
+      { path: '/repo/wt-b', exists: 'absent', isStale: false, ageMinutes: null },
     ]);
   });
 
@@ -692,6 +757,52 @@ describe('snapshotWorktreeInventory', () => {
       result.reason,
       'git_timed_out',
       'must use reason=git_timed_out when execGit returns timedOut:true'
+    );
+  });
+
+  // Counter-test pair (B5, #3057): a statSync throw must NOT be reported as
+  // exists:'present' (unverified presence masquerading as confirmed presence),
+  // and must be distinguishable from a genuinely-absent worktree (existsSync
+  // returns false for a different entry in the SAME call). Asserting only one
+  // side could not prove the two are distinguishable.
+  test("exists is 'unverified' (not 'present') when statSync throws — distinct from a genuinely absent worktree", () => {
+    const porcelain = [
+      'worktree /repo/main',
+      'HEAD aaa',
+      'branch refs/heads/main',
+      '',
+      'worktree /repo/wt-unverified',
+      'HEAD bbb',
+      'branch refs/heads/feat-a',
+      '',
+      'worktree /repo/wt-absent',
+      'HEAD ccc',
+      'branch refs/heads/feat-b',
+      '',
+    ].join('\n');
+    const inventory = snapshotWorktreeInventory(
+      '/repo/main',
+      { staleAfterMs: 60 * 60 * 1000, nowMs: 2 * 60 * 60 * 1000 },
+      {
+        execGit: () => ({ exitCode: 0, stdout: porcelain, stderr: '' }),
+        existsSync: (p) => p !== '/repo/wt-absent',
+        statSync: (p) => {
+          if (p === '/repo/wt-unverified') {
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+          }
+          return { mtimeMs: 0 };
+        },
+      }
+    );
+    assert.strictEqual(inventory.ok, true);
+    assert.deepStrictEqual(inventory.entries, [
+      { path: '/repo/wt-unverified', exists: 'unverified', isStale: false, ageMinutes: null },
+      { path: '/repo/wt-absent', exists: 'absent', isStale: false, ageMinutes: null },
+    ]);
+    assert.notStrictEqual(
+      inventory.entries[0].exists,
+      inventory.entries[1].exists,
+      'an unverifiable statSync failure must not collapse to the same exists value as a genuinely absent worktree'
     );
   });
 });
@@ -2920,6 +3031,111 @@ describe('executeWorktreeWaveCleanupPlan', () => {
       'cat-file timeout must RESCUE the SUMMARY — data safety wins over uncertain status (#2556)');
     // The rest of cleanup proceeds normally (merge/remove/delete succeed in this fixture)
     assert.equal(result.ok, true, 'cleanup can still succeed after rescuing on cat-file timeout');
+  });
+
+  // ─── B7 (#3050/#3057): rescue-anyway on an uncertain cat-file, via the
+  // Phase 2 fault-injection adapter (makeFaultyGit) rather than a hand-rolled
+  // key-matching stub. The two tests above already prove the verdict with
+  // hand-written mocks; these prove it again through the in-process fault
+  // seam the epic standardized on, for both fault shapes the design calls
+  // "uncertain": a fatal exit (128) and a timeout.
+  //
+  // #3057 finding: `git cat-file -e` returns exit 128 BOTH for the normal
+  // "absent from HEAD" case (#2556's own comment above, line ~2833) and for a
+  // genuine fatal git error — there is no third exit code that means
+  // "confirmed absent, no ambiguity" as opposed to "uncertain". The
+  // production code's own non-zero-exit check (`catFileResult.exitCode === 0
+  // ? skip : rescue`) therefore CANNOT distinguish "uncertain" from
+  // "certain-and-fine" — every non-zero exit, whatever its cause, is uncertain
+  // by construction, and #2556 rescues all of them uniformly. That is not a
+  // gap the tests below can paper over: it is the reason "rescue whenever not
+  // confirmed committed" is the whole rule, rather than a narrower
+  // uncertain-only carve-out.
+  function makeWaveCleanupPassthrough() {
+    return (args) => {
+      const key = args.join(' ');
+      if (key === '-C /repo/.claude/worktrees/agent-a1 rev-parse --abbrev-ref HEAD') {
+        return { exitCode: 0, stdout: 'worktree-agent-a1', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'merge-base HEAD worktree-agent-a1') {
+        return { exitCode: 0, stdout: 'abc123', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key.startsWith('merge worktree-agent-a1')) {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'worktree remove /repo/.claude/worktrees/agent-a1 --force') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'branch -D worktree-agent-a1') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+    };
+  }
+
+  const waveCleanupPlanFixture = {
+    ok: true,
+    repoRoot: '/repo/main',
+    action: 'cleanup_wave',
+    discovery: 'manifest',
+    entries: [{
+      agent_id: 'a1',
+      worktree_path: '/repo/.claude/worktrees/agent-a1',
+      branch: 'worktree-agent-a1',
+      expected_base: 'abc123',
+    }],
+  };
+
+  test('#3057/B7 (makeFaultyGit): cat-file exit 128 still rescues anyway (deliberate, #2556)', () => {
+    const rescued = [];
+    const execGit = makeFaultyGit({
+      faults: [{ kind: 'exit', exitCode: 128, when: (args) => args.includes('cat-file') }],
+      passthrough: makeWaveCleanupPassthrough(),
+    });
+    const result = executeWorktreeWaveCleanupPlan(waveCleanupPlanFixture, {
+      execGit,
+      findSummaryFiles: (worktreePath) => (
+        worktreePath === '/repo/.claude/worktrees/agent-a1'
+          ? ['/repo/.claude/worktrees/agent-a1/.planning/q1-SUMMARY.md']
+          : []
+      ),
+      readFileSync: () => 'summary content',
+      existsSync: () => false,
+      mkdirSync: () => {},
+      copyFileSync: (src, dest) => { rescued.push({ src, dest }); },
+    });
+    assert.strictEqual(rescued.length, 1,
+      'an uncertain cat-file (exit 128) must still rescue — the deliberate #2556 verdict');
+    assert.strictEqual(result.ok, true);
+  });
+
+  test('#3057/B7 (makeFaultyGit): cat-file timeout still rescues anyway (deliberate, #2556)', () => {
+    const rescued = [];
+    const execGit = makeFaultyGit({
+      faults: [{ kind: 'timeout', when: (args) => args.includes('cat-file') }],
+      passthrough: makeWaveCleanupPassthrough(),
+    });
+    const result = executeWorktreeWaveCleanupPlan(waveCleanupPlanFixture, {
+      execGit,
+      findSummaryFiles: (worktreePath) => (
+        worktreePath === '/repo/.claude/worktrees/agent-a1'
+          ? ['/repo/.claude/worktrees/agent-a1/.planning/q1-SUMMARY.md']
+          : []
+      ),
+      readFileSync: () => 'summary content',
+      existsSync: () => false,
+      mkdirSync: () => {},
+      copyFileSync: (src, dest) => { rescued.push({ src, dest }); },
+    });
+    assert.strictEqual(rescued.length, 1,
+      'an uncertain cat-file (timeout) must still rescue — the deliberate #2556 verdict, same as exit 128');
+    assert.strictEqual(result.ok, true);
   });
 
   test('blocks dirty worktrees before merge/remove/delete', () => {

@@ -52,6 +52,34 @@ Adopt a **dynamic context management platform** built on a hybrid of build-time 
 
    *This defers a content catalog, not MCP itself.* A companion MCP server shipped 2026-06-28 under [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (#1681 / PR #1809) — `package.json` bin `gsd-mcp-server` → `bin/gsd-mcp-server.js`, module `src/mcp-server.cts` — exposing three **tools**: `gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`. ADR-1239 owns that surface; this ADR defers a different one over the same protocol. What is genuinely unbuilt is the served **resources** and **prompts** catalog, tracked in #3072.
 
+   **Amended by #3072 — the deferral is lifted and the catalog ships.** `gsd-mcp-server` now serves
+   the workflow/reference/command tree as MCP **resources** (`resources/list` cursor-paginated,
+   `resources/read`, `gsd://<segment>/<relpath>` uris) and the `commands/gsd/*.md` set as MCP
+   **prompts**. Decision 6's binding constraint is unchanged and was honored: the catalog is purely
+   additive, the file-copy floor is still written for every runtime, and no install behavior moved.
+
+   *The composition scope is shared, not re-declared.* Served workflow content passes through
+   `composeWorkflow`, and — critically — through the **same** scope predicate the installer uses.
+   That predicate (`shouldCompose`) now lives in one place, `src/mcp-catalog.cts`, and
+   `bin/install.js` imports it rather than re-declaring its own regex. This is the direct answer to
+   the "Dual-surface drift … requires parity assertions" risk this ADR records below: the two
+   channels cannot disagree about *what* gets composed, because there is only one predicate, and
+   `tests/mcp-catalog-parity.install.test.cjs` spawns a REAL `bin/install.js` and asserts its
+   composition decision (marker-token presence, which survives every per-runtime rewrite) matches
+   the catalog's, with executable anti-vacuity guards (the comparison set must contain a
+   marker-bearing workflow AND a non-composed file, and the gate must fail if the predicate stops
+   discriminating).
+
+   *Two things measurement corrected in the migration-step wording.* First, the scope predicate is
+   **not** "compose everything" — install deliberately composes only under `gsd-core/workflows/`,
+   because a reference or command that *documents* marker syntax with an unfenced example would
+   otherwise be parsed as carrying a real marker and have that line lossily dropped (the reason
+   recorded at `bin/install.js`'s call site, from #2930's review). The catalog inherits that scope
+   exactly; references and commands are served verbatim. Second, parity is asserted at the
+   **composition stage, not against an emitted runtime tree** — install applies per-runtime path
+   rewrites after composing, and the catalog is host-agnostic, so byte-equality with any one
+   runtime's output would be false by construction.
+
    *"deferred-tools" is not deferred; it is unbuildable.* The **External practice** section above names "resources/prompts/deferred-tools" as the external list-then-fetch analog, and that phrase propagated into this decision. MCP defines exactly three server primitives — resources, prompts, and tools — and the tools surface is `tools/list` (cursor-paginated) plus `tools/call`. There is no server-side deferred-tools primitive; deferring tool *schemas* is host behavior, not a server capability. The list-then-fetch property this ADR wants is delivered by resources and prompts. Recorded in #3075 rather than carried here as a deliverable.
 
 ### Options considered
@@ -279,7 +307,7 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
    roughly nineteen, which is how a gate becomes something contributors route around.
 6. **Wire the init bundle (C)** to emit a per-invocation sections manifest; workflows consume it.
 7. **Roll out across LARGE/XL tiers**; update INVENTORY families + parity tests.
-8. **(Deferred)** MCP served catalog — resources + prompts, served through the same composition seam as the file floor so the two channels cannot drift (#3072). Additive for MCP-capable hosts only; the file-copy floor stays the default (Decision 6).
+8. **MCP served catalog** — resources + prompts, served through the same composition seam as the file floor so the two channels cannot drift (#3072). Additive for MCP-capable hosts only; the file-copy floor stays the default (Decision 6). **Shipped by #3072** — see the amendment under Decision 6.
 
 **Ordering landmine:** any generator consuming compiled output must run *after* `build:lib` (tsc), like `gen-plugin-skills` / `gen-capability-registry`; regenerating before `build:lib` silently drops unbuilt modules (`gsd-inventory-manifest-regen-needs-build`).
 
@@ -313,6 +341,16 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
 - Per-runtime emission multiplies artifacts across the 15 × N matrix (inventory/parity surface).
 - Build-order fragility (must run after `build:lib`).
 - Dual-surface drift if any future MCP channel is added — requires parity assertions.
+
+  **Discharged by #3072 (the served catalog).** The channel this warned about now exists, and the
+  mitigation shipped with it rather than being promised alongside it. The composition-scope
+  predicate is shared (`shouldCompose`, one definition, consumed by both `bin/install.js` and the
+  catalog) instead of duplicated, so the two surfaces cannot independently drift on what gets
+  composed; `tests/mcp-catalog-parity.install.test.cjs` spawns a real installer and asserts its
+  composition decision matches the catalog's across the real content tree. The gate carries two executable anti-vacuity
+  guards — the comparison set must include a workflow that actually carries markers and a file the
+  predicate declines to compose — so it cannot pass by comparing nothing, which is the failure mode
+  a parity assertion is most prone to.
 
 ## Prototype (step 2, Option E) — non-shipping reference example
 

@@ -1762,3 +1762,103 @@ describe('#2645 — deleting a verification report must not raise completeness',
       'the in-milestone phase (2-new) must be recorded normally');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: inspectWorkstream surfaces an indeterminate staleness check
+//
+// readVerificationStatus's internal staleness check can fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3 wiring, that failure was
+// dropped here — `liveVerificationStatus` used only `.status` — so nothing
+// could ever distinguish "checked; nothing is stale" from "could not check".
+// `WorkstreamInventory`'s own return shape has no per-phase verification
+// detail to carry this on, so it is surfaced via the SAME injectable
+// stderr-diagnostic seam #3057 B4 added to cmdGitBaseBranch (see
+// tests/git-base-branch.test.cjs), never via a change to `phases[]`/
+// `completed_phases` — the rollup routing must stay byte-identical.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: inspectWorkstream — verification staleness-check indeterminate is surfaced', () => {
+  let tmpDir;
+  before(() => { tmpDir = createFixture(); });
+  after(() => cleanup(tmpDir));
+
+  const V2_STATE = 'milestone: v2.0\nstatus: executing\n';
+
+  function roadmapWithRows(rows) {
+    return [
+      '# Roadmap', '', '## Progress', '',
+      '| Phase | Milestone | Plans Complete | Status | Completed |',
+      '| --- | --- | --- | --- | --- |',
+      ...rows,
+      '',
+    ].join('\n');
+  }
+
+  /** Writes a verified phase directory with a deterministic (never-stale) mtime ordering. */
+  function writeVerifiedPhase(wsDir, slug) {
+    const dir = path.join(wsDir, 'phases', slug);
+    fs.mkdirSync(dir, { recursive: true });
+    const summaryPath = path.join(dir, '01-SUMMARY.md');
+    const verificationPath = path.join(dir, '01-VERIFICATION.md');
+    fs.writeFileSync(path.join(dir, '01-PLAN.md'), '# plan\n');
+    fs.writeFileSync(summaryPath, '# summary\n');
+    fs.writeFileSync(verificationPath, '---\nstatus: passed\n---\n');
+    // Deterministic mtime ordering — never rely on write-order clock ties.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:01:00.000Z');
+    fs.utimesSync(summaryPath, older, older);
+    fs.utimesSync(verificationPath, newer, newer);
+    return { summaryPath, verificationPath };
+  }
+
+  test('an fs failure inside the staleness check writes a stderr diagnostic; the rollup is UNCHANGED', (t) => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-3057-b3-fault' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Alpha | v2.0 | 1/1 | Complete | - |',
+    ]));
+    const { summaryPath, verificationPath } = writeVerifiedPhase(wsDir, '1-alpha');
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const calls = [];
+    const inv = inspectWorkstream(tmpDir, 'ws-3057-b3-fault', {
+      active: null,
+      writeDiagnostic: (message, meta) => { calls.push({ message, meta }); },
+    });
+
+    assert.ok(inv);
+    // Pre-existing no-throw fail-open routing is UNCHANGED: the rollup counts
+    // exactly what it would without the injected fault.
+    assert.equal(inv.completed_phases, 1, 'rollup routing unchanged');
+    assert.strictEqual(calls.length, 1, 'an indeterminate staleness check must write exactly one diagnostic');
+    assert.strictEqual(calls[0].meta.phaseDir, '1-alpha', 'diagnostic meta should name the affected phase directory');
+    assert.strictEqual(calls[0].meta.reason, 'staleCheckIndeterminate', 'diagnostic meta should carry a stable reason');
+  });
+
+  test('a completed staleness check that finds nothing stale writes NO diagnostic', () => {
+    const wsDir = seedWorkstream(tmpDir, { name: 'ws-3057-b3-ok' });
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), V2_STATE);
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapWithRows([
+      '| 1. Alpha | v2.0 | 1/1 | Complete | - |',
+    ]));
+    writeVerifiedPhase(wsDir, '1-alpha');
+
+    const calls = [];
+    const inv = inspectWorkstream(tmpDir, 'ws-3057-b3-ok', {
+      active: null,
+      writeDiagnostic: (message, meta) => { calls.push({ message, meta }); },
+    });
+
+    assert.ok(inv);
+    assert.equal(inv.completed_phases, 1);
+    assert.strictEqual(calls.length, 0, 'a completed, non-stale check must not write any diagnostic');
+  });
+});

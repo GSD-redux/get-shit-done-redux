@@ -16,6 +16,8 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 
+const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
+
 const MODULE_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-base-ref.cjs'
 );
@@ -378,6 +380,42 @@ describe('evaluateWorktreeBaseDegrade', () => {
     });
     assert.strictEqual(result.shouldDegrade, false);
     assert.strictEqual(result.reason, 'no-head');
+  });
+
+  // ─── #3057 B8: headAbsenceVerified distinguishes the two "no-head" causes ──
+  //
+  // Both outcomes below keep `shouldDegrade:false, reason:'no-head'` — that
+  // product decision is deliberately UNCHANGED (pinned by the regression
+  // guards above and flagged in the #3050 review as still an open question).
+  // What changes is that a caller can now tell git's DEFINITIVE "not a git
+  // repository" answer (exit 128) apart from git completing but returning
+  // nothing useful (exit 0, empty stdout) — the module's own #380-383 comment
+  // named this gap; these two paired tests prove it is closed.
+
+  test('exit 128 — git\'s definitive "not a git repository" answer → headAbsenceVerified:true', () => {
+    const faultyGit = makeFaultyGit({
+      faults: [{ kind: 'exit', exitCode: 128, stderr: 'fatal: not a git repository' }],
+    });
+    const result = evaluateWorktreeBaseDegrade({ execGit: faultyGit });
+    assert.strictEqual(result.shouldDegrade, false);
+    assert.strictEqual(result.reason, 'no-head');
+    assert.strictEqual(result.headAbsenceVerified, true);
+  });
+
+  test('exit 0 with empty stdout — git completed but gave no useful answer → headAbsenceVerified:false', () => {
+    // makeFaultyGit()'s default passthrough IS exit 0 / empty stdout / no
+    // error / not timed out — a real, completed, but non-substantive answer.
+    const faultyGit = makeFaultyGit();
+    const result = evaluateWorktreeBaseDegrade({ execGit: faultyGit });
+    assert.strictEqual(result.shouldDegrade, false);
+    assert.strictEqual(result.reason, 'no-head');
+    assert.strictEqual(result.headAbsenceVerified, false);
+  });
+
+  test('headAbsenceVerified is null (not applicable) for a reason other than no-head', () => {
+    const result = evaluateWorktreeBaseDegrade({ effectiveBaseRef: 'head' });
+    assert.strictEqual(result.reason, 'baseref-head');
+    assert.strictEqual(result.headAbsenceVerified, null);
   });
 
   test('HEAD == origin/HEAD → no degrade, reason head-matches-fork', () => {

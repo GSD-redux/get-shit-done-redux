@@ -802,6 +802,83 @@ describe('verification-status', () => {
 
 });
 
+// ─── #3057 B3: findStaleVerificationSummary — indeterminate vs not-stale ─────
+//
+// The pre-fix catch-all returned `null` on ANY fs / scanPhasePlans / clock
+// failure — identical to a completed check that genuinely found nothing
+// stale. `opts.fs` had never been exercised by any test. These two tests
+// confirm (a) the `opts.fs` injection seam actually works, and (b) the two
+// outcomes are now distinguishable via `staleCheckIndeterminate` on the
+// `readVerificationStatus` result.
+
+describe('#3057 B3: staleness check — indeterminate is distinguishable from not-stale', () => {
+  test('an fs failure inside the staleness check yields staleCheckIndeterminate:true, not a silent "not stale"', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b3-fault-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-stale-check-fault');
+    fs.mkdirSync(dir);
+
+    const verificationPath = path.join(dir, '01-VERIFICATION.md');
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    writeVerificationMd(dir, '01-VERIFICATION.md', 'passed');
+    fs.writeFileSync(summaryPath, '# Summary');
+    // The summary IS newer — if the check ran to completion it would find
+    // 'stale'. The point of this test is that it never gets to find out.
+    setMtime(verificationPath, '2026-01-01T00:00:00.000Z');
+    setMtime(summaryPath, '2026-01-01T00:01:00.000Z');
+
+    // Confirms opts.fs is actually threaded through: readdirSync/readFileSync
+    // delegate to the real fs (so "find the VERIFICATION.md" / "read its
+    // frontmatter" upstream of the staleness check still succeed normally),
+    // and ONLY statSync is faulted — driving findStaleVerificationSummary's
+    // catch branch specifically, via the injected seam, not a global monkeypatch.
+    const fsLike = {
+      readdirSync: (d) => fs.readdirSync(d),
+      readFileSync: (p, enc) => fs.readFileSync(p, enc),
+      statSync: () => { throw new Error('injected stat failure (#3057 B3)'); },
+    };
+
+    const result = readVerificationStatus(dir, {
+      fs: fsLike,
+      phaseCleanCommitTimesMs: () => new Map(),
+    });
+
+    // Pre-existing no-throw fail-open contract is UNCHANGED: routing still
+    // proceeds as if nothing were stale (status stays 'passed', not 'stale' —
+    // a genuinely-stale summary sits right there and would have tripped the
+    // 'stale' route had the check run to completion).
+    assert.equal(result.status, 'passed');
+    // But the cause is no longer silently identical to a completed "nothing
+    // is stale" check — this MUST be flagged as indeterminate.
+    assert.strictEqual(result.staleCheckIndeterminate, true);
+  });
+
+  test('a completed staleness check that finds nothing stale never reports indeterminate', (t) => {
+    const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-3057-b3-ok-'));
+    t.after(() => cleanup(baseDir));
+    const dir = path.join(baseDir, '01-stale-check-ok');
+    fs.mkdirSync(dir);
+
+    const verificationPath = path.join(dir, '01-VERIFICATION.md');
+    const summaryPath = path.join(dir, '01-01-SUMMARY.md');
+    writeVerificationMd(dir, '01-VERIFICATION.md', 'passed');
+    fs.writeFileSync(summaryPath, '# Summary');
+    // Verification NEWER than the summary → the check runs to completion
+    // (no fault injected) and genuinely finds nothing stale.
+    setMtime(summaryPath, '2026-01-01T00:00:00.000Z');
+    setMtime(verificationPath, '2026-01-01T00:01:00.000Z');
+
+    const result = readVerificationStatus(dir, { phaseCleanCommitTimesMs: () => new Map() });
+
+    assert.equal(result.status, 'passed');
+    assert.strictEqual(
+      result.staleCheckIndeterminate,
+      undefined,
+      'a completed check that found nothing stale must not be flagged indeterminate',
+    );
+  });
+});
+
 // ─── #2617: next_command runtime projection ──────────────────────────────────
 //
 // Regression tests for #2617 — verification-status `next_command` bypassed the

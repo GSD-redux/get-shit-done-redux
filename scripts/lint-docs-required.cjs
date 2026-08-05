@@ -16,6 +16,10 @@
 const { parseFragment, FRAGMENT_ERROR } = require('./changeset/parse.cjs');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
 
+// #2988: the repo's integration/default branch — the base every PR targets.
+// Used as the local fallback when GITHUB_BASE_REF is unset (CI sets it).
+const DEFAULT_BASE = 'next';
+
 const LINT_REASON = Object.freeze({
   OK_NO_TRIGGERING_FRAGMENTS: 'ok_no_triggering_fragments',
   OK_DOCS_UPDATED: 'ok_docs_updated',
@@ -149,7 +153,10 @@ function main() {
     } catch { /* fall through */ }
   }
 
-  const base = process.env.GITHUB_BASE_REF || 'main';
+  // #2988: local fallback must match the repo's integration branch (`next`),
+  // not the release branch (`main`). CI sets GITHUB_BASE_REF explicitly; the
+  // fallback only fires locally, where `next` is the base every PR targets.
+  const base = process.env.GITHUB_BASE_REF || DEFAULT_BASE;
   let changedFiles = [];
   try {
     // execFileSync with argv — no shell, so a malicious GITHUB_BASE_REF
@@ -216,6 +223,7 @@ module.exports = {
   OPT_OUT_LABEL,
   TRIGGERING_TYPES,
   FRAGMENT_ERROR,
+  DEFAULT_BASE,
   isFragmentPath,
   isDocsFile,
   isExemptFragment,

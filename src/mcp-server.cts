@@ -33,10 +33,66 @@ import stateIo = require('./state-io.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import shellCommandProjection = require('./shell-command-projection.cjs');
 const { dispatchGsdCommand } = shellCommandProjection;
+import fs from 'node:fs';
+import path from 'node:path';
+import {
+  buildCatalog,
+  readResource,
+  listResources,
+  getPrompt,
+  REASON,
+  type Catalog,
+} from './mcp-catalog.cjs';
 
 export const PROTOCOL_VERSION = '2024-11-05';
 export const SERVER_NAME = 'gsd-core';
-const SERVER_VERSION = '1.7.0';
+
+// #3072: resolve SERVER_VERSION from package.json (source tree) or the
+// installed gsd-core/VERSION marker, WITHOUT a top-level `require(...)` —
+// mirrors the established, already-precedented resolver in
+// `runtime-artifact-conversion.cts`'s `gsdVersion()` (#1383): a top-level
+// require would throw on any runtime whose root has no package.json/VERSION,
+// and `scripts/sync-manifest-versions.cjs` is not a fit here — its
+// `VERSIONED_MANIFESTS` list stamps a `version` FIELD into hand-authored JSON
+// manifests (plugin.json, marketplace.json, vscode/package.json); a `.cts`
+// source constant is not a JSON document that script can round-trip through
+// `readJson`/`setByPath`, and teaching it to text-edit TypeScript source
+// would be a much larger footprint than this lazy, cached, defensive read.
+// Resolved once per process (never per-request) and cached; a failed lookup
+// degrades to '0.0.0' (never `undefined`, never a crash) rather than making
+// `initialize`'s `serverInfo.version` field absent or malformed.
+const SEMVER_PREFIX = /^\d+\.\d+\.\d+/;
+let cachedServerVersion: string | undefined;
+function resolveServerVersion(): string {
+  if (cachedServerVersion !== undefined) return cachedServerVersion;
+  let version = '0.0.0';
+  try {
+    const v = fs.readFileSync(path.join(__dirname, '..', '..', 'VERSION'), 'utf8').trim();
+    if (SEMVER_PREFIX.test(v)) version = v;
+  } catch {
+    /* not an installed tree (no gsd-core/VERSION) */
+  }
+  if (version === '0.0.0') {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy, defensive: a top-level require would throw on a runtime root with no package.json.
+      const pkg = require(path.join(__dirname, '..', '..', '..', 'package.json')) as { version?: string };
+      if (pkg && typeof pkg.version === 'string' && SEMVER_PREFIX.test(pkg.version)) version = pkg.version;
+    } catch {
+      /* runtime root has no package.json */
+    }
+  }
+  cachedServerVersion = version;
+  return version;
+}
+
+// Catalog is built once per process, lazily, and cached (design "Shape" /
+// Gall's Law — no watching, no invalidation; Known limits: the package is
+// immutable in every install mode we ship).
+let cachedCatalog: Catalog | undefined;
+function getCatalog(): Catalog {
+  if (cachedCatalog === undefined) cachedCatalog = buildCatalog();
+  return cachedCatalog;
+}
 
 // JSON-RPC 2.0 error codes.
 const PARSE_ERROR = -32700;
@@ -107,6 +163,37 @@ function asString(v: unknown): string | null {
   return typeof v === 'string' ? v : null;
 }
 
+/** Extract the {@link REASON} carried by a `CatalogError`, if any (see `mcp-catalog.cts`). */
+function catalogErrorReason(err: unknown): string | undefined {
+  const reason = err && typeof err === 'object' ? (err as { reason?: unknown }).reason : undefined;
+  return typeof reason === 'string' ? reason : undefined;
+}
+
+function catalogErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Map a `mcp-catalog.cts` `CatalogError.reason` to a JSON-RPC error code.
+ * `READ_FAILED` is a server-side IO/compose failure (`INTERNAL_ERROR`);
+ * every other reason (unknown uri/prompt/cursor/root, malformed/traversal
+ * uri, wrong-typed param) is a client-supplied-value problem (`INVALID_PARAMS`)
+ * — deliberately never `METHOD_NOT_FOUND`, so a refusal is never
+ * indistinguishable from the method simply not existing (test-matrix rows
+ * 33/35).
+ */
+function catalogErrorCode(err: unknown): number {
+  return catalogErrorReason(err) === REASON.READ_FAILED ? INTERNAL_ERROR : INVALID_PARAMS;
+}
+
+function wireResource(entry: { uri: string; name: string; title: string; description: string; mimeType: string }) {
+  return { uri: entry.uri, name: entry.name, title: entry.title, description: entry.description, mimeType: entry.mimeType };
+}
+
+function wirePrompt(entry: { name: string; title: string; description: string }) {
+  return { name: entry.name, title: entry.title, description: entry.description };
+}
+
 function callTool(name: string, args: unknown, ctx: McpContext): { content: Array<{ type: string; text: string }>; isError?: boolean } {
   const a = (args && typeof args === 'object' ? args : {}) as Record<string, unknown>;
   const cwd = asString(ctx.cwd) || process.cwd();
@@ -161,8 +248,12 @@ export function handleMessage(request: JsonRpcRequest, ctx: McpContext = {}): Re
     case 'initialize':
       result = {
         protocolVersion: PROTOCOL_VERSION,
-        capabilities: { tools: {} },
-        serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+        // #3072: resources/prompts declared alongside tools. Deliberately NO
+        // subscribe/listChanged — nothing ever sends those notifications
+        // (design row 2 / Hyrum's Law: advertising an unimplemented
+        // notification is a lie a host would act on).
+        capabilities: { tools: {}, resources: {}, prompts: {} },
+        serverInfo: { name: SERVER_NAME, version: resolveServerVersion() },
       };
       break;
     case 'tools/list':
@@ -173,6 +264,48 @@ export function handleMessage(request: JsonRpcRequest, ctx: McpContext = {}): Re
       const toolName = asString(params.name);
       if (!toolName) return errorResponse(id, INVALID_PARAMS, 'tools/call requires string "name".');
       result = callTool(toolName, params.arguments, ctx);
+      break;
+    }
+    case 'resources/list': {
+      const params = (request.params && typeof request.params === 'object' ? request.params : {}) as Record<string, unknown>;
+      try {
+        const cursor = typeof params.cursor === 'string' ? params.cursor : undefined;
+        const pageSize = typeof params.pageSize === 'number' ? params.pageSize : undefined;
+        const page = listResources(getCatalog(), { cursor, pageSize });
+        result = page.nextCursor === undefined
+          ? { resources: page.resources.map(wireResource) }
+          : { resources: page.resources.map(wireResource), nextCursor: page.nextCursor };
+      } catch (e) {
+        return errorResponse(id, catalogErrorCode(e), catalogErrorMessage(e));
+      }
+      break;
+    }
+    case 'resources/read': {
+      const params = (request.params && typeof request.params === 'object' ? request.params : {}) as Record<string, unknown>;
+      try {
+        const read = readResource(getCatalog(), params.uri);
+        result = { contents: [{ uri: read.uri, mimeType: read.mimeType, text: read.text }] };
+      } catch (e) {
+        return errorResponse(id, catalogErrorCode(e), catalogErrorMessage(e));
+      }
+      break;
+    }
+    case 'prompts/list':
+      result = {
+        prompts: [...getCatalog().prompts.values()]
+          .map(wirePrompt)
+          .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)),
+      };
+      break;
+    case 'prompts/get': {
+      const params = (request.params && typeof request.params === 'object' ? request.params : {}) as Record<string, unknown>;
+      const name = asString(params.name);
+      if (!name) return errorResponse(id, INVALID_PARAMS, 'prompts/get requires string "name".');
+      try {
+        result = getPrompt(getCatalog(), name, params.arguments);
+      } catch (e) {
+        return errorResponse(id, catalogErrorCode(e), catalogErrorMessage(e));
+      }
       break;
     }
     default:
