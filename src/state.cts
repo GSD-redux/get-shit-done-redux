@@ -2284,18 +2284,17 @@ function extractRetiredPhaseNumbers(scope: string, convention?: string | null): 
  *   route sentinel exclusion through #3185's canonical predicate; the sync
  *   path intentionally retains its pre-existing absence of that exclusion.
  *
- * `applyReadPathSentinelRules` preserves the two call sites' pre-existing
- * asymmetry while sharing their counting implementation. The read path
- * excludes bare bracket token 999 and canonical legacy sentinels; the sync
- * path does neither. Both bracket paths retain the bracket-id and bare-0
- * rules. Making that distinction explicit prevents this refactor from
- * silently moving either total.
+ * `applyConventionTokenSentinelRules` makes the remaining convention-specific
+ * asymmetry explicit. Both read and sync exclude bare bracket token 999; only
+ * the read path excludes canonical legacy sentinels. Both bracket paths also
+ * retain the bracket-id and bare-0 rules. Sharing the implementation therefore
+ * cannot silently move either convention's total.
  */
 function countRoadmapPhaseHeadings(
   scope: string,
   convention: string | null | undefined,
   retiredPhaseNums: Set<string>,
-  applyReadPathSentinelRules: boolean,
+  applyConventionTokenSentinelRules: boolean,
 ): number {
   let count = 0;
   if (convention === 'bracket') {
@@ -2318,7 +2317,7 @@ function countRoadmapPhaseHeadings(
       // #612: under bracket the token rule composes with the bracket-id
       // check as the engine's {0, 999} sentinel set.
       if (/^0\b/.test(token)) continue;
-      if (applyReadPathSentinelRules && /^999\b/.test(token)) continue;
+      if (applyConventionTokenSentinelRules && /^999\b/.test(token)) continue;
       // #1514: retired/folded phases are struck through in the ROADMAP;
       // exclude them from the denominator (they can never be completed).
       if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
@@ -2333,7 +2332,7 @@ function countRoadmapPhaseHeadings(
   while ((m = phaseHeadingPattern.exec(scope)) !== null) {
     const token = m[1];
     if (!/\d/.test(token)) continue;
-    if (applyReadPathSentinelRules && isSentinelPhaseId(token)) continue;
+    if (applyConventionTokenSentinelRules && isSentinelPhaseId(token)) continue;
     if (retiredPhaseNums.has(phaseKeyFromToken(token))) continue;
     count++;
   }
@@ -5465,13 +5464,14 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   // #612 round-4: shares countRoadmapPhaseHeadings with buildStateFrontmatter
   // (defined just above extractRetiredPhaseNumbers) so both report
   // consistent totals off the SAME implementation, not two independently
-  // maintained copies (#3242 Bug B). This call site passes
-  // applyReadPathSentinelRules=false, preserving this file's pre-existing,
-  // deliberately-unchanged divergence from the read path (see the helper's
-  // own comment).
+  // maintained copies (#3242 Bug B).
+  // #612 round-5: bracket sync enables the same bare-token 999 exclusion as
+  // the read path and getMilestonePhaseFilter, preventing frontmatter/body
+  // disagreement. Non-bracket conventions still pass false, preserving the
+  // pre-existing legacy sync behavior while #3185 remains the read-path owner.
   let syncTotalPhases: number | null = null;
   const roadmapPhaseCount = syncRoadmapScope !== null
-    ? countRoadmapPhaseHeadings(syncRoadmapScope, syncConvention, syncRetiredPhaseNums, false)
+    ? countRoadmapPhaseHeadings(syncRoadmapScope, syncConvention, syncRetiredPhaseNums, syncConvention === 'bracket')
     : 0;
   if (roadmapPhaseCount > 0) {
     syncTotalPhases = Math.max(entries.length, roadmapPhaseCount);
