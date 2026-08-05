@@ -16,6 +16,7 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
 import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
+import { resolveRuntimeWithPersistedDefault } from './runtime-slash.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import toolsContract = require('./agent-tools-contract.cjs');
 const { parseToolsContract, toolsRequireWrite } = toolsContract;
@@ -144,11 +145,23 @@ function getAgentsDir(runtime?: string, projectRoot?: string): string {
 /**
  * Check which GSD agents are installed on disk.
  *
- * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param runtime - the active runtime name; when omitted, resolved from
+ *   GSD_RUNTIME, then `.planning/config.json`, then the runtime the installer
+ *   persisted to `~/.gsd/defaults.json`, then 'claude'
  * @param projectRoot - canonical project root for local-install discovery
  */
 function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsInstalledResult {
-  const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
+  // #2540 BLOCKER (review round 7): this previously read GSD_RUNTIME then fell
+  // straight to 'claude', so on the issue's own repro — a Codex install with no
+  // GSD_RUNTIME exported and no project-level runtime — it resolved 'claude',
+  // the codex-gated sandbox loop below never ran, and `validate agents`
+  // reported the same false pass #2540 was filed about. The installer persists
+  // `runtime: "codex"` to ~/.gsd/defaults.json (bin/install.js
+  // writeNonClaudeDefaults); the read path now looks where the write path
+  // writes. Scoped to a separate resolver rather than changing resolveRuntime
+  // itself, whose 118-symbol blast radius makes a precedence change its own
+  // piece of work.
+  const resolvedRuntime = runtime ?? resolveRuntimeWithPersistedDefault(projectRoot ?? null);
   const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
   const expectedAgents = Object.keys(MODEL_PROFILES);
   const installed: string[] = [];

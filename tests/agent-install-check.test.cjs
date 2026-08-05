@@ -540,6 +540,98 @@ describe('#2540 regression: sandbox_mode weaker than declared tool contract is r
     assert.strictEqual(result.agents_installed, false);
   });
 
+  // ── #2540 BLOCKER (review round 7): default runtime resolution ─────────────
+  //
+  // Every other test in this describe injects the runtime explicitly
+  // (`checkAgentsInstalled('codex')`). That is exactly why the blocker
+  // survived seven rounds: the ONE path that matters in production — a user
+  // who installed for Codex and just runs `validate agents` — is the one path
+  // the suite never took. `checkAgentsInstalled` read GSD_RUNTIME then fell
+  // straight to 'claude', while `bin/install.js` persists `runtime: "codex"`
+  // to `~/.gsd/defaults.json`. Read path and write path disagreed, the
+  // codex-gate early-returned, and the check reported the same false pass
+  // #2540 was filed about.
+  //
+  // These two tests therefore pass NO runtime argument, export NO GSD_RUNTIME,
+  // and supply NO project config. The only thing that says "codex" is a
+  // sandboxed defaults.json.
+  describe('#2540 BLOCKER: the gate fires on the issue\'s own repro (no env, no project config)', () => {
+    let homeDir;
+    let savedHome;
+    let savedUserProfile;
+
+    const writeDefaults = (contents) => {
+      fs.mkdirSync(path.join(homeDir, '.gsd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(homeDir, '.gsd', 'defaults.json'), JSON.stringify(contents, null, 2) + '\n',
+      );
+    };
+
+    beforeEach(() => {
+      homeDir = createTempDir();
+      savedHome = process.env['HOME'];
+      savedUserProfile = process.env['USERPROFILE'];
+      // os.homedir() reads HOME on POSIX and USERPROFILE on Windows; set both
+      // so this test never touches the developer's real ~/.gsd.
+      process.env['HOME'] = homeDir;
+      process.env['USERPROFILE'] = homeDir;
+      // The violating pair: contract needs Write, generated sandbox is read-only.
+      fs.writeFileSync(path.join(agentsDir, `${target}.md`), codexMd('Read, Write, Edit, Bash'));
+      fs.writeFileSync(path.join(agentsDir, `${target}.toml`), toml('read-only'));
+    });
+
+    afterEach(() => {
+      if (savedHome === undefined) delete process.env['HOME'];
+      else process.env['HOME'] = savedHome;
+      if (savedUserProfile === undefined) delete process.env['USERPROFILE'];
+      else process.env['USERPROFILE'] = savedUserProfile;
+      cleanup(homeDir);
+    });
+
+    test('a persisted codex runtime makes the sandbox check run', () => {
+      writeDefaults({ resolve_model_ids: 'omit', runtime: 'codex' });
+
+      assert.equal(process.env['GSD_RUNTIME'], undefined, 'precondition: no runtime in env');
+
+      const result = agentInstallCheck.checkAgentsInstalled();
+      assert.strictEqual(
+        result.agent_runtime, 'codex',
+        'the runtime must resolve from ~/.gsd/defaults.json when nothing upstream asserts one',
+      );
+      assert.strictEqual(
+        result.sandbox_violations.length, 1,
+        'the sandbox check must run on a Codex install that only declared itself in defaults.json — ' +
+          'this is #2540\'s stated reproduction, and the pre-fix code reported a clean pass here',
+      );
+      assert.strictEqual(result.agents_installed, false);
+    });
+
+    test('no persisted runtime still resolves claude, so the gate stays inert (discrimination proof)', () => {
+      // Same fixture, same absent env, same absent project config — only the
+      // defaults.json runtime differs. If this also reported a violation, the
+      // test above would prove nothing about where the runtime came from.
+      writeDefaults({ resolve_model_ids: 'omit' });
+
+      const result = agentInstallCheck.checkAgentsInstalled();
+      assert.strictEqual(result.agent_runtime, 'claude', 'no persisted runtime → the claude default');
+      assert.deepStrictEqual(
+        result.sandbox_violations, [],
+        'the codex-only sandbox check must not run when nothing resolves codex',
+      );
+    });
+
+    test('an explicit runtime argument still wins over the persisted default', () => {
+      // defaults.json is the LAST tier. A caller that knows the runtime, or a
+      // project/env that asserts one, must not be overridden by a stale
+      // global default left behind by an earlier install.
+      writeDefaults({ runtime: 'codex' });
+
+      const result = agentInstallCheck.checkAgentsInstalled('opencode');
+      assert.strictEqual(result.agent_runtime, 'opencode');
+      assert.deepStrictEqual(result.sandbox_violations, []);
+    });
+  });
+
   test('#2540 review: a TOML literal string sandbox_mode does not evade the check', () => {
     // GSD emits basic (double-quoted) strings, but this validator exists to
     // catch installs that no longer match what GSD emitted — a drifted

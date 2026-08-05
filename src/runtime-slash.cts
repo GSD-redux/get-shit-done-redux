@@ -113,6 +113,83 @@ export function resolveRuntime(projectDir: string | null | undefined): string {
 }
 
 /**
+ * Resolve the effective runtime the way `resolveRuntime` does, plus one final
+ * tier: the runtime the INSTALLER persisted to `~/.gsd/defaults.json`.
+ *
+ *   process.env.GSD_RUNTIME  >  config.runtime  >  defaults.json runtime  >  'claude'
+ *
+ * #2540 BLOCKER (review round 7). `resolveRuntime` stops at a hardcoded
+ * `'claude'` and never reads `~/.gsd/defaults.json` — which is exactly where
+ * `bin/install.js` (`writeNonClaudeDefaults`, #2395/#2834) persists
+ * `runtime: "codex"` when a user installs for Codex. The read path and the
+ * write path disagreed about where the runtime lives, so on #2540's own
+ * reproduction — no `GSD_RUNTIME` exported, no project-level runtime in
+ * `.planning/config.json` — a genuine Codex install resolved to `'claude'`,
+ * every codex-gated check early-returned, and `validate agents` reported the
+ * same false pass the issue was filed about.
+ *
+ * DELIBERATELY NOT FIXED IN `resolveRuntime` ITSELF. That symbol carries 118
+ * affected symbols across 24 files and 10 processes (CRITICAL blast radius);
+ * changing its precedence would silently re-point every one of them, and it
+ * deserves its own pass rather than riding along on a sandbox-check fix. This
+ * is the reviewer's offered narrow alternative: a separate entry point that
+ * DELEGATES to `resolveRuntime` for the first two tiers (no duplicated
+ * precedence logic to drift) and only consults the persisted default when
+ * neither of them asserted anything.
+ *
+ * The `assertedUpstream` check exists because `resolveRuntime` returns
+ * `'claude'` both when Claude was explicitly configured and when nothing was
+ * configured at all — the two are indistinguishable from its return value. An
+ * explicit `claude` in env or project config must keep winning over a stale
+ * `defaults.json`, so the persisted default is consulted only in the genuinely
+ * unconfigured case.
+ *
+ * @param projectDir - path to the project directory, or null/undefined
+ * @returns the resolved runtime name
+ */
+export function resolveRuntimeWithPersistedDefault(projectDir: string | null | undefined): string {
+  const resolved = resolveRuntime(projectDir);
+  if (resolved !== 'claude') return resolved;
+
+  // Did anything upstream actually ASSERT a runtime, or did resolveRuntime
+  // fall through to its default? Only the latter may consult defaults.json.
+  let assertedUpstream = Boolean(resolveRuntimeNameFromCandidates(process.env['GSD_RUNTIME']));
+  if (!assertedUpstream && projectDir) {
+    try {
+      const configPath = path.join(projectDir, '.planning', 'config.json');
+      if (fs.existsSync(configPath)) {
+        const parsed: unknown = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        if (parsed && typeof parsed === 'object' && 'runtime' in parsed) {
+          assertedUpstream = Boolean(
+            resolveRuntimeNameFromCandidates((parsed as Record<string, unknown>)['runtime']),
+          );
+        }
+      }
+    } catch {
+      // Unreadable/!JSON config — treat as "asserted nothing" and fall through
+      // to the persisted default, matching resolveRuntime's own tolerance.
+    }
+  }
+  if (assertedUpstream) return resolved;
+
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const os = require('node:os') as typeof import('node:os');
+    const defaultsPath = path.join(os.homedir(), '.gsd', 'defaults.json');
+    if (fs.existsSync(defaultsPath)) {
+      const parsed: unknown = JSON.parse(fs.readFileSync(defaultsPath, 'utf-8'));
+      if (parsed && typeof parsed === 'object' && 'runtime' in parsed) {
+        const persisted = resolveRuntimeNameFromCandidates((parsed as Record<string, unknown>)['runtime']);
+        if (persisted) return persisted;
+      }
+    }
+  } catch {
+    // A missing/broken defaults.json must not crash a validation run.
+  }
+  return 'claude';
+}
+
+/**
  * Convenience: format using the runtime resolved from a project directory.
  * Equivalent to `formatGsdSlash(name, resolveRuntime(projectDir))`.
  */
