@@ -1901,6 +1901,24 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
  * `computeMilestoneSectionEnd` owner (#3184), so there is no separate copy to
  * keep in sync. Returns null when there is no versioned active milestone;
  * callers then fall back to whole-content mutation (the prior behaviour).
+ *
+ * #2761 (round-2 review, Minor 3 — latent, currently harmless): this function
+ * consumes #3184's shared owners, but it does not pass the bracket-specific
+ * B1/B2 boundary predicate and still has no bracket-fallback SELECTION branch:
+ * it returns null when the version-string owner finds nothing, unlike
+ * `extractCurrentMilestoneScoped`. The read owner can therefore scope a
+ * bracket ROADMAP this write-range consumer still calls unscoped. Probed and
+ * confirmed harmless TODAY: this
+ * function's single consumer (`mutateMilestonePhase`, src/phase.cts) falls
+ * back to whole-content mutation when it returns null, and every mutation
+ * inside that caller is still `Phase`-labelled-only (not bracket-widened) per
+ * the changeset's own "READ-path opt-in until the migrator and write path
+ * land" — so a bracket ROADMAP's checkbox/heading patterns never match inside
+ * that fallback and nothing is mutated cross-milestone. The moment the write
+ * path is widened (PR-3+), this divergence becomes live: the whole-content
+ * fallback would become a cross-milestone writer, which is exactly what this
+ * note exists to prevent. Bracket-widen this function in lockstep with the
+ * write path landing, not before.
  */
 function currentMilestoneRawRanges(
   content: string,
