@@ -8374,21 +8374,39 @@ function extractFrontmatterField(stateContent, fieldName) {
   return fieldMatch ? fieldMatch[1].trim() : null;
 }
 
-// Capture stdout from cmdPhaseComplete (it calls output() which writes to stdout)
+// Capture stdout from cmdPhaseComplete (it calls output() which writes to stdout).
+//
+// io.cts's `output()` writes via `writeAllSync` → `fs.writeSync(1, ...)`
+// directly (bug #1008's non-blocking-pipe fix), NOT `process.stdout.write`
+// — mocking `process.stdout.write` here silently captured nothing, so every
+// caller that parses the return value as JSON saw `JSON.parse('')`
+// ("Unexpected end of JSON input") regardless of what cmdPhaseComplete
+// actually produced. The fix is the fd-level seam tests/io.test.cjs already
+// established for exactly this function (bug #1008's
+// `mock.method(fs, 'writeSync', ...)` pattern, here via manual save/restore
+// since this helper's ~10 call sites do not thread a test context through):
+// intercept fd 1, discard fd 2, and pass every OTHER fd through to the real
+// writeSync — cmdPhaseComplete takes the planning lock, which writes its own
+// JSON via a separate fd that must not be swallowed as if it were stdout.
 function capturePhaseComplete(cwd, phaseNum) {
   // We invoke gsd-tools directly for the full CJS path, but with GSD_DISABLE_SDK_BRIDGE=1
   // to force the CJS implementation. Since no env var disables bridge, we call cmdPhaseComplete
   // directly and redirect output capture.
   const chunks = [];
-  const origWrite = process.stdout.write.bind(process.stdout);
-  const origErrWrite = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
-  process.stderr.write = () => true;
+  const origWriteSync = fs.writeSync.bind(fs);
+  fs.writeSync = (fd, data, offset, length) => {
+    if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+    if (fd !== 1) return origWriteSync(fd, data, offset, length);
+    const chunk = Buffer.isBuffer(data)
+      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+      : String(data);
+    chunks.push(chunk);
+    return Buffer.byteLength(chunk, 'utf8');
+  };
   try {
     cmdPhaseComplete(cwd, phaseNum, false);
   } finally {
-    process.stdout.write = origWrite;
-    process.stderr.write = origErrWrite;
+    fs.writeSync = origWriteSync;
   }
   return chunks.join('');
 }

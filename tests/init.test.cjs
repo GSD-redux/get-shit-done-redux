@@ -2797,20 +2797,37 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
     cleanup(projectDir);
   });
 
-  /** In-process capture of cmdInitVerifyWork's stdout JSON, stderr discarded. */
-  function captureInitVerifyWork(cwd, phase) {
+  /**
+   * In-process capture of cmdInitVerifyWork's stdout JSON, stderr discarded.
+   *
+   * io.cts's `output()` writes via `writeAllSync` → `fs.writeSync(1, ...)`
+   * directly (bug #1008's non-blocking-pipe fix), NOT `process.stdout.write`
+   * — so mocking `process.stdout.write` here silently captures nothing and
+   * every assertion below saw `JSON.parse('')` ("Unexpected end of JSON
+   * input") regardless of what cmdInitVerifyWork actually produced. The fix
+   * is the fd-level seam tests/io.test.cjs already established for exactly
+   * this function (bug #1008's `t.mock.method(fs, 'writeSync', ...)`
+   * pattern): intercept fd 1, discard fd 2, and pass every OTHER fd through
+   * to the real writeSync — any code path that opens its own fd (e.g. a
+   * lock file) must still actually write, not be silently swallowed as if
+   * it were stdout.
+   */
+  function captureInitVerifyWork(t, cwd, phase) {
     const chunks = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
-    const origErrWrite = process.stderr.write.bind(process.stderr);
-    process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
-    process.stderr.write = () => true;
-    try {
-      initMod.cmdInitVerifyWork(cwd, phase, false);
-    } finally {
-      process.stdout.write = origWrite;
-      process.stderr.write = origErrWrite;
-    }
-    return chunks.join('');
+    const origWriteSync = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+      if (fd !== 1) return origWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      chunks.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+    initMod.cmdInitVerifyWork(cwd, phase, false);
+    const captured = chunks.join('');
+    assert.ok(captured.length > 0, 'cmdInitVerifyWork produced no stdout output');
+    return captured;
   }
 
   function seedVerifiedPhase() {
@@ -2846,7 +2863,7 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
       return origStatSync.call(fs, target, ...args);
     });
 
-    const output = JSON.parse(captureInitVerifyWork(projectDir, '03'));
+    const output = JSON.parse(captureInitVerifyWork(t, projectDir, '03'));
 
     // Pre-existing no-throw fail-open routing is UNCHANGED: status still
     // resolves to 'passed' exactly as it would without the injected fault.
@@ -2854,10 +2871,10 @@ describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indetermi
     assert.strictEqual(output.phase_completion.verification_stale_check_indeterminate, true);
   });
 
-  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', () => {
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', (t) => {
     seedVerifiedPhase();
 
-    const output = JSON.parse(captureInitVerifyWork(projectDir, '03'));
+    const output = JSON.parse(captureInitVerifyWork(t, projectDir, '03'));
 
     assert.strictEqual(output.phase_completion.verification_status, 'passed');
     assert.strictEqual(output.phase_completion.verification_stale_check_indeterminate, false);

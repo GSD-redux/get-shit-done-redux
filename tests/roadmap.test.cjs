@@ -1142,20 +1142,39 @@ describe('#3057 B3: roadmap update-plan-progress — verification staleness-chec
     cleanup(tmpDir);
   });
 
-  /** In-process capture of cmdRoadmapUpdatePlanProgress's stdout JSON, stderr discarded. */
-  function captureUpdatePlanProgress(cwd, phaseNum) {
+  /**
+   * In-process capture of cmdRoadmapUpdatePlanProgress's stdout JSON, stderr
+   * discarded.
+   *
+   * io.cts's `output()` writes via `writeAllSync` → `fs.writeSync(1, ...)`
+   * directly (bug #1008's non-blocking-pipe fix), NOT `process.stdout.write`
+   * — so mocking `process.stdout.write` here silently captured nothing and
+   * every assertion below saw `JSON.parse('')` ("Unexpected end of JSON
+   * input") regardless of what the command actually produced. The fix is the
+   * fd-level seam tests/io.test.cjs already established for exactly this
+   * function (bug #1008's `t.mock.method(fs, 'writeSync', ...)` pattern):
+   * intercept fd 1, discard fd 2, and pass every OTHER fd through to the
+   * real writeSync — this command takes the planning lock, which writes its
+   * own JSON via a separate fd that must not be swallowed as if it were
+   * stdout (confirmed: without the pass-through, its lock-acquire JSON
+   * corrupts the captured payload into two concatenated JSON objects).
+   */
+  function captureUpdatePlanProgress(t, cwd, phaseNum) {
     const chunks = [];
-    const origWrite = process.stdout.write.bind(process.stdout);
-    const origErrWrite = process.stderr.write.bind(process.stderr);
-    process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
-    process.stderr.write = () => true;
-    try {
-      roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false);
-    } finally {
-      process.stdout.write = origWrite;
-      process.stderr.write = origErrWrite;
-    }
-    return chunks.join('');
+    const origWriteSync = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+      if (fd !== 1) return origWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      chunks.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+    roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false);
+    const captured = chunks.join('');
+    assert.ok(captured.length > 0, 'cmdRoadmapUpdatePlanProgress produced no stdout output');
+    return captured;
   }
 
   function seedVerifiedPhase() {
@@ -1202,7 +1221,7 @@ describe('#3057 B3: roadmap update-plan-progress — verification staleness-chec
       return origStatSync.call(fs, target, ...args);
     });
 
-    const output = JSON.parse(captureUpdatePlanProgress(tmpDir, '1'));
+    const output = JSON.parse(captureUpdatePlanProgress(t, tmpDir, '1'));
 
     // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
     // resolves complete, exactly as it would without the injected fault.
@@ -1210,10 +1229,10 @@ describe('#3057 B3: roadmap update-plan-progress — verification staleness-chec
     assert.strictEqual(output.verification_stale_check_indeterminate, true);
   });
 
-  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', () => {
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', (t) => {
     seedVerifiedPhase();
 
-    const output = JSON.parse(captureUpdatePlanProgress(tmpDir, '1'));
+    const output = JSON.parse(captureUpdatePlanProgress(t, tmpDir, '1'));
 
     assert.strictEqual(output.complete, true);
     assert.strictEqual(output.verification_stale_check_indeterminate, false);
