@@ -2034,3 +2034,103 @@ Authoring guide — a milestone heading looks like:
     fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
   }
 });
+
+// ─── #2761 round-3 hardening (team-lead review of f87bba0e): two edges in ──
+// ─── the new preambleCutoff code ────────────────────────────────────────────
+//
+// AMENDMENT 1 — bracketHeadingHasMatchingChild originally checked only
+// `headings[index + 1]` (the IMMEDIATE next heading), not the candidate's
+// whole subtree. A genuine prior sibling milestone whose section opens with
+// a non-bracket subsection before its first phase (`## [GSD.01] Setup` /
+// `### Notes` / `### [GSD.01] 01: Old`) was therefore wrongly rejected as a
+// boundary — its own real phase heading is TWO headings deep, not one — and
+// its entire section leaked into the preamble unstripped.
+//
+// CONFIRMED RED at f87bba0e before this fix (per the team lead's request to
+// check observability, not just theory): the leak is NOT merely inert —
+// `GSD.01-01-old`'s directory was wrongly admitted into the CURRENT
+// milestone's filter via the leaked heading's qualified key
+// (`GSD.01-01`), reading **3/2/67%** where truth is **2/1/50%**. Scope
+// membership DOES drive the disk-side filter on this shape. Fixed by
+// scanning the candidate's full SUBTREE (continue past a non-matching
+// deeper heading instead of returning false immediately; only a
+// same-or-shallower heading actually closes the subtree).
+//
+// AMENDMENT 2 — the round-3 Major 1 fix (c483552a) ported the version/emoji
+// half of preambleCutoff to the token-based scan with no level cap; the raw
+// `content.match(anyMilestonePattern)` it replaced was anchored `^#{1,3}\s+`.
+// A level-4+ version-bearing heading in the preamble (`#### v2.0 notes`)
+// therefore won the scan on the bracket branch where the raw pattern (and
+// the legacy path, unaffected) ignores it outright — a heading neither the
+// selector nor `isMilestoneBounded` would ever treat as a milestone marker.
+// Fixed with `if (h.level > 3) continue;`, mirroring the depth-sanity cap
+// `isBracketMilestoneBoundary` already applies to the bracket half.
+describe('#612 PR-2 round-3 hardening: subtree child scan + level cap on preambleCutoff', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r3h-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('RED (rv2-amend1): a genuine prior sibling with an intervening non-bracket subsection is still excluded — 2/1/50, not 3/2/67', () => {
+    const dirs = [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+    writeProject(`# Roadmap
+
+## [GSD.01] Setup
+
+### Notes
+
+Some prose about the prior milestone.
+
+### [GSD.01] 01: Old
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+
+### [GSD.02] 02: Two
+`, 'bracket', dirs);
+    assert.equal(readTotal(), 2, 'pinned 3 before this fix — the immediate-next-heading-only check rejected [GSD.01] Setup as a boundary because its FIRST child (### Notes) is not bracket-shaped, even though its SECOND child (### [GSD.01] 01: Old) is');
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(!!f('GSD.01-01-old'), false, 'pinned true before this fix — the leaked heading\'s qualified key wrongly admitted the prior milestone\'s own directory');
+    assert.equal(!!f('GSD.02-01-one'), true);
+    assert.equal(!!f('GSD.02-02-two'), true);
+  });
+
+  test('PIN (rv2-amend2): a level-4 version-bearing preamble heading is NOT a cutoff on the bracket branch — the preamble text survives unstripped', () => {
+    const roadmap = `# Roadmap
+
+#### v2.0 notes
+
+Some prose that happens to mention v2.0 in a deep heading.
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+
+### [GSD.02] 02: Two
+`;
+    writeProject(roadmap, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false]]);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const scope = rp.extractCurrentMilestone(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      tmpDir,
+    );
+    assert.ok(scope.includes('v2.0 notes'), 'pinned dropped before this fix — the level-4 heading wrongly won the earliest-of-either scan and truncated the preamble at itself');
+    assert.equal(readTotal(), 2);
+  });
+
+  test('PIN: the LEGACY control for the level-4 preamble heading is unchanged (raw content.match path untouched)', () => {
+    writeProject(`# Roadmap
+
+#### v2.0 notes
+
+Some prose that happens to mention v2.0 in a deep heading.
+
+## Milestone v2.0: Current
+
+### Phase 01: One
+
+### Phase 02: Two
+`, undefined, [['01-one', true], ['02-two', false]]);
+    assert.equal(readTotal(), 2);
+  });
+});

@@ -183,29 +183,44 @@ function isBracketMilestoneBoundary(headingText: string, level: number, selected
 }
 
 /**
- * #2761 B1 (round-3 fix, Blocker 1 case D): is the next STRICTLY DEEPER
- * heading below `headings[index]` (skipping nothing — the first heading at
- * or above `headings[index]`'s own level ends the search) bracket-shaped
- * with the SAME id as `headings[index]`'s own?
+ * #2761 B1 (round-3 fix, Blocker 1 case D; hardened post-round-3): does
+ * `headings[index]`'s SUBTREE — every heading strictly deeper than it, up to
+ * (not including) the next heading at or above its own level — contain a
+ * bracket-shaped heading with the SAME id as `headings[index]`'s own?
  *
  * Used ONLY at the preambleCutoff scan below, to distinguish a genuine prior
- * or later SIBLING MILESTONE — whose own children carry ITS bracket id
- * (`## [GSD.01] Setup` / `### [GSD.01] 01: …`) — from an unrelated
- * bracket-shaped PROSE heading sitting above the current milestone's own
- * content (`## [ADR.612] Heading convention used by this roadmap`, followed
- * by `### [GSD.02] 01: …` — a DIFFERENT id). `isBracketMilestoneBoundary`
- * alone cannot make this distinction: `[ADR.612]` is bracket-shaped, not
- * phase-tail-shaped, and not the SAME id as the selected milestone — so by
- * that function's rules alone it reads as a genuine boundary, incorrectly
- * cutting the preamble mid-way through the current milestone's own content.
+ * or later SIBLING MILESTONE — whose own subtree contains a phase heading
+ * carrying ITS bracket id (`## [GSD.01] Setup` / `### [GSD.01] 01: …`) —
+ * from an unrelated bracket-shaped PROSE heading sitting above the current
+ * milestone's own content (`## [ADR.612] Heading convention used by this
+ * roadmap`, followed by `### [GSD.02] 01: …` — a DIFFERENT id, and nothing
+ * else in its subtree). `isBracketMilestoneBoundary` alone cannot make this
+ * distinction: `[ADR.612]` is bracket-shaped, not phase-tail-shaped, and not
+ * the SAME id as the selected milestone — so by that function's rules alone
+ * it reads as a genuine boundary, incorrectly cutting the preamble mid-way
+ * through the current milestone's own content.
  *
- * A candidate with NO deeper heading at all (childless — e.g. an empty prior
- * milestone with no phases yet, or one immediately followed by a
- * same-or-shallower sibling) degrades to `false` — NOT a boundary. This is
- * deliberately the OVER-inclusive direction: the childless heading's own
- * text stays in the preamble, contributing nothing to any phase count (no
- * phase-shaped heading, no qualified key), so nothing is miscounted — merely
- * some inert prose staying where it already was.
+ * SCANS THE WHOLE SUBTREE, not just the immediate next heading — an earlier
+ * version checked only `headings[index + 1]` and returned `false` the moment
+ * that ONE heading wasn't a same-id match, even if it wasn't bracket-shaped
+ * at all. A genuine prior milestone whose section opens with a non-bracket
+ * subsection before its first phase (`## [GSD.01] Setup` / `### Notes` /
+ * `### [GSD.01] 01: Old`) was therefore wrongly rejected as a boundary by
+ * that version, leaking the ENTIRE prior-milestone section — including its
+ * real bracket phase heading — into the preamble unstripped. Confirmed
+ * observable, not merely theoretical: `GSD.01-01-old`'s directory was
+ * wrongly admitted into the CURRENT milestone's filter via the leaked
+ * heading's qualified key, inflating a 2/1/50% truth to 3/2/67% (rv2-amend1
+ * fixture).
+ *
+ * A candidate whose ENTIRE subtree closes (next same-or-shallower heading,
+ * or EOF) with no same-id hit at all — including a genuinely childless
+ * heading (no deeper heading whatsoever) — degrades to `false`, NOT a
+ * boundary. This is deliberately the OVER-inclusive direction: the
+ * heading's own text (and any non-bracket-matching subtree content) stays in
+ * the preamble, contributing nothing to any phase count (no phase-shaped
+ * heading, no qualified key), so nothing is miscounted — merely some inert
+ * prose staying where it already was.
  *
  * `headings` is the SAME `currentMilestoneHeadings` token list the caller
  * iterates; `index` is the candidate's own position in it.
@@ -219,7 +234,10 @@ function bracketHeadingHasMatchingChild(headings: HeadingToken[], index: number)
     const next = headings[i];
     if (next.level <= candidate.level) return false;
     const childMatch = BRACKET_HEADING_INTRO_RE.exec(next.text);
-    return !!childMatch && foldBracketId(childMatch[1]) === ownId;
+    if (childMatch && foldBracketId(childMatch[1]) === ownId) return true;
+    // Not a same-id match — keep scanning DEEPER into the subtree instead of
+    // giving up on this one heading; only a same-or-shallower heading (above)
+    // actually closes the subtree.
   }
   return false;
 }
@@ -455,8 +473,18 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     // against the same `/^Phase\s+\S/i` / `/v\d+\.\d+|✅|📋|🚧/i` pair
     // `computeSectionEnd` already uses) never sees a fenced heading at all,
     // because tokenizeHeadings never produces a token for one.
+    //
+    // Hardened post-round-3: the raw `content.match(anyMilestonePattern)`
+    // this replaced was anchored `^#{1,3}\s+…` — a level cap the token loop
+    // dropped entirely. A level-4+ version-bearing heading in the preamble
+    // (`#### v2.0 notes`) would win this scan where the raw pattern on the
+    // legacy path ignores it outright, cutting the preamble at a heading
+    // neither the selector nor `isMilestoneBounded` would ever treat as a
+    // milestone marker. Mirrors the depth-sanity cap
+    // `isBracketMilestoneBoundary` already applies to the bracket half.
     earliestMilestoneIndex = null;
     for (const h of currentMilestoneHeadings) {
+      if (h.level > 3) continue;
       if (/^Phase\s+\S/i.test(h.text)) continue;
       if (/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) { earliestMilestoneIndex = h.offset; break; }
     }
