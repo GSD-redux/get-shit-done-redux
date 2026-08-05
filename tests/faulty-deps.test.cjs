@@ -103,21 +103,24 @@ describe('A. execGit normalization (#3071)', () => {
     assert.strictEqual(result.timedOut, false);
   });
 
-  test('6. execGitDefault now accepts env', (t) => {
+  test('6. execGit env opt actually reaches the child process', (t) => {
     tmpDir = createTempGitProject();
     t.after(() => cleanup(tmpDir));
     // worktree-safety.cts's execGitDefault is now a thin passthrough to this
-    // exact seam (see worktree-safety.cts:38 docstring) and is not itself
-    // exported, so the acceptance is proven at the seam it delegates to:
-    // {cwd, env, timeout} together must not be rejected.
-    assert.doesNotThrow(() => {
-      const result = execGit(['status', '--porcelain'], {
-        cwd: tmpDir,
-        env: { FAULT_3056_TEST_VAR: 'x' },
-        timeout: 5000,
-      });
-      assert.strictEqual(typeof result.exitCode, 'number');
+    // exact seam (see worktree-safety.cts:38 docstring), and its widened opts
+    // type ({cwd, env, timeout} together) is proven at build time by the
+    // strict tsc build, not here. This test instead proves the runtime
+    // behavior the type describes: `git var GIT_EDITOR` reflects the
+    // GIT_EDITOR env var, so a sentinel value passed via opts.env must come
+    // back verbatim on stdout — a real proof env reaches the child, not a
+    // liveness check that passes regardless of whether env is wired through.
+    const result = execGit(['var', 'GIT_EDITOR'], {
+      cwd: tmpDir,
+      env: { GIT_EDITOR: 'fault-3056-sentinel-editor' },
+      timeout: 5000,
     });
+    assert.strictEqual(result.exitCode, 0);
+    assert.strictEqual(result.stdout, 'fault-3056-sentinel-editor');
   });
 
   test('7. exitCode is always a number', (t) => {
