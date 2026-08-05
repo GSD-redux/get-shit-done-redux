@@ -1887,15 +1887,34 @@ describe('bug #2946: unstarted-phase guard runs independent of STATE.md mileston
       tmpDir,
     );
     // Guard fires (failure path) — the WARNING is written to stderr before
-    // the `Error:` line, so it appears in result.error.
+    // the `Error:` line, so it appears in result.error. Assert on the stable
+    // operator-facing tokens (the WARNING marker and both version literals
+    // the operator must see), not the surrounding prose — the prose is a
+    // human formatter and may be reworded.
     assert.strictEqual(result.success, false);
     assert.ok(
-      /WARNING/.test(result.error),
-      `expected a WARNING on stderr; got: ${result.error}`,
+      result.error.includes('WARNING:'),
+      `expected a WARNING marker on stderr; got: ${result.error}`,
     );
     assert.ok(
       result.error.includes('v1.0-closing') && result.error.includes('v1.0'),
       `warning should name both the STATE value and the requested version; got: ${result.error}`,
+    );
+  });
+
+  test('no WARNING is emitted when STATE.md milestone: field is absent (fresh project is not suspicious drift)', () => {
+    // The scan still runs and fires (covered by the absent-field test above),
+    // but a missing milestone: declaration is a normal fresh-project state,
+    // not a mismatch — so no WARNING should accompany it.
+    makeFixture(tmpDir, 'v1.0', 'absent');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run'],
+      tmpDir,
+    );
+    assert.strictEqual(result.success, false, 'guard must still fire on absent field');
+    assert.ok(
+      !result.error.includes('WARNING:'),
+      `no WARNING expected for an absent milestone: field; got: ${result.error}`,
     );
   });
 

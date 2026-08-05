@@ -23,7 +23,7 @@ import type { WriteSet } from './write-set.cjs';
 import { updateTableCell } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error, getJsonErrorMode } = ioMod;
+const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
@@ -558,15 +558,15 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       }
       if (stateVersion !== null && stateVersion !== version) {
         // #2946: emit a WARNING so the suspicious STATE mismatch is visible
-        // rather than silently disarming the guard. In --json-errors mode,
-        // emit a structured JSON object so a stderr line-by-line JSON parser
-        // is not broken by plain text (mirrors io.cts `error()` JSON shape).
-        const warnText = `STATE.md milestone: "${stateVersion}" ≠ requested "${version}" — running the unstarted-phase guard against the ROADMAP scoped for "${version}" anyway.`;
-        if (getJsonErrorMode()) {
-          process.stderr.write(JSON.stringify({ ok: true, level: 'warning', message: warnText }) + '\n');
-        } else {
-          process.stderr.write(`[gsd-tools] WARNING: ${warnText}\n`);
-        }
+        // rather than silently disarming the guard. Plain-text diagnostic on
+        // stderr, matching the existing [gsd-tools] WARNING convention
+        // (state.cts). A missing STATE.md `milestone:` field is not warned
+        // here — the scan still runs, and "no milestone declared" is a normal
+        // state for a fresh project, not a suspicious drift.
+        process.stderr.write(
+          `[gsd-tools] WARNING: STATE.md milestone: "${stateVersion}" ≠ requested "${version}" — ` +
+            `running the unstarted-phase guard against the ROADMAP scoped for "${version}" anyway.\n`,
+        );
       }
 
       const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
