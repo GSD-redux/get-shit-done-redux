@@ -177,8 +177,9 @@ describe('mergeCodexConfig trailing-content preservation (#2940)', () => {
     mergeCodexConfig(configPath, block());
 
     const content = fs.readFileSync(configPath, 'utf8');
-    // No spurious trailing blank lines beyond the single trailing newline.
-    assert.ok(!/\n{3,}$/.test(content), 'no spurious run of blank lines at end of file');
+    // No spurious trailing blank lines beyond the single trailing newline. Use a CRLF-safe
+    // pattern (\r?\n) so the assertion holds under Windows git-autocrlf line endings.
+    assert.ok(!/(?:\r?\n){3,}$/.test(content), 'no spurious run of blank lines at end of file');
     assert.strictEqual(content.trim(), block().trim(), 'content is exactly the regenerated block (whitespace-trimmed)');
   });
 });
