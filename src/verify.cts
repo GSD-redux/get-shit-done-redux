@@ -2013,7 +2013,7 @@ function cmdValidateHealth(
     const roadmapContentRaw = fs.readFileSync(roadmapPath, 'utf-8');
     const roadmapContent = extractCurrentMilestone(roadmapContentRaw, cwd);
 
-    const { roadmapPhases } = buildRoadmapPhaseVariants(roadmapContent, phaseConvention);
+    const { roadmapPhases, sentinelPhases } = buildRoadmapPhaseVariants(roadmapContent, phaseConvention);
     const { roadmapPhaseVariants: fullRoadmapPhaseVariants } =
       buildRoadmapPhaseVariants(roadmapContentRaw, phaseConvention);
 
@@ -2025,6 +2025,13 @@ function cmdValidateHealth(
     const notStartedPhases = buildNotStartedPhaseVariants(roadmapContent, phaseConvention);
 
     for (const p of roadmapPhases) {
+      // #2761 B2: a backlog/icebox phase legitimately has no directory.
+      // `sentinelPhases` is empty unless the bracket convention is active, so a
+      // legacy repo's reading is untouched. Mirrors cmdValidateConsistency's
+      // identical skip a few hundred lines up — without it, a bracket sentinel
+      // heading (`### [GSD.999] 07:`) gained a W006 here that `validate
+      // consistency` correctly stayed silent on for the same ROADMAP.
+      if (sentinelPhases.has(p)) continue;
       const variants = phaseVariants(p);
       const existsOnDisk = [...variants].some((v) => diskPhases.has(v));
       if (!existsOnDisk) {

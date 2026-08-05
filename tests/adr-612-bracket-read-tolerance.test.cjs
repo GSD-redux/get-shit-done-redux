@@ -512,6 +512,70 @@ describe('#612 PR-2: bracket sentinels do not warn as missing directories', () =
   });
 });
 
+// ─── #2761 B2: validate health and validate consistency must agree ─────────
+//
+// buildRoadmapPhaseVariants() surfaces `sentinelPhases` — tokens borne ONLY by
+// a bracket-sentinel heading ([GSD.999] icebox / [GSD.00] pre-milestone) — so a
+// backlog item's heading-only entry does not need a directory. cmdValidateConsistency
+// consumes it (see the describe block above); cmdValidateHealth's W006 loop did
+// not, so the SAME sentinel-only bracket ROADMAP produced a silent `validate
+// consistency` and a false W006 from `validate health` — the two verbs
+// contradicting each other about the same repo.
+describe('#612 PR-2 B2: validate health and validate consistency agree on bracket sentinels', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-b2-agree-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const SENTINEL_ONLY = `# Roadmap
+
+## [GSD.999] Icebox
+
+### [GSD.999] 07: Someday
+**Goal:** a
+`;
+
+  const healthW006 = () => {
+    const r = runGsdTools(['validate', 'health'], tmpDir);
+    const out = JSON.parse(r.output);
+    return [...(out.errors || []), ...(out.warnings || [])]
+      .filter((i) => i.code === 'W006')
+      .map((i) => i.message);
+  };
+
+  const consistencyMissingDirWarnings = () => {
+    const r = runGsdTools(['validate', 'consistency'], tmpDir);
+    return (JSON.parse(r.output).warnings || []).filter((w) => /no directory on disk/.test(w));
+  };
+
+  test('a sentinel-only bracket roadmap: neither validator warns about the missing directory', () => {
+    write(SENTINEL_ONLY, 'bracket');
+    assert.deepEqual(
+      consistencyMissingDirWarnings(), [],
+      'validate consistency already excludes sentinel phases via sentinelPhases',
+    );
+    assert.deepEqual(
+      healthW006(), [],
+      'validate health must ALSO exclude sentinel phases — the two validators must agree on the same ROADMAP',
+    );
+  });
+
+  test('CONTROL: a real (non-sentinel) phase with no directory still warns on both validators', () => {
+    // The agreement above must not be achieved by suppressing W006 outright.
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+### [GSD.02] 09: Real but absent
+**Goal:** a
+`, 'bracket');
+    const consistency = consistencyMissingDirWarnings();
+    const health = healthW006();
+    assert.equal(consistency.length, 1, JSON.stringify(consistency));
+    assert.equal(health.length, 1, JSON.stringify(health));
+    assert.match(consistency[0], /Phase 09/);
+    assert.match(health[0], /Phase 09/);
+  });
+});
+
 describe('#612 PR-2: sentinel suppression is occurrence-aware', () => {
   beforeEach(() => { tmpDir = createTempProject('adr-612-occ-'); });
   afterEach(() => { cleanup(tmpDir); });
