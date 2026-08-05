@@ -73,7 +73,13 @@ const BASE_SITES = [
   // `if (bracketBoundaryActive) { … }` block (`src/roadmap-parser.cts`,
   // grep `isBracketMilestoneBoundary(` for current line numbers — both
   // round-3 fixes shifted them since this note was first written) — and
-  // `BRACKET_PHASE_TAIL_RE` has no other consumers.
+  // `BRACKET_PHASE_TAIL_RE` has TWO consumers as of #2761 round-4 (its own
+  // use inside `isBracketMilestoneBoundary`, plus `bracketHeadingHasMatchingChild`'s
+  // same-id-PHASE-child conjunct added by 65d257ce) — both still nested
+  // inside the same `bracketBoundaryActive` runtime gate this note is about
+  // (round-5 Nit 1: this sentence was stale by one commit, claiming no other
+  // consumers when 65d257ce had already added one; the CONCLUSION is
+  // unaffected — every consumer is still runtime-gated).
   // `BRACKET_HEADING_INTRO_RE` has THREE consumers as of #2761 round-4
   // (`isBracketMilestoneBoundary` itself, plus two uses inside
   // `bracketHeadingHasMatchingChild` — its own id and its same-id-PHASE-child
