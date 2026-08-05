@@ -913,11 +913,13 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
       const canonical = String(milestoneInt).padStart(2, '0');
       // #612 round-4: keep the canonical padded-id fallback from the upstream
       // selector, but restrict its candidates to real (unfenced) headings.
-      // Rebuild the match shape expected by the existing section-boundary and
-      // version-token consumers without changing first-match document order.
+      // #612 round-5: HeadingToken.offset is the line start, so require the
+      // `#` there to preserve the old line-start anchor's indentation parity.
+      // For every survivor, rebuilding [fullLine, fullLine] plus `.index`
+      // retains the match shape and first-match order expected downstream.
       const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
       headingMatches = tokenizeHeadings(content)
-        .filter((h) => h.level <= 3 && bracketMilestoneHeadingRe.test(h.text))
+        .filter((h) => h.level <= 3 && content[h.offset] === '#' && bracketMilestoneHeadingRe.test(h.text))
         .map((h) => {
           const lineEnd = content.indexOf('\n', h.offset);
           const fullLine = content.slice(h.offset, lineEnd === -1 ? content.length : lineEnd);
