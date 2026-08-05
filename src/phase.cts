@@ -35,6 +35,7 @@ const {
   phaseMarkdownRegexSource,
   comparePhaseNum,
   phaseTokenMatches,
+  isSentinelPhaseId,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
@@ -2574,7 +2575,14 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           let lowestOutstanding: { num: string; name: string } | null = null;
           while ((cbm = cbPattern.exec(milestoneScope)) !== null) {
             const isChecked = cbm[1].toLowerCase() === 'x';
-            if (!isChecked && comparePhaseNum(cbm[2], phaseNum) < 0) {
+            // #2949: exclude sentinel-range phase ids (0.x backlog, 999.x) from candidacy.
+            // comparePhaseNum("0.1","12") === -12, so without this guard an unchecked 0.x
+            // backlog row sorts below every real phase and is wrongly selected as next_phase,
+            // corrupting STATE.md and desyncing current_phase from current_phase_name.
+            // isSentinelPhaseId covers both sentinel ranges (SENTINEL_RANGES = [0, 999]); a
+            // real lower-numbered outstanding phase (e.g. Phase 9) is NOT a sentinel and is
+            // still selected, preserving #2028's out-of-order-completion behavior.
+            if (!isChecked && !isSentinelPhaseId(cbm[2]) && comparePhaseNum(cbm[2], phaseNum) < 0) {
               if (lowestOutstanding === null || comparePhaseNum(cbm[2], lowestOutstanding.num) < 0) {
                 lowestOutstanding = {
                   num: cbm[2],
