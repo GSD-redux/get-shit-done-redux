@@ -138,8 +138,10 @@ describe('phase complete stage-3 sentinel filter (#2949)', () => {
     const output = JSON.parse(result.output);
 
     // A real lower phase (9) IS selected — the #2028 out-of-order behavior is preserved.
+    // next_phase may be padded ("09") or unpadded ("9"); compare numerically.
     assert.strictEqual(output.is_last_phase, false, 'a real lower outstanding phase must keep is_last_phase=false');
-    assert.ok(/09/.test(String(output.next_phase)), `real lower phase 9 must be selected as next_phase (got ${output.next_phase})`);
+    const nextNum = parseInt(String(output.next_phase), 10);
+    assert.strictEqual(nextNum, 9, `real lower phase 9 must be selected as next_phase (got ${output.next_phase})`);
   });
 
   test('zeroXSentinelNoCurrentPhaseDesync', () => {
