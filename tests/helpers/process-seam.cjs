@@ -192,20 +192,27 @@ function runGit(args, options = {}) {
  * tests/graphify-auto-update.slow.test.cjs:248,
  * tests/worktree-cleanup.test.cjs:1549, tests/worktree-safety.test.cjs:4641).
  * Rather than add a fourth spawn primitive for one more binary, the target
- * interpreter is a parameter here. It is EXPLICIT, never inferred from the
- * hookPath's extension — guessing an interpreter from a path fails silently
+ * interpreter is a parameter here. It is EXPLICIT, never inferred from
+ * `target`'s extension — guessing an interpreter from a path fails silently
  * on a script whose name does not match its shebang.
  *
- * @param {string} hookPath - absolute path to the hook script.
- * @param {string[]} [args] - extra argv for the hook.
+ * @param {string} target - the first argv element handed to the
+ *   interpreter. Normally an absolute path to the hook/guard/gate script
+ *   being run. But for an interpreter invoked with an inline program (e.g.
+ *   `bash -c '<script text>'`), this is that interpreter's own flag —
+ *   `'-c'` — with the actual program text supplied as the first element of
+ *   `args`, not as `target` itself.
+ * @param {string[]} [args] - extra argv for the hook. When `target` is an
+ *   interpreter flag like `'-c'`, this is where the inline program text and
+ *   its own argv go.
  * @param {object} [options] - see spawnSeam.
- * @param {string} [options.interpreter] - binary used to run hookPath.
+ * @param {string} [options.interpreter] - binary used to run `target`.
  *   Defaults to `process.execPath` (matching read-guard/workflow-guard
  *   today); pass `'bash'` to run a shell script instead.
  */
-function runHook(hookPath, args = [], options = {}) {
+function runHook(target, args = [], options = {}) {
   const { interpreter = process.execPath, ...spawnOptions } = options;
-  return spawnSeam(interpreter, [hookPath, ...args], spawnOptions);
+  return spawnSeam(interpreter, [target, ...args], spawnOptions);
 }
 
 module.exports = { runNode, runGit, runHook, OUTCOME };
