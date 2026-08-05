@@ -8374,64 +8374,46 @@ function extractFrontmatterField(stateContent, fieldName) {
   return fieldMatch ? fieldMatch[1].trim() : null;
 }
 
-// Capture stdout from cmdPhaseComplete (it calls output() which writes to stdout).
+// Capture stdout from `gsd-tools phase complete <N>` via a REAL subprocess.
 //
-// io.cts's `output()` writes via `writeAllSync` → `fs.writeSync(1, ...)`
-// directly (bug #1008's non-blocking-pipe fix), NOT `process.stdout.write`
-// — mocking `process.stdout.write` here silently captured nothing, so every
-// caller that parses the return value as JSON saw `JSON.parse('')`
-// ("Unexpected end of JSON input") regardless of what cmdPhaseComplete
-// actually produced. The fix is the fd-level seam tests/io.test.cjs already
-// established for exactly this function (bug #1008's
-// `mock.method(fs, 'writeSync', ...)` pattern, here via manual save/restore
-// since this helper's ~10 call sites do not thread a test context through):
-// intercept fd 1, discard fd 2, and pass every OTHER fd through to the real
-// writeSync — cmdPhaseComplete takes the planning lock, which writes its own
-// JSON via a separate fd that must not be swallowed as if it were stdout.
-// #3057-followup: this MUST take the test's `t` and mock via `t.mock.method`,
-// NOT a manual `fs.writeSync = mock; try { } finally { fs.writeSync = orig; }`
-// global reassignment. The manual form directly overwrites the shared `fs`
-// module's exported property for the duration of the call — a window that is
-// synchronous and correctly restored for THIS function alone, but any OTHER
-// synchronous write that happens to route through the SAME public
-// `fs.writeSync` while the property is swapped (confirmed reachable: on a
-// file-backed fd 1 — the common case for a captured/redirected CI child,
-// as opposed to a live TTY/pipe — `process.stdout.write` itself resolves
-// through the public `fs.writeSync`, not an internal/unpatchable binding) is
-// silently captured into `chunks` or dropped instead of reaching the real fd.
-// `t.mock.method` installs the SAME interception but registers it on node:test's
-// own MockTracker, which independently guarantees restoration through the
-// test's normal lifecycle — the identical fd-1 seam tests/io.test.cjs and
-// tests/roadmap.test.cjs already use successfully. Converging on that one
-// proven pattern removes this file's manual save/restore as a second,
-// divergent implementation of the same seam.
+// #3057: this used to call cmdPhaseComplete(...) IN-PROCESS and capture its
+// stdout by monkeypatching fs.writeSync (io.cts's output() writes via
+// writeAllSync -> fs.writeSync(1, ...), not process.stdout.write — bug #1008's
+// non-blocking-pipe fix). That interception shares the exact seam the remote
+// matrix's own event-stream capture depends on: when the runner's stdout is
+// redirected to a file (the common case for a captured CI child),
+// `process.stdout.write` itself resolves through that SAME public
+// `fs.writeSync`, so any write racing the patched window — including the
+// runner's own test:pass/test:fail events — could be silently swallowed into
+// `chunks` or dropped instead of reaching the real fd. Two attempts to make
+// that interception safe (manual save/restore, then `t.mock.method`) both
+// still left this file reporting zero test:pass/test:fail events on the
+// remote matrix. The fix is to stop intercepting fd 1 altogether: run the
+// real CLI in a real subprocess, exactly like every other test in this file
+// already does via `runGsdTools`, so the OS owns stdout capture and the
+// runner's own event stream is never at risk.
 //
-// The explicit `try { … } finally { ctx.mock.restore(); }` below is
-// belt-and-suspenders on TOP of the MockTracker: several call sites invoke
-// this helper more than once per test (T1's double-invocation case, T2's
-// double-invocation case), so restoring THIS call's mock immediately —
-// rather than leaving it installed until the whole test ends — keeps the
-// interception window tight even across repeated calls in one test body.
-// `MockTracker` restoring everything at test end remains the fallback if a
-// future edit ever removes this finally.
+// The phase family router (phase-command-router.cjs) calls
+// `phase.cmdPhaseComplete(cwd, phaseNum, raw)` directly for `phase complete`
+// — no SDK delegation on this path — so this reaches the exact same CJS
+// function the old in-process call did.
+//
+// A handful of call sites depend on state a subprocess cannot see (a mock
+// installed in THIS process, or the parent's own fs.writeFileSync mock for
+// the rollback-failure tests below); those call sites do not use this
+// helper — see the inline notes at each one.
 function capturePhaseComplete(t, cwd, phaseNum) {
-  const chunks = [];
-  const origWriteSync = fs.writeSync.bind(fs);
-  const ctx = t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
-    if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
-    if (fd !== 1) return origWriteSync(fd, data, offset, length);
-    const chunk = Buffer.isBuffer(data)
-      ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
-      : String(data);
-    chunks.push(chunk);
-    return Buffer.byteLength(chunk, 'utf8');
-  });
-  try {
-    cmdPhaseComplete(cwd, phaseNum, false);
-  } finally {
-    ctx.mock.restore();
+  const result = runGsdTools(['phase', 'complete', String(phaseNum)], cwd);
+  if (!result.success) {
+    // Surface exitCode/error verbatim so a real failure never presents as a
+    // downstream `JSON.parse('')` error, and so assert.throws() callers keep
+    // matching against the real stderr text (e.g. "verification is
+    // incomplete...").
+    throw new Error(
+      result.error || `cmdPhaseComplete failed (exitCode=${result.exitCode})`,
+    );
   }
-  return chunks.join('');
+  return result.output;
 }
 
 // ── T1: Double invocation must NOT double-increment Completed Phases ─────────
@@ -8506,8 +8488,15 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // Calls cmdPhaseComplete directly (bypassing capturePhaseComplete's
+    // subprocess helper): this test's fault is a `t.mock.method(fs,
+    // 'writeFileSync', ...)` installed in THIS process, which a subprocess
+    // cannot see. No stdout capture is needed here — only the thrown
+    // exception and the resulting on-disk file state — so calling the CJS
+    // function directly does not touch fd 1 and does not reinstate the
+    // fs.writeSync interception this file removed.
     assert.throws(
-      () => capturePhaseComplete(t, tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected STATE\.md write failure/,
     );
 
@@ -8541,8 +8530,11 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // See the parent-process-mock note in the STATE.md-write-fails test
+    // above: this must call cmdPhaseComplete directly, not via
+    // capturePhaseComplete's subprocess helper.
     assert.throws(
-      () => capturePhaseComplete(t, tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected REQUIREMENTS\.md write failure/,
     );
 
@@ -8576,8 +8568,11 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // See the parent-process-mock note in the STATE.md-write-fails test
+    // above: this must call cmdPhaseComplete directly, not via
+    // capturePhaseComplete's subprocess helper.
     assert.throws(
-      () => capturePhaseComplete(t, tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected REQUIREMENTS\.md write failure[\s\S]*WARNING: rollback failed while restoring[\s\S]*injected ROADMAP\.md rollback failure/,
     );
   });
@@ -8606,19 +8601,25 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     cleanup(tmpDir);
   });
 
-  test('an fs failure inside the staleness check adds a warning; completion routing is unchanged', (t) => {
+  test(
+    'an fs failure inside the staleness check adds a warning; completion routing is unchanged',
+    { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
+    (t) => {
     const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
-    const verificationPath = path.join(phase01Dir, '01-VERIFICATION.md');
     const summaryPath = path.join(phase01Dir, '01-01-SUMMARY.md');
-    const origStatSync = fs.statSync;
 
-    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
-      const targetPath = String(target);
-      if (targetPath === verificationPath || targetPath === summaryPath) {
-        throw new Error('injected stat failure (#3057 B3)');
-      }
-      return origStatSync.call(fs, target, ...args);
-    });
+    // Real, on-disk fault instead of an in-process fs.statSync mock: this now
+    // runs cmdPhaseComplete in a subprocess (via capturePhaseComplete), which
+    // cannot see a mock installed in this process. findStaleVerificationSummary
+    // (verification.cjs) calls fs.statSync on each summary file to compare
+    // mtimes, and statSync follows symlinks — so pointing the summary at a
+    // target that does not exist reproduces a genuine ENOENT there, degrading
+    // the staleness check to {determined:false} exactly like the removed
+    // injected statSync throw did. scanPhasePlans only matches summary
+    // *filenames* (never stats them), so the plan-coverage gate still sees
+    // the summary as present.
+    fs.unlinkSync(summaryPath);
+    fs.symlinkSync(path.join(phase01Dir, '.does-not-exist'), summaryPath);
 
     const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
 
@@ -8631,7 +8632,8 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
       `warnings must surface the indeterminate staleness check; got ${JSON.stringify(output.warnings)}`,
     );
     assert.strictEqual(output.has_warnings, true);
-  });
+    },
+  );
 
   test('a completed staleness check that finds nothing stale does NOT add an indeterminate warning', (t) => {
     const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
@@ -8643,10 +8645,12 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     );
   });
 
-  test('a BLOCKED completion (status=human_needed) with an indeterminate staleness check still blocks, but the error note says so', (t) => {
+  test(
+    'a BLOCKED completion (status=human_needed) with an indeterminate staleness check still blocks, but the error note says so',
+    { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
+    (t) => {
     const phase02Dir = path.join(tmpDir, '.planning', 'phases', '02-api');
     fs.writeFileSync(path.join(phase02Dir, '02-01-PLAN.md'), '# Plan\nDo the work.\n');
-    fs.writeFileSync(path.join(phase02Dir, '02-01-SUMMARY.md'), '# Summary\nDone.\n');
     fs.writeFileSync(path.join(phase02Dir, '02-VERIFICATION.md'), [
       '---',
       'status: human_needed',
@@ -8656,17 +8660,11 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
       '',
     ].join('\n'));
 
-    const verificationPath = path.join(phase02Dir, '02-VERIFICATION.md');
+    // Real, on-disk fault — see the note in the sibling test above. The
+    // summary is a dangling symlink so fs.statSync (inside
+    // findStaleVerificationSummary, running in the subprocess) throws ENOENT.
     const summaryPath = path.join(phase02Dir, '02-01-SUMMARY.md');
-    const origStatSync = fs.statSync;
-
-    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
-      const targetPath = String(target);
-      if (targetPath === verificationPath || targetPath === summaryPath) {
-        throw new Error('injected stat failure (#3057 B3)');
-      }
-      return origStatSync.call(fs, target, ...args);
-    });
+    fs.symlinkSync(path.join(phase02Dir, '.does-not-exist'), summaryPath);
 
     // Routing is UNCHANGED — status !== 'passed' already blocked before #3057
     // B3; the note is purely additive to the message text.
@@ -8674,7 +8672,8 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
       () => capturePhaseComplete(t, tmpDir, '2'),
       /verification is incomplete[\s\S]*staleness check could not complete — see #3057/,
     );
-  });
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
