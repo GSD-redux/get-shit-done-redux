@@ -2941,6 +2941,29 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
     }
   } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
+  // #2761 Major 1 (round-2 adversarial review): this disk scan fed
+  // totalDiskPlans/totalDiskSummaries/diskCompletedPhases/syncTotalPhases
+  // below UNFILTERED — no getMilestonePhaseFilter, unlike
+  // buildStateFrontmatter's identical-purpose scan a few hundred lines above
+  // (`:1698`). One command (`state sync`) therefore wrote TWO contradictory
+  // numbers into the same STATE.md: frontmatter total_phases/completed_phases
+  // milestone-scoped correctly (via the READ derivation), body Progress
+  // percent computed from the whole disk. On the ADR-canonical version-less
+  // bracket fixture (4 dirs, 3 complete; asserted milestone = 2 phases, both
+  // complete): body wrote 75% where 100% is true (repro3).
+  //
+  // GATED on `syncConvention === 'bracket'` — an unconditional filter would
+  // ALSO move LEGACY sync percents, since the milestone-scoping-vs-whole-disk
+  // divergence this fixes is engine-wide, not bracket-specific; the gate
+  // keeps legacy byte-identical, which is the binding constraint here. This
+  // is a DEVIATION from an earlier "mirror :1698 unconditionally" phrasing —
+  // deliberate, not an oversight: legacy repos are DOWNSTREAM of a Progress
+  // percent that has read this way for a long time, and moving it as a side
+  // effect of a bracket-only PR is out of this fix's scope.
+  const isDirInMilestone = syncConvention === 'bracket'
+    ? (getMilestonePhaseFilter(cwd) as (dir: string) => boolean)
+    : () => true;
+
   // Scan all phases
   let entries: string[];
   try {
@@ -2948,6 +2971,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
       .filter(e => e.isDirectory())
       .map(e => e.name)
       .filter(name => !(syncRetiredPhaseNums.size > 0 && syncRetiredPhaseNums.has(phaseKeyFromDir(name, syncConvention))))
+      .filter(isDirInMilestone)
       .sort();
   } catch {
     output({ synced: true, changes: [], dry_run: !!verify }, raw, undefined);

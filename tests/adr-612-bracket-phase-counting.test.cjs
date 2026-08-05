@@ -164,7 +164,15 @@ describe('#612 PR-2: bracket phase headings enter total_phases', () => {
 **Goal:** b
 
 ### Phase Overview:
-`, 'bracket');
+`, 'bracket',
+    // #2761 Major 1: the default single dir ('GSD.02-01-setup') names a phase
+    // number ("01") this roadmap never declares — only "1" (legacy-labelled)
+    // and "05" (bracket) are real — so post-Major-1 the disk-side milestone
+    // filter correctly excludes it and `state sync` becomes a no-op (nothing
+    // to write). Naming the ACTUAL bracket-declared phase here keeps this
+    // test about what it says it's about (mixed heading-style counting), not
+    // an accidental side effect of the disk-scan gating fixed elsewhere.
+    ['GSD.02-05-bracket-one']);
     assert.equal(readTotal(), 2, '`Phase Overview:` still excluded');
     assert.equal(syncedTotal(), 2);
   });
@@ -200,16 +208,21 @@ describe('#612 PR-2: bracket sentinels stay OUT of both derivations', () => {
     // The assertion that actually exercises cmdStateSync's sentinel guard —
     // reading `state json` after sync would measure the read path a second time
     // and let a mutation to the write path survive.
-    // One completed phase directory. With the sentinel guard the denominator is
-    // 2 (05, 06) so the percent is 50; without it the two sentinel headings
-    // inflate it to 4 and the percent drops to 25.
-    writeProject(SENTINEL_ROADMAP, 'bracket');
+    // One completed phase directory — named for the REAL "05" phase this
+    // roadmap declares (#2761 Major 1: the default dir names phase "01",
+    // which this roadmap never declares, and the disk-side milestone filter
+    // now correctly excludes an undeclared phase number from the WRITE-path
+    // scan too, making `state sync` a no-op on the default dir). With the
+    // sentinel guard the denominator is 2 (05, 06) so the percent is 50;
+    // without it the two sentinel headings inflate it to 4 and the percent
+    // drops to 25.
+    writeProject(SENTINEL_ROADMAP, 'bracket', ['GSD.02-05-real-work']);
     assert.equal(syncedPercent(), 50, 'sentinel headings must not inflate the sync denominator');
   });
 
   test('a LOWERCASE sentinel bracket is excluded from both', () => {
     const doc = SENTINEL_ROADMAP.replace(/GSD\./g, 'gsd.');
-    writeProject(doc, 'bracket');
+    writeProject(doc, 'bracket', ['gsd.02-05-real-work']);
     assert.equal(readTotal(), 2);
     assert.equal(syncedTotal(), 2);
   });
@@ -224,7 +237,7 @@ describe('#612 PR-2: bracket sentinels stay OUT of both derivations', () => {
 
 ### [GSD.02] 05: Real
 **Goal:** b
-`, 'bracket');
+`, 'bracket', ['GSD.02-05-real']);
     // The composed rule: bracket-sentinel OR legacy 999 token.
     assert.equal(readTotal(), 1);
     assert.equal(syncedTotal(), 1);
@@ -259,7 +272,12 @@ ${heading}
 
   test('bullet-only strike (the canonical gesture) excludes the phase', () => {
     writeProject(
-      retiredRoadmap('~~**[GSD.02] 04: Delta**~~', '### [GSD.02] 04: Delta'), 'bracket');
+      retiredRoadmap('~~**[GSD.02] 04: Delta**~~', '### [GSD.02] 04: Delta'), 'bracket',
+      // #2761 Major 1: name one of the two REAL (non-retired) phases so the
+      // WRITE-path milestone filter has something to admit — the retired "04"
+      // itself is deliberately never used here (that's a separate dedicated
+      // test below).
+      ['GSD.02-05-real-work']);
     assert.equal(readTotal(), 2, 'the retired bracket phase must leave the denominator');
     assert.equal(syncedTotal(), 2);
   });
@@ -742,18 +760,27 @@ describe('#612 PR-2: the disk-side filter scopes bracket dirs — all five numbe
     assert.deepEqual(legacy, [3, 1, 3, 1, 33]);
   });
 
-  test('shape 2 WRITE: 60%, the DISCLOSED legacy gap, mirrored — not closed', () => {
-    // cmdStateSync does its own `fs.readdirSync` and never calls the milestone
-    // filter, so its denominator is the whole disk: 3 summaries over 5 plans =
-    // 60%, against the read path's scoped 33%. That divergence is PRE-EXISTING
-    // and identical on the flat-legacy twin at the true base build — scoping the
-    // sync counter here would fix legacy behaviour inside a bracket read-path PR
-    // and move every legacy repo's percent. It is mirrored deliberately.
+  test('shape 2 WRITE (#2761 Major 1 fix): bracket closes to 33% (matches read); legacy stays at the disclosed 60%', () => {
+    // UPDATED by #2761 Major 1 — this test used to pin the BUG this fix
+    // closes, titled "the DISCLOSED legacy gap, mirrored — not closed":
+    // cmdStateSync did its own `fs.readdirSync` and never called the
+    // milestone filter, so its denominator was the whole disk (3 summaries
+    // over 5 plans = 60%) against the read path's scoped 33% — for BOTH
+    // bracket and legacy alike, since the divergence was engine-wide, not
+    // bracket-specific.
+    //
+    // Major 1 gates cmdStateSync's disk scan by getMilestonePhaseFilter under
+    // `phase_id_convention === 'bracket'` ONLY — deliberately NOT
+    // unconditionally: an unconditional filter would ALSO move every legacy
+    // repo's persisted percent, which is out of this fix's scope (the
+    // binding constraint is "legacy stays byte-identical"). So: bracket now
+    // closes to 33% (agrees with the read path — repro3's fix, verified
+    // here on a SECOND fixture with real prior-milestone noise dirs);
+    // legacy stays at the pre-existing 60% (unchanged, deliberately).
     writeProject(TWO_MILESTONE_BRACKET, 'bracket', TWO_BRACKET_DIRS);
-    const bracket = syncedPercent();
+    assert.equal(syncedPercent(), 33, 'bracket: the gap is now closed, agrees with the read path');
     writeProject(TWO_MILESTONE_LEGACY, undefined, TWO_LEGACY_DIRS);
-    assert.equal(bracket, syncedPercent(), 'the gap must be mirrored, not closed on one side');
-    assert.equal(bracket, 60);
+    assert.equal(syncedPercent(), 60, 'legacy: the gap remains — moving it is out of this fix\'s scope');
   });
 
   test('shape 2 WRITE frontmatter agrees with `state json` on both spellings', () => {
