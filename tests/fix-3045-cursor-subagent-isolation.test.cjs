@@ -38,10 +38,10 @@ const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-cursor-subagent-start
  * `gsd-tools.cjs record-dispatch-isolation` writes). `writtenAt` defaults to
  * "now" (fresh); pass an explicit past timestamp to construct a stale one.
  */
-function writeSentinel(dir, { isolation, harnessFlag = null, phase = null, writtenAt = Date.now() }) {
+function writeSentinel(dir, { isolation, harnessFlag = null, phase = null, plan = null, writtenAt = Date.now() }) {
   const p = path.join(dir, SENTINEL_RELATIVE_PATH);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ isolation, harness_flag: harnessFlag, phase, written_at: writtenAt }));
+  fs.writeFileSync(p, JSON.stringify({ isolation, harness_flag: harnessFlag, phase, plan, written_at: writtenAt }));
 }
 
 function runHook(payload, extraEnv = {}) {
@@ -103,7 +103,15 @@ describe('gsd-cursor-subagent-start.js: isolation guard applicability (#3045)', 
   let unreadableConfigProject; // config.json is a directory (EISDIR)
 
   before(() => {
-    harnessProject = makeGitProject('gsd-cs-harness-', JSON.stringify({}));
+    // #3045 MAJOR fix ("Cursor residual false-deny"): the fallback resolver
+    // no longer defaults confidently to 'cursor' when config.json carries no
+    // `runtime` key (see hooks/gsd-cursor-subagent-start.js's
+    // resolveFallbackIsolation doc comment) — an explicit signal is now
+    // required. This fixture intentionally declares one so the REST of this
+    // describe block still exercises a properly-configured Cursor+GSD
+    // project resolving harness-worktree, not the newly-inert unconfigured
+    // case (covered separately below).
+    harnessProject = makeGitProject('gsd-cs-harness-', JSON.stringify({ runtime: 'cursor' }));
     const linkedPath = path.join(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'gsd-cs-wt-parent-')), 'linked');
     git(['worktree', 'add', linkedPath, '-b', 'agent-gsd-cs-iso-test'], harnessProject);
     linkedWorktree = linkedPath;
@@ -262,7 +270,11 @@ describe('gsd-cursor-subagent-start.js: managed-worktree-root OR-signal (#3045)'
     // (a confident negative); the managed-root signal must still ALLOW.
     managedWorktree = path.join(cursorConfigDir, 'worktrees', 'agent-1');
     fs.mkdirSync(path.join(managedWorktree, '.planning'), { recursive: true });
-    fs.writeFileSync(path.join(managedWorktree, '.planning', 'config.json'), JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal required for the fallback to
+    // resolve harness-worktree at all — otherwise this test would trivially
+    // allow for the wrong reason (no runtime signal) instead of exercising
+    // the managed-root evidence path it's actually testing.
+    fs.writeFileSync(path.join(managedWorktree, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
   });
 
   after(() => {
@@ -284,7 +296,9 @@ describe('gsd-cursor-subagent-start.js: multi-root workspace scan (#3045 finding
   let managedWorktree; // a real isolated root under CURSOR_CONFIG_DIR/worktrees
 
   before(() => {
-    unisolatedProject = makeGitProject('gsd-cs-multiroot-primary-', JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal required — see the note on
+    // the first `harnessProject` fixture above.
+    unisolatedProject = makeGitProject('gsd-cs-multiroot-primary-', JSON.stringify({ runtime: 'cursor' }));
     benignRoot = createTempDir('gsd-cs-multiroot-benign-');
 
     cursorConfigDir = createTempDir('gsd-cs-multiroot-cursorhome-');
@@ -337,7 +351,9 @@ describe('gsd-cursor-subagent-start.js: realpath verification against symlink/bi
 
   before(() => {
     cursorConfigDir = createTempDir('gsd-cs-symlink-cursorhome-');
-    primaryCheckout = makeGitProject('gsd-cs-symlink-primary-', JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal required — see the note on
+    // the first `harnessProject` fixture above.
+    primaryCheckout = makeGitProject('gsd-cs-symlink-primary-', JSON.stringify({ runtime: 'cursor' }));
     fs.mkdirSync(path.join(cursorConfigDir, 'worktrees'), { recursive: true });
     spoofedManagedPath = path.join(cursorConfigDir, 'worktrees', 'spoofed');
     fs.symlinkSync(primaryCheckout, spoofedManagedPath, 'dir');
@@ -368,7 +384,9 @@ describe('gsd-cursor-subagent-start.js: nonexistent workspace root does not cras
   let nonexistentRoot;
 
   before(() => {
-    unisolatedProject = makeGitProject('gsd-cs-nonexistent-companion-', JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal required — see the note on
+    // the first `harnessProject` fixture above.
+    unisolatedProject = makeGitProject('gsd-cs-nonexistent-companion-', JSON.stringify({ runtime: 'cursor' }));
     nonexistentRoot = path.join(require('node:os').tmpdir(), 'gsd-cs-does-not-exist-', String(process.pid), 'nope');
   });
 
@@ -398,7 +416,10 @@ describe('gsd-cursor-subagent-start.js: output contract precision (#3045)', () =
   let harnessProject;
 
   before(() => {
-    harnessProject = makeGitProject('gsd-cs-contract-', JSON.stringify({}));
+    // See the #3045 MAJOR fix note in the first `harnessProject` fixture
+    // above — an explicit runtime signal is required for the fallback to
+    // resolve harness-worktree.
+    harnessProject = makeGitProject('gsd-cs-contract-', JSON.stringify({ runtime: 'cursor' }));
   });
 
   after(() => {
@@ -446,7 +467,11 @@ describe('executor-identity parity: hooks/gsd-agent-isolation-guard.js (Claude) 
 
     cursorProject = createTempDir('gsd-cs-parity-cursor-');
     fs.mkdirSync(path.join(cursorProject, '.planning'), { recursive: true });
-    fs.writeFileSync(path.join(cursorProject, '.planning', 'config.json'), JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal required for the fallback to
+    // resolve harness-worktree — mirrors claudeProject's explicit
+    // `runtime: 'claude'` above, so this parity check compares two ACTUALLY
+    // enforcing configurations, not Claude-enforcing vs. Cursor-inert.
+    fs.writeFileSync(path.join(cursorProject, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
   });
 
   after(() => {
@@ -493,7 +518,11 @@ describe('gsd-cursor-subagent-start.js: #3045 MAJOR 3 — non-git GSD project is
   before(() => {
     nonGitProject = createTempDir('gsd-cs-notgitrepo-');
     fs.mkdirSync(path.join(nonGitProject, '.planning'), { recursive: true });
-    fs.writeFileSync(path.join(nonGitProject, '.planning', 'config.json'), JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal, so this test exercises the
+    // not_git_repo -> INERT code path specifically, not the unrelated "no
+    // runtime signal" trivial allow (both now happen to allow, but this
+    // fixture's whole point is proving the FORMER).
+    fs.writeFileSync(path.join(nonGitProject, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
   });
 
   after(() => {
@@ -527,7 +556,9 @@ describe('gsd-cursor-subagent-start.js: #3045 MINOR — relative workspace_roots
   });
 
   test('relative root paired with a real unisolated absolute harness-worktree root still DENIES (relative entry is dropped, not silently trusted)', () => {
-    const unisolatedProject = makeGitProject('gsd-cs-relmix-', JSON.stringify({}));
+    // #3045 MAJOR fix: explicit runtime signal required — see the note on
+    // the first `harnessProject` fixture above.
+    const unisolatedProject = makeGitProject('gsd-cs-relmix-', JSON.stringify({ runtime: 'cursor' }));
     try {
       const r = runHook(subagentPayload(['relative/workspace/root', unisolatedProject]));
       assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
@@ -550,8 +581,13 @@ describe('gsd-cursor-subagent-start.js: #3045 BLOCKER regression — sentinel is
   let useWorktreesFalseProject;
 
   before(() => {
-    harnessProject = makeGitProject('gsd-cs-sentinel-', JSON.stringify({}));
-    useWorktreesFalseProject = makeGitProject('gsd-cs-uwf-', JSON.stringify({ workflow: { use_worktrees: false } }));
+    // See the #3045 MAJOR fix note in the first `harnessProject` fixture
+    // above — an explicit runtime signal is required for the fallback to
+    // resolve harness-worktree (both fixtures need it: `useWorktreesFalseProject`
+    // must actually reach the `workflow.use_worktrees:false` branch, not
+    // short-circuit to 'none' for the unrelated "no runtime signal" reason).
+    harnessProject = makeGitProject('gsd-cs-sentinel-', JSON.stringify({ runtime: 'cursor' }));
+    useWorktreesFalseProject = makeGitProject('gsd-cs-uwf-', JSON.stringify({ runtime: 'cursor', workflow: { use_worktrees: false } }));
   });
 
   after(() => {
@@ -621,5 +657,143 @@ describe('gsd-cursor-subagent-start.js: #3045 BLOCKER regression — sentinel is
     assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, 'deny');
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: #3045 MAJOR "Cursor residual false-deny" — align with Claude hook semantics', () => {
+  let unconfiguredProject; // .planning/config.json = {}, no GSD_RUNTIME, no defaults.json signal
+
+  before(() => {
+    unconfiguredProject = makeGitProject('gsd-cs-unconfigured-', JSON.stringify({}));
+  });
+
+  after(() => {
+    cleanup(unconfiguredProject);
+  });
+
+  test('no sentinel + no runtime signal anywhere -> ALLOW (was a confident "cursor" default -> DENY pre-fix)', () => {
+    // Before this fix, this exact shape (a GSD project scaffolded from
+    // gsd-core/templates/config.json, which ships with no `runtime` key, with
+    // no fresh sentinel — outside execute-phase, after .gsd cleanup, or past
+    // the sentinel's staleness window) always resolved 'cursor' purely
+    // because this script only runs as Cursor's own hook, then hard-DENIED
+    // because the main checkout is not (yet) an isolated Cursor worktree —
+    // a false-deny of an otherwise legitimate dispatch. HOME is pinned to the
+    // project dir itself (which has no .gsd/defaults.json) for hermeticity.
+    const r = runHook(subagentPayload([unconfiguredProject]), { HOME: unconfiguredProject });
+    assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, undefined, `expected allow (inert), got: ${r.stdout}`);
+  });
+
+  test('~/.gsd/defaults.json runtime (installer-persisted, #2395) makes a REAL Cursor+GSD install still enforce', () => {
+    const home = createTempDir('gsd-cs-defaults-home-');
+    try {
+      fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'cursor' }));
+
+      const r = runHook(subagentPayload([unconfiguredProject]), { HOME: home });
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.permission, 'deny', `defaults.json runtime must be enforced, got: ${r.stdout}`);
+    } finally {
+      cleanup(home);
+    }
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: #3045 SECURITY F2 — sentinel bound to phase/plan, mismatch is "no applicable sentinel"', () => {
+  let harnessProject;
+
+  before(() => {
+    harnessProject = makeGitProject('gsd-cs-f2-', JSON.stringify({ runtime: 'cursor' }));
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+  });
+
+  test('a fresh "none" sentinel for a DIFFERENT phase than this dispatch (task text) is not applied -> falls through and DENIES', () => {
+    writeSentinel(harnessProject, { isolation: 'none', phase: '1', plan: 'plan-a' });
+    try {
+      const r = runHook(subagentPayload([harnessProject], { task: 'Execute plan plan-b of phase 2' }));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(JSON.parse(r.stdout).permission, 'deny', 'mismatched sentinel must not silently allow');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('a fresh sentinel for the SAME phase/plan as this dispatch (task text) is applied normally (positive control)', () => {
+    writeSentinel(harnessProject, { isolation: 'none', phase: '2', plan: 'plan-b' });
+    try {
+      const r = runHook(subagentPayload([harnessProject], { task: 'Execute plan plan-b of phase 2' }));
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(JSON.parse(r.stdout).permission, undefined);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: #3045 MAJOR — clock seam boundary coverage (in-process, no subprocess wall-clock race)', () => {
+  const cursorHookModule = require('../hooks/gsd-cursor-subagent-start.js');
+
+  let harnessProject;
+  let savedGsdRuntime;
+
+  before(() => {
+    harnessProject = makeGitProject('gsd-cs-clock-', JSON.stringify({ runtime: 'cursor' }));
+    savedGsdRuntime = process.env.GSD_RUNTIME;
+    delete process.env.GSD_RUNTIME;
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+    if (savedGsdRuntime === undefined) delete process.env.GSD_RUNTIME;
+    else process.env.GSD_RUNTIME = savedGsdRuntime;
+  });
+
+  function fixedClock(nowMs) {
+    return { now: () => nowMs };
+  }
+
+  test('sentinel exactly at SENTINEL_STALE_MS - 1 is still FRESH (trusted)', () => {
+    const writtenAt = 1_000_000;
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt });
+    try {
+      const verdict = cursorHookModule.evaluateRootIsolation(
+        harnessProject, 'gsd-executor', { clock: fixedClock(writtenAt + SENTINEL_STALE_MS - 1) },
+      );
+      assert.equal(verdict.action, 'allow', 'still within the trust window — must use the fresh "none" sentinel');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel exactly AT SENTINEL_STALE_MS is STALE (falls back to registry, which DENIES for this unisolated checkout)', () => {
+    const writtenAt = 1_000_000;
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt });
+    try {
+      const verdict = cursorHookModule.evaluateRootIsolation(
+        harnessProject, 'gsd-executor', { clock: fixedClock(writtenAt + SENTINEL_STALE_MS) },
+      );
+      assert.equal(verdict.action, 'deny');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel at SENTINEL_STALE_MS + 1 is STALE', () => {
+    const writtenAt = 1_000_000;
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt });
+    try {
+      const verdict = cursorHookModule.evaluateRootIsolation(
+        harnessProject, 'gsd-executor', { clock: fixedClock(writtenAt + SENTINEL_STALE_MS + 1) },
+      );
+      assert.equal(verdict.action, 'deny');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
   });
 });

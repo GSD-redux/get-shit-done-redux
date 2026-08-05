@@ -61,7 +61,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { readSentinel, VALID_ISOLATION } = require('./lib/isolation-sentinel.js');
+const os = require('os');
+const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
 
 // No other executor-shaped subagent_type exists in agents/ today
 // (verified: only agents/gsd-executor.md). A Set, not a bare string compare,
@@ -98,9 +99,24 @@ function parseHarnessFlag(flag) {
  * -equivalent dispatch — a kwarg that runtime's own tool never accepts.
  *
  * Returns `{ runtimeId, confident }`. `confident` is true only when an
- * explicit signal exists (GSD_RUNTIME env override, or a `runtime` key
- * literally present in config.json); false means "cannot determine" and
- * callers must NOT silently substitute 'claude' — see resolveRegistryIsolation.
+ * explicit signal exists (GSD_RUNTIME env override, a `runtime` key literally
+ * present in config.json, or a `runtime` persisted to `~/.gsd/defaults.json`
+ * by the installer — see below); false means "cannot determine" and callers
+ * must NOT silently substitute 'claude' — see resolveRegistryIsolation.
+ *
+ * #3045 BLOCKER 2 fix: precedence is GSD_RUNTIME env > config.json `runtime`
+ * key > `~/.gsd/defaults.json` `runtime`. The first two are unchanged; the
+ * third is NEW — `bin/install.js`'s `writeNonClaudeDefaults` already persists
+ * the installed runtime to `~/.gsd/defaults.json` for every non-Claude
+ * runtime install (`defaults.runtime = runtime`, #2395), so this is real,
+ * already-shipping data, not a new write. Before this fix, "no signal" was
+ * the COMMON case for any project whose config.json was scaffolded from
+ * `gsd-core/templates/config.json` (which ships with NO `runtime` key) and
+ * whose session had no `GSD_RUNTIME` override — i.e. nearly every non-Claude
+ * install, since Claude installs never reach `writeNonClaudeDefaults` at all
+ * (`nativeModelAliases` short-circuits it) and therefore correctly still rely
+ * on config.json/env. Reading the installer's own persisted signal makes
+ * "confident" the common case instead.
  */
 function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates) {
   const envRuntime = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
@@ -115,6 +131,23 @@ function resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidate
     const configRuntime = resolveRuntimeNameFromCandidates(parsed.runtime);
     if (configRuntime) return { runtimeId: configRuntime, confident: true };
   }
+
+  // #3045 BLOCKER 2: fall back to the installer-persisted default. Read
+  // defensively — an absent/corrupt/non-object defaults.json is "no signal",
+  // never a resolution failure (this function only ever throws for the
+  // config.json read above, which the caller's catch already handles).
+  try {
+    const defaultsPath = path.join(os.homedir(), '.gsd', 'defaults.json');
+    const defaultsRaw = fs.readFileSync(defaultsPath, 'utf-8');
+    const defaultsParsed = JSON.parse(defaultsRaw);
+    if (defaultsParsed && typeof defaultsParsed === 'object' && 'runtime' in defaultsParsed) {
+      const defaultsRuntime = resolveRuntimeNameFromCandidates(defaultsParsed.runtime);
+      if (defaultsRuntime) return { runtimeId: defaultsRuntime, confident: true };
+    }
+  } catch {
+    // Absent or unreadable ~/.gsd/defaults.json — no signal, fall through.
+  }
+
   return { runtimeId: null, confident: false };
 }
 
@@ -220,8 +253,16 @@ function resolveRegistryIsolation(cwd, configPath) {
  *
  * `clock` is injectable for the sentinel-staleness check (repo clock-seam
  * convention); defaults to the real `Date`.
+ *
+ * `dispatchIds` (optional, `{plan, phase}`) is the identifiers extracted from
+ * THIS dispatch's own prompt/description text (#3045 SECURITY F2 —
+ * `extractDispatchIdentifiers` in `hooks/lib/isolation-sentinel.js`). When
+ * supplied and a fresh sentinel disagrees with it on a shared identifier, the
+ * sentinel is treated as NOT APPLICABLE to this dispatch (falls through to
+ * the conservative registry+config fallback below) rather than trusted —
+ * "a mismatch is 'no applicable sentinel', not an allow" (#3045 review).
  */
-function resolveIsolationState(cwd, { clock = Date } = {}) {
+function resolveIsolationState(cwd, { clock = Date, dispatchIds = null } = {}) {
   const configPath = path.join(cwd, '.planning', 'config.json');
   let projectExists;
   try {
@@ -235,34 +276,47 @@ function resolveIsolationState(cwd, { clock = Date } = {}) {
   }
 
   const sentinel = readSentinel(cwd, { clock });
-  if (sentinel.present && !sentinel.stale) {
+  if (sentinel.present && !sentinel.stale && sentinelAppliesToDispatch(sentinel, dispatchIds)) {
     if (sentinel.isolation !== 'harness-worktree') {
       return { gsdProject: true, isolation: sentinel.isolation, harnessFlag: null, error: null };
     }
     if (sentinel.harnessFlag) {
       return { gsdProject: true, isolation: 'harness-worktree', harnessFlag: sentinel.harnessFlag, error: null };
     }
-    // Sentinel confirms harness-worktree but (unexpectedly) carries no flag —
-    // fall through to the registry lookup for the flag descriptor only.
-    try {
-      const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
-      const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
-      const { runtimeId, confident } = resolveRuntimeIdentity(cwd, configPath, resolveRuntimeNameFromCandidates);
-      const harnessFlag = confident ? resolveHarnessFlag(runtimeId, runtimes) : null;
-      return {
-        gsdProject: true,
-        isolation: harnessFlag ? 'harness-worktree' : 'none',
-        harnessFlag,
-        error: null,
-      };
-    } catch (err) {
-      return { gsdProject: true, isolation: null, harnessFlag: null, error: err };
-    }
+    // #3045 BLOCKER 2 fix: the sentinel already PROVED this dispatch requires
+    // isolation (it resolved harness-worktree) but carries no usable flag —
+    // this must DENY, not degrade to the registry's "not confident -> none"
+    // fallback. That degrade exists for the case where NOTHING has resolved
+    // isolation yet (the conservative fallback path below); reusing it here
+    // was the BLOCKER: a fresh sentinel asserting harness-worktree with no
+    // flag fell through to a registry lookup that, on the common "runtime not
+    // confidently determinable" case, silently returned isolation:'none' and
+    // ALLOWED the dispatch to run unisolated in the primary checkout — the
+    // exact failure this guard exists to prevent, and on the default-install
+    // path (no `runtime` key in gsd-core/templates/config.json), not a corner
+    // case. With the #3045 CORE REDESIGN, `dispatch-isolation` always resolves
+    // and records `harnessFlag` together with `isolation` in one atomic write
+    // whenever isolation is 'harness-worktree' (routeDispatchIsolation
+    // degrades to 'none' itself when no flag is declared) — so a fresh
+    // sentinel with isolation:'harness-worktree' and no flag should not occur
+    // in practice. This branch is defense-in-depth for a sentinel written by
+    // an older gsd-tools.cjs, a hand-crafted/corrupted-in-a-*valid*-way
+    // sentinel, or any other path that reaches this state; it MUST deny.
+    return {
+      gsdProject: true,
+      isolation: null,
+      harnessFlag: null,
+      error: new Error(
+        'dispatch-isolation sentinel resolved "harness-worktree" but recorded no harness_flag — ' +
+        'cannot verify what parameter the dispatch must carry.'
+      ),
+    };
   }
 
-  // Sentinel absent or stale: conservative fallback (#3045 finding — must
-  // still cover fail-closed case (a): a project that opted out of worktrees
-  // entirely via workflow.use_worktrees).
+  // Sentinel absent, stale, or does not apply to this dispatch (F2 mismatch):
+  // conservative fallback (#3045 finding — must still cover fail-closed case
+  // (a): a project that opted out of worktrees entirely via
+  // workflow.use_worktrees).
   try {
     const { isolation, harnessFlag } = resolveRegistryIsolation(cwd, configPath);
     return { gsdProject: true, isolation, harnessFlag, error: null };
@@ -271,68 +325,104 @@ function resolveIsolationState(cwd, { clock = Date } = {}) {
   }
 }
 
-let input = '';
-const stdinTimeout = setTimeout(() => process.exit(0), 3000);
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => { input += chunk; });
-process.stdin.on('end', () => {
-  clearTimeout(stdinTimeout);
-  try {
-    const data = JSON.parse(input);
-    if (!data || typeof data !== 'object') { process.exit(0); }
-    // #3045 MAJOR 1: accept both subagent-dispatch tool names. hooks.json's
-    // matcher is "Agent|Task" (mirroring the repo's own PostToolUse
-    // precedent) so this must match both, or it is silently inert on any
-    // host/version whose subagent tool is named "Task".
-    if (data.tool_name !== 'Agent' && data.tool_name !== 'Task') { process.exit(0); }
+/**
+ * Process one PreToolUse payload (already JSON-parsed) and return the
+ * decision without touching stdin/stdout/process.exit — the exported,
+ * directly-testable core of this hook's logic (#3045 MAJOR: "the clock seam
+ * is dead code" fix). The stdin-driven script below is now a thin adapter
+ * over this function so tests can `require()` it and inject a `clock`
+ * (`{now(): number}`) directly per the repo's clock-seam convention, instead
+ * of racing real `Date.now()` across a spawned subprocess boundary.
+ *
+ * Returns `{ action: 'allow' } | { action: 'block', reason: string }`.
+ */
+function evaluateDispatch(data, { clock = Date } = {}) {
+  if (!data || typeof data !== 'object') return { action: 'allow' };
+  // #3045 MAJOR 1: accept both subagent-dispatch tool names. hooks.json's
+  // matcher is "Agent|Task" (mirroring the repo's own PostToolUse
+  // precedent) so this must match both, or it is silently inert on any
+  // host/version whose subagent tool is named "Task".
+  if (data.tool_name !== 'Agent' && data.tool_name !== 'Task') return { action: 'allow' };
 
-    const toolInput = (data.tool_input && typeof data.tool_input === 'object') ? data.tool_input : {};
-    const subagentType = toolInput.subagent_type;
-    if (typeof subagentType !== 'string' || !EXECUTOR_SUBAGENT_TYPES.has(subagentType)) {
+  const toolInput = (data.tool_input && typeof data.tool_input === 'object') ? data.tool_input : {};
+  const subagentType = toolInput.subagent_type;
+  if (typeof subagentType !== 'string' || !EXECUTOR_SUBAGENT_TYPES.has(subagentType)) {
+    return { action: 'allow' };
+  }
+
+  const cwd = data.cwd || process.cwd();
+  // #3045 SECURITY F2: best-effort plan/phase extraction from this
+  // dispatch's own description text, so a fresh sentinel that disagrees
+  // with THIS dispatch is treated as inapplicable rather than trusted.
+  const dispatchIds = extractDispatchIdentifiers(toolInput.description);
+  const state = resolveIsolationState(cwd, { clock, dispatchIds });
+
+  if (!state.gsdProject) return { action: 'allow' };
+
+  if (state.error) {
+    const reason =
+      `Agent isolation guard: could not read or resolve this project's dispatch-isolation ` +
+      `configuration ('.planning/config.json' under '${cwd}'). Refusing to dispatch ` +
+      `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
+      `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
+      `project configuration is readable.`;
+    return { action: 'block', reason };
+  }
+
+  if (state.isolation !== 'harness-worktree') return { action: 'allow' };
+
+  const parsed = parseHarnessFlag(state.harnessFlag);
+  if (!parsed) return { action: 'allow' };
+
+  if (toolInput[parsed.param] === parsed.value) return { action: 'allow' };
+
+  const reason =
+    `Agent isolation guard: this project's dispatch isolation resolves to "harness-worktree", ` +
+    `but the Agent() dispatch for subagent_type="${subagentType}" is missing ` +
+    `${parsed.param}="${parsed.value}". Add ${parsed.param}="${parsed.value}" to the Agent() ` +
+    `call so the executor runs in an isolated worktree instead of the primary checkout ` +
+    `(gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md).`;
+  return { action: 'block', reason };
+}
+
+/* istanbul ignore next -- stdin adapter, exercised via spawnSync in tests */
+function main() {
+  let input = '';
+  const stdinTimeout = setTimeout(() => process.exit(0), 3000);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => { input += chunk; });
+  process.stdin.on('end', () => {
+    clearTimeout(stdinTimeout);
+    try {
+      const data = JSON.parse(input);
+      const decision = evaluateDispatch(data);
+      if (decision.action === 'block') {
+        const out = { decision: 'block', reason: decision.reason };
+        process.stdout.write(JSON.stringify(out));
+        // Kimi feeds stderr (not stdout) back to the model on exit 2.
+        process.stderr.write(decision.reason);
+        process.exit(2);
+      }
+      process.exit(0);
+    } catch {
+      // Silent fail — never block valid tool calls due to hook errors
+      // (malformed payload, etc.). This is distinct from resolveIsolationState's
+      // internal error handling, which DOES deny — this outer catch only
+      // covers payload parsing before applicability could even be determined.
       process.exit(0);
     }
+  });
+}
 
-    const cwd = data.cwd || process.cwd();
-    const state = resolveIsolationState(cwd);
+if (require.main === module) {
+  main();
+}
 
-    if (!state.gsdProject) { process.exit(0); }
-
-    if (state.error) {
-      const reason =
-        `Agent isolation guard: could not read or resolve this project's dispatch-isolation ` +
-        `configuration ('.planning/config.json' under '${cwd}'). Refusing to dispatch ` +
-        `subagent_type="${subagentType}" without being able to verify whether isolation is ` +
-        `required — a guard that cannot verify must not answer "safe" (#3050). Retry once the ` +
-        `project configuration is readable.`;
-      const out = { decision: 'block', reason };
-      process.stdout.write(JSON.stringify(out));
-      // Kimi feeds stderr (not stdout) back to the model on exit 2.
-      process.stderr.write(reason);
-      process.exit(2);
-    }
-
-    if (state.isolation !== 'harness-worktree') { process.exit(0); }
-
-    const parsed = parseHarnessFlag(state.harnessFlag);
-    if (!parsed) { process.exit(0); }
-
-    if (toolInput[parsed.param] === parsed.value) { process.exit(0); }
-
-    const reason =
-      `Agent isolation guard: this project's dispatch isolation resolves to "harness-worktree", ` +
-      `but the Agent() dispatch for subagent_type="${subagentType}" is missing ` +
-      `${parsed.param}="${parsed.value}". Add ${parsed.param}="${parsed.value}" to the Agent() ` +
-      `call so the executor runs in an isolated worktree instead of the primary checkout ` +
-      `(gsd-core/workflows/execute-phase/steps/executor-isolation-dispatch.md).`;
-    const out = { decision: 'block', reason };
-    process.stdout.write(JSON.stringify(out));
-    process.stderr.write(reason);
-    process.exit(2);
-  } catch {
-    // Silent fail — never block valid tool calls due to hook errors
-    // (malformed payload, etc.). This is distinct from resolveIsolationState's
-    // internal error handling, which DOES deny — this outer catch only
-    // covers payload parsing before applicability could even be determined.
-    process.exit(0);
-  }
-});
+module.exports = {
+  evaluateDispatch,
+  resolveIsolationState,
+  resolveRuntimeIdentity,
+  resolveHarnessFlag,
+  resolveRegistryIsolation,
+  parseHarnessFlag,
+};

@@ -1587,6 +1587,24 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // `orchestrator-worktree`. It requires `--cwd-target` (the GSD-created
     // worktree path) and optionally `--prompt`; without a target there is
     // nothing to bind, so `exec` is null.
+    //
+    // #3045 CORE REDESIGN: this is now the SOLE resolver of "what isolation
+    // applies to this dispatch", and — as an unconditional side effect — it
+    // PERSISTS that resolved decision (mode + harnessFlag + phase/plan
+    // identifiers, written together in one atomic write) to the sentinel the
+    // guard hooks read. Previously the sentinel was written by prose-gated
+    // shell blocks in `executor-isolation-dispatch.md` that a model was told
+    // to "read and run" — a prose-gated writer for a guard against
+    // prose-gated values is the same defect class the guard exists to close.
+    // The workflow MUST call this query to learn ISOLATION at all, so
+    // recording here is structurally unskippable. `--phase`/`--plan` are
+    // optional identifiers threaded through from the caller (workflow shell
+    // variables); `--force-isolation <mode>` lets a caller that has
+    // additional context this resolver cannot see (the #2474 per-plan
+    // submodule intersection, computed in shell in
+    // `per-plan-worktree-gate.md`) override the naturally-resolved mode
+    // while still going through this single write path. Best-effort: a
+    // sentinel write failure here must never fail the wave.
     const VALID_ISOLATION = new Set(['harness-worktree', 'orchestrator-worktree', 'none']);
     let isolation = 'none';
     let runtimeId = null;
@@ -1645,6 +1663,40 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       harnessFlag = null;
     }
 
+    // `--force-isolation <mode>` overrides the naturally-resolved mode with
+    // context this resolver has no way to see on its own (e.g. the #2474
+    // per-plan submodule intersection). Invalid/unrecognized values are
+    // ignored rather than erroring — this is a best-effort recording call,
+    // not a hard usage gate. Forcing to 'none' clears harnessFlag/exec since
+    // neither applies to sequential dispatch.
+    const forceIdx = args.indexOf('--force-isolation');
+    const forcedIsolation = forceIdx !== -1 ? args[forceIdx + 1] : undefined;
+    if (forcedIsolation && VALID_ISOLATION.has(forcedIsolation)) {
+      isolation = forcedIsolation;
+      if (isolation === 'none') {
+        harnessFlag = null;
+        exec = null;
+      }
+    }
+
+    const phaseIdx = args.indexOf('--phase');
+    const phaseArg = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
+      ? args[phaseIdx + 1]
+      : null;
+    const planIdx = args.indexOf('--plan');
+    const planArg = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
+      ? args[planIdx + 1]
+      : null;
+
+    // Side-effect write (#3045 CORE REDESIGN) — see the doc comment above.
+    // Never allowed to affect this query's own stdout contract or throw.
+    try {
+      writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase: phaseArg, plan: planArg });
+    } catch {
+      // writeDispatchIsolationSentinel already swallows its own errors into
+      // a { recorded: false } result; this catch is defense in depth only.
+    }
+
     if (args.indexOf('--json') !== -1) {
       output({ runtime: runtimeId, isolation, exec, harnessFlag }, raw);
     } else {
@@ -1652,19 +1704,54 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
   }
 
+  /**
+   * Atomically persist the resolved dispatch-isolation decision to the
+   * run-scoped sentinel both isolation guard hooks read
+   * (hooks/gsd-agent-isolation-guard.js, hooks/gsd-cursor-subagent-start.js;
+   * shared reader hooks/lib/isolation-sentinel.js). Extracted so
+   * `routeDispatchIsolation` (the #3045 CORE REDESIGN primary write path)
+   * and `routeRecordDispatchIsolation` (the explicit verb, kept for the
+   * per-plan degrade call site and back-compat/tests) share exactly one
+   * write implementation. Never throws — returns `{ recorded, path, error? }`.
+   */
+  function writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag = null, phase = null, plan = null }) {
+    const nodePath = require('path');
+    const nodeFs = require('fs');
+    const sentinelDir = nodePath.join(cwd, '.gsd');
+    const sentinelPath = nodePath.join(sentinelDir, 'dispatch-isolation-sentinel.json');
+    const payload = {
+      isolation,
+      harness_flag: harnessFlag || null,
+      phase: phase || null,
+      plan: plan || null,
+      written_at: Date.now(),
+    };
+    try {
+      nodeFs.mkdirSync(sentinelDir, { recursive: true });
+      // Atomic write: unique temp file + rename, so a concurrent reader (a
+      // guard hook firing mid-write) never observes a partially-written
+      // sentinel. Unique per-process+time so concurrent orchestrator-worktree
+      // invocations sharing the same sentinelDir never collide on the temp name.
+      const tmpPath = `${sentinelPath}.tmp-${process.pid}-${Date.now()}`;
+      nodeFs.writeFileSync(tmpPath, JSON.stringify(payload));
+      nodeFs.renameSync(tmpPath, sentinelPath);
+      return { recorded: true, path: '.gsd/dispatch-isolation-sentinel.json' };
+    } catch (err) {
+      return { recorded: false, path: '.gsd/dispatch-isolation-sentinel.json', error: err && err.message };
+    }
+  }
+
   function routeRecordDispatchIsolation({ args, cwd, raw, error }) {
-    // #3045 BLOCKER fix: `executor-isolation-dispatch.md`'s "Resolve ISOLATION"
-    // shell block is the SOLE authority for the per-dispatch decision — it
-    // already applies workflow.use_worktrees, the #2474 per-plan submodule
-    // degrade, and the #683/#3060 base-check auto-degrade before this verb
-    // ever runs. This verb's only job is to PERSIST that already-resolved
-    // decision to a run-scoped sentinel file so the isolation guard hooks
-    // (hooks/gsd-agent-isolation-guard.js, hooks/gsd-cursor-subagent-start.js)
-    // can read the actual per-dispatch decision instead of re-deriving a host
-    // CAPABILITY from the registry — the registry's harness-worktree entry
-    // means "this host CAN isolate", not "this dispatch SHOULD be isolated".
-    // Sequential ISOLATION=none is a legitimate, documented outcome even on a
-    // harness-worktree-capable host (execute-phase.md:788-790).
+    // #3045: `routeDispatchIsolation` (the `dispatch-isolation` query) is now
+    // the PRIMARY write path for the sentinel (CORE REDESIGN) — it records
+    // as an unconditional side effect of resolving ISOLATION, which the
+    // workflow must call to learn the value at all. This verb remains as an
+    // explicit fallback for callers that resolve isolation through some
+    // other means (or need to force a specific value, e.g. a caller with no
+    // access to `--force-isolation` context) and for direct test coverage of
+    // the write primitive. Both verbs share exactly one write implementation
+    // (`writeDispatchIsolationSentinel`) so there is only one atomic-write
+    // code path to reason about.
     //
     // Best-effort: a write failure here must never fail the workflow — the
     // guard hooks' own sentinel-absent path degrades to a conservative
@@ -1677,38 +1764,42 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     if (!isolation || !VALID_ISOLATION.has(isolation)) {
       error(
         'Usage: record-dispatch-isolation --isolation <harness-worktree|orchestrator-worktree|none> ' +
-        '[--harness-flag <flag>] [--phase <n>]',
+        '[--harness-flag <flag>|--harness-flag=<flag>] [--phase <n>] [--plan <id>]',
         ERROR_REASON.USAGE,
       );
       return;
     }
-    const flagIdx = args.indexOf('--harness-flag');
-    const harnessFlag = flagIdx !== -1 && args[flagIdx + 1] && !args[flagIdx + 1].startsWith('--')
-      ? args[flagIdx + 1]
-      : null;
+    // #3045 MAJOR: the space-separated form rejects any value starting with
+    // `--` (to avoid swallowing a missing value followed by another flag),
+    // but that is exactly the shape of Cursor's and Windsurf's real
+    // `harnessIsolationFlag` — both declare the bare CLI flag `--worktree`
+    // (gsd-core/bin/lib/capability-registry.cjs), which could therefore
+    // never be persisted. The `--harness-flag=<value>` equals form (mirrors
+    // the `--cwd=<path>` convention already used by this dispatcher's
+    // top-level arg parsing above) carries the value unambiguously and is
+    // never subject to that guard.
+    let harnessFlag = null;
+    const flagEqArg = args.find((a) => a.startsWith('--harness-flag='));
+    if (flagEqArg) {
+      const value = flagEqArg.slice('--harness-flag='.length);
+      harnessFlag = value.length > 0 ? value : null;
+    } else {
+      const flagIdx = args.indexOf('--harness-flag');
+      harnessFlag = flagIdx !== -1 && args[flagIdx + 1] && !args[flagIdx + 1].startsWith('--')
+        ? args[flagIdx + 1]
+        : null;
+    }
     const phaseIdx = args.indexOf('--phase');
     const phase = phaseIdx !== -1 && args[phaseIdx + 1] && !args[phaseIdx + 1].startsWith('--')
       ? args[phaseIdx + 1]
       : null;
+    const planIdx = args.indexOf('--plan');
+    const plan = planIdx !== -1 && args[planIdx + 1] && !args[planIdx + 1].startsWith('--')
+      ? args[planIdx + 1]
+      : null;
 
-    const nodePath = require('path');
-    const nodeFs = require('fs');
-    const sentinelDir = nodePath.join(cwd, '.gsd');
-    const sentinelPath = nodePath.join(sentinelDir, 'dispatch-isolation-sentinel.json');
-    const payload = { isolation, harness_flag: harnessFlag, phase, written_at: Date.now() };
-    try {
-      nodeFs.mkdirSync(sentinelDir, { recursive: true });
-      // Atomic write: unique temp file + rename, so a concurrent reader (a
-      // guard hook firing mid-write) never observes a partially-written
-      // sentinel. Unique per-process+time so concurrent orchestrator-worktree
-      // invocations sharing the same sentinelDir never collide on the temp name.
-      const tmpPath = `${sentinelPath}.tmp-${process.pid}-${Date.now()}`;
-      nodeFs.writeFileSync(tmpPath, JSON.stringify(payload));
-      nodeFs.renameSync(tmpPath, sentinelPath);
-      output({ recorded: true, path: '.gsd/dispatch-isolation-sentinel.json' }, raw);
-    } catch (err) {
-      output({ recorded: false, path: '.gsd/dispatch-isolation-sentinel.json', error: err && err.message }, raw);
-    }
+    const result = writeDispatchIsolationSentinel(cwd, { isolation, harnessFlag, phase, plan });
+    output(result, raw);
   }
 
   function routeResolveDispatchType({ args, cwd, raw, error }) {

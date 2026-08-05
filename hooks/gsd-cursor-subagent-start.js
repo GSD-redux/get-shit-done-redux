@@ -55,12 +55,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // Workspace resolution is shared across the Cursor hooks (#2587) — see
 // hooks/lib/cursor-workspace.js. Staged next to these scripts by
 // writeCursorHooksJson so the require always resolves post-install.
 const { resolveStatePath } = require('./lib/cursor-workspace.js');
-const { readSentinel, VALID_ISOLATION } = require('./lib/isolation-sentinel.js');
+const { readSentinel, VALID_ISOLATION, extractDispatchIdentifiers, sentinelAppliesToDispatch } = require('./lib/isolation-sentinel.js');
 
 const MSG_PRESENT =
   'GSD: Subagent session started — review .planning/STATE.md for the current phase and any blockers before acting.';
@@ -302,8 +303,15 @@ function resolveIsolationDecision(data, { clock = Date } = {}) {
   const roots = getWorkspaceRoots(data);
   if (roots.length === 0) return { action: 'allow' };
 
+  // #3045 SECURITY F2: best-effort plan/phase extraction from this
+  // dispatch's own `task` text (Cursor carries the same prompt content the
+  // Claude Agent() dispatch does — see extractDispatchIdentifiers), so a
+  // fresh sentinel that disagrees with THIS dispatch is treated as
+  // inapplicable rather than trusted.
+  const dispatchIds = extractDispatchIdentifiers(data.task);
+
   for (const root of roots) {
-    const verdict = evaluateRootIsolation(root, subagentType, { clock });
+    const verdict = evaluateRootIsolation(root, subagentType, { clock, dispatchIds });
     if (verdict.action === 'deny') return verdict;
   }
   return { action: 'allow' };
@@ -316,6 +324,27 @@ function resolveIsolationDecision(data, { clock = Date } = {}) {
  * gsd-core/bin/shared/config-schema.manifest.json's validKeys, so it survives
  * loadConfig's whitelist; read directly from the raw config.json here, same
  * side-effect-free approach cmdConfigGet itself uses).
+ *
+ * #3045 MAJOR fix ("Cursor residual false-deny"): previously defaulted
+ * confidently to 'cursor' whenever no `GSD_RUNTIME`/config.json `runtime`
+ * signal existed, purely because this script only ever executes as Cursor's
+ * OWN `subagentStart` hook — true of the PROCESS, but not evidence the
+ * PROJECT itself declared an isolation requirement this guard can verify.
+ * Combined with a stale/absent sentinel (outside `execute-phase`, after
+ * `.gsd` cleanup, a phase running past the sentinel's staleness window, or a
+ * base-check-degraded run whose sentinel went stale before a fresh one was
+ * recorded), that default made every such `gsd-executor` dispatch resolve to
+ * "harness-worktree" and then hard-DENY unless the session happened to be
+ * running under Cursor's own managed worktree root — a false-deny of
+ * otherwise legitimate dispatches, unlike `hooks/gsd-agent-isolation-guard.js`,
+ * which degrades an undeterminable runtime to inert (#3045 MAJOR 2). Aligned
+ * here: an explicit signal is now required — `GSD_RUNTIME` > config.json
+ * `runtime` key > `~/.gsd/defaults.json` `runtime` (mirrors the Claude hook's
+ * `resolveRuntimeIdentity`; `bin/install.js`'s `writeNonClaudeDefaults`
+ * persists the installed runtime there for every non-Claude install,
+ * including Cursor, so a REAL Cursor+GSD install still resolves confidently
+ * — this only stops GUESSING 'cursor' for a project that never declared any
+ * runtime signal at all).
  */
 function resolveFallbackIsolation(root, configPath) {
   const { resolveRuntimeNameFromCandidates } = require('../gsd-core/bin/lib/runtime-name-policy.cjs');
@@ -324,12 +353,24 @@ function resolveFallbackIsolation(root, configPath) {
   let runtimeId = resolveRuntimeNameFromCandidates(process.env.GSD_RUNTIME);
   const rawConfig = fs.readFileSync(configPath, 'utf-8');
   const parsedConfig = JSON.parse(rawConfig);
+  if (!runtimeId && parsedConfig && typeof parsedConfig === 'object' && 'runtime' in parsedConfig) {
+    runtimeId = resolveRuntimeNameFromCandidates(parsedConfig.runtime) || null;
+  }
   if (!runtimeId) {
-    if (parsedConfig && typeof parsedConfig === 'object' && 'runtime' in parsedConfig) {
-      runtimeId = resolveRuntimeNameFromCandidates(parsedConfig.runtime) || 'cursor';
-    } else {
-      runtimeId = 'cursor';
+    try {
+      const defaultsPath = path.join(os.homedir(), '.gsd', 'defaults.json');
+      const defaultsParsed = JSON.parse(fs.readFileSync(defaultsPath, 'utf-8'));
+      if (defaultsParsed && typeof defaultsParsed === 'object' && 'runtime' in defaultsParsed) {
+        runtimeId = resolveRuntimeNameFromCandidates(defaultsParsed.runtime) || null;
+      }
+    } catch {
+      // Absent/unreadable ~/.gsd/defaults.json — no signal, fall through.
     }
+  }
+  if (!runtimeId) {
+    // No explicit signal anywhere confirms this project resolved
+    // harness-worktree — degrade to inert rather than guess 'cursor'.
+    return 'none';
   }
 
   const runtimeEntry = runtimes != null ? runtimes[runtimeId] : null;
@@ -351,7 +392,7 @@ function resolveFallbackIsolation(root, configPath) {
  * resolveIsolationDecision (#3045 finding 1) so every root in a multi-root
  * workspace runs the identical check.
  */
-function evaluateRootIsolation(root, subagentType, { clock = Date } = {}) {
+function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds = null } = {}) {
   const configPath = path.join(root, '.planning', 'config.json');
   let isGsdProject;
   try {
@@ -366,8 +407,11 @@ function evaluateRootIsolation(root, subagentType, { clock = Date } = {}) {
   try {
     // #3045 BLOCKER fix: a fresh sentinel is authoritative for THIS
     // dispatch's actual resolved isolation — see the doc comment above.
+    // #3045 SECURITY F2: a fresh sentinel that names a DIFFERENT
+    // plan/phase than this dispatch is not applicable to it — fall through
+    // to the conservative fallback exactly as a stale sentinel would.
     const sentinel = readSentinel(root, { clock });
-    declaredIsolation = (sentinel.present && !sentinel.stale)
+    declaredIsolation = (sentinel.present && !sentinel.stale && sentinelAppliesToDispatch(sentinel, dispatchIds))
       ? sentinel.isolation
       : resolveFallbackIsolation(root, configPath);
   } catch {
@@ -426,56 +470,75 @@ function evaluateRootIsolation(root, subagentType, { clock = Date } = {}) {
   };
 }
 
-let raw = '';
-const stdinTimeout = setTimeout(() => {
-  process.exit(0);
-}, 10000);
+/* istanbul ignore next -- stdin adapter, exercised via spawnSync in tests */
+function main() {
+  let raw = '';
+  const stdinTimeout = setTimeout(() => {
+    process.exit(0);
+  }, 10000);
 
-process.stdin.setEncoding('utf8');
-process.stdin.on('data', (chunk) => { raw += chunk; });
-process.stdin.on('end', () => {
-  clearTimeout(stdinTimeout);
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => { raw += chunk; });
+  process.stdin.on('end', () => {
+    clearTimeout(stdinTimeout);
 
-  let data = null;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    data = null;
-  }
-
-  // Resolve the state-reminder context ONCE, up front, so it can ride along
-  // with EITHER outcome below (#3045 MINOR: a deny previously dropped this
-  // reminder entirely — process.stdout.write for the deny branch returned
-  // before the additional_context block ever ran — instead of preserving it
-  // alongside the deny; the subagent still benefits from phase/blocker
-  // context even when its dispatch is refused).
-  let additionalContext = null;
-  try {
-    const statePath = resolveStatePath(raw);
-    const statePresent = fs.existsSync(statePath);
-    additionalContext = statePresent ? MSG_PRESENT : MSG_ABSENT;
-  } catch {
-    additionalContext = null;
-  }
-
-  if (data && typeof data === 'object') {
-    let decision = { action: 'allow' };
+    let data = null;
     try {
-      decision = resolveIsolationDecision(data);
+      data = JSON.parse(raw);
     } catch {
-      // Defense in depth only: every verify-and-deny path above has its own
-      // explicit try/catch that resolves to a deny with a distinct reason.
-      // Anything reaching here is an unexpected failure outside those paths
-      // (e.g. malformed workspace_roots entries) — never crash the hook.
-      decision = { action: 'allow' };
+      data = null;
     }
-    if (decision.action === 'deny') {
-      const out = { permission: 'deny', user_message: decision.reason };
-      if (additionalContext !== null) out.additional_context = additionalContext;
-      process.stdout.write(JSON.stringify(out));
-      return;
-    }
-  }
 
-  process.stdout.write(JSON.stringify(additionalContext !== null ? { additional_context: additionalContext } : {}));
-});
+    // Resolve the state-reminder context ONCE, up front, so it can ride along
+    // with EITHER outcome below (#3045 MINOR: a deny previously dropped this
+    // reminder entirely — process.stdout.write for the deny branch returned
+    // before the additional_context block ever ran — instead of preserving it
+    // alongside the deny; the subagent still benefits from phase/blocker
+    // context even when its dispatch is refused).
+    let additionalContext = null;
+    try {
+      const statePath = resolveStatePath(raw);
+      const statePresent = fs.existsSync(statePath);
+      additionalContext = statePresent ? MSG_PRESENT : MSG_ABSENT;
+    } catch {
+      additionalContext = null;
+    }
+
+    if (data && typeof data === 'object') {
+      let decision = { action: 'allow' };
+      try {
+        decision = resolveIsolationDecision(data);
+      } catch {
+        // Defense in depth only: every verify-and-deny path above has its own
+        // explicit try/catch that resolves to a deny with a distinct reason.
+        // Anything reaching here is an unexpected failure outside those paths
+        // (e.g. malformed workspace_roots entries) — never crash the hook.
+        decision = { action: 'allow' };
+      }
+      if (decision.action === 'deny') {
+        const out = { permission: 'deny', user_message: decision.reason };
+        if (additionalContext !== null) out.additional_context = additionalContext;
+        process.stdout.write(JSON.stringify(out));
+        return;
+      }
+    }
+
+    process.stdout.write(JSON.stringify(additionalContext !== null ? { additional_context: additionalContext } : {}));
+  });
+}
+
+if (require.main === module) {
+  main();
+}
+
+// #3045 MAJOR ("clock seam is dead code" fix): exported so tests can
+// `require()` this module and inject a `clock` (`{now(): number}`) directly
+// per the repo's clock-seam convention, instead of racing real `Date.now()`
+// across a spawned subprocess boundary.
+module.exports = {
+  resolveIsolationDecision,
+  evaluateRootIsolation,
+  resolveFallbackIsolation,
+  resolveIsolationEvidence,
+  getWorkspaceRoots,
+};

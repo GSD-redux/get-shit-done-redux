@@ -59,10 +59,10 @@ const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-agent-isolation-guard
  * `gsd-tools.cjs record-dispatch-isolation` writes). `writtenAt` defaults to
  * "now" (fresh); pass an explicit past timestamp to construct a stale one.
  */
-function writeSentinel(dir, { isolation, harnessFlag = null, phase = null, writtenAt = Date.now() }) {
+function writeSentinel(dir, { isolation, harnessFlag = null, phase = null, plan = null, writtenAt = Date.now() }) {
   const p = path.join(dir, SENTINEL_RELATIVE_PATH);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ isolation, harness_flag: harnessFlag, phase, written_at: writtenAt }));
+  fs.writeFileSync(p, JSON.stringify({ isolation, harness_flag: harnessFlag, phase, plan, written_at: writtenAt }));
 }
 
 /**
@@ -432,9 +432,210 @@ describe('gsd-agent-isolation-guard.js: #3045 MAJOR 2 — undeterminable runtime
     cleanup(unconfiguredProject);
   });
 
-  test('no GSD_RUNTIME override, no config.json runtime key -> ALLOW (cannot-determine degrades to inert, not a guessed "claude" demand)', () => {
-    const r = runHook(agentPayload(), unconfiguredProject);
+  test('no GSD_RUNTIME override, no config.json runtime key, no ~/.gsd/defaults.json runtime -> ALLOW (cannot-determine degrades to inert, not a guessed "claude" demand)', () => {
+    // #3045 BLOCKER 2 fix: resolveRuntimeIdentity now ALSO reads
+    // ~/.gsd/defaults.json as a confidence signal. That makes this test's
+    // outcome environment-dependent unless HOME is pinned to a directory with
+    // no defaults.json (the project fixture dir itself has none) — otherwise
+    // a developer machine that ever installed GSD for a non-Claude runtime
+    // would have ~/.gsd/defaults.json's real `runtime` leak in here and
+    // silently flip this test's expectation depending on who runs it.
+    const r = runHook(agentPayload(), unconfiguredProject, { HOME: unconfiguredProject });
     assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
     assert.equal(r.stdout, '');
+  });
+});
+
+describe('gsd-agent-isolation-guard.js: #3045 BLOCKER 2 — default-install fail-open (isolated two-review finding)', () => {
+  let harnessProject; // registry resolves harness-worktree (claude), no defaults.json runtime
+  let unconfiguredHarnessProject; // same, but with NO explicit runtime signal at all
+
+  before(() => {
+    harnessProject = mkProject('gsd-aig-b2-harness-');
+    writeConfig(harnessProject, JSON.stringify({ runtime: 'claude' }));
+
+    unconfiguredHarnessProject = mkProject('gsd-aig-b2-unconfigured-');
+    // Mirrors gsd-core/templates/config.json exactly: no `runtime` key.
+    writeConfig(unconfiguredHarnessProject, JSON.stringify({}));
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+    cleanup(unconfiguredHarnessProject);
+  });
+
+  test('part A: fresh sentinel confirms harness-worktree but carries NO harness_flag, and the runtime is not confidently resolvable -> DENY (was ALLOW pre-fix)', () => {
+    // This is the exact BLOCKER 2 regression: previously this branch fell
+    // through to the "not confident -> none" degrade and ALLOWED the
+    // dispatch to run unisolated, on the DEFAULT-INSTALL path (no `runtime`
+    // key in config.json — gsd-core/templates/config.json's shipped shape —
+    // and no ~/.gsd/defaults.json runtime either).
+    writeSentinel(unconfiguredHarnessProject, { isolation: 'harness-worktree', harnessFlag: null });
+    try {
+      const r = runHook(agentPayload(), unconfiguredHarnessProject, { HOME: unconfiguredHarnessProject });
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — must DENY, not silently allow`);
+      const out = JSON.parse(r.stdout);
+      assert.equal(out.decision, 'block');
+      assert.match(out.reason, /cannot verify|harness_flag/i);
+    } finally {
+      cleanup(path.join(unconfiguredHarnessProject, '.gsd'));
+    }
+  });
+
+  test('part B: ~/.gsd/defaults.json runtime (installer-persisted, #2395) is now a confident signal — makes the default install enforce', () => {
+    // No sentinel at all here — pure conservative-fallback path. Before this
+    // fix, an unconfigured project (no config.json runtime key, the COMMON
+    // scaffold shape) always fell back to 'none'/allow regardless of what the
+    // machine actually has installed. After the fix, a `runtime` persisted to
+    // ~/.gsd/defaults.json (which bin/install.js's writeNonClaudeDefaults
+    // already writes for every non-Claude install) is read as confidently as
+    // GSD_RUNTIME or config.json's own key.
+    const home = mkProject('gsd-aig-b2-home-');
+    try {
+      fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+      fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'claude' }));
+
+      const r = runHook(agentPayload(), unconfiguredHarnessProject, { HOME: home });
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — defaults.json runtime must be enforced`);
+      assert.equal(JSON.parse(r.stdout).decision, 'block');
+    } finally {
+      cleanup(home);
+    }
+  });
+
+  test('part B (negative control): a project WITH its own config.json runtime key still wins over defaults.json', () => {
+    const home = mkProject('gsd-aig-b2-home2-');
+    try {
+      fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
+      // defaults.json says a runtime with NO harness-worktree capability;
+      // config.json's own `runtime: claude` must take precedence.
+      fs.writeFileSync(path.join(home, '.gsd', 'defaults.json'), JSON.stringify({ runtime: 'windsurf' }));
+
+      const r = runHook(agentPayload(), harnessProject, { HOME: home });
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+      assert.equal(JSON.parse(r.stdout).decision, 'block');
+    } finally {
+      cleanup(home);
+    }
+  });
+});
+
+describe('gsd-agent-isolation-guard.js: #3045 SECURITY F2 — sentinel bound to phase/plan, mismatch is "no applicable sentinel"', () => {
+  let harnessProject;
+
+  before(() => {
+    harnessProject = mkProject('gsd-aig-f2-');
+    writeConfig(harnessProject, JSON.stringify({ runtime: 'claude' }));
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+  });
+
+  test('a fresh "none" sentinel for a DIFFERENT phase than this dispatch is not applied — falls through to conservative fallback and DENIES', () => {
+    // Sentinel legitimately recorded 'none' for phase 1 (e.g. a submodule
+    // degrade). This dispatch's own description names phase 2 — the guard
+    // must not reuse phase 1's stale-but-fresh "none" to authorize it.
+    writeSentinel(harnessProject, { isolation: 'none', phase: '1', plan: 'plan-a' });
+    try {
+      const r = runHook(
+        agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'Execute plan plan-b of phase 2' } }),
+        harnessProject,
+      );
+      assert.equal(r.status, 2, `stdout: ${r.stdout} stderr: ${r.stderr} — mismatched sentinel must not silently allow`);
+      assert.equal(JSON.parse(r.stdout).decision, 'block');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('a fresh sentinel for the SAME phase/plan as this dispatch is applied normally (positive control)', () => {
+    writeSentinel(harnessProject, { isolation: 'none', phase: '2', plan: 'plan-b' });
+    try {
+      const r = runHook(
+        agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'Execute plan plan-b of phase 2' } }),
+        harnessProject,
+      );
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('a dispatch whose description does not match the expected shape does not itself trigger a mismatch (best-effort extraction)', () => {
+    writeSentinel(harnessProject, { isolation: 'none', phase: '2', plan: 'plan-b' });
+    try {
+      const r = runHook(
+        agentPayload({ tool_input: { subagent_type: 'gsd-executor', description: 'some other free-form text' } }),
+        harnessProject,
+      );
+      assert.equal(r.status, 0, `stdout: ${r.stdout} stderr: ${r.stderr}`);
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+});
+
+describe('gsd-agent-isolation-guard.js: #3045 MAJOR — clock seam boundary coverage (in-process, no subprocess wall-clock race)', () => {
+  const guardModule = require('../hooks/gsd-agent-isolation-guard.js');
+
+  let harnessProject;
+  let savedGsdRuntime;
+
+  before(() => {
+    harnessProject = mkProject('gsd-aig-clock-');
+    writeConfig(harnessProject, JSON.stringify({ runtime: 'claude' }));
+    // These tests call resolveIsolationState() directly, in-process (not via
+    // runHook's subprocess, which already strips GSD_RUNTIME) — guard against
+    // ambient env leakage from the CURRENT test process (repo hermeticity
+    // rule: an ambient GSD_ env var must never redirect a test's outcome).
+    savedGsdRuntime = process.env.GSD_RUNTIME;
+    delete process.env.GSD_RUNTIME;
+  });
+
+  after(() => {
+    cleanup(harnessProject);
+    if (savedGsdRuntime === undefined) delete process.env.GSD_RUNTIME;
+    else process.env.GSD_RUNTIME = savedGsdRuntime;
+  });
+
+  function fixedClock(nowMs) {
+    return { now: () => nowMs };
+  }
+
+  test('sentinel exactly at SENTINEL_STALE_MS - 1 is still FRESH (trusted)', () => {
+    const writtenAt = 1_000_000;
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt });
+    try {
+      const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS - 1) });
+      assert.equal(state.isolation, 'none', 'still within the trust window — must use the sentinel, not the registry fallback');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel exactly AT SENTINEL_STALE_MS is STALE (age > threshold is the only fresh condition)', () => {
+    const writtenAt = 1_000_000;
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt });
+    try {
+      const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS) });
+      // Registry fallback for this project resolves harness-worktree (claude,
+      // no workflow.use_worktrees:false) — proves the sentinel's 'none' was
+      // NOT trusted at exactly the boundary.
+      assert.equal(state.isolation, 'harness-worktree');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
+  });
+
+  test('sentinel at SENTINEL_STALE_MS + 1 is STALE', () => {
+    const writtenAt = 1_000_000;
+    writeSentinel(harnessProject, { isolation: 'none', writtenAt });
+    try {
+      const state = guardModule.resolveIsolationState(harnessProject, { clock: fixedClock(writtenAt + SENTINEL_STALE_MS + 1) });
+      assert.equal(state.isolation, 'harness-worktree');
+    } finally {
+      cleanup(path.join(harnessProject, '.gsd'));
+    }
   });
 });

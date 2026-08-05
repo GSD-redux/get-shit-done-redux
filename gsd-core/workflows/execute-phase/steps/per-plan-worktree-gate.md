@@ -92,3 +92,21 @@ fi
 ```
 
 After running this for the plan, the dispatch branches in `execute_waves` step 3 MUST gate on `USE_WORKTREES_FOR_PLAN` for the current plan, not on the project-level `USE_WORKTREES`. Track which plans in this wave actually used worktrees (append `plan_id` to a `WAVE_WORKTREE_PLANS` accumulator when `USE_WORKTREES_FOR_PLAN != false`) — the post-wave cleanup step (5.5) uses this to decide whether worktree-merge cleanup is needed at all.
+
+**Re-record the dispatch-isolation sentinel, scoped to THIS plan (#3045 BLOCKER 1):**
+
+The phase-level sentinel (written by the "Resolve ISOLATION" step, before any per-plan decision exists) authorizes/denies at the PHASE level. This per-plan gate can override that decision (submodule intersection forcing `USE_WORKTREES_FOR_PLAN=false` on an otherwise harness-worktree phase) — without a fresh, plan-scoped re-record, the isolation guard hooks would still be reading the STALE phase-level `harness-worktree` sentinel when this plan's dispatch omits the isolation kwarg (correctly, since it isn't worktree-isolated), producing a false DENY; or, symmetrically, a plan-level submodule degrade elsewhere in the wave could leave a stale `none` sentinel that a LATER, genuinely harness-worktree plan's own dispatch could be misread against. Run this immediately before dispatching THIS plan (right after computing `USE_WORKTREES_FOR_PLAN` above), so the sentinel is always fresh at the moment of dispatch and always keyed to the plan it authorizes:
+
+```bash
+if [ "$USE_WORKTREES_FOR_PLAN" = "false" ]; then
+  # Submodule intersection (or an inherited USE_WORKTREES=false) forces
+  # sequential dispatch for this plan specifically — force the resolver's
+  # single write path to record `none`, scoped to this plan, even though the
+  # phase/registry would otherwise resolve harness-worktree.
+  gsd_run query dispatch-isolation --raw --phase "${PHASE_NUMBER:-}" --plan "$plan_id" --force-isolation none >/dev/null 2>&1 || true
+else
+  # No plan-level override — re-resolve normally, still scoped to this plan,
+  # so the sentinel's `plan` field always matches the plan about to dispatch.
+  gsd_run query dispatch-isolation --raw --phase "${PHASE_NUMBER:-}" --plan "$plan_id" >/dev/null 2>&1 || true
+fi
+```
