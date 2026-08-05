@@ -73,9 +73,18 @@ const BASE_SITES = [
   // `if (bracketBoundaryActive) { … }` block (`src/roadmap-parser.cts`,
   // grep `isBracketMilestoneBoundary(` for current line numbers — both
   // round-3 fixes shifted them since this note was first written) — and
-  // `BRACKET_PHASE_TAIL_RE`/`BRACKET_HEADING_INTRO_RE` have no other
-  // consumers. The marker exists so a future reader does not mistake this
-  // row for "selector-covered like the other 14."
+  // `BRACKET_PHASE_TAIL_RE` has no other consumers.
+  // `BRACKET_HEADING_INTRO_RE` has THREE consumers as of #2761 round-4
+  // (`isBracketMilestoneBoundary` itself, plus two uses inside
+  // `bracketHeadingHasMatchingChild` — its own id and its same-id-PHASE-child
+  // scan) — all still nested inside the same `bracketBoundaryActive` runtime
+  // gate this note is about (round-4 Nit 1: this sentence was stale by one
+  // commit, claiming zero other consumers when 2e06aef5 had already added
+  // two; the CONCLUSION is unaffected — every consumer is still
+  // runtime-gated, and `BRACKET_HEADING_INTRO_RE` is built from
+  // `BRACKET_ID_SRC`, not `phaseHeadingPrefixSrcFor`, so it was never a
+  // selector site to begin with). The marker exists so a future reader does
+  // not mistake this row for "selector-covered like the other 14."
   { file: 'roadmap-parser.cts', site: 'isBracketMilestoneBoundary BRACKET_PHASE_TAIL_RE',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+', runtimeGated: true },
   // --- baseline: the site spells a BARE `Phase ` with no bracket tolerance

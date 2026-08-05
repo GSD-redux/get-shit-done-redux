@@ -570,6 +570,23 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
         // DEEPER heading to carry ITS bracket id too — the property every
         // genuine sibling MILESTONE has (its own phase children) and no
         // unrelated prose heading does.
+        //
+        // #2761 round-4 Minor 1 (docstring correction — no code change): a
+        // heading rejected here (no same-id PHASE child — see
+        // bracketHeadingHasMatchingChild's own comment) leaves its WHOLE
+        // SUBTREE in the preamble, not merely its own inert heading text.
+        // That subtree can still contain a DIFFERENT-id bracket PHASE
+        // heading, which DOES form a qualified key and CAN admit a foreign
+        // directory (F7: `## [GSD.01] Setup` / `### [GSD.07] 01: Foreign` —
+        // no same-id child, so `[GSD.01] Setup` is not a boundary, and
+        // `GSD.07-01-foreign`'s directory is admitted into the CURRENT
+        // milestone's filter, reading 3/2/67%). This is NOT a regression —
+        // base, round-1 and HEAD all read 3/2/67% on F7 (base via its own
+        // pass-all degrade) — and it remains the declared OVER-inclusive,
+        // never under-inclusive, safe direction; it is a narrower and more
+        // honest claim than "contributes nothing to any phase count", which
+        // is true of the candidate's OWN text but not of what its subtree
+        // can carry.
         isBoundary = bracketHeadingHasMatchingChild(currentMilestoneHeadings, i);
       } else {
         isBoundary = false;
