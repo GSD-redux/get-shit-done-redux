@@ -11,10 +11,14 @@
  * any real declared strategy.
  *
  * This file:
- *   1. Mirrors the REAL fragment construction from `applyBudget` in
- *      src/prompt-budget.cts:192-215 (that logic is built inline inside
- *      `applyBudget` and is not exported/reusable — confirmed by reading
- *      the source; there is no `buildFragments` export to import instead).
+ *   1. IMPORTS the real fragment construction from `buildBudgetFragments`
+ *      (src/prompt-budget.cts, exported for issue #3065) rather than
+ *      hand-copying it. A hand-copy is exactly the `DEFECT.GENERATIVE-FIX`
+ *      divergence class this gate exists to guard against: if production
+ *      flips a fragment's strategy (e.g. `roadmap` from `verbatim` to
+ *      `drop`), a copy would keep passing because it computes from stale
+ *      duplicated data instead of the real declaration. Importing means the
+ *      gate can only pass if the REAL declared strategies still hold.
  *   2. Derives the load-bearing set mechanically — every fragment whose
  *      declared `strategy.kind === 'verbatim'` — rather than hand-listing
  *      ids, so the gate follows automatically if the upstream declarations
@@ -33,19 +37,17 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const { composeWithinBudget } = require('../gsd-core/bin/lib/context-composer.cjs');
+const { buildBudgetFragments, PLAN_FLOOR_CHARS } = require('../gsd-core/bin/lib/prompt-budget.cjs');
 
 // Same estimator prompt-budget.cts uses (estimateTokens: chars/4, rounded up).
 const measure = (text) => (text ? Math.ceil(text.length / 4) : 0);
 
-// Mirrors MIN_PLAN_BYTES in src/prompt-budget.cts:35.
-const MIN_PLAN_BYTES = 1024;
-
 /**
- * Build the exact fragment shape `applyBudget` builds in
- * src/prompt-budget.cts:192-215, with realistic, non-trivial content for
- * every fragment (not one-word placeholders) so the sweep below exercises
- * real head-shrink and proportional-truncate behavior, not degenerate
- * inputs.
+ * Build realistic, non-trivial input sections (not one-word placeholders)
+ * and call the REAL `buildBudgetFragments` (src/prompt-budget.cts) to get
+ * the fragment array, so the sweep below exercises real head-shrink and
+ * proportional-truncate behavior against production's actual declared
+ * strategies — not a hand-copied duplicate (issue #3065).
  */
 function buildProductionFragments() {
   const instructions = [
@@ -89,17 +91,20 @@ function buildProductionFragments() {
   const research = 'Research: ' + 'prior art and precedent gathered before this change was proposed. '.repeat(20);
   const requirements = 'Requirements: ' + 'acceptance criteria extracted verbatim from the linked issue. '.repeat(20);
 
-  return [
-    { id: 'instructions', content: instructions, wrapper: '', strategy: { kind: 'verbatim' }, required: true },
-    { id: 'roadmap', content: roadmap, wrapper: '## Roadmap\n\n', strategy: { kind: 'verbatim' }, required: true },
-    { id: 'projectMd', content: projectMd, wrapper: '## Project\n\n', strategy: { kind: 'head-shrink', maxLines: 40 } },
-    { id: 'plans-header', content: '', wrapper: '## Plans\n\n', strategy: { kind: 'verbatim' }, required: true },
-    { id: 'plan:plan1.md', content: plan1, wrapper: '### plan1.md\n\n', strategy: { kind: 'proportional-truncate', floorChars: MIN_PLAN_BYTES }, group: 'plans', required: true },
-    { id: 'plan:plan2.md', content: plan2, wrapper: '### plan2.md\n\n', strategy: { kind: 'proportional-truncate', floorChars: MIN_PLAN_BYTES }, group: 'plans', required: true },
-    { id: 'context', content: context, wrapper: '## Context\n\n', strategy: { kind: 'drop' } },
-    { id: 'research', content: research, wrapper: '## Research\n\n', strategy: { kind: 'drop' } },
-    { id: 'requirements', content: requirements, wrapper: '## Requirements\n\n', strategy: { kind: 'drop' } },
-  ];
+  const sections = {
+    instructions,
+    roadmap,
+    plans: [
+      { file: 'plan1.md', content: plan1 },
+      { file: 'plan2.md', content: plan2 },
+    ],
+    projectMd,
+    context,
+    research,
+    requirements,
+  };
+
+  return buildBudgetFragments(sections, 40);
 }
 
 /**
@@ -131,7 +136,7 @@ const composeOptions = () => ({
   // Mirrors the minimumFor in src/prompt-budget.cts:230-234.
   minimumFor: (f) => {
     if (f.id === 'instructions' || f.id === 'roadmap') return f.content;
-    if (f.id.startsWith('plan:')) return f.content.slice(0, MIN_PLAN_BYTES);
+    if (f.id.startsWith('plan:')) return f.content.slice(0, PLAN_FLOOR_CHARS);
     return null;
   },
 });
@@ -180,6 +185,14 @@ describe('load-bearing fragment contract gate (ADR-1671, #2931, #3065)', () => {
       // finding"): a non-empty `floored` means flexReserve prevented a cut
       // that would otherwise have happened. Do NOT assert it is empty.
 
+      // HONEST NOTE (#3065 review): no production `applyBudget` fragment
+      // currently sets `isolate: true`, so `isolatePrefix` is always `''`
+      // for the real production fragment set — this equality assertion by
+      // itself would be decorative (it could never observe a change,
+      // because there is nothing to observe). It is kept because it is
+      // still the correct invariant to hold, and its ability to actually
+      // detect drift is proven separately below (isolate-prefix pinning
+      // test), which builds a fragment set WITH an isolate fragment.
       if (firstIsolatePrefix === undefined) {
         firstIsolatePrefix = result.metadata.isolatePrefix;
       } else {
@@ -192,6 +205,26 @@ describe('load-bearing fragment contract gate (ADR-1671, #2931, #3065)', () => {
     // Row 7 anti-vacuity: the sweep must have applied real pressure at
     // least once, or the assertions above prove nothing.
     assert.ok(sawUnderPressure, 'no sampled budget reported underPressure — an always-unpressured sweep proves nothing (test-matrix row 7)');
+  });
+
+  test('isolate-prefix pinning is a REAL check: a fragment set WITH isolate:true produces a non-empty, byte-identical isolatePrefix across budgets', () => {
+    // Proves the equality assertion in the budget-sweep test above is
+    // capable of failing, not merely decorative. Production has no
+    // isolate:true fragment today (see the HONEST NOTE above), so this
+    // constructs one explicitly.
+    const isolateFragments = [
+      { id: 'canonical-header', content: 'STABLE CANONICAL PREFIX — must never move.', wrapper: '', strategy: { kind: 'verbatim' }, required: true, isolate: true },
+      { id: 'instructions', content: 'Body instructions that may be trimmed under pressure. '.repeat(40), wrapper: '', strategy: { kind: 'verbatim' }, required: true },
+      { id: 'context', content: 'Droppable context. '.repeat(40), wrapper: '', strategy: { kind: 'drop' } },
+    ];
+    const isolateTotal = isolateFragments.reduce((sum, f) => sum + measure(f.content), 0);
+
+    const resultRoomy = composeWithinBudget({ fragments: isolateFragments, budget: isolateTotal * 4, measure, options: composeOptions() });
+    const resultTight = composeWithinBudget({ fragments: isolateFragments, budget: Math.floor(isolateTotal * 0.3), measure, options: composeOptions() });
+
+    assert.notEqual(resultRoomy.metadata.isolatePrefix, '', 'isolatePrefix must be non-empty when an isolate:true fragment is present');
+    assert.equal(resultRoomy.metadata.isolatePrefix, resultTight.metadata.isolatePrefix, 'isolatePrefix must stay byte-identical across budgets, including under severe pressure');
+    assert.equal(resultTight.metadata.isolatePrefix, isolateFragments[0].content, 'isolatePrefix must equal the isolate fragment content verbatim');
   });
 
   test('anti-vacuity row 7: a sweep of only budget=total*4 never reports underPressure, proving the guard CAN fail', () => {
@@ -219,7 +252,7 @@ describe('load-bearing fragment contract gate (ADR-1671, #2931, #3065)', () => {
   test('anti-vacuity row 6 (executable): an all-non-verbatim fragment set derives an empty load-bearing set, and the guard throws on it', () => {
     const noVerbatimFragments = [
       { id: 'projectMd', content: 'x'.repeat(2000), wrapper: '', strategy: { kind: 'head-shrink', maxLines: 10 } },
-      { id: 'plan:only.md', content: 'y'.repeat(2000), wrapper: '', strategy: { kind: 'proportional-truncate', floorChars: MIN_PLAN_BYTES }, group: 'plans' },
+      { id: 'plan:only.md', content: 'y'.repeat(2000), wrapper: '', strategy: { kind: 'proportional-truncate', floorChars: PLAN_FLOOR_CHARS }, group: 'plans' },
       { id: 'context', content: 'z'.repeat(500), wrapper: '', strategy: { kind: 'drop' } },
     ];
 
