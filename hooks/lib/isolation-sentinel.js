@@ -199,7 +199,7 @@ function readSentinel(cwd, { clock = Date } = {}) {
   // Negative age beyond a small tolerance means the sentinel claims to be
   // written in the future — never trust it, but still surface the parsed
   // fields so callers can log an actionable reason.
-  const stale = age > SENTINEL_STALE_MS || age < -5000;
+  const stale = age >= SENTINEL_STALE_MS || age < -5000;
 
   return {
     present: true,

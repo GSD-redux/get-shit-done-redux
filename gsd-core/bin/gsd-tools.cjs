@@ -1771,13 +1771,19 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     }
     // #3045 MAJOR: the space-separated form rejects any value starting with
     // `--` (to avoid swallowing a missing value followed by another flag),
-    // but that is exactly the shape of Cursor's and Windsurf's real
-    // `harnessIsolationFlag` — both declare the bare CLI flag `--worktree`
+    // but that is exactly the shape of Cursor's real `harnessIsolationFlag`
+    // — it declares the bare CLI flag `--worktree`
     // (gsd-core/bin/lib/capability-registry.cjs), which could therefore
-    // never be persisted. The `--harness-flag=<value>` equals form (mirrors
-    // the `--cwd=<path>` convention already used by this dispatcher's
-    // top-level arg parsing above) carries the value unambiguously and is
-    // never subject to that guard.
+    // never be persisted. (Windsurf declares NO `harnessIsolationFlag` at
+    // all — its `hostIntegration.dispatch.isolation` is `none`; per
+    // ADR-1239 it "genuinely cannot benefit" from worktree isolation
+    // because it lacks named/concurrent subagent dispatch, so this is not a
+    // gap to close for Windsurf.) The `--harness-flag=<value>` equals form
+    // (mirrors the `--cwd=<path>` convention already used by this
+    // dispatcher's top-level arg parsing above) carries the value
+    // unambiguously and is never subject to that guard — any future runtime
+    // whose registered flag happens to be bare-CLI-shaped benefits the same
+    // way Cursor's does.
     let harnessFlag = null;
     const flagEqArg = args.find((a) => a.startsWith('--harness-flag='));
     if (flagEqArg) {

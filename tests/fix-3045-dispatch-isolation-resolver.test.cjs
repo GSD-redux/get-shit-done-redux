@@ -163,7 +163,7 @@ describe('#3045 CORE REDESIGN — dispatch-isolation records as an unconditional
   });
 });
 
-describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (Cursor/Windsurf real registry values)', () => {
+describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (Cursor real registry value + generalized parsing)', () => {
   test('record-dispatch-isolation --harness-flag=--worktree persists the REAL cursor registry value verbatim', () => {
     const cursorFlag = runtimes.cursor.runtime.harnessIsolationFlag;
     assert.equal(cursorFlag, '--worktree', 'precondition: registry shape assumed by this test');
@@ -183,19 +183,34 @@ describe('#3045 MAJOR — --harness-flag can now accept a bare CLI-flag value (C
     }
   });
 
-  test('record-dispatch-isolation --harness-flag=--worktree persists the REAL windsurf registry value verbatim', () => {
-    const windsurfFlag = runtimes.windsurf.runtime.harnessIsolationFlag;
-    assert.equal(windsurfFlag, '--worktree', 'precondition: registry shape assumed by this test');
+  test('record-dispatch-isolation --harness-flag=<bare-flag> persists ANY bare-CLI-flag-shaped value verbatim (parser is not Cursor-specific)', () => {
+    // A prior draft of this test asserted `runtimes.windsurf.runtime.harnessIsolationFlag
+    // === '--worktree'`, assuming Windsurf's registry entry mirrors Cursor's.
+    // It does not: Windsurf's `hostIntegration.dispatch.isolation` is 'none'
+    // and it declares NO `harnessIsolationFlag` at all — per ADR-1239
+    // (docs/adr/1239-gsd-embeddable-orchestration-engine.md:247,250),
+    // `pi`/`zcode`/`windsurf` "genuinely cannot benefit and correctly stay
+    // none" because they lack named/concurrent subagent dispatch, so there is
+    // no per-dispatch isolation flag for Windsurf to record. That was a wrong
+    // test expectation (a fabricated registry precondition), not a production
+    // defect — corrected here to prove the `--harness-flag=<value>` parser
+    // generalizes to any bare-CLI-flag-shaped value, not merely Cursor's
+    // specific '--worktree' string (which the sub-test above already pins).
+    assert.equal(
+      runtimes.windsurf.runtime.harnessIsolationFlag,
+      undefined,
+      'precondition: windsurf declares no harnessIsolationFlag (isolation: "none", ADR-1239)',
+    );
 
     const dir = createTempProject('gsd-3045-resolver-');
     try {
       const result = runGsdTools(
-        ['query', 'record-dispatch-isolation', '--isolation', 'harness-worktree', `--harness-flag=${windsurfFlag}`, '--phase', '1'],
+        ['query', 'record-dispatch-isolation', '--isolation', 'harness-worktree', '--harness-flag=--isolated', '--phase', '1'],
         dir,
         { HOME: dir },
       );
       assert.equal(result.success, true, result.error);
-      assert.equal(readSentinelRaw(dir).harness_flag, windsurfFlag);
+      assert.equal(readSentinelRaw(dir).harness_flag, '--isolated');
     } finally {
       cleanup(dir);
     }

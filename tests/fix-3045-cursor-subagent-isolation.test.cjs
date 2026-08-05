@@ -465,13 +465,15 @@ describe('executor-identity parity: hooks/gsd-agent-isolation-guard.js (Claude) 
     fs.mkdirSync(path.join(claudeProject, '.planning'), { recursive: true });
     fs.writeFileSync(path.join(claudeProject, '.planning', 'config.json'), JSON.stringify({ runtime: 'claude' }));
 
-    cursorProject = createTempDir('gsd-cs-parity-cursor-');
-    fs.mkdirSync(path.join(cursorProject, '.planning'), { recursive: true });
+    // Must be a REAL git repo (not a bare mkdir'd directory): the Cursor hook's
+    // #3045 MAJOR 3 "not a git repo -> INERT" branch would otherwise short-circuit
+    // every probe type to allow before EXECUTOR_SUBAGENT_TYPES membership is ever
+    // consulted, masking exactly the drift this parity check exists to catch.
     // #3045 MAJOR fix: explicit runtime signal required for the fallback to
     // resolve harness-worktree — mirrors claudeProject's explicit
     // `runtime: 'claude'` above, so this parity check compares two ACTUALLY
     // enforcing configurations, not Claude-enforcing vs. Cursor-inert.
-    fs.writeFileSync(path.join(cursorProject, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
+    cursorProject = makeGitProject('gsd-cs-parity-cursor-', JSON.stringify({ runtime: 'cursor' }));
   });
 
   after(() => {
