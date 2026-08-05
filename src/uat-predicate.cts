@@ -53,7 +53,7 @@ interface UatPassedReport {
    * than silently indistinguishable from "checked; nothing is stale". Always
    * false when `requireVerification` is not set (the check is never reached).
    */
-  verification_check_indeterminate: boolean;
+  verification_stale_check_indeterminate: boolean;
 }
 
 // ─── Blocking state sets (documented for maintainability) ─────────────────────
@@ -239,7 +239,7 @@ function evaluateUatPassed(
       no_uat_artifacts,
       policy: { require_verification: requireVerification },
       // readVerificationStatus was never reached on this early-return path.
-      verification_check_indeterminate: false,
+      verification_stale_check_indeterminate: false,
     };
   }
 
@@ -327,13 +327,13 @@ function evaluateUatPassed(
   // ── Policy: requireVerification ───────────────────────────────────────────
   // #3057 B3: routing here is UNCHANGED — an indeterminate staleness check
   // still falls through to the same `verificationStatus !== 'passed'` branch
-  // it always did (the pre-existing fail-open contract). `verificationCheckIndeterminate`
+  // it always did (the pre-existing fail-open contract). `verificationStaleCheckIndeterminate`
   // only records the fact for the report below; it never itself gates `blockers`.
-  let verificationCheckIndeterminate = false;
+  let verificationStaleCheckIndeterminate = false;
   if (requireVerification) {
     const verificationResult = readVerificationStatus(phaseFullDir);
     const verificationStatus = verificationResult.status;
-    verificationCheckIndeterminate = verificationResult.staleCheckIndeterminate === true;
+    verificationStaleCheckIndeterminate = verificationResult.staleCheckIndeterminate === true;
     if (verificationStatus === 'stale') {
       blockers.push('policy: verification status=stale');
     } else if (verificationStatus !== 'passed' || !hasPassingVerification) {
@@ -359,7 +359,7 @@ function evaluateUatPassed(
     policy: {
       require_verification: requireVerification,
     },
-    verification_check_indeterminate: verificationCheckIndeterminate,
+    verification_stale_check_indeterminate: verificationStaleCheckIndeterminate,
   };
 }
 

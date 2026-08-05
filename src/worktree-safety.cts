@@ -358,14 +358,14 @@ function inspectWorktreeHealth(repoRoot: string, options: { staleAfterMs?: numbe
 
   const findings: WorktreeFinding[] = [];
   for (const entry of inventory.entries) {
-    if (entry.exists === false) {
+    if (entry.exists === 'absent') {
       findings.push({
         kind: 'orphan',
         path: entry.path,
       });
       continue;
     }
-    if (entry.exists === null) {
+    if (entry.exists === 'unverified') {
       // #3050/#3057 (B5): existsSync confirmed the path is present but statSync
       // threw, so age/staleness could not be determined. This is neither
       // "orphan" (existsSync says it IS there) nor "healthy" (we never verified
@@ -396,14 +396,14 @@ function inspectWorktreeHealth(repoRoot: string, options: { staleAfterMs?: numbe
 interface InventoryEntry {
   path: string;
   /**
-   * Tri-state (#3050/#3057, B5): `true` = existsSync AND statSync both
-   * succeeded (confirmed present, age known); `false` = existsSync confirmed
-   * the path is genuinely absent; `null` = existsSync confirmed presence but
-   * statSync threw — presence could not be fully verified. `null` MUST NOT be
-   * treated as `true`: a caller that could not check must not report the
-   * worktree as confirmed present.
+   * Tri-state (#3050/#3057, B5): `'present'` = existsSync AND statSync both
+   * succeeded (confirmed present, age known); `'absent'` = existsSync confirmed
+   * the path is genuinely absent; `'unverified'` = existsSync confirmed presence
+   * but statSync threw — presence could not be fully verified. `'unverified'`
+   * MUST NOT be treated as `'present'`: a caller that could not check must not
+   * report the worktree as confirmed present.
    */
-  exists: boolean | null;
+  exists: 'present' | 'absent' | 'unverified';
   isStale: boolean;
   ageMinutes: number | null;
 }
@@ -430,7 +430,7 @@ function snapshotWorktreeInventory(repoRoot: string, options: { staleAfterMs?: n
 
   const entries: InventoryEntry[] = [];
   for (const worktreePath of listed.paths) {
-    let exists: boolean | null = false;
+    let exists: 'present' | 'absent' | 'unverified' = 'absent';
     let isStale = false;
     let ageMinutes: number | null = null;
 
@@ -446,7 +446,7 @@ function snapshotWorktreeInventory(repoRoot: string, options: { staleAfterMs?: n
 
     try {
       const stat = statSync(worktreePath);
-      exists = true;
+      exists = 'present';
       const ageMs = nowMs - stat.mtimeMs;
       ageMinutes = Math.round(ageMs / 60000);
       if (ageMs > staleAfterMs) {
@@ -454,11 +454,11 @@ function snapshotWorktreeInventory(repoRoot: string, options: { staleAfterMs?: n
       }
     } catch {
       // #3050/#3057 (B5): a statSync throw means presence could not be
-      // verified — do NOT report exists:true (a guard that could not check
-      // must not claim the worktree is confirmed present). Distinguish from
-      // the genuinely-absent case above with a third state (null) rather than
-      // silently falling through to the pre-existing exists:true default.
-      exists = null;
+      // verified — do NOT report exists:'present' (a guard that could not
+      // check must not claim the worktree is confirmed present). Distinguish
+      // from the genuinely-absent case above with a third state ('unverified')
+      // rather than silently falling through to the pre-existing 'present' default.
+      exists = 'unverified';
     }
     entries.push({
       path: worktreePath,

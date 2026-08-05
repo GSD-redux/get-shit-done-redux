@@ -1834,6 +1834,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
   let requirementsUpdated = false;
 
   const warnings: string[] = [];
+  // #3057 B3: mirrors `verification_stale_check_indeterminate` on init.cts /
+  // roadmap.cts / uat-predicate.cts's outputs — set on the non-blocking path
+  // below (inside withPlanningLock) alongside the warnings[] entry, so a
+  // caller can assert on the typed field instead of the warning's prose.
+  let staleCheckIndeterminate = false;
   const phaseFullDir = path.join(cwd, phaseInfo['directory'] as string);
 
   // #2648: fail-closed plan-coverage gate. phase.complete used to gate ONLY on a
@@ -2010,6 +2015,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     // only fires on the non-blocking path (status resolves to 'passed' despite
     // the indeterminate check) — the blocked path below carries its own note.
     if (verificationStatus.staleCheckIndeterminate) {
+      staleCheckIndeterminate = true;
       warnings.push(
         `verification staleness check could not complete for phase ${phaseNum} — routed as not-stale, but this was not actually verified (#3057)`,
       );
@@ -2720,13 +2726,18 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     // #3057 B3: purely additive to the message text — does not change WHETHER
     // this blocks (verificationBlocked was already truthy) or the
     // ERROR_REASON, only whether the operator can see the staleness check
-    // itself did not complete.
-    const indeterminateNote = verificationBlocked.staleCheckIndeterminate
+    // itself did not complete. The same fact is also attached as a typed
+    // field (`verification_stale_check_indeterminate`) on the JSON-error-mode
+    // payload so a test can assert on it by value instead of regexing this
+    // human-readable note.
+    const staleCheckIndeterminate = verificationBlocked.staleCheckIndeterminate === true;
+    const indeterminateNote = staleCheckIndeterminate
       ? ' (staleness check could not complete — see #3057)'
       : '';
     error(
       `Phase ${phaseNum} verification is incomplete: ${verificationBlocked.next_action}${nextStep}${indeterminateNote}`,
       ERROR_REASON.PHASE_VERIFICATION_INCOMPLETE,
+      { verification_stale_check_indeterminate: staleCheckIndeterminate },
     );
   }
 
@@ -2762,6 +2773,7 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     auto_pruned: autoPruned,
     warnings,
     has_warnings: warnings.length > 0,
+    verification_stale_check_indeterminate: staleCheckIndeterminate,
   };
 
   output(result, raw);

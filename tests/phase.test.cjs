@@ -8627,9 +8627,10 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     // completes exactly as it would have before #3057 B3.
     assert.strictEqual(output.completed_phase, '1');
     assert.ok(Array.isArray(output.warnings), 'result must carry a warnings array');
-    assert.ok(
-      output.warnings.some((w) => /staleness check could not complete/.test(w)),
-      `warnings must surface the indeterminate staleness check; got ${JSON.stringify(output.warnings)}`,
+    assert.strictEqual(
+      output.verification_stale_check_indeterminate,
+      true,
+      `result must surface the indeterminate staleness check as a typed field; got ${JSON.stringify(output.warnings)}`,
     );
     assert.strictEqual(output.has_warnings, true);
     },
@@ -8639,16 +8640,17 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
 
     assert.strictEqual(output.completed_phase, '1');
-    assert.ok(
-      !(output.warnings || []).some((w) => /staleness check could not complete/.test(w)),
-      `warnings must not mention an indeterminate check when the staleness check ran to completion; got ${JSON.stringify(output.warnings)}`,
+    assert.strictEqual(
+      output.verification_stale_check_indeterminate,
+      false,
+      `must not report an indeterminate check when the staleness check ran to completion; got ${JSON.stringify(output.warnings)}`,
     );
   });
 
   test(
     'a BLOCKED completion (status=human_needed) with an indeterminate staleness check still blocks, but the error note says so',
     { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
-    (t) => {
+    () => {
     const phase02Dir = path.join(tmpDir, '.planning', 'phases', '02-api');
     fs.writeFileSync(path.join(phase02Dir, '02-01-PLAN.md'), '# Plan\nDo the work.\n');
     fs.writeFileSync(path.join(phase02Dir, '02-VERIFICATION.md'), [
@@ -8667,11 +8669,18 @@ describe('#3057 B3: cmdPhaseComplete — verification staleness-check indetermin
     fs.symlinkSync(path.join(phase02Dir, '.does-not-exist'), summaryPath);
 
     // Routing is UNCHANGED — status !== 'passed' already blocked before #3057
-    // B3; the note is purely additive to the message text.
-    assert.throws(
-      () => capturePhaseComplete(t, tmpDir, '2'),
-      /verification is incomplete[\s\S]*staleness check could not complete — see #3057/,
-    );
+    // B3; the note is purely additive to the message text. Assert the fact
+    // structurally (via --json-errors) rather than regexing the human-
+    // readable note — CONTRIBUTING requires a typed surface alongside any
+    // text a caller might otherwise only match on, and once that typed
+    // surface exists the test must assert on IT, not also on the rendered
+    // prose (src/phase.cts's human message wording is out of scope for this
+    // test — operators read it, but the test must not lock its exact text).
+    const result = runGsdTools(['--json-errors', 'phase', 'complete', '2'], tmpDir);
+    assert.equal(result.success, false, 'phase complete must fail when verification is blocked');
+    const errorPayload = JSON.parse(result.error);
+    assert.equal(errorPayload.reason, 'phase_verification_incomplete');
+    assert.equal(errorPayload.verification_stale_check_indeterminate, true);
     },
   );
 });

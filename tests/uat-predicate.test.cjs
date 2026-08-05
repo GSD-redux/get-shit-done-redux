@@ -605,7 +605,7 @@ describe('evaluateUatPassed — policy.requireVerification', () => {
 // policy check used only `.status`, dropping `.staleCheckIndeterminate` on
 // the floor — so cmdPhaseUatPassed's JSON output (which spreads this whole
 // report) could never distinguish "checked; nothing is stale" from "could
-// not check". `verification_check_indeterminate` must never itself gate
+// not check". `verification_stale_check_indeterminate` must never itself gate
 // `passed`/`blockers` — only readVerificationStatus's `.status` may.
 
 describe('#3057 B3: evaluateUatPassed — verification staleness-check indeterminate is surfaced', () => {
@@ -633,7 +633,7 @@ describe('#3057 B3: evaluateUatPassed — verification staleness-check indetermi
     return { summaryPath, verificationPath };
   }
 
-  test('an fs failure inside the staleness check sets verification_check_indeterminate:true; passed/blockers unchanged', (t) => {
+  test('an fs failure inside the staleness check sets verification_stale_check_indeterminate:true; passed/blockers unchanged', (t) => {
     const { summaryPath, verificationPath } = seedVerifiedPhase();
     const origStatSync = fs.statSync;
 
@@ -651,24 +651,24 @@ describe('#3057 B3: evaluateUatPassed — verification staleness-check indetermi
     // `blockers` are exactly what they would be without the injected fault.
     assert.strictEqual(report.passed, true);
     assert.deepStrictEqual(report.blockers, []);
-    assert.strictEqual(report.verification_check_indeterminate, true);
+    assert.strictEqual(report.verification_stale_check_indeterminate, true);
   });
 
-  test('a completed staleness check that finds nothing stale reports verification_check_indeterminate:false', () => {
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', () => {
     seedVerifiedPhase();
 
     const report = evaluateUatPassed(tmpDir, { policy: { requireVerification: true } });
 
     assert.strictEqual(report.passed, true);
-    assert.strictEqual(report.verification_check_indeterminate, false);
+    assert.strictEqual(report.verification_stale_check_indeterminate, false);
   });
 
-  test('requireVerification not set → verification_check_indeterminate is always false (readVerificationStatus never reached)', () => {
+  test('requireVerification not set → verification_stale_check_indeterminate is always false (readVerificationStatus never reached)', () => {
     seedVerifiedPhase();
 
     const report = evaluateUatPassed(tmpDir, { policy: { requireVerification: false } });
 
-    assert.strictEqual(report.verification_check_indeterminate, false);
+    assert.strictEqual(report.verification_stale_check_indeterminate, false);
   });
 });
 

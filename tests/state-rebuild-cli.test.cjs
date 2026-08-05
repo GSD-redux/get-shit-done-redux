@@ -200,14 +200,6 @@ function projectWithOnlyPhaseTableDrift() {
 }
 
 /**
- * Run `fn` while capturing every fd-1 write `cmdStateRebuild`'s `output()`
- * performs (it writes via a raw `fs.writeSync(1, ...)`, never
- * `console.log`/`process.stdout.write` — same seam `tests/io.test.cjs`
- * exercises for bug #1008). Standalone helper with no test context, so the
- * try/finally restore is CONTRIBUTING-compliant (same shape as
- * `withFaultyFs`).
- */
-/**
  * Typed presence check for the `## Rebuild Log` audit-log section, shared by
  * both call sites that need it (CONTRIBUTING: no raw-text `.includes()` on
  * produced STATE.md text). Built on the existing `collectSection` seam
@@ -217,6 +209,14 @@ function hasRebuildLogSection(content) {
   return collectSection(content, (h) => h.text.trim() === 'Rebuild Log') !== null;
 }
 
+/**
+ * Run `fn` while capturing every fd-1 write `cmdStateRebuild`'s `output()`
+ * performs (it writes via a raw `fs.writeSync(1, ...)`, never
+ * `console.log`/`process.stdout.write` — same seam `tests/io.test.cjs`
+ * exercises for bug #1008). Standalone helper with no test context, so the
+ * try/finally restore is CONTRIBUTING-compliant (same shape as
+ * `withFaultyFs`).
+ */
 function captureStdout(fn) {
   const chunks = [];
   const original = fs.writeSync;

@@ -728,8 +728,8 @@ describe('snapshotWorktreeInventory', () => {
     );
     assert.strictEqual(inventory.ok, true);
     assert.deepStrictEqual(inventory.entries, [
-      { path: '/repo/wt-a', exists: true, isStale: true, ageMinutes: 120 },
-      { path: '/repo/wt-b', exists: false, isStale: false, ageMinutes: null },
+      { path: '/repo/wt-a', exists: 'present', isStale: true, ageMinutes: 120 },
+      { path: '/repo/wt-b', exists: 'absent', isStale: false, ageMinutes: null },
     ]);
   });
 
@@ -761,11 +761,11 @@ describe('snapshotWorktreeInventory', () => {
   });
 
   // Counter-test pair (B5, #3057): a statSync throw must NOT be reported as
-  // exists:true (unverified presence masquerading as confirmed presence), and
-  // must be distinguishable from a genuinely-absent worktree (existsSync
+  // exists:'present' (unverified presence masquerading as confirmed presence),
+  // and must be distinguishable from a genuinely-absent worktree (existsSync
   // returns false for a different entry in the SAME call). Asserting only one
   // side could not prove the two are distinguishable.
-  test('exists is null (not true) when statSync throws — distinct from a genuinely absent worktree', () => {
+  test("exists is 'unverified' (not 'present') when statSync throws — distinct from a genuinely absent worktree", () => {
     const porcelain = [
       'worktree /repo/main',
       'HEAD aaa',
@@ -796,8 +796,8 @@ describe('snapshotWorktreeInventory', () => {
     );
     assert.strictEqual(inventory.ok, true);
     assert.deepStrictEqual(inventory.entries, [
-      { path: '/repo/wt-unverified', exists: null, isStale: false, ageMinutes: null },
-      { path: '/repo/wt-absent', exists: false, isStale: false, ageMinutes: null },
+      { path: '/repo/wt-unverified', exists: 'unverified', isStale: false, ageMinutes: null },
+      { path: '/repo/wt-absent', exists: 'absent', isStale: false, ageMinutes: null },
     ]);
     assert.notStrictEqual(
       inventory.entries[0].exists,
