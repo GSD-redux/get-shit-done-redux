@@ -1204,6 +1204,156 @@ describe('#612 PR-2 B1 FOLLOW-UP: mixed heading shapes and boundary heading leve
   });
 });
 
+// ─── #2761 B1 (round-2 adversarial review, Blocker 1): a SAME-MILESTONE ──────
+// ─── continuation heading is not mistaken for a DIFFERENT milestone's ───────
+// ─── boundary ────────────────────────────────────────────────────────────────
+//
+// The B1 fix above (08d5b0c4) taught computeSectionEnd/preambleCutoff to
+// recognise ANY `#{1,2} [CODE.MM]` heading as a milestone boundary. It did not
+// distinguish "a heading for a DIFFERENT milestone" (a real boundary) from "a
+// heading that merely CONTINUES the CURRENT milestone's own section" (e.g. a
+// version-less checklist/detail split: `## [GSD.02] Foundation (Phase
+// Details)`, or an ad-hoc continuation heading `## [GSD.02] Foundation —
+// continued`) — the latter is not a boundary at all. The `(Phase Details)`
+// re-append at `detailsMatch` below only searches `allMatches` (the
+// VERSION-STRING matches from the top of this function), so a version-less
+// continuation heading was cut out by the boundary and never re-appended: the
+// milestone's OWN later phases silently vanished from the returned scope,
+// while `getMilestonePhaseFilter`'s phaseCount stayed non-zero (unlike the
+// original #612 defect), so the pass-all degrade never caught it either — a
+// confidently wrong, non-degraded phase count for a still-incomplete
+// milestone.
+//
+// Fixed here by teaching isBracketMilestoneBoundary a same-milestone
+// exclusion: a candidate heading whose OWN bracket id (case-folded) equals the
+// SELECTED milestone's bracket id is never a boundary.
+describe('#612 PR-2 B1 round-2: a same-milestone continuation heading is not a boundary', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-b1r2-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const D = [['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+
+  /**
+   * Per the file header's oracle-hazard #2: pre-write a WRONG total_phases
+   * into STATE.md's frontmatter before calling `syncedTotal()`/
+   * `syncedPercent()`, so `state sync` is forced to do real work rather than
+   * silently no-op because its computed total already happens to match.
+   */
+  function poisonTotalPhases() {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+  }
+
+  test('RED (repro8 case 1): version-bearing head + version-less "(Phase Details)" continuation — 2/1/50, not 1/1/100', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** b
+
+## [GSD.02] Foundation (Phase Details)
+
+### [GSD.02] 02: Two
+**Goal:** c
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix — the continuation heading truncated the section');
+    poisonTotalPhases();
+    assert.equal(syncedTotal(), 2, 'the WRITE path must agree with the READ path');
+    assert.equal(syncedPercent(), 50, 'pinned 100 before this fix');
+  });
+
+  test('RED (repro5): fully version-less milestone split across two headings, no siblings — 2/1/50, not 1/1/100', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] Foundation
+
+### [GSD.02] 01: One
+**Goal:** b
+
+## [GSD.02] Foundation — continued
+
+### [GSD.02] 02: Two
+**Goal:** c
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix');
+    poisonTotalPhases();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 100 before this fix');
+  });
+
+  test('PIN (repro8 case 3): a trailing DIFFERENT-id icebox section still terminates the primary section — unchanged at 2/1/50', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.999] Icebox
+
+### [GSD.999] 07: Someday
+**Goal:** z
+`, 'bracket', D);
+    assert.equal(readTotal(), 2);
+    poisonTotalPhases();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50);
+  });
+
+  test('PIN (repro10 A1): all-version-bearing + icebox + "(Phase Details)" — exact 2/1/50, no double-count', () => {
+    // The same-milestone exclusion must not make the PRIMARY section swallow
+    // the (Phase Details) section a second time on top of the pre-existing
+    // detailsMatch re-append — total_phases must read EXACTLY 2, not 4.
+    const dirs = [
+      ['GSD.01-01-old', true],
+      ['GSD.02-01-one', true],
+      ['GSD.02-02-two', false],
+      ['GSD.03-01-later', true],
+    ];
+    writeProject(`# Roadmap
+
+## [GSD.01] v1.0: Prior
+
+### [GSD.01] 01: Old
+**Goal:** a
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** b
+
+## [GSD.03] v3.0: Later
+
+### [GSD.03] 01: Later
+**Goal:** d
+
+## [GSD.02] v2.0: Current (Phase Details)
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.999] Icebox
+
+### [GSD.999] 07: Someday
+**Goal:** z
+`, 'bracket', dirs);
+    assert.equal(readTotal(), 2, 'exact — a regression here would double-count to 4');
+    // NOTE: no syncedTotal()/syncedPercent() assertions here — this fixture
+    // carries dirs OUTSIDE the current milestone (GSD.01-01-old,
+    // GSD.03-01-later), which is exactly the shape that exposes Major 1
+    // (cmdStateSync's body percent is computed from an unfiltered whole-disk
+    // scan). Asserting the synced percent here before Major 1's fix lands
+    // would fail on a DIFFERENT, not-yet-fixed defect. Covered once Major 1 is
+    // fixed (#2761 Major 1 commit), where this fixture's synced values are
+    // asserted directly.
+  });
+});
+
 // ─── #2761 B3 (self-caught, round-2 verification): CURRENT version-bearing, ──
 // ─── a sibling milestone is not ──────────────────────────────────────────────
 //
