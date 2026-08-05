@@ -1203,3 +1203,83 @@ describe('#612 PR-2 B1 FOLLOW-UP: mixed heading shapes and boundary heading leve
     assert.equal(readTotal(), 2);
   });
 });
+
+// ─── #2761 B3 (self-caught, round-2 verification): CURRENT version-bearing, ──
+// ─── a sibling milestone is not ──────────────────────────────────────────────
+//
+// The B1 fix (commit 08d5b0c4) resolved `bracketScopeConvention` only inside
+// the `if (headingMatches.length === 0)` gate that also drives SELECTION's own
+// bracket fallback. That gate is correct for SELECTION (only try the bracket
+// heading shape when the version-string match found nothing), but
+// `bracketScopeConvention` also feeds `computeSectionEnd`'s and
+// `preambleCutoff`'s boundary-detection — which accidentally inherited
+// SELECTION's gate instead of having its own.
+//
+// Trigger shape: the CURRENT milestone heading is ITSELF version-bearing
+// (`## [GSD.02] v2.0: Current Milestone`), so the primary version-string
+// `sectionPattern` matches it directly — `headingMatches.length !== 0` from the
+// very first check — and the entire bracket-resolution branch is skipped. A
+// sibling milestone (PRIOR or LATER) that is version-less then gets NEITHER
+// the version/emoji boundary rule (it has no version) NOR the bracket boundary
+// rule (never resolved) — reproducing the exact #612 defect symptom
+// (total_phases falls back to the whole-disk count) through a structural
+// shape B1's own fixtures never exercised (every B1 fixture is uniformly
+// version-bearing or uniformly version-less across all three milestones).
+describe('#612 PR-2 B3: bracket boundaries engage even when CURRENT is version-bearing but a sibling is not', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-b3-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const ROADMAP = `# Roadmap
+
+## [GSD.01] Prior Milestone
+
+### [GSD.01] 01: Old one
+**Goal:** a
+
+## [GSD.02] v2.0: Current Milestone
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.03] Later Milestone
+
+### [GSD.03] 01: Later one
+**Goal:** d
+`;
+  const DIRS = ['GSD.01-01-old-one', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later-one'];
+
+  const acceptsFor = (dirs) => {
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    return Object.fromEntries(dirs.map((d) => [d, !!f(d)]));
+  };
+
+  test('CURRENT version-bearing + both siblings version-less: scoping works in both directions', () => {
+    writeProject(ROADMAP, 'bracket', DIRS);
+    assert.deepEqual(acceptsFor(DIRS), {
+      'GSD.01-01-old-one': false,
+      'GSD.02-01-one': true,
+      'GSD.02-02-two': true,
+      'GSD.03-01-later-one': false,
+    });
+  });
+
+  test('the PRIOR (version-less) milestone does not leak into the preamble (preambleCutoff twin)', () => {
+    writeProject(ROADMAP, 'bracket', DIRS);
+    assert.equal(acceptsFor(DIRS)['GSD.01-01-old-one'], false);
+  });
+
+  test('the LATER (version-less) milestone does not leak into scope (computeSectionEnd twin)', () => {
+    writeProject(ROADMAP, 'bracket', DIRS);
+    assert.equal(acceptsFor(DIRS)['GSD.03-01-later-one'], false);
+  });
+
+  test('total_phases counts only the asserted milestone, not the whole disk', () => {
+    writeProject(ROADMAP, 'bracket', DIRS);
+    // 4 directories on disk, 2 phases in the milestone STATE.md asserts.
+    assert.equal(readTotal(), 2);
+  });
+});

@@ -159,11 +159,9 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   // symptom the bracket read path exists to remove, for the exact heading form
   // the ADR specifies.
   //
-  // Resolved LAZILY and only in this fallback, so the legacy path pays neither a
-  // config read nor a second scan; and gated, so a non-bracket repo cannot start
-  // scoping on a bracket heading it never wrote. READING-B parity: the bracket's
-  // milestone integer is the milestone, matched against the `vN` of STATE's
-  // milestone string.
+  // GATED, so a non-bracket repo cannot start scoping on a bracket heading it
+  // never wrote. READING-B parity: the bracket's milestone integer is the
+  // milestone, matched against the `vN` of STATE's milestone string.
   //
   // GUARDED, for the same reason getRoadmapPhaseInternal and getMilestoneInfo
   // carry their #2245 / ADR-227 notes: `resolvePhaseIdConvention` reaches
@@ -177,12 +175,30 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   // it is reachable by any in-process embedder calling this module directly.
   // On failure the convention is simply unknown, which takes the pre-existing
   // non-bracket path: the same safe degrade as a repo with no config.
+  //
+  // #2761 B3 (self-caught, round-2 verification): resolved UNCONDITIONALLY —
+  // NOT gated on `headingMatches.length === 0` — because this convention also
+  // feeds `computeSectionEnd`'s and `preambleCutoff`'s boundary detection
+  // further down, which must engage on an opted-in bracket repo regardless of
+  // which branch selected the current heading. The round-1 fix coupled two
+  // different concerns under one gate: SELECTION's own bracket fallback
+  // (immediately below — correctly still gated on `headingMatches.length ===
+  // 0`, UNCHANGED) and boundary detection, which accidentally inherited
+  // SELECTION's gate instead of having its own. On a roadmap where the CURRENT
+  // milestone heading is itself version-bearing but a sibling (PRIOR or LATER)
+  // is not, the version-string match above already succeeds —
+  // `headingMatches.length !== 0` — so under the old single gate
+  // `bracketScopeConvention` was never resolved and the version-less sibling
+  // leaked in exactly like the original #612 defect. The extra
+  // `resolvePhaseIdConvention` call this now costs on every call (previously
+  // only paid when the version-string match found nothing) is deliberate: a
+  // non-bracket repo still resolves to something other than `'bracket'` (or
+  // `null` on a poisoned env, caught below), so `bracketMilestoneHeadingRe`
+  // stays `null` and every downstream branch is byte-identical to today.
   let bracketScopeConvention: string | null = null;
-  if (headingMatches.length === 0) {
-    try {
-      bracketScopeConvention = resolvePhaseIdConvention(cwd);
-    } catch { /* unresolvable convention → treat as not-configured (base behaviour) */ }
-  }
+  try {
+    bracketScopeConvention = resolvePhaseIdConvention(cwd);
+  } catch { /* unresolvable convention → treat as not-configured (base behaviour) */ }
   if (headingMatches.length === 0 && bracketScopeConvention === 'bracket') {
     const vMatch = version.match(/^v(\d+)/i);
     const milestoneInt = vMatch ? parseInt(vMatch[1], 10) : NaN;
@@ -242,11 +258,11 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   // (`### [CODE.MM] N:`) is level 3 and carries the same `[CODE.MM]` prefix, so
   // a `#{1,3}` boundary would treat it as a milestone boundary too. Built from
   // phase-id.cts's BRACKET_ID_SRC (single owner of the bracket-id grammar)
-  // rather than a re-typed literal. `bracketScopeConvention` is only ever
-  // resolved to `'bracket'` above when the bracket scope branch actually fired
-  // (see its own guard comment), so a version-bearing/emoji heading or a
-  // non-bracket convention leaves this null and takes the exact pre-existing
-  // code path, byte-identically.
+  // rather than a re-typed literal. `bracketScopeConvention` (see its own
+  // comment above, #2761 B3) resolves independently of which branch selected
+  // the current heading, so this engages on ANY opted-in bracket repo — a
+  // non-bracket convention (or an unresolvable one) leaves this null and takes
+  // the exact pre-existing code path, byte-identically.
   const bracketMilestoneHeadingRe = bracketScopeConvention === 'bracket'
     ? new RegExp(`^\\[${BRACKET_ID_SRC}\\]`, 'i')
     : null;
