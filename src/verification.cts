@@ -143,10 +143,18 @@ interface FsLike {
   statSync(filePath: string): { mtimeMs: number };
 }
 
-interface StaleVerificationInfo {
-  verificationFile: string;
-  summaryFile: string;
-}
+/**
+ * Outcome of a staleness check. `determined:false` means the check could NOT
+ * run to completion (an fs / scanPhasePlans / injected-clock failure) — this
+ * is distinct from `determined:true, stale:false`, which means the check ran
+ * to completion and genuinely found nothing stale. Collapsing the two (the
+ * pre-#3057 behavior: both returned `null`) let a disk-scan failure silently
+ * report "not stale" — the same fail-open shape as #3050. (#3057 B3)
+ */
+type StaleCheckResult =
+  | { determined: true; stale: true; verificationFile: string; summaryFile: string }
+  | { determined: true; stale: false }
+  | { determined: false };
 
 /**
  * Resolve the git commit time (epoch-ms) for each of `files` (paths relative to
@@ -296,30 +304,44 @@ interface VerificationStatusResult {
   status: string;
   next_action: string;
   next_command: string;
+  /**
+   * True when the internal staleness check (findStaleVerificationSummary)
+   * could not run to completion (an fs / scanPhasePlans / clock failure) —
+   * `status` above was routed as if the phase were not stale (the pre-existing
+   * no-throw fail-open contract, preserved unchanged), but this flag lets a
+   * caller distinguish "checked; nothing is stale" from "could not check" so
+   * the two are no longer silently identical (#3057 B3). Omitted (not present)
+   * when the staleness check ran to completion, or was never reached (e.g. the
+   * `gaps_found` short-circuit above it, or no verification file at all).
+   */
+  staleCheckIndeterminate?: boolean;
 }
 
 function findStaleVerificationSummary(
   phaseDir: string,
   fsImpl: FsLike = fs,
   phaseCleanCommitTimesMs: PhaseCleanCommitTimesFn = defaultPhaseCleanCommitTimesMs,
-): StaleVerificationInfo | null {
+): StaleCheckResult {
   // FS errors (TOCTOU: a SUMMARY listed by scanPhasePlans then removed before statSync;
-  // unreadable dir; broken symlink; file->dir swap) must degrade to "not stale" rather
-  // than throw uncaught into callers that are NOT under the planning lock
-  // (init.manager / init.progress / uat-predicate). Mirrors readVerificationStatus's
-  // no-throw contract; `fsImpl` threads the same injectable-fs seam for parity/testing.
-  // (Review B1 on #1548.)
+  // unreadable dir; broken symlink; file->dir swap) must degrade rather than throw
+  // uncaught into callers that are NOT under the planning lock (init.manager /
+  // init.progress / uat-predicate). Mirrors readVerificationStatus's no-throw
+  // contract; `fsImpl` threads the same injectable-fs seam for parity/testing.
+  // (Review B1 on #1548.) The degraded result is `{determined:false}`, NOT the
+  // same value as a completed "nothing is stale" check — see StaleCheckResult
+  // doc and #3057 B3. The caller decides how to route an indeterminate result;
+  // this function only reports what it actually knows.
   try {
     const phaseFiles = fsImpl.readdirSync(phaseDir);
     const verificationFile = phaseFiles.filter((f) => f.endsWith('-VERIFICATION.md')).sort()[0];
-    if (!verificationFile) return null;
+    if (!verificationFile) return { determined: true, stale: false };
 
     const summaryFiles = (scanPhasePlans(phaseDir) as { summaryFiles: string[] }).summaryFiles
       .slice()
       .sort();
     // No summary can be newer than the verification → never stale. Return before
     // touching git so a phase with no summaries costs zero subprocesses. (#2348)
-    if (summaryFiles.length === 0) return null;
+    if (summaryFiles.length === 0) return { determined: true, stale: false };
 
     // Each file's effective "last changed" time = its commit time when committed
     // AND clean (content-tied and clone-stable), else its filesystem mtime (the
@@ -337,13 +359,13 @@ function findStaleVerificationSummary(
       // The caller only needs whether the phase is stale, not which summary —
       // the first stale summary (in sorted order) is enough. Short-circuit.
       if (effectiveTimeMs(summaryFile) > verificationTimeMs) {
-        return { verificationFile, summaryFile };
+        return { determined: true, stale: true, verificationFile, summaryFile };
       }
     }
 
-    return null;
+    return { determined: true, stale: false };
   } catch {
-    return null;
+    return { determined: false };
   }
 }
 
@@ -358,6 +380,12 @@ function findStaleVerificationSummary(
  *    parser (DEFECT.FRONTMATTER-SCALAR-BROAD-GREP fix — parser anchors at byte 0).
  *    If no frontmatter block or no `status` key → status 'missing'.
  * 3. Map to routing table. Unknown non-empty value → status 'unknown'.
+ *
+ * The internal staleness check can itself fail (fs / scanPhasePlans / clock
+ * error); when it does, `status` is routed as if nothing were stale (the
+ * pre-existing no-throw fail-open contract — unchanged), but the returned
+ * result carries `staleCheckIndeterminate: true` so a caller can distinguish
+ * "checked; nothing is stale" from "could not check" (#3057 B3).
  *
  * @param phaseDir - Absolute path to the phase directory.
  * @param opts     - Options. `opts.fs` allows test injection (defaults to node:fs).
@@ -434,8 +462,8 @@ function readVerificationStatus(
     };
   }
 
-  const staleVerification = findStaleVerificationSummary(phaseDir, fsImpl, phaseCleanCommitTimesMs);
-  if (staleVerification) {
+  const staleCheck = findStaleVerificationSummary(phaseDir, fsImpl, phaseCleanCommitTimesMs);
+  if (staleCheck.determined && staleCheck.stale) {
     const entry = VERIFICATION_ROUTING_TABLE['stale'];
     return {
       status: entry.status,
@@ -443,6 +471,12 @@ function readVerificationStatus(
       next_command: projectNextCommand('verify-work', runtime, phaseArg),
     };
   }
+  // staleCheck is either {determined:true, stale:false} (checked; nothing
+  // stale) or {determined:false} (could not check — fs/scan/clock failure).
+  // Both fall through to normal routing below (the pre-existing no-throw
+  // fail-open contract is unchanged), but the indeterminate case is flagged
+  // on the returned result so a caller can tell the two apart (#3057 B3).
+  const staleCheckIndeterminate = !staleCheck.determined;
 
   // 3. Route — exclude internal sentinels from raw-file lookup (they are
   // constructed internally above, never written by the verifier).
@@ -458,6 +492,7 @@ function readVerificationStatus(
       status: entry.status,
       next_action: entry.next_action,
       next_command: projectNextCommand(entry.next_command, runtime, phaseArg),
+      ...(staleCheckIndeterminate ? { staleCheckIndeterminate: true } : {}),
     };
   }
 
@@ -467,6 +502,7 @@ function readVerificationStatus(
     status: unknownRoute.status,
     next_action: `Unexpected verification status '${rawStatus}'. Re-run execute-phase verification.`,
     next_command: projectNextCommand(unknownRoute.next_command, runtime, phaseArg),
+    ...(staleCheckIndeterminate ? { staleCheckIndeterminate: true } : {}),
   };
 }
 

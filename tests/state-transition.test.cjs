@@ -676,6 +676,43 @@ describe('ADR-1769 Phase 3: completePhase progress derivation (roadmap)', () => 
     assert.strictEqual(stateExtractField(result.content, 'Completed Phases'), '2');
     assert.strictEqual(stateExtractField(result.content, 'Progress'), '40%');
   });
+
+  // #3057 B9: `result.updated` must let a caller tell "recomputed from the
+  // roadmap" apart from "roadmap unavailable, left as-is". Before the fix,
+  // `stateReplaceField`'s return was truthy whenever the field pattern
+  // matched — regardless of whether the substituted text actually differed
+  // from `body` — so 'Completed Phases' (and 'Progress') were marked
+  // 'updated' even when nothing changed.
+
+  test('FAILURE path (roadmap unavailable): Completed Phases / Progress are NOT marked updated — left-as-is is distinguishable from recomputed', () => {
+    const nullDeps = { clock: fixedClock, progressProvider: noProgress, roadmapProvider: () => null };
+    const result = transitionCore(
+      completePhaseBody(),
+      { kind: 'completePhase', phaseNum: '3', nextPhaseNum: '4', nextPhaseName: null, isLastPhase: false, planCount: 3, summaryCount: 3 },
+      nullDeps,
+    );
+    assert.ok(!result.updated.includes('Completed Phases'),
+      `left-as-is 'Completed Phases' must NOT appear in updated; got ${JSON.stringify(result.updated)}`);
+    assert.ok(!result.updated.includes('Progress'),
+      `left-as-is 'Progress' must NOT appear in updated; got ${JSON.stringify(result.updated)}`);
+    // Values are unchanged (the benign-preservation contract from the test above).
+    assert.strictEqual(stateExtractField(result.content, 'Completed Phases'), '2');
+    assert.strictEqual(stateExtractField(result.content, 'Progress'), '40%');
+  });
+
+  test('BENIGN path (roadmap recomputes a different value): Completed Phases / Progress ARE marked updated — recomputed is distinguishable from left-as-is', () => {
+    const result = transitionCore(
+      completePhaseBody(),
+      { kind: 'completePhase', phaseNum: '3', nextPhaseNum: '4', nextPhaseName: null, isLastPhase: false, planCount: 3, summaryCount: 3 },
+      deps, // roadmapProvider => ROADMAP_3_OF_5, which recomputes Completed Phases 2 → 3
+    );
+    assert.ok(result.updated.includes('Completed Phases'),
+      `recomputed 'Completed Phases' must appear in updated; got ${JSON.stringify(result.updated)}`);
+    assert.ok(result.updated.includes('Progress'),
+      `recomputed 'Progress' must appear in updated; got ${JSON.stringify(result.updated)}`);
+    assert.strictEqual(stateExtractField(result.content, 'Completed Phases'), '3');
+    assert.strictEqual(stateExtractField(result.content, 'Progress'), '60%');
+  });
 });
 
 describe('ADR-1769 Phase 3: completePhase edge cases', () => {
@@ -1301,6 +1338,61 @@ describe('ADR-1769 #1796: applyStatePreservation — table-driven post-sync cons
     });
     assert.equal(r.postFm.progress.total_plans, 64,
       'total_plans equality → derived value (identity)');
+  });
+
+  test('#2969: deriveProgressKeys=true — completed_plans ratchets UP when disk count exceeds curated (gap-closure plans completed)', () => {
+    // Gap-closure scenario: a phase had 50 plans all summarized (completed_plans: 50),
+    // then 4 gap-closure plans were added (total_plans -> 54) and all 4 got SUMMARYs.
+    // Disk scan now counts 54 summaries. The curated completed_plans (50) must
+    // ratchet UP to the derived value (54), not stay pinned at 50 — otherwise
+    // completed_plans < total_plans forever even though every plan is summarized.
+    const curated = { progress: { total_plans: 54, completed_plans: 50, total_phases: 2, completed_phases: 1, percent: 93 } };
+    const r = applyStatePreservation({
+      preFm: curated,
+      preFmSnapshot: curated,
+      postFm: { progress: { total_plans: 54, completed_plans: 54, total_phases: 2, completed_phases: 1, percent: 100 } },
+      resync: false,
+      deriveProgressKeys: true,
+      ...untouched,
+    });
+    assert.equal(r.postFm.progress.total_plans, 54, 'total_plans takes derived value');
+    assert.equal(r.postFm.progress.completed_plans, 54,
+      'completed_plans must ratchet UP to derived (54 > curated 50 — gap-closure plans completed) (#2969)');
+    assert.equal(r.postFm.progress.percent, 100,
+      'percent must reflect the true completion fraction (54/54) (#2969)');
+  });
+
+  test('#2969 ratchet-down protection: deriveProgressKeys=true keeps curated when disk count < curated', () => {
+    // The ratchet must only go UP. If the disk count is somehow LOWER than
+    // curated (e.g. a SUMMARY was deleted), keep the curated value — do not
+    // derive downward. (#3242 curated-progress protection, scoped to deriveProgressKeys.)
+    const curated = { progress: { total_plans: 54, completed_plans: 50, percent: 93 } };
+    const r = applyStatePreservation({
+      preFm: curated,
+      preFmSnapshot: curated,
+      postFm: { progress: { total_plans: 54, completed_plans: 47, percent: 87 } },
+      resync: false,
+      deriveProgressKeys: true,
+      ...untouched,
+    });
+    assert.equal(r.postFm.progress.completed_plans, 50,
+      'completed_plans must NOT derive downward (47 < curated 50) — ratchet-up only (#2969/#3242)');
+  });
+
+  test('#2969 body-only write protection: deriveProgressKeys absent keeps wholesale restore', () => {
+    // state.update/patch (no deriveProgressKeys flag) must keep the full #3242
+    // wholesale curated restore — completed_plans never moves for a body-only edit.
+    const curated = { progress: { total_plans: 54, completed_plans: 50, percent: 93 } };
+    const r = applyStatePreservation({
+      preFm: curated,
+      preFmSnapshot: curated,
+      postFm: { progress: { total_plans: 54, completed_plans: 54, percent: 100 } },
+      resync: false,
+      // deriveProgressKeys NOT set — body-only write path
+      ...untouched,
+    });
+    assert.equal(r.postFm.progress.completed_plans, 50,
+      'body-only write must keep curated completed_plans (no deriveProgressKeys) (#2969/#3242)');
   });
 
   test('progress: NOT restored when transition re-derives from disk (resync=true) — sync/advancePlan/completePhase path', () => {

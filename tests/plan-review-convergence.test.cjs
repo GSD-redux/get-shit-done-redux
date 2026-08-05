@@ -73,7 +73,13 @@ function runReviewerFlagsParseBlock(block, args) {
   return execFileSync('bash', ['-c', script], {
     env: { ...process.env, ARGUMENTS: args, GSD_TOOLS_PATH },
     encoding: 'utf8',
-    timeout: 5000,
+    // 30s covers the nested bash → node → gsd-tools.cjs cold-start chain this
+    // helper spawns. 5s was too tight: on a loaded bench (30k tests running
+    // in parallel) that budget was consumed by process-spawn scheduling
+    // latency alone, producing a spurious ETIMEDOUT with no genuine hang.
+    // 30_000 matches the convention other script-invocation tests in this
+    // repo already use (see e.g. adr-index-gate.test.cjs, check-env.test.cjs).
+    timeout: 30_000,
   }).trim();
 }
 
@@ -393,7 +399,10 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
       return execFileSync('bash', ['-c', script], {
         env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '', GSD_TOOLS_PATH },
         encoding: 'utf8',
-        timeout: 5000,
+        // 30s covers the same nested bash → node → gsd-tools.cjs cold-start
+        // chain as runReviewerFlagsParseBlock above; see that helper's
+        // comment for why 5s flaked under bench load.
+        timeout: 30_000,
       });
     };
 
@@ -447,7 +456,10 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
       return execFileSync('bash', ['-c', script], {
         env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '', GSD_TOOLS_PATH },
         encoding: 'utf8',
-        timeout: 5000,
+        // 30s covers the same nested bash → node → gsd-tools.cjs cold-start
+        // chain as runReviewerFlagsParseBlock above; see that helper's
+        // comment for why 5s flaked under bench load.
+        timeout: 30_000,
       });
     };
 

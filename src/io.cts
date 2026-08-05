@@ -225,10 +225,17 @@ function getJsonErrorMode(): boolean { return _jsonErrorMode; }
  * process is in JSON-error mode, stderr receives `{ ok: false, reason,
  * message }` so callers can parse it; otherwise stderr keeps the plain
  * text form for human operators.
+ *
+ * `extra` (optional) lets a caller attach additional structured fields
+ * (e.g. `{ verification_stale_check_indeterminate: true }`) onto the
+ * JSON-error-mode payload, spread alongside `ok`/`reason`/`message`, so a
+ * test can assert on the value directly instead of regexing `message`'s
+ * human-readable text. Ignored entirely in plain-text mode — the human
+ * message is the only thing an operator sees there.
  */
-function error(message: string, reason: ErrorReasonValue = ERROR_REASON.UNKNOWN): never {
+function error(message: string, reason: ErrorReasonValue = ERROR_REASON.UNKNOWN, extra?: Record<string, unknown>): never {
   if (_jsonErrorMode) {
-    const payload = JSON.stringify({ ok: false, reason, message }) + '\n';
+    const payload = JSON.stringify({ ok: false, reason, message, ...(extra || {}) }) + '\n';
     writeAllSync(2, payload);
   } else {
     writeAllSync(2, 'Error: ' + message + '\n');

@@ -264,7 +264,8 @@ interface FsLike {
 
 type WriteResult =
   | { ok: true; path: string }
-  | { ok: false; kind: 'malformed_existing' | 'duplicate_plan_id' | 'io_error'; message: string };
+  | { ok: false; kind: 'malformed_existing' | 'duplicate_plan_id' | 'io_error'; message: string }
+  | { ok: false; kind: 'scan_incomplete'; message: string; offendingPath: string };
 
 /**
  * Pure path projection: `.planning/async-jobs/<job_id>.json`.
@@ -289,6 +290,11 @@ function _isNonTerminal(status: unknown): boolean {
  *  - Same `job_id` for the same `plan_id` -> allowed (status progression).
  *  - A prior job for the same `plan_id` that is already terminal -> allowed
  *    (the duplicate guard only protects against re-dispatching live work).
+ *  - If a SIBLING manifest (not the target) cannot be read or parsed, the
+ *    duplicate scan cannot be completed and may be hiding a live duplicate
+ *    -> refuse (`scan_incomplete`), naming the offending file's path so an
+ *    operator can quarantine or repair it. Never silently skip a sibling the
+ *    scan could not inspect.
  */
 function writeManifest(
   manifest: Manifest,
@@ -313,17 +319,27 @@ function writeManifest(
     let raw: string;
     try {
       raw = String(fs.readFileSync(p));
-    } catch {
-      continue;
+    } catch (e) {
+      return {
+        ok: false,
+        kind: 'scan_incomplete',
+        message: `duplicate scan incomplete: failed to READ sibling manifest ${p} (${(e as Error).message}); quarantine or repair this file before retrying`,
+        offendingPath: p,
+      };
     }
     let existing: Record<string, unknown>;
     try {
       existing = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
+    } catch (e) {
       if (p === target) {
         return { ok: false, kind: 'malformed_existing', message: `target manifest ${p} is not valid JSON` };
       }
-      continue;
+      return {
+        ok: false,
+        kind: 'scan_incomplete',
+        message: `duplicate scan incomplete: failed to PARSE sibling manifest ${p} (${(e as Error).message}); quarantine or repair this file before retrying`,
+        offendingPath: p,
+      };
     }
     const samePlan = existing.plan_id === manifest.plan_id;
     const sameJob = existing.job_id === manifest.job_id;
