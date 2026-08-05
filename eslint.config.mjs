@@ -352,7 +352,7 @@ export default tseslint.config(
 
   // ── tests/**/*.test.cjs ─────────────────────────────────────────────────────
   {
-    files: ['tests/**/*.test.cjs'],
+    files: ['tests/**/*.cjs'],
     plugins: {
       'no-only-tests': noOnlyTests,
       local: localPlugin,

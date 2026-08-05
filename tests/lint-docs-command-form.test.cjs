@@ -10,10 +10,11 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const GUARD_SCRIPT = path.resolve(__dirname, '..', 'scripts', 'lint-docs-command-form.cjs');
 
@@ -43,12 +44,21 @@ function cleanup(dir) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/**
+ * Returns an object shaped like the raw spawnSync() result (status/stdout/
+ * stderr) because every call site in this file was written against that
+ * shape; the seam itself returns exitCode, not status, so it is mapped here.
+ * 30_000ms: matches the sibling-suite default for guard scripts that shell
+ * out to git (the guard runs `git ls-files` over the fixture repo), which
+ * is comparable workload to this script's own `git ls-files` invocation.
+ */
 function runGuard(cwd) {
-  return spawnSync(process.execPath, [GUARD_SCRIPT], {
+  const r = runNode([GUARD_SCRIPT], {
     cwd,
-    encoding: 'utf8',
     env: { ...process.env, GSD_LINT_DOCS_COMMAND_FORM_REPO_ROOT: cwd },
+    timeoutMs: 30_000,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 describe('lint-docs-command-form — colon slash form flagged', () => {

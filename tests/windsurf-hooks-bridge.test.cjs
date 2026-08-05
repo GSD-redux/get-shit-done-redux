@@ -44,7 +44,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -66,12 +67,12 @@ const PRE_COMMAND_SCRIPT = path.join(HOOKS_DIR, GSD_WINDSURF_PRE_COMMAND_HOOK_SC
 
 function runHook(scriptPath, payload, opts = {}) {
   const input = payload === undefined ? '' : (typeof payload === 'string' ? payload : JSON.stringify(payload));
-  return spawnSync(process.execPath, [scriptPath], {
+  const r = runHookSeam(scriptPath, [], {
     input,
-    encoding: 'utf8',
-    timeout: 10000,
+    timeoutMs: 10000,
     cwd: opts.cwd || os.tmpdir(),
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr, signal: r.signal };
 }
 
 function initGitRepo(dir) {
@@ -218,7 +219,7 @@ describe('gsd-windsurf-pre-command.js (pre_run_command guard)', () => {
 
   test('G10: ReDoS-guard — a 200000+-char rm -rf-shaped payload is handled without catastrophic backtracking (length cap)', () => {
     const payload = `rm -${'r'.repeat(200000)}!`;
-    // The ReDoS guard is `runHook`'s spawnSync `timeout: 10000`: catastrophic
+    // The ReDoS guard is `runHook`'s seam `timeoutMs: 10000`: catastrophic
     // backtracking on this payload would run for minutes, so the hook is
     // SIGKILL'd and returns a non-zero status — the exit-0 assertion below IS
     // the ReDoS check. (The prior `elapsedMs < 1000` wall-clock assertion was

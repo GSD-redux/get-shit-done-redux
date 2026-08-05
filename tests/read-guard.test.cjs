@@ -22,6 +22,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -44,22 +45,15 @@ function runHook(payload, envOverrides = {}) {
     CLAUDE_PROJECT_DIR: '',
     ...envOverrides,
   };
-  try {
-    const stdout = execFileSync(process.execPath, [HOOK_PATH], {
-      input,
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
-    return { exitCode: 0, stdout: stdout.trim(), stderr: '' };
-  } catch (err) {
-    return {
-      exitCode: err.status ?? 1,
-      stdout: (err.stdout || '').toString().trim(),
-      stderr: (err.stderr || '').toString().trim(),
-    };
+  const r = runHookSeam(HOOK_PATH, [], { input, env, timeoutMs: 5000 });
+  if (r.exitCode === 0) {
+    return { exitCode: 0, stdout: r.stdout.trim(), stderr: '' };
   }
+  return {
+    exitCode: r.exitCode ?? 1,
+    stdout: r.stdout.trim(),
+    stderr: r.stderr.trim(),
+  };
 }
 
 describe('gsd-read-guard hook', () => {
@@ -281,7 +275,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -298,22 +292,15 @@ function runHook(payload, envOverrides = {}) {
     CLAUDE_PROJECT_DIR: '',
     ...envOverrides,
   };
-  try {
-    const stdout = execFileSync(process.execPath, [HOOK_PATH], {
-      input,
-      encoding: 'utf-8',
-      timeout: 5000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
-    return { exitCode: 0, stdout: stdout.trim(), stderr: '' };
-  } catch (err) {
-    return {
-      exitCode: err.status ?? 1,
-      stdout: (err.stdout || '').toString().trim(),
-      stderr: (err.stderr || '').toString().trim(),
-    };
+  const r = runHookSeam(HOOK_PATH, [], { input, env, timeoutMs: 5000 });
+  if (r.exitCode === 0) {
+    return { exitCode: 0, stdout: r.stdout.trim(), stderr: '' };
   }
+  return {
+    exitCode: r.exitCode ?? 1,
+    stdout: r.stdout.trim(),
+    stderr: r.stderr.trim(),
+  };
 }
 
 describe('bug #2344: read guard skips on CLAUDECODE env var', () => {

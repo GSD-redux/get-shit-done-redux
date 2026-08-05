@@ -484,6 +484,7 @@
       "write-set.cjs"
     ],
     "hooks": [
+      "gsd-agent-isolation-guard.js",
       "gsd-check-update-worker.js",
       "gsd-check-update.js",
       "gsd-config-reload.js",

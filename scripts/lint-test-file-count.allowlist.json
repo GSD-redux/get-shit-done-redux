@@ -1,5 +1,5 @@
 {
-  "_doc": "Baseline of modules currently exceeding the 2-test-file limit. Each entry locks in TODAY's exact test filenames as the allowlisted set (identity ratchet). Adding a NEW test file to a capped module fails (novel). Removing one requires pruning this list (stale, ratchet-down). When a cluster drops to ≤ 2, remove its entry entirely. New entries require justification in PR description.",
+  "_doc": "Baseline of modules currently exceeding the 2-test-file limit. Each entry locks in TODAY's exact test filenames as the allowlisted set (identity ratchet). Adding a NEW test file to a capped module fails (novel). Removing one requires pruning this list (stale, ratchet-down). When a cluster drops to \u2264 2, remove its entry entirely. New entries require justification in PR description.",
   "modules": {
     "config": {
       "files": [
@@ -125,6 +125,14 @@
         "prompt-budget.test.cjs"
       ],
       "issue": "2929"
+    },
+    "audit": {
+      "files": [
+        "audit-command-cutover.test.cjs",
+        "audit-fix-command.test.cjs",
+        "fix-2766-audit-uat-archived-and-table-shapes.test.cjs"
+      ],
+      "issue": "2766"
     }
   }
 }

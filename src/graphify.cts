@@ -84,8 +84,12 @@ function execGraphify(cwd: string, args: string[], options: { timeout?: number }
     };
   }
 
-  // Timeout — seam exposes signal; spawnSync sets SIGTERM when killed by timeout.
-  if (result.signal === 'SIGTERM') {
+  // Timeout — result.timedOut is derived by the shared isSpawnTimeout predicate
+  // (shell-command-projection.cts), keyed on error.code === 'ETIMEDOUT' rather
+  // than signal === 'SIGTERM': Windows does not reliably report SIGTERM on a
+  // timeout kill, and an externally-delivered SIGTERM (error is null) is not
+  // a timeout at all.
+  if (result.timedOut) {
     return {
       exitCode: 124,
       stdout: result.stdout,

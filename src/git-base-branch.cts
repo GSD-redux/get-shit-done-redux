@@ -29,10 +29,7 @@ import { execGit as execGitSeam } from './shell-command-projection.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type ExecGitFn = (
-  args: string[],
-  opts?: { cwd?: string; env?: Record<string, string>; timeout?: number }
-) => { exitCode: number | null; stdout: string; stderr: string; signal: string | null; error: unknown };
+type ExecGitFn = typeof execGitSeam;
 
 export interface BaseBranchDeps {
   /** Override the git runner (default: execGit from shell-command-projection) */

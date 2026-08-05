@@ -10,8 +10,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -57,13 +58,15 @@ function commitFile(dir, name, msg) {
 
 /** Run the extracted guard in `dir`. Never throws — returns the observed result. */
 function runGuard(dir) {
-  const res = spawnSync('bash', ['-c', guardScript()], {
+  // 30s: already bounded pre-migration (unchanged) — the guard runs a handful
+  // of git plumbing calls (rev-parse, log, status) against a small fixture repo.
+  const res = runHook('-c', [guardScript()], {
+    interpreter: 'bash',
     cwd: dir,
-    encoding: 'utf8',
-    timeout: 30_000,
+    timeoutMs: 30_000,
     env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
   });
-  return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '' };
+  return { status: res.exitCode, stdout: res.stdout || '', stderr: res.stderr || '' };
 }
 
 test('#1856: refusal names the stranded commits and the dirty tree', () => {

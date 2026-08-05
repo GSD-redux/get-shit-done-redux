@@ -1514,7 +1514,7 @@ describe('milestone complete explicit version scope (#3043)', () => {
       );
       fs.writeFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), '# Requirements\n');
 
-      for (const [dir, liner] of [['103.old', 'old milestone A'], ['104.old', 'old milestone B'], ['108.new', 'new milestone']]) {
+      for (const [dir, liner] of [['103-old', 'old milestone A'], ['104-old', 'old milestone B'], ['108-new', 'new milestone']]) {
         const p = path.join(tmpDir, '.planning', 'phases', dir);
         fs.mkdirSync(p, { recursive: true });
         fs.writeFileSync(path.join(p, 'SUMMARY.md'), `one-liner: ${liner}\n\n## Summary\n${liner.split(' ')[0]}\n`);
@@ -1761,6 +1761,205 @@ describe('bug-978: milestone complete --force overrides unstarted-phase guard', 
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// bug #2946: milestone complete unstarted-phase guard fails open on STATE desync
+// ────────────────────────────────────────────────────────────────────────
+//
+// The guard that refuses to archive a milestone while the ROADMAP still lists
+// unstarted phases used to nest its entire ROADMAP scan inside
+// `if (stateVersion && stateVersion === version)`. Any STATE.md `milestone:`
+// value that did not exactly string-equal the version argument — a desynced
+// value, or no `milestone:` field at all — skipped the scan with no warning,
+// functionally equivalent to an implicit `--force`. The operation the guard
+// fronts is a one-way door: ROADMAP.md and REQUIREMENTS.md are archived and
+// phase directories are MOVED into `.planning/milestones/<version>-phases/`.
+//
+// The scan was already driven by the `version` argument through
+// getMilestonePhaseFilter / extractCurrentMilestone; the STATE match was a
+// redundant second gate that shadowed and broke it. After the fix the scan
+// runs whenever `--force` is absent and the ROADMAP can be scoped for the
+// version; a present-but-mismatched STATE.md `milestone:` field additionally
+// emits a WARNING naming both values.
+
+describe('bug #2946: unstarted-phase guard runs independent of STATE.md milestone field', () => {
+  const { test, beforeEach, afterEach } = require('node:test');
+  const assert = require('node:assert/strict');
+  const fs = require('fs');
+  const path = require('path');
+  const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-bug-2946-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /**
+   * Build a fixture where the guard MUST fire if it runs:
+   *  - ROADMAP.md scopes for `version` (heading includes the version literal)
+   *    and lists a `### Phase 2:` heading with no on-disk phase directory.
+   *  - STATE.md `milestone:` field is shaped by `stateMode`:
+   *      'sync'      → milestone: <version>
+   *      'desync'    → milestone: <version>-closing
+   *      'absent'    → no milestone: line in frontmatter
+   *      'no-file'   → STATE.md not written at all
+   * The unstarted phase is a REAL phase number (Phase 0 / 999 are sentinels
+   * excluded by the scan, #1580, so they would not fire it).
+   */
+  function makeFixture(tmpDir, version, stateMode) {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap ${version}\n\n### Phase 2: Real Work\n**Goal:** Not started\n`,
+    );
+    if (stateMode === 'no-file') return;
+    let frontmatter;
+    if (stateMode === 'sync') frontmatter = `milestone: ${version}\n`;
+    else if (stateMode === 'desync') frontmatter = `milestone: ${version}-closing\n`;
+    else frontmatter = ''; // 'absent'
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\n${frontmatter}---\n# State\n\n**Status:** In progress\n**Last Activity:** 2025-01-01\n**Last Activity Description:** Working\n`,
+    );
+  }
+
+  test('without --force the guard fires even when STATE.md milestone: desyncs from the requested version', () => {
+    makeFixture(tmpDir, 'v1.0', 'desync');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run'],
+      tmpDir,
+    );
+    assert.strictEqual(result.success, false, 'guard must fire on STATE desync, not fail open');
+    assert.ok(
+      result.error.includes('Re-run with --force to override'),
+      `expected guard error message; got: ${result.error}`,
+    );
+  });
+
+  test('without --force the guard fires even when STATE.md has no milestone: field', () => {
+    makeFixture(tmpDir, 'v1.0', 'absent');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run'],
+      tmpDir,
+    );
+    assert.strictEqual(result.success, false, 'guard must fire when milestone: field is absent');
+    assert.ok(
+      result.error.includes('Re-run with --force to override'),
+      `expected guard error message; got: ${result.error}`,
+    );
+  });
+
+  test('without --force the guard fires even when STATE.md does not exist', () => {
+    makeFixture(tmpDir, 'v1.0', 'no-file');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run'],
+      tmpDir,
+    );
+    assert.strictEqual(result.success, false, 'guard must fire when STATE.md is missing entirely');
+    assert.ok(
+      result.error.includes('Re-run with --force to override'),
+      `expected guard error message; got: ${result.error}`,
+    );
+  });
+
+  test('with --force the guard is bypassed even when STATE.md milestone: desyncs', () => {
+    makeFixture(tmpDir, 'v1.0', 'desync');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run', '--force'],
+      tmpDir,
+    );
+    assert.ok(
+      result.success,
+      `--force must override the guard on the desync path too; got: ${result.error}`,
+    );
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.dry_run, true, 'preview should run past the guard with --force');
+  });
+
+  test('a STATE milestone mismatch emits a warning naming both versions', () => {
+    makeFixture(tmpDir, 'v1.0', 'desync');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run'],
+      tmpDir,
+    );
+    // Guard fires (failure path) — the WARNING is written to stderr before
+    // the `Error:` line, so it appears in result.error. Assert on the stable
+    // operator-facing tokens (the WARNING marker and both version literals
+    // the operator must see), not the surrounding prose — the prose is a
+    // human formatter and may be reworded.
+    assert.strictEqual(result.success, false);
+    assert.ok(
+      result.error.includes('WARNING:'),
+      `expected a WARNING marker on stderr; got: ${result.error}`,
+    );
+    assert.ok(
+      result.error.includes('v1.0-closing') && result.error.includes('v1.0'),
+      `warning should name both the STATE value and the requested version; got: ${result.error}`,
+    );
+  });
+
+  test('no WARNING is emitted when STATE.md milestone: field is absent (fresh project is not suspicious drift)', () => {
+    // The scan still runs and fires (covered by the absent-field test above),
+    // but a missing milestone: declaration is a normal fresh-project state,
+    // not a mismatch — so no WARNING should accompany it.
+    makeFixture(tmpDir, 'v1.0', 'absent');
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Regression Test', '--dry-run'],
+      tmpDir,
+    );
+    assert.strictEqual(result.success, false, 'guard must still fire on absent field');
+    assert.ok(
+      !result.error.includes('WARNING:'),
+      `no WARNING expected for an absent milestone: field; got: ${result.error}`,
+    );
+  });
+
+  test('guard is a no-op when the scoped ROADMAP has no Phase headings (fresh project)', () => {
+    // STATE in sync, ROADMAP scopes for v1.0 but lists NO phase headings →
+    // scan yields zero unstarted phases, guard must not fire.
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap v1.0\n\nThis milestone has no phases yet.\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\nmilestone: v1.0\n---\n# State\n\n**Status:** In progress\n`,
+    );
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Fresh', '--dry-run'],
+      tmpDir,
+    );
+    assert.ok(
+      result.success,
+      `guard must be a no-op when the scoped slice has no phase headings; got: ${result.error}`,
+    );
+  });
+
+  test('Phase 0 and Phase 999 sentinels do not fire the unstarted-phase guard', () => {
+    // STATE absent (the strictest case for the new guard). ROADMAP has only
+    // sentinel phases with no directories — they must be skipped (#1580).
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap v1.0\n\n### Phase 0: Pre-milestone\n**Goal:** Setup\n\n### Phase 999: Backlog\n**Goal:** Later\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\n---\n# State\n\n**Status:** In progress\n`,
+    );
+    const result = runGsdTools(
+      ['milestone', 'complete', 'v1.0', '--name', 'Sentinel', '--dry-run'],
+      tmpDir,
+    );
+    assert.ok(
+      result.success,
+      `Phase 0 / 999 sentinels must not fire the guard; got: ${result.error}`,
+    );
+  });
+});
 
 // ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2660-one-liner-extraction.test.cjs — consolidation epic #1969 (B3 #1972)

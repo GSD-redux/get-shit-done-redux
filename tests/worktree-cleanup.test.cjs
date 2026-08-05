@@ -1484,6 +1484,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -1567,11 +1568,17 @@ function extractCwdGuardBash() {
  * Returns { status, stderr }.
  */
 function runGuard(guardBash, cwd) {
-  const result = spawnSync('bash', ['-c', guardBash], {
+  // 30000ms: previously UNBOUNDED (no `timeout` option was passed to
+  // spawnSync). This is the same execute-phase.md cwd-drift guard snippet
+  // exercised by tests/execute-phase-worktree-guard.test.cjs, which already
+  // bounds the identical guard at 30s (a handful of git plumbing calls
+  // against a small fixture repo) — matched here for consistency.
+  const result = runHook('-c', [guardBash], {
+    interpreter: 'bash',
     cwd,
-    encoding: 'utf-8',
+    timeoutMs: 30_000,
   });
-  return { status: result.status, stderr: result.stderr || '' };
+  return { status: result.exitCode, stderr: result.stderr || '' };
 }
 
 // ---------------------------------------------------------------------------
