@@ -563,8 +563,16 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         // (state.cts). A missing STATE.md `milestone:` field is not warned
         // here — the scan still runs, and "no milestone declared" is a normal
         // state for a fresh project, not a suspicious drift.
+        //
+        // `stateVersion` comes from a user-controlled file (STATE.md) and is
+        // not validated like the CLI `version` arg (ARCHIVE_VERSION_LABEL_RE).
+        // Sanitize before interpolating into stderr so ANSI escapes / control
+        // chars / secret-looking strings cannot be echoed verbatim into a CI
+        // log or terminal (CONTRIBUTING.md security: secret-looking values in
+        // stderr). `version` is already constrained to [A-Za-z0-9._-].
+        const safeStateVersion = stateVersion.replace(/[\x00-\x1f\x7f]/g, '?').slice(0, 80);
         process.stderr.write(
-          `[gsd-tools] WARNING: STATE.md milestone: "${stateVersion}" ≠ requested "${version}" — ` +
+          `[gsd-tools] WARNING: STATE.md milestone: "${safeStateVersion}" ≠ requested "${version}" — ` +
             `running the unstarted-phase guard against the ROADMAP scoped for "${version}" anyway.\n`,
         );
       }
