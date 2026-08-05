@@ -41,6 +41,10 @@ const {
   // #612: the disk-side milestone filter resolves bracket directories through
   // the owner's gated helpers rather than spelling the grammar a second time.
   phaseTokenMatches,
+  // #2761 B1: the version-less bracket milestone boundary (computeSectionEnd /
+  // preambleCutoff, below) is built from this single-owner source rather than a
+  // re-typed `[A-Z][A-Z0-9_]*\.\d+` literal.
+  BRACKET_ID_SRC,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -124,7 +128,12 @@ function isMilestoneShippedInRoadmap(content: string, version: string): boolean 
  * `getMilestonePhaseFilter`'s versionOverride branch all call this instead of
  * re-deriving it.
  */
-function computeMilestoneSectionEnd(content: string, headingText: string, headingStart: number): number {
+function computeMilestoneSectionEnd(
+  content: string,
+  headingText: string,
+  headingStart: number,
+  additionalBoundary?: (heading: HeadingToken) => boolean,
+): number {
   const level = (headingText.match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
   const afterHeading = headingStart + headingText.length;
   // Use tokenizeHeadings (fence-aware, offsets into original content) to find
@@ -136,8 +145,8 @@ function computeMilestoneSectionEnd(content: string, headingText: string, headin
     if (h.level > level) continue;
     // Mirrors old stopPattern: level-bounded, not a Phase heading, milestone marker
     if (/^Phase\s+\S/i.test(h.text)) continue;
-    if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
-    return h.offset;
+    if (/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) return h.offset;
+    if (additionalBoundary?.(h)) return h.offset;
   }
   return content.length;
 }
@@ -841,10 +850,39 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
 
   const sectionStart = selected.index;
 
-  const sectionEnd = computeMilestoneSectionEnd(content, selected[0], sectionStart);
+  // #2761 B1: name-only bracket milestones carry neither a version nor a
+  // status marker. Compose that gated boundary with upstream's centralized
+  // section-end owner instead of restoring the former inline copy.
+  const bracketMilestoneHeadingRe = bracketScopeConvention === 'bracket'
+    ? new RegExp(`^\\[${BRACKET_ID_SRC}\\]`, 'i')
+    : null;
+  const bracketBoundary = bracketMilestoneHeadingRe
+    ? (heading: HeadingToken): boolean =>
+      heading.level <= 2 && bracketMilestoneHeadingRe.test(heading.text)
+    : undefined;
+  const sectionEnd = computeMilestoneSectionEnd(
+    content,
+    selected[0],
+    sectionStart,
+    bracketBoundary,
+  );
 
   const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
-  const firstMilestoneMatch = content.match(anyMilestonePattern);
+  let firstMilestoneMatch = content.match(anyMilestonePattern);
+  if (bracketMilestoneHeadingRe) {
+    // Same discriminator as computeSectionEnd: `#{1,2}` only, so a bracket
+    // PHASE heading is never mistaken for a milestone boundary here either.
+    // Earliest-of-either-shape, so a version-bearing PRIOR milestone in an
+    // otherwise version-less roadmap still cuts the preamble correctly.
+    const anyBracketMilestonePattern = new RegExp(`^#{1,2}\\s+\\[${BRACKET_ID_SRC}\\]`, 'im');
+    const bracketMilestoneMatch = content.match(anyBracketMilestonePattern);
+    if (
+      bracketMilestoneMatch &&
+      (firstMilestoneMatch === null || bracketMilestoneMatch.index! < firstMilestoneMatch.index!)
+    ) {
+      firstMilestoneMatch = bracketMilestoneMatch;
+    }
+  }
   const preambleCutoff = firstMilestoneMatch
     ? firstMilestoneMatch.index!
     : firstMatch.index;
@@ -879,7 +917,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
     const detailsStart = detailsMatch.index ?? 0;
     detailsSection = content.slice(
       detailsStart,
-      computeMilestoneSectionEnd(content, detailsMatch[0], detailsStart),
+      computeMilestoneSectionEnd(content, detailsMatch[0], detailsStart, bracketBoundary),
     );
   }
 
