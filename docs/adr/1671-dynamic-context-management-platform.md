@@ -142,6 +142,81 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
   the "Rejected" cases (`--auto`/`--chain`/persisted-config interleaving;
   negated `--skip-bounce` OR `--gaps` OR NOT(...)) recorded in
   `.gsd/phase/chore-2993-fragmentize-plan-phase/40-design.md`.
+
+  **Amended by #2994 (Phase 6.3) — the vocabulary widens 19 → 29, third coordinated
+  amendment.** Rolling the fragment model onto the remaining 13 LARGE/XL workflows
+  surfaced 10 more atoms, admitted under the same two gates #2992 established. This
+  amendment is recorded retroactively by #2995 (Phase 6.4): #2994 shipped the atoms
+  without it, which this bullet's own rule forbids ("Widening the vocabulary requires a
+  coordinated ADR amendment, not an organic edit"). The gap was found by re-running
+  `/adr-phase-coverage` against what actually merged. The atoms each satisfy both
+  admission gates and are not in question; the missing record is.
+
+  **Shipped (10).** `flag:--fix`, `state:auto-advance-active`, `state:fallow-enabled`,
+  `state:flat-mode`, `state:git-create-tag`, `state:is-monorepo`, `state:next-channel`,
+  `state:plan-strategy-converge`, `state:reviewer-instances-configured`,
+  `state:ui-phase-active`, `state:workstream-active`. Compound real-world triggers
+  (`--converge OR --cross-ai`, `--next OR --rc`, `--auto OR` config, `--discuss OR
+  --full`) are each resolved to a single boolean in `src/init.cts` before evaluation, so
+  `when=` still sees one operator-free atom — the `state:chunked-mode` precedent above.
+  `state:flat-mode` is the positively-phrased inverse of `state:workstream-active`,
+  because negation is not in the grammar.
+
+  **`flag:--verify-only` is permanently REJECTED, not pending.** #2992 listed it among
+  six withheld atoms and deferred all six to "the LARGE/XL rollout phase". Five shipped
+  in #2994. `flag:--verify-only` did not, and will not: `docs-update`'s control flow is
+  interleaved across three non-contiguous touch-points, so gating one would leave the
+  other two as raw `$ARGUMENTS` checks. An atom with no genuine consuming section is dead
+  vocabulary — the rot the frozen list exists to prevent. That disposition was recorded
+  only in merged PR #3030's body, leaving this ADR still asserting a hand-off that will
+  never complete; it is recorded here so the withheld list reaches a terminal state.
+
+  **Amended by #2995 (Phase 6.4) — the grammar does NOT extend to `agents/`.**
+  Migration step 7 names agents alongside workflows. Emission does extend: agent bodies
+  now pass through `composeWorkflow` on every emission path, so a marker in an agent is
+  stripped rather than shipped verbatim. **Gating does not.** `when=` selection is
+  consumed from the committed `gsd-core/workflows/section-manifest.json`, which
+  `scripts/gen-section-manifest.cjs` derives from `gsd-core/workflows/*.md` only; its
+  shape is `{workflows: {...}}` and there is no per-agent entry, no per-agent init entry
+  point, and no consumer that could evaluate an agent's `when=`. An agent atom therefore
+  fails admission gate (2) — "a fact the init seam demonstrably computes at a real entry
+  point" — and would be the exact silent-inertness failure that gate exists to prevent: a
+  marker that looks like working gating while evaluating `false` forever. Agents are
+  consequently size-managed by extraction to `gsd-core/references/` (the documented
+  `DEFECT.AGENT-FILE-SIZE-CAP-BREACH` fix-forward), not by `when=` markers. Extending
+  gating to agents would require a per-agent manifest family and a dispatch-time seam to
+  read it; that is a separate decision, not an organic edit, and is not taken here.
+
+  **Amended by #3065 (Phase 7) — the promised contract gate is built, and three records are
+  corrected.** A post-merge audit of every promise in this ADR against the merged tree found one
+  mitigation asserted-but-absent and two stale records.
+
+  *The load-bearing contract gate now exists.* The Consequences section below claims, as amended by
+  #2931, that a deterministic gate proves no load-bearing fragment was omitted or shrunk. Until this
+  phase only synthetic unit tests of the `composeWithinBudget` primitive existed, over invented
+  fragments, asserting nothing about real content. `tests/load-bearing-contract-gate.test.cjs` now
+  derives the load-bearing set from declared `verbatim` strategies rather than a hand-maintained
+  list, sweeps a descending budget range, and carries both anti-vacuity guards as executable
+  assertions: an empty load-bearing set fails, and a sweep that never applies pressure fails.
+
+  *Decision item 2 overstated what shipped.* It describes a composer that "selects the needed
+  fragments and trims by priority to fit that runtime's measured cap". `composeWorkflow` in fact
+  calls `composeWithinBudget` with `budget: Number.MAX_SAFE_INTEGER` and every fragment
+  `{kind:'verbatim'}` — non-lossiness is a structural guarantee of the strategy set, not a
+  large-budget trick, and no per-runtime trimming happens there. The emitted-byte cap is enforced by
+  a separate measure-and-fail gate, and Windsurf's limit by a bespoke description truncation
+  (#2931), not by this composer. Per-runtime trimming remains available in the strategy set and
+  unused; the wording above describes an option, not shipped behavior.
+
+  *`flag:--converge` reaches a terminal state.* #2992 withheld six atoms and deferred them to the
+  rollout phase. Five were resolved explicitly. `flag:--converge` was resolved in code by reusing
+  `state:plan-strategy-converge` for `autonomous.md`'s converge sections, but that disposition was
+  recorded nowhere — the same undocumented-disposition gap #2995 closed for `flag:--verify-only`.
+  It is recorded here: **not admitted as its own atom; superseded by `state:plan-strategy-converge`.**
+
+  *Open-questions numbering is corrected.* The list enumerates three questions, while two "Resolved
+  by" blocks below resolve a "Question 4" that was never added to it. Question 4 — index keying,
+  stable ids vs baked line numbers — is now listed explicitly.
 - **Budget unit:** bytes for emission caps (matches `lfByteCount`, deterministic, offline-safe); a token estimate for run-time selection.
 
   **Corrected by #2931 (Phase 4) — the Windsurf cap was never load-bearing.** The Context
@@ -261,6 +336,7 @@ Prototype scope notes: the parser is intentionally self-contained for the exampl
 1. Fragment unit: separate files vs in-file section markers?
 2. Build-time emission vs run-time assembly as the primary surface during migration (double-write vs per-workflow cutover)?
 3. Whether/when to invest in per-runtime native channels (skills, MCP) above the universal file floor.
+4. Index keying: stable IDs vs baked `line` numbers? *(Resolved by #2928 — see below.)*
 
 **Resolved by #2928 — index keying: stable IDs, with no `line` field at all.** Question 4 asked stable IDs vs baked `line` numbers: `CONTEXT-INDEX.json` stored each predicate's `line`, so `--check` re-drifted on *any* `CONTEXT.md` line shift — a typo fix three sections up failed the gate. Raised by @davesienkowski (#1671, 2026-06-25). The shipped resolution is **stronger than the option originally proposed** (keying the comparison on stable IDs with `line` retained as non-compared metadata): the committed `ContextIndex.predicates` entries carry **no `line` field at all**. Committed-but-uncompared metadata goes silently stale — the same defect class the drift-guard exists to catch, with the alarm removed — so it was dropped from the committed artifact rather than merely excluded from the comparison. `line` is still returned by the live `parsePredicates`/`gsd-tools query context-predicates` result for callers that want to cite a source location; only the committed `docs/CONTEXT-INDEX.json` shape omits it.
 
