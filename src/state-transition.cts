@@ -195,11 +195,27 @@ export function applyStatePreservation(input: StatePreservationInput): StatePres
       const derived = (postFm['progress'] ?? {}) as Record<string, unknown>;
       const merged: Record<string, unknown> = { ...derived };
       if (curated) {
+        // #2440: total_plans and total_phases always take the derived value.
+        // #2969: completed_plans and completed_phases take the derived value
+        // when it is GREATER than the curated value (gap-closure plans that
+        // completed after the plan count grew) — ratcheting UP only, never
+        // deriving downward (preserves the #3242 curated-progress protection
+        // for cases unrelated to plan-count growth, e.g. a deleted SUMMARY).
+        const ratchetUpKeys = new Set(['completed_plans', 'completed_phases']);
         for (const [key, value] of Object.entries(curated)) {
-          if (key !== 'total_plans' && key !== 'total_phases') {
+          if (key === 'total_plans' || key === 'total_phases') continue;
+          if (ratchetUpKeys.has(key)) {
+            const derivedNum = typeof derived[key] === 'number' ? derived[key] : -Infinity;
+            const curatedNum = typeof value === 'number' ? value : -Infinity;
+            // Take the derived value only when it ratchets up; else keep curated.
+            if (derivedNum > curatedNum) continue;
+            merged[key] = value;
+          } else {
             merged[key] = value;
           }
         }
+        // percent recomputes from the final completed/total — prefer derived
+        // (the resync already computed it from disk counts).
       }
       postFm['progress'] = merged;
     } else {
