@@ -2610,3 +2610,79 @@ describe('#612 PR-2 round-5 Blocker 1: countRoadmapPhaseHeadings restores the br
     assert.equal(readTotal(), 2);
   });
 });
+
+// ─── #2761 round-5 Major 1: extractRetiredPhaseNumbers is a FIFTH ───────────
+// ─── fence-blind site on the bracket path ───────────────────────────────────
+//
+// The retirement gesture's own line scan iterates `scope.split(/\r?\n/)`
+// with no fence awareness. Once the bracket alternative is compiled into
+// `introSrc` (this PR's own change), a FENCED authoring EXAMPLE showing the
+// #1514 retirement gesture in bracket spelling is indistinguishable from a
+// real one — it retires a genuine phase, shrinking the denominator and
+// jumping the percent to a confident 100%.
+describe('#612 PR-2 round-5 Major 1: extractRetiredPhaseNumbers is fence-aware on the bracket path', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r5m1-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const D2 = [['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+
+  test('RED (G2): a fenced retired-strikethrough bracket bullet in the preamble no longer retires a real phase — 2/1/50, not 1/1/100', () => {
+    writeProject(`# Roadmap
+
+Retiring a phase looks like this:
+
+\`\`\`markdown
+- [x] ~~**[GSD.02] 02: Two**~~ — folded into 03; number retired
+\`\`\`
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D2);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix — the fenced EXAMPLE retirement gesture wrongly retired phase 02');
+  });
+
+  test('RED (G2b): the same fenced retirement example placed INSIDE the milestone section — not a preamble-scoping artifact', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+Retiring a phase looks like this:
+
+\`\`\`markdown
+- [x] ~~**[GSD.02] 02: Two**~~ — folded; number retired
+\`\`\`
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D2);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix');
+  });
+
+  test('PIN (G2 LEGACY control): the same fenced-example shape on a non-bracket repo is unchanged (pre-existing, out of scope)', () => {
+    writeProject(`# Roadmap
+
+Retiring a phase looks like this:
+
+\`\`\`markdown
+- [x] ~~**Phase 02: Two**~~ — folded into 03; number retired
+\`\`\`
+
+## Milestone v2.0: Foundation
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, undefined, [['01-one', true], ['02-two', false]]);
+    assert.equal(readTotal(), 1, 'pre-existing legacy hazard — deliberately unchanged, base is wrong here too');
+  });
+});

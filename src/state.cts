@@ -47,7 +47,7 @@ import {
   KNOWN_TEMPLATE_DEFAULTS,
   stateReplaceFieldIfTemplate,
 } from './state-document.cjs';
-import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sectionizer.cjs';
+import { tokenizeHeadings, collectSection, replaceSection, stripFencedCode } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
@@ -1636,7 +1636,14 @@ function extractRetiredPhaseNumbers(scope: string, convention?: string | null): 
   // the bare `Phase\s+` this line spelled before.
   const introSrc = phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention);
   const phaseRefRe = new RegExp(`^[\\s*_]*${introSrc}([\\w][\\w.-]*)`, 'i');
-  for (const line of scope.split(/\r?\n/)) {
+  // #612 round-5 (Major 1): fence-aware on the BRACKET path only — a fenced
+  // AUTHORING EXAMPLE of the #1514 retirement gesture, spelled in bracket
+  // form, must not retire a real phase. Reuses markdown-sectionizer's
+  // single-owner stripFencedCode rather than a second fence parser. Legacy
+  // stays the raw `scope`, byte-identical — its own fenced-example hazard is
+  // pre-existing and out of scope.
+  const scanScope = convention === 'bracket' ? stripFencedCode(scope).text : scope;
+  for (const line of scanScope.split(/\r?\n/)) {
     if (!isChecklistOrHeading.test(line)) continue;
     const strikeSpan = /~~([^~]*?)~~/g;
     let s: RegExpExecArray | null;
