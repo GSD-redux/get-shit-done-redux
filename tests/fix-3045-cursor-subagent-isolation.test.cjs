@@ -49,6 +49,13 @@ function runHook(payload, extraEnv = {}) {
   delete env.GSD_RUNTIME;
   delete env.CURSOR_CONFIG_DIR;
   Object.assign(env, extraEnv);
+  // Production code resolves the home directory via `os.homedir()` (correct,
+  // cross-platform), which on Windows reads `USERPROFILE`, not `HOME` —
+  // `os.homedir()` never honors `HOME` there. Tests below override `HOME` to
+  // redirect `os.homedir()` hermetically; mirror the override onto
+  // `USERPROFILE` too so that redirection actually takes effect on Windows
+  // instead of silently leaking the real CI runner's profile directory.
+  if ('HOME' in extraEnv) env.USERPROFILE = extraEnv.HOME;
   return spawnSync(process.execPath, [HOOK_PATH], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
@@ -348,6 +355,7 @@ describe('gsd-cursor-subagent-start.js: realpath verification against symlink/bi
   let cursorConfigDir;
   let primaryCheckout; // real git repo, harness-worktree, main checkout (not isolated)
   let spoofedManagedPath; // <CURSOR_CONFIG_DIR>/worktrees/<name>, a SYMLINK to primaryCheckout
+  let symlinkError = null; // set when fs.symlinkSync('dir') fails (unprivileged Windows)
 
   before(() => {
     cursorConfigDir = createTempDir('gsd-cs-symlink-cursorhome-');
@@ -356,7 +364,18 @@ describe('gsd-cursor-subagent-start.js: realpath verification against symlink/bi
     primaryCheckout = makeGitProject('gsd-cs-symlink-primary-', JSON.stringify({ runtime: 'cursor' }));
     fs.mkdirSync(path.join(cursorConfigDir, 'worktrees'), { recursive: true });
     spoofedManagedPath = path.join(cursorConfigDir, 'worktrees', 'spoofed');
-    fs.symlinkSync(primaryCheckout, spoofedManagedPath, 'dir');
+    // Creating a DIRECTORY symlink requires elevated privileges (or Developer
+    // Mode) on Windows and throws EPERM/EACCES/ENOSYS/UNKNOWN in unprivileged
+    // CI. This end-to-end test is the real-symlink pin for the #3045 finding
+    // 2 security property (the in-process, no-symlink coverage of the same
+    // logic lives in the "realpath seam" describe block below, via an
+    // injected realpath); on a platform that cannot create the symlink, the
+    // test below skips rather than silently passing or crashing the suite.
+    try {
+      fs.symlinkSync(primaryCheckout, spoofedManagedPath, 'dir');
+    } catch (err) {
+      symlinkError = err;
+    }
   });
 
   after(() => {
@@ -364,7 +383,11 @@ describe('gsd-cursor-subagent-start.js: realpath verification against symlink/bi
     cleanup(cursorConfigDir);
   });
 
-  test('symlink under the managed root pointing OUTSIDE it (at the primary checkout) -> DENY, not isolated', () => {
+  test('symlink under the managed root pointing OUTSIDE it (at the primary checkout) -> DENY, not isolated', (t) => {
+    if (symlinkError) {
+      t.skip('directory symlinks require elevated privileges on this platform');
+      return;
+    }
     // Lexical path.relative(managedRoot, root) would find `root` textually
     // "under" managedRoot and misclassify this as isolated. A process with
     // the user's permissions (including an agent already running in a
@@ -376,6 +399,96 @@ describe('gsd-cursor-subagent-start.js: realpath verification against symlink/bi
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, 'deny');
     assert.match(out.user_message, /not an isolated Cursor worktree/);
+  });
+});
+
+describe('gsd-cursor-subagent-start.js: realpath seam — in-process spoof coverage, no symlink required (#3045 finding 2, Windows-safe)', () => {
+  // Same threat model as the symlink describe block above (a path planted at
+  // <CURSOR_CONFIG_DIR>/worktrees/<name> pointing OUTSIDE the managed root,
+  // at the user's primary checkout, must not be classified as isolated) but
+  // exercised entirely in-process via the `realpath` dependency-injection
+  // seam added to hooks/gsd-cursor-subagent-start.js's
+  // resolveIsolationEvidence/evaluateRootIsolation. No fs.symlinkSync call —
+  // runs identically, unprivileged, on Windows/macOS/Linux.
+  //
+  // `spoofedPath` is a REAL (non-symlink) directory of its own, initialized
+  // as its own tiny git repo — this makes the real `git rev-parse` calls
+  // resolveIsolationEvidence's diagnostic path performs succeed exactly as
+  // they would against a symlink transparently resolved by the OS, so the
+  // test exercises the full evidence-resolution logic, not a shortcut. The
+  // injected `realpath` function is what then proves the resolver is NOT
+  // fooled by this path's own on-disk identity (or by its literal string
+  // being lexically nested under the managed root) and instead follows the
+  // (simulated) symlink-resolved target, exactly as a real spoof would need
+  // to be defeated.
+  const cursorHookModule = require('../hooks/gsd-cursor-subagent-start.js');
+
+  let cursorConfigDir;
+  let managedRootPath;
+  let spoofedPath;
+  let savedCursorConfigDir;
+
+  before(() => {
+    cursorConfigDir = createTempDir('gsd-cs-seam-cursorhome-');
+    managedRootPath = path.join(cursorConfigDir, 'worktrees');
+    spoofedPath = path.join(managedRootPath, 'spoofed');
+    fs.mkdirSync(spoofedPath, { recursive: true });
+    git(['init'], spoofedPath);
+    git(['config', 'user.email', 'test@test.com'], spoofedPath);
+    git(['config', 'user.name', 'Test'], spoofedPath);
+    fs.mkdirSync(path.join(spoofedPath, '.planning'), { recursive: true });
+    fs.writeFileSync(path.join(spoofedPath, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
+
+    // resolveIsolationEvidence/evaluateRootIsolation are called directly
+    // (in-process, no spawned subprocess), so CURSOR_CONFIG_DIR must be set
+    // on THIS process's env, mirroring what the e2e tests pass via spawnSync.
+    savedCursorConfigDir = process.env.CURSOR_CONFIG_DIR;
+    process.env.CURSOR_CONFIG_DIR = cursorConfigDir;
+  });
+
+  after(() => {
+    if (savedCursorConfigDir === undefined) delete process.env.CURSOR_CONFIG_DIR;
+    else process.env.CURSOR_CONFIG_DIR = savedCursorConfigDir;
+    cleanup(cursorConfigDir);
+  });
+
+  function fakeRealpathTo(primaryCheckoutTarget) {
+    return (p) => {
+      if (p === spoofedPath) return primaryCheckoutTarget;
+      if (p === managedRootPath) return managedRootPath;
+      throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${p}'`), { code: 'ENOENT' });
+    };
+  }
+
+  test('resolveIsolationEvidence: injected realpath resolving the spoofed path OUTSIDE the managed root -> NOT isolated, not merely "cannot determine"', () => {
+    const primaryCheckoutTarget = path.join(require('node:os').tmpdir(), 'gsd-cs-seam-primary-checkout-fake-1');
+    const evidence = cursorHookModule.resolveIsolationEvidence(spoofedPath, { realpath: fakeRealpathTo(primaryCheckoutTarget) });
+    assert.equal(evidence.isolated, false, 'realpath must be consulted, not the literal lexically-nested path');
+    assert.equal(evidence.cannotDetermine, false, 'the spoofed path is a real (decoy) git repo — git can determine it fine');
+    assert.equal(evidence.notApplicable, false);
+  });
+
+  test('evaluateRootIsolation: full pipeline denies through the injected realpath seam (no subprocess, no symlink)', () => {
+    const primaryCheckoutTarget = path.join(require('node:os').tmpdir(), 'gsd-cs-seam-primary-checkout-fake-2');
+    const verdict = cursorHookModule.evaluateRootIsolation(
+      spoofedPath, 'gsd-executor', { realpath: fakeRealpathTo(primaryCheckoutTarget) },
+    );
+    assert.equal(verdict.action, 'deny');
+    assert.match(verdict.reason, /not an isolated Cursor worktree/);
+  });
+
+  test('control: an honest (identity) realpath — no spoof — correctly ALLOWS, proving the deny above comes from the injected spoof mapping, not the fixture itself', () => {
+    // `spoofedPath` is genuinely, physically nested under `managedRootPath`
+    // on disk (it is not a symlink). With an honest identity realpath (i.e.
+    // "no symlink here at all"), the resolver must correctly see it as
+    // isolated and ALLOW — exactly the same as a legitimate worktree Cursor
+    // itself created under its own managed root. This is the control that
+    // proves the DENY in the two tests above is caused specifically by the
+    // injected realpath mapping simulating a symlink pointing outside the
+    // managed root, not by some incidental property of this fixture.
+    const identityRealpath = (p) => p;
+    const verdict = cursorHookModule.evaluateRootIsolation(spoofedPath, 'gsd-executor', { realpath: identityRealpath });
+    assert.equal(verdict.action, 'allow');
   });
 });
 

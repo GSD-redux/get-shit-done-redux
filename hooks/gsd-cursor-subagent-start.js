@@ -80,14 +80,21 @@ const MSG_ABSENT =
 const EXECUTOR_SUBAGENT_TYPES = new Set(['gsd-executor']);
 
 /**
- * fs.realpathSync, never throwing. A path that cannot be resolved (does not
+ * Runs `realpathFn`, never throwing. A path that cannot be resolved (does not
  * exist, dangling symlink, ELOOP, ...) yields `null` rather than an
  * exception — the caller decides what "cannot resolve" means for its own
  * verdict (#3045 finding 2).
+ *
+ * `realpathFn` is injectable (defaults to `fs.realpathSync`), per the repo's
+ * dependency-injection seam convention (mirrors the `clock` seam elsewhere in
+ * these hooks) — this lets tests exercise the realpath-based spoof-resistance
+ * logic below with a fabricated symlink-resolution mapping, without ever
+ * creating a real filesystem symlink (directory symlinks require elevated
+ * privileges on unprivileged Windows CI).
  */
-function realpathOrNull(p) {
+function realpathOrNull(p, realpathFn) {
   try {
-    return fs.realpathSync(p);
+    return realpathFn(p);
   } catch {
     return null;
   }
@@ -134,8 +141,17 @@ function realpathOrNull(p) {
  * Returns `{ isolated: true|false, cannotDetermine: bool, notApplicable: bool }`.
  * `notApplicable` (#3045 MAJOR 3) is true only for a confidently-not-a-git-repo
  * root — see the `not_git_repo` branch below.
+ *
+ * `realpath` is injectable (`(p: string) => string`, throws like
+ * `fs.realpathSync` on an unresolvable path; defaults to the real
+ * `fs.realpathSync`) per the repo's clock-seam-style dependency-injection
+ * convention. This lets tests drive the exact spoof-resistance logic this
+ * function exists for (a symlink at the managed root pointing OUTSIDE it)
+ * with an injected resolution mapping, in-process, on every platform —
+ * without creating a real directory symlink, which requires elevated
+ * privileges on unprivileged Windows CI.
  */
-function resolveIsolationEvidence(root) {
+function resolveIsolationEvidence(root, { realpath = fs.realpathSync } = {}) {
   let managedRoot = null;
   try {
     // Sibling data/policy module, staged alongside this hook at install time
@@ -146,8 +162,8 @@ function resolveIsolationEvidence(root) {
     managedRoot = null;
   }
 
-  const realRoot = realpathOrNull(root);
-  const realManagedRoot = managedRoot === null ? null : realpathOrNull(managedRoot);
+  const realRoot = realpathOrNull(root, realpath);
+  const realManagedRoot = managedRoot === null ? null : realpathOrNull(managedRoot, realpath);
 
   if (realRoot !== null && realManagedRoot !== null) {
     const rel = path.relative(realManagedRoot, realRoot);
@@ -293,7 +309,7 @@ function getWorkspaceRoots(data) {
  * stays a single check, not per-root — an unreadable config on one root must
  * never even be attempted for a confirmed non-executor dispatch).
  */
-function resolveIsolationDecision(data, { clock = Date } = {}) {
+function resolveIsolationDecision(data, { clock = Date, realpath = fs.realpathSync } = {}) {
   const subagentType = data.subagent_type;
   const isConfirmedNonExecutor = typeof subagentType === 'string'
     && subagentType.length > 0
@@ -311,7 +327,7 @@ function resolveIsolationDecision(data, { clock = Date } = {}) {
   const dispatchIds = extractDispatchIdentifiers(data.task);
 
   for (const root of roots) {
-    const verdict = evaluateRootIsolation(root, subagentType, { clock, dispatchIds });
+    const verdict = evaluateRootIsolation(root, subagentType, { clock, dispatchIds, realpath });
     if (verdict.action === 'deny') return verdict;
   }
   return { action: 'allow' };
@@ -392,7 +408,7 @@ function resolveFallbackIsolation(root, configPath) {
  * resolveIsolationDecision (#3045 finding 1) so every root in a multi-root
  * workspace runs the identical check.
  */
-function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds = null } = {}) {
+function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds = null, realpath = fs.realpathSync } = {}) {
   const configPath = path.join(root, '.planning', 'config.json');
   let isGsdProject;
   try {
@@ -442,7 +458,7 @@ function evaluateRootIsolation(root, subagentType, { clock = Date, dispatchIds =
     };
   }
 
-  const evidence = resolveIsolationEvidence(root);
+  const evidence = resolveIsolationEvidence(root, { realpath });
   if (evidence.isolated) return { action: 'allow' };
   if (evidence.notApplicable) return { action: 'allow' };
 

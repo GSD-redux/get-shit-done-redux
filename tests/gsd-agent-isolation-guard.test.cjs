@@ -75,6 +75,13 @@ function runHook(payload, cwd, extraEnv = {}) {
   const env = { ...process.env };
   delete env.GSD_RUNTIME;
   Object.assign(env, extraEnv);
+  // Production code resolves the home directory via `os.homedir()` (correct,
+  // cross-platform), which on Windows reads `USERPROFILE`, not `HOME` —
+  // `os.homedir()` never honors `HOME` there. Tests below override `HOME` to
+  // redirect `os.homedir()` hermetically; mirror the override onto
+  // `USERPROFILE` too so that redirection actually takes effect on Windows
+  // instead of silently leaking the real CI runner's profile directory.
+  if ('HOME' in extraEnv) env.USERPROFILE = extraEnv.HOME;
   return spawnSync(process.execPath, [HOOK_PATH], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
     encoding: 'utf8',
