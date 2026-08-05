@@ -128,26 +128,35 @@ describe('mergeCodexConfig trailing-content preservation (#2940)', () => {
   });
 
   test('bareAgentsAfterMarkerHandled', () => {
-    // Row 5: a bare [agents] table after the marker is GSD-managed (stripped), and any user
-    // AgentsToml scalars on it are preserved via spliceCodexAgentsScalars into the managed block.
+    // Row 5: a user AgentsToml scalar (max_threads) the user folded INTO the managed [agents]
+    // block (the valid, realistic shape — two [agents] tables would be invalid TOML), PLUS a
+    // separate trailing [model] section. The fix must preserve the user scalar via the existing
+    // spliceCodexAgentsScalars path AND preserve the trailing [model] via the new trailing-region
+    // logic, while regenerating exactly one managed [agents] table.
     const configPath = path.join(tmpDir, 'config.toml');
-    const trailing = [
+    // Simulate: fresh install wrote the GSD block; the user then added max_threads into the
+    // [agents] table and added a [model] section after it.
+    const existing = [
+      GSD_CODEX_MARKER,
+      '',
       '[agents]',
+      'max_depth = 1',
       'max_threads = 4',
       '',
       '[model]',
       'name = "o3"',
     ].join('\n');
-    fs.writeFileSync(configPath, block() + '\n' + trailing + '\n');
+    fs.writeFileSync(configPath, existing + '\n');
 
     mergeCodexConfig(configPath, block());
 
     const content = fs.readFileSync(configPath, 'utf8');
-    // The user's max_threads scalar is preserved (spliced into the managed [agents] block);
-    // there is exactly one [agents] table (the managed one), not two.
-    assert.ok(content.includes('max_threads = 4'), 'user AgentsToml scalar (max_threads) preserved');
+    // The user's max_threads scalar is preserved (spliced into the regenerated managed [agents]);
+    // there is exactly one [agents] table (the managed one).
+    assert.ok(content.includes('max_threads = 4'), 'user AgentsToml scalar (max_threads) preserved in managed block');
     const agentsHeaders = (content.match(/^\[agents\]\s*$/gm) || []).length;
-    assert.strictEqual(agentsHeaders, 1, 'exactly one [agents] table (the managed one), bare-table duplicate removed');
+    assert.strictEqual(agentsHeaders, 1, 'exactly one [agents] table (the managed one)');
+    assert.ok(content.includes('max_depth = 1'), 'GSD-managed max_depth still present');
     assert.ok(content.includes('[model]'), 'trailing [model] still preserved');
   });
 
