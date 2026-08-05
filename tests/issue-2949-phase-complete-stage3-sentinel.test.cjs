@@ -75,7 +75,7 @@ describe('phase complete stage-3 sentinel filter (#2949)', () => {
       `# Roadmap
 
 - [ ] **Phase 0.1: Backlog sentinel item** — deferred work
-- [ ] **Phase 11: First phase**
+- [x] **Phase 11: First phase** (completed 2025-01-01)
 - [ ] **Phase 12: Last phase**
 
 ### Phase 11: First phase
