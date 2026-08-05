@@ -2000,6 +2000,20 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     // suggests the command surface this runtime actually installs
     // ($gsd-… on Codex) rather than a hard-coded Claude-style string.
     const verificationStatus = readVerificationStatus(phaseFullDir, { runtime: resolveRuntime(cwd) });
+    // #3057 B3: the staleness check inside readVerificationStatus can itself
+    // fail (fs / scanPhasePlans / clock error), in which case `status` above
+    // was routed as if nothing were stale (unchanged fail-open routing) — but
+    // that must not be silently identical to a check that actually ran and
+    // found nothing stale. Join the SAME advisory channel the UAT/VERIFICATION
+    // pre-scan above already uses (`warnings[]`, rendered by execute-phase.md's
+    // "If has_warnings is true" step) rather than inventing a new one. This
+    // only fires on the non-blocking path (status resolves to 'passed' despite
+    // the indeterminate check) — the blocked path below carries its own note.
+    if (verificationStatus.staleCheckIndeterminate) {
+      warnings.push(
+        `verification staleness check could not complete for phase ${phaseNum} — routed as not-stale, but this was not actually verified (#3057)`,
+      );
+    }
     if (verificationStatus.status !== 'passed') {
       return verificationStatus;
     }
@@ -2703,8 +2717,15 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
     const nextStep = verificationBlocked.next_command
       ? ` Next: ${verificationBlocked.next_command}`
       : '';
+    // #3057 B3: purely additive to the message text — does not change WHETHER
+    // this blocks (verificationBlocked was already truthy) or the
+    // ERROR_REASON, only whether the operator can see the staleness check
+    // itself did not complete.
+    const indeterminateNote = verificationBlocked.staleCheckIndeterminate
+      ? ' (staleness check could not complete — see #3057)'
+      : '';
     error(
-      `Phase ${phaseNum} verification is incomplete: ${verificationBlocked.next_action}${nextStep}`,
+      `Phase ${phaseNum} verification is incomplete: ${verificationBlocked.next_action}${nextStep}${indeterminateNote}`,
       ERROR_REASON.PHASE_VERIFICATION_INCOMPLETE,
     );
   }

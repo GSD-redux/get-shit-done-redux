@@ -8543,6 +8543,100 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdPhaseComplete surfaces an indeterminate staleness check
+//
+// readVerificationStatus's internal staleness check can itself fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3, that failure was silently
+// identical to a completed check that genuinely found nothing stale — the
+// SAME fail-open shape as #3050. B3 flags this on the result
+// (`staleCheckIndeterminate`); this test proves phase.cts actually SURFACES
+// that flag (into `warnings[]`, the same advisory channel the UAT/VERIFICATION
+// pre-scan above already uses) rather than dropping it on the floor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: cmdPhaseComplete — verification staleness-check indeterminate is surfaced', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture('gsd-3057-b3-phase-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('an fs failure inside the staleness check adds a warning; completion routing is unchanged', (t) => {
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    const verificationPath = path.join(phase01Dir, '01-VERIFICATION.md');
+    const summaryPath = path.join(phase01Dir, '01-01-SUMMARY.md');
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const output = JSON.parse(capturePhaseComplete(tmpDir, '1'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
+    // completes exactly as it would have before #3057 B3.
+    assert.strictEqual(output.completed_phase, '1');
+    assert.ok(Array.isArray(output.warnings), 'result must carry a warnings array');
+    assert.ok(
+      output.warnings.some((w) => /staleness check could not complete/.test(w)),
+      `warnings must surface the indeterminate staleness check; got ${JSON.stringify(output.warnings)}`,
+    );
+    assert.strictEqual(output.has_warnings, true);
+  });
+
+  test('a completed staleness check that finds nothing stale does NOT add an indeterminate warning', () => {
+    const output = JSON.parse(capturePhaseComplete(tmpDir, '1'));
+
+    assert.strictEqual(output.completed_phase, '1');
+    assert.ok(
+      !(output.warnings || []).some((w) => /staleness check could not complete/.test(w)),
+      `warnings must not mention an indeterminate check when the staleness check ran to completion; got ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test('a BLOCKED completion (status=human_needed) with an indeterminate staleness check still blocks, but the error note says so', (t) => {
+    const phase02Dir = path.join(tmpDir, '.planning', 'phases', '02-api');
+    fs.writeFileSync(path.join(phase02Dir, '02-01-PLAN.md'), '# Plan\nDo the work.\n');
+    fs.writeFileSync(path.join(phase02Dir, '02-01-SUMMARY.md'), '# Summary\nDone.\n');
+    fs.writeFileSync(path.join(phase02Dir, '02-VERIFICATION.md'), [
+      '---',
+      'status: human_needed',
+      '---',
+      '',
+      '# Verification',
+      '',
+    ].join('\n'));
+
+    const verificationPath = path.join(phase02Dir, '02-VERIFICATION.md');
+    const summaryPath = path.join(phase02Dir, '02-01-SUMMARY.md');
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    // Routing is UNCHANGED — status !== 'passed' already blocked before #3057
+    // B3; the note is purely additive to the message text.
+    assert.throws(
+      () => capturePhaseComplete(tmpDir, '2'),
+      /verification is incomplete[\s\S]*staleness check could not complete — see #3057/,
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Regressions: phase complete preserves completion date (#1161)
 // Tests drive the REAL handler (cmdPhaseComplete) via the CLI entry point
 // `runGsdTools('phase complete <N>')` so the fix in phase.cts is exercised

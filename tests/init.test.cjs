@@ -2776,6 +2776,95 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdInitVerifyWork surfaces an indeterminate staleness check
+//
+// buildPhaseCompletionProjection (init.cts) projects readVerificationStatus's
+// result into phase_completion — a workflow step reads phase_completion.*
+// fields directly. Pre-#3057 B3 wiring, `staleCheckIndeterminate` was
+// computed by readVerificationStatus but dropped here, so a workflow could
+// never distinguish "checked; nothing is stale" from "could not check".
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indeterminate is surfaced', () => {
+  const initMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'init.cjs'));
+  let projectDir;
+
+  beforeEach(() => {
+    projectDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(projectDir);
+  });
+
+  /** In-process capture of cmdInitVerifyWork's stdout JSON, stderr discarded. */
+  function captureInitVerifyWork(cwd, phase) {
+    const chunks = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    const origErrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
+    process.stderr.write = () => true;
+    try {
+      initMod.cmdInitVerifyWork(cwd, phase, false);
+    } finally {
+      process.stdout.write = origWrite;
+      process.stderr.write = origErrWrite;
+    }
+    return chunks.join('');
+  }
+
+  function seedVerifiedPhase() {
+    seedPhase(projectDir, '03-api', {
+      '03-01-PLAN.md': '# Plan',
+      '03-01-SUMMARY.md': '# Summary',
+      '03-VERIFICATION.md': '---\nstatus: passed\n---\n\n# Verification\n',
+    });
+    fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), '# State\n');
+    fs.writeFileSync(path.join(projectDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
+    const phaseDir = path.join(projectDir, '.planning', 'phases', '03-api');
+    const summaryPath = path.join(phaseDir, '03-01-SUMMARY.md');
+    const verificationPath = path.join(phaseDir, '03-VERIFICATION.md');
+    // Deterministic mtime ordering (never rely on write-order clock ties):
+    // verification strictly newer than the summary → a completed check finds
+    // nothing stale.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:01:00.000Z');
+    fs.utimesSync(summaryPath, older, older);
+    fs.utimesSync(verificationPath, newer, newer);
+    return { summaryPath, verificationPath };
+  }
+
+  test('an fs failure inside the staleness check sets phase_completion.verification_stale_check_indeterminate:true', (t) => {
+    const { summaryPath, verificationPath } = seedVerifiedPhase();
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const output = JSON.parse(captureInitVerifyWork(projectDir, '03'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: status still
+    // resolves to 'passed' exactly as it would without the injected fault.
+    assert.strictEqual(output.phase_completion.verification_status, 'passed');
+    assert.strictEqual(output.phase_completion.verification_stale_check_indeterminate, true);
+  });
+
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', () => {
+    seedVerifiedPhase();
+
+    const output = JSON.parse(captureInitVerifyWork(projectDir, '03'));
+
+    assert.strictEqual(output.phase_completion.verification_status, 'passed');
+    assert.strictEqual(output.phase_completion.verification_stale_check_indeterminate, false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // roadmap analyze command
 // ─────────────────────────────────────────────────────────────────────────────
 

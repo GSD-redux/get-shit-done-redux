@@ -1118,6 +1118,109 @@ describe('roadmap update-plan-progress command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdRoadmapUpdatePlanProgress surfaces an indeterminate staleness check
+//
+// readVerificationStatus's internal staleness check can fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3 wiring, that failure was
+// dropped here — `verificationPassed` used only `.status`, never
+// `.staleCheckIndeterminate` — so this command's JSON output could never
+// distinguish "checked; nothing is stale" from "could not check". These
+// tests require roadmap.cjs directly (in-process) so an `fs.statSync` fault
+// can be injected via the same deterministic path-scoped seam #3057 B4 uses
+// for git-base-branch.cts (see tests/git-base-branch.test.cjs).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: roadmap update-plan-progress — verification staleness-check indeterminate is surfaced', () => {
+  const roadmapMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'roadmap.cjs'));
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3057-b3-roadmap-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /** In-process capture of cmdRoadmapUpdatePlanProgress's stdout JSON, stderr discarded. */
+  function captureUpdatePlanProgress(cwd, phaseNum) {
+    const chunks = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    const origErrWrite = process.stderr.write.bind(process.stderr);
+    process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
+    process.stderr.write = () => true;
+    try {
+      roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false);
+    } finally {
+      process.stdout.write = origWrite;
+      process.stderr.write = origErrWrite;
+    }
+    return chunks.join('');
+  }
+
+  function seedVerifiedPhase() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 1: Test
+**Goal:** Test goal
+**Plans:** TBD
+
+## Progress
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Test | v1.0 | 0/1 | Planned | - |
+`
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan 1');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary 1');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n\n# Verification\n');
+
+    const summaryPath = path.join(p1, '01-01-SUMMARY.md');
+    const verificationPath = path.join(p1, '01-VERIFICATION.md');
+    // Deterministic mtime ordering — never rely on write-order clock ties.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:01:00.000Z');
+    fs.utimesSync(summaryPath, older, older);
+    fs.utimesSync(verificationPath, newer, newer);
+    return { summaryPath, verificationPath };
+  }
+
+  test('an fs failure inside the staleness check sets verification_stale_check_indeterminate:true; routing unchanged', (t) => {
+    const { summaryPath, verificationPath } = seedVerifiedPhase();
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const output = JSON.parse(captureUpdatePlanProgress(tmpDir, '1'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
+    // resolves complete, exactly as it would without the injected fault.
+    assert.strictEqual(output.complete, true, 'routing unchanged — phase still marked complete');
+    assert.strictEqual(output.verification_stale_check_indeterminate, true);
+  });
+
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', () => {
+    seedVerifiedPhase();
+
+    const output = JSON.parse(captureUpdatePlanProgress(tmpDir, '1'));
+
+    assert.strictEqual(output.complete, true);
+    assert.strictEqual(output.verification_stale_check_indeterminate, false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase add command
 // ─────────────────────────────────────────────────────────────────────────────
 
