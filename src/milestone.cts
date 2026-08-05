@@ -23,7 +23,7 @@ import type { WriteSet } from './write-set.cjs';
 import { updateTableCell } from './markdown-table.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
-const { output, error } = ioMod;
+const { output, error, getJsonErrorMode } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
@@ -557,10 +557,16 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         /* skip — stateVersion stays null, scan still runs */
       }
       if (stateVersion !== null && stateVersion !== version) {
-        process.stderr.write(
-          `[gsd-tools] WARNING: STATE.md milestone: "${stateVersion}" ≠ requested "${version}" — ` +
-            `running the unstarted-phase guard against the ROADMAP scoped for "${version}" anyway.\n`,
-        );
+        // #2946: emit a WARNING so the suspicious STATE mismatch is visible
+        // rather than silently disarming the guard. In --json-errors mode,
+        // emit a structured JSON object so a stderr line-by-line JSON parser
+        // is not broken by plain text (mirrors io.cts `error()` JSON shape).
+        const warnText = `STATE.md milestone: "${stateVersion}" ≠ requested "${version}" — running the unstarted-phase guard against the ROADMAP scoped for "${version}" anyway.`;
+        if (getJsonErrorMode()) {
+          process.stderr.write(JSON.stringify({ ok: true, level: 'warning', message: warnText }) + '\n');
+        } else {
+          process.stderr.write(`[gsd-tools] WARNING: ${warnText}\n`);
+        }
       }
 
       const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
