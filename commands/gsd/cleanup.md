@@ -5,6 +5,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+  - Grep
   - AskUserQuestion
 requires: [phase]
 ---

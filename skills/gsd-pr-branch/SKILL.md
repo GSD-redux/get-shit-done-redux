@@ -5,6 +5,7 @@ argument-hint: "[target branch, default: main]"
 allowed-tools:
   - Bash
   - Read
+  - Grep
   - AskUserQuestion
 ---
 

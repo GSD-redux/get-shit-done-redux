@@ -6,6 +6,7 @@ allowed-tools:
   - Read
   - Write
   - Bash
+  - Grep
 ---
 
 

@@ -5,6 +5,7 @@ effort: low
 allowed-tools:
   - Read
   - Bash
+  - Grep
 ---
 
 <objective>

@@ -741,7 +741,7 @@ describe('installRuntimeArtifacts (copilot integration)', () => {
     const skillContent = fs.readFileSync(path.join(skillsDir, 'gsd-health', 'SKILL.md'), 'utf8');
     // Frontmatter format checks
     assert.ok(skillContent.startsWith('---\nname: gsd-health\n'), 'starts with name: gsd-health');
-    assert.ok(skillContent.includes('allowed-tools: Read, Bash, Write, AskUserQuestion'),
+    assert.ok(skillContent.includes('allowed-tools: Read, Bash, Write, Grep, AskUserQuestion'),
       'allowed-tools is comma-separated');
     assert.ok(!skillContent.includes('allowed-tools:\n  -'), 'NOT YAML multiline format');
     // CONV-06/07 applied

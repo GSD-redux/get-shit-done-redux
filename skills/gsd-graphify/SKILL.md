@@ -5,6 +5,7 @@ argument-hint: "[build|query <term>|status|diff]"
 allowed-tools:
   - Read
   - Bash
+  - Grep
 ---
 
 

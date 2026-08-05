@@ -4,6 +4,7 @@ description: Manage parallel workstreams — list, create, switch, status, progr
 allowed-tools:
   - Read
   - Bash
+  - Grep
 requires: [new-milestone, phase, progress, resume-work]
 ---
 

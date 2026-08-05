@@ -5,6 +5,7 @@ allowed-tools:
   - Read
   - Bash
   - Write
+  - Grep
   - AskUserQuestion
   - SlashCommand
 ---
