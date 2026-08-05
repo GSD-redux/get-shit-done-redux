@@ -6322,17 +6322,40 @@ function mergeCodexConfig(configPath, gsdBlock) {
   const normalizedGsdBlock = mergedGsdBlock.replace(/\r?\n/g, eol);
   const markerIndex = existing.indexOf(GSD_CODEX_MARKER);
 
-  // Case 2: Has GSD marker — truncate and re-append
+  // Case 2: Has GSD marker — preserve user content on BOTH sides, regenerate the GSD block.
+  //
+  // #2940: the marker delimits where GSD's OWN block begins, NOT where every post-marker byte
+  // is GSD-owned. A fresh install writes the GSD block as the file's entire content, so any
+  // settings the user or Codex CLI later adds ([model], [mcp_servers.*], [profiles.*]) land
+  // AFTER the block. The previous truncate-to-marker logic discarded that trailing region on
+  // every update, destroying user config. The fix routes the trailing region through the
+  // existing AST-based `stripLeakedGsdCodexSections`, which removes GSD's own managed/leaked
+  // sections (the bare [agents] table GSD regenerates, legacy [agents.gsd-*], [[agents]])
+  // while preserving genuine user TOML — so #2406's de-dup still holds AND user content survives.
   if (markerIndex !== -1) {
     let before = existing.substring(0, markerIndex).trimEnd();
     if (before) {
       // Strip any GSD-managed sections that leaked above the marker from previous installs
       before = stripLeakedGsdCodexSections(before).trimEnd();
-
-      atomicWriteFileSync(configPath, before + eol + eol + normalizedGsdBlock + eol);
-    } else {
-      atomicWriteFileSync(configPath, normalizedGsdBlock + eol);
     }
+    // Capture and preserve genuine user content AFTER the GSD-managed region. The whole
+    // post-marker region is passed through stripLeakedGsdCodexSections: GSD's own previously-
+    // emitted [agents] table (regenerated above as normalizedGsdBlock) and any leaked sections
+    // are removed, while user tables ([model], [mcp_servers.*], [profiles.*]) are kept. The
+    // marker comment line itself (and the optional codex_hooks ownership line right under it)
+    // is GSD-owned and is stripped from the trailing region so it is not duplicated alongside
+    // the freshly regenerated block.
+    const rawAfter = existing.substring(markerIndex);
+    const markerStripped = rawAfter
+      .replace(GSD_CODEX_MARKER, '')
+      .replace(/^\r?\n# GSD codex_hooks ownership: (?:section|root_dotted)\r?\n/, '');
+    const afterUser = stripLeakedGsdCodexSections(markerStripped).trim();
+
+    const parts = [];
+    if (before) parts.push(before);
+    parts.push(normalizedGsdBlock);
+    if (afterUser) parts.push(afterUser);
+    atomicWriteFileSync(configPath, parts.join(eol + eol) + eol);
     return;
   }
 
