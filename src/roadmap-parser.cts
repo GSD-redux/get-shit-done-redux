@@ -183,6 +183,48 @@ function isBracketMilestoneBoundary(headingText: string, level: number, selected
 }
 
 /**
+ * #2761 B1 (round-3 fix, Blocker 1 case D): is the next STRICTLY DEEPER
+ * heading below `headings[index]` (skipping nothing — the first heading at
+ * or above `headings[index]`'s own level ends the search) bracket-shaped
+ * with the SAME id as `headings[index]`'s own?
+ *
+ * Used ONLY at the preambleCutoff scan below, to distinguish a genuine prior
+ * or later SIBLING MILESTONE — whose own children carry ITS bracket id
+ * (`## [GSD.01] Setup` / `### [GSD.01] 01: …`) — from an unrelated
+ * bracket-shaped PROSE heading sitting above the current milestone's own
+ * content (`## [ADR.612] Heading convention used by this roadmap`, followed
+ * by `### [GSD.02] 01: …` — a DIFFERENT id). `isBracketMilestoneBoundary`
+ * alone cannot make this distinction: `[ADR.612]` is bracket-shaped, not
+ * phase-tail-shaped, and not the SAME id as the selected milestone — so by
+ * that function's rules alone it reads as a genuine boundary, incorrectly
+ * cutting the preamble mid-way through the current milestone's own content.
+ *
+ * A candidate with NO deeper heading at all (childless — e.g. an empty prior
+ * milestone with no phases yet, or one immediately followed by a
+ * same-or-shallower sibling) degrades to `false` — NOT a boundary. This is
+ * deliberately the OVER-inclusive direction: the childless heading's own
+ * text stays in the preamble, contributing nothing to any phase count (no
+ * phase-shaped heading, no qualified key), so nothing is miscounted — merely
+ * some inert prose staying where it already was.
+ *
+ * `headings` is the SAME `currentMilestoneHeadings` token list the caller
+ * iterates; `index` is the candidate's own position in it.
+ */
+function bracketHeadingHasMatchingChild(headings: HeadingToken[], index: number): boolean {
+  const candidate = headings[index];
+  const ownMatch = BRACKET_HEADING_INTRO_RE.exec(candidate.text);
+  if (!ownMatch) return false;
+  const ownId = foldBracketId(ownMatch[1]);
+  for (let i = index + 1; i < headings.length; i++) {
+    const next = headings[i];
+    if (next.level <= candidate.level) return false;
+    const childMatch = BRACKET_HEADING_INTRO_RE.exec(next.text);
+    return !!childMatch && foldBracketId(childMatch[1]) === ownId;
+  }
+  return false;
+}
+
+/**
  * Extract the current milestone section from ROADMAP.md by positive lookup.
  *
  * @param content - ROADMAP.md content.
@@ -415,12 +457,40 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     // shape) — isBracketMilestoneBoundary is built to consume exactly that,
     // so no `^#{1,3}\s+` re-derivation is needed (that spelling would not
     // match `h.text` — it still carries the hashes in a raw regex match).
-    //
-    // Passes `null` for `selectedBracketId`, same as before this commit —
-    // see the comment on that parameter above; the same-milestone exclusion
-    // is a computeSectionEnd-only concept.
-    for (const h of currentMilestoneHeadings) {
-      if (!isBracketMilestoneBoundary(h.text, h.level, null)) continue;
+    for (let i = 0; i < currentMilestoneHeadings.length; i++) {
+      const h = currentMilestoneHeadings[i];
+      let isBoundary: boolean;
+      if (h.offset === sectionStart) {
+        // #2761 B1 (round-3 fix): the SELECTED heading's own occurrence is
+        // ALWAYS a correct earliest answer to "where does milestone content
+        // begin" — bypass BOTH the same-milestone check inside
+        // isBracketMilestoneBoundary (which would otherwise reject this
+        // heading against ITSELF, since `selectedBracketId` is its own id)
+        // and the same-id-child rule below (which would reject a genuinely
+        // childless CURRENT milestone, e.g. one with no phases populated
+        // yet). Without this, a same-milestone heading EARLIER than the
+        // selected one (a version-less checklist/overview split, or the
+        // version-bearing heading landing on the LATER half of such a
+        // split — Blocker 1 round-3 cases A/B) would incorrectly win via the
+        // OLD `null`-everywhere behaviour, or (with the same-milestone
+        // check alone reinstated) the selected heading would incorrectly
+        // reject itself and fall through to a stray, unrelated LATER
+        // heading.
+        isBoundary = true;
+      } else if (isBracketMilestoneBoundary(h.text, h.level, selectedBracketId)) {
+        // #2761 B1 (round-3 fix, Blocker 1 case D): bracket-shaped, not
+        // phase-tail-shaped, and not the SAME id as the selected milestone
+        // is not enough — an unrelated bracket-shaped PROSE heading
+        // (`## [ADR.612] Heading convention used by this roadmap`) reads as
+        // a genuine boundary by those rules alone. Require its own next
+        // DEEPER heading to carry ITS bracket id too — the property every
+        // genuine sibling MILESTONE has (its own phase children) and no
+        // unrelated prose heading does.
+        isBoundary = bracketHeadingHasMatchingChild(currentMilestoneHeadings, i);
+      } else {
+        isBoundary = false;
+      }
+      if (!isBoundary) continue;
       if (earliestMilestoneIndex === null || h.offset < earliestMilestoneIndex) {
         earliestMilestoneIndex = h.offset;
       }

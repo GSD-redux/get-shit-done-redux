@@ -1757,3 +1757,206 @@ describe('#612 PR-2 B3: bracket boundaries engage even when CURRENT is version-b
     assert.equal(readTotal(), 2);
   });
 });
+
+// ─── #2761 Blocker 1 (round-3 adversarial re-verify): the preambleCutoff ────
+// ─── scan drops current-milestone content whenever ANY bracket-shaped ──────
+// ─── heading precedes the selected milestone heading ────────────────────────
+//
+// The round-2 fix (39c42a89) threaded `selectedBracketId` as the REAL value
+// at computeSectionEnd but as bare `null` at the preambleCutoff scan — the
+// deviation's own rationale ("the selected heading's own occurrence is
+// always the correct earliest answer") was right, but `null` disables the
+// same-milestone check for EVERY heading, not just the selected one. Any
+// bracket-shaped heading earlier than the selected milestone — same id
+// (cases A, B) or a DIFFERENT id with no children of its own (case D) — was
+// wrongly accepted as the earliest boundary, and the region between it and
+// the real `sectionStart` was silently dropped: a completed phase vanished
+// and `state sync` persisted a confident 0% where base and round-1 both
+// correctly wrote 50%.
+//
+// Fixed with two changes, both scoped to the preambleCutoff scan only
+// (computeSectionEnd is untouched — it already threads the real
+// `selectedBracketId`):
+//   (a) `h.offset === sectionStart` bypasses BOTH the same-milestone check
+//       and the same-id-child rule below — the selected heading's own
+//       position is definitionally correct, and this is the one case where
+//       neither discriminator should even run (rejecting it would be
+//       rejecting the heading against ITSELF).
+//   (b) every OTHER bracket-shaped, non-phase-tail-shaped candidate must
+//       additionally have a matching-id CHILD (the next strictly-deeper
+//       heading beneath it) to count as a boundary — `bracketHeadingHasMatchingChild`.
+//       This is what distinguishes a genuine sibling milestone (whose own
+//       phase children carry ITS bracket id) from an unrelated bracket-shaped
+//       PROSE heading like `## [ADR.612] Heading convention used by this
+//       roadmap` sitting above the current milestone's own content.
+describe('#612 PR-2 Blocker 1 round-3: preambleCutoff identity is offset- and child-aware', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-b1r3-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const D = [['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+
+  function poisonTotalPhases() {
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+  }
+
+  test('RED case A (rv-attack1): a same-milestone version-LESS heading earlier than the version-bearing selected heading — 2/1/50, not 1/0/0', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] Foundation
+
+- [ ] **[GSD.02] 01: One**
+- [ ] **[GSD.02] 02: Two**
+
+### [GSD.02] 01: One
+**Goal:** a
+
+## [GSD.02] v2.0: Foundation (Phase Details)
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix — the earlier checklist heading dropped everything before sectionStart');
+    poisonTotalPhases();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 0 before this fix — a confidently wrong persisted 0%');
+  });
+
+  test('RED case B (rv-attack1): a same-milestone OVERVIEW heading (no "(Phase Details)" spelling) earlier than the version-bearing selected heading — 2/1/50, not 1/0/0', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] Foundation (overview)
+
+### [GSD.02] 01: One
+**Goal:** a
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix');
+    poisonTotalPhases();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 0 before this fix');
+  });
+
+  test('RED case D (rv-attack1b): a DIFFERENT-id bracket-shaped PROSE heading before the selected milestone — 2/1/50, not 1/0/0', () => {
+    writeProject(`# Roadmap
+
+## [ADR.612] Heading convention used by this roadmap
+
+Phases are listed under their milestone.
+
+### [GSD.02] 01: One
+**Goal:** a
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix — [ADR.612] read as a genuine boundary with no child-id check');
+    poisonTotalPhases();
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 0 before this fix');
+  });
+
+  test('PIN: a genuine prior sibling milestone (real children sharing its own id) is still excluded from the preamble', () => {
+    const dirs = ['GSD.01-01-old-one', 'GSD.02-01-one', 'GSD.02-02-two'];
+    writeProject(`# Roadmap
+
+## [GSD.01] Prior Milestone
+
+### [GSD.01] 01: Old one
+**Goal:** a
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+`, 'bracket', dirs.map((d, i) => [d, i !== 2]));
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(!!f('GSD.01-01-old-one'), false, 'the prior milestone must still be excluded — the child rule must not re-admit a genuine sibling');
+    assert.equal(readTotal(), 2);
+  });
+
+  test('PIN: a CHILDLESS prior sibling milestone (no phases of its own) degrades to NOT cutting the preamble — over-inclusive, safe', () => {
+    // "## [GSD.01] Empty Prior Milestone" has no deeper heading before the
+    // next heading at its own level — the child rule rejects it as a
+    // boundary, so its own heading TEXT stays in the preamble. That text is
+    // not phase-shaped (no digit-colon), so it contributes nothing to any
+    // count — over-inclusive, not under-inclusive, the safe direction.
+    writeProject(`# Roadmap
+
+## [GSD.01] Empty Prior Milestone
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D);
+    assert.equal(readTotal(), 2, 'the current milestone\'s own two phases must still be counted, unpolluted by the childless sibling');
+    poisonTotalPhases();
+    assert.equal(syncedPercent(), 50);
+  });
+
+  test('Nit 2 PIN: a colon-less bracket heading ("[GSD.02] 05" with no trailing colon) does not spuriously terminate the preamble', () => {
+    // A colon-less bracket heading is bracket-shaped but NOT phase-tail-shaped
+    // (BRACKET_PHASE_TAIL_RE requires the trailing colon), so
+    // isBracketMilestoneBoundary alone would read it as a boundary. It is
+    // also — precisely because it is malformed/incomplete rather than a real
+    // milestone — childless (nothing deeper follows it before the next
+    // same-or-shallower heading), so the child rule neutralizes it here.
+    writeProject(`# Roadmap
+
+### [GSD.02] 05
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', D);
+    assert.equal(readTotal(), 2);
+  });
+
+  test('mechanism (rv-mech1): extractCurrentMilestone now scopes the FULL document for case A, phaseCount reflects both real phases', () => {
+    const roadmap = `# Roadmap
+
+## [GSD.02] Foundation
+
+- [ ] **[GSD.02] 01: One**
+- [ ] **[GSD.02] 02: Two**
+
+### [GSD.02] 01: One
+**Goal:** a
+
+## [GSD.02] v2.0: Foundation (Phase Details)
+
+### [GSD.02] 02: Two
+**Goal:** b
+`;
+    writeProject(roadmap, 'bracket', D);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const scope = rp.extractCurrentMilestone(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      tmpDir,
+    );
+    assert.equal(scope, roadmap, 'pinned a truncated scope (bytes [11,124) dropped) before this fix');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(f.phaseCount, 2, 'pinned phaseCount 1 before this fix');
+    assert.equal(!!f('GSD.02-01-one'), true, 'pinned false before this fix — a real dir of the CURRENT milestone');
+    assert.equal(!!f('GSD.02-02-two'), true);
+  });
+});
