@@ -79,6 +79,12 @@ if [ "$ISOLATION" = "none" ] && [ "$USE_WORKTREES" != "false" ]; then
   echo "FATAL: runtime '$RUNTIME' declares no executor-isolation primitive (dispatch.isolation=none) — debug agents would run unisolated against the main checkout. Set workflow.use_worktrees=false." >&2
   exit 1
 fi
+# Re-record the FINAL value: both degrades above (project opt-out, orchestrator-worktree
+# fallback) happen in shell, where the resolver cannot see them, so the sentinel written
+# by the resolve call still asserts the naturally-resolved mode. The #3045 PreToolUse
+# isolation guard reads that sentinel at the instant of dispatch and denies (exit 2) when
+# it disagrees with the call. Idempotent, best-effort, never fails the diagnosis.
+gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null 2>&1 || true
 HARNESS_FLAG=""
 if [ "$ISOLATION" = "harness-worktree" ]; then
   HARNESS_FLAG=$(gsd_run query dispatch-isolation --json 2>/dev/null \
@@ -141,6 +147,10 @@ if [ "$ISOLATION" = "harness-worktree" ]; then
     USE_WORKTREES=false
   fi
 fi
+
+# Re-record after the base-check degrade, immediately before the spawn below, so the
+# #3045 sentinel matches the dispatch the guard is about to see (#3045).
+gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null 2>&1 || true
 ```
 
 **Spawn debug agents in parallel:**

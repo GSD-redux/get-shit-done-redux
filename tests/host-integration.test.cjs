@@ -2224,3 +2224,164 @@ describe('#2652 dispatch-site parity — isolation gates on capability, not runt
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #2728 review BLOCKER (B1/B2/B3) — a degrade must re-RECORD, not just reassign.
+//
+// Every isolation degrade in a dispatch site is decided in SHELL, where
+// `routeDispatchIsolation` cannot see it. That resolver persists whatever it
+// resolved to the run-scoped sentinel as an unconditional side effect (#3045
+// CORE REDESIGN, hooks/lib/isolation-sentinel.js), so a degrade that only
+// reassigns `$ISOLATION` leaves the sentinel asserting `harness-worktree`
+// while the dispatch correctly omits the harness flag. The shipped PreToolUse
+// guard reads the sentinel at the instant of the `Agent()` call and denies the
+// mismatch with exit 2 — the work does not run unisolated, it does not run.
+//
+// WHY THIS ASSERTS THE RECORDED VALUE, NOT `$ISOLATION`: asserting the local
+// variable is precisely what let this class through. `$ISOLATION` was already
+// correct at all three sites — `none` — and the defect was entirely in what
+// reached the sentinel. So these tests execute each workflow's own degrade
+// block under a `gsd_run` stub that captures every call, and assert on the
+// value the workflow PUSHED THROUGH THE WRITE PATH.
+// ---------------------------------------------------------------------------
+describe('#2728 B1 — isolation degrades re-record through the single write path', () => {
+  const { spawnSync } = require('node:child_process');
+  const os = require('node:os');
+
+  const WORKFLOWS = path.join(REPO_ROOT, 'gsd-core', 'workflows');
+
+  /** Pull the fenced ```bash block containing `marker` out of a workflow. */
+  function bashBlockContaining(file, marker) {
+    const text = fs.readFileSync(file, 'utf-8');
+    for (const m of text.matchAll(/```bash\n([\s\S]*?)```/g)) {
+      if (m[1].includes(marker)) return m[1];
+    }
+    assert.fail(`no \`\`\`bash block containing ${JSON.stringify(marker)} in ${file}`);
+  }
+
+  /**
+   * Run a degrade block with the base-check forced to fire, under a `gsd_run`
+   * stub that logs its argv. Returns every `dispatch-isolation` call the block
+   * made, in order — i.e. the writes that would have hit the sentinel.
+   */
+  function recordedWrites(block) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-degrade-'));
+    const log = path.join(dir, 'calls.log');
+    // The stub answers the base-check `true` so the degrade path is TAKEN;
+    // every other query returns empty. It logs the full argv of each call.
+    const harness = [
+      'set -u',
+      `gsd_run() { printf '%s\\n' "$*" >> ${JSON.stringify(log)};`,
+      '  case "$*" in',
+      '    *"worktree.base-check"*"shouldDegrade"*) printf true ;;',
+      '    *"worktree.base-check"*"message"*) printf "base diverged" ;;',
+      '    *) printf "" ;;',
+      '  esac; }',
+      'ISOLATION=harness-worktree',
+      'USE_WORKTREES=true',
+      'RUNTIME=claude',
+      'PHASE_NUMBER=7',
+      block,
+      // Prove the local variable was ALSO correct, so a failure below can only
+      // mean the recording is missing — not that the degrade itself misfired.
+      'printf "FINAL_LOCAL=%s\\n" "$ISOLATION"',
+    ].join('\n');
+
+    const res = spawnSync('bash', ['-c', harness], { encoding: 'utf-8' });
+    assert.equal(res.status, 0, `degrade block exited ${res.status}: ${res.stderr}`);
+    assert.match(res.stdout, /FINAL_LOCAL=none/, 'the degrade must set $ISOLATION=none locally');
+
+    const calls = fs.existsSync(log)
+      ? fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean)
+      : [];
+    fs.rmSync(dir, { recursive: true, force: true });
+    return calls.filter(c => c.includes('dispatch-isolation'));
+  }
+
+  /** The isolation mode the last write pushed, or null if nothing was written. */
+  function recordedIsolation(block) {
+    const writes = recordedWrites(block);
+    if (writes.length === 0) return null;
+    const last = writes[writes.length - 1];
+    const m = last.match(/--force-isolation\s+(\S+)/);
+    return m ? m[1] : null;
+  }
+
+  const DEGRADE_SITES = [
+    {
+      label: 'quick.md #1941 base-check degrade',
+      file: path.join(WORKFLOWS, 'quick.md'),
+      marker: '_QUICK_SHOULD_DEGRADE',
+    },
+    {
+      label: 'diagnose-issues.md #2649 base-check degrade',
+      file: path.join(WORKFLOWS, 'diagnose-issues.md'),
+      marker: '_DIAG_SHOULD_DEGRADE',
+    },
+  ];
+
+  for (const site of DEGRADE_SITES) {
+    test(`${site.label} records none, not just the local variable`, () => {
+      const block = bashBlockContaining(site.file, site.marker);
+      assert.equal(
+        recordedIsolation(block),
+        'none',
+        `${site.label}: $ISOLATION degraded to none but the block never pushed that ` +
+          'through `query dispatch-isolation --force-isolation`. The sentinel still ' +
+          'asserts harness-worktree, so the #3045 PreToolUse guard denies the dispatch ' +
+          'with exit 2. Re-record immediately after the degrade.',
+      );
+    });
+  }
+
+  test('the harness detects a degrade that only reassigns (fail-first proof)', () => {
+    // Strip the re-record from the shipped block. If the assertion above can
+    // still pass against this, it is not testing what it claims to test.
+    const block = bashBlockContaining(
+      path.join(WORKFLOWS, 'quick.md'), '_QUICK_SHOULD_DEGRADE',
+    );
+    const preFix = block
+      .split('\n')
+      .filter(l => !l.includes('--force-isolation'))
+      .join('\n');
+
+    assert.notEqual(preFix, block, 'the shipped block must contain a --force-isolation re-record');
+    assert.equal(
+      recordedIsolation(preFix),
+      null,
+      'the pre-fix shape must record NOTHING — otherwise these tests prove nothing. ' +
+        'Note $ISOLATION is `none` in BOTH shapes: that is exactly why asserting the ' +
+        'local variable would have passed on the defect.',
+    );
+  });
+
+  test('every dispatch-site degrade block re-records before the block ends', () => {
+    // Coverage guard: a NEW degrade site added later cannot silently skip the
+    // re-record. Scans the shipped shell rather than a hand-listed set.
+    const offenders = [];
+    const scan = [
+      path.join(WORKFLOWS, 'quick.md'),
+      path.join(WORKFLOWS, 'diagnose-issues.md'),
+      path.join(REPO_ROOT, 'gsd-core', 'references', 'dispatch-isolation-gate.md'),
+    ];
+    for (const file of scan) {
+      const text = fs.readFileSync(file, 'utf-8');
+      const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
+      for (const m of text.matchAll(/```bash\n([\s\S]*?)```/g)) {
+        const block = m[1];
+        if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;
+        if (!block.includes('--force-isolation')) {
+          const line = text.slice(0, m.index).split('\n').length;
+          offenders.push(`${rel}:${line}`);
+        }
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'these shell blocks degrade $ISOLATION to none without re-recording it through ' +
+        '`query dispatch-isolation --force-isolation` — the #3045 guard will deny the ' +
+        'resulting dispatch:\n' + offenders.join('\n'),
+    );
+  });
+});

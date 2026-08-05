@@ -390,6 +390,21 @@ if [ "$ISOLATION" = "harness-worktree" ] && [ "${USE_WORKTREES:-true}" != "false
     ISOLATION=none
   fi
 fi
+
+# Re-resolve (and, as a side effect, re-persist) now that the base-check
+# auto-degrade above may have changed $ISOLATION since the Step 2 gate's
+# `dispatch-isolation` call (#3045). That first call recorded the NATURALLY
+# resolved mode into the run-scoped sentinel the isolation guard hooks read
+# (hooks/gsd-agent-isolation-guard.js, hooks/gsd-cursor-subagent-start.js via
+# hooks/lib/isolation-sentinel.js). The degrade above is decided HERE, in
+# shell — the resolver cannot see it — so without this the sentinel still
+# asserts `harness-worktree` while the dispatch below correctly omits the
+# harness flag, and the guard denies the dispatch with exit 2. `--force-isolation`
+# pushes the FINAL, shell-computed value through that SAME single write path
+# (`none` also clears the stored harnessFlag, since none applies to sequential
+# dispatch). Best-effort: a write failure here must never fail the task — the
+# guards' own sentinel-absent fallback is safe, just less precise.
+gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null 2>&1 || true
 ```
 
 Capture current HEAD before spawning (used for worktree branch check):
