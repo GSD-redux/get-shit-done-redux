@@ -64,8 +64,9 @@ Adopt a **dynamic context management platform** built on a hybrid of build-time 
    `bin/install.js` imports it rather than re-declaring its own regex. This is the direct answer to
    the "Dual-surface drift … requires parity assertions" risk this ADR records below: the two
    channels cannot disagree about *what* gets composed, because there is only one predicate, and
-   `tests/mcp-catalog-parity.test.cjs` asserts served text equals the installer's composition-stage
-   text over the real tree, with executable anti-vacuity guards (the comparison set must contain a
+   `tests/mcp-catalog-parity.install.test.cjs` spawns a REAL `bin/install.js` and asserts its
+   composition decision (marker-token presence, which survives every per-runtime rewrite) matches
+   the catalog's, with executable anti-vacuity guards (the comparison set must contain a
    marker-bearing workflow AND a non-composed file, and the gate must fail if the predicate stops
    discriminating).
 
@@ -345,8 +346,8 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
   mitigation shipped with it rather than being promised alongside it. The composition-scope
   predicate is shared (`shouldCompose`, one definition, consumed by both `bin/install.js` and the
   catalog) instead of duplicated, so the two surfaces cannot independently drift on what gets
-  composed; `tests/mcp-catalog-parity.test.cjs` then asserts served text equals the installer's
-  composition-stage text across the real content tree. The gate carries two executable anti-vacuity
+  composed; `tests/mcp-catalog-parity.install.test.cjs` spawns a real installer and asserts its
+  composition decision matches the catalog's across the real content tree. The gate carries two executable anti-vacuity
   guards — the comparison set must include a workflow that actually carries markers and a file the
   predicate declines to compose — so it cannot pass by comparing nothing, which is the failure mode
   a parity assertion is most prone to.
