@@ -1145,10 +1145,11 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     const cp = require('node:child_process');
     const fsx = require('node:fs');
     const os = require('node:os');
-    const { REVIEWER_LANES } = require('./lib/review-lane-descriptor.cjs');
+    const { REVIEWER_LANES, mergeReviewerLanes } = require('./lib/review-lane-descriptor.cjs');
     const { resolveLanePlan } = require('./lib/review-lane-invocation.cjs');
     const runner = require('./lib/review-lane-runner.cjs');
     const cfgLoader = require('./lib/config-loader.cjs');
+    const capabilityLoader = require('./lib/capability-loader.cjs');
 
     const flag = (name) => {
       const i = args.indexOf(name);
@@ -1176,8 +1177,30 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
 
     const selected = (flag('--selected') || '')
       .split(',').map((s) => s.trim()).filter(Boolean);
-    const laneBySlug = new Map(REVIEWER_LANES.map((l) => [l.slug, l]));
-    const chosen = selected.length ? selected : REVIEWER_LANES.map((l) => l.slug);
+    // ADR-2782 D8 (#2927): the lane map is first-party ∪ INSTALLED overlay
+    // `reviewer` bodies, first-party winning on slug collision. Before this merge
+    // the map was built from the frozen REVIEWER_LANES array alone, so an installed,
+    // consented third-party reviewer lane was roster-visible (deriveReviewerSlugs)
+    // and disclosed at install (collectReviewerLaneSurfaces) but never selectable,
+    // plannable, or invocable — `sections`/`flags`/`plan`/`invoke` all consumed this
+    // one map. The overlay body is field-identical to a ReviewerLane (ADR-2782 D1,
+    // "no translation layer"), so `mergeReviewerLanes` is a pure merge, not a
+    // projection. loadRegistry is TOTAL and never throws on a malformed overlay
+    // (it skips the cap with a warning), and mergeReviewerLanes is total in turn,
+    // so a bad third-party manifest cannot take the first-party lanes down with it.
+    // `includeInstalled` is what merges project + global overlay caps into the
+    // registry; without it the base is first-party-only and this is a no-op.
+    let mergedLanes = REVIEWER_LANES;
+    try {
+      const registry = capabilityLoader.loadRegistry({ includeInstalled: true, cwd });
+      mergedLanes = mergeReviewerLanes(REVIEWER_LANES, registry);
+    } catch {
+      // A registry load failure must never block first-party review. Degrade to the
+      // static set — identical to pre-fix behavior — rather than crashing review-lane.
+      mergedLanes = REVIEWER_LANES;
+    }
+    const laneBySlug = new Map(mergedLanes.map((l) => [l.slug, l]));
+    const chosen = selected.length ? selected : mergedLanes.map((l) => l.slug);
 
     if (sub === 'sections') {
       const rows = chosen
@@ -3355,6 +3378,37 @@ function skipsRootResolution(command) {
   return SKIP_ROOT_RESOLUTION.has(command);
 }
 
+/**
+ * Resolve the worktree root for a given cwd, warning to stderr when git
+ * could not determine it (reason 'git_timed_out') rather than silently
+ * trusting a best-effort fallback (#3050). Extracted from main() so it can
+ * be driven directly in tests via injected deps.
+ *
+ * @param {string} cwd
+ * @param {{ existsSync?: (p: string) => boolean, resolveWorktreeRoot?: (cwd: string) => { root: string, reason: string }, writeWarning?: (msg: string) => void }} [deps]
+ * @returns {string} resolved cwd
+ */
+function resolveMainWorktreeCwd(cwd, deps = {}) {
+  const existsSync = deps.existsSync || fs.existsSync;
+  const resolveWorktreeRoot = deps.resolveWorktreeRoot || require('./lib/worktree-safety.cjs').resolveWorktreeRoot;
+  const writeWarning = deps.writeWarning || ((msg) => process.stderr.write(msg));
+
+  if (existsSync(path.join(cwd, '.planning'))) {
+    return cwd;
+  }
+  const { root: worktreeRoot, reason: worktreeRootReason } = resolveWorktreeRoot(cwd);
+  if (worktreeRootReason === 'git_timed_out') {
+    writeWarning(
+      'WARNING: could not determine the git worktree root (git timed out). ' +
+      'Planning artifacts (STATE.md, ROADMAP.md, etc.) may be written to the ' +
+      `wrong tree — proceeding with "${worktreeRoot}" as a best-effort fallback. ` +
+      'Retry the command; if this persists, check for a stalled filesystem mount ' +
+      'or a stale git index lock (.git/index.lock) in this worktree.\n'
+    );
+  }
+  return worktreeRoot;
+}
+
 async function main() {
   let args = process.argv.slice(2);
 
@@ -3412,13 +3466,7 @@ async function main() {
   // Resolve worktree root: in a linked worktree, .planning/ lives in the main worktree.
   // However, in monorepo worktrees where the subdirectory itself owns .planning/,
   // skip worktree resolution — the CWD is already the correct project root.
-  const { resolveWorktreeRoot } = require('./lib/worktree-safety.cjs');
-  if (!fs.existsSync(path.join(cwd, '.planning'))) {
-    const worktreeRoot = resolveWorktreeRoot(cwd);
-    if (worktreeRoot !== cwd) {
-      cwd = worktreeRoot;
-    }
-  }
+  cwd = resolveMainWorktreeCwd(cwd);
 
   // Optional workstream override for parallel milestone work.
   // Priority: --ws flag > GSD_WORKSTREAM env var > session/shared pointer > null.
@@ -3678,5 +3726,6 @@ module.exports = {
   HOST_COMMAND_ROUTERS,
   TOP_LEVEL_USAGE,
   skipsRootResolution,
+  resolveMainWorktreeCwd,
 };
 

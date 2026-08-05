@@ -8,7 +8,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit, platformWriteSync, platformReadSync, platformEnsureDir } from './shell-command-projection.cjs';
+import { execGit, platformWriteSync, platformReadSync, platformEnsureDir, isSpawnTimeout } from './shell-command-projection.cjs';
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import ioMod = require('./io.cjs');
@@ -923,11 +923,10 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       // exit is a real I/O failure, not a missing file.
       const rmResult = execGit(['rm', '--cached', '--ignore-unmatch', file], { cwd });
       if (rmResult.exitCode !== 0) {
-        const rmErr: NodeJS.ErrnoException | null = rmResult.error;
         stagingFailures.push({
           file,
           error: rmResult.stderr || rmResult.stdout,
-          timed_out: rmResult.signal === 'SIGTERM' && rmErr?.code === 'ETIMEDOUT',
+          timed_out: isSpawnTimeout(rmResult),
         });
       }
     } else {
@@ -938,17 +937,13 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
       if (addResult.exitCode === 0) {
         stagedPaths.push(file);
       } else {
-        // `SpawnResultOutput.error` is typed `Error | null`; widen to the errno
-        // shape by ANNOTATION rather than assertion — `Error` is assignable to
-        // `NodeJS.ErrnoException` (its extra fields are optional), so an `as`
-        // cast here trips no-unnecessary-type-assertion.
-        const addErr: NodeJS.ErrnoException | null = addResult.error;
         stagingFailures.push({
           file,
           error: addResult.stderr || addResult.stdout,
-          // The projection exposes a timeout distinctly (#2608 AC5); this is the
-          // same SIGTERM+ETIMEDOUT idiom worktree-safety.cts uses.
-          timed_out: addResult.signal === 'SIGTERM' && addErr?.code === 'ETIMEDOUT',
+          // The projection exposes a timeout distinctly (#2608 AC5); this uses
+          // the shared isSpawnTimeout predicate (shell-command-projection.cts)
+          // also used by worktree-safety.cts and worktree-base-ref.cts (#3050).
+          timed_out: isSpawnTimeout(addResult),
         });
       }
     }
@@ -1127,11 +1122,10 @@ function cmdCommitToSubrepo(cwd: string, message: string | undefined, files: str
       if (addResult.exitCode === 0) {
         stagedRelPaths.push(relativePath);
       } else {
-        const addErr: NodeJS.ErrnoException | null = addResult.error;
         subStagingFailures.push({
           file,
           error: addResult.stderr || addResult.stdout,
-          timed_out: addResult.signal === 'SIGTERM' && addErr?.code === 'ETIMEDOUT',
+          timed_out: isSpawnTimeout(addResult),
         });
       }
     }

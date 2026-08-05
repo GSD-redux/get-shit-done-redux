@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit as execGitSeam, posixNormalize } from './shell-command-projection.cjs';
+import { execGit as execGitSeam, posixNormalize, isSpawnTimeout } from './shell-command-projection.cjs';
 
 // Default timeout for worktree-related git subprocess calls.
 // 10 s is generous enough for normal git operations on large repos while still
@@ -38,11 +38,13 @@ type ExecGitFn = (args: string[], opts?: { cwd?: string; timeout?: number }) => 
  * (args, opts) shape — see worktree-safety-policy.test.cjs.
  *
  * Return shape: { exitCode, stdout, stderr, timedOut, error, signal }
- *   - timedOut: true when spawnSync reports SIGTERM + ETIMEDOUT
+ *   - timedOut: derived via the shared `isSpawnTimeout` predicate
+ *     (shell-command-projection.cts) — true when spawnSync's `error.code`
+ *     is `ETIMEDOUT`; does not require `signal === 'SIGTERM'` (#3050).
  */
 function execGitDefault(args: string[], opts: { cwd?: string; timeout?: number } = {}): GitResult {
   const result = execGitSeam(args, { ...opts, timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS });
-  const timedOut = result.signal === 'SIGTERM' && (result.error as NodeJS.ErrnoException)?.code === 'ETIMEDOUT';
+  const timedOut = isSpawnTimeout(result);
   return { ...result, timedOut };
 }
 
@@ -163,6 +165,19 @@ function resolveWorktreeContext(cwd: string, deps: WorktreeDeps = {}): WorktreeC
 
   const gitDir = execGit(['rev-parse', '--git-dir'], { cwd });
   const commonDir = execGit(['rev-parse', '--git-common-dir'], { cwd });
+  // A TIMEOUT means the command never completed — it is not evidence of "not a
+  // git repository" (which completes fast, with a clean non-zero exit). Surface
+  // it under a distinct reason so callers can tell "genuinely not a repo" apart
+  // from "could not determine" (#3050). effectiveRoot still degrades to cwd
+  // (there is no safer default without a resolved git-dir), but the reason is
+  // no longer indistinguishable from the benign case.
+  if (gitDir.timedOut || commonDir.timedOut) {
+    return {
+      effectiveRoot: cwd,
+      mode: 'current_directory',
+      reason: 'git_timed_out',
+    };
+  }
   if (gitDir.exitCode !== 0 || commonDir.exitCode !== 0) {
     return {
       effectiveRoot: cwd,
@@ -1341,7 +1356,7 @@ interface WorktreeCreateCmdResult {
  * validated manifest entry so the worktree is immediately manageable by
  * `worktree cleanup-wave` / `worktree reap-orphans`.
  *
- * Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha>
+ * Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir>
  *
  * #2584 FIX 1 — ORDERING CONTRACT: every manifest read/parse/shape-validate/
  * plan step runs BEFORE the git side effect (step 5). The ONLY manifest
@@ -1362,7 +1377,7 @@ function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCm
 
   const manifestPath = flag('--manifest');
   if (!manifestPath) {
-    writeErr('Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> [--root <dir>]\n');
+    writeErr('Usage: worktree create --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir>\n');
     process.exitCode = 2;
     return { ok: false, reason: 'usage' };
   }
@@ -1435,25 +1450,38 @@ function cmdWorktreeCreate(cwd: string, args: string[] = [], deps: RecordAgentCm
     return { ok: false, reason: plan.reason, hint: plan.hint };
   }
 
-  // 3b. Optional root confinement (#2627, Phase 3 — the confinement Phase 2
-  //     deferred here from planWorktreeCreate's path-traversal guard).
-  //     planWorktreeCreate rejects a literal ".." SEGMENT, but a plain absolute
-  //     path outside the project contains no ".." and passes. Phase 3 makes the
-  //     orchestrator SPAWN executor processes into these paths, so an
-  //     unconfined --path is a write primitive aimed anywhere on the filesystem.
+  // 3b. Mandatory root confinement (#2627 Phase 3 introduced it; #3050 made it
+  //     mandatory — the confinement Phase 2 deferred here from
+  //     planWorktreeCreate's path-traversal guard). planWorktreeCreate rejects a
+  //     literal ".." SEGMENT, but a plain absolute path outside the project
+  //     contains no ".." and passes. The orchestrator SPAWNS executor processes
+  //     into these paths, so an unconfined --path is a write primitive aimed
+  //     anywhere on the filesystem.
   //
   //     The root is DECLARED by the caller (`--root`) rather than inferred: agent
   //     worktrees legitimately live outside the orchestrator's own root (a lane
   //     orchestrator creates siblings under the repo's .claude/worktrees/), so
-  //     there is no layout this module could derive without guessing. Absent
-  //     `--root` the behavior is exactly as shipped in Phase 2 — the
-  //     orchestrator-worktree scheduler path always passes it.
+  //     there is no layout this module could derive without guessing.
   //
   //     Lexical by design: the worktree does not exist yet, so there is nothing
   //     to realpath, and resolving only the root would not close a symlinked-leaf
   //     hole. Pairs with the leading-dash and ".."-segment guards above.
+  //
+  //     #3050: confinement does not depend on the caller remembering to pass
+  //     `--root` — it used to be silently skippable, so a caller that forgot the
+  //     flag got an unconfined `--path` with no warning. Fail closed instead:
+  //     absent `--root`, this verb refuses to create anything. The one current
+  //     caller (execute-phase's orchestrator-worktree dispatch) always passes
+  //     `--root`, so this closes the gap without breaking it.
   const rootFlag = flag('--root');
-  if (rootFlag) {
+  if (!rootFlag) {
+    const hint = '--root is required (fail-closed root confinement, #3050). Pass --root <orchestrator-root-dir> so worktree.create can verify --path resolves inside it before creating anything.';
+    writeErr(`[gsd] worktree.create: root_required — ${hint}\n`);
+    write(`${JSON.stringify({ ok: false, reason: 'root_required', hint }, null, 2)}\n`);
+    process.exitCode = 1;
+    return { ok: false, reason: 'root_required', hint };
+  }
+  {
     const absRoot = path.resolve(cwd, rootFlag);
     const absWorktree = path.resolve(cwd, plan.entry.worktree_path);
     const rel = path.relative(absRoot, absWorktree);
@@ -1774,15 +1802,22 @@ void parseWorktreeListPaths;
 // ─── Moved from core.cjs (ADR-857 T0 #1268 rehome-core-squatters) ─────────────
 
 /**
- * Resolve the main worktree root when running inside a git worktree.
- * In a linked worktree, .planning/ lives in the main worktree, not in the linked one.
- * Returns the main worktree path, or cwd if not in a worktree.
+ * Resolve the main worktree root when running inside a git worktree, along
+ * with the `reason` that produced it (#3050). Callers MUST inspect `reason`
+ * before trusting `root` unconditionally — a `reason` of `git_timed_out`
+ * means the git subprocess used to distinguish "linked worktree" from
+ * "not a repo" never completed, so `root` is a best-effort fallback (cwd),
+ * not a confirmed worktree root. Degrading to cwd rather than throwing is
+ * intentional (return degraded result on timeout; do not throw) — but the
+ * reason must still reach the caller so it can surface the risk instead of
+ * silently trusting the wrong root.
  */
-function resolveWorktreeRoot(cwd: string): string {
+function resolveWorktreeRoot(cwd: string, deps: WorktreeDeps = {}): { root: string; reason: string } {
   const context = resolveWorktreeContext(cwd, {
-    existsSync: fs.existsSync,
+    existsSync: deps.existsSync || fs.existsSync,
+    execGit: deps.execGit,
   });
-  return context.effectiveRoot;
+  return { root: context.effectiveRoot, reason: context.reason };
 }
 
 /**

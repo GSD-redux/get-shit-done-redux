@@ -72,11 +72,14 @@ test('synchronous dispatch force-flattens; the retracted axes would not have', (
   // capability must serialize rather than be trusted.
   assert.equal(shouldFlattenDispatch(OC_AXES.dispatch), true,
     'with background:false, GSD must force-flatten opencode dispatch (fail closed)');
-  // Pin the retracted contract so a silent re-flip is caught: had the #2087
-  // values been accurate, dispatch would NOT have been flattened.
+  // #2939: pin the retracted contract so a silent re-flip is caught. Under the depth-aware
+  // rule, flipping ONLY the two background booleans is no longer sufficient to background —
+  // opencode's axes lack nested:true + subagentToolkit:"full" + a depth budget > 1, so even
+  // the #2087 background values still flatten. A future accurate declaration would need to
+  // establish the full nesting capability, not just the background booleans.
   const retracted = { ...OC_AXES.dispatch, background: true, backgroundDispatch: true };
-  assert.equal(shouldFlattenDispatch(retracted), false,
-    'the #2087 axes did not flatten — that is exactly the overstatement #2598 retracts');
+  assert.equal(shouldFlattenDispatch(retracted), true,
+    '#2939: the #2087 background-only values still flatten — opencode lacks nested + full toolkit + depth budget');
 });
 
 test('opencode extension-event surface includes the #2087 additions (permission + session.error)', () => {
