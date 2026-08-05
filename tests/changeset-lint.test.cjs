@@ -8,7 +8,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const cp = require('node:child_process');
 
-const { evaluateLint, LINT_REASON } = require(path.join(__dirname, '..', 'scripts', 'changeset', 'lint.cjs'));
+const { evaluateLint, LINT_REASON, DEFAULT_BASE: CHANGESET_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'changeset', 'lint.cjs'));
+const { DEFAULT_BASE: DOCS_DEFAULT_BASE } = require(path.join(__dirname, '..', 'scripts', 'lint-docs-required.cjs'));
 
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'changeset', 'lint.cjs');
@@ -295,5 +296,21 @@ describe('changeset lint: main() end-to-end wiring (#1006)', () => {
     const failures = report.failures ?? [];
     const deletedEntry = failures.find((f) => f.file.endsWith('.changeset/old.md'));
     assert.ok(!deletedEntry, `deleted fragment must not appear in failures, got: ${JSON.stringify(failures)}`);
+  });
+});
+
+// ─── #2988: local base fallback parity ──────────────────────────────────────
+
+describe('#2988: changeset + docs lints resolve the same local base fallback', () => {
+  test('both lints default to `next` (the integration branch), not `main`', () => {
+    assert.strictEqual(CHANGESET_DEFAULT_BASE, 'next',
+      `changeset lint DEFAULT_BASE must be 'next', got '${CHANGESET_DEFAULT_BASE}'`);
+    assert.strictEqual(DOCS_DEFAULT_BASE, 'next',
+      `docs lint DEFAULT_BASE must be 'next', got '${DOCS_DEFAULT_BASE}'`);
+  });
+
+  test('both lints resolve the same base given the same environment (parity)', () => {
+    assert.strictEqual(CHANGESET_DEFAULT_BASE, DOCS_DEFAULT_BASE,
+      `the two lints must not diverge on base resolution: changeset='${CHANGESET_DEFAULT_BASE}' docs='${DOCS_DEFAULT_BASE}'`);
   });
 });

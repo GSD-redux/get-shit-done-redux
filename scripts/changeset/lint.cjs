@@ -12,6 +12,10 @@
  * Tests assert on the typed verdict, never on free text.
  */
 
+// #2988: the repo's integration/default branch — the base every PR targets.
+// Used as the local fallback when GITHUB_BASE_REF is unset (CI sets it).
+const DEFAULT_BASE = 'next';
+
 const LINT_REASON = Object.freeze({
   OK_FRAGMENT_PRESENT: 'ok_fragment_present',
   OK_OPT_OUT_LABEL: 'ok_opt_out_label',
@@ -80,7 +84,10 @@ function main() {
       labels = (event.pull_request?.labels || []).map((l) => l.name);
     } catch { /* fall through */ }
   }
-  const base = process.env.GITHUB_BASE_REF || 'main';
+  // #2988: local fallback must match the repo's integration branch (`next`),
+  // not the release branch (`main`). CI sets GITHUB_BASE_REF explicitly; the
+  // fallback only fires locally, where `next` is the base every PR targets.
+  const base = process.env.GITHUB_BASE_REF || DEFAULT_BASE;
   let changedFiles = [];
   try {
     // Use execFileSync with an argv array — the base ref is interpolated
@@ -145,4 +152,4 @@ function main() {
 
 if (require.main === module) runMain(main);
 
-module.exports = { evaluateLint, LINT_REASON, OPT_OUT_LABEL, isUserFacing, isFragment };
+module.exports = { evaluateLint, LINT_REASON, OPT_OUT_LABEL, isUserFacing, isFragment, DEFAULT_BASE };
