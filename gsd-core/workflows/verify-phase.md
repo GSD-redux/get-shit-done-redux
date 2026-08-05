@@ -57,9 +57,7 @@ Extract **phase goal** from ROADMAP.md (the outcome to verify, not tasks), **req
 Use `gsd-tools.cjs query` verify handlers (or legacy gsd-tools) to extract must_haves from each PLAN:
 
 ```bash
-# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
 shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
-
 for plan in "$PHASE_DIR"/*-PLAN.md; do
   MUST_HAVES=$(gsd_run query frontmatter.get "$plan" --field must_haves)
   echo "=== $plan ===" && echo "$MUST_HAVES"
@@ -129,9 +127,7 @@ For each truth: identify supporting artifacts → check artifact status → chec
 Use `gsd-tools.cjs query verify.artifacts` (or legacy gsd-tools) for artifact verification against must_haves in each PLAN:
 
 ```bash
-# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
 shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
-
 for plan in "$PHASE_DIR"/*-PLAN.md; do
   ARTIFACT_RESULT=$(gsd_run query verify.artifacts "$plan")
   echo "=== $plan ===" && echo "$ARTIFACT_RESULT"
@@ -175,9 +171,7 @@ wiring or leftover code from plan revisions.
 Use `gsd-tools.cjs query verify.key-links` (or legacy gsd-tools) for key link verification against must_haves in each PLAN:
 
 ```bash
-# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
 shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
-
 for plan in "$PHASE_DIR"/*-PLAN.md; do
   LINKS_RESULT=$(gsd_run query verify.key-links "$plan")
   echo "=== $plan ===" && echo "$LINKS_RESULT"
@@ -234,18 +228,9 @@ phase.
 no `<decisions>` block.
 
 ```bash
-# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
-shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
-
 GATE_CFG=$(gsd_run query config-get workflow.context_coverage_gate 2>/dev/null || echo "true")
 if [ "$GATE_CFG" != "false" ]; then
-  # Discover the phase CONTEXT.md via glob expansion rather than `ls | head`
-  # (review F17 / ShellCheck SC2012). Globs preserve filenames containing
-  # spaces and avoid an extra subprocess.
-  CONTEXT_PATH=""
-  for f in "${PHASE_DIR}"/*-CONTEXT.md; do
-    [ -e "$f" ] && CONTEXT_PATH="$f" && break
-  done
+  CONTEXT_PATH=$(ls "${PHASE_DIR}"/*-CONTEXT.md 2>/dev/null | head -1)  # #2962: not a for-glob (zsh aborts)
   DECISION_RESULT=$(gsd_run query check.decision-coverage-verify "${PHASE_DIR}" "${CONTEXT_PATH}")
 fi
 ```

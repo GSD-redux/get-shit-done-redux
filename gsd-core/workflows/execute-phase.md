@@ -1486,15 +1486,13 @@ Copy failure must NOT block phase completion.
 After `update_roadmap`, moves todos whose `resolves_phase` matches to `completed/`.
 
 ```bash
-# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
 shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
-
 PHASE_NUM="${PHASE_NUMBER}"
 PENDING_DIR=".planning/todos/pending"
 COMPLETED_DIR=".planning/todos/completed"
 mkdir -p "$COMPLETED_DIR"
 
-# "05"=="5" (#2576).
+#2576
 normalize_phase_num() {
   local p="${1//\"/}"; printf '%s' "$p" | sed 's/^0*\([0-9]\)/\1/'
 }
@@ -1503,7 +1501,6 @@ PHASE_NUM_NORM=$(normalize_phase_num "$PHASE_NUM")
 CLOSED=()
 for TODO_FILE in "$PENDING_DIR"/*.md; do
   [ -f "$TODO_FILE" ] || continue
-  # resolves_phase from first frontmatter block
   RP=$(awk '/^---/{c++;next} c==1 && /^resolves_phase:/{print $2;exit} c==2{exit}' "$TODO_FILE" 2>/dev/null || true)
   RP_NORM=$(normalize_phase_num "$RP")
   if [ -n "$RP_NORM" ] && [ "$RP_NORM" = "$PHASE_NUM_NORM" ]; then

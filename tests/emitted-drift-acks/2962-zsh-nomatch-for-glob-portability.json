@@ -1,9 +1,8 @@
 {
   "version": 1,
   "paths": {
-    "verify-phase.md": "#2962: 4 bash blocks containing for-glob loops (lines ~60, ~129, ~172, ~234) gained a portable nullglob shim (shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null) so zsh no longer aborts the whole block on an unmatched for-list glob. The line-234 block is the decision-coverage gate whose optional *-CONTEXT.md lookup used the unsafe for-list form — under zsh the DECISION_RESULT= assignment never ran, silently skipping the gate for every phase lacking a CONTEXT.md (the normal case).",
-    "review.md": "#2962: 2 bash blocks (lines ~244 PLAN_FILE iteration, ~327 RUN_DIR plan-file args) gained the nullglob shim for zsh portability of the for-glob loops.",
-    "execute-phase.md": "#2962: 1 bash block (line ~1488 pending-todo iteration) gained the nullglob shim for zsh portability of the for-glob loop.",
+    "gsd-integration-checker.md": "#2962: 1 bash block (line ~98 SUMMARY iteration) gained the nullglob shim for zsh portability of the for-glob loop.",
+    "gsd-plan-checker.md": "#2962: 3 bash blocks (lines ~716, ~737, ~822) gained the nullglob shim for zsh portability of the for-glob loops.",
     "resume-project.md": "#2962: 1 bash block (line ~66 plans-without-summaries scan) gained the nullglob shim for zsh portability of the for-glob loop.",
     "complete-milestone.md": "#2962: 1 bash block (line ~221 summary one-liner extraction) gained the nullglob shim for zsh portability of the for-glob loop.",
     "audit-milestone.md": "#2962: 1 bash block (line ~126 requirements_completed extraction) gained the nullglob shim for zsh portability of the for-glob loop."
