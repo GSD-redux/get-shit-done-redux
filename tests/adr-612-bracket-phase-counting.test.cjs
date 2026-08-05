@@ -2686,3 +2686,62 @@ Retiring a phase looks like this:
     assert.equal(readTotal(), 1, 'pre-existing legacy hazard — deliberately unchanged, base is wrong here too');
   });
 });
+
+// ─── #2761 round-5 Major 2: state sync's own counter now excludes the ──────
+// ─── bare `999` icebox token like the other two derivations ─────────────────
+//
+// Under bracket, READING-B puts the sentinel in the BRACKET
+// (isSentinelPhaseId), so `/^999\b/` on the bare TOKEN is the only thing
+// excluding a `### [GSD.02] 999:` icebox heading — and it ran on the read
+// path (buildStateFrontmatter) and getMilestonePhaseFilter, but not on
+// cmdStateSync's own counter. One `state sync` call could leave a single
+// STATE.md with its frontmatter (percent 50, from the read-path re-sync) and
+// its body (percent 33, from the write-path counter that still counted the
+// icebox heading) disagreeing.
+describe('#612 PR-2 round-5 Major 2: state sync excludes the bracket 999 icebox token like the read path', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r5m2-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('RED (G1): state sync\'s body percent now agrees with state json\'s percent on a bracket 999 icebox heading', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+### [GSD.02] 999: Backlog item
+**Goal:** later
+`, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false]]);
+    const readPercent = (() => {
+      const r = runGsdTools(['state', 'json'], tmpDir);
+      assert.ok(r.success, `state json failed: ${r.error}`);
+      return JSON.parse(r.output).progress?.percent;
+    })();
+    assert.equal(readPercent, 50);
+    assert.equal(syncedPercent(), readPercent, 'pinned 33 (vs read-path 50) before this fix — one STATE.md, two disagreeing numbers');
+  });
+
+  test('PIN (G1 LEGACY control): the pre-existing legacy read/write divergence on the same shape is unchanged', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+
+### Phase 999: Backlog item
+**Goal:** later
+`, undefined, [['01-one', true], ['02-two', false]]);
+    const r = runGsdTools(['state', 'json'], tmpDir);
+    assert.ok(r.success, `state json failed: ${r.error}`);
+    assert.equal(JSON.parse(r.output).progress?.percent, 50);
+    assert.equal(syncedPercent(), 33, 'the legacy asymmetry is genuinely pre-existing — deliberately unchanged');
+  });
+});

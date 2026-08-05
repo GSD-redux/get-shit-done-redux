@@ -3097,13 +3097,23 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   // #612 round-4: shares countRoadmapPhaseHeadings with buildStateFrontmatter
   // (defined just above extractRetiredPhaseNumbers) so both report
   // consistent totals off the SAME implementation, not two independently
-  // maintained copies (#3242 Bug B). This call site passes
-  // includeUnconditional999Check=false, preserving this file's pre-existing,
-  // deliberately-unchanged divergence from the read path (a bare `999` token
-  // is not excluded here — see that function's own comment).
+  // maintained copies (#3242 Bug B).
+  // #612 round-5 (Major 2): `includeUnconditional999Check` is now
+  // `syncConvention === 'bracket'`, not a literal `false` — under bracket,
+  // READING-B puts the sentinel in the bracket, so `/^999\b/` on the bare
+  // token is the ONLY thing excluding a `### [GSD.02] 999:` icebox heading,
+  // and the read path (`:1860`) already applies it. Leaving this site a
+  // literal `false` meant `state sync` was the one derivation (of three:
+  // this counter, the read-path counter, and getMilestonePhaseFilter) that
+  // counted the icebox heading — one `state sync` call could leave a single
+  // STATE.md with its own frontmatter and body disagreeing. The LEGACY
+  // convention still resolves to `false` here exactly as before (this
+  // file's pre-existing, deliberately-unchanged divergence from the read
+  // path on that path only) — `syncConvention === 'bracket'` is `false` for
+  // every non-bracket value, so legacy is untouched.
   let syncTotalPhases: number | null = null;
   const roadmapPhaseCount = syncRoadmapScope !== null
-    ? countRoadmapPhaseHeadings(syncRoadmapScope, syncConvention, syncRetiredPhaseNums, false)
+    ? countRoadmapPhaseHeadings(syncRoadmapScope, syncConvention, syncRetiredPhaseNums, syncConvention === 'bracket')
     : 0;
   if (roadmapPhaseCount > 0) {
     syncTotalPhases = Math.max(entries.length, roadmapPhaseCount);
