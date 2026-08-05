@@ -183,22 +183,31 @@ function isBracketMilestoneBoundary(headingText: string, level: number, selected
 }
 
 /**
- * #2761 B1 (round-3 fix, Blocker 1 case D; hardened post-round-3): does
+ * #2761 B1 (round-3 fix, Blocker 1 case D; hardened post-round-3; round-4
+ * fix: requires a same-id PHASE child, not merely a same-id child): does
  * `headings[index]`'s SUBTREE — every heading strictly deeper than it, up to
  * (not including) the next heading at or above its own level — contain a
- * bracket-shaped heading with the SAME id as `headings[index]`'s own?
+ * bracket-shaped, PHASE-TAIL-shaped heading with the SAME id as
+ * `headings[index]`'s own?
  *
  * Used ONLY at the preambleCutoff scan below, to distinguish a genuine prior
- * or later SIBLING MILESTONE — whose own subtree contains a phase heading
- * carrying ITS bracket id (`## [GSD.01] Setup` / `### [GSD.01] 01: …`) —
- * from an unrelated bracket-shaped PROSE heading sitting above the current
- * milestone's own content (`## [ADR.612] Heading convention used by this
- * roadmap`, followed by `### [GSD.02] 01: …` — a DIFFERENT id, and nothing
- * else in its subtree). `isBracketMilestoneBoundary` alone cannot make this
- * distinction: `[ADR.612]` is bracket-shaped, not phase-tail-shaped, and not
- * the SAME id as the selected milestone — so by that function's rules alone
- * it reads as a genuine boundary, incorrectly cutting the preamble mid-way
- * through the current milestone's own content.
+ * or later SIBLING MILESTONE — whose own subtree contains a real PHASE
+ * heading carrying ITS bracket id (`## [GSD.01] Setup` / `### [GSD.01] 01: …`)
+ * — from an unrelated bracket-shaped PROSE heading sitting above the current
+ * milestone's own content. `isBracketMilestoneBoundary` alone cannot make
+ * this distinction, and neither can same-id-ness alone: round-4's case F1
+ * is `## [ADR.612] Heading convention` followed by its OWN sub-heading
+ * `### [ADR.612] Examples` — same id as the candidate, but a MILESTONE-shaped
+ * heading (a name, no digit-then-colon), not a phase. Same-id-ness alone
+ * satisfied the rule the round-3 hardening shipped, re-opening exactly the
+ * case that hardening was meant to close — the requirement was never "does
+ * this heading have EVIDENCE bearing its own id", it was "does this heading
+ * have PHASE CHILDREN of its own", the property that actually distinguishes
+ * a genuine sibling milestone from a bracket-shaped id namespace that merely
+ * happens to nest headings under itself. `BRACKET_PHASE_TAIL_RE` is the
+ * single-owner phase-vs-milestone discriminator `isBracketMilestoneBoundary`
+ * already uses for the SAME distinction one level up — reused here, not
+ * re-derived.
  *
  * SCANS THE WHOLE SUBTREE, not just the immediate next heading — an earlier
  * version checked only `headings[index + 1]` and returned `false` the moment
@@ -214,13 +223,13 @@ function isBracketMilestoneBoundary(headingText: string, level: number, selected
  * fixture).
  *
  * A candidate whose ENTIRE subtree closes (next same-or-shallower heading,
- * or EOF) with no same-id hit at all — including a genuinely childless
- * heading (no deeper heading whatsoever) — degrades to `false`, NOT a
- * boundary. This is deliberately the OVER-inclusive direction: the
- * heading's own text (and any non-bracket-matching subtree content) stays in
- * the preamble, contributing nothing to any phase count (no phase-shaped
- * heading, no qualified key), so nothing is miscounted — merely some inert
- * prose staying where it already was.
+ * or EOF) with no same-id PHASE hit at all — including a genuinely childless
+ * heading, or one whose same-id children are all MILESTONE-shaped rather
+ * than phase-shaped (F1) — degrades to `false`, NOT a boundary. This is
+ * deliberately the OVER-inclusive direction: the heading's own text (and any
+ * non-matching subtree content) stays in the preamble. See the docstring
+ * correction at the call site below (round-4 Minor 1) for what that
+ * over-inclusive degrade can and cannot leak.
  *
  * `headings` is the SAME `currentMilestoneHeadings` token list the caller
  * iterates; `index` is the candidate's own position in it.
@@ -234,10 +243,14 @@ function bracketHeadingHasMatchingChild(headings: HeadingToken[], index: number)
     const next = headings[i];
     if (next.level <= candidate.level) return false;
     const childMatch = BRACKET_HEADING_INTRO_RE.exec(next.text);
-    if (childMatch && foldBracketId(childMatch[1]) === ownId) return true;
-    // Not a same-id match — keep scanning DEEPER into the subtree instead of
-    // giving up on this one heading; only a same-or-shallower heading (above)
-    // actually closes the subtree.
+    // #2761 round-4: a same-id child is not enough — it must also be a PHASE
+    // (BRACKET_PHASE_TAIL_RE), or an unrelated PROSE heading whose own
+    // sub-heading merely happens to share its bracket id (F1: [ADR.612]
+    // Heading convention / [ADR.612] Examples) satisfies this rule.
+    if (childMatch && foldBracketId(childMatch[1]) === ownId && BRACKET_PHASE_TAIL_RE.test(next.text)) return true;
+    // Not a same-id PHASE match — keep scanning DEEPER into the subtree
+    // instead of giving up on this one heading; only a same-or-shallower
+    // heading (above) actually closes the subtree.
   }
   return false;
 }

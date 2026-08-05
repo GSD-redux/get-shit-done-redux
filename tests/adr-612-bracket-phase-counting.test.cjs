@@ -2134,3 +2134,176 @@ Some prose that happens to mention v2.0 in a deep heading.
     assert.equal(readTotal(), 2);
   });
 });
+
+// ─── #2761 round-4 (team-lead re-verify of fbfd0fca): the child rule must ──
+// ─── require a same-id PHASE, not merely a same-id heading ──────────────────
+//
+// bracketHeadingHasMatchingChild's subtree scan (fbfd0fca) proved SAME-ID-NESS
+// but never asked whether the matching child was PHASE-shaped. Case F1
+// reopens round-3's case D one heading later: `## [ADR.612] Heading
+// convention` is followed by its OWN sub-heading `### [ADR.612] Examples` —
+// same bracket id as the candidate, but MILESTONE-shaped (a name, no
+// digit-then-colon), not a phase. Same-id-ness alone satisfied the subtree
+// scan, re-cutting the preamble at exactly the shape the round-3 hardening
+// was written to close.
+function poisonTotalPhasesR4(dir) {
+  const statePath = path.join(dir, '.planning', 'STATE.md');
+  const raw = fs.readFileSync(statePath, 'utf-8');
+  fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+}
+
+describe('#612 PR-2 round-4 Blocker 1: the same-id child must be PHASE-shaped', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r4b1-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('RED (F1): a same-id MILESTONE-shaped child on a prose heading no longer satisfies the child rule — 2/1/50, not 1/0/0', () => {
+    writeProject(`# Roadmap
+
+## [ADR.612] Heading convention
+
+### [ADR.612] Examples
+
+Prose about the convention.
+
+### [GSD.02] 01: One
+**Goal:** a
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false]]);
+    assert.equal(readTotal(), 2, 'pinned 1 before this fix — [ADR.612]\'s own MILESTONE-shaped sub-heading satisfied the same-id-only rule');
+    poisonTotalPhasesR4(tmpDir);
+    assert.equal(syncedTotal(), 2);
+    assert.equal(syncedPercent(), 50, 'pinned 0 before this fix — state sync reported "nothing to do" because its wrong 0% happened to equal the seed');
+  });
+
+  test('PIN (F11): a genuine prior sibling whose same-id child lacks the trailing colon is still correctly excluded (inert leak, not a boundary either way)', () => {
+    const dirs = [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+    writeProject(`# Roadmap
+
+## [GSD.01] Setup
+
+### [GSD.01] 01 Old
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', dirs);
+    assert.equal(readTotal(), 2);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(!!f('GSD.01-01-old'), false, 'the colon-less heading forms no qualified key either, so the childless-degrade leak is inert');
+  });
+
+  test('PIN (F11b): a genuine prior sibling whose phases exist only as bullets is still correctly excluded', () => {
+    const dirs = [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+    writeProject(`# Roadmap
+
+## [GSD.01] Setup
+
+- [x] **[GSD.01] 01: Old**
+
+### [GSD.01] Retrospective
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', dirs);
+    assert.equal(readTotal(), 2);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(!!f('GSD.01-01-old'), false, 'a bracket bullet never forms a qualified key (BULLET_PHASE_LINE_PATTERN needs a literal **Phase )');
+  });
+
+  test('re-verify: the four existing child-rule pins (F2-F5 shapes) are unaffected by the phase-shape requirement', () => {
+    // F2: subtree closure — same-id child appears only after a same-level
+    // heading closes the subtree; must not count (over-inclusive degrade).
+    writeProject(`# Roadmap
+
+## [GSD.01] Setup
+
+Prose, no children.
+
+## [DOC.99] Reference
+
+### [GSD.01] 01: Old
+
+### [GSD.02] 01: One
+**Goal:** a
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]]);
+    assert.equal(readTotal(), 3, 'unchanged — the declared over-inclusive/safe degrade (Minor 1), not a regression');
+
+    // F3: deep wrong-id children then a same-id PHASE child inside the subtree — must count.
+    writeProject(`# Roadmap
+
+## [GSD.01] Setup
+
+### Notes
+
+#### Deep note
+
+### [DOC.99] Aside
+
+### [GSD.01] 01: Old
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]]);
+    assert.equal(readTotal(), 2);
+
+    // F4: the same-id PHASE child is itself level 4 — the child scan has no depth ceiling.
+    writeProject(`# Roadmap
+
+## [GSD.01] Setup
+
+### Notes
+
+#### [GSD.01] 01: Old
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]]);
+    assert.equal(readTotal(), 2);
+
+    // F5: trailing bracket sibling at document end (childless) — computeSectionEnd
+    // excludes it without needing the child rule at all.
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+## [GSD.03] Later
+`, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later', true]]);
+    assert.equal(readTotal(), 2);
+  });
+});
