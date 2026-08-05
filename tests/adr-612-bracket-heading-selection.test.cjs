@@ -52,6 +52,15 @@ const BASE_SITES = [
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
   { file: 'roadmap-parser.cts', site: 'getMilestonePhaseFilter phaseHeadingPattern',
     baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
+  // #2761 B2: BRACKET_PHASE_TAIL_RE (isBracketMilestoneBoundary's phase-tail
+  // discriminator) always passes the literal 'bracket' convention — it is not
+  // itself convention-gated (the CALLER, isBracketMilestoneBoundary, is only
+  // ever consulted when bracketBoundaryActive is already true) — but it still
+  // shares the SAME ANY_BRACKET baseline and produces the identical BASE
+  // source on a non-bracket convention as every other ANY_BRACKET site, so it
+  // is pinned here for count-exactness rather than left as an unpinned hole.
+  { file: 'roadmap-parser.cts', site: 'isBracketMilestoneBoundary BRACKET_PHASE_TAIL_RE',
+    baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
   // --- baseline: the site spells a BARE `Phase ` with no bracket tolerance
   { file: 'roadmap.cts', site: 'searchPhaseInContent checklistPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
@@ -427,7 +436,7 @@ describe('#612 PR-2: every selector call site declares the right baseline (live 
     'validate.cts': [1, 2],
     'state.cts': [0, 3],
     'verify.cts': [0, 1],
-    'roadmap-parser.cts': [1, 0],
+    'roadmap-parser.cts': [2, 0],
   };
 
   const callsIn = (file) => {

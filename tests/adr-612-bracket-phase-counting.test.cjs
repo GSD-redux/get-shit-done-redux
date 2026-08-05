@@ -1354,6 +1354,158 @@ describe('#612 PR-2 B1 round-2: a same-milestone continuation heading is not a b
   });
 });
 
+// ─── #2761 B2 (round-2 adversarial review, Blocker 2): the heading ──────────
+// ─── discriminator is CONTENT, not level ────────────────────────────────────
+//
+// Three sites disagreed about which heading levels are a bracket milestone:
+// the selector (`^#{1,3}\s+\[CODE.MM\]`) and `isMilestoneBounded` (state.cts)
+// both admit level 1-3, but the B1 boundary only admitted level 1-2
+// (`h.level <= 2`). A `###`-level bracket milestone was therefore SELECTED and
+// BOUNDED but never TERMINATED: computeSectionEnd ran with level=3, a level-3
+// SIBLING milestone survived `h.level > level` (not deeper), failed the
+// version/emoji test (version-less), then failed `h.level <= 2` — so the
+// function fell through to `return content.length`, sweeping the sibling
+// milestone's own phases into the current one. This reproduces trek-e's
+// original #612 defect verbatim (a safe degrade became a confidently-wrong
+// persisted number) on a heading level the selector and bounding predicate
+// both already admit.
+//
+// ADR-612 Decision 1 (docs/adr/612-bracket-phase-id-convention.md:56)
+// specifies the discriminator as CONTENT: "a phase heading is a bracket
+// followed by a digit-then-colon; a milestone heading is a bracket followed
+// by a name." Fixed by replacing the `level > 2` rejection with
+// BRACKET_PHASE_TAIL_RE (built from phase-id.cts's single-owner
+// phaseHeadingPrefixSrcFor, not a re-typed grammar), with the level check
+// widened to a depth-sanity cap of 3 (mirroring the selector's own `#{1,3}`
+// ceiling — NOT a phase/milestone discriminator itself).
+describe('#612 PR-2 B2 round-2: the bracket boundary is a CONTENT discriminator, not a level cap', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-b2r2-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('RED (repro2 case C): all milestones ###, all phases ####, version-less — total 2, TRUTHFUL percent 100', () => {
+    // GSD.02 (asserted milestone) has 2 phases, both complete. isMilestoneBounded
+    // already returns true at #{1,3} (state.cts, unaffected by this fix), so the
+    // percent this fixture writes is directly observable — pinned 75 (4 dirs,
+    // 3 complete, whole-disk fallback) before this fix.
+    const dirs = [
+      ['GSD.01-01-old', true],
+      ['GSD.02-01-one', true],
+      ['GSD.02-02-two', true],
+      ['GSD.03-01-later', false],
+    ];
+    writeProject(`# Roadmap
+
+### [GSD.01] Prior Milestone
+
+#### [GSD.01] 01: Old one
+**Goal:** a
+
+### [GSD.02] Current Milestone
+
+#### [GSD.02] 01: One
+**Goal:** b
+
+#### [GSD.02] 02: Two
+**Goal:** c
+
+### [GSD.03] Later Milestone
+
+#### [GSD.03] 01: Later one
+**Goal:** d
+`, 'bracket', dirs);
+    assert.equal(readTotal(), 2, 'pinned 4 before this fix (whole-doc fallback)');
+    const r = runGsdTools(['state', 'json'], tmpDir);
+    assert.ok(r.success, `state json failed: ${r.error}`);
+    assert.equal(JSON.parse(r.output).progress?.percent, 100, 'pinned 75 before this fix');
+  });
+
+  test('mechanism (repro7): extractCurrentMilestone actually scopes a level-3 milestone, not the whole document', () => {
+    const dirs = ['GSD.01-01-old', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later'];
+    const roadmap = `# Roadmap
+
+### [GSD.01] Prior
+
+#### [GSD.01] 01: Old
+**Goal:** a
+
+### [GSD.02] Current
+
+#### [GSD.02] 01: One
+**Goal:** b
+
+#### [GSD.02] 02: Two
+**Goal:** c
+
+### [GSD.03] Later
+
+#### [GSD.03] 01: Later
+**Goal:** d
+`;
+    writeProject(roadmap, 'bracket', dirs);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const scope = rp.extractCurrentMilestone(
+      fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8'),
+      tmpDir,
+    );
+    assert.ok(scope.length < roadmap.length, 'pinned scope === full document before this fix (fell through to content.length)');
+    assert.ok(scope.includes('01: One') && scope.includes('02: Two'), 'the milestone\'s own phases must survive scoping');
+    assert.ok(!scope.includes('Old') && !scope.includes('Later'), 'sibling milestones must not leak in');
+  });
+
+  test('PIN: a dotted sub-phase heading ([GSD.02] 05.03:) is phase-tail-shaped, not a boundary', () => {
+    // The tail grammar must cover BOTH `05:` and the dotted `05.03:` forms —
+    // this is precisely where a regex slip in the tail discriminator would
+    // hide (a milestone-shaped false negative would truncate the section at
+    // what is actually a real sub-phase heading).
+    const dirs = ['GSD.02-01-one', 'GSD.02-05.03-sub', 'GSD.03-01-later'];
+    writeProject(`# Roadmap
+
+## [GSD.02] Current
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 05.03: Name
+**Goal:** b
+
+## [GSD.03] Later
+
+### [GSD.03] 01: Later
+**Goal:** c
+`, 'bracket', dirs);
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    assert.equal(!!f('GSD.02-01-one'), true);
+    assert.equal(!!f('GSD.02-05.03-sub'), true, 'the dotted sub-phase heading must not be excluded as a boundary');
+    assert.equal(!!f('GSD.03-01-later'), false);
+    assert.equal(readTotal(), 2, 'both GSD.02 phases (01 and 05.03) must be counted');
+  });
+
+  test('PIN (repro8 case 3, content-discriminator mechanism): a trailing DIFFERENT-id icebox section still terminates — 2/1/50', () => {
+    // Re-pins the same shape as the B1 round-2 block above, now that the
+    // discriminator is CONTENT rather than level: [GSD.999] is bracket-shaped
+    // and NOT phase-tail-shaped ("Icebox" carries no digit-colon), and its id
+    // differs from the selected milestone's — a boundary either way.
+    const D = [['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.999] Icebox
+
+### [GSD.999] 07: Someday
+**Goal:** z
+`, 'bracket', D);
+    assert.equal(readTotal(), 2);
+  });
+});
+
 // ─── #2761 B3 (self-caught, round-2 verification): CURRENT version-bearing, ──
 // ─── a sibling milestone is not ──────────────────────────────────────────────
 //

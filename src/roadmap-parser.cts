@@ -118,31 +118,64 @@ function isMilestoneShippedInRoadmap(content: string, version: string): boolean 
 // produced Blocker 3 in the round-2 review).
 const BRACKET_HEADING_INTRO_RE = new RegExp(`^\\[(${BRACKET_ID_SRC})\\]`, 'i');
 
+// #2761 B2 (round-2 fix, Blocker 2): ADR-612 Decision 1's own discriminator
+// (docs/adr/612-bracket-phase-id-convention.md:56) — "a phase heading is a
+// bracket followed by a digit-then-colon (`[GSD.02] 05:`); a milestone
+// heading is a bracket followed by a name" — is CONTENT, not heading level.
+// The prior `h.level <= 2` level cap broke on a level-3 bracket milestone
+// heading (`### [GSD.02] Foundation`): its own level-3 phase children
+// (`#### [GSD.02] 01: One`) never reached this check at all (excluded
+// upstream by the `h.level > level` sibling-depth filter), but a level-3
+// SIBLING milestone heading (`### [GSD.03] Later`) was ALSO excluded by the
+// level cap, so the section ran to EOF instead of stopping there — trek-e's
+// original #612 defect, reopened on any milestone heading below level 2.
+//
+// Built by interpolating phase-id.cts's single-owner
+// phaseHeadingPrefixSrcFor (the SAME intro grammar getMilestonePhaseFilter's
+// heading counter and extractRetiredPhaseNumbers already compile) plus the
+// digit + optional-tag + colon tail every phase-heading counter in this file
+// already spells (mirrors the `([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:`
+// shape at :nnn below) — not a re-typed grammar. Covers the dotted sub-phase
+// heading form too (`[GSD.02] 05.03:`) via the same `[\w][\w.-]*` token,
+// which admits an embedded `.`.
+const BRACKET_PHASE_TAIL_RE = new RegExp(
+  `^${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.ANY_BRACKET, 'bracket', false)}[\\w][\\w.-]*(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`,
+  'i',
+);
+
 /**
- * #2761 B1 (round-2 fix): is `headingText` (hashes STRIPPED — the
+ * #2761 B1/B2 (round-2 fixes): is `headingText` (hashes STRIPPED — the
  * `tokenizeHeadings` `HeadingToken.text` shape, and the shape the
  * preambleCutoff scan below is made to match) a BRACKET MILESTONE boundary —
- * as opposed to (a) a bracket PHASE heading, which must never terminate a
- * milestone's own section, or (b) a heading that names the SAME milestone
- * already selected, which is a CONTINUATION of the current milestone's own
- * section (a version-less split like `## [GSD.02] Foundation (Phase
- * Details)`), not the boundary to a DIFFERENT one?
+ * as opposed to (a) a bracket PHASE heading (at any level, including the
+ * dotted sub-phase form), which must never terminate a milestone's own
+ * section, or (b) a heading that names the SAME milestone already selected,
+ * which is a CONTINUATION of the current milestone's own section (a
+ * version-less split like `## [GSD.02] Foundation (Phase Details)`), not the
+ * boundary to a DIFFERENT one?
  *
- * `level` is the CANDIDATE heading's own depth (`h.level`), capped at 2 —
- * temporary at this commit (mirrors the pre-existing `h.level <= 2`
- * discriminator one-for-one; #2761 B2 replaces this with ADR-612's CONTENT
- * discriminator, at which point the cap widens to a depth-sanity ceiling
- * rather than being the discriminator itself).
+ * `level` is the CANDIDATE heading's own depth (`h.level`), capped at 3 — a
+ * depth-SANITY ceiling, not a phase/milestone discriminator (that job is
+ * BRACKET_PHASE_TAIL_RE, below). The cap mirrors the bracket-fallback
+ * selector's own `#{1,3}` ceiling (this file's SELECTION branch above) and
+ * `isMilestoneBounded`'s (`state.cts`) — a bracket-shaped heading deeper than
+ * either of those will ever select as a CURRENT milestone is outside the
+ * shape this function needs to discriminate at all.
  *
  * `selectedBracketId` is the SELECTED milestone's own bracket id, already
- * case-folded by the caller — `null` when scoping is not bracket-gated or the
- * selected heading is not itself bracket-shaped, in which case the
- * same-milestone check below simply never fires.
+ * case-folded by the caller — `null` when scoping is not bracket-gated, the
+ * selected heading is not itself bracket-shaped, or (preambleCutoff) the
+ * same-milestone check does not apply at this call site (see its own comment
+ * there) — in which case the same-milestone check below simply never fires.
  */
 function isBracketMilestoneBoundary(headingText: string, level: number, selectedBracketId: string | null): boolean {
-  if (level > 2) return false;
+  if (level > 3) return false;
   const introMatch = BRACKET_HEADING_INTRO_RE.exec(headingText);
   if (!introMatch) return false;
+  // #2761 B2: a bracket PHASE heading (`[GSD.02] 05:`, or the dotted
+  // sub-phase form `[GSD.02] 05.03:`) is never a milestone boundary,
+  // regardless of level.
+  if (BRACKET_PHASE_TAIL_RE.test(headingText)) return false;
   // #2761 B1: fold-before-identity — this branch's own convention
   // (bracketQualifiedKey / isSentinelPhaseId apply the same rule).
   if (selectedBracketId && foldBracketId(introMatch[1]) === selectedBracketId) return false;
@@ -376,7 +409,17 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     // still apply uniformly at both sites; only the same-milestone component
     // is call-site-specific, because it encodes a "keep scanning" instruction
     // that has no counterpart in a top-of-document search.
-    const anyBracketMilestonePattern = new RegExp(`^(#{1,2})[ \\t]+(\\[${BRACKET_ID_SRC}\\][^\\n]*)`, 'gim');
+    // #2761 B2: widened from `#{1,2}` to `#{1,3}` in lockstep with
+    // isBracketMilestoneBoundary's depth cap (level > 3) — a level-3 MILESTONE
+    // heading (e.g. a PRIOR milestone written as `### [GSD.01] Prior`) must be
+    // a candidate here too, or it is invisible to this raw scan and its own
+    // phase heading leaks into the preamble un-stripped (the preamble's own
+    // phase-stripping regex only recognises literal `Phase N:`-labelled
+    // headings, not bracket ones) — a real double-count this widening closes.
+    // The outer regex's OWN level ceiling must track the helper's cap; the
+    // helper alone cannot rescue a heading the outer pattern never captures as
+    // a candidate in the first place.
+    const anyBracketMilestonePattern = new RegExp(`^(#{1,3})[ \\t]+(\\[${BRACKET_ID_SRC}\\][^\\n]*)`, 'gim');
     let bracketMilestoneMatch: RegExpMatchArray | null = null;
     for (const m of content.matchAll(anyBracketMilestonePattern)) {
       const candidateLevel = m[1].length;
