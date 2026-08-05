@@ -347,6 +347,18 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   headSha: string | null;
   forkRef: string | null;
   forkSha: string | null;
+  /**
+   * Only meaningful when `reason === 'no-head'` (both non-degrade outcomes);
+   * `null` for every other reason. `true` for exit 128 — git's definitive
+   * "not a git repository" answer. `false` for exit 0 with empty stdout: git
+   * completed but did NOT give a confirmed "no HEAD" answer, unlike exit 128
+   * — this outcome is left `shouldDegrade:false` unchanged (pinned by an
+   * existing regression guard; the underlying product question of whether it
+   * SHOULD degrade is still open, see #3050 review), but a caller can now
+   * tell the two `'no-head'` causes apart instead of treating them as the
+   * same verified answer. (#3057 B8)
+   */
+  headAbsenceVerified: boolean | null;
 } {
   const execGit: ExecGitFn = deps?.execGit ?? execGitSeam;
   const cwd = deps?.cwd;
@@ -358,7 +370,7 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   // complete: any non-"head" value (including "fresh" and absent/null) has fresh/origin-HEAD
   // semantics and must be evaluated against origin/HEAD. (Reference: Claude Code worktrees docs, #683.)
   if (deps?.effectiveBaseRef === 'head') {
-    return { shouldDegrade: false, reason: 'baseref-head', message: null, headSha: null, forkRef: null, forkSha: null };
+    return { shouldDegrade: false, reason: 'baseref-head', message: null, headSha: null, forkRef: null, forkSha: null, headAbsenceVerified: null };
   }
 
   // b. Resolve HEAD sha.
@@ -367,7 +379,7 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   // git repository" and must fail closed (distinct from the clean-exit-128
   // "no-head" case below, which genuinely completed and reported no HEAD).
   if (isExecGitTimeout(headResult)) {
-    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null };
+    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null, headAbsenceVerified: null };
   }
   const headStdout = headResult.stdout ? headResult.stdout.trim() : '';
   // exit 128 is git's definitive "not a git repository" answer — it completed
@@ -375,14 +387,19 @@ export function evaluateWorktreeBaseDegrade(deps?: {
   // stays a benign non-degrade; every other non-success outcome below is
   // NOT a definitive answer from git and must fail closed (#3050).
   if (headResult.exitCode === 128) {
-    return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null };
+    return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null, headAbsenceVerified: true };
   }
   // Exit 0 with empty stdout is pinned as benign no-degrade by an existing
   // regression guard (tests/worktree-base-ref.test.cjs — "git rev-parse HEAD
   // returns empty stdout"). Left unchanged deliberately; flagged in the
   // #3050 review for a product-intent call rather than silently flipped.
+  // Unlike the exit-128 case above, git did NOT give a definitive "no HEAD"
+  // answer here — `headAbsenceVerified:false` names that gap explicitly
+  // instead of leaving it folded into an identical-looking 'no-head' reason
+  // (#3057 B8; the product question of whether this SHOULD degrade is
+  // unchanged and still open).
   if (headResult.exitCode === 0 && !headStdout) {
-    return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null };
+    return { shouldDegrade: false, reason: 'no-head', message: null, headSha: null, forkRef: null, forkSha: null, headAbsenceVerified: false };
   }
   if (headResult.exitCode !== 0) {
     // Any other non-success outcome (e.g. exit 127 — git missing — or any
@@ -391,7 +408,7 @@ export function evaluateWorktreeBaseDegrade(deps?: {
     // (`!headStdout` was previously OR'd in here but is unreachable: the
     // exitCode===0 && !headStdout case is already handled above, and every
     // other branch here has exitCode!==0 already true — #3050 review.)
-    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null };
+    return { shouldDegrade: true, reason: 'head-unresolvable', message: MSG_HEAD_UNRESOLVABLE, headSha: null, forkRef: null, forkSha: null, headAbsenceVerified: null };
   }
   const headSha = headStdout;
 
@@ -423,11 +440,11 @@ export function evaluateWorktreeBaseDegrade(deps?: {
 
   // d. Evaluate.
   if (forkSha === null) {
-    return { shouldDegrade: true, reason: 'fork-ref-unknown', message: MSG_UNKNOWN, headSha, forkRef: null, forkSha: null };
+    return { shouldDegrade: true, reason: 'fork-ref-unknown', message: MSG_UNKNOWN, headSha, forkRef: null, forkSha: null, headAbsenceVerified: null };
   }
   if (forkSha === headSha) {
-    return { shouldDegrade: false, reason: 'head-matches-fork', message: null, headSha, forkRef, forkSha };
+    return { shouldDegrade: false, reason: 'head-matches-fork', message: null, headSha, forkRef, forkSha, headAbsenceVerified: null };
   }
   const message = buildMsgDiverged(headSha, forkRef, forkSha);
-  return { shouldDegrade: true, reason: 'head-diverged-from-fork', message, headSha, forkRef, forkSha };
+  return { shouldDegrade: true, reason: 'head-diverged-from-fork', message, headSha, forkRef, forkSha, headAbsenceVerified: null };
 }

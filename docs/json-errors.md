@@ -2,11 +2,12 @@
 
 ## Overview
 
-`gsd-tools` supports a **JSON error mode** that emits all errors as structured
+`gsd-tools` supports a **JSON error mode** that emits most errors as structured
 JSON objects on stderr instead of free-form text.  This is the recommended
 surface for tests and tooling that need to assert on error types without
 grepping raw text (see `CONTRIBUTING.md` — "Prohibited: Raw Text Matching on
-Test Outputs").
+Test Outputs"). Usage errors are an intentional exception — see the
+`ExitError` carve-out below.
 
 ## Activating
 
@@ -36,6 +37,20 @@ Fields:
 | `ok`      | `false` | Always `false` for error objects. |
 | `reason`  | string  | Typed reason code from the taxonomy below. |
 | `message` | string  | Human-readable description (may change; do not assert on it). |
+
+### `ExitError` carve-out (plain text, not JSON)
+
+Usage errors and explicit exit-code signals take a **different path**: they
+throw `ExitError` (`src/cli-exit.cts`), which `runMain` catches *before* the
+JSON-envelope branch. An `ExitError` writes its `message` as **plain text**
+to stderr (not a JSON object) and exits with the error's own `code` (which
+may differ from 1). This is intentional — usage messages are operator-facing
+prose, not structured failures.
+
+If you are testing a usage/flag error, do **not** parse stderr as JSON;
+assert on the exit code and (if needed) the plain-text message. The
+"parse stderr as JSON" guidance below applies only to the structured-envelope
+branch (non-`ExitError` failures).
 
 ## Error code taxonomy
 
@@ -99,8 +114,9 @@ text (unstable).
 
 ## Writing tests
 
-Always parse stderr with `JSON.parse` and assert on typed fields.  Never use
-`.includes()`, `.match()`, or regex on the raw error string.
+For **non-usage** errors (the structured-envelope branch), parse stderr with
+`JSON.parse` and assert on typed fields.  Never use `.includes()`, `.match()`,
+or regex on the raw error string.
 
 ```js
 // CORRECT: parse then assert on typed field

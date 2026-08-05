@@ -185,8 +185,9 @@ test('parseSacctRow parses [jobid, state] columns', () => {
 
 // ─── writeManifest (fail-closed duplicate guard + fs injection) ────────────────
 
-function memFs(files = {}) {
+function memFs(files = {}, opts = {}) {
   const store = new Map(Object.entries(files));
+  const failReads = new Map(Object.entries(opts.failReads || {}));
   return {
     mkdirSync: () => undefined,
     readdirSync: (d) => {
@@ -194,6 +195,9 @@ function memFs(files = {}) {
       return Array.isArray(set) ? set : [];
     },
     readFileSync: (p) => {
+      if (failReads.has(p)) {
+        throw new Error(failReads.get(p));
+      }
       if (!store.has(p)) { const e = new Error('enoent'); e.code = 'ENOENT'; throw e; }
       return store.get(p);
     },
@@ -266,6 +270,129 @@ test('writeManifest fails closed on a malformed existing manifest', () => {
   const res = writeManifest(manifest, '.planning', { fs, clock });
   assert.strictEqual(res.ok, false);
   assert.strictEqual(res.kind, 'malformed_existing');
+});
+
+// ─── writeManifest — negative-space: an incomplete duplicate scan (#3057) ─────
+// A corrupt/unreadable SIBLING manifest must not be silently skipped: the
+// duplicate scan cannot be trusted to have inspected it, so the write must
+// refuse rather than risk dispatching a duplicate external job.
+
+test('an unreadable sibling manifest refuses the write', () => {
+  // A1
+  const dir = path.join('.planning', 'async-jobs');
+  const siblingPath = path.join(dir, '99999.json');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const fs = memFs(
+    { [dir]: ['99999.json'] },
+    { failReads: { [siblingPath]: 'eio: input/output error' } },
+  );
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.kind, 'scan_incomplete');
+  assert.strictEqual(res.offendingPath, siblingPath, 'offendingPath must name the unreadable file');
+});
+
+test('an unparseable sibling manifest refuses the write', () => {
+  // A2
+  const dir = path.join('.planning', 'async-jobs');
+  const siblingPath = path.join(dir, '99999.json');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const fs = memFs({ [dir]: ['99999.json'], [siblingPath]: '{not json' });
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.kind, 'scan_incomplete');
+  assert.strictEqual(res.offendingPath, siblingPath, 'offendingPath must name the unparseable file');
+});
+
+test('target and sibling failures stay distinct kinds', () => {
+  // A3
+  const dir = path.join('.planning', 'async-jobs');
+  const targetPath = path.join(dir, '12345.json');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const fs = memFs({ [dir]: ['12345.json'], [targetPath]: '{not json' });
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.kind, 'malformed_existing', 'the TARGET failure must stay malformed_existing, not scan_incomplete');
+});
+
+// A4 (paired): prove the sibling really holds a duplicate (control), then
+// prove that making that SAME content unreadable still refuses (regression).
+
+test('control: a readable sibling with a non-terminal duplicate plan_id is duplicate_plan_id', () => {
+  // A4a — control. Same construction as the "FAILS CLOSED on duplicate
+  // plan_id" test above: valid JSON, same plan_id, different job_id,
+  // non-terminal status. This establishes the sibling content genuinely
+  // triggers the duplicate guard when it CAN be read.
+  const dir = path.join('.planning', 'async-jobs');
+  const siblingPath = path.join(dir, '99999.json');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const duplicate = buildManifest({ ...baseInput(), job_id: '99999' }, { clock });
+  const fs = memFs({ [dir]: ['99999.json'], [siblingPath]: JSON.stringify(duplicate) });
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.kind, 'duplicate_plan_id', 'the sibling content must be a real duplicate trigger when readable');
+});
+
+test('a corrupt sibling can no longer hide a duplicate dispatch', () => {
+  // A4b — the bug, as a test. Same sibling PATH as the control above, which
+  // that test proves can hold a genuine non-terminal duplicate for this
+  // plan_id. Here the read itself faults (opts.failReads), so no content is
+  // reachable at all — and that is the point: the guard now refuses on ANY
+  // unreadable sibling precisely because it cannot know whether that file
+  // was the duplicate. The control supplies the "it could have been"; this
+  // supplies the "and we no longer gamble on it".
+  //
+  // Before the fix, an unreadable sibling was `continue`d past, the
+  // duplicate was never seen, and this returned ok:true — dispatching a
+  // duplicate external job.
+  const dir = path.join('.planning', 'async-jobs');
+  const siblingPath = path.join(dir, '99999.json');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const fs = memFs(
+    { [dir]: ['99999.json'] },
+    { failReads: { [siblingPath]: 'eio: input/output error' } },
+  );
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, false, 'a corrupt sibling must refuse, not silently permit a possible duplicate dispatch');
+  assert.strictEqual(res.kind, 'scan_incomplete');
+});
+
+test('happy path unaffected', () => {
+  // A5
+  const dir = path.join('.planning', 'async-jobs');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const fs = memFs({ [dir]: [] });
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, true);
+});
+
+test('a terminal prior job is still allowed', () => {
+  // A6
+  const dir = path.join('.planning', 'async-jobs');
+  const otherPath = path.join(dir, '99999.json');
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const dead = buildManifest({ ...baseInput(), job_id: '99999', status: 'failed', terminal_details: { code: 1 } }, { clock });
+  const fs = memFs({ [dir]: ['99999.json'], [otherPath]: JSON.stringify(dead) });
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, true, 'the duplicate guard only protects against re-dispatching live work');
+});
+
+test('a directory read failure is io_error, not scan_incomplete', () => {
+  // A7
+  const clock = { nowIso: () => '2020-06-15T12:00:00.000Z' };
+  const fs = memFs({}, { failReads: {} });
+  fs.readdirSync = () => { throw new Error('eio: input/output error'); };
+  const manifest = buildManifest(baseInput(), { clock });
+  const res = writeManifest(manifest, '.planning', { fs, clock });
+  assert.strictEqual(res.ok, false);
+  assert.strictEqual(res.kind, 'io_error');
 });
 
 // ─── Property-based (CLAUDE.md: parsers/contracts need a fast-check test) ─────

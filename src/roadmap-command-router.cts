@@ -21,6 +21,9 @@ const { planningDir } = planningWorkspace;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import cliExitMod = require('./cli-exit.cjs');
+const { ExitError } = cliExitMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -143,11 +146,43 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
       'annotate-dependencies': () => roadmap.cmdRoadmapAnnotateDependencies(cwd, args[2], raw),
       'validate': () => {
         const roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
-        let roadmapContent = '';
+        const warnings: Array<{ code: string; message: string }> = [];
+
+        // #2978: structural validation. A verb named "validate" that cannot
+        // produce a negative result provides false assurance. Before the
+        // opt-in milestone-prefix check, verify the file is structurally a
+        // roadmap at all.
+        let roadmapContent: string;
         try {
           roadmapContent = fs.readFileSync(roadmapPath, 'utf8');
         } catch {
-          // ROADMAP.md missing — return empty warnings
+          // ROADMAP.md missing — not silent success.
+          warnings.push({ code: 'V001', message: 'ROADMAP.md not found or unreadable' });
+          const result = { warnings };
+          process.stdout.write(raw ? JSON.stringify(result) : JSON.stringify(result, null, 2));
+          throw new ExitError(1);
+        }
+
+        // Empty or whitespace-only.
+        if (roadmapContent.trim() === '') {
+          warnings.push({ code: 'V002', message: 'ROADMAP.md is empty' });
+        }
+
+        // Malformed frontmatter — a `---` opener with no matching closer.
+        // Tolerate a leading BOM (#3057) before the fence.
+        const contentAfterBom = roadmapContent.replace(/^\uFEFF/, '');
+        if (contentAfterBom.startsWith('---')) {
+          const closeMatch = contentAfterBom.slice(3).match(/\r?\n---\s*(\r?\n|$)/);
+          if (!closeMatch) {
+            warnings.push({ code: 'V003', message: 'ROADMAP.md frontmatter is malformed (unterminated --- fence)' });
+          }
+        }
+
+        // No recognizable phase structure — at least one `### Phase N:` heading.
+        // Mirrors the phase-heading pattern used across roadmap-parser.cts.
+        const hasPhaseEntry = /^#{2,4}\s*Phase\s+\S/im.test(roadmapContent);
+        if (!hasPhaseEntry && !warnings.some((w) => w.code === 'V002')) {
+          warnings.push({ code: 'V004', message: 'ROADMAP.md contains no recognizable phase entries (no "### Phase N:" headings)' });
         }
 
         // W021 only fires when phase_id_convention is explicitly 'milestone-prefixed'.
@@ -173,13 +208,17 @@ function routeRoadmapCommand({ roadmap, args, cwd, raw, error }: RouteRoadmapCom
             }
           }
         }
-        const warnings = (convention === 'milestone-prefixed')
-          ? checkW021(roadmapContent)
-          : [];
+        if (convention === 'milestone-prefixed') {
+          warnings.push(...checkW021(roadmapContent));
+        }
 
         const result = { warnings };
-        if (raw) process.stdout.write(JSON.stringify(result));
-        else process.stdout.write(JSON.stringify(result, null, 2));
+        process.stdout.write(raw ? JSON.stringify(result) : JSON.stringify(result, null, 2));
+        // #2978: exit non-zero on any warning, per the documented contract
+        // ("exits non-zero on any error or warning").
+        if (warnings.length > 0) {
+          throw new ExitError(1);
+        }
       },
       'upgrade': () => {
         const dryRun = !args.includes('--apply');

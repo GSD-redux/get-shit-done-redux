@@ -2079,6 +2079,20 @@ function cmdValidateHealth(
             `Stale git worktree: ${worktreePath} (last modified ${finding['ageMinutes'] as number} minutes ago)`,
             `Run: git worktree remove ${worktreePath} --force`,
           );
+          continue;
+        }
+
+        // #3050/#3057 (B5): a 'unverified' finding means existsSync confirmed
+        // the worktree is present but statSync threw, so orphan/stale status
+        // could not be determined for THIS entry — it must not be silently
+        // dropped (that would be the exact fail-open the row exists to close).
+        if (finding['kind'] === 'unverified') {
+          addIssue(
+            'warning',
+            'W020',
+            `Worktree health check degraded: could not stat ${finding['path'] as string} — presence/staleness could not be verified`,
+            'Check filesystem permissions on the worktree path, or investigate why statSync failed for it',
+          );
         }
       }
     }

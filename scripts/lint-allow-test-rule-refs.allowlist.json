@@ -153,7 +153,6 @@
   "tests/settings-jsonc.test.cjs :: structural-regression-guard",
   "tests/skill-frontmatter-contract.test.cjs :: source-text-is-the-product",
   "tests/spawn-liveness-banner.test.cjs :: source-text-is-the-product",
-  "tests/state-acquirestatelock-non-eexist.test.cjs :: architectural-invariant",
   "tests/state.test.cjs :: source-text-is-the-product",
   "tests/subagent-timeout.test.cjs :: source-text-is-the-product",
   "tests/template.test.cjs :: source-text-is-the-product",

@@ -22,6 +22,7 @@ const {
   transitionCore,
 } = require('../gsd-core/bin/lib/state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+const { parseMarkdownTable } = require('../gsd-core/bin/lib/markdown-table.cjs');
 
 const fixedClock = Object.freeze({
   today: () => '2026-06-29',
@@ -30,7 +31,12 @@ const fixedClock = Object.freeze({
 });
 
 const noProgress = () => null;
-const noPhases = () => null;
+// #3057 B1: `phaseInventoryProvider` returns a discriminated result, never a
+// bare array-or-null — `{ ok: true, phases: [] }` is the genuinely-empty
+// benign case ("nothing to reconcile"), distinct from `{ ok: false, reason }`
+// (a scan that could not complete). See tests/helpers/faulty-deps.cjs and the
+// dedicated describe block below for the failure-path coverage.
+const noPhases = () => ({ ok: true, phases: [] });
 
 const baseDeps = Object.freeze({
   progressProvider: noProgress,
@@ -362,11 +368,14 @@ describe('ADR-1817 §2: rebuild reconciles **By Phase:** table via phaseInventor
     );
     const deps = {
       ...baseDeps,
-      phaseInventoryProvider: () => [
-        { number: '1', name: 'Phase 1', planCount: 2, summaryCount: 2 },
-        { number: '2', name: 'Phase 2', planCount: 3, summaryCount: 3 },
-        { number: '3', name: 'Test Phase', planCount: 5, summaryCount: 4 },
-      ],
+      phaseInventoryProvider: () => ({
+        ok: true,
+        phases: [
+          { number: '1', name: 'Phase 1', planCount: 2, summaryCount: 2 },
+          { number: '2', name: 'Phase 2', planCount: 3, summaryCount: 3 },
+          { number: '3', name: 'Test Phase', planCount: 5, summaryCount: 4 },
+        ],
+      }),
     };
     // First call with no phaseInventoryProvider → no-op (covered by its own test below).
     // Re-run with the provider-wired deps:
@@ -389,11 +398,14 @@ describe('ADR-1817 §2: rebuild reconciles **By Phase:** table via phaseInventor
     );
     const deps = {
       ...baseDeps,
-      phaseInventoryProvider: () => [
-        { number: '1', name: 'Phase 1', planCount: 2, summaryCount: 2 },
-        { number: '2', name: 'Phase 2', planCount: 3, summaryCount: 3 },
-        { number: '3', name: 'Test Phase', planCount: 5, summaryCount: 4 },
-      ],
+      phaseInventoryProvider: () => ({
+        ok: true,
+        phases: [
+          { number: '1', name: 'Phase 1', planCount: 2, summaryCount: 2 },
+          { number: '2', name: 'Phase 2', planCount: 3, summaryCount: 3 },
+          { number: '3', name: 'Test Phase', planCount: 5, summaryCount: 4 },
+        ],
+      }),
     };
     const result = transitionCore(drifted, { kind: 'rebuild' }, deps);
     assert.ok(result.content.includes('kind: by-phase-table-reconciled'),
@@ -405,12 +417,66 @@ describe('ADR-1817 §2: rebuild reconciles **By Phase:** table via phaseInventor
       /\| 3 \| 5 \| - \| - \|\n/,
       '| 3 | 5 | - | - |\n| 99 | 1 | - | - |\n',
     );
-    // baseDeps.phaseInventoryProvider = noPhases (returns null) → step is no-op.
+    // baseDeps.phaseInventoryProvider = noPhases ({ ok: true, phases: [] }) → step is no-op.
     const result = transitionCore(drifted, { kind: 'rebuild' }, baseDeps);
     assert.ok(result.content.includes('| 99 |'),
       'orphan row must be preserved when no canonical source is wired');
     assert.ok(!result.content.includes('kind: by-phase-table-reconciled'),
       'no log entry when step is a no-op');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — #3057 B1: a phase-inventory scan FAILURE must be distinguishable
+// from a genuinely-empty scan. Before the fix both were `null`, so a real
+// disk-scan failure and "no phases on disk" produced the identical result:
+// `state rebuild` could report success while by-phase-table reconciliation
+// silently never ran.
+// ---------------------------------------------------------------------------
+
+describe('#3057 B1: phaseInventoryProvider scan-failure is distinguishable from genuinely-empty', () => {
+  const drifted = () => cleanState().replace(
+    /\| 3 \| 5 \| - \| - \|\n/,
+    '| 3 | 5 | - | - |\n| 99 | 1 | - | - |\n',
+  );
+
+  test('FAILURE path: ok:false surfaces phase_inventory_scan_failed and leaves the table untouched', () => {
+    const deps = {
+      ...baseDeps,
+      phaseInventoryProvider: () => ({ ok: false, reason: 'EACCES: permission denied, readdir .planning/phases' }),
+    };
+    const result = transitionCore(drifted(), { kind: 'rebuild' }, deps);
+    assert.strictEqual(result.data.phase_inventory_scan_failed, true,
+      'a scan failure must set phase_inventory_scan_failed:true on the result data');
+    assert.strictEqual(result.data.phase_inventory_scan_reason,
+      'EACCES: permission denied, readdir .planning/phases',
+      'the failure reason must be threaded through to the caller');
+    const table = parseMarkdownTable(result.content);
+    assert.ok(table.ok, `By Phase table must parse; reason: ${table.ok ? '' : table.reason}`);
+    const phaseIds = table.value.rows.map((r) => r.Phase);
+    assert.ok(phaseIds.includes('99'),
+      'orphan row must be preserved — a failed scan is not a trustworthy inventory to reconcile against');
+    assert.ok(!result.data.log.some((e) => e.kind === 'by-phase-table-reconciled'),
+      'a failed scan must not log a by-phase-table-reconciled entry (nothing was actually reconciled)');
+  });
+
+  test('BENIGN path: ok:true with an empty phases array reports no failure and no reconciliation', () => {
+    const deps = {
+      ...baseDeps,
+      phaseInventoryProvider: () => ({ ok: true, phases: [] }),
+    };
+    const result = transitionCore(drifted(), { kind: 'rebuild' }, deps);
+    assert.strictEqual(result.data.phase_inventory_scan_failed, false,
+      'a genuinely-empty successful scan must report phase_inventory_scan_failed:false');
+    assert.strictEqual(result.data.phase_inventory_scan_reason, undefined,
+      'no reason field when the scan did not fail');
+    const table = parseMarkdownTable(result.content);
+    assert.ok(table.ok, `By Phase table must parse; reason: ${table.ok ? '' : table.reason}`);
+    const phaseIds = table.value.rows.map((r) => r.Phase);
+    assert.ok(phaseIds.includes('99'),
+      'orphan row is preserved (same visible outcome as the failure case — the DATA field is what distinguishes them)');
+    assert.ok(!result.data.log.some((e) => e.kind === 'by-phase-table-reconciled'),
+      'an empty inventory logs no reconciliation entry, same as the failure case');
   });
 });
 

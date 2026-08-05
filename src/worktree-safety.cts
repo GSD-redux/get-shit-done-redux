@@ -236,17 +236,26 @@ function planWorktreePrune(repoRoot: string, options: { allowDestructive?: boole
   }
 
   let worktrees: WorktreeBranchEntry[] = [];
+  let parseFailed = false;
   try {
     worktrees = parsePorcelain(listed.porcelain);
   } catch {
     // Keep historical behavior: still run metadata prune when parsing fails.
+    // #3050/#3057 (B6): but the reason must NOT collide with the
+    // genuinely-empty-list case below — a parser that could not read the
+    // porcelain output is not the same fact as "there are no worktrees", and
+    // this plan drives a PRUNE, so conflating them means a prune decision made
+    // on unread data would be indistinguishable from one made on real data.
     worktrees = [];
+    parseFailed = true;
   }
 
   return {
     repoRoot,
     action: 'metadata_prune_only',
-    reason: worktrees.length === 0 ? 'no_worktrees' : 'worktrees_present',
+    reason: parseFailed
+      ? 'parse_failed'
+      : (worktrees.length === 0 ? 'no_worktrees' : 'worktrees_present'),
     destructiveModeRequested,
   };
 }
@@ -326,7 +335,7 @@ function listLinkedWorktreePaths(repoRoot: string, deps: WorktreeDeps = {}): Lin
 }
 
 interface WorktreeFinding {
-  kind: 'orphan' | 'stale';
+  kind: 'orphan' | 'stale' | 'unverified';
   path: string;
   ageMinutes?: number;
 }
@@ -349,9 +358,21 @@ function inspectWorktreeHealth(repoRoot: string, options: { staleAfterMs?: numbe
 
   const findings: WorktreeFinding[] = [];
   for (const entry of inventory.entries) {
-    if (!entry.exists) {
+    if (entry.exists === 'absent') {
       findings.push({
         kind: 'orphan',
+        path: entry.path,
+      });
+      continue;
+    }
+    if (entry.exists === 'unverified') {
+      // #3050/#3057 (B5): existsSync confirmed the path is present but statSync
+      // threw, so age/staleness could not be determined. This is neither
+      // "orphan" (existsSync says it IS there) nor "healthy" (we never verified
+      // it) — surface it as its own finding so a caller can't silently treat an
+      // unverifiable worktree as confirmed present-and-not-stale.
+      findings.push({
+        kind: 'unverified',
         path: entry.path,
       });
       continue;
@@ -374,7 +395,15 @@ function inspectWorktreeHealth(repoRoot: string, options: { staleAfterMs?: numbe
 
 interface InventoryEntry {
   path: string;
-  exists: boolean;
+  /**
+   * Tri-state (#3050/#3057, B5): `'present'` = existsSync AND statSync both
+   * succeeded (confirmed present, age known); `'absent'` = existsSync confirmed
+   * the path is genuinely absent; `'unverified'` = existsSync confirmed presence
+   * but statSync threw — presence could not be fully verified. `'unverified'`
+   * MUST NOT be treated as `'present'`: a caller that could not check must not
+   * report the worktree as confirmed present.
+   */
+  exists: 'present' | 'absent' | 'unverified';
   isStale: boolean;
   ageMinutes: number | null;
 }
@@ -401,7 +430,7 @@ function snapshotWorktreeInventory(repoRoot: string, options: { staleAfterMs?: n
 
   const entries: InventoryEntry[] = [];
   for (const worktreePath of listed.paths) {
-    let exists = false;
+    let exists: 'present' | 'absent' | 'unverified' = 'absent';
     let isStale = false;
     let ageMinutes: number | null = null;
 
@@ -415,16 +444,21 @@ function snapshotWorktreeInventory(repoRoot: string, options: { staleAfterMs?: n
       continue;
     }
 
-    exists = true;
     try {
       const stat = statSync(worktreePath);
+      exists = 'present';
       const ageMs = nowMs - stat.mtimeMs;
       ageMinutes = Math.round(ageMs / 60000);
       if (ageMs > staleAfterMs) {
         isStale = true;
       }
     } catch {
-      // Keep historical behavior: stat failures are ignored.
+      // #3050/#3057 (B5): a statSync throw means presence could not be
+      // verified — do NOT report exists:'present' (a guard that could not
+      // check must not claim the worktree is confirmed present). Distinguish
+      // from the genuinely-absent case above with a third state ('unverified')
+      // rather than silently falling through to the pre-existing 'present' default.
+      exists = 'unverified';
     }
     entries.push({
       path: worktreePath,
