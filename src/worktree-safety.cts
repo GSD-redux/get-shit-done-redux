@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit as execGitSeam, posixNormalize, isSpawnTimeout } from './shell-command-projection.cjs';
+import { execGit as execGitSeam, posixNormalize, type SpawnResultOutput } from './shell-command-projection.cjs';
 
 // Default timeout for worktree-related git subprocess calls.
 // 10 s is generous enough for normal git operations on large repos while still
@@ -21,31 +21,22 @@ const DEFAULT_GIT_TIMEOUT_MS = 10000;
 const WORKTREE_AGENT_BRANCH_RE = /^(worktree-)?agent-[A-Za-z0-9._/-]+$/;
 const WORKTREE_AGENT_BRANCH_PATTERN = WORKTREE_AGENT_BRANCH_RE.source;
 
-interface GitResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  signal?: string | null;
-  error?: NodeJS.ErrnoException | null;
-  timedOut: boolean;
-}
+// GitResult now aliases the canonical SpawnResultOutput (shell-command-projection.cts),
+// which already carries `timedOut` — kept as a local name since it is referenced
+// below (gitResultOk).
+type GitResult = SpawnResultOutput;
 
-type ExecGitFn = (args: string[], opts?: { cwd?: string; timeout?: number }) => GitResult;
+type ExecGitFn = typeof execGitSeam;
 
 /**
- * Execute a git command via the shell-projection seam, with a derived
- * `timedOut` field. Tests inject mocks via deps.execGit using the new
+ * Execute a git command via the shell-projection seam, applying the module's
+ * default timeout. `timedOut` is now derived by the seam itself
+ * (shell-command-projection.cts's `_spawnResult`), so this is a thin
+ * passthrough. Tests inject mocks via deps.execGit using the same
  * (args, opts) shape — see worktree-safety-policy.test.cjs.
- *
- * Return shape: { exitCode, stdout, stderr, timedOut, error, signal }
- *   - timedOut: derived via the shared `isSpawnTimeout` predicate
- *     (shell-command-projection.cts) — true when spawnSync's `error.code`
- *     is `ETIMEDOUT`; does not require `signal === 'SIGTERM'` (#3050).
  */
-function execGitDefault(args: string[], opts: { cwd?: string; timeout?: number } = {}): GitResult {
-  const result = execGitSeam(args, { ...opts, timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS });
-  const timedOut = isSpawnTimeout(result);
-  return { ...result, timedOut };
+function execGitDefault(args: string[], opts: { cwd?: string; env?: Record<string, string>; timeout?: number } = {}): GitResult {
+  return execGitSeam(args, { ...opts, timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS });
 }
 
 interface WorktreeBranchEntry {
