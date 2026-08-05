@@ -10,7 +10,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { execGit as execGitSeam, posixNormalize, isSpawnTimeout } from './shell-command-projection.cjs';
+import { execGit as execGitSeam, posixNormalize, type SpawnResultOutput } from './shell-command-projection.cjs';
 
 // Default timeout for worktree-related git subprocess calls.
 // 10 s is generous enough for normal git operations on large repos while still
@@ -21,31 +21,22 @@ const DEFAULT_GIT_TIMEOUT_MS = 10000;
 const WORKTREE_AGENT_BRANCH_RE = /^(worktree-)?agent-[A-Za-z0-9._/-]+$/;
 const WORKTREE_AGENT_BRANCH_PATTERN = WORKTREE_AGENT_BRANCH_RE.source;
 
-interface GitResult {
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  signal?: string | null;
-  error?: NodeJS.ErrnoException | null;
-  timedOut: boolean;
-}
+// GitResult now aliases the canonical SpawnResultOutput (shell-command-projection.cts),
+// which already carries `timedOut` — kept as a local name since it is referenced
+// below (gitResultOk).
+type GitResult = SpawnResultOutput;
 
-type ExecGitFn = (args: string[], opts?: { cwd?: string; timeout?: number }) => GitResult;
+type ExecGitFn = typeof execGitSeam;
 
 /**
- * Execute a git command via the shell-projection seam, with a derived
- * `timedOut` field. Tests inject mocks via deps.execGit using the new
+ * Execute a git command via the shell-projection seam, applying the module's
+ * default timeout. `timedOut` is now derived by the seam itself
+ * (shell-command-projection.cts's `_spawnResult`), so this is a thin
+ * passthrough. Tests inject mocks via deps.execGit using the same
  * (args, opts) shape — see worktree-safety-policy.test.cjs.
- *
- * Return shape: { exitCode, stdout, stderr, timedOut, error, signal }
- *   - timedOut: derived via the shared `isSpawnTimeout` predicate
- *     (shell-command-projection.cts) — true when spawnSync's `error.code`
- *     is `ETIMEDOUT`; does not require `signal === 'SIGTERM'` (#3050).
  */
-function execGitDefault(args: string[], opts: { cwd?: string; timeout?: number } = {}): GitResult {
-  const result = execGitSeam(args, { ...opts, timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS });
-  const timedOut = isSpawnTimeout(result);
-  return { ...result, timedOut };
+function execGitDefault(args: string[], opts: { cwd?: string; env?: Record<string, string>; timeout?: number } = {}): GitResult {
+  return execGitSeam(args, { ...opts, timeout: opts.timeout ?? DEFAULT_GIT_TIMEOUT_MS });
 }
 
 interface WorktreeBranchEntry {
@@ -150,18 +141,24 @@ interface WorktreeContextResult {
   reason: string;
 }
 
-function resolveWorktreeContext(cwd: string, deps: WorktreeDeps = {}): WorktreeContextResult {
+/**
+ * Shortcut-free git-dir-vs-git-common-dir comparison: the actual primitive
+ * that distinguishes a linked worktree from the main worktree.
+ *
+ * Deliberately factored out of `resolveWorktreeContext` (#3045). That
+ * function's `has_local_planning` shortcut answers a DIFFERENT question ("is
+ * there already a usable project root right here") and must NOT be consulted
+ * for isolation detection: a git worktree created specifically to isolate an
+ * executor is a full checkout, so it normally has its OWN checked-out
+ * `.planning/` too. A caller that ran the shortcut first would read that
+ * correctly-isolated worktree as `current_directory`/`has_local_planning` —
+ * i.e. "not isolated" — a false positive that defeats the very isolation
+ * guard that needs this check (see `hooks/gsd-cursor-subagent-start.js`,
+ * #3045). `resolveWorktreeLinkage` always performs the real git-dir
+ * comparison, independent of whether `.planning` exists locally.
+ */
+function resolveWorktreeLinkage(cwd: string, deps: WorktreeDeps = {}): WorktreeContextResult {
   const execGit = deps.execGit || execGitDefault;
-  const existsSync = deps.existsSync || fs.existsSync;
-
-  // Local .planning takes precedence over linked-worktree remapping.
-  if (existsSync(path.join(cwd, '.planning'))) {
-    return {
-      effectiveRoot: cwd,
-      mode: 'current_directory',
-      reason: 'has_local_planning',
-    };
-  }
 
   const gitDir = execGit(['rev-parse', '--git-dir'], { cwd });
   const commonDir = execGit(['rev-parse', '--git-common-dir'], { cwd });
@@ -201,6 +198,21 @@ function resolveWorktreeContext(cwd: string, deps: WorktreeDeps = {}): WorktreeC
     mode: 'current_directory',
     reason: 'main_worktree',
   };
+}
+
+function resolveWorktreeContext(cwd: string, deps: WorktreeDeps = {}): WorktreeContextResult {
+  const existsSync = deps.existsSync || fs.existsSync;
+
+  // Local .planning takes precedence over linked-worktree remapping.
+  if (existsSync(path.join(cwd, '.planning'))) {
+    return {
+      effectiveRoot: cwd,
+      mode: 'current_directory',
+      reason: 'has_local_planning',
+    };
+  }
+
+  return resolveWorktreeLinkage(cwd, deps);
 }
 
 interface WorktreePrunePlan {
@@ -1850,6 +1862,7 @@ function pruneOrphanedWorktrees(repoRoot: string): string[] {
 
 export = {
   resolveWorktreeContext,
+  resolveWorktreeLinkage,
   parseWorktreePorcelain,
   planWorktreePrune,
   executeWorktreePrunePlan,

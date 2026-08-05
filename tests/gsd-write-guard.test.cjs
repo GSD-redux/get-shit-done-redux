@@ -26,8 +26,8 @@ const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-write-guard.js');
 
@@ -35,16 +35,25 @@ const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-write-guard.js');
  * Run the hook with a given payload. The override env var is stripped by
  * default so an outer environment can never leak a bypass into the tests;
  * pass extraEnv to set it explicitly.
+ *
+ * Returns an object shaped like the raw spawnSync() result (status/stdout/
+ * stderr) because every call site in this file was written against that
+ * shape; the seam itself returns exitCode, not status, so it is mapped here.
+ * 10_000ms: gsd-write-guard.js does no subprocess work of its own (pure
+ * fs reads + JSON, no execFileSync/spawnSync inside the hook) — generous
+ * headroom over the fs-bound workload without matching the 30_000ms figure
+ * sibling suites use for guards that shell out to git.
  */
 function runHook(payload, extraEnv = {}) {
   const env = { ...process.env };
   delete env.GSD_ALLOW_PLANNING_SHRINK;
   Object.assign(env, extraEnv);
-  return spawnSync(process.execPath, [HOOK_PATH], {
+  const r = runHookSeam(HOOK_PATH, [], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-    encoding: 'utf8',
     env,
+    timeoutMs: 10_000,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 function lines(n, tag = 'line') {

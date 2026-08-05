@@ -14,6 +14,7 @@ const path = require('path');
 const os = require('node:os');
 const { execFileSync, spawnSync } = require('child_process');
 const { createTempProject, cleanup, runGsdTools, delay } = require('./helpers.cjs');
+const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 
 const {
   graphifyStatus,
@@ -249,7 +250,12 @@ describe('auto-update', () => {
     const PATH = pathPrepend
       ? `${pathPrepend}${path.delimiter}${process.env.PATH || ''}`
       : process.env.PATH || '';
-    return spawnSync('bash', [HOOK], {
+    // 30000ms: already bounded pre-migration (unchanged) — this is the `slow`
+    // suite and the hook itself dispatches a detached graphify rebuild that
+    // some tests wait on separately; the hook's own synchronous return (gate
+    // checks + status-file write) is fast, so 30s stays generous headroom.
+    const r = seamRunHook(HOOK, [], {
+      interpreter: 'bash',
       cwd: tmpDir,
       input: JSON.stringify(toolPayload),
       env: {
@@ -258,9 +264,9 @@ describe('auto-update', () => {
         CI: '',
         ...env,
       },
-      encoding: 'utf8',
-      timeout: 30000,
+      timeoutMs: 30000,
     });
+    return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
   }
 
   // Wait until the detached rebuild writes a terminal status, with a generous

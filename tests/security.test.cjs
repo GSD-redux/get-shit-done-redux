@@ -455,20 +455,14 @@ describe('validateFieldName', () => {
 // Verify that gsd-context-monitor and gsd-statusline reject session_id values
 // containing path traversal sequences before constructing temp file paths.
 
-const { execFileSync } = require('child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 function runHook(hookPath, inputJson) {
-  try {
-    const result = execFileSync(process.execPath, [hookPath], {
-      input: JSON.stringify(inputJson),
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 3000,
-    });
-    return { exitCode: 0, stdout: result };
-  } catch (err) {
-    return { exitCode: err.status || 1, stdout: err.stdout || '', stderr: err.stderr || '' };
-  }
+  const result = runHookSeam(hookPath, [], {
+    input: JSON.stringify(inputJson),
+    timeoutMs: 3000,
+  });
+  return { exitCode: result.exitCode, stdout: result.stdout, stderr: result.stderr };
 }
 
 describe('gsd-context-monitor session_id path traversal', () => {

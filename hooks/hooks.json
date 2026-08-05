@@ -27,6 +27,12 @@
         "hooks": [
           { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/gsd-write-guard.js\"", "timeout": 5 }
         ]
+      },
+      {
+        "matcher": "Agent|Task",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/gsd-agent-isolation-guard.js\"", "timeout": 5 }
+        ]
       }
     ],
     "PostToolUse": [

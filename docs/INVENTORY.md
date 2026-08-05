@@ -603,7 +603,7 @@ Full listing: `hooks/`.
 | `gsd-cursor-post-tool.js` | Cursor `postToolUse` | Cursor-native STATE.md update monitor after tool calls (issue #777) |
 | `gsd-cursor-pre-tool.js` | Cursor `preToolUse` | Cursor-native write-path guard for `.planning/` (ADR-1239 / #2089) |
 | `gsd-cursor-stop.js` | Cursor `stop` | Cursor-native verify-work reminder on agent stop (ADR-1239 / #2089) |
-| `gsd-cursor-subagent-start.js` | Cursor `subagentStart` | Cursor-native subagent context injection (ADR-1239 / #2089) |
+| `gsd-cursor-subagent-start.js` | Cursor `subagentStart` | Cursor-native subagent context injection (ADR-1239 / #2089); hard-blocks an executor subagent whose session is not actually isolated when the project resolves to `harness-worktree` (#3045) |
 | `gsd-cursor-subagent-stop.js` | Cursor `subagentStop` | Cursor-native subagent completion reminder (ADR-1239 / #2089) |
 | `gsd-windsurf-pre-write.js` | Windsurf/Cascade `pre_write_code` | Blocking (exit-code-2) write-path guard — blocks a write resolving to a different git root than cwd, or inside `.git/` internals (ADR-1239 / #2100) |
 | `gsd-windsurf-pre-command.js` | Windsurf/Cascade `pre_run_command` | Blocking (exit-code-2) destructive-command guard — conservative deny-list (`rm -rf` root/home wipes, force-push to a protected branch) (ADR-1239 / #2100) |
@@ -612,6 +612,7 @@ Full listing: `hooks/`.
 | `gsd-read-guard.js` | `PreToolUse` | Advisory guard preventing Edit/Write on unread files |
 | `gsd-read-injection-scanner.js` | `PostToolUse` | Scans tool Read results for prompt-injection patterns (v1.36+, PR #2201) |
 | `gsd-worktree-path-guard.js` | `PreToolUse` | Hard-blocks Edit/Write/MultiEdit with absolute paths outside the worktree root (PR #579, #260) |
+| `gsd-agent-isolation-guard.js` | `PreToolUse` | Hard-blocks an executor `Agent()` dispatch missing its harness isolation parameter when the project's resolved dispatch isolation is `harness-worktree` (#3045) |
 | `gsd-write-guard.js` | `PreToolUse` | Hard-blocks a whole-file `Write` that catastrophically shrinks a curated `.planning/` artifact (ROADMAP.md, milestone roadmaps, STATE.md); override via the single-use sentinel `.planning/.gsd-allow-shrink` (workflow steps) or `GSD_ALLOW_PLANNING_SHRINK=1` (interactive) (#2255, fix 3 of #973) |
 | `gsd-config-reload.js` | `FileChanged` | Hot-reloads GSD config context when `.planning/config.json` changes mid-session (#770) |
 | `gsd-ensure-canonical-path.js` | `SessionStart` | Symlinks `~/.claude/gsd-core/{bin,contexts,references,templates,workflows}` to the plugin's bundled tree so `@~/.claude/gsd-core/...` includes resolve in marketplace plugin installs; no-op in classic installs, self-heals after `claude plugin update` (#997) |

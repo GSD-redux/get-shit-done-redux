@@ -16,6 +16,7 @@
  * stale warnings for users who haven't cleaned up manually (#1750).
  */
 const MANAGED_HOOKS = [
+  'gsd-agent-isolation-guard.js',
   'gsd-check-update-worker.js',
   'gsd-check-update.js',
   'gsd-config-reload.js',
