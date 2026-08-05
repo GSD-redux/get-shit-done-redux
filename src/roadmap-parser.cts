@@ -34,6 +34,10 @@ const {
   // the owner's gated helpers rather than spelling the grammar a second time.
   isSentinelPhaseId,
   phaseTokenMatches,
+  // #2761 B1: the version-less bracket milestone boundary (computeSectionEnd /
+  // preambleCutoff, below) is built from this single-owner source rather than a
+  // re-typed `[A-Z][A-Z0-9_]*\.\d+` literal.
+  BRACKET_ID_SRC,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -227,6 +231,26 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
 
   const sectionStart = selected.index;
 
+  // #2761 B1: the ADR-canonical bracket milestone heading (`## [GSD.02]
+  // Foundation`) carries no `vN.N` and no status emoji, so neither
+  // `computeSectionEnd` below nor the `preambleCutoff` scan further down
+  // recognised it as a milestone boundary — every LATER milestone swept into
+  // `computeSectionEnd`'s scope, and every PRIOR milestone landed in
+  // `preambleCutoff`'s preamble. Under the bracket scope branch, a `#{1,2}`
+  // bracket milestone heading is ALSO a valid boundary; `#{1,2}` (not `#{1,3}`)
+  // is the deliberate discriminator — a bracket PHASE heading
+  // (`### [CODE.MM] N:`) is level 3 and carries the same `[CODE.MM]` prefix, so
+  // a `#{1,3}` boundary would treat it as a milestone boundary too. Built from
+  // phase-id.cts's BRACKET_ID_SRC (single owner of the bracket-id grammar)
+  // rather than a re-typed literal. `bracketScopeConvention` is only ever
+  // resolved to `'bracket'` above when the bracket scope branch actually fired
+  // (see its own guard comment), so a version-bearing/emoji heading or a
+  // non-bracket convention leaves this null and takes the exact pre-existing
+  // code path, byte-identically.
+  const bracketMilestoneHeadingRe = bracketScopeConvention === 'bracket'
+    ? new RegExp(`^\\[${BRACKET_ID_SRC}\\]`, 'i')
+    : null;
+
   const computeSectionEnd = (headingText: string, headingStart: number): number => {
     const level = (headingText.match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
     const afterHeading = headingStart + headingText.length;
@@ -239,8 +263,11 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
       if (h.level > level) continue;
       // Mirrors old stopPattern: level-bounded, not a Phase heading, milestone marker
       if (/^Phase\s+\S/i.test(h.text)) continue;
-      if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
-      return h.offset;
+      if (/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) return h.offset;
+      if (bracketMilestoneHeadingRe && h.level <= 2 && bracketMilestoneHeadingRe.test(h.text)) {
+        return h.offset;
+      }
+      continue;
     }
     return content.length;
   };
@@ -248,7 +275,21 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
   const sectionEnd = computeSectionEnd(selected[0], sectionStart);
 
   const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
-  const firstMilestoneMatch = content.match(anyMilestonePattern);
+  let firstMilestoneMatch = content.match(anyMilestonePattern);
+  if (bracketMilestoneHeadingRe) {
+    // Same discriminator as computeSectionEnd: `#{1,2}` only, so a bracket
+    // PHASE heading is never mistaken for a milestone boundary here either.
+    // Earliest-of-either-shape, so a version-bearing PRIOR milestone in an
+    // otherwise version-less roadmap still cuts the preamble correctly.
+    const anyBracketMilestonePattern = new RegExp(`^#{1,2}\\s+\\[${BRACKET_ID_SRC}\\]`, 'im');
+    const bracketMilestoneMatch = content.match(anyBracketMilestonePattern);
+    if (
+      bracketMilestoneMatch &&
+      (firstMilestoneMatch === null || bracketMilestoneMatch.index! < firstMilestoneMatch.index!)
+    ) {
+      firstMilestoneMatch = bracketMilestoneMatch;
+    }
+  }
   const preambleCutoff = firstMilestoneMatch
     ? firstMilestoneMatch.index!
     : firstMatch.index;
