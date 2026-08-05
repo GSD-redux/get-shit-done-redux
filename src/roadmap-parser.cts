@@ -911,10 +911,18 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
       // Canonical padded milestone spelling only. Accepting `[CODE.2]` would
       // bound a section whose phase headings the bracket grammar rejects.
       const canonical = String(milestoneInt).padStart(2, '0');
-      headingMatches = [...content.matchAll(new RegExp(
-        `(^#{1,3}\\s+\\[[A-Z][A-Z0-9_]*\\.${canonical}\\][^\\n]*)`,
-        'gmi',
-      ))];
+      // #612 round-4: keep the canonical padded-id fallback from the upstream
+      // selector, but restrict its candidates to real (unfenced) headings.
+      // Rebuild the match shape expected by the existing section-boundary and
+      // version-token consumers without changing first-match document order.
+      const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
+      headingMatches = tokenizeHeadings(content)
+        .filter((h) => h.level <= 3 && bracketMilestoneHeadingRe.test(h.text))
+        .map((h) => {
+          const lineEnd = content.indexOf('\n', h.offset);
+          const fullLine = content.slice(h.offset, lineEnd === -1 ? content.length : lineEnd);
+          return Object.assign([fullLine, fullLine], { index: h.offset }) as RegExpExecArray;
+        });
     }
   }
 
