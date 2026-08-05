@@ -767,6 +767,9 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
   // heading; it never replaces or re-derives the legacy lookup.
   let headingMatches = locateMilestoneHeadings(content, version);
 
+  // #2761 B3: resolve the boundary convention independently of whether the
+  // version-heading owner already selected a match. Preserve an explicitly
+  // threaded convention; otherwise resolve from this call's workspace.
   let bracketScopeConvention: string | null = phaseIdConvention ?? null;
   if (phaseIdConvention === undefined) {
     try {
@@ -850,9 +853,10 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
 
   const sectionStart = selected.index;
 
-  // #2761 B1: name-only bracket milestones carry neither a version nor a
-  // status marker. Compose that gated boundary with upstream's centralized
-  // section-end owner instead of restoring the former inline copy.
+  // #2761 B1/B3: name-only bracket milestones carry neither a version nor
+  // a status marker. Compose that gated boundary with upstream's centralized
+  // section-end owner whenever this call resolves the bracket convention,
+  // regardless of which heading-selection path succeeded.
   const bracketMilestoneHeadingRe = bracketScopeConvention === 'bracket'
     ? new RegExp(`^\\[${BRACKET_ID_SRC}\\]`, 'i')
     : null;
