@@ -1514,7 +1514,7 @@ describe('milestone complete explicit version scope (#3043)', () => {
       );
       fs.writeFileSync(path.join(tmpDir, '.planning', 'REQUIREMENTS.md'), '# Requirements\n');
 
-      for (const [dir, liner] of [['103.old', 'old milestone A'], ['104.old', 'old milestone B'], ['108.new', 'new milestone']]) {
+      for (const [dir, liner] of [['103-old', 'old milestone A'], ['104-old', 'old milestone B'], ['108-new', 'new milestone']]) {
         const p = path.join(tmpDir, '.planning', 'phases', dir);
         fs.mkdirSync(p, { recursive: true });
         fs.writeFileSync(path.join(p, 'SUMMARY.md'), `one-liner: ${liner}\n\n## Summary\n${liner.split(' ')[0]}\n`);
