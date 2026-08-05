@@ -1599,8 +1599,13 @@ function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: 
   // whole-disk) phase set. tokenizeHeadings never produces a token for a
   // fenced line, so a fenced-only example can no longer satisfy this test.
   const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
+  // #612 round-5 (Minor 1): skip ≤3-space-indented tokens — `h.offset` is
+  // tokenizeHeadings' LINE-START offset, not the `#` character, so an
+  // indented heading here would bound a milestone the line-start-anchored
+  // raw predecessor never matched. Restores raw parity; see roadmap-parser's
+  // matching selector-reconstruction comment for the full rationale.
   return tokenizeHeadings(roadmapRaw).some(
-    (h) => h.level <= 3 && bracketMilestoneHeadingRe.test(h.text),
+    (h) => h.level <= 3 && roadmapRaw[h.offset] === '#' && bracketMilestoneHeadingRe.test(h.text),
   );
 }
 

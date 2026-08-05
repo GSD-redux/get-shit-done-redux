@@ -2745,3 +2745,89 @@ describe('#612 PR-2 round-5 Major 2: state sync excludes the bracket 999 icebox 
     assert.equal(syncedPercent(), 33, 'the legacy asymmetry is genuinely pre-existing — deliberately unchanged');
   });
 });
+
+// ─── #2761 round-5 Minor 1: the two tokenizeHeadings reconstructions ───────
+// ─── (bracket-fallback selector, isMilestoneBounded) accept indented ───────
+// ─── headings their raw line-start-anchored predecessors never did ─────────
+//
+// `HeadingToken.offset` is `tokenizeHeadings`' LINE-START offset. For a
+// ≤3-space-indented heading that is NOT the `#` character's own offset, so
+// a token the raw `^#{1,3}\s+\[...` regex never matched (indentation moves
+// it off the line-start anchor) was still accepted by the reconstruction,
+// which then mis-parses (selectedBracketId null, a sibling milestone's
+// phases leaking into the scope).
+describe('#612 PR-2 round-5 Minor 1: bracket-fallback selector skips indented headings (raw parity)', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r5min1-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('RED (G6): a 2-space-indented, version-less bracket milestone heading no longer leaks the NEXT milestone\'s phases in — 2/1/50, not 3/2/67', () => {
+    writeProject(`# Roadmap
+
+  ## [GSD.02] Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+## [GSD.03] Later
+
+### [GSD.03] 01: Later one
+**Goal:** c
+`, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later-one', true]]);
+    assert.equal(readTotal(), 2, 'pinned 3 before this fix — GSD.03\'s phase leaked into scope');
+    assert.equal(syncedPercent(), 50, 'pinned 67 before this fix');
+  });
+
+  test('PIN (G6c UNINDENTED control): the identical document with no leading indent is unaffected — 2/1/50', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+## [GSD.03] Later
+
+### [GSD.03] 01: Later one
+**Goal:** c
+`, 'bracket', [['GSD.02-01-one', true], ['GSD.02-02-two', false], ['GSD.03-01-later-one', true]]);
+    assert.equal(readTotal(), 2);
+    assert.equal(syncedPercent(), 50);
+  });
+
+  // G6 above happens to leave isMilestoneBounded's own verdict unchanged
+  // either way — the phase headings (`### [GSD.02] 01: One`, unindented)
+  // already satisfy its loose bracket-prefix regex, so it returns bounded=true
+  // both before and after this fix on that fixture. This second fixture
+  // isolates isMilestoneBounded specifically: the ONLY `[GSD.02]`-shaped
+  // heading anywhere in the document is indented, mirroring round-4's F12
+  // (fenced-ONLY) shape but with indentation as the parity gap instead of a
+  // fence.
+  test('RED (isMilestoneBounded site, indented-ONLY): an indented-only bracket heading no longer bounds a milestone absent from the roadmap — percent stays suppressed', () => {
+    const dirs = [['GSD.01-01-old', true], ['GSD.02-01-one', true], ['GSD.02-02-two', false]];
+    writeProject(`# Roadmap
+
+Authoring guide:
+
+  ## [GSD.02] Example milestone heading
+
+## [GSD.01] v1.0: Prior
+
+### [GSD.01] 01: Old
+**Goal:** a
+`, 'bracket', dirs);
+    const r = runGsdTools(['state', 'json'], tmpDir);
+    assert.ok(r.success, `state json failed: ${r.error}`);
+    const progress = JSON.parse(r.output).progress;
+    assert.equal(progress?.percent, undefined, 'pinned 100 before this fix — an indented-only [GSD.02] example wrongly bounded a milestone with no real section');
+    const syncResult = runGsdTools(['state', 'sync'], tmpDir);
+    assert.ok(syncResult.success);
+    const raw = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    assert.match(raw, /\*\*Progress:\*\*[^\r\n]*?0%/, 'pinned 100% persisted before this fix; body must stay at its seed');
+  });
+});

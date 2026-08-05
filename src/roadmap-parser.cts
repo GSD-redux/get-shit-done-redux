@@ -369,13 +369,16 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
       // match-shaped array ([fullLine, fullLine], with `.index`) so every
       // downstream consumer of `headingMatches` (computeSectionEnd, the
       // version-token lookup) sees the exact shape the raw-regex path always
-      // produced — `content.slice(h.offset, lineEnd)` is byte-identical to
-      // what `[^\n]*` would have captured for any UNFENCED heading, since
-      // `h.offset` is the same `#`-character coordinate space
-      // `content.match().index` used.
+      // produced. `h.offset` is `tokenizeHeadings`' LINE-START offset, not
+      // necessarily the `#` character itself — a ≤3-space-indented heading
+      // has both — so the `content[h.offset] === '#'` filter above discards
+      // any token the line-start-anchored raw `^#{1,3}\s+\[...` would never
+      // have matched. For every survivor, `h.offset` IS the `#` character,
+      // so `content.slice(h.offset, lineEnd)` is byte-identical to what
+      // `[^\n]*` would have captured at `content.match().index`.
       const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
       headingMatches = tokenizeHeadings(content)
-        .filter((h) => h.level <= 3 && bracketMilestoneHeadingRe.test(h.text))
+        .filter((h) => h.level <= 3 && content[h.offset] === '#' && bracketMilestoneHeadingRe.test(h.text))
         .map((h) => {
           const lineEnd = content.indexOf('\n', h.offset);
           const fullLine = content.slice(h.offset, lineEnd === -1 ? content.length : lineEnd);
