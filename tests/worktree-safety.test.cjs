@@ -31,6 +31,7 @@ const CORE_PATH = path.join(
 
 const {
   resolveWorktreeContext,
+  resolveWorktreeLinkage,
   parseWorktreePorcelain,
   planWorktreePrune,
   executeWorktreePrunePlan,
@@ -210,6 +211,59 @@ describe('resolveWorktreeContext', () => {
       const context = resolveWorktreeContext('/repo', { existsSync: () => false });
       assert.notStrictEqual(context.reason, 'git_timed_out');
     });
+  });
+});
+
+// ─── resolveWorktreeLinkage (#3045) ──────────────────────────────────────────
+// resolveWorktreeContext's `has_local_planning` shortcut answers "is there a
+// usable project root right here", not "is this a linked worktree" — a linked
+// worktree created to isolate an executor is a full checkout, so it normally
+// has its OWN checked-out .planning/ too. resolveWorktreeLinkage is the
+// shortcut-free primitive the isolation guard (hooks/gsd-cursor-subagent-start.js)
+// needs instead: it must report "linked_worktree_root" for such a worktree even
+// though .planning exists locally — exactly the case that would defeat the guard
+// if resolveWorktreeContext were reused as-is.
+describe('resolveWorktreeLinkage', () => {
+  test('reports linked_worktree_root even when .planning exists locally (the case resolveWorktreeContext would misclassify)',
+    { skip: isWindows ? 'POSIX-rooted fixture paths cannot be expressed on Windows path.resolve' : false },
+    () => {
+      // deliberately no `existsSync` dep at all — resolveWorktreeLinkage must
+      // never consult the filesystem for .planning; only git-dir comparison.
+      const linkage = resolveWorktreeLinkage('/repo/wt', {
+        execGit: (args) => {
+          if (args[1] === '--git-dir') return { exitCode: 0, stdout: '.git/worktrees/wt', stderr: '' };
+          if (args[1] === '--git-common-dir') return { exitCode: 0, stdout: '../.git', stderr: '' };
+          return { exitCode: 1, stdout: '', stderr: '' };
+        },
+      });
+      assert.strictEqual(linkage.mode, 'linked_worktree_root');
+      assert.strictEqual(linkage.reason, 'linked_worktree');
+      assert.strictEqual(linkage.effectiveRoot, '/repo');
+    });
+
+  test('reports main_worktree for the primary checkout', () => {
+    const linkage = resolveWorktreeLinkage('/repo/main', {
+      execGit: (args) => {
+        if (args[1] === '--git-dir') return { exitCode: 0, stdout: '.git', stderr: '' };
+        if (args[1] === '--git-common-dir') return { exitCode: 0, stdout: '.git', stderr: '' };
+        return { exitCode: 1, stdout: '', stderr: '' };
+      },
+    });
+    assert.strictEqual(linkage.mode, 'current_directory');
+    assert.strictEqual(linkage.reason, 'main_worktree');
+  });
+
+  test('git timeout → git_timed_out, never throws', () => {
+    const linkage = resolveWorktreeLinkage('/repo', { execGit: makeTimeoutStub() });
+    assert.strictEqual(linkage.reason, 'git_timed_out');
+    assert.strictEqual(linkage.effectiveRoot, '/repo');
+  });
+
+  test('not a git repo → not_git_repo', () => {
+    const linkage = resolveWorktreeLinkage('/repo', {
+      execGit: () => ({ exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' }),
+    });
+    assert.strictEqual(linkage.reason, 'not_git_repo');
   });
 });
 
@@ -4247,8 +4301,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-worktree-path-guard.js');
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
@@ -4305,11 +4360,17 @@ function makeWorktree(mainRepo, branchName) {
  * Run the hook with a given payload, returning the spawnSync result.
  */
 function runHook(cwd, payload) {
-  return spawnSync(process.execPath, [HOOK_PATH], {
+  // 10000ms: previously UNBOUNDED (no `timeout` option passed to spawnSync).
+  // gsd-worktree-path-guard.js is a synchronous, in-process path-guard hook
+  // (fs/path checks against a JSON stdin payload) — no subprocess or network
+  // work of its own. 10s leaves generous headroom over its sub-second
+  // worst case even on a heavily contended CI runner.
+  const r = seamRunHook(HOOK_PATH, [], {
     cwd,
     input: JSON.stringify(payload),
-    encoding: 'utf8',
+    timeoutMs: 10_000,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 // ---------------------------------------------------------------------------
@@ -5388,6 +5449,7 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { createTempGitProject, cleanup } = require('./helpers.cjs');
+const { runHook: seamRunHookGate } = require('./helpers/process-seam.cjs');
 
 // Bash snippet extracted from execute-phase.md (the SUBMODULE_PATHS parse +
 // per-plan intersection logic with normalization + bidirectional matching).
@@ -5461,11 +5523,27 @@ const GATE_SNIPPET = [
 ].join('\n');
 
 function runGate(cwd, env) {
-  const out = execFileSync('bash', ['-c', GATE_SNIPPET], {
+  // 30000ms: previously UNBOUNDED (execFileSync had no `timeout` option).
+  // The snippet is pure shell string/array parsing plus one `git config
+  // --file .gitmodules` lookup against a small fixture repo — matched to the
+  // 30s bound already established for the other bash guard snippets in this
+  // suite for consistency, though it does substantially less work than those.
+  const r = seamRunHookGate('-c', [GATE_SNIPPET], {
+    interpreter: 'bash',
     cwd,
-    encoding: 'utf-8',
+    timeoutMs: 30_000,
     env: { ...process.env, ...env },
   });
+  if (r.exitCode !== 0) {
+    // execFileSync THREW on non-zero exit; the seam does not. Reproduce that
+    // failure signal explicitly so a real gate-snippet failure still surfaces
+    // loudly instead of silently falling through to the parse below.
+    throw new Error(
+      `runGate: bash -c GATE_SNIPPET exited ${r.exitCode} (outcome=${r.outcome}). ` +
+      `stdout:\n${r.stdout}\nstderr:\n${r.stderr}`
+    );
+  }
+  const out = r.stdout;
   const lines = out.trim().split('\n');
   const last = lines[lines.length - 1];
   const m = last.match(/^USE_WORKTREES_FOR_PLAN=(true|false)$/);

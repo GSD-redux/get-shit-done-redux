@@ -609,7 +609,7 @@ describe('readGsdState', () => {
 // ─── CLAUDE_CODE_AUTO_COMPACT_WINDOW context meter (#2219) ──────────────────
 
 describe('context meter respects CLAUDE_CODE_AUTO_COMPACT_WINDOW (#2219)', () => {
-  const { execFileSync } = require('node:child_process');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
   const hookPath = path.join(__dirname, '..', 'hooks', 'gsd-statusline.js');
 
   /**
@@ -639,17 +639,8 @@ describe('context meter respects CLAUDE_CODE_AUTO_COMPACT_WINDOW (#2219)', () =>
       delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
     }
 
-    let stdout = '';
-    try {
-      stdout = execFileSync(process.execPath, [hookPath], {
-        input: payload,
-        env,
-        encoding: 'utf8',
-        timeout: 4000,
-      });
-    } catch (e) {
-      stdout = e.stdout || '';
-    }
+    const r = runHookSeam(hookPath, [], { input: payload, env, timeoutMs: 4000 });
+    const stdout = r.stdout;
 
     // Parse normalized used% from the statusline bar output (e.g. "60%")
     // Strip ANSI escape codes then extract the percentage digit(s) before "%"
@@ -1549,7 +1540,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
-  const { execFileSync } = require('node:child_process');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
   const { cleanup } = require('./helpers.cjs');
   const { formatTokens, contextTokenSuffix } = require('../hooks/gsd-statusline.js');
   const { VALID_CONFIG_KEYS } = require('../gsd-core/bin/lib/config-schema.cjs');
@@ -1639,16 +1630,9 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
           },
         },
       });
-      let stdout = '';
-      try {
-        stdout = execFileSync(process.execPath, [hookPath], {
-          input: payload, encoding: 'utf8', timeout: 4000,
-        });
-      } catch (e) {
-        stdout = e.stdout || '';
-      }
+      const r = runHookSeam(hookPath, [], { input: payload, timeoutMs: 4000 });
       // eslint-disable-next-line no-control-regex -- stripping ANSI SGR sequences from captured CLI output
-      return stdout.replace(/\x1b\[[0-9;]*m/g, '');
+      return r.stdout.replace(/\x1b\[[0-9;]*m/g, '');
     }
 
     test('flag=true appends the token count after the percentage', () => {
@@ -1986,6 +1970,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
   const os = require('node:os');
   const path = require('node:path');
   const { execFileSync } = require('node:child_process');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
   const { cleanup } = require('./helpers.cjs');
   const statusline = require('../hooks/gsd-statusline.js');
   const { parseGitStatus, buildGitSegment, readGitStatus, composeStatusline } = statusline;
@@ -2210,16 +2195,9 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
         workspace: { current_dir: dir },
         session_id: `test-git-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       });
-      let stdout = '';
-      try {
-        stdout = execFileSync(process.execPath, [hookPath], {
-          input: payload, encoding: 'utf8', timeout: 4000,
-        });
-      } catch (e) {
-        stdout = e.stdout || '';
-      }
+      const r = runHookSeam(hookPath, [], { input: payload, timeoutMs: 4000 });
       // eslint-disable-next-line no-control-regex -- stripping ANSI SGR sequences from captured CLI output
-      return stdout.replace(/\x1b\[[0-9;]*m/g, '');
+      return r.stdout.replace(/\x1b\[[0-9;]*m/g, '');
     }
 
     test('flag=true renders the branch segment', () => {

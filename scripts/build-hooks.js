@@ -51,6 +51,13 @@ const HOOKS_TO_COPY = [
   // .planning/config.json changes mid-session. Must ship to dist so the
   // installer can copy it to the target hooks/ dir and register FileChanged.
   'gsd-config-reload.js',
+  // Agent-dispatch isolation guard (#3045): blocks an executor Agent()
+  // dispatch missing its harness isolation parameter when the project
+  // resolves to harness-worktree. Requires the sibling
+  // gsd-core/bin/lib/{runtime-name-policy,capability-registry}.cjs modules
+  // at runtime — those ship as part of the full gsd-core/ tree, not via this
+  // list.
+  'gsd-agent-isolation-guard.js',
   'gsd-prompt-guard.js',
   'gsd-read-guard.js',
   'gsd-read-injection-scanner.js',

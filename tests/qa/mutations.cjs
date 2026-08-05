@@ -172,7 +172,7 @@ function crlf(text) {
  * @returns {string}
  */
 function bom(text) {
-  return `﻿${text}`;
+  return `\uFEFF${text}`;
 }
 
 /**

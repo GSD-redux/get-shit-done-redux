@@ -968,7 +968,7 @@ function buildPredicateDeps() {
         stdout: r.stdout,
         stderr: r.stderr,
         signal: r.signal,
-        timedOut: r.signal === 'SIGTERM',
+        timedOut: r.timedOut,
       };
     },
     findPhaseArtifact(phaseDir: string, artifactSuffix: string): string | null {

@@ -35,6 +35,7 @@ const {
   phaseMarkdownRegexSource,
   comparePhaseNum,
   phaseTokenMatches,
+  isSentinelPhaseId,
   OPTIONAL_PROJECT_CODE_PREFIX_SOURCE,
   OPTIONAL_PHASE_TAG_SOURCE,
   PHASE_NUMBER_TOKEN_SOURCE,
@@ -2240,10 +2241,17 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
 
             for (const reqId of citedReqIds) {
               const reqEscaped = escapeRegex(reqId);
-              reqContent = reqContent.replace(
-                new RegExp(`(-\\s*\\[)[ ](\\]\\s*\\*\\*${reqEscaped}\\*\\*)`, 'gi'),
-                '$1x$2',
-              );
+              // Surface 1 — the checkbox: - [ ] **REQ-ID** → - [x] **REQ-ID**.
+              // #2945: the flip is CONDITIONAL (porting #2788 defect-2's rollback from
+              // cmdRequirementsMarkComplete). Capture the pre-flip content; if a
+              // traceability row EXISTS for this ID below but its Status write is rejected
+              // (Out/Deferred/Blocked), the checkbox is rolled back so the two surfaces
+              // cannot silently diverge. A requirement recorded as deferred must not read
+              // as shipped.
+              const checkboxRe = new RegExp(`(-\\s*\\[)[ ](\\]\\s*\\*\\*${reqEscaped}\\*\\*)`, 'gi');
+              const beforeCheckbox = reqContent;
+              reqContent = reqContent.replace(checkboxRe, '$1x$2');
+              const checkboxFlipped = reqContent !== beforeCheckbox;
 
               // Traceability row: | <REQ-ID> | Phase N | Pending|In Progress | ->
               // ... Complete | via the markdown-table seam (ADR-2143 §7). Match the
@@ -2261,14 +2269,32 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
               // requirement's write. The "only flip Pending/In Progress ->
               // Complete" gate is folded into the newValue callback so one
               // updateTableCell call both probes and writes.
-              const reqUpdate = updateTraceabilityCell(reqContent, reqRowMatch, 'Status', (current) =>
+              // #2945: track tableHit (did the callback actually CHANGE the value?) so the
+              // checkbox rollback below can distinguish "row existed and accepted" from
+              // "row existed and rejected".
+              let tableHit = false;
+              const reqUpdate = updateTraceabilityCell(reqContent, reqRowMatch, 'Status', (current) => {
                 // #2788: accept `Gaps Found` too so a phase stranded by revert-phase (the
                 // gaps_found response) can complete without hand-editing the table.
-                /^(?:pending|in progress|gaps found)$/i.test(current.trim()) ? ' Complete ' : current);
+                if (/^(?:pending|in progress|gaps found)$/i.test(current.trim())) {
+                  tableHit = true;
+                  return ' Complete ';
+                }
+                return current;
+              });
               if (reqUpdate.ok) {
                 reqContent = reqUpdate.value;
               } else if (!isPlaceholderReqId(reqId)) {
                 traceabilityWriteMisses.push(reqId);
+              }
+
+              // #2945 defect-2 (port of milestone.cts:200-210): if a row EXISTS for this
+              // ID but its Status write was rejected (row reads Out/Deferred/Blocked,
+              // which the callback returned unchanged), roll the checkbox back so the
+              // checkbox and the row cannot silently diverge. reqUpdate.ok === a row
+              // matched (existence probe); !tableHit === the callback did not advance it.
+              if (checkboxFlipped && reqUpdate.ok && !tableHit) {
+                reqContent = beforeCheckbox;
               }
             }
           }
@@ -2574,7 +2600,14 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           let lowestOutstanding: { num: string; name: string } | null = null;
           while ((cbm = cbPattern.exec(milestoneScope)) !== null) {
             const isChecked = cbm[1].toLowerCase() === 'x';
-            if (!isChecked && comparePhaseNum(cbm[2], phaseNum) < 0) {
+            // #2949: exclude sentinel-range phase ids (0.x backlog, 999.x) from candidacy.
+            // comparePhaseNum("0.1","12") === -12, so without this guard an unchecked 0.x
+            // backlog row sorts below every real phase and is wrongly selected as next_phase,
+            // corrupting STATE.md and desyncing current_phase from current_phase_name.
+            // isSentinelPhaseId covers both sentinel ranges (SENTINEL_RANGES = [0, 999]); a
+            // real lower-numbered outstanding phase (e.g. Phase 9) is NOT a sentinel and is
+            // still selected, preserving #2028's out-of-order-completion behavior.
+            if (!isChecked && !isSentinelPhaseId(cbm[2]) && comparePhaseNum(cbm[2], phaseNum) < 0) {
               if (lowestOutstanding === null || comparePhaseNum(cbm[2], lowestOutstanding.num) < 0) {
                 lowestOutstanding = {
                   num: cbm[2],

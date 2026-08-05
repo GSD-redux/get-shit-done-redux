@@ -36,7 +36,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
-const { cleanup } = require('../helpers.cjs');
+const { cleanup, runNpm } = require('../helpers.cjs');
 const {
   MANIFEST_FAMILIES,
   MINIMUM_MANIFEST_FAMILIES,
@@ -689,8 +689,8 @@ function buildBaselineAtRef(ref, { cwd = REPO_ROOT } = {}) {
       fs.symlinkSync(sharedNodeModules, path.join(worktreeDir, 'node_modules'), 'dir');
     }
 
-    execFileSync('npm', ['run', 'build:lib'], {
-      cwd: worktreeDir, encoding: 'utf8', timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
+    runNpm(['run', 'build:lib'], {
+      cwd: worktreeDir, timeout: BUILD_LIB_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'pipe'],
     });
 
     // Run `cwd`'s OWN generator (not the worktree's — see the function doc for why),

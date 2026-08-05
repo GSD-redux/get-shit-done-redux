@@ -9,12 +9,24 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const GUARD_SCRIPT = path.resolve(__dirname, '..', 'scripts', 'lint-legacy-dir-name.cjs');
+
+// The guard itself does trivial work here (git ls-files against a 1-2 file
+// fixture repo, then a per-line regex scan), but it shells out to `git` as a
+// real subprocess and this call previously had NO timeout at all (unbounded
+// spawnSync). The seam requires an explicit bound, so pick one generous
+// enough to absorb a slow/contended CI runner's process-spawn and git-init
+// overhead without masking a genuine hang: 30s, matching the timeout this
+// suite already uses for the sibling check-npm-integrity.cjs script
+// invocation in tests/npm-integrity-gate.test.cjs (also a small-fixture,
+// single-subprocess CLI script).
+const GUARD_TIMEOUT_MS = 30_000;
 
 function createTempRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-legacy-test-'));
@@ -48,11 +60,12 @@ function runGuard(cwd) {
   // Simpler: run as a child process with the --cwd trick is not available for
   // scripts. Instead we pass the fixture dir path as an env var that the guard
   // can use to override REPO_ROOT when present.
-  return spawnSync(process.execPath, [GUARD_SCRIPT], {
+  const r = runNode([GUARD_SCRIPT], {
     cwd,
-    encoding: 'utf8',
     env: { ...process.env, GSD_LINT_LEGACY_REPO_ROOT: cwd },
+    timeoutMs: GUARD_TIMEOUT_MS,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 // ---------------------------------------------------------------------------

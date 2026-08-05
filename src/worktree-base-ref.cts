@@ -85,10 +85,7 @@ function parseJsonc(text: string): unknown {
 
 // ─── Internal types ───────────────────────────────────────────────────────────
 
-type ExecGitFn = (
-  args: string[],
-  opts?: { cwd?: string; env?: Record<string, string>; timeout?: number }
-) => { exitCode: number | null; stdout: string; stderr: string; signal: string | null; error: unknown };
+type ExecGitFn = typeof execGitSeam;
 
 // ─── Message constants (verbatim — downstream docs/tests depend on these) ─────
 
