@@ -1715,7 +1715,7 @@ function countRoadmapPhaseHeadings(
       // #612 READING-B: a bracket heading carries its sentinel in the
       // bracket, so `### [GSD.999] 01:` is an icebox item even though its
       // token is `01`.
-      if (isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
+      if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
       // #612: under bracket the token rule composes with the bracket-id
       // check as the engine's {0, 999} sentinel set.
       if (/^0\b/.test(token)) continue;

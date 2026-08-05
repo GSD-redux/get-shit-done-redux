@@ -2498,3 +2498,115 @@ Authoring guide:
     assert.equal(readTotal(), 2);
   });
 });
+
+// ─── #2761 round-5 Blocker 1: 3be5c412's merge dropped the `bracketId &&` ───
+// ─── guard countRoadmapPhaseHeadings' bracket branch needs ──────────────────
+//
+// Every other isSentinelPhaseId call site in src/ (roadmap-parser.cts,
+// roadmap.cts, validate.cts ×2, verify.cts) guards the call with
+// `bracketId &&`. The shared counter's bracket branch omitted it: when the
+// LEGACY alternative of the intro grammar matches (a `### Phase 00:` heading
+// in a `phase_id_convention: "bracket"` repo — the mid-migration shape this
+// PR exists for), `m[1]` (bracketId) is `undefined`, and the call becomes
+// `isSentinelPhaseId("undefined-00", 'bracket')` — which is TRUE, silently
+// dropping a real phase from the denominator. `getMilestonePhaseFilter`
+// still counts it and admits its directory, so the filter and the counter
+// disagree — a half-done milestone reads as 100% complete.
+describe('#612 PR-2 round-5 Blocker 1: countRoadmapPhaseHeadings restores the bracketId guard', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r5b1-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function poisonTotalPhasesR5(dir) {
+    const statePath = path.join(dir, '.planning', 'STATE.md');
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+  }
+
+  test('RED (G3): a legacy `### Phase 00:` heading in a bracket repo is no longer dropped — 3/2/67, not 2/2/100', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 00: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, 'bracket', [['00-bootstrap', true], ['01-one', true]]);
+    assert.equal(readTotal(), 3, 'pinned 2 before this fix — "undefined-00" read as a sentinel');
+    poisonTotalPhasesR5(tmpDir);
+    assert.equal(syncedTotal(), 3);
+    assert.equal(syncedPercent(), 67, 'pinned 100 before this fix — a half-done milestone read as shipped');
+  });
+
+  test('PIN (G3 LEGACY control): the identical document under the legacy convention is unaffected', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 00: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, undefined, [['00-bootstrap', true], ['01-one', true]]);
+    assert.equal(readTotal(), 3);
+  });
+
+  test('RED (G3d, mixed mid-migration): bracket headings PLUS one legacy `### Phase 00:` — 3/2/67, not 2/2/100', () => {
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+### Phase 00: Bootstrap
+**Goal:** z
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', [['00-bootstrap', true], ['GSD.02-01-one', true]]);
+    assert.equal(readTotal(), 3, 'pinned 2 before this fix');
+    poisonTotalPhasesR5(tmpDir);
+    assert.equal(syncedTotal(), 3);
+    assert.equal(syncedPercent(), 67, 'pinned 100 before this fix');
+  });
+
+  test('PIN (G3b, isolates the counter): a `### Phase 000:` heading with no directory — total still 3, no dir to admit', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 000: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, 'bracket', [['01-one', true], ['02-two', false]]);
+    assert.equal(readTotal(), 3, 'pinned 2 before this fix');
+  });
+
+  test('PIN (G3c control): legacy `### Phase 01:`/`02:` only, no sentinel-shaped token — unaffected', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, 'bracket', [['01-one', true], ['02-two', false]]);
+    assert.equal(readTotal(), 2);
+  });
+});
