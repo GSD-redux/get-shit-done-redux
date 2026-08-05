@@ -1058,3 +1058,148 @@ describe('#612 PR-2 REGRESSION: a version-less bracket milestone scopes correctl
     assert.equal(a['GSD.02-02-two'], true);
   });
 });
+
+// ─── #2761 B1 FOLLOW-UP: mixed heading shapes and boundary heading levels ───
+//
+// Two gaps flagged during self-review of the B1 fix above, closed here with
+// deterministic fixtures:
+//
+//   1. The earliest-of-either comparison added to `preambleCutoff` (taking
+//      whichever of the version/emoji match or the bracket match sits first in
+//      the document) was only exercised where the two patterns happen to agree
+//      on the same heading (every milestone in the REGRESSION block above is
+//      uniformly version-bearing or uniformly version-less). A genuinely mixed
+//      roadmap — one milestone version-bearing, its sibling version-less — was
+//      untested.
+//
+//   2. `computeSectionEnd`'s `h.level <= 2` conjunct (added alongside the
+//      pre-existing `h.level > level` skip) is REDUNDANT whenever the selected
+//      milestone heading is level 2 — the ADR-canonical shape, and every
+//      existing fixture in this repo: `h.level > level` alone already implies
+//      `h.level <= 2` there, so a mutant deleting the conjunct would survive
+//      every test written before this one. It is NOT redundant when the
+//      selected heading is level 3 (or level 1) — see the fixtures below.
+describe('#612 PR-2 B1 FOLLOW-UP: mixed heading shapes and boundary heading levels', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-mixed-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  const acceptsFor = (dirs) => {
+    const rp = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+    const f = rp.getMilestonePhaseFilter(tmpDir);
+    return Object.fromEntries(dirs.map((d) => [d, !!f(d)]));
+  };
+
+  test('mixed shape: version-bearing PRIOR + version-less CURRENT — prior stays out of the preamble leak set', () => {
+    // The mid-migration shape: an already-versioned milestone sits before a
+    // newer one that has not yet had its version added. anyMilestonePattern
+    // alone already finds GSD.01 here — it's the first (and only) version-
+    // bearing heading in the document — so this fixture pins that the
+    // earliest-of-either comparison does not regress that pre-existing path
+    // when the two patterns agree on the same heading, while computeSectionEnd
+    // still needs the bracket-boundary fix to correctly exclude GSD.03 (which
+    // remains version-less).
+    const roadmap = `# Roadmap
+
+## [GSD.01] v1.0: Prior Milestone
+
+### [GSD.01] 01: Old one
+**Goal:** a
+
+## [GSD.02] Current Milestone
+
+### [GSD.02] 01: One
+**Goal:** b
+
+### [GSD.02] 02: Two
+**Goal:** c
+
+## [GSD.03] Later Milestone
+
+### [GSD.03] 01: Later one
+**Goal:** d
+`;
+    const dirs = ['GSD.01-01-old-one', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later-one'];
+    writeProject(roadmap, 'bracket', dirs);
+    assert.deepEqual(acceptsFor(dirs), {
+      'GSD.01-01-old-one': false,
+      'GSD.02-01-one': true,
+      'GSD.02-02-two': true,
+      'GSD.03-01-later-one': false,
+    });
+    assert.equal(readTotal(), 2);
+  });
+
+  test('boundary heading level: a level-3 CURRENT milestone heading still scopes correctly (kills the h.level<=2 equivalent-mutant)', () => {
+    // The selected milestone heading is written with THREE hashes
+    // (`### [GSD.02] Foundation`) — unusual, but syntactically admitted by the
+    // same `#{1,3}` grammar every heading matcher in this function already
+    // compiles. With level=3, `h.level > level` alone no longer excludes a
+    // level-3 heading, so computeSectionEnd's own first phase heading
+    // (`### [GSD.02] 01: One`) — itself bracket-shaped — would ALSO satisfy the
+    // bracket-boundary test if the `h.level <= 2` conjunct were removed,
+    // truncating the section to nothing but the bare milestone heading and
+    // dropping BOTH of its own phases. A real PRIOR milestone precedes it so the
+    // preamble side-channel cannot independently rescue the truncated phases —
+    // confirmed by hand-mutating a throwaway build copy: without the guard this
+    // fixture's own phases vanish from the returned scope entirely, and
+    // getMilestonePhaseFilter's zero-token pass-all degrade then admits every
+    // directory on disk instead (the exact pre-#612 symptom).
+    const roadmap = `# Roadmap
+
+## [GSD.01] v1.0: Prior Milestone
+
+### [GSD.01] 01: Old
+**Goal:** z
+
+### [GSD.02] Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+## [GSD.03] v3.0: Next Milestone
+
+### [GSD.03] 01: Later
+**Goal:** c
+`;
+    const dirs = ['GSD.01-01-old', 'GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later'];
+    writeProject(roadmap, 'bracket', dirs);
+    assert.deepEqual(acceptsFor(dirs), {
+      'GSD.01-01-old': false,
+      'GSD.02-01-one': true,
+      'GSD.02-02-two': true,
+      'GSD.03-01-later': false,
+    });
+    assert.equal(readTotal(), 2);
+  });
+
+  test('boundary heading level: a level-1 CURRENT milestone heading also scopes correctly (#{1,2} tolerance, not just level 2)', () => {
+    // A level-1/level-1 pairing (consistent heading-level convention across
+    // sibling milestones) — distinct from the level-3 case above: this pins
+    // that the `#{1,2}` bracket-boundary source tolerates level 1, not only the
+    // ADR-canonical level 2.
+    const roadmap = `# [GSD.02] Foundation
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+
+# [GSD.03] v3.0: Next Milestone
+
+### [GSD.03] 01: Later
+**Goal:** c
+`;
+    const dirs = ['GSD.02-01-one', 'GSD.02-02-two', 'GSD.03-01-later'];
+    writeProject(roadmap, 'bracket', dirs);
+    assert.deepEqual(acceptsFor(dirs), {
+      'GSD.02-01-one': true,
+      'GSD.02-02-two': true,
+      'GSD.03-01-later': false,
+    });
+    assert.equal(readTotal(), 2);
+  });
+});
