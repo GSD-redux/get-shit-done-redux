@@ -59,8 +59,25 @@ const BASE_SITES = [
   // shares the SAME ANY_BRACKET baseline and produces the identical BASE
   // source on a non-bracket convention as every other ANY_BRACKET site, so it
   // is pinned here for count-exactness rather than left as an unpinned hole.
+  //
+  // #2761 round-3 Minor 1: `runtimeGated: true` below is the load-bearing
+  // fact this row's STRUCTURAL IDENTITY assertion (the loop just below)
+  // cannot see — that assertion is a property of `phaseHeadingPrefixSrcFor`
+  // (the FUNCTION: "called with a non-bracket convention, it returns the
+  // base source"), not of THIS site, and it would pass unchanged even if
+  // this call were deleted entirely. Safety at this specific call site rests
+  // ENTIRELY on a runtime gate the guard cannot see: `isBracketMilestoneBoundary`
+  // has exactly two callers, both guarded — `computeSectionEnd`'s
+  // `bracketBoundaryActive && isBracketMilestoneBoundary(...)` and the
+  // preambleCutoff scan's own call, itself nested inside an
+  // `if (bracketBoundaryActive) { … }` block (`src/roadmap-parser.cts`,
+  // grep `isBracketMilestoneBoundary(` for current line numbers — both
+  // round-3 fixes shifted them since this note was first written) — and
+  // `BRACKET_PHASE_TAIL_RE`/`BRACKET_HEADING_INTRO_RE` have no other
+  // consumers. The marker exists so a future reader does not mistake this
+  // row for "selector-covered like the other 14."
   { file: 'roadmap-parser.cts', site: 'isBracketMilestoneBoundary BRACKET_PHASE_TAIL_RE',
-    baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+' },
+    baseline: B.ANY_BRACKET, src: '(?:\\[[^\\]]{1,200}\\]\\s*)?Phase\\s+', runtimeGated: true },
   // --- baseline: the site spells a BARE `Phase ` with no bracket tolerance
   { file: 'roadmap.cts', site: 'searchPhaseInContent checklistPattern',
     baseline: B.LABEL_ONLY, src: 'Phase\\s+' },
@@ -86,8 +103,12 @@ const BASE_SITES = [
 const NON_BRACKET = [undefined, null, '', 'milestone-prefixed', 'Bracket', 'BRACKET', 'brackets', 'bracket-ish'];
 
 describe('#612 PR-2 STRUCTURAL IDENTITY: a non-bracket repo compiles the BASE pattern', () => {
-  for (const { file, site, baseline, src } of BASE_SITES) {
-    test(`${file} — ${site}`, () => {
+  for (const { file, site, baseline, src, runtimeGated } of BASE_SITES) {
+    // #2761 round-3 Minor 1: the title makes the gating mechanism visible in
+    // test output, not just in a source comment — a row with no
+    // `[runtime-gated]` suffix IS selector-covered by this test; one WITH it
+    // is safe only because of a call-site guard this test cannot see.
+    test(`${file} — ${site}${runtimeGated ? ' [runtime-gated, not selector-covered]' : ''}`, () => {
       for (const convention of NON_BRACKET) {
         assert.strictEqual(
           core.phaseHeadingPrefixSrcFor(baseline, convention),
