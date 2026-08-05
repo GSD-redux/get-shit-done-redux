@@ -3612,3 +3612,79 @@ describe('bug #1103 — annotate-dependencies preserves newline before Plans: he
 });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bug #2978: roadmap validate returns {"warnings":[]} for every input
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bug #2978: roadmap validate performs structural validation', () => {
+  test('empty (zero-byte) ROADMAP.md → non-empty warnings, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-2978-empty-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'empty file must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(Array.isArray(payload.warnings) && payload.warnings.length > 0,
+        `empty file must produce non-empty warnings; got: ${JSON.stringify(payload)}`);
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('garbage/non-roadmap text → non-empty warnings, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-2978-garbage-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'not a roadmap at all');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'garbage must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.length > 0, 'garbage must produce warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('missing ROADMAP.md → non-empty warnings, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-2978-missing-');
+    try {
+      // createTempProject creates .planning/phases but no ROADMAP.md — don't write one
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'missing file must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.length > 0, 'missing file must produce warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('truncated frontmatter (unterminated ---) → non-empty warnings', () => {
+    const tmpDir = createTempProject('gsd-2978-trunc-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '---\nmilestone: v1.0\n### Phase 1: Setup\n');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'truncated frontmatter must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.length > 0, 'truncated frontmatter must produce warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('well-formed roadmap → warnings: [], exit 0 (no false positive)', () => {
+    const tmpDir = createTempProject('gsd-2978-good-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '# Roadmap\n\n## v1.0\n\n### Phase 1: Foundation\n**Goal:** setup\n');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.ok(result.success, `well-formed roadmap must exit 0; got: ${result.error}`);
+      const payload = JSON.parse(result.output);
+      assert.deepStrictEqual(payload.warnings, [], 'well-formed roadmap must have no warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('BOM-prefixed well-formed roadmap → warnings: [], exit 0 (not corruption)', () => {
+    const tmpDir = createTempProject('gsd-2978-bom-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '\uFEFF# Roadmap\n\n### Phase 1: Foundation\n**Goal:** setup\n');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.ok(result.success, `BOM-prefixed roadmap must exit 0; got: ${result.error}`);
+      const payload = JSON.parse(result.output);
+      assert.deepStrictEqual(payload.warnings, [], 'BOM is not corruption');
+    } finally { cleanup(tmpDir); }
+  });
+});
