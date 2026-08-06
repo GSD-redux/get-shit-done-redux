@@ -2308,7 +2308,9 @@ Prose, no children.
   });
 });
 
-// ─── #2761 round-4 Major 1: four fence-blind sites on the bracket path ──────
+// ─── #2761 round-4 Major 1: the four fence-blind sites known at round 4 ────
+// ─── on the bracket path (a fifth — the retirement scan — was found at ────
+// ─── round 5 and has its own block further below) ──────────────────────────
 //
 // The scope string extractCurrentMilestone returns is fence-BALANCED and
 // fence-STRIPPED-by-tokenizeHeadings only when its CONSUMERS ask it that way.
@@ -2337,7 +2339,7 @@ Prose, no children.
 // fidelity, and legacy identity forbids touching the shared string. Legacy
 // (non-bracket) behavior at all four sites is byte-identical; this is the
 // ONLY commit in this arc that touches SELECTION.
-describe('#612 PR-2 round-4 Major 1: four fence-blind sites on the bracket path', () => {
+describe('#612 PR-2 round-4 Major 1: the four fence-blind sites known at round 4 (a fifth was found at round 5, see its own block below)', () => {
   beforeEach(() => { tmpDir = createTempProject('adr-612-r4m1-'); });
   afterEach(() => { cleanup(tmpDir); });
 

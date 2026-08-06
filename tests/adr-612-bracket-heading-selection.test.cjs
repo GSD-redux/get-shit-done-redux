@@ -75,11 +75,18 @@ const BASE_SITES = [
   // round-3 fixes shifted them since this note was first written) — and
   // `BRACKET_PHASE_TAIL_RE` has TWO consumers as of #2761 round-4 (its own
   // use inside `isBracketMilestoneBoundary`, plus `bracketHeadingHasMatchingChild`'s
-  // same-id-PHASE-child conjunct added by 65d257ce) — both still nested
-  // inside the same `bracketBoundaryActive` runtime gate this note is about
-  // (round-5 Nit 1: this sentence was stale by one commit, claiming no other
-  // consumers when 65d257ce had already added one; the CONCLUSION is
-  // unaffected — every consumer is still runtime-gated).
+  // same-id-PHASE-child conjunct added by 65d257ce) — both still gated on
+  // the same `bracketBoundaryActive` flag, but NOT both through the same
+  // mechanism: `bracketHeadingHasMatchingChild` is reached only via its one
+  // caller (`:593`, inside the `if (bracketBoundaryActive) { … }` block this
+  // note names above), while `isBracketMilestoneBoundary` — see this row's
+  // own "exactly two callers" paragraph above — is reached via TWO different
+  // mechanisms, an inline `bracketBoundaryActive &&` conjunct at one call
+  // site and that same block at the other. (round-5 Nit 1 first added this
+  // sentence to note the consumer count was stale by one commit; round-6
+  // Nit 2 corrected the mechanism claim that sentence introduced — the
+  // CONCLUSION is unaffected either time: every consumer is still
+  // runtime-gated on the same flag.)
   // `BRACKET_HEADING_INTRO_RE` has THREE consumers as of #2761 round-4
   // (`isBracketMilestoneBoundary` itself, plus two uses inside
   // `bracketHeadingHasMatchingChild` — its own id and its same-id-PHASE-child
