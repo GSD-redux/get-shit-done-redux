@@ -242,6 +242,9 @@ Write to a temp file: `{run_dir}/gsd-review-prompt.md`
 Also write individual section files so the budget tool can re-trim per reviewer:
 
 ```bash
+# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
 RUN_DIR="{run_dir}"   # from gather_context
 
 # Write individual section files for per-reviewer budget trimming
@@ -312,6 +315,9 @@ If `section_manifest` is `null` or `"reviewer-instances-note-2"` is in its `incl
 Lanes run **sequentially, not in parallel** — concurrent invocation trips provider rate limits.
 
 ```bash
+# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
 RUN_DIR="{run_dir}"
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # SELECTED_REVIEWERS is the comma-separated result of reviewer selection (ADR-0011 precedence:

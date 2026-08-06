@@ -48,6 +48,9 @@ const { createImperativeAdapter } = require('../gsd-core/bin/lib/adapter-imperat
 // #2930 (epic #1671 Phase 3): strips `<!-- gsd:section -->` markers from
 // workflow .md content at emit time, before any per-runtime rewrite runs.
 const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
+// #3072: THE shared composition-scope predicate (also consumed by the served
+// MCP catalog, src/mcp-catalog.cts) — see the comment at its call site below.
+const { shouldCompose } = require('../gsd-core/bin/lib/mcp-catalog.cjs');
 const runtimeArtifactConversion = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
 // #2544: the CommonJS marker's single source of truth. classifyMarker() backs
 // BOTH ensureCommonJsMarker() (install) and removeCommonJsMarker() (uninstall),
@@ -3896,6 +3899,8 @@ Typed mapping (agent_type-capable schema only):
   inherited, or unsupported values; do not invent one-off effort literals in
   workflow prose.
 - \`fork_context: false\` by default — GSD agents load their own context via \`<files_to_read>\` blocks
+- \`task_name\` — required by the collaboration schema; provide a descriptive name for each spawned task
+- \`fork_turns\` — optional parameter controlling turn-forking depth; coexists with \`fork_context\` (not a replacement)
 - \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
   but Codex declares \`dispatch.isolation: orchestrator-worktree\` (#2584). Codex
   \`spawn_agent\` still does not create or bind a git worktree; instead GSD itself
@@ -3932,11 +3937,13 @@ Spawn restriction:
   defaulting to inline execution.
 
 Parallel fan-out:
-- Spawn multiple agents → collect agent IDs → \`wait(ids)\` for all to complete
+- Spawn multiple agents → collect agent IDs → \`collaboration.wait_agent(timeout_ms=...)\` for each to complete
+- Do NOT use \`functions.wait(cell_id=...)\` — that is an unrelated exec-cell tool, not the collaboration wait
 
 Result parsing:
 - Look for structured markers in agent output: \`CHECKPOINT\`, \`PLAN COMPLETE\`, \`SUMMARY\`, etc.
-- \`close_agent(id)\` after collecting results from each agent
+- \`close_agent(id)\` after collecting results — but only if \`close_agent\` is visible in the current
+  tool schema (check via \`tool_search\` first, same schema-detection gate as \`spawn_agent\` above)
 </codex_skill_adapter>`;
 }
 
@@ -7727,8 +7734,18 @@ function copyWithPathReplacement(srcDir, destDir, pathPrefix, runtime, isCommand
       // Linux too — CONTEXT.md path-separator rule) and checked as a
       // path-segment match so the recursive descent (srcPath may be several
       // directory levels below gsd-core/workflows/) is still caught.
-      const normalizedSrcPath = srcPath.replace(/\\/g, '/');
-      if (/(?:^|\/)gsd-core\/workflows\//.test(normalizedSrcPath)) {
+      //
+      // #3072: the scoping predicate itself now lives in ONE place —
+      // shouldCompose (src/mcp-catalog.cts, imported above) — rather than
+      // being re-declared inline here. The MCP served catalog calls the
+      // SAME function to decide what it composes vs serves verbatim, so this
+      // install path and the catalog can never independently drift on what
+      // gets composed (ADR-1671:309, DEFECT.GENERATIVE-FIX; the parity gate
+      // is tests/mcp-catalog-parity.test.cjs). shouldCompose normalizes with
+      // the identical unconditional `.replace(/\\/g, '/')` internally, so
+      // this call is behavior-preserving byte-for-behavior with the regex it
+      // replaces.
+      if (shouldCompose(srcPath)) {
         content = composeWorkflow(content, { sourcePath: srcPath });
       }
 

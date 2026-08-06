@@ -1,4 +1,5 @@
-// allow-test-rule: runtime-contract-is-the-product — spec-phase.md Step 5.5 is the deployed workflow runtime contract under assertion
+// allow-test-rule: source-text-is-the-product
+// spec-phase.md Step 5.5 is the deployed workflow runtime contract under assertion
 // spec-phase.md is the deployed spec workflow contract; these checks lock
 // the Step 5.5 wiring so the edge-probe.cjs runtime invocation cannot
 // silently rot the way the original plan-phase no-op did (reviewer finding RR-11).

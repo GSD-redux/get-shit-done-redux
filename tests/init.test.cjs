@@ -2776,6 +2776,112 @@ describe('#2376 — init.* path fields resolve when process cwd differs from --c
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdInitVerifyWork surfaces an indeterminate staleness check
+//
+// buildPhaseCompletionProjection (init.cts) projects readVerificationStatus's
+// result into phase_completion — a workflow step reads phase_completion.*
+// fields directly. Pre-#3057 B3 wiring, `staleCheckIndeterminate` was
+// computed by readVerificationStatus but dropped here, so a workflow could
+// never distinguish "checked; nothing is stale" from "could not check".
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: cmdInitVerifyWork — verification staleness-check indeterminate is surfaced', () => {
+  const initMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'init.cjs'));
+  let projectDir;
+
+  beforeEach(() => {
+    projectDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(projectDir);
+  });
+
+  /**
+   * In-process capture of cmdInitVerifyWork's stdout JSON, stderr discarded.
+   *
+   * io.cts's `output()` writes via `writeAllSync` → `fs.writeSync(1, ...)`
+   * directly (bug #1008's non-blocking-pipe fix), NOT `process.stdout.write`
+   * — so mocking `process.stdout.write` here silently captures nothing and
+   * every assertion below saw `JSON.parse('')` ("Unexpected end of JSON
+   * input") regardless of what cmdInitVerifyWork actually produced. The fix
+   * is the fd-level seam tests/io.test.cjs already established for exactly
+   * this function (bug #1008's `t.mock.method(fs, 'writeSync', ...)`
+   * pattern): intercept fd 1, discard fd 2, and pass every OTHER fd through
+   * to the real writeSync — any code path that opens its own fd (e.g. a
+   * lock file) must still actually write, not be silently swallowed as if
+   * it were stdout.
+   */
+  function captureInitVerifyWork(t, cwd, phase) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+      if (fd !== 1) return origWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      chunks.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+    initMod.cmdInitVerifyWork(cwd, phase, false);
+    const captured = chunks.join('');
+    assert.ok(captured.length > 0, 'cmdInitVerifyWork produced no stdout output');
+    return captured;
+  }
+
+  function seedVerifiedPhase() {
+    seedPhase(projectDir, '03-api', {
+      '03-01-PLAN.md': '# Plan',
+      '03-01-SUMMARY.md': '# Summary',
+      '03-VERIFICATION.md': '---\nstatus: passed\n---\n\n# Verification\n',
+    });
+    fs.writeFileSync(path.join(projectDir, '.planning', 'STATE.md'), '# State\n');
+    fs.writeFileSync(path.join(projectDir, '.planning', 'ROADMAP.md'), '# Roadmap\n');
+    const phaseDir = path.join(projectDir, '.planning', 'phases', '03-api');
+    const summaryPath = path.join(phaseDir, '03-01-SUMMARY.md');
+    const verificationPath = path.join(phaseDir, '03-VERIFICATION.md');
+    // Deterministic mtime ordering (never rely on write-order clock ties):
+    // verification strictly newer than the summary → a completed check finds
+    // nothing stale.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:01:00.000Z');
+    fs.utimesSync(summaryPath, older, older);
+    fs.utimesSync(verificationPath, newer, newer);
+    return { summaryPath, verificationPath };
+  }
+
+  test('an fs failure inside the staleness check sets phase_completion.verification_stale_check_indeterminate:true', (t) => {
+    const { summaryPath, verificationPath } = seedVerifiedPhase();
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const output = JSON.parse(captureInitVerifyWork(t, projectDir, '03'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: status still
+    // resolves to 'passed' exactly as it would without the injected fault.
+    assert.strictEqual(output.phase_completion.verification_status, 'passed');
+    assert.strictEqual(output.phase_completion.verification_stale_check_indeterminate, true);
+  });
+
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', (t) => {
+    seedVerifiedPhase();
+
+    const output = JSON.parse(captureInitVerifyWork(t, projectDir, '03'));
+
+    assert.strictEqual(output.phase_completion.verification_status, 'passed');
+    assert.strictEqual(output.phase_completion.verification_stale_check_indeterminate, false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // roadmap analyze command
 // ─────────────────────────────────────────────────────────────────────────────
 

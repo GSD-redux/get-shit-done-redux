@@ -1153,7 +1153,7 @@ describe('readCmdNames() — tolerates missing commands/gsd directory (#1223)', 
 });
 
 // ─── Section N: Antigravity .agents canonical workspace dir (#791) ─────────────
-// allow-test-rule: runtime-contract-is-the-product
+// allow-test-rule: source-text-is-the-product
 // Reads deployed agent .md files whose text IS the product surface the
 // Antigravity runtime loads at startup (path references, command names).
 
@@ -1289,7 +1289,7 @@ describe('install — --devin-desktop CLI flag routes to windsurf runtime (#792)
   });
 });
 // ─── Section N: Windsurf workflow slash-command install (#1615) ─────────────
-// allow-test-rule: runtime-contract-is-the-product
+// allow-test-rule: source-text-is-the-product
 // Reads deployed workflow .md files whose text IS the product surface the
 // Windsurf runtime loads at startup (path references, command names).
 

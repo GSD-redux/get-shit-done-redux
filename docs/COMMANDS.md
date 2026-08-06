@@ -472,6 +472,8 @@ If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowle
 
 > **Note:** the `deferred-items.md` category is the per-phase SCOPE BOUNDARY log a phase agent writes when it finds a defect it should not fix. It is a different artifact from the `## Deferred Items` section `[A]` writes into `STATE.md`, which records what you acknowledged at close.
 
+> **Unstarted-phase guard.** Archiving refuses if the milestone's ROADMAP still lists a phase with no phase directory on disk — `Cannot mark milestone complete: ROADMAP lists N unstarted phase(s)`. If a phase was intentionally deferred or merged without a directory, run `gsd-tools milestone complete <version> --force` (the `/gsd-complete-milestone` workflow runs the underlying command without `--force`, so use the CLI directly to override). A `STATE.md` `milestone:` value that does not match `<version>` prints a WARNING and still runs the guard (#2946).
+
 ---
 
 ### `/gsd-milestone-summary`

@@ -1,12 +1,14 @@
 'use strict';
 
-// allow-test-rule: prompt-content-is-the-product
-// The prompt-budget CLI writes an assembled, trimmed prompt string to disk.
-// Testing that the prompt omits a dropped section (research) requires a
-// content assertion on the output file — the file content IS the product.
-// Structured metadata (omitted[], hardFailed, etc.) is always the primary
-// assertion; text content checks are secondary and only used to verify the
-// trim policy was applied correctly to the assembled output.
+// allow-test-rule: pending-migration-to-typed-ir [#3090]
+// The prompt-budget CLI writes an assembled, trimmed prompt string to disk —
+// a computed/assembled output, not shipped source text, so this is not
+// source-text-is-the-product (same mistake as the STATE.md-as-deployed-
+// artifact miscategorization). Structured metadata (omitted[], hardFailed,
+// etc.) is the primary assertion; the secondary raw substring check that the
+// dropped research content is actually absent from the assembled prompt has
+// no typed IR to convert to — prompt text is unstructured by nature.
+// Tracked under #3090.
 
 /**
  * prompt-budget-cli.test.cjs

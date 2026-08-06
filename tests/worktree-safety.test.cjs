@@ -20,7 +20,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const childProcess = require('node:child_process');
 const fc = require('fast-check');
-const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createFixture } = require('./fixtures/index.cjs');
+const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 
 const WORKTREE_SAFETY_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-safety.cjs'
@@ -126,8 +128,8 @@ describe('resolveWorktreeContext', () => {
     assert.strictEqual(context.mode, 'current_directory');
   });
 
-  // Counter-test: timeout returns object with effectiveRoot (Contract 6)
-  test('returns valid result on timeout, not throw', () => {
+  // Counter-test: timeout returns the canonical degraded shape, not just an object (Contract 6)
+  test('returns effectiveRoot=cwd, mode=current_directory, reason=git_timed_out on timeout, not throw', () => {
     let threw = false;
     let result;
     try {
@@ -136,11 +138,11 @@ describe('resolveWorktreeContext', () => {
       threw = true;
     }
     assert.strictEqual(threw, false, 'must not throw on timeout');
-    assert.strictEqual(typeof result, 'object');
-    assert.ok(
-      typeof result.effectiveRoot === 'string',
-      'must return effectiveRoot string even on timeout'
-    );
+    assert.deepStrictEqual(result, {
+      effectiveRoot: '/tmp',
+      mode: 'current_directory',
+      reason: 'git_timed_out',
+    });
   });
 
   // ─── #3050 DEFECT 2: timeout must be distinguishable from not_git_repo ─────
@@ -405,11 +407,40 @@ describe('planWorktreePrune', () => {
       },
     });
     assert.strictEqual(plan.action, 'metadata_prune_only');
-    assert.strictEqual(plan.reason, 'no_worktrees');
+    // #3050/#3057 (B6): a parse failure must NOT collide with the
+    // genuinely-empty-list verdict below ('no_worktrees') — see the paired
+    // test 'reason distinguishes a parse failure from a genuinely empty list'.
+    assert.strictEqual(plan.reason, 'parse_failed');
+  });
+
+  // Counter-test pair (B5/B6 negative-space, #3057): the same 0-worktrees
+  // shape must yield a DIFFERENT reason depending on WHY the list came back
+  // empty — a parser that threw vs a porcelain output that genuinely listed
+  // nothing. Asserting only one of these could not prove they are
+  // distinguishable; asserting both, side by side, proves it.
+  test('reason distinguishes a parse failure from a genuinely empty list', () => {
+    const failurePlan = planWorktreePrune('/repo/main', {}, {
+      execGit: () => ({ exitCode: 0, stdout: 'not-porcelain', stderr: '' }),
+      parseWorktreePorcelain: () => {
+        throw new Error('parse failed');
+      },
+    });
+    assert.strictEqual(failurePlan.action, 'metadata_prune_only');
+    assert.strictEqual(failurePlan.reason, 'parse_failed');
+
+    const benignPlan = planWorktreePrune('/repo/main', {}, {
+      execGit: () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      parseWorktreePorcelain: () => [],
+    });
+    assert.strictEqual(benignPlan.action, 'metadata_prune_only');
+    assert.strictEqual(benignPlan.reason, 'no_worktrees');
+
+    assert.notStrictEqual(failurePlan.reason, benignPlan.reason,
+      'a parse failure must not be reported as the same reason as a genuinely empty worktree list');
   });
 
   // Counter-test: timeout path (Contract 6)
-  test('returns action=skip when execGit times out', () => {
+  test('returns action=skip, reason=git_timed_out when execGit times out', () => {
     let threw = false;
     let result;
     try {
@@ -420,9 +451,10 @@ describe('planWorktreePrune', () => {
     assert.strictEqual(threw, false, 'must not throw on timeout');
     assert.strictEqual(typeof result, 'object');
     assert.strictEqual(result.action, 'skip');
-    assert.ok(
-      typeof result.reason === 'string' && result.reason.length > 0,
-      'must return a non-empty reason when git times out'
+    assert.strictEqual(
+      result.reason,
+      'git_timed_out',
+      'must surface the specific git_timed_out reason, not a generic non-empty string'
     );
   });
 
@@ -494,11 +526,15 @@ describe('executeWorktreePrunePlan', () => {
   });
 
   // Counter-test: timeout path (Contract 6)
-  test('returns ok:false when plan is skip (timeout path)', () => {
+  test('returns {ok:false, action:skip, reason:git_timed_out, pruned:[]} when plan is skip (timeout path)', () => {
     const plan = planWorktreePrune('/tmp', {}, { execGit: makeTimeoutStub() });
     const result = executeWorktreePrunePlan(plan, { execGit: makeTimeoutStub() });
-    assert.strictEqual(typeof result, 'object');
-    assert.strictEqual(result.ok, false, 'must return ok:false on timeout');
+    assert.deepStrictEqual(result, {
+      ok: false,
+      action: 'skip',
+      reason: 'git_timed_out',
+      pruned: [],
+    });
   });
 
   // AC4 strict: timedOut must be surfaced as a first-class field
@@ -548,7 +584,7 @@ describe('listLinkedWorktreePaths', () => {
   });
 
   // Counter-test: failure path (Contract 6)
-  test('returns ok:false on timeout, not throw', () => {
+  test('returns ok:false, reason:git_timed_out on timeout, not throw', () => {
     let threw = false;
     let result;
     try {
@@ -558,9 +594,10 @@ describe('listLinkedWorktreePaths', () => {
     }
     assert.strictEqual(threw, false, 'must not throw on timeout');
     assert.strictEqual(result.ok, false);
-    assert.ok(
-      typeof result.reason === 'string' && result.reason.length > 0,
-      'must return non-empty reason on timeout'
+    assert.strictEqual(
+      result.reason,
+      'git_timed_out',
+      'must surface the specific git_timed_out reason, not a generic non-empty string'
     );
   });
 
@@ -611,8 +648,11 @@ describe('inspectWorktreeHealth', () => {
     ]);
   });
 
-  // Counter-test: timeout path (Contract 6)
-  test('returns ok:false when git times out', () => {
+  // Counter-test: timeout path (Contract 6). This function's own reason on
+  // timeout is not pinned by any sibling test in this file (unlike
+  // planWorktreePrune/listLinkedWorktreePaths/snapshotWorktreeInventory,
+  // which each have a dedicated "reason is git_timed_out" test) — pin it here.
+  test('returns {ok:false, reason:git_timed_out, findings:[]} when git times out', () => {
     let threw = false;
     let result;
     try {
@@ -621,13 +661,51 @@ describe('inspectWorktreeHealth', () => {
       threw = true;
     }
     assert.strictEqual(threw, false, 'must not throw on timeout');
-    assert.strictEqual(typeof result, 'object');
-    assert.strictEqual(result.ok, false);
+    assert.deepStrictEqual(result, {
+      ok: false,
+      reason: 'git_timed_out',
+      findings: [],
+    });
   });
 
-  test('findings is empty array (not undefined) on timeout', () => {
+  test('findings is an empty array, not undefined, on timeout', () => {
     const result = inspectWorktreeHealth('/tmp', {}, { execGit: makeTimeoutStub() });
-    assert.strictEqual(Array.isArray(result.findings), true, 'findings must be an array even when ok:false');
+    assert.deepStrictEqual(result.findings, [], 'findings must be [] (not undefined) even when ok:false');
+  });
+
+  // Counter-test (B5, #3057): a statSync throw must surface as its own
+  // 'unverified' finding, distinct from 'orphan' (the case above, where
+  // existsSync itself says the path is absent). Silently producing NO finding
+  // for an unverifiable worktree would be the fail-open this row exists to close.
+  test('reports an unverified finding (not silently healthy, not orphan) when statSync throws', () => {
+    const health = inspectWorktreeHealth(
+      '/repo/main',
+      { staleAfterMs: 60 * 60 * 1000, nowMs: 2 * 60 * 60 * 1000 },
+      {
+        execGit: () => ({
+          exitCode: 0,
+          stdout: [
+            'worktree /repo/main',
+            'HEAD aaa',
+            'branch refs/heads/main',
+            '',
+            'worktree /repo/wt-unverified',
+            'HEAD bbb',
+            'branch refs/heads/feat-a',
+            '',
+          ].join('\n'),
+          stderr: '',
+        }),
+        existsSync: () => true,
+        statSync: () => {
+          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        },
+      }
+    );
+    assert.strictEqual(health.ok, true);
+    assert.deepStrictEqual(health.findings, [
+      { kind: 'unverified', path: '/repo/wt-unverified' },
+    ]);
   });
 });
 
@@ -663,13 +741,13 @@ describe('snapshotWorktreeInventory', () => {
     );
     assert.strictEqual(inventory.ok, true);
     assert.deepStrictEqual(inventory.entries, [
-      { path: '/repo/wt-a', exists: true, isStale: true, ageMinutes: 120 },
-      { path: '/repo/wt-b', exists: false, isStale: false, ageMinutes: null },
+      { path: '/repo/wt-a', exists: 'present', isStale: true, ageMinutes: 120 },
+      { path: '/repo/wt-b', exists: 'absent', isStale: false, ageMinutes: null },
     ]);
   });
 
   // Counter-test: timeout path (Contract 6)
-  test('returns ok:false with reason on timeout, not throw', () => {
+  test('returns ok:false, reason:git_timed_out on timeout, not throw', () => {
     let threw = false;
     let result;
     try {
@@ -680,9 +758,10 @@ describe('snapshotWorktreeInventory', () => {
     assert.strictEqual(threw, false, 'must not throw on timeout');
     assert.strictEqual(typeof result, 'object');
     assert.strictEqual(result.ok, false);
-    assert.ok(
-      typeof result.reason === 'string' && result.reason.length > 0,
-      'must return non-empty reason on timeout'
+    assert.strictEqual(
+      result.reason,
+      'git_timed_out',
+      'must surface the specific git_timed_out reason, not a generic non-empty string'
     );
   });
 
@@ -692,6 +771,52 @@ describe('snapshotWorktreeInventory', () => {
       result.reason,
       'git_timed_out',
       'must use reason=git_timed_out when execGit returns timedOut:true'
+    );
+  });
+
+  // Counter-test pair (B5, #3057): a statSync throw must NOT be reported as
+  // exists:'present' (unverified presence masquerading as confirmed presence),
+  // and must be distinguishable from a genuinely-absent worktree (existsSync
+  // returns false for a different entry in the SAME call). Asserting only one
+  // side could not prove the two are distinguishable.
+  test("exists is 'unverified' (not 'present') when statSync throws — distinct from a genuinely absent worktree", () => {
+    const porcelain = [
+      'worktree /repo/main',
+      'HEAD aaa',
+      'branch refs/heads/main',
+      '',
+      'worktree /repo/wt-unverified',
+      'HEAD bbb',
+      'branch refs/heads/feat-a',
+      '',
+      'worktree /repo/wt-absent',
+      'HEAD ccc',
+      'branch refs/heads/feat-b',
+      '',
+    ].join('\n');
+    const inventory = snapshotWorktreeInventory(
+      '/repo/main',
+      { staleAfterMs: 60 * 60 * 1000, nowMs: 2 * 60 * 60 * 1000 },
+      {
+        execGit: () => ({ exitCode: 0, stdout: porcelain, stderr: '' }),
+        existsSync: (p) => p !== '/repo/wt-absent',
+        statSync: (p) => {
+          if (p === '/repo/wt-unverified') {
+            throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+          }
+          return { mtimeMs: 0 };
+        },
+      }
+    );
+    assert.strictEqual(inventory.ok, true);
+    assert.deepStrictEqual(inventory.entries, [
+      { path: '/repo/wt-unverified', exists: 'unverified', isStale: false, ageMinutes: null },
+      { path: '/repo/wt-absent', exists: 'absent', isStale: false, ageMinutes: null },
+    ]);
+    assert.notStrictEqual(
+      inventory.entries[0].exists,
+      inventory.entries[1].exists,
+      'an unverifiable statSync failure must not collapse to the same exists value as a genuinely absent worktree'
     );
   });
 });
@@ -1013,6 +1138,9 @@ describe('worktree branch namespace boundaries (#1995)', () => {
     'worktree-agent-a1',
     'worktree-agent-abc123',
     'worktree-agent-session.42',
+    // #3021: Workflow backend naming convention
+    'worktree-wf_run123-1',
+    'worktree-wf_execute-phase-71-env-vars-3',
   ];
   const REJECTED_BRANCHES = [
     'feature-x',
@@ -1070,7 +1198,8 @@ describe('worktree branch namespace boundaries (#1995)', () => {
       agentId: 'a1', worktreePath: '/repo/wt', branch: 'feature-x', base: 'abc123',
     });
     assert.equal(plan.ok, false);
-    assert.match(plan.hint, /\(worktree-\)\?agent-\[A-Za-z0-9\._\/-\]\+/);
+    // #3021: hint must now mention the worktree-wf_ namespace too
+    assert.match(plan.hint, /worktree-wf_/);
   });
 });
 
@@ -2922,6 +3051,111 @@ describe('executeWorktreeWaveCleanupPlan', () => {
     assert.equal(result.ok, true, 'cleanup can still succeed after rescuing on cat-file timeout');
   });
 
+  // ─── B7 (#3050/#3057): rescue-anyway on an uncertain cat-file, via the
+  // Phase 2 fault-injection adapter (makeFaultyGit) rather than a hand-rolled
+  // key-matching stub. The two tests above already prove the verdict with
+  // hand-written mocks; these prove it again through the in-process fault
+  // seam the epic standardized on, for both fault shapes the design calls
+  // "uncertain": a fatal exit (128) and a timeout.
+  //
+  // #3057 finding: `git cat-file -e` returns exit 128 BOTH for the normal
+  // "absent from HEAD" case (#2556's own comment above, line ~2833) and for a
+  // genuine fatal git error — there is no third exit code that means
+  // "confirmed absent, no ambiguity" as opposed to "uncertain". The
+  // production code's own non-zero-exit check (`catFileResult.exitCode === 0
+  // ? skip : rescue`) therefore CANNOT distinguish "uncertain" from
+  // "certain-and-fine" — every non-zero exit, whatever its cause, is uncertain
+  // by construction, and #2556 rescues all of them uniformly. That is not a
+  // gap the tests below can paper over: it is the reason "rescue whenever not
+  // confirmed committed" is the whole rule, rather than a narrower
+  // uncertain-only carve-out.
+  function makeWaveCleanupPassthrough() {
+    return (args) => {
+      const key = args.join(' ');
+      if (key === '-C /repo/.claude/worktrees/agent-a1 rev-parse --abbrev-ref HEAD') {
+        return { exitCode: 0, stdout: 'worktree-agent-a1', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'merge-base HEAD worktree-agent-a1') {
+        return { exitCode: 0, stdout: 'abc123', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'diff --diff-filter=D --name-only HEAD...worktree-agent-a1') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === '-C /repo/.claude/worktrees/agent-a1 status --porcelain --untracked-files=all') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key.startsWith('merge worktree-agent-a1')) {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'worktree remove /repo/.claude/worktrees/agent-a1 --force') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      if (key === 'branch -D worktree-agent-a1') {
+        return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+      }
+      return { exitCode: 0, stdout: '', stderr: '', signal: null, error: null, timedOut: false };
+    };
+  }
+
+  const waveCleanupPlanFixture = {
+    ok: true,
+    repoRoot: '/repo/main',
+    action: 'cleanup_wave',
+    discovery: 'manifest',
+    entries: [{
+      agent_id: 'a1',
+      worktree_path: '/repo/.claude/worktrees/agent-a1',
+      branch: 'worktree-agent-a1',
+      expected_base: 'abc123',
+    }],
+  };
+
+  test('#3057/B7 (makeFaultyGit): cat-file exit 128 still rescues anyway (deliberate, #2556)', () => {
+    const rescued = [];
+    const execGit = makeFaultyGit({
+      faults: [{ kind: 'exit', exitCode: 128, when: (args) => args.includes('cat-file') }],
+      passthrough: makeWaveCleanupPassthrough(),
+    });
+    const result = executeWorktreeWaveCleanupPlan(waveCleanupPlanFixture, {
+      execGit,
+      findSummaryFiles: (worktreePath) => (
+        worktreePath === '/repo/.claude/worktrees/agent-a1'
+          ? ['/repo/.claude/worktrees/agent-a1/.planning/q1-SUMMARY.md']
+          : []
+      ),
+      readFileSync: () => 'summary content',
+      existsSync: () => false,
+      mkdirSync: () => {},
+      copyFileSync: (src, dest) => { rescued.push({ src, dest }); },
+    });
+    assert.strictEqual(rescued.length, 1,
+      'an uncertain cat-file (exit 128) must still rescue — the deliberate #2556 verdict');
+    assert.strictEqual(result.ok, true);
+  });
+
+  test('#3057/B7 (makeFaultyGit): cat-file timeout still rescues anyway (deliberate, #2556)', () => {
+    const rescued = [];
+    const execGit = makeFaultyGit({
+      faults: [{ kind: 'timeout', when: (args) => args.includes('cat-file') }],
+      passthrough: makeWaveCleanupPassthrough(),
+    });
+    const result = executeWorktreeWaveCleanupPlan(waveCleanupPlanFixture, {
+      execGit,
+      findSummaryFiles: (worktreePath) => (
+        worktreePath === '/repo/.claude/worktrees/agent-a1'
+          ? ['/repo/.claude/worktrees/agent-a1/.planning/q1-SUMMARY.md']
+          : []
+      ),
+      readFileSync: () => 'summary content',
+      existsSync: () => false,
+      mkdirSync: () => {},
+      copyFileSync: (src, dest) => { rescued.push({ src, dest }); },
+    });
+    assert.strictEqual(rescued.length, 1,
+      'an uncertain cat-file (timeout) must still rescue — the deliberate #2556 verdict, same as exit 128');
+    assert.strictEqual(result.ok, true);
+  });
+
   test('blocks dirty worktrees before merge/remove/delete', () => {
     const calls = [];
     const plan = {
@@ -3320,15 +3554,20 @@ describe('worktree-safety: resolveWorktreeRoot and pruneOrphanedWorktrees reloca
 describe('worktree-safety: resolveWorktreeRoot behaviour', () => {
   const worktreeSafety = require(WORKTREE_SAFETY_PATH);
 
-  test('resolveWorktreeRoot(createTempGitProject()) returns {root, reason} with a non-empty root', (t) => {
-    const dir = createTempGitProject('gsd-wt-root-');
+  // NOTE: createTempGitProject() always seeds .planning/ (createFixture's
+  // planning:true default), which makes resolveWorktreeContext short-circuit
+  // on the has_local_planning branch (src/worktree-safety.cts:203-216) BEFORE
+  // ever calling git — so a fixture built with it can never reach the
+  // git-based main_worktree path this test's name is about. Use a git fixture
+  // WITHOUT .planning/ (and without the projectDoc PROJECT.md, which — since
+  // projectDoc defaults to `git` in createFixture — would otherwise silently
+  // recreate the .planning/ directory it's writing into) so resolveWorktreeRoot
+  // actually reaches resolveWorktreeLinkage's real git rev-parse comparison.
+  test('resolveWorktreeRoot(git repo with no local .planning) reaches the git-based main_worktree path, returns {root: dir, reason: main_worktree}', (t) => {
+    const dir = createFixture({ prefix: 'gsd-wt-root-', planning: false, git: true, projectDoc: false });
     t.after(() => cleanup(dir));
     const result = worktreeSafety.resolveWorktreeRoot(dir);
-    assert.ok(result && typeof result === 'object', 'must return an object, not a bare string');
-    assert.ok(typeof result.root === 'string' && result.root.length > 0,
-      `Expected non-empty root string, got: ${JSON.stringify(result)}`);
-    assert.ok(typeof result.reason === 'string' && result.reason.length > 0,
-      `Expected non-empty reason string, got: ${JSON.stringify(result)}`);
+    assert.deepStrictEqual(result, { root: dir, reason: 'main_worktree' });
   });
 
   test('resolveWorktreeRoot propagates git_timed_out via the injected execGit seam (#3050)', () => {
@@ -3347,10 +3586,7 @@ describe('worktree-safety: pruneOrphanedWorktrees behaviour', () => {
   test('pruneOrphanedWorktrees(temp dir) returns [] and does not throw', (t) => {
     const dir = createTempDir('gsd-prune-');
     t.after(() => cleanup(dir));
-    let result;
-    assert.doesNotThrow(() => {
-      result = worktreeSafety.pruneOrphanedWorktrees(dir);
-    });
+    const result = worktreeSafety.pruneOrphanedWorktrees(dir);
     assert.deepStrictEqual(result, []);
   });
 });
@@ -3677,10 +3913,14 @@ describe('bug-3707: reapOrphanWorktrees', () => {
     // ensuring the live-PID check is the only reason the entry is skipped.
     const result = reapOrphanWorktrees(repoDir, { mtimeSafe: () => STALE_MTIME });
 
+    // #3057: assert the SPECIFIC verdict unconditionally. The previous form
+    // guarded on `if (skipped)`, so it passed vacuously whenever the entry was
+    // absent from the results entirely — the exact failure this test exists to
+    // catch.
     const skipped = result.find((r) => canonicalPath(r.path) === canonicalPath(wtDir));
-    if (skipped) {
-      assert.notEqual(skipped.status, 'reaped', 'live-pid worktree must not be reaped');
-    }
+    assert.ok(skipped, 'live-pid worktree must appear in the results');
+    assert.equal(skipped.status, 'skipped', 'live-pid worktree must not be reaped');
+    assert.equal(skipped.reason, 'pid_alive', 'reason must be pid_alive');
     assert.ok(fs.existsSync(wtDir), 'worktree directory must still exist for live-pid worktree');
   });
 
@@ -3703,10 +3943,12 @@ describe('bug-3707: reapOrphanWorktrees', () => {
     // ensuring the unmerged-branch check is the only reason the entry is skipped.
     const result = reapOrphanWorktrees(repoDir, { mtimeSafe: () => STALE_MTIME });
 
+    // #3057: unconditional verdict assertion — the old `if (entry)` form passed
+    // vacuously when no row was produced at all.
     const entry = result.find((r) => canonicalPath(r.path) === canonicalPath(wtDir));
-    if (entry) {
-      assert.notEqual(entry.status, 'reaped', 'unmerged worktree must not be reaped (data loss guard)');
-    }
+    assert.ok(entry, 'unmerged worktree must appear in the results');
+    assert.equal(entry.status, 'skipped', 'unmerged worktree must not be reaped (data loss guard)');
+    assert.equal(entry.reason, 'branch_not_merged', 'reason must be branch_not_merged');
     assert.ok(fs.existsSync(wtDir), 'unmerged worktree directory must still exist');
   });
 
@@ -3732,10 +3974,12 @@ describe('bug-3707: reapOrphanWorktrees', () => {
     // within 5 minutes) which is fragile on heavily-loaded CI hosts.
     const result = reapOrphanWorktrees(repoDir, { mtimeSafe: () => FRESH_MTIME });
 
+    // #3057: unconditional verdict assertion — the old `if (entry)` form passed
+    // vacuously when no row was produced at all.
     const entry = result.find((r) => canonicalPath(r.path) === canonicalPath(wtDir));
-    if (entry) {
-      assert.notEqual(entry.status, 'reaped', 'fresh-mtime worktree must not be reaped (race guard)');
-    }
+    assert.ok(entry, 'fresh-mtime worktree must appear in the results');
+    assert.equal(entry.status, 'skipped', 'fresh-mtime worktree must not be reaped (race guard)');
+    assert.equal(entry.reason, 'lock_too_fresh', 'reason must be lock_too_fresh');
     assert.ok(fs.existsSync(wtDir), 'fresh-lock worktree directory must still exist');
   });
 
@@ -3954,16 +4198,12 @@ describe('bug-3707: reapOrphanWorktrees — adversarial edge cases', () => {
     // ensuring the non-numeric content check is the only reason the entry is skipped.
     const result = reapOrphanWorktrees(repoDir, { mtimeSafe: () => STALE_MTIME });
 
+    // #3057: unconditional verdict assertion — the old `if (entry)` form passed
+    // vacuously when no row was produced at all.
     const entry = result.find((r) => canonicalPath(r.path) === canonicalPath(wtDir));
-    if (entry) {
-      assert.notEqual(
-        entry.status,
-        'reaped',
-        'non-numeric Claude Code lock must NOT be reaped (fail-closed: owner unknown)'
-      );
-      assert.equal(entry.status, 'skipped', 'non-numeric lock entry should have status=skipped');
-      assert.equal(entry.reason, 'lock_owner_unknown', 'reason must be lock_owner_unknown');
-    }
+    assert.ok(entry, 'Claude-Code-locked worktree must appear in the results');
+    assert.equal(entry.status, 'skipped', 'non-numeric lock entry should have status=skipped');
+    assert.equal(entry.reason, 'lock_owner_unknown', 'reason must be lock_owner_unknown');
     assert.ok(fs.existsSync(wtDir), 'worktree with Claude Code lock must NOT be removed');
   });
 
@@ -3997,10 +4237,13 @@ describe('bug-3707: reapOrphanWorktrees — adversarial edge cases', () => {
       mtimeSafe: () => STALE_MTIME,
     });
 
+    // #3057: unconditional verdict assertion. An undeterminable owner takes the
+    // same fail-closed exit as a genuinely live one, so the reason string is
+    // pid_alive in both cases — production deliberately conflates them.
     const entry = result.find((r) => canonicalPath(r.path) === canonicalPath(wtDir));
-    if (entry) {
-      assert.notEqual(entry.status, 'reaped', 'EPERM from isPidAlive must be treated as ALIVE — must not reap');
-    }
+    assert.ok(entry, 'EPERM worktree must appear in the results');
+    assert.equal(entry.status, 'skipped', 'EPERM from isPidAlive must be treated as ALIVE — must not reap');
+    assert.equal(entry.reason, 'pid_alive', 'reason must be pid_alive');
     assert.ok(fs.existsSync(wtDir), 'worktree must still exist when isPidAlive throws EPERM');
   });
 
@@ -4047,11 +4290,12 @@ describe('bug-3707: reapOrphanWorktrees — adversarial edge cases', () => {
     // OR skip it for a safe reason — it must NOT return an empty result (which
     // would mean it bailed out entirely, silently skipping all orphan detection).
     assert.ok(Array.isArray(result), 'reapOrphanWorktrees must return an array');
-    assert.ok(result.length > 0, 'reaper must not bail out entirely for trunk-default repos — must inspect the worktree');
+    assert.equal(result.length, 1, 'reaper must inspect exactly the one worktree in this trunk-default repo — not bail out entirely, and not report extras');
     const entry = result.find((r) => canonicalPath(r.path) === wtDirCanonical);
     assert.ok(entry, 'worktree must appear in results (reaped or skipped with reason)');
     // The branch IS merged into trunk, and the PID is dead, so it should be reaped.
     assert.equal(entry.status, 'reaped', 'worktree with dead pid merged into trunk must be reaped');
+    assert.equal(entry.reason, 'pid_dead_and_merged', 'reason must be pid_dead_and_merged (using trunk as the default branch)');
   });
 });
   });
@@ -4064,7 +4308,12 @@ describe('bug-3707: reapOrphanWorktrees — adversarial edge cases', () => {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3129-validate-commit-git-bypass (consolidation epic #1969 B5 #1974)", () => {
 'use strict';
-// allow-test-rule: reads hook shell script to verify delegation pattern — structural contract test, not source-grep (see #3129)
+// allow-test-rule: structural-regression-guard (see #3129)
+// Reads the gsd-validate-commit.sh hook source to verify it delegates to
+// git-cmd.js isGitSubcommand() rather than the old regex — a specific code
+// pattern that must (and must not) exist; behavioral tests of tokenize()/
+// isGitSubcommand() cannot observe which detection strategy the hook itself
+// calls.
 
 // Regression tests for bug #3129.
 //
@@ -4515,8 +4764,7 @@ describe('bug #260: gsd-worktree-path-guard.js', () => {
       };
       const result = runHook(worktreeDir, payload);
       assert.strictEqual(result.status, 2, `Expected exit 2 (block), got ${result.status}. stderr: ${result.stderr}`);
-      let parsed;
-      assert.doesNotThrow(() => { parsed = JSON.parse(result.stdout); }, 'stdout must be valid JSON');
+      const parsed = JSON.parse(result.stdout);
       assert.strictEqual(parsed.decision, 'block', 'Expected decision:"block" in output');
     });
 
@@ -5101,8 +5349,7 @@ describe('#1342 — GSD-activity gate + fail-open for no-repo targets', () => {
       `GSD-managed worktree targeting main repo root must be blocked (exit 2). ` +
       `Got exit ${result.status}. stderr: ${result.stderr}`
     );
-    let parsed;
-    assert.doesNotThrow(() => { parsed = JSON.parse(result.stdout); }, 'stdout must be valid JSON');
+    const parsed = JSON.parse(result.stdout);
     assert.strictEqual(parsed.decision, 'block', 'Expected decision:"block" in output');
   });
 
@@ -5167,8 +5414,7 @@ describe('#1342 — GSD-activity gate + fail-open for no-repo targets', () => {
       `GSD-managed worktree targeting .git/config of another repo must be blocked (exit 2). ` +
       `Got exit ${result.status}. stderr: ${result.stderr}`
     );
-    let parsed;
-    assert.doesNotThrow(() => { parsed = JSON.parse(result.stdout); }, 'stdout must be valid JSON');
+    const parsed = JSON.parse(result.stdout);
     assert.strictEqual(parsed.decision, 'block', 'Expected decision:"block" in output');
     assert.ok(
       parsed.reason && parsed.reason.includes('.git'),

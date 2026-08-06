@@ -1742,14 +1742,14 @@ describe('bug-967 verify key-links strict file-path contract', () => {
   // This test reads the canonical docs file and asserts the example is consistent
   // with the strict-path contract.
   //
-  // allow-test-rule: <runtime-contract-is-the-product> the plan-md.md reference (see #967)
+  // allow-test-rule: source-text-is-the-product the plan-md.md reference (see #967)
   // example IS the documented authoring surface for key_links; asserting it uses
   // a file path (not an endpoint) directly tests the documented contract.
   test('docs/reference/plan-md.md key_links example uses a relative file path for to:, not an HTTP endpoint', () => {
     // Locate plan-md.md relative to this test file's repo root
     const docPath = path.join(__dirname, '..', 'docs', 'reference', 'plan-md.md');
     assert.ok(fs.existsSync(docPath), `plan-md.md not found at ${docPath}`);
-    const content = fs.readFileSync(docPath, 'utf-8'); // allow-test-rule: <runtime-contract-is-the-product> the plan-md.md reference example IS the documented authoring surface for key_links; asserting it uses a file path (not an endpoint) directly tests the documented contract. (see #967)
+    const content = fs.readFileSync(docPath, 'utf-8'); // allow-test-rule: source-text-is-the-product the plan-md.md reference example IS the documented authoring surface for key_links; asserting it uses a file path (not an endpoint) directly tests the documented contract. (see #967)
 
     // Find the key_links block in the annotated example (the first YAML frontmatter fence)
     // The bad old value was:  to: "/api/feed"

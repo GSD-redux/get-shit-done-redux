@@ -1181,14 +1181,24 @@ test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', (t) =>
     cwd: overlay,
     encoding: 'utf8',
     env: installerEnv(),
-    timeout: 300000,
+    // `regen:derived` chains a full `npm run build` plus eight generators —
+    // the single heaviest subprocess in this suite. 300_000 (5min) was
+    // observed to be killed (status: null) near the very end of a genuinely
+    // completed run on a loaded bench (linux-node22), not from a real hang.
+    // 900_000 (15min) is deliberately generous so this can never again flake
+    // on load while still catching a true hang.
+    timeout: 900000,
     maxBuffer: 64 * 1024 * 1024,
   });
   assert.equal(
     regen.status,
     0,
-    `npm run regen:derived must succeed inside the copy-mode overlay\n` +
-      `stdout: ${regen.stdout}\nstderr: ${regen.stderr}`,
+    regen.status === null
+      ? `npm run regen:derived was KILLED (status: null, signal: ${regen.signal}) inside the copy-mode ` +
+        `overlay — likely a timeout, not a build failure; the captured output below may show the build ` +
+        `actually completed\nstdout: ${regen.stdout}\nstderr: ${regen.stderr}`
+      : `npm run regen:derived must succeed inside the copy-mode overlay (exit ${regen.status})\n` +
+        `stdout: ${regen.stdout}\nstderr: ${regen.stderr}`,
   );
 
   // 3. P2, now non-tautological because real writers ran: compare the

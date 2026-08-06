@@ -395,6 +395,7 @@
       "loop-resolver.cjs",
       "markdown-sectionizer.cjs",
       "markdown-table.cjs",
+      "mcp-catalog.cjs",
       "mcp-server.cjs",
       "milestone.cjs",
       "model-adapter.cjs",

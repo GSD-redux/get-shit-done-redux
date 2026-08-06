@@ -1,13 +1,20 @@
 'use strict';
 
 /**
- * The full test lane is sharded, and the coverage gate that sharding displaced
- * is still wired in — .github/workflows/test.yml (#2952).
+ * The full test lane and the scoped Windows lane are both sharded, and the
+ * coverage gate that sharding displaced is still wired in —
+ * .github/workflows/test.yml (#2952, #3057).
  *
  * The `scope: full` lane was the only unsharded lane in this file. It ran the
  * entire unit suite under c8 on a single runner, grew past a 15-minute cap, and
  * reddened `next` (#2952). Raising the cap treated the symptom; sharding is the
- * shape fix, and it is the same answer #1212 reached for the Windows lane.
+ * shape fix, and it is the same answer #1212 reached for the Windows lane at
+ * the time.
+ *
+ * The `scope: windows` lane then hit the identical cliff itself: it reached
+ * exactly 15m05s and was CANCELLED on PR #3094, four shas in a row. Per #869's
+ * stated durable follow-up, it is now sharded three ways too (#3057), leaving
+ * `scope: targeted` as the only lane in this job with no shard.
  *
  * Sharding introduces two failure modes that stay GREEN while being wrong, so
  * both are pinned here:
@@ -69,42 +76,62 @@ test('the full test lane is sharded and complete (#2952)', async (t) => {
   const workflow = loadWorkflow('test.yml');
   const include = workflow.jobs.test.strategy.matrix.include;
   const fullLanes = include.filter((e) => e.scope === 'full');
+  const windowsLanes = include.filter((e) => e.scope === 'windows');
+  // The only lane in this job with no shard is `scope: targeted` — the fast,
+  // single-runner default lane. Both `full` and `windows` are sharded.
+  const shardedScopes = { full: fullLanes, windows: windowsLanes };
 
-  await t.test('the full lane is actually sharded, not a single runner', () => {
-    assert.ok(fullLanes.length > 0, 'expected at least one `scope: full` matrix entry');
-    assert.ok(
-      fullLanes.length > 1,
-      'the `scope: full` lane is back to a single unsharded entry. That is the '
-      + '#2952 regression: the whole unit suite under c8 on one runner grew past '
-      + 'its cap and reddened `next`.',
-    );
-    for (const lane of fullLanes) {
+  for (const [scope, lanes] of Object.entries(shardedScopes)) {
+    await t.test(`the \`scope: ${scope}\` lane is actually sharded, not a single runner`, () => {
+      assert.ok(lanes.length > 0, `expected at least one \`scope: ${scope}\` matrix entry`);
       assert.ok(
-        lane.shard !== undefined,
-        `a \`scope: full\` matrix entry declares no shard: ${JSON.stringify(lane)}`,
+        lanes.length > 1,
+        `the \`scope: ${scope}\` lane is back to a single unsharded entry. That is `
+        + 'the #2952/#3057 regression: the whole suite on one runner grows past '
+        + 'its cap and reddens `next`.',
       );
-    }
-  });
+      for (const lane of lanes) {
+        assert.ok(
+          lane.shard !== undefined,
+          `a \`scope: ${scope}\` matrix entry declares no shard: ${JSON.stringify(lane)}`,
+        );
+      }
+    });
 
-  await t.test('the declared shards form one complete set', () => {
-    const specs = fullLanes.map((e) => e.shard);
-    assert.ok(
-      isCompleteShardSet(specs),
-      `the full lane's shards ${JSON.stringify(specs)} are not a complete set. `
-      + 'Every entry must share one denominator N and the numerators must be '
-      + 'exactly 1..N — a missing numerator silently stops running that slice of '
-      + 'the unit suite while every check stays green.',
-    );
-  });
+    await t.test(`the \`scope: ${scope}\` lane's declared shards form one complete set`, () => {
+      const specs = lanes.map((e) => e.shard);
+      assert.ok(
+        isCompleteShardSet(specs),
+        `the \`scope: ${scope}\` lane's shards ${JSON.stringify(specs)} are not a `
+        + 'complete set. Every entry must share one denominator N and the '
+        + 'numerators must be exactly 1..N — a missing numerator silently stops '
+        + 'running that slice of the suite while every check stays green.',
+      );
+    });
+  }
 
-  await t.test('only the full lane is sharded', () => {
-    for (const lane of include.filter((e) => e.scope !== 'full')) {
+  await t.test('no other lane is sharded', () => {
+    for (const lane of include.filter((e) => e.scope !== 'full' && e.scope !== 'windows')) {
       assert.equal(
         lane.shard, undefined,
-        `non-full lane ${JSON.stringify(lane)} declares a shard; the scoped and `
-        + 'Windows lanes run a selected file list, not a partition.',
+        `lane ${JSON.stringify(lane)} declares a shard but is neither \`scope: full\` `
+        + 'nor `scope: windows` — the targeted lane runs a selected file list, not '
+        + 'a partition.',
       );
     }
+  });
+
+  await t.test('the scoped Windows shards are passed through to run-tests.cjs', () => {
+    const scopedStep = workflow.jobs.test.steps.find(
+      (s) => s.name === 'Run scoped tests',
+    );
+    assert.ok(scopedStep, 'no "Run scoped tests" step in the test job');
+    assert.match(
+      scopedStep.run, /matrix\.shard/,
+      'the "Run scoped tests" step does not reference matrix.shard, so the '
+      + 'windows lane\'s three shards would each run the entire selected file '
+      + 'list — N times the cost, no speedup.',
+    );
   });
 
   await t.test('each shard runs its own slice, not the whole suite', () => {
