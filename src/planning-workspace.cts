@@ -147,11 +147,18 @@ function planningRoot(cwd: string): string {
  * config-loader uses (config-loader.cts:618/:649) — the workstream config wins,
  * the root config is the fallback.
  *
- * Why this exists rather than `loadConfig(cwd)['phase_id_convention']`: loadConfig
- * merges against CONFIG_DEFAULTS and drops keys it does not know, and
- * `phase_id_convention` is not among them, so it returns `undefined` no matter
- * where the file lives. Adding the key to the defaults is the convention-enum
- * work, not this change. Cycles were never the obstacle.
+ * Why this exists rather than `loadConfig(cwd)['phase_id_convention']`: as of
+ * #2997 (aa7697fe, in `next`), loadConfig surfaces `phase_id_convention` in
+ * its resolved `_baseConfig` — the "loadConfig drops keys it does not know"
+ * rationale this comment used to give is stale. The surviving reasons for the
+ * direct read are (1) the workstream->root federation below, a standalone
+ * resolution this function needs to run against a GIVEN cwd rather than
+ * whatever base a `loadConfig(cwd)` call elsewhere would federate from, and
+ * (2) convention-ENUM validation, which is still #612 PR-4 work — this
+ * function returns the raw string unvalidated, same as the now-surfaced
+ * resolved key would. #2997 surfacing the key makes consuming it from
+ * resolved config (instead of re-reading config.json here) a natural PR-4
+ * consolidation, not this PR's scope. Cycles were never the obstacle.
  *
  * Why federation matters here specifically: the phase-id readers were splitting
  * on this value from two different bases — one resolving from the workstream
