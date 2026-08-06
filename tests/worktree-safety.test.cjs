@@ -1138,6 +1138,9 @@ describe('worktree branch namespace boundaries (#1995)', () => {
     'worktree-agent-a1',
     'worktree-agent-abc123',
     'worktree-agent-session.42',
+    // #3021: Workflow backend naming convention
+    'worktree-wf_run123-1',
+    'worktree-wf_execute-phase-71-env-vars-3',
   ];
   const REJECTED_BRANCHES = [
     'feature-x',
@@ -1195,7 +1198,8 @@ describe('worktree branch namespace boundaries (#1995)', () => {
       agentId: 'a1', worktreePath: '/repo/wt', branch: 'feature-x', base: 'abc123',
     });
     assert.equal(plan.ok, false);
-    assert.match(plan.hint, /\(worktree-\)\?agent-\[A-Za-z0-9\._\/-\]\+/);
+    // #3021: hint must now mention the worktree-wf_ namespace too
+    assert.match(plan.hint, /worktree-wf_/);
   });
 });
 

@@ -18,7 +18,10 @@ import { execGit as execGitSeam, posixNormalize, type SpawnResultOutput } from '
 // remote, stalled NFS mount, etc.).  Callers can override via deps.timeout.
 const DEFAULT_GIT_TIMEOUT_MS = 10000;
 
-const WORKTREE_AGENT_BRANCH_RE = /^(worktree-)?agent-[A-Za-z0-9._/-]+$/;
+// #3021: accept the Workflow tool's worktree-wf_<runid>-<n> naming convention
+// (claude-orchestration's isolation:"worktree" emission) alongside the
+// existing agent-<id> / worktree-agent-<id> shapes.
+const WORKTREE_AGENT_BRANCH_RE = /^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$/;
 const WORKTREE_AGENT_BRANCH_PATTERN = WORKTREE_AGENT_BRANCH_RE.source;
 
 // GitResult now aliases the canonical SpawnResultOutput (shell-command-projection.cts),
@@ -1026,7 +1029,7 @@ function planWorktreeRecordAgent(manifestRaw: string, fields: RecordAgentFields)
     return {
       ok: false,
       reason: 'invalid_entry',
-      hint: `Entry failed cleanup-manifest validation: --path/--branch/--base must be non-empty and --branch must match ${WORKTREE_AGENT_BRANCH_PATTERN} (accepts both agent-<id> and worktree-agent-<id> namespaces; got branch="${branch}"). Fix the field and re-run.`,
+      hint: `Entry failed cleanup-manifest validation: --path/--branch/--base must be non-empty and --branch must match ${WORKTREE_AGENT_BRANCH_PATTERN} (accepts agent-<id>, worktree-agent-<id>, and worktree-wf_<runid> namespaces; got branch="${branch}"). Fix the field and re-run.`,
       entry: null,
       manifest: null,
     };
@@ -1252,7 +1255,7 @@ function planWorktreeCreate(fields: WorktreeCreateFields): WorktreeCreatePlan {
     return {
       ok: false,
       reason: 'invalid_entry',
-      hint: `Entry failed cleanup-manifest validation: --path/--branch/--base must be non-empty and --branch must match ${WORKTREE_AGENT_BRANCH_PATTERN} (accepts both agent-<id> and worktree-agent-<id> namespaces; got branch="${branch}"). Fix the field and re-run.`,
+      hint: `Entry failed cleanup-manifest validation: --path/--branch/--base must be non-empty and --branch must match ${WORKTREE_AGENT_BRANCH_PATTERN} (accepts agent-<id>, worktree-agent-<id>, and worktree-wf_<runid> namespaces; got branch="${branch}"). Fix the field and re-run.`,
       entry: null,
     };
   }
