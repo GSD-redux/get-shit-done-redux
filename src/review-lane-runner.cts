@@ -353,14 +353,24 @@ export function antigravityWatermark(
   }
 }
 
-/** Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides. */
-function resolveConvId(cache: Record<string, unknown>, workspace: string): string {
-  if (Object.prototype.hasOwnProperty.call(cache, workspace)) {
-    const direct = cache[workspace];
+/**
+ * Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides.
+ *
+ * #3118: `JSON.parse` succeeding is not the same fact as the payload being a usable object —
+ * `JSON.parse('null')` succeeds and returns `null`, so a truncated/zeroed cache file slips past
+ * the callers' parse-only try/catch. `typeof null === 'object'`, so the guard below must exclude
+ * `null` explicitly. Arrays are excluded too (not a workspace map), which also falls out of the
+ * `Object.entries`/`hasOwnProperty` lookups below returning nothing for array input.
+ */
+function resolveConvId(cache: unknown, workspace: string): string {
+  if (cache === null || typeof cache !== 'object') return '';
+  const record = cache as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, workspace)) {
+    const direct = record[workspace];
     if (typeof direct === 'string' && direct) return direct;
   }
   const target = workspace.toLowerCase();
-  for (const [k, v] of Object.entries(cache)) {
+  for (const [k, v] of Object.entries(record)) {
     if (k.toLowerCase() === target && typeof v === 'string' && v) return v;
   }
   return '';
