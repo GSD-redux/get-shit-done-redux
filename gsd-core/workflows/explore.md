@@ -67,8 +67,9 @@ If yes, spawn a research agent:
 
 Resolve the researcher's model **and** the project's profile setting before dispatching. Both arm the
 tier-floor guard below, and neither is sufficient alone. `--pick profile` returns the project's
-**global `model_profile` setting** (`quality` | `balanced` | `budget`) — **not** the agent's effective
-resolved tier; `--raw` would drop it. `--pick model` returns the model actually dispatched:
+**global `model_profile` setting** (`quality` | `balanced` | `budget` | `adaptive` | `inherit`) —
+**not** the agent's effective resolved tier; `--raw` would drop it. `--pick model` returns the model
+actually dispatched:
 
 ```bash
 RESEARCHER_MODEL=$(gsd_run query resolve-model gsd-phase-researcher --pick model 2>/dev/null || true)
@@ -139,11 +140,22 @@ Two guards ride with it:
   patterns — dispatches a haiku model while the profile still reads `balanced`. Gating on the profile
   alone lets exactly that configuration present haiku-tier "grounded" admits at full confidence.
 
-  **Disclosed residual:** on runtimes whose budget tier is not an Anthropic model (`codex` →
-  `gpt-5.6-luna`, `qwen` → `qwen3-coder-next`) only the profile signal fires, so a per-agent override
-  onto those models is not detected. This is deliberate: pinning a per-runtime budget-model list here
-  would duplicate `bin/shared/model-catalog.json` and drift out of step with it. The durable fix is an
-  effective-tier field on `query resolve-model`, which is an engine change outside this issue's scope.
+  **Disclosed residual — the floor is a narrowing, not a closure.** Three measured escapes remain:
+
+  1. Runtimes whose budget tier is not an Anthropic model (`codex` → `gpt-5.6-luna`, `qwen` →
+     `qwen3-coder-next`): only the profile signal fires.
+  2. A per-agent `model_overrides` / `models.<phaseType>` / `model_policy` pin onto **any** non-`haiku`
+     low-cost ID, on **any** runtime **including `claude`**: neither signal fires. Measured —
+     `model_profile: balanced` + `model_overrides.gsd-phase-researcher: gemini-2.5-flash-lite`
+     resolves that model while the profile still reads `balanced`.
+  3. `model_profile: inherit`: `RESEARCHER_MODEL` is the literal `inherit`, `model=` is omitted per
+     #2517, and the subagent silently inherits the session model — so neither signal describes what
+     actually ran.
+
+  Pinning a per-runtime budget-model list here was rejected deliberately: it would duplicate
+  `bin/shared/model-catalog.json` and drift out of step with it. **Treat the floor as a floor, never
+  as proof the research did not run cheap.** The durable fix is an effective-tier field on
+  `query resolve-model`, which is an engine change outside this issue's scope.
 - **Untagged findings** — a finding returned with **no** `[admit:/refute:/abstain:]` tag is treated
   as an **abstain** and goes to the ledger with the reason `untagged — disposition not reported`.
   It is never stated as flat prose and never silently dropped. This is the instruction-following
