@@ -19,6 +19,7 @@ const {
   resolveGsdToolsPath,
   projectPathActionProjection,
   projectPathExportLine,
+  posixNormalize,
   PATH_ACTION_REASON,
   renderShellActionLines,
   formatManagedHookScriptToken,
@@ -971,7 +972,9 @@ describe('bug #3441: PATH guidance is projected from typed shell action IR', () 
     assert.equal(projected.shellActions[1].command.includes("/tmp/O'\\''Neil/bin"), true);
     // #323: fish entry single-quotes the dir with the same POSIX literal
     // escaping (`'\''` is also a valid escaped quote in fish unquoted context).
-    assert.equal(projected.shellActions[2].command, "fish_add_path '/tmp/O'\\''Neil/bin'");
+    // #3118: `--` is fish's end-of-options separator, added so a leading-dash
+    // directory name is not misparsed as a flag; every fish_add_path lane carries it now.
+    assert.equal(projected.shellActions[2].command, "fish_add_path -- '/tmp/O'\\''Neil/bin'");
   });
 
   test('maybeSuggestPathExport renders commands projected by path-action seam', () => {
@@ -1833,10 +1836,15 @@ describe('path export projection — escaping (#3118)', () => {
     const { escapedDir: token } = projectPathExportLine('/tmp/a$(id)b');
     const repairCommand = laneCommand('repair', '/tmp/a$(id)b', 'linux', 'posix');
     const persistCommand = laneCommand('persist', '/tmp/a$(id)b', 'linux', 'bash');
-    const win32Command = laneCommand('repair', 'C:/a$(id)b', 'win32', 'bash');
+    const win32TargetDir = 'C:/a$(id)b';
+    const win32Command = laneCommand('repair', win32TargetDir, 'win32', 'bash');
+    // #3118: the win32 bash lane posix-normalizes targetDir before escaping it, so its token
+    // must be compared against the SAME (posix-normalized) input, not against the '/tmp/...'
+    // token above — those are two different inputs and legitimately escape differently.
+    const { escapedDir: win32Token } = projectPathExportLine(posixNormalize(win32TargetDir));
     assert.ok(repairCommand.includes(token), 'repair posix lane must use the same escaped token');
     assert.ok(persistCommand.includes(token), 'persist bash lane must use the same escaped token');
-    assert.ok(win32Command.includes(token), 'win32 bash lane must use the same escaped token');
+    assert.ok(win32Command.includes(win32Token), 'win32 bash lane must use the same escaped token');
   });
 
   test('does not let a quote break out of the cmd lane', () => {
