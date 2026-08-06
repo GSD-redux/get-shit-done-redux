@@ -953,7 +953,15 @@ describe('validate health command', () => {
     fs.writeFileSync(path.join(phaseDir, '01-01-PLAN.md'), '# Plan\n');
     fs.writeFileSync(path.join(phaseDir, '01-01-SUMMARY.md'), '# Summary\n');
 
-    const result = runGsdTools('validate health', tmpDir);
+    // #2540 round 8: sandbox HOME — health honors ~/.gsd/defaults.json, and a
+    // dev machine with a persisted non-claude runtime would W010 this
+    // all-checks-pass fixture (claude repo layout) into 'degraded'.
+    const isolatedHome = path.join(tmpDir, 'isolated-home');
+    fs.mkdirSync(isolatedHome, { recursive: true });
+    const result = runGsdTools('validate health', tmpDir, {
+      HOME: isolatedHome,
+      USERPROFILE: isolatedHome,
+    });
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     const output = JSON.parse(result.output);

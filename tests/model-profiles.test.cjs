@@ -327,6 +327,12 @@ describe('bug #384 — getAgentsDir() is runtime-aware', () => {
     // GSD_AGENTS_DIR points directly at the agents dir (not the config dir)
     const directAgentsDir = path.join(tmpDir, 'agents');
 
+    // #2540 round 8: this test's premise is "nothing anywhere asserts a
+    // runtime → claude", and the resolution chain now includes
+    // ~/.gsd/defaults.json — sandbox HOME so a dev machine's persisted
+    // runtime cannot assert one.
+    const isolatedHome = path.join(tmpDir, 'isolated-home');
+    fs.mkdirSync(isolatedHome, { recursive: true });
     const result = runGsdTools(
       ['init', 'quick', 'test description', '--raw'],
       tmpDir,
@@ -334,6 +340,8 @@ describe('bug #384 — getAgentsDir() is runtime-aware', () => {
         GSD_AGENTS_DIR: directAgentsDir,
         // Explicitly unset GSD_RUNTIME so no runtime override applies
         GSD_RUNTIME: '',
+        HOME: isolatedHome,
+        USERPROFILE: isolatedHome,
       }
     );
     assert.ok(result.success, `Command failed: ${result.error}`);

@@ -119,7 +119,16 @@ describe('W017: no regression on healthy projects', () => {
   afterEach(() => cleanup(tmpDir));
 
   test('validate health still reports healthy on a clean project', () => {
-    const result = runGsdTools('validate health --raw', tmpDir);
+    // #2540 round 8: health honors a runtime persisted to ~/.gsd/defaults.json,
+    // so sandbox HOME — a developer machine whose real defaults.json names a
+    // non-claude runtime would otherwise (correctly) check that runtime's
+    // agents dir and degrade this clean-project expectation with W010.
+    const isolatedHome = path.join(tmpDir, 'isolated-home');
+    fs.mkdirSync(isolatedHome, { recursive: true });
+    const result = runGsdTools('validate health --raw', tmpDir, {
+      HOME: isolatedHome,
+      USERPROFILE: isolatedHome,
+    });
     assert.ok(result.success, `validate health should succeed: ${result.error || ''}`);
     const parsed = JSON.parse(result.output);
     assert.equal(parsed.status, 'healthy', `Expected healthy status, got ${parsed.status}. Errors: ${JSON.stringify(parsed.errors)}. Warnings: ${JSON.stringify(parsed.warnings)}`);
