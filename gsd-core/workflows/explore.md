@@ -122,10 +122,16 @@ authoritative on its own — it can only ever produce an abstain, never a refute
 Two guards ride with it:
 - **Conflict-abstention** — a source-vs-prior conflict routes to the ledger, never a silent pick-a-side.
 - **Tier floor** — present every would-be **admit** as an **abstain** instead when **either** signal
-  bound above says the research ran on the cheapest tier:
+  bound above says the research ran on the cheapest tier — **or** when *neither* signal could be read
+  at all:
   - `RESEARCHER_PROFILE` is `budget`, **or**
   - `RESEARCHER_MODEL` names a haiku-tier model — match `haiku` case-insensitively, which covers the
-    bare alias (`haiku`) and the prefixed forms (`claude-haiku-4-5`, `anthropic/claude-haiku-4-5`).
+    bare alias (`haiku`) and the prefixed forms (`claude-haiku-4-5`, `anthropic/claude-haiku-4-5`), **or**
+  - **both `RESEARCHER_MODEL` and `RESEARCHER_PROFILE` are empty** — `resolve-model` could not answer
+    (the `2>/dev/null || true` on the resolve lines swallowed its failure). An *unknown* tier is
+    treated as potentially-cheap and floored, never as verified-adequate: a resolver failure degrades
+    to a stated default (abstain), it does not silently disarm the floor. This is a fail-safe default,
+    not one of the disclosed escapes below.
 
   The budget tier for `gsd-phase-researcher` is `haiku` (`bin/shared/model-catalog.json`), which
   over-defers to whatever source it was handed, so a confident "grounded" label from that tier is not
@@ -180,7 +186,7 @@ Suppress any section with no entries — an empty heading reads as a claim that 
 If **every** finding landed in Unresolved, say so in one line rather than presenting an empty
 admitted section: that outcome is itself the useful signal.
 
-This is the claims-side analogue of the **#1154** honest verifier (abstain-and-flag on the non-inferable; ADR-550 D4 — *never a silent pass*). Here it is a **prompt-level** judgment on this ideation surface, reusing the #1154 *pattern* — it does **not** call the verify-time `probe-core` disposition, which sits on the verifier↔predicate rail (ADR-857) and is out of altitude for an ideation flow.
+This is the claims-side analogue of the **#1154** honest verifier (abstain-and-flag on the non-inferable; ADR-550 D4 — *never a silent pass*). Here it is a **prompt-level** judgment on this ideation surface, reusing the #1154 *pattern* — it does **not** call the verify-time `probe-core` disposition, which sits on the verifier↔predicate rail (ADR-857) and is out of altitude for an ideation flow. It is also distinct from the `gsd_run query classify-confidence` seam the researcher **does** call (ADR-0656): that stamps a provider-**authority** tier (HIGH/MEDIUM/LOW) which feeds the tier floor above, but it runs no refute pass and yields no admit/refute/abstain verdict — the confidence tier is an *input* to the disposition, never a substitute for it.
 
 If the topic doesn't warrant research, skip this step entirely. **Don't force it.**
 

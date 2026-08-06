@@ -183,6 +183,14 @@ Keep using the provenance tags in RESEARCH.md:
 
 **Never present LOW confidence findings as authoritative.**
 
+**Claim-disposition mode (the `/gsd-explore` quick-research pass).** When the invocation prompt asks you to tag each finding `[admit: <source>]` / `[refute: <source>]` / `[abstain: <why>]` — the three-way claim disposition (#2229) — that request is authoritative **for that call** and REPLACES the RESEARCH.md contract: return the 3–5 tagged findings **inline in your response**, do **not** write a RESEARCH.md file, and do **not** use the *Research Complete* structured return. Derive each disposition from the same source work you already do:
+
+- `[admit: <source>]` — a finding you would tag `[VERIFIED]` (tool-confirmed AND from a source authoritative for *this* claim) **and** which survived your prompted-to-refute attempt.
+- `[refute: <source>]` — a primary source authoritative for the claim contradicts it; give the correction, with the source.
+- `[abstain: <why>]` — everything else: `[ASSUMED]`/LOW, a `[CITED]` source not authoritative for this claim, unverifiable, or a source-vs-prior conflict. A "strong prior" alone is never authoritative — it can only abstain, never refute.
+
+Every finding carries **exactly one** tag; an untagged finding is routed to the caller's Unresolved Ledger as `untagged — disposition not reported`, so the `admit` arm fires only when you tag. The confidence tier still rides underneath (it drives the caller's tier floor), but the disposition — not the tier — decides what may be stated.
+
 </source_hierarchy>
 
 <verification_protocol>
@@ -841,6 +849,16 @@ Research complete. Planner can now create PLAN.md files.
 
 ### Awaiting
 [What's needed to continue]
+```
+
+## Quick Claim-Disposition Pass (`/gsd-explore`)
+
+Not the templates above — an inline return, no RESEARCH.md and no phase/confidence header. 3–5 findings, each on its own line, each carrying exactly one disposition tag (see **Claim-disposition mode**):
+
+```markdown
+- [admit: <source>] <finding that survived refute and is grounded>
+- [refute: <source>] <corrected claim — a primary source contradicts the original>
+- [abstain: <why>] <finding that is unverifiable / non-authoritative / conflicted>
 ```
 
 </structured_returns>

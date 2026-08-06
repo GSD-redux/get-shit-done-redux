@@ -114,6 +114,61 @@ describe('explore research-pass claim disposition (#2229)', () => {
     );
   });
 
+  test('#2543 M1: the researcher agent is taught the disposition enum, so admit is reachable', () => {
+    // The admit arm only fires if the spawned researcher actually emits
+    // [admit/refute/abstain] tags. explore.md's spawn prompt asks for them, but
+    // gsd-phase-researcher is a SHARED agent carrying its own [VERIFIED]/[CITED]/
+    // [ASSUMED] contract — if it never learned the disposition enum it follows its
+    // own template, every finding returns untagged, and the three-way disposition
+    // degenerates to all-abstain. Assert BOTH ends of the contract, not just the
+    // word "admit" somewhere in the workflow (the vacuous version above).
+    const explore = readWorkflow();
+    const spawn = explore.slice(
+      explore.indexOf('Agent('),
+      explore.indexOf('subagent_type="gsd-phase-researcher"'),
+    );
+    for (const tag of ['[admit:', '[refute:', '[abstain:']) {
+      assert.ok(spawn.includes(tag), `the spawn prompt must ask the researcher for ${tag} …] tags`);
+    }
+    const agent = fs.readFileSync(
+      path.join(__dirname, '..', 'agents', 'gsd-phase-researcher.md'),
+      'utf-8',
+    );
+    assert.match(
+      agent,
+      /claim-disposition mode/i,
+      'gsd-phase-researcher.md must document the claim-disposition mode; without it the shared agent ' +
+        'follows its own [VERIFIED]/[CITED]/[ASSUMED] template and the admit arm never fires (#2543 M1)',
+    );
+    for (const tag of ['[admit:', '[refute:', '[abstain:']) {
+      assert.ok(agent.includes(tag), `the researcher agent must define the ${tag} …] disposition tag`);
+    }
+  });
+
+  test('#2543 M4: the ledger-reason enum is identical in explore.md and CONTEXT.md', () => {
+    // The 5 abstention reasons are duplicated verbatim across the workflow and the
+    // CONTEXT glossary with no coupling. Extract the enum from BOTH (no third hardcoded
+    // copy) and assert equality, so a drift fails CI (CLAUDE.md: shared constants across
+    // parallel surfaces need a parity assertion).
+    const pull = (text, label) => {
+      const m = text.match(
+        /[{(][^{}()]*\bunverifiable\b[^{}()]*untagged — disposition not reported[^{}()]*[})]/,
+      );
+      assert.ok(m, `${label} must carry the 5-value ledger-reason enum in one {…}/(…) group`);
+      return m[0].slice(1, -1).replace(/`/g, '').split('|').map((s) => s.trim());
+    };
+    const fromExplore = pull(readWorkflow(), 'explore.md');
+    const fromContext = pull(
+      fs.readFileSync(path.join(__dirname, '..', 'CONTEXT.md'), 'utf-8'),
+      'CONTEXT.md',
+    );
+    assert.deepStrictEqual(
+      fromContext,
+      fromExplore,
+      'the Unresolved-Ledger abstention reasons in explore.md and CONTEXT.md have drifted; keep them identical (#2543 M4)',
+    );
+  });
+
   test('conflict-abstention guard: a source-vs-prior conflict routes to the ledger', () => {
     const content = readWorkflow().toLowerCase();
     // Require the disposition-specific phrasing, not an incidental "conflicting edits" mention

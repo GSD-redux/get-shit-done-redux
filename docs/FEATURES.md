@@ -2222,6 +2222,7 @@ Test suite that scans all agent, workflow, and command files for embedded inject
 - REQ-EXPLORE-02: Session MUST offer to route outputs to the appropriate GSD artifact
 - REQ-EXPLORE-03: An optional topic argument MUST prime the first question
 - REQ-EXPLORE-04: Exploration MUST optionally spawn a research agent for technical feasibility
+- REQ-EXPLORE-05: A research pass MUST disposition each surfaced claim (admit / refute / abstain) and route every abstention to a visible Unresolved Ledger — never smoothing an ungrounded claim into the narrative as confident prose
 
 ---
 
