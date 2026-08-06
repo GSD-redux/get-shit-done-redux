@@ -65,9 +65,10 @@ If yes, spawn a research agent:
 
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
-Resolve the researcher's model **and its tier** before dispatching. The tier is what arms the
-tier-floor guard below, so it must be a real resolved value, not an assumption. `--pick profile`
-returns the tier (`quality` | `balanced` | `budget`); `--raw` would drop it:
+Resolve the researcher's model **and** the project's profile setting before dispatching. Both arm the
+tier-floor guard below, and neither is sufficient alone. `--pick profile` returns the project's
+**global `model_profile` setting** (`quality` | `balanced` | `budget`) — **not** the agent's effective
+resolved tier; `--raw` would drop it. `--pick model` returns the model actually dispatched:
 
 ```bash
 RESEARCHER_MODEL=$(gsd_run query resolve-model gsd-phase-researcher --pick model 2>/dev/null || true)
@@ -119,11 +120,30 @@ authoritative on its own — it can only ever produce an abstain, never a refute
 
 Two guards ride with it:
 - **Conflict-abstention** — a source-vs-prior conflict routes to the ledger, never a silent pick-a-side.
-- **Tier floor** — when `RESEARCHER_PROFILE` (bound above) is `budget`, present every would-be
-  **admit** as an **abstain** instead. The budget tier for `gsd-phase-researcher` is `haiku`
-  (`bin/shared/model-catalog.json`), which over-defers to whatever source it was handed, so a
-  confident "grounded" label from that tier is not worth what it claims. `refute` and `abstain` are
-  unaffected — the floor suppresses unearned confidence, it does not suppress corrections.
+- **Tier floor** — present every would-be **admit** as an **abstain** instead when **either** signal
+  bound above says the research ran on the cheapest tier:
+  - `RESEARCHER_PROFILE` is `budget`, **or**
+  - `RESEARCHER_MODEL` names a haiku-tier model — match `haiku` case-insensitively, which covers the
+    bare alias (`haiku`) and the prefixed forms (`claude-haiku-4-5`, `anthropic/claude-haiku-4-5`).
+
+  The budget tier for `gsd-phase-researcher` is `haiku` (`bin/shared/model-catalog.json`), which
+  over-defers to whatever source it was handed, so a confident "grounded" label from that tier is not
+  worth what it claims. `refute` and `abstain` are unaffected — the floor suppresses unearned
+  confidence, it does not suppress corrections.
+
+  **Both signals are required, because they catch different routes to the same tier.** In
+  `resolveModelInternal` (`src/model-resolver.cts`) the per-agent `model_overrides[<agent>]` and the
+  phase-type `models.research` lookups sit **above** the profile lookup, while `--pick profile` reports
+  `config.model_profile` verbatim (`src/commands.cts`). So a project on `model_profile: balanced` with
+  `models.research: "haiku"` — or `model_overrides.gsd-phase-researcher: "haiku"`, both documented
+  patterns — dispatches a haiku model while the profile still reads `balanced`. Gating on the profile
+  alone lets exactly that configuration present haiku-tier "grounded" admits at full confidence.
+
+  **Disclosed residual:** on runtimes whose budget tier is not an Anthropic model (`codex` →
+  `gpt-5.6-luna`, `qwen` → `qwen3-coder-next`) only the profile signal fires, so a per-agent override
+  onto those models is not detected. This is deliberate: pinning a per-runtime budget-model list here
+  would duplicate `bin/shared/model-catalog.json` and drift out of step with it. The durable fix is an
+  effective-tier field on `query resolve-model`, which is an engine change outside this issue's scope.
 - **Untagged findings** — a finding returned with **no** `[admit:/refute:/abstain:]` tag is treated
   as an **abstain** and goes to the ledger with the reason `untagged — disposition not reported`.
   It is never stated as flat prose and never silently dropped. This is the instruction-following
