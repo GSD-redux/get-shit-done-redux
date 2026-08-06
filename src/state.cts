@@ -1730,7 +1730,7 @@ function countRoadmapPhaseHeadings(
       if (bracketId && isSentinelPhaseId(`${bracketId}-${token}`, 'bracket')) continue;
       // #612: under bracket the token rule composes with the bracket-id
       // check as the engine's {0, 999} sentinel set.
-      if (/^0\b/.test(token)) continue;
+      if (bracketId && /^0\b/.test(token)) continue;
       if (includeUnconditional999Check && /^999\b/.test(token)) continue;
       // #1514: retired/folded phases are struck through in the ROADMAP;
       // exclude them from the denominator (they can never be completed).

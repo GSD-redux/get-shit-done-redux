@@ -2831,3 +2831,129 @@ Authoring guide:
     assert.match(raw, /\*\*Progress:\*\*[^\r\n]*?0%/, 'pinned 100% persisted before this fix; body must stay at its seed');
   });
 });
+
+// ─── #2761 round-6 Blocker 1: countRoadmapPhaseHeadings' bracket-only ──────
+// ─── `/^0\b/` sibling rule needs the SAME `bracketId &&` guard round-5's ───
+// ─── Blocker 1 restored two lines above it ──────────────────────────────────
+//
+// Round-5's Blocker 1 was `isSentinelPhaseId("undefined-00")`. This is the
+// identical failure one line down: when the phase-heading grammar's LEGACY
+// alternative matches (`### Phase 0:` in a `phase_id_convention: "bracket"`
+// repo — the mid-migration shape this PR exists for), `bracketId` is
+// `undefined`, and the unguarded `/^0\b/` fires on the bare token anyway.
+// Neither the LEGACY branch of this same function nor
+// `getMilestonePhaseFilter` has a `/^0\b/` rule at all, so the filter counts
+// the phase and admits its completed directory while the counter refuses to
+// count its heading — a milestone with an unstarted phase 02 persists as a
+// confident 100%. `/^0\b/` matches `0` and `0.5` (word boundary before the
+// dot) but not `00` (no boundary between the two zeros) — which is exactly
+// why round-5's G3/G3d fixtures (both spelled `Phase 00:`) never tripped
+// this one.
+describe('#612 PR-2 round-6 Blocker 1: countRoadmapPhaseHeadings\' bracket-only /^0\\b/ rule restores the bracketId guard', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r6b1-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  function poisonTotalPhasesR6(dir) {
+    const statePath = path.join(dir, '.planning', 'STATE.md');
+    const raw = fs.readFileSync(statePath, 'utf-8');
+    fs.writeFileSync(statePath, raw.replace(/^---\r?\n/, '---\ntotal_phases: 999\n'), 'utf-8');
+  }
+
+  test('RED (T0): a legacy `### Phase 0:` heading in a bracket repo is no longer dropped — 3/2/67, not 2/2/100', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 0: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, 'bracket', [['0-bootstrap', true], ['01-one', true]]);
+    assert.equal(readTotal(), 3, 'pinned 2 before this fix — "0" read as a sentinel with no bracketId guard');
+    poisonTotalPhasesR6(tmpDir);
+    assert.equal(syncedTotal(), 3);
+    assert.equal(syncedPercent(), 67, 'pinned 100 before this fix — a milestone with an unstarted phase 02 read as shipped');
+  });
+
+  test('PIN (T0L LEGACY control): the identical document under the legacy convention is unaffected', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 0: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, undefined, [['0-bootstrap', true], ['01-one', true]]);
+    assert.equal(readTotal(), 3);
+  });
+
+  test('RED (T05): a legacy `### Phase 0.5:` heading in a bracket repo — same defect, second spelling — 3/2/67, not 2/2/100', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 0.5: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, 'bracket', [['0.5-bootstrap', true], ['01-one', true]]);
+    assert.equal(readTotal(), 3, 'pinned 2 before this fix');
+    poisonTotalPhasesR6(tmpDir);
+    assert.equal(syncedTotal(), 3);
+    assert.equal(syncedPercent(), 67, 'pinned 100 before this fix');
+  });
+
+  test('PIN (T05L LEGACY control): the identical document under the legacy convention is unaffected', () => {
+    writeProject(`# Roadmap
+
+## Milestone v2.0: Foundation
+
+### Phase 0.5: Bootstrap
+**Goal:** z
+
+### Phase 01: One
+**Goal:** a
+
+### Phase 02: Two
+**Goal:** b
+`, undefined, [['0.5-bootstrap', true], ['01-one', true]]);
+    assert.equal(readTotal(), 3);
+  });
+
+  test('PIN (B0, bracket-spelled `0` token — Minor 1, NOT fixed this round): counter/filter disagreement is base-parity, deliberately unchanged', () => {
+    // `### [GSD.02] 0: Bootstrap` — the SAME token shape, spelled in bracket
+    // form rather than legacy form. `isSentinelPhaseId('GSD.02-0','bracket')`
+    // is false (READING-B puts the sentinel in the bracket, not the token),
+    // so `/^0\b/` is the only thing that could exclude it — and per round-6's
+    // review this shape reads 2/2/100 on base AND HEAD (never closed by any
+    // build in this arc), so it is a pre-existing gap, not a regression.
+    // Disclosed in the changeset; pinned here as a base-parity characterization.
+    writeProject(`# Roadmap
+
+## [GSD.02] v2.0: Foundation
+
+### [GSD.02] 0: Bootstrap
+**Goal:** z
+
+### [GSD.02] 01: One
+**Goal:** a
+
+### [GSD.02] 02: Two
+**Goal:** b
+`, 'bracket', [['GSD.02-0-bootstrap', true], ['GSD.02-01-one', true]]);
+    assert.equal(readTotal(), 2, 'base-parity: this shape has never been closed by any build in this arc');
+  });
+});
