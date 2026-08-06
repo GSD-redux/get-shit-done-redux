@@ -17,7 +17,14 @@
  *   5. "main"  (last-resort default)
  *
  * Every git subprocess is bounded with a timeout (≤ 30 s); on timeout/error
- * the resolver degrades gracefully to the next tier — it never throws.
+ * the resolver degrades gracefully to the next tier — it never throws. Tier 5
+ * is reachable two ways that `resolveBaseBranch()` alone cannot tell apart: a
+ * repository that genuinely has no candidate branch (every git query on tiers
+ * 2-4 completed and cleanly answered "nothing"), or a total resolution
+ * failure (some query timed out / could not run). `resolveBaseBranchDiagnostics()`
+ * distinguishes the two via `verified`; `cmdGitBaseBranch` surfaces the
+ * unverified case as a stderr diagnostic without changing its stdout contract
+ * (#3057 B4).
  *
  * Pure/testable: all I/O is injectable via the `deps` argument so unit
  * tests can run without touching the real filesystem or spawning real git.
@@ -38,6 +45,13 @@ export interface BaseBranchDeps {
   readFile?: (p: string) => string | null;
   /** Inject the write function used by cmdGitBaseBranch (default: process.stdout.write) */
   write?: (s: string) => void;
+  /**
+   * Inject the diagnostic-write function used by cmdGitBaseBranch when the
+   * last-resort default is reached WITHOUT verification (default:
+   * process.stderr.write). Never used for the resolved branch itself — only
+   * for the "this is an unverified guess" warning (#3057 B4).
+   */
+  writeDiagnostic?: (s: string) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -122,7 +136,8 @@ export function tryRemoteShow(
     const branch = m[1];
     // git emits "(unknown)" when the remote is offline but the local cache
     // resolved it; treat that as non-authoritative and fall through.
-    if (!branch || branch === '(unknown)') return null;
+    // No `!branch ||` guard: m[1] comes from the `(\S+)` capture group above, so it is never empty.
+    if (branch === '(unknown)') return null;
     return branch;
   } catch {
     return null;
@@ -162,38 +177,88 @@ export function tryLocalBranch(
 }
 
 /**
- * Resolve the default/base branch for the repository at `cwd`.
+ * Result of {@link resolveBaseBranchDiagnostics}: the resolved branch plus
+ * whether it was actually verified against the repository.
+ */
+export interface ResolvedBaseBranch {
+  branch: string;
+  /**
+   * True when `branch` came from a tier that ran to completion and produced
+   * a real answer: a config override, a resolved git query (tiers 2-4), or
+   * the tier-5 default reached because every git query on tiers 2-4
+   * completed and cleanly reported no candidate. False when the tier-5
+   * default was reached because at least one of those git queries timed out
+   * or failed to run (e.g. git missing) — collapsing that case into the same
+   * `'main'` as a verified "no candidate" answer is the fail-open branch
+   * fixed by #3057 B4: the two are no longer indistinguishable.
+   */
+  verified: boolean;
+}
+
+/**
+ * Resolve the default/base branch for the repository at `cwd`, along with
+ * whether the tier-5 last-resort default (if reached) was verified.
  *
  * Consults the full precedence ladder and always returns a non-empty string.
  * Never throws.
  */
-export function resolveBaseBranch(
+export function resolveBaseBranchDiagnostics(
   cwd: string,
   deps?: BaseBranchDeps
-): string {
-  const execGit: ExecGitFn = deps?.execGit ?? execGitSeam;
+): ResolvedBaseBranch {
+  const rawExecGit: ExecGitFn = deps?.execGit ?? execGitSeam;
+  // A genuine execGit failure (timeout, or the call could not even spawn —
+  // e.g. git missing, surfaced as exitCode 127 with `error` set) is distinct
+  // from git completing and cleanly reporting a negative answer (non-zero
+  // exit with no useful output, or exit 0 with empty stdout). Only the former
+  // means a tier's answer was never actually obtained. Wrapping execGit here
+  // observes every tier's calls uniformly without changing trySymbolicRef /
+  // tryRemoteShow / tryLocalBranch's own return contracts.
+  let anyGitFailure = false;
+  const execGit: ExecGitFn = (args, opts) => {
+    const r = rawExecGit(args, opts);
+    if (r.timedOut || r.error) anyGitFailure = true;
+    return r;
+  };
 
   // Derive .planning dir relative to cwd (mirrors planningDir() in planning-workspace.cjs)
   const planningDir = path.join(cwd, '.planning');
 
   // 1. Config override
   const configured = readConfigBaseBranch(planningDir, deps);
-  if (configured) return configured;
+  if (configured) return { branch: configured, verified: true };
 
   // 2. symbolic-ref (fast, no network)
   const symref = trySymbolicRef(cwd, execGit);
-  if (symref) return symref;
+  if (symref) return { branch: symref, verified: true };
 
   // 3. git remote show origin (authoritative when origin/HEAD unset)
   const remoteShow = tryRemoteShow(cwd, execGit);
-  if (remoteShow) return remoteShow;
+  if (remoteShow) return { branch: remoteShow, verified: true };
 
   // 4. Local branch existence
   const local = tryLocalBranch(cwd, execGit);
-  if (local) return local;
+  if (local) return { branch: local, verified: true };
 
-  // 5. Last-resort default
-  return 'main';
+  // 5. Last-resort default. `verified:false` when at least one tier-2/3/4
+  // execGit call timed out or failed to run — the default was never actually
+  // checked against this repository, it is just what's left after git could
+  // not answer (#3057 B4).
+  return { branch: 'main', verified: !anyGitFailure };
+}
+
+/**
+ * Resolve the default/base branch for the repository at `cwd`.
+ *
+ * Consults the full precedence ladder and always returns a non-empty string.
+ * Never throws. See {@link resolveBaseBranchDiagnostics} for a caller that
+ * needs to distinguish a verified answer from an unverified fallback.
+ */
+export function resolveBaseBranch(
+  cwd: string,
+  deps?: BaseBranchDeps
+): string {
+  return resolveBaseBranchDiagnostics(cwd, deps).branch;
 }
 
 // ─── gitWorktreeInfoInternal (moved from core.cjs, ADR-857 T0 #1268) ─────────
@@ -207,9 +272,13 @@ export interface GitWorktreeInfo {
  * Detect whether `cwd` sits inside a git worktree, and if so, return the
  * absolute path of the worktree root.
  */
-export function gitWorktreeInfoInternal(cwd: string): GitWorktreeInfo {
+export function gitWorktreeInfoInternal(
+  cwd: string,
+  deps?: Pick<BaseBranchDeps, 'execGit'>
+): GitWorktreeInfo {
+  const execGit: ExecGitFn = deps?.execGit ?? execGitSeam;
   try {
-    const insideResult = execGitSeam(['rev-parse', '--is-inside-work-tree'], { cwd, timeout: 5000 });
+    const insideResult = execGit(['rev-parse', '--is-inside-work-tree'], { cwd, timeout: 5000 });
     if (insideResult.exitCode !== 0) {
       return { inside: false, worktreeRoot: null };
     }
@@ -217,7 +286,7 @@ export function gitWorktreeInfoInternal(cwd: string): GitWorktreeInfo {
     if (insideStdout !== 'true') {
       return { inside: false, worktreeRoot: null };
     }
-    const rootResult = execGitSeam(['rev-parse', '--show-toplevel'], { cwd, timeout: 5000 });
+    const rootResult = execGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 5000 });
     if (rootResult.exitCode !== 0) {
       return { inside: true, worktreeRoot: null };
     }
@@ -240,7 +309,14 @@ export function cmdGitBaseBranch(
   _args: string[],
   deps?: BaseBranchDeps
 ): string {
-  const branch = resolveBaseBranch(cwd, deps);
+  const { branch, verified } = resolveBaseBranchDiagnostics(cwd, deps);
+  if (!verified) {
+    const writeDiagnostic = deps?.writeDiagnostic ?? ((s: string) => process.stderr.write(s));
+    writeDiagnostic(
+      `⚠ git-base-branch: defaulted to 'main' WITHOUT verifying against this repository — ` +
+      `a git query timed out or could not run. See #3057.\n`
+    );
+  }
   const write = deps?.write ?? ((s: string) => process.stdout.write(s));
   write(branch + '\n');
   return branch;

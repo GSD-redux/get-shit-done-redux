@@ -973,7 +973,11 @@ test('claude runtime does NOT rewrite the runtime default — stamping is non-cl
 // ---------------------------------------------------------------------------
 
 test('regression: every edited workflow gets codex-stamped (source↔engine parity, all surfaces) (#1515)', () => {
-  // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1515) — asserts on engine-transformed output of the real source
+  // allow-test-rule: pending-migration-to-typed-ir [#3090]
+  // `out` is _applyRuntimeRewrites's engine-transformed shell text, not shipped
+  // source — substring-matching it is the "Rendered file" row CONTRIBUTING
+  // requires a typed-IR builder for. No such IR exists yet for the shell
+  // rewrite output; production change out of scope here. Tracked under #3090.
   const WORKFLOWS = ['execute-phase.md', 'autonomous.md', 'manager.md', 'diagnose-issues.md', 'quick.md'];
   const CLAUDE_RUNTIME = 'config-get runtime --default claude --raw 2>/dev/null || echo "claude"';
   const CODEX_RUNTIME = 'config-get runtime --default codex --raw 2>/dev/null || echo "codex"';
@@ -1065,7 +1069,11 @@ const FALSE_WT_LINE = 'config-get workflow.use_worktrees --default false --raw 2
 // ---------------------------------------------------------------------------
 
 test('parity: every non-Claude runtime stamps its own runtime default and use_worktrees=false on all workflows (#1521)', () => {
-  // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521)
+  // allow-test-rule: pending-migration-to-typed-ir [#3090]
+  // `out` is _applyRuntimeRewrites's engine-transformed shell text, not shipped
+  // source — substring-matching it is the "Rendered file" row CONTRIBUTING
+  // requires a typed-IR builder for. No such IR exists yet for the shell
+  // rewrite output; production change out of scope here. Tracked under #3090.
   for (const rt of NON_CLAUDE) {
     for (const wf of WORKFLOWS) {
       const src = fs.readFileSync(
@@ -1181,7 +1189,10 @@ test('property: _stampNonClaudeRuntimeDefaults is idempotent (#1521)', () => {
 // ---------------------------------------------------------------------------
 
 test('execute-phase.md, quick.md, and diagnose-issues.md guards are generalized to != "claude" (not Codex-specific) (#1521)', () => {
-  // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521)
+  // allow-test-rule: source-text-is-the-product (#1521)
+  // Reads the raw shipped workflow .md source directly (not engine-transformed
+  // output) and asserts on its literal guard-clause text — the deployed prose
+  // IS the runtime contract here.
   // #2584 Phase 3 (#2627): execute-phase.md graduated PAST the `!= "claude"`
   // guard — worktree isolation there is now keyed on the negotiated
   // `dispatch.isolation` capability, so no runtime name appears in its guard at
@@ -1226,7 +1237,9 @@ test('execute-phase.md, quick.md, and diagnose-issues.md guards are generalized 
 // ---------------------------------------------------------------------------
 
 test('manager.md and autonomous.md gate run_in_background on FLATTEN=false, not a runtime name (#1521, graduated by #1708)', () => {
-  // allow-test-rule: orchestration dispatch gating in manager/autonomous .md is the runtime contract surface (#1521/#1708)
+  // allow-test-rule: source-text-is-the-product (#1521/#1708)
+  // Reads the raw shipped manager.md/autonomous.md workflow prose directly —
+  // the deployed orchestration dispatch gating text IS the runtime contract.
   const manager = fs.readFileSync(
     path.join(__dirname, '..', 'gsd-core', 'workflows', 'manager.md'),
     'utf8',
@@ -1263,7 +1276,9 @@ test('manager.md and autonomous.md gate run_in_background on FLATTEN=false, not 
 });
 
 test('manager.md and autonomous.md no longer contain old "not claude" background-dispatch gating (#1521)', () => {
-  // allow-test-rule: orchestration dispatch gating in manager/autonomous .md is the runtime contract surface (#1521)
+  // allow-test-rule: source-text-is-the-product (#1521)
+  // Reads the raw shipped manager.md/autonomous.md workflow prose directly —
+  // the deployed orchestration dispatch gating text IS the runtime contract.
   const manager = fs.readFileSync(
     path.join(__dirname, '..', 'gsd-core', 'workflows', 'manager.md'),
     'utf8',

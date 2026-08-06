@@ -914,11 +914,11 @@ describe('bug #2950: stale deleted-command references removed from workflow file
  *     integration. (Test-enforced via concept-mapping audit.)
  */
 
-// allow-test-rule: structural-IR parser for a docs guide. The .includes() (see #2840)
-// calls below build a typed record (commandsPresent flags, conceptPairs
-// flags, nonGoalFlags, safetyFlags); assertions run on those booleans, not
-// on raw text. This is the documented escape hatch in
-// scripts/lint-no-source-grep.cjs for doc-shape tests.
+// allow-test-rule: source-text-is-the-product (see #2840)
+// docs/issue-driven-orchestration.md's deployed prose IS the product being
+// validated for required-concept coverage. The .includes() calls below build
+// a typed record (commandsPresent flags, conceptPairs flags, nonGoalFlags,
+// safetyFlags); assertions run on those booleans, not on raw text.
 
 'use strict';
 

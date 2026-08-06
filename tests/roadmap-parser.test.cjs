@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const roadmapParser = require('../gsd-core/bin/lib/roadmap-parser.cjs');
-const { createTempProject, cleanup } = require('./helpers.cjs');
+const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 
 const {
   stripShippedMilestones,
@@ -200,6 +200,162 @@ describe('roadmap-parser: extractCurrentMilestone', () => {
     // The section should include Phase 1 content; the fenced heading should not terminate section early
     assert.ok(result.includes('real goal'), 'phase 1 content included');
     assert.ok(result.includes('Also Real'), 'phase 2 content also included');
+  });
+
+  // ─── #2947: milestone anchor must prefer the heading whose section contains
+  // Phase details, not just the first version-bearing heading anywhere. ────────
+
+  test('#2947 — prefers the heading whose section contains Phase details over a later version-bearing progress heading', () => {
+    // The shipped greenfield template's `## Phases` is NOT version-bearing,
+    // but a later `### v9.0 phase progress` heading (under `## Progress`) is.
+    // The anchor must not latch onto the progress heading and drop the phases.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone** — Phases 1-2 (in progress)',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+      '|-------|--------|',
+      '| 1     | Planned |',
+      '| 2     | Planned |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    // The Phase detail headings must be inside the extracted section.
+    assert.ok(result.includes('Phase 1: Alpha'), 'Phase 1 detail must be in scope (got dropped — #2947)');
+    assert.ok(result.includes('Phase 2: Beta'), 'Phase 2 detail must be in scope (got dropped — #2947)');
+    // The progress heading should NOT be the anchor (it has no phase details).
+    assert.ok(!result.startsWith('### v9.0 phase progress'), 'progress heading must not be the anchor');
+  });
+
+  test('#2947 — version-bearing phase-listing heading still resolves (control, no regression)', () => {
+    // The one-word control from the issue: rename `## Phases` → `## v9.0 Phases`.
+    // This already works today and must keep working after the fix.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## v9.0 Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'control: Phase 1 in scope');
+    assert.ok(result.includes('Phase 2: Beta'), 'control: Phase 2 in scope');
+  });
+
+  test('#2947 — falls back to first non-closed when no candidate section has Phase details', () => {
+    // No `### Phase N:` details anywhere — the fix's fallback must preserve
+    // today's behavior (no crash, returns a section).
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## v9.0 Milestone',
+      '',
+      'Some prose, no phase detail headings.',
+      '',
+      '### v9.0 notes',
+      '',
+      'More prose.',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(typeof result === 'string', 'fallback returns a string section without throwing');
+    assert.ok(result.includes('v9.0'), 'fallback still includes the milestone content');
+  });
+
+  test('#2947 — closed milestone heading is not preferred over an open one with phase details', () => {
+    // A closed (✅) version-bearing heading must not win over an open one
+    // whose section contains the phase details.
+    writeState(tmpDir, { milestone: 'v2.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## ✅ v1.0 Shipped',
+      '',
+      '### Phase 1: Old',
+      '',
+      '## 🚧 v2.0 Current',
+      '',
+      '### Phase 2: New',
+      '',
+      '**Goal:** new work',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 2: New'), 'open milestone phase selected');
+    assert.ok(!result.includes('Phase 1: Old'), 'closed milestone phase excluded');
+  });
+
+  test('#2947 — roadmap.analyze on the issue fixture reports phase_count 2 (end-to-end)', () => {
+    writeState(tmpDir, { milestone: 'v9.0', gsd_state_version: '1.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone** — Phases 1-2 (in progress)',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+      '|-------|--------|',
+      '| 1     | Planned |',
+      '| 2     | Planned |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+
+    const result = runGsdTools(['query', 'roadmap.analyze', '--raw'], tmpDir);
+    assert.ok(result.success, `roadmap.analyze should succeed; got: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    assert.strictEqual(payload.phase_count, 2, `expected phase_count 2, got ${payload.phase_count} (phases dropped — #2947)`);
   });
 });
 
@@ -1373,7 +1529,9 @@ describe('bug #730 — milestone (Phase Details) section scope resolution', () =
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3128-roadmap-plan-count-slug-layout (consolidation epic #1969 B3 #1972)", () => {
 'use strict';
-// allow-test-rule: reads roadmap.cjs source to verify isPlanFile pattern was adopted — structural contract prevents silent regression to old filter (see #3128)
+// allow-test-rule: structural-regression-guard (see #3128)
+// Reads roadmap.cjs source to verify isPlanFile pattern was adopted —
+// structural contract prevents silent regression to the old filter.
 
 // Regression guard for bug #3128.
 //

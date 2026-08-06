@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #644) — plan-phase.md's planner prompt is the deployed
+// allow-test-rule: source-text-is-the-product (see #644) — plan-phase.md's planner prompt is the deployed
 // runtime contract under assertion (the workflow PROSE is the product).
 //
 // RED-first PROSE-PRESENCE contract for the plan-phase lift of confirmed prohibitions. plan-phase.md

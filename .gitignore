@@ -83,6 +83,7 @@ build/
 /gsd-core/bin/lib/hook-bus.cjs
 /gsd-core/bin/lib/state-io.cjs
 /gsd-core/bin/lib/mcp-server.cjs
+/gsd-core/bin/lib/mcp-catalog.cjs
 /gsd-core/bin/lib/external-descriptor-trust.cjs
 /gsd-core/bin/lib/cli-skew-check.cjs
 /gsd-core/bin/lib/context-composer.cjs

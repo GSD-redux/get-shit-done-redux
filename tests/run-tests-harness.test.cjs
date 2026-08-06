@@ -1,7 +1,10 @@
-// allow-test-rule: run-tests.cjs is a CLI test harness whose only IR is its
-// stable stderr line `run-tests: suite="X" files=N: name1 name2 ...` plus its
-// exit code. No typed IR is exposable from a shell script; the printed line
-// IS the contract this test pins. See docs/TESTING-SUITES.md and issue #3597.
+// allow-test-rule: pending-migration-to-typed-ir [#3090]
+// run-tests.cjs is a CLI test harness with no --json/structured output mode;
+// these tests regex/substring-match its human-readable stderr (usage errors,
+// the `run-tests: suite="X" files=N: name1 name2 ...` selection line) instead
+// of a frozen typed IR. Adding a structured output mode is a production
+// change out of scope here. See docs/TESTING-SUITES.md and issue #3597.
+// Tracked under #3090.
 //
 // Tests for scripts/run-tests.cjs --suite filtering (issue #3597).
 //

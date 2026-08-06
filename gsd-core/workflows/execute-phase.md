@@ -479,7 +479,7 @@ cwd inside an agent worktree (or a subdirectory of one). Every subsequent
 orchestrator-side git call would then target the wrong tree — this is how a wrong-base
 merge nearly shipped ~1000 files. Resolve the *worktree root* (so a subdirectory cwd
 cannot skew the check) and refuse if it is an agent worktree. The discriminator is the
-per-agent branch namespace `agent-*` / `worktree-agent-*`, NOT the `.claude/worktrees/` path: the
+per-agent branch namespace `agent-`/`worktree-agent-`/`worktree-wf_`, NOT the path: the
 orchestrator may itself be legitimately invoked from a feature worktree under
 `.claude/worktrees/`, so a path-substring refusal would break legitimate runs. Do NOT
 pin to `git worktree list`'s first entry — that is the main worktree, the wrong target
@@ -490,7 +490,7 @@ when the orchestrator legitimately runs from a feature worktree.
 ORCHESTRATOR_WT=$(git rev-parse --show-toplevel 2>/dev/null) || {
   echo "FATAL: execute_waves entry is not inside a git worktree (#48)." >&2; exit 1; }
 ORCH_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-if printf '%s' "$ORCH_BRANCH" | grep -Eq '^(worktree-)?agent-'; then
+if printf '%s' "$ORCH_BRANCH" | grep -Eq '^((worktree-)?agent-|worktree-wf_)'; then
   echo "FATAL: orchestrator cwd is inside an agent worktree (branch '$ORCH_BRANCH', root '$ORCHESTRATOR_WT') — refusing to execute waves (#48). A prior isolation=\"worktree\" dispatch drifted the cwd; re-run from the orchestrator's own worktree." >&2
   # #1856 handoff: the refusal above is correct, but on its own it is a dead end —
   # this worktree may hold committed fixes AND uncommitted work, and "re-run from
@@ -1486,12 +1486,13 @@ Copy failure must NOT block phase completion.
 After `update_roadmap`, moves todos whose `resolves_phase` matches to `completed/`.
 
 ```bash
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
 PHASE_NUM="${PHASE_NUMBER}"
 PENDING_DIR=".planning/todos/pending"
 COMPLETED_DIR=".planning/todos/completed"
 mkdir -p "$COMPLETED_DIR"
 
-# "05"=="5" (#2576).
+#2576
 normalize_phase_num() {
   local p="${1//\"/}"; printf '%s' "$p" | sed 's/^0*\([0-9]\)/\1/'
 }
@@ -1500,7 +1501,6 @@ PHASE_NUM_NORM=$(normalize_phase_num "$PHASE_NUM")
 CLOSED=()
 for TODO_FILE in "$PENDING_DIR"/*.md; do
   [ -f "$TODO_FILE" ] || continue
-  # resolves_phase from first frontmatter block
   RP=$(awk '/^---/{c++;next} c==1 && /^resolves_phase:/{print $2;exit} c==2{exit}' "$TODO_FILE" 2>/dev/null || true)
   RP_NORM=$(normalize_phase_num "$RP")
   if [ -n "$RP_NORM" ] && [ "$RP_NORM" = "$PHASE_NUM_NORM" ]; then

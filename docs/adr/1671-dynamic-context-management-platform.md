@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-06-24
 - **Extends:** ADR-0002 (Command Contract Validation Module), ADR-457 (build-at-publish generation model for `bin/lib/*.cjs`)
-- **Relates:** ADR-857 §7 (Connected-Capability / MCP contract — kept deferred by this ADR)
+- **Relates:** [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (owns GSD's MCP surface — the companion `gsd-mcp-server`; this ADR defers only the served *content* catalog), ADR-857 (capability system — its Phase-6 completion property bounds workflow size, see Open questions)
 
 ## Context
 
@@ -11,7 +11,7 @@ GSD ships command and workflow content as large, hand-edited Markdown files. Two
 
 1. **Authoring is monolithic.** A single workflow body carries every branch inline. `gsd-core/workflows/plan-phase.md` is 93,973 bytes / 1,770 lines; `execute-phase.md` is 93,426 bytes. Mutually-exclusive paths (`--prd`, `--ingest`, `--mvp`, `--reviews`) all live in the same file, so a runtime loads guidance for branches a given invocation will never take.
 
-2. **One payload ships to every runtime.** Install copies the whole `gsd-core/` tree (3.4 MB, 89 workflows, 1.7 MB) **byte-identical to all 15 runtimes** via `copyWithPathReplacement` (`bin/install.js`). The only per-runtime work is string rewrites and description truncation. There is **no per-runtime trimming or splitting**.
+2. **One payload ships to every runtime.** Install copies the whole `gsd-core/` tree (3.4 MB, 89 workflows, 1.7 MB) **byte-identical to all 19 runtimes** (the capability descriptors carrying `role: runtime`, of 44 descriptors total) via `copyWithPathReplacement` (`bin/install.js`). The only per-runtime work is string rewrites and description truncation. There is **no per-runtime trimming or splitting**.
 
 The result is constant pressure against size caps, enforced today only against *source* files (not emitted output) by a two-part guard (issue #1074): a per-file baseline ratchet plus per-tier hard caps (workflows XL 96 KiB / LARGE 60 KiB / DEFAULT 40 KiB; agents XL 56 KiB / LARGE 48 KiB / DEFAULT 24 KiB). Several files have almost no headroom — `agents/gsd-verifier.md` has **293 bytes**. The one true emission-time cap, Windsurf's 12,000-byte limit (`src/runtime-artifact-conversion.cts`), is a hard `throw` with no graceful fallback. Adding one rule to a tight file forces an extract-to-`references/` refactor (`DEFECT.AGENT-FILE-SIZE-CAP-BREACH`), turning a one-line edit into a multi-file change that ripples across stub frontmatter, the workflow body, reference fragments, and `docs/` — each guarded by a different lint.
 
@@ -30,7 +30,7 @@ Research into the codebase found that most JIT primitives are already present an
 
 ### External practice
 
-The closest external analogs are Anthropic Agent Skills' three-tier progressive disclosure (metadata → `SKILL.md` → bundled references), MCP resources/prompts/deferred-tools (list-then-fetch JIT), and priority/token-budget prompt renderers (Priompt, VS Code `@vscode/prompt-tsx`) that include the highest-priority fragments that fit a budget via a binary-search cutoff, with `flexReserve` floors for load-bearing content and `<isolate>` for a stable cacheable prefix. The portability catch is real and load-bearing: only the Skills *format* (directory + `SKILL.md` + frontmatter) is an open standard; native lazy loading is Claude-specific, and GSD's 15 runtimes do not all support skills or MCP (cf. surface-mismatch bugs #1614 antigravity, #1615 windsurf).
+The closest external analogs are Anthropic Agent Skills' three-tier progressive disclosure (metadata → `SKILL.md` → bundled references), MCP resources/prompts/deferred-tools (list-then-fetch JIT), and priority/token-budget prompt renderers (Priompt, VS Code `@vscode/prompt-tsx`) that include the highest-priority fragments that fit a budget via a binary-search cutoff, with `flexReserve` floors for load-bearing content and `<isolate>` for a stable cacheable prefix. The portability catch is real and load-bearing: only the Skills *format* (directory + `SKILL.md` + frontmatter) is an open standard; native lazy loading is Claude-specific, and GSD's 19 runtimes do not all support skills or MCP (cf. surface-mismatch bugs #1614 antigravity, #1615 windsurf).
 
 ## Decision
 
@@ -46,7 +46,41 @@ Adopt a **dynamic context management platform** built on a hybrid of build-time 
 
 5. **Formalize the `CONTEXT.md` predicate fact-store → JIT selector.** Give the predicate grammar a parser (on `markdown-sectionizer`), an ID-uniqueness validator, a `--check`/`--write` drift-guard, and a `task → relevant predicate set` selector. This converts hand-assembled briefs into JIT-generated context and attacks the maintainer-side "edit a 200 KB file by hand" pain directly. **This is sequenced first** (see Prototype) because it is the smallest, lowest-risk piece that proves the whole pattern.
 
-6. **Defer MCP (Connected-Capability).** Per ADR-857 §7 / #956, a served MCP catalog (resources/prompts/deferred-tools) remains an additive future enhancement for MCP-capable runtimes — never a replacement for the file-copy floor. Not in scope here.
+6. **Defer the MCP served catalog.** A served MCP catalog remains an additive future enhancement for MCP-capable runtimes — never a replacement for the file-copy floor. Not in scope here.
+
+   *The grounds are this ADR's own, not a borrowed citation.* MCP is runtime-partial (see **External practice** above, option D below, and the paragraph closing this section), so only build-time emission relieves caps on every runtime. Earlier revisions of this ADR attributed the deferral to "ADR-857 §7 / #956"; neither source supports it, and the deferral never needed either. `docs/adr/857-capability-system.md` contains no MCP content at all — its Decision 7 is third-party **code-loading** and its Decision 8 is Runtime/CLI-as-Capability — and #956 is the (closed) *first-party MemPalace plugin capability* pre-proposal, which [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) explicitly disclaims in its own header ("Distinct from: #956"). Corrected by #3074.
+
+   *This defers a content catalog, not MCP itself.* A companion MCP server shipped 2026-06-28 under [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (#1681 / PR #1809) — `package.json` bin `gsd-mcp-server` → `bin/gsd-mcp-server.js`, module `src/mcp-server.cts` — exposing three **tools**: `gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`. ADR-1239 owns that surface; this ADR defers a different one over the same protocol. What is genuinely unbuilt is the served **resources** and **prompts** catalog, tracked in #3072.
+
+   **Amended by #3072 — the deferral is lifted and the catalog ships.** `gsd-mcp-server` now serves
+   the workflow/reference/command tree as MCP **resources** (`resources/list` cursor-paginated,
+   `resources/read`, `gsd://<segment>/<relpath>` uris) and the `commands/gsd/*.md` set as MCP
+   **prompts**. Decision 6's binding constraint is unchanged and was honored: the catalog is purely
+   additive, the file-copy floor is still written for every runtime, and no install behavior moved.
+
+   *The composition scope is shared, not re-declared.* Served workflow content passes through
+   `composeWorkflow`, and — critically — through the **same** scope predicate the installer uses.
+   That predicate (`shouldCompose`) now lives in one place, `src/mcp-catalog.cts`, and
+   `bin/install.js` imports it rather than re-declaring its own regex. This is the direct answer to
+   the "Dual-surface drift … requires parity assertions" risk this ADR records below: the two
+   channels cannot disagree about *what* gets composed, because there is only one predicate, and
+   `tests/mcp-catalog-parity.install.test.cjs` spawns a REAL `bin/install.js` and asserts its
+   composition decision (marker-token presence, which survives every per-runtime rewrite) matches
+   the catalog's, with executable anti-vacuity guards (the comparison set must contain a
+   marker-bearing workflow AND a non-composed file, and the gate must fail if the predicate stops
+   discriminating).
+
+   *Two things measurement corrected in the migration-step wording.* First, the scope predicate is
+   **not** "compose everything" — install deliberately composes only under `gsd-core/workflows/`,
+   because a reference or command that *documents* marker syntax with an unfenced example would
+   otherwise be parsed as carrying a real marker and have that line lossily dropped (the reason
+   recorded at `bin/install.js`'s call site, from #2930's review). The catalog inherits that scope
+   exactly; references and commands are served verbatim. Second, parity is asserted at the
+   **composition stage, not against an emitted runtime tree** — install applies per-runtime path
+   rewrites after composing, and the catalog is host-agnostic, so byte-equality with any one
+   runtime's output would be false by construction.
+
+   *"deferred-tools" is not deferred; it is unbuildable.* The **External practice** section above names "resources/prompts/deferred-tools" as the external list-then-fetch analog, and that phrase propagated into this decision. MCP defines exactly three server primitives — resources, prompts, and tools — and the tools surface is `tools/list` (cursor-paginated) plus `tools/call`. There is no server-side deferred-tools primitive; deferring tool *schemas* is host behavior, not a server capability. The list-then-fetch property this ADR wants is delivered by resources and prompts. Recorded in #3075 rather than carried here as a deliverable.
 
 ### Options considered
 
@@ -55,7 +89,7 @@ Adopt a **dynamic context management platform** built on a hybrid of build-time 
 | A. Progressive-disclosure authoring | Metadata-first files + one-level references; lean on host lazy-load | Partial; needs host lazy-load | Authoring universal; native JIT Claude-first | Adopt as a layer |
 | B. Build-time composer + per-runtime budget emission | Composer trims fragments to each runtime cap, emits right-sized files | Yes — measured before write | Universal floor | **Adopt as core** |
 | C. Run-time selection via init seam | Init bundle names which slices this invocation needs | Reduces per-invocation context | Broad (the `gsd_run` shim is universal) | Adopt after B |
-| D. MCP served catalog | Serve content as resources/prompts/deferred-tools | For MCP hosts only | Partial; needs 2nd channel | Defer (ADR-857 §7) |
+| D. MCP served catalog | Serve content as resources/prompts | For MCP hosts only | Partial; needs 2nd channel | Defer — runtime-partial (see Decision 6) |
 | E. Predicate fact-store → JIT selector | Parse/validate/select `CONTEXT.md` predicates | Maintainer-side big-file pain | N/A (build + orchestrator) | **Adopt first** |
 
 Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundation because both are runtime-partial; only build-time emission (B) relieves caps on every runtime.
@@ -273,7 +307,7 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
    roughly nineteen, which is how a gate becomes something contributors route around.
 6. **Wire the init bundle (C)** to emit a per-invocation sections manifest; workflows consume it.
 7. **Roll out across LARGE/XL tiers**; update INVENTORY families + parity tests.
-8. **(Deferred)** MCP served catalog (ADR-857 §7 / #956).
+8. **MCP served catalog** — resources + prompts, served through the same composition seam as the file floor so the two channels cannot drift (#3072). Additive for MCP-capable hosts only; the file-copy floor stays the default (Decision 6). **Shipped by #3072** — see the amendment under Decision 6.
 
 **Ordering landmine:** any generator consuming compiled output must run *after* `build:lib` (tsc), like `gen-plugin-skills` / `gen-capability-registry`; regenerating before `build:lib` silently drops unbuilt modules (`gsd-inventory-manifest-regen-needs-build`).
 
@@ -307,6 +341,16 @@ Sequenced to de-risk — prove the pattern on the smallest surface first, scale 
 - Per-runtime emission multiplies artifacts across the 15 × N matrix (inventory/parity surface).
 - Build-order fragility (must run after `build:lib`).
 - Dual-surface drift if any future MCP channel is added — requires parity assertions.
+
+  **Discharged by #3072 (the served catalog).** The channel this warned about now exists, and the
+  mitigation shipped with it rather than being promised alongside it. The composition-scope
+  predicate is shared (`shouldCompose`, one definition, consumed by both `bin/install.js` and the
+  catalog) instead of duplicated, so the two surfaces cannot independently drift on what gets
+  composed; `tests/mcp-catalog-parity.install.test.cjs` spawns a real installer and asserts its
+  composition decision matches the catalog's across the real content tree. The gate carries two executable anti-vacuity
+  guards — the comparison set must include a workflow that actually carries markers and a file the
+  predicate declines to compose — so it cannot pass by comparing nothing, which is the failure mode
+  a parity assertion is most prone to.
 
 ## Prototype (step 2, Option E) — non-shipping reference example
 
@@ -352,4 +396,5 @@ Prototype scope notes: the parser is intentionally self-contained for the exampl
 
 - ADR-0002 — Command Contract Validation Module (the stub `<execution_context>` @-ref contract this platform's emission must keep satisfying).
 - ADR-457 — build-at-publish generation model (the codegen + drift-guard precedent the composer extends).
-- ADR-857 §7 — Connected-Capability / MCP contract (the deferred served-catalog channel).
+- [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) — the ADR that owns GSD's MCP surface. It shipped the companion `gsd-mcp-server` (three tools) on 2026-06-28; the catalog this ADR defers (resources + prompts) is a different surface over the same protocol.
+- ADR-857 — capability system. It carries **no** MCP content; earlier revisions of this ADR wrongly cited its §7 as the authority for the MCP deferral (corrected by #3074). Its genuine bearing here is the Phase-6 completion property that bounds workflow size, which constrained Phase 3's pilot (see Open questions).

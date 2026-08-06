@@ -1,10 +1,6 @@
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
-// allow-test-rule: state-md-is-the-runtime-contract — regression tests for
-// bug #3517 assert the exact STATE.md fields written by phase.complete;
-// STATE.md IS the product surface being verified, not source code.
-// Migration to typed-IR parser tracked in #2974.
 
 /**
  * GSD Tools Tests - Phase
@@ -5757,6 +5753,13 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
 // ─────────────────────────────────────────────────────────────────────────────
 
 {
+  // Typed STATE.md surfaces (#3090) — replaces raw regex/substring matching
+  // on STATE.md content written by phase.complete in this bug-#3517 block.
+  const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+  const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+  const { parseMarkdownTable } = require('../gsd-core/bin/lib/markdown-table.cjs');
+  const { parsePhaseFromProse } = require('../gsd-core/bin/lib/phase-id.cjs');
+
   function runSdkQuery(args, cwd) {
     if (Array.isArray(args) && args[0] === 'phase.complete') {
       writePassedVerificationForPhase(cwd, args[1]);
@@ -5986,24 +5989,24 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r1.success, `first call failed: ${r1.error}`);
 
       const stateAfter1 = fs.readFileSync(statePath, 'utf8');
-      const match1 = stateAfter1.match(/completed_phases:\s*(\d+)/);
-      assert.ok(match1, 'completed_phases not found in frontmatter after first call');
+      const progress1 = extractFrontmatter(stateAfter1).progress;
+      assert.ok(progress1, 'progress not found in frontmatter after first call');
       assert.equal(
-        Number(match1[1]),
+        Number(progress1.completed_phases),
         2,
-        `After first call: completed_phases should be 2 (derived from ROADMAP: phases 4 and 5 complete), got ${match1[1]}`,
+        `After first call: completed_phases should be 2 (derived from ROADMAP: phases 4 and 5 complete), got ${progress1.completed_phases}`,
       );
 
       const r2 = runSdkQuery(['phase.complete', '5'], tmpDir);
       assert.ok(r2.success, `second call failed: ${r2.error}`);
 
       const stateAfter2 = fs.readFileSync(statePath, 'utf8');
-      const match2 = stateAfter2.match(/completed_phases:\s*(\d+)/);
-      assert.ok(match2, 'completed_phases not found in frontmatter after second call');
+      const progress2 = extractFrontmatter(stateAfter2).progress;
+      assert.ok(progress2, 'progress not found in frontmatter after second call');
       assert.equal(
-        Number(match2[1]),
+        Number(progress2.completed_phases),
         2,
-        `After second call (same phase): completed_phases must remain 2 (idempotent), got ${match2[1]}`,
+        `After second call (same phase): completed_phases must remain 2 (idempotent), got ${progress2.completed_phases}`,
       );
     });
 
@@ -6015,16 +6018,16 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const stoppedMatch = state.match(/stopped_at:\s*(.+)/);
-      assert.ok(stoppedMatch, 'stopped_at not found in frontmatter');
+      const stoppedAt = extractFrontmatter(state).stopped_at;
+      assert.ok(stoppedAt, 'stopped_at not found in frontmatter');
       assert.ok(
-        !stoppedMatch[1].includes('05-03-PLAN.md'),
-        `stopped_at should not still say "Completed 05-03-PLAN.md" — got: ${stoppedMatch[1]}`,
+        !stoppedAt.includes('05-03-PLAN.md'),
+        `stopped_at should not still say "Completed 05-03-PLAN.md" — got: ${stoppedAt}`,
       );
       assert.ok(
-        stoppedMatch[1].toLowerCase().includes('phase 5') ||
-        stoppedMatch[1].toLowerCase().includes('complete'),
-        `stopped_at should reference phase 5 completion, got: ${stoppedMatch[1]}`,
+        stoppedAt.toLowerCase().includes('phase 5') ||
+        stoppedAt.toLowerCase().includes('complete'),
+        `stopped_at should reference phase 5 completion, got: ${stoppedAt}`,
       );
     });
 
@@ -6036,10 +6039,8 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const lastUpdatedMatch = state.match(/last_updated:\s*(.+)/);
-      assert.ok(lastUpdatedMatch, 'last_updated not found in frontmatter');
-
-      const raw = lastUpdatedMatch[1].trim().replace(/^"(.*)"$/, '$1');
+      const raw = extractFrontmatter(state).last_updated;
+      assert.ok(raw, 'last_updated not found in frontmatter');
 
       // Must have been refreshed — not the stale seed value from setupPhase3517Project
       assert.notEqual(
@@ -6073,10 +6074,10 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const match = state.match(/total_plans:\s*(\d+)/);
-      assert.ok(match, 'total_plans not found in frontmatter');
-      const totalPlans = Number(match[1]);
-      assert.ok(Number.isFinite(totalPlans) && totalPlans > 0, `total_plans must be a positive number, got: ${match[1]}`);
+      const progress = extractFrontmatter(state).progress;
+      assert.ok(progress && progress.total_plans !== undefined, 'total_plans not found in frontmatter');
+      const totalPlans = Number(progress.total_plans);
+      assert.ok(Number.isFinite(totalPlans) && totalPlans > 0, `total_plans must be a positive number, got: ${progress.total_plans}`);
     });
 
     test('frontmatter completed_plans is updated from SUMMARY file count after phase.complete', () => {
@@ -6087,9 +6088,9 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const match = state.match(/completed_plans:\s*(\d+)/);
-      assert.ok(match, 'completed_plans not found in frontmatter');
-      const completedPlans = Number(match[1]);
+      const progress = extractFrontmatter(state).progress;
+      assert.ok(progress && progress.completed_plans !== undefined, 'completed_plans not found in frontmatter');
+      const completedPlans = Number(progress.completed_plans);
       assert.equal(
         completedPlans,
         10,
@@ -6105,9 +6106,9 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const match = state.match(/percent:\s*(\d+)/);
-      assert.ok(match, 'percent not found in frontmatter');
-      assert.equal(Number(match[1]), 67, `percent should be 67 (2/3 phases), got: ${match[1]}`);
+      const progress = extractFrontmatter(state).progress;
+      assert.ok(progress && progress.percent !== undefined, 'percent not found in frontmatter');
+      assert.equal(Number(progress.percent), 67, `percent should be 67 (2/3 phases), got: ${progress.percent}`);
     });
 
     test('state frontmatter and numeric phase line reflect next phase after phase.complete', () => {
@@ -6118,8 +6119,19 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      assert.match(state, /completed_phases:\s*2/, 'completed_phases must be updated in frontmatter');
-      assert.match(state, /Phase:\s*0?6\b/, 'numeric Phase line should advance to phase 6');
+      const progress = extractFrontmatter(state).progress;
+      assert.equal(
+        Number(progress && progress.completed_phases),
+        2,
+        `completed_phases must be updated in frontmatter, got: ${progress && progress.completed_phases}`,
+      );
+      const phaseLine = stateExtractField(state, 'Phase');
+      const { phase: nextPhase } = parsePhaseFromProse(phaseLine);
+      assert.equal(
+        Number(nextPhase),
+        6,
+        `numeric Phase line should advance to phase 6, got Phase line: ${phaseLine}`,
+      );
     });
 
     test('prose-block STATE keeps next phase name without field-miss warnings (#1316)', () => {
@@ -6143,16 +6155,27 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       );
 
       const state = fs.readFileSync(path.join(planningDir, 'STATE.md'), 'utf8');
-      assert.match(state, /current_phase:\s*"?33"?/, 'current_phase frontmatter must advance to 33');
-      assert.match(
-        state,
-        /^Phase:\s*33\s+—\s+Follow Up Implementation\b/m,
-        `Current Position Phase line must keep the next phase name; state:\n${state}`,
+      const currentPhase = extractFrontmatter(state).current_phase;
+      assert.equal(
+        String(currentPhase),
+        '33',
+        `current_phase frontmatter must advance to 33, got: ${currentPhase}`,
       );
+
+      const phaseLine = stateExtractField(state, 'Phase');
+      const { phase: nextPhase, name: nextPhaseName } = parsePhaseFromProse(phaseLine);
+      assert.equal(Number(nextPhase), 33, `Current Position Phase line must advance to 33; got Phase line: ${phaseLine}`);
+      assert.equal(
+        nextPhaseName,
+        'Follow Up Implementation',
+        `Current Position Phase line must keep the next phase name; got Phase line: ${phaseLine}`,
+      );
+
+      const lastActivity = stateExtractField(state, 'Last activity');
       assert.match(
-        state,
-        /^Last activity:\s*\d{4}-\d{2}-\d{2}\s+—\s+Phase 32 complete/m,
-        `Last activity line must use the template em-dash delimiter with narrative; state:\n${state}`,
+        lastActivity || '',
+        /^\d{4}-\d{2}-\d{2}\s+—\s+Phase 32 complete/,
+        `Last activity line must use the template em-dash delimiter with narrative; got: ${lastActivity}`,
       );
     });
 
@@ -6164,10 +6187,14 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      assert.match(
-        state,
-        /\|\s*5\s*\|\s*7\s*\|/,
-        `By Phase table should have a row for phase 5 with 7 summaries.\nState:\n${state}`,
+      const table = parseMarkdownTable(state);
+      assert.ok(table.ok, `By Phase table must parse; reason: ${table.ok ? '' : table.reason}`);
+      const row = table.value.rows.find((r) => r.Phase.trim() === '5');
+      assert.ok(row, `By Phase table should have a row for phase 5.\nState:\n${state}`);
+      assert.equal(
+        row.Plans.trim(),
+        '7',
+        `By Phase table row for phase 5 should show 7 summaries, got row: ${JSON.stringify(row)}`,
       );
     });
 
@@ -6181,10 +6208,24 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
 
       const state = fs.readFileSync(statePath, 'utf8');
 
-      assert.match(state, /completed_phases:\s*2/, 'completed_phases must be 2 (4 and 5 complete)');
-      assert.match(state, /percent:\s*67/, 'percent must be 67%');
-      const hasPhase6 = /Phase:\s*0?6/.test(state) || /current_phase:\s*0?6/.test(state);
-      assert.ok(hasPhase6, `STATE.md must reference Phase 6 as current after completing Phase 5.\nState:\n${state}`);
+      const fm = extractFrontmatter(state);
+      assert.equal(
+        Number(fm.progress && fm.progress.completed_phases),
+        2,
+        `completed_phases must be 2 (4 and 5 complete), got: ${fm.progress && fm.progress.completed_phases}`,
+      );
+      assert.equal(
+        Number(fm.progress && fm.progress.percent),
+        67,
+        `percent must be 67%, got: ${fm.progress && fm.progress.percent}`,
+      );
+      const phaseLine = stateExtractField(state, 'Phase');
+      const { phase: bodyPhase } = parsePhaseFromProse(phaseLine);
+      const hasPhase6 = Number(bodyPhase) === 6 || Number(fm.current_phase) === 6;
+      assert.ok(
+        hasPhase6,
+        `STATE.md must reference Phase 6 as current after completing Phase 5. body Phase line: ${phaseLine}, frontmatter current_phase: ${fm.current_phase}`,
+      );
     });
   });
 }
@@ -8374,23 +8415,46 @@ function extractFrontmatterField(stateContent, fieldName) {
   return fieldMatch ? fieldMatch[1].trim() : null;
 }
 
-// Capture stdout from cmdPhaseComplete (it calls output() which writes to stdout)
-function capturePhaseComplete(cwd, phaseNum) {
-  // We invoke gsd-tools directly for the full CJS path, but with GSD_DISABLE_SDK_BRIDGE=1
-  // to force the CJS implementation. Since no env var disables bridge, we call cmdPhaseComplete
-  // directly and redirect output capture.
-  const chunks = [];
-  const origWrite = process.stdout.write.bind(process.stdout);
-  const origErrWrite = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
-  process.stderr.write = () => true;
-  try {
-    cmdPhaseComplete(cwd, phaseNum, false);
-  } finally {
-    process.stdout.write = origWrite;
-    process.stderr.write = origErrWrite;
+// Capture stdout from `gsd-tools phase complete <N>` via a REAL subprocess.
+//
+// #3057: this used to call cmdPhaseComplete(...) IN-PROCESS and capture its
+// stdout by monkeypatching fs.writeSync (io.cts's output() writes via
+// writeAllSync -> fs.writeSync(1, ...), not process.stdout.write — bug #1008's
+// non-blocking-pipe fix). That interception shares the exact seam the remote
+// matrix's own event-stream capture depends on: when the runner's stdout is
+// redirected to a file (the common case for a captured CI child),
+// `process.stdout.write` itself resolves through that SAME public
+// `fs.writeSync`, so any write racing the patched window — including the
+// runner's own test:pass/test:fail events — could be silently swallowed into
+// `chunks` or dropped instead of reaching the real fd. Two attempts to make
+// that interception safe (manual save/restore, then `t.mock.method`) both
+// still left this file reporting zero test:pass/test:fail events on the
+// remote matrix. The fix is to stop intercepting fd 1 altogether: run the
+// real CLI in a real subprocess, exactly like every other test in this file
+// already does via `runGsdTools`, so the OS owns stdout capture and the
+// runner's own event stream is never at risk.
+//
+// The phase family router (phase-command-router.cjs) calls
+// `phase.cmdPhaseComplete(cwd, phaseNum, raw)` directly for `phase complete`
+// — no SDK delegation on this path — so this reaches the exact same CJS
+// function the old in-process call did.
+//
+// A handful of call sites depend on state a subprocess cannot see (a mock
+// installed in THIS process, or the parent's own fs.writeFileSync mock for
+// the rollback-failure tests below); those call sites do not use this
+// helper — see the inline notes at each one.
+function capturePhaseComplete(t, cwd, phaseNum) {
+  const result = runGsdTools(['phase', 'complete', String(phaseNum)], cwd);
+  if (!result.success) {
+    // Surface exitCode/error verbatim so a real failure never presents as a
+    // downstream `JSON.parse('')` error, and so assert.throws() callers keep
+    // matching against the real stderr text (e.g. "verification is
+    // incomplete...").
+    throw new Error(
+      result.error || `cmdPhaseComplete failed (exitCode=${result.exitCode})`,
+    );
   }
-  return chunks.join('');
+  return result.output;
 }
 
 // ── T1: Double invocation must NOT double-increment Completed Phases ─────────
@@ -8406,9 +8470,9 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     cleanup(tmpDir);
   });
 
-  test('T1: double invocation does NOT double-increment Completed Phases in STATE.md body', () => {
+  test('T1: double invocation does NOT double-increment Completed Phases in STATE.md body', (t) => {
     // First call — legitimate completion
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfter1 = readStateMd(tmpDir);
     const completedAfter1Body = extractField(stateAfter1, 'Completed Phases');
@@ -8426,7 +8490,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     );
 
     // Second call on the same phase — must be idempotent
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfter2 = readStateMd(tmpDir);
     const completedAfter2Body = extractField(stateAfter2, 'Completed Phases');
@@ -8465,8 +8529,15 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // Calls cmdPhaseComplete directly (bypassing capturePhaseComplete's
+    // subprocess helper): this test's fault is a `t.mock.method(fs,
+    // 'writeFileSync', ...)` installed in THIS process, which a subprocess
+    // cannot see. No stdout capture is needed here — only the thrown
+    // exception and the resulting on-disk file state — so calling the CJS
+    // function directly does not touch fd 1 and does not reinstate the
+    // fs.writeSync interception this file removed.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected STATE\.md write failure/,
     );
 
@@ -8500,8 +8571,11 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // See the parent-process-mock note in the STATE.md-write-fails test
+    // above: this must call cmdPhaseComplete directly, not via
+    // capturePhaseComplete's subprocess helper.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected REQUIREMENTS\.md write failure/,
     );
 
@@ -8535,11 +8609,121 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // See the parent-process-mock note in the STATE.md-write-fails test
+    // above: this must call cmdPhaseComplete directly, not via
+    // capturePhaseComplete's subprocess helper.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected REQUIREMENTS\.md write failure[\s\S]*WARNING: rollback failed while restoring[\s\S]*injected ROADMAP\.md rollback failure/,
     );
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdPhaseComplete surfaces an indeterminate staleness check
+//
+// readVerificationStatus's internal staleness check can itself fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3, that failure was silently
+// identical to a completed check that genuinely found nothing stale — the
+// SAME fail-open shape as #3050. B3 flags this on the result
+// (`staleCheckIndeterminate`); this test proves phase.cts actually SURFACES
+// that flag (into `warnings[]`, the same advisory channel the UAT/VERIFICATION
+// pre-scan above already uses) rather than dropping it on the floor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: cmdPhaseComplete — verification staleness-check indeterminate is surfaced', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture('gsd-3057-b3-phase-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test(
+    'an fs failure inside the staleness check adds a warning; completion routing is unchanged',
+    { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
+    (t) => {
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    const summaryPath = path.join(phase01Dir, '01-01-SUMMARY.md');
+
+    // Real, on-disk fault instead of an in-process fs.statSync mock: this now
+    // runs cmdPhaseComplete in a subprocess (via capturePhaseComplete), which
+    // cannot see a mock installed in this process. findStaleVerificationSummary
+    // (verification.cjs) calls fs.statSync on each summary file to compare
+    // mtimes, and statSync follows symlinks — so pointing the summary at a
+    // target that does not exist reproduces a genuine ENOENT there, degrading
+    // the staleness check to {determined:false} exactly like the removed
+    // injected statSync throw did. scanPhasePlans only matches summary
+    // *filenames* (never stats them), so the plan-coverage gate still sees
+    // the summary as present.
+    fs.unlinkSync(summaryPath);
+    fs.symlinkSync(path.join(phase01Dir, '.does-not-exist'), summaryPath);
+
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
+    // completes exactly as it would have before #3057 B3.
+    assert.strictEqual(output.completed_phase, '1');
+    assert.ok(Array.isArray(output.warnings), 'result must carry a warnings array');
+    assert.strictEqual(
+      output.verification_stale_check_indeterminate,
+      true,
+      `result must surface the indeterminate staleness check as a typed field; got ${JSON.stringify(output.warnings)}`,
+    );
+    assert.strictEqual(output.has_warnings, true);
+    },
+  );
+
+  test('a completed staleness check that finds nothing stale does NOT add an indeterminate warning', (t) => {
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
+
+    assert.strictEqual(output.completed_phase, '1');
+    assert.strictEqual(
+      output.verification_stale_check_indeterminate,
+      false,
+      `must not report an indeterminate check when the staleness check ran to completion; got ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test(
+    'a BLOCKED completion (status=human_needed) with an indeterminate staleness check still blocks, but the error note says so',
+    { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
+    () => {
+    const phase02Dir = path.join(tmpDir, '.planning', 'phases', '02-api');
+    fs.writeFileSync(path.join(phase02Dir, '02-01-PLAN.md'), '# Plan\nDo the work.\n');
+    fs.writeFileSync(path.join(phase02Dir, '02-VERIFICATION.md'), [
+      '---',
+      'status: human_needed',
+      '---',
+      '',
+      '# Verification',
+      '',
+    ].join('\n'));
+
+    // Real, on-disk fault — see the note in the sibling test above. The
+    // summary is a dangling symlink so fs.statSync (inside
+    // findStaleVerificationSummary, running in the subprocess) throws ENOENT.
+    const summaryPath = path.join(phase02Dir, '02-01-SUMMARY.md');
+    fs.symlinkSync(path.join(phase02Dir, '.does-not-exist'), summaryPath);
+
+    // Routing is UNCHANGED — status !== 'passed' already blocked before #3057
+    // B3; the note is purely additive to the message text. Assert the fact
+    // structurally (via --json-errors) rather than regexing the human-
+    // readable note — CONTRIBUTING requires a typed surface alongside any
+    // text a caller might otherwise only match on, and once that typed
+    // surface exists the test must assert on IT, not also on the rendered
+    // prose (src/phase.cts's human message wording is out of scope for this
+    // test — operators read it, but the test must not lock its exact text).
+    const result = runGsdTools(['--json-errors', 'phase', 'complete', '2'], tmpDir);
+    assert.equal(result.success, false, 'phase complete must fail when verification is blocked');
+    const errorPayload = JSON.parse(result.error);
+    assert.equal(errorPayload.reason, 'phase_verification_incomplete');
+    assert.equal(errorPayload.verification_stale_check_indeterminate, true);
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8842,7 +9026,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — progress percent clamp', () => {
     cleanup(tmpDir);
   });
 
-  test('T2: Progress percent never exceeds 100 after double invocation', () => {
+  test('T2: Progress percent never exceeds 100 after double invocation', (t) => {
     tmpDir = createFixture();
 
     // Pre-load STATE.md with Completed Phases: 1, Total Phases: 1 (already 100%)
@@ -8873,9 +9057,9 @@ describe('issue #4 (CJS): cmdPhaseComplete — progress percent clamp', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
 
     // First call
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
     // Second call — this is the problematic one
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfterBoth = readStateMd(tmpDir);
 

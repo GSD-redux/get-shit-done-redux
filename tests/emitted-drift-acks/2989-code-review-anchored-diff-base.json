@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "code-review.md": "#2989: the diff-base fallback's git log --grep was changed from an unanchored bare phase number (matching version strings, dates, issue refs) to an anchored '[Pp]hase N\\b' with --extended-regexp, plus a 5-line comment explaining the anchor. Makes the fail-closed branch reachable when no commit genuinely references the phase."
+  }
+}

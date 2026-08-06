@@ -327,7 +327,8 @@ describe('changeset cli extract: version-range changelog extraction (#3496)', ()
   });
 
   // F1: workflows/update.md must reference the extract subcommand invocation.
-  // allow-test-rule: reads a product workflow .md file (not CJS source) to verify
+  // allow-test-rule: source-text-is-the-product
+  // Reads a product workflow .md file (not CJS source) to verify
   // the user-facing instruction was wired; there is no behavioural runtime to invoke.
   test('F1: workflows/update.md contains concrete extract subcommand invocation', (_t) => {
     const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'update.md');
@@ -359,7 +360,8 @@ describe('changeset cli extract: version-range changelog extraction (#3496)', ()
   // NOT the old broken path ($GSD_DIR/gsd-core/scripts/changeset/cli.cjs).
   // The installer copies scripts/changeset/ into <configDir>/scripts/changeset/,
   // so the runtime path is $GSD_DIR/scripts/changeset/cli.cjs (#935).
-  // allow-test-rule: reads a product workflow .md file (not CJS source) to verify
+  // allow-test-rule: source-text-is-the-product
+  // Reads a product workflow .md file (not CJS source) to verify
   // the runtime install path contract; there is no behavioural runtime to invoke.
   test('F2: update.md CLI path is $GSD_DIR/scripts/changeset/cli.cjs (not gsd-core/scripts/…) (#935)', (_t) => {
     const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'update.md');
@@ -377,7 +379,8 @@ describe('changeset cli extract: version-range changelog extraction (#3496)', ()
   });
 
   // F3: update.md must guard against the CLI being missing (not pure silent-swallow)
-  // allow-test-rule: reads a product workflow .md file (not CJS source) to verify
+  // allow-test-rule: source-text-is-the-product
+  // Reads a product workflow .md file (not CJS source) to verify
   // the guard is present; there is no behavioural runtime to invoke.
   test('F3: update.md has an explicit guard when changeset CLI is missing (#935)', (_t) => {
     const workflowPath = path.join(ROOT, 'gsd-core', 'workflows', 'update.md');

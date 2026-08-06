@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #1867) — the rendered reference doc's taxonomy table IS the runtime contract; this pins its bijection to the code (docs-parity, ADR-456 exception matrix)
+// allow-test-rule: source-text-is-the-product (see #1867) — the rendered reference doc's taxonomy table IS the runtime contract; this pins its bijection to the code (docs-parity, ADR-456 exception matrix)
 // Asserts gsd-core/references/ui-consideration-probe.md keeps its taxonomy id column in
 // sync with the source-of-truth UI_TAXONOMY (built .cjs), and that the closed compiled
 // taxonomy stays DISJOINT from the open-prose domain-probes.md bank (the mixed-axis boundary,

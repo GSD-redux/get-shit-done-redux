@@ -227,6 +227,18 @@ interface PhaseCompletionProjection {
   completion_status: string;
   verification_next_action: string;
   verification_next_command: string;
+  /**
+   * #3057 B3: true when readVerificationStatus's internal staleness check could
+   * NOT run to completion (an fs / scanPhasePlans / clock failure) — routing
+   * above is unaffected (the pre-existing fail-open contract), but this lets a
+   * workflow step distinguish "checked; nothing is stale" from "could not
+   * check" instead of silently treating both as the same "not stale" answer.
+   * Always present (unlike verification.cts's own optional field) so this
+   * projection's shape stays uniform with its sibling boolean fields; false
+   * when the staleness check was never reached (e.g. implementation not yet
+   * complete) or ran to completion.
+   */
+  verification_stale_check_indeterminate: boolean;
 }
 
 
@@ -271,6 +283,10 @@ function buildPhaseCompletionProjection(
     completion_status: projectCompletionStatus(implementationComplete, verificationPassed),
     verification_next_action: projectedVerificationAction,
     verification_next_command: verificationStatus.next_command,
+    // #3057 B3: only readVerificationStatus's result ever carries this flag —
+    // the `not_required` synthetic object above never does.
+    verification_stale_check_indeterminate: 'staleCheckIndeterminate' in verificationStatus
+      && verificationStatus.staleCheckIndeterminate === true,
   };
 }
 
@@ -2247,7 +2263,15 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     }
 
     const roadmapComplete = _checkboxStates.get(phaseNum) || false;
-    if (roadmapComplete && completion.phase_complete && diskStatus !== 'complete') {
+    // #3033: a zero-plan phase (split parent — intentionally plan-less, holds
+    // shared context for sub-phases) whose roadmap checkbox is marked complete
+    // must resolve as complete. The original gate required completion.phase_complete
+    // (derived from plan/summary counts), which is always false for zero-plan
+    // phases — so the checkbox override never fired and the parent was permanently
+    // stuck as 'researched' (an in-progress state eligible for current-phase
+    // selection). Now: when the roadmap marks it complete AND it has zero plans,
+    // treat it as complete regardless of the plan-count derivation.
+    if (roadmapComplete && (completion.phase_complete || planCount === 0) && diskStatus !== 'complete') {
       diskStatus = 'complete';
     }
 

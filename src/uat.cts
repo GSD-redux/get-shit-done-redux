@@ -19,7 +19,7 @@ import markdownSectionizer = require('./markdown-sectionizer.cjs');
 const { collectSection, tokenizeHeadings } = markdownSectionizer;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import markdownTable = require('./markdown-table.cjs');
-const { splitTableRow } = markdownTable;
+const { splitTableRow, isDelimiterRow } = markdownTable;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParser = require('./roadmap-parser.cjs');
 const { getMilestonePhaseFilter } = roadmapParser;
@@ -35,6 +35,9 @@ const { extractFrontmatter } = frontmatter;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseLocator = require('./phase-locator.cjs');
+const { getArchivedPhaseDirs } = phaseLocator;
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
@@ -62,6 +65,13 @@ interface UatFileResult {
   file_path: string;
   type: 'uat' | 'verification' | 'deferred';
   status: string;
+  /**
+   * Milestone version whose archive this phase dir was read from
+   * (`.planning/milestones/<version>-phases/`), or undefined for a phase still
+   * in the active `.planning/phases/` tree. Lets a consumer label provenance
+   * instead of presenting archived and in-flight work identically.
+   */
+  archived_milestone?: string;
   items: UatItem[];
 }
 
@@ -76,24 +86,56 @@ interface CurrentTest {
 
 function cmdAuditUat(cwd: string, raw: boolean): void {
   const phasesDir = path.join(planningDir(cwd), 'phases');
-  if (!fs.existsSync(phasesDir)) {
+  const hasActivePhases = fs.existsSync(phasesDir);
+
+  // #2766: on milestone completion `milestone.cts` MOVES each phase dir into
+  // `.planning/milestones/<version>-phases/` (archive-by-default since #1871),
+  // leaving `.planning/phases/` empty or absent. Scanning only the active tree
+  // meant a partly-archived project silently omitted the archived phases, and a
+  // fully-archived one hard-errored with "No phases directory found" —
+  // indistinguishable from a broken install. Outstanding UAT items do not stop
+  // mattering when a milestone closes: a deferred human-UAT scenario or a
+  // `skipped` live-stack test is exactly what gets archived still-open.
+  //
+  // Reuses the canonical `getArchivedPhaseDirs` seam (phase-locator.cts), which
+  // `findPhaseInternal` already uses for this same fallback, so the archive
+  // layout convention stays owned by one module.
+  const archivedDirs = getArchivedPhaseDirs(cwd);
+  if (!hasActivePhases && archivedDirs.length === 0) {
     error('No phases directory found in planning directory');
   }
 
   const isDirInMilestone = getMilestonePhaseFilter(cwd);
   const results: UatFileResult[] = [];
 
-  // Scan all phase directories
-  const dirs = fs.readdirSync(phasesDir, { withFileTypes: true })
-    .filter(e => e.isDirectory())
-    .map(e => e.name)
-    .filter(isDirInMilestone)
-    .sort();
+  // Active dirs are milestone-filtered; archived dirs deliberately are NOT.
+  // getMilestonePhaseFilter derives the CURRENT milestone's phase numbers from
+  // ROADMAP.md, and archived phases belong to past milestones by definition — so
+  // applying it to them discards every one and silently reinstates the bug.
+  const scanTargets: { dir: string; phaseDir: string; milestone?: string }[] = [];
 
-  for (const dir of dirs) {
+  if (hasActivePhases) {
+    const dirs = fs.readdirSync(phasesDir, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+      .filter(isDirInMilestone)
+      .sort();
+    for (const dir of dirs) {
+      scanTargets.push({ dir, phaseDir: path.join(phasesDir, dir) });
+    }
+  }
+
+  for (const archived of archivedDirs) {
+    scanTargets.push({
+      dir: archived.name,
+      phaseDir: archived.fullPath,
+      milestone: archived.milestone,
+    });
+  }
+
+  for (const { dir, phaseDir, milestone } of scanTargets) {
     const phaseMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
     const phaseNum = phaseMatch ? phaseMatch[1] : dir;
-    const phaseDir = path.join(phasesDir, dir);
     const files = fs.readdirSync(phaseDir);
 
     // Process UAT files
@@ -109,6 +151,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, file))),
           type: 'uat',
           status: (extractFrontmatter(content, uatFilePath).status as string || 'unknown'),
+          archived_milestone: milestone,
           items,
         });
       }
@@ -129,6 +172,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
             file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, file))),
             type: 'verification',
             status,
+            archived_milestone: milestone,
             items,
           });
         }
@@ -154,6 +198,7 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
           file_path: toPosixPath(path.relative(cwd, path.join(phaseDir, deferredFile))),
           type: 'deferred',
           status: 'unresolved',
+          archived_milestone: milestone,
           items,
         });
       }
@@ -655,6 +700,170 @@ function parseGapsItems(content: string): UatItem[] {
     items.push(item);
   }
 
+  // #2766: union with the table form. A `|`-leading line is never a `- ` bullet
+  // opener, so a section mixing bullet entries and a table surfaces both with no
+  // double-counting.
+  items.push(...parseGapsTableItems(gapsSection.body));
+
+  return items;
+}
+
+/**
+ * Split a section body into its GFM pipe tables, one entry per table (#2766).
+ *
+ * Shared by `parseGapsTableItems` and `parseDeferredTableItems` so the
+ * header/delimiter/table-boundary handling — the fiddly part — lives in exactly
+ * one place, and the two consumers only decide what a data row MEANS.
+ *
+ * Header detection is lookahead-free: the last data-shaped row is held in
+ * `pending` until the NEXT line decides its fate — a delimiter row
+ * (`|---|---|`) proves the held row was a header, anything else promotes it to a
+ * data row. So a conventional table drops exactly its header, a HEADERLESS table
+ * keeps every row (hand-authored planning tables often omit the delimiter), and
+ * a header with no data rows yields nothing. A prose or blank line ends the
+ * current table, so two tables separated by text are read independently and each
+ * drops its own header.
+ *
+ * Reuses the canonical `isDelimiterRow` shape check from markdown-table.cts
+ * rather than re-deriving it. Deliberately NOT routed through
+ * `parseMarkdownTable`, which reads only the FIRST table in a body and treats
+ * ragged/headerless shapes as errors (ADR-2143 §3) — correct for the mandated
+ * tables in STATE.md/ROADMAP.md, but the wrong contract here, where a malformed
+ * hand-written table must still surface its rows rather than be dropped.
+ */
+function collectTableRows(sectionBody: string): { header: string[] | null; rows: string[][] }[] {
+  const tables: { header: string[] | null; rows: string[][] }[] = [];
+  let current: { header: string[] | null; rows: string[][] } | null = null;
+  let pending: string[] | null = null;
+
+  const ensure = (): void => {
+    if (!current) current = { header: null, rows: [] };
+  };
+  const flushPending = (): void => {
+    if (pending) {
+      ensure();
+      current!.rows.push(pending);
+      pending = null;
+    }
+  };
+  const endTable = (): void => {
+    flushPending();
+    if (current) {
+      tables.push(current);
+      current = null;
+    }
+  };
+
+  for (const rawLine of sectionBody.split('\n')) {
+    const line = rawLine.replace(/\r$/, '').trim();
+    if (!line.startsWith('|')) {
+      endTable();
+      continue;
+    }
+    const cells = splitTableRow(line);
+    if (cells.length === 0) continue;
+    if (isDelimiterRow(cells)) {
+      ensure();
+      current!.header = pending; // may be null for a delimiter-first table
+      pending = null;
+      continue;
+    }
+    flushPending();
+    pending = cells;
+  }
+  endTable();
+
+  return tables;
+}
+
+/**
+ * Header-name → canonical Gaps field (#2766).
+ *
+ * Anchored on the `## Gaps` field vocabulary `templates/UAT.md` mandates for the
+ * YAML-lite bullet form (truth/status/reason/severity/test), plus the obvious
+ * synonyms a human writing the same information as a table reaches for instead.
+ */
+const GAPS_COLUMN_ALIASES: Record<string, 'truth' | 'status' | 'reason' | 'severity' | 'test'> = {
+  truth: 'truth', gap: 'truth', finding: 'truth', item: 'truth',
+  description: 'truth', issue: 'truth', name: 'truth',
+  status: 'status', result: 'status', state: 'status',
+  reason: 'reason', note: 'reason', notes: 'reason',
+  detail: 'reason', details: 'reason', evidence: 'reason',
+  severity: 'severity',
+  test: 'test', '#': 'test', 'test #': 'test', 'test number': 'test',
+};
+
+function mapGapsHeader(header: string[] | null): Record<string, number> | null {
+  if (!header) return null;
+  const columns: Record<string, number> = {};
+  header.forEach((cell, idx) => {
+    const key = GAPS_COLUMN_ALIASES[cell.trim().toLowerCase().replace(/\*+/g, '')];
+    if (key && !(key in columns)) columns[key] = idx;
+  });
+  return Object.keys(columns).length > 0 ? columns : null;
+}
+
+/**
+ * Extract gap entries from GFM pipe tables in a `## Gaps` section (#2766) — a
+ * UNION with the YAML-lite bullet scan in `parseGapsItems`, for the same reason
+ * `parseDeferredTableItems` exists: `splitGapsEntries` keys entirely on `- `
+ * bullet openers, so a table-shaped `## Gaps` section yielded ZERO items and
+ * every finding in it was silently invisible.
+ *
+ * Neither `templates/UAT.md` nor `templates/verification-report.md` documents a
+ * table for this section (both mandate the bullet/numbered form), so a table
+ * here is off-template hand-authoring — which is precisely why it must not fail
+ * silently. Note `parseVerificationItems` in this same file already reads table
+ * rows AND numbered AND bullet items as a union because the live sections mix
+ * shapes; the Gaps and deferred parsers never got the same treatment.
+ *
+ * When a header row is present its columns are mapped by name against the
+ * template's own field vocabulary (see GAPS_COLUMN_ALIASES) so a tabled gap
+ * carries the same status/reason/test fields as its bullet equivalent and
+ * `categorizeItem` classifies it identically. With no recognizable header, the
+ * row degrades to a joined-cells name with status `unknown` — surfaced, not
+ * dropped, matching this module's established fail-safe stance.
+ *
+ * Resolution follows the bullet path exactly: an entry is skipped ONLY on an
+ * explicit resolved marker — the mapped `status` column reading `resolved`, or,
+ * absent a status column, any cell reading exactly `resolved`. A gap with no
+ * parseable status is NEVER treated as resolved.
+ */
+function parseGapsTableItems(sectionBody: string): UatItem[] {
+  const items: UatItem[] = [];
+
+  for (const { header, rows } of collectTableRows(sectionBody)) {
+    const columns = mapGapsHeader(header);
+    for (const cells of rows) {
+      const at = (key: string): string =>
+        (columns && key in columns ? (cells[columns[key]] ?? '').trim() : '');
+
+      const rawStatus = at('status');
+      if (rawStatus && rawStatus.toLowerCase() === 'resolved') continue;
+      // No status column: fall back to an explicit resolved marker in any cell
+      // (the headerless-table equivalent of `status: resolved`).
+      if (!columns || !('status' in columns)) {
+        if (cells.some(c => /^resolved$/i.test(c.trim()))) continue;
+      }
+
+      const truth = at('truth');
+      const reason = at('reason');
+      const testNum = at('test');
+      const name = truth || cells.filter(c => c !== '').join(' — ');
+      if (!name) continue;
+
+      const status = rawStatus || 'unknown';
+      const item: UatItem = {
+        name,
+        result: status,
+        category: categorizeItem(status, reason || undefined, undefined),
+      };
+      if (testNum && /^\d+$/.test(testNum)) item.test = parseInt(testNum, 10);
+      if (reason) item.reason = reason;
+      items.push(item);
+    }
+  }
+
   return items;
 }
 
@@ -709,6 +918,51 @@ function parseDeferredItems(content: string): UatItem[] {
       result: 'unresolved',
       category: 'deferred',
     });
+  }
+
+  // #2766: union with the table form — see parseDeferredTableItems. Executors
+  // write this file by hand with no mandated shape, and a GFM table is a natural
+  // choice for the common "test → failing seeds" case, which produced ZERO items.
+  items.push(...parseDeferredTableItems(sectionBody));
+
+  return items;
+}
+
+/**
+ * Extract deferred entries from GFM pipe tables in a deferred-items.md body
+ * (#2766) — a UNION with the bullet scan in `parseDeferredItems`.
+ *
+ * Cells are joined with ` — ` rather than taking only the first: these tables
+ * carry the useful detail in the later columns (the failing seeds, the reason,
+ * the owner), and dropping them would surface a name with no context.
+ *
+ * A row is skipped when any cell reads exactly `resolved`/`done`/`pass`
+ * (case-insensitive), mirroring the "explicit resolution only" convention
+ * `parseGapsItems` uses for `status: resolved` and `parseVerificationItems` uses
+ * for its `hasPassResult` cell scan — so a human can close a tabled deferred
+ * item in place and keep deferred-items.md the single source of truth.
+ *
+ * Deliberately permissive: an unrelated table in a deferred-items.md (say a
+ * table of environment notes) will surface as deferred entries. That is the
+ * correct fail-safe direction for a false-NEGATIVE bug — the whole file exists to
+ * record outstanding work, and this module's established stance (see
+ * parseGapsItems' 'unknown'-status fallback) is to surface a questionable entry
+ * rather than silently drop a real one.
+ */
+function parseDeferredTableItems(sectionBody: string): UatItem[] {
+  const items: UatItem[] = [];
+
+  for (const { rows } of collectTableRows(sectionBody)) {
+    for (const cells of rows) {
+      if (cells.some(c => /^(resolved|done|pass)$/i.test(c))) continue;
+      const name = cells.filter(c => c !== '').join(' — ');
+      if (!name) continue;
+      items.push({
+        name,
+        result: 'unresolved',
+        category: 'deferred',
+      });
+    }
   }
 
   return items;

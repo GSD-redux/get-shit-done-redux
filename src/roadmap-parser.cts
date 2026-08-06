@@ -235,9 +235,19 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     );
   }
 
+  // #2947: the preamble strip removes `### Phase N:` detail headings from the
+  // pre-milestone region so they don't duplicate the ones inside the selected
+  // milestone section. But when the phase list lives under a non-version-bearing
+  // `## Phases` heading (the shipped greenfield template's own shape) and the
+  // selected version-bearing heading is a LATER progress/notes sub-heading with
+  // NO phase details of its own, stripping the preamble phases silently drops
+  // every phase (phase_count: 0, exit 0). Only strip preamble phase details when
+  // the selected milestone section actually contains its own — otherwise the
+  // preamble phases ARE this milestone's phases and must be preserved.
+  const currentSectionHasPhaseDetails = /^#{2,4}\s*Phase\s+\S/im.test(currentSection);
   const preamble = stripTaggedBlocks(beforeMilestones, 'details')
     // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
-    .replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
+    .replace(currentSectionHasPhaseDetails ? /^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim : /$/, '')
     .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
 
   return detailsSection

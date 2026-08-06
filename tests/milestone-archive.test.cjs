@@ -58,6 +58,10 @@ describe('bug #2684: milestone.complete forwards version to phases.archive', () 
       path.join(tmpDir, '.planning', 'ROADMAP.md'),
       `# Roadmap\n\n### Phase 1: Foundation\n**Goal:** Setup\n`,
     );
+    // #2946: the unstarted-phase guard now runs whenever --force is absent
+    // (independent of STATE.md). This test exercises version-forwarding, not
+    // the guard, so give Phase 1 a real directory so the scan is satisfied.
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-foundation'), { recursive: true });
 
     const result = runSdkQuery(['milestone.complete', 'v2.5'], tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
