@@ -90,15 +90,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'resume-project.md');
 
 // Extract the first ```bash``` code block inside the
 // `<step name="check_incomplete_work">` element. That's the snippet the
 // runtime actually executes; it's what we want to validate.
+//
+// readFileNormalized() strips \r\n -> \n before the fence match below runs —
+// the extracted snippet is spawned via spawnSync('bash', ...) in
+// runSnippet(), so an un-normalized read on a Windows checkout would break
+// bash mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
 function extractCheckBlock() {
-  const md = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  const md = readFileNormalized(WORKFLOW_PATH);
   const stepStart = md.indexOf('<step name="check_incomplete_work">');
   assert.ok(stepStart >= 0, 'resume-project.md must contain a check_incomplete_work step');
   const stepEnd = md.indexOf('</step>', stepStart);

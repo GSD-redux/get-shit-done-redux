@@ -2,10 +2,12 @@ When you need library or framework documentation, check in this order:
 
 1. If Context7 MCP tools (`mcp__context7__*`) are available in your environment, use them:
    - Resolve library ID: `mcp__context7__resolve-library-id` with `libraryName`
-   - Fetch docs: `mcp__context7__get-library-docs` with `context7CompatibleLibraryId` and `topic`
+   - Fetch docs: `mcp__context7__query-docs` with `libraryId` (the ID from step 1) and `query`
 
-2. If Context7 MCP is not available (upstream bug anthropics/claude-code#13898 strips MCP
-   tools from agents with a `tools:` frontmatter restriction), use the CLI fallback via Bash:
+2. If Context7 MCP is not available (custom subagents cannot see project-scoped
+   `.mcp.json` servers — they only inherit user-scoped `~/.claude/mcp.json`, so a
+   context7 server configured at the project scope is invisible to spawned
+   agents), use the CLI fallback via Bash:
 
    Step 1 — Resolve library ID:
    ```bash

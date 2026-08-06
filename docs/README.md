@@ -18,7 +18,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 ## How-to guides
 
 - [Install on your runtime](how-to/install-on-your-runtime.md) — runtime-specific install steps for all 16 supported runtimes
-- [Install a minimal GSD and add skills later](how-to/install-minimal-and-add-skills.md) — install only the core skills, then grow the surface with profiles and `/gsd:surface`
+- [Install a minimal GSD and add skills later](how-to/install-minimal-and-add-skills.md) — install only the core skills, then grow the surface with profiles and `/gsd-surface`
 - [Attach a plugin-provided skill to a GSD agent](how-to/attach-a-plugin-skill-to-a-gsd-agent.md) — use the `global:plugin:skill` entry form to load Claude Code plugin skills into agent prompts
 - [Discuss a phase](how-to/discuss-a-phase.md) — capture implementation decisions before planning begins
 - [Resolve edge-coverage findings](how-to/resolve-edge-coverage-findings.md) — turn the spec phase's surfaced domain-boundary edges into covered, dismissed, or backstopped spec decisions
@@ -36,12 +36,15 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Spike and sketch](how-to/spike-and-sketch.md) — use `/gsd-spike` and `/gsd-sketch` for exploratory work before committing to a plan
 - [Design a UI phase](how-to/design-a-ui-phase.md) — use the UI phase loop for frontend and visual work
 - [Develop a Capability for GSD 1.5+](how-to/develop-a-capability.md) — add feature Capabilities, hook fragments, and registry entries
+- [Ship a reviewer lane in your capability](how-to/ship-a-reviewer-lane.md) — declare a `reviewer` body so `/gsd-review` discovers, invokes, and renders your external review CLI or model endpoint
+- [List your reviewer lane in the registry](how-to/list-your-reviewer-lane.md) — publish a lane you have built to the Reviewer Lane Registry so other people can find and install it
+- [Take over a capability or EoS integration](how-to/take-over-a-capability-or-eos.md) — assume maintainership of an existing third-party capability, reviewer lane, or EoS host integration through a handoff, an adoption fork, first-party absorption, or a de-listing
 - [Add or update a host's integration](how-to/add-or-update-a-host-integration.md) — set a host's documentation-sourced `runtime.hostIntegration` axes (ADR-1239 Phase A), with the `undocumented` sentinel rule
 - [Turn a capability off (and keep it off)](how-to/turn-a-capability-off.md) — disable a capability via the surface, or gate individual hooks off without removing the capability
 - [Drive GSD from a tracker issue](how-to/drive-gsd-from-a-tracker-issue.md) — start a phase from a GitHub, Linear, or Jira issue
 - [Migrate from GSD 2](how-to/migrate-from-gsd-2.md) — upgrade an existing GSD 2 project to GSD Core
 - [Update GSD](how-to/update-gsd.md) — re-run the installer to pick up the latest release
-- [Clean up get-shit-done-cc](cleanup-get-shit-done-cc.md) — remove leftover old-package artifacts that cause a spurious `⬆ /gsd:update` indicator after migrating to `@opengsd/gsd-core`
+- [Clean up get-shit-done-cc](cleanup-get-shit-done-cc.md) — remove leftover old-package artifacts that cause a spurious `⬆ /gsd-update` indicator after migrating to `@opengsd/gsd-core`
 - [Fix the worktree base-mismatch (exit 42) error](how-to/fix-worktree-base-mismatch.md) — resolve the branch-divergence condition that halts parallel phase execution
 - [Recover and troubleshoot](how-to/recover-and-troubleshoot.md) — fix common problems, rebuild context, and uninstall
 
@@ -59,9 +62,12 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [PLAN.md schema](reference/plan-md.md) — field-by-field reference for `.planning/phases/<N>/PLAN.md`
 - [Planning artifacts](reference/planning-artifacts.md) — all `.planning/` files and their roles
 - [Review and verification capabilities](reference/review-verification-capabilities.md) — code review, security, and Nyquist capability ownership and hook contracts
+- [Gate predicates](reference/gate-predicates.md) — canonical specification of the phase-gate predicate vocabulary
 - [Capability matrix](reference/capability-matrix.md) — generated catalogue of every capability's role, tier, extension points, hook kinds, and `engines.gsd`
 - [Capability manifest](reference/capability-manifest.md) — the full `capability.json` schema and validation rules
 - [`gsd capability` command](reference/gsd-capability-command.md) — install / update / remove / list reference for third-party capabilities
+- [Workflow fragments](reference/workflow-fragments.md) — in-file `<!-- gsd:section -->` marker grammar for fragmentizing workflow markdown at emission time
+- [Reviewer Lane Registry](registries/reviewer-registry.md) — generated catalogue of third-party reviewer lanes, with their flags, transport, and install commands
 
 ---
 

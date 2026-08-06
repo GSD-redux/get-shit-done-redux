@@ -1,0 +1,219 @@
+{
+  "workflows": {
+    "autonomous": [
+      {
+        "id": "converge-fail-fast",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-fail-fast.md"
+      },
+      {
+        "id": "converge-banner",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-banner.md"
+      },
+      {
+        "id": "converge-dispatch-bg",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-dispatch-bg.md"
+      },
+      {
+        "id": "converge-dispatch-inline",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-dispatch-inline.md"
+      },
+      {
+        "id": "converge-loop",
+        "when": "state:plan-strategy-converge",
+        "read": "gsd-core/workflows/autonomous/steps/converge-loop.md"
+      }
+    ],
+    "code-review": [
+      {
+        "id": "structural-pre-pass",
+        "when": "state:fallow-enabled",
+        "read": "gsd-core/workflows/code-review/steps/structural-pre-pass.md"
+      },
+      {
+        "id": "dispatch-fix",
+        "when": "flag:--fix",
+        "read": "gsd-core/workflows/code-review/steps/dispatch-fix.md"
+      }
+    ],
+    "complete-milestone": [
+      {
+        "id": "git-tag",
+        "when": "state:git-create-tag",
+        "read": "gsd-core/workflows/complete-milestone/steps/git-tag.md"
+      }
+    ],
+    "discuss-phase-assumptions": [
+      {
+        "id": "auto-advance-dispatch",
+        "when": "state:auto-advance-active",
+        "read": "gsd-core/workflows/discuss-phase-assumptions/steps/auto-advance-dispatch.md"
+      }
+    ],
+    "docs-update": [
+      {
+        "id": "dispatch-monorepo-packages",
+        "when": "state:is-monorepo",
+        "read": "gsd-core/workflows/docs-update/steps/dispatch-monorepo-packages.md"
+      }
+    ],
+    "execute-phase": [
+      {
+        "id": "partial-wave",
+        "when": "flag:--wave",
+        "read": "gsd-core/workflows/execute-phase/steps/partial-wave.md"
+      },
+      {
+        "id": "gap-closure-artifacts",
+        "when": "state:gap-closure-phase",
+        "read": "gsd-core/workflows/execute-phase/steps/gap-closure-artifacts.md"
+      },
+      {
+        "id": "regression-gate",
+        "when": "state:has-prior-phases",
+        "read": "gsd-core/workflows/execute-phase/steps/regression-gate.md"
+      }
+    ],
+    "new-milestone": [
+      {
+        "id": "project-md-milestone-write",
+        "when": "state:flat-mode",
+        "read": "gsd-core/workflows/new-milestone/steps/project-md-milestone-write.md"
+      },
+      {
+        "id": "reset-phase-safety",
+        "when": "flag:--reset-phase-numbers",
+        "read": "gsd-core/workflows/new-milestone/steps/reset-phase-safety.md"
+      }
+    ],
+    "new-project": [
+      {
+        "id": "auto-mode-detection",
+        "when": "flag:--auto",
+        "read": "gsd-core/workflows/new-project/steps/auto-mode-detection.md"
+      },
+      {
+        "id": "codebase-map-offer",
+        "when": "state:needs-codebase-map",
+        "read": "gsd-core/workflows/new-project/steps/codebase-map-offer.md"
+      },
+      {
+        "id": "auto-mode-config",
+        "when": "flag:--auto",
+        "read": "gsd-core/workflows/new-project/steps/auto-mode-config.md"
+      }
+    ],
+    "plan-phase": [
+      {
+        "id": "reviews-prerequisite",
+        "when": "flag:--reviews",
+        "read": "gsd-core/workflows/plan-phase/steps/reviews-prerequisite.md"
+      },
+      {
+        "id": "prd-express-gate",
+        "when": "flag:--prd",
+        "read": "gsd-core/workflows/plan-phase/steps/prd-express-gate.md"
+      },
+      {
+        "id": "adr-ingest-express-path",
+        "when": "flag:--ingest",
+        "read": "gsd-core/workflows/plan-phase/steps/adr-ingest-express-path.md"
+      },
+      {
+        "id": "research-only-modifiers",
+        "when": "flag:--research-phase",
+        "read": "gsd-core/workflows/plan-phase/steps/research-only-modifiers.md"
+      },
+      {
+        "id": "research-only-early-exit",
+        "when": "flag:--research-phase",
+        "read": "gsd-core/workflows/plan-phase/steps/research-only-early-exit.md"
+      },
+      {
+        "id": "chunked-planning-mode",
+        "when": "state:chunked-mode",
+        "read": "gsd-core/workflows/plan-phase/steps/chunked-planning-mode.md"
+      }
+    ],
+    "progress": [
+      {
+        "id": "mvp-display",
+        "when": "state:phase-mvp-mode",
+        "read": "gsd-core/workflows/progress/steps/mvp-display.md"
+      },
+      {
+        "id": "forensic-audit",
+        "when": "flag:--forensic",
+        "read": "gsd-core/workflows/progress/steps/forensic-audit.md"
+      }
+    ],
+    "quick": [
+      {
+        "id": "discussion-phase",
+        "when": "flag:--discuss",
+        "read": "gsd-core/workflows/quick/steps/discussion-phase.md"
+      },
+      {
+        "id": "research-phase",
+        "when": "flag:--research",
+        "read": "gsd-core/workflows/quick/steps/research-phase.md"
+      },
+      {
+        "id": "plan-checker-loop",
+        "when": "flag:--validate",
+        "read": "gsd-core/workflows/quick/steps/plan-checker-loop.md"
+      },
+      {
+        "id": "worktree-pre-dispatch-commit",
+        "when": "state:worktrees-enabled",
+        "read": "gsd-core/workflows/quick/steps/worktree-pre-dispatch-commit.md"
+      },
+      {
+        "id": "quick-verification",
+        "when": "flag:--validate",
+        "read": "gsd-core/workflows/quick/steps/quick-verification.md"
+      }
+    ],
+    "review": [
+      {
+        "id": "reviewer-instances-note-1",
+        "when": "state:reviewer-instances-configured",
+        "read": "gsd-core/workflows/review/steps/reviewer-instances-note-1.md"
+      },
+      {
+        "id": "reviewer-instances-note-2",
+        "when": "state:reviewer-instances-configured",
+        "read": "gsd-core/workflows/review/steps/reviewer-instances-note-2.md"
+      }
+    ],
+    "transition": [
+      {
+        "id": "workstream-collision-check",
+        "when": "state:workstream-active",
+        "read": "gsd-core/workflows/transition/steps/workstream-collision-check.md"
+      }
+    ],
+    "update": [
+      {
+        "id": "channel-banner",
+        "when": "state:next-channel",
+        "read": "gsd-core/workflows/update/steps/channel-banner.md"
+      }
+    ],
+    "verify-work": [
+      {
+        "id": "automated-ui-verification",
+        "when": "state:ui-phase-active",
+        "read": "gsd-core/workflows/verify-work/steps/automated-ui-verification.md"
+      },
+      {
+        "id": "mvp-uat-framing",
+        "when": "state:phase-mvp-mode",
+        "read": "gsd-core/workflows/verify-work/steps/mvp-uat-framing.md"
+      }
+    ]
+  }
+}

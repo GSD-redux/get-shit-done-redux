@@ -382,8 +382,8 @@ AI 코딩 도구는 패키지 이름을 환각합니다. 공격자는 npm, PyPI,
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -395,7 +395,7 @@ AI 코딩 도구는 패키지 이름을 환각합니다. 공격자는 npm, PyPI,
 
 **실행 중** — 설치가 실패하면 실행자는 체크포인트를 표시하고 자동으로 대안을 시도하지 않고 중단합니다.
 
-**슬롭체크 판정:**
+**적법성 판정:**
 
 | 판정 | 의미 | GSD 조치 |
 |---------|---------|------------|
@@ -499,7 +499,7 @@ claude --dangerously-skip-permissions
 
 **needs-acknowledgement 동작.** 가드가 누락된 심볼을 발견하면, 하드 차단 대신 계획 검토 출력에 `needs-acknowledgement` 알림을 표시합니다. 승인 후 진행하거나(심볼이 의도적으로 새로운 것일 수 있음) 계획 수정을 요청할 수 있습니다. 가드는 계획을 자동으로 거부하지 않으며 — 사람의 결정을 위한 신호를 표시합니다.
 
-**인텔 없이 작동.** 기본적으로 가드는 `grep`/`ripgrep`을 사용하여 소스 파일을 검색합니다 — 사전 인덱싱이 필요하지 않습니다. `intel.enabled: true`로 `/gsd:map-codebase`를 실행했다면 `plan_review.source_grounding_authority: intel`로 설정하여 더 빠른 사전 빌드 `api-map.json` 인덱스를 사용하세요.
+**인텔 없이 작동.** 기본적으로 가드는 `grep`/`ripgrep`을 사용하여 소스 파일을 검색합니다 — 사전 인덱싱이 필요하지 않습니다. `intel.enabled: true`로 `/gsd-map-codebase`를 실행했다면 `plan_review.source_grounding_authority: intel`로 설정하여 더 빠른 사전 빌드 `api-map.json` 인덱스를 사용하세요.
 
 ```bash
 # Enable/disable (default: on)
@@ -511,7 +511,7 @@ claude --dangerously-skip-permissions
 /gsd-settings plan_review.source_grounding_authority intel  # pre-indexed api-map.json
 ```
 
-프로젝트 설정 시(`/gsd:new-project`가 워크플로우 선호도 중 질문) 또는 `/gsd:settings`를 통해 언제든지 전환 가능합니다(계획 섹션 → 드리프트 가드).
+프로젝트 설정 시(`/gsd-new-project`가 워크플로우 선호도 중 질문) 또는 `/gsd-settings`를 통해 언제든지 전환 가능합니다(계획 섹션 → 드리프트 가드).
 
 ### 빠른 버그 수정
 

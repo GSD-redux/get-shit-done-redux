@@ -174,7 +174,10 @@ describe('skill frontmatter: /gsd-plan-phase --research-phase flag absorbs the s
   });
 
   test('research-only mode auto-uses existing RESEARCH.md (no update/view/skip prompt)', () => {
-    const content = read('gsd-core/workflows/plan-phase.md');
+    // #2993 fragmentization moved §5.0 (research-only modifiers, including the
+    // existing-RESEARCH.md auto-use notice) out of plan-phase.md into
+    // gsd-core/workflows/plan-phase/steps/research-only-modifiers.md.
+    const content = read('gsd-core/workflows/plan-phase/steps/research-only-modifiers.md');
     // #159: the §5.0 existing-RESEARCH.md path no longer prompts
     // update/view/skip. When RESEARCH.md exists and neither --research nor
     // --view is set, the workflow emits a brief "using it" notice naming

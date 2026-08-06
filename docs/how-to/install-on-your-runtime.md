@@ -50,7 +50,7 @@ GSD registers the following Claude Code hook events automatically on install:
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, commit validation |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, commit validation |
 | `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
 | `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |
 | `PreCompact` | `gsd-context-monitor.js` | Context awareness before conversation compaction |
@@ -124,6 +124,12 @@ npx @opengsd/gsd-core@latest --opencode --global
 The installer writes four surfaces under `~/.config/opencode/` (XDG) or `~/.opencode/`: flat slash commands in `commands/` (plural — the directory OpenCode discovers slash commands from, #2329), file-based subagents in `agents/`, on-demand skills in `skills/<name>/SKILL.md`, and a native plugin in `plugins/gsd-core.js`. It converts agent frontmatter to OpenCode's schema — removing the `tools:` field and converting colour values to hex — and emits each skill with spec-compliant frontmatter (`name` matching the skill directory plus a `description`). Skills are loaded on demand via OpenCode's native skill tool; commands remain invokable as `/gsd-*`. See [Installing without Node.js — OpenCode transformations](#opencode--required-transformations) if you need to understand what changes.
 
 **GSD safety hooks on OpenCode.** OpenCode does not register lifecycle hooks the way Claude Code does (its `hooksSurface` is `none`), so GSD's prompt-injection guard, read-before-edit guard, injection scanner, and context monitor would otherwise be inert. The bundled plugin (`plugins/gsd-core.js`) closes that gap: OpenCode auto-discovers `plugins/*.{ts,js}` files under its config directory at startup and the adapter bridges OpenCode's event bus (`tool.execute.before`/`after`, `session.created`, `file.edited`) onto GSD's existing hook scripts, spawning them as subprocesses. No `opencode.json` entry is needed — the plugin is loaded by directory auto-discovery (the config `plugin` array is for npm packages only). A blocking hook aborts the tool call; an advisory hook surfaces its message without blocking.
+
+**Your plugin directory is pinned to CommonJS (accepted trade-off, #2544).** GSD's adapter is a CommonJS `.js` file, and Node decides a `.js` file's module type by walking up for the nearest `package.json`. So the installer writes a minimal `{"type":"commonjs"}` marker into the plugin directory itself — `plugins/package.json` on OpenCode and Kilo, `extensions/package.json` on pi. It is written only when GSD actually stages its adapter there, it never overwrites a `package.json` GSD did not write, and uninstall removes only its own.
+
+The trade-off: that marker shadows your config root for **every** `.js` file in that directory, not just GSD's. If you author your own plugins as ESM `.js` and rely on a `"type": "module"` at the config root, they will stop resolving as ESM. This is deliberate — it is strictly narrower than the pre-#2544 behavior, which wrote the marker over `<configRoot>/package.json` itself and destroyed whatever was there — but it is a real constraint rather than a pure improvement, which is why it is stated here.
+
+**Mitigation:** author your own plugins as `.ts`. OpenCode and Kilo compile plugin TypeScript with Bun, and a `package.json` `type` field does not affect `.ts` resolution — so a `.ts` plugin is unaffected by the marker. Failing that, keep ESM plugins outside the auto-discovered directory and load them as npm packages via the config `plugin` array.
 
 **Override the install directory:**
 
@@ -276,7 +282,7 @@ COPILOT_CONFIG_DIR=~/.copilot-alt npx @opengsd/gsd-core@latest --copilot --globa
 npx @opengsd/gsd-core@latest --cursor --global
 ```
 
-Artifacts land in `~/.cursor/`. GSD installs slash commands (`~/.cursor/commands/gsd-*.md`), skills (`~/.cursor/skills/gsd-*/SKILL.md`), agents, and rule references. Each GSD action appears once in Cursor's `/` menu: the command surface is the single `/` entry point, and the skills are installed with `user-invocable: false` so they stay model-invocable background knowledge without duplicating the `/` entries.
+Artifacts land in `~/.cursor/`. GSD installs skills (`~/.cursor/skills/gsd-*/SKILL.md`), agents, and rule references. Cursor exposes each skill once in the `/` menu while keeping it available for contextual model invocation. Upgrading removes manifest-managed legacy `~/.cursor/commands/gsd-*.md` copies that previously duplicated those menu entries; unknown user-authored command files are preserved.
 
 **Override the install directory:**
 
@@ -360,7 +366,7 @@ GSD registers the following events automatically on install (Claude hook event d
 | Event | Hook | Purpose |
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, commit validation |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, commit validation |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
 | `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
 | `SubagentStart` | `gsd-context-monitor.js` | Context headroom tracking at subagent start |
@@ -399,7 +405,7 @@ Qwen Code supports 15 hook events. GSD registers the following events automatica
 |---|---|---|
 | `SessionStart` | `gsd-check-update.js`, `gsd-session-state.sh` | Update check, session orientation |
 | `PostToolUse` | `gsd-context-monitor.js`, `gsd-read-injection-scanner.js`, `gsd-phase-boundary.sh`, `gsd-graphify-update.sh` | Context monitoring, read-time scan, phase boundary detection |
-| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, commit validation |
+| `PreToolUse` | `gsd-prompt-guard.js`, `gsd-read-guard.js`, `gsd-workflow-guard.js`, `gsd-worktree-path-guard.js`, `gsd-agent-isolation-guard.js`, `gsd-validate-commit.sh` | Prompt guard, read-before-edit, workflow + worktree safety, agent-dispatch isolation, commit validation |
 | `SubagentStop` | `gsd-context-monitor.js` | Context headroom tracking after subagent completion |
 | `SubagentStart` | `gsd-context-monitor.js` | Context headroom tracking at subagent start |
 | `Stop` | `gsd-context-monitor.js` | Context headroom tracking before model stop |

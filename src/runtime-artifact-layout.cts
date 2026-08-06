@@ -20,7 +20,6 @@ import os from 'node:os';
 import installProfiles = require('./install-profiles.cjs');
 const {
   stageSkillsForProfile,
-  stageAgentsForProfile,
   stageAgentsForRuntimeWithConverter,
   stageSkillsForRuntimeAsSkills,
   stageCommandsForRuntimeFlat,
@@ -199,7 +198,21 @@ function agentsKind(destSubpath: string, prefix: string, configDir: string): Art
     kind: 'agents',
     destSubpath,
     prefix,
-    stage: (resolved) => stageAgentsForProfile(findAgentsSourceRoot(configDir), resolved),
+    // #2995: a `converter: null` agents entry (claude local, zcode) previously
+    // staged via stageAgentsForProfile — a RAW byte copy that never reads content
+    // into JS, so gsd:section markers shipped verbatim. Route through the
+    // composing stager with an identity converter instead: same output as the raw
+    // copy for an unmarked agent, markers stripped for a marked one. Routing both
+    // agent kinds through the stager collapses what were five independent agent
+    // read points down to three compose call sites: this stager, bin/install.js's
+    // inline agent loop, and installCodexConfig's per-agent .toml writer. The
+    // exhaustive per-runtime sweep in tests/agent-fragments-emission.install.test.cjs
+    // is what keeps a fourth from appearing uncomposed.
+    stage: (resolved) => stageAgentsForRuntimeWithConverter(
+      findAgentsSourceRoot(configDir),
+      resolved,
+      (content: string) => content,
+    ),
   };
 }
 
@@ -287,7 +300,13 @@ function kimiAgentsKind(destSubpath: string, prefix: string, configDir: string):
         root: { yaml: string; prompt: string };
         subagents: Array<{ name: string; yaml: string; prompt: string }>;
       };
-      const stagedAgents = stageAgentsForProfile(findAgentsSourceRoot(configDir), resolved);
+      // #2995: compose at staging (identity converter) so the readFileSync below
+      // sees marker-free content — same single composing stager as agentsKind.
+      const stagedAgents = stageAgentsForRuntimeWithConverter(
+        findAgentsSourceRoot(configDir),
+        resolved,
+        (content: string) => content,
+      );
       const subagents: Array<{ path: string; content: string }> = [];
       if (fs.existsSync(stagedAgents)) {
         for (const entry of fs.readdirSync(stagedAgents, { withFileTypes: true })) {

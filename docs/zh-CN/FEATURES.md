@@ -2821,7 +2821,7 @@ Source commit: abc1234 (3 commits behind HEAD)
 - 执行器安装失败会暂停进行人工验证，而不是自动尝试类似命名的包。
 
 **需求：**
-- REQ-PKG-GATE-01：研究必须记录包注册表、年龄、下载/来源信号、slopcheck 判决和处置。
+- REQ-PKG-GATE-01：研究必须记录包注册表、年龄、下载/来源信号、合法性判决和处置。
 - REQ-PKG-GATE-02：规划器必须在执行前门控未验证或可疑的包安装。
 - REQ-PKG-GATE-03：执行器在包管理器安装失败后不得自动替换包名。
 
@@ -2840,7 +2840,7 @@ Source commit: abc1234 (3 commits behind HEAD)
 | `standard` | 核心加常用阶段管理命令 |
 | `full` | 完整界面；默认 |
 
-**运行时控制：** `/gsd:surface` 列出配置文件状态，无需重新安装即可启用、禁用或重置技能集群。
+**运行时控制：** `/gsd-surface` 列出配置文件状态，无需重新安装即可启用、禁用或重置技能集群。
 
 **需求：**
 - REQ-SURFACE-01：安装器必须解析 `--profile=<name>` 并将活跃配置文件持久化在 `.gsd-profile` 中。

@@ -1,7 +1,7 @@
 {
   "id": "coderabbit",
   "role": "reviewer",
-  "version": "1.9.0",
+  "version": "1.9.1",
   "title": "CodeRabbit",
   "description": "CodeRabbit CLI — cross-AI /gsd:review reviewer lane only; not a GSD install target (no runtime body, no artifacts). Reviews the working-tree diff (`coderabbit review --prompt-only`), not the source tree, and accepts neither a prompt nor a model flag; findings are down-weighted in consensus (evidenceClass: diff-only).",
   "tier": "full",

@@ -130,6 +130,19 @@ const COVERED = {
     // minScore raised to TARGET (80) — module now meets ADR-456 goal.
     minScore: 80,
   },
+  // context-composer: extracted from prompt-budget by #2929. Needs its own entry because
+  // mutation coverage does not migrate with relocated code — scoring only prompt-budget.cjs
+  // would leave the extracted ladder unmeasured.
+  'context-composer': {
+    cjs: 'gsd-core/bin/lib/context-composer.cjs',
+    tests: [
+      'tests/prompt-budget-parity.test.cjs',
+      'tests/prompt-budget.unit.test.cjs',
+      'tests/context-composer.test.cjs',
+      'tests/context-composer.property.test.cjs',
+    ],
+    minScore: 66,
+  },
   'prompt-budget': {
     cjs: 'gsd-core/bin/lib/prompt-budget.cjs',
     tests: [

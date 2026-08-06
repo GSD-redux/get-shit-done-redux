@@ -2755,6 +2755,81 @@ Plans:
       "surviving row's Plans/Status/Completed cells stay byte-identical; only its leading ordinal renumbers 3->2",
     );
   });
+
+  // ─── #2640: state_updated must reflect actual content change, and progress
+  // frontmatter must be resync'd even when the body lacks 'Total Phases:'. ──
+
+  test('#2640 — state_updated reflects actual content change (not just file existence)', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: A\n**Goal:** x\n\n### Phase 2: B\n**Goal:** y\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), { recursive: true });
+    // STATE.md with 'Total Phases:' body field + progress frontmatter
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: 1.0\ncurrent_phase: 1\nprogress:\n  total_phases: 2\n  completed_phases: 0\n  percent: 0\n---\n\n# State\n\nTotal Phases: 2\n`,
+    );
+
+    const result = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.state_updated, true, 'state_updated must be true when STATE.md content changed');
+    // Body 'Total Phases:' must be decremented from 2 to 1.
+    const afterState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const bodyMatch = afterState.match(/^Total Phases:\s*(\d+)/m);
+    assert.ok(bodyMatch, 'body must have Total Phases field after remove');
+    assert.strictEqual(bodyMatch[1], '1', `body 'Total Phases:' must be 1 after removing one of 2 phases; got ${bodyMatch[1]}`);
+    // Frontmatter progress.total_phases must agree.
+    const fmMatch = afterState.match(/total_phases:\s*(\d+)/);
+    assert.ok(fmMatch, 'frontmatter must have total_phases');
+    assert.strictEqual(fmMatch[1], '1', `frontmatter progress.total_phases must be 1; got ${fmMatch[1]}`);
+  });
+
+  test('#2640 — progress.total_phases resync\'d even when body lacks Total Phases', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: A\n**Goal:** x\n\n### Phase 2: B\n**Goal:** y\n\n### Phase 3: C\n**Goal:** z\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '02-b'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '03-c'), { recursive: true });
+    // STATE.md with NO 'Total Phases:' body field, but with progress frontmatter
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ngsd_state_version: 1.0\ncurrent_phase: 1\nprogress:\n  total_phases: 3\n  completed_phases: 0\n  percent: 0\n---\n\n# State\n\nNo body phase count here.\n`,
+    );
+
+    const beforeState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const beforeMatch = beforeState.match(/total_phases:\s*(\d+)/);
+    assert.ok(beforeMatch && beforeMatch[1] === '3', 'precondition: total_phases should be 3');
+
+    const result = runGsdTools('phase remove 2', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const afterState = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    const afterMatch = afterState.match(/total_phases:\s*(\d+)/);
+    assert.ok(afterMatch, `STATE.md frontmatter must still have total_phases after remove; got:\n${afterState}`);
+    // Must be exactly 2 — 3 phases minus 1 removed. Asserting the exact value
+    // catches a wrong count (not just "not 3").
+    assert.strictEqual(afterMatch[1], '2',
+      `total_phases must be exactly 2 after removing one of 3 phases; got ${afterMatch[1]}`);
+  });
+
+  test('#2640 — state_updated is false when STATE.md does not exist', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap\n\n### Phase 1: A\n**Goal:** x\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, '.planning', 'phases', '01-a'), { recursive: true });
+    // No STATE.md
+
+    const result = runGsdTools('phase remove 1', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.strictEqual(out.state_updated, false, 'state_updated must be false when no STATE.md exists');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2840,6 +2915,160 @@ describe('phase complete canonical verification gate (#1522)', () => {
     assert.equal(fs.readFileSync(roadmapPath, 'utf-8'), beforeRoadmap);
     assert.equal(fs.readFileSync(statePath, 'utf-8'), beforeState);
   });
+});
+
+// #2648: phase.complete used to gate only on a single *-VERIFICATION.md status,
+// so a phase could close "complete" while an arbitrary number of its plans had
+// no completion record (confirmed production incident: 6/30 plans unexecuted,
+// including the phase's entire final UI scope, with every signal green). The
+// fix adds a fail-closed plan-coverage gate that refuses completion when any
+// non-retired plan lacks a *-SUMMARY.md, naming the missing plans. A plan
+// retired via machine-readable `status: superseded` frontmatter (#2349) is
+// excluded from the gate so the legitimate lock/recovery pattern still works.
+describe('phase complete plan-coverage gate (#2648)', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  // Build a phase-1 directory with a configurable set of plan/summary files and
+  // a passed VERIFICATION (so the ONLY thing that could block completion is the
+  // plan-coverage gate — isolating it from the #1522 verification gate). The
+  // ROADMAP declares Phase 1 so completion has a phase to act on.
+  function writePlanCoverageFixture(tmpDir, { plans, summaries, supersededPlans = [] }) {
+    const planningDir = path.join(tmpDir, '.planning');
+    const phase1Dir = path.join(planningDir, 'phases', '01-foundation');
+    fs.mkdirSync(phase1Dir, { recursive: true });
+
+    fs.writeFileSync(
+      path.join(planningDir, 'ROADMAP.md'),
+      [
+        '# Roadmap', '',
+        '- [ ] Phase 1: Foundation', '',
+        '### Phase 1: Foundation',
+        '**Goal:** Setup', '**Plans:** 3 plans', '',
+        '## Progress', '',
+        '| Phase | Plans Complete | Status | Completed |',
+        '|-------|----------------|--------|-----------|',
+        '| 01. Foundation | 0/3 | Not started | - |', '',
+      ].join('\n'),
+    );
+
+    // createTempProject() scaffolds .planning/phases but NOT STATE.md; write it
+    // so the "ROADMAP/STATE unchanged on refusal" assertions have a file to read
+    // (mirrors writePhaseCompleteVerificationGateFixture's STATE.md write above).
+    fs.writeFileSync(
+      path.join(planningDir, 'STATE.md'),
+      [
+        '# State', '',
+        '**Current Phase:** 01',
+        '**Current Phase Name:** Foundation',
+        '**Status:** In progress',
+        '**Current Plan:** 01-01',
+        '**Last Activity:** 2025-01-01',
+        '**Last Activity Description:** Working on phase 1', '',
+      ].join('\n'),
+    );
+
+    for (const plan of plans) {
+      const isSuperseded = supersededPlans.includes(plan);
+      const body = isSuperseded
+        ? ['---', 'status: superseded', '---', '', '# Plan (retired)', ''].join('\n')
+        : ['# Plan', ''].join('\n');
+      fs.writeFileSync(path.join(phase1Dir, `01-${plan}-PLAN.md`), body);
+    }
+    for (const summary of summaries) {
+      fs.writeFileSync(path.join(phase1Dir, `01-${summary}-SUMMARY.md`), '# Summary\n');
+    }
+    // A passed VERIFICATION — so the verification gate (#1522) does NOT fire;
+    // only the plan-coverage gate is under test.
+    fs.writeFileSync(
+      path.join(phase1Dir, '01-VERIFICATION.md'),
+      ['---', 'status: passed', '---', '', '# Verification', ''].join('\n'),
+    );
+  }
+
+  test('blocks completion when plans lack summaries despite a passed verification', () => {
+    // 3 plans, only 1 has a summary → 2 unsummarized. Verifier passed.
+    // Pre-#2648 this completed silently; it must now refuse and name the gaps.
+    writePlanCoverageFixture(tmpDir, {
+      plans: ['01', '02', '03'],
+      summaries: ['01'],
+    });
+    const roadmapPath = path.join(tmpDir, '.planning', 'ROADMAP.md');
+    const statePath = path.join(tmpDir, '.planning', 'STATE.md');
+    const beforeRoadmap = fs.readFileSync(roadmapPath, 'utf-8');
+    const beforeState = fs.readFileSync(statePath, 'utf-8');
+
+    const result = runGsdTools(['--json-errors', 'phase', 'complete', '1'], tmpDir);
+
+    assert.equal(result.success, false, 'phase complete must fail when plans lack completion records (#2648)');
+    const errorPayload = JSON.parse(result.error);
+    assert.equal(errorPayload.reason, 'phase_plan_coverage_incomplete');
+    assert.match(errorPayload.message, /2 plan\(s\) have no completion record/);
+    // Names the missing plans (02 and 03), not a generic refusal.
+    assert.match(errorPayload.message, /02/);
+    assert.match(errorPayload.message, /03/);
+    // Nothing mutated.
+    assert.equal(fs.readFileSync(roadmapPath, 'utf-8'), beforeRoadmap);
+    assert.equal(fs.readFileSync(statePath, 'utf-8'), beforeState);
+  });
+
+  test('a plan retired via status: superseded does not block completion', () => {
+    // 3 plans, 1 summary. Plans 02 and 03 have no summary, BUT plan 03 is
+    // explicitly retired (status: superseded, #2349). Only plan 02 is an
+    // actionable gap → completion still refuses, naming ONLY 02, proving the
+    // retired plan is excluded from the gate (the lock/recovery pattern is
+    // preserved, the Goodhart hole is closed).
+    writePlanCoverageFixture(tmpDir, {
+      plans: ['01', '02', '03'],
+      summaries: ['01'],
+      supersededPlans: ['03'],
+    });
+
+    const result = runGsdTools(['--json-errors', 'phase', 'complete', '1'], tmpDir);
+
+    assert.equal(result.success, false, 'phase 2 is still an unsummarized, non-retired gap');
+    const errorPayload = JSON.parse(result.error);
+    assert.equal(errorPayload.reason, 'phase_plan_coverage_incomplete');
+    assert.match(errorPayload.message, /1 plan\(s\) have no completion record/);
+    assert.match(errorPayload.message, /02/);
+    // The retired plan 03 is NOT named as a gap.
+    assert.doesNotMatch(errorPayload.message, /\b03\b/);
+  });
+
+  test('a fully-covered phase with a passed verification completes normally', () => {
+    // Regression guard: the gate must not over-block a healthy phase where
+    // every plan has a summary.
+    writePlanCoverageFixture(tmpDir, {
+      plans: ['01', '02', '03'],
+      summaries: ['01', '02', '03'],
+    });
+
+    const result = runGsdTools(['phase', 'complete', '1'], tmpDir);
+
+    assert.equal(result.success, true, `phase complete failed on a fully-covered phase: ${result.error}`);
+    const out = JSON.parse(result.output);
+    assert.equal(out.completed_phase, '1');
+  });
+
+  // NOTE on the security-review B1 case (fail-closed on an UNREADABLE plan dir):
+  // the gate defends it in code — it readdirSync's the phase dir and refuses on a
+  // throw before scanPhasePlans' swallow-and-return-empty can make the gate pass
+  // (src/phase.cts). It is NOT covered by a unit test here because there is no
+  // cross-platform, root-safe way to construct it: any condition that makes the
+  // phase dir unreadable to the gate's readdirSync ALSO makes findPhaseInternal
+  // (which walks the parent phases/ dir) fail upstream with "Phase N not found"
+  // before the gate runs, and the root-safe alternative to chmod 0o000 does not
+  // exist (root bypasses mode bits, so a mode-based test silently passes with
+  // zero coverage in root Docker/CI — the documented reason the repo forbids
+  // chmod-based IO-failure tests). The defensive code is cheap and correct; the
+  // unreachable-path gap is recorded in 60-review.json.
 });
 
 describe('phase complete command', () => {
@@ -3293,6 +3522,11 @@ describe('phase complete command', () => {
       const d = path.join(tmpDir, '.planning', 'phases', `${num}-${names[i]}`);
       fs.mkdirSync(d, { recursive: true });
       fs.writeFileSync(path.join(d, `${num}-PLAN.md`), '# Plan\n');
+      // #2648: phase.complete now refuses when a non-retired plan has no matching
+      // *-SUMMARY.md. This test's concern is the total_phases-decrement cascade,
+      // not plan coverage, so give each phase's plan a summary to keep it
+      // fully-covered and isolate the #1752 behavior under test.
+      fs.writeFileSync(path.join(d, `${num}-SUMMARY.md`), '# Summary\n');
     }
 
     const result = runVerifiedPhaseComplete('phase complete 36', tmpDir);
@@ -7542,6 +7776,274 @@ describe('bug #3537: phase verbs accept padded ids against un-padded ROADMAP pro
 
 
 // ────────────────────────────────────────────────────────────────────────
+// Regression: bug #2853 — roadmap.update-plan-progress deletes hand-written
+// annotations after the plan count. The count-bump regex's trailing `[^\n]+`
+// swallowed the whole line and the replacement wrote back only the regenerated
+// count, truncating any human prose after it.
+// ────────────────────────────────────────────────────────────────────────
+{
+  const { describe: __foldDescribe } = require('node:test');
+  __foldDescribe("folded:bug-2853-plan-progress-annotation-preservation", () => {
+'use strict';
+
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { execFileSync } = require('node:child_process');
+const { cleanup } = require('./helpers.cjs');
+
+const gsdTools2853 = path.resolve(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+function run2853(args, cwd) {
+  try {
+    return {
+      stdout: execFileSync('node', [gsdTools2853, ...args], {
+        cwd, timeout: 15000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+      }),
+      ok: true,
+    };
+  } catch (e) {
+    return {
+      stdout: (e.stdout && e.stdout.toString()) || '',
+      stderr: (e.stderr && e.stderr.toString()) || '',
+      ok: false, code: e.status,
+    };
+  }
+}
+
+/**
+ * Build a phase-10 fixture with one plan + matching summary + verification
+ * `passed`, so the phase is "complete" for update-plan-progress. The ROADMAP
+ * `Plans` summary line is supplied verbatim so each test pins a specific shape.
+ */
+function setupFixture2853(tmpDir, plansSummaryLine, opts = {}) {
+  const { incomplete = false, eol = '\n' } = opts;
+  const planningDir = path.join(tmpDir, '.planning');
+  const phaseDir = path.join(planningDir, 'phases', 'CK-10-test-phase');
+  fs.mkdirSync(phaseDir, { recursive: true });
+
+  fs.writeFileSync(path.join(planningDir, 'config.json'), JSON.stringify({ project_code: 'CK' }));
+  fs.writeFileSync(
+    path.join(planningDir, 'STATE.md'),
+    `---\ncurrent_phase: 10\nstatus: executing\n---\n# State\n`
+  );
+
+  fs.writeFileSync(
+    path.join(phaseDir, '10-01-PLAN.md'),
+    `---\nphase: 10\nplan: 1\nwave: 1\n---\n# Plan 1\n`
+  );
+  fs.writeFileSync(
+    path.join(phaseDir, '10-01-SUMMARY.md'),
+    '---\nstatus: complete\n---\n# Summary\nDone.\n'
+  );
+  fs.writeFileSync(
+    path.join(phaseDir, '10-VERIFICATION.md'),
+    incomplete
+      ? '---\nstatus: pending\n---\n# Verification\nPending.\n'
+      : '---\nstatus: passed\nscore: "1/1"\n---\n# Verification\nPassed.\n'
+  );
+
+  const roadmap = [
+    '# Roadmap',
+    '',
+    '## v1.0 Milestone',
+    '',
+    '- [ ] **Phase 10: Test Phase**',
+    '',
+    '## Progress',
+    '',
+    '| Phase | Plans | Status | Completed |',
+    '|-------|-------|--------|-----------|',
+    '| 10 Test Phase | 0/1 | Planned | - |',
+    '',
+    '### Phase 10: Test Phase',
+    '',
+    '**Goal:** reproduce',
+    plansSummaryLine,
+    '',
+    'Plans:',
+    '- [ ] 10-01-PLAN.md',
+    '',
+  ].join('\n') + '\n';
+
+  fs.writeFileSync(path.join(planningDir, 'ROADMAP.md'), roadmap.replace(/\n/g, eol));
+
+  return { planningDir, roadmapPath: path.join(planningDir, 'ROADMAP.md') };
+}
+
+describe('bug #2853: update-plan-progress preserves hand-written annotations', () => {
+  test('row 1 — bold colon-outside form: annotation after count survives a complete bump', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r1-'));
+    try {
+      const annotation = '(11-16 are gap closure from VERIFICATION)';
+      const { roadmapPath } = setupFixture2853(
+        tmp,
+        `**Plans**: 0/1 plans executed ${annotation}`
+      );
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+
+      const result = fs.readFileSync(roadmapPath, 'utf-8');
+      const line = result.split(/\r?\n/).find((l) => l.includes('**Plans**'));
+      assert.ok(line, 'Plans summary line must exist');
+      assert.ok(
+        line.includes(annotation),
+        `annotation must survive; got: ${line}`
+      );
+      assert.match(line, /1\/1 plans complete/, 'count must still bump to complete');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 2 — **Plans:** colon-inside-bold form: annotation survives', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r2-'));
+    try {
+      const annotation = '(gap closure wave)';
+      const { roadmapPath } = setupFixture2853(
+        tmp,
+        `**Plans:** 0/1 plans executed ${annotation}`
+      );
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(line && line.includes(annotation), `annotation must survive; got: ${line}`);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 3 — plain Plans: header form: annotation survives', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r3-'));
+    try {
+      const annotation = '(see verification notes)';
+      const { roadmapPath } = setupFixture2853(tmp, `Plans: 0/1 plans executed ${annotation}`);
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const result = fs.readFileSync(roadmapPath, 'utf-8');
+      const line = result.split(/\r?\n/).find((l) => /^Plans:/.test(l));
+      assert.ok(line && line.includes(annotation), `annotation must survive; got: ${line}`);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 4 — no trailing text: count updates with no whitespace regression', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r4-'));
+    try {
+      const { roadmapPath } = setupFixture2853(tmp, '**Plans:** 0/1 plans executed');
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(line, 'Plans line must exist');
+      // Exact line: count bumped, no stray trailing space or duplicated text.
+      assert.equal(line, '**Plans:** 1/1 plans complete');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 5 — bare template form `N plans` (no slash) still gets count inserted', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r5-'));
+    try {
+      const { roadmapPath } = setupFixture2853(tmp, '**Plans:** 0 plans');
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(line, 'Plans line must exist');
+      assert.match(line, /1\/1 plans complete/, 'bare form must still receive the canonical count');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 6 — executed (non-complete) path: annotation survives', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r6-'));
+    try {
+      const annotation = '(half-done, gap closure pending)';
+      const { roadmapPath } = setupFixture2853(
+        tmp,
+        `**Plans:** 0/1 plans executed ${annotation}`,
+        { incomplete: true }
+      );
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(line, 'Plans line must exist');
+      assert.ok(line.includes(annotation), `annotation must survive on executed path; got: ${line}`);
+      assert.match(line, /1\/1 plans executed/, 'count must reflect executed (not complete) path');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 7 — CRLF input: annotation text preserved (line-ending normalization is pre-existing)', () => {
+    // The verb has always normalized ROADMAP.md line endings on its read-modify-write
+    // (a pre-existing trait, not #2853's concern). What #2853 guarantees is that the
+    // annotation TEXT survives the count bump on whatever line ending the verb emits.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r7-'));
+    try {
+      const annotation = '(CRLF note)';
+      const { roadmapPath } = setupFixture2853(
+        tmp,
+        `**Plans:** 0/1 plans executed ${annotation}`,
+        { eol: '\r\n' }
+      );
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const result = fs.readFileSync(roadmapPath, 'utf-8');
+      const plansLine = result.split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(plansLine, 'Plans summary line must exist');
+      assert.ok(
+        plansLine.includes(annotation),
+        `annotation text must survive on a CRLF-origin file; got: ${plansLine}`
+      );
+      assert.match(plansLine, /1\/1 plans complete/, 'count must still bump');
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 8 — idempotent re-run does not drop annotation', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r8-'));
+    try {
+      const annotation = '(idempotent check)';
+      const { roadmapPath } = setupFixture2853(
+        tmp,
+        `**Plans:** 0/1 plans executed ${annotation}`
+      );
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans:**'));
+      assert.ok(line && line.includes(annotation), `annotation must survive a no-op re-run; got: ${line}`);
+    } finally {
+      cleanup(tmp);
+    }
+  });
+
+  test('row 9 — fresh-template placeholder is replaced, not glued to the new count', () => {
+    // The canonical template ships `**Plans**: [Number of plans, e.g., "3 plans" or "TBD"]`.
+    // A count bump must NOT preserve that bracketed guidance verbatim glued after the
+    // count (pre-#2853 produced a clean `N/N plans complete`). The count replaces the
+    // placeholder because there is no real count token for $2 to anchor a trailing-text
+    // preservation to.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2853-r9-'));
+    try {
+      const placeholder = '[Number of plans, e.g., "3 plans" or "TBD"]';
+      const { roadmapPath } = setupFixture2853(tmp, `**Plans**: ${placeholder}`);
+      run2853(['roadmap', 'update-plan-progress', '10'], tmp);
+      const line = fs.readFileSync(roadmapPath, 'utf-8').split(/\r?\n/).find((l) => l.includes('**Plans**'));
+      assert.ok(line, 'Plans line must exist');
+      assert.equal(
+        line,
+        '**Plans**: 1/1 plans complete',
+        `placeholder must be replaced cleanly, not glued; got: ${line}`
+      );
+    } finally {
+      cleanup(tmp);
+    }
+  });
+});
+  });
+}
+
+
+// ────────────────────────────────────────────────────────────────────────
 // Folded from tests/bug-2268-parallel-discuss.test.cjs — consolidation epic #1969 (B2 #1971)
 // ────────────────────────────────────────────────────────────────────────
 {
@@ -7872,23 +8374,46 @@ function extractFrontmatterField(stateContent, fieldName) {
   return fieldMatch ? fieldMatch[1].trim() : null;
 }
 
-// Capture stdout from cmdPhaseComplete (it calls output() which writes to stdout)
-function capturePhaseComplete(cwd, phaseNum) {
-  // We invoke gsd-tools directly for the full CJS path, but with GSD_DISABLE_SDK_BRIDGE=1
-  // to force the CJS implementation. Since no env var disables bridge, we call cmdPhaseComplete
-  // directly and redirect output capture.
-  const chunks = [];
-  const origWrite = process.stdout.write.bind(process.stdout);
-  const origErrWrite = process.stderr.write.bind(process.stderr);
-  process.stdout.write = (chunk) => { chunks.push(chunk); return true; };
-  process.stderr.write = () => true;
-  try {
-    cmdPhaseComplete(cwd, phaseNum, false);
-  } finally {
-    process.stdout.write = origWrite;
-    process.stderr.write = origErrWrite;
+// Capture stdout from `gsd-tools phase complete <N>` via a REAL subprocess.
+//
+// #3057: this used to call cmdPhaseComplete(...) IN-PROCESS and capture its
+// stdout by monkeypatching fs.writeSync (io.cts's output() writes via
+// writeAllSync -> fs.writeSync(1, ...), not process.stdout.write — bug #1008's
+// non-blocking-pipe fix). That interception shares the exact seam the remote
+// matrix's own event-stream capture depends on: when the runner's stdout is
+// redirected to a file (the common case for a captured CI child),
+// `process.stdout.write` itself resolves through that SAME public
+// `fs.writeSync`, so any write racing the patched window — including the
+// runner's own test:pass/test:fail events — could be silently swallowed into
+// `chunks` or dropped instead of reaching the real fd. Two attempts to make
+// that interception safe (manual save/restore, then `t.mock.method`) both
+// still left this file reporting zero test:pass/test:fail events on the
+// remote matrix. The fix is to stop intercepting fd 1 altogether: run the
+// real CLI in a real subprocess, exactly like every other test in this file
+// already does via `runGsdTools`, so the OS owns stdout capture and the
+// runner's own event stream is never at risk.
+//
+// The phase family router (phase-command-router.cjs) calls
+// `phase.cmdPhaseComplete(cwd, phaseNum, raw)` directly for `phase complete`
+// — no SDK delegation on this path — so this reaches the exact same CJS
+// function the old in-process call did.
+//
+// A handful of call sites depend on state a subprocess cannot see (a mock
+// installed in THIS process, or the parent's own fs.writeFileSync mock for
+// the rollback-failure tests below); those call sites do not use this
+// helper — see the inline notes at each one.
+function capturePhaseComplete(t, cwd, phaseNum) {
+  const result = runGsdTools(['phase', 'complete', String(phaseNum)], cwd);
+  if (!result.success) {
+    // Surface exitCode/error verbatim so a real failure never presents as a
+    // downstream `JSON.parse('')` error, and so assert.throws() callers keep
+    // matching against the real stderr text (e.g. "verification is
+    // incomplete...").
+    throw new Error(
+      result.error || `cmdPhaseComplete failed (exitCode=${result.exitCode})`,
+    );
   }
-  return chunks.join('');
+  return result.output;
 }
 
 // ── T1: Double invocation must NOT double-increment Completed Phases ─────────
@@ -7904,9 +8429,9 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     cleanup(tmpDir);
   });
 
-  test('T1: double invocation does NOT double-increment Completed Phases in STATE.md body', () => {
+  test('T1: double invocation does NOT double-increment Completed Phases in STATE.md body', (t) => {
     // First call — legitimate completion
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfter1 = readStateMd(tmpDir);
     const completedAfter1Body = extractField(stateAfter1, 'Completed Phases');
@@ -7924,7 +8449,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
     );
 
     // Second call on the same phase — must be idempotent
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfter2 = readStateMd(tmpDir);
     const completedAfter2Body = extractField(stateAfter2, 'Completed Phases');
@@ -7963,8 +8488,15 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // Calls cmdPhaseComplete directly (bypassing capturePhaseComplete's
+    // subprocess helper): this test's fault is a `t.mock.method(fs,
+    // 'writeFileSync', ...)` installed in THIS process, which a subprocess
+    // cannot see. No stdout capture is needed here — only the thrown
+    // exception and the resulting on-disk file state — so calling the CJS
+    // function directly does not touch fd 1 and does not reinstate the
+    // fs.writeSync interception this file removed.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected STATE\.md write failure/,
     );
 
@@ -7998,8 +8530,11 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // See the parent-process-mock note in the STATE.md-write-fails test
+    // above: this must call cmdPhaseComplete directly, not via
+    // capturePhaseComplete's subprocess helper.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected REQUIREMENTS\.md write failure/,
     );
 
@@ -8033,11 +8568,121 @@ describe('issue #4 (CJS): cmdPhaseComplete — idempotency (blind-increment bug)
       return originalWriteFileSync.call(this, target, ...args);
     });
 
+    // See the parent-process-mock note in the STATE.md-write-fails test
+    // above: this must call cmdPhaseComplete directly, not via
+    // capturePhaseComplete's subprocess helper.
     assert.throws(
-      () => capturePhaseComplete(tmpDir, '1'),
+      () => cmdPhaseComplete(tmpDir, '1', false),
       /injected REQUIREMENTS\.md write failure[\s\S]*WARNING: rollback failed while restoring[\s\S]*injected ROADMAP\.md rollback failure/,
     );
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdPhaseComplete surfaces an indeterminate staleness check
+//
+// readVerificationStatus's internal staleness check can itself fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3, that failure was silently
+// identical to a completed check that genuinely found nothing stale — the
+// SAME fail-open shape as #3050. B3 flags this on the result
+// (`staleCheckIndeterminate`); this test proves phase.cts actually SURFACES
+// that flag (into `warnings[]`, the same advisory channel the UAT/VERIFICATION
+// pre-scan above already uses) rather than dropping it on the floor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: cmdPhaseComplete — verification staleness-check indeterminate is surfaced', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture('gsd-3057-b3-phase-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test(
+    'an fs failure inside the staleness check adds a warning; completion routing is unchanged',
+    { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
+    (t) => {
+    const phase01Dir = path.join(tmpDir, '.planning', 'phases', '01-foundation');
+    const summaryPath = path.join(phase01Dir, '01-01-SUMMARY.md');
+
+    // Real, on-disk fault instead of an in-process fs.statSync mock: this now
+    // runs cmdPhaseComplete in a subprocess (via capturePhaseComplete), which
+    // cannot see a mock installed in this process. findStaleVerificationSummary
+    // (verification.cjs) calls fs.statSync on each summary file to compare
+    // mtimes, and statSync follows symlinks — so pointing the summary at a
+    // target that does not exist reproduces a genuine ENOENT there, degrading
+    // the staleness check to {determined:false} exactly like the removed
+    // injected statSync throw did. scanPhasePlans only matches summary
+    // *filenames* (never stats them), so the plan-coverage gate still sees
+    // the summary as present.
+    fs.unlinkSync(summaryPath);
+    fs.symlinkSync(path.join(phase01Dir, '.does-not-exist'), summaryPath);
+
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
+    // completes exactly as it would have before #3057 B3.
+    assert.strictEqual(output.completed_phase, '1');
+    assert.ok(Array.isArray(output.warnings), 'result must carry a warnings array');
+    assert.strictEqual(
+      output.verification_stale_check_indeterminate,
+      true,
+      `result must surface the indeterminate staleness check as a typed field; got ${JSON.stringify(output.warnings)}`,
+    );
+    assert.strictEqual(output.has_warnings, true);
+    },
+  );
+
+  test('a completed staleness check that finds nothing stale does NOT add an indeterminate warning', (t) => {
+    const output = JSON.parse(capturePhaseComplete(t, tmpDir, '1'));
+
+    assert.strictEqual(output.completed_phase, '1');
+    assert.strictEqual(
+      output.verification_stale_check_indeterminate,
+      false,
+      `must not report an indeterminate check when the staleness check ran to completion; got ${JSON.stringify(output.warnings)}`,
+    );
+  });
+
+  test(
+    'a BLOCKED completion (status=human_needed) with an indeterminate staleness check still blocks, but the error note says so',
+    { skip: process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false },
+    () => {
+    const phase02Dir = path.join(tmpDir, '.planning', 'phases', '02-api');
+    fs.writeFileSync(path.join(phase02Dir, '02-01-PLAN.md'), '# Plan\nDo the work.\n');
+    fs.writeFileSync(path.join(phase02Dir, '02-VERIFICATION.md'), [
+      '---',
+      'status: human_needed',
+      '---',
+      '',
+      '# Verification',
+      '',
+    ].join('\n'));
+
+    // Real, on-disk fault — see the note in the sibling test above. The
+    // summary is a dangling symlink so fs.statSync (inside
+    // findStaleVerificationSummary, running in the subprocess) throws ENOENT.
+    const summaryPath = path.join(phase02Dir, '02-01-SUMMARY.md');
+    fs.symlinkSync(path.join(phase02Dir, '.does-not-exist'), summaryPath);
+
+    // Routing is UNCHANGED — status !== 'passed' already blocked before #3057
+    // B3; the note is purely additive to the message text. Assert the fact
+    // structurally (via --json-errors) rather than regexing the human-
+    // readable note — CONTRIBUTING requires a typed surface alongside any
+    // text a caller might otherwise only match on, and once that typed
+    // surface exists the test must assert on IT, not also on the rendered
+    // prose (src/phase.cts's human message wording is out of scope for this
+    // test — operators read it, but the test must not lock its exact text).
+    const result = runGsdTools(['--json-errors', 'phase', 'complete', '2'], tmpDir);
+    assert.equal(result.success, false, 'phase complete must fail when verification is blocked');
+    const errorPayload = JSON.parse(result.error);
+    assert.equal(errorPayload.reason, 'phase_verification_incomplete');
+    assert.equal(errorPayload.verification_stale_check_indeterminate, true);
+    },
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8340,7 +8985,7 @@ describe('issue #4 (CJS): cmdPhaseComplete — progress percent clamp', () => {
     cleanup(tmpDir);
   });
 
-  test('T2: Progress percent never exceeds 100 after double invocation', () => {
+  test('T2: Progress percent never exceeds 100 after double invocation', (t) => {
     tmpDir = createFixture();
 
     // Pre-load STATE.md with Completed Phases: 1, Total Phases: 1 (already 100%)
@@ -8371,9 +9016,9 @@ describe('issue #4 (CJS): cmdPhaseComplete — progress percent clamp', () => {
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), roadmap);
 
     // First call
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
     // Second call — this is the problematic one
-    capturePhaseComplete(tmpDir, '1');
+    capturePhaseComplete(t, tmpDir, '1');
 
     const stateAfterBoth = readStateMd(tmpDir);
 

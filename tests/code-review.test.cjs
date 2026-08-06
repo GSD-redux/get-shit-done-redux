@@ -531,7 +531,14 @@ describe('CR-INTEGRATION: workflow integration points', () => {
   test('quick.md resolves code-review capability hook', () => {
     const content = fs.readFileSync(path.join(WORKFLOWS_DIR, 'quick.md'), 'utf-8');
     const start = content.indexOf('**Step 6.25: Code review (auto)**');
-    const end = content.indexOf('**Step 6.5: Verification', start);
+    // #2994 (pre-existing since #2994's earlier quick-verification.md extraction,
+    // 18ff35d20): Step 6.5's content moved into
+    // gsd-core/workflows/quick/steps/quick-verification.md behind a
+    // `<!-- gsd:section id="quick-verification" -->` marker, so the literal
+    // "**Step 6.5: Verification" heading text no longer follows Step 6.25 in
+    // this file — the marker is the correct end-of-step delimiter now (mirrors
+    // phase6-review-capabilities.test.cjs's identical retarget for the same move).
+    const end = content.indexOf('<!-- gsd:section id="quick-verification"', start);
     assert.ok(start !== -1 && end !== -1, 'quick.md missing Step 6.25 code review section');
     const reviewContent = content.slice(start, end);
 

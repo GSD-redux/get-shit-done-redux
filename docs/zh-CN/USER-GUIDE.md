@@ -381,8 +381,8 @@ AI 编码工具会幻觉出包名。攻击者会在 npm、PyPI 和 crates.io 上
 ```markdown
 ## Package Legitimacy Audit
 
-| Package | Registry | Age | Downloads | Source Repo | slopcheck | Disposition |
-|---------|----------|-----|-----------|-------------|-----------|-------------|
+| Package | Registry | Age | Downloads | Source Repo | Verdict | Disposition |
+|---------|----------|-----|-----------|-------------|---------|-------------|
 | express | npm | 13 yrs | 100M+/wk | github.com/expressjs/express | [OK] | Approved |
 | some-new-util | npm | 3 days | 47 | none | [SLOP] | REMOVED |
 | api-bridge | npm | 6 mo | 1.2k/wk | github.com/user/api-bridge | [SUS] | Flagged |
@@ -394,7 +394,7 @@ AI 编码工具会幻觉出包名。攻击者会在 npm、PyPI 和 crates.io 上
 
 **执行期间** — 如果安装失败，执行器会显示检查点并停止，而不是静默尝试替代方案。
 
-**Slopcheck 判定：**
+**合法性判定：**
 
 | 判定 | 含义 | GSD 操作 |
 |---------|---------|------------|
@@ -498,7 +498,7 @@ claude --dangerously-skip-permissions
 
 **needs-acknowledgement 行为。** 当守卫发现缺失的符号时，它会在计划审查输出中发出 needs-acknowledgement 通知，而不是硬性阻塞。您可以确认并继续（该符号可能是有意新增的），或请求修改计划。守卫不会自动拒绝计划——它为人工决策提供信号。
 
-**无需 intel 即可工作。** 默认情况下，守卫使用 `grep`/`ripgrep` 搜索源文件——无需预先索引。如果您已使用 `intel.enabled: true` 运行 `/gsd:map-codebase`，请将 `plan_review.source_grounding_authority: intel` 设置为使用更快的预构建 `api-map.json` 索引。
+**无需 intel 即可工作。** 默认情况下，守卫使用 `grep`/`ripgrep` 搜索源文件——无需预先索引。如果您已使用 `intel.enabled: true` 运行 `/gsd-map-codebase`，请将 `plan_review.source_grounding_authority: intel` 设置为使用更快的预构建 `api-map.json` 索引。
 
 ```bash
 # Enable/disable (default: on)
@@ -510,7 +510,7 @@ claude --dangerously-skip-permissions
 /gsd-settings plan_review.source_grounding_authority intel  # pre-indexed api-map.json
 ```
 
-在项目设置时切换（`/gsd:new-project` 在工作流偏好设置期间询问）或随时通过 `/gsd:settings`（计划部分 → 漂移守卫）切换。
+在项目设置时切换（`/gsd-new-project` 在工作流偏好设置期间询问）或随时通过 `/gsd-settings`（计划部分 → 漂移守卫）切换。
 
 ### 快速修复 Bug
 

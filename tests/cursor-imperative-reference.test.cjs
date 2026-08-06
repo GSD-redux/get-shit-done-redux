@@ -108,7 +108,11 @@ test('cursor descriptor declares runtime.hostBehaviors (the folded-in behaviors)
   assert.equal(hb.frontmatterDialect, 'cursor');
   assert.equal(hb.hooksJsonSurface, true);
   assert.equal(hb.skipSharedHooksInstall, true);
-  assert.equal(hb.reportCommandsDir, true);
+  assert.deepEqual(hb.retiredArtifacts, [
+    { destSubpath: 'commands', prefix: 'gsd-', suffix: '.md' },
+  ]);
+  assert.equal(hb.reportCommandsDir, undefined,
+    'Cursor no longer installs a parallel commands/ surface (#2644)');
   assert.ok(Array.isArray(hb.managedHookEvents) && hb.managedHookEvents.length >= 6,
     'managedHookEvents must list at least 6 events (AC4a)');
 });

@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFixture } = require('./fixtures/index.cjs');
+const processSeam = require('./helpers/process-seam.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TEST_ENV_BASE = {
@@ -44,72 +45,150 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
     : (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
         .map(t => t.replace(/"([^"]*)"/g, '$1').replace(/'([^']*)'/g, '$1'));
 
+  // Adapter over tests/helpers/process-seam.cjs (#3055). The seam returns a
+  // typed { outcome, exitCode, stdout, stderr, timedOut, signal, killed, code }
+  // result — never throws for a kill/timeout/buffer-overflow/spawn-failure.
+  // This adapter is the ONLY place that retries and the ONLY place that
+  // reconstructs runGsdTools's legacy { success, output, error, exitCode }
+  // shape, so all 136 callers keep their existing contract byte-identically.
+  //
+  // `processSeam.runNode` is looked up on the module object (not destructured
+  // at require time) so tests can `mock.method(processSeam, 'runNode', fn)`
+  // to inject TIMED_OUT / BUFFER_OVERFLOW / SPAWN_FAILED without waiting on
+  // real subprocess timers.
   function attempt() {
-    // Split shell-style string into argv, stripping surrounding quotes, so we
-    // can invoke execFileSync with process.execPath instead of relying on
-    // `node` being on PATH (it isn't in Claude Code shell sessions).
-    // Apply shell-style quote removal: strip surrounding quotes from quoted
-    // sequences anywhere in a token (handles both "foo bar" and --"foo bar").
-    return execFileSync(process.execPath, [TOOLS_PATH, ...argv], {
+    return processSeam.runNode([TOOLS_PATH, ...argv], {
       cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
-      timeout: 60000,
+      timeoutMs: 60000,
     });
   }
 
-  // isKilled: true when the subprocess was terminated by a signal or timed out.
-  // This indicates host resource starvation (OOM, scheduler contention), NOT a
-  // product assertion failure.
-  function isKilled(err) {
-    return err.killed || err.signal != null || err.code === 'ETIMEDOUT';
-  }
-
-  function throwResourceStarvation(err) {
+  function throwResourceStarvation(result) {
     throw new Error(
       `[runGsdTools: resource-starvation / subprocess-kill after retry] ` +
       `gsd-tools was killed before completion ` +
-      `(signal=${err.signal}, code=${err.code}, killed=${err.killed}). ` +
+      `(signal=${result.signal}, code=${result.code}, killed=${result.killed}). ` +
       `This indicates host OOM or scheduler contention, not a product bug. ` +
-      `stdout=${err.stdout?.toString().trim() || ''} ` +
-      `stderr=${err.stderr?.toString().trim() || ''}`
+      `stdout=${(result.stdout || '').trim()} ` +
+      `stderr=${(result.stderr || '').trim()}`
     );
   }
 
-  try {
-    const result = attempt();
-    return { success: true, output: result.trim(), exitCode: 0 };
-  } catch (firstErr) {
-    // Kill-signal discrimination (#969): transient OOM/contention usually
-    // succeeds on retry; retry ONCE before surfacing the labeled error.
-    if (isKilled(firstErr)) {
-      try {
-        const result = attempt();
-        return { success: true, output: result.trim(), exitCode: 0 };
-      } catch (retryErr) {
-        // Still killed after retry — persistent resource starvation, throw.
-        throwResourceStarvation(retryErr);
+  function toLegacyShape(result) {
+    if (result.outcome === processSeam.OUTCOME.EXITED) {
+      if (result.exitCode === 0) {
+        return { success: true, output: (result.stdout || '').trim(), exitCode: 0 };
       }
+      // Clean non-zero exit (real command error, no kill signal, no spawn
+      // failure): return normally. No retry, no throw — preserves existing
+      // test behavior that asserts on error shape.
+      const stderrRaw = (result.stderr || '').trim();
+      // Prefer actual stderr content; fall back to the same "Command failed:
+      // <argv0> <args...>" message Node's execFileSync used to synthesize
+      // for a clean non-zero exit with no stderr (verified against this
+      // runtime's child_process internals: checkExecSyncError() only builds
+      // that message when `ret.error` is absent and `ret.status !== 0`, and
+      // never appends stderr when it is empty). If stderr is empty, append a
+      // note so CI logs show "stderr: (empty)" rather than silently losing
+      // the fact that the child process produced no error output — empty
+      // stderr with a non-zero exit code is a signal of OS-level crash (OOM
+      // kill, worker thread fatal error) rather than a gsd-tools application
+      // error.
+      const commandLine = [process.execPath, TOOLS_PATH, ...argv].join(' ');
+      const error = stderrRaw
+        || `Command failed: ${commandLine} [stderr: (empty) exit:${result.exitCode ?? 1}]`;
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error,
+        exitCode: result.exitCode ?? 1,
+      };
     }
-    // Clean non-zero exit (real command error, no kill signal): return normally.
-    // No retry, no throw — preserves existing test behavior that asserts on
-    // error shape.
-    const stderrRaw = firstErr.stderr?.toString().trim() || '';
-    // Prefer actual stderr content; fall back to err.message (which contains
-    // the command invocation). If stderr is empty, append a note so CI logs
-    // show "stderr: (empty)" rather than silently losing the fact that the
-    // child process produced no error output — empty stderr with a non-zero
-    // exit code is a signal of OS-level crash (OOM kill, worker thread fatal
-    // error) rather than a gsd-tools application error.
-    const error = stderrRaw || `${firstErr.message} [stderr: (empty) exit:${firstErr.status ?? 1}]`;
+    if (result.outcome === processSeam.OUTCOME.BUFFER_OVERFLOW) {
+      // Never retried. This is a DELIBERATE divergence from the old
+      // execFileSync-based helper, not an oversight: the old code saw a
+      // maxBuffer overflow as `err.signal === 'SIGTERM'`, which made the old
+      // `isKilled(err)` true and triggered a retry. The new seam classifies
+      // overflow as its own BUFFER_OVERFLOW outcome specifically so it stops
+      // being conflated with a kill — the child ran fine and produced too
+      // much output, so retrying wastes 60s and fails identically every
+      // time.
+      //
+      // exitCode is coerced to 1 here — RETRACTED claim from an earlier
+      // revision of this comment that it was "never coerced to exitCode:1,
+      // unlike the pre-seam helper": that was wrong. A real caller
+      // (tests/context-predicates-query.test.cjs) asserts
+      // `typeof r.exitCode === 'number'`, matching the old code's
+      // `err.status ?? 1` on every non-retried failure path. The SEAM layer
+      // still reports `exitCode: null` (see toSeamResult) — that typed
+      // result is where the "no numeric exit code exists" information
+      // lives, discriminated via `outcome`. This LEGACY adapter's job is to
+      // preserve the old numeric contract for existing callers, so it
+      // coerces null to 1 here rather than propagating the seam's null.
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error: `gsd-tools output exceeded the subprocess buffer limit (code=${result.code})`,
+        exitCode: 1,
+      };
+    }
+    if (result.outcome === processSeam.OUTCOME.KILLED) {
+      // Defensive only: the retry loop below always retries KILLED once and
+      // throws throwResourceStarvation() if it is still KILLED afterward, so
+      // this function is never actually invoked with a KILLED result that
+      // has not already survived a retry. It is handled explicitly (instead
+      // of falling into the SPAWN_FAILED catch-all below, whose message
+      // would be misleading) so a KILLED result can never silently render as
+      // a generic {success:false, exitCode:1}-shaped spawn failure.
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error: `gsd-tools was killed by signal (signal=${result.signal}, code=${result.code})`,
+        exitCode: null,
+      };
+    }
+    // SPAWN_FAILED: the process never started (matches old behavior — ENOENT
+    // and friends carry no signal, so the old `isKilled(err)` was false).
+    // Never retried — retrying is pointless.
+    //
+    // exitCode is coerced to 1 here — same retraction as the BUFFER_OVERFLOW
+    // branch above: this was previously described as "never coerced to
+    // exitCode:1," which was wrong for the ADAPTER path. The old
+    // execFileSync-based helper returned `err.status ?? 1` on every
+    // non-retried failure, i.e. always `1` for a spawn failure, and a real
+    // caller depends on `typeof exitCode === 'number'`. The SEAM's own
+    // `toSeamResult` still reports `exitCode: null` for SPAWN_FAILED — that
+    // typed layer is where "no numeric exit code exists" is expressed via
+    // `outcome`; this legacy adapter re-applies the old numeric contract on
+    // top of it.
     return {
       success: false,
-      output: firstErr.stdout?.toString().trim() || '',
-      error,
-      exitCode: firstErr.status ?? 1,
+      output: (result.stdout || '').trim(),
+      error: `gsd-tools failed to spawn (code=${result.code})`,
+      exitCode: 1,
     };
   }
+
+  // Kill-signal discrimination (#969): transient OOM/contention usually
+  // succeeds on retry; retry ONCE before surfacing the labeled error.
+  // TIMED_OUT and KILLED are retried — together they reproduce the OLD
+  // execFileSync-based `isKilled(err)` semantics exactly:
+  //   old = err.killed || err.signal != null || err.code === 'ETIMEDOUT'
+  // TIMED_OUT covers the timeout case; KILLED covers a child terminated by a
+  // signal nobody in the seam sent (e.g. an external OOM kill) — the exact
+  // #969 case this retry exists for. BUFFER_OVERFLOW and SPAWN_FAILED are
+  // not kills and are never retried (see their branches in toLegacyShape).
+  const first = attempt();
+  if (first.outcome === processSeam.OUTCOME.TIMED_OUT || first.outcome === processSeam.OUTCOME.KILLED) {
+    const retry = attempt();
+    if (retry.outcome === processSeam.OUTCOME.TIMED_OUT || retry.outcome === processSeam.OUTCOME.KILLED) {
+      // Still killed after retry — persistent resource starvation, throw.
+      throwResourceStarvation(retry);
+    }
+    return toLegacyShape(retry);
+  }
+  return toLegacyShape(first);
 }
 
 // Create a bare temp directory (no .planning/ structure)
@@ -152,6 +231,76 @@ function cleanup(tmpDir) {
       && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error && error.code);
     if (!isTransientWinErr) throw error;
   }
+}
+
+/**
+ * Read a text file with CRLF normalized to LF.
+ *
+ * DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE (CONTEXT.md; recurring since #1700):
+ * a test that reads a workflow/agent/reference `.md` file, slices or
+ * regex-matches a fenced code block out of it, and hands that block to
+ * `spawnSync('bash', ...)` breaks on a Windows checkout — `.gitattributes`
+ * `eol=lf` is not always honored by `actions/checkout` on `windows-latest`,
+ * so `readFileSync` can return `\r\n` line endings. Bash then treats the
+ * trailing `\r` on every line as part of the token; an opening quote never
+ * finds its match and the parser dies mid-script with "unexpected EOF while
+ * looking for matching `"'" or a bare syntax error at the next `{`/`)`.
+ *
+ * `.split(/\r?\n/)` on the FENCE DELIMITER alone does not fix this — it only
+ * protects the boundary match, not the captured body between the fences,
+ * which still carries embedded `\r` characters (the exact bug #2650's
+ * verification round found in tests/fix-2650-plan-phase-stall-detection.test.cjs,
+ * despite that file's fence regex already using `\r?\n`).
+ *
+ * Normalizing ONCE at the read boundary, before any slicing/regex/fence
+ * parsing runs, is cheaper and safer than normalizing at each extraction
+ * call site: every downstream `indexOf`/`slice`/regex/`spawnSync` then
+ * operates on LF-only content by construction, and a new `.md`-extraction
+ * test is correct by default just by reading through this helper.
+ *
+ * @param {string} filePath - Absolute or relative path to a text file.
+ * @returns {string} File content with every `\r\n` replaced by `\n`.
+ */
+function readFileNormalized(filePath) {
+  return fs.readFileSync(filePath, 'utf-8').replace(/\r\n/g, '\n');
+}
+
+/**
+ * Read a workflow .md file plus every .md file under its sibling
+ * `<workflow-basename>/steps/` directory, concatenated in document order
+ * (host file first, then step files sorted by filename).
+ *
+ * ADR-1671's workflow fragmentization (#2930/#2932/#2993 et al.) moves whole
+ * sections out of a host workflow (e.g. `plan-phase.md`) into lazily-loaded
+ * step files under `gsd-core/workflows/<name>/steps/*.md`. A structural or
+ * drift guard that reads the host file alone goes blind the moment a
+ * section it cares about moves out — this is exactly the shape #2650's own
+ * regression tests hit when #2993 relocated plan-phase.md's chunked-planning
+ * spawn sites into `plan-phase/steps/chunked-planning-mode.md`. Any test
+ * that needs to see the FULL picture (counting markers, asserting a marker
+ * exists somewhere in the workflow) should read through this helper instead
+ * of `fs.readFileSync(workflowPath)` alone, so the next relocation doesn't
+ * silently blind it again. Originally local to
+ * tests/plan-phase-drift-guard.test.cjs (readPlanPhaseCombined) — promoted
+ * here so a second, divergent copy is never written (Generative Fix
+ * Divergence class).
+ *
+ * @param {string} workflowPath - absolute path to the host workflow .md file.
+ * @returns {string} host content, then '\n' + each step file's content in
+ *   sorted-filename order. An absent steps directory degrades to the host
+ *   content alone (not an error — most workflows have no steps/ dir).
+ */
+function readWorkflowCombined(workflowPath) {
+  let combined = readFileNormalized(workflowPath);
+  const stepsDir = path.join(path.dirname(workflowPath), path.basename(workflowPath, '.md'), 'steps');
+  if (fs.existsSync(stepsDir)) {
+    for (const entry of fs.readdirSync(stepsDir).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + readFileNormalized(path.join(stepsDir, entry));
+      }
+    }
+  }
+  return combined;
 }
 
 /**
@@ -263,7 +412,11 @@ function captureConsole(fn) {
     console.error = origError;
   }
   if (threw) throw threw;
-  const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  // Built via String.fromCharCode (not a literal control character in a
+  // regex, which `no-control-regex` rejects) so the ESC byte itself is
+  // matched at runtime — this strips real ANSI color codes, not a decoy.
+  const ansiPattern = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
+  const strip = (s) => s.replace(ansiPattern, '');
   return {
     stdout: stdout.map(strip).join('\n'),
     stderr: stderr.map(strip).join('\n'),
@@ -450,4 +603,38 @@ function resetRuntimeWarningCaches() {
   modelResolver._resetModelOverrideWarningCacheForTests();
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, TOOLS_PATH };
+/**
+ * Env vars that influence workstream-session identity (getWorkstreamSessionKey
+ * in active-workstream-store.cjs) or workstream/project resolution (planningDir).
+ * Single source of truth for tests that need a deterministic, session-key-free
+ * and workstream/project-free process.env — save/clear before, restore after.
+ * Union of the sets previously hand-duplicated in
+ * tests/active-workstream-store.unit.test.cjs and tests/gsd-statusline.test.cjs
+ * (#2850 code review finding: the two copies had already silently diverged).
+ */
+const SESSION_ENV_KEYS = [
+  'GSD_SESSION_KEY', 'CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SSE_PORT',
+  'OPENCODE_SESSION_ID', 'GEMINI_SESSION_ID', 'CURSOR_SESSION_ID', 'WINDSURF_SESSION_ID',
+  'TERM_SESSION_ID', 'WT_SESSION', 'TMUX_PANE', 'ZELLIJ_SESSION_NAME',
+  'TTY', 'SSH_TTY', 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
+  'GSD_WORKSTREAM', 'GSD_PROJECT',
+];
+
+function saveSessionEnv() {
+  const saved = {};
+  for (const k of SESSION_ENV_KEYS) saved[k] = process.env[k];
+  return saved;
+}
+
+function restoreSessionEnv(saved) {
+  for (const k of SESSION_ENV_KEYS) {
+    if (saved[k] === undefined) delete process.env[k];
+    else process.env[k] = saved[k];
+  }
+}
+
+function clearSessionEnv() {
+  for (const k of SESSION_ENV_KEYS) delete process.env[k];
+}
+
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };

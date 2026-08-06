@@ -14,6 +14,16 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// #2994 fragmentization moved the --forensic-gated forensic_audit step out of
+// progress.md into gsd-core/workflows/progress/steps/forensic-audit.md behind
+// a section marker. Tests that need the step BODY read that step file
+// directly (it is the sole remaining source of the step's content); the
+// step-presence check below is the only one that must also confirm the host
+// still wires up the marker that reads it.
+const FORENSIC_AUDIT_STEP_PATH = path.join(
+  __dirname, '..', 'gsd-core', 'workflows', 'progress', 'steps', 'forensic-audit.md'
+);
+
 describe('#2189: progress --forensic flag', () => {
   test('progress command argument-hint includes --forensic', () => {
     const command = fs.readFileSync(
@@ -26,20 +36,19 @@ describe('#2189: progress --forensic flag', () => {
     const workflow = fs.readFileSync(
       path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md'), 'utf8'
     );
+    const step = fs.readFileSync(FORENSIC_AUDIT_STEP_PATH, 'utf8');
     assert.ok(
-      workflow.includes('<step name="forensic_audit">'),
-      'workflow should have a forensic_audit step'
+      workflow.includes('id="forensic-audit"'),
+      'progress.md must wire up the forensic-audit section marker'
+    );
+    assert.ok(
+      step.includes('<step name="forensic_audit">'),
+      'progress/steps/forensic-audit.md should have a forensic_audit step'
     );
   });
 
   test('forensic_audit step is only triggered when --forensic is present', () => {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md'), 'utf8'
-    );
-    const forensicStep = workflow.slice(
-      workflow.indexOf('<step name="forensic_audit">'),
-      workflow.indexOf('</step>', workflow.indexOf('<step name="forensic_audit">'))
-    );
+    const forensicStep = fs.readFileSync(FORENSIC_AUDIT_STEP_PATH, 'utf8');
     assert.ok(
       forensicStep.includes('--forensic'),
       'forensic_audit step should be gated on --forensic flag'
@@ -51,13 +60,7 @@ describe('#2189: progress --forensic flag', () => {
   });
 
   test('forensic_audit step includes all 6 checks', () => {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md'), 'utf8'
-    );
-    const forensicStep = workflow.slice(
-      workflow.indexOf('<step name="forensic_audit">'),
-      workflow.indexOf('</step>', workflow.indexOf('<step name="forensic_audit">'))
-    );
+    const forensicStep = fs.readFileSync(FORENSIC_AUDIT_STEP_PATH, 'utf8');
     // Check 1: STATE vs artifact consistency
     assert.ok(
       forensicStep.includes('STATE') && (forensicStep.includes('artifact') || forensicStep.includes('consistent')),
@@ -91,13 +94,7 @@ describe('#2189: progress --forensic flag', () => {
   });
 
   test('forensic_audit step produces a CLEAN or INTEGRITY ISSUE(S) FOUND verdict', () => {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md'), 'utf8'
-    );
-    const forensicStep = workflow.slice(
-      workflow.indexOf('<step name="forensic_audit">'),
-      workflow.indexOf('</step>', workflow.indexOf('<step name="forensic_audit">'))
-    );
+    const forensicStep = fs.readFileSync(FORENSIC_AUDIT_STEP_PATH, 'utf8');
     assert.ok(
       forensicStep.includes('CLEAN'),
       'forensic step should produce a CLEAN verdict when all checks pass'
@@ -109,14 +106,8 @@ describe('#2189: progress --forensic flag', () => {
   });
 
   test('forensic_audit step does not change default progress behavior', () => {
-    const workflow = fs.readFileSync(
-      path.join(__dirname, '..', 'gsd-core', 'workflows', 'progress.md'), 'utf8'
-    );
     // The forensic step must explicitly say default behavior is unchanged
-    const forensicStep = workflow.slice(
-      workflow.indexOf('<step name="forensic_audit">'),
-      workflow.indexOf('</step>', workflow.indexOf('<step name="forensic_audit">'))
-    );
+    const forensicStep = fs.readFileSync(FORENSIC_AUDIT_STEP_PATH, 'utf8');
     assert.ok(
       forensicStep.includes('unchanged') || forensicStep.includes('standard report'),
       'forensic step should clarify that default behavior is unchanged'

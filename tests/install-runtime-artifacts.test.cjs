@@ -23,6 +23,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -39,6 +40,8 @@ const {
 const {
   resolveRuntimeArtifactLayout,
 } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+
+const { applySurface } = require('../gsd-core/bin/lib/surface.cjs');
 
 const {
   loadSkillsManifest,
@@ -105,13 +108,10 @@ describe('installRuntimeArtifacts — consumes Runtime Artifact Install Plan Mod
     });
     t.after(restore);
 
-    // #1928: gemini (the only runtime whose 'commands' kind used a
-    // namespaced-by-dir 'commands/gsd' layout) was removed; cursor is the
-    // stand-in — it has a 'commands' kind but prefixes files 'gsd-'
-    // (destSubpath basename !== prefix stem), so proof.md → gsd-proof.md.
-    installer.installRuntimeArtifacts('cursor', configDir, 'global', RESOLVED_CORE);
+    // Augment has a flat commands kind and prefixes proof.md as gsd-proof.md.
+    installer.installRuntimeArtifacts('augment', configDir, 'global', RESOLVED_CORE);
 
-    assert.strictEqual(planArgs.layout.runtime, 'cursor');
+    assert.strictEqual(planArgs.layout.runtime, 'augment');
     assert.strictEqual(planArgs.layout.configDir, configDir);
     assert.strictEqual(planArgs.layout.scope, 'global');
     assert.strictEqual(planArgs.resolvedProfile, RESOLVED_CORE);
@@ -288,28 +288,19 @@ describe('installRuntimeArtifacts — hermes nested layout', () => {
   });
 });
 
-describe('installRuntimeArtifacts — cursor commands layout (#785)', () => {
-  test('cursor: skills/ AND commands/ both created; commands/gsd-help.md is plain markdown', (t) => {
+describe('installRuntimeArtifacts — cursor skills-only layout (#2644)', () => {
+  test('cursor: skills/ is created and commands/ is not materialized', (t) => {
     const configDir = createTempDir('gsd-ial-cursor-cmds-');
     t.after(() => cleanup(configDir));
 
     installRuntimeArtifacts('cursor', configDir, 'global', RESOLVED_CORE);
 
-    // Existing skills kind still present
     const skillsDir = path.join(configDir, 'skills');
     assert.ok(fs.existsSync(skillsDir), 'skills/ must exist');
     assert.ok(fs.existsSync(path.join(skillsDir, 'gsd-help', 'SKILL.md')),
       'skills/gsd-help/SKILL.md must exist');
-
-    // New commands kind (#785)
-    const commandsDir = path.join(configDir, 'commands');
-    assert.ok(fs.existsSync(commandsDir), 'commands/ must exist (#785)');
-    assert.ok(fs.existsSync(path.join(commandsDir, 'gsd-help.md')),
-      'commands/gsd-help.md must exist (#785)');
-
-    // Cursor commands are plain markdown — no YAML frontmatter
-    const helpContent = fs.readFileSync(path.join(commandsDir, 'gsd-help.md'), 'utf8');
-    assert.ok(!helpContent.startsWith('---'), 'cursor commands must not start with YAML frontmatter');
+    assert.ok(!fs.existsSync(path.join(configDir, 'commands')),
+      'Cursor must not materialize commands/ because skills already populate the slash menu');
   });
 });
 
@@ -750,9 +741,9 @@ describe('uninstallRuntimeArtifacts — consumes Runtime Artifact Uninstall Plan
     });
     t.after(restore);
 
-    installer.uninstallRuntimeArtifacts('cursor', configDir, 'global');
+    installer.uninstallRuntimeArtifacts('augment', configDir, 'global');
 
-    assert.strictEqual(planLayout.runtime, 'cursor');
+    assert.strictEqual(planLayout.runtime, 'augment');
     assert.strictEqual(planLayout.configDir, configDir);
     assert.strictEqual(planLayout.scope, 'global');
     assert.ok(!fs.existsSync(path.join(commandsDir, 'gsd-help.md')));
@@ -2494,17 +2485,9 @@ describe('enh-789 — installRuntimeArtifacts codebuddy emits commands and skill
   });
 });
 
-// ─── #2341: extend the #789 de-dup to Cursor ─────────────────────────────────
-// Cursor installs BOTH a skills surface and a commands surface (#785/#803), and
-// surfaces both in its '/' menu — so every /gsd-* appeared twice. The #789 fix
-// (skills user-invocable:false → model-invocable but out of '/') was scoped to
-// CodeBuddy only and never applied to Cursor. Cursor honors the same SKILL.md
-// `user-invocable` convention (verified: user-invocable:false hides a skill from
-// '/' while keeping it model-invocable, distinct from disable-model-invocation).
-// Fix: emit Cursor skills with user-invocable:false so commands are the single
-// '/' entry point.
-describe('fix-2341 — Cursor skills marked user-invocable:false', () => {
-  test('convertClaudeCommandToCursorSkill emits user-invocable: false', () => {
+// ─── #2644: Cursor skills are the one slash + model surface ──────────────────
+describe('fix-2644 — Cursor has one menu entry per GSD workflow', () => {
+  test('convertClaudeCommandToCursorSkill emits only supported invocation metadata', () => {
     const src = [
       '---',
       'name: gsd:help',
@@ -2515,33 +2498,93 @@ describe('fix-2341 — Cursor skills marked user-invocable:false', () => {
       '',
     ].join('\n');
     const out = convertClaudeCommandToCursorSkill(src, 'gsd-help');
-    assert.ok(/^user-invocable:\s*false\s*$/m.test(out),
-      `Cursor SKILL.md frontmatter must hide skill from '/' menu (user-invocable: false). Got:\n${out}`);
+    assert.ok(!/^user-invocable:/m.test(out),
+      `Cursor does not support user-invocable; the field must not be emitted. Got:\n${out}`);
+    assert.ok(!/^disable-model-invocation:/m.test(out),
+      'Cursor skill must remain available for contextual model invocation');
   });
 
-  test('installed cursor skills/gsd-help/SKILL.md is hidden from the / menu', (t) => {
-    const configDir = createTempDir('gsd-fix2341-skillhide-');
+  test('fresh install keeps the skill slash/model surface and omits commands', (t) => {
+    const configDir = createTempDir('gsd-fix2644-fresh-');
     t.after(() => cleanup(configDir));
 
     installRuntimeArtifacts('cursor', configDir, 'global', RESOLVED_CORE);
 
     const skill = fs.readFileSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md'), 'utf8');
-    assert.ok(/^user-invocable:\s*false\s*$/m.test(skill),
-      'installed Cursor SKILL.md must set user-invocable: false so it is not a duplicate / entry');
+    assert.ok(!/^user-invocable:/m.test(skill));
+    assert.ok(!/^disable-model-invocation:/m.test(skill));
+    assert.ok(!fs.existsSync(path.join(configDir, 'commands', 'gsd-help.md')));
   });
 
-  test('cursor still installs the commands surface (the single / entry point)', (t) => {
-    const configDir = createTempDir('gsd-fix2341-cmd-');
+  test('reinstall removes manifest-proven legacy commands and preserves unknown files', (t) => {
+    const configDir = createTempDir('gsd-fix2644-upgrade-');
     t.after(() => cleanup(configDir));
+
+    const commandsDir = path.join(configDir, 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    const managedContent = '# old generated help\n';
+    fs.writeFileSync(path.join(commandsDir, 'gsd-help.md'), managedContent);
+    fs.writeFileSync(path.join(commandsDir, 'gsd-my-custom.md'), '# user command\n');
+    fs.writeFileSync(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.8.0',
+      timestamp: '2026-07-28T00:00:00.000Z',
+      mode: 'full',
+      files: {
+        'commands/gsd-help.md': crypto.createHash('sha256').update(managedContent).digest('hex'),
+      },
+    }));
 
     installRuntimeArtifacts('cursor', configDir, 'global', RESOLVED_CORE);
 
-    // The commands surface stays user-invocable — de-dup hides the skill, not the command.
-    assert.ok(fs.existsSync(path.join(configDir, 'commands', 'gsd-help.md')),
-      'commands/gsd-help.md (the / entry point) must still be installed');
-    const cmd = fs.readFileSync(path.join(configDir, 'commands', 'gsd-help.md'), 'utf8');
-    assert.ok(!/^user-invocable:\s*false\s*$/m.test(cmd),
-      'the command surface must remain user-invocable (only the skill is hidden)');
+    assert.ok(!fs.existsSync(path.join(commandsDir, 'gsd-help.md')),
+      'manifest-proven legacy command must be retired');
+    assert.ok(fs.existsSync(path.join(commandsDir, 'gsd-my-custom.md')),
+      'unmanifested user command must be preserved');
+  });
+
+  test('profile surface apply also retires a manifest-proven legacy command', (t) => {
+    const configDir = createTempDir('gsd-fix2644-surface-');
+    t.after(() => cleanup(configDir));
+
+    const commandsDir = path.join(configDir, 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    const content = '# old generated help\n';
+    fs.writeFileSync(path.join(commandsDir, 'gsd-help.md'), content);
+    fs.writeFileSync(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.8.0', timestamp: '2026-07-28T00:00:00.000Z', mode: 'core',
+      files: { 'commands/gsd-help.md': crypto.createHash('sha256').update(content).digest('hex') },
+    }));
+
+    const layout = resolveRuntimeArtifactLayout('cursor', configDir, 'global');
+    applySurface(configDir, layout, MANIFEST);
+
+    assert.ok(!fs.existsSync(path.join(commandsDir, 'gsd-help.md')),
+      'profile toggles must not leave or recreate the retired duplicate surface');
+    assert.ok(fs.existsSync(path.join(configDir, 'skills', 'gsd-help', 'SKILL.md')));
+  });
+
+  test('uninstall also retires manifest-proven legacy commands', (t) => {
+    const configDir = createTempDir('gsd-fix2644-uninstall-');
+    t.after(() => cleanup(configDir));
+
+    const commandsDir = path.join(configDir, 'commands');
+    fs.mkdirSync(commandsDir, { recursive: true });
+    const managedContent = '# old generated help\n';
+    fs.writeFileSync(path.join(commandsDir, 'gsd-help.md'), managedContent);
+    fs.writeFileSync(path.join(commandsDir, 'user-command.md'), '# user command\n');
+    fs.writeFileSync(path.join(configDir, 'gsd-file-manifest.json'), JSON.stringify({
+      version: '1.8.0', timestamp: '2026-07-28T00:00:00.000Z', mode: 'full',
+      files: {
+        'commands/gsd-help.md': crypto.createHash('sha256').update(managedContent).digest('hex'),
+      },
+    }));
+
+    uninstallRuntimeArtifacts('cursor', configDir, 'global');
+
+    assert.ok(!fs.existsSync(path.join(commandsDir, 'gsd-help.md')),
+      'direct uninstall must remove a manifest-proven retired command');
+    assert.ok(fs.existsSync(path.join(commandsDir, 'user-command.md')),
+      'direct uninstall must preserve unknown user commands');
   });
 });
 
@@ -4446,6 +4489,52 @@ describe('single-owner reference-identity guard (ADR-1508 / #1511 Phase 2)', () 
       'install.js must bind convertClaudeAgentToAugmentAgent from conversion (not a duplicate body)',
     );
   });
+
+  // #2931 (ADR-1508): the windsurf converter family is single-sourced in the
+  // conversion module, same pattern as the #1675 Augment dedup above.
+  test('installJsBindsWindsurfConvertersByReference — convertClaudeCommandToWindsurfWorkflow (single converter)', () => {
+    assert.strictEqual(
+      install.convertClaudeCommandToWindsurfWorkflow,
+      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
+      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
+    );
+  });
+
+  test('installJsBindsEntireWindsurfFamilyByReference — every windsurf converter member', () => {
+    assert.strictEqual(
+      install.convertClaudeToWindsurfMarkdown,
+      conversionCjs.convertClaudeToWindsurfMarkdown,
+      'install.js must bind convertClaudeToWindsurfMarkdown from conversion (not a duplicate body)',
+    );
+    assert.strictEqual(
+      install.convertClaudeCommandToWindsurfSkill,
+      conversionCjs.convertClaudeCommandToWindsurfSkill,
+      'install.js must bind convertClaudeCommandToWindsurfSkill from conversion (not a duplicate body)',
+    );
+    assert.strictEqual(
+      install.convertClaudeCommandToWindsurfWorkflow,
+      conversionCjs.convertClaudeCommandToWindsurfWorkflow,
+      'install.js must bind convertClaudeCommandToWindsurfWorkflow from conversion (not a duplicate body)',
+    );
+    assert.strictEqual(
+      install.convertClaudeAgentToWindsurfAgent,
+      conversionCjs.convertClaudeAgentToWindsurfAgent,
+      'install.js must bind convertClaudeAgentToWindsurfAgent from conversion (not a duplicate body)',
+    );
+  });
+
+  // #2931 (ADR-1508): applyClaudeCodeBrandSwap + RUNTIME_COMPATIBILITY_BLOCK_RE
+  // were duplicated verbatim in install.js (used by the local Cursor/Trae/
+  // CodeBuddy/Cline converters) alongside the conversion module's copy —
+  // exactly the unlinked-duplicate-implementation class this guard exists to
+  // catch. install.js now re-binds (does not re-define) it.
+  test('install.applyClaudeCodeBrandSwap === conversion.applyClaudeCodeBrandSwap (single implementation)', () => {
+    assert.strictEqual(
+      install.applyClaudeCodeBrandSwap,
+      conversionCjs.applyClaudeCodeBrandSwap,
+      'install.js must bind applyClaudeCodeBrandSwap from conversion (not a duplicate body)',
+    );
+  });
 });
   });
 }
@@ -4669,6 +4758,80 @@ describe('Bug #2973: installer migrates existing legacy dev-preferences.md to sk
       assert.equal(fs.readFileSync(skillFile, 'utf-8'), '# user-customized skill\n');
     } finally {
       cleanup(tmpDir);
+    }
+  });
+});
+
+// ─── #2911: migrateLegacyDevPreferencesToSkill is the latent instance of the ──
+// ─── same installer-vs-surface destination-root defect ───────────────────────
+//
+// migrateLegacyDevPreferencesToSkill (src/install-engine.cts) resolved the
+// skill dir as `assertDestWithinConfigHome(targetDir, skillsKindEntry.destSubpath)`
+// — always against targetDir (configDir), ignoring skillsKindEntry.home. For
+// codex/global (the only current `home`-override runtime/scope), a legacy
+// dev-preferences.md migration would have landed under $CODEX_HOME/skills
+// instead of the canonical $HOME/.agents/skills tree used by both the
+// installer's _copyStaged and (post-#2911-fix) applySurface. Fixed the same
+// way: `skillsKindEntry.home ?? targetDir`.
+describe('Bug #2911: migrateLegacyDevPreferencesToSkill honors the skills-kind home override (codex)', () => {
+  const { resolveRuntimeArtifactLayout } = require('../gsd-core/bin/lib/runtime-artifact-layout.cjs');
+
+  function withFakeHome(fakeHome, fn) {
+    const savedHome = process.env.HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    process.env.HOME = fakeHome;
+    process.env.USERPROFILE = fakeHome;
+    try {
+      return fn();
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      if (savedUserProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedUserProfile;
+    }
+  }
+
+  test('codex + global: migration writes SKILL.md under $HOME/.agents/skills, NOT under $CODEX_HOME/skills', () => {
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2911-mig-home-'));
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2911-mig-codexhome-'));
+    try {
+      withFakeHome(fakeHome, () => {
+        const inst = installEngine;
+        const layout = resolveRuntimeArtifactLayout('codex', codexHome, 'global');
+        const skillsKindEntry = layout.kinds.find((k) => k.kind === 'skills');
+        assert.equal(skillsKindEntry.home, path.join(fakeHome, '.agents'), 'pre-condition: codex global skills kind declares the $HOME/.agents override');
+
+        const saved = new Map([['dev-preferences.md', '# my legacy preferences\n']]);
+        const migrated = inst.migrateLegacyDevPreferencesToSkill(codexHome, saved, 'codex', 'global');
+        assert.equal(migrated, true, 'expected migration to succeed when no SKILL.md exists');
+
+        const correctSkillFile = path.join(fakeHome, '.agents', 'skills', 'gsd-dev-preferences', 'SKILL.md');
+        assert.equal(fs.existsSync(correctSkillFile), true, `expected SKILL.md at ${correctSkillFile}`);
+        assert.equal(fs.readFileSync(correctSkillFile, 'utf-8'), '# my legacy preferences\n');
+
+        const legacySkillFile = path.join(codexHome, 'skills', 'gsd-dev-preferences', 'SKILL.md');
+        assert.equal(fs.existsSync(legacySkillFile), false, `migration must NOT also write a second copy at the legacy location ${legacySkillFile}`);
+      });
+    } finally {
+      cleanup(fakeHome);
+      cleanup(codexHome);
+    }
+  });
+
+  test('codex + local: no home override — migration destination is unchanged ($CODEX_HOME/skills)', () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2911-mig-local-'));
+    try {
+      const inst = installEngine;
+      const layout = resolveRuntimeArtifactLayout('codex', codexHome, 'local');
+      const skillsKindEntry = layout.kinds.find((k) => k.kind === 'skills');
+      assert.equal(skillsKindEntry.home, undefined, 'pre-condition: codex local scope declares NO home override');
+
+      const saved = new Map([['dev-preferences.md', '# my legacy preferences\n']]);
+      const migrated = inst.migrateLegacyDevPreferencesToSkill(codexHome, saved, 'codex', 'local');
+      assert.equal(migrated, true);
+
+      const skillFile = path.join(codexHome, 'skills', 'gsd-dev-preferences', 'SKILL.md');
+      assert.equal(fs.existsSync(skillFile), true, `expected SKILL.md at ${skillFile} (unchanged, no home override)`);
+    } finally {
+      cleanup(codexHome);
     }
   });
 });

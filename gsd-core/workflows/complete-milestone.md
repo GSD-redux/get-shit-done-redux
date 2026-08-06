@@ -219,6 +219,9 @@ Milestone Stats:
 Extract one-liners from SUMMARY.md files using summary-extract:
 
 ```bash
+# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
 # For each phase in milestone, extract one-liner
 for summary in .planning/phases/*-*/*-SUMMARY.md; do
   [ -e "$summary" ] || continue
@@ -392,50 +395,6 @@ Initial user testing showed demand for shape tools.
 
 </step>
 
-<step name="reorganize_roadmap">
-
-Update `.planning/ROADMAP.md` — group completed milestone phases:
-
-```markdown
-# Roadmap: [Project Name]
-
-## Milestones
-
-- ✅ **v1.0 MVP** — Phases 1-4 (shipped YYYY-MM-DD)
-- 🚧 **v1.1 Security** — Phases 5-6 (in progress)
-- 📋 **v2.0 Redesign** — Phases 7-10 (planned)
-
-## Phases
-
-<details>
-<summary>✅ v1.0 MVP (Phases 1-4) — SHIPPED YYYY-MM-DD</summary>
-
-- [x] Phase 1: Foundation (2/2 plans) — completed YYYY-MM-DD
-- [x] Phase 2: Authentication (2/2 plans) — completed YYYY-MM-DD
-- [x] Phase 3: Core Features (3/3 plans) — completed YYYY-MM-DD
-- [x] Phase 4: Polish (1/1 plan) — completed YYYY-MM-DD
-
-</details>
-
-### 🚧 v[Next] [Name] (In Progress / Planned)
-
-- [ ] Phase 5: [Name] ([N] plans)
-- [ ] Phase 6: [Name] ([N] plans)
-
-## Progress
-
-| Phase             | Milestone | Plans Complete | Status      | Completed  |
-| ----------------- | --------- | -------------- | ----------- | ---------- |
-| 1. Foundation     | v1.0      | 2/2            | Complete    | YYYY-MM-DD |
-| 2. Authentication | v1.0      | 2/2            | Complete    | YYYY-MM-DD |
-| 3. Core Features  | v1.0      | 3/3            | Complete    | YYYY-MM-DD |
-| 4. Polish         | v1.0      | 1/1            | Complete    | YYYY-MM-DD |
-| 5. Security Audit | v1.1      | 0/1            | Not started | -          |
-| 6. Hardening      | v1.1      | 0/2            | Not started | -          |
-```
-
-</step>
-
 <step name="archive_milestone">
 
 **Delegate archival to `gsd-tools.cjs query milestone.complete`:**
@@ -469,7 +428,7 @@ Verify after a default (archived) completion: `✅ Phase directories archived to
 **Text mode (`workflow.text_mode: true` in config or `--text` flag):** Set `TEXT_MODE=true` if `--text` is present in `$ARGUMENTS` OR `text_mode` from init JSON is `true`. When TEXT_MODE is active, replace every `AskUserQuestion` call with a plain-text numbered list and ask the user to type their choice number. This is required for non-Claude runtimes (OpenAI Codex, Gemini CLI, etc.) where `AskUserQuestion` is not available.
 
 After archival, the AI still handles:
-- Reorganizing ROADMAP.md with milestone grouping (requires judgment) — overwrite in place after extracting Backlog section
+- Reorganizing ROADMAP.md with milestone grouping (requires judgment) — overwrite in place after extracting Backlog section, with the write-guard's single-use sentinel armed first (a per-step env var cannot reach a hook — see the reorganize step for the sentinel mechanics)
 - Full PROJECT.md evolution review (requires understanding)
 - Safety commit of archive files + updated ROADMAP.md, then `git rm .planning/REQUIREMENTS.md`
 - These are NOT fully delegated because they require AI interpretation of content
@@ -491,7 +450,19 @@ BACKLOG_SECTION=$(awk '/^## Backlog/{found=1} found{print}' .planning/ROADMAP.md
 
 If `$BACKLOG_SECTION` is empty, there is no Backlog section — skip silently.
 
-**Reorganize ROADMAP.md** — overwrite in place (do NOT delete first) with milestone groupings:
+**Reorganize ROADMAP.md** — overwrite in place (do NOT delete first) with milestone groupings.
+
+This rewrite is an *intentional* catastrophic shrink: phase detail was just archived to `milestones/v[X.Y]-ROADMAP.md`, and a multi-hundred-line ROADMAP.md collapses to a compact grouped summary. The `gsd-write-guard` PreToolUse hook (#2255) hard-blocks exactly that shape on curated `.planning/` files — this step is the legitimate milestone reset its escape hatch exists for. A hook inherits the *runtime's* environment, so no per-step env var can reach it; the hatch is a **single-use sentinel file the guard itself consumes**. Arm it, then write:
+
+1. Arm the sentinel (single-use; the guard checks it is fresh — within 15 minutes — and names exactly this file, then consumes it):
+
+```bash
+printf '.planning/ROADMAP.md\n' > .planning/.gsd-allow-shrink
+```
+
+2. Compose the full new ROADMAP.md content (template below) and overwrite `.planning/ROADMAP.md` with the **Write tool** — the normal path. The guard allows this one shrink and deletes the sentinel. If the Write is blocked anyway, the sentinel was stale or consumed — re-run the `printf` and retry the Write.
+
+Template for the composed content:
 
 ```markdown
 # Roadmap: [Project Name]
@@ -624,9 +595,11 @@ Use `init milestone-op` for context, or load config directly:
 ```bash
 INIT=$(gsd_run query init.execute-phase "1")
 if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
+INIT_CM=$(gsd_run query init.complete-milestone)
+if [[ "$INIT_CM" == @file:* ]]; then INIT_CM=$(cat "${INIT_CM#@file:}"); fi
 ```
 
-Extract `branching_strategy`, `phase_branch_template`, `milestone_branch_template`, and `commit_docs` from init JSON.
+Extract `branching_strategy`, `phase_branch_template`, `milestone_branch_template`, and `commit_docs` from init JSON. Extract `git_create_tag` and `section_manifest` from `INIT_CM` (used by the `git_tag` step below).
 
 Detect base branch:
 ```bash
@@ -743,40 +716,9 @@ fi
 
 </step>
 
-<step name="git_tag">
-
-<config-check>
-Read `git.create_tag` via `gsd-tools.cjs query config-get git.create_tag 2>/dev/null || echo "true"`.
-If the result is `false` → skip this step entirely and proceed to `git_commit_milestone`.
-</config-check>
-
-Create git tag:
-
-```bash
-# Pre-check: skip if tag already exists (prevents silent failure on retry)
-if git rev-parse "v[X.Y]" >/dev/null 2>&1; then echo "Tag v[X.Y] already exists, skipping"; exit 0; fi
-git tag -a v[X.Y] -m "v[X.Y] [Name]
-
-Delivered: [One sentence]
-
-Key accomplishments:
-- [Item 1]
-- [Item 2]
-- [Item 3]
-
-See .planning/MILESTONES.md for full details."
-```
-
-Confirm: "Tagged: v[X.Y]"
-
-Ask: "Push tag to remote? (y/n)"
-
-If yes:
-```bash
-git push origin v[X.Y]
-```
-
-</step>
+<!-- gsd:section id="git-tag" when="state:git-create-tag" -->
+If `section_manifest` is `null` or `"git-tag"` is in its `included` list: read and execute `gsd-core/workflows/complete-milestone/steps/git-tag.md`. Otherwise skip — do not read the file; proceed to `git_commit_milestone`.
+<!-- /gsd:section -->
 
 <step name="git_commit_milestone">
 

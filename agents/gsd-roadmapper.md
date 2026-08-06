@@ -560,9 +560,27 @@ If gaps found, include in draft for user decision.
 
 Write files first, then return. This ensures artifacts persist even if context is lost.
 
-1. **Write ROADMAP.md** using output format
+**Arm the write-guard sentinel before each curated write, when the target already exists.** On a
+`/gsd:new-milestone` run `.planning/ROADMAP.md` and `.planning/STATE.md` still hold the *outgoing*
+milestone's content, and the replacement carries only the new milestone's phases — a legitimate,
+intentional shrink that the `gsd-write-guard` PreToolUse hook (#2255) hard-blocks on curated
+`.planning/` artifacts. A hook inherits the *runtime's* environment, so no per-step env var can reach
+it; the hatch is a **single-use sentinel file the guard itself consumes**. It is path-bound and
+single-use, so arm it immediately before each Write — one arming can never cover both files. On a
+`/gsd:new-project` run neither target exists, the guard exempts the write (ENOENT), and the `[ -f ]`
+test skips the arming so no unconsumed token is left on disk.
 
-2. **Write STATE.md** using output format
+1. **Write ROADMAP.md** using output format — arm first, then Write:
+
+   ```bash
+   [ -f .planning/ROADMAP.md ] && printf '.planning/ROADMAP.md\n' > .planning/.gsd-allow-shrink
+   ```
+
+2. **Write STATE.md** using output format — arm first, then Write:
+
+   ```bash
+   [ -f .planning/STATE.md ] && printf '.planning/STATE.md\n' > .planning/.gsd-allow-shrink
+   ```
 
 3. **Update REQUIREMENTS.md traceability section**
 

@@ -126,7 +126,7 @@ Acceptance Criteria:[score 0.0–1.0]
 Ambiguity: [score] ([calculate])
 ```
 
-**If `--auto` and initial ambiguity already ≤ 0.20 with all minimums met:** Skip interview — derive SPEC.md directly from roadmap + requirements. Log: `[auto] Phase requirements are already sufficiently clear — generating SPEC.md from existing context.` Jump to Step 6.
+**If `--auto` and initial ambiguity already ≤ 0.20 with all minimums met:** Skip interview — derive SPEC.md directly from roadmap + requirements. Log: `[auto] Phase requirements are already sufficiently clear — generating SPEC.md from existing context.` Jump to Step 5.5.
 
 **Otherwise:** Continue to Step 4.
 
@@ -159,15 +159,15 @@ After round [N]:
 
 If gate passes (ambiguity ≤ 0.20 AND all minimums met):
 
-**If `--auto`:** Jump to Step 6.
+**If `--auto`:** Jump to Step 5.5.
 
 **Otherwise:** AskUserQuestion:
 - header: "Spec Gate Passed"
 - question: "Ambiguity is [score] — requirements are clear enough to write SPEC.md. Proceed?"
 - options:
-  - "Yes — write SPEC.md" → Jump to Step 6
+  - "Yes — write SPEC.md" → Jump to Step 5.5
   - "One more round" → Continue interview
-  - "Done talking — write it" → Jump to Step 6
+  - "Done talking — write it" → Jump to Step 5.5
 
 **If max rounds reached (6) and gate not passed:**
 
@@ -302,7 +302,7 @@ For each Requirement gathered so far:
      **Dismiss (reason)**, or **Defer**). A manual-review nudge, not a hard block.
 
 **Soft gate (after resolving):**
-- All applicable edges resolved → proceed to Step 6.
+- All applicable edges resolved → proceed to Step 5.6.
 - Any `unresolved` → AskUserQuestion:
   - header: "Edge Coverage"
   - question: "[N] edge(s) are unresolved: [list]. What do you want to do?"

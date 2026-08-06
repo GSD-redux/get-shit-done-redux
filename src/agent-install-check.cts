@@ -2,8 +2,8 @@
  * Agent Install Check — moved from core.cts (ADR-857 T0 #1268 phase rehome-core-squatters).
  *
  * Owns:
- *   - getAgentsDir(runtime?): string
- *   - checkAgentsInstalled(runtime?): AgentsInstalledResult
+ *   - getAgentsDir(runtime?, projectRoot?): string
+ *   - checkAgentsInstalled(runtime?, projectRoot?): AgentsInstalledResult
  *
  * The core.cjs re-export spine was retired in epic #1267; callers import
  * these symbols from agent-install-check.cjs directly.
@@ -15,6 +15,7 @@ import path from 'node:path';
 import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES } = modelProfiles;
 import { getGlobalConfigDir } from './runtime-homes.cjs';
+import { getDirName, NO_LOCAL_CONFIG_DIR_SENTINEL } from './runtime-name-policy.cjs';
 
 interface AgentsInstalledResult {
   agents_installed: boolean;
@@ -33,17 +34,48 @@ interface AgentsInstalledResult {
  *   2. For claude runtime: __dirname-relative path (agents/ sibling of gsd-core/)
  *      This is correct for both repo runs and real installs (the runtime config dir's
  *      agents/ folder) because gsd-tools.cjs lives inside gsd-core/bin/ in both cases.
- *   3. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
+ *   3. For non-claude runtimes with a manifest-backed project-local install:
+ *      <projectRoot>/<localConfigDir>/agents (or <projectRoot>/agents when
+ *      the runtime's local install targets the project root). Requiring the
+ *      GSD manifest prevents runtime-native project agents from shadowing a
+ *      working global GSD install. Symlinked local agent directories are ignored.
+ *   4. For non-claude runtimes: getGlobalConfigDir(runtime)/agents
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for local-install discovery
  */
-function getAgentsDir(runtime?: string): string {
+function getAgentsDir(runtime?: string, projectRoot?: string): string {
   if (process.env['GSD_AGENTS_DIR']) {
     return process.env['GSD_AGENTS_DIR'];
   }
   const resolved = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
   if (resolved === 'claude') {
     return path.join(__dirname, '..', '..', '..', 'agents');
+  }
+  if (projectRoot) {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { runtimes } = require('./capability-registry.cjs') as {
+      runtimes: Record<string, { runtime?: { hostBehaviors?: { localTargetIsProjectRoot?: boolean } } }>;
+    };
+    const runtimeConfig = runtimes[resolved]?.runtime;
+    const localConfigDirName = getDirName(resolved);
+    const localConfigDir = localConfigDirName === NO_LOCAL_CONFIG_DIR_SENTINEL
+      ? undefined
+      : runtimeConfig?.hostBehaviors?.localTargetIsProjectRoot
+        ? projectRoot
+        : path.join(projectRoot, localConfigDirName);
+    if (!localConfigDir) {
+      return path.join(getGlobalConfigDir(resolved), 'agents');
+    }
+    const localAgentsDir = path.join(localConfigDir, 'agents');
+    const manifestPath = path.join(localConfigDir, 'gsd-file-manifest.json');
+    try {
+      if (fs.lstatSync(localAgentsDir).isDirectory() && fs.lstatSync(manifestPath).isFile()) {
+        return localAgentsDir;
+      }
+    } catch {
+      // Local discovery is best-effort; any probe failure preserves global fallback.
+    }
   }
   return path.join(getGlobalConfigDir(resolved), 'agents');
 }
@@ -52,10 +84,11 @@ function getAgentsDir(runtime?: string): string {
  * Check which GSD agents are installed on disk.
  *
  * @param runtime - the active runtime name; defaults to GSD_RUNTIME env, then 'claude'
+ * @param projectRoot - canonical project root for local-install discovery
  */
-function checkAgentsInstalled(runtime?: string): AgentsInstalledResult {
+function checkAgentsInstalled(runtime?: string, projectRoot?: string): AgentsInstalledResult {
   const resolvedRuntime = runtime ?? (process.env['GSD_RUNTIME'] || 'claude');
-  const agentsDir = getAgentsDir(resolvedRuntime);
+  const agentsDir = getAgentsDir(resolvedRuntime, projectRoot);
   const expectedAgents = Object.keys(MODEL_PROFILES);
   const installed: string[] = [];
   const missing: string[] = [];

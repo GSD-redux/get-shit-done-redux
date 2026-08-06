@@ -16,7 +16,7 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
+const { runGsdTools, createTempProject, cleanup, readWorkflowCombined } = require('./helpers.cjs');
 
 // ─── config key registration ─────────────────────────────────────────────────
 
@@ -170,7 +170,12 @@ describe('#1359: workflows collect background subagents via Read(outputFile), no
   });
 
   describe('docs-update.md', () => {
-    const content = readWorkflow('docs-update.md');
+    // #2994: dispatch_monorepo_packages was extracted to
+    // gsd-core/workflows/docs-update/steps/dispatch-monorepo-packages.md behind a
+    // <!-- gsd:section --> stub, so the bare host file no longer contains that
+    // <step> block. readWorkflowCombined follows the host + its step fragments so
+    // the property below still evaluates against the step's real content.
+    const content = readWorkflowCombined(path.join(WORKFLOWS_DIR, 'docs-update.md'));
 
     test('contains no deprecated TaskOutput tool references', () => {
       assert.ok(

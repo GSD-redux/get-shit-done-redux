@@ -1,6 +1,6 @@
 # CONTEXT.md schema reference
 
-A per-phase `CONTEXT.md` is GSD Core's carrier for implementation decisions captured during `/gsd:discuss-phase`. It is the primary upstream input for both the research and planning agents. This page documents its structure. See [docs index](../README.md).
+A per-phase `CONTEXT.md` is GSD Core's carrier for implementation decisions captured during `/gsd-discuss-phase`. It is the primary upstream input for both the research and planning agents. This page documents its structure. See [docs index](../README.md).
 
 ---
 
@@ -107,7 +107,7 @@ A CONTEXT.md where decisions survive into plans is considered compliant. A CONTE
 
 ## SPEC.md integration
 
-When `/gsd:spec-phase` has been run before discussing a phase, the `check_spec` step finds the `*-SPEC.md` file and activates `<spec_lock>`:
+When `/gsd-spec-phase` has been run before discussing a phase, the `check_spec` step finds the `*-SPEC.md` file and activates `<spec_lock>`:
 
 ```markdown
 <spec_lock>

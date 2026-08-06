@@ -1,4 +1,4 @@
-# ADR-2008: Generic gate-predicate evaluator (`command-exit-zero`)
+# ADR-2008: Generic gate-predicate evaluator
 
 | | |
 |---|---|
@@ -39,8 +39,8 @@ The maintainer chose **Option 2** (issue comment, 2026-07-04).
 
 ## Decision
 
-Add a **generic gate-predicate evaluation path** with one built-in kind,
-`command-exit-zero`, scoped as follows.
+Add a **generic gate-predicate evaluation path** with two built-in kinds,
+`command-exit-zero` and `artifact-frontmatter-equals`, scoped as follows.
 
 ### Declaration shape
 
@@ -140,9 +140,6 @@ hiding the mechanism.
 
 ## Out of scope
 
-- Implementing the `artifact-frontmatter-equals` kind (the maintainer chose
-  Option 2 over Option 1; the kind table is structured for it but it is not
-  registered).
 - Retiring the hard-coded `security` branch in `ship.md`.
 - `check.agentVerdict` evaluation (advisory, `blocking:false`-forced, separate
   concern).

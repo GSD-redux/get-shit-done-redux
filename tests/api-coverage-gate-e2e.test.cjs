@@ -19,9 +19,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
 const { cleanup } = require('./helpers.cjs');
+const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 // In-process seam for the fail-closed read-injection tests at the bottom of this
 // file (#2365 review): readPhaseScope is the pure phase-scope reader behind the
 // gate. Those tests monkeypatch fs rather than drive a subprocess.
@@ -51,22 +51,23 @@ function runTools(args, cwd) {
     ? args
     : (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
         .map((t) => t.replace(/"([^"]*)"/g, '$1').replace(/'([^']*)'/g, '$1'));
-  try {
-    const stdout = execFileSync(process.execPath, [TOOLS_PATH, ...argv], {
-      cwd,
-      encoding: 'utf-8',
-      env: { ...process.env, ...TEST_ENV_BASE },
-      timeout: 60000,
-    });
-    return { success: true, output: stdout.trim(), exitCode: 0, error: '' };
-  } catch (err) {
-    return {
-      success: false,
-      output: err.stdout?.toString().trim() || '',
-      error: err.stderr?.toString().trim() || err.message,
-      exitCode: err.status ?? 1,
-    };
+  const r = runNode([TOOLS_PATH, ...argv], {
+    cwd,
+    env: { ...process.env, ...TEST_ENV_BASE },
+    timeoutMs: 60000,
+  });
+  if (r.outcome === OUTCOME.EXITED && r.exitCode === 0) {
+    return { success: true, output: r.stdout.trim(), exitCode: 0, error: '' };
   }
+  return {
+    success: false,
+    output: r.stdout.trim(),
+    // Non-EXITED outcomes (timeout, spawn failure, buffer overflow) never
+    // populate stderr, so fall back to the seam's outcome label — mirroring
+    // execFileSync's err.message fallback when err.stderr was empty.
+    error: r.stderr.trim() || `process-seam: ${r.outcome}`,
+    exitCode: r.exitCode ?? 1,
+  };
 }
 
 function makeProject(workflow) {

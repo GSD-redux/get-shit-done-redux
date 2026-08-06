@@ -8,8 +8,15 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
+const fc = require('./helpers/fast-check-setup.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
-const { buildCheckpoint } = require('../gsd-core/bin/lib/uat.cjs');
+const {
+  buildCheckpoint,
+  CHECKPOINT_FRAMES,
+  CHECKPOINT_LANGUAGE_ALIASES,
+  resolveCheckpointFrame,
+  checkpointBoxLine,
+} = require('../gsd-core/bin/lib/uat.cjs');
 
 describe('audit-uat command', () => {
   let tmpDir;
@@ -861,54 +868,233 @@ describe('uat render-checkpoint', () => {
     assert.notStrictEqual(japanese, english);
   });
 
-  // Regression: #2402 review medium finding — checkpointBoxLine() padded using
-  // JS string `.length` (UTF-16 code units), not display width. Japanese/
-  // Chinese/Korean use full-width characters that render at 2 terminal
-  // columns each, so the padded line was JS-length-correct (64) but visually
-  // 8-15 columns too wide, misaligning the right `║` border relative to the
-  // box's single-width border lines. Independently recomputes display width
-  // (East Asian Width W/F ranges) rather than reading source, so this test
-  // fails if the fix regresses even if the banner copy itself later changes.
-  describe('CJK checkpoint banner padding uses display width, not UTF-16 length (#2402)', () => {
-    function isWideCodePoint(codePoint) {
-      return (
-        (codePoint >= 0x1100 && codePoint <= 0x115f) ||
-        codePoint === 0x2329 || codePoint === 0x232a ||
-        (codePoint >= 0x2e80 && codePoint <= 0x303e) ||
-        (codePoint >= 0x3041 && codePoint <= 0x33ff) ||
-        (codePoint >= 0x3400 && codePoint <= 0x4dbf) ||
-        (codePoint >= 0x4e00 && codePoint <= 0x9fff) ||
-        (codePoint >= 0xa000 && codePoint <= 0xa4cf) ||
-        (codePoint >= 0xac00 && codePoint <= 0xd7a3) ||
-        (codePoint >= 0xf900 && codePoint <= 0xfaff) ||
-        (codePoint >= 0xfe30 && codePoint <= 0xfe4f) ||
-        (codePoint >= 0xff00 && codePoint <= 0xff60) ||
-        (codePoint >= 0xffe0 && codePoint <= 0xffe6) ||
-        (codePoint >= 0x20000 && codePoint <= 0x3fffd)
+  test('resolveCheckpointFrame: every extended-pack alias resolves its localized frame', () => {
+    // Exercise canonical names, ISO codes, endonyms, and transliterations so a
+    // typo or duplicate alias cannot silently route a supported language back
+    // to the English fallback.
+    const cases = [
+      {
+        aliases: ['Dutch', 'nl', 'nederlands', 'flemish', 'vlaams'],
+        frame: {
+          banner: 'CONTROLEPUNT: Verificatie vereist',
+          instruction: 'Typ `pass` of beschrijf wat er mis is.',
+        },
+      },
+      {
+        aliases: ['Polish', 'pl', 'polski'],
+        frame: {
+          banner: 'PUNKT KONTROLNY: Wymagana weryfikacja',
+          instruction: 'Wpisz `pass` lub opisz, co jest nie tak.',
+        },
+      },
+      {
+        aliases: ['Russian', 'ru', 'ru-ru', 'русский'],
+        frame: {
+          banner: 'КОНТРОЛЬНАЯ ТОЧКА: требуется проверка',
+          instruction: 'Введите `pass` или опишите, что не так.',
+        },
+      },
+      {
+        aliases: ['Ukrainian', 'uk', 'ua', 'українська'],
+        frame: {
+          banner: 'КОНТРОЛЬНА ТОЧКА: потрібна перевірка',
+          instruction: 'Введіть `pass` або опишіть, що не так.',
+        },
+      },
+      {
+        aliases: ['Turkish', 'tr', 'türkçe', 'turkce'],
+        frame: {
+          banner: 'KONTROL NOKTASI: Doğrulama gerekli',
+          instruction: '`pass` yazın veya sorunu açıklayın.',
+        },
+      },
+      {
+        aliases: ['Hindi', 'hi', 'हिन्दी', 'हिंदी'],
+        frame: {
+          banner: 'चेकपॉइंट: सत्यापन आवश्यक',
+          instruction: '`pass` लिखें या बताएं कि क्या गलत है।',
+        },
+      },
+      {
+        aliases: ['Arabic', 'ar', 'العربية'],
+        frame: {
+          banner: 'نقطة تحقق: المراجعة مطلوبة',
+          instruction: 'اكتب `pass` أو صف المشكلة.',
+          direction: 'rtl',
+        },
+      },
+      {
+        aliases: ['Vietnamese', 'vi', 'tiếng việt', 'tieng viet'],
+        frame: {
+          banner: 'ĐIỂM KIỂM TRA: Cần xác minh',
+          instruction: 'Nhập `pass` hoặc mô tả vấn đề.',
+        },
+      },
+      {
+        aliases: ['Indonesian', 'id', 'bahasa indonesia'],
+        frame: {
+          banner: 'TITIK PEMERIKSAAN: Verifikasi diperlukan',
+          instruction: 'Ketik `pass` atau jelaskan apa yang salah.',
+        },
+      },
+    ];
+    for (const { aliases, frame } of cases) {
+      for (const alias of aliases) {
+        assert.deepStrictEqual(
+          resolveCheckpointFrame(alias),
+          frame,
+          `${alias} resolved to the wrong checkpoint frame`,
+        );
+      }
+    }
+  });
+
+  test('checkpoint frame and alias catalogs remain structurally complete', () => {
+    const english = CHECKPOINT_FRAMES.english;
+    assert.ok(english, 'English fallback frame must exist');
+
+    for (const [language, frame] of Object.entries(CHECKPOINT_FRAMES)) {
+      const expectedKeys = frame.direction
+        ? ['banner', 'direction', 'instruction']
+        : ['banner', 'instruction'];
+      assert.deepStrictEqual(
+        Object.keys(frame).sort(),
+        expectedKeys,
+        `${language} has an unexpected checkpoint-frame shape`,
       );
-    }
-    function displayWidth(text) {
-      let width = 0;
-      for (const ch of text) width += isWideCodePoint(ch.codePointAt(0)) ? 2 : 1;
-      return width;
+      assert.ok(frame.banner.trim(), `${language} banner must be non-empty`);
+      assert.ok(frame.instruction.trim(), `${language} instruction must be non-empty`);
+      if (frame.direction !== undefined) {
+        assert.strictEqual(frame.direction, 'rtl', `${language} has an unsupported direction`);
+      }
+      assert.strictEqual(
+        CHECKPOINT_LANGUAGE_ALIASES[language],
+        language,
+        `${language} must self-alias to its canonical frame`,
+      );
+      if (language !== 'english') {
+        assert.notDeepStrictEqual(frame, english, `${language} must not duplicate the English frame`);
+      }
     }
 
-    for (const lang of ['Japanese', 'Chinese', 'Korean']) {
-      test(`${lang} checkpoint banner line renders at display-width 64, aligning the right border`, () => {
-        const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
-        const output = buildCheckpoint(currentTest, lang);
-        const lines = output.split('\n');
-        const topBorder = lines[0];
-        const bannerLine = lines[1];
-        const bottomBorder = lines[2];
-
-        assert.strictEqual(displayWidth(topBorder), 64, 'top border is the 64-column reference width');
-        assert.strictEqual(displayWidth(bottomBorder), 64, 'bottom border is the 64-column reference width');
-        assert.strictEqual(displayWidth(bannerLine), 64,
-          `${lang} banner line must render at the same 64-column display width as the borders — ` +
-          'padding by UTF-16 .length under-pads full-width characters and overflows the box');
-      });
+    for (const [alias, language] of Object.entries(CHECKPOINT_LANGUAGE_ALIASES)) {
+      const frame = CHECKPOINT_FRAMES[language];
+      assert.ok(frame, `${alias} targets missing checkpoint frame ${language}`);
+      assert.strictEqual(
+        resolveCheckpointFrame(alias),
+        frame,
+        `${alias} must resolve to its declared checkpoint frame`,
+      );
+      if (language !== 'english') {
+        assert.notDeepStrictEqual(
+          frame,
+          english,
+          `${alias} must not resolve to the English fallback`,
+        );
+      }
     }
+  });
+
+  // Two alias keys that differ only by case or Unicode normalization form are
+  // distinct object keys — every assertion above still passes. But resolution
+  // lowercases and NFC-normalizes before the lookup, so the two collapse to one
+  // lookup key at runtime and whichever was written first becomes unreachable:
+  // the losing language silently renders the English fallback.
+  //
+  // Both defects survive compilation and both are observable on the catalog
+  // itself, precisely because the keys stay distinct. The remaining case — two
+  // byte-identical keys, where the object genuinely no longer records what was
+  // written — is rejected by tsc as TS1117 before this suite can run, since the
+  // tests execute against `gsd-core/bin/lib/uat.cjs` built from this source.
+  test('checkpoint alias catalog declares no colliding or unreachable alias keys', () => {
+    const declared = Object.keys(CHECKPOINT_LANGUAGE_ALIASES);
+
+    const seen = new Set();
+    const collisions = declared.filter(
+      (alias) => seen.size === seen.add(alias.normalize('NFC').toLowerCase()).size,
+    );
+    assert.deepStrictEqual(
+      collisions,
+      [],
+      `alias key(s) collapse onto an earlier alias once normalized for lookup, so one language silently loses its alias: ${collisions.join(', ')}`,
+    );
+
+    // An alias not already in lookup form is the mirror defect: it collides with
+    // nothing, and resolveCheckpointFrame() — which normalizes its argument
+    // before indexing — can never produce it, so the entry is simply dead.
+    const unreachable = declared.filter(
+      (alias) => alias !== alias.normalize('NFC').toLowerCase(),
+    );
+    assert.deepStrictEqual(
+      unreachable,
+      [],
+      `alias key(s) are not in NFC-lowercase lookup form and can never resolve: ${unreachable.join(', ')}`,
+    );
+  });
+
+  test('resolveCheckpointFrame: canonically equivalent aliases resolve after NFC normalization', () => {
+    assert.deepStrictEqual(
+      resolveCheckpointFrame('türkçe'.normalize('NFD')),
+      resolveCheckpointFrame('türkçe'),
+    );
+    assert.deepStrictEqual(
+      resolveCheckpointFrame('tiếng việt'.normalize('NFD')),
+      resolveCheckpointFrame('tiếng việt'),
+    );
+  });
+
+  // Regression: #2402 review medium finding — checkpointBoxLine() padded using
+  // JS string `.length` (UTF-16 code units), not display width. The property
+  // below supplies an independent, category-labelled cell-width oracle rather
+  // than copying the implementation's Unicode range logic.
+  describe('checkpoint banner padding uses terminal display width (#2402, #2530)', () => {
+    test('property: category-labelled strings are padded to a 62-cell interior', () => {
+      const oneCell = fc.constantFrom(
+        { text: 'a', width: 1 },
+        { text: '7', width: 1 },
+        { text: ' ', width: 1 },
+        { text: '\u093e', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN AA
+        { text: '\u093f', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN I
+        { text: '\u0949', width: 1 }, // Mc: DEVANAGARI VOWEL SIGN CANDRA O
+      );
+      const zeroCell = fc.constantFrom(
+        { text: '\u0301', width: 0 }, // Mn: COMBINING ACUTE ACCENT
+        { text: '\u093c', width: 0 }, // Mn: DEVANAGARI SIGN NUKTA
+        { text: '\u20dd', width: 0 }, // Me: COMBINING ENCLOSING CIRCLE
+        { text: '\u200d', width: 0 }, // Cf: ZERO WIDTH JOINER
+        { text: '\u2066', width: 0 }, // Cf: LEFT-TO-RIGHT ISOLATE
+        { text: '\u2069', width: 0 }, // Cf: POP DIRECTIONAL ISOLATE
+      );
+      const twoCell = fc.constantFrom(
+        { text: '界', width: 2 },
+        { text: '語', width: 2 },
+        { text: '한', width: 2 },
+      );
+
+      fc.assert(fc.property(
+        fc.array(fc.oneof(oneCell, zeroCell, twoCell), { maxLength: 35 }),
+        (cells) => {
+          const text = cells.map((cell) => cell.text).join('');
+          const textWidth = cells.reduce((sum, cell) => sum + cell.width, 0);
+          const padding = ' '.repeat(Math.max(0, 60 - textWidth));
+          assert.strictEqual(
+            checkpointBoxLine(text),
+            `║  ${text}${padding}║`,
+          );
+        },
+      ));
+    });
+
+    test('padding boundary: width limit-1, limit, and limit+1', () => {
+      for (const width of [59, 60, 61]) {
+        const text = 'a'.repeat(width);
+        assert.strictEqual(
+          checkpointBoxLine(text),
+          `║  ${text}${' '.repeat(Math.max(0, 60 - width))}║`,
+          `unexpected rendering at text width ${width}`,
+        );
+      }
+    });
 
     test('exact rendered banner lines for Japanese/Chinese/Korean (regression pin)', () => {
       const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
@@ -924,6 +1110,24 @@ describe('uat render-checkpoint', () => {
         buildCheckpoint(currentTest, 'Korean').split('\n')[1],
         '║  체크포인트: 검증 필요                                       ║',
       );
+    });
+
+    test('exact rendered Hindi banner line ignores combining-mark cell width (regression pin)', () => {
+      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+      assert.strictEqual(
+        buildCheckpoint(currentTest, 'Hindi').split('\n')[1],
+        `║  चेकपॉइंट: सत्यापन आवश्यक${' '.repeat(40)}║`,
+      );
+    });
+
+    test('exact rendered Arabic frame is isolated inside the LTR checkpoint layout', () => {
+      const currentTest = { number: 1, name: 'Sample', expected: 'Something happens.' };
+      const arabic = buildCheckpoint(currentTest, 'Arabic');
+      assert.strictEqual(
+        arabic.split('\n')[1],
+        `║  \u2067نقطة تحقق: المراجعة مطلوبة\u2069${' '.repeat(34)}║`,
+      );
+      assert.ok(arabic.includes('\u2067اكتب `pass` أو صف المشكلة.\u2069'));
     });
   });
 

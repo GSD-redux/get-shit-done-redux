@@ -32,6 +32,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('node:child_process');
+const { readFileNormalized } = require('./helpers.cjs');
 
 const COMMAND_PATH = path.join(__dirname, '..', 'commands', 'gsd', 'plan-review-convergence.md');
 const WORKFLOW_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-review-convergence.md');
@@ -72,7 +73,13 @@ function runReviewerFlagsParseBlock(block, args) {
   return execFileSync('bash', ['-c', script], {
     env: { ...process.env, ARGUMENTS: args, GSD_TOOLS_PATH },
     encoding: 'utf8',
-    timeout: 5000,
+    // 30s covers the nested bash → node → gsd-tools.cjs cold-start chain this
+    // helper spawns. 5s was too tight: on a loaded bench (30k tests running
+    // in parallel) that budget was consumed by process-spawn scheduling
+    // latency alone, producing a spurious ETIMEDOUT with no genuine hang.
+    // 30_000 matches the convention other script-invocation tests in this
+    // repo already use (see e.g. adr-index-gate.test.cjs, check-env.test.cjs).
+    timeout: 30_000,
   }).trim();
 }
 
@@ -256,7 +263,15 @@ describe('plan-review-convergence: --agy/--antigravity reviewer whitelist (#2293
 // ─── #2315: bare invocation respects review.default_reviewers ──────────────
 
 describe('plan-review-convergence: #2315 respects review.default_reviewers (no-flag default)', () => {
-  const workflow = fs.readFileSync(WORKFLOW_PATH, 'utf8');
+  // readFileNormalized() strips \r\n -> \n before the two behavioral tests
+  // below slice a bash block out of `workflow` and hand it to
+  // execFileSync('bash', ...) — an un-normalized read on a Windows checkout
+  // would break bash mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE,
+  // #2650). Those two tests already skip on win32 for an unrelated POSIX-
+  // shell-extraction reason, but `workflow` is shared with non-skipped
+  // structural assertions in this same describe block, so normalizing here
+  // is the single correct fix rather than a per-test patch.
+  const workflow = readFileNormalized(WORKFLOW_PATH);
   const command = fs.readFileSync(COMMAND_PATH, 'utf8');
   const SKILL_PATH = path.join(__dirname, '..', 'skills', 'gsd-plan-review-convergence', 'SKILL.md');
   const skill = fs.readFileSync(SKILL_PATH, 'utf8');
@@ -384,7 +399,10 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
       return execFileSync('bash', ['-c', script], {
         env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '', GSD_TOOLS_PATH },
         encoding: 'utf8',
-        timeout: 5000,
+        // 30s covers the same nested bash → node → gsd-tools.cjs cold-start
+        // chain as runReviewerFlagsParseBlock above; see that helper's
+        // comment for why 5s flaked under bench load.
+        timeout: 30_000,
       });
     };
 
@@ -438,7 +456,10 @@ describe('plan-review-convergence: #2315 respects review.default_reviewers (no-f
       return execFileSync('bash', ['-c', script], {
         env: { ...process.env, ARGUMENTS: args, GSD_TEST_DEFAULT_REVIEWERS: defaultReviewers ?? '', GSD_TOOLS_PATH },
         encoding: 'utf8',
-        timeout: 5000,
+        // 30s covers the same nested bash → node → gsd-tools.cjs cold-start
+        // chain as runReviewerFlagsParseBlock above; see that helper's
+        // comment for why 5s flaked under bench load.
+        timeout: 30_000,
       });
     };
 

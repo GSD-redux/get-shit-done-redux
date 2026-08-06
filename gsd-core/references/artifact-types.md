@@ -43,6 +43,13 @@ reads is inert — the consumption mechanism is what gives an artifact meaning.
 - **Lifecycle**: Created at plan completion → Read by subsequent plans in same phase
 - **Location**: `.planning/phases/XX-name/XX-YY-SUMMARY.md`
 - **Consumed by**: Orchestrator (progress), planner (context for future plans), `milestone-summary`
+- **`status:`** — `complete` (default) or **`halted`**. `halted` records a *designed stop*:
+  the plan ran and answered its question, but the answer means the work it was gating cannot
+  proceed (a spike that returns "no", for example). It is a success, not a failure — the plan
+  did its job. Marking a SUMMARY `halted` propagates transitively over `depends_on`: every
+  plan that depends on it, directly or through a chain, is reported as **blocked** rather than
+  offered to the executor as ordinary incomplete work, and is named with its cause. Any other
+  value — including no `status:` field at all — reads as complete. (#2830)
 
 ### HANDOFF.json / .continue-here.md
 - **Shape**: Structured pause state (JSON machine-readable + Markdown human-readable)
@@ -72,11 +79,11 @@ reads is inert — the consumption mechanism is what gives an artifact meaning.
 - **Location**: `.planning/spikes/SPIKE-NNN/`
 - **Consumed by**: Planner when spike is referenced; `pause-work` for spike context handoff
 
-### Spike README.md / MANIFEST.md (per-spike, via /gsd:spike)
-- **Shape**: YAML frontmatter (spike, name, validates, verdict, related, tags) + run instructions + results
+### Spike README.md (per-spike) / MANIFEST.md (per-project index, via /gsd:spike)
+- **Shape**: README — YAML frontmatter (spike, idea, name, validates, verdict, related, tags) + run instructions + results. MANIFEST.md — one `### {idea-key}` section per idea under `## Ideas` (idea paragraph + its own scoped Requirements), plus one durable `## Spikes` table (with an Idea column) indexing every spike across every idea.
 - **Lifecycle**: Created by `/gsd:spike` → Verified → Wrapped up by `/gsd-spike-wrap-up`
 - **Location**: `.planning/spikes/NNN-name/README.md`, `.planning/spikes/MANIFEST.md`
-- **Consumed by**: `/gsd-spike-wrap-up` for curation; `pause-work` for spike context handoff
+- **Consumed by**: `/gsd-spike-wrap-up` for curation (Requirements pulled only from the idea key(s) it wraps); `pause-work` for spike context handoff
 
 ### Sketch README.md / MANIFEST.md / index.html (per-sketch)
 - **Shape**: YAML frontmatter (sketch, name, question, winner, tags) + variants as tabbed HTML

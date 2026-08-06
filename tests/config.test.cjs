@@ -1884,15 +1884,38 @@ describe('#3086: git.create_tag config key', () => {
     );
   });
 
-  test('D. complete-milestone.md contains <config-check> gate for git.create_tag', () => {
+  test('D. complete-milestone.md gates git_tag behind state:git-create-tag (#2994: <config-check> hoisted into cmdInitCompleteMilestone)', () => {
+    // #2994: the inline <config-check> (`gsd-tools.cjs query config-get
+    // git.create_tag ... || echo "true"`) that used to gate the git_tag step's
+    // own inclusion was hoisted into `detectGitCreateTag` (src/init.cts),
+    // consumed by the new `cmdInitCompleteMilestone` entry point and exposed
+    // as the init-bundle's `git_create_tag` field / the `state:git-create-tag`
+    // when= atom. The workflow markdown no longer contains a literal
+    // <config-check> block or `git.create_tag` string — it gates the whole
+    // git_tag step behind a gsd:section marker instead.
     const content = fs.readFileSync(WORKFLOW_PATH, 'utf8');
     assert.ok(
-      content.includes('git.create_tag'),
-      'complete-milestone.md must reference git.create_tag in a <config-check> block',
+      content.includes('<!-- gsd:section id="git-tag" when="state:git-create-tag" -->'),
+      'complete-milestone.md must gate the git_tag step behind the state:git-create-tag section marker',
     );
     assert.ok(
-      content.includes('<config-check>'),
-      'complete-milestone.md must have a <config-check> block in the git_tag step',
+      content.includes('gsd-core/workflows/complete-milestone/steps/git-tag.md'),
+      'complete-milestone.md must point the git-tag section at its step file',
+    );
+
+    const stepFile = fs.readFileSync(
+      path.join(__dirname, '..', 'gsd-core', 'workflows', 'complete-milestone', 'steps', 'git-tag.md'),
+      'utf8',
+    );
+    assert.ok(
+      stepFile.includes('<step name="git_tag">') && stepFile.includes('git tag -a'),
+      'git-tag.md step file must contain the git_tag step body (git tag creation)',
+    );
+
+    const initSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'init.cts'), 'utf8');
+    assert.ok(
+      /detectGitCreateTag[\s\S]{0,300}'git'[\s\S]{0,40}'create_tag'/.test(initSource),
+      'src/init.cts detectGitCreateTag must resolve the git.create_tag config key',
     );
   });
 });

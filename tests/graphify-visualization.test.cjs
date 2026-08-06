@@ -610,7 +610,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
 
 // Path to the command doc (relative to repo root)
 const GRAPHIFY_MD = path.join(__dirname, '..', 'commands', 'gsd', 'graphify.md');
@@ -621,9 +621,14 @@ const GRAPHIFY_MD = path.join(__dirname, '..', 'commands', 'gsd', 'graphify.md')
  * closing ``` fence.
  *
  * Returns the bash source text (without the fence lines themselves).
+ *
+ * readFileNormalized() strips \r\n -> \n before the match below runs — the
+ * extracted block is later spawned via spawnSync('bash', ...) in runBlock(),
+ * so an un-normalized read on a Windows checkout would break bash mid-script
+ * (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
  */
 function extractStep3Block() {
-  const content = fs.readFileSync(GRAPHIFY_MD, 'utf-8');
+  const content = readFileNormalized(GRAPHIFY_MD);
   // Capture the full body of the ```bash fence that CONTAINS `graphify update .`
   // (including any leading preamble line), without crossing into other fences.
   const match = content.match(/```bash\r?\n((?:(?!```)[\s\S])*?graphify update \.(?:(?!```)[\s\S])*?)\r?\n```/);

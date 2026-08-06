@@ -476,7 +476,10 @@ describe('build', () => {
         status: null,
         stdout: 'partial',
         stderr: '',
-        error: undefined,
+        // Real spawnSync timeouts set error.code === 'ETIMEDOUT'; the
+        // timeout verdict keys on that, because SIGTERM alone is also
+        // produced by an external kill and is unreliable on Windows.
+        error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
         signal: 'SIGTERM',
       }));
 
@@ -485,6 +488,22 @@ describe('build', () => {
       // Migrated #2974: typed reason instead of stderr grep.
       assert.strictEqual(result.reason, GRAPHIFY_REASON.TIMEOUT);
       assert.strictEqual(result.timeout_ms, 30000);
+    });
+
+    test('an externally-delivered SIGTERM is not reported as a timeout', () => {
+      // Before the shared isSpawnTimeout predicate was adopted, this shape
+      // (SIGTERM with no error.code) was misclassified as a timeout.
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: '',
+        error: undefined,
+        signal: 'SIGTERM',
+      }));
+
+      const result = execGraphify('/tmp', ['build']);
+      assert.notStrictEqual(result.exitCode, 124);
+      assert.notStrictEqual(result.reason, GRAPHIFY_REASON.TIMEOUT);
     });
 
     test('passes PYTHONUNBUFFERED=1 in env', () => {

@@ -19,7 +19,7 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const QUICK_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md');
 
@@ -52,8 +52,8 @@ function git(cwd, ...args) {
  * a markdown parser would.
  */
 function extractStep25Bash() {
-  const content = fs.readFileSync(QUICK_PATH, 'utf-8');
-  const lines = content.split(/\r?\n/);
+  const content = readFileNormalized(QUICK_PATH);
+  const lines = content.split('\n');
 
   let start = -1;
   let end = -1;

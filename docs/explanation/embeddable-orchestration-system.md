@@ -126,7 +126,7 @@ transport onto the same contract, not a second contract.
 
 The clearest evidence that the contract is doing its job: because every host
 integration is now expressed as data — a descriptor, not bespoke code —
-`/gsd:surface` can reproduce a given runtime's generated agent output
+`/gsd-surface` can reproduce a given runtime's generated agent output
 byte-for-byte from the same descriptors the installer itself consumes
 (#1575). Runtime output can no longer drift from what the installer
 produces, because there is only one source of truth for it.

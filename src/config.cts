@@ -88,6 +88,8 @@ const SCHEMA_DEFAULTS: Record<string, unknown> = {
   'context_window': 200000,
   'executor.stall_detect_interval_minutes': 5,
   'executor.stall_threshold_minutes': 10,
+  'planner.stall_detect_interval_minutes': 5,
+  'planner.stall_threshold_minutes': 10,
   'git.create_tag': true,
   // Derived from the defaults manifest rather than restated, so the manifest
   // stays the single source of truth for the smart-zone budget (#2630).
@@ -329,10 +331,20 @@ function buildNewProjectConfig(userChoices: Record<string, unknown>): Record<str
   const ch = choices as Record<string, Record<string, unknown>>;
   const hd = hardcoded as Record<string, Record<string, unknown>>;
 
+  // #2840: `runtime` is host-specific (written by the installer for whichever
+  // runtime's install ran last). On a machine with 2+ runtimes, it poisons every
+  // new project config — e.g. a Codex install's `runtime:"codex"` leaks into
+  // Claude Code projects, resolving agents to wrong model IDs. `resolve_model_ids`
+  // already has a per-install guard (#2297); `runtime` gets the same treatment
+  // by excluding it from the defaults spread. Projects detect the runtime from
+  // the install path / .gsd-runtime marker, not from a copied config key.
+  const safeDefaults = { ...userDefaults };
+  delete safeDefaults['runtime'];
+
   // Three-level deep merge: hardcoded <- userDefaults <- choices
   const config: Record<string, unknown> = {
     ...hardcoded,
-    ...userDefaults,
+    ...safeDefaults,
     ...choices,
     git: {
       ...hd['git'],

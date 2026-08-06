@@ -714,6 +714,9 @@ Extract from init JSON: `phase_dir`, `phase_number`, `has_plans`, `plan_count`.
 Orchestrator provides CONTEXT.md content in the verification prompt. If provided, parse for locked decisions, discretion areas, deferred ideas.
 
 ```bash
+# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
 gsd_run query phase.list-plans "$phase_number"
 # Research / brief artifacts (deterministic listing)
 gsd_run query phase.list-artifacts "$phase_number" --type research
@@ -735,6 +738,9 @@ done
 Use `gsd-tools query` to validate plan structure:
 
 ```bash
+# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
 for plan in "$PHASE_DIR"/*-PLAN.md; do
   echo "=== $plan ==="
   PLAN_STRUCTURE=$(gsd_run query verify.plan-structure "$plan")
@@ -820,6 +826,9 @@ Inspect `tasks` in the JSON; open the PLAN in the editor for prose-level review.
 ## Step 6: Verify Dependency Graph
 
 ```bash
+# #2962: zsh aborts the block on an unmatched for-list glob (nomatch); bash passes it through. nullglob both.
+shopt -s nullglob 2>/dev/null; setopt NULL_GLOB 2>/dev/null
+
 for plan in "$PHASE_DIR"/*-PLAN.md; do
   grep "depends_on:" "$plan"
 done

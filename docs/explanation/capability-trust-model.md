@@ -85,7 +85,7 @@ has a window between install and first use to verify what they consented to.
 ### The reviewer lane: the one surface that *receives* data
 
 Three of the four disclosure classes are about code the capability gets to
-**run**. A reviewer lane — one external CLI or model endpoint that `/gsd:review`
+**run**. A reviewer lane — one external CLI or model endpoint that `/gsd-review`
 hands a plan to — is different in kind, and the difference is the reason it is
 disclosed at all.
 

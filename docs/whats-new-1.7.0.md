@@ -14,7 +14,7 @@
 
 **Gemini CLI removed** (#1928): Google discontinued Gemini CLI on 2026-06-18, so `--gemini` now prints a deprecation notice pointing to Antigravity CLI, the official successor and already a first-class GSD runtime.
 
-`/gsd:surface` and `--materialize` now produce byte-identical agent output to a fresh install for descriptor-driven runtimes (#1575).
+`/gsd-surface` and `--materialize` now produce byte-identical agent output to a fresh install for descriptor-driven runtimes (#1575).
 
 Read more: [Embeddable Orchestration System](explanation/embeddable-orchestration-system.md) · [Host-Integration Interface reference](reference/host-integration-interface.md) · [Interface versioning policy](explanation/interface-versioning-policy.md) · [Install on your runtime](how-to/install-on-your-runtime.md).
 
@@ -62,7 +62,7 @@ See [Configuration — model profiles](CONFIGURATION.md) and [Configure model pr
 
 ## Planning, verification & workflow
 
-- The **API-coverage gate** (#1562): a phase that integrates an external API/SDK/service cannot seal `/gsd:verify-work` without a decided coverage matrix.
+- The **API-coverage gate** (#1562): a phase that integrates an external API/SDK/service cannot seal `/gsd-verify-work` without a decided coverage matrix.
 - `plan-phase` now authors edge and prohibition predicates into `PLAN.md` `must_have` (#1154), and the **honest verifier** abstains (`human_needed`) on non-inferable `backstop` truths instead of confidently false-passing them (#1154).
 - A plural/optional/chosen **assumption-delta checkpoint** during planning re-asks identity-model questions when cardinality changes (#1561).
 - `/gsd-ui-phase` gains a **UI state-coverage probe** (#1979); `/gsd-review` supports **custom reviewer instances** (#1517).

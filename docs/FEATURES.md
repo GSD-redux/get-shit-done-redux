@@ -969,7 +969,7 @@ continues. Drift detection cannot fail verification.
 | `granularity` | enum | `standard` | `coarse`, `standard`, or `fine` |
 | `model_profile` | enum | `balanced` | `quality`, `balanced`, `budget`, or `inherit` |
 | `models.<phase_type>` | enum | (none) | Per-phase-type tier override (`planning`, `discuss`, `research`, `execution`, `verification`, `completion`). Values: `opus`, `sonnet`, `haiku`, `inherit`. Coarse phase-level tuning that wins over `model_profile` but loses to per-agent `model_overrides`. See [CONFIGURATION.md](CONFIGURATION.md#per-phase-type-models-models--added-in-v140). Added in v1.40 |
-| `granularities.<phase_type>` | enum | (none) | Per-phase-type granularity override (`planning`, `discuss`, `research`, `execution`, `verification`, `completion`). Values: `coarse`, `standard`, `fine`. Mirrors `models.<phase_type>` for granularity. See [CONFIGURATION.md](CONFIGURATION.md#core-settings). Added in v1.43 ([#68](https://github.com/open-gsd/gsd-core/issues/68)). `/gsd:plan-phase --granularity <coarse\|standard\|fine>` overrides all config-based granularity for a single invocation (takes precedence over `granularities.planning`, top-level `granularity`, and `planning.granularity`). ([#703](https://github.com/open-gsd/gsd-core/issues/703)) |
+| `granularities.<phase_type>` | enum | (none) | Per-phase-type granularity override (`planning`, `discuss`, `research`, `execution`, `verification`, `completion`). Values: `coarse`, `standard`, `fine`. Mirrors `models.<phase_type>` for granularity. See [CONFIGURATION.md](CONFIGURATION.md#core-settings). Added in v1.43 ([#68](https://github.com/open-gsd/gsd-core/issues/68)). `/gsd-plan-phase --granularity <coarse\|standard\|fine>` overrides all config-based granularity for a single invocation (takes precedence over `granularities.planning`, top-level `granularity`, and `planning.granularity`). ([#703](https://github.com/open-gsd/gsd-core/issues/703)) |
 | `dynamic_routing.enabled` | boolean | `false` | Master switch for failure-tier escalation. When `true`, agents resolve to `tier_models[default_tier]` and escalate one tier on orchestrator-detected soft failure. Capped by `max_escalations`. See [CONFIGURATION.md](CONFIGURATION.md#dynamic-routing-with-failure-tier-escalation-dynamic_routing--added-in-v140). Added in v1.40 |
 | `workflow.research` | boolean | `true` | Domain research before planning |
 | `workflow.plan_check` | boolean | `true` | Plan verification loop |
@@ -2687,7 +2687,7 @@ Users who run a memory / knowledge-base MCP server (for example, ExoCortex-style
   - `/gsd-config` — folds settings-advanced (`--advanced`), settings-integrations (`--integrations`), set-profile (`--profile`)
   - `/gsd-workspace` — folds new-workspace (`--new`), list-workspaces (`--list`), remove-workspace (`--remove`)
 - REQ-CONSOLIDATE-02: Six existing parents absorb wrap-up / sub-operations as flags: `/gsd-update --sync`, `/gsd-update --reapply`, `/gsd-sketch --wrap-up`, `/gsd-spike --wrap-up`, `/gsd-map-codebase --fast`, `/gsd-map-codebase --query`, `/gsd-code-review --fix`, `/gsd-progress --do`, `/gsd-progress --next`.
-- REQ-CONSOLIDATE-03: `/gsd:next` is not the retired workflow-advance command; it is reserved for the state-aware smart-entry launcher. Workflow advancement remains under `/gsd-progress --next`.
+- REQ-CONSOLIDATE-03: `/gsd-next` is not the retired workflow-advance command; it is reserved for the state-aware smart-entry launcher. Workflow advancement remains under `/gsd-progress --next`.
 - REQ-CONSOLIDATE-04: Deleted micro-skill slash forms (the bare `gsd-add-todo`, `gsd-add-backlog`, `gsd-plant-seed`, `gsd-check-todos`, `gsd-add-phase`, `gsd-insert-phase`, `gsd-remove-phase`, `gsd-edit-phase`, `gsd-new-workspace`, `gsd-list-workspaces`, `gsd-remove-workspace`, `gsd-settings-advanced`, `gsd-settings-integrations`, `gsd-set-profile`, `gsd-sketch-wrap-up`, `gsd-spike-wrap-up`, `gsd-reapply-patches`, `gsd-code-review-fix`, …) MUST resolve to "Unknown command" — no shadow stubs.
 - REQ-CONSOLIDATE-05: `autonomous.md` invokes `/gsd-code-review --fix` (was previously calling the deleted `gsd-code-review-fix`).
 
@@ -2899,7 +2899,7 @@ Source commit: abc1234 (3 commits behind HEAD)
 - Executor install failures stop for human verification instead of auto-trying similarly named packages.
 
 **Requirements:**
-- REQ-PKG-GATE-01: Research MUST record package registry, age, download/source signals, slopcheck verdict, and disposition.
+- REQ-PKG-GATE-01: Research MUST record package registry, age, download/source signals, legitimacy verdict, and disposition.
 - REQ-PKG-GATE-02: Planner MUST gate unverified or suspicious package installs before execution.
 - REQ-PKG-GATE-03: Executor MUST NOT auto-substitute package names after failed package-manager installs.
 
@@ -2918,7 +2918,7 @@ Source commit: abc1234 (3 commits behind HEAD)
 | `standard` | Core plus common phase-management commands |
 | `full` | Complete surface; default |
 
-**Runtime control:** `/gsd:surface` lists profile state and enables, disables, or resets skill clusters without reinstalling.
+**Runtime control:** `/gsd-surface` lists profile state and enables, disables, or resets skill clusters without reinstalling.
 
 **Requirements:**
 - REQ-SURFACE-01: Installer MUST resolve `--profile=<name>` and persist the active profile in `.gsd-profile`.
@@ -3218,7 +3218,7 @@ Each surfaced prohibition is resolved to exactly one of three states:
 | `dismissed` | Not a genuine prohibition (requires a non-empty reason) | Recorded with its reason; empty dismissals are rejected |
 | `unresolved` | Deferred | Soft-gates the spec; surfaced as a planner assumption |
 
-Each resolved prohibition carries a `verification` tier — `test` (a negative test can enforce it) or `judgment` (only human/LLM judgment can). At verify time, judgment-tier prohibitions route to a never-silent / never-hard-halt soft gate (autonomous emits an `unverified-prohibition — human review recommended` flag); test-tier prohibitions are enforced via the deterministic `check prohibition-enforcement` gate — green when the wired negative test / lint rule passes, hard-gate (flagged, non-green) when missing or failing, in both interactive and autonomous modes (#1259, ADR-550 D5d). Under `--auto`, the probe **never auto-dismisses**. Canon-bound concerns (OWASP / GDPR / fairness) are referred to `/gsd:secure-phase` rather than minting SPEC prohibitions (ADR-550 D6).
+Each resolved prohibition carries a `verification` tier — `test` (a negative test can enforce it) or `judgment` (only human/LLM judgment can). At verify time, judgment-tier prohibitions route to a never-silent / never-hard-halt soft gate (autonomous emits an `unverified-prohibition — human review recommended` flag); test-tier prohibitions are enforced via the deterministic `check prohibition-enforcement` gate — green when the wired negative test / lint rule passes, hard-gate (flagged, non-green) when missing or failing, in both interactive and autonomous modes (#1259, ADR-550 D5d). Under `--auto`, the probe **never auto-dismisses**. Canon-bound concerns (OWASP / GDPR / fairness) are referred to `/gsd-secure-phase` rather than minting SPEC prohibitions (ADR-550 D6).
 
 The load-bearing wire is the `plan-phase` lift into `must_haves.prohibitions`, so the section is not merely documentation.
 
@@ -3255,7 +3255,7 @@ The load-bearing wire is the `plan-phase` lift into `must_haves.prohibitions`, s
 **Reference:** [`gsd capability` command reference](reference/gsd-capability-command.md) · [ADR-1244](adr/1244-capability-ecosystem.md)
 ### 148. Smart Entry Launcher
 
-**Command:** `/gsd:next`
+**Command:** `/gsd-next`
 
 **Tool:** `gsd-tools smart-entry [--json]`
 
@@ -3282,7 +3282,7 @@ The load-bearing wire is the `plan-phase` lift into `must_haves.prohibitions`, s
 
 **Purpose:** Express every host integration against one public, versioned contract (ADR-1239 Phase A, #1690) instead of bespoke per-host wiring, so onboarding a new host becomes additive descriptor work.
 
-**Behavior:** The interface exposes six interface points (`command`, `dispatch`, `model`, `hooks`, `state`, `artifact`), eight negotiated axes, and a `PROTOCOL_VERSION` handshake that negotiates down to `min(host, engine)`. In 1.7.0, 14 runtimes were migrated onto the interface via imperative adapters (OpenCode #2087, Cursor #2089, Cline #2090, Hermes #2091, Qwen #2092, Kilo #2093, Trae #2094, Kimi #2095, Antigravity #2096, Augment #2097), a declarative adapter (Codex #2088), plus full lifecycle-hook wiring for CodeBuddy (#2098), GitHub Copilot (#2099), and Windsurf (#2100). Descriptors gained an `extensionEvents` vocabulary (#1946), and `/gsd:surface` now reproduces a runtime's agent output byte-for-byte from the installer's descriptors (#1575).
+**Behavior:** The interface exposes six interface points (`command`, `dispatch`, `model`, `hooks`, `state`, `artifact`), eight negotiated axes, and a `PROTOCOL_VERSION` handshake that negotiates down to `min(host, engine)`. In 1.7.0, 14 runtimes were migrated onto the interface via imperative adapters (OpenCode #2087, Cursor #2089, Cline #2090, Hermes #2091, Qwen #2092, Kilo #2093, Trae #2094, Kimi #2095, Antigravity #2096, Augment #2097), a declarative adapter (Codex #2088), plus full lifecycle-hook wiring for CodeBuddy (#2098), GitHub Copilot (#2099), and Windsurf (#2100). Descriptors gained an `extensionEvents` vocabulary (#1946), and `/gsd-surface` now reproduces a runtime's agent output byte-for-byte from the installer's descriptors (#1575).
 
 **New runtimes:** ZCode (Z.ai — Agentic Development Environment for GLM-5.2, #1925), pi (`npx @opengsd/gsd-core --pi`, #2102), and a repo-local VS Code extension driven through the adapter (#2103). The retired Gemini CLI now redirects to Antigravity CLI, its official successor (#1928).
 
@@ -3348,7 +3348,7 @@ The load-bearing wire is the `plan-phase` lift into `must_haves.prohibitions`, s
 
 ### 156. API-Coverage Gate
 
-**Command:** `/gsd:verify-work`
+**Command:** `/gsd-verify-work`
 
 **Purpose:** A phase that integrates an external API, SDK, or service can no longer seal verification without a decided coverage matrix (#1562).
 
@@ -3362,7 +3362,7 @@ The load-bearing wire is the `plan-phase` lift into `must_haves.prohibitions`, s
 
 ### 158. Broken-Windows Ledger
 
-**Behavior:** A cross-phase defect register at `.planning/WINDOWS.md` accumulates stubs, TODOs, skipped tests, unrun verifies, and unmet truths (#1950). `/gsd:ship` blocks while any entry is `open`; an entry can be `waived` only with a recorded reason (auditable) or marked `fixed` (removed from the blocking set). `/gsd:progress` surfaces the open + waived counts.
+**Behavior:** A cross-phase defect register at `.planning/WINDOWS.md` accumulates stubs, TODOs, skipped tests, unrun verifies, and unmet truths (#1950). `/gsd-ship` blocks while any entry is `open`; an entry can be `waived` only with a recorded reason (auditable) or marked `fixed` (removed from the blocking set). `/gsd-progress` surfaces the open + waived counts.
 
 **Commands:** `gsd-tools windows status | append | waive | fixed`.
 

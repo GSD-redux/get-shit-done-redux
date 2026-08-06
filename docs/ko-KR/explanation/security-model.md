@@ -30,7 +30,7 @@ AI 모델은 패키지 이름을 환각한다. 이것은 변두리 실패 모드
 
 게이트는 세 가지 파이프라인 단계에 걸쳐 작동한다:
 
-**리서치 단계.** `gsd-phase-researcher`가 외부 패키지를 추천할 때 각 패키지에 대해 `slopcheck install <pkgs> --json`을 실행한다. 결과는 `RESEARCH.md`의 `## Package Legitimacy Audit` 테이블에 작성된다. `[SLOP]`로 태그된 패키지들(높은 신뢰도의 환각 또는 공격자가 등록)은 파일이 저장되기 전에 **`RESEARCH.md`에서 완전히 제거된다**. 이런 패키지들은 절대 플래너에게 도달하지 않는다.
+**리서치 단계.** `gsd-phase-researcher`가 외부 패키지를 추천할 때 각 패키지에 대해 `gsd-tools query package-legitimacy check --ecosystem <npm|pypi|crates> <pkgs>`을 실행한다. 결과는 `RESEARCH.md`의 `## Package Legitimacy Audit` 테이블에 작성된다. `[SLOP]`로 태그된 패키지들(높은 신뢰도의 환각 또는 공격자가 등록)은 파일이 저장되기 전에 **`RESEARCH.md`에서 완전히 제거된다**. 이런 패키지들은 절대 플래너에게 도달하지 않는다.
 
 **계획 단계.** `gsd-planner`는 감사 테이블을 읽는다. `[SUS]`(의심스러움: 최근 등록, 낮은 다운로드 수, 소스 저장소 없음, 또는 인기 있는 패키지와 가까운 명명 패턴)나 `[ASSUMED]`(직접 레지스트리 검증이 아닌 WebSearch에서 출처)로 태그된 모든 패키지에 대해, 플래너는 설치 단계 전에 **`checkpoint:human-verify` 작업을 삽입한다**. 체크포인트에는 레지스트리 페이지로의 직접 링크와 살펴봐야 할 구체적인 항목들이 포함된다: 유지관리자 이력, 이슈 트래커 활동, 의심스러운 설치 스크립트의 부재.
 

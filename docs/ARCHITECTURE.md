@@ -347,6 +347,73 @@ gsd-tools query research-plan          ← Research Provider: check cache, build
 
 Agents always return a `RESEARCH.md` path, never raw fetched content. Context discipline is enforced through subagent isolation, compact provider output, and fetch-to-disk. See [ADR-0656](adr/0656-research-module-seam.md).
 
+### Context Predicate Fact-Store (`src/context-predicates.cts`, ADR-1671)
+
+The `CONTEXT.md` predicate fact-store — every backtick-wrapped `CLASS.subkey=value` declaration in the repo-root `CONTEXT.md` — has a compiled parser/selector seam (generated to `gsd-core/bin/lib/context-predicates.cjs` per ADR-457) reachable live via `gsd-tools query context-predicates --class|--prefix|--contains`. Fence-aware line skipping mirrors `markdown-sectionizer.cts`'s exported `scanFencedBlocks` delimiter-matching rule exactly (proven by a fence-skip parity test suite), but is scanned by a LOCAL, interleaved single pass rather than a call into that seam directly: fences and HTML comments must mutually suppress each other's open/close detection while either is active (a fence delimiter inside a real comment, or a comment token inside a real fence, must not falsely toggle the other construct), and that precedence cannot be resolved by two independent passes over `scanFencedBlocks`'s comment-blind output — see `src/context-predicates.cts`'s module doc comment.
+
+`scripts/gen-context-index.cjs --check` is the CI drift-guard for the committed `docs/CONTEXT-INDEX.json` artifact: it fails on staleness between a fresh parse of `CONTEXT.md` and the committed file, and on any duplicate predicate ID. It is wired into `lint:generated-sync` (so `lint:ci`, so CI). `docs/CONTEXT-INDEX.json` is **generated — never hand-edit it**; regenerate with `gen-context-index.cjs --write` (also wired into `build`, after `build:lib`, and into `regen:derived`). The generator `require()`s the compiled `context-predicates.cjs`, so it must run after `build:lib` in any pipeline; `.github/workflows/test.yml` does this.
+
+The committed index intentionally carries **no `line` field** for any predicate (ADR-1671 open question 4, resolved by #2928) — committed-but-uncompared metadata goes silently stale, the same defect class the drift-guard exists to catch, with the alarm removed. The live `gsd-tools query context-predicates` parse still returns `line`/`section` for callers that want to cite a source location. See [ADR-1671](adr/1671-dynamic-context-management-platform.md) and [CLI Tools Reference](CLI-TOOLS.md#query-context-predicates).
+
+### Workflow Fragmentization and Emission (`src/workflow-fragments.cts`, ADR-1671)
+
+Workflow markdown under `gsd-core/workflows/*.md` can mark one or more sections with an
+in-file `<!-- gsd:section id="<id>" when="<when>" -->` / `<!-- /gsd:section -->` pair. A
+compiled parser/composer seam (generated to `gsd-core/bin/lib/workflow-fragments.cjs` per
+ADR-457) partitions a marked document into fragments and recomposes them through the shared
+`context-composer.cjs` budget seam (ADR-1671, #2929) before any per-runtime converter sees the
+text — so a marker attribute can never be corrupted by a `.claude/` → `.windsurf/`-style
+path-rewrite regex. `bin/install.js`'s `copyWithPathReplacement` calls `composeWorkflow` on
+every workflow file at emit time; an unmarked file (88 of the 89 shipped workflows today)
+parses to a single implicit fragment and round-trips byte-identical, so this is a no-op for
+every workflow that hasn't opted in yet.
+
+Every fragment in this phase carries the `verbatim` strategy, so composition is structurally
+non-lossy — nothing is trimmed regardless of budget. Fence and HTML-comment interleaving
+reuses the same LOCAL, single-pass, mutually-suppressing scan discipline as
+`context-predicates.cts` (see above), so a marker-shaped line inside a fenced code block or an
+unrelated comment is never misread as structural. Markers are **stripped at emit** — the
+installed artifact carries no build metadata and is smaller than the source by exactly the
+stripped marker bytes.
+
+See [Reference: Workflow fragments](reference/workflow-fragments.md) for the full marker
+grammar, the frozen `when=` vocabulary, and fail-closed authoring rules, and
+[ADR-1671](adr/1671-dynamic-context-management-platform.md) (open questions 1 and 2) for why
+in-file markers were chosen over separate fragment files or a sidecar manifest.
+
+### Section Manifest (`src/section-manifest.cts`, ADR-1671 Phases 5 and 6.1)
+
+Two seams turn a workflow's `gsd:section` markers into per-invocation applicability data.
+`scripts/gen-section-manifest.cjs --write` (wired into `build` after `build:lib`, and into
+`lint:generated-sync`) scans `gsd-core/workflows/*.md` and writes the committed
+`gsd-core/workflows/section-manifest.json`, keyed **per workflow** —
+`{workflows: {"<name>": [{id, when, read}]}}` — where `read` is the path of the step file the
+section's body was extracted to. A workflow with no marked sections contributes **no key at
+all**: an absent key means degraded/unknown (the caller reads every section, the safe superset),
+while a key present with an empty array means "computed, nothing applies". The generator reuses
+`parseWorkflowSections` unchanged rather than re-implementing marker parsing, and fails closed
+(`--check`) on a marker naming a step file that does not exist, a step file no marker
+references, or a committed artifact still carrying the pre-6.1 flat `{sections: [...]}` shape.
+
+A separate pure evaluator, `src/section-manifest.cts` (compiled to
+`gsd-core/bin/lib/section-manifest.cjs` per ADR-457), maps one invocation's facts —
+`{flags, phaseNumber, hasPriorPhases}` plus the optional `needsCodebaseMap`, `phaseMvpMode` and
+`worktreesEnabled` booleans — to an included/excluded partition of section ids via
+`selectSections`. `flags` is a `ReadonlySet<string>` of flag tokens; because `parseNamedArgs`
+always materializes a boolean flag key (`false` when the token was absent, never `undefined`),
+presence is **truthiness**, and the init router folds a boolean flag's own `false` into the
+absent sentinel before the facts are built. Per Greenspun's Tenth Rule, the evaluator is a total
+lookup over the frozen 14-atom `when=` vocabulary, never a parser: `WHEN_PREDICATES` is a
+hand-written literal map that never derives a predicate from its atom string, and an
+unrecognized value fails closed rather than being silently excluded. An atom is admitted only
+when it has both a real consuming section and a fact the init seam actually computes — an atom
+without the latter would evaluate `false` forever and silently disable its own section.
+
+`execute-phase.md`'s `partial-wave` and `gap-closure-artifacts` sections — previously inlined
+directly per #2930's pilot — now delegate to dedicated step files under
+`gsd-core/workflows/execute-phase/steps/`, the same pattern the pre-existing `regression-gate`
+section already used.
+
 ### CLI Tools (`gsd-core/bin/`)
 
 Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core/bin/lib/` (see [`docs/INVENTORY.md`](INVENTORY.md#cli-modules) for the authoritative roster):
@@ -382,6 +449,7 @@ Node.js CLI utility (`gsd-tools.cjs`) with domain modules split across `gsd-core
 | `schema-detect.cjs`    | Schema-drift detection for ORM patterns (Prisma, Drizzle, etc.)                                     |
 | `profile-pipeline.cjs` | User behavioral profiling data pipeline, session file scanning                                      |
 | `profile-output.cjs`       | Profile rendering, USER-PROFILE.md and dev-preferences.md generation                                |
+| `context-predicates.cjs`   | `CONTEXT.md` predicate fact-store parser/selector (ADR-1671, #2928); backs `query context-predicates` and `scripts/gen-context-index.cjs`'s `docs/CONTEXT-INDEX.json` drift guard; compiled from `src/context-predicates.cts` |
 | `loop-host-contract.cjs`   | Generated Loop Host Contract — 12 loop points, per-step agent roles, and core artifacts; emitted by `scripts/gen-loop-host-contract.cjs` from workflow markers (ADR-894 §3); consumed by `gen-capability-registry.cjs` |
 | `capability-loader.cjs`    | Runtime registry overlay loader (ADR-1244 D2) — `loadRegistry({ includeInstalled })` composes the frozen first-party registry with a validated installed overlay of third-party capability manifests read from global `$GSD_HOME/.gsd/capabilities/` and project `<projectRoot>/.gsd/capabilities/`; first-party always wins; load-time `engines.gsd` re-gate skips incompatible overlays with a warning; gate-kind hooks on skipped capabilities fail OPEN — no gate is injected; a loud warning (stderr + envelope `warnings`) names the load failure and the `gsd capability remove <id>` remediation (#2009) |
 | `capability-registry.cjs`  | Generated central Capability Registry — role-partitioned index of all co-located capability declarations; emitted by `scripts/gen-capability-registry.cjs` (ADR-894 §5) |
@@ -521,7 +589,7 @@ ui-phase → UI-SPEC.md (design contract, optional)
 plan-phase
     ├── Research gate (blocks if RESEARCH.md has unresolved open questions)
     ├── Phase Researcher → RESEARCH.md
-    │       └── Package Legitimacy Gate: slopcheck on every package; [SLOP] removed,
+    │       └── Package Legitimacy Gate: registry-API verdict on every package; [SLOP] removed,
     │           [SUS]/[ASSUMED] flagged; Audit table written to RESEARCH.md
     ├── Planner (with reachability check) → PLAN.md files
     │       └── checkpoint:human-verify injected before [ASSUMED]/[SUS] installs;
@@ -787,17 +855,15 @@ The researcher → planner → executor pipeline includes a supply-chain gate ag
 
 | Layer | Component | Action |
 |-------|-----------|--------|
-| Research | `gsd-phase-researcher` | Runs `slopcheck install <pkgs> --json`; writes `## Package Legitimacy Audit` table to RESEARCH.md; strips `[SLOP]` packages before RESEARCH.md is written |
+| Research | `gsd-phase-researcher` | Runs `gsd-tools query package-legitimacy check --ecosystem <npm\|pypi\|crates> <pkgs>`; writes `## Package Legitimacy Audit` table to RESEARCH.md; strips `[SLOP]` packages before RESEARCH.md is written |
 | Planning | `gsd-planner` | Reads Audit table; inserts `checkpoint:human-verify` before any `[ASSUMED]` or `[SUS]` install task; adds `T-{phase}-SC` STRIDE supply-chain row to `<threat_model>` |
 | Execution | `gsd-executor` | RULE 3 excludes package installation from auto-fix scope; failed installs surface as checkpoints, never silent substitutions |
 
-**Claim provenance integration:** Package names discovered via WebSearch are tagged `[ASSUMED]` (not `[VERIFIED]`) regardless of `npm view` result. This extends the existing `[ASSUMED]` / `[VERIFIED]` / `[CITED]` provenance system by enforcing the provenance tag as a hard gate at the install boundary — `[ASSUMED]` always generates a `checkpoint:human-verify` in PLAN.md.
+**Claim provenance integration:** Package names discovered via WebSearch are tagged `[ASSUMED]` (not `[VERIFIED]`) regardless of the registry-API verdict. This extends the existing `[ASSUMED]` / `[VERIFIED]` / `[CITED]` provenance system by enforcing the provenance tag as a hard gate at the install boundary — `[ASSUMED]` always generates a `checkpoint:human-verify` in PLAN.md.
 
-**Ecosystem coverage:** The researcher uses registry-specific verification commands — `npm view` (Node), `pip index versions` (Python), `cargo search` (Rust) — rather than a single generic check. This catches cross-ecosystem hallucination (~9% rate documented in 2025 USENIX research).
+**Ecosystem coverage:** The gate resolves signals directly from each ecosystem's registry API rather than a single generic check — `registry.npmjs.org` + `api.npmjs.org/downloads` (Node), `pypi.org/pypi/<pkg>/json` (Python), the crates.io API (Rust). This catches cross-ecosystem hallucination (~9% rate documented in 2025 USENIX research).
 
-**Graceful degradation:** If `slopcheck` is unavailable, every recommended package is tagged `[ASSUMED]` and gated with a checkpoint. Research and planning proceed; the system never hard-fails on a missing tool dependency.
-
-**External dependency:** `slopcheck` (MIT, pip-installable). If abandoned, the `[ASSUMED]`-gate fallback maintains human-checkpoint coverage.
+**Graceful degradation:** Each registry adapter degrades to null signals (never throws) on a failed lookup; missing signals push a package to `[SUS]`, which is gated behind the same `checkpoint:human-verify` checkpoint as `[ASSUMED]`. Research and planning proceed; the system never hard-fails on a network or tool outage. `slopcheck` is an optional escalate-only adapter — it can only raise a verdict, never lower it, and is not the install-or-degrade gate. No shipped configuration wires it.
 
 ---
 

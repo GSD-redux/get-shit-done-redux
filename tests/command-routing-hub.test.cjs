@@ -1672,10 +1672,16 @@ describe('bug-853 — manager/autonomous gate background dispatch by runtime', (
     assert.match(AUTONOMOUS, /If `FLATTEN` is `false`[\s\S]{0,1200}?run_in_background=true[\s\S]{0,600}?gsd-plan-phase/);
     // Background block: run_in_background=true appears within the FLATTEN=false branch and gsd-execute-phase is nearby
     assert.match(AUTONOMOUS, /If `FLATTEN` is `false`[\s\S]{0,3000}?run_in_background=true[\s\S]{0,200}?gsd-execute-phase/);
-    // Inline is the otherwise/else branch for plan — anchored on FLATTEN=true language (not runtime name)
+    // Inline is the otherwise/else branch for plan — anchored on FLATTEN=true language (not runtime name).
+    // #2994: the window between `FLATTEN` and the inline Skill() call widened
+    // past manager.md's 400 because this branch now carries a
+    // state:plan-strategy-converge conditional-read stub (converge-dispatch-inline,
+    // gsd-core/workflows/autonomous/steps/converge-dispatch-inline.md) ahead of
+    // the local-planning fallback — the stub's full step-file path is more
+    // verbose than the terse `Skill()` call it replaced.
     assert.match(
       AUTONOMOUS,
-      /Otherwise[\s\S]{0,100}?`FLATTEN`[\s\S]{0,400}?Skill\(skill="gsd-plan-phase"/,
+      /Otherwise[\s\S]{0,100}?`FLATTEN`[\s\S]{0,700}?Skill\(skill="gsd-plan-phase"/,
     );
     // Inline is the otherwise/else branch for execute — anchored on FLATTEN=true language (not runtime name)
     assert.match(
@@ -1687,23 +1693,25 @@ describe('bug-853 — manager/autonomous gate background dispatch by runtime', (
 
 describe('dispatch-should-flatten query — behavioral', () => {
   // #853 / #1708: The typed query replaces prose-level RUNTIME===codex checks.
-  // shouldFlattenDispatch returns false only when both dispatch.background AND
-  // dispatch.backgroundDispatch are true in the capability registry.
+  // #2939: shouldFlattenDispatch is now DEPTH-AWARE — a host may background only if it can
+  // background AND host a nesting orchestrator with a depth budget > 1 (nested:true +
+  // subagentToolkit:"full" + maxDepth > 1 or unbounded). The two-field background rule is the
+  // first gate, not the whole decision.
   //
   // Registry values (from host-integration-capability-matrix.md):
-  //   codex:   background=true, backgroundDispatch=true  → shouldFlatten=false (may background)
-  //   claude:  background=true, backgroundDispatch=false → shouldFlatten=true  (must inline)
-  //   cursor:  background=true, backgroundDispatch=true  → shouldFlatten=false (may background)
-  //   unknown: no entry → fail-closed                   → shouldFlatten=true  (must inline)
+  //   codex:   background=true, backgroundDispatch=true, BUT maxDepth:1  → shouldFlatten=true  (must inline — #2939: depth budget insufficient for a bg orchestrator + leaf)
+  //   claude:  background=true, backgroundDispatch=false                 → shouldFlatten=true  (must inline)
+  //   cursor:  background=true, backgroundDispatch=true, maxDepth:2      → shouldFlatten=false (may background — the one shipped host with a sufficient depth budget)
+  //   unknown: no entry → fail-closed                                   → shouldFlatten=true  (must inline)
 
-  test('runtime=codex → shouldFlatten=false (background dispatch safe)', () => {
+  test('runtime=codex → shouldFlatten=true (#2939: maxDepth:1 cannot host a bg orchestrator + leaf)', () => {
     const tmpDir = createTempProject();
     try {
       const result = runGsdTools(['query', 'dispatch-should-flatten', '--raw'], tmpDir, {
         GSD_RUNTIME: 'codex',
       });
       assert.ok(result.success, `Expected success, got error: ${result.error}`);
-      assert.strictEqual(result.output, 'false', `codex should return false (may background), got: ${result.output}`);
+      assert.strictEqual(result.output, 'true', `#2939: codex maxDepth:1 should return true (must inline), got: ${result.output}`);
     } finally {
       cleanupDir(tmpDir);
     }
@@ -1764,7 +1772,10 @@ describe('dispatch-should-flatten query — behavioral', () => {
         assert.fail(`Expected valid JSON output, got: ${result.output}`);
       }
       assert.strictEqual(parsed.runtime, 'codex');
-      assert.strictEqual(parsed.shouldFlatten, false);
+      // #2939: codex maxDepth:1 → shouldFlatten:true (depth budget insufficient). backgroundDispatch
+      // stays true on the descriptor (codex CAN background a single agent); only the flatten
+      // consequence changes.
+      assert.strictEqual(parsed.shouldFlatten, true);
       assert.ok(parsed.dispatch !== null && typeof parsed.dispatch === 'object', 'dispatch should be an object');
       assert.strictEqual(parsed.dispatch.backgroundDispatch, true);
     } finally {
@@ -1791,9 +1802,9 @@ describe('dispatch-should-flatten query — behavioral', () => {
       const result = runGsdTools(['query', 'dispatch-should-flatten', '--raw'], tmpDir, {
         GSD_RUNTIME: '',
       });
-      // config.runtime=codex with GSD_RUNTIME cleared → codex backgrounds → shouldFlatten=false
+      // #2939: config.runtime=codex with GSD_RUNTIME cleared → codex maxDepth:1 → shouldFlatten=true (must inline)
       assert.ok(result.success, `Expected success, got error: ${result.error}`);
-      assert.strictEqual(result.output, 'false', `config.runtime=codex (GSD_RUNTIME cleared) should return false (may background), got: ${result.output}`);
+      assert.strictEqual(result.output, 'true', `#2939: config.runtime=codex (GSD_RUNTIME cleared) should return true (must inline, maxDepth:1), got: ${result.output}`);
     } finally {
       cleanupDir(tmpDir);
     }

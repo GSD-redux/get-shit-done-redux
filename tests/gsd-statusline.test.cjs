@@ -18,10 +18,11 @@ const path = require('node:path');
 const {
   parseStateMd,
   formatGsdState,
+  formatGsdStateCompact,
   readGsdState,
   isInstalledAheadOfLatest,
 } = require('../hooks/gsd-statusline.js');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, saveSessionEnv, restoreSessionEnv, clearSessionEnv } = require('./helpers.cjs');
 
 // ─── parseStateMd ───────────────────────────────────────────────────────────
 
@@ -346,6 +347,16 @@ describe('formatGsdState', () => {
   test('returns only available parts when everything else is missing', () => {
     assert.equal(formatGsdState({ status: 'planning' }), 'planning');
   });
+
+  test('renders observable "no active workstream" signal for the #2850 sentinel', () => {
+    assert.equal(formatGsdState({ noActiveWorkstream: true }), 'no active workstream');
+  });
+});
+
+describe('formatGsdStateCompact — #2850 sentinel', () => {
+  test('renders observable "no active workstream" signal', () => {
+    assert.equal(formatGsdStateCompact({ noActiveWorkstream: true }), 'no active workstream');
+  });
 });
 
 describe('isInstalledAheadOfLatest', () => {
@@ -410,12 +421,195 @@ describe('readGsdState', () => {
     // only returns null when no file is found.
     assert.deepEqual(s, {});
   });
+
+  // ─── Workstream mode (#2850) ──────────────────────────────────────────────
+  //
+  // readGsdState previously only ever walked up looking for a flat
+  // .planning/STATE.md — it never resolved an active workstream, so the
+  // GSD-state segment silently disappeared for any workstream-mode project
+  // without a root STATE.md (issue #2850). These cases exercise the fix,
+  // which reuses resolveActiveWorkstream (CLI>env>store precedence,
+  // active-workstream-store.cjs) and listAvailableWorkstreams/planningPaths
+  // (planning-workspace.cjs) rather than re-implementing that resolution.
+  //
+  // saveSessionEnv/restoreSessionEnv/clearSessionEnv come from tests/helpers.cjs
+  // (shared with tests/active-workstream-store.unit.test.cjs — see that file's
+  // comment; #2850 code review caught the two local copies had diverged).
+
+  test('resolves active workstream via GSD_WORKSTREAM env when no root STATE.md exists (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'bot'), { recursive: true });
+    fs.writeFileSync(
+      path.join(proj, '.planning', 'workstreams', 'bot', 'STATE.md'),
+      '---\nstatus: executing\nmilestone: v1.0\n---\n'
+    );
+
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    t.after(() => restoreSessionEnv(saved));
+    process.env.GSD_WORKSTREAM = 'bot';
+
+    const s = readGsdState(proj);
+    assert.notEqual(s, null, 'must not silently return null when a workstream resolves');
+    assert.equal(s.status, 'executing');
+    assert.equal(s.milestone, 'v1.0');
+  });
+
+  test('resolves via GSD_WORKSTREAM env with CRLF frontmatter (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'bot'), { recursive: true });
+    fs.writeFileSync(
+      path.join(proj, '.planning', 'workstreams', 'bot', 'STATE.md'),
+      '---\r\nstatus: planning\r\nmilestone: v2.0\r\n---\r\n'
+    );
+
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    t.after(() => restoreSessionEnv(saved));
+    process.env.GSD_WORKSTREAM = 'bot';
+
+    const s = readGsdState(proj);
+    assert.equal(s.status, 'planning');
+    assert.equal(s.milestone, 'v2.0');
+  });
+
+  test('flat root STATE.md takes precedence over workstream mode when both exist (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'bot'), { recursive: true });
+    fs.writeFileSync(
+      path.join(proj, '.planning', 'STATE.md'),
+      '---\nstatus: executing\nmilestone: v-flat\n---\n'
+    );
+    fs.writeFileSync(
+      path.join(proj, '.planning', 'workstreams', 'bot', 'STATE.md'),
+      '---\nstatus: planning\nmilestone: v-ws\n---\n'
+    );
+
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    t.after(() => restoreSessionEnv(saved));
+    process.env.GSD_WORKSTREAM = 'bot';
+
+    const s = readGsdState(proj);
+    assert.equal(s.milestone, 'v-flat', 'flat STATE.md must win — flat-mode behavior stays byte-for-byte unchanged');
+  });
+
+  test('returns an observable "no active workstream" signal when nothing resolves (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'other'), { recursive: true });
+
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    t.after(() => restoreSessionEnv(saved));
+
+    const s = readGsdState(proj);
+    assert.deepEqual(s, { noActiveWorkstream: true });
+  });
+
+  test('resolved workstream with no STATE.md yet degrades to null without crashing (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'bot'), { recursive: true });
+    // No STATE.md written under workstreams/bot/ — workstream exists, state doesn't yet.
+
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    t.after(() => restoreSessionEnv(saved));
+    process.env.GSD_WORKSTREAM = 'bot';
+
+    assert.equal(readGsdState(proj), null);
+  });
+
+  test('resolves active workstream via the stored shared pointer file (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'bot'), { recursive: true });
+    fs.writeFileSync(
+      path.join(proj, '.planning', 'workstreams', 'bot', 'STATE.md'),
+      '---\nstatus: verifying\nmilestone: v3.0\n---\n'
+    );
+    fs.writeFileSync(path.join(proj, '.planning', 'active-workstream'), 'bot\n');
+
+    const { _resetControllingTtyCacheForTests } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    _resetControllingTtyCacheForTests();
+    t.after(() => {
+      restoreSessionEnv(saved);
+      _resetControllingTtyCacheForTests();
+    });
+
+    const s = readGsdState(proj);
+    assert.equal(s.status, 'verifying');
+    assert.equal(s.milestone, 'v3.0');
+  });
+
+  test('whitespace-only stored pointer file is treated as no active workstream (#2850)', (t) => {
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'bot'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.planning', 'active-workstream'), '   \n');
+
+    const { _resetControllingTtyCacheForTests } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    _resetControllingTtyCacheForTests();
+    t.after(() => {
+      restoreSessionEnv(saved);
+      _resetControllingTtyCacheForTests();
+    });
+
+    assert.deepEqual(readGsdState(proj), { noActiveWorkstream: true });
+  });
+
+  test('stored pointer naming an absent workstream dir degrades to the sentinel WITHOUT deleting the pointer file (#2850)', (t) => {
+    // Regression for a review finding: readGsdState previously resolved via
+    // resolveActiveWorkstream's DEFAULT store lookup (getActiveWorkstream),
+    // which self-heals a stale pointer by deleting it (adapter.clear() in
+    // active-workstream-store.cts). The statusline renders once per prompt,
+    // so a merely-stale pointer (mid-rename, mid-cleanup, or any transient
+    // absence of the workstream dir) would be silently unlinked by a hook
+    // whose only job is to display text — violating issue #2850's AC4 ("the
+    // fix is purely additive to what's displayed"). The fix routes through
+    // peekActiveWorkstream, a read-only sibling that never calls clear().
+    // This test asserts BOTH halves: the render still degrades usefully,
+    // AND the pointer file survives the render untouched.
+    const proj = fs.mkdtempSync(path.join(tmpRoot, 'proj-'));
+    // workstream mode is detected via .planning/workstreams/ existing — but
+    // note it does NOT contain a 'ghost' directory, so the pointer below
+    // names a workstream that does not exist.
+    fs.mkdirSync(path.join(proj, '.planning', 'workstreams', 'other'), { recursive: true });
+    const pointerPath = path.join(proj, '.planning', 'active-workstream');
+    fs.writeFileSync(pointerPath, 'ghost\n');
+
+    const { _resetControllingTtyCacheForTests } = require('../gsd-core/bin/lib/active-workstream-store.cjs');
+    const saved = saveSessionEnv();
+    clearSessionEnv();
+    _resetControllingTtyCacheForTests();
+    t.after(() => {
+      restoreSessionEnv(saved);
+      _resetControllingTtyCacheForTests();
+    });
+
+    assert.equal(fs.existsSync(pointerPath), true, 'precondition: pointer file must exist before the render');
+
+    const s = readGsdState(proj);
+
+    assert.deepEqual(s, { noActiveWorkstream: true }, 'a stale pointer must still degrade to the observable sentinel');
+    assert.equal(
+      fs.existsSync(pointerPath),
+      true,
+      'a read-only render must never delete the pointer file — that is a write, and the statusline must be purely additive to what is displayed (#2850 AC4)'
+    );
+    assert.equal(
+      fs.readFileSync(pointerPath, 'utf8'),
+      'ghost\n',
+      'the pointer file content must be byte-for-byte unchanged by the render, not just present'
+    );
+  });
 });
 
 // ─── CLAUDE_CODE_AUTO_COMPACT_WINDOW context meter (#2219) ──────────────────
 
 describe('context meter respects CLAUDE_CODE_AUTO_COMPACT_WINDOW (#2219)', () => {
-  const { execFileSync } = require('node:child_process');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
   const hookPath = path.join(__dirname, '..', 'hooks', 'gsd-statusline.js');
 
   /**
@@ -445,17 +639,8 @@ describe('context meter respects CLAUDE_CODE_AUTO_COMPACT_WINDOW (#2219)', () =>
       delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
     }
 
-    let stdout = '';
-    try {
-      stdout = execFileSync(process.execPath, [hookPath], {
-        input: payload,
-        env,
-        encoding: 'utf8',
-        timeout: 4000,
-      });
-    } catch (e) {
-      stdout = e.stdout || '';
-    }
+    const r = runHookSeam(hookPath, [], { input: payload, env, timeoutMs: 4000 });
+    const stdout = r.stdout;
 
     // Parse normalized used% from the statusline bar output (e.g. "60%")
     // Strip ANSI escape codes then extract the percentage digit(s) before "%"
@@ -1355,7 +1540,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
   const fs = require('node:fs');
   const os = require('node:os');
   const path = require('node:path');
-  const { execFileSync } = require('node:child_process');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
   const { cleanup } = require('./helpers.cjs');
   const { formatTokens, contextTokenSuffix } = require('../hooks/gsd-statusline.js');
   const { VALID_CONFIG_KEYS } = require('../gsd-core/bin/lib/config-schema.cjs');
@@ -1445,16 +1630,9 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
           },
         },
       });
-      let stdout = '';
-      try {
-        stdout = execFileSync(process.execPath, [hookPath], {
-          input: payload, encoding: 'utf8', timeout: 4000,
-        });
-      } catch (e) {
-        stdout = e.stdout || '';
-      }
+      const r = runHookSeam(hookPath, [], { input: payload, timeoutMs: 4000 });
       // eslint-disable-next-line no-control-regex -- stripping ANSI SGR sequences from captured CLI output
-      return stdout.replace(/\x1b\[[0-9;]*m/g, '');
+      return r.stdout.replace(/\x1b\[[0-9;]*m/g, '');
     }
 
     test('flag=true appends the token count after the percentage', () => {
@@ -1792,6 +1970,7 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
   const os = require('node:os');
   const path = require('node:path');
   const { execFileSync } = require('node:child_process');
+  const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
   const { cleanup } = require('./helpers.cjs');
   const statusline = require('../hooks/gsd-statusline.js');
   const { parseGitStatus, buildGitSegment, readGitStatus, composeStatusline } = statusline;
@@ -2016,16 +2195,9 @@ test('config-set statusline.show_context_tokens yes → rejected', () => {
         workspace: { current_dir: dir },
         session_id: `test-git-${Date.now()}-${Math.random().toString(36).slice(2)}`,
       });
-      let stdout = '';
-      try {
-        stdout = execFileSync(process.execPath, [hookPath], {
-          input: payload, encoding: 'utf8', timeout: 4000,
-        });
-      } catch (e) {
-        stdout = e.stdout || '';
-      }
+      const r = runHookSeam(hookPath, [], { input: payload, timeoutMs: 4000 });
       // eslint-disable-next-line no-control-regex -- stripping ANSI SGR sequences from captured CLI output
-      return stdout.replace(/\x1b\[[0-9;]*m/g, '');
+      return r.stdout.replace(/\x1b\[[0-9;]*m/g, '');
     }
 
     test('flag=true renders the branch segment', () => {

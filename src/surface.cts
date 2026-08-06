@@ -52,6 +52,8 @@ const { findInstallSourceRoot } = runtimeArtifactLayout;
 import runtimeArtifactConversion = require('./runtime-artifact-conversion.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import runtimeArtifactInstallPlan = require('./runtime-artifact-install-plan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import retiredArtifactCleanup = require('./retired-artifact-cleanup.cjs');
 const { assertDestWithinConfigHome } = runtimeArtifactInstallPlan;
 
 const SURFACE_FILE_NAME = '.gsd-surface.json';
@@ -70,6 +72,10 @@ interface ArtifactKind {
   kind: string;
   destSubpath: string;
   prefix: string;
+  // #2911: optional install-root override (e.g. Codex skills -> $HOME/.agents),
+  // set by resolveRuntimeArtifactLayout's dispatchKindEntry. Must be honored as
+  // a FALLBACK by every destination-computation call site — see applySurface.
+  home?: string;
   stage: (resolvedProfile: { name: string; skills: Set<string> | '*'; agents: Set<string> }, agentCtx?: AgentCtx) => string;
 }
 
@@ -351,6 +357,9 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
   }
   const skillManifest = normalizeSkillManifest(layout.configDir, manifest);
   const resolved = resolveSurface(layout.configDir, skillManifest, clusterMap, registry);
+  // Profile toggles must converge retired surfaces too. Once a kind disappears
+  // from artifactLayout there is no normal sync pass left to prune it (#2644).
+  retiredArtifactCleanup.pruneRetiredRuntimeArtifacts(layout.runtime, layout.configDir);
   // #1575: agents kind now mirrors createRuntimeArtifactInstallPlan — build
   // agentCtx (pathPrefix + attribution) and pass it to kind.stage() so
   // stageAgentsForRuntimeWithConverter applies the full inline-loop pipeline
@@ -410,7 +419,13 @@ function applySurface(runtimeConfigDir: string, layout: Layout, manifest: Map<st
           tempDirsToClean.push(rewritten);
         }
       }
-      const dest = assertDestWithinConfigHome(layout.configDir, kind.destSubpath);
+      // #2911: honor kind.home as a FALLBACK-preferred override (e.g. Codex
+      // skills -> $HOME/.agents), never a blanket replacement — kinds without
+      // a `home` must keep resolving against layout.configDir. This must stay
+      // in lockstep with _copyStaged's root selection in src/install-engine.cts;
+      // the parity test in tests/runtime-artifact-layout-surface.test.cjs
+      // enforces that the two writers never diverge again.
+      const dest = assertDestWithinConfigHome(kind.home ?? layout.configDir, kind.destSubpath);
       _syncGsdDir(staged, dest, kind, skillManifest, layout.runtime);
     }
   } finally {

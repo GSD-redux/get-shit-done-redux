@@ -975,3 +975,58 @@ describe('#2736 prose name precedence — properties', () => {
     }
   });
 });
+
+// ─── phase-key derivations (#2562) ───────────────────────────────────────────
+
+// #2562: the whole point of these living here is that a ROADMAP table cell and
+// a phase DIRECTORY must land in ONE key space. Modules that derived their own
+// regex for this is what let a `| 01. … |` row miss a `1-slug` directory, so
+// the contract is unit-tested at the owner module, not only through consumers.
+describe('phaseKeyFrom* — one key space for directories and prose', () => {
+  test('every zero-padding spelling of a directory collapses to one key', () => {
+    for (const dir of ['5-a', '05-a', 'PROJ-5-a', 'PROJ-05-a']) {
+      assert.strictEqual(phaseId.phaseKeyFromDir(dir), '05', dir);
+    }
+  });
+
+  test('every zero-padding spelling in prose collapses to the same key', () => {
+    for (const prose of ['5. A', '05. A', '**5. A**', '`05. A`']) {
+      assert.strictEqual(phaseId.phaseKeyFromProse(prose), '05', prose);
+    }
+  });
+
+  test('a padded table cell and an unpadded directory produce the SAME key', () => {
+    assert.strictEqual(phaseId.phaseKeyFromProse('01. Setup'), phaseId.phaseKeyFromDir('1-setup'));
+    assert.strictEqual(phaseId.phaseKeyFromProse('30. Rollout'), phaseId.phaseKeyFromDir('030-rollout'));
+  });
+
+  test('sub-phase keys keep their decimal segment', () => {
+    assert.strictEqual(phaseId.phaseKeyFromDir('30.1-follow-up'), '30.1');
+    assert.strictEqual(phaseId.phaseKeyFromProse('**05.1 Follow-up**'), '05.1');
+  });
+
+  test('prose that does not begin with a phase token is null, not a bogus key', () => {
+    assert.strictEqual(phaseId.phaseKeyFromProse('Not a phase'), null);
+    assert.strictEqual(phaseId.phaseKeyFromProse(null), null);
+    assert.strictEqual(phaseId.phaseKeyFromProse(undefined), null);
+  });
+
+  test('parentPhaseKey resolves a sub-phase to its parent and a top-level to null', () => {
+    assert.strictEqual(phaseId.parentPhaseKey('30.1'), '30');
+    assert.strictEqual(phaseId.parentPhaseKey('05.12'), '05');
+    assert.strictEqual(phaseId.parentPhaseKey('30'), null);
+  });
+
+  test('property: padding a directory number never changes its key', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 1, max: 99 }),
+        fc.integer({ min: 0, max: 3 }),
+        (num, pad) => {
+          const padded = String(num).padStart(String(num).length + pad, '0');
+          return phaseId.phaseKeyFromDir(`${padded}-slug`) === phaseId.phaseKeyFromDir(`${num}-slug`);
+        },
+      ),
+    );
+  });
+});

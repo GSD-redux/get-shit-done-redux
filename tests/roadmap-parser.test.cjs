@@ -23,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const roadmapParser = require('../gsd-core/bin/lib/roadmap-parser.cjs');
-const { createTempProject, cleanup } = require('./helpers.cjs');
+const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 
 const {
   stripShippedMilestones,
@@ -32,6 +32,7 @@ const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
   getMilestonePhaseFilter,
+  isMilestoneShippedInRoadmap,
   withPhaseSection,
 } = roadmapParser;
 
@@ -199,6 +200,162 @@ describe('roadmap-parser: extractCurrentMilestone', () => {
     // The section should include Phase 1 content; the fenced heading should not terminate section early
     assert.ok(result.includes('real goal'), 'phase 1 content included');
     assert.ok(result.includes('Also Real'), 'phase 2 content also included');
+  });
+
+  // ─── #2947: milestone anchor must prefer the heading whose section contains
+  // Phase details, not just the first version-bearing heading anywhere. ────────
+
+  test('#2947 — prefers the heading whose section contains Phase details over a later version-bearing progress heading', () => {
+    // The shipped greenfield template's `## Phases` is NOT version-bearing,
+    // but a later `### v9.0 phase progress` heading (under `## Progress`) is.
+    // The anchor must not latch onto the progress heading and drop the phases.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone** — Phases 1-2 (in progress)',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+      '|-------|--------|',
+      '| 1     | Planned |',
+      '| 2     | Planned |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    // The Phase detail headings must be inside the extracted section.
+    assert.ok(result.includes('Phase 1: Alpha'), 'Phase 1 detail must be in scope (got dropped — #2947)');
+    assert.ok(result.includes('Phase 2: Beta'), 'Phase 2 detail must be in scope (got dropped — #2947)');
+    // The progress heading should NOT be the anchor (it has no phase details).
+    assert.ok(!result.startsWith('### v9.0 phase progress'), 'progress heading must not be the anchor');
+  });
+
+  test('#2947 — version-bearing phase-listing heading still resolves (control, no regression)', () => {
+    // The one-word control from the issue: rename `## Phases` → `## v9.0 Phases`.
+    // This already works today and must keep working after the fix.
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## v9.0 Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 1: Alpha'), 'control: Phase 1 in scope');
+    assert.ok(result.includes('Phase 2: Beta'), 'control: Phase 2 in scope');
+  });
+
+  test('#2947 — falls back to first non-closed when no candidate section has Phase details', () => {
+    // No `### Phase N:` details anywhere — the fix's fallback must preserve
+    // today's behavior (no crash, returns a section).
+    writeState(tmpDir, { milestone: 'v9.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## v9.0 Milestone',
+      '',
+      'Some prose, no phase detail headings.',
+      '',
+      '### v9.0 notes',
+      '',
+      'More prose.',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(typeof result === 'string', 'fallback returns a string section without throwing');
+    assert.ok(result.includes('v9.0'), 'fallback still includes the milestone content');
+  });
+
+  test('#2947 — closed milestone heading is not preferred over an open one with phase details', () => {
+    // A closed (✅) version-bearing heading must not win over an open one
+    // whose section contains the phase details.
+    writeState(tmpDir, { milestone: 'v2.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## ✅ v1.0 Shipped',
+      '',
+      '### Phase 1: Old',
+      '',
+      '## 🚧 v2.0 Current',
+      '',
+      '### Phase 2: New',
+      '',
+      '**Goal:** new work',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+    const roadmap = fs.readFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'utf-8');
+    const result = extractCurrentMilestone(roadmap, tmpDir);
+    assert.ok(result.includes('Phase 2: New'), 'open milestone phase selected');
+    assert.ok(!result.includes('Phase 1: Old'), 'closed milestone phase excluded');
+  });
+
+  test('#2947 — roadmap.analyze on the issue fixture reports phase_count 2 (end-to-end)', () => {
+    writeState(tmpDir, { milestone: 'v9.0', gsd_state_version: '1.0' });
+    const content = [
+      '# ROADMAP',
+      '',
+      '## Milestones',
+      '',
+      '- 🚧 **v9.0 Test Milestone** — Phases 1-2 (in progress)',
+      '',
+      '## Phases',
+      '',
+      '### Phase 1: Alpha',
+      '',
+      '**Goal:** do alpha',
+      '',
+      '### Phase 2: Beta',
+      '',
+      '**Goal:** do beta',
+      '',
+      '## Progress',
+      '',
+      '### v9.0 phase progress',
+      '',
+      '| Phase | Status |',
+      '|-------|--------|',
+      '| 1     | Planned |',
+      '| 2     | Planned |',
+    ].join('\n');
+    writeRoadmap(tmpDir, content);
+
+    const result = runGsdTools(['query', 'roadmap.analyze', '--raw'], tmpDir);
+    assert.ok(result.success, `roadmap.analyze should succeed; got: ${result.error}`);
+    const payload = JSON.parse(result.output);
+    assert.strictEqual(payload.phase_count, 2, `expected phase_count 2, got ${payload.phase_count} (phases dropped — #2947)`);
   });
 });
 
@@ -479,6 +636,38 @@ describe('roadmap-parser: getMilestoneInfo #2135 — milestone_name clobber', ()
   });
 });
 
+// ─── isMilestoneShippedInRoadmap ──────────────────────────────────────────────
+
+// #2562: this module owns milestone-heading classification, so its own shipped
+// detection is unit-tested here rather than only through the workstream
+// inventory that consumes it.
+describe('roadmap-parser: isMilestoneShippedInRoadmap', () => {
+  test('a shipped marker on the milestone heading counts', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## v2.0 Launch — ✅ SHIPPED\n', 'v2.0'), true);
+  });
+
+  test('a collapsed <summary> shipped marker counts', () => {
+    const roadmap = '<details><summary>✅ v2.0 Launch — SHIPPED</summary>\n\ncontent\n</details>\n';
+    assert.strictEqual(isMilestoneShippedInRoadmap(roadmap, 'v2.0'), true);
+  });
+
+  test('a bullet merely naming the version does NOT count', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('- ✅ v2.0 Launch — SHIPPED\n', 'v2.0'), false);
+  });
+
+  test('version tokens are boundary-matched (v2.0.1 is not v2.0)', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## v2.0.1 Patch — ✅ SHIPPED\n', 'v2.0'), false);
+  });
+
+  test('an in-progress marker on the heading beats a shipped one', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## 🚧 v2.0 Launch — ✅ SHIPPED\n', 'v2.0'), false);
+  });
+
+  test('another milestone being shipped says nothing about this one', () => {
+    assert.strictEqual(isMilestoneShippedInRoadmap('## v1.0 Old — ✅ SHIPPED\n', 'v2.0'), false);
+  });
+});
+
 // ─── getMilestonePhaseFilter ──────────────────────────────────────────────────
 
 describe('roadmap-parser: getMilestonePhaseFilter', () => {
@@ -491,6 +680,46 @@ describe('roadmap-parser: getMilestonePhaseFilter', () => {
     const filter = getMilestonePhaseFilter(tmpDir);
     assert.strictEqual(filter.phaseCount, 0);
     assert.strictEqual(filter('anything'), true);
+  });
+
+  // #2562 added a trailing optional `ws` param. Every pre-existing call site in
+  // the codebase passes 1–3 args, so what has to hold is that omitting the 4th
+  // is INDISTINGUISHABLE from the prior resolution — including its
+  // `GSD_WORKSTREAM` env fallback. Characterises the legacy call surface
+  // directly; it does not stand in for coverage of the individual callers.
+  test('#2562: omitting the ws param preserves the prior path resolution exactly', () => {
+    const ROADMAP = ['## v1.0: Launch', '### Phase 1: Setup', '**Goal:** setup'].join('\n');
+    writeRoadmap(tmpDir, ROADMAP);
+
+    const omitted = getMilestonePhaseFilter(tmpDir);
+    const explicitUndefined = getMilestonePhaseFilter(tmpDir, undefined, undefined, undefined);
+    const explicitNull = getMilestonePhaseFilter(tmpDir, null, null, null);
+
+    for (const [label, filter] of [['omitted', omitted], ['undefined', explicitUndefined], ['null', explicitNull]]) {
+      assert.strictEqual(filter.phaseCount, 1, `${label}: same phase count`);
+      assert.strictEqual(filter('01-setup'), true, `${label}: same membership`);
+      assert.strictEqual(filter('02-other'), false, `${label}: same exclusion`);
+      assert.strictEqual(typeof filter.versionScoped, 'boolean', `${label}: new flag is present, not undefined`);
+    }
+  });
+
+  test('#2562: the GSD_WORKSTREAM env fallback still resolves when ws is omitted', () => {
+    const wsRoadmap = ['## v1.0: WS', '### Phase 7: Only', '**Goal:** only'].join('\n');
+    const wsDir = path.join(tmpDir, '.planning', 'workstreams', 'alpha');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), wsRoadmap);
+    writeRoadmap(tmpDir, ['## v1.0: Root', '### Phase 1: Setup', '**Goal:** setup'].join('\n'));
+
+    const previous = process.env.GSD_WORKSTREAM;
+    process.env.GSD_WORKSTREAM = 'alpha';
+    try {
+      const filter = getMilestonePhaseFilter(tmpDir);
+      assert.strictEqual(filter('07-only'), true, 'env fallback must still reach the workstream roadmap');
+      assert.strictEqual(filter('01-setup'), false, 'and must not read the root roadmap');
+    } finally {
+      if (previous === undefined) delete process.env.GSD_WORKSTREAM;
+      else process.env.GSD_WORKSTREAM = previous;
+    }
   });
 
   test('basic milestone phase filter — matches dirs by phase number', () => {

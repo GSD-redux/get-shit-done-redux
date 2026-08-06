@@ -95,7 +95,7 @@ Returns JSON with: current position, phase, plan, status, decisions, blockers, m
 
 ### Smart Entry
 
-Read-only situation classifier used by `/gsd:next`.
+Read-only situation classifier used by `/gsd-next`.
 
 ```bash
 node gsd-tools.cjs smart-entry          # Human summary + recommended route
@@ -322,6 +322,47 @@ This command is strictly read-only — no config writes, no disk mutation.
 
 ---
 
+### `query context-predicates`
+
+```bash
+node gsd-tools.cjs query context-predicates --class <CLASS> | --prefix <dotted.prefix> | --contains <text>
+```
+
+Selector surface for the `CONTEXT.md` predicate fact-store (ADR-1671, #2928). Parses the repo-root `CONTEXT.md` **live** on every call via the compiled `context-predicates.cjs` — it never reads the committed `docs/CONTEXT-INDEX.json` (that artifact is a CI drift-guard byproduct, not a query source, so it can never go stale relative to the live predicates it answers about).
+
+**Selectors** (at least one required; when more than one is given they are ANDed together):
+
+| Flag | Type | Description |
+|---|---|---|
+| `--class <CLASS>` | string | Exact match on the predicate's class (the segment before the first `.`) |
+| `--prefix <dotted.prefix>` | string | Match predicate ids starting with this dotted prefix |
+| `--contains <text>` | string | Case-insensitive substring match against `id + ' ' + value` |
+
+Each flag also accepts the inline-assignment form (`--contains=<text>`), which is the escape
+hatch for a flag-shaped value the space-separated form cannot express — e.g.
+`--contains=--dry-run` to search for the literal substring `--dry-run`. The space-separated form
+(`--contains --dry-run`) always reads a following `--...` token as a missing value, by design.
+
+**Output JSON:**
+
+```json
+{
+  "matched": 2,
+  "predicates": [
+    { "id": "RULESET.EXAMPLE", "klass": "RULESET", "value": "…", "line": 42, "section": "Glossary" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `matched` | number | Count of predicates satisfying all given selectors |
+| `predicates` | array | Each entry is a live `Predicate` — `id`, `klass`, `value`, `line` (1-based source line), `section` (nearest enclosing heading) |
+
+This command is strictly read-only — no config writes, no disk mutation. See [ADR-1671](adr/1671-dynamic-context-management-platform.md) and [Architecture — CLI Tools](ARCHITECTURE.md#cli-tools-gsd-corebin).
+
+---
+
 ## Model Resolution
 
 ```bash
@@ -460,10 +501,19 @@ node gsd-tools.cjs init quick <description>
 node gsd-tools.cjs init resume
 node gsd-tools.cjs init verify-work <phase>
 node gsd-tools.cjs init phase-op <phase>
+node gsd-tools.cjs init code-review <phase> [--fix]
+node gsd-tools.cjs init review <phase>
+node gsd-tools.cjs init discuss-phase-assumptions <phase> [--auto]
 node gsd-tools.cjs init todos [area]
 node gsd-tools.cjs init milestone-op
 node gsd-tools.cjs init map-codebase
 node gsd-tools.cjs init progress
+node gsd-tools.cjs init manager
+node gsd-tools.cjs init complete-milestone
+node gsd-tools.cjs init autonomous [--converge] [--cross-ai]
+node gsd-tools.cjs init docs-update
+node gsd-tools.cjs init update [--next] [--rc]
+node gsd-tools.cjs init transition
 
 # Workstream-scoped init (`--ws` flag)
 node gsd-tools.cjs init execute-phase <phase> --ws <name>
@@ -483,12 +533,24 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 ```bash
 # Archive milestone
-node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases]
+node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run]
 
 # Mark requirements as complete
 node gsd-tools.cjs requirements mark-complete <ids>
 # Accepts: REQ-01,REQ-02 or REQ-01 REQ-02 or [REQ-01, REQ-02]
 ```
+
+**`milestone complete` flags**
+
+| Flag | Description |
+|------|-------------|
+| `<version>` | Milestone version label to archive (e.g. `v1.0`). |
+| `--name <name>` | Display name for the MILESTONES.md entry. Defaults to `<version>`. |
+| `--no-archive-phases` | Leave phase directories in place instead of moving them into `.planning/milestones/<version>-phases/`. |
+| `--force` | Override the unstarted-phase guard (see below). |
+| `--dry-run` | Print the archive plan (roadmap, requirements, phases to move) without mutating anything. |
+
+**Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
 
 ---
 
@@ -604,7 +666,7 @@ node gsd-tools.cjs websearch <query> [--limit N] [--freshness day|week|month]
 
 ## Update Backup and Restore
 
-The two halves of `/gsd:update`'s user-added-file protection. `detect-custom-files`
+The two halves of `/gsd-update`'s user-added-file protection. `detect-custom-files`
 lists files that exist inside GSD-managed directories but are absent from
 `gsd-file-manifest.json` — the update workflow copies those into
 `gsd-user-files-backup/` before the clean-install wipe. `restore-custom-files`
@@ -669,9 +731,22 @@ node gsd-tools.cjs worktree set-baseref
 | `head-matches-fork` | `false` | HEAD and `origin/HEAD` are the same commit |
 | `head-diverged-from-fork` | `true` | Branch is ahead of or diverged from `origin/HEAD` |
 | `fork-ref-unknown` | `true` | `origin/HEAD` could not be resolved |
-| `no-head` | `false` | Not in a git repo (no `HEAD`) |
+| `no-head` | `false` | Not in a git repo (no `HEAD`) — `git rev-parse HEAD` exited 128 (definitive), or exited 0 with empty stdout |
+| `head-unresolvable` | `true` | `git rev-parse HEAD` did not return a definitive answer (timed out, `git` missing, or any other non-128 failure) — fails closed rather than being treated as `no-head` |
 
 **`worktree set-baseref`** applies a no-clobber write of `worktree.baseRef:"head"` to `.claude/settings.local.json`. If the file already contains an explicit `baseRef` value other than `"head"`, the existing value is preserved and `skipped:"explicit-other"` is returned. Malformed JSON causes an error rather than a silent overwrite. Both fresh installs and upgrades of GSD Core run this automatically when `workflow.use_worktrees` is enabled (the default); the command is also available for manual use — for example, to apply the setting when worktrees were toggled on after installation, or to re-apply it after a settings change.
+
+### Worktree creation
+
+```bash
+# Create an agent worktree and atomically record it in the wave cleanup manifest.
+# Returns JSON: { ok, reason, entry, manifest_path } (exit 0), or
+#   { ok:false, reason, hint } with a non-zero exit on a rejected/failed create.
+node gsd-tools.cjs worktree create \
+  --manifest <path> --agent-id <id> --path <worktree> --branch <branch> --base <sha> --root <dir>
+```
+
+**`worktree create`** validates and records the manifest entry BEFORE running any git command, then runs `git worktree add` for the validated `{path, branch, base}`, and only on success finalizes the manifest write — a rejected entry or a failed `git worktree add` never leaves a partially-recorded manifest or an unmanifested worktree on disk. `--root` is **mandatory** (#3050): the fail-closed root-confinement check resolves `--path` and `--root` and rejects (`reason:"path_outside_root"`) unless `--path` resolves strictly inside `--root` — this closes a prior gap where an unconfined `--path` (no `--root` check at all) could point a spawned executor's worktree anywhere on the filesystem. Omitting `--root` fails closed with `reason:"root_required"` rather than silently skipping confinement. All other flags share `worktree record-agent`'s validation rules above (`--branch` namespace, non-empty/non-whitespace `--path`/`--branch`/`--base`, `--agent-id` required).
 
 ### Wave-manifest recording
 
@@ -739,6 +814,7 @@ User-facing entry point: `/gsd-graphify` (see [Command Reference](COMMANDS.md#gs
 | Audit | `lib/audit.cjs` | Phase/milestone audit queue handlers; `audit-open` helper |
 | GSD2 Import | `lib/gsd2-import.cjs` | Reverse-migration importer from GSD-2 projects (backs `/gsd-import --from-gsd2`) |
 | Intel | `lib/intel.cjs` | Queryable codebase intelligence index (backs `/gsd-map-codebase --query`) |
+| Context Predicates | `lib/context-predicates.cjs` | `CONTEXT.md` predicate fact-store parser/selector (ADR-1671, #2928) — backs `query context-predicates` and `scripts/gen-context-index.cjs`'s `docs/CONTEXT-INDEX.json` drift guard |
 | Capability State | `lib/capability-state.cjs` | Capability-state resolver — composes install profile, surface, and config into per-capability `enabled`/`active` view |
 | Capability Writer | `lib/capability-writer.cjs` | Capability-state writer (ADR-1213) — write-side inverse; projects `--on`/`--off`/`--gate` onto surface + config substrates then re-resolves |
 | Worktree Base Ref | `lib/worktree-base-ref.cjs` | Worktree fork-base detection and `worktree base-check` / `set-baseref` commands (#683) |

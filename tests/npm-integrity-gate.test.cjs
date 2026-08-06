@@ -22,6 +22,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'check-npm-integrity.cjs');
@@ -36,15 +37,11 @@ const FIXTURES = path.join(__dirname, 'fixtures', 'npm-integrity');
  */
 function runGate(fixtureName, extraArgs = []) {
   const fixtureDir = path.join(FIXTURES, fixtureName);
-  const result = spawnSync(process.execPath, [SCRIPT, ...extraArgs], {
-    cwd: fixtureDir,
-    encoding: 'utf-8',
-    timeout: 30_000,
-  });
+  const r = runNode([SCRIPT, ...extraArgs], { cwd: fixtureDir, timeoutMs: 30_000 });
   return {
-    status: result.status ?? 1,
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
+    status: r.exitCode ?? 1,
+    stdout: r.stdout,
+    stderr: r.stderr,
   };
 }
 

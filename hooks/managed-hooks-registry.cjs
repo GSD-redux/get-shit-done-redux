@@ -16,6 +16,7 @@
  * stale warnings for users who haven't cleaned up manually (#1750).
  */
 const MANAGED_HOOKS = [
+  'gsd-agent-isolation-guard.js',
   'gsd-check-update-worker.js',
   'gsd-check-update.js',
   'gsd-config-reload.js',
@@ -40,6 +41,7 @@ const MANAGED_HOOKS = [
   'gsd-windsurf-pre-write.js',
   'gsd-workflow-guard.js',
   'gsd-worktree-path-guard.js',
+  'gsd-write-guard.js',
 ];
 
 module.exports = { MANAGED_HOOKS };

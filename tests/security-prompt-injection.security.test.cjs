@@ -83,6 +83,7 @@ const {
   cleanup,
 } = require('./helpers.cjs');
 const { runCli } = require('./helpers/cli-negative.cjs');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const PROMPT_GUARD_HOOK = path.join(REPO_ROOT, 'hooks', 'gsd-prompt-guard.js');
@@ -117,22 +118,18 @@ const {
  * the human-readable `additionalContext` prose.
  */
 function runHook(hookPath, payload, { timeoutMs = 5000 } = {}) {
-  const r = spawnSync(process.execPath, [hookPath], {
-    input: JSON.stringify(payload),
-    encoding: 'utf-8',
-    timeout: timeoutMs,
-  });
-  const stdout = typeof r.stdout === 'string' ? r.stdout : '';
+  const r = runHookSeam(hookPath, [], { input: JSON.stringify(payload), timeoutMs });
+  const stdout = r.stdout;
   let parsed = null;
   const trimmed = stdout.trim();
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
     try { parsed = JSON.parse(trimmed); } catch { parsed = null; }
   }
   return {
-    status: r.status,
+    status: r.exitCode,
     signal: r.signal,
     stdout,
-    stderr: typeof r.stderr === 'string' ? r.stderr : '',
+    stderr: r.stderr,
     parsed,
     silent: trimmed.length === 0,
     additionalContext: parsed?.hookSpecificOutput?.additionalContext ?? null,

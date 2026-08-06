@@ -10,9 +10,31 @@ const fs = require('fs');
 const path = require('path');
 
 const WORKFLOW = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work.md');
+const VERIFY_WORK_STEPS_DIR = path.join(__dirname, '..', 'gsd-core', 'workflows', 'verify-work', 'steps');
+
+/**
+ * verify-work.md was fragmented (#2994) into gsd-core/workflows/verify-work/steps/*.md.
+ * The MVP-mode UAT framing content (verify-mvp-mode.md reference, user-flow-first
+ * ordering, deferred-technical-checks clause) now lives in
+ * verify-work/steps/mvp-uat-framing.md, only read at all when
+ * state:phase-mvp-mode is true. Read host + every step file combined so these
+ * guards keep seeing the full picture regardless of which file the content
+ * physically lives in.
+ */
+function readVerifyWorkCombined() {
+  let combined = fs.readFileSync(WORKFLOW, 'utf8');
+  if (fs.existsSync(VERIFY_WORK_STEPS_DIR)) {
+    for (const entry of fs.readdirSync(VERIFY_WORK_STEPS_DIR).sort()) {
+      if (entry.endsWith('.md')) {
+        combined += '\n' + fs.readFileSync(path.join(VERIFY_WORK_STEPS_DIR, entry), 'utf8');
+      }
+    }
+  }
+  return combined;
+}
 
 describe('verify-work — MVP mode UAT framing', () => {
-  const content = fs.readFileSync(WORKFLOW, 'utf-8');
+  const content = readVerifyWorkCombined();
 
   test('Step 1 resolves MVP_MODE from phase mode field', () => {
     assert.match(content, /MVP_MODE/, 'workflow must declare MVP_MODE');
