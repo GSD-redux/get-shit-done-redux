@@ -17,6 +17,7 @@ const {
   FIELD_CLASSIFICATION,
   getFieldClassification,
   STATE_MD_SECTIONS,
+  sliceCurrentPositionSection,
 } = require('../gsd-core/bin/lib/state-transition.cjs');
 const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
 
@@ -1660,3 +1661,323 @@ describe('bug #21 — STATE.md template must carry YAML frontmatter', () => {
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #3118: sliceCurrentPositionSection — locator characterization tests.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('sliceCurrentPositionSection (#3118)', () => {
+  test('slices the section up to the following heading', () => {
+    const body = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 (Test Phase) — EXECUTING',
+      '',
+      '## Accumulated Context',
+      '',
+      '- A decision worth keeping.',
+      '',
+    ].join('\n');
+    const result = sliceCurrentPositionSection(body);
+    assert.ok(result.includes('Phase: 3 (Test Phase) — EXECUTING'));
+    assert.ok(!result.includes('A decision worth keeping'));
+  });
+
+  test('slices to end of document for a trailing section', () => {
+    const body = [
+      '# Project State',
+      '',
+      '## Accumulated Context',
+      '',
+      '- Earlier decision.',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 5 (Final Phase) — EXECUTING',
+      '',
+    ].join('\n');
+    const result = sliceCurrentPositionSection(body);
+    assert.ok(result.includes('Phase: 5 (Final Phase) — EXECUTING'));
+  });
+
+  test('returns null when the section is absent', () => {
+    const body = [
+      '# Project State',
+      '',
+      '## Accumulated Context',
+      '',
+      '- Some decision.',
+      '',
+      '## Deferred Items',
+      '',
+      '- Something deferred.',
+      '',
+    ].join('\n');
+    assert.strictEqual(sliceCurrentPositionSection(body), null);
+  });
+
+  test('matches the heading case- and space-insensitively', () => {
+    const body = [
+      '# Project State',
+      '',
+      '##  CURRENT   POSITION',
+      '',
+      'Phase: 2 — EXECUTING',
+      '',
+    ].join('\n');
+    assert.notStrictEqual(sliceCurrentPositionSection(body), null);
+  });
+
+  test('ignores a Current Position heading inside a code fence', () => {
+    // The locator is fence-aware via `tokenizeHeadings` — a `##` line inside
+    // a ``` fence is not a real heading, so this document has zero *real*
+    // Current Position headings.
+    const body = [
+      '# Project State',
+      '',
+      '## Accumulated Context',
+      '',
+      '```markdown',
+      '## Current Position',
+      '',
+      'Phase: 9 — should not be seen',
+      '```',
+      '',
+    ].join('\n');
+    assert.strictEqual(sliceCurrentPositionSection(body), null);
+  });
+
+  test('distinguishes an empty section from an absent one', () => {
+    // An empty section and an absent one are different answers, and a caller
+    // that folds them together reintroduces the collapse this epic removes.
+    const body = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '## Accumulated Context',
+      '',
+      '- A decision.',
+      '',
+    ].join('\n');
+    const result = sliceCurrentPositionSection(body);
+    assert.strictEqual(typeof result, 'string');
+    assert.notStrictEqual(result, null);
+    assert.strictEqual(result.trim(), '');
+  });
+
+  test('does not match an H3 Current Position', () => {
+    const body = [
+      '# Project State',
+      '',
+      '### Current Position',
+      '',
+      'Phase: 2 — EXECUTING',
+      '',
+    ].join('\n');
+    assert.strictEqual(sliceCurrentPositionSection(body), null);
+  });
+
+  test('slices the first Current Position when the document has two', () => {
+    // `findIndex` picks the first heading match and nothing pinned that
+    // behavior down before this test.
+    const body = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 — FIRST OCCURRENCE',
+      '',
+      '## Accumulated Context',
+      '',
+      '- unrelated',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 9 — SECOND OCCURRENCE',
+      '',
+    ].join('\n');
+    const result = sliceCurrentPositionSection(body);
+    assert.ok(result.includes('FIRST OCCURRENCE'));
+    assert.ok(!result.includes('SECOND OCCURRENCE'));
+  });
+
+  test('returns null for an empty document', () => {
+    assert.strictEqual(sliceCurrentPositionSection(''), null);
+  });
+
+  test('slices a CRLF document identically', () => {
+    // Only `\n` in a regex/split is the recurring CRLF defect class in this
+    // repo (#1658 and successors) — verify the CRLF fixture, normalized back
+    // to LF, matches the LF fixture's result byte-for-byte.
+    const lines = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 (Test Phase) — EXECUTING',
+      '',
+      '## Accumulated Context',
+      '',
+      '- A decision worth keeping.',
+      '',
+    ];
+    const lfResult = sliceCurrentPositionSection(lines.join('\n'));
+    const crlfResult = sliceCurrentPositionSection(lines.join('\r\n'));
+    assert.strictEqual(crlfResult.replace(/\r/g, ''), lfResult);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────────────
+// #3118: deps.progressProvider is a required StateTransitionDeps field with
+// 33 supply sites and zero call sites, and is being removed. Prove it
+// behaviorally: no transition ever invokes it.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('state transitions do not consult a progress provider (#3118)', () => {
+  test('no transition invokes deps.progressProvider', () => {
+    // An exploding stub is the behavioral form of "this field is inert";
+    // asserting the declaration is absent would be source-grep theater.
+    const exploding = () => { throw new Error('progressProvider must never be called'); };
+    const clock = fixedClock;
+
+    assert.doesNotThrow(() => transitionCore(
+      firstTimeBody(),
+      { kind: 'beginPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 },
+      { clock, progressProvider: exploding },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      [
+        '# Project State',
+        '',
+        '**Current Plan:** 02',
+        '**Total Plans in Phase:** 05',
+        '**Status:** Executing Phase 3',
+        '**Last Activity:** 2026-06-26',
+        '',
+        '## Current Position',
+        '',
+        'Plan: 2 of 5',
+        'Status: Executing Phase 3',
+        '',
+      ].join('\n'),
+      { kind: 'advancePlan' },
+      { clock, progressProvider: exploding },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      completePhaseBody(),
+      { kind: 'completePhase', phaseNum: '3', nextPhaseNum: '4', nextPhaseName: 'Design Phase', isLastPhase: false, planCount: 3, summaryCount: 3 },
+      { clock, progressProvider: exploding, roadmapProvider: () => ROADMAP_3_OF_5 },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      plannedPhaseBody(),
+      { kind: 'plannedPhase', phaseNumber: 3, planCount: 4 },
+      { clock, progressProvider: exploding },
+    ));
+
+    const milestoneBody = [
+      '---',
+      'gsd_state_version: 1.0',
+      'milestone: v1.0',
+      'milestone_name: Old Milestone',
+      'status: executing',
+      'current_phase: "3"',
+      'progress:',
+      '  total_phases: 5',
+      '  completed_phases: 2',
+      '  percent: 40',
+      '---',
+      '',
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 3 — EXECUTING',
+      'Plan: 2 of 5',
+      'Status: Executing Phase 3',
+      'Last activity: 2026-06-20 — mid-flight',
+      '',
+    ].join('\n');
+    assert.doesNotThrow(() => transitionCore(
+      milestoneBody,
+      { kind: 'milestoneSwitch', version: 'v2.0', name: 'New Milestone' },
+      { clock, progressProvider: exploding },
+    ));
+
+    const preCloseBody = [
+      '# Project State',
+      '',
+      '**Status:** Executing Phase 5',
+      '**Last Activity:** 2026-06-20',
+      '**Last Activity Description:** mid-flight',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 5 — EXECUTING',
+      'Plan: 2 of 3',
+      'Status: Executing Phase 5',
+      'Last activity: 2026-06-20 — running',
+      '',
+      '## Operator Next Steps',
+      '',
+      '- Re-run /gsd:complete-milestone v1.0',
+      '',
+    ].join('\n');
+    assert.doesNotThrow(() => transitionCore(
+      preCloseBody,
+      { kind: 'milestoneComplete', version: 'v1.0', nextMilestoneCommand: '/gsd:new-milestone' },
+      { clock, progressProvider: exploding },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      [
+        '# Project State',
+        '',
+        '**Status:** Planning',
+        '**Current Plan:** 2',
+        '**Total Plans in Phase:** 5',
+        '',
+      ].join('\n'),
+      { kind: 'patch', patches: { Status: 'Paused', 'Current Plan': '3' } },
+      { clock, progressProvider: exploding },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      '# Project State\n\n**Status:** Planning\n**Current Plan:** 2\n',
+      { kind: 'update', field: 'Current Plan', value: '3' },
+      { clock, progressProvider: exploding },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      [
+        '# Session State',
+        '',
+        '## Decisions',
+        '',
+        '- [Phase 1]: Old',
+        '- [Phase 3]: Older',
+        '- [Phase 9]: Recent',
+        '',
+      ].join('\n'),
+      { kind: 'prune', cutoff: 7 },
+      { clock, progressProvider: exploding },
+    ));
+
+    assert.doesNotThrow(() => transitionCore(
+      [
+        '# Project State',
+        '',
+        '**Total Plans in Phase:** 2',
+        '**Last Activity:** 2026-06-20',
+        '**Progress:** [████░░░░░░] 40%',
+        '',
+      ].join('\n'),
+      { kind: 'sync', totalPlansInPhase: 5, percent: 60 },
+      { clock, progressProvider: exploding },
+    ));
+  });
+});

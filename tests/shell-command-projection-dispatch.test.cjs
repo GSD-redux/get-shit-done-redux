@@ -17,6 +17,16 @@ const {
   platformEnsureDir,
   dispatchGsdCommand,
   resolveGsdToolsPath,
+  projectPathActionProjection,
+  projectPathExportLine,
+  escapeCmdDoubleQuotedArgument,
+  renderShellActionLines,
+  formatManagedHookScriptToken,
+  escapeTomlDoubleQuotedString,
+  escapePowerShellSingleQuoted,
+  escapePosixDoubleQuoted,
+  escapeSingleQuotedShellLiteral,
+  retryRenameSync,
 } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
 
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
@@ -1619,3 +1629,242 @@ test('platformWriteSync survives a concurrent collision on the same target path'
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #3118 — failing-first coverage for a path-export projection API that does
+// not exist yet in this module (projectPathExportLine, escapeCmdDoubleQuotedArgument).
+// These tests are EXPECTED TO FAIL until that API lands.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('path export projection — escaping (#3118)', () => {
+  const laneCommand = (mode, targetDir, platform, shell) => {
+    const { shellActions } = projectPathActionProjection({ mode, targetDir, platform });
+    const a = shellActions.find((x) => x.shell === shell);
+    return a ? a.command : null;
+  };
+
+  test('leaves an ordinary path byte-identical on every lane', () => {
+    const repairLinux = projectPathActionProjection({ mode: 'repair', targetDir: '/usr/local/bin', platform: 'linux' });
+    assert.deepEqual(repairLinux.shellActions, [
+      { label: null, shell: 'posix', command: 'export PATH="/usr/local/bin:$PATH"' },
+    ]);
+    assert.deepEqual(repairLinux.actionLines, [
+      'export PATH="/usr/local/bin:$PATH"',
+    ]);
+
+    const persistLinux = projectPathActionProjection({ mode: 'persist', targetDir: '/usr/local/bin', platform: 'linux' });
+    assert.deepEqual(persistLinux.shellActions, [
+      { label: 'zsh', shell: 'zsh', command: `echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc` },
+      { label: 'bash', shell: 'bash', command: `echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc` },
+      { label: 'fish', shell: 'fish', command: `fish_add_path '/usr/local/bin'` },
+    ]);
+    assert.deepEqual(persistLinux.actionLines, [
+      `zsh: echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc`,
+      `bash: echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc`,
+      `fish: fish_add_path '/usr/local/bin'`,
+    ]);
+
+    const repairWin32 = projectPathActionProjection({ mode: 'repair', targetDir: 'C:/Users/dev/bin', platform: 'win32' });
+    assert.deepEqual(repairWin32.shellActions, [
+      {
+        label: 'PowerShell',
+        shell: 'powershell',
+        command: `[Environment]::SetEnvironmentVariable('PATH', 'C:/Users/dev/bin;' + [Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')`,
+      },
+      {
+        label: 'cmd.exe',
+        shell: 'cmd',
+        command: `powershell -Command "[Environment]::SetEnvironmentVariable('PATH', 'C:/Users/dev/bin;' + [Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')"`,
+      },
+      {
+        label: 'Git Bash',
+        shell: 'bash',
+        command: `echo 'export PATH="C:/Users/dev/bin:$PATH"' >> ~/.bashrc`,
+      },
+    ]);
+  });
+
+  test('does not write a command substitution into the rc file', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a$(id)b');
+    assert.ok(!escapedDir.includes('$('), 'escapedDir must not contain an unescaped command substitution');
+    assert.ok(escapedDir.includes('\\$('), 'escapedDir must contain an escaped dollar-paren');
+  });
+
+  test('does not write a backtick substitution into the rc file', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a`whoami`b');
+    assert.ok(escapedDir.includes('\\`'), 'escapedDir must contain at least one escaped backtick');
+    const withoutEscapedBackticks = escapedDir.split('\\`').join('');
+    assert.ok(!withoutEscapedBackticks.includes('`'), 'no bare backtick may remain after removing escaped ones');
+  });
+
+  test('keeps the persisted rc line quote-balanced', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a"b');
+    assert.ok(escapedDir.includes('\\"'), 'escapedDir must contain an escaped double quote');
+    const withoutEscapedQuotes = escapedDir.split('\\"').join('');
+    assert.ok(!withoutEscapedQuotes.includes('"'), 'no bare double quote may remain after removing escaped ones');
+  });
+
+  test('escapes a backslash in the persisted line', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a\\b');
+    assert.ok(escapedDir.includes('\\\\'), 'escapedDir must contain a doubled backslash');
+  });
+
+  test('keeps the existing apostrophe escaping', () => {
+    const command = laneCommand('persist', "/tmp/o'brien", 'linux', 'bash');
+    assert.ok(command.includes(`'\\''`), 'bash lane must retain the POSIX single-quote escape sequence');
+  });
+
+  test('escapes an apostrophe and a dollar in one path', () => {
+    const command = laneCommand('persist', "/tmp/o'b$(id)", 'linux', 'bash');
+    assert.ok(command.includes(`'\\''`), 'must still contain the POSIX single-quote escape');
+    assert.ok(command.includes('\\$('), 'must also contain the escaped dollar-paren');
+  });
+
+  test('all three lanes escape the export line identically', () => {
+    const { escapedDir: token } = projectPathExportLine('/tmp/a$(id)b');
+    const repairCommand = laneCommand('repair', '/tmp/a$(id)b', 'linux', 'posix');
+    const persistCommand = laneCommand('persist', '/tmp/a$(id)b', 'linux', 'bash');
+    const win32Command = laneCommand('repair', 'C:/a$(id)b', 'win32', 'bash');
+    assert.ok(repairCommand.includes(token), 'repair posix lane must use the same escaped token');
+    assert.ok(persistCommand.includes(token), 'persist bash lane must use the same escaped token');
+    assert.ok(win32Command.includes(token), 'win32 bash lane must use the same escaped token');
+  });
+
+  test('does not let a quote break out of the cmd lane', () => {
+    const { shellActions, actionLines } = projectPathActionProjection({
+      mode: 'repair',
+      targetDir: 'C:/a"&calc&"b',
+      platform: 'win32',
+    });
+    // `"` is a reserved character that cannot appear in any Windows path, so
+    // there is no valid command to suggest; the projection fails closed
+    // rather than emitting a cmd line whose quoting can be broken.
+    assert.deepEqual(shellActions, []);
+    assert.deepEqual(actionLines, []);
+  });
+
+  test('still projects win32 lanes for a legal path', () => {
+    const { shellActions } = projectPathActionProjection({
+      mode: 'repair',
+      targetDir: 'C:/Users/dev/bin',
+      platform: 'win32',
+    });
+    assert.equal(shellActions.length, 3);
+    assert.deepEqual(shellActions.map((a) => a.shell), ['powershell', 'cmd', 'bash']);
+  });
+
+  test('keeps the PowerShell doubling', () => {
+    assert.equal(escapePowerShellSingleQuoted("o'brien"), "o''brien");
+  });
+
+  test('an absent target directory produces no actions', () => {
+    for (const targetDir of [null, undefined, '']) {
+      assert.deepEqual(
+        projectPathActionProjection({ mode: 'repair', targetDir, platform: 'linux' }),
+        { shellActions: [], actionLines: [] },
+      );
+    }
+  });
+
+  test('leaves the fish lane escaping unchanged', () => {
+    const command = laneCommand('persist', '/tmp/a$(id)b', 'linux', 'fish');
+    assert.equal(command, `fish_add_path '/tmp/a$(id)b'`);
+  });
+
+  test('an empty platform string falls back to the host', () => {
+    assert.equal(
+      formatManagedHookScriptToken('/x/y.js', { platform: '' }),
+      formatManagedHookScriptToken('/x/y.js'),
+    );
+  });
+
+  test('projects no token off win32', () => {
+    assert.equal(formatManagedHookScriptToken('/x/y.js', { platform: 'linux' }), null);
+  });
+
+  test('projects a JSON-quoted posix-normalized token on win32', () => {
+    assert.equal(
+      formatManagedHookScriptToken('C:\\x\\y.js', { platform: 'win32' }),
+      JSON.stringify('C:/x/y.js'),
+    );
+  });
+
+  test('returns no lines when called with no arguments', () => {
+    assert.deepEqual(renderShellActionLines(), []);
+  });
+
+  test('drops entries without a command', () => {
+    assert.deepEqual(
+      renderShellActionLines([null, { label: 'a' }, { label: 'b', command: 'c' }]),
+      ['b: c'],
+    );
+  });
+
+  test('renders an unlabeled action as the bare command', () => {
+    assert.deepEqual(renderShellActionLines([{ label: null, command: 'x' }]), ['x']);
+  });
+
+  test('escapes a backslash-quote pair in the right order', () => {
+    // Input: a \ " b  (a literal backslash immediately followed by a quote).
+    const input = ['a', '\\', '"', 'b'].join('');
+    // Expected: backslash first doubles to two backslashes, THEN the quote
+    // gets its own backslash — so the quote ends up preceded by 3 backslashes.
+    const expected = ['a', '\\', '\\', '\\', '"', 'b'].join('');
+    assert.equal(escapeTomlDoubleQuotedString(input), expected);
+  });
+
+  test('coerces non-string values', () => {
+    const escapers = [
+      escapeTomlDoubleQuotedString,
+      escapePowerShellSingleQuoted,
+      escapePosixDoubleQuoted,
+      escapeSingleQuotedShellLiteral,
+    ];
+    for (const escaper of escapers) {
+      for (const value of [null, undefined, 0, [], {}]) {
+        assert.doesNotThrow(() => escaper(value));
+        assert.equal(typeof escaper(value), 'string');
+      }
+    }
+  });
+
+  test('returns empty for an empty value', () => {
+    const escapers = [
+      escapeTomlDoubleQuotedString,
+      escapePowerShellSingleQuoted,
+      escapePosixDoubleQuoted,
+      escapeSingleQuotedShellLiteral,
+    ];
+    for (const escaper of escapers) {
+      assert.equal(escaper(''), '');
+    }
+  });
+
+  describe('retryRenameSync (#3118)', () => {
+    afterEach(() => {
+      mock.restoreAll();
+    });
+
+    test('rethrows when the rename cannot be retried to success', () => {
+      mock.method(fs, 'renameSync', () => {
+        const e = new Error('EPERM');
+        e.code = 'EPERM';
+        throw e;
+      });
+      assert.throws(() => retryRenameSync('/a', '/b'));
+    });
+
+    test('returns silently on a successful rename', () => {
+      const dir = createTempDir('gsd-3118-rename-');
+      const from = path.join(dir, 'source.txt');
+      const to = path.join(dir, 'dest.txt');
+      fs.writeFileSync(from, 'content');
+
+      retryRenameSync(from, to);
+
+      assert.ok(fs.statSync(to).isFile());
+      assert.equal(fs.existsSync(from), false);
+      cleanup(dir);
+    });
+  });
+});
