@@ -27,8 +27,6 @@ const fixedClock = Object.freeze({
   nowIso: () => '2026-06-27T12:00:00.000Z',
 });
 
-const noProgress = () => null;
-
 describe('ADR-1769 substrate: field-classification table', () => {
   const allowedSources = new Set(['body', 'disk', 'external', 'curated', 'free']);
   const allowedPreservation = new Set([
@@ -141,7 +139,7 @@ describe('ADR-1769 Phase 1: beginPhase transition — tracer bullet', () => {
     const result = transitionCore(
       input,
       { kind: 'beginPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 },
-      { clock: fixedClock, progressProvider: noProgress },
+      { clock: fixedClock },
     );
 
     assert.ok(result.updated.includes('Status'), `updated should include Status; got ${JSON.stringify(result.updated)}`);
@@ -182,7 +180,7 @@ function firstTimeBody() {
 
 describe('ADR-1769 Phase 1: beginPhase first-time body field updates', () => {
   const intent = { kind: 'beginPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 };
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('updates Current Phase to N', () => {
     const result = transitionCore(firstTimeBody(), intent, deps);
@@ -261,7 +259,7 @@ function resumeBody() {
 
 describe('ADR-1769 Phase 1: #3127 idempotency guard — resume path', () => {
   const intent = { kind: 'beginPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 };
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('Status is still refreshed on resume (Last Activity Date tracks execute-phase runs)', () => {
     const result = transitionCore(resumeBody(), intent, deps);
@@ -300,7 +298,7 @@ describe('ADR-1769 Phase 1: #3127 idempotency guard — resume path', () => {
 
 describe('ADR-1769 Phase 1: Current Position section mutation (first-time begin)', () => {
   const intent = { kind: 'beginPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 };
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('Current Position Phase line reflects the new phase (EXECUTING)', () => {
     const result = transitionCore(firstTimeBody(), intent, deps);
@@ -357,7 +355,7 @@ describe('ADR-1769 Phase 1: Current Position section mutation (first-time begin)
 
 describe('ADR-1769 Phase 1: Current Position section mutation (resume path)', () => {
   const intent = { kind: 'beginPhase', phaseNumber: 3, phaseName: 'Test Phase', planCount: 5 };
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('Resume updates only the Last activity line in Current Position (preserves Plan, Phase, Status)', () => {
     const result = transitionCore(resumeBody(), intent, deps);
@@ -373,7 +371,7 @@ describe('ADR-1769 Phase 1: Current Position section mutation (resume path)', ()
 });
 
 describe('ADR-1769 Phase 1: property tests (RULESET.TESTS.property-based-testing)', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('for any non-negative integer phaseNumber and any STATE.md body with a non-whitespace Status value, beginPhase produces content whose body Status carries "Executing Phase N"', () => {
     // Note: filters out whitespace-only statusSuffix because state-document.cjs's
@@ -420,7 +418,7 @@ describe('ADR-1769 Phase 1: property tests (RULESET.TESTS.property-based-testing
 });
 
 describe('ADR-1769 Phase 2: advancePlan transition', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('advances Current Plan from N to N+1 (legacy format)', () => {
     const input = [
@@ -484,7 +482,7 @@ describe('ADR-1769 Phase 2: advancePlan transition', () => {
 });
 
 describe('ADR-1769 Phase 2: advancePlan with frontmatter (#1255 pattern — codex review)', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('advances plan correctly when STATE.md has YAML frontmatter (body Status not YAML status)', () => {
     const input = [
@@ -561,7 +559,7 @@ const ROADMAP_3_OF_5 = [
 ].join('\n');
 
 describe('ADR-1769 Phase 3: completePhase transition — body field updates', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress, roadmapProvider: () => ROADMAP_3_OF_5 };
+  const deps = { clock: fixedClock, roadmapProvider: () => ROADMAP_3_OF_5 };
 
   test('Current Phase advances to nextPhaseNum, preserving "of total" and appending the next name', () => {
     const intent = {
@@ -646,7 +644,7 @@ describe('ADR-1769 Phase 3: completePhase transition — body field updates', ()
 });
 
 describe('ADR-1769 Phase 3: completePhase progress derivation (roadmap)', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress, roadmapProvider: () => ROADMAP_3_OF_5 };
+  const deps = { clock: fixedClock, roadmapProvider: () => ROADMAP_3_OF_5 };
 
   test('Completed Phases is re-derived from the roadmap progress table', () => {
     const result = transitionCore(
@@ -668,7 +666,7 @@ describe('ADR-1769 Phase 3: completePhase progress derivation (roadmap)', () => 
   });
 
   test('when roadmapProvider yields null, existing Completed Phases / Progress are preserved (no crash)', () => {
-    const nullDeps = { clock: fixedClock, progressProvider: noProgress, roadmapProvider: () => null };
+    const nullDeps = { clock: fixedClock, roadmapProvider: () => null };
     const result = transitionCore(
       completePhaseBody(),
       { kind: 'completePhase', phaseNum: '3', nextPhaseNum: '4', nextPhaseName: null, isLastPhase: false, planCount: 3, summaryCount: 3 },
@@ -686,7 +684,7 @@ describe('ADR-1769 Phase 3: completePhase progress derivation (roadmap)', () => 
   // 'updated' even when nothing changed.
 
   test('FAILURE path (roadmap unavailable): Completed Phases / Progress are NOT marked updated — left-as-is is distinguishable from recomputed', () => {
-    const nullDeps = { clock: fixedClock, progressProvider: noProgress, roadmapProvider: () => null };
+    const nullDeps = { clock: fixedClock, roadmapProvider: () => null };
     const result = transitionCore(
       completePhaseBody(),
       { kind: 'completePhase', phaseNum: '3', nextPhaseNum: '4', nextPhaseName: null, isLastPhase: false, planCount: 3, summaryCount: 3 },
@@ -717,7 +715,7 @@ describe('ADR-1769 Phase 3: completePhase progress derivation (roadmap)', () => 
 });
 
 describe('ADR-1769 Phase 3: completePhase edge cases', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress, roadmapProvider: () => ROADMAP_3_OF_5 };
+  const deps = { clock: fixedClock, roadmapProvider: () => ROADMAP_3_OF_5 };
 
   test('falls back to the "Phase:" field when "Current Phase:" is absent (stateReplaceFieldWithFallback)', () => {
     const input = [
@@ -814,7 +812,7 @@ function plannedPhaseBody() {
 }
 
 describe('ADR-1769 Phase 4: plannedPhase transition — body field updates', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('Status advances to "Ready to execute" when the existing value is a template default (Planning)', () => {
     const result = transitionCore(plannedPhaseBody(), { kind: 'plannedPhase', phaseNumber: 3, planCount: 4 }, deps);
@@ -889,7 +887,7 @@ describe('ADR-1769 Phase 4: plannedPhase transition — body field updates', () 
 });
 
 describe('ADR-1769 Phase 4: milestoneSwitch transition — milestone reset', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   function milestoneBody() {
     return [
@@ -964,7 +962,7 @@ describe('ADR-1769 Phase 4: milestoneSwitch transition — milestone reset', () 
 // ADR-1769 Phase 5: milestoneComplete
 
 describe('ADR-1769 Phase 5: milestoneComplete transition — closure write', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
   const intent = { kind: 'milestoneComplete', version: 'v1.0', nextMilestoneCommand: '/gsd:new-milestone' };
 
   function preCloseBody() {
@@ -1096,7 +1094,7 @@ describe('ADR-1769 Phase 5: milestoneComplete transition — closure write', () 
 // ADR-1769 Phase 6: patch
 
 describe('ADR-1769 Phase 6: patch transition — field updates', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('applies each patched field and reports the updated set', () => {
     const input = [
@@ -1149,7 +1147,7 @@ describe('ADR-1769 Phase 6: patch transition — field updates', () => {
 // ADR-1769 Phase 7: update, prune, sync
 
 describe('ADR-1769 Phase 7: update transition — single body field', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('replaces a body field and reports updated:true', () => {
     const input = '# Project State\n\n**Status:** Planning\n**Current Plan:** 2\n';
@@ -1174,7 +1172,7 @@ describe('ADR-1769 Phase 7: update transition — single body field', () => {
 });
 
 describe('ADR-1769 Phase 7: prune transition — section pruning', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('archives Decisions entries at or below the cutoff phase', () => {
     const input = [
@@ -1224,7 +1222,7 @@ describe('ADR-1769 Phase 7: prune transition — section pruning', () => {
 });
 
 describe('ADR-1769 Phase 7: sync transition — body writes + #1761', () => {
-  const deps = { clock: fixedClock, progressProvider: noProgress };
+  const deps = { clock: fixedClock };
 
   test('updates Total Plans in Phase + Progress bar + Last Activity when bounded', () => {
     const input = [
@@ -1825,7 +1823,12 @@ describe('sliceCurrentPositionSection (#3118)', () => {
     ];
     const lfResult = sliceCurrentPositionSection(lines.join('\n'));
     const crlfResult = sliceCurrentPositionSection(lines.join('\r\n'));
-    assert.strictEqual(crlfResult.replace(/\r/g, ''), lfResult);
+    // Strict form (#3118): normalize CRLF->LF and require exact equality with
+    // the LF result. The looser `.replace(/\r/g, '')` form (previously used
+    // here) strips ALL `\r` bytes including a stray unpaired trailing `\r`
+    // left by the pre-fix `end = hs[j].offset - 1` slice — that loose
+    // assertion is what let the CRLF-slice-defect ship undetected.
+    assert.strictEqual(crlfResult.replace(/\r\n/g, '\n'), lfResult);
   });
 });
 

@@ -112,7 +112,7 @@ describe('#2136 last_activity is stamped from localToday, not today', () => {
     const result = transitionCore(
       input,
       { kind: 'sync', totalPlansInPhase: 5, percent: 60 },
-      { clock: splitClock, progressProvider: () => null },
+      { clock: splitClock },
     );
     assert.strictEqual(stateExtractField(result.content, 'Last Activity'), '2020-06-14',
       'Last Activity must use localToday() (2020-06-14), not today() (2020-06-15)');
