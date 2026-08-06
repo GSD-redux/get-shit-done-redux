@@ -19,7 +19,6 @@ const {
   resolveGsdToolsPath,
   projectPathActionProjection,
   projectPathExportLine,
-  escapeCmdDoubleQuotedArgument,
   renderShellActionLines,
   formatManagedHookScriptToken,
   escapeTomlDoubleQuotedString,

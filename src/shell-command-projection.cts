@@ -388,6 +388,18 @@ export function escapeSingleQuotedShellLiteral(value: unknown): string {
   return String(value).replace(/'/g, "'\\''");
 }
 
+/**
+ * The `export PATH="<dir>:$PATH"` line every persistence lane appends, plus the escaped directory
+ * token it embeds. One builder because three lanes emit this line: a lane that re-escapes it
+ * locally is how #3118 shipped a `$(…)` into ~/.bashrc, where it ran on every new shell. The
+ * escaping is for the line's FINAL context — a double-quoted string in an rc file — not for
+ * whatever transport (an `echo`, a paste) it passes through on the way there.
+ */
+export function projectPathExportLine(targetDir: unknown): { escapedDir: string; line: string } {
+  const escapedDir = escapePosixDoubleQuoted(String(targetDir));
+  return { escapedDir, line: `export PATH="${escapedDir}:$PATH"` };
+}
+
 interface ShellAction {
   label: string | null;
   shell: string;
@@ -412,12 +424,20 @@ export function projectPathActionProjection({
 }): { shellActions: ShellAction[]; actionLines: string[] } {
   if (!targetDir) return { shellActions: [], actionLines: [] };
 
+  // #3118: `"` is reserved on Windows, so a path containing one cannot exist — and it would close
+  // cmd's quoted region in the `powershell -Command "…"` lane below, turning the rest into cmd
+  // input. There is no correct command to suggest for an impossible path: fail closed rather than
+  // emit one whose quoting can be broken.
+  if (platform === 'win32' && String(targetDir).includes('"')) return { shellActions: [], actionLines: [] };
+
   const isWin32 = platform === 'win32';
 
   let shellActions: ShellAction[];
   if (isWin32) {
     const psTargetDir = escapePowerShellSingleQuoted(targetDir);
-    const bashTargetDir = escapeSingleQuotedShellLiteral(posixNormalize(String(targetDir)));
+    const bashExportLine = escapeSingleQuotedShellLiteral(
+      projectPathExportLine(posixNormalize(String(targetDir))).line,
+    );
     shellActions = [
       {
         label: 'PowerShell',
@@ -432,21 +452,22 @@ export function projectPathActionProjection({
       {
         label: 'Git Bash',
         shell: 'bash',
-        command: `echo 'export PATH="${bashTargetDir}:$PATH"' >> ~/.bashrc`,
+        command: `echo '${bashExportLine}' >> ~/.bashrc`,
       },
     ];
   } else if (mode === 'persist') {
-    const bashTargetDir = escapeSingleQuotedShellLiteral(String(targetDir));
+    const exportLine = escapeSingleQuotedShellLiteral(projectPathExportLine(targetDir).line);
+    const fishTargetDir = escapeSingleQuotedShellLiteral(String(targetDir));
     shellActions = [
       {
         label: 'zsh',
         shell: 'zsh',
-        command: `echo 'export PATH="${bashTargetDir}:$PATH"' >> ~/.zshrc`,
+        command: `echo '${exportLine}' >> ~/.zshrc`,
       },
       {
         label: 'bash',
         shell: 'bash',
-        command: `echo 'export PATH="${bashTargetDir}:$PATH"' >> ~/.bashrc`,
+        command: `echo '${exportLine}' >> ~/.bashrc`,
       },
       // #323: fish has no `export`/`$PATH`-list syntax. `fish_add_path` is the
       // fish-native API (>= fish 3.2, 2021) that persists to the universal
@@ -456,16 +477,15 @@ export function projectPathActionProjection({
       {
         label: 'fish',
         shell: 'fish',
-        command: `fish_add_path '${bashTargetDir}'`,
+        command: `fish_add_path '${fishTargetDir}'`,
       },
     ];
   } else {
-    const posixTargetDir = escapePosixDoubleQuoted(targetDir);
     shellActions = [
       {
         label: null,
         shell: 'posix',
-        command: `export PATH="${posixTargetDir}:$PATH"`,
+        command: projectPathExportLine(targetDir).line,
       },
     ];
   }
