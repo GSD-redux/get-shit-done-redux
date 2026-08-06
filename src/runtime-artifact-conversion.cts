@@ -1647,6 +1647,8 @@ Typed mapping (agent_type-capable schema only):
   inherited, or unsupported values; do not invent one-off effort literals in
   workflow prose.
 - \`fork_context: false\` by default — GSD agents load their own context via \`<files_to_read>\` blocks
+- \`task_name\` — required by the collaboration schema; provide a descriptive name for each spawned task
+- \`fork_turns\` — optional parameter controlling turn-forking depth; coexists with \`fork_context\` (not a replacement)
 - \`Task(isolation="worktree")\` / \`Agent(isolation="worktree")\` → no direct \`spawn_agent\` mapping,
   but Codex declares \`dispatch.isolation: orchestrator-worktree\` (#2584). Codex
   \`spawn_agent\` still does not create or bind a git worktree; instead GSD itself
@@ -1683,11 +1685,13 @@ Spawn restriction:
   defaulting to inline execution.
 
 Parallel fan-out:
-- Spawn multiple agents → collect agent IDs → \`wait(ids)\` for all to complete
+- Spawn multiple agents → collect agent IDs → \`collaboration.wait_agent(timeout_ms=...)\` for each to complete
+- Do NOT use \`functions.wait(cell_id=...)\` — that is an unrelated exec-cell tool, not the collaboration wait
 
 Result parsing:
 - Look for structured markers in agent output: \`CHECKPOINT\`, \`PLAN COMPLETE\`, \`SUMMARY\`, etc.
-- \`close_agent(id)\` after collecting results from each agent
+- \`close_agent(id)\` after collecting results — but only if \`close_agent\` is visible in the current
+  tool schema (check via \`tool_search\` first, same schema-detection gate as \`spawn_agent\` above)
 </codex_skill_adapter>`;
 }
 
