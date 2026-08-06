@@ -2264,7 +2264,15 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     }
 
     const roadmapComplete = _checkboxStates.get(phaseNum) || false;
-    if (roadmapComplete && completion.phase_complete && diskStatus !== 'complete') {
+    // #3033: a zero-plan phase (split parent — intentionally plan-less, holds
+    // shared context for sub-phases) whose roadmap checkbox is marked complete
+    // must resolve as complete. The original gate required completion.phase_complete
+    // (derived from plan/summary counts), which is always false for zero-plan
+    // phases — so the checkbox override never fired and the parent was permanently
+    // stuck as 'researched' (an in-progress state eligible for current-phase
+    // selection). Now: when the roadmap marks it complete AND it has zero plans,
+    // treat it as complete regardless of the plan-count derivation.
+    if (roadmapComplete && (completion.phase_complete || planCount === 0) && diskStatus !== 'complete') {
       diskStatus = 'complete';
     }
 

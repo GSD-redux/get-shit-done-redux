@@ -152,3 +152,32 @@ describe('changeset serialize: multi-section + prior content (#2975)', () => {
     assert.equal(back.releases[1].sections[0].bullets[0].pr, 100);
   });
 });
+
+// ─── #3001: multi-paragraph body round-trip ────────────────────────────────
+
+describe('#3001: multi-paragraph changeset body round-trips without truncation', () => {
+  test('a body containing \\n\\n retains content from both paragraphs AND its PR number', () => {
+    const ir = {
+      releaseHeader: { version: '1.42.0', date: '2026-08-05' },
+      sections: [{
+        type: 'Fixed',
+        bullets: [{
+          pr: 2595,
+          body: 'First paragraph, load-bearing.\n\nSecond paragraph, also load-bearing.',
+        }],
+      }],
+      priorChangelog: null,
+    };
+    const text = serializeChangelog(ir);
+    const back = parseChangelog(text);
+    const bullet = back.releases[0].sections[0].bullets[0];
+    // PR trailer must survive (was lost pre-fix because the trailer was on the dropped side).
+    assert.equal(bullet.pr, 2595,
+      `PR number must survive round-trip; got: ${bullet.pr}`);
+    // Content from BOTH paragraphs must be present (was truncated pre-fix).
+    assert.ok(bullet.body.includes('First paragraph'),
+      `first paragraph must survive; got: ${JSON.stringify(bullet.body)}`);
+    assert.ok(bullet.body.includes('Second paragraph'),
+      `second paragraph must survive; got: ${JSON.stringify(bullet.body)}`);
+  });
+});

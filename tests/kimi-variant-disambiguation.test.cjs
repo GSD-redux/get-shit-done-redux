@@ -1,8 +1,9 @@
-// allow-test-rule: behavioral-subprocess-test — see #2505 — Phase 5 kimi-variant
-// disambiguation is verified via install.js subprocess output capture, since
-// the disambiguateKimiVariant function is inline in bin/install.js (not
-// exported). The test sets a disposable HOME, creates the probe config files,
-// and asserts on the printed notices.
+// allow-test-rule: pending-migration-to-typed-ir [#3090]
+// Phase 5 kimi-variant disambiguation is verified via install.js subprocess
+// output capture (regex on printed notices), since disambiguateKimiVariant
+// is inline in bin/install.js (not exported) and emits no structured/JSON
+// output. Exporting the function and/or adding a --json notice mode is a
+// production change out of scope here. Tracked under #3090.
 process.env.GSD_TEST_MODE = '1';
 
 const { test, describe, before, after } = require('node:test');

@@ -1,5 +1,6 @@
-// allow-test-rule: source-text-is-the-product — commands/gsd/*.md files ARE the
-// deployed skill surface. Testing their contract tests the runtime behaviour.
+// allow-test-rule: source-text-is-the-product
+// commands/gsd/*.md files ARE the deployed skill surface. Testing their
+// contract tests the runtime behaviour.
 
 'use strict';
 

@@ -159,7 +159,8 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     }
   });
 
-  // allow-test-rule: structural guard over bin/install.js source. Behavioral assertions
+  // allow-test-rule: structural-regression-guard
+  // structural guard over bin/install.js source. Behavioral assertions
   // cannot observe inline `runtime === '...'` config branching, so this enforces that
   // every inline per-runtime branch references a runtime the adapter registry knows
   // about — a NEW branch against an unregistered runtime name fails here. It matches
@@ -184,7 +185,8 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     );
   });
 
-  // allow-test-rule: structural guard over bin/install.js source (#2103). VS Code
+  // allow-test-rule: structural-regression-guard (#2103)
+  // structural guard over bin/install.js source. VS Code
   // (capabilities/vscode/capability.json) is a registry runtime (role:runtime, for
   // validator/host-integration coverage) but is NEVER CLI-installed — it is a
   // Marketplace/VSIX extension with no --vscode flag and no allRuntimes membership
@@ -214,7 +216,8 @@ describe('issue-57 AC2 — config-mutation dispatch is closed over the explicit 
     );
   });
 
-  // allow-test-rule: delegation-presence guard. Catches wholesale removal of the registry
+  // allow-test-rule: structural-regression-guard
+  // delegation-presence guard. Catches wholesale removal of the registry
   // dispatch (a regression to scattered per-runtime config branching). Presence-style, not
   // absence-grep, so it does not bite on incidental non-config `runtime === '...'` checks.
   test('bin/install.js requires the config adapter registry and dispatches through it', () => {

@@ -22,7 +22,8 @@
  * is the minimum-cost contract.
  */
 
-// allow-test-rule: structural assertion on spawn-options shape; the behavior
+// allow-test-rule: structural-regression-guard
+// structural assertion on spawn-options shape; the behavior
 // (Windows-only shell resolution) is platform-gated at runtime and cannot be
 // reached on POSIX CI without a Windows lane.
 
@@ -295,7 +296,8 @@ describe('Issue #815: --next dist-tag support', () => {
  * contract for the worker, the same rationale #378 carried.
  */
 
-// allow-test-rule: structural assertion on hook delegation; the behavior being (see #378)
+// allow-test-rule: structural-regression-guard (see #378)
+// structural assertion on hook delegation; the behavior being
 // tested (correct package name → no E404) only manifests at runtime against the
 // live npm registry, which CI does not call.
 

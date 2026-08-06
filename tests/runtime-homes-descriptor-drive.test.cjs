@@ -881,7 +881,9 @@ describe('descriptor-driven parity: 13 non-probe registry runtimes × no-env-var
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3126-global-skills-base-runtime-path (consolidation epic #1969 B3 #1972)", () => {
 'use strict';
-// allow-test-rule: last three tests read init.cjs source to verify delegation contract to runtime-homes.cjs — structural guard, no behavioral IR exposed (see #3126)
+// allow-test-rule: structural-implementation-guard (see #3126)
+// Last three tests read init.cjs source to verify delegation contract to
+// runtime-homes.cjs — no behavioral IR exposed yet for this wiring point.
 
 // Regression guard for bug #3126.
 //

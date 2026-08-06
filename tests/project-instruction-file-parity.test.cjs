@@ -89,7 +89,8 @@ describe('bug #1529: getProjectInstructionFile ↔ gsd-tools query parity', () =
 });
 
 describe('bug #1529: new-project.md workflow uses the shared policy query', () => {
-  // allow-test-rule: structural drift guard for #1529 — the workflow's bash block MUST invoke the
+  // allow-test-rule: structural-regression-guard (#1529)
+  // the workflow's bash block MUST invoke the
   // shared `gsd_run query project-instruction-file` query rather than a hardcoded
   // codex-only `if/else` branch; there is no typed IR for "this bash block calls a
   // specific gsd-tools query instead of a hardcoded mapping".

@@ -707,8 +707,6 @@ describe('bug #2638 — sub_repos canonical location', () => {
   __foldDescribe("folded:bug-3523-cjs-loadconfig-branching-strategy-warning (consolidation epic #1969 B6 #1975)", () => {
 'use strict';
 
-// allow-test-rule: validates runtime CLI stdout/stderr warning behavior, not source grep (see #3523)
-
 /**
  * Regression tests for #3523 — CJS loadConfig must not emit a false
  * "unknown config key(s)" warning for `branching_strategy` when that key
@@ -833,7 +831,7 @@ describe('bug-3523 — no warning for legacy top-level branching_strategy', () =
     );
 
     // After migration write-back, config-get should find git.branching_strategy.
-    const result = runWithStderr(['config-get', 'git.branching_strategy'], tmpDir);
+    const result = runWithStderr(['config-get', 'git.branching_strategy', '--raw'], tmpDir);
 
     assert.equal(
       result.status,
@@ -845,8 +843,9 @@ describe('bug-3523 — no warning for legacy top-level branching_strategy', () =
       '',
       `No error should fire when reading migrated branching_strategy (#3523) — got: ${result.stderr}`
     );
-    assert.ok(
-      result.stdout.includes('milestone'),
+    assert.equal(
+      result.stdout.trim(),
+      'milestone',
       `Expected git.branching_strategy to be 'milestone' but got: ${result.stdout}`
     );
   });
@@ -880,6 +879,11 @@ describe('bug-3523 — double-emission reduced to single-emission', () => {
 
     const result = runWithStderr(['resolve-model', 'planner'], tmpDir);
 
+    // allow-test-rule: pending-migration-to-typed-ir [#3090]
+    // Counts occurrences of a sentinel substring in the CLI's human-readable
+    // stderr warning text — no structured "warning count"/warning-list API is
+    // exposed yet; adding one is a production change out of scope here.
+    // Tracked under #3090.
     // Count how many times the sentinel key appears in warnings
     const warningLines = result.stderr
       .split('\n')
@@ -1253,5 +1257,46 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
       "configured_empty and not_configured must be distinguishable (ADR-1411 rule 3)");
     assert.equal(res.reason, "configured_empty", "enum value is the wire contract");
     assert.equal(res.degraded, false, "an empty file is not corruption");
+  });
+});
+
+// ─── #2997: phase_id_convention survives config resolution ─────────────────
+
+describe('#2997: phase_id_convention is not silently dropped on a clean read', () => {
+  const { createTempDir } = require('./helpers.cjs');
+  const cfgPath = (dir) => path.join(dir, '.planning', 'config.json');
+
+  test('setting phase_id_convention in config.json survives into the resolved config', () => {
+    const tmpDir = createTempDir('gsd-2997-');
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+      fs.writeFileSync(cfgPath(tmpDir), JSON.stringify({ phase_id_convention: 'milestone-prefixed' }), 'utf-8');
+      const res = loadConfigResolved(tmpDir);
+      assert.equal(res.degraded, false, 'read must report as non-degraded');
+      assert.equal(res.config.phase_id_convention, 'milestone-prefixed',
+        `phase_id_convention must survive resolution; got: ${JSON.stringify(res.config.phase_id_convention)}`);
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('phase_id_convention set to null round-trips correctly', () => {
+    const tmpDir = createTempDir('gsd-2997-null-');
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+      fs.writeFileSync(cfgPath(tmpDir), JSON.stringify({ phase_id_convention: null }), 'utf-8');
+      const res = loadConfigResolved(tmpDir);
+      assert.equal(res.config.phase_id_convention, null,
+        'null phase_id_convention must round-trip as null');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('phase_id_convention absent → null in resolved config (no false default)', () => {
+    const tmpDir = createTempDir('gsd-2997-absent-');
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+      fs.writeFileSync(cfgPath(tmpDir), JSON.stringify({ commit_docs: true }), 'utf-8');
+      const res = loadConfigResolved(tmpDir);
+      assert.equal(res.config.phase_id_convention, null,
+        'absent phase_id_convention must resolve to null, not undefined');
+    } finally { cleanup(tmpDir); }
   });
 });

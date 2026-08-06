@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product (see #1073) — this guard asserts the
+// allow-test-rule: source-text-is-the-product (see #1073) — this guard asserts the
 // ABSENCE of phantom pre-migration issue references in repo text (docs, tests,
 // workflows). The file *content* is the product surface here (#1073): dangling
 // refs that don't exist in open-gsd/gsd-core mislead triage and manufacture

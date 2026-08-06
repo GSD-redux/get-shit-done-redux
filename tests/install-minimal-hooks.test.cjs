@@ -2652,7 +2652,7 @@ describe('enh-770: gsd-config-reload.js hook script', () => {
   });
 
   test('gsd-config-reload.js contains the gsd-hook-version stamp', () => {
-    // allow-test-rule: runtime-contract-is-the-product — the stamp template token (see #770)
+    // allow-test-rule: source-text-is-the-product — the stamp template token (see #770)
     // IS the product surface that the installer must find and replace with the
     // real version at copy time; asserting its presence is required.
     const content = fs.readFileSync(reloadScript, 'utf8');
@@ -2663,7 +2663,7 @@ describe('enh-770: gsd-config-reload.js hook script', () => {
   });
 
   test('gsd-config-reload.js reads from stdin and emits JSON output', () => {
-    // allow-test-rule: runtime-contract-is-the-product — the stdin-read and (see #770)
+    // allow-test-rule: source-text-is-the-product — the stdin-read and (see #770)
     // JSON-emit pattern IS the hook contract; asserting its presence is required.
     const content = fs.readFileSync(reloadScript, 'utf8');
     assert.ok(
@@ -2673,7 +2673,7 @@ describe('enh-770: gsd-config-reload.js hook script', () => {
   });
 
   test('gsd-config-reload.js targets the FileChanged hook event', () => {
-    // allow-test-rule: runtime-contract-is-the-product — the hookEventName is (see #770)
+    // allow-test-rule: source-text-is-the-product — the hookEventName is (see #770)
     // the protocol surface; asserting its presence verifies the contract.
     const content = fs.readFileSync(reloadScript, 'utf8');
     assert.ok(
@@ -2693,7 +2693,7 @@ describe('enh-770: hooks/hooks.json plugin manifest includes new hook events', (
   });
 
   test('hooks.json contains SubagentStop event', () => {
-    // allow-test-rule: runtime-contract-is-the-product — hooks.json IS the (see #770)
+    // allow-test-rule: source-text-is-the-product — hooks.json IS the (see #770)
     // plugin manifest surface that Claude Code reads at plugin load time.
     const content = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
     assert.ok(
@@ -2703,7 +2703,7 @@ describe('enh-770: hooks/hooks.json plugin manifest includes new hook events', (
   });
 
   test('hooks.json contains Stop event', () => {
-    // allow-test-rule: runtime-contract-is-the-product — hooks.json IS the (see #770)
+    // allow-test-rule: source-text-is-the-product — hooks.json IS the (see #770)
     // plugin manifest surface that Claude Code reads at plugin load time.
     const content = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
     assert.ok(
@@ -2713,7 +2713,7 @@ describe('enh-770: hooks/hooks.json plugin manifest includes new hook events', (
   });
 
   test('hooks.json contains PreCompact event', () => {
-    // allow-test-rule: runtime-contract-is-the-product — hooks.json IS the (see #770)
+    // allow-test-rule: source-text-is-the-product — hooks.json IS the (see #770)
     // plugin manifest surface that Claude Code reads at plugin load time.
     const content = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
     assert.ok(
@@ -2723,7 +2723,7 @@ describe('enh-770: hooks/hooks.json plugin manifest includes new hook events', (
   });
 
   test('hooks.json contains FileChanged event', () => {
-    // allow-test-rule: runtime-contract-is-the-product — hooks.json IS the (see #770)
+    // allow-test-rule: source-text-is-the-product — hooks.json IS the (see #770)
     // plugin manifest surface that Claude Code reads at plugin load time.
     const content = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8'));
     assert.ok(

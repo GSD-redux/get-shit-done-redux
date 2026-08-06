@@ -1529,7 +1529,9 @@ describe('bug #730 — milestone (Phase Details) section scope resolution', () =
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3128-roadmap-plan-count-slug-layout (consolidation epic #1969 B3 #1972)", () => {
 'use strict';
-// allow-test-rule: reads roadmap.cjs source to verify isPlanFile pattern was adopted — structural contract prevents silent regression to old filter (see #3128)
+// allow-test-rule: structural-regression-guard (see #3128)
+// Reads roadmap.cjs source to verify isPlanFile pattern was adopted —
+// structural contract prevents silent regression to the old filter.
 
 // Regression guard for bug #3128.
 //

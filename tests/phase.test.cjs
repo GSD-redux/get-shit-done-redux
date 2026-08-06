@@ -1,10 +1,6 @@
 // allow-test-rule: source-text-is-the-product
 // Reads .md/.json/.yml product files whose deployed text IS what the
 // runtime loads — testing text content tests the deployed contract.
-// allow-test-rule: state-md-is-the-runtime-contract — regression tests for
-// bug #3517 assert the exact STATE.md fields written by phase.complete;
-// STATE.md IS the product surface being verified, not source code.
-// Migration to typed-IR parser tracked in #2974.
 
 /**
  * GSD Tools Tests - Phase
@@ -5757,6 +5753,13 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
 // ─────────────────────────────────────────────────────────────────────────────
 
 {
+  // Typed STATE.md surfaces (#3090) — replaces raw regex/substring matching
+  // on STATE.md content written by phase.complete in this bug-#3517 block.
+  const { stateExtractField } = require('../gsd-core/bin/lib/state-document.cjs');
+  const { extractFrontmatter } = require('../gsd-core/bin/lib/frontmatter.cjs');
+  const { parseMarkdownTable } = require('../gsd-core/bin/lib/markdown-table.cjs');
+  const { parsePhaseFromProse } = require('../gsd-core/bin/lib/phase-id.cjs');
+
   function runSdkQuery(args, cwd) {
     if (Array.isArray(args) && args[0] === 'phase.complete') {
       writePassedVerificationForPhase(cwd, args[1]);
@@ -5986,24 +5989,24 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r1.success, `first call failed: ${r1.error}`);
 
       const stateAfter1 = fs.readFileSync(statePath, 'utf8');
-      const match1 = stateAfter1.match(/completed_phases:\s*(\d+)/);
-      assert.ok(match1, 'completed_phases not found in frontmatter after first call');
+      const progress1 = extractFrontmatter(stateAfter1).progress;
+      assert.ok(progress1, 'progress not found in frontmatter after first call');
       assert.equal(
-        Number(match1[1]),
+        Number(progress1.completed_phases),
         2,
-        `After first call: completed_phases should be 2 (derived from ROADMAP: phases 4 and 5 complete), got ${match1[1]}`,
+        `After first call: completed_phases should be 2 (derived from ROADMAP: phases 4 and 5 complete), got ${progress1.completed_phases}`,
       );
 
       const r2 = runSdkQuery(['phase.complete', '5'], tmpDir);
       assert.ok(r2.success, `second call failed: ${r2.error}`);
 
       const stateAfter2 = fs.readFileSync(statePath, 'utf8');
-      const match2 = stateAfter2.match(/completed_phases:\s*(\d+)/);
-      assert.ok(match2, 'completed_phases not found in frontmatter after second call');
+      const progress2 = extractFrontmatter(stateAfter2).progress;
+      assert.ok(progress2, 'progress not found in frontmatter after second call');
       assert.equal(
-        Number(match2[1]),
+        Number(progress2.completed_phases),
         2,
-        `After second call (same phase): completed_phases must remain 2 (idempotent), got ${match2[1]}`,
+        `After second call (same phase): completed_phases must remain 2 (idempotent), got ${progress2.completed_phases}`,
       );
     });
 
@@ -6015,16 +6018,16 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const stoppedMatch = state.match(/stopped_at:\s*(.+)/);
-      assert.ok(stoppedMatch, 'stopped_at not found in frontmatter');
+      const stoppedAt = extractFrontmatter(state).stopped_at;
+      assert.ok(stoppedAt, 'stopped_at not found in frontmatter');
       assert.ok(
-        !stoppedMatch[1].includes('05-03-PLAN.md'),
-        `stopped_at should not still say "Completed 05-03-PLAN.md" — got: ${stoppedMatch[1]}`,
+        !stoppedAt.includes('05-03-PLAN.md'),
+        `stopped_at should not still say "Completed 05-03-PLAN.md" — got: ${stoppedAt}`,
       );
       assert.ok(
-        stoppedMatch[1].toLowerCase().includes('phase 5') ||
-        stoppedMatch[1].toLowerCase().includes('complete'),
-        `stopped_at should reference phase 5 completion, got: ${stoppedMatch[1]}`,
+        stoppedAt.toLowerCase().includes('phase 5') ||
+        stoppedAt.toLowerCase().includes('complete'),
+        `stopped_at should reference phase 5 completion, got: ${stoppedAt}`,
       );
     });
 
@@ -6036,10 +6039,8 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const lastUpdatedMatch = state.match(/last_updated:\s*(.+)/);
-      assert.ok(lastUpdatedMatch, 'last_updated not found in frontmatter');
-
-      const raw = lastUpdatedMatch[1].trim().replace(/^"(.*)"$/, '$1');
+      const raw = extractFrontmatter(state).last_updated;
+      assert.ok(raw, 'last_updated not found in frontmatter');
 
       // Must have been refreshed — not the stale seed value from setupPhase3517Project
       assert.notEqual(
@@ -6073,10 +6074,10 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const match = state.match(/total_plans:\s*(\d+)/);
-      assert.ok(match, 'total_plans not found in frontmatter');
-      const totalPlans = Number(match[1]);
-      assert.ok(Number.isFinite(totalPlans) && totalPlans > 0, `total_plans must be a positive number, got: ${match[1]}`);
+      const progress = extractFrontmatter(state).progress;
+      assert.ok(progress && progress.total_plans !== undefined, 'total_plans not found in frontmatter');
+      const totalPlans = Number(progress.total_plans);
+      assert.ok(Number.isFinite(totalPlans) && totalPlans > 0, `total_plans must be a positive number, got: ${progress.total_plans}`);
     });
 
     test('frontmatter completed_plans is updated from SUMMARY file count after phase.complete', () => {
@@ -6087,9 +6088,9 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const match = state.match(/completed_plans:\s*(\d+)/);
-      assert.ok(match, 'completed_plans not found in frontmatter');
-      const completedPlans = Number(match[1]);
+      const progress = extractFrontmatter(state).progress;
+      assert.ok(progress && progress.completed_plans !== undefined, 'completed_plans not found in frontmatter');
+      const completedPlans = Number(progress.completed_plans);
       assert.equal(
         completedPlans,
         10,
@@ -6105,9 +6106,9 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      const match = state.match(/percent:\s*(\d+)/);
-      assert.ok(match, 'percent not found in frontmatter');
-      assert.equal(Number(match[1]), 67, `percent should be 67 (2/3 phases), got: ${match[1]}`);
+      const progress = extractFrontmatter(state).progress;
+      assert.ok(progress && progress.percent !== undefined, 'percent not found in frontmatter');
+      assert.equal(Number(progress.percent), 67, `percent should be 67 (2/3 phases), got: ${progress.percent}`);
     });
 
     test('state frontmatter and numeric phase line reflect next phase after phase.complete', () => {
@@ -6118,8 +6119,19 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      assert.match(state, /completed_phases:\s*2/, 'completed_phases must be updated in frontmatter');
-      assert.match(state, /Phase:\s*0?6\b/, 'numeric Phase line should advance to phase 6');
+      const progress = extractFrontmatter(state).progress;
+      assert.equal(
+        Number(progress && progress.completed_phases),
+        2,
+        `completed_phases must be updated in frontmatter, got: ${progress && progress.completed_phases}`,
+      );
+      const phaseLine = stateExtractField(state, 'Phase');
+      const { phase: nextPhase } = parsePhaseFromProse(phaseLine);
+      assert.equal(
+        Number(nextPhase),
+        6,
+        `numeric Phase line should advance to phase 6, got Phase line: ${phaseLine}`,
+      );
     });
 
     test('prose-block STATE keeps next phase name without field-miss warnings (#1316)', () => {
@@ -6143,16 +6155,27 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       );
 
       const state = fs.readFileSync(path.join(planningDir, 'STATE.md'), 'utf8');
-      assert.match(state, /current_phase:\s*"?33"?/, 'current_phase frontmatter must advance to 33');
-      assert.match(
-        state,
-        /^Phase:\s*33\s+—\s+Follow Up Implementation\b/m,
-        `Current Position Phase line must keep the next phase name; state:\n${state}`,
+      const currentPhase = extractFrontmatter(state).current_phase;
+      assert.equal(
+        String(currentPhase),
+        '33',
+        `current_phase frontmatter must advance to 33, got: ${currentPhase}`,
       );
+
+      const phaseLine = stateExtractField(state, 'Phase');
+      const { phase: nextPhase, name: nextPhaseName } = parsePhaseFromProse(phaseLine);
+      assert.equal(Number(nextPhase), 33, `Current Position Phase line must advance to 33; got Phase line: ${phaseLine}`);
+      assert.equal(
+        nextPhaseName,
+        'Follow Up Implementation',
+        `Current Position Phase line must keep the next phase name; got Phase line: ${phaseLine}`,
+      );
+
+      const lastActivity = stateExtractField(state, 'Last activity');
       assert.match(
-        state,
-        /^Last activity:\s*\d{4}-\d{2}-\d{2}\s+—\s+Phase 32 complete/m,
-        `Last activity line must use the template em-dash delimiter with narrative; state:\n${state}`,
+        lastActivity || '',
+        /^\d{4}-\d{2}-\d{2}\s+—\s+Phase 32 complete/,
+        `Last activity line must use the template em-dash delimiter with narrative; got: ${lastActivity}`,
       );
     });
 
@@ -6164,10 +6187,14 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       assert.ok(r.success, `call failed: ${r.error}`);
 
       const state = fs.readFileSync(statePath, 'utf8');
-      assert.match(
-        state,
-        /\|\s*5\s*\|\s*7\s*\|/,
-        `By Phase table should have a row for phase 5 with 7 summaries.\nState:\n${state}`,
+      const table = parseMarkdownTable(state);
+      assert.ok(table.ok, `By Phase table must parse; reason: ${table.ok ? '' : table.reason}`);
+      const row = table.value.rows.find((r) => r.Phase.trim() === '5');
+      assert.ok(row, `By Phase table should have a row for phase 5.\nState:\n${state}`);
+      assert.equal(
+        row.Plans.trim(),
+        '7',
+        `By Phase table row for phase 5 should show 7 summaries, got row: ${JSON.stringify(row)}`,
       );
     });
 
@@ -6181,10 +6208,24 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
 
       const state = fs.readFileSync(statePath, 'utf8');
 
-      assert.match(state, /completed_phases:\s*2/, 'completed_phases must be 2 (4 and 5 complete)');
-      assert.match(state, /percent:\s*67/, 'percent must be 67%');
-      const hasPhase6 = /Phase:\s*0?6/.test(state) || /current_phase:\s*0?6/.test(state);
-      assert.ok(hasPhase6, `STATE.md must reference Phase 6 as current after completing Phase 5.\nState:\n${state}`);
+      const fm = extractFrontmatter(state);
+      assert.equal(
+        Number(fm.progress && fm.progress.completed_phases),
+        2,
+        `completed_phases must be 2 (4 and 5 complete), got: ${fm.progress && fm.progress.completed_phases}`,
+      );
+      assert.equal(
+        Number(fm.progress && fm.progress.percent),
+        67,
+        `percent must be 67%, got: ${fm.progress && fm.progress.percent}`,
+      );
+      const phaseLine = stateExtractField(state, 'Phase');
+      const { phase: bodyPhase } = parsePhaseFromProse(phaseLine);
+      const hasPhase6 = Number(bodyPhase) === 6 || Number(fm.current_phase) === 6;
+      assert.ok(
+        hasPhase6,
+        `STATE.md must reference Phase 6 as current after completing Phase 5. body Phase line: ${phaseLine}, frontmatter current_phase: ${fm.current_phase}`,
+      );
     });
   });
 }
