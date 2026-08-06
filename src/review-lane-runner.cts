@@ -330,7 +330,7 @@ interface TranscriptEntry {
 export function antigravityWatermark(
   workspace: string,
   deps: RunnerDeps,
-): { convId: string; lines: number } {
+): { convId: string; lines: number; unreadable?: boolean } {
   const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
   if (!deps.exists(cachePath)) return { convId: '', lines: 0 };
   let cache: Record<string, unknown>;
@@ -346,7 +346,10 @@ export function antigravityWatermark(
   try {
     return { convId, lines: deps.readFile(tx).split(/\r?\n/).filter((l) => l.trim()).length };
   } catch {
-    return { convId, lines: 0 };
+    // #3118: this conv-id pre-dates this run, so its transcript exists but this run cannot verify
+    // its line count. Reporting `lines: 0` would assert a fact we could not check — flag it instead
+    // so the fallback can decline rather than silently skip zero and replay a stale response.
+    return { convId, lines: 0, unreadable: true };
   }
 }
 
@@ -376,7 +379,7 @@ function transcriptPath(homeDir: string, convId: string): string {
  */
 export function antigravityTranscriptFallback(
   workspace: string,
-  mark: { convId: string; lines: number },
+  mark: { convId: string; lines: number; unreadable?: boolean },
   deps: RunnerDeps,
 ): string {
   const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
@@ -389,6 +392,9 @@ export function antigravityTranscriptFallback(
   }
   const convId = resolveConvId(cache, workspace);
   if (!convId) return '';
+  // #3118: the watermark could not read this conversation's transcript, so there is no trustworthy
+  // skip for it. Declining is the fail-closed answer; skipping 0 would replay a prior run's review.
+  if (mark.unreadable === true && convId === mark.convId) return '';
   const tx = transcriptPath(deps.homeDir, convId);
   if (!deps.exists(tx)) return '';
   let lines: string[];
