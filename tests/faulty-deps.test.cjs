@@ -144,31 +144,58 @@ describe('A. execGit normalization (#3071)', () => {
     const sharedStub = makeFaultyGit();
 
     // worktree-safety.cts:33 — via resolveWorktreeContext, the exported
-    // entry point that threads deps.execGit.
+    // entry point that threads deps.execGit. Derived: existsSync:()=>false
+    // skips the has_local_planning shortcut, so resolveWorktreeLinkage runs;
+    // the shared stub's benign passthrough (exitCode:0, empty stdout) for
+    // both --git-dir and --git-common-dir makes them resolve to the SAME
+    // path (tmpDir), which is the main_worktree branch
+    // (src/worktree-safety.cts:196-200) — a `typeof === 'string'` check
+    // would still pass if a shape regrowth returned e.g. reason:'not_a_git_repo'.
     const wsResult = worktreeSafety.resolveWorktreeContext(tmpDir, {
       execGit: sharedStub,
       existsSync: () => false,
     });
-    assert.strictEqual(typeof wsResult.effectiveRoot, 'string');
-    assert.strictEqual(typeof wsResult.mode, 'string');
-    assert.strictEqual(typeof wsResult.reason, 'string');
+    assert.deepStrictEqual(wsResult, {
+      effectiveRoot: tmpDir,
+      mode: 'current_directory',
+      reason: 'main_worktree',
+    });
 
     // git-base-branch.cts:32 — trySymbolicRef takes execGit directly as its
-    // second positional argument (no deps wrapper).
-    assert.doesNotThrow(() => trySymbolicRef(tmpDir, sharedStub));
+    // second positional argument (no deps wrapper). Derived: the stub
+    // answers `git symbolic-ref ...` with exitCode:0 but empty stdout, and
+    // trySymbolicRef treats an empty stdout as "unset" regardless of exit
+    // code (src/git-base-branch.cts:105) — it must return null, not merely
+    // return without throwing.
+    assert.strictEqual(trySymbolicRef(tmpDir, sharedStub), null);
 
     // worktree-base-ref.cts:88 — evaluateWorktreeBaseDegrade threads
-    // deps.execGit.
+    // deps.execGit. Derived: `git rev-parse HEAD` answers exitCode:0 with
+    // empty stdout, which is the explicit exit0-empty-stdout branch
+    // (src/worktree-base-ref.cts:401-403) — shouldDegrade:false,
+    // reason:'no-head', headAbsenceVerified:false (NOT the exit-128
+    // "definitive no-head" case, which would report headAbsenceVerified:true).
+    // A `typeof shouldDegrade === 'boolean'` check would still pass on a
+    // fail-closed flip to shouldDegrade:true.
     const wbrResult = evaluateWorktreeBaseDegrade({ execGit: sharedStub, cwd: tmpDir });
-    assert.strictEqual(typeof wbrResult.shouldDegrade, 'boolean');
-    assert.strictEqual(typeof wbrResult.reason, 'string');
+    assert.deepStrictEqual(wbrResult, {
+      shouldDegrade: false,
+      reason: 'no-head',
+      message: null,
+      headSha: null,
+      forkRef: null,
+      forkSha: null,
+      headAbsenceVerified: false,
+    });
 
     // verification.cts:226 — defaultPhaseCleanCommitTimesMs takes execGitFn
     // directly as its third positional argument, typed `= typeof execGit`.
-    assert.doesNotThrow(() => {
-      const map = defaultPhaseCleanCommitTimesMs(tmpDir, ['a.md', 'b.md'], sharedStub);
-      assert.ok(map instanceof Map);
-    });
+    // Derived: `git log ...` answers exitCode:0 with empty stdout, which
+    // trips the early `logRes.stdout.length === 0` return (empty Map) at
+    // src/verification.cts:247 — `map instanceof Map` alone would also pass
+    // for a non-empty map.
+    const map = defaultPhaseCleanCommitTimesMs(tmpDir, ['a.md', 'b.md'], sharedStub);
+    assert.deepStrictEqual(map, new Map());
   });
 });
 

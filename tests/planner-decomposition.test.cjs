@@ -148,7 +148,7 @@ describe('reference files contain key content from original mode sections', () =
   __foldDescribe("folded:bug-3320-planner-deep-work-rules (consolidation epic #1969 B4 #1973)", () => {
 'use strict';
 
-// allow-test-rule: source-text-is-product [#3320]
+// allow-test-rule: source-text-is-the-product [#3320]
 // The bug is a contradiction in prompt/workflow source text. These assertions
 // intentionally pin the contract words that planner agents consume.
 

@@ -1,4 +1,4 @@
-// allow-test-rule: AC2 requires asserting no `runtime === 'codex'` string-equality and no positive `isCodex` branch remain in bin/install.js/src — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2088)
+// allow-test-rule: structural-regression-guard — AC2 requires asserting no `runtime === 'codex'` string-equality and no positive `isCodex` branch remain in bin/install.js/src — the descriptor-migration contract is a property of the source text, so a source-grep is the only faithful check (#2088)
 'use strict';
 
 /**

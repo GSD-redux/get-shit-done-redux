@@ -206,11 +206,123 @@ function createTempGitProject(prefix = 'gsd-test-') {
   return createFixture({ prefix, planning: true, git: true, projectDoc: true });
 }
 
+// The OS temp root has several canonical spellings, and a path a caller
+// legitimately passes to cleanup() may arrive in any of them: macOS resolves
+// os.tmpdir() under /var/folders/... but /var is a symlink to /private/var;
+// Windows CI runners report os.tmpdir() in the 8.3 SHORT form
+// (C:\Users\RUNNER~1\AppData\Local\Temp) while the caller's path is the
+// expanded LONG form, and fs.realpathSync() does not reliably expand 8.3
+// short names there — only fs.realpathSync.native() does; drive-letter and
+// path casing can also differ (C:\ vs c:\). This function collects the full
+// set of accepted temp roots — os.tmpdir()'s several spellings are one part
+// of that set, not the whole of it (see below). Each probe is wrapped in its
+// own try/catch — none of them may throw and crash cleanup(), they just
+// contribute nothing if unavailable.
+// Memoization cache for tmpRootCandidates(), keyed on the LIVE os.tmpdir()
+// value (not hoisted to a plain module-level constant) — two test files in
+// this suite mutate TMPDIR/TEMP/TMP mid-run and restore them afterward, so
+// caching on the current os.tmpdir() read is what keeps a stale cache from
+// leaking across that override instead of a one-time computation baked in
+// at module load.
+let _tmpRootCandidatesCacheKey;
+let _tmpRootCandidatesCache;
+
+function tmpRootCandidates() {
+  const cacheKey = os.tmpdir();
+  if (cacheKey === _tmpRootCandidatesCacheKey && _tmpRootCandidatesCache) {
+    return _tmpRootCandidatesCache;
+  }
+  const deduped = _computeTmpRootCandidates();
+  _tmpRootCandidatesCacheKey = cacheKey;
+  _tmpRootCandidatesCache = Object.freeze(deduped);
+  return _tmpRootCandidatesCache;
+}
+
+function _computeTmpRootCandidates() {
+  const roots = [];
+  try {
+    roots.push(path.resolve(os.tmpdir()));
+  } catch (_) { /* os.tmpdir() unavailable — skip this variant */ }
+  try {
+    roots.push(fs.realpathSync(os.tmpdir()));
+  } catch (_) { /* temp root unreadable — skip this variant */ }
+  try {
+    roots.push(fs.realpathSync.native(os.tmpdir()));
+  } catch (_) { /* native realpath unavailable/unreadable — skip this variant */ }
+  const isWindows = process.platform === 'win32';
+  // os.tmpdir() alone is too narrow: it honors $TMPDIR, but some tests
+  // (e.g. tests/config-schema.property.test.cjs's getWritableTmp()) create
+  // fixtures directly under the conventional system temp roots instead of
+  // through $TMPDIR — on macOS that is /private/tmp, which can differ from
+  // os.tmpdir()'s /var/folders/.../T. Probe the well-known non-Windows temp
+  // roots too, each independently and only if it actually exists on this
+  // host, so the accepted set stays a bounded, explicit list rather than an
+  // open-ended patch list. macOS additionally exposes /tmp as a symlink to
+  // /private/tmp, so both the unprefixed and /private-prefixed spellings —
+  // and each one's realpath — are collected.
+  if (!isWindows) {
+    for (const candidate of ['/tmp', '/private/tmp']) {
+      try {
+        if (fs.existsSync(candidate)) {
+          roots.push(path.resolve(candidate));
+          try {
+            roots.push(fs.realpathSync(candidate));
+          } catch (_) { /* exists but unreadable via realpath — skip this variant */ }
+        }
+      } catch (_) { /* existsSync itself should not throw, but fail closed if it does */ }
+    }
+  }
+  const seen = new Set();
+  const deduped = [];
+  for (const root of roots) {
+    const key = isWindows ? root.toLowerCase() : root;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(root);
+  }
+  return deduped;
+}
+
 function cleanup(tmpDir) {
   if (typeof tmpDir !== 'string' || tmpDir.length === 0) return;
   const target = path.resolve(tmpDir);
   const cwd = path.resolve(process.cwd());
-  const tmpRoot = path.resolve(os.tmpdir());
+  // The temp-root check below was previously done only inside the catch block,
+  // so it classified a transient Windows error but was never consulted by the
+  // destructive rmSync call itself — a wrong `target` would still chdir out of
+  // its own tree and get force-deleted. Hoisted above both the chdir and the
+  // rmSync so an out-of-temp-root path is refused before either can run.
+  // Comparison is case-insensitive on Windows (drive-letter and path casing
+  // vary there) and case-sensitive everywhere else; the error message below
+  // always prints the original-case target.
+  const isWindows = process.platform === 'win32';
+  const tmpRoots = tmpRootCandidates();
+  function isUnderRoots(p) {
+    const pForCompare = isWindows ? p.toLowerCase() : p;
+    return tmpRoots.some((root) => {
+      const rootForCompare = isWindows ? root.toLowerCase() : root;
+      if (pForCompare === rootForCompare) return true;
+      // A root that is itself a filesystem root (`/`, or `C:\` reachable via
+      // TMPDIR=/) already ends with path.sep — appending a second one would
+      // build `//`, which only the literal string `/` satisfies, refusing
+      // every real descendant. Only append the separator when it is not
+      // already there.
+      const prefix = rootForCompare.endsWith(path.sep)
+        ? rootForCompare
+        : `${rootForCompare}${path.sep}`;
+      return pForCompare.startsWith(prefix);
+    });
+  }
+  if (!isUnderRoots(target)) {
+    throw new Error(
+      `cleanup() refused to remove a path outside the known temp roots ` +
+      `(${tmpRoots.join(', ')}): ${target}`
+    );
+  }
+  // No symlink-escape check here: fs.rmSync does not follow a top-level
+  // symlink — it unlinks the link itself and leaves the target intact — so
+  // there is no live hazard for the root-membership check above to guard
+  // against. That check is the one closing an actual defect.
   if (cwd === target || cwd.startsWith(`${target}${path.sep}`)) {
     // Windows cannot remove a directory that is the current working directory.
     process.chdir(path.dirname(target));
@@ -225,9 +337,9 @@ function cleanup(tmpDir) {
   } catch (error) {
     // After retries, Windows can still briefly hold temp dirs open after a timed-out
     // child exits. Ignore that teardown-only flake for temp roots, but rethrow everything else.
-    const isTmpPath = target === tmpRoot || target.startsWith(`${tmpRoot}${path.sep}`);
+    // By this point target is guaranteed under a temp root: the guard clauses above throw
+    // for any other path, so this swallow doesn't need to re-test that.
     const isTransientWinErr = process.platform === 'win32'
-      && isTmpPath
       && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error && error.code);
     if (!isTransientWinErr) throw error;
   }
@@ -637,4 +749,4 @@ function clearSessionEnv() {
   for (const k of SESSION_ENV_KEYS) delete process.env[k];
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };

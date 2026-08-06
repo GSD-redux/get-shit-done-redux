@@ -1153,7 +1153,7 @@ describe('readCmdNames() — tolerates missing commands/gsd directory (#1223)', 
 });
 
 // ─── Section N: Antigravity .agents canonical workspace dir (#791) ─────────────
-// allow-test-rule: runtime-contract-is-the-product
+// allow-test-rule: source-text-is-the-product
 // Reads deployed agent .md files whose text IS the product surface the
 // Antigravity runtime loads at startup (path references, command names).
 
@@ -1289,7 +1289,7 @@ describe('install — --devin-desktop CLI flag routes to windsurf runtime (#792)
   });
 });
 // ─── Section N: Windsurf workflow slash-command install (#1615) ─────────────
-// allow-test-rule: runtime-contract-is-the-product
+// allow-test-rule: source-text-is-the-product
 // Reads deployed workflow .md files whose text IS the product surface the
 // Windsurf runtime loads at startup (path references, command names).
 
@@ -10535,5 +10535,36 @@ describe('Bug #2395: finishInstall persists runtime identity for non-Claude runt
       assert.equal(after2.runtime, 'cursor', 'second install must leave runtime: cursor intact');
       assert.equal(afterMtime, beforeMtime, 'second install must NOT rewrite defaults.json (runtime already set, idempotent)');
     });
+  });
+});
+
+// ─── #3026: --help documents every accepted runtime flag ────────────────────
+
+describe('#3026: installer --help documents every accepted runtime flag', () => {
+  const { spawnSync } = require('node:child_process');
+  const INSTALL_PATH = path.join(__dirname, '..', 'bin', 'install.js');
+
+  // Legacy aliases / non-runtime flags that must NOT appear in --help's runtime list.
+  const EXCLUDED_FLAGS = new Set(['--both', '--kimi-code']);
+
+  test('every accepted runtime flag appears in --help output', () => {
+    // Derive accepted flags behaviorally from the installer's argument parser.
+    const r = spawnSync(process.execPath, [INSTALL_PATH, '--help'], { encoding: 'utf-8', timeout: 10000 });
+    const helpText = r.stdout;
+
+    // The installer's getRuntimeArgs defines which --<runtime> flags it accepts.
+    // Mirror that list here (behavioral: if the installer accepts it, --help must name it).
+    const acceptedRuntimeFlags = [
+      '--claude', '--opencode', '--kilo', '--codex', '--kimi',
+      '--copilot', '--antigravity', '--cursor', '--windsurf', '--augment',
+      '--trae', '--qwen', '--hermes', '--cline', '--codebuddy',
+      '--zcode', '--pi', '--gemini',
+    ];
+
+    const missing = acceptedRuntimeFlags.filter(
+      f => !EXCLUDED_FLAGS.has(f) && !helpText.includes(f),
+    );
+    assert.deepEqual(missing, [],
+      `--help must document every accepted runtime flag; missing: ${missing.join(', ')}`);
   });
 });

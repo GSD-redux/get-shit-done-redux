@@ -1605,7 +1605,7 @@ function extractRetiredPhaseNumbers(scope: string): Set<string> {
  * a YAML frontmatter object. Allows hooks and scripts to read state
  * reliably via `state json` instead of fragile regex parsing.
  */
-function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Record<string, unknown> {
+function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, storedMilestone?: string | null): Record<string, unknown> {
   // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
   // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
   // below). Phase canonically lives in ## Current Position (templates/state.md);
@@ -1682,7 +1682,10 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             }
           } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
-          const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
+          // #3017: scope the milestone filter to the STORED milestone when available,
+          // so a state.* write doesn't auto-derive (and mis-bind) to a different
+          // milestone's heading and clobber the stored value + progress counts.
+          const isDirInMilestone = getMilestonePhaseFilter(cwd, storedMilestone ?? undefined) as (dir: string) => boolean;
           const allMatchingDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
             .filter(e => e.isDirectory()).map(e => e.name)
             .filter(isDirInMilestone);
@@ -1855,7 +1858,11 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
     cwd ? planningPaths(cwd).state : undefined,
   ) as Record<string, unknown>;
   const body = stripFrontmatter(content);
-  const derivedFm = buildStateFrontmatter(body, cwd);
+  // #3017: pass the stored milestone from the existing frontmatter so
+  // buildStateFrontmatter scopes its disk scan to the correct milestone
+  // instead of auto-deriving (and potentially mis-binding).
+  const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
+  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone);
 
   // Preserve existing frontmatter status when body-derived status is 'unknown'.
   // This prevents a missing Status: field in the body from overwriting a

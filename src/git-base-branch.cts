@@ -136,7 +136,8 @@ export function tryRemoteShow(
     const branch = m[1];
     // git emits "(unknown)" when the remote is offline but the local cache
     // resolved it; treat that as non-authoritative and fall through.
-    if (!branch || branch === '(unknown)') return null;
+    // No `!branch ||` guard: m[1] comes from the `(\S+)` capture group above, so it is never empty.
+    if (branch === '(unknown)') return null;
     return branch;
   } catch {
     return null;
@@ -271,9 +272,13 @@ export interface GitWorktreeInfo {
  * Detect whether `cwd` sits inside a git worktree, and if so, return the
  * absolute path of the worktree root.
  */
-export function gitWorktreeInfoInternal(cwd: string): GitWorktreeInfo {
+export function gitWorktreeInfoInternal(
+  cwd: string,
+  deps?: Pick<BaseBranchDeps, 'execGit'>
+): GitWorktreeInfo {
+  const execGit: ExecGitFn = deps?.execGit ?? execGitSeam;
   try {
-    const insideResult = execGitSeam(['rev-parse', '--is-inside-work-tree'], { cwd, timeout: 5000 });
+    const insideResult = execGit(['rev-parse', '--is-inside-work-tree'], { cwd, timeout: 5000 });
     if (insideResult.exitCode !== 0) {
       return { inside: false, worktreeRoot: null };
     }
@@ -281,7 +286,7 @@ export function gitWorktreeInfoInternal(cwd: string): GitWorktreeInfo {
     if (insideStdout !== 'true') {
       return { inside: false, worktreeRoot: null };
     }
-    const rootResult = execGitSeam(['rev-parse', '--show-toplevel'], { cwd, timeout: 5000 });
+    const rootResult = execGit(['rev-parse', '--show-toplevel'], { cwd, timeout: 5000 });
     if (rootResult.exitCode !== 0) {
       return { inside: true, worktreeRoot: null };
     }

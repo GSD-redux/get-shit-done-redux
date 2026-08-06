@@ -1,4 +1,4 @@
-// allow-test-rule: runtime-contract-is-the-product see #1856
+// allow-test-rule: source-text-is-the-product see #1856
 // The orchestrator cwd-drift guard (#48) is shell EMBEDDED in execute-phase.md.
 // The shipped text IS the runtime contract, so these tests extract the block and
 // EXECUTE it against real git fixtures rather than asserting on its characters —

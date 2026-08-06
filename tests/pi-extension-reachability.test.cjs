@@ -63,23 +63,28 @@ test('REACHABILITY: the /gsd handler dispatches a real family through gsd-tools.
   const dir = createTempDir();
   try {
     const result = await pi._recorded.commands['gsd'].handler('progress json', { cwd: dir });
-    assert.equal(typeof result, 'string', '/gsd handler returns a string result');
-    const parsed = JSON.parse(result);
+    // #2991: handler returns { content: [{ type: 'text', text }] } (Pi's display shape), not a bare string.
+    assert.ok(result && Array.isArray(result.content) && result.content[0].type === 'text',
+      `/gsd handler must return Pi's display shape { content: [{ type: 'text', text }] }; got: ${JSON.stringify(result).slice(0, 200)}`);
+    const parsed = JSON.parse(result.content[0].text);
     assert.equal(typeof parsed.percent, 'number', '/gsd dispatch reached gsd-tools.cjs for real (the engine was reached)');
   } finally {
     cleanup(dir);
   }
 });
 
-test('REACHABILITY: an unknown family surfaces a clear GSD error string, not a throw', async () => {
+test('REACHABILITY: an unknown family surfaces a clear GSD error, not a throw', async () => {
   const pi = mockPi();
   gsdPiExtension(pi);
   const dir = createTempDir();
   try {
     const result = await pi._recorded.commands['gsd'].handler('no-such-family-8675309', { cwd: dir });
-    assert.equal(typeof result, 'string');
-    assert.match(result, /GSD error:/);
-    assert.match(result, /no-such-family-8675309|Unknown command/);
+    // #2991: handler returns { content: [{ type: 'text', text }] } (Pi's display shape).
+    assert.ok(result && Array.isArray(result.content) && result.content[0].type === 'text',
+      `error result must carry Pi's display shape; got: ${JSON.stringify(result).slice(0, 200)}`);
+    const text = result.content[0].text;
+    assert.match(text, /GSD error:/);
+    assert.match(text, /no-such-family-8675309|Unknown command/);
   } finally {
     cleanup(dir);
   }

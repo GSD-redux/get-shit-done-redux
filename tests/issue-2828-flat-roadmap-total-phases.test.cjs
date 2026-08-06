@@ -1,4 +1,3 @@
-// allow-test-rule: behavioral-fs-fixture (#2828)
 'use strict';
 
 // Regression guard for #2828: on a flat unmilestoned roadmap (no versioned milestone
