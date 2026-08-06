@@ -40,8 +40,6 @@
 
 const path = require('node:path');
 
-const REPO_ROOT = path.join(__dirname, '..', '..');
-
 const { cleanup } = require('../helpers.cjs');
 const { MANIFEST_FAMILIES, runMinimalInstall, buildParityManifest } = require('./install-shared.cjs');
 

@@ -30,8 +30,8 @@ if [ "$HEAD_REF" = "DETACHED" ] || echo "$ACTUAL_BRANCH" | grep -Eq '^(main|mast
   echo "FATAL: worktree HEAD on '$ACTUAL_BRANCH' (expected agent-* or worktree-agent-*); refusing to commit or self-recover via 'git update-ref' (#2924)." >&2
   exit 42
 fi
-if ! echo "$ACTUAL_BRANCH" | grep -Eq '^(worktree-)?agent-[A-Za-z0-9._/-]+$'; then
-  echo "FATAL: worktree HEAD '$ACTUAL_BRANCH' is not in the agent-* / worktree-agent-* namespace; refusing to commit (#2924)." >&2
+if ! echo "$ACTUAL_BRANCH" | grep -Eq '^((worktree-)?agent-|worktree-wf_)[A-Za-z0-9._/-]+$'; then
+  echo "FATAL: worktree HEAD '$ACTUAL_BRANCH' is not in the agent-* / worktree-agent-* / worktree-wf_* namespace; refusing to commit (#2924)." >&2
   exit 42
 fi
 ACTUAL_BASE=$(git rev-parse HEAD)

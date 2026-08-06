@@ -7,6 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { createFixture } = require('./fixtures/index.cjs');
+const processSeam = require('./helpers/process-seam.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const TEST_ENV_BASE = {
@@ -44,72 +45,150 @@ function runGsdTools(args, cwd = process.cwd(), env = {}) {
     : (args.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [])
         .map(t => t.replace(/"([^"]*)"/g, '$1').replace(/'([^']*)'/g, '$1'));
 
+  // Adapter over tests/helpers/process-seam.cjs (#3055). The seam returns a
+  // typed { outcome, exitCode, stdout, stderr, timedOut, signal, killed, code }
+  // result — never throws for a kill/timeout/buffer-overflow/spawn-failure.
+  // This adapter is the ONLY place that retries and the ONLY place that
+  // reconstructs runGsdTools's legacy { success, output, error, exitCode }
+  // shape, so all 136 callers keep their existing contract byte-identically.
+  //
+  // `processSeam.runNode` is looked up on the module object (not destructured
+  // at require time) so tests can `mock.method(processSeam, 'runNode', fn)`
+  // to inject TIMED_OUT / BUFFER_OVERFLOW / SPAWN_FAILED without waiting on
+  // real subprocess timers.
   function attempt() {
-    // Split shell-style string into argv, stripping surrounding quotes, so we
-    // can invoke execFileSync with process.execPath instead of relying on
-    // `node` being on PATH (it isn't in Claude Code shell sessions).
-    // Apply shell-style quote removal: strip surrounding quotes from quoted
-    // sequences anywhere in a token (handles both "foo bar" and --"foo bar").
-    return execFileSync(process.execPath, [TOOLS_PATH, ...argv], {
+    return processSeam.runNode([TOOLS_PATH, ...argv], {
       cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
       env: childEnv,
-      timeout: 60000,
+      timeoutMs: 60000,
     });
   }
 
-  // isKilled: true when the subprocess was terminated by a signal or timed out.
-  // This indicates host resource starvation (OOM, scheduler contention), NOT a
-  // product assertion failure.
-  function isKilled(err) {
-    return err.killed || err.signal != null || err.code === 'ETIMEDOUT';
-  }
-
-  function throwResourceStarvation(err) {
+  function throwResourceStarvation(result) {
     throw new Error(
       `[runGsdTools: resource-starvation / subprocess-kill after retry] ` +
       `gsd-tools was killed before completion ` +
-      `(signal=${err.signal}, code=${err.code}, killed=${err.killed}). ` +
+      `(signal=${result.signal}, code=${result.code}, killed=${result.killed}). ` +
       `This indicates host OOM or scheduler contention, not a product bug. ` +
-      `stdout=${err.stdout?.toString().trim() || ''} ` +
-      `stderr=${err.stderr?.toString().trim() || ''}`
+      `stdout=${(result.stdout || '').trim()} ` +
+      `stderr=${(result.stderr || '').trim()}`
     );
   }
 
-  try {
-    const result = attempt();
-    return { success: true, output: result.trim(), exitCode: 0 };
-  } catch (firstErr) {
-    // Kill-signal discrimination (#969): transient OOM/contention usually
-    // succeeds on retry; retry ONCE before surfacing the labeled error.
-    if (isKilled(firstErr)) {
-      try {
-        const result = attempt();
-        return { success: true, output: result.trim(), exitCode: 0 };
-      } catch (retryErr) {
-        // Still killed after retry — persistent resource starvation, throw.
-        throwResourceStarvation(retryErr);
+  function toLegacyShape(result) {
+    if (result.outcome === processSeam.OUTCOME.EXITED) {
+      if (result.exitCode === 0) {
+        return { success: true, output: (result.stdout || '').trim(), exitCode: 0 };
       }
+      // Clean non-zero exit (real command error, no kill signal, no spawn
+      // failure): return normally. No retry, no throw — preserves existing
+      // test behavior that asserts on error shape.
+      const stderrRaw = (result.stderr || '').trim();
+      // Prefer actual stderr content; fall back to the same "Command failed:
+      // <argv0> <args...>" message Node's execFileSync used to synthesize
+      // for a clean non-zero exit with no stderr (verified against this
+      // runtime's child_process internals: checkExecSyncError() only builds
+      // that message when `ret.error` is absent and `ret.status !== 0`, and
+      // never appends stderr when it is empty). If stderr is empty, append a
+      // note so CI logs show "stderr: (empty)" rather than silently losing
+      // the fact that the child process produced no error output — empty
+      // stderr with a non-zero exit code is a signal of OS-level crash (OOM
+      // kill, worker thread fatal error) rather than a gsd-tools application
+      // error.
+      const commandLine = [process.execPath, TOOLS_PATH, ...argv].join(' ');
+      const error = stderrRaw
+        || `Command failed: ${commandLine} [stderr: (empty) exit:${result.exitCode ?? 1}]`;
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error,
+        exitCode: result.exitCode ?? 1,
+      };
     }
-    // Clean non-zero exit (real command error, no kill signal): return normally.
-    // No retry, no throw — preserves existing test behavior that asserts on
-    // error shape.
-    const stderrRaw = firstErr.stderr?.toString().trim() || '';
-    // Prefer actual stderr content; fall back to err.message (which contains
-    // the command invocation). If stderr is empty, append a note so CI logs
-    // show "stderr: (empty)" rather than silently losing the fact that the
-    // child process produced no error output — empty stderr with a non-zero
-    // exit code is a signal of OS-level crash (OOM kill, worker thread fatal
-    // error) rather than a gsd-tools application error.
-    const error = stderrRaw || `${firstErr.message} [stderr: (empty) exit:${firstErr.status ?? 1}]`;
+    if (result.outcome === processSeam.OUTCOME.BUFFER_OVERFLOW) {
+      // Never retried. This is a DELIBERATE divergence from the old
+      // execFileSync-based helper, not an oversight: the old code saw a
+      // maxBuffer overflow as `err.signal === 'SIGTERM'`, which made the old
+      // `isKilled(err)` true and triggered a retry. The new seam classifies
+      // overflow as its own BUFFER_OVERFLOW outcome specifically so it stops
+      // being conflated with a kill — the child ran fine and produced too
+      // much output, so retrying wastes 60s and fails identically every
+      // time.
+      //
+      // exitCode is coerced to 1 here — RETRACTED claim from an earlier
+      // revision of this comment that it was "never coerced to exitCode:1,
+      // unlike the pre-seam helper": that was wrong. A real caller
+      // (tests/context-predicates-query.test.cjs) asserts
+      // `typeof r.exitCode === 'number'`, matching the old code's
+      // `err.status ?? 1` on every non-retried failure path. The SEAM layer
+      // still reports `exitCode: null` (see toSeamResult) — that typed
+      // result is where the "no numeric exit code exists" information
+      // lives, discriminated via `outcome`. This LEGACY adapter's job is to
+      // preserve the old numeric contract for existing callers, so it
+      // coerces null to 1 here rather than propagating the seam's null.
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error: `gsd-tools output exceeded the subprocess buffer limit (code=${result.code})`,
+        exitCode: 1,
+      };
+    }
+    if (result.outcome === processSeam.OUTCOME.KILLED) {
+      // Defensive only: the retry loop below always retries KILLED once and
+      // throws throwResourceStarvation() if it is still KILLED afterward, so
+      // this function is never actually invoked with a KILLED result that
+      // has not already survived a retry. It is handled explicitly (instead
+      // of falling into the SPAWN_FAILED catch-all below, whose message
+      // would be misleading) so a KILLED result can never silently render as
+      // a generic {success:false, exitCode:1}-shaped spawn failure.
+      return {
+        success: false,
+        output: (result.stdout || '').trim(),
+        error: `gsd-tools was killed by signal (signal=${result.signal}, code=${result.code})`,
+        exitCode: null,
+      };
+    }
+    // SPAWN_FAILED: the process never started (matches old behavior — ENOENT
+    // and friends carry no signal, so the old `isKilled(err)` was false).
+    // Never retried — retrying is pointless.
+    //
+    // exitCode is coerced to 1 here — same retraction as the BUFFER_OVERFLOW
+    // branch above: this was previously described as "never coerced to
+    // exitCode:1," which was wrong for the ADAPTER path. The old
+    // execFileSync-based helper returned `err.status ?? 1` on every
+    // non-retried failure, i.e. always `1` for a spawn failure, and a real
+    // caller depends on `typeof exitCode === 'number'`. The SEAM's own
+    // `toSeamResult` still reports `exitCode: null` for SPAWN_FAILED — that
+    // typed layer is where "no numeric exit code exists" is expressed via
+    // `outcome`; this legacy adapter re-applies the old numeric contract on
+    // top of it.
     return {
       success: false,
-      output: firstErr.stdout?.toString().trim() || '',
-      error,
-      exitCode: firstErr.status ?? 1,
+      output: (result.stdout || '').trim(),
+      error: `gsd-tools failed to spawn (code=${result.code})`,
+      exitCode: 1,
     };
   }
+
+  // Kill-signal discrimination (#969): transient OOM/contention usually
+  // succeeds on retry; retry ONCE before surfacing the labeled error.
+  // TIMED_OUT and KILLED are retried — together they reproduce the OLD
+  // execFileSync-based `isKilled(err)` semantics exactly:
+  //   old = err.killed || err.signal != null || err.code === 'ETIMEDOUT'
+  // TIMED_OUT covers the timeout case; KILLED covers a child terminated by a
+  // signal nobody in the seam sent (e.g. an external OOM kill) — the exact
+  // #969 case this retry exists for. BUFFER_OVERFLOW and SPAWN_FAILED are
+  // not kills and are never retried (see their branches in toLegacyShape).
+  const first = attempt();
+  if (first.outcome === processSeam.OUTCOME.TIMED_OUT || first.outcome === processSeam.OUTCOME.KILLED) {
+    const retry = attempt();
+    if (retry.outcome === processSeam.OUTCOME.TIMED_OUT || retry.outcome === processSeam.OUTCOME.KILLED) {
+      // Still killed after retry — persistent resource starvation, throw.
+      throwResourceStarvation(retry);
+    }
+    return toLegacyShape(retry);
+  }
+  return toLegacyShape(first);
 }
 
 // Create a bare temp directory (no .planning/ structure)
@@ -127,11 +206,123 @@ function createTempGitProject(prefix = 'gsd-test-') {
   return createFixture({ prefix, planning: true, git: true, projectDoc: true });
 }
 
+// The OS temp root has several canonical spellings, and a path a caller
+// legitimately passes to cleanup() may arrive in any of them: macOS resolves
+// os.tmpdir() under /var/folders/... but /var is a symlink to /private/var;
+// Windows CI runners report os.tmpdir() in the 8.3 SHORT form
+// (C:\Users\RUNNER~1\AppData\Local\Temp) while the caller's path is the
+// expanded LONG form, and fs.realpathSync() does not reliably expand 8.3
+// short names there — only fs.realpathSync.native() does; drive-letter and
+// path casing can also differ (C:\ vs c:\). This function collects the full
+// set of accepted temp roots — os.tmpdir()'s several spellings are one part
+// of that set, not the whole of it (see below). Each probe is wrapped in its
+// own try/catch — none of them may throw and crash cleanup(), they just
+// contribute nothing if unavailable.
+// Memoization cache for tmpRootCandidates(), keyed on the LIVE os.tmpdir()
+// value (not hoisted to a plain module-level constant) — two test files in
+// this suite mutate TMPDIR/TEMP/TMP mid-run and restore them afterward, so
+// caching on the current os.tmpdir() read is what keeps a stale cache from
+// leaking across that override instead of a one-time computation baked in
+// at module load.
+let _tmpRootCandidatesCacheKey;
+let _tmpRootCandidatesCache;
+
+function tmpRootCandidates() {
+  const cacheKey = os.tmpdir();
+  if (cacheKey === _tmpRootCandidatesCacheKey && _tmpRootCandidatesCache) {
+    return _tmpRootCandidatesCache;
+  }
+  const deduped = _computeTmpRootCandidates();
+  _tmpRootCandidatesCacheKey = cacheKey;
+  _tmpRootCandidatesCache = Object.freeze(deduped);
+  return _tmpRootCandidatesCache;
+}
+
+function _computeTmpRootCandidates() {
+  const roots = [];
+  try {
+    roots.push(path.resolve(os.tmpdir()));
+  } catch (_) { /* os.tmpdir() unavailable — skip this variant */ }
+  try {
+    roots.push(fs.realpathSync(os.tmpdir()));
+  } catch (_) { /* temp root unreadable — skip this variant */ }
+  try {
+    roots.push(fs.realpathSync.native(os.tmpdir()));
+  } catch (_) { /* native realpath unavailable/unreadable — skip this variant */ }
+  const isWindows = process.platform === 'win32';
+  // os.tmpdir() alone is too narrow: it honors $TMPDIR, but some tests
+  // (e.g. tests/config-schema.property.test.cjs's getWritableTmp()) create
+  // fixtures directly under the conventional system temp roots instead of
+  // through $TMPDIR — on macOS that is /private/tmp, which can differ from
+  // os.tmpdir()'s /var/folders/.../T. Probe the well-known non-Windows temp
+  // roots too, each independently and only if it actually exists on this
+  // host, so the accepted set stays a bounded, explicit list rather than an
+  // open-ended patch list. macOS additionally exposes /tmp as a symlink to
+  // /private/tmp, so both the unprefixed and /private-prefixed spellings —
+  // and each one's realpath — are collected.
+  if (!isWindows) {
+    for (const candidate of ['/tmp', '/private/tmp']) {
+      try {
+        if (fs.existsSync(candidate)) {
+          roots.push(path.resolve(candidate));
+          try {
+            roots.push(fs.realpathSync(candidate));
+          } catch (_) { /* exists but unreadable via realpath — skip this variant */ }
+        }
+      } catch (_) { /* existsSync itself should not throw, but fail closed if it does */ }
+    }
+  }
+  const seen = new Set();
+  const deduped = [];
+  for (const root of roots) {
+    const key = isWindows ? root.toLowerCase() : root;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(root);
+  }
+  return deduped;
+}
+
 function cleanup(tmpDir) {
   if (typeof tmpDir !== 'string' || tmpDir.length === 0) return;
   const target = path.resolve(tmpDir);
   const cwd = path.resolve(process.cwd());
-  const tmpRoot = path.resolve(os.tmpdir());
+  // The temp-root check below was previously done only inside the catch block,
+  // so it classified a transient Windows error but was never consulted by the
+  // destructive rmSync call itself — a wrong `target` would still chdir out of
+  // its own tree and get force-deleted. Hoisted above both the chdir and the
+  // rmSync so an out-of-temp-root path is refused before either can run.
+  // Comparison is case-insensitive on Windows (drive-letter and path casing
+  // vary there) and case-sensitive everywhere else; the error message below
+  // always prints the original-case target.
+  const isWindows = process.platform === 'win32';
+  const tmpRoots = tmpRootCandidates();
+  function isUnderRoots(p) {
+    const pForCompare = isWindows ? p.toLowerCase() : p;
+    return tmpRoots.some((root) => {
+      const rootForCompare = isWindows ? root.toLowerCase() : root;
+      if (pForCompare === rootForCompare) return true;
+      // A root that is itself a filesystem root (`/`, or `C:\` reachable via
+      // TMPDIR=/) already ends with path.sep — appending a second one would
+      // build `//`, which only the literal string `/` satisfies, refusing
+      // every real descendant. Only append the separator when it is not
+      // already there.
+      const prefix = rootForCompare.endsWith(path.sep)
+        ? rootForCompare
+        : `${rootForCompare}${path.sep}`;
+      return pForCompare.startsWith(prefix);
+    });
+  }
+  if (!isUnderRoots(target)) {
+    throw new Error(
+      `cleanup() refused to remove a path outside the known temp roots ` +
+      `(${tmpRoots.join(', ')}): ${target}`
+    );
+  }
+  // No symlink-escape check here: fs.rmSync does not follow a top-level
+  // symlink — it unlinks the link itself and leaves the target intact — so
+  // there is no live hazard for the root-membership check above to guard
+  // against. That check is the one closing an actual defect.
   if (cwd === target || cwd.startsWith(`${target}${path.sep}`)) {
     // Windows cannot remove a directory that is the current working directory.
     process.chdir(path.dirname(target));
@@ -146,9 +337,9 @@ function cleanup(tmpDir) {
   } catch (error) {
     // After retries, Windows can still briefly hold temp dirs open after a timed-out
     // child exits. Ignore that teardown-only flake for temp roots, but rethrow everything else.
-    const isTmpPath = target === tmpRoot || target.startsWith(`${tmpRoot}${path.sep}`);
+    // By this point target is guaranteed under a temp root: the guard clauses above throw
+    // for any other path, so this swallow doesn't need to re-test that.
     const isTransientWinErr = process.platform === 'win32'
-      && isTmpPath
       && ['EBUSY', 'ENOTEMPTY', 'EPERM'].includes(error && error.code);
     if (!isTransientWinErr) throw error;
   }
@@ -333,7 +524,11 @@ function captureConsole(fn) {
     console.error = origError;
   }
   if (threw) throw threw;
-  const strip = (s) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  // Built via String.fromCharCode (not a literal control character in a
+  // regex, which `no-control-regex` rejects) so the ESC byte itself is
+  // matched at runtime — this strips real ANSI color codes, not a decoy.
+  const ansiPattern = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g');
+  const strip = (s) => s.replace(ansiPattern, '');
   return {
     stdout: stdout.map(strip).join('\n'),
     stderr: stderr.map(strip).join('\n'),
@@ -554,4 +749,4 @@ function clearSessionEnv() {
   for (const k of SESSION_ENV_KEYS) delete process.env[k];
 }
 
-module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };
+module.exports = { runGsdTools, createTempDir, createTempProject, createTempGitProject, cleanup, tmpRootCandidates, readFileNormalized, readWorkflowCombined, parseFrontmatter, isUsageOutput, captureConsole, toPosixPath, absPlanningPath, runNpm, isolatedNpmEnv, withIsolatedProcessState, delay, waitFor, resetRuntimeWarningCaches, SESSION_ENV_KEYS, saveSessionEnv, restoreSessionEnv, clearSessionEnv, TOOLS_PATH };

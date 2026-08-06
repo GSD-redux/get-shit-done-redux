@@ -551,8 +551,13 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
   // cmdPhaseComplete's gate (phase.cts:1436). Previously the checkbox fired the
   // moment the last plan summary landed — before gsd-verifier had verified.
   const phaseDir = path.join(cwd, phaseInfo!.directory);
-  const verificationPassed = readVerificationStatus(phaseDir).status === 'passed';
+  const verificationResult = readVerificationStatus(phaseDir);
+  const verificationPassed = verificationResult.status === 'passed';
   const isComplete = summaryCount >= planCount && verificationPassed;
+  // #3057 B3: routing above is unchanged (an indeterminate staleness check
+  // still routes as if nothing were stale) — this only makes the fact visible
+  // to whatever reads this command's JSON output.
+  const verificationStaleCheckIndeterminate = verificationResult.staleCheckIndeterminate === true;
   const status = isComplete ? 'Complete' : summaryCount > 0 ? 'In Progress' : 'Planned';
   const today = realClock.localToday();
 
@@ -757,6 +762,7 @@ function cmdRoadmapUpdatePlanProgress(cwd: string, phaseNum: string | null | und
     summary_count: summaryCount,
     status,
     complete: isComplete,
+    verification_stale_check_indeterminate: verificationStaleCheckIndeterminate,
   }, raw, `${summaryCount}/${planCount} ${status}`);
 }
 

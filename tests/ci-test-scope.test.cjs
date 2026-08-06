@@ -176,9 +176,12 @@ describe('ci-test-scope.cjs', () => {
       encoding: 'utf8',
     });
     assert.notStrictEqual(r.status, 0);
-    // allow-test-rule: CLI usage failure text is user-facing contract for this parser guard.
+    // allow-test-rule: pending-migration-to-typed-ir [#3090]
+    // Regex-matches the CLI's human-readable stderr formatter (usage banner +
+    // arg-parser Error#message) — CONTRIBUTING's own BAD example verbatim.
+    // scripts/ci-test-scope.cjs has no --json / frozen-reason-enum error mode
+    // yet; adding one is a production change out of scope here. Tracked under #3090.
     assert.match(r.stderr, /--files requires a value/);
-    // allow-test-rule: CLI usage banner presence is a user-facing contract.
     assert.match(r.stderr, /Usage:/);
   });
 
@@ -211,7 +214,6 @@ describe('ci-test-scope.cjs', () => {
     // A plain source file that matches no RULES entry but is under gsd-core/ (code path)
     const result = scopeFor(['gsd-core/src/some-util.js']);
     assert.strictEqual(result.code_changed, true);
-    // allow-test-rule: the unit-fallback contract is the exact subject of bug #408.
     assert.deepStrictEqual(result.targeted_tests, ['unit'],
       'targeted_tests must be [\'unit\'] when code changed but no rule matched');
   });

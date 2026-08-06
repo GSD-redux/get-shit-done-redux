@@ -18,9 +18,11 @@
  * program; asserting their shape is asserting on the deployed contract.
  */
 
-// allow-test-rule: structural assertion on the deployed update.md backup bash;
-// the data-loss behavior only manifests against a real install during a clean
-// reinstall, which CI does not perform.
+// allow-test-rule: source-text-is-the-product
+// update.md's bash blocks ARE the deployed /gsd:update program; asserting
+// their shape is asserting on the deployed contract. The data-loss behavior
+// only manifests against a real install during a clean reinstall, which CI
+// does not perform.
 
 'use strict';
 

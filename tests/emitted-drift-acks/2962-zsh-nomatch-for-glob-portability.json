@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-integration-checker.md": "#2962: 1 bash block (line ~98 SUMMARY iteration) gained the nullglob shim for zsh portability of the for-glob loop.",
+    "gsd-plan-checker.md": "#2962: 3 bash blocks (lines ~716, ~737, ~822) gained the nullglob shim for zsh portability of the for-glob loops.",
+    "resume-project.md": "#2962: 1 bash block (line ~66 plans-without-summaries scan) gained the nullglob shim for zsh portability of the for-glob loop.",
+    "complete-milestone.md": "#2962: 1 bash block (line ~221 summary one-liner extraction) gained the nullglob shim for zsh portability of the for-glob loop.",
+    "audit-milestone.md": "#2962: 1 bash block (line ~126 requirements_completed extraction) gained the nullglob shim for zsh portability of the for-glob loop."
+  }
+}

@@ -183,11 +183,18 @@ describe('runMain', () => {
 describe('regressions', () => {
   /** Spawn a one-shot script that sets json-error mode and calls runMain with a throwing handler. */
   function spawnJsonErrorRun({ jsonMode, errorType = 'TypeError', message = 'unexpected boom' } = {}) {
+    // ExitError lives in the same module as runMain; import it when the test
+    // wants to exercise the ExitError carve-out path. ExitError takes (code, message).
+    const isExitError = errorType === 'ExitError';
+    const destructure = isExitError ? '{ runMain, ExitError }' : '{ runMain }';
+    const throwExpr = isExitError
+      ? `new ExitError(1, ${JSON.stringify(message)})`
+      : `new ${errorType}(${JSON.stringify(message)})`;
     const script = `
       const io = require(${JSON.stringify(IO_PATH)});
-      const { runMain } = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});
+      const ${destructure} = require(${JSON.stringify(BUILT_CLI_EXIT_PATH)});
       io.setJsonErrorMode(${jsonMode ? 'true' : 'false'});
-      runMain(() => { throw new ${errorType}(${JSON.stringify(message)}); });
+      runMain(() => { throw ${throwExpr}; });
       setImmediate(() => {});
     `;
     return spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
@@ -244,6 +251,36 @@ describe('regressions', () => {
         stderrTrimmed.includes('unexpected boom'),
         `expected "unexpected boom" in stderr, got: ${stderrTrimmed.slice(0, 200)}`
       );
+    });
+
+    // #2979: characterization test pinning the two error paths under json-errors
+    // mode. The structured envelope covers non-ExitError failures; ExitError
+    // (usage errors) intentionally emits plain text with its own exit code.
+    // Both halves asserted together so the code cannot drift toward the doc's
+    // prior overstated claim that EVERY error emits JSON.
+    test('#2979: ExitError emits plain text (not JSON) even under --json-errors; non-ExitError emits the envelope', () => {
+      // ExitError path: plain text, own exit code, NOT a JSON object.
+      const exitResult = spawnJsonErrorRun({
+        jsonMode: true,
+        errorType: 'ExitError',
+        message: 'Usage: gsd-tools <command> [args]',
+      });
+      assert.strictEqual(exitResult.status, 1, 'ExitError exits with its code');
+      const exitStderr = exitResult.stderr.trim();
+      let exitParsed = null;
+      try { exitParsed = JSON.parse(exitStderr); } catch { /* expected — plain text */ }
+      assert.strictEqual(exitParsed, null,
+        `ExitError must emit plain text, not JSON; got: ${exitStderr.slice(0, 200)}`);
+      assert.ok(exitStderr.includes('Usage'),
+        `ExitError plain-text message must reach stderr; got: ${exitStderr.slice(0, 200)}`);
+
+      // Non-ExitError path: structured JSON envelope.
+      const envResult = spawnJsonErrorRun({ jsonMode: true });
+      assert.strictEqual(envResult.status, 1);
+      const envParsed = JSON.parse(envResult.stderr.trim());
+      assert.strictEqual(envParsed.ok, false);
+      assert.strictEqual(envParsed.reason, 'sdk_fail_fast');
+      assert.ok(envParsed.message, 'envelope must carry a message');
     });
   });
 });

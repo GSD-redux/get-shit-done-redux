@@ -43,6 +43,17 @@ interface UatPassedReport {
   policy: {
     require_verification: boolean;
   };
+  /**
+   * #3057 B3: true when the `requireVerification` policy check's own
+   * readVerificationStatus call could not complete its internal staleness
+   * check (fs / scanPhasePlans / clock failure). `passed`/`blockers` above are
+   * UNCHANGED by this — the pre-existing fail-open routing (indeterminate
+   * treated as not-stale) is preserved — this only makes the fact visible to
+   * cmdPhaseUatPassed's JSON output (which spreads this whole report), rather
+   * than silently indistinguishable from "checked; nothing is stale". Always
+   * false when `requireVerification` is not set (the check is never reached).
+   */
+  verification_stale_check_indeterminate: boolean;
 }
 
 // ─── Blocking state sets (documented for maintainability) ─────────────────────
@@ -227,6 +238,8 @@ function evaluateUatPassed(
       blockers,
       no_uat_artifacts,
       policy: { require_verification: requireVerification },
+      // readVerificationStatus was never reached on this early-return path.
+      verification_stale_check_indeterminate: false,
     };
   }
 
@@ -312,8 +325,15 @@ function evaluateUatPassed(
   }
 
   // ── Policy: requireVerification ───────────────────────────────────────────
+  // #3057 B3: routing here is UNCHANGED — an indeterminate staleness check
+  // still falls through to the same `verificationStatus !== 'passed'` branch
+  // it always did (the pre-existing fail-open contract). `verificationStaleCheckIndeterminate`
+  // only records the fact for the report below; it never itself gates `blockers`.
+  let verificationStaleCheckIndeterminate = false;
   if (requireVerification) {
-    const verificationStatus = readVerificationStatus(phaseFullDir).status;
+    const verificationResult = readVerificationStatus(phaseFullDir);
+    const verificationStatus = verificationResult.status;
+    verificationStaleCheckIndeterminate = verificationResult.staleCheckIndeterminate === true;
     if (verificationStatus === 'stale') {
       blockers.push('policy: verification status=stale');
     } else if (verificationStatus !== 'passed' || !hasPassingVerification) {
@@ -339,6 +359,7 @@ function evaluateUatPassed(
     policy: {
       require_verification: requireVerification,
     },
+    verification_stale_check_indeterminate: verificationStaleCheckIndeterminate,
   };
 }
 

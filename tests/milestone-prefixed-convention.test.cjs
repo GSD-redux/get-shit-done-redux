@@ -89,7 +89,8 @@ describe('W021 — milestone-prefixed phase ID convention', () => {
     ]);
 
     const result = runGsdTools(['roadmap', 'validate'], tmpDir);
-    assert.ok(result.success, `roadmap validate should exit 0 even with warnings: ${result.error}`);
+    // #2978: validate now exits non-zero on any warning (per its documented contract).
+    assert.strictEqual(result.success, false, `roadmap validate must exit non-zero on W021 warnings: ${result.error}`);
 
     const out = JSON.parse(result.output);
     assert.ok(Array.isArray(out.warnings), 'output.warnings should be an array');
@@ -219,7 +220,8 @@ describe('W021 — milestone-prefixed phase ID convention', () => {
     ]);
 
     const result = runGsdTools(['roadmap', 'validate'], tmpDir);
-    assert.ok(result.success, `roadmap validate failed: ${result.error}`);
+    // #2978: validate now exits non-zero on any warning (per its documented contract).
+    assert.strictEqual(result.success, false, `roadmap validate must exit non-zero on W021 warnings: ${result.error}`);
 
     const out = JSON.parse(result.output);
     const w021 = (out.warnings || []).filter(w => w.code === 'W021');

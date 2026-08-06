@@ -533,12 +533,24 @@ if [[ "$INIT" == @file:* ]]; then INIT=$(cat "${INIT#@file:}"); fi
 
 ```bash
 # Archive milestone
-node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases]
+node gsd-tools.cjs milestone complete <version> [--name <name>] [--no-archive-phases] [--force] [--dry-run]
 
 # Mark requirements as complete
 node gsd-tools.cjs requirements mark-complete <ids>
 # Accepts: REQ-01,REQ-02 or REQ-01 REQ-02 or [REQ-01, REQ-02]
 ```
+
+**`milestone complete` flags**
+
+| Flag | Description |
+|------|-------------|
+| `<version>` | Milestone version label to archive (e.g. `v1.0`). |
+| `--name <name>` | Display name for the MILESTONES.md entry. Defaults to `<version>`. |
+| `--no-archive-phases` | Leave phase directories in place instead of moving them into `.planning/milestones/<version>-phases/`. |
+| `--force` | Override the unstarted-phase guard (see below). |
+| `--dry-run` | Print the archive plan (roadmap, requirements, phases to move) without mutating anything. |
+
+**Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
 
 ---
 

@@ -395,6 +395,7 @@
       "loop-resolver.cjs",
       "markdown-sectionizer.cjs",
       "markdown-table.cjs",
+      "mcp-catalog.cjs",
       "mcp-server.cjs",
       "milestone.cjs",
       "model-adapter.cjs",
@@ -483,6 +484,7 @@
       "write-set.cjs"
     ],
     "hooks": [
+      "gsd-agent-isolation-guard.js",
       "gsd-check-update-worker.js",
       "gsd-check-update.js",
       "gsd-config-reload.js",

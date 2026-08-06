@@ -22,25 +22,14 @@ process.env.GSD_TEST_MODE = '1';
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
 
 const HOOK_PATH = require('node:path').join(__dirname, '..', 'hooks', 'gsd-read-injection-scanner.js');
 
 function runHook(payload, timeoutMs = 5000) {
   const input = JSON.stringify(payload);
-  try {
-    const stdout = execFileSync(process.execPath, [HOOK_PATH], {
-      input,
-      encoding: 'utf-8',
-      timeout: timeoutMs,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    return { exitCode: 0, stdout: stdout.trim() };
-  } catch (err) {
-    return {
-      exitCode: err.status ?? 1,
-      stdout: (err.stdout || '').toString().trim(),
-    };
-  }
+  const r = runHookSeam(HOOK_PATH, [], { input, timeoutMs });
+  return { exitCode: r.exitCode ?? 1, stdout: r.stdout.trim() };
 }
 
 function readPayload(filePath, content) {

@@ -167,9 +167,9 @@ describe('canonical worktree-branch-check fragment is the single source of truth
     assert.ok(/\brelease\b/.test(block), 'fragment protected-ref alternation must include release');
   });
 
-  test('fragment block positive allow-list matches ^(worktree-)?agent- pattern', () => {
-    const allowListRe = /grep\s+-Eq?\s+'\^\(worktree-\)\?agent-/;
-    assert.ok(allowListRe.test(block), 'fragment block must enforce a positive allow-list matching ^(worktree-)?agent-');
+  test('fragment block positive allow-list matches ^((worktree-)?agent-|worktree-wf_) pattern', () => {
+    const allowListRe = /grep\s+-Eq?\s+'\^\(\(worktree-\)\?agent-\|worktree-wf_/;
+    assert.ok(allowListRe.test(block), 'fragment block must enforce a positive allow-list matching ^((worktree-)?agent-|worktree-wf_) (#3021)');
   });
 
   test('fragment block contains update-ref prohibition text', () => {

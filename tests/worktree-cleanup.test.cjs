@@ -187,10 +187,11 @@ describe('bug #2924: worktree HEAD attachment + destructive recovery', () => {
       const scripts = codeBlocks.map(({ body }) => body).join('\n');
       // Allow-list must reference the canonical Claude Code worktree-agent-<id>
       // namespace via a regex assertion (grep -Eq '^worktree-agent-...').
-      const allowListRe = /grep\s+-Eq?\s+'\^\(worktree-\)\?agent-/;
+      // #3021: allow-list now includes worktree-wf_* alongside agent-*/worktree-agent-*
+      const allowListRe = /grep\s+-Eq?\s+'\^\(\(worktree-\)\?agent-\|worktree-wf_/;
       assert.ok(
         allowListRe.test(scripts),
-        'worktree_branch_check must enforce a positive allow-list matching ^(worktree-)?agent-* (#2924 hardening)'
+        'worktree_branch_check must enforce a positive allow-list matching ^((worktree-)?agent-|worktree-wf_) (#2924/#3021 hardening)'
       );
     });
 
@@ -322,10 +323,10 @@ describe('bug #2924: worktree HEAD attachment + destructive recovery', () => {
     });
 
     test('block enforces positive worktree-agent-* allow-list (#2924 hardening)', () => {
-      const allowListRe = /grep\s+-Eq?\s+'\^\(worktree-\)\?agent-/;
+      const allowListRe = /grep\s+-Eq?\s+'\^\(\(worktree-\)\?agent-\|worktree-wf_/;
       assert.ok(
         allowListRe.test(block),
-        'quick.md worktree_branch_check must enforce a positive allow-list matching ^(worktree-)?agent-* (#2924 hardening)'
+        'quick.md worktree_branch_check must enforce a positive allow-list matching ^((worktree-)?agent-|worktree-wf_) (#2924/#3021 hardening)'
       );
     });
   });
@@ -412,10 +413,10 @@ describe('bug #2924: worktree HEAD attachment + destructive recovery', () => {
     test('step 0 enforces positive worktree-agent-* allow-list (#2924 hardening)', () => {
       const codeBlocks = extractFencedCodeBlocks(block);
       const scripts = codeBlocks.map(({ body }) => body).join('\n');
-      const allowListRe = /grep\s+-Eq?\s+'\^\(worktree-\)\?agent-/;
+      const allowListRe = /grep\s+-Eq?\s+'\^\(\(worktree-\)\?agent-\|worktree-wf_/;
       assert.ok(
         allowListRe.test(scripts),
-        'task_commit_protocol step 0 must enforce a positive allow-list matching ^(worktree-)?agent-* in addition to the protected-ref deny-list (#2924 hardening)'
+        'task_commit_protocol step 0 must enforce a positive allow-list matching ^((worktree-)?agent-|worktree-wf_) in addition to the protected-ref deny-list (#2924/#3021 hardening)'
       );
     });
   });
@@ -1484,6 +1485,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -1567,11 +1569,17 @@ function extractCwdGuardBash() {
  * Returns { status, stderr }.
  */
 function runGuard(guardBash, cwd) {
-  const result = spawnSync('bash', ['-c', guardBash], {
+  // 30000ms: previously UNBOUNDED (no `timeout` option was passed to
+  // spawnSync). This is the same execute-phase.md cwd-drift guard snippet
+  // exercised by tests/execute-phase-worktree-guard.test.cjs, which already
+  // bounds the identical guard at 30s (a handful of git plumbing calls
+  // against a small fixture repo) — matched here for consistency.
+  const result = runHook('-c', [guardBash], {
+    interpreter: 'bash',
     cwd,
-    encoding: 'utf-8',
+    timeoutMs: 30_000,
   });
-  return { status: result.status, stderr: result.stderr || '' };
+  return { status: result.exitCode, stderr: result.stderr || '' };
 }
 
 // ---------------------------------------------------------------------------

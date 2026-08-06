@@ -1,8 +1,3 @@
-// allow-test-rule: behavioral-query-coverage — see #2505 — this test exercises the
-// resolve-dispatch-type query end-to-end (subprocess) AND the pure
-// resolveDispatchType function (require), covering the runtime-aware dispatch
-// contract from epic #2505 Phase 4 (#2508). The query is the workflow-facing
-// surface; the function is the pure projection.
 process.env.GSD_TEST_MODE = '1';
 
 const { test, describe } = require('node:test');

@@ -1118,6 +1118,128 @@ describe('roadmap update-plan-progress command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3057 B3: cmdRoadmapUpdatePlanProgress surfaces an indeterminate staleness check
+//
+// readVerificationStatus's internal staleness check can fail (fs /
+// scanPhasePlans / clock error). Pre-#3057 B3 wiring, that failure was
+// dropped here — `verificationPassed` used only `.status`, never
+// `.staleCheckIndeterminate` — so this command's JSON output could never
+// distinguish "checked; nothing is stale" from "could not check". These
+// tests require roadmap.cjs directly (in-process) so an `fs.statSync` fault
+// can be injected via the same deterministic path-scoped seam #3057 B4 uses
+// for git-base-branch.cts (see tests/git-base-branch.test.cjs).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3057 B3: roadmap update-plan-progress — verification staleness-check indeterminate is surfaced', () => {
+  const roadmapMod = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'roadmap.cjs'));
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createTempProject('gsd-3057-b3-roadmap-');
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  /**
+   * In-process capture of cmdRoadmapUpdatePlanProgress's stdout JSON, stderr
+   * discarded.
+   *
+   * io.cts's `output()` writes via `writeAllSync` → `fs.writeSync(1, ...)`
+   * directly (bug #1008's non-blocking-pipe fix), NOT `process.stdout.write`
+   * — so mocking `process.stdout.write` here silently captured nothing and
+   * every assertion below saw `JSON.parse('')` ("Unexpected end of JSON
+   * input") regardless of what the command actually produced. The fix is the
+   * fd-level seam tests/io.test.cjs already established for exactly this
+   * function (bug #1008's `t.mock.method(fs, 'writeSync', ...)` pattern):
+   * intercept fd 1, discard fd 2, and pass every OTHER fd through to the
+   * real writeSync — this command takes the planning lock, which writes its
+   * own JSON via a separate fd that must not be swallowed as if it were
+   * stdout (confirmed: without the pass-through, its lock-acquire JSON
+   * corrupts the captured payload into two concatenated JSON objects).
+   */
+  function captureUpdatePlanProgress(t, cwd, phaseNum) {
+    const chunks = [];
+    const origWriteSync = fs.writeSync.bind(fs);
+    t.mock.method(fs, 'writeSync', (fd, data, offset, length) => {
+      if (fd === 2) return Buffer.isBuffer(data) ? data.length : String(data).length;
+      if (fd !== 1) return origWriteSync(fd, data, offset, length);
+      const chunk = Buffer.isBuffer(data)
+        ? data.subarray(offset ?? 0, length === undefined ? data.length : (offset ?? 0) + length).toString('utf8')
+        : String(data);
+      chunks.push(chunk);
+      return Buffer.byteLength(chunk, 'utf8');
+    });
+    roadmapMod.cmdRoadmapUpdatePlanProgress(cwd, phaseNum, false);
+    const captured = chunks.join('');
+    assert.ok(captured.length > 0, 'cmdRoadmapUpdatePlanProgress produced no stdout output');
+    return captured;
+  }
+
+  function seedVerifiedPhase() {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      `# Roadmap
+
+### Phase 1: Test
+**Goal:** Test goal
+**Plans:** TBD
+
+## Progress
+
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Test | v1.0 | 0/1 | Planned | - |
+`
+    );
+    const p1 = path.join(tmpDir, '.planning', 'phases', '01-test');
+    fs.mkdirSync(p1, { recursive: true });
+    fs.writeFileSync(path.join(p1, '01-01-PLAN.md'), '# Plan 1');
+    fs.writeFileSync(path.join(p1, '01-01-SUMMARY.md'), '# Summary 1');
+    fs.writeFileSync(path.join(p1, '01-VERIFICATION.md'), '---\nstatus: passed\n---\n\n# Verification\n');
+
+    const summaryPath = path.join(p1, '01-01-SUMMARY.md');
+    const verificationPath = path.join(p1, '01-VERIFICATION.md');
+    // Deterministic mtime ordering — never rely on write-order clock ties.
+    const older = new Date('2026-01-01T00:00:00.000Z');
+    const newer = new Date('2026-01-01T00:01:00.000Z');
+    fs.utimesSync(summaryPath, older, older);
+    fs.utimesSync(verificationPath, newer, newer);
+    return { summaryPath, verificationPath };
+  }
+
+  test('an fs failure inside the staleness check sets verification_stale_check_indeterminate:true; routing unchanged', (t) => {
+    const { summaryPath, verificationPath } = seedVerifiedPhase();
+    const origStatSync = fs.statSync;
+
+    t.mock.method(fs, 'statSync', function injectedStaleCheckFault(target, ...args) {
+      const targetPath = String(target);
+      if (targetPath === verificationPath || targetPath === summaryPath) {
+        throw new Error('injected stat failure (#3057 B3)');
+      }
+      return origStatSync.call(fs, target, ...args);
+    });
+
+    const output = JSON.parse(captureUpdatePlanProgress(t, tmpDir, '1'));
+
+    // Pre-existing no-throw fail-open routing is UNCHANGED: the phase still
+    // resolves complete, exactly as it would without the injected fault.
+    assert.strictEqual(output.complete, true, 'routing unchanged — phase still marked complete');
+    assert.strictEqual(output.verification_stale_check_indeterminate, true);
+  });
+
+  test('a completed staleness check that finds nothing stale reports verification_stale_check_indeterminate:false', (t) => {
+    seedVerifiedPhase();
+
+    const output = JSON.parse(captureUpdatePlanProgress(t, tmpDir, '1'));
+
+    assert.strictEqual(output.complete, true);
+    assert.strictEqual(output.verification_stale_check_indeterminate, false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // phase add command
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3490,3 +3612,79 @@ describe('bug #1103 — annotate-dependencies preserves newline before Plans: he
 });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// bug #2978: roadmap validate returns {"warnings":[]} for every input
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bug #2978: roadmap validate performs structural validation', () => {
+  test('empty (zero-byte) ROADMAP.md → non-empty warnings, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-2978-empty-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), '');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'empty file must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(Array.isArray(payload.warnings) && payload.warnings.length > 0,
+        `empty file must produce non-empty warnings; got: ${JSON.stringify(payload)}`);
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('garbage/non-roadmap text → non-empty warnings, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-2978-garbage-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), 'not a roadmap at all');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'garbage must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.length > 0, 'garbage must produce warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('missing ROADMAP.md → non-empty warnings, non-zero exit', () => {
+    const tmpDir = createTempProject('gsd-2978-missing-');
+    try {
+      // createTempProject creates .planning/phases but no ROADMAP.md — don't write one
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'missing file must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.length > 0, 'missing file must produce warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('truncated frontmatter (unterminated ---) → non-empty warnings', () => {
+    const tmpDir = createTempProject('gsd-2978-trunc-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '---\nmilestone: v1.0\n### Phase 1: Setup\n');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.strictEqual(result.success, false, 'truncated frontmatter must exit non-zero');
+      const payload = JSON.parse(result.output);
+      assert.ok(payload.warnings.length > 0, 'truncated frontmatter must produce warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('well-formed roadmap → warnings: [], exit 0 (no false positive)', () => {
+    const tmpDir = createTempProject('gsd-2978-good-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '# Roadmap\n\n## v1.0\n\n### Phase 1: Foundation\n**Goal:** setup\n');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.ok(result.success, `well-formed roadmap must exit 0; got: ${result.error}`);
+      const payload = JSON.parse(result.output);
+      assert.deepStrictEqual(payload.warnings, [], 'well-formed roadmap must have no warnings');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('BOM-prefixed well-formed roadmap → warnings: [], exit 0 (not corruption)', () => {
+    const tmpDir = createTempProject('gsd-2978-bom-');
+    try {
+      fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'),
+        '\uFEFF# Roadmap\n\n### Phase 1: Foundation\n**Goal:** setup\n');
+      const result = runGsdTools(['roadmap', 'validate', '--raw'], tmpDir);
+      assert.ok(result.success, `BOM-prefixed roadmap must exit 0; got: ${result.error}`);
+      const payload = JSON.parse(result.output);
+      assert.deepStrictEqual(payload.warnings, [], 'BOM is not corruption');
+    } finally { cleanup(tmpDir); }
+  });
+});

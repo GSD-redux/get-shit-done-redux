@@ -92,7 +92,8 @@ const CONSUMERS = [
 
 for (const consumer of CONSUMERS) {
   test(`${consumer.name} does not re-declare an inline buildParityManifest or any exclusion constant (#2266)`, () => {
-    // allow-test-rule: source text is the product for this anti-divergence check, see #2266
+    // allow-test-rule: source-text-is-the-product (see #2266)
+    // Source text is the product for this anti-divergence check.
     const content = fs.readFileSync(path.join(ROOT, ...consumer.rel), 'utf8');
     for (const { label, re } of FORBIDDEN_INLINE) {
       assert.ok(
