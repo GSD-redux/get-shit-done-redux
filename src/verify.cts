@@ -2267,7 +2267,7 @@ function cmdValidateHealth(
           ? `Phase ${mm.phaseId}: heading is not in bracket form under the 'bracket' convention (expected \`[CODE.${mm.sectionMilestone}] ${mm.phaseId}:\`)`
           : `Phase ${mm.phaseId}: bracket milestone ${mm.phaseMilestone} does not match its section milestone ${mm.sectionMilestone}`;
         addIssue('warning', 'W021', message,
-          'Run `gsd-tools roadmap upgrade --convention bracket` to migrate (dry-run by default)');
+          'Bracket migration lands with the #612 migrator (PR-3); until then, manually align the bracket milestone in this heading to match the enclosing section.');
       }
     }
   } catch {

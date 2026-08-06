@@ -529,3 +529,41 @@ ${BROKEN_HEADINGS.map(([, h]) => `${h}\n**Goal:** x\n`).join('\n')}
     assert.deepEqual(w021(), []);
   });
 });
+
+// ─── #2761 round-7 Minor 2: the W021 remediation hint must name no ────────
+// ─── unsupported `--convention` value ───────────────────────────────────────
+//
+// `checkBracketCoherence`'s W021 previously attached a `fix` string telling
+// users to run `gsd-tools roadmap upgrade --convention bracket` — but
+// `roadmap-command-router.cts` only supports `--convention milestone-prefixed`
+// (the bracket migrator is #612 PR-3, not yet landed); that command hard-errors
+// with "Only --convention milestone-prefixed is supported". Nothing in the
+// suite asserted the `fix` string's content, so the unfollowable hint shipped
+// unpinned. This pins the corrected string and, more importantly, the
+// invariant a future edit must not re-break: no unsupported `--convention`
+// value named in remediation text users are expected to run verbatim.
+describe('#612 PR-2 round-7 Minor 2: bracket W021 fix string names no unsupported --convention value', () => {
+  beforeEach(() => { tmpDir = createTempProject('adr-612-r7m2-'); });
+  afterEach(() => { cleanup(tmpDir); });
+
+  test('the fix string does not tell users to run `--convention bracket` (unsupported, hard-errors)', () => {
+    writeProject({ roadmap: `# Roadmap
+
+## [GSD.02] v2.0
+
+### Phase 2-01: Mnn Legacy
+**Goal:** a
+`, convention: 'bracket' });
+    const r = runGsdTools(['validate', 'health'], tmpDir);
+    assert.ok(r.success, `validate health failed: ${r.error}`);
+    const out = JSON.parse(r.output);
+    const issues = [...(out.issues || []), ...(out.warnings || [])].filter((i) => i.code === 'W021');
+    assert.equal(issues.length, 1, JSON.stringify(issues));
+    assert.doesNotMatch(issues[0].fix, /--convention bracket/,
+      'pinned before this fix — the hint named a command that hard-errors: "Only --convention milestone-prefixed is supported"');
+    assert.equal(
+      issues[0].fix,
+      'Bracket migration lands with the #612 migrator (PR-3); until then, manually align the bracket milestone in this heading to match the enclosing section.',
+    );
+  });
+});
