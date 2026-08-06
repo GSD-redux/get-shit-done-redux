@@ -2,7 +2,7 @@
 name: gsd-autonomous
 description: "Run all remaining phases autonomously — discuss→plan→execute per phase"
 argument-hint: "[--from N] [--to N] [--only N] [--interactive] [--converge]"
-effort: max
+effort: high
 allowed-tools:
   - Read
   - Write
