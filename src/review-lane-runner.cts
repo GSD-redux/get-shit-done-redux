@@ -356,7 +356,7 @@ export function antigravityWatermark(
 /**
  * Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides.
  *
- * #3118: `JSON.parse` succeeding is not the same fact as the payload being a usable object —
+ * #3118: a successful `JSON.parse` does not by itself make the payload a usable object —
  * `JSON.parse('null')` succeeds and returns `null`, so a truncated/zeroed cache file slips past
  * the callers' parse-only try/catch. `typeof null === 'object'`, so the guard below must exclude
  * `null` explicitly. Arrays are excluded too (not a workspace map), which also falls out of the
