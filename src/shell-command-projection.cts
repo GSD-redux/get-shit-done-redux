@@ -406,6 +406,17 @@ interface ShellAction {
   command: string;
 }
 
+/**
+ * Why a PATH suggestion produced no actions. An empty `shellActions` alone folds two different
+ * facts together — "no target directory was given" and "this target directory cannot be
+ * expressed as a shell command" — and a caller that cannot tell them apart prints a header with
+ * nothing under it (#3118).
+ */
+export const PATH_ACTION_REASON = Object.freeze({
+  NO_TARGET_DIR: 'no_target_dir',
+  WIN32_RESERVED_QUOTE: 'win32_reserved_quote',
+});
+
 export function renderShellActionLines(shellActions: ShellAction[] = []): string[] {
   return shellActions.map((action) => {
     if (!action || !action.command) return '';
@@ -421,14 +432,14 @@ export function projectPathActionProjection({
   mode?: string;
   targetDir?: string | null;
   platform?: string;
-}): { shellActions: ShellAction[]; actionLines: string[] } {
-  if (!targetDir) return { shellActions: [], actionLines: [] };
+}): { shellActions: ShellAction[]; actionLines: string[]; reason?: string } {
+  if (!targetDir) return { shellActions: [], actionLines: [], reason: PATH_ACTION_REASON.NO_TARGET_DIR };
 
   // #3118: `"` is reserved on Windows, so a path containing one cannot exist — and it would close
   // cmd's quoted region in the `powershell -Command "…"` lane below, turning the rest into cmd
   // input. There is no correct command to suggest for an impossible path: fail closed rather than
   // emit one whose quoting can be broken.
-  if (platform === 'win32' && String(targetDir).includes('"')) return { shellActions: [], actionLines: [] };
+  if (platform === 'win32' && String(targetDir).includes('"')) return { shellActions: [], actionLines: [], reason: PATH_ACTION_REASON.WIN32_RESERVED_QUOTE };
 
   const isWin32 = platform === 'win32';
 
@@ -474,10 +485,19 @@ export function projectPathActionProjection({
       // variable store and de-duplicates. The directory is single-quoted with
       // the same POSIX literal escaping as the zsh/bash siblings — `'\''` is
       // also a valid escaped single quote in fish between quote spans.
+      //
+      // #3118 review MINOR: a `targetDir` with a leading `-` (e.g. `-v`) is a
+      // legal directory name, but fish's argparse-based option scanning
+      // treats a leading-dash token as a flag REGARDLESS of quoting, so
+      // `fish_add_path '-v'` misparses it and prints "No paths to add, not
+      // setting anything." (exit 1) instead of adding the path. `--` is
+      // fish's standard end-of-options separator; verified empirically
+      // against a real fish 4.8.1 install that `fish_add_path -- '-v'`
+      // succeeds where the unseparated form fails.
       {
         label: 'fish',
         shell: 'fish',
-        command: `fish_add_path '${fishTargetDir}'`,
+        command: `fish_add_path -- '${fishTargetDir}'`,
       },
     ];
   } else {
@@ -499,13 +519,15 @@ export function projectPathActionProjection({
 export function projectPersistentPathExportActions({ targetDir, platform = process.platform }: {
   targetDir?: string | null;
   platform?: string;
-}): { shellActions: ShellAction[] } {
+}): { shellActions: ShellAction[]; reason?: string } {
   const projected = projectPathActionProjection({
     mode: 'persist',
     targetDir,
     platform,
   });
-  return { shellActions: projected.shellActions };
+  return projected.reason === undefined
+    ? { shellActions: projected.shellActions }
+    : { shellActions: projected.shellActions, reason: projected.reason };
 }
 
 

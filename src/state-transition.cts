@@ -608,7 +608,14 @@ function locateCurrentPosition(body: string): { start: number; end: number } | n
         e -= 1;
         if (e > 0 && body[e - 1] === '\r') e -= 1;
       }
-      end = e;
+      // Clamp so the span can never invert (#3118 review): when the section
+      // is empty and the next heading follows with no blank line between,
+      // walking back over the newline(s) can land `e` before `start`. An
+      // inverted span makes every mutator's `body.slice(0, start) +
+      // sectionBody + body.slice(end)` reassembly duplicate the bytes in
+      // `[end, start)`. A zero-length span (`end === start`) is the correct
+      // representation of an empty-but-present section.
+      end = Math.max(e, start);
       break;
     }
   }

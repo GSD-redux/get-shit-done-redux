@@ -1830,6 +1830,53 @@ describe('sliceCurrentPositionSection (#3118)', () => {
     // assertion is what let the CRLF-slice-defect ship undetected.
     assert.strictEqual(crlfResult.replace(/\r\n/g, '\n'), lfResult);
   });
+
+  test('returns an empty string when the section is empty and the next heading follows immediately', () => {
+    const body = ['# STATE', '', '## Current Position', '## Next Section', 'content'].join('\n');
+    const result = sliceCurrentPositionSection(body);
+    assert.strictEqual(result, '');
+  });
+
+  test('does not duplicate bytes when a transition mutates an empty adjacent section', () => {
+    // Regression for #3118 review MAJOR: `locateCurrentPosition`'s newline
+    // walk-back could land `end` before `start` when the section is empty
+    // and the next heading follows with no blank line between. Every
+    // mutator's `body.slice(0, start) + sectionBody + body.slice(end)`
+    // reassembly then duplicated the bytes in the inverted `[end, start)`
+    // range — a spurious blank line (LF) or `\r\n` (CRLF) inserted into
+    // STATE.md on every transition.
+    const lfBody = ['# STATE', '', '## Current Position', '## Next Section', 'content'].join('\n');
+    const lfResult = transitionCore(
+      lfBody,
+      { kind: 'beginPhase', phaseNumber: 3, phaseName: null, planCount: null },
+      { clock: fixedClock },
+    );
+    assert.ok(
+      !lfResult.content.includes('## Current Position\n\n## Next Section'),
+      `expected no inserted blank line; got ${JSON.stringify(lfResult.content)}`,
+    );
+    assert.strictEqual(
+      lfResult.content,
+      '# STATE\n\n## Current Position\n## Next Section\ncontent',
+    );
+    assert.strictEqual(lfResult.content.length, lfBody.length);
+
+    const crlfBody = ['# STATE', '', '## Current Position', '## Next Section', 'content'].join('\r\n');
+    const crlfResult = transitionCore(
+      crlfBody,
+      { kind: 'beginPhase', phaseNumber: 3, phaseName: null, planCount: null },
+      { clock: fixedClock },
+    );
+    assert.ok(
+      !crlfResult.content.includes('## Current Position\r\n\r\n## Next Section'),
+      `expected no inserted CRLF; got ${JSON.stringify(crlfResult.content)}`,
+    );
+    assert.strictEqual(
+      crlfResult.content,
+      '# STATE\r\n\r\n## Current Position\r\n## Next Section\r\ncontent',
+    );
+    assert.strictEqual(crlfResult.content.length, crlfBody.length);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────

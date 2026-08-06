@@ -14,6 +14,7 @@ const {
   projectPathActionProjection,
   projectPortableHookBaseDir,
   projectPersistentPathExportActions,
+  PATH_ACTION_REASON,
   projectShellCommandText,
   projectCodexHookTomlCommand,
   shellHookOmitsBashRunner,
@@ -13136,14 +13137,26 @@ function maybeSuggestPathExport(globalBin, homeDir) {
 
   console.log('');
   console.log(`  ${yellow}⚠${reset} ${bold}${globalBin}${reset} is not on your PATH.`);
-  console.log(`    Add it with one of:`);
   const projected = projectPersistentPathExportActions({
     targetDir: globalBin,
     platform: process.platform,
   });
-  for (const action of projected.shellActions) {
-    const labelPrefix = action.label ? `${action.label}: ` : '';
-    console.log(`      ${cyan}${labelPrefix}${action.command}${reset}`);
+  if (projected.reason === PATH_ACTION_REASON.WIN32_RESERVED_QUOTE) {
+    // #3118 review MINOR: a win32 targetDir containing `"` makes
+    // projectPathActionProjection return [] (no command can quote it safely
+    // on Windows) — printing the "Add it with one of:" header with nothing
+    // under it is a silent dead-end. Name the cause instead.
+    console.log(`    No command can be suggested: the path contains a ${cyan}"${reset} character, which cannot appear in a Windows path.`);
+  } else if (projected.shellActions.length === 0) {
+    // #3118: no target directory to talk about (reason === NO_TARGET_DIR, or
+    // no reason at all) — there is nothing to print beyond the "not on your
+    // PATH" line above.
+  } else {
+    console.log(`    Add it with one of:`);
+    for (const action of projected.shellActions) {
+      const labelPrefix = action.label ? `${action.label}: ` : '';
+      console.log(`      ${cyan}${labelPrefix}${action.command}${reset}`);
+    }
   }
   console.log('');
 }

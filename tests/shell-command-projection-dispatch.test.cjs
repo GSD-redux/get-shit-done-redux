@@ -19,6 +19,7 @@ const {
   resolveGsdToolsPath,
   projectPathActionProjection,
   projectPathExportLine,
+  PATH_ACTION_REASON,
   renderShellActionLines,
   formatManagedHookScriptToken,
   escapeTomlDoubleQuotedString,
@@ -1655,12 +1656,12 @@ describe('path export projection — escaping (#3118)', () => {
     assert.deepEqual(persistLinux.shellActions, [
       { label: 'zsh', shell: 'zsh', command: `echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc` },
       { label: 'bash', shell: 'bash', command: `echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc` },
-      { label: 'fish', shell: 'fish', command: `fish_add_path '/usr/local/bin'` },
+      { label: 'fish', shell: 'fish', command: `fish_add_path -- '/usr/local/bin'` },
     ]);
     assert.deepEqual(persistLinux.actionLines, [
       `zsh: echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc`,
       `bash: echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc`,
-      `fish: fish_add_path '/usr/local/bin'`,
+      `fish: fish_add_path -- '/usr/local/bin'`,
     ]);
 
     const repairWin32 = projectPathActionProjection({ mode: 'repair', targetDir: 'C:/Users/dev/bin', platform: 'win32' });
@@ -1760,14 +1761,49 @@ describe('path export projection — escaping (#3118)', () => {
     for (const targetDir of [null, undefined, '']) {
       assert.deepEqual(
         projectPathActionProjection({ mode: 'repair', targetDir, platform: 'linux' }),
-        { shellActions: [], actionLines: [] },
+        { shellActions: [], actionLines: [], reason: PATH_ACTION_REASON.NO_TARGET_DIR },
       );
     }
   });
 
+  test('reports why a win32 quote produced no actions', () => {
+    const result = projectPathActionProjection({ mode: 'repair', targetDir: 'C:/a"b', platform: 'win32' });
+    assert.deepEqual(result.shellActions, []);
+    assert.equal(result.reason, PATH_ACTION_REASON.WIN32_RESERVED_QUOTE);
+  });
+
+  // Two empty results with different causes must stay distinguishable — that
+  // is the whole subject of epic #3051.
+  test('reports a missing target directory as a different cause', () => {
+    const result = projectPathActionProjection({ mode: 'repair', targetDir: null, platform: 'win32' });
+    assert.equal(result.reason, PATH_ACTION_REASON.NO_TARGET_DIR);
+  });
+
+  test('a successful projection carries no reason', () => {
+    const result = projectPathActionProjection({ mode: 'repair', targetDir: '/usr/local/bin', platform: 'linux' });
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'reason'), false);
+  });
+
+  test('the reason vocabulary is closed', () => {
+    assert.deepEqual(Object.keys(PATH_ACTION_REASON).sort(), ['NO_TARGET_DIR', 'WIN32_RESERVED_QUOTE']);
+    assert.ok(Object.isFrozen(PATH_ACTION_REASON));
+  });
+
   test('leaves the fish lane escaping unchanged', () => {
     const command = laneCommand('persist', '/tmp/a$(id)b', 'linux', 'fish');
-    assert.equal(command, `fish_add_path '/tmp/a$(id)b'`);
+    assert.equal(command, `fish_add_path -- '/tmp/a$(id)b'`);
+  });
+
+  test('emits the fish end-of-options separator for an ordinary path', () => {
+    // #3118 review MINOR: a leading-dash `targetDir` (e.g. `-v`) is a legal
+    // directory name, but fish's argparse-based option scanning misparses an
+    // unseparated leading-dash token as a flag regardless of quoting —
+    // verified empirically against a real fish 4.8.1 install that
+    // `fish_add_path '-v'` fails ("No paths to add, not setting anything.")
+    // while `fish_add_path -- '-v'` succeeds. `--` is fish's standard
+    // end-of-options separator and is a no-op for ordinary paths.
+    const command = laneCommand('persist', '/tmp/x', 'linux', 'fish');
+    assert.equal(command, `fish_add_path -- '/tmp/x'`);
   });
 
   test('an empty platform string falls back to the host', () => {
