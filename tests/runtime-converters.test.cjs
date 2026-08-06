@@ -271,6 +271,70 @@ describe('convertClaudeToKiloFrontmatter output parity: bin/install.js vs runtim
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DEFECT.GENERATIVE-FIX output-parity guard (#2540): the OpenCode and Kilo
+// frontmatter converters are ALSO defined twice (bin/install.js + the compiled
+// runtime-artifact-conversion.cjs), and #2540 edited BOTH copies to route the
+// `tools:` contract through the shared agent-tools-contract seam. The #2093
+// guard above pins Kilo on one synthetic sample only; this one pins BOTH
+// converters over every REAL agent in agents/ — including the repo's two
+// block-list contracts (gsd-nyquist-auditor, gsd-security-auditor), the shape
+// whose divergence #2540 fixed — plus the three synthetic tools: spellings.
+// If a future edit lands in one copy only, this fails naming the agent.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#2540 output parity over real agents: bin/install.js vs runtime-artifact-conversion.cjs', () => {
+  const nodeFs = require('node:fs');
+  const nodePath = require('node:path');
+  const conversionModule = require('../gsd-core/bin/lib/runtime-artifact-conversion.cjs');
+  const agentsSrcDir = nodePath.join(__dirname, '..', 'agents');
+  const realAgents = nodeFs.readdirSync(agentsSrcDir).filter((f) => f.endsWith('.md'));
+
+  const TOOLS_SHAPES = [
+    ['inline', 'tools: Read, Write'],
+    ['block-list', 'tools:\n  - Read\n  - Write'],
+    ['flow', 'tools: [Read, Write]'],
+  ];
+
+  test('convertClaudeToOpencodeFrontmatter agrees on every real agent', () => {
+    assert.ok(realAgents.length > 0, 'precondition: agents/ has agent sources');
+    for (const file of realAgents) {
+      const content = nodeFs.readFileSync(nodePath.join(agentsSrcDir, file), "utf8");
+      assert.equal(
+        convertClaudeToOpencodeFrontmatter(content, { isAgent: true }),
+        conversionModule.convertClaudeToOpencodeFrontmatter(content, { isAgent: true }),
+        `${file}: the two live OpenCode converter copies diverged`,
+      );
+    }
+  });
+
+  test('convertClaudeToKiloFrontmatter agrees on every real agent', () => {
+    for (const file of realAgents) {
+      const content = nodeFs.readFileSync(nodePath.join(agentsSrcDir, file), "utf8");
+      assert.equal(
+        convertClaudeToKiloFrontmatter(content, { isAgent: true }),
+        conversionModule.convertClaudeToKiloFrontmatter(content, { isAgent: true }),
+        `${file}: the two live Kilo converter copies diverged`,
+      );
+    }
+  });
+
+  test('both converters agree on every synthetic tools: spelling', () => {
+    for (const [label, toolsBlock] of TOOLS_SHAPES) {
+      const md = `---\nname: probe-agent\ndescription: Parity probe\n${toolsBlock}\n---\n\n<role>Probe.</role>`;
+      assert.equal(
+        convertClaudeToOpencodeFrontmatter(md, { isAgent: true }),
+        conversionModule.convertClaudeToOpencodeFrontmatter(md, { isAgent: true }),
+        `OpenCode copies diverged on the ${label} tools: shape`,
+      );
+      assert.equal(
+        convertClaudeToKiloFrontmatter(md, { isAgent: true }),
+        conversionModule.convertClaudeToKiloFrontmatter(md, { isAgent: true }),
+        `Kilo copies diverged on the ${label} tools: shape`,
+      );
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // DEFECT.GENERATIVE-FIX output-parity guard: convertClaudeCommandToTraeSkill is
 // defined TWICE — once in bin/install.js (dead for the live skills-install
 // path; kept for this file's own module-level export/test surface) and once in

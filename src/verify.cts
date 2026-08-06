@@ -1552,6 +1552,11 @@ function cmdValidateHealth(
   const warnings: IssueEntry[] = [];
   const info: IssueEntry[] = [];
   const repairs: string[] = [];
+  // #2540 M1: sandbox findings are surfaced as a typed array on the health
+  // result (mirroring `validate agents`), not only folded into W010 prose —
+  // CONTRIBUTING's typed-surface rule forbids consumers re-deriving them
+  // from the warning string.
+  let healthSandboxViolations: ReturnType<typeof checkAgentsInstalled>['sandbox_violations'] = [];
 
   const addIssue = (
     severity: 'error' | 'warning' | 'info',
@@ -1855,7 +1860,13 @@ function cmdValidateHealth(
   }
 
   try {
-    const agentStatus = checkAgentsInstalled(_slashRuntime, cwd);
+    // #2540 round 8: pass NO runtime so checkAgentsInstalled applies its own
+    // persisted-default resolution (GSD_RUNTIME > config > ~/.gsd/defaults.json
+    // > 'claude'). Pre-resolving with the narrower resolveRuntime here
+    // short-circuited the defaults.json tier and made the codex sandbox gate
+    // unreachable on the issue's own repro.
+    const agentStatus = checkAgentsInstalled(undefined, cwd);
+    healthSandboxViolations = agentStatus.sandbox_violations;
     if (!agentStatus.agents_installed) {
       if ((agentStatus.installed_agents).length === 0) {
         addIssue(
@@ -2432,6 +2443,7 @@ function cmdValidateHealth(
     errors,
     warnings,
     info,
+    sandbox_violations: healthSandboxViolations,
     repairable_count: repairableCount,
     repairs_performed: repairActions.length > 0 ? repairActions : undefined,
   };
@@ -2440,7 +2452,11 @@ function cmdValidateHealth(
 }
 
 function cmdValidateAgents(cwd: string, raw: boolean): void {
-  const agentStatus = checkAgentsInstalled(resolveRuntime(cwd), cwd);
+  // #2540 round 8: pass NO runtime — see the cmdValidateHealth call site. This
+  // is the `validate agents` entry the issue's repro runs; pre-resolving with
+  // resolveRuntime returned 'claude' on a defaults.json-only Codex install and
+  // the sandbox gate never opened.
+  const agentStatus = checkAgentsInstalled(undefined, cwd);
   const expected = Object.keys(MODEL_PROFILES);
 
   output(
