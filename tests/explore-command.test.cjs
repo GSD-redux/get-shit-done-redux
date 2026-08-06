@@ -174,6 +174,31 @@ describe('explore research-pass claim disposition (#2229)', () => {
     );
   });
 
+  // Keying the floor on the profile ALONE is bypassable by a documented config.
+  // `model_overrides[<agent>]` and `models.research` sit ABOVE the profile lookup in
+  // resolveModelInternal, while `--pick profile` reports config.model_profile verbatim —
+  // so `model_profile: balanced` + `models.research: haiku` dispatches haiku while the
+  // profile still reads `balanced`, and a profile-only floor never fires. Measured:
+  // `query resolve-model gsd-phase-researcher` returns {model: haiku, profile: balanced}
+  // for that config. These assert the floor also keys on the RESOLVED MODEL.
+  test('tier-floor guard: the floor also keys on the resolved model, not the profile alone', () => {
+    const content = readWorkflow().replace(/\s+/g, ' ');
+    assert.match(
+      content,
+      /RESEARCHER_MODEL[^.]*\bhaiku\b/i,
+      'the floor must also fire on a haiku-tier RESEARCHER_MODEL; keying on ' +
+        'RESEARCHER_PROFILE alone is bypassed by models.research / model_overrides, ' +
+        'which sit above the profile lookup in resolveModelInternal'
+    );
+    assert.match(
+      content,
+      /--pick profile[^.]*\bmodel_profile\b/i,
+      'the workflow must state that --pick profile returns the global model_profile ' +
+        'setting, NOT the effective resolved tier — the prose previously claimed the ' +
+        'opposite, which is what made a profile-only floor look sufficient'
+    );
+  });
+
   test('an untagged finding has a defined destination, not a silent drop', () => {
     const content = readWorkflow().toLowerCase().replace(/\s+/g, ' ');
     assert.ok(
