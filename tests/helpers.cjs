@@ -25,6 +25,13 @@ const TEST_ENV_BASE = {
   ZELLIJ_SESSION_NAME: '',
   TTY: '',
   SSH_TTY: '',
+  // #2665: blank config-LOCATION vars so npm test never writes into the developer's
+  // live config directory. The resolver consults these before HOME, so an ambient
+  // value wins unconditionally over a sandboxed HOME. Per-site overrides still win
+  // because env is spread last in the child-env merge.
+  CLAUDE_CONFIG_DIR: '',
+  GSD_RUNTIME: '',
+  CODEX_HOME: '',
 };
 
 /**
