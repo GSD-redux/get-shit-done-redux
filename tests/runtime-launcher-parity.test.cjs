@@ -21,7 +21,8 @@
  *     can satisfy gsd_run for Codex shim-only installs.
  */
 
-// allow-test-rule: structural parity/drift guard — asserts literal presence/absence of the canonical gsd_run launcher and the retired $GSD_SDK / `/gsd-tools` tokens across workflow markdown; there is no typed IR for "this source file does not contain substring X".
+// allow-test-rule: structural-regression-guard
+// structural parity/drift guard — asserts literal presence/absence of the canonical gsd_run launcher and the retired $GSD_SDK / `/gsd-tools` tokens across workflow markdown; there is no typed IR for "this source file does not contain substring X".
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -790,7 +791,8 @@ describe('runtime-launcher-parity — agents (#1041)', () => {
  *     When all three miss, exit non-zero.
  */
 
-// allow-test-rule: structural/behavioral regression for the ~/.claude fallback arm in (see #211)
+// allow-test-rule: structural-regression-guard (see #211)
+// structural/behavioral regression for the ~/.claude fallback arm in
 // the gsd_run launcher snippet -- asserts literal substring presence and exercises the
 // bash resolution path via execFileSync; there is no typed IR for "snippet contains arm X".
 
@@ -998,7 +1000,8 @@ describe('bug-211: launcher ~/.claude home fallback', () => {
  *     (sync-runtime-launcher.cjs was re-run after editing the snippet).
  */
 
-// allow-test-rule: structural/behavioral regression for non-Claude runtime-home (see #891)
+// allow-test-rule: structural-regression-guard (see #891)
+// structural/behavioral regression for non-Claude runtime-home
 // fallback arms in the gsd_run launcher snippet -- asserts literal substring
 // presence for each runtime-home probe and exercises the bash resolution paths
 // via execFileSync; there is no typed IR for "snippet contains arm X".
@@ -1606,7 +1609,8 @@ describe('bug-3668: workflow SDK resolver supports installed user projects', { s
  * (C) Precedence: repo-local .claude/ wins over $HOME/.claude/ when both exist.
  */
 
-// allow-test-rule: structural/behavioral regression for the repo-local .claude/ install (see #444)
+// allow-test-rule: structural-regression-guard (see #444)
+// structural/behavioral regression for the repo-local .claude/ install
 // arm in the gsd_run launcher snippet -- asserts literal substring presence and exercises
 // the bash resolution path via execFileSync; there is no typed IR for "snippet contains arm X".
 

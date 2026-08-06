@@ -148,11 +148,10 @@ function buildGsdInvokeParameters() {
       });
     }
   } catch {
-    // typebox is not installed in this environment — fall through.
+    // typebox is not installed in this environment — fall through to the
+    // plain JSON-Schema fallback below. This is the normal path (typebox is
+    // NOT a gsd-core dependency), so no warning is emitted (#3022).
   }
-  process.stderr.write(
-    'gsd: typebox unavailable — gsd_invoke "parameters" falling back to a plain JSON-schema object.\n',
-  );
   return {
     type: 'object',
     properties: {
@@ -287,11 +286,16 @@ module.exports = function gsdPiExtension(pi) {
       try {
         ({ dispatchGsdCommand } = require(path.join(GSD_CORE, 'bin', 'lib', 'shell-command-projection.cjs')));
       } catch (e) {
-        return `GSD engine unavailable: ${e && e.message ? e.message : String(e)}`;
+        // #2991: return the structured { content } shape Pi's ExtensionAPI
+        // displays, not a bare string (which Pi silently drops).
+        return { content: [{ type: 'text', text: `GSD engine unavailable: ${e && e.message ? e.message : String(e)}` }] };
       }
       const result = dispatchGsdCommand({ family, subcommand, args: rest, cwd });
-      if (result.ok) return result.stdout;
-      return `GSD error: ${result.stderr || result.stdout || `dispatch failed (exit ${result.code})`}`;
+      // #2991: match gsd_invoke's proven output shape so Pi actually displays it.
+      const text = result.ok
+        ? result.stdout
+        : `GSD error: ${result.stderr || result.stdout || `dispatch failed (exit ${result.code})`}`;
+      return { content: [{ type: 'text', text }] };
     },
   });
 

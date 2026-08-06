@@ -195,8 +195,25 @@ export function applyStatePreservation(input: StatePreservationInput): StatePres
       const derived = (postFm['progress'] ?? {}) as Record<string, unknown>;
       const merged: Record<string, unknown> = { ...derived };
       if (curated) {
+        // #2440: total_plans and total_phases always take the derived value.
+        // #2969: completed_plans and completed_phases take the derived value
+        // when it is GREATER than the curated value (gap-closure plans that
+        // completed after the plan count grew) — ratcheting UP only, never
+        // deriving downward (preserves the #3242 curated-progress protection
+        // for cases unrelated to plan-count growth, e.g. a deleted SUMMARY).
+        // percent also takes the derived value — the resync recomputed it from
+        // disk counts, and a stale curated percent would be incoherent against
+        // the ratcheted-up completed counts (e.g. 54/54 at 93%).
+        const ratchetUpKeys = new Set(['completed_plans', 'completed_phases']);
         for (const [key, value] of Object.entries(curated)) {
-          if (key !== 'total_plans' && key !== 'total_phases') {
+          if (key === 'total_plans' || key === 'total_phases' || key === 'percent') continue;
+          if (ratchetUpKeys.has(key)) {
+            const derivedNum = typeof derived[key] === 'number' ? derived[key] : -Infinity;
+            const curatedNum = typeof value === 'number' ? value : -Infinity;
+            // Take the derived value only when it ratchets up; else keep curated.
+            if (derivedNum > curatedNum) continue;
+            merged[key] = value;
+          } else {
             merged[key] = value;
           }
         }
@@ -294,12 +311,20 @@ export type StateTransitionDeps = {
   roadmapProvider?: () => string | null;
   /**
    * Phase-inventory provider for `rebuild` (ADR-1817 §2): re-derives the
-   * `## By-Phase Progress` table from canonical disk sources. Returns one
-   * record per on-disk phase directory under `.planning/phases/`. Optional:
-   * when absent, `rebuild` skips table reconciliation (Leaky-Abstractions
+   * `## By-Phase Progress` table from canonical disk sources. Optional: when
+   * absent, `rebuild` skips table reconciliation entirely (Leaky-Abstractions
    * guard — the core stays pure and testable without disk I/O).
+   *
+   * When present, MUST return a discriminated result, never a bare
+   * array-or-null: `{ ok: true, phases }` for a (possibly empty) successful
+   * scan vs `{ ok: false, reason }` for a scan that could not complete. A
+   * disk-scan failure is NOT the same as "no phases on disk" — collapsing
+   * both to the same value made a real failure indistinguishable from
+   * "nothing to reconcile" (issue #3057 B1); `reconcileByPhaseTable` treats
+   * the two differently and surfaces `ok:false` to the caller instead of
+   * silently no-op'ing.
    */
-  phaseInventoryProvider?: () => PhaseInventoryRecord[] | null;
+  phaseInventoryProvider?: () => PhaseInventoryResult;
   /**
    * Resolved path of the STATE.md the content was read from. Injected (not
    * derived) so the core stays pure; used only to name the file in an
@@ -320,6 +345,19 @@ export type PhaseInventoryRecord = {
   planCount: number;
   summaryCount: number;
 };
+
+/**
+ * Discriminated result of a `phaseInventoryProvider` disk scan (issue #3057
+ * B1). `ok:true` covers a completed scan, including the genuinely-empty case
+ * (`phases: []` — no `.planning/phases/` directory exists yet). `ok:false`
+ * covers a scan that could not complete (e.g. the phases directory could not
+ * be read). The two are NOT interchangeable: only `ok:true` with an empty
+ * array means "nothing to reconcile"; `ok:false` means "unknown — do not
+ * treat as reconciled".
+ */
+export type PhaseInventoryResult =
+  | { ok: true; phases: PhaseInventoryRecord[] }
+  | { ok: false; reason: string };
 
 export type StateTransitionIntent =
   | { kind: 'beginPhase'; phaseNumber: string | number; phaseName: string | null; planCount: number | null }
@@ -1009,8 +1047,17 @@ function completePhaseCore(
       if (derived.completedPhases !== null) newCompleted = derived.completedPhases;
       if (derived.totalPhases !== null) derivedTotalPhases = derived.totalPhases;
     }
+    // #3057 B9: only mark 'Completed Phases' updated when the text actually
+    // changed. `stateReplaceField` returns the full (re-)substituted content
+    // whenever the field pattern matches, REGARDLESS of whether newCompleted
+    // differs from the value already in `body` — so a truthy-only check here
+    // marked the field 'updated' even when the roadmap was unavailable and
+    // newCompleted is just completedRaw parsed back to itself. That collapsed
+    // "recomputed from roadmap" and "left as-is" into the same `updated`
+    // signal. Comparing to `body` (the idiom every other field in this
+    // function already uses) restores the distinction.
     const completedAfter = stateReplaceField(body, 'Completed Phases', String(newCompleted));
-    if (completedAfter) {
+    if (completedAfter !== null && completedAfter !== body) {
       body = completedAfter;
       updated.push('Completed Phases');
     }
@@ -1019,8 +1066,9 @@ function completePhaseCore(
     const totalPhases = derivedTotalPhases || (totalRaw ? parseInt(totalRaw, 10) : null);
     if (totalPhases && totalPhases > 0) {
       const newPercent = clampPercent(newCompleted, totalPhases);
+      // Same guard as 'Completed Phases' above, and for the same reason.
       const progAfter = stateReplaceField(body, 'Progress', `${newPercent}%`);
-      if (progAfter) {
+      if (progAfter !== null && progAfter !== body) {
         body = progAfter;
         updated.push('Progress');
       }
@@ -1716,6 +1764,20 @@ interface RebuildLogEntry {
 }
 
 /**
+ * Out-of-band signal from `reconcileByPhaseTable` back to `rebuildCore`
+ * (issue #3057 B1): a mutable sibling to `log`, carrying whether the
+ * phase-inventory disk scan failed. Kept separate from `log`/`RebuildLogEntry`
+ * because a scan failure does not mutate content (there is nothing to diff),
+ * so it does not fit the before/after log-entry shape — but it still must
+ * reach the caller so "scan failed" and "nothing to reconcile" stay
+ * distinguishable in `rebuildCore`'s returned `data`.
+ */
+interface PhaseInventoryScanMeta {
+  failed: boolean;
+  reason: string | null;
+}
+
+/**
  * Truncate a string for inclusion in a rebuild log entry. Per ADR-1817 §3 the
  * `before` / `after` fields are bounded to REBUILD_LOG_TRUNCATION_LIMIT chars
  * to prevent unbounded log growth when the drifted content is large.
@@ -1737,6 +1799,7 @@ function rebuildCore(
 ): StateTransitionResult {
   const timestamp = deps.clock.nowIso();
   const log: RebuildLogEntry[] = [];
+  const phaseInventoryScan: PhaseInventoryScanMeta = { failed: false, reason: null };
   let modified = content;
 
   // §2 Decision: re-derive derived sections, preserve others. Order is
@@ -1744,7 +1807,7 @@ function rebuildCore(
   // sourcePath threaded so `state rebuild --dry-run` names the file: that branch reads STATE.md
   // directly rather than through readModifyWriteStateMd, so nothing upstream has named it yet.
   modified = reconcileCurrentPosition(modified, timestamp, log, deps.sourcePath);
-  modified = reconcileByPhaseTable(modified, deps, timestamp, log);
+  modified = reconcileByPhaseTable(modified, deps, timestamp, log, phaseInventoryScan);
   modified = stripTemplatePlaceholders(modified, timestamp, log);
   modified = deduplicateSessionArchive(modified, timestamp, log);
 
@@ -1763,6 +1826,11 @@ function rebuildCore(
       mutated: log.length > 0,
       mutations: log.length,
       log,
+      // #3057 B1: distinguishable from a clean "nothing to reconcile" — a
+      // failed phase-inventory scan means the by-phase table was NOT
+      // verified against disk, even though `mutated` may still be false.
+      phase_inventory_scan_failed: phaseInventoryScan.failed,
+      ...(phaseInventoryScan.reason !== null ? { phase_inventory_scan_reason: phaseInventoryScan.reason } : {}),
     },
   };
 }
@@ -1849,16 +1917,29 @@ function reconcileCurrentPosition(
  * Leaky-Abstractions guard (ADR-1817 §1): when `phaseInventoryProvider` is
  * absent (no disk scan wired), this step is a no-op. The core stays pure and
  * testable without disk I/O.
+ *
+ * A DIFFERENT case is a scan that ran but failed (`ok:false`): that is NOT a
+ * no-op-equivalent "nothing to reconcile" — the table is left untouched (we
+ * have no trustworthy inventory to reconcile against) but the failure is
+ * recorded into `meta` so the caller (`rebuildCore`) can surface it instead
+ * of reporting a clean, fully-reconciled rebuild (#3057 B1).
  */
 function reconcileByPhaseTable(
   content: string,
   deps: StateTransitionDeps,
   timestamp: string,
   log: RebuildLogEntry[],
+  meta: PhaseInventoryScanMeta,
 ): string {
   if (!deps.phaseInventoryProvider) return content;
-  const inventory = deps.phaseInventoryProvider();
-  if (!inventory || inventory.length === 0) return content;
+  const result = deps.phaseInventoryProvider();
+  if (!result.ok) {
+    meta.failed = true;
+    meta.reason = result.reason;
+    return content; // cannot reconcile without a trustworthy inventory — leave the table as-is
+  }
+  const inventory = result.phases;
+  if (inventory.length === 0) return content;
 
   // The canonical table shape (from gsd-core/templates/state.md):
   //   | Phase | Plans | Total | Avg/Plan |

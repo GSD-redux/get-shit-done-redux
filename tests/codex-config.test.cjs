@@ -194,8 +194,14 @@ describe('getCodexSkillAdapterHeader', () => {
     );
     assert.ok(result.includes('do not invent one-off effort literals'), 'keeps effort policy centralized');
     assert.ok(result.includes('fork_context'), 'documents fork_context default');
-    assert.ok(result.includes('wait(ids)'), 'documents parallel wait pattern');
+    // #3004: collaboration tool vocabulary must match Codex's actual schema.
+    assert.ok(result.includes('wait_agent'), 'documents the real collaboration wait tool (wait_agent, not wait(ids))');
+    assert.ok(!result.includes('wait(ids)'), 'must NOT contain the obsolete wait(ids) spelling');
+    assert.ok(result.includes('functions.wait'), 'disambiguates from the unrelated exec-cell functions.wait tool');
+    assert.ok(result.includes('task_name'), 'documents the required task_name field');
+    assert.ok(result.includes('fork_turns'), 'documents the fork_turns parameter');
     assert.ok(result.includes('close_agent'), 'documents close_agent cleanup');
+    assert.ok(result.includes('tool_search'), 'gates close_agent on tool visibility (schema detection)');
     assert.ok(result.includes('CHECKPOINT'), 'documents result markers');
   });
 });

@@ -1927,6 +1927,38 @@ function applySettingsJsonHooks(settings: any, opts: ApplySettingsJsonHooksOpts)
       console.warn(`  ${yellow}⚠${reset}  Skipped worktree path guard hook — gsd-worktree-path-guard.js not found at target`);
     }
 
+    // Configure PreToolUse hook for Agent-dispatch isolation (#3045)
+    // Hard-blocks an executor Agent() dispatch (subagent_type="gsd-executor")
+    // missing its harness isolation parameter when this project's resolved
+    // dispatch isolation is harness-worktree. Prevents the executor from
+    // silently running and committing in the primary checkout when the
+    // model-authored dispatch omits isolation="worktree".
+    const agentIsolationGuardCommand = isGlobal
+      ? buildHookCommand(targetDir, 'gsd-agent-isolation-guard.js', hookOpts)
+      : localCmd('gsd-agent-isolation-guard.js');
+    const hasAgentIsolationGuardHook = settings.hooks[preToolEvent].some((entry: HookGroup) =>
+      entry.hooks && entry.hooks.some((h: HookEntry) => referencesHook(h as Record<string, unknown>, 'gsd-agent-isolation-guard'))
+    );
+    const agentIsolationGuardFile = path.join(targetDir, 'hooks', 'gsd-agent-isolation-guard.js');
+    if (!hasAgentIsolationGuardHook && fs.existsSync(agentIsolationGuardFile) && agentIsolationGuardCommand) {
+      settings.hooks[preToolEvent].push({
+        // #3045 MAJOR 1: widened from "Agent"-only — hooks.json's own
+        // PostToolUse precedent (context-monitor) already hedges both names,
+        // and the hook itself now accepts tool_name "Task" too.
+        matcher: 'Agent|Task',
+        hooks: [
+          {
+            type: 'command',
+            command: agentIsolationGuardCommand,
+            timeout: 5
+          }
+        ]
+      });
+      console.log(`  ${green}✓${reset} Configured agent isolation dispatch guard hook`);
+    } else if (!hasAgentIsolationGuardHook && !fs.existsSync(agentIsolationGuardFile)) {
+      console.warn(`  ${yellow}⚠${reset}  Skipped agent isolation guard hook — gsd-agent-isolation-guard.js not found at target`);
+    }
+
     // Configure PreToolUse hook for catastrophic-shrink protection (#2255, fix 3 of #973)
     // Hard-blocks a whole-file Write that collapses a curated .planning/ artifact
     // (ROADMAP.md, milestone roadmaps, STATE.md) far below its on-disk size.

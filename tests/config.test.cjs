@@ -1808,7 +1808,7 @@ describe('#3197 — gsd-tools.cjs config-set workflow._auto_chain_active', () =>
 {
   const { describe: __foldDescribe } = require('node:test');
   __foldDescribe("folded:bug-3086-git-create-tag-config-gate (consolidation epic #1969 B2 #1971)", () => {
-// allow-test-rule: workflow-markdown-is-the-runtime-contract (see #3086)
+// allow-test-rule: source-text-is-the-product (see #3086)
 // Justification: complete-milestone.md IS the runtime — the agent reads and
 // follows it directly. Asserting the <config-check> block is present in the
 // markdown is the only way to verify the gate is wired. Per CONTEXT.md L611.
@@ -2285,7 +2285,7 @@ describe('feat-3210 / H5: enum validation for code_quality.fallow.scope and .pro
   __foldDescribe("folded:bug-3212-execute-phase-stall-safe-resume (consolidation epic #1969 B3 #1972)", () => {
 'use strict';
 
-// allow-test-rule: source-text-is-product [#3212]
+// allow-test-rule: source-text-is-the-product [#3212]
 // The bug is in workflow/config contracts consumed by agents at runtime.
 
 const { describe, test } = require('node:test');

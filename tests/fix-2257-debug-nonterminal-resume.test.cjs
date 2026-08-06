@@ -46,9 +46,11 @@ const DEBUG_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'debug.md')
 const SESSION_MANAGER_MD = path.join(__dirname, '..', 'agents', 'gsd-debug-session-manager.md');
 
 describe('#2257 debug non-terminal session-manager return contract', () => {
-  // allow-test-rule: workflow/agent prose IS the runtime contract under test #2257
+  // allow-test-rule: source-text-is-the-product (#2257)
+  // workflow/agent prose IS the runtime contract under test
   const debugContent = fs.readFileSync(DEBUG_MD, 'utf-8');
-  // allow-test-rule: workflow/agent prose IS the runtime contract under test #2257
+  // allow-test-rule: source-text-is-the-product (#2257)
+  // workflow/agent prose IS the runtime contract under test
   const managerContent = fs.readFileSync(SESSION_MANAGER_MD, 'utf-8');
 
   const section4Start = debugContent.indexOf('## 4. Session Management');

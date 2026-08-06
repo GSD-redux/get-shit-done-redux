@@ -491,12 +491,13 @@ export function projectPersistentPathExportActions({ targetDir, platform = proce
 
 // ─── Subprocess dispatch ──────────────────────────────────────────────────────
 
-interface SpawnResultOutput {
+export interface SpawnResultOutput {
   exitCode: number;
   stdout: string;
   stderr: string;
   signal: NodeJS.Signals | null;
   error: Error | null;
+  timedOut: boolean;
 }
 
 /**
@@ -522,14 +523,20 @@ export function isSpawnTimeout(result: { error?: unknown }): boolean {
 
 function _spawnResult(result: { error?: NodeJS.ErrnoException | null; status?: number | null; stdout?: Buffer | string | null; stderr?: Buffer | string | null; signal?: NodeJS.Signals | null }, program: string): SpawnResultOutput {
   if (result.error && result.error.code === 'ENOENT') {
-    return { exitCode: 127, stdout: '', stderr: `${program}: not found`, signal: null, error: result.error };
+    return { exitCode: 127, stdout: '', stderr: `${program}: not found`, signal: null, error: result.error, timedOut: false };
   }
+  const signal = result.signal ?? null;
+  const error = result.error ?? null;
   return {
     exitCode: result.status ?? 1,
     stdout: (result.stdout ?? '').toString().trim(),
     stderr: (result.stderr ?? '').toString().trim(),
-    signal: result.signal ?? null,
-    error: result.error ?? null,
+    signal,
+    error,
+    // Reuse the single shared timeout predicate (isSpawnTimeout, below) rather
+    // than re-deriving it here — see that function's docstring for why only
+    // error.code === 'ETIMEDOUT' is checked (not signal === 'SIGTERM').
+    timedOut: isSpawnTimeout({ error }),
   };
 }
 

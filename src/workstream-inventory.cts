@@ -46,6 +46,22 @@ interface PhaseFileCounts {
 
 interface InspectWorkstreamOptions {
   active?: string | null;
+  /**
+   * #3057 B3: injectable diagnostic-write seam, mirrored from
+   * cmdGitBaseBranch's `writeDiagnostic` (git-base-branch.cts). Called with a
+   * stderr-style line when a phase's readVerificationStatus staleness check
+   * could not run to completion — WorkstreamInventory's own return shape
+   * (`phases: PhaseStatus[]`) has no per-phase verification detail today, so
+   * this side channel surfaces the fact without widening that aggregate type.
+   * The second argument carries the same facts as structured, typed data
+   * (CONTRIBUTING: no raw-text matching on produced diagnostics) so a caller
+   * — tests included — can assert on `phaseDir`/`reason` directly instead of
+   * pattern-matching the operator-facing `message`. The default
+   * implementation writes only `message` to stderr; operator output is
+   * unchanged. Never affects routing: the ledger / rollup computation below
+   * is unchanged either way (the pre-existing fail-open contract).
+   */
+  writeDiagnostic?: (message: string, meta: { phaseDir: string; reason: string }) => void;
 }
 
 interface WorkstreamInventoryList {
@@ -470,6 +486,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   if (!fs.existsSync(wsDir)) return null;
 
   const activeWorkstreamName = options.active === undefined ? getActiveWorkstream(cwd) : options.active;
+  const writeDiagnostic = options.writeDiagnostic ?? ((message: string) => process.stderr.write(message));
   const p = planningPaths(cwd, name);
   const phaseDirNames = readSubdirectories(p.phases);
 
@@ -582,6 +599,20 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   const rawPhaseEntries = [...phaseDirNames].sort().map(dir => {
     const phaseDir = path.join(p.phases, dir);
     const counts = countPhaseFiles(phaseDir);
+    const verificationResult = readVerificationStatus(phaseDir);
+    // #3057 B3: routing is UNCHANGED — `liveVerificationStatus` below is still
+    // `.status`, exactly as before, so the ledger/rollup logic that consumes
+    // it is unaffected. This only makes an indeterminate staleness check
+    // visible (stderr), matching cmdGitBaseBranch's own non-blocking
+    // unverified-fallback diagnostic (#3057 B4) — the closest existing idiom,
+    // since `WorkstreamInventory`'s aggregate return shape carries no
+    // per-phase verification detail for this to attach to.
+    if (verificationResult.staleCheckIndeterminate) {
+      writeDiagnostic(
+        `⚠ workstream-inventory: verification staleness check could not complete for phase directory '${dir}' in workstream '${name}' — routed as not-stale, but this was not actually verified. See #3057.\n`,
+        { phaseDir: dir, reason: 'staleCheckIndeterminate' },
+      );
+    }
     return {
       directory: dir,
       phaseKey: phaseKeyFromDir(dir),
@@ -589,7 +620,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
       planCount: counts.planCount,
       summaryCount: counts.summaryCount,
       inMilestone: isDirInCurrentMilestone(dir),
-      liveVerificationStatus: readVerificationStatus(phaseDir).status,
+      liveVerificationStatus: verificationResult.status,
     };
   });
 

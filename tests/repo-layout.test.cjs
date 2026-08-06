@@ -1,5 +1,8 @@
 'use strict';
-// allow-test-rule: structural guard-placement verification in bin/install.js requires source-text analysis; install.js is a non-exportable CLI script and the guard must be in a specific lexical scope which require()+behavior cannot verify #1188
+// allow-test-rule: structural-regression-guard (#1188)
+// Guard-placement verification in bin/install.js requires source-text
+// analysis; install.js is a non-exportable CLI script and the guard must be
+// in a specific lexical scope which require()+behavior cannot verify.
 
 /**
  * Governance tests for the gsd-core repository root layout.

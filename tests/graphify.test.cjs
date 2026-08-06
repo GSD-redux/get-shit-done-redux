@@ -476,7 +476,10 @@ describe('build', () => {
         status: null,
         stdout: 'partial',
         stderr: '',
-        error: undefined,
+        // Real spawnSync timeouts set error.code === 'ETIMEDOUT'; the
+        // timeout verdict keys on that, because SIGTERM alone is also
+        // produced by an external kill and is unreliable on Windows.
+        error: Object.assign(new Error('spawnSync ETIMEDOUT'), { code: 'ETIMEDOUT' }),
         signal: 'SIGTERM',
       }));
 
@@ -485,6 +488,22 @@ describe('build', () => {
       // Migrated #2974: typed reason instead of stderr grep.
       assert.strictEqual(result.reason, GRAPHIFY_REASON.TIMEOUT);
       assert.strictEqual(result.timeout_ms, 30000);
+    });
+
+    test('an externally-delivered SIGTERM is not reported as a timeout', () => {
+      // Before the shared isSpawnTimeout predicate was adopted, this shape
+      // (SIGTERM with no error.code) was misclassified as a timeout.
+      mock.method(childProcess, 'spawnSync', () => ({
+        status: null,
+        stdout: '',
+        stderr: '',
+        error: undefined,
+        signal: 'SIGTERM',
+      }));
+
+      const result = execGraphify('/tmp', ['build']);
+      assert.notStrictEqual(result.exitCode, 124);
+      assert.notStrictEqual(result.reason, GRAPHIFY_REASON.TIMEOUT);
     });
 
     test('passes PYTHONUNBUFFERED=1 in env', () => {
@@ -585,9 +604,11 @@ describe('build', () => {
     });
 
     test('returns compatible:true for version 0.4.0', () => {
-      mock.method(childProcess, 'spawnSync', () => ({
+      // #3020: command-aware mock — graphify --version returns the version,
+      // python3 importlib.metadata confirms the graphifyy package.
+      mock.method(childProcess, 'spawnSync', (cmd) => ({
         status: 0,
-        stdout: '0.4.0\n',
+        stdout: cmd === 'graphify' ? '0.4.0\n' : '0.4.0\n',
         stderr: '',
         error: undefined,
         signal: null,
@@ -600,9 +621,9 @@ describe('build', () => {
     });
 
     test('returns compatible:true for version 0.9.5', () => {
-      mock.method(childProcess, 'spawnSync', () => ({
+      mock.method(childProcess, 'spawnSync', (cmd) => ({
         status: 0,
-        stdout: '0.9.5\n',
+        stdout: cmd === 'graphify' ? '0.9.5\n' : '0.9.5\n',
         stderr: '',
         error: undefined,
         signal: null,
@@ -614,9 +635,9 @@ describe('build', () => {
     });
 
     test('returns compatible:false for version 0.3.0', () => {
-      mock.method(childProcess, 'spawnSync', () => ({
+      mock.method(childProcess, 'spawnSync', (cmd) => ({
         status: 0,
-        stdout: '0.3.0\n',
+        stdout: cmd === 'graphify' ? '0.3.0\n' : '0.3.0\n',
         stderr: '',
         error: undefined,
         signal: null,
@@ -628,9 +649,9 @@ describe('build', () => {
     });
 
     test('returns compatible:false for version 1.0.0', () => {
-      mock.method(childProcess, 'spawnSync', () => ({
+      mock.method(childProcess, 'spawnSync', (cmd) => ({
         status: 0,
-        stdout: '1.0.0\n',
+        stdout: cmd === 'graphify' ? '1.0.0\n' : '1.0.0\n',
         stderr: '',
         error: undefined,
         signal: null,
@@ -669,19 +690,35 @@ describe('build', () => {
       assert.ok(result.warning.includes('Could not parse'));
     });
 
-    test('tries graphify --version first before python3', () => {
+    test('#3020: warns when graphifyy package cannot be confirmed (foreign binary)', () => {
+      // graphify --version succeeds with a plausible version, but python3
+      // importlib.metadata cannot find the graphifyy package — identity unverified.
+      mock.method(childProcess, 'spawnSync', (cmd) => {
+        if (cmd === 'graphify') {
+          return { status: 0, stdout: '0.4.3\n', stderr: '', error: undefined, signal: null };
+        }
+        // python3 importlib.metadata fails — package not found
+        return { status: 1, stdout: '', stderr: 'PackageNotFoundError', error: undefined, signal: null };
+      });
+
+      const result = checkGraphifyVersion();
+      assert.strictEqual(result.version, '0.4.3');
+      assert.strictEqual(result.compatible, false, 'foreign binary must not report compatible');
+      assert.ok(result.warning && result.warning.includes('graphifyy'), 'warning must name the package mismatch');
+    });
+
+    test('tries graphify --version first, then verifies identity via python3', () => {
       const calls = [];
       mock.method(childProcess, 'spawnSync', (cmd, args) => {
         calls.push({ cmd, args });
-        return { status: 0, stdout: '0.4.3\n', stderr: '', error: undefined, signal: null };
+        return { status: 0, stdout: cmd === 'graphify' ? '0.4.3\n' : '0.4.3\n', stderr: '', error: undefined, signal: null };
       });
 
       checkGraphifyVersion();
-      assert.strictEqual(calls.length, 1, 'exactly one spawnSync call — no python3 fallback');
-      assert.strictEqual(calls[0].cmd, 'graphify');
+      assert.strictEqual(calls.length, 2, 'graphify --version + python3 identity verification (#3020)');
+      assert.strictEqual(calls[0].cmd, 'graphify', 'first call is graphify --version');
+      assert.strictEqual(calls[1].cmd, 'python3', 'second call is python3 identity check (#3020)');
       assert.ok(calls[0].args.includes('--version'), 'graphify called with --version');
-      const python3Calls = calls.filter(c => c.cmd === 'python3');
-      assert.strictEqual(python3Calls.length, 0, 'no python3 fallback when graphify --version succeeds');
     });
 
     test('falls back to python3 importlib.metadata when graphify --version fails', () => {

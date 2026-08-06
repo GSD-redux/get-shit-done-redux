@@ -36,6 +36,7 @@ const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = 
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
 type StateTransitionDeps = stateTransitionMod.StateTransitionDeps;
 type PhaseInventoryRecord = stateTransitionMod.PhaseInventoryRecord;
+type PhaseInventoryResult = stateTransitionMod.PhaseInventoryResult;
 import {
   computeProgressPercent,
   normalizeProgressNumbers,
@@ -264,23 +265,53 @@ function _stateHolderVerifiedLive(lockPath: string): boolean {
 }
 
 /**
+ * Three-way classification of a lock body read (issue #3057 B2): a pid that
+ * parses cleanly, a body that reads but is empty/garbage/non-numeric, or a
+ * body that could not be READ at all (I/O fault — permission error, transient
+ * NFS/overlay-fs hiccup, mid-rename, etc.). The third case is NOT the same as
+ * the second: an unreadable body tells us nothing about whether the lock is
+ * fresh, stale, or actively held mid-write by a live process whose file the
+ * fault merely prevented us from reading. Collapsing it into "empty" would
+ * make it eligible for the short fresh-create-floor steal window, which can
+ * rob an active holder purely because of a transient read fault.
+ */
+type LockBodyStatus =
+  | { kind: 'pid'; pid: number }
+  | { kind: 'empty' }
+  | { kind: 'unreadable' };
+
+/**
+ * Read + classify the lock body at `lockPath`. See `LockBodyStatus` for the
+ * three-way distinction the steal decision in `acquireStateLock` relies on.
+ */
+function _stateLockBodyStatus(lockPath: string): LockBodyStatus {
+  let body: string;
+  try {
+    body = fs.readFileSync(lockPath, 'utf-8');
+  } catch {
+    return { kind: 'unreadable' };
+  }
+  const trimmed = body.trim();
+  const pid = parseInt(trimmed, 10);
+  if (!Number.isInteger(pid) || pid <= 0 || String(pid) !== trimmed) return { kind: 'empty' };
+  return { kind: 'pid', pid };
+}
+
+/**
  * Parse the lock body to its recorded pid, or null when the body is empty / non-numeric
  * / unreadable (legacy or mid-creation). Distinguishing a COMPLETE dead-pid body (steal
  * promptly) from an EMPTY/unparseable one (the create→write window — do not steal while
  * fresh) is what `_stateHolderVerifiedLive` alone cannot express, so the steal decision
  * in acquireStateLock reads the pid directly (PR #1532 review, window a).
+ *
+ * NOTE: this collapses "genuinely empty" and "unreadable" to the same `null` —
+ * that is fine for `_stateHolderVerifiedLive` (both mean "not verified-live"
+ * either way), but the STEAL-TIMING decision must not make that same
+ * collapse (#3057 B2) and reads `_stateLockBodyStatus` directly instead.
  */
 function _stateLockBodyPid(lockPath: string): number | null {
-  let body: string;
-  try {
-    body = fs.readFileSync(lockPath, 'utf-8');
-  } catch {
-    return null; // unreadable body → cannot verify
-  }
-  const trimmed = body.trim();
-  const pid = parseInt(trimmed, 10);
-  if (!Number.isInteger(pid) || pid <= 0 || String(pid) !== trimmed) return null;
-  return pid;
+  const status = _stateLockBodyStatus(lockPath);
+  return status.kind === 'pid' ? status.pid : null;
 }
 
 // Monotonic sequence for unique stale-steal rename targets (no crypto dependency).
@@ -1574,7 +1605,7 @@ function extractRetiredPhaseNumbers(scope: string): Set<string> {
  * a YAML frontmatter object. Allows hooks and scripts to read state
  * reliably via `state json` instead of fragile regex parsing.
  */
-function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Record<string, unknown> {
+function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, storedMilestone?: string | null): Record<string, unknown> {
   // #2956: scope `Phase` extraction to ## Current Position (mirrors the read
   // path in cmdStateSnapshot and the Stopped At / Paused At ## Session scoping
   // below). Phase canonically lives in ## Current Position (templates/state.md);
@@ -1651,7 +1682,10 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined): Re
             }
           } catch { /* fall through: no roadmap scope → no retired exclusion */ }
 
-          const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
+          // #3017: scope the milestone filter to the STORED milestone when available,
+          // so a state.* write doesn't auto-derive (and mis-bind) to a different
+          // milestone's heading and clobber the stored value + progress counts.
+          const isDirInMilestone = getMilestonePhaseFilter(cwd, storedMilestone ?? undefined) as (dir: string) => boolean;
           const allMatchingDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
             .filter(e => e.isDirectory()).map(e => e.name)
             .filter(isDirInMilestone);
@@ -1824,7 +1858,11 @@ function syncStateFrontmatter(content: string, cwd: string | undefined, authorit
     cwd ? planningPaths(cwd).state : undefined,
   ) as Record<string, unknown>;
   const body = stripFrontmatter(content);
-  const derivedFm = buildStateFrontmatter(body, cwd);
+  // #3017: pass the stored milestone from the existing frontmatter so
+  // buildStateFrontmatter scopes its disk scan to the correct milestone
+  // instead of auto-deriving (and potentially mis-binding).
+  const storedMilestone = typeof existingFm['milestone'] === 'string' ? existingFm['milestone'] : null;
+  const derivedFm = buildStateFrontmatter(body, cwd, storedMilestone);
 
   // Preserve existing frontmatter status when body-derived status is 'unknown'.
   // This prevents a missing Status: field in the body from overwriting a
@@ -2043,17 +2081,22 @@ function acquireStateLock(statePath: string, clock?: StateLockClock): string {
       }
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err; // propagate — silent bypass causes lost updates
       // Liveness-gated steal (audit M1) + steal-safety (PR #1532 review). The steal
-      // decision is three-way on the lock body:
+      // decision is four-way on the lock body (#3057 B2 added the fourth):
       //   - VERIFIED-LIVE holder (parseable pid that signals alive): NEVER stolen until
       //     its age crosses the absolute deadman ceiling (the pid-reuse backstop) —
       //     nuking a slow-but-live writer's lock causes lost updates (#3711 / #500/#905/
       //     #1230 family).
       //   - COMPLETE DEAD pid (parseable pid, not alive): stolen PROMPTLY regardless of
       //     age — a crashed holder left a full body.
-      //   - EMPTY / unparseable body: liveness is unknowable. While FRESH (age <=
-      //     freshCreateFloorMs) it is a lock still mid-creation (O_EXCL done, pid not yet
-      //     written) and is NOT stolen (window a); only once aged past the floor is it a
-      //     genuine orphan and stealable.
+      //   - UNREADABLE body (I/O fault reading the file): NOT the same as empty — we
+      //     have no evidence this is a fresh create window, only that we could not read
+      //     it. Held to the SAME conservative ceiling as a verified-live holder rather
+      //     than the short fresh-create floor, so a transient read fault can never rob
+      //     an active holder the way stealing at 1s would.
+      //   - EMPTY / unparseable body (body WAS read, and holds no valid pid): liveness is
+      //     unknowable. While FRESH (age <= freshCreateFloorMs) it is a lock still
+      //     mid-creation (O_EXCL done, pid not yet written) and is NOT stolen (window a);
+      //     only once aged past the floor is it a genuine orphan and stealable.
       // The steal itself is an ATOMIC rename-then-recreate (only one racer can rename the
       // inode) guarded by an identity re-confirm, so a racer that recreates a fresh lock
       // in the decision→steal gap never has its replacement deleted (window b). Mirrors
@@ -2061,13 +2104,16 @@ function acquireStateLock(statePath: string, clock?: StateLockClock): string {
       try {
         const stat = fs.statSync(lockPath);
         const ageMs = clock.now() - stat.mtimeMs;
-        const bodyPid = _stateLockBodyPid(lockPath);
+        const bodyStatus = _stateLockBodyStatus(lockPath);
+        const bodyPid = bodyStatus.kind === 'pid' ? bodyStatus.pid : null;
         const holderLive = bodyPid !== null && _stateLockIsPidAlive(bodyPid);
         let steal: boolean;
         if (holderLive) {
           steal = ageMs > deadmanCeilingMs;   // pid-reuse backstop only
         } else if (bodyPid !== null) {
           steal = true;                       // complete dead pid → prompt steal
+        } else if (bodyStatus.kind === 'unreadable') {
+          steal = ageMs > deadmanCeilingMs;   // I/O fault ≠ known-fresh — do not grant the short floor
         } else {
           steal = ageMs > freshCreateFloorMs; // empty/garbage → protect the create window
         }
@@ -3103,10 +3149,19 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
   // is the same canonical source `buildStateFrontmatter` consults; the Leaky-
   // Abstractions guard in `rebuildCore` (ADR-1817 §1) keeps the pure core
   // testable without this dep — here we provide it.
-  const phaseInventoryProvider = (): PhaseInventoryRecord[] | null => {
+  //
+  // #3057 B1: a missing `.planning/phases/` directory is genuinely "nothing
+  // to reconcile" (`ok:true, phases: []`) — but a `readdirSync`/`statSync`
+  // THROW on a directory that DOES exist (permission fault, corrupted
+  // mount, etc.) is a real scan failure (`ok:false`). The old implementation
+  // returned `null` for both, so `state rebuild` could report success while
+  // by-phase-table reconciliation silently never ran. Per-entry stat
+  // failures (an individual phase dir vanishing mid-scan) still `continue`
+  // past that one entry — that is not a whole-scan failure.
+  const phaseInventoryProvider = (): PhaseInventoryResult => {
     try {
       const phasesDir = path.join(planningPaths(cwd).planning, 'phases');
-      if (!fs.existsSync(phasesDir) || !fs.statSync(phasesDir).isDirectory()) return null;
+      if (!fs.existsSync(phasesDir) || !fs.statSync(phasesDir).isDirectory()) return { ok: true, phases: [] };
       const entries = fs.readdirSync(phasesDir);
       const records: PhaseInventoryRecord[] = [];
       for (const entry of entries) {
@@ -3122,9 +3177,9 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
         const summaryCount = files.filter(f => /-SUMMARY\.md$/i.test(f)).length;
         records.push({ number: m[1], name: m[2], planCount, summaryCount });
       }
-      return records;
-    } catch {
-      return null;
+      return { ok: true, phases: records };
+    } catch (err) {
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
     }
   };
 
@@ -3150,18 +3205,36 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
     }
   };
 
+  // #3057 B1: distinguish "nothing to rebuild" from "the phase-inventory
+  // disk scan failed, so by-phase-table reconciliation could not run" — both
+  // used to collapse to the same `mutated:false` / "Nothing to rebuild" note.
+  type RebuildData = {
+    log?: unknown[];
+    mutated?: boolean;
+    phase_inventory_scan_failed?: boolean;
+    phase_inventory_scan_reason?: string;
+  };
+  const scanFailureNote = (reason: string | undefined): string =>
+    'Nothing rebuilt: the phase-inventory disk scan failed, so by-phase-table reconciliation did not run' +
+    (reason ? ` (${reason})` : '');
+
   if (dryRun) {
     const content = fs.readFileSync(statePath, 'utf-8');
     const result = runRebuild(content);
-    const data = (result.data ?? {}) as { log?: unknown[]; mutated?: boolean };
+    const data = (result.data ?? {}) as RebuildData;
     emitVerboseLog(data.log);
     const mutated = data.mutated === true;
+    const scanFailed = data.phase_inventory_scan_failed === true;
     emit({
       rebuilt: false,
       dry_run: true,
       mutations: Array.isArray(data.log) ? data.log.length : 0,
       mutated,
-      note: mutated ? 'Run without --dry-run to apply changes' : 'Nothing to rebuild',
+      phase_inventory_scan_failed: scanFailed,
+      phase_inventory_scan_reason: scanFailed ? data.phase_inventory_scan_reason : undefined,
+      note: mutated
+        ? 'Run without --dry-run to apply changes'
+        : scanFailed ? scanFailureNote(data.phase_inventory_scan_reason) : 'Nothing to rebuild',
     }, raw, mutated ? 'true' : 'false');
     return;
   }
@@ -3171,11 +3244,15 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
   // to STATE.md by rebuildCore itself, per ADR-1817 §3).
   let capturedLog: unknown[] = [];
   let capturedMutated = false;
+  let capturedScanFailed = false;
+  let capturedScanReason: string | undefined;
   readModifyWriteStateMd(statePath, (content: string) => {
     const result = runRebuild(content);
-    const data = (result.data ?? {}) as { log?: unknown[]; mutated?: boolean };
+    const data = (result.data ?? {}) as RebuildData;
     capturedLog = Array.isArray(data.log) ? data.log : [];
     capturedMutated = data.mutated === true;
+    capturedScanFailed = data.phase_inventory_scan_failed === true;
+    capturedScanReason = data.phase_inventory_scan_reason;
     return result.content;
   }, cwd);
 
@@ -3184,7 +3261,11 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
   emit({
     rebuilt: capturedMutated,
     mutations: capturedLog.length,
-    note: capturedMutated ? 'STATE.md rebuilt; see ## Rebuild Log section for the audit trail' : 'Nothing to rebuild',
+    phase_inventory_scan_failed: capturedScanFailed,
+    phase_inventory_scan_reason: capturedScanFailed ? capturedScanReason : undefined,
+    note: capturedMutated
+      ? 'STATE.md rebuilt; see ## Rebuild Log section for the audit trail'
+      : capturedScanFailed ? scanFailureNote(capturedScanReason) : 'Nothing to rebuild',
   }, raw, capturedMutated ? 'true' : 'false');
 }
 

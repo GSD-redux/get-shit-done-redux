@@ -1,4 +1,5 @@
-// allow-test-rule: runtime-contract-is-the-product — plan-phase.md's planner prompt is the deployed runtime contract under assertion
+// allow-test-rule: source-text-is-the-product
+// plan-phase.md's planner prompt is the deployed runtime contract under assertion
 // plan-phase.md is the deployed planning workflow contract; these checks lock
 // the SPEC path wiring and quality-gate that the edge-probe review (RR-01/02/03)
 // requires — assertions scope to extracted sub-blocks to avoid false positives.

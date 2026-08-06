@@ -930,7 +930,7 @@ describe('TABLE_SCHEMAS parity: registry headers must appear verbatim in their s
    */
   function assertHeaderInFile(relPath, variant) {
     const fullPath = path.join(ROOT, relPath);
-    const content = fs.readFileSync(fullPath, 'utf8'); // allow-test-rule: runtime-contract-is-the-product — template/registry parity (#2242)
+    const content = fs.readFileSync(fullPath, 'utf8'); // allow-test-rule: source-text-is-the-product — template/registry parity (#2242)
     const expectedHeader = buildHeader(variant);
     const normalizedExpected = normalize(expectedHeader);
     const found = content

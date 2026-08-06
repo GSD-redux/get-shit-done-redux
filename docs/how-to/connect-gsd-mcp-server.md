@@ -7,10 +7,14 @@ commands and read/write `.planning/` state — through the companion MCP server,
 with no bespoke plugin.
 
 Once connected, three tools appear in the host alongside its others:
-`gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`. (For the tool
-contracts, see the reference section below; for *why* this server exists and
-its trust model, see [ADR-1239](../adr/1239-gsd-embeddable-orchestration-engine.md)
-and the [capability trust model](../explanation/capability-trust-model.md).)
+`gsd_invoke_command`, `gsd_read_state`, `gsd_write_state`. The server also
+serves a read-only **catalog** of GSD's own content — workflows and
+references as MCP resources, and the `/gsd-*` commands as MCP prompts — so a
+host can browse and pull that content directly instead of shelling out to the
+CLI. (For the tool contracts, see the reference section below; for *why* this
+server exists and its trust model, see
+[ADR-1239](../adr/1239-gsd-embeddable-orchestration-engine.md) and the
+[capability trust model](../explanation/capability-trust-model.md).)
 
 ## 1. Add the server to your host's MCP config
 
@@ -71,8 +75,12 @@ OpenCode (and Kilo, which shares OpenCode's config schema) use a
 
 ## 2. Restart the host
 
-On startup the host performs the MCP `initialize` handshake, lists tools, and
-the three GSD tools become callable.
+On startup the host performs the MCP `initialize` handshake. The response
+advertises `tools`, `resources`, and `prompts` capabilities, so the three GSD
+tools become callable and the host can also list the served catalog
+(resources and prompts) described below. The server never advertises
+`resources.subscribe` or `listChanged` — the catalog is fixed for the life of
+the server process, so there is nothing to subscribe to.
 
 ## 3. Verify
 
@@ -85,6 +93,63 @@ Ask the host to read an existing planning file:
 It returns the file's contents. `gsd_invoke_command` takes
 `{family, subcommand, args}` and returns the command-routing hub's structured
 result (the same shape `gsd-tools` produces).
+
+## 4. Browse the catalog (resources and prompts)
+
+The server also exposes GSD's own content tree as MCP resources and the
+`commands/gsd/*.md` command set as MCP prompts. This is additive: the
+file-copy install (the default for every runtime) is unchanged, and the
+catalog only adds a way for an MCP-capable host to read the same content
+directly over the protocol.
+
+### List and read a resource
+
+List available resources (paginated — ask the host to follow `nextCursor`
+until it is absent):
+
+```jsonc
+{ "name": "resources/list", "arguments": { "cursor": null } }
+```
+
+Each entry has a `gsd://<segment>/<relpath>` URI, where `<segment>` is
+`workflows`, `references`, or `commands`, and `<relpath>` is the file's path
+within that segment (for example, `gsd://workflows/plan-phase.md`,
+`gsd://references/untrusted-input-boundary.md`, or
+`gsd://commands/plan-phase.md`). Commands appear in both surfaces: read one as
+a resource to get its raw markdown, or get it as a prompt to have the host
+treat it as an invocable message. Read one by URI:
+
+```jsonc
+{ "name": "resources/read", "arguments": { "uri": "gsd://workflows/plan-phase.md" } }
+```
+
+An unknown or unrecognized URI (including any path-traversal or absolute-path
+attempt) returns a JSON-RPC error rather than an empty or partial result.
+
+### List and get a prompt
+
+```jsonc
+{ "name": "prompts/list", "arguments": {} }
+```
+
+Each entry is keyed by its bare command name — `plan-phase`, not a path. Get
+one:
+
+```jsonc
+{ "name": "prompts/get", "arguments": { "name": "plan-phase" } }
+```
+
+An unknown prompt name returns a JSON-RPC error. `prompts/get` accepts an
+`arguments` object but ignores it — no shipped command template takes
+injected arguments today.
+
+### Composed vs. verbatim content
+
+Workflow resources (`gsd://workflows/…`) are served **composed** — with
+`<!-- gsd:section -->` markers stripped — exactly as the installed file tree
+gets them, while reference and command content is served **verbatim**, because
+some reference and command docs use that marker syntax as a documented example
+rather than a real marker.
 
 ## If something does not work
 
@@ -108,3 +173,16 @@ result (the same shape `gsd-tools` produces).
 
 Errors from a tool are returned as MCP tool errors (`isError: true`), not as
 JSON-RPC protocol errors — the host surfaces them in its normal tool-failure UX.
+
+## Reference — the served catalog
+
+| Method | Arguments | Returns |
+|--------|-----------|---------|
+| `resources/list` | `{cursor?: string}` | `{resources: [{uri, name, title, description, mimeType}], nextCursor?: string}` |
+| `resources/read` | `{uri: string}` | `{contents: [{uri, mimeType, text}]}` |
+| `prompts/list` | `{}` | `{prompts: [{name, title, description}]}` |
+| `prompts/get` | `{name: string, arguments?: object}` | `{description, messages: [{role: "user", content: {type: "text", text}}]}` |
+
+Errors from the catalog (unknown URI, unknown prompt name, malformed cursor,
+a refused path-traversal attempt) are returned as JSON-RPC protocol errors,
+not MCP tool errors — unlike the three tools above.

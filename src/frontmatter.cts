@@ -204,6 +204,18 @@ function parseYamlRegion(yaml: string): Frontmatter {
  *   hold only an in-memory string; those dedup on a content digest instead.
  */
 function extractFrontmatter(content: string, sourcePath?: string): Frontmatter {
+  // #2977: tolerate a single leading UTF-8 BOM (\uFEFF), which Windows tooling
+  // (PowerShell `>`/`Out-File` on PS 5.1, several editors) writes by default. Without this
+  // strip, the byte-0 `startsWith('---')` fence check below fails on the BOM and the whole
+  // parse collapses to {} — every frontmatter field silently disappears, and the engine
+  // proceeds as though the file had no frontmatter at all. The BOM is a single codepoint;
+  // stripping it here restores byte-0 alignment so the rest of the function is unchanged.
+  // Scope: BOM only. Arbitrary non-BOM content before the fence (leading whitespace/blank
+  // line/comment) is a separate product-intent decision (tolerate vs diagnose) left to a
+  // future change — this fix does not broaden the byte-0 fence rule beyond the BOM.
+  if (content.charCodeAt(0) === 0xFEFF) {
+    content = content.slice(1);
+  }
   // Match frontmatter only at byte 0 — a `---` block later in the document
   // body (YAML examples, horizontal rules) must never be treated as frontmatter.
   const headerEnd = content.startsWith('---\r\n') ? 5 : content.startsWith('---\n') ? 4 : -1;
