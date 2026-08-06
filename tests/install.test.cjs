@@ -10537,3 +10537,34 @@ describe('Bug #2395: finishInstall persists runtime identity for non-Claude runt
     });
   });
 });
+
+// ─── #3026: --help documents every accepted runtime flag ────────────────────
+
+describe('#3026: installer --help documents every accepted runtime flag', () => {
+  const { spawnSync } = require('node:child_process');
+  const INSTALL_PATH = path.join(__dirname, '..', 'bin', 'install.js');
+
+  // Legacy aliases / non-runtime flags that must NOT appear in --help's runtime list.
+  const EXCLUDED_FLAGS = new Set(['--both', '--kimi-code']);
+
+  test('every accepted runtime flag appears in --help output', () => {
+    // Derive accepted flags behaviorally from the installer's argument parser.
+    const r = spawnSync(process.execPath, [INSTALL_PATH, '--help'], { encoding: 'utf-8', timeout: 10000 });
+    const helpText = r.stdout;
+
+    // The installer's getRuntimeArgs defines which --<runtime> flags it accepts.
+    // Mirror that list here (behavioral: if the installer accepts it, --help must name it).
+    const acceptedRuntimeFlags = [
+      '--claude', '--opencode', '--kilo', '--codex', '--kimi',
+      '--copilot', '--antigravity', '--cursor', '--windsurf', '--augment',
+      '--trae', '--qwen', '--hermes', '--cline', '--codebuddy',
+      '--zcode', '--pi', '--gemini',
+    ];
+
+    const missing = acceptedRuntimeFlags.filter(
+      f => !EXCLUDED_FLAGS.has(f) && !helpText.includes(f),
+    );
+    assert.deepEqual(missing, [],
+      `--help must document every accepted runtime flag; missing: ${missing.join(', ')}`);
+  });
+});
