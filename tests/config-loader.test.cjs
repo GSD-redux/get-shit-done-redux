@@ -1255,3 +1255,44 @@ describe("loadConfigResolved — corrupt config is distinguishable from absent",
     assert.equal(res.degraded, false, "an empty file is not corruption");
   });
 });
+
+// ─── #2997: phase_id_convention survives config resolution ─────────────────
+
+describe('#2997: phase_id_convention is not silently dropped on a clean read', () => {
+  const { createTempDir } = require('./helpers.cjs');
+  const cfgPath = (dir) => path.join(dir, '.planning', 'config.json');
+
+  test('setting phase_id_convention in config.json survives into the resolved config', () => {
+    const tmpDir = createTempDir('gsd-2997-');
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+      fs.writeFileSync(cfgPath(tmpDir), JSON.stringify({ phase_id_convention: 'milestone-prefixed' }), 'utf-8');
+      const res = loadConfigResolved(tmpDir);
+      assert.equal(res.degraded, false, 'read must report as non-degraded');
+      assert.equal(res.config.phase_id_convention, 'milestone-prefixed',
+        `phase_id_convention must survive resolution; got: ${JSON.stringify(res.config.phase_id_convention)}`);
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('phase_id_convention set to null round-trips correctly', () => {
+    const tmpDir = createTempDir('gsd-2997-null-');
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+      fs.writeFileSync(cfgPath(tmpDir), JSON.stringify({ phase_id_convention: null }), 'utf-8');
+      const res = loadConfigResolved(tmpDir);
+      assert.equal(res.config.phase_id_convention, null,
+        'null phase_id_convention must round-trip as null');
+    } finally { cleanup(tmpDir); }
+  });
+
+  test('phase_id_convention absent → null in resolved config (no false default)', () => {
+    const tmpDir = createTempDir('gsd-2997-absent-');
+    try {
+      fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+      fs.writeFileSync(cfgPath(tmpDir), JSON.stringify({ commit_docs: true }), 'utf-8');
+      const res = loadConfigResolved(tmpDir);
+      assert.equal(res.config.phase_id_convention, null,
+        'absent phase_id_convention must resolve to null, not undefined');
+    } finally { cleanup(tmpDir); }
+  });
+});
