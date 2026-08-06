@@ -181,22 +181,45 @@ describe('explore research-pass claim disposition (#2229)', () => {
   // profile still reads `balanced`, and a profile-only floor never fires. Measured:
   // `query resolve-model gsd-phase-researcher` returns {model: haiku, profile: balanced}
   // for that config. These assert the floor also keys on the RESOLVED MODEL.
-  test('tier-floor guard: the floor also keys on the resolved model, not the profile alone', () => {
-    const content = readWorkflow().replace(/\s+/g, ' ');
-    assert.match(
-      content,
-      /RESEARCHER_MODEL[^.]*\bhaiku\b/i,
-      'the floor must also fire on a haiku-tier RESEARCHER_MODEL; keying on ' +
-        'RESEARCHER_PROFILE alone is bypassed by models.research / model_overrides, ' +
-        'which sit above the profile lookup in resolveModelInternal'
-    );
-    assert.match(
-      content,
-      /--pick profile[^.]*\bmodel_profile\b/i,
-      'the workflow must state that --pick profile returns the global model_profile ' +
-        'setting, NOT the effective resolved tier — the prose previously claimed the ' +
-        'opposite, which is what made a profile-only floor look sufficient'
-    );
+  // Slice the Tier-floor bullet itself rather than searching the whole document:
+  // a whole-file proximity match is satisfied by ANY sentence that merely mentions
+  // RESEARCHER_MODEL near "haiku", including a purely descriptive one sitting beside
+  // a floor that still keys on the profile alone. Asserting on the guard's own text,
+  // and on its POLARITY, is what makes this a barrier instead of a word-search.
+  const tierFloorClause = (content) => {
+    const start = content.indexOf('- **Tier floor**');
+    assert.notStrictEqual(start, -1, 'the Tier floor bullet must exist');
+    const rest = content.slice(start + 1);
+    const end = rest.indexOf('\n- **');
+    return (end === -1 ? rest : rest.slice(0, end)).replace(/\s+/g, ' ');
+  };
+
+  test('tier-floor guard: the floor keys on the resolved model AND the profile, as a disjunction', () => {
+    const clause = tierFloorClause(readWorkflow());
+
+    assert.match(clause, /\bRESEARCHER_MODEL\b/,
+      'the floor itself must reference the resolved model; keying on RESEARCHER_PROFILE ' +
+      'alone is bypassed by models.research / model_overrides, which sit ABOVE the ' +
+      'profile lookup in resolveModelInternal (measured: model_profile balanced + ' +
+      'models.research haiku resolves {model: haiku, profile: balanced})');
+    assert.match(clause, /\bRESEARCHER_PROFILE\b/,
+      'the profile signal must stay — codex and qwen have non-haiku budget models, so a ' +
+      'model-only check would fail open there');
+    assert.match(clause, /\beither\b/i,
+      'the two signals must be a disjunction; requiring both would re-open the bypass');
+  });
+
+  test('tier-floor guard: the floor SUPPRESSES an admit — polarity, not just vocabulary', () => {
+    const clause = tierFloorClause(readWorkflow());
+
+    // Without this, a clause saying "present every would-be admit as an admit, unchanged;
+    // do NOT suppress merely because RESEARCHER_MODEL names a haiku-tier model" passes
+    // every keyword check above. Verified: that exact inversion passed the prior test 20/20.
+    assert.match(clause, /would-be \*\*admit\*\* as an \*\*abstain\*\*/,
+      'the floor must state that a would-be admit is presented as an abstain; a clause ' +
+      'that merely NAMES admit and abstain does not establish which way it converts');
+    assert.doesNotMatch(clause, /\bdo not suppress\b|as an \*\*admit\*\*, unchanged/i,
+      'an inverted floor must fail this test');
   });
 
   test('an untagged finding has a defined destination, not a silent drop', () => {
