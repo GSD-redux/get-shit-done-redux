@@ -35,6 +35,7 @@ const {
   _HOST_INTEGRATION_VOCAB,
   validateCapability,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
+const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -2253,7 +2254,7 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
   /** Pull the fenced ```bash block containing `marker` out of a workflow. */
   function bashBlockContaining(file, marker) {
     const text = fs.readFileSync(file, 'utf-8');
-    for (const m of text.matchAll(/```bash\n([\s\S]*?)```/g)) {
+    for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
       if (m[1].includes(marker)) return m[1];
     }
     assert.fail(`no \`\`\`bash block containing ${JSON.stringify(marker)} in ${file}`);
@@ -2292,9 +2293,9 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
     assert.match(res.stdout, /FINAL_LOCAL=none/, 'the degrade must set $ISOLATION=none locally');
 
     const calls = fs.existsSync(log)
-      ? fs.readFileSync(log, 'utf-8').split('\n').filter(Boolean)
+      ? fs.readFileSync(log, 'utf-8').split(/\r?\n/).filter(Boolean)
       : [];
-    fs.rmSync(dir, { recursive: true, force: true });
+    cleanup(dir);
     return calls.filter(c => c.includes('dispatch-isolation'));
   }
 
@@ -2367,11 +2368,11 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
     for (const file of scan) {
       const text = fs.readFileSync(file, 'utf-8');
       const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
-      for (const m of text.matchAll(/```bash\n([\s\S]*?)```/g)) {
+      for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
         const block = m[1];
         if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;
         if (!block.includes('--force-isolation')) {
-          const line = text.slice(0, m.index).split('\n').length;
+          const line = text.slice(0, m.index).split(/\r?\n/).length;
           offenders.push(`${rel}:${line}`);
         }
       }
