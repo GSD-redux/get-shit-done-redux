@@ -1317,8 +1317,11 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
   const RUNTIME_BRANCH_WORKFLOWS = ['settings.md', 'health.md'];
   const CLAUDE_RUNTIME_LINE = 'config-get runtime --default claude --raw 2>/dev/null || echo "claude"';
   const TRUE_WT_LINE = 'config-get workflow.use_worktrees --raw 2>/dev/null || echo "true"';
-  // #2486 review round 2 (#2584): the capability read that replaced the runtime-name gate.
-  const ISOLATION_LINE = 'ISOLATION=$(gsd_run query dispatch-isolation --raw 2>/dev/null || echo "none")';
+  // #2486 review round 2 (#2584): the capability read that replaced the runtime-name
+  // gate. Round 4: `inspect-dispatch-isolation`, the side-effect-free inspection verb —
+  // the recording `dispatch-isolation` verb stamps the executor-dispatch sentinel as an
+  // unconditional #3045 side effect, which an inspection surface must never do.
+  const ISOLATION_LINE = 'ISOLATION=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null || echo "none")';
   const readWorkflow = (wf) =>
     fs.readFileSync(path.join(__dirname, '..', 'gsd-core', 'workflows', wf), 'utf8');
 
@@ -1329,7 +1332,8 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     // would block a supported configuration on five runtimes and false-warn in
     // health. Both surfaces branch on `dispatch-isolation` instead.
     test('settings.md and health.md contain NO runtime-name gate for the worktrees branch', () => {
-      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
+      // allow-test-rule: source-text-is-the-product (#2486)
+      // Workflow .md text IS what the runtime loads — asserting on it tests the deployed contract.
       for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
         const src = readWorkflow(wf);
         assert.ok(
@@ -1354,67 +1358,33 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       }
     });
 
-    // -----------------------------------------------------------------------
-    // Merge-order enforcement (#2486 review round 3)
-    // -----------------------------------------------------------------------
-    //
-    // settings.md now presents the Worktrees question and persists
-    // `workflow.use_worktrees: true` for every runtime whose declared
-    // dispatch.isolation is not `none` — cursor (harness-worktree) and
-    // codex/opencode/kimi/kimi-code (orchestrator-worktree).
-    //
-    // quick.md and diagnose-issues.md are the two workflows that consume that
-    // value at dispatch time, and while they still gate on the runtime NAME
-    // they FATAL for all five. A user steered into the recommended setting by
-    // this PR would hit a hard failure minutes later — #2486's own shape,
-    // reintroduced for the exact runtimes this change exists to help, with the
-    // added indignity that it is now the recommended path that breaks them.
-    //
-    // #2728 migrates both gates to dispatch.isolation. This test is what makes
-    // that ordering STRUCTURAL rather than advisory: it is red while either
-    // sibling is still name-gated and goes green the moment #2728 lands. A
-    // "Depends on #2728" note in a PR body is not a gate — it is prose that an
-    // automated batch merge never reads. This is the gate.
-    //
-    // It also closes W024's coverage window. W024 only fires when ISOLATION is
-    // `none`, so it is structurally blind to these five runtimes: /gsd:health
-    // would report healthy right up until quick.md FATALs. W024 cannot see the
-    // hazard, so the hazard is prevented here instead — by making the unsafe
-    // ordering unmergeable rather than by warning about it after the fact.
-    const SIBLING_DISPATCH_WORKFLOWS = ['quick.md', 'diagnose-issues.md'];
-    const ISOLATION_GATE_REFERENCE = 'gsd-core/references/dispatch-isolation-gate.md';
+    // Round 4 note: an earlier revision carried a test here that encoded the
+    // #2728 merge order as a red assertion against quick.md/diagnose-issues.md.
+    // Deleted: a repo test cannot sequence merges — it only made this change
+    // unmergeable on its own schedule. The settings behavior change is instead
+    // scoped entirely to the `ISOLATION = none` branch (below), which needs
+    // nothing from any sibling PR; the `!= none` path is base behavior unchanged.
 
-    test('the sibling dispatch workflows are capability-gated before settings.md may recommend worktrees (#2486 — enforces the #2728 merge order)', () => {
-      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
-      for (const wf of SIBLING_DISPATCH_WORKFLOWS) {
-        const src = readWorkflow(wf);
-
-        // The runtime IDENTITY read (`RUNTIME=$(... config-get runtime ...)`)
-        // is legitimate and survives; only a RUNTIME-vs-"claude" COMPARISON is
-        // the name gate. The pattern below matches the latter and not the
-        // former — verified against both the pre-#2728 and post-#2728 sources.
-        const nameGates = src.match(/RUNTIME"?\s*(!=|=)\s*"?claude/g);
-        assert.ok(
-          !nameGates,
-          `${wf}: still gates worktree isolation on the runtime name (${JSON.stringify(nameGates)}), so it FATALs for cursor/codex/opencode/kimi/kimi-code — the five runtimes settings.md now recommends use_worktrees:true for. This PR must not merge ahead of #2728, which migrates this gate to dispatch.isolation.`,
-        );
-
-        // And it must actually reach the negotiated capability — either the
-        // inline canonical read or the shared reference that carries it.
-        assert.ok(
-          src.includes(ISOLATION_LINE) || src.includes(ISOLATION_GATE_REFERENCE),
-          `${wf}: no dispatch-isolation resolution — expected the canonical read or a reference to ${ISOLATION_GATE_REFERENCE}`,
-        );
-      }
-    });
-
-    test('settings.md and health.md resolve isolation with the canonical capability read', () => {
-      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
+    test('settings.md and health.md resolve isolation with the side-effect-free inspection read', () => {
+      // allow-test-rule: source-text-is-the-product (#2486)
+      // Workflow .md text IS what the runtime loads — asserting on it tests the deployed contract.
       for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
         const src = readWorkflow(wf);
         assert.ok(
           src.includes(ISOLATION_LINE),
-          `${wf}: missing the canonical dispatch-isolation read (fail-closes unknown/undocumented to none)`,
+          `${wf}: missing the canonical inspect-dispatch-isolation read (fail-closes unknown/undocumented to none)`,
+        );
+        // #2486 round 4 (B1): the RECORDING resolver is dispatch-only. On
+        // current next, `query dispatch-isolation` persists its decision to
+        // .gsd/dispatch-isolation-sentinel.json as an unconditional #3045 side
+        // effect, and the isolation guard hooks hard-fail dispatches that
+        // disagree with the recorded sentinel. An inspection surface calling it
+        // would let /gsd:health or /gsd:settings hard-block executor dispatch
+        // for the sentinel's lifetime — across sessions, since the sentinel
+        // root resolves linked worktrees to the main checkout.
+        assert.ok(
+          !src.includes('query dispatch-isolation'),
+          `${wf}: calls the RECORDING dispatch-isolation verb — inspection surfaces must use inspect-dispatch-isolation, which never writes the sentinel`,
         );
         assert.ok(
           src.includes('"$ISOLATION" = "none"') || src.includes('`ISOLATION` = `none`'),
@@ -1424,17 +1394,28 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
     });
 
     test('the isolation read is runtime-neutral — no per-runtime stamping rewrites it', () => {
-      // dispatch-isolation resolves the runtime internally and fail-closes, so
-      // unlike the #1521 runtime read it must survive every emit byte-identical.
-      // allow-test-rule: emitted workflow runtime-resolution shell block is the runtime contract surface (#1521/#2486)
+      // inspect-dispatch-isolation resolves the runtime internally and fail-closes,
+      // so unlike the #1521 runtime read it must survive every emit byte-identical.
+      // allow-test-rule: integration-test-input (#2486)
+      // The workflow source is fed to _applyRuntimeRewrites as real fixture input;
+      // the assertion is on the transformation's output.
       for (const rt of NON_CLAUDE_RUNTIMES) {
         for (const wf of RUNTIME_BRANCH_WORKFLOWS) {
           const out = conversion._applyRuntimeRewrites(readWorkflow(wf), rt, `$HOME/.${rt}/`, true, undefined);
           assert.ok(
             out.includes(ISOLATION_LINE),
-            `${rt}/${wf}: the dispatch-isolation read must not be rewritten by per-runtime stamping`,
+            `${rt}/${wf}: the inspect-dispatch-isolation read must not be rewritten by per-runtime stamping`,
           );
         }
+        // The settings tri-state read must survive stamping too: if
+        // _stampNonClaudeRuntimeDefaults ever matched the bare (no-fallback)
+        // shape, absence would again collapse into an explicit false and the
+        // pre-selection rule would go dead on that runtime.
+        const settingsOut = conversion._applyRuntimeRewrites(readWorkflow('settings.md'), rt, `$HOME/.${rt}/`, true, undefined);
+        assert.ok(
+          settingsOut.includes('USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)'),
+          `${rt}/settings.md: the bare tri-state worktrees read must survive per-runtime stamping byte-identical`,
+        );
       }
     });
 
@@ -1452,9 +1433,19 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
         src.includes('**Conditional options — Worktrees (#2486):**'),
         'settings.md: missing the conditional-options block for the Worktrees question',
       );
+      // Round 4: the current-value read carries NO --default/fallback on purpose.
+      // _stampNonClaudeRuntimeDefaults rewrites the canonical fallback line to
+      // `--default false || echo "false"` on every non-Claude emit, which made
+      // key-absence indistinguishable from an explicit false — and the
+      // "pre-select Leave unchanged only when absent" rule dead there. The bare
+      // read signals absence as empty output and matches no stamp pattern.
       assert.ok(
-        src.includes(`USE_WORKTREES_CURRENT=$(gsd_run query ${TRUE_WT_LINE})`),
-        'settings.md: current worktrees value must be read with the canonical stamped line',
+        src.includes('USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)'),
+        'settings.md: current worktrees value must use the bare tri-state read (empty = absent)',
+      );
+      assert.ok(
+        !src.includes(`USE_WORKTREES_CURRENT=$(gsd_run query ${TRUE_WT_LINE})`),
+        'settings.md: the stampable fallback read collapses absent into false on non-Claude emits',
       );
       assert.ok(
         src.includes('NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive'),
@@ -1509,31 +1500,13 @@ test('manager.md and autonomous.md no longer contain old "not claude" background
       }
     });
 
-    test('W024 does not collide with the W-code namespace owned by src/verify.cts', () => {
-      // KNOWN GAP, stated rather than hidden (#2486 review round 3). This is a
-      // source-text match, the shape `local/no-source-grep` exists to
-      // discourage, and it is declared here instead of quietly passing lint.
-      //
-      // The behavioral alternative does not exist yet: verify.cts emits its
-      // W-codes as inline string literals inside ~25 separate `addIssue(...)`
-      // calls and exports no enumerable warning-code registry, so there is
-      // nothing to require() and assert against. Building one means refactoring
-      // a shared module well outside this fix's scope. Until that registry
-      // exists, reading the source is the only way to check the namespace claim
-      // at all, and an unchecked claim is worse than a declared-imperfect one.
-      //
-      // What this costs: a rename or reformat of the 'W024' literal breaks
-      // nothing this test needs to know about, and a code embedded in a larger
-      // token could slip past. Accepted deliberately.
-      //
-      // allow-test-rule: no enumerable W-code registry exists to assert against; namespace-collision check must read the source (#2486)
-      const verifySrc = fs.readFileSync(path.join(__dirname, '..', 'src', 'verify.cts'), 'utf8');
-      // Quote-agnostic: verify.cts could emit the code single- or double-quoted.
-      assert.ok(
-        !/['"]W024['"]/.test(verifySrc),
-        'W024 is claimed by src/verify.cts — pick the next free code for the health check',
-      );
-    });
+    // Round 4 note: an earlier revision carried a W024-vs-src/verify.cts
+    // namespace-collision test here that read verify.cts as raw text — the
+    // source-grep shape RULESET.TESTS.delete-bad-tests says to delete, not
+    // exempt. Deleted without a behavioral replacement: verify.cts exposes no
+    // enumerable W-code registry to assert against, and building one is a
+    // shared-module refactor outside this fix. The namespace claim lives as
+    // guidance in health.md's error-codes note instead of as a fake test.
 
     test('the health.md error-codes table is not broken by the namespace note', () => {
       // The note was inserted BETWEEN two rows, which terminates the GFM table

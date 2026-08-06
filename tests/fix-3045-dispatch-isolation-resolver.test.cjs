@@ -315,3 +315,107 @@ describe('#3045 MINOR — writer/reader sentinel path derivation now agrees for 
     }
   });
 });
+
+describe('#2486 regression: inspect-dispatch-isolation is the side-effect-free read', () => {
+  // /gsd:health (W024) and /gsd:settings (Worktrees branching) must be able to
+  // learn the negotiated isolation WITHOUT recording it: the #3045 recording
+  // verb stamps a phase:null/plan:null sentinel the guard hooks then enforce
+  // against real executor dispatches — letting a read-only diagnostic
+  // hard-block execution for the sentinel's lifetime, across sessions.
+
+  test('inspect-dispatch-isolation resolves the declared capability and writes NO sentinel', () => {
+    const dir = createTempProject('gsd-2486-inspect-');
+    try {
+      assert.equal(fs.existsSync(sentinelFile(dir)), false, 'precondition: no sentinel yet');
+      const result = runGsdTools(
+        ['query', 'inspect-dispatch-isolation', '--raw'],
+        dir,
+        { GSD_RUNTIME: 'claude', HOME: dir },
+      );
+      assert.equal(result.success, true, result.error);
+      assert.equal(result.output.trim(), 'harness-worktree');
+      assert.equal(
+        fs.existsSync(sentinelFile(dir)),
+        false,
+        'inspection must not create .gsd/dispatch-isolation-sentinel.json',
+      );
+      assert.equal(fs.existsSync(path.join(dir, '.gsd')), false, 'inspection must not even create the .gsd dir');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('parity: inspect resolves byte-identically to the recording verb for every registry runtime', () => {
+    // Same negotiation implementation by construction (shared helper) — this
+    // pins the contract so a future edit cannot fork the two verbs apart.
+    for (const runtimeId of Object.keys(runtimes)) {
+      const dir = createTempProject('gsd-2486-parity-');
+      try {
+        const inspected = runGsdTools(
+          ['query', 'inspect-dispatch-isolation', '--raw'],
+          dir,
+          { GSD_RUNTIME: runtimeId, HOME: dir },
+        );
+        assert.equal(inspected.success, true, inspected.error);
+        assert.equal(
+          fs.existsSync(sentinelFile(dir)),
+          false,
+          `${runtimeId}: inspect must not write the sentinel`,
+        );
+
+        const dispatched = runGsdTools(
+          ['query', 'dispatch-isolation', '--raw'],
+          dir,
+          { GSD_RUNTIME: runtimeId, HOME: dir },
+        );
+        assert.equal(dispatched.success, true, dispatched.error);
+        assert.equal(
+          inspected.output.trim(),
+          dispatched.output.trim(),
+          `${runtimeId}: the two verbs must resolve the same isolation`,
+        );
+      } finally {
+        cleanup(dir);
+      }
+    }
+  });
+
+  test('inspect ignores --force-isolation/--phase/--plan — recording knobs have no read-path meaning', () => {
+    const dir = createTempProject('gsd-2486-inspect-args-');
+    try {
+      const result = runGsdTools(
+        ['query', 'inspect-dispatch-isolation', '--raw', '--force-isolation', 'none', '--phase', '9', '--plan', 'p1'],
+        dir,
+        { GSD_RUNTIME: 'claude', HOME: dir },
+      );
+      assert.equal(result.success, true, result.error);
+      assert.equal(result.output.trim(), 'harness-worktree', 'declared capability wins — force is a recording concept');
+      assert.equal(fs.existsSync(sentinelFile(dir)), false, 'and still nothing recorded');
+    } finally {
+      cleanup(dir);
+    }
+  });
+
+  test('--json shape matches the recording verb: { runtime, isolation, exec, harnessFlag }', () => {
+    const dir = createTempProject('gsd-2486-inspect-json-');
+    try {
+      const result = runGsdTools(
+        ['query', 'inspect-dispatch-isolation', '--json'],
+        dir,
+        { GSD_RUNTIME: 'cursor', HOME: dir },
+      );
+      assert.equal(result.success, true, result.error);
+      const parsed = JSON.parse(result.output);
+      assert.deepEqual(
+        Object.keys(parsed).sort(),
+        ['exec', 'harnessFlag', 'isolation', 'runtime'],
+        'consumers written against the recording verb JSON must be able to switch verbatim',
+      );
+      assert.equal(parsed.runtime, 'cursor');
+      assert.equal(parsed.isolation, 'harness-worktree');
+      assert.equal(fs.existsSync(sentinelFile(dir)), false, 'no sentinel from a --json inspection either');
+    } finally {
+      cleanup(dir);
+    }
+  });
+});

@@ -403,8 +403,10 @@ You do not configure this directly: set `workflow.use_worktrees` and GSD negotia
 To see what your current runtime negotiated:
 
 ```bash
-gsd-tools query dispatch-isolation --json
+gsd-tools query inspect-dispatch-isolation --json
 ```
+
+(`inspect-dispatch-isolation` is the read-only form. The `dispatch-isolation` query is the executor-dispatch resolver: it records its decision to the isolation sentinel as a deliberate side effect, so it is not an inspection command.)
 
 ## Code Quality Settings
 

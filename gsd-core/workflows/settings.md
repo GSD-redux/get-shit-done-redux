@@ -87,11 +87,11 @@ configure `model_overrides` manually in .planning/config.json to target specific
 models per agent.
 ```
 
-**Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value with the same reads the execution workflows use, before presenting the questions:
+**Isolation resolution for the Worktrees question (#2486):** resolve the runtime's declared executor-isolation primitive and the current worktrees value before presenting the questions. Use `inspect-dispatch-isolation`, the **side-effect-free** inspection verb — never `dispatch-isolation`, whose #3045 contract records the resolved decision to the executor-dispatch sentinel as an unconditional side effect; a settings menu must not be able to stamp a sentinel the isolation guards then enforce against real dispatches. The worktrees read deliberately carries no `--default`/fallback: an absent key must stay distinguishable from an explicit `false` (empty output = key absent), which the pre-selection rule below depends on:
 
 ```bash
-ISOLATION=$(gsd_run query dispatch-isolation --raw 2>/dev/null || echo "none")
-USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")
+ISOLATION=$(gsd_run query inspect-dispatch-isolation --raw 2>/dev/null || echo "none")
+USE_WORKTREES_CURRENT=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null)
 ```
 
 Use AskUserQuestion with current values pre-selected. Questions are grouped into six visual sections; the first question in each section carries the section-denoting `header` field (AskUserQuestion renders abbreviated section tags for grouping, max 12 chars).
@@ -120,9 +120,9 @@ Context Warnings, Research Qs
 
 **Conditional visibility — graphify.auto_update:** This question is shown only when the user's chosen `graphify.enabled` value is on. If `graphify.enabled` is off, omit the `graphify.auto_update` question and preserve the existing `graphify.auto_update` value in config (do not overwrite). Implementation: ask Graphify first; only ask Graph auto-update when Graphify is enabled.
 
-**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584). Runtimes whose own harness isolates each executor (`harness-worktree`) and runtimes GSD drives into worktrees itself (`orchestrator-worktree`) both run parallel worktrees; a runtime that declares no primitive resolves to `none`, and the execution workflows fail closed on an explicit `true` there. This question branches on the same `dispatch-isolation` read those guards use — which fail-closes an unknown, undeclared, or `undocumented` value to `none` — so this flow and the execution guards always reach the same verdict: never persist a value the guards would fail closed on, never withhold one they accept. **Do not add a runtime-name test here.** Branch the Worktrees question on `$ISOLATION`:
+**Conditional options — Worktrees (#2486):** whether a runtime can honor `workflow.use_worktrees: true` depends on its **declared `dispatch.isolation` capability, not its name** (#2584). Runtimes whose own harness isolates each executor (`harness-worktree`) and runtimes GSD drives into worktrees itself (`orchestrator-worktree`) both run parallel worktrees; a runtime that declares no primitive resolves to `none`, and the execution workflows fail closed on an explicit `true` there. This question branches on the same negotiation those guards resolve (via the side-effect-free `inspect-dispatch-isolation` verb) — which fail-closes an unknown, undeclared, or `undocumented` value to `none` — so this flow and the execution guards always reach the same verdict: never persist a value the guards would fail closed on. **Do not add a runtime-name test here.** Branch the Worktrees question on `$ISOLATION`:
 
-- **If `ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): present the Worktrees question exactly as written in the block below — this runtime supports worktree isolation.
+- **If `ISOLATION` ≠ `none`** (`harness-worktree` or `orchestrator-worktree`): no change — present the Worktrees question exactly as already written in the block below. This branch adds nothing for these runtimes; the `none` branch is the entirety of the #2486 behavior change.
 - **If `ISOLATION` = `none`:** replace the Worktrees question's options with the two below — do NOT offer an enabling option, and NEVER write `workflow.use_worktrees: true` from this workflow when the runtime declares no isolation primitive, regardless of the user's answer:
 
 ```
@@ -139,9 +139,9 @@ Context Warnings, Research Qs
 
   Persistence: "No (Recommended)" → write `workflow.use_worktrees: false`; "Leave unchanged" → do not write `workflow.use_worktrees` at all (preserve the existing value or absence).
 
-  Pre-selection: the generic "current values pre-selected" rule does not apply to this question when `ISOLATION` is `none` (an explicit `true` has no matching option by design). Pre-select "Leave unchanged" only when the key is absent (nothing to repair — absence already resolves to `false` on this runtime). Otherwise pre-select "No (Recommended)": both when `$USE_WORKTREES_CURRENT` is `false` (matches the current value) and when it is an explicit non-false value — the broken-inheritance case the notice below describes. The pre-selected default must be the repair that the "(Recommended)" label and the notice point to, so a user who accepts the default never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default choice in the numbered list.
+  Pre-selection: the generic "current values pre-selected" rule does not apply to this question when `ISOLATION` is `none` (an explicit `true` has no matching option by design). Pre-select "Leave unchanged" only when the key is absent — `$USE_WORKTREES_CURRENT` is empty, the no-`--default` read's absent signal (nothing to repair — absence already resolves to `false` on this runtime). Otherwise pre-select "No (Recommended)": both when `$USE_WORKTREES_CURRENT` is `false` (matches the current value) and when it is an explicit non-false value — the broken-inheritance case the notice below describes. The pre-selected default must be the repair that the "(Recommended)" label and the notice point to, so a user who accepts the default never keeps a config that fails closed at execution time. In TEXT_MODE, mark that option as the default choice in the numbered list.
 
-  Additionally, if `$USE_WORKTREES_CURRENT` is not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a worktree-capable install sharing the repo), prepend this notice before the question:
+  Additionally, if `$USE_WORKTREES_CURRENT` is non-empty and not `false` (the config carries an explicit `true` this runtime fails closed on — e.g. inherited from a worktree-capable install sharing the repo; empty means the key is absent, which needs no notice), prepend this notice before the question:
 
 ```
 Note: .planning/config.json currently sets workflow.use_worktrees: true. This

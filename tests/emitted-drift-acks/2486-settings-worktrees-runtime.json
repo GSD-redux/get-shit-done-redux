@@ -1,7 +1,7 @@
 {
   "version": 1,
   "paths": {
-    "settings.md": "#2486 — the Worktrees question now branches on the runtime's declared dispatch.isolation capability instead of offering Claude-only worktree isolation everywhere. Growth is the three-case capability branch, its explanatory notice, and the pre-selection rule for the broken-inheritance repair.",
-    "health.md": "#2486 — adds the W024 diagnostic that detects a persisted workflow.use_worktrees:true on a runtime whose declared isolation cannot honor it. Growth is the new check, its prose, and the error_codes row."
+    "settings.md": "#2486 — the Worktrees question now branches on the runtime's declared dispatch.isolation capability (resolved via the side-effect-free inspect-dispatch-isolation query) instead of offering Claude-only worktree isolation everywhere. Growth is the isolation-none branch, its explanatory notice, and the tri-state pre-selection rule for the broken-inheritance repair.",
+    "health.md": "#2486 — adds the W024 diagnostic that detects a persisted workflow.use_worktrees:true on a runtime whose declared isolation cannot honor it, resolved via the side-effect-free inspect-dispatch-isolation query. Growth is the new check, its prose, and the error_codes row."
   }
 }
