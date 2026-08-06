@@ -148,11 +148,10 @@ function buildGsdInvokeParameters() {
       });
     }
   } catch {
-    // typebox is not installed in this environment — fall through.
+    // typebox is not installed in this environment — fall through to the
+    // plain JSON-Schema fallback below. This is the normal path (typebox is
+    // NOT a gsd-core dependency), so no warning is emitted (#3022).
   }
-  process.stderr.write(
-    'gsd: typebox unavailable — gsd_invoke "parameters" falling back to a plain JSON-schema object.\n',
-  );
   return {
     type: 'object',
     properties: {
