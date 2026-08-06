@@ -358,8 +358,35 @@ export function projectLegacySettingsHookCommand({
   });
 }
 
+// Implements the TOML v1.0.0 basic-string escaping grammar (toml.md, "Basic
+// strings" section, https://toml.io/en/v1.0.0#string): a basic string must
+// escape the quotation mark, backslash, and control characters other than
+// tab (U+0000-U+0008, U+000A-U+001F, U+007F). Compact escapes are used where
+// TOML defines them (\b \t \n \f \r \" \\); every other character in the
+// required ranges falls back to \uXXXX. See #3118 — an earlier version
+// escaped only backslash and quote, so a raw newline/CR/NUL in a value
+// produced an unparseable config.toml.
+const TOML_COMPACT_ESCAPES: Record<string, string> = {
+  '\x08': '\\b',
+  '\x09': '\\t',
+  '\x0A': '\\n',
+  '\x0C': '\\f',
+  '\x0D': '\\r',
+};
+
+// U+0000-U+0008, U+000A-U+001F, U+007F — control characters other than tab
+// (U+0009), which the grammar permits unescaped.
+const TOML_MUST_ESCAPE_CONTROL_CHARS = /[\x00-\x08\x0A-\x1F\x7F]/g;
+
 export function escapeTomlDoubleQuotedString(value: unknown): string {
-  return String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(TOML_MUST_ESCAPE_CONTROL_CHARS, (ch) => {
+      const compact = TOML_COMPACT_ESCAPES[ch];
+      if (compact) return compact;
+      return `\\u${ch.codePointAt(0)!.toString(16).padStart(4, '0')}`;
+    });
 }
 
 export function projectCodexHookTomlCommand({ absoluteRunner, scriptPath, platform = process.platform }: {

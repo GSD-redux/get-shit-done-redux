@@ -1643,7 +1643,12 @@ describe('path export projection — escaping (#3118)', () => {
     return a ? a.command : null;
   };
 
-  test('leaves an ordinary path byte-identical on every lane', () => {
+  // The fish lane is the ONE deliberate output change for ordinary paths: fish_add_path
+  // misparses a leading-dash directory name without the `--` end-of-options separator
+  // (#3118 review finding), so every path — hostile or ordinary — now gets `--` on the
+  // fish lane. Every other lane (posix export, zsh/bash echo, PowerShell, cmd) remains
+  // byte-identical for an ordinary path.
+  test('leaves an ordinary path unchanged on every lane except fish', () => {
     const repairLinux = projectPathActionProjection({ mode: 'repair', targetDir: '/usr/local/bin', platform: 'linux' });
     assert.deepEqual(repairLinux.shellActions, [
       { label: null, shell: 'posix', command: 'export PATH="/usr/local/bin:$PATH"' },
@@ -1684,29 +1689,133 @@ describe('path export projection — escaping (#3118)', () => {
     ]);
   });
 
+  test('the fish lane gains the end-of-options separator for every path', () => {
+    const command = laneCommand('persist', '/usr/local/bin', 'linux', 'fish');
+    assert.equal(command, `fish_add_path -- '/usr/local/bin'`);
+  });
+
   test('does not write a command substitution into the rc file', () => {
     const { escapedDir } = projectPathExportLine('/tmp/a$(id)b');
-    assert.ok(!escapedDir.includes('$('), 'escapedDir must not contain an unescaped command substitution');
-    assert.ok(escapedDir.includes('\\$('), 'escapedDir must contain an escaped dollar-paren');
+    assert.equal(escapedDir, '/tmp/a\\$(id)b');
   });
 
   test('does not write a backtick substitution into the rc file', () => {
     const { escapedDir } = projectPathExportLine('/tmp/a`whoami`b');
-    assert.ok(escapedDir.includes('\\`'), 'escapedDir must contain at least one escaped backtick');
-    const withoutEscapedBackticks = escapedDir.split('\\`').join('');
-    assert.ok(!withoutEscapedBackticks.includes('`'), 'no bare backtick may remain after removing escaped ones');
+    assert.equal(escapedDir, '/tmp/a\\`whoami\\`b');
   });
 
   test('keeps the persisted rc line quote-balanced', () => {
     const { escapedDir } = projectPathExportLine('/tmp/a"b');
-    assert.ok(escapedDir.includes('\\"'), 'escapedDir must contain an escaped double quote');
-    const withoutEscapedQuotes = escapedDir.split('\\"').join('');
-    assert.ok(!withoutEscapedQuotes.includes('"'), 'no bare double quote may remain after removing escaped ones');
+    assert.equal(escapedDir, '/tmp/a\\"b');
   });
 
   test('escapes a backslash in the persisted line', () => {
     const { escapedDir } = projectPathExportLine('/tmp/a\\b');
-    assert.ok(escapedDir.includes('\\\\'), 'escapedDir must contain a doubled backslash');
+    assert.equal(escapedDir, '/tmp/a\\\\b');
+  });
+
+  // #3118 review finding (now fixed): the other four escapers' target contexts
+  // (PowerShell single-quoted, POSIX double-quoted, POSIX single-quoted, and the win32
+  // JSON.stringify-based hook token) all treat a raw newline/CR/NUL as literal data that
+  // stays inside the quoting/escaping without breaking out, so those four DO survive
+  // intact and are pinned exactly below. escapeTomlDoubleQuotedString is exercised
+  // separately below — it now escapes TOML's required control-character ranges rather
+  // than passing them through raw.
+  test('the escapers survive newlines and null bytes', () => {
+    const cases = [
+      ['\n', '\n', 'a\\nb'],
+      ['\r\n', '\r\n', 'a\\r\\nb'],
+      ['\0', '\0', 'a\\u0000b'],
+    ];
+    for (const [raw, , tomlExpected] of cases) {
+      const value = `a${raw}b`;
+      assert.equal(escapePowerShellSingleQuoted(value), `a${raw}b`);
+      assert.equal(escapePosixDoubleQuoted(value), `a${raw}b`);
+      assert.equal(escapeSingleQuotedShellLiteral(value), `a${raw}b`);
+      assert.equal(formatManagedHookScriptToken(value, { platform: 'win32' }), JSON.stringify(`a${raw}b`));
+      assert.equal(escapeTomlDoubleQuotedString(value), tomlExpected);
+    }
+  });
+
+  // TOML v1.0.0 basic-string grammar (https://toml.io/en/v1.0.0#string): a basic string
+  // must escape the quotation mark, backslash, and control characters other than tab
+  // (U+0000-U+0008, U+000A-U+001F, U+007F). Compact escapes (\b \t \n \f \r \" \\) are
+  // used where TOML defines them; every other required character falls back to \uXXXX.
+  // Tab (U+0009) is explicitly excluded from the "must escape" set, so it passes through
+  // unescaped. Exact expected outputs below were derived by running the built function
+  // (see dispatch report table).
+  test('escapes control characters to a parseable TOML basic string', () => {
+    assert.equal(escapeTomlDoubleQuotedString('\n'), '\\n');
+    assert.equal(escapeTomlDoubleQuotedString('\r'), '\\r');
+    assert.equal(escapeTomlDoubleQuotedString('\r\n'), '\\r\\n');
+    assert.equal(escapeTomlDoubleQuotedString('\0'), '\\u0000');
+    assert.equal(escapeTomlDoubleQuotedString('\t'), '\t');
+    assert.equal(escapeTomlDoubleQuotedString('\b'), '\\b');
+    assert.equal(escapeTomlDoubleQuotedString('\f'), '\\f');
+    assert.equal(escapeTomlDoubleQuotedString('\x1F'), '\\u001f');
+    assert.equal(escapeTomlDoubleQuotedString('\x7F'), '\\u007f');
+    // Ordering pin: backslash escaped FIRST (doubled), then quote, then control chars —
+    // so a backslash introduced by an earlier escape step is never re-escaped.
+    assert.equal(escapeTomlDoubleQuotedString('a\\b"c\nd'), 'a\\\\b\\"c\\nd');
+  });
+
+  test('leaves an ordinary value byte-identical', () => {
+    const value = 'C:/Users/dev/gsd.js';
+    assert.equal(escapeTomlDoubleQuotedString(value), value);
+  });
+
+  test('produces a TOML basic string that parses back to the original', () => {
+    // No built-in or dependency TOML parser is available in this environment (Node has
+    // no built-in TOML support, and neither `toml` nor `@iarna/toml` nor `smol-toml` is a
+    // project dependency), so this round-trips through a minimal inline unescape that
+    // implements only the escape forms escapeTomlDoubleQuotedString can produce
+    // (\\ \" \b \t \n \f \r \uXXXX) — sufficient to invert this encoder, not a general
+    // TOML parser.
+    const unescapeTomlBasicString = (escaped) => {
+      let out = '';
+      for (let i = 0; i < escaped.length; i += 1) {
+        const ch = escaped[i];
+        if (ch !== '\\') {
+          out += ch;
+          continue;
+        }
+        const next = escaped[i + 1];
+        if (next === 'u') {
+          out += String.fromCodePoint(parseInt(escaped.slice(i + 2, i + 6), 16));
+          i += 5;
+          continue;
+        }
+        const compact = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' }[next];
+        if (compact === undefined) throw new Error(`unsupported escape: \\${next}`);
+        out += compact;
+        i += 1;
+      }
+      return out;
+    };
+
+    const hostileInputs = ['\n', '\r', '\r\n', '\0', '\t', '\b', '\f', '\x1F', '\x7F', 'a\\b"c\nd'];
+    for (const input of hostileInputs) {
+      const escaped = escapeTomlDoubleQuotedString(input);
+      const tomlLine = `k = "${escaped}"`;
+      const quoted = tomlLine.slice(tomlLine.indexOf('"') + 1, tomlLine.lastIndexOf('"'));
+      assert.equal(unescapeTomlBasicString(quoted), input, `round-trip failed for ${JSON.stringify(input)}`);
+    }
+  });
+
+  // A newline in the target directory lands inside a single-quoted `echo '...'` argument
+  // in the persisted bash/zsh rc lines. POSIX single quotes preserve a literal newline as
+  // data — they do NOT terminate on a bare newline — so the whole `echo '...' >> ~/.bashrc`
+  // stays ONE shell command; the newline just makes the persisted PATH assignment a broken,
+  // two-line value inside .bashrc, not a second executable command. (Contrast: had the
+  // value been embedded unquoted or inside double quotes followed by an unescaped command
+  // separator, a newline COULD start a new command — that is not the case here.)
+  test('a newline in the target directory cannot start a new rc-file command', () => {
+    const command = laneCommand('persist', '/tmp/a\nmalicious', 'linux', 'bash');
+    assert.equal(command, `echo 'export PATH="/tmp/a\nmalicious:$PATH"' >> ~/.bashrc`);
+    // The newline sits between the opening and closing `'` of the echo argument — it is
+    // literal data inside one quoted token, not a shell command terminator.
+    const singleQuoteSpan = command.slice(command.indexOf(`'`) + 1, command.lastIndexOf(`'`));
+    assert.ok(singleQuoteSpan.includes('\n'), 'the newline must be inside the single-quoted region');
   });
 
   test('keeps the existing apostrophe escaping', () => {
@@ -1889,8 +1998,9 @@ describe('path export projection — escaping (#3118)', () => {
       assert.throws(() => retryRenameSync('/a', '/b'));
     });
 
-    test('returns silently on a successful rename', () => {
+    test('returns silently on a successful rename', (t) => {
       const dir = createTempDir('gsd-3118-rename-');
+      t.after(() => cleanup(dir));
       const from = path.join(dir, 'source.txt');
       const to = path.join(dir, 'dest.txt');
       fs.writeFileSync(from, 'content');
@@ -1899,7 +2009,6 @@ describe('path export projection — escaping (#3118)', () => {
 
       assert.ok(fs.statSync(to).isFile());
       assert.equal(fs.existsSync(from), false);
-      cleanup(dir);
     });
   });
 });
