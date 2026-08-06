@@ -481,10 +481,30 @@ export function detectApiIntegration(
     // boundary is the whole relationship test. Nouns are NOT filtered on
     // "internal" qualification here — "integrate the internal API" is a
     // fail-closed positive; the declaration dismisses it if wrong.
+    //
+    // #2784: negation suppression. A clause that pairs an integration verb with
+    // an API noun but the verb itself is directly negated (e.g. "does not
+    // integrate", "integrates no external API", "without any API integration")
+    // is suppressed. The check is scoped to the verb's immediate context (the
+    // word directly before the verb, or the word directly between verb and noun)
+    // — NOT a blanket clause-wide scan, because "without changing runtime
+    // dependencies" in a long clause does NOT negate the integration.
+    const NEGATION_QUALIFIERS = new Set([
+      'no', 'not', 'without', 'zero', 'neither', 'nor', 'none', "don't", "doesn't", "didn't", "won't", "can't", "cannot",
+    ]);
     if (verbRe && nounRe) {
       for (const clause of clauses) {
         const verbs = collectTermMatches(verbRe, clause.text);
         if (verbs.length === 0) continue;
+        // #2784: check if any verb is immediately preceded by a negation
+        // qualifier (within 2 words before the verb match).
+        const clauseText = clause.text.toLowerCase();
+        const hasNegatedVerb = verbs.some((v) => {
+          const before = clauseText.slice(Math.max(0, v.start - clause.start - 20), v.start - clause.start);
+          const beforeWords = before.split(/\s+/).filter(Boolean).slice(-2);
+          return beforeWords.some((w: string) => NEGATION_QUALIFIERS.has(w.replace(/[^a-z']/g, '')));
+        });
+        // Also check if "no"/"zero"/"none" appears between the verb and the noun.
         const nouns = collectTermMatches(nounRe, clause.text);
         const nounTerms = new Set(nouns.map((t) => t.term));
         for (const u of extraNouns) {
@@ -493,6 +513,16 @@ export function detectApiIntegration(
           }
         }
         if (nounTerms.size === 0) continue;
+        // Check for negation between verb and noun
+        const hasNegatedNoun = verbs.some((v) => {
+          return nouns.some((n) => {
+            if (n.start <= v.start) return false;
+            const between = clauseText.slice(v.start - clause.start + v.term.length, n.start - clause.start);
+            const betweenWords = between.split(/\s+/).filter(Boolean);
+            return betweenWords.some((w: string) => ['no', 'zero', 'none'].includes(w.replace(/[^a-z']/g, '')));
+          });
+        });
+        if (hasNegatedVerb || hasNegatedNoun) continue;
         for (const vTerm of new Set(verbs.map((t) => t.term))) {
           for (const nTerm of nounTerms) emitPair(vTerm, nTerm, rawLine);
         }

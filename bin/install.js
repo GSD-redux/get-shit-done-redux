@@ -1983,7 +1983,9 @@ function skillFrontmatterName(skillDirName) {
 }
 
 function normalizeClaudeSkillEffort(effort) {
-  return effort === 'xhigh' ? 'max' : effort;
+  // #3039: `max` is rejected by Anthropic models when extended thinking is disabled.
+  if (effort === 'xhigh' || effort === 'max') return 'high';
+  return effort;
 }
 
 /**
