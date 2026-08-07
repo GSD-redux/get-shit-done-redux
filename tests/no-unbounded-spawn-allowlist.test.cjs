@@ -48,11 +48,50 @@ function listTestFiles() {
   return out;
 }
 
+// Pure detection helpers, extracted so each is unit-testable against a
+// synthetic fixture — proving the check itself can fail, not only that
+// today's real data happens to pass it (a check that never runs against an
+// injected violation is a vacuous-truth risk).
+
+function findDeadEntries(list, root) {
+  return list.filter((entry) => !fs.existsSync(path.join(root, entry)));
+}
+
+function findBackslashEntries(list) {
+  return list.filter((entry) => entry.includes('\\'));
+}
+
+function isSorted(list) {
+  return JSON.stringify(list) === JSON.stringify([...list].sort());
+}
+
+function findDuplicates(list) {
+  const seen = new Set();
+  const dupes = new Set();
+  for (const entry of list) {
+    if (seen.has(entry)) dupes.add(entry);
+    seen.add(entry);
+  }
+  return [...dupes];
+}
+
+const GUARDED_RULE = 'local' + '/' + 'no-unbounded-spawn';
+
+function containsDisableDirective(contents, ruleName) {
+  return new RegExp(`eslint-disable[^\\n]*${ruleName}`).test(contents);
+}
+
 describe('no-unbounded-spawn allowlist: D4 — no dead entries', () => {
   test('every allowlist entry resolves to a file that exists on disk', () => {
     const list = readAllowlist();
-    const dead = list.filter((entry) => !fs.existsSync(path.join(REPO_ROOT, entry)));
+    const dead = findDeadEntries(list, REPO_ROOT);
     assert.deepEqual(dead, [], `dead allowlist entries (file does not exist): ${JSON.stringify(dead)}`);
+  });
+
+  test('detection logic actually flags a synthetic dead entry', () => {
+    const synthetic = ['tests/does-not-exist-xyz.test.cjs', 'tests/no-unbounded-spawn.test.cjs'];
+    const dead = findDeadEntries(synthetic, REPO_ROOT);
+    assert.deepEqual(dead, ['tests/does-not-exist-xyz.test.cjs']);
   });
 });
 
@@ -71,18 +110,22 @@ describe('no-unbounded-spawn allowlist: D5 — never grows', () => {
 describe('no-unbounded-spawn allowlist: D6 — separator normalization', () => {
   test('every entry uses / separators, never \\', () => {
     const list = readAllowlist();
-    const withBackslash = list.filter((entry) => entry.includes('\\'));
+    const withBackslash = findBackslashEntries(list);
     assert.deepEqual(withBackslash, [], `entries with a backslash separator: ${JSON.stringify(withBackslash)}`);
+  });
+
+  test('detection logic actually flags a synthetic backslash entry', () => {
+    const synthetic = ['tests\\foo.test.cjs', 'tests/bar.test.cjs'];
+    assert.deepEqual(findBackslashEntries(synthetic), ['tests\\foo.test.cjs']);
   });
 });
 
 describe('no-unbounded-spawn allowlist: D7 — no inline disable of this rule', () => {
   test('no test file inline-disables the unbounded-spawn guard', () => {
-    const GUARDED_RULE = 'local' + '/' + 'no-unbounded-spawn';
     const offenders = [];
     for (const filePath of listTestFiles()) {
       const contents = fs.readFileSync(filePath, 'utf8');
-      if (new RegExp(`eslint-disable[^\\n]*${GUARDED_RULE}`).test(contents)) {
+      if (containsDisableDirective(contents, GUARDED_RULE)) {
         offenders.push(path.relative(REPO_ROOT, filePath));
       }
     }
@@ -92,17 +135,28 @@ describe('no-unbounded-spawn allowlist: D7 — no inline disable of this rule', 
       `test files inline-disabling the unbounded-spawn guard (forbidden — fix the timeout instead): ${JSON.stringify(offenders)}`
     );
   });
+
+  test('detection logic actually flags a synthetic inline-disable directive', () => {
+    const syntheticContents = [
+      "'use strict';",
+      '// eslint-disable-next-line ' + GUARDED_RULE,
+      "spawnSync('git', ['status'], {});",
+    ].join('\n');
+    assert.equal(containsDisableDirective(syntheticContents, GUARDED_RULE), true);
+    assert.equal(containsDisableDirective("'use strict';\nspawnSync('git', ['status'], {});", GUARDED_RULE), false);
+  });
 });
 
 describe('no-unbounded-spawn allowlist: D8 — canonical form', () => {
   test('allowlist is valid JSON, sorted, with no duplicates', () => {
     const list = readAllowlist();
     assert.ok(Array.isArray(list), 'allowlist.json must parse to an array');
+    assert.ok(isSorted(list), 'allowlist entries must be sorted');
+    assert.deepEqual(findDuplicates(list), [], 'allowlist entries must be unique');
+  });
 
-    const sorted = [...list].sort();
-    assert.deepEqual(list, sorted, 'allowlist entries must be sorted');
-
-    const unique = new Set(list);
-    assert.equal(unique.size, list.length, 'allowlist entries must be unique');
+  test('detection logic actually flags a synthetic unsorted/duplicate list', () => {
+    assert.equal(isSorted(['b.test.cjs', 'a.test.cjs']), false);
+    assert.deepEqual(findDuplicates(['a.test.cjs', 'b.test.cjs', 'a.test.cjs']), ['a.test.cjs']);
   });
 });
