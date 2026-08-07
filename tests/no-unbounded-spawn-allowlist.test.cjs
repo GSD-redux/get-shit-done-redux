@@ -30,8 +30,9 @@ const REPO_ROOT = path.join(__dirname, '..');
 // The allowlist only ratchets DOWN. This baseline is the length observed at
 // the time this guard was written (139 entries) — each future migration
 // wave lowers it as files are moved off the allowlist by adding real
-// timeouts; it must never grow back up.
-const BASELINE = 139;
+// timeouts; it must never grow back up. Lowered to 120 by the #3144 Wave-1
+// process-seam migration (19 files' unbounded spawns bounded).
+const BASELINE = 120;
 
 function readAllowlist() {
   const raw = fs.readFileSync(ALLOWLIST_PATH, 'utf8');

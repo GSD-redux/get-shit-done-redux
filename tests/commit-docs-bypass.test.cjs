@@ -229,8 +229,12 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { createTempGitProject, cleanup, runGsdTools } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+
+// 15000ms: git plumbing (diff/rev-parse) on a small mkdtemp fixture repo —
+// far over any observed duration for that class of call.
+const GIT_TIMEOUT_MS = 15000;
 
 // Repo root resolution. This test file lives in `<repo>/tests/`. Use a single
 // parent reference (the established repo-wide pattern, e.g. tests/helpers.cjs
@@ -249,7 +253,7 @@ const COMMIT_REASON = Object.freeze({
 });
 
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+  return gitOrThrow(args, { cwd, timeoutMs: GIT_TIMEOUT_MS });
 }
 
 describe('bug #3678 — executor must respect commit_docs:false', () => {

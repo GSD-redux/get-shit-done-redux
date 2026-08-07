@@ -24,6 +24,12 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const { createFixture } = require('./fixtures/index.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 
+// 30000ms: this file's single named bound for every migrated subprocess call
+// below (git plumbing on small mkdtemp fixtures, gsd-tools.cjs/hook CLI runs,
+// and bash guard snippets) — well over any observed duration for any of
+// those classes of call on this file's fixtures.
+const SUBPROCESS_TIMEOUT_MS = 30_000;
+
 const WORKTREE_SAFETY_PATH = path.join(
   __dirname, '..', 'gsd-core', 'bin', 'lib', 'worktree-safety.cjs'
 );
@@ -1315,22 +1321,34 @@ describe('cmdWorktreeRecordAgent', () => {
 
 describe('worktree record-agent — real CLI dispatch (#1298)', () => {
   const fs = require('node:fs');
-  const { execFileSync } = require('node:child_process');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { throwIfFailed } = require('./helpers/git-fixture.cjs');
   const GSD_TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  // runNode never throws; this describe's tests are written against the
+  // legacy execFileSync throw (an implicit dependency at the success-path
+  // call, and an explicit `err.status`/`err.stderr` read in the failure-path
+  // catch below) — this helper re-throws in that shape via the shared
+  // tests/helpers/git-fixture.cjs mechanism, for a non-git target.
+  function runGsdToolsOrThrow(args, opts) {
+    const r = runNode(args, opts);
+    throwIfFailed(r, `node ${args.join(' ')}`);
+    return r.stdout;
+  }
 
   test('the dotted `query worktree.record-agent` path writes an entry the cleanup reader accepts', () => {
     const dir = createTempDir();
     try {
       const manifest = path.join(dir, 'wave-manifest.json');
       fs.writeFileSync(manifest, `${JSON.stringify({ orchestrator_root: dir, worktrees: [] })}\n`);
-      const out = execFileSync(process.execPath, [
+      const out = runGsdToolsOrThrow([
         GSD_TOOLS, 'query', 'worktree.record-agent',
         '--manifest', manifest,
         '--agent-id', 'a1',
         '--path', path.join(dir, 'wt-a1'),
         '--branch', 'worktree-agent-a1',
         '--base', 'abc123',
-      ], { encoding: 'utf8' });
+      ], { timeoutMs: SUBPROCESS_TIMEOUT_MS });
       assert.match(out, /"ok": true/);
       const written = JSON.parse(fs.readFileSync(manifest, 'utf8'));
       assert.equal(written.worktrees.length, 1);
@@ -1351,11 +1369,11 @@ describe('worktree record-agent — real CLI dispatch (#1298)', () => {
       fs.writeFileSync(manifest, `${JSON.stringify({ worktrees: [] })}\n`);
       let threw = false;
       try {
-        execFileSync(process.execPath, [
+        runGsdToolsOrThrow([
           GSD_TOOLS, 'query', 'worktree.record-agent',
           '--manifest', manifest,
           '--path', path.join(dir, 'wt'), '--branch', 'worktree-agent-x', '--base', 'abc123',
-        ], { encoding: 'utf8', stdio: 'pipe' });
+        ], { timeoutMs: SUBPROCESS_TIMEOUT_MS });
       } catch (err) {
         threw = true;
         assert.equal(err.status, 1);
@@ -3611,8 +3629,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const {
   executeWorktreeWaveCleanupPlan,
@@ -3657,8 +3676,11 @@ const FRESH_MTIME = new Date(8640000000000000); // max safe JS Date (year ~27576
  */
 function deadPid() {
   // Use the shortest possible no-op: `node -e ""` on all platforms.
+  // Bounded directly (not routed through the process-seam) because the
+  // point of this call is `result.pid` — the seam's discriminated-union
+  // result does not expose the child's pid, only outcome/exitCode/etc.
   const nodeExe = process.execPath;
-  const result = spawnSync(nodeExe, ['-e', ''], { stdio: 'ignore' });
+  const result = spawnSync(nodeExe, ['-e', ''], { stdio: 'ignore', timeout: SUBPROCESS_TIMEOUT_MS });
   if (result.pid == null || result.status === null) {
     // Fallback: use a PID above the system max — 2^31-1 always exceeds any
     // real OS limit (Linux max: 4194304, macOS max: 99998, Windows: variable).
@@ -3687,7 +3709,7 @@ function resolvedTmpDir() {
 }
 
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' });
+  return gitOrThrow(args, { cwd, timeoutMs: SUBPROCESS_TIMEOUT_MS });
 }
 
 function initRepo(dir) {
@@ -4550,9 +4572,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
 const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-worktree-path-guard.js');
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
@@ -4573,7 +4595,7 @@ function realp(p) {
 // ---------------------------------------------------------------------------
 
 function git(cwd, args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return gitOrThrow(args, { cwd, timeoutMs: SUBPROCESS_TIMEOUT_MS });
 }
 
 /**
@@ -5491,14 +5513,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
-
 const { cleanup } = require('./helpers.cjs');
+const { runHook: seamRunHook } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-workflow-guard.js');
 
 function git(cwd, args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  return gitOrThrow(args, { cwd, timeoutMs: SUBPROCESS_TIMEOUT_MS });
 }
 
 function makeRepo(branch) {
@@ -5524,11 +5546,12 @@ function setWorkflowGuard(dir, enabled) {
 }
 
 function runHookInput(cwd, input) {
-  return spawnSync(process.execPath, [HOOK_PATH], {
+  const r = seamRunHook(HOOK_PATH, [], {
     cwd,
-    encoding: 'utf8',
     input: JSON.stringify({ cwd, ...input }),
+    timeoutMs: SUBPROCESS_TIMEOUT_MS,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 function runBashHook(cwd, command) {
@@ -5693,9 +5716,20 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
 const { createTempGitProject, cleanup } = require('./helpers.cjs');
 const { runHook: seamRunHookGate } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+
+// Bash guard snippets in this block are exercised via `bash -c`, matching
+// the pre-migration execFileSync('bash', ...) throw-on-non-zero idiom the
+// tests below are written against (some catch and read err.status/
+// err.stderr explicitly). Uses the shared tests/helpers/git-fixture.cjs
+// throw mechanism, for a non-git (`bash`) target.
+function runBashOrThrow(script, opts) {
+  const r = seamRunHookGate('-c', [script], { interpreter: 'bash', ...opts });
+  throwIfFailed(r, 'bash -c <script>');
+  return r.stdout;
+}
 
 // Bash snippet extracted from execute-phase.md (the SUBMODULE_PATHS parse +
 // per-plan intersection logic with normalization + bidirectional matching).
@@ -6176,13 +6210,13 @@ describe('quick.md executor pre-commit submodule guard (#2772)', () => {
       // Create a file inside the submodule path and stage it.
       fs.mkdirSync(path.join(repo, 'vendor', 'foo'), { recursive: true });
       fs.writeFileSync(path.join(repo, 'vendor', 'foo', 'bar.ts'), 'export {};\n');
-      execFileSync('git', ['add', 'vendor/foo/bar.ts'], { cwd: repo });
+      gitOrThrow(['add', 'vendor/foo/bar.ts'], { cwd: repo, timeoutMs: SUBPROCESS_TIMEOUT_MS });
 
       let err;
       try {
-        execFileSync('bash', ['-c', QUICK_GUARD_SNIPPET], {
+        runBashOrThrow(QUICK_GUARD_SNIPPET, {
           cwd: repo,
-          encoding: 'utf-8',
+          timeoutMs: SUBPROCESS_TIMEOUT_MS,
           env: { ...process.env, SUBMODULE_PATHS: 'vendor/foo' },
         });
       } catch (e) {
@@ -6203,11 +6237,11 @@ describe('quick.md executor pre-commit submodule guard (#2772)', () => {
     try {
       fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
       fs.writeFileSync(path.join(repo, 'src', 'index.ts'), 'export {};\n');
-      execFileSync('git', ['add', 'src/index.ts'], { cwd: repo });
+      gitOrThrow(['add', 'src/index.ts'], { cwd: repo, timeoutMs: SUBPROCESS_TIMEOUT_MS });
 
-      const out = execFileSync('bash', ['-c', QUICK_GUARD_SNIPPET], {
+      const out = runBashOrThrow(QUICK_GUARD_SNIPPET, {
         cwd: repo,
-        encoding: 'utf-8',
+        timeoutMs: SUBPROCESS_TIMEOUT_MS,
         env: { ...process.env, SUBMODULE_PATHS: 'vendor/foo' },
       });
       assert.match(out, /OK/);
@@ -6221,14 +6255,14 @@ describe('quick.md executor pre-commit submodule guard (#2772)', () => {
     try {
       fs.mkdirSync(path.join(repo, 'vendor', 'foo'), { recursive: true });
       fs.writeFileSync(path.join(repo, 'vendor', 'foo', 'bar.ts'), 'export {};\n');
-      execFileSync('git', ['add', 'vendor/foo/bar.ts'], { cwd: repo });
+      gitOrThrow(['add', 'vendor/foo/bar.ts'], { cwd: repo, timeoutMs: SUBPROCESS_TIMEOUT_MS });
 
       let err;
       try {
         // Submodule path declared with ./ prefix — must still match.
-        execFileSync('bash', ['-c', QUICK_GUARD_SNIPPET], {
+        runBashOrThrow(QUICK_GUARD_SNIPPET, {
           cwd: repo,
-          encoding: 'utf-8',
+          timeoutMs: SUBPROCESS_TIMEOUT_MS,
           env: { ...process.env, SUBMODULE_PATHS: './vendor/foo' },
         });
       } catch (e) {
@@ -6287,8 +6321,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const EXECUTOR_PATH = path.join(__dirname, '..', 'agents', 'gsd-executor.md');
 
@@ -6366,25 +6400,25 @@ test('bug-3542: stash pushed in main checkout is visible inside a linked worktre
   try {
     // Set up a normal repo with one commit.
     fs.mkdirSync(mainRepo);
-    const gitOpts = { cwd: mainRepo, stdio: 'pipe' };
-    execSync('git init -q', gitOpts);
-    execSync('git config user.email "test@test.com"', gitOpts);
-    execSync('git config user.name "Test"', gitOpts);
-    execSync('git config commit.gpgsign false', gitOpts);
+    const gitOpts = { cwd: mainRepo, timeoutMs: SUBPROCESS_TIMEOUT_MS };
+    gitOrThrow(['init', '-q'], gitOpts);
+    gitOrThrow(['config', 'user.email', 'test@test.com'], gitOpts);
+    gitOrThrow(['config', 'user.name', 'Test'], gitOpts);
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], gitOpts);
     fs.writeFileSync(path.join(mainRepo, 'a.txt'), 'initial\n');
-    execSync('git add a.txt', gitOpts);
-    execSync('git commit -q -m initial', gitOpts);
+    gitOrThrow(['add', 'a.txt'], gitOpts);
+    gitOrThrow(['commit', '-q', '-m', 'initial'], gitOpts);
 
     // Create a linked worktree on a separate branch — this is what the
     // executor agent runs inside.
-    execSync(`git worktree add -q "${linkedWorktree}" -b wt-branch`, gitOpts);
+    gitOrThrow(['worktree', 'add', '-q', linkedWorktree, '-b', 'wt-branch'], gitOpts);
 
     // Push a stash from the MAIN checkout (simulating a prior session).
     fs.writeFileSync(path.join(mainRepo, 'a.txt'), 'wip in main\n');
-    execSync('git stash push -q -u -m "from-main-checkout"', gitOpts);
+    gitOrThrow(['stash', 'push', '-q', '-u', '-m', 'from-main-checkout'], gitOpts);
 
     // Sanity check: the stash exists in the main checkout's view.
-    const mainList = execSync('git stash list', { cwd: mainRepo }).toString();
+    const mainList = gitOrThrow(['stash', 'list'], { cwd: mainRepo, timeoutMs: SUBPROCESS_TIMEOUT_MS }).toString();
     assert.match(
       mainList,
       /from-main-checkout/,
@@ -6395,8 +6429,9 @@ test('bug-3542: stash pushed in main checkout is visible inside a linked worktre
     // stash entry, even though it was pushed from a different working
     // tree. This is the invariant that makes `git stash pop` inside an
     // executor agent's worktree an isolation violation.
-    const worktreeList = execSync('git stash list', {
+    const worktreeList = gitOrThrow(['stash', 'list'], {
       cwd: linkedWorktree,
+      timeoutMs: SUBPROCESS_TIMEOUT_MS,
     }).toString();
     assert.match(
       worktreeList,
@@ -6413,7 +6448,7 @@ test('bug-3542: stash pushed in main checkout is visible inside a linked worktre
     // pop the stash pushed from main — proving cross-worktree mutation,
     // not just visibility. We pop into a clean working tree on a
     // different branch, so any applied content is the contamination.
-    execSync('git stash pop -q', { cwd: linkedWorktree, stdio: 'pipe' });
+    gitOrThrow(['stash', 'pop', '-q'], { cwd: linkedWorktree, timeoutMs: SUBPROCESS_TIMEOUT_MS });
     // On Windows autocrlf=true, git rewrites stashed content with CRLF on
     // checkout. Strip \r before content compare — the test pins git's
     // shared-stash behavior, not line endings.

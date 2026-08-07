@@ -25,6 +25,11 @@ const ROOT   = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'ci-rebase-check.cjs');
 const NODE   = process.execPath;
 const { cleanup } = require('./helpers.cjs');
+const { runGit } = require('./helpers/process-seam.cjs');
+
+// 15000ms: git plumbing (init/clone/config/checkout/add/commit) on a small
+// mkdtemp fixture repo — far over any observed duration for that class of call.
+const GIT_TIMEOUT_MS = 15000;
 
 // ---------------------------------------------------------------------------
 // Helper: run a small inline Node snippet that requires the run() helper
@@ -131,17 +136,17 @@ describe('ci-rebase-check: fetch-retry loop resolves when git fetch succeeds', (
     try {
       // Build a bare remote with a `main` branch containing one commit.
       fs.mkdirSync(remoteDir, { recursive: true });
-      spawnSync('git', ['init', '--bare', remoteDir], { encoding: 'utf8' });
+      runGit(['init', '--bare', remoteDir], { timeoutMs: GIT_TIMEOUT_MS });
 
       // Create a working clone to push an initial commit.
-      spawnSync('git', ['clone', remoteDir, workDir], { encoding: 'utf8' });
+      runGit(['clone', remoteDir, workDir], { timeoutMs: GIT_TIMEOUT_MS });
       fs.writeFileSync(path.join(workDir, 'seed.txt'), 'init\n');
-      spawnSync('git', ['-C', workDir, 'config', 'user.email', 'ci@test'], { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'config', 'user.name', 'CI Test'],  { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'checkout', '-b', 'main'],           { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'add', 'seed.txt'],                  { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'commit', '-m', 'init'],             { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'push', 'origin', 'main'],          { encoding: 'utf8' });
+      runGit(['-C', workDir, 'config', 'user.email', 'ci@test'], { timeoutMs: GIT_TIMEOUT_MS });
+      runGit(['-C', workDir, 'config', 'user.name', 'CI Test'],  { timeoutMs: GIT_TIMEOUT_MS });
+      runGit(['-C', workDir, 'checkout', '-b', 'main'],           { timeoutMs: GIT_TIMEOUT_MS });
+      runGit(['-C', workDir, 'add', 'seed.txt'],                  { timeoutMs: GIT_TIMEOUT_MS });
+      runGit(['-C', workDir, 'commit', '-m', 'init'],             { timeoutMs: GIT_TIMEOUT_MS });
+      runGit(['-C', workDir, 'push', 'origin', 'main'],          { timeoutMs: GIT_TIMEOUT_MS });
 
       // Run the script from `workDir` with origin pointing at our bare remote.
       // GITHUB_BASE_REF=main so it fetches `origin main`.

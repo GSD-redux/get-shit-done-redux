@@ -1,10 +1,11 @@
 'use strict';
 
 /**
- * git-fixture — a throw-preserving wrapper over the process seam's `runGit`.
+ * git-fixture — the shared throw-on-failure mechanism for process-seam
+ * results, plus a throw-preserving wrapper over the seam's `runGit`.
  *
  * Why this exists: `execSync`/`execFileSync` throw on any non-zero exit,
- * and 237 sites in this repo's test suite are written against that throw —
+ * and 237+ sites in this repo's test suite are written against that throw —
  * they read `err.status`, `err.stdout`, `err.stderr`. `tests/helpers/
  * process-seam.cjs` deliberately never throws (see its own header): every
  * outcome, including a non-zero exit, a timeout, or a spawn failure, comes
@@ -14,11 +15,18 @@
  * a quiet one (a result object nobody checked) — exactly the kind of
  * regression a migration must not introduce.
  *
- * `gitOrThrow` is that bridge: it calls the seam's `runGit` and re-throws in
- * the shape the old idiom produced, with the seam's typed fields attached
- * alongside it. `tests/helpers/process-seam.cjs` itself is NOT modified by
- * this module — its never-throws contract is intact; this is a layer on
- * top, not a change underneath.
+ * `throwIfFailed` is that mechanism: given any process-seam result and a
+ * human-readable name for what ran, it throws in the shape the legacy
+ * `execSync`/`execFileSync` idiom produced, with the seam's typed fields
+ * attached alongside it — or returns quietly on a clean exit. `gitOrThrow`
+ * is `throwIfFailed` specialized to `runGit`. Every other local test helper
+ * that needs the same throw-on-failure bridge (over `runNode`, `runHook`,
+ * etc.) calls `throwIfFailed` directly instead of hand-rolling its own copy
+ * of this shape — five call sites did exactly that before this module
+ * exported it, and drifted from each other in the process (#3144).
+ * `tests/helpers/process-seam.cjs` itself is NOT modified by this module —
+ * its never-throws contract is intact; this is a layer on top, not a change
+ * underneath.
  */
 
 const { runGit, OUTCOME } = require('./process-seam.cjs');
@@ -35,14 +43,18 @@ const { runGit, OUTCOME } = require('./process-seam.cjs');
 const DEFAULT_GIT_TIMEOUT_MS = 15000;
 
 /**
- * Run `git` via the process seam and throw on anything other than a clean
- * exit, preserving the legacy `execSync`/`execFileSync` throw-on-failure
- * idiom that existing test code is written against.
+ * Throw on anything other than a clean (exit 0) process-seam result,
+ * preserving the legacy `execSync`/`execFileSync` throw-on-failure idiom
+ * that existing test code is written against. Returns quietly (no return
+ * value) on a clean exit — callers that need `stdout` read it off `result`
+ * themselves; this only decides whether to throw.
  *
- * @param {string[]} args - argv passed to git (never shell-interpreted).
- * @param {object} [options] - forwarded to `runGit`; see process-seam.cjs.
- *   `options.timeoutMs`, if provided, overrides `DEFAULT_GIT_TIMEOUT_MS`.
- * @returns {string} `stdout` on a clean (exit 0) run.
+ * @param {object} result - a process-seam result: `{outcome, exitCode,
+ *   stdout, stderr, timedOut, signal}` (plus any seam-specific fields,
+ *   e.g. `code`, which are ignored here).
+ * @param {string} displayName - human string naming what ran, e.g.
+ *   `'git commit -m seed'` or `'bash <quick-guard snippet>'`. Embedded in
+ *   the thrown message so failures are attributable at a glance.
  * @throws {Error} On any non-zero exit, timeout, kill, or spawn failure.
  *   The thrown error carries, as own properties:
  *   - `status` — the exit code (the legacy `execSync`/`execFileSync` name;
@@ -56,6 +68,36 @@ const DEFAULT_GIT_TIMEOUT_MS = 15000;
  *   - `timedOut` — the seam's `timedOut` field.
  *   - `outcome` — the seam's `OUTCOME` discriminant.
  */
+function throwIfFailed(result, displayName) {
+  if (result.outcome === OUTCOME.EXITED && result.exitCode === 0) {
+    return;
+  }
+
+  const err = new Error(
+    `${displayName} failed — outcome=${result.outcome} exitCode=${result.exitCode} ` +
+      `stderr=${result.stderr.trim()}`
+  );
+  err.status = result.exitCode;
+  err.exitCode = result.exitCode;
+  err.stdout = result.stdout;
+  err.stderr = result.stderr;
+  err.signal = result.signal;
+  err.timedOut = result.timedOut;
+  err.outcome = result.outcome;
+  throw err;
+}
+
+/**
+ * Run `git` via the process seam and throw on anything other than a clean
+ * exit, preserving the legacy `execSync`/`execFileSync` throw-on-failure
+ * idiom that existing test code is written against.
+ *
+ * @param {string[]} args - argv passed to git (never shell-interpreted).
+ * @param {object} [options] - forwarded to `runGit`; see process-seam.cjs.
+ *   `options.timeoutMs`, if provided, overrides `DEFAULT_GIT_TIMEOUT_MS`.
+ * @returns {string} `stdout` on a clean (exit 0) run.
+ * @throws {Error} See `throwIfFailed` for the exact shape thrown.
+ */
 function gitOrThrow(args, options = {}) {
   // Destructure (not spread-after) so an explicit `timeoutMs: undefined` in
   // `options` still resolves to the default: a destructure default applies
@@ -65,23 +107,8 @@ function gitOrThrow(args, options = {}) {
   const { timeoutMs = DEFAULT_GIT_TIMEOUT_MS, ...rest } = options;
   const r = runGit(args, { ...rest, timeoutMs });
 
-  if (r.outcome === OUTCOME.EXITED && r.exitCode === 0) {
-    return r.stdout;
-  }
-
-  const argvDisplay = ['git', ...args].join(' ');
-  const err = new Error(
-    `gitOrThrow: \`${argvDisplay}\` failed — outcome=${r.outcome} exitCode=${r.exitCode} ` +
-      `stderr=${r.stderr.trim()}`
-  );
-  err.status = r.exitCode;
-  err.exitCode = r.exitCode;
-  err.stdout = r.stdout;
-  err.stderr = r.stderr;
-  err.signal = r.signal;
-  err.timedOut = r.timedOut;
-  err.outcome = r.outcome;
-  throw err;
+  throwIfFailed(r, `gitOrThrow: \`${['git', ...args].join(' ')}\``);
+  return r.stdout;
 }
 
-module.exports = { gitOrThrow, DEFAULT_GIT_TIMEOUT_MS };
+module.exports = { gitOrThrow, throwIfFailed, DEFAULT_GIT_TIMEOUT_MS };
