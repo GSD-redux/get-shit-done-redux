@@ -11,15 +11,19 @@ process.env.GSD_TEST_MODE = '1';
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const installModule = require('../bin/install.js');
 const pkg = require('../package.json');
 const { install } = installModule;
 const { createTempDir, cleanup } = require('./helpers.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const installScript = path.join(__dirname, '..', 'bin', 'install.js');
 const SUPPORTED_RUNTIMES = installModule.allRuntimes;
@@ -190,8 +194,7 @@ function runInstallerCli(runtime, targetDir, options = {}) {
   env.HOME = path.join(path.dirname(targetDir), 'home');
   env.USERPROFILE = env.HOME;
 
-  return spawnSync(
-    process.execPath,
+  return runNode(
     [
       installScript,
       `--${runtime}`,
@@ -202,8 +205,8 @@ function runInstallerCli(runtime, targetDir, options = {}) {
       '--no-sdk',
     ],
     {
-      encoding: 'utf8',
       env,
+      timeoutMs: INSTALL_TIMEOUT_MS,
     }
   );
 }
@@ -583,7 +586,7 @@ describe('installer migration install integration', { concurrency: false }, () =
 
       const result = runInstallerCli(runtime, targetDir, { minimal: false });
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.exitCode, 0, result.stderr || result.stdout);
       const output = stripAnsi(`${result.stdout}\n${result.stderr}`);
       assert.match(output, /Installing for /);
       assert.match(output, /Installer migrations/);
@@ -614,7 +617,7 @@ describe('installer migration install integration', { concurrency: false }, () =
 
       const result = runInstallerCli(runtime, targetDir);
 
-      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.equal(result.exitCode, 0, result.stderr || result.stdout);
       const output = stripAnsi(`${result.stdout}\n${result.stderr}`);
       assert.match(output, /Installer migrations/);
       assert.match(output, /removed\s+hooks\/statusline\.js/);
@@ -633,7 +636,7 @@ describe('installer migration install integration', { concurrency: false }, () =
 
       const result = runInstallerCli(runtime, targetDir);
 
-      assert.notEqual(result.status, 0, 'install should fail before materialization');
+      assert.notEqual(result.exitCode, 0, 'install should fail before materialization');
       const output = stripAnsi(`${result.stdout}\n${result.stderr}`);
       assert.match(output, /Installer migrations/);
       assert.match(output, /blocked\s+gsd-core\/gsd-retired-tool\.cjs/);

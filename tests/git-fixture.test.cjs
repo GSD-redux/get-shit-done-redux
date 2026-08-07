@@ -30,7 +30,7 @@ const { OUTCOME } = processSeam;
 const runGitSpy = mock.method(processSeam, 'runGit');
 after(() => mock.restoreAll());
 
-const { gitOrThrow, throwIfFailed, DEFAULT_GIT_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
+const { gitOrThrow, throwIfFailed, toLegacyResult, DEFAULT_GIT_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 /**
@@ -281,5 +281,55 @@ describe('throwIfFailed', () => {
       throwIfFailed({ ...BASE, outcome: OUTCOME.EXITED, exitCode: 1 }, 'my distinctive display name')
     );
     assert.ok(caught.message.includes('my distinctive display name'));
+  });
+});
+
+/**
+ * `toLegacyResult` is the non-throwing sibling of `throwIfFailed` (#3147):
+ * a bare mapping onto `{ status, stdout, stderr }`, never throwing. Tested
+ * directly with literal result objects — no subprocess needed.
+ */
+describe('toLegacyResult', () => {
+  test('never throws, unlike throwIfFailed, for a non-zero exit', () => {
+    assert.doesNotThrow(() =>
+      toLegacyResult({ outcome: OUTCOME.EXITED, exitCode: 1, stdout: '', stderr: 'boom' })
+    );
+  });
+
+  test('maps exitCode to .status (the legacy field name)', () => {
+    const r = toLegacyResult({ outcome: OUTCOME.EXITED, exitCode: 1, stdout: 'out', stderr: 'err' });
+    assert.equal(r.status, 1);
+  });
+
+  test('exitCode: 0 maps to .status: 0, not falsy-coerced', () => {
+    const r = toLegacyResult({ outcome: OUTCOME.EXITED, exitCode: 0, stdout: '', stderr: '' });
+    assert.equal(r.status, 0);
+    assert.notEqual(r.status, undefined);
+  });
+
+  test('exitCode: null (non-EXITED outcome) propagates to .status as null, not coerced', () => {
+    const r = toLegacyResult({ outcome: OUTCOME.TIMED_OUT, exitCode: null, stdout: '', stderr: '' });
+    assert.equal(r.status, null);
+    assert.notEqual(r.status, undefined);
+  });
+
+  test('stdout and stderr pass through unchanged', () => {
+    const r = toLegacyResult({ outcome: OUTCOME.EXITED, exitCode: 0, stdout: 'the stdout', stderr: 'the stderr' });
+    assert.equal(r.stdout, 'the stdout');
+    assert.equal(r.stderr, 'the stderr');
+  });
+
+  test('returns exactly the three legacy fields, nothing extra from the seam result', () => {
+    const r = toLegacyResult({
+      outcome: OUTCOME.EXITED,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      signal: null,
+      timedOut: false,
+      killed: false,
+      code: null,
+    });
+    assert.deepEqual(Object.keys(r).sort(), ['status', 'stderr', 'stdout']);
   });
 });

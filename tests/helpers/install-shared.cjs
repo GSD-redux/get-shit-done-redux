@@ -17,8 +17,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
 const assert = require('node:assert/strict');
+
+const { runNode } = require('./process-seam.cjs');
 
 const {
   resolveRuntimeArtifactLayout,
@@ -26,6 +27,12 @@ const {
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', '..', 'bin', 'install.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
+
+// #3145: class-norm timeout (bounds the previously-unbounded spawnSync in
+// runMinimalInstall) — not a per-suite value. See helpers/timeouts.cjs for
+// the justification; every one of install-shared.cjs's 37+ importers
+// inherits this value, so it must stay generous rather than tight.
+const { INSTALL_TIMEOUT_MS } = require('./timeouts.cjs');
 
 const BUILD_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'build-hooks.js');
 const HOOKS_DIST = path.join(__dirname, '..', '..', 'hooks', 'dist');
@@ -560,12 +567,24 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
       configDir = runtime === 'cline' ? root : path.join(root, LOCAL_DIR_NAME[runtime]);
     }
     args.push(...extraArgs);
-    const result = spawnSync(process.execPath, args, {
-      cwd, encoding: 'utf8',
+    const result = runNode(args, {
+      cwd,
       env: installerEnv({ HOME: root, USERPROFILE: root, ...extraEnv }),
+      timeoutMs: INSTALL_TIMEOUT_MS,
     });
-    assert.strictEqual(result.status, 0,
-      `installer exited with status ${result.status} for ${runtime} --${scope}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+    // Kept as a hand-rolled assert (rather than throwIfFailed from
+    // git-fixture.cjs) so the embedded stdout+stderr survives verbatim —
+    // that is the whole diagnostic value of this message for a failing
+    // install, and throwIfFailed's message only carries a trimmed stderr.
+    // `result.exitCode` (never `result.status` — the seam has no such key)
+    // is `null` for a non-EXITED outcome (TIMED_OUT/KILLED/BUFFER_OVERFLOW/
+    // SPAWN_FAILED), so `outcome`/`timedOut`/`signal` are folded into the
+    // message too: a bare "expected null to equal 0" would not tell anyone
+    // the installer never actually exited.
+    assert.strictEqual(result.exitCode, 0,
+      `installer exited with status ${result.exitCode} (outcome=${result.outcome}` +
+      `${result.timedOut ? ', timedOut=true' : ''}${result.signal ? `, signal=${result.signal}` : ''}) ` +
+      `for ${runtime} --${scope}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
     const manifestPath = path.join(configDir, MANIFEST_NAME);
     const manifest = fs.existsSync(manifestPath)
       ? JSON.parse(fs.readFileSync(manifestPath, 'utf8'))

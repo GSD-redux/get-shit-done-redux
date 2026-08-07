@@ -31,8 +31,10 @@ const REPO_ROOT = path.join(__dirname, '..');
 // the time this guard was written (139 entries) — each future migration
 // wave lowers it as files are moved off the allowlist by adding real
 // timeouts; it must never grow back up. Lowered to 120 by the #3144 Wave-1
-// process-seam migration (19 files' unbounded spawns bounded).
-const BASELINE = 120;
+// process-seam migration (19 files' unbounded spawns bounded), then to 73
+// by the #3145 Wave-2 migration (47 files' unbounded spawns bounded), then
+// to 49 by the #3147 Wave-3 migration (24 files' unbounded spawns bounded).
+const BASELINE = 49;
 
 function readAllowlist() {
   const raw = fs.readFileSync(ALLOWLIST_PATH, 'utf8');

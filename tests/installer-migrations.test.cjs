@@ -2082,7 +2082,8 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const installModule = require('../bin/install.js');
 const { readInstallState } = require('../gsd-core/bin/lib/installer-migrations.cjs');
@@ -2090,6 +2091,11 @@ const { install, parseTomlToObject, reconcileCodexHooksJsonEvent } = installModu
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything, even
+// run in beforeEach on a fresh worktree. See tests/helpers/timeouts.cjs for
+// the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const previousCodexHome = process.env.CODEX_HOME;
@@ -2147,7 +2153,10 @@ describe('#3357 — Codex install removes legacy GSD hooks.json entries', { conc
 
   beforeEach(() => {
     if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-      execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+      throwIfFailed(
+        runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+        `node ${BUILD_HOOKS_SCRIPT}`,
+      );
     }
     tmpRoot = createTempDir('gsd-3357-');
     codexHome = path.join(tmpRoot, '.codex');

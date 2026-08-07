@@ -28,7 +28,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync, execFileSync } = require('node:child_process');
+
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
@@ -115,10 +117,9 @@ describe('install-profiles: MINIMAL_SKILL_ALLOWLIST', () => {
 
 describe('install: --help profile counts match PROFILES (#834)', () => {
   function helpText() {
-    return execFileSync(process.execPath, [INSTALL_SCRIPT, '--help'], {
-      encoding: 'utf8',
-      env: installerEnv(),
-    });
+    const r = runNode([INSTALL_SCRIPT, '--help'], { env: installerEnv(), timeoutMs: 15000 });
+    throwIfFailed(r, `node ${INSTALL_SCRIPT} --help`);
+    return r.stdout;
   }
 
   test('core line advertises PROFILES.core.length main-loop skills', () => {
@@ -442,10 +443,9 @@ describe('install: manifest records mode for both profiles', () => {
   function manifestModeAfterInstall(extraArgs) {
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-manifest-mode-'));
     try {
-      spawnSync(
-        process.execPath,
+      runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, ...extraArgs],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
       const manifestPath = path.join(targetDir, MANIFEST_NAME);
       if (!fs.existsSync(manifestPath)) return { mode: '<no manifest>', skillCount: 0, agentCount: 0 };
@@ -496,10 +496,9 @@ describe('install-minimal-backcompat: --minimal and --profile=core produce same 
   function installAndGetManifest(extraArgs) {
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-backcompat-'));
     try {
-      spawnSync(
-        process.execPath,
+      runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, ...extraArgs],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
       const manifestPath = path.join(targetDir, MANIFEST_NAME);
       if (!fs.existsSync(manifestPath)) return { mode: null, skillCount: 0, profileMarker: null };
@@ -573,10 +572,9 @@ describe('install: Codex full → minimal downgrade cleans stale agent state', (
       // unsandboxed spawn here would write gsd-* skill dirs into the developer's
       // real $HOME/.agents/skills. This test only asserts on agents/ and
       // config.toml (both under targetDir), so the sandbox has no effect on intent.
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, '--codex', '--global', '--config-dir', targetDir, '--minimal'],
-        { encoding: 'utf8', env: installerEnv({ HOME: targetDir, USERPROFILE: targetDir }) },
+        { env: installerEnv({ HOME: targetDir, USERPROFILE: targetDir }), timeoutMs: 120000 },
       );
       assert.ok(result.stdout || result.stderr);
 
@@ -611,10 +609,9 @@ describe('install: Claude full → minimal downgrade removes stale agents', () =
       fs.writeFileSync(path.join(agentsDir, 'gsd-planner.md'), 'stale\n');
       fs.writeFileSync(path.join(agentsDir, 'my-custom-agent.md'), 'user owns this\n');
 
-      spawnSync(
-        process.execPath,
+      runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, '--minimal'],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
 
       const remaining = fs.existsSync(agentsDir) ? fs.readdirSync(agentsDir) : [];
@@ -630,8 +627,11 @@ describe('install: Claude full → minimal downgrade removes stale agents', () =
 
 // ─── Section 13: Hooks copy, manifest, uninstall settings cleanup ─────────────
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: SECTION13_BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: SECTION13_BUILD_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 const isWindows = process.platform === 'win32';
@@ -701,13 +701,12 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
   function installAndCollect(runtime, opts = {}) {
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-1821-${runtime}-`));
     try {
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, `--${runtime}`, '--global', '--config-dir', targetDir],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
-      assert.strictEqual(result.status, 0,
-        `installer exited with status ${result.status} for --${runtime} --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+      assert.strictEqual(result.exitCode, 0,
+        `installer exited with status ${result.exitCode} for --${runtime} --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
       // Collect results while targetDir still exists — cleanup() below removes it.
       const pluginRelPath = opts.pluginRelPath || path.join('plugins', 'gsd-core.js');
       // #3023: the shared hooks bundle's staged directory name is per-runtime
@@ -1238,16 +1237,20 @@ const { test, describe, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /** Idempotently ensure hooks/dist contains built .js files. */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -1677,7 +1680,8 @@ const { test, describe, before, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -1694,13 +1698,16 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /**
  * Idempotently ensure hooks/dist contains built .js files.
  * Runs build-hooks.js only when the directory is absent or empty of .js files.
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -2989,16 +2996,20 @@ const { test, describe, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /** Idempotently ensure hooks/dist contains built .js files. */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -3428,7 +3439,8 @@ const { test, describe, before, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -3445,13 +3457,16 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /**
  * Idempotently ensure hooks/dist contains built .js files.
  * Runs build-hooks.js only when the directory is absent or empty of .js files.
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -4097,11 +4112,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const isWindows = process.platform === 'win32';
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const SH_HOOKS = [
   'gsd-session-state.sh',
@@ -4112,10 +4131,7 @@ const SH_HOOKS = [
 // ─── Ensure hooks/dist/ is populated before any install test ────────────────
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -4138,14 +4154,16 @@ function runInstaller(configDir) {
   // --no-sdk: this test covers hook deployment only; skip SDK build to avoid
   // flakiness and keep the test fast (SDK install path has dedicated coverage
   // in install-smoke.yml).
-  execFileSync(process.execPath, [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-    env: {
-      ...process.env,
-      CLAUDE_CONFIG_DIR: configDir,
-    },
-  });
+  throwIfFailed(
+    runNode([INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'], {
+      timeoutMs: 120000,
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: configDir,
+      },
+    }),
+    `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`,
+  );
   return path.join(configDir, 'hooks');
 }
 

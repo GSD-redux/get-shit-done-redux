@@ -32,6 +32,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { runMinimalInstall, installerEnv, INSTALL_SCRIPT } = require('./helpers/install-shared.cjs');
 const { cleanup } = require('./helpers.cjs');
@@ -248,11 +249,11 @@ test('antigravity --global uninstall removes only GSD-owned permissions.allow ru
   t.after(() => cleanup(root));
 
   const args = [INSTALL_SCRIPT, '--antigravity', '--global', '--config-dir', root];
-  const installResult = spawnSync(process.execPath, args, {
-    encoding: 'utf8',
+  const installResult = runNode(args, {
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: 120000,
   });
-  assert.strictEqual(installResult.status, 0, `install failed: ${installResult.stderr}`);
+  assert.strictEqual(installResult.exitCode, 0, `install failed: ${installResult.stderr}`);
 
   // Seed user-owned data alongside GSD's contributions, post-install.
   const settingsPath = path.join(root, 'settings.json');
@@ -267,11 +268,11 @@ test('antigravity --global uninstall removes only GSD-owned permissions.allow ru
   fs.writeFileSync(mcpConfigPath, JSON.stringify(mcpConfig, null, 2) + '\n');
 
   const uninstallArgs = [INSTALL_SCRIPT, '--antigravity', '--global', '--config-dir', root, '--uninstall'];
-  const uninstallResult = spawnSync(process.execPath, uninstallArgs, {
-    encoding: 'utf8',
+  const uninstallResult = runNode(uninstallArgs, {
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: 120000,
   });
-  assert.strictEqual(uninstallResult.status, 0, `uninstall failed: ${uninstallResult.stderr}`);
+  assert.strictEqual(uninstallResult.exitCode, 0, `uninstall failed: ${uninstallResult.stderr}`);
 
   const settingsAfter = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
   assert.deepEqual(settingsAfter.permissions.allow, ['command(git)'], 'GSD allow rules removed, user rule preserved');
