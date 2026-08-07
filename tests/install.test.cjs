@@ -10155,9 +10155,10 @@ const path = require('node:path');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
 
-// A single short CLI query (install.js --skills-root <runtime>) — no full
-// install or build involved.
-const SKILLS_ROOT_PROBE_TIMEOUT_MS = 15000;
+// #3145 class-norm timeout: a single short CLI query (install.js
+// --skills-root <runtime>) — no full install or build involved. Not a
+// per-suite value; see tests/helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS: SKILLS_ROOT_PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const INSTALL_JS = path.join(__dirname, '../bin/install.js');
 const WORKFLOW = path.join(__dirname, '../gsd-core/workflows/sync-skills.md');
@@ -10372,6 +10373,57 @@ describe('#3024: gsd-tools query skills-root', () => {
       `stdout must not silently emit claude's skills root for __proto__; got: ${result.stdout}`
     );
   });
+
+  // #3024 review BLOCKER (finding 1 regression pin): the first fix pass
+  // rejected `grok` outright, and a test that only asserts "grok is
+  // accepted" would not have caught that regression's root cause — an
+  // allow-list membership check proves nothing about whether the id
+  // actually resolves anywhere real. This asserts the REAL contract: grok
+  // must both be accepted AND resolve to its own dedicated `~/.agents`
+  // layout (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+  // `src/runtime-homes.cts`), not to claude's wrong-runtime fallback.
+  test('grok: accepted, and resolves under .agents — NOT claude\'s skills root (inclusion is real, not merely allow-listed)', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const grokSkillsRoot = path.join(os.homedir(), '.agents', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'grok', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1', GROK_AGENTS_HOME: undefined },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.exitCode, 0, `grok must be accepted; gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+    const actual = result.stdout.trim();
+    assert.strictEqual(actual, grokSkillsRoot, `Expected grok to resolve under .agents (${grokSkillsRoot}), got ${actual}`);
+    assert.notStrictEqual(actual, claudeSkillsRoot, "grok must NOT resolve to claude's skills root");
+  });
+
+  // #3024 review BLOCKER (finding 1, rejection-side teeth): `gemini` must
+  // stay rejected, and — critically — for the RIGHT reason. It is not
+  // merely "unregistered" (grok is unregistered too, and is correctly
+  // accepted via LEGACY_NON_REGISTRY_RUNTIME_IDS); gemini has no dedicated
+  // resolution branch anywhere, so `getGlobalSkillsBase('gemini')` silently
+  // falls through to claude's wrong-runtime fallback path. The CLI-level
+  // assertion proves gemini is rejected; the direct-resolution assertion
+  // below proves WHY it must stay rejected — if gemini ever grew a real
+  // dedicated branch (making it grok's true peer), this second assertion
+  // would fail and force a conscious decision, instead of someone
+  // reflexively adding it to LEGACY_NON_REGISTRY_RUNTIME_IDS.
+  test("gemini: rejected — because its bare resolution is claude's fallback, not because it is merely unregistered", () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'gemini', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'gemini must be rejected by isRegisteredRuntimeId');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path for rejected gemini; got: ${result.stdout}`);
+
+    // Prove the reason: gemini's underlying (ungated) resolution IS claude's
+    // wrong-runtime fallback — unlike grok's, which resolves to a real,
+    // distinct path (see the sibling grok test above).
+    const { getGlobalSkillsBase } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    assert.strictEqual(
+      getGlobalSkillsBase('gemini'), claudeSkillsRoot,
+      "gemini's bare resolution must be claude's fallback path — this is the wrong-runtime bug that justifies keeping gemini rejected"
+    );
+  });
 });
 
 // ── sync-skills.md workflow content ──────────────────────────────────────────
@@ -10418,34 +10470,62 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
   });
 
-  // #3024 review BLOCKER (finding 1): the "Supported runtime names" prose
-  // list and the `--to all` TO_RUNTIMES expansion were both hand-copied
-  // runtime-id lists that had drifted from the capability registry — `grok`
-  // and `gemini` were listed but are not registered runtime ids, while this
-  // same PR's routeSkillsRoot own-property gate rejects any unregistered id,
-  // so `--to all` (a documented first-class feature) aborted. This parity
-  // test fails the moment either list next diverges from the registry, in
-  // EITHER direction (an id in the doc but not the registry, or an id in the
-  // registry but missing from the doc).
+  // #3024 review BLOCKER (finding 1 — REGRESSION): this branch's first fix
+  // pass hand-derived the "expected" set from the registry alone and dropped
+  // `grok` from both the doc list and the `--to all` expansion, on the
+  // mistaken assumption that "not in the registry" means "not a real
+  // runtime". `grok` has a live, dedicated `~/.agents`-layout resolution
+  // branch in `getGlobalConfigDir` (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+  // `src/runtime-homes.cts`) predating the capability registry, so removing
+  // it silently broke working, documented `--skills-root`/`sync-skills`
+  // support. `gemini`, by contrast, is correctly excluded: it has NO
+  // dedicated branch and falls through to claude's skills root — the
+  // wrong-runtime bug this whole PR exists to fix. This parity test fails
+  // the moment either doc list next diverges from (registry ∪
+  // NAMED_LEGACY_INCLUSIONS) minus NAMED_DELIBERATE_EXCLUSIONS, in EITHER
+  // direction (an id in the doc but not expected, or an id expected but
+  // missing from the doc).
   test('parity: documented runtime list matches the capability registry (minus deliberate exclusions)', () => {
     content = content || readWorkflow();
     const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const { LEGACY_NON_REGISTRY_RUNTIME_IDS } = require('../gsd-core/bin/lib/runtime-homes.cjs');
     const registryIds = Object.keys(runtimes);
     assert.ok(registryIds.length > 0, 'capability registry must list at least one runtime');
+
+    // Named, single-source inclusion: runtime ids with a genuine dedicated
+    // resolution branch (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+    // `src/runtime-homes.cts`) but no capability-registry descriptor. As of
+    // #3024 this is `grok` only — imported directly from the same constant
+    // `isRegisteredRuntimeId` gates on, so this test and the validator can
+    // never independently drift on which legacy ids are "real".
+    const NAMED_LEGACY_INCLUSIONS = [...LEGACY_NON_REGISTRY_RUNTIME_IDS];
+    assert.ok(
+      NAMED_LEGACY_INCLUSIONS.length > 0 && NAMED_LEGACY_INCLUSIONS.includes('grok'),
+      `expected LEGACY_NON_REGISTRY_RUNTIME_IDS to include 'grok'; got ${JSON.stringify(NAMED_LEGACY_INCLUSIONS)}`
+    );
+    for (const included of NAMED_LEGACY_INCLUSIONS) {
+      assert.ok(
+        !registryIds.includes(included),
+        `named legacy inclusion "${included}" is already a registry id — remove it from LEGACY_NON_REGISTRY_RUNTIME_IDS, not from this test`
+      );
+    }
 
     // Deliberate, named exclusion: vscode is `installSurface: 'none'` (#2103)
     // and `getGlobalSkillsBase('vscode')` returns null, so a skills-root sync
     // to/from it can never succeed. It is named as excluded in the workflow's
     // own "Supported runtime names" prose, and excluded here identically, so
     // this test cannot silently drift from the prose that documents it.
-    const DELIBERATE_EXCLUSIONS = ['vscode'];
-    for (const excluded of DELIBERATE_EXCLUSIONS) {
+    const NAMED_DELIBERATE_EXCLUSIONS = ['vscode'];
+    for (const excluded of NAMED_DELIBERATE_EXCLUSIONS) {
       assert.ok(
         registryIds.includes(excluded),
         `deliberate exclusion "${excluded}" must itself be a real registry id (nothing to exclude otherwise)`
       );
     }
-    const expectedIds = registryIds.filter((id) => !DELIBERATE_EXCLUSIONS.includes(id)).sort();
+    const expectedIds = registryIds
+      .filter((id) => !NAMED_DELIBERATE_EXCLUSIONS.includes(id))
+      .concat(NAMED_LEGACY_INCLUSIONS)
+      .sort();
 
     // Anchored to the "Supported runtime names:" line's id list ONLY: capture
     // stops at the " — the full capability registry runtime set" prose that
@@ -10487,17 +10567,17 @@ describe('sync-skills.md — required behavioral specs', () => {
 
     assert.deepStrictEqual(
       docIds, expectedIds,
-      '"Supported runtime names" list must match the capability registry minus deliberate ' +
-      `exclusions (${DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
-      `  in doc but not registry: ${JSON.stringify(docIds.filter((id) => !expectedIds.includes(id)))}\n` +
-      `  in registry but missing from doc: ${JSON.stringify(expectedIds.filter((id) => !docIds.includes(id)))}`
+      '"Supported runtime names" list must match (capability registry ∪ named legacy inclusions ' +
+      `[${NAMED_LEGACY_INCLUSIONS.join(', ')}]) minus deliberate exclusions (${NAMED_DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in doc but not expected: ${JSON.stringify(docIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  expected but missing from doc: ${JSON.stringify(expectedIds.filter((id) => !docIds.includes(id)))}`
     );
     assert.deepStrictEqual(
       toAllIds, expectedIds,
-      '`--to all` TO_RUNTIMES expansion must match the capability registry minus deliberate ' +
-      `exclusions (${DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
-      `  in --to-all but not registry: ${JSON.stringify(toAllIds.filter((id) => !expectedIds.includes(id)))}\n` +
-      `  in registry but missing from --to-all: ${JSON.stringify(expectedIds.filter((id) => !toAllIds.includes(id)))}`
+      '`--to all` TO_RUNTIMES expansion must match (capability registry ∪ named legacy inclusions ' +
+      `[${NAMED_LEGACY_INCLUSIONS.join(', ')}]) minus deliberate exclusions (${NAMED_DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in --to-all but not expected: ${JSON.stringify(toAllIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  expected but missing from --to-all: ${JSON.stringify(expectedIds.filter((id) => !toAllIds.includes(id)))}`
     );
   });
 

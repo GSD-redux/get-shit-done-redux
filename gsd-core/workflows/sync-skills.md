@@ -17,7 +17,7 @@ Sync managed `gsd-*` skill directories from one canonical runtime's skills root 
 
 If neither `--dry-run` nor `--apply` is specified, dry-run is the default.
 
-**Supported runtime names:** `antigravity`, `augment`, `claude`, `cline`, `codebuddy`, `codex`, `copilot`, `cursor`, `hermes`, `kilo`, `kimi`, `kimi-code`, `opencode`, `pi`, `qwen`, `trae`, `windsurf`, `zcode` — the full capability registry runtime set (`gsd-core/bin/lib/capability-registry.cjs`'s `runtimes`), excluding `vscode`: it is `installSurface: 'none'` (#2103) and `getGlobalSkillsBase('vscode')` returns `null`, so a skills-root sync to/from it always aborts at Step 2's resolution guard — there is nowhere on disk to sync to.
+**Supported runtime names:** `antigravity`, `augment`, `claude`, `cline`, `codebuddy`, `codex`, `copilot`, `cursor`, `grok`, `hermes`, `kilo`, `kimi`, `kimi-code`, `opencode`, `pi`, `qwen`, `trae`, `windsurf`, `zcode` — the full capability registry runtime set (`gsd-core/bin/lib/capability-registry.cjs`'s `runtimes`) plus `grok` (a live, dedicated `~/.agents`-layout resolution branch in `getGlobalConfigDir` predating the capability registry — overridable via `GROK_AGENTS_HOME`), excluding `vscode`: it is `installSurface: 'none'` (#2103) and `getGlobalSkillsBase('vscode')` returns `null`, so a skills-root sync to/from it always aborts at Step 2's resolution guard — there is nowhere on disk to sync to.
 
 ---
 
@@ -35,7 +35,7 @@ fi
 
 # Parse --to
 if [[ "$@" == *"--to all"* ]]; then
-  TO_RUNTIMES=(antigravity augment claude cline codebuddy codex copilot cursor hermes kilo kimi kimi-code opencode pi qwen trae windsurf zcode)
+  TO_RUNTIMES=(antigravity augment claude cline codebuddy codex copilot cursor grok hermes kilo kimi kimi-code opencode pi qwen trae windsurf zcode)
 elif [[ "$@" == *"--to"* ]]; then
   TO_RUNTIMES=( $(echo "$@" | grep -oP '(?<=--to )\S+') )
 fi
@@ -106,6 +106,10 @@ For each destination runtime:
 # re-resolving here (rather than reading back a shared array) keeps this
 # value unambiguously scoped to the destination currently being processed.
 DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
+if [ $? -ne 0 ] || [ -z "$DEST_ROOT" ]; then
+  echo "error: failed to resolve skills root for runtime '$DEST_RUNTIME' (gsd_run query skills-root $DEST_RUNTIME --raw)" >&2
+  exit 1
+fi
 
 # List gsd-* subdirectories in source
 SRC_SKILLS=$(ls -1 "$SRC_SKILLS_ROOT" 2>/dev/null | grep '^gsd-')
