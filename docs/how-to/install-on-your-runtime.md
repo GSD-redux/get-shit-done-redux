@@ -538,7 +538,7 @@ If the command is not found after restart, verify the install directory matches 
 If the installer's global bin directory is not on your `PATH`, it prints a one-time warning with a copy-paste command for your shell. The suggestion list covers `zsh`, `bash`, and `fish` (plus PowerShell, cmd.exe, and Git Bash on Windows). For fish, run the line it prints:
 
 ```fish
-fish_add_path '/path/to/global/bin'
+fish_add_path -- '/path/to/global/bin'
 ```
 
 If the directory is already on your PATH but the installer still warns, open a new fish session (`exec fish`) to pick up the change.

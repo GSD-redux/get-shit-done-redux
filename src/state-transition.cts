@@ -297,10 +297,7 @@ export const STATE_MD_SECTIONS = {
 // Intent + deps + result types (ADR-1769 §3)
 // ----------------------------------------------------------------------------
 
-export type ProgressRecord = Record<string, unknown>;
-
 export type StateTransitionDeps = {
-  progressProvider: () => ProgressRecord | null;
   clock: { today: () => string; localToday: () => string; nowIso: () => string };
   /**
    * Roadmap content provider for transitions that re-derive milestone-wide
@@ -601,7 +598,26 @@ function locateCurrentPosition(body: string): { start: number; end: number } | n
   const start = h.offset + hl.length + 1;
   let end = body.length;
   for (let j = idx + 1; j < hs.length; j++) {
-    if (STOP_H2_PLUS(hs[j].level)) { end = hs[j].offset - 1; break; }
+    if (STOP_H2_PLUS(hs[j].level)) {
+      // Exclude the newline that separates this section from the next
+      // heading. Walk back over a bare `\n`, then over a `\r` if one
+      // immediately precedes it (CRLF), so a CRLF document's slice does not
+      // retain a stray unpaired trailing `\r` (#3118).
+      let e = hs[j].offset;
+      if (e > 0 && body[e - 1] === '\n') {
+        e -= 1;
+        if (e > 0 && body[e - 1] === '\r') e -= 1;
+      }
+      // Clamp so the span can never invert (#3118 review): when the section
+      // is empty and the next heading follows with no blank line between,
+      // walking back over the newline(s) can land `e` before `start`. An
+      // inverted span makes every mutator's `body.slice(0, start) +
+      // sectionBody + body.slice(end)` reassembly duplicate the bytes in
+      // `[end, start)`. A zero-length span (`end === start`) is the correct
+      // representation of an empty-but-present section.
+      end = Math.max(e, start);
+      break;
+    }
   }
   return { start, end };
 }

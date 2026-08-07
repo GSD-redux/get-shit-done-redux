@@ -2690,6 +2690,68 @@ function cmdInitTransition(cwd: string, raw: boolean, options: Record<string, un
   output(withProjectRoot(cwd, result), raw);
 }
 
+/**
+ * `debug.md`'s dedicated init entry point (#3149; prerequisite for #3128).
+ * `debug.md` previously carried NO `gsd_run query init.*` call at all — it made
+ * THREE separate round-trips instead: `state.load` (for `commit_docs`,
+ * `config.response_language` and `debug_dir`), `resolve-model gsd-debugger
+ * --pick model`, and `config-get workflow.tdd_mode --raw`. Because no
+ * debug-scoped fact was computed at any entry point, a `when=` atom naming one
+ * would have evaluated FALSE forever — ADR-1671's admission gate (2) and the
+ * silent-exclusion bug it exists to prevent (`docs/adr/1671-…:122-131`).
+ *
+ * Every field is resolved through the SAME primitive the call it replaces used,
+ * never a second hand-maintained copy (DEFECT.GENERATIVE-FIX):
+ *
+ * - `commit_docs` — `loadConfig`, the same loader `cmdStateLoad` calls.
+ * - `response_language` — NOT read here: `withProjectRoot` already injects it
+ *   when configured (#2402), which is also the shape sibling init bundles use.
+ *   It is absent, not null, when unset.
+ * - `debug_dir` — `planningPaths(cwd).debug`, the SAME expression `cmdStateLoad`
+ *   now uses; the `debug` field was added to `PlanningPaths` (#3149) so the
+ *   location has one source instead of two kept in sync by hand.
+ * - `debugger_model` — `resolveModelInternal`, which IS what `query
+ *   resolve-model --pick model` returns (`cmdResolveModel`, src/commands.cts).
+ * - `tdd_mode` — the `Boolean(wf['tdd_mode'])` idiom `cmdInitExecutePhase` and
+ *   `cmdInitPlanPhase` already use. `/gsd:debug` has no `--tdd` flag, so the
+ *   sibling handlers' `options['tdd'] ||` disjunct is deliberately omitted
+ *   rather than carried as a phantom.
+ *
+ * `state.load` is deliberately NOT narrowed — see the note beside its own
+ * `debug_dir` field. This handler is purely additive alongside it.
+ *
+ * `diagnose` is the one flag `/gsd:debug` already documents. Exposing it as a
+ * top-level fact follows `cmdInitUpdate`'s `next_channel` and
+ * `cmdInitAutonomous`'s `plan_strategy_converge` precedent, and is what makes
+ * the router's flag forwarding observable. No `when=` atom consumes it yet:
+ * admission gate (1) — a consuming section of at least 400 bytes — is #3128's
+ * to satisfy, and shipping the atom before its section is the same
+ * silent-exclusion bug from the other direction.
+ */
+function cmdInitDebug(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
+  const config = loadConfig(cwd);
+  const wf = (config.workflow ?? {}) as Record<string, unknown>;
+
+  const result: Record<string, unknown> = {
+    commit_docs: config.commit_docs,
+    // #2376: absolute — debug.md builds `debug_file_path` as
+    // `{debug_dir}/{slug}.md` for its gsd-debug-session-manager spawns, whose
+    // own cwd may differ from the orchestrator's.
+    debug_dir: toPosixPath(planningPaths(cwd).debug),
+    debugger_model: resolveModelInternal(cwd, 'gsd-debugger'),
+    tdd_mode: Boolean(wf['tdd_mode']),
+    diagnose: options['diagnose'] === true,
+  };
+
+  // Additive, optional field — degrades to null while `debug` has no key in
+  // `gsd-core/workflows/section-manifest.json` (it has no `gsd:section` markers
+  // until #3128). null means "read everything", which is NOT the same as a
+  // computed empty selection.
+  result['section_manifest'] = buildSectionManifestField(cwd, null, options, 'debug', {});
+
+  output(withProjectRoot(cwd, result), raw);
+}
+
 function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   try {
     (pruneOrphanedWorktrees as (cwd: string) => void)(cwd);
@@ -3708,6 +3770,7 @@ export = {
   cmdInitDocsUpdate,
   cmdInitUpdate,
   cmdInitTransition,
+  cmdInitDebug,
   cmdInitNewWorkspace,
   cmdInitListWorkspaces,
   cmdInitRemoveWorkspace,
