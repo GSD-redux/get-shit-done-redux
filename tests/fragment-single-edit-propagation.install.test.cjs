@@ -1170,7 +1170,13 @@ function isEnvDependentGeneratedPath(rel) {
   return ENV_DEPENDENT_GENERATED_PATHS.some((prefix) => rel.startsWith(prefix));
 }
 
-test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', (t) => {
+test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', {
+  skip: process.platform === 'win32'
+    ? 'regen:derived (full build + 8 generators) is bounded at 900000ms, which exceeds the '
+      + '600000ms per-chunk CI budget — the chunk killer always fires first, so this can never '
+      + 'complete on the Windows lane. Covered on the Linux lanes. See #3145.'
+    : false,
+}, (t) => {
   // 1. COPY-mode overlay — the whole point of this row over rows 1-20: every
   // leaf is a real independent inode (see overlay-repo.cjs's opts.mode doc),
   // so the REAL `--write` chain below can run to completion without ever

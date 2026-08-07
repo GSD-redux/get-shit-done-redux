@@ -368,13 +368,19 @@ describe('no-unbounded-spawn: ceiling escape (allow-spawn-timeout-ceiling)', () 
   });
 
   test('A12: an unrelated marker does not apply', () => {
+    // The marker text is built via concatenation, not a string literal, so
+    // this file does not itself contain the contiguous exemption-directive
+    // text (the no-source-grep marker, name split across the concat below) —
+    // the refs linter that guards that directive can't tell fixture data
+    // proving non-suppression from a real exemption, and a literal here
+    // would be misread as an unreferenced one. Same idiom as GUARDED_RULE
+    // in no-unbounded-spawn-allowlist.test.cjs.
+    const UNRELATED_MARKER = '// ' + 'allow-test-rule' + ': unrelated escape\n';
     ruleTester.run('local/no-unbounded-spawn', rule, {
       valid: [],
       invalid: [
         {
-          code:
-            `// allow-test-rule: unrelated escape\n` +
-            `spawnSync(c, a, { timeout: 900000 });`,
+          code: UNRELATED_MARKER + `spawnSync(c, a, { timeout: 900000 });`,
           filename: FILE,
           errors: [{ messageId: 'timeoutTooLarge' }],
         },
