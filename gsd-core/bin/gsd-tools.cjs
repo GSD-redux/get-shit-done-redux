@@ -1330,7 +1330,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // cannot be interrupted by --test-force-exit and hangs a whole CI chunk to its 10-minute kill.
     const deps = {
       spawn: (binary, argv, opts) => {
-        const r = cp.spawnSync(binary, argv, {
+        // #3086: on Windows, reviewer CLIs (gemini, codex, etc.) are installed
+        // as .cmd shims. spawnSync with a bare name + shell:false fails with
+        // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
+        // gate used in runWithTimeout: detect .cmd/.bat and mediate through
+        // cmd.exe /d /s /c with an explicit argv array (no shell:true).
+        const isWin = process.platform === 'win32';
+        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(binary));
+        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : binary;
+        const spawnArgv = winShim ? ['/d', '/s', '/c', binary, ...argv] : argv;
+        const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
           timeout: opts.timeoutMs,

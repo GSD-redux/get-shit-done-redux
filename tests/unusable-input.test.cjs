@@ -72,7 +72,7 @@ describe('UNUSABLE_REASON', () => {
     // (enum + call site + this assertion) instead of a silent widening.
     assert.deepStrictEqual(
       Object.keys(UNUSABLE_REASON).sort(),
-      ['FRONTMATTER_UNTERMINATED', 'ROADMAP_UNREADABLE'],
+      ['FRONTMATTER_UNTERMINATED', 'LAST_ACTIVITY_UNPARSEABLE', 'ROADMAP_UNREADABLE'],
     );
     assert.strictEqual(UNUSABLE_REASON.FRONTMATTER_UNTERMINATED, 'frontmatter_unterminated');
   });
