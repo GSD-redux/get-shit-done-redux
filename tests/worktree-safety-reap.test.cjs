@@ -35,6 +35,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
 const { runGit } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { makeFaultyGit, withFaultyFs } = require('./helpers/faulty-deps.cjs');
 
 const {
@@ -70,9 +71,7 @@ function resolvedTmpDir() {
 /** Run git for FIXTURE SETUP; throws on anything but a clean exit. */
 function git(args, cwd) {
   const r = runGit(args, { cwd, timeoutMs: GIT_TIMEOUT_MS });
-  if (r.exitCode !== 0) {
-    throw new Error(`git ${args.join(' ')} failed (${r.outcome}/${r.exitCode}): ${r.stderr}`);
-  }
+  throwIfFailed(r, `git ${args.join(' ')}`);
   return r.stdout;
 }
 

@@ -11,11 +11,19 @@ const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 
 /**
- * Bound for every subprocess in this file: git plumbing (init/config/add/
- * commit/rev-parse) against small fixture repos, plus the grep/sed probes in
- * the region-scoped negative-gate proof below — all well under this. #3144.
+ * Bound for every git subprocess in this file: plumbing (init/config/add/
+ * commit/rev-parse) against small fixture repos — well under this. #3144.
  */
 const GIT_TIMEOUT_MS = 15000;
+
+/**
+ * Bound for the grep/sed availability probes and region-extraction calls in
+ * the region-scoped negative-gate proof below (#3144). These are not git —
+ * reusing `GIT_TIMEOUT_MS` for them would tie an unrelated tool's budget to
+ * git's, so they get their own named constant even though the value happens
+ * to match; a `grep -Eq`/`sed -n` over a small temp file is well under this.
+ */
+const TEXT_TOOL_TIMEOUT_MS = 15000;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -2657,9 +2665,9 @@ describe('doc-contract: guidance prose is in place', () => {
 describe('AC3: executable proof — file-wide ban vs region-scoped simultaneously satisfiable', () => {
   test('case 22 — grep/sed proof: both gates simultaneously satisfiable', () => {
     // Check if grep and sed are available
-    const grepAvail = runHook('--version', [], { interpreter: 'grep', timeoutMs: GIT_TIMEOUT_MS }).exitCode === 0;
-    const sedAvail = runHook('--version', [], { interpreter: 'sed', timeoutMs: GIT_TIMEOUT_MS }).exitCode === 0 ||
-                    runHook('-n', ['1p', '/dev/null'], { interpreter: 'sed', timeoutMs: GIT_TIMEOUT_MS }).exitCode === 0;
+    const grepAvail = runHook('--version', [], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS }).exitCode === 0;
+    const sedAvail = runHook('--version', [], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS }).exitCode === 0 ||
+                    runHook('-n', ['1p', '/dev/null'], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS }).exitCode === 0;
 
     if (!grepAvail || !sedAvail) {
       // Skip gracefully if tools are unavailable
@@ -2686,7 +2694,7 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
     try {
       // (a) File-wide: grep -Eq 'await .*refresh' <file> — should EXIT 0 (pattern found)
       //     This means a file-wide ban (! grep -Eq ...) WOULD FAIL
-      const fileWide = runHook('-Eq', ['await .*refresh', tmpFile], { interpreter: 'grep', timeoutMs: GIT_TIMEOUT_MS });
+      const fileWide = runHook('-Eq', ['await .*refresh', tmpFile], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
       assert.strictEqual(
         fileWide.exitCode,
         0,
@@ -2695,7 +2703,7 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
 
       // (b) Region-scoped (make_page only): sed extracts lines 1-3, piped to grep → pattern NOT found
       //     The factory region is clean: ban PASSES
-      const makePageLines = runHook('-n', ['1,3p', tmpFile], { interpreter: 'sed', timeoutMs: GIT_TIMEOUT_MS });
+      const makePageLines = runHook('-n', ['1,3p', tmpFile], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
       assert.strictEqual(makePageLines.exitCode, 0, 'sed should succeed');
       const makePageRegion = makePageLines.stdout.toString();
 
@@ -2703,7 +2711,7 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
       const regionFile = path.join(os.tmpdir(), `gsd-968-region-${process.pid}.py`);
       fs.writeFileSync(regionFile, makePageRegion);
       try {
-        const regionBan = runHook('-Eq', ['await .*refresh', regionFile], { interpreter: 'grep', timeoutMs: GIT_TIMEOUT_MS });
+        const regionBan = runHook('-Eq', ['await .*refresh', regionFile], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
         assert.strictEqual(
           regionBan.exitCode,
           1,
@@ -2711,12 +2719,12 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
         );
 
         // (c) Region-scoped (reindex_handler): grep should FIND the pattern → requirement met
-        const reindexLines = runHook('-n', ['6,9p', tmpFile], { interpreter: 'sed', timeoutMs: GIT_TIMEOUT_MS });
+        const reindexLines = runHook('-n', ['6,9p', tmpFile], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
         const reindexRegion = reindexLines.stdout.toString();
         const reindexFile = path.join(os.tmpdir(), `gsd-968-reindex-${process.pid}.py`);
         fs.writeFileSync(reindexFile, reindexRegion);
         try {
-          const reindexCheck = runHook('-Eq', ['await .*refresh', reindexFile], { interpreter: 'grep', timeoutMs: GIT_TIMEOUT_MS });
+          const reindexCheck = runHook('-Eq', ['await .*refresh', reindexFile], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
           assert.strictEqual(
             reindexCheck.exitCode,
             0,

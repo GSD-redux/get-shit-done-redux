@@ -447,6 +447,19 @@ site keeps working.
 
 `process-seam.cjs` itself is untouched by this — it still never throws.
 
+If your per-suite wrapper spawns something that is **not** git — a node CLI via `runNode`, a bash
+snippet via `runHook` — and its callers depend on a throw, call `throwIfFailed(result, displayName)`
+directly instead of hand-rolling the same `outcome !== EXITED || exitCode !== 0` check. `gitOrThrow`
+is itself just `throwIfFailed` bound to `runGit`, so every thrown error — git or not — carries the
+same `status`/`exitCode`/`stdout`/`stderr`/`signal`/`timedOut`/`outcome` shape:
+
+```javascript
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+
+const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
+throwIfFailed(r, 'build-hooks.js (before install tests)');
+```
+
 #### The lint rule that enforces it
 
 `local/no-unbounded-spawn` (`eslint-rules/no-unbounded-spawn.cjs`) fails any `spawnSync`,

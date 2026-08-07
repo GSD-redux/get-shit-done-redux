@@ -30,7 +30,7 @@ const { OUTCOME } = processSeam;
 const runGitSpy = mock.method(processSeam, 'runGit');
 after(() => mock.restoreAll());
 
-const { gitOrThrow, DEFAULT_GIT_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
+const { gitOrThrow, throwIfFailed, DEFAULT_GIT_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 /**
@@ -209,5 +209,77 @@ describe('git-fixture: E — gitOrThrow', () => {
     );
     const author = gitOrThrow(['log', '-1', '--format=%an'], { cwd: dir }).trim();
     assert.equal(author, 'Env Author');
+  });
+});
+
+/**
+ * `throwIfFailed` is exercised only indirectly above (via `gitOrThrow`) and by
+ * six other per-suite wrappers elsewhere in the tree. It takes a plain
+ * process-seam result object, so it is tested directly here with literal
+ * result objects — no subprocess needed.
+ */
+describe('throwIfFailed', () => {
+  /** A minimal clean-exit result, spread over in each test below. */
+  const BASE = { stdout: '', stderr: '', signal: null, timedOut: false };
+
+  test('does not throw for outcome=EXITED, exitCode=0', () => {
+    assert.doesNotThrow(() => throwIfFailed({ ...BASE, outcome: OUTCOME.EXITED, exitCode: 0 }, 'ok'));
+  });
+
+  test('throws when outcome=EXITED but exitCode=1', () => {
+    assert.throws(() => throwIfFailed({ ...BASE, outcome: OUTCOME.EXITED, exitCode: 1 }, 'bad'));
+  });
+
+  test('throws when outcome=EXITED but exitCode=128', () => {
+    assert.throws(() => throwIfFailed({ ...BASE, outcome: OUTCOME.EXITED, exitCode: 128 }, 'bad'));
+  });
+
+  for (const outcome of [OUTCOME.TIMED_OUT, OUTCOME.KILLED, OUTCOME.BUFFER_OVERFLOW, OUTCOME.SPAWN_FAILED]) {
+    test(`throws for non-EXITED outcome: ${outcome}`, () => {
+      assert.throws(() => throwIfFailed({ ...BASE, outcome, exitCode: null }, 'bad'));
+    });
+  }
+
+  test('boundary: exitCode=0 with a non-EXITED outcome still throws (0 alone is not success)', () => {
+    assert.throws(() => throwIfFailed({ ...BASE, outcome: OUTCOME.KILLED, exitCode: 0 }, 'bad'));
+  });
+
+  test('thrown error carries .status and .exitCode as equal aliases of the same value', () => {
+    const caught = captureThrown(() => throwIfFailed({ ...BASE, outcome: OUTCOME.EXITED, exitCode: 42 }, 'bad'));
+    assert.equal(caught.status, 42);
+    assert.equal(caught.exitCode, 42);
+    assert.equal(caught.status, caught.exitCode);
+  });
+
+  test('thrown error carries stdout, stderr, signal, timedOut, outcome from the input result', () => {
+    const input = {
+      outcome: OUTCOME.KILLED,
+      exitCode: null,
+      stdout: 'input stdout',
+      stderr: 'input stderr',
+      signal: 'SIGTERM',
+      timedOut: false,
+    };
+    const caught = captureThrown(() => throwIfFailed(input, 'bad'));
+    assert.equal(caught.stdout, input.stdout);
+    assert.equal(caught.stderr, input.stderr);
+    assert.equal(caught.signal, input.signal);
+    assert.equal(caught.timedOut, input.timedOut);
+    assert.equal(caught.outcome, input.outcome);
+  });
+
+  test('exitCode: null propagates to .status as null, not coerced', () => {
+    const caught = captureThrown(() =>
+      throwIfFailed({ ...BASE, outcome: OUTCOME.TIMED_OUT, exitCode: null, timedOut: true }, 'bad')
+    );
+    assert.equal(caught.status, null);
+    assert.notEqual(caught.status, undefined);
+  });
+
+  test('displayName appears in the thrown error message', () => {
+    const caught = captureThrown(() =>
+      throwIfFailed({ ...BASE, outcome: OUTCOME.EXITED, exitCode: 1 }, 'my distinctive display name')
+    );
+    assert.ok(caught.message.includes('my distinctive display name'));
   });
 });

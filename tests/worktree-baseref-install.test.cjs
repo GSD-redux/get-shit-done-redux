@@ -22,7 +22,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
@@ -36,12 +37,7 @@ const BUILD_TIMEOUT_MS = 60000;
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
   const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
-  if (r.outcome !== OUTCOME.EXITED || r.exitCode !== 0) {
-    throw new Error(
-      `build-hooks.js failed before install tests could run: outcome=${r.outcome} ` +
-        `exitCode=${r.exitCode}\n${r.stderr}`,
-    );
-  }
+  throwIfFailed(r, 'build-hooks.js (before install tests)');
 });
 
 // ─── Helper: run both install phases (mirrors installAllRuntimes two-phase) ──
