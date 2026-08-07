@@ -1890,7 +1890,6 @@ test('reconciles a drifted applied-migration checksum into install state on appl
 
   test('evaluateRemoveEmptyDir degrades an EACCES from rmdirSync without throwing', (t) => {
     const configDir = createTempDir('gsd-remove-empty-dir-');
-    t.after(() => cleanup(configDir));
     const target = path.join(configDir, 'hooks');
     fs.mkdirSync(target);
 
@@ -1899,7 +1898,23 @@ test('reconciles a drifted applied-migration checksum into install state on appl
       err.code = 'EACCES';
       throw err;
     });
+    // Registered BEFORE the cleanup hook below — node:test runs `t.after`
+    // callbacks in REGISTRATION order, so this guarantees fs.rmdirSync is
+    // restored before cleanup() ever runs. That ordering is load-bearing on
+    // Node 22 (not Node 24): Node 22's recursive `fs.rmSync` still falls
+    // through to the JS rimraf implementation (internal/fs/rimraf.js), which
+    // calls the PUBLIC `fs.rmdirSync` this test mocks; Node 24's native
+    // recursive-rm implementation never touches it. With cleanup's `t.after`
+    // registered FIRST (as it was), cleanup() ran while the mock was still
+    // active on Node 22 — `fs.rmSync` threw the injected EACCES, that
+    // exception aborted the test's remaining `after` hooks before
+    // `mock.restoreAll()` could run, and the still-mocked `fs.rmdirSync` then
+    // poisoned `cleanup()` for every later test in this file for the rest of
+    // the Node 22 process (the node22-only "failed running afterEach/after
+    // hook" cascade across the Codex/migration-008/T3 tests below). Verified
+    // by reproducing both orderings against `node:22` and `node:24` directly.
     t.after(() => mock.restoreAll());
+    t.after(() => cleanup(configDir));
 
     let outcome;
     assert.doesNotThrow(() => { outcome = evaluateRemoveEmptyDir(configDir, target); });

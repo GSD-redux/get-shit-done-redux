@@ -354,29 +354,38 @@ describe('GROUP A.2: resolveSharedHooksDirName — malformed/hostile values + pr
 // ---------------------------------------------------------------------------
 
 describe('GROUP B: pi adapter resolveSharedHooksDir (pi/gsd.cjs)', () => {
+  // A real staged bundle always has at least one hook file in it; these tests
+  // populate every "should qualify" candidate with a placeholder file so they
+  // exercise the same non-empty invariant defect 2's fix enforces, rather than
+  // relying on an literally-empty directory that no real install ever produces.
+  function populate(dirPath) {
+    fs.mkdirSync(dirPath, { recursive: true });
+    fs.writeFileSync(path.join(dirPath, 'gsd-placeholder-hook.js'), '// placeholder\n');
+  }
+
   test('candidate order is exactly ["gsd-hooks", "hooks"] (a reordering that silently prefers the stale dir must fail loudly)', () => {
     assert.deepEqual(SHARED_HOOKS_DIR_CANDIDATES, ['gsd-hooks', 'hooks']);
   });
 
-  test('only gsd-hooks/ exists -> returns that path', (t) => {
+  test('only gsd-hooks/ exists (populated) -> returns that path', (t) => {
     const root = createTempDir('fix-3023-adapter-');
     t.after(() => cleanup(root));
-    fs.mkdirSync(path.join(root, 'gsd-hooks'));
+    populate(path.join(root, 'gsd-hooks'));
     assert.equal(resolveSharedHooksDir(root), path.join(root, 'gsd-hooks'));
   });
 
-  test('only hooks/ exists (dev-tree back-compat) -> returns that path', (t) => {
+  test('only hooks/ exists (dev-tree back-compat, populated) -> returns that path', (t) => {
     const root = createTempDir('fix-3023-adapter-');
     t.after(() => cleanup(root));
-    fs.mkdirSync(path.join(root, 'hooks'));
+    populate(path.join(root, 'hooks'));
     assert.equal(resolveSharedHooksDir(root), path.join(root, 'hooks'));
   });
 
-  test('both exist (half-upgraded tree) -> gsd-hooks wins deterministically', (t) => {
+  test('both exist and both populated (half-upgraded tree) -> gsd-hooks wins deterministically', (t) => {
     const root = createTempDir('fix-3023-adapter-');
     t.after(() => cleanup(root));
-    fs.mkdirSync(path.join(root, 'gsd-hooks'));
-    fs.mkdirSync(path.join(root, 'hooks'));
+    populate(path.join(root, 'gsd-hooks'));
+    populate(path.join(root, 'hooks'));
     assert.equal(resolveSharedHooksDir(root), path.join(root, 'gsd-hooks'));
   });
 
@@ -387,11 +396,11 @@ describe('GROUP B: pi adapter resolveSharedHooksDir (pi/gsd.cjs)', () => {
     assert.equal(resolveSharedHooksDir(root), null);
   });
 
-  test('gsd-hooks exists as a FILE, not a directory -> skipped; falls through to hooks/ when present', (t) => {
+  test('gsd-hooks exists as a FILE, not a directory -> skipped; falls through to a populated hooks/ when present', (t) => {
     const root = createTempDir('fix-3023-adapter-');
     t.after(() => cleanup(root));
     fs.writeFileSync(path.join(root, 'gsd-hooks'), 'not a directory');
-    fs.mkdirSync(path.join(root, 'hooks'));
+    populate(path.join(root, 'hooks'));
     assert.equal(resolveSharedHooksDir(root), path.join(root, 'hooks'));
   });
 
@@ -399,6 +408,48 @@ describe('GROUP B: pi adapter resolveSharedHooksDir (pi/gsd.cjs)', () => {
     const root = createTempDir('fix-3023-adapter-');
     t.after(() => cleanup(root));
     fs.writeFileSync(path.join(root, 'gsd-hooks'), 'not a directory');
+    assert.equal(resolveSharedHooksDir(root), null);
+  });
+
+  // ── Defect 2 (adversarial review): empty-bundle qualification ────────────
+  // An install interrupted between mkdirSync(gsd-hooks) and the file copy
+  // leaves a directory that EXISTS but is EMPTY. Since gsd-hooks is probed
+  // FIRST, an empty gsd-hooks/ must lose to a fully-staged legacy hooks/ —
+  // otherwise every hook silently no-ops (runHook's fs.existsSync guard
+  // degrades per-file, producing no error at all).
+
+  test('regression: gsd-hooks/ exists but is EMPTY, hooks/ is populated -> resolves hooks/ (fails before the fix)', (t) => {
+    const root = createTempDir('fix-3023-adapter-');
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'gsd-hooks'), { recursive: true }); // empty — no files written
+    populate(path.join(root, 'hooks'));
+    assert.equal(
+      resolveSharedHooksDir(root),
+      path.join(root, 'hooks'),
+      'an empty gsd-hooks/ must not win over a fully-staged legacy hooks/',
+    );
+  });
+
+  test('gsd-hooks/ populated, hooks/ populated -> resolves gsd-hooks/', (t) => {
+    const root = createTempDir('fix-3023-adapter-');
+    t.after(() => cleanup(root));
+    populate(path.join(root, 'gsd-hooks'));
+    populate(path.join(root, 'hooks'));
+    assert.equal(resolveSharedHooksDir(root), path.join(root, 'gsd-hooks'));
+  });
+
+  test('both gsd-hooks/ and hooks/ exist but are BOTH empty -> null', (t) => {
+    const root = createTempDir('fix-3023-adapter-');
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'gsd-hooks'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'hooks'), { recursive: true });
+    assert.equal(resolveSharedHooksDir(root), null);
+  });
+
+  test('gsd-hooks/ is empty, hooks/ does not exist -> null', (t) => {
+    const root = createTempDir('fix-3023-adapter-');
+    t.after(() => cleanup(root));
+    fs.mkdirSync(path.join(root, 'gsd-hooks'), { recursive: true });
     assert.equal(resolveSharedHooksDir(root), null);
   });
 });

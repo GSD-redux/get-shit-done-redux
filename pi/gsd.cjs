@@ -74,6 +74,15 @@ const SHARED_HOOKS_DIR_CANDIDATES = ['gsd-hooks', 'hooks'];
 /**
  * Absolute path to the staged shared-hook bundle, or null when none is present.
  * Never throws — a stat failure on any candidate is treated as "not this one".
+ *
+ * A candidate qualifies only when it is a directory AND non-empty. An install
+ * can be interrupted between `mkdirSync(gsd-hooks)` and the file copy, leaving
+ * a directory that exists but is empty; `gsd-hooks` is probed FIRST (it is the
+ * preferred, current name), so an empty `gsd-hooks/` would otherwise win over
+ * a fully-staged legacy `hooks/` and every hook would silently no-op —
+ * `runHook`'s `fs.existsSync(hookPath)` guard degrades per-file, so binding to
+ * an empty bundle produces no error at all, just silent inaction. A
+ * partially-staged bundle must lose to a fully-staged one for that reason.
  * @param {string} engineRoot
  * @returns {string|null}
  */
@@ -81,7 +90,9 @@ function resolveSharedHooksDir(engineRoot) {
   for (const name of SHARED_HOOKS_DIR_CANDIDATES) {
     const candidate = path.join(engineRoot, name);
     try {
-      if (fs.statSync(candidate).isDirectory()) return candidate;
+      if (!fs.statSync(candidate).isDirectory()) continue;
+      if (fs.readdirSync(candidate).length === 0) continue;
+      return candidate;
     } catch { /* absent or unreadable — try the next candidate */ }
   }
   return null;
