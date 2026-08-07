@@ -1,7 +1,6 @@
 {
   "version": 1,
   "paths": {
-    "spec-phase.md": "#3132: realigned retired covered/backstop-as-status vocab to resolved+verification model (probe-core Status enum). Step 5.5 resolution options, --auto mode, comment, Step 6 row list.",
     "ui-phase.md": "#3132: realigned resolution loop and write-back format from covered/backstop-as-status to resolved+verification."
   }
 }
