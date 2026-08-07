@@ -391,7 +391,13 @@ function skillFrontmatterName(skillDirName) {
 }
 
 function normalizeClaudeSkillEffort(effort) {
-  return effort === 'xhigh' ? 'max' : effort;
+  // #3039: `max` is rejected by Anthropic models when extended thinking is
+  // disabled (400: output_config.effort 'max' is not supported when thinking
+  // is disabled). The frontmatter is static at install time and the installer
+  // cannot know whether thinking will be on or off at invocation. `high` is the
+  // maximum value that works in both states on all supported models.
+  if (effort === 'xhigh' || effort === 'max') return 'high';
+  return effort;
 }
 
 /**

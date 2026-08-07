@@ -2576,6 +2576,11 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           );
           let pm: RegExpExecArray | null;
           while ((pm = phasePattern.exec(roadmapForPhases)) !== null) {
+            // #2786: skip sentinel phase ids (999.x backlog, 0.x drafts) — stage 1
+            // already skips 999 dirs on disk; stage 2's heading scan must not
+            // advance into backlog headings. Mirrors the /^999(?:\.|$)/ guard
+            // stage 1 uses at line 2536, but via isSentinelPhaseId for both ranges.
+            if (isSentinelPhaseId(pm[1])) continue;
             if (comparePhaseNum(pm[1], phaseNum) > 0) {
               nextPhaseNum = pm[1];
               nextPhaseName = pm[2]

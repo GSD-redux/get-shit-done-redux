@@ -42,6 +42,13 @@ Escolha **Claude Code** e **local** quando solicitado. Você verá:
 claude --dangerously-skip-permissions
 ```
 
+> [!CAUTION]
+> **The permissions flag is optional.** It skips per-file confirmation while
+> GSD's sub-agents read and write files. Use it only in low-stakes or
+> throwaway contexts. To keep confirmations enabled, start with `claude` instead.
+> For real work, read the [security model](../explanation/security-model.md) first.
+
+
 ---
 
 ## Passo 3 — Iniciar o onboarding brownfield
