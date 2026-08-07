@@ -4208,3 +4208,84 @@ describe('#1834: installer deploys .sh hooks alongside .js hooks', () => {
 });
   });
 }
+
+// ─── #3023: pi must not stage its shared-hooks bundle in pi's reserved hooks/ ──
+//
+// pi (pi.dev) renamed its `hooks/` directory to `extensions/` and now prints a
+// deprecation warning on every startup when a `hooks/` directory exists in its
+// agent dir. GSD's installer stages the shared hook bundle at
+// `<destRootDir>/hooks` for every runtime that does not set
+// hostBehaviors.skipSharedHooksInstall — which since #2102 Stage 2 includes pi.
+// The bundle must live under a name pi does not reserve.
+//
+// The expected directory name is asserted as a LITERAL on purpose: importing the
+// production constant would make the assertion re-derive the very value under
+// test, and it could then never catch that value changing.
+describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory', () => {
+  const PI_RESERVED_DIR = 'hooks';
+  const PI_BUNDLE_DIR = 'gsd-hooks';
+
+  for (const scope of ['local', 'global']) {
+    test(`pi ${scope} install does not create the host-reserved hooks/ directory`, (t) => {
+      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      const reserved = path.join(configDir, PI_RESERVED_DIR);
+      assert.equal(
+        fs.existsSync(reserved),
+        false,
+        `pi reserves <configDir>/${PI_RESERVED_DIR} as its deprecated extension location; ` +
+        `GSD must not create it (found ${reserved})`
+      );
+    });
+
+    test(`pi ${scope} install stages the shared hooks bundle under ${PI_BUNDLE_DIR}/`, (t) => {
+      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      const bundle = path.join(configDir, PI_BUNDLE_DIR);
+      assert.equal(
+        fs.existsSync(bundle) && fs.statSync(bundle).isDirectory(),
+        true,
+        `pi's shared hook bundle must be staged at ${bundle}`
+      );
+
+      // The adapter's live require target (pi/gsd.cjs parseGsdCommandArgs).
+      const gitCmd = path.join(bundle, 'lib', 'git-cmd.js');
+      assert.equal(
+        fs.existsSync(gitCmd) && fs.statSync(gitCmd).isFile(),
+        true,
+        `pi adapter requires ${gitCmd}; the hooks/lib helpers must move with the bundle`
+      );
+
+      // #2544 CommonJS marker follows the bundle, and is NOT dropped at the
+      // shared config root (user-owned territory).
+      assert.equal(
+        fs.existsSync(path.join(bundle, 'package.json')),
+        true,
+        'the CommonJS marker must live inside the bundle directory'
+      );
+    });
+
+    test(`pi ${scope} install manifests the bundle under ${PI_BUNDLE_DIR}/`, (t) => {
+      const { manifest, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      assert.ok(manifest && manifest.files, 'pi install must write a file manifest');
+      const keys = Object.keys(manifest.files);
+
+      const stale = keys.filter((k) => k.startsWith(`${PI_RESERVED_DIR}/`));
+      assert.deepEqual(
+        stale,
+        [],
+        'no manifest key may reference the host-reserved hooks/ directory'
+      );
+
+      const staged = keys.filter((k) => k.startsWith(`${PI_BUNDLE_DIR}/`));
+      assert.ok(
+        staged.length > 0,
+        `manifest must track the staged bundle under ${PI_BUNDLE_DIR}/ so uninstall can remove it`
+      );
+    });
+  }
+});
