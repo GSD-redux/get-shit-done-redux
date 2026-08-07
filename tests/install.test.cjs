@@ -10154,6 +10154,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
+const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 
 // A single short CLI query (install.js --skills-root <runtime>) — no full
 // install or build involved.
@@ -10222,22 +10223,120 @@ describe('#3024: gsd-tools query skills-root', () => {
 
   for (const { runtime, expected } of CASES) {
     test(`resolves correct skills root for ${runtime}`, () => {
-      const result = spawnSync(process.execPath, [TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
-        encoding: 'utf-8',
+      const result = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
         env: { ...process.env, GSD_TEST_MODE: '1' },
       });
-      assert.strictEqual(result.status, 0, `gsd-tools exited ${result.status}: ${result.stderr}`);
+      assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+      assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
       const actual = result.stdout.trim();
       assert.strictEqual(actual, expected, `Expected ${expected}, got ${actual}`);
     });
   }
 
   test('errors when runtime arg is missing', () => {
-    const result = spawnSync(process.execPath, [TOOLS_PATH, 'query', 'skills-root'], {
-      encoding: 'utf-8',
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root'], {
       env: { ...process.env, GSD_TEST_MODE: '1' },
     });
-    assert.notStrictEqual(result.status, 0, 'Should exit with error when runtime arg is missing');
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Should exit with error when runtime arg is missing');
+  });
+
+  test('non-raw form: query skills-root claude parses as JSON with expected skills_root', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+    const expected = path.join(os.homedir(), '.claude', 'skills');
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.skills_root, expected, `Expected ${expected}, got ${parsed.skills_root}`);
+  });
+
+  // Defect B regression: an unknown runtime must NOT silently resolve to
+  // claude's skills root. getGlobalSkillsBase falls back through
+  // getGlobalConfigDir instead of returning null, so routeSkillsRoot's
+  // `if (skillsRoot === null)` guard never fires for a bogus runtime id.
+  test('defect B: unknown runtime does not silently resolve to claude skills root', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'bogus-runtime', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Unknown runtime must exit non-zero');
+    assert.ok(
+      !result.stdout.includes(claudeSkillsRoot),
+      `stdout must not silently emit claude's skills root for an unknown runtime; got: ${result.stdout}`
+    );
+  });
+
+  test('empty runtime arg exits non-zero', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Empty runtime must exit non-zero');
+  });
+
+  test('whitespace-only runtime arg exits non-zero', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '   ', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Whitespace-only runtime must exit non-zero');
+  });
+
+  test('HOSTILE: path-traversal runtime arg exits non-zero and emits no path', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '../../etc', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Path-traversal runtime must exit non-zero');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
+  });
+
+  // HOSTILE: the seam spawns via an argv array (see process-seam.cjs), never a
+  // shell string, so this value can never reach a shell for interpolation.
+  // The assertion below confirms the command rejects the runtime value and
+  // produces no output — it cannot (and does not need to) prove
+  // shell-injection safety, because no shell is ever invoked.
+  test('HOSTILE: shell-metacharacter runtime arg exits non-zero with no output', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude; rm -rf /', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Shell-metacharacter runtime must exit non-zero');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
+  });
+
+  test('parity: gsd-tools query skills-root matches install.js --skills-root for every registered runtime', () => {
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const runtimeIds = Object.keys(runtimes);
+    assert.ok(runtimeIds.length > 0, 'capability registry must list at least one runtime');
+
+    for (const runtime of runtimeIds) {
+      const toolsResult = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
+        env: { ...process.env, GSD_TEST_MODE: '1' },
+      });
+      const installResult = runNode([INSTALL_JS, '--skills-root', runtime], {
+        env: { ...process.env, GSD_TEST_MODE: undefined },
+      });
+      assert.equal(toolsResult.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly for ${runtime}: ${JSON.stringify(toolsResult)}`);
+      assert.equal(installResult.outcome, OUTCOME.EXITED, `install.js did not exit cleanly for ${runtime}: ${JSON.stringify(installResult)}`);
+      const toolsIsZero = toolsResult.exitCode === 0;
+      const installIsZero = installResult.exitCode === 0;
+      assert.strictEqual(
+        toolsIsZero, installIsZero,
+        `runtime ${runtime}: exit-code agreement mismatch (gsd-tools=${toolsResult.exitCode}, install.js=${installResult.exitCode})`
+      );
+      if (toolsIsZero && installIsZero) {
+        const toolsPath = String(toolsResult.stdout.trim()).replace(/\\/g, '/');
+        const installPath = String(installResult.stdout.trim()).replace(/\\/g, '/');
+        assert.strictEqual(
+          toolsPath, installPath,
+          `runtime ${runtime}: gsd-tools (${toolsPath}) and install.js (${installPath}) must resolve the same skills root`
+        );
+      }
+    }
   });
 });
 
@@ -10322,6 +10421,25 @@ describe('sync-skills.md — required behavioral specs', () => {
     assert.ok(
       safetySection || content.includes('no writes') || content.includes('--dry-run performs no writes'),
       'workflow must have a safety rule that dry-run performs no writes'
+    );
+  });
+
+  // Defect C regression: the workflow must not send users back to the
+  // unshipped `install.js` entry point this issue moved away from (#3024).
+  test('defect C: workflow contains zero references to install.js', () => {
+    content = content || readWorkflow();
+    const occurrences = (content.match(/install\.js/g) || []).length;
+    assert.strictEqual(
+      occurrences, 0,
+      `sync-skills.md must not reference install.js (unshipped in installed trees); found ${occurrences} occurrence(s)`
+    );
+  });
+
+  test('Step 2 resolves skills roots via gsd_run query skills-root', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      content.includes('gsd_run query skills-root'),
+      'workflow Step 2 must resolve skills roots via `gsd_run query skills-root`'
     );
   });
 });
