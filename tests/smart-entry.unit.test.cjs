@@ -558,7 +558,7 @@ describe('#2427 — roadmap-grounded completion + tightened status regex', () =>
 describe('#3099: unusable last_activity emits a diagnostic', () => {
   const {
     _resetUnusableInputWarningsForTests,
-    _unusableInputWarningCountForTests,
+    _unusableInputEmissionCountForTests,
   } = require('../gsd-core/bin/lib/unusable-input.cjs');
 
   function makeStateWithActivity(activity) {
@@ -591,7 +591,7 @@ describe('#3099: unusable last_activity emits a diagnostic', () => {
       state: makeStateWithActivity('not-a-date-at-all'),
     }));
     detectSignals(dir);
-    assert.equal(_unusableInputWarningCountForTests(), 1,
+    assert.equal(_unusableInputEmissionCountForTests(), 1,
       'unusable last_activity must emit exactly one diagnostic');
   });
 
@@ -610,7 +610,7 @@ describe('#3099: unusable last_activity emits a diagnostic', () => {
       ].join('\n'),
     }));
     detectSignals(dir);
-    assert.equal(_unusableInputWarningCountForTests(), 0,
+    assert.equal(_unusableInputEmissionCountForTests(), 0,
       'absent last_activity must NOT emit a diagnostic (it is genuinely absent, not corrupt)');
   });
 
@@ -620,7 +620,7 @@ describe('#3099: unusable last_activity emits a diagnostic', () => {
       state: makeStateWithActivity('2026-06-13T12:00:00Z'),
     }));
     detectSignals(dir);
-    assert.equal(_unusableInputWarningCountForTests(), 0,
+    assert.equal(_unusableInputEmissionCountForTests(), 0,
       'well-formed last_activity must NOT emit a diagnostic');
   });
 
@@ -631,7 +631,7 @@ describe('#3099: unusable last_activity emits a diagnostic', () => {
     }));
     detectSignals(dir);
     detectSignals(dir);
-    assert.equal(_unusableInputWarningCountForTests(), 1,
+    assert.equal(_unusableInputEmissionCountForTests(), 1,
       'dedup: second call on the same source must not re-emit');
   });
 });
