@@ -15,7 +15,6 @@
     "gsd-core/workflows/execute-plan.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
     "gsd-core/workflows/help/modes/full.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
     "gsd-core/workflows/milestone-summary.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
-    "gsd-core/workflows/plan-phase.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md'). #3132: realigned lift rule and quality gate from covered/backstop-as-status to resolved+verification.",
     "gsd-core/workflows/profile-user.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
     "gsd-core/workflows/progress.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
     "gsd-core/workflows/quick.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md').",
@@ -25,6 +24,7 @@
     "skills/gsd-ns-project/skills/profile-user/SKILL.md": "#2658: derived (via commands/gsd/profile-user.md, which mentions CLAUDE.md) through convertClaudeToTraeMarkdown; same replacement-target change as checkpoints.md above.",
     "skills/gsd-ns-review/skills/code-review/SKILL.md": "#2658: derived (via commands/gsd/code-review.md, which mentions CLAUDE.md) through convertClaudeToTraeMarkdown; same replacement-target change as checkpoints.md above.",
     "ingest-docs.md": "#2658: runtime-detection block gained a `/.trae/` path-based line and a `TRAE_CONFIG_DIR` env-var fallback line (the same trae-detection gap found in new-project.md, fixed here too since it is the identical defect in a sibling workflow).",
-    "new-project.md": "#2658: runtime-detection block gained a `/.trae/` path-based line and a `TRAE_CONFIG_DIR` env-var fallback line, so trae resolves to RUNTIME=trae instead of falling through to the claude default."
+    "new-project.md": "#2658: runtime-detection block gained a `/.trae/` path-based line and a `TRAE_CONFIG_DIR` env-var fallback line, so trae resolves to RUNTIME=trae instead of falling through to the claude default.",
+    "plan-phase.md": "#2658: same CLAUDE.md replacement-target change as checkpoints.md above (bare directory '.trae/rules/' -> concrete file '.trae/rules/rules.md'). #3132: realigned lift rule and quality gate from covered/backstop-as-status to resolved+verification."
   }
 }
