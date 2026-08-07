@@ -525,10 +525,16 @@ escape only ever raises the ceiling for a call that already resolves to a numeri
 never waives the requirement for a bound. A marked call with no `timeout` at all still reports
 `unboundedSpawn`.
 
-`eslint-rules/no-unbounded-spawn.allowlist.json` grandfathers files that predate the rule. It only
-ratchets **down**: once a file is clean, the rule reports its allowlist line as stale and you delete
-it. Never add an entry, and never reach for `eslint-disable` on this rule — a test asserts that no
-such comment exists.
+There is no allowlist. `eslint-rules/no-unbounded-spawn.allowlist.json` grandfathered files that
+predated the rule; the epic that introduced it (#3064) migrated every site across four waves and
+deleted the file in its terminal wave (#3148), so `local/no-unbounded-spawn` now runs with **no
+exemption surface** across `tests/**`. There is no file to add an entry to — fix the timeout at
+the call site instead. The only sanctioned escapes are an explicit `timeout` on a raw spawn (for a
+call shape the process seam cannot express, e.g. a `shell: true` invocation for `npm.cmd` on
+Windows, or `stdio` redirection to a real fd) and the `// allow-spawn-timeout-ceiling: <reason>`
+marker above for a bound over the 600000 ms ceiling. Never reach for `eslint-disable` on this rule
+— with the allowlist gone, that is the only remaining way to silence it, and a test asserts that no
+such comment exists anywhere under `tests/`.
 
 ### Test Structure
 

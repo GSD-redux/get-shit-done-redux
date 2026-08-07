@@ -20,7 +20,6 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 const { createTempDir, cleanup, runGsdTools, TOOLS_PATH } = require('./helpers.cjs');
 const processSeam = require('./helpers/process-seam.cjs');
@@ -443,8 +442,8 @@ describe('runHook interpreter option', () => {
   // node-only container may not have bash on PATH.
   function isBashAvailable() {
     if (process.platform === 'win32') return false;
-    const probeResult = spawnSync('bash', ['-c', 'exit 0']);
-    return !probeResult.error;
+    const probeResult = runHook('-c', ['exit 0'], { interpreter: 'bash' });
+    return probeResult.outcome !== OUTCOME.SPAWN_FAILED;
   }
 
   const bashAvailable = isBashAvailable();

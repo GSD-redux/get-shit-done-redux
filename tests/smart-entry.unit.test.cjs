@@ -15,8 +15,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const smartEntry = require('../gsd-core/bin/lib/smart-entry.cjs');
 const { classify, classifyProject, detectSignals, SITUATIONS } = smartEntry;
@@ -43,9 +45,9 @@ function makeProject({ state, roadmap = false, git = false, verifyFail = false }
     fs.writeFileSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), content);
   }
   if (git) {
-    execFileSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-    execFileSync('git', ['config', 'user.email', 't@t.com'], { cwd: tmpDir, stdio: 'pipe' });
-    execFileSync('git', ['config', 'user.name', 'T'], { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['init'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.email', 't@t.com'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.name', 'T'], { cwd: tmpDir });
   }
   if (verifyFail) {
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '01-feat');
@@ -133,8 +135,8 @@ describe('smart-entry: idle-stranded (git-dependent)', () => {
     }));
     // Commit the .planning files so the working tree is clean (untracked files
     // would make git_dirty true and mask the stranded signal).
-    execFileSync('git', ['add', '-A'], { cwd: dir, stdio: 'pipe' });
-    execFileSync('git', ['commit', '-m', 'init'], { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['add', '-A'], { cwd: dir });
+    gitOrThrow(['commit', '-m', 'init'], { cwd: dir });
     const base = detectSignals(dir);
     assert.equal(base.git_dirty, false);
     assert.equal(base.git_unpushed, false);
@@ -413,10 +415,9 @@ describe('smart-entry: CLI dispatch (gsd-tools smart-entry)', () => {
     // A bare tmpdir with no .planning is a true no-project.
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-se-bare-'));
     track(bare);
-    const out = execFileSync(process.execPath, [TOOLS, 'smart-entry', '--json', '--cwd', bare], {
-      encoding: 'utf-8',
-    });
-    const j = JSON.parse(out);
+    const r = runNode([TOOLS, 'smart-entry', '--json', '--cwd', bare], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(r, 'gsd-tools smart-entry --json');
+    const j = JSON.parse(r.stdout);
     assert.equal(j.situation, 'no-project');
     assert.equal(j.recommended, 'new-project');
     assert.equal(j.actions[0].command, '/gsd:new-project');
@@ -425,9 +426,9 @@ describe('smart-entry: CLI dispatch (gsd-tools smart-entry)', () => {
   test('default (human) mode prints a plain summary line, not JSON', () => {
     const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-se-human-'));
     track(bare);
-    const out = execFileSync(process.execPath, [TOOLS, 'smart-entry', '--cwd', bare], {
-      encoding: 'utf-8',
-    });
+    const r = runNode([TOOLS, 'smart-entry', '--cwd', bare], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(r, 'gsd-tools smart-entry');
+    const out = r.stdout;
     assert.ok(!out.startsWith('{'), 'human mode is not JSON');
     assert.match(out, /No project yet/);
     assert.match(out, /Recommended:/);

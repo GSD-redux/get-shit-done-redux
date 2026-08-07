@@ -20,8 +20,10 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
-const { execFileSync, spawnSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const BUILT_SCRIPT = path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'edge-probe.cjs');
 const ep = require(BUILT_SCRIPT);
@@ -148,19 +150,14 @@ describe('edge-probe: CLI (built artifact)', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'edge-probe-'));
     const reqPath = path.join(dir, 'requirements.json');
     fs.writeFileSync(reqPath, JSON.stringify([{ id: 'R1', text: 'Round a number to N decimal places' }]));
-    const out = execFileSync('node', [BUILT_SCRIPT, reqPath], { encoding: 'utf8' });
-    const rep = JSON.parse(out);
+    const nodeResult = runNode([BUILT_SCRIPT, reqPath], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(nodeResult, `node ${BUILT_SCRIPT} ${reqPath}`);
+    const rep = JSON.parse(nodeResult.stdout);
     assert.deepEqual(rep.coverage, { applicable: 2, resolved: 0, unresolved: 2, byVerification: { explicit: 0, backstop: 0 } });
   });
   test('with no args exits with status 2 (assert on exit code, not stderr prose)', () => {
-    let status;
-    try {
-      execFileSync('node', [BUILT_SCRIPT], { stdio: 'pipe' });
-      status = 0;
-    } catch (error) {
-      status = error.status;
-    }
-    assert.equal(status, 2);
+    const result = runNode([BUILT_SCRIPT], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.equal(result.exitCode, 2);
   });
 });
 
@@ -170,8 +167,8 @@ describe('edge-probe: CLI JSON.parse error handling (RR-10)', () => {
     const badJson = path.join(dir, 'bad-req.json');
     fs.writeFileSync(badJson, 'not valid json {{{');
     try {
-      const r = spawnSync(process.execPath, [BUILT_SCRIPT, badJson], { stdio: 'pipe' });
-      assert.equal(r.status, 2);
+      const r = runNode([BUILT_SCRIPT, badJson], { timeoutMs: PROBE_TIMEOUT_MS });
+      assert.equal(r.exitCode, 2);
     } finally {
       cleanup(dir);
     }
@@ -183,8 +180,8 @@ describe('edge-probe: CLI JSON.parse error handling (RR-10)', () => {
     fs.writeFileSync(goodReq, JSON.stringify([{ id: 'R1', text: 'Round a number to N decimal places' }]));
     fs.writeFileSync(badRes, 'not valid json {{{');
     try {
-      const r = spawnSync(process.execPath, [BUILT_SCRIPT, goodReq, badRes], { stdio: 'pipe' });
-      assert.equal(r.status, 2);
+      const r = runNode([BUILT_SCRIPT, goodReq, badRes], { timeoutMs: PROBE_TIMEOUT_MS });
+      assert.equal(r.exitCode, 2);
     } finally {
       cleanup(dir);
     }
@@ -194,8 +191,8 @@ describe('edge-probe: CLI JSON.parse error handling (RR-10)', () => {
     const reqPath = path.join(dir, 'req.json');
     fs.writeFileSync(reqPath, JSON.stringify([{ id: 'R1', text: 'Round a number to N decimal places' }]));
     try {
-      const r = spawnSync(process.execPath, [BUILT_SCRIPT, reqPath], { stdio: 'pipe', encoding: 'utf8' });
-      assert.equal(r.status, 0);
+      const r = runNode([BUILT_SCRIPT, reqPath], { timeoutMs: PROBE_TIMEOUT_MS });
+      assert.equal(r.exitCode, 0);
       const rep = JSON.parse(r.stdout);
       assert.deepEqual(rep.coverage, { applicable: 2, resolved: 0, unresolved: 2, byVerification: { explicit: 0, backstop: 0 } });
     } finally {
@@ -303,8 +300,8 @@ describe('edge-probe: proposeEdges — invalid authored shapes fail closed (re-r
     const reqPath = path.join(dir, 'req.json');
     fs.writeFileSync(reqPath, JSON.stringify([{ id: 'R1', text: 'Round a number', shapes: ['numeric'] }]));
     try {
-      const r = spawnSync(process.execPath, [BUILT_SCRIPT, reqPath], { stdio: 'pipe' });
-      assert.equal(r.status, 2);
+      const r = runNode([BUILT_SCRIPT, reqPath], { timeoutMs: PROBE_TIMEOUT_MS });
+      assert.equal(r.exitCode, 2);
     } finally {
       cleanup(dir);
     }

@@ -2,22 +2,21 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'ci-test-scope.cjs');
 const WORKFLOWS_DIR = path.join(ROOT, '.github', 'workflows');
 
 function scopeFor(files) {
-  const r = spawnSync(process.execPath, [SCRIPT, '--files', files.join(' ')], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  });
-  assert.strictEqual(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+  const r = runNode([SCRIPT, '--files', files.join(' ')], { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS });
+  assert.strictEqual(r.exitCode, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
   return JSON.parse(r.stdout);
 }
 
@@ -171,11 +170,8 @@ describe('ci-test-scope.cjs', () => {
   });
 
   test('missing required CLI values fail with usage', () => {
-    const r = spawnSync(process.execPath, [SCRIPT, '--files'], {
-      cwd: ROOT,
-      encoding: 'utf8',
-    });
-    assert.notStrictEqual(r.status, 0);
+    const r = runNode([SCRIPT, '--files'], { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.notStrictEqual(r.exitCode, 0);
     // allow-test-rule: pending-migration-to-typed-ir [#3090]
     // Regex-matches the CLI's human-readable stderr formatter (usage banner +
     // arg-parser Error#message) — CONTRIBUTING's own BAD example verbatim.
@@ -226,11 +222,7 @@ describe('ci-test-scope.cjs', () => {
     // GitHub's PR semantics) must see ONLY the docs change.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-scope-837-'));
     try {
-      const git = (...a) => {
-        const r = spawnSync('git', a, { cwd: tmp, encoding: 'utf8' });
-        assert.strictEqual(r.status, 0, `git ${a.join(' ')} failed: ${r.stderr}`);
-        return r.stdout.trim();
-      };
+      const git = (...a) => gitOrThrow(a, { cwd: tmp }).trim();
       git('init', '-q');
       git('config', 'user.email', 'test@example.com');
       git('config', 'user.name', 'Test');
@@ -259,11 +251,8 @@ describe('ci-test-scope.cjs', () => {
       git('commit', '-qm', 'chore: bump version on next');
       const base = git('rev-parse', 'HEAD');
 
-      const r = spawnSync(process.execPath, [SCRIPT, '--base', base, '--head', head], {
-        cwd: tmp,
-        encoding: 'utf8',
-      });
-      assert.strictEqual(r.status, 0, `script failed: stderr=${r.stderr}\nstdout=${r.stdout}`);
+      const r = runNode([SCRIPT, '--base', base, '--head', head], { cwd: tmp, timeoutMs: PROBE_TIMEOUT_MS });
+      assert.strictEqual(r.exitCode, 0, `script failed: stderr=${r.stderr}\nstdout=${r.stdout}`);
       const result = JSON.parse(r.stdout);
 
       assert.deepStrictEqual(
@@ -897,11 +886,13 @@ describe('code_changed=false implies clean output invariant', () => {
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const HARNESS = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
 
@@ -919,11 +910,12 @@ function seed(dir, names) {
 function runHarness(testDir, args = [], extraEnv = {}) {
   const env = { ...process.env, GSD_TEST_DIR: testDir, ...extraEnv };
   delete env.NODE_TEST_CONTEXT;
-  return spawnSync(process.execPath, [HARNESS, ...args], {
+  const result = runNode([HARNESS, ...args], {
     cwd: path.join(__dirname, '..'),
     env,
-    encoding: 'utf8',
+    timeoutMs: PROBE_TIMEOUT_MS,
   });
+  return toLegacyResult(result);
 }
 
 describe('bug #641 — --files-from with bare suite token', () => {
@@ -1114,12 +1106,15 @@ describe('bug #1329 — ci-prepare-test-scope fallback never emits a deleted fil
     for (const f of FALLBACK) {
       fs.writeFileSync(path.join(tmpDir, f), PASS_BODY, 'utf8');
     }
-    const prep = spawnSync(
-      process.execPath,
+    const prep = runNode(
       [path.join(REPO_ROOT, 'scripts', 'ci-prepare-test-scope.cjs')],
-      { cwd: tmpDir, env: { ...process.env, TEST_SCOPE: 'targeted', TARGETED_TESTS: '', WINDOWS_TESTS: '' }, encoding: 'utf8' },
+      {
+        cwd: tmpDir,
+        env: { ...process.env, TEST_SCOPE: 'targeted', TARGETED_TESTS: '', WINDOWS_TESTS: '' },
+        timeoutMs: PROBE_TIMEOUT_MS,
+      },
     );
-    assert.strictEqual(prep.status, 0, `prepare step failed: ${prep.stderr}`);
+    assert.strictEqual(prep.exitCode, 0, `prepare step failed: ${prep.stderr}`);
 
     const selected = fs.readFileSync(path.join(tmpDir, '.ci-selected-tests.txt'), 'utf8');
     for (const line of selected.split(/\r?\n/).filter(Boolean)) {

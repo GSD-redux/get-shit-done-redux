@@ -611,14 +611,21 @@ function runNpm(args, options = {}) {
   const defaults = {
     encoding: 'utf-8',
     shell: isWindows,
-    timeout: 180000,
     env: isolatedEnv,
   };
   // Merge options; if caller passes their own env, merge it on top of isolatedEnv
   // so the isolation is preserved unless the caller explicitly overrides HOME.
-  const { env: callerEnv, ...otherOptions } = options;
+  // `timeout` is destructured with a default (not left inside `defaults`) so an
+  // explicit `timeout: undefined` in `options` — an own key, not an omission —
+  // cannot silently erase the bound via the spread below; a destructure default
+  // only applies on `undefined`, whereas `{ ...defaults, ...otherOptions }`
+  // would let that own key win and fall through to no bound at all. 180000ms:
+  // npm install/pack against an isolated HOME; this is the pre-existing value,
+  // preserved.
+  const NPM_TIMEOUT_MS = 180000;
+  const { env: callerEnv, timeout = NPM_TIMEOUT_MS, ...otherOptions } = options;
   const mergedEnv = callerEnv ? { ...isolatedEnv, ...callerEnv } : isolatedEnv;
-  return execFileSync(npmCmd, args, { ...defaults, ...otherOptions, env: mergedEnv }).trim();
+  return execFileSync(npmCmd, args, { ...defaults, ...otherOptions, timeout, env: mergedEnv }).trim();
 }
 
 /**
