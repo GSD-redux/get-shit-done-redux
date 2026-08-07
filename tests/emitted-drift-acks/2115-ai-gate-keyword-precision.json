@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "plan-phase.md": {
+      "reason": "#2115 / PR #3131: the AI-integration capability gate's keyword sentence is rewritten for precision — whole-word/whole-phrase matching with an explicit substring exclusion and plural-forms clause, plus the added phrase keywords `model evaluation` / `evaluation harness`. The growth is the qualifier and examples that keep `eval` / `rag` from firing as substrings of `evaluation` / `retrieval` / `storage`; it is deliberate prose, not drift."
+    }
+  }
+}
