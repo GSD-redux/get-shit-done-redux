@@ -35,11 +35,15 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 /**
- * Expand a leading ~ to os.homedir().
+ * Expand a leading ~ to the given home directory (defaults to os.homedir()).
+ * Every call site inside resolveConfigHomeFromDescriptor threads its
+ * resolved `home` local through here so an injected opts.home (used by
+ * hermetic tests) is honored instead of silently falling back to the real
+ * home directory.
  */
-function expandTilde(p: string): string {
+function expandTilde(p: string, home: string = os.homedir()): string {
   if (!p) return p;
-  if (p.startsWith('~/') || p === '~') return path.join(os.homedir(), p.slice(1));
+  if (p.startsWith('~/') || p === '~') return path.join(home, p.slice(1));
   return p;
 }
 
@@ -177,7 +181,7 @@ export function resolveConfigHomeFromDescriptor(
       // First env var that is set wins
       for (const varName of configHome.env) {
         const val = env[varName];
-        if (val) return expandTilde(val);
+        if (val) return expandTilde(val, home);
       }
       return path.join(home, configHome.name);
     }
@@ -186,7 +190,7 @@ export function resolveConfigHomeFromDescriptor(
       // env override
       const nestedEnv0Val = env[configHome.env[0]];
       if (configHome.env[0] && nestedEnv0Val) {
-        return expandTilde(nestedEnv0Val);
+        return expandTilde(nestedEnv0Val, home);
       }
       const base = path.join(home, configHome.parent);
       if (configHome.probe && configHome.probe.length > 0) {
@@ -219,17 +223,17 @@ export function resolveConfigHomeFromDescriptor(
       // env[0]: direct override dir
       const xdgEnv0Val = env[configHome.env[0]];
       if (configHome.env[0] && xdgEnv0Val) {
-        return expandTilde(xdgEnv0Val);
+        return expandTilde(xdgEnv0Val, home);
       }
       // env[1]: FILE path → dirname
       const xdgEnv1Val = env[configHome.env[1]];
       if (configHome.env[1] && xdgEnv1Val) {
-        return path.dirname(expandTilde(xdgEnv1Val));
+        return path.dirname(expandTilde(xdgEnv1Val, home));
       }
       // env[2]: XDG_CONFIG_HOME → subdir
       const xdgEnv2Val = env[configHome.env[2]];
       if (configHome.env[2] && xdgEnv2Val) {
-        return path.join(expandTilde(xdgEnv2Val), configHome.name);
+        return path.join(expandTilde(xdgEnv2Val, home), configHome.name);
       }
       return path.join(home, '.config', configHome.name);
     }
@@ -238,28 +242,19 @@ export function resolveConfigHomeFromDescriptor(
       // env override
       const garEnv0Val = env[configHome.env[0]];
       if (configHome.env[0] && garEnv0Val) {
-        return expandTilde(garEnv0Val);
+        return expandTilde(garEnv0Val, home);
       }
       // probe each candidate; return first where probeExists subpath exists
       for (const candidate of configHome.probe) {
-        const resolved = expandTildeWithHome(candidate, home);
+        const resolved = expandTilde(candidate, home);
         if (existsSyncFn(path.join(resolved, configHome.probeExists))) {
           return resolved;
         }
       }
       // fallback: first probe candidate
-      return expandTildeWithHome(configHome.probe[0], home);
+      return expandTilde(configHome.probe[0], home);
     }
   }
-}
-
-/**
- * Expand ~ using an explicit home directory (for hermetic testing).
- */
-function expandTildeWithHome(p: string, home: string): string {
-  if (!p) return p;
-  if (p.startsWith('~/') || p === '~') return path.join(home, p.slice(1));
-  return p;
 }
 
 /**

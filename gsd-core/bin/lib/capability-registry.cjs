@@ -2777,7 +2777,9 @@ const capabilities = {
         "kind": "dot-home-nested",
         "name": "agent",
         "parent": ".pi",
-        "env": []
+        "env": [
+          "PI_CODING_AGENT_DIR"
+        ]
       },
       "localConfigDir": ".pi",
       "configFormat": "none",
@@ -6324,7 +6326,9 @@ const runtimes = {
         "kind": "dot-home-nested",
         "name": "agent",
         "parent": ".pi",
-        "env": []
+        "env": [
+          "PI_CODING_AGENT_DIR"
+        ]
       },
       "localConfigDir": ".pi",
       "configFormat": "none",

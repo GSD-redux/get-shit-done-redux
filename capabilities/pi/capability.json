@@ -14,7 +14,7 @@
       "kind": "dot-home-nested",
       "name": "agent",
       "parent": ".pi",
-      "env": []
+      "env": ["PI_CODING_AGENT_DIR"]
     },
     "localConfigDir": ".pi",
     "configFormat": "none",
