@@ -794,8 +794,10 @@ describe('broken-windows CLI: lifecycle', () => {
 describe('#3116: parseLedger handles CRLF ledgers', () => {
   // Build ledgers via renderLedger (the real writer) so the JSON fence
   // format (4-backtick) and structure always match what production emits.
+  // parseLedger validates that frontmatter counts match the entries array,
+  // so non-zero counts require real entries (appendWindow).
 
-  test('CRLF ledger parses without throwing', () => {
+  test('CRLF empty ledger parses without throwing', () => {
     const ledger = emptyLedger();
     ledger.last_updated = '2026-08-06T09:43:08.354Z';
     const lfLedger = renderLedger(ledger);
@@ -809,29 +811,24 @@ describe('#3116: parseLedger handles CRLF ledgers', () => {
     assert.equal(parsed.last_updated, '2026-08-06T09:43:08.354Z');
   });
 
-  test('CRLF ledger with non-zero counts parses correctly', () => {
-    const ledger = emptyLedger();
-    ledger.open_count = 3;
-    ledger.waived_count = 1;
-    ledger.fixed_count = 2;
-    ledger.total_count = 6;
-    ledger.last_updated = '2026-08-06T12:00:00.000Z';
+  test('CRLF ledger with entries parses correctly', () => {
+    let ledger = emptyLedger();
+    const { ledger: led1 } = appendWindow(ledger, makeEntry(), { now: '2026-08-06T12:00:00Z' });
+    const { ledger: led2 } = appendWindow(led1, makeEntry({ description: 'second' }), { now: '2026-08-06T12:01:00Z' });
+    ledger = led2;
     const lfLedger = renderLedger(ledger);
     const crlfLedger = lfLedger.replace(/\n/g, '\r\n');
 
     const parsed = parseLedger(crlfLedger);
-    assert.equal(parsed.open_count, 3);
-    assert.equal(parsed.waived_count, 1);
-    assert.equal(parsed.fixed_count, 2);
-    assert.equal(parsed.total_count, 6);
+    assert.equal(parsed.open_count, 2);
+    assert.equal(parsed.total_count, 2);
+    assert.equal(parsed.entries.length, 2);
   });
 
   test('CRLF and LF ledgers produce identical parse results', () => {
-    const ledger = emptyLedger();
-    ledger.open_count = 2;
-    ledger.fixed_count = 1;
-    ledger.total_count = 3;
-    ledger.last_updated = '2026-08-06T09:43:08.354Z';
+    let ledger = emptyLedger();
+    const { ledger: led1 } = appendWindow(ledger, makeEntry(), { now: '2026-08-06T09:43:08Z' });
+    ledger = led1;
     const lfLedger = renderLedger(ledger);
 
     const lfParsed = parseLedger(lfLedger);
