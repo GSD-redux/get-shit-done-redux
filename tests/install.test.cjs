@@ -10207,6 +10207,40 @@ describe('install.js --skills-root', () => {
   });
 });
 
+// ── gsd-tools query skills-root (#3024) ──────────────────────────────────────
+
+describe('#3024: gsd-tools query skills-root', () => {
+  const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  // Must agree with install.js --skills-root for every runtime (same underlying
+  // getGlobalSkillsBase function, just a different entry point that IS shipped).
+  const CASES = [
+    { runtime: 'claude', expected: path.join(os.homedir(), '.claude', 'skills') },
+    { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
+  ];
+
+  for (const { runtime, expected } of CASES) {
+    test(`resolves correct skills root for ${runtime}`, () => {
+      const result = spawnSync(process.execPath, [TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
+        encoding: 'utf-8',
+        env: { ...process.env, GSD_TEST_MODE: '1' },
+      });
+      assert.strictEqual(result.status, 0, `gsd-tools exited ${result.status}: ${result.stderr}`);
+      const actual = result.stdout.trim();
+      assert.strictEqual(actual, expected, `Expected ${expected}, got ${actual}`);
+    });
+  }
+
+  test('errors when runtime arg is missing', () => {
+    const result = spawnSync(process.execPath, [TOOLS_PATH, 'query', 'skills-root'], {
+      encoding: 'utf-8',
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.notStrictEqual(result.status, 0, 'Should exit with error when runtime arg is missing');
+  });
+});
+
 // ── sync-skills.md workflow content ──────────────────────────────────────────
 
 describe('sync-skills.md — required behavioral specs', () => {

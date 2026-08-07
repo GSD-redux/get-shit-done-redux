@@ -55,18 +55,13 @@ fi
 
 ## Step 2: Resolve Skills Roots
 
-Use `install.js --skills-root` to resolve paths — this reuses the single authoritative path table rather than duplicating it:
+Use `gsd-tools query skills-root` to resolve paths — this reuses the single authoritative path table via the shipped gsd-tools binary (#3024: `install.js` is not shipped in installed trees, but `gsd-tools` is):
 
 ```bash
-INSTALL_JS="$(dirname "$0")/../gsd-core/bin/install.js"
-# If running from a global install, resolve relative to the GSD package
-INSTALL_JS_GLOBAL="$HOME/.claude/gsd-core/bin/install.js"
-[[ ! -f "$INSTALL_JS" ]] && INSTALL_JS="$INSTALL_JS_GLOBAL"
-
-SRC_SKILLS_ROOT=$(node "$INSTALL_JS" --skills-root "$FROM_RUNTIME")
+SRC_SKILLS_ROOT=$(gsd_run query skills-root "$FROM_RUNTIME" --raw)
 
 for DEST_RUNTIME in "${TO_RUNTIMES[@]}"; do
-  DEST_SKILLS_ROOTS["$DEST_RUNTIME"]=$(node "$INSTALL_JS" --skills-root "$DEST_RUNTIME")
+  DEST_SKILLS_ROOTS["$DEST_RUNTIME"]=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
 done
 ```
 
@@ -143,6 +138,13 @@ For each destination with changes:
 
 ```bash
 mkdir -p "$DEST_ROOT"
+
+# #3025: verbatim cp -r copies the SOURCE runtime's converted skill form, which
+# corrupts skills for destinations that need a different conversion (e.g. Claude
+# SKILL.md → Codex TOML agent). Until the installer exposes a per-skill conversion
+# CLI, sync is limited to runtime pairs that share the same skill format.
+# Run `gsd install --<dest-runtime> --local` to get correctly converted skills
+# for a destination that uses a different format.
 
 for SKILL in $CREATE_LIST $UPDATE_LIST; do
   rm -rf "$DEST_ROOT/$SKILL"
