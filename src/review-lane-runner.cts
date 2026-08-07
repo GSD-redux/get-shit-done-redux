@@ -664,7 +664,13 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
       : plan.argv;
 
   const out = deps.spawn(plan.binary, argv, { input, timeoutMs: plan.timeoutMs });
-  deps.writeFile(plan.errPath, out.stderr ?? '');
+  // #3086: surface spawn errors (ENOENT, ETIMEDOUT, etc.) that would otherwise
+  // be silently dropped — the review path read only stdout/stderr and treated
+  // an empty-stderr spawn failure as "the model had nothing to say".
+  const errContent = out.errorCode
+    ? `${out.stderr ?? ''}\n[spawn error: ${out.errorCode}]\n`
+    : (out.stderr ?? '');
+  deps.writeFile(plan.errPath, errContent);
 
   // `file-arg` lanes write the review themselves and their stdout is deliberately discarded (#1698).
   let review =

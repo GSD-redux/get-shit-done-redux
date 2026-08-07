@@ -663,3 +663,44 @@ describe('runner — orchestration', () => {
     }
   });
 });
+
+// #3086: spawn errors (ENOENT on Windows .cmd shims, ETIMEDOUT, etc.) must be
+// surfaced in the err file so the stub reviewer output explains WHY the lane
+// produced nothing, rather than silently dropping the error code.
+
+describe('runner — #3086: spawn errorCode surfaced in err file', () => {
+  test('a spawn ENOENT writes the error code to the err file', async () => {
+    const p = plan('gemini');
+    const d = deps({
+      spawn: () => ({ status: null, stdout: '', stderr: '', errorCode: 'ENOENT' }),
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+    const errContent = d.files[p.errPath] || '';
+    assert.ok(errContent.includes('ENOENT'),
+      `err file must include the spawn error code; got: ${errContent}`);
+  });
+
+  test('a spawn ETIMEDOUT writes the error code to the err file', async () => {
+    const p = plan('codex');
+    const d = deps({
+      spawn: () => ({ status: null, stdout: '', stderr: '', errorCode: 'ETIMEDOUT' }),
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+    const errContent = d.files[p.errPath] || '';
+    assert.ok(errContent.includes('ETIMEDOUT'),
+      `err file must include the spawn error code; got: ${errContent}`);
+  });
+
+  test('a successful spawn with stderr does NOT add a spawn error marker', async () => {
+    const p = plan('gemini');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: '## Review\nok', stderr: 'some warning', errorCode: undefined }),
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+    const errContent = d.files[p.errPath] || '';
+    assert.ok(!errContent.includes('[spawn error:'),
+      `err file must NOT contain a spawn error marker on success; got: ${errContent}`);
+    assert.ok(errContent.includes('some warning'),
+      'legitimate stderr should still be written');
+  });
+});
