@@ -10152,9 +10152,8 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { runNode } = require('./helpers/process-seam.cjs');
-const os = require('node:os');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+const os = require('node:os');
 
 // A single short CLI query (install.js --skills-root <runtime>) — no full
 // install or build involved.
