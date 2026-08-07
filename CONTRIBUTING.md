@@ -417,6 +417,14 @@ bench OOM. Inject faults in-process through a module's `deps` parameter instead.
 Per-suite wrappers are still expected and encouraged: bind your fixture (cwd, env, payload) in a
 local helper and delegate the spawn to the seam.
 
+**Class-norm timeouts live in `tests/helpers/timeouts.cjs`** — `PROBE_TIMEOUT_MS`,
+`GIT_TIMEOUT_MS`, `BUILD_TIMEOUT_MS`, `INSTALL_TIMEOUT_MS`. These describe how long a whole CLASS
+of subprocess call takes (a CLI probe, git plumbing on a fixture repo, a hooks build, a full
+`bin/install.js` run), not a single suite's preference, so import them rather than re-declaring the
+same literal with the same comment in yet another file. Only write a local constant when a site
+genuinely differs from its class (a real `tsc` compile, a `regen:derived` run, ...) — and give that
+local constant its own justifying comment explaining why it departs from the norm.
+
 #### When you want git to *throw*: `gitOrThrow`
 
 `runGit` never throws — that is the whole point of it. But `execSync` and `execFileSync` **do**

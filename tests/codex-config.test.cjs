@@ -33,13 +33,14 @@ const { CLAUDE_AGENT_ALIASES } = require('../gsd-core/bin/lib/model-resolver.cjs
 // Build on demand so the test passes regardless of runner ordering.
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling via scripts/build-hooks.js) on a fresh/empty
-// hooks/dist/, not a query — sized to the 120000-180000 build-class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
     throwIfFailed(
-      runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+      runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }),
       `node ${BUILD_HOOKS_SCRIPT}`,
     );
   }
@@ -2985,9 +2986,10 @@ const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see the class norm in
-// tests/codex-config.test.cjs's top-of-file BUILD_TIMEOUT_MS comment.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { install, GSD_CODEX_MARKER } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
@@ -4812,9 +4814,10 @@ if (previousGsdTestMode === undefined) {
 // Ensure hooks/dist/ is populated — mirrors the pattern used by codex-config.test.cjs.
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see BUILD_TIMEOUT_MS at the
-// top of this file for the class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
     throwIfFailed(
@@ -5345,9 +5348,10 @@ if (previousGsdTestMode === undefined) {
 const { before, beforeEach, afterEach } = require('node:test');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see BUILD_TIMEOUT_MS at the
-// top of this file for the class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
     throwIfFailed(
@@ -6377,9 +6381,10 @@ const { createTempDir, cleanup, parseFrontmatter } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see BUILD_TIMEOUT_MS at the
-// top of this file for the class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -6598,9 +6603,10 @@ const { createTempDir, cleanup, parseFrontmatter } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see BUILD_TIMEOUT_MS at the
-// top of this file for the class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -6767,9 +6773,10 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see BUILD_TIMEOUT_MS at the
-// top of this file for the class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -7499,9 +7506,10 @@ const { createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling), not a query — see BUILD_TIMEOUT_MS at the
-// top of this file for the class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;

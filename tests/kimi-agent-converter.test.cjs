@@ -185,10 +185,8 @@ const ROOT = path.join(__dirname, '..');
 const KIMI_CFG = path.join(os.tmpdir(), 'gsd-kimi-config-test').replace(/\\/g, '/');
 const XDG_HOME = path.join(os.tmpdir(), 'gsd-xdg-home-test');
 const INSTALL_SCRIPT = path.join(ROOT, 'bin', 'install.js');
-// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for the
-// load-tested class norm (a 60000 cap ETIMEDOUT on a loaded bench while
-// another lane passed the same commit in 12.7s).
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   getGlobalConfigDir,

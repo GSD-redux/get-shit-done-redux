@@ -52,9 +52,10 @@ const { walk, runMinimalInstall, BUILD_SCRIPT } = require('./helpers/install-sha
 const DESC = path.join(__dirname, '..', 'capabilities', 'zcode', 'capability.json');
 const ZCODE_CAP = JSON.parse(fs.readFileSync(DESC, 'utf8'));
 const ZCODE_AXES = ZCODE_CAP.runtime.hostIntegration;
-// 120000: a build (hooks bundling), not a query — see install.test.cjs:5505-5513
-// for the install/build class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // hooks/dist is gitignored and built (mirrors golden-install-parity harness).
 before(() => {

@@ -22,11 +22,8 @@ const pkg = require('../package.json');
 const { install } = installModule;
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const installScript = path.join(__dirname, '..', 'bin', 'install.js');
 const SUPPORTED_RUNTIMES = installModule.allRuntimes;

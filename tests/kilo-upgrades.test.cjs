@@ -310,9 +310,10 @@ test('capabilities/kilo/capability.json extendedHookEvents is exactly [] (hooksS
 // hooks/dist is gitignored and built; the scoped CI lane does not run
 // build:hooks, so a real install there would stage no hooks/ dir. Build it
 // idempotently (mirrors golden-install-parity + install-minimal-hooks).
-// 120000: a build (hooks bundling via scripts/build-hooks.js), not a query —
-// see install.test.cjs:5505-5513 for the install/build class norm.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   const build = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
   assert.equal(build.exitCode, 0, `build:hooks failed: ${build.stderr}`);

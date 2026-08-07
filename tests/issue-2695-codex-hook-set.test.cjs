@@ -33,15 +33,11 @@ const {
 
 const PKG_VERSION = require('../package.json').version;
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 // The four-file hook set the Codex surface must deliver together (#2695).
 const CODEX_HOOK_FILES = [

@@ -27,8 +27,8 @@ const { CAP_MARKER } = lifecycle;
 // ---------------------------------------------------------------------------
 
 const { runHook } = require('./helpers/process-seam.cjs');
-// 15000: a single short CLI probe (mkfifo), not an install or a build.
-const PROBE_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 /** POSIX-only: make a FIFO at `p` (returns false where mkfifo is unavailable). */
 function tryMkfifoLife(p) {
   if (process.platform === 'win32') return false;

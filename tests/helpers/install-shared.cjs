@@ -28,14 +28,11 @@ const {
 const INSTALL_SCRIPT = path.join(__dirname, '..', '..', 'bin', 'install.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 
-// #3145: bound the previously-unbounded spawnSync in runMinimalInstall. A
-// full `bin/install.js` run measures 13-30s idle; install.test.cjs:5505-5513
-// records a real `spawnSync ETIMEDOUT` at a 60000ms cap on a loaded bench
-// while another lane passed the SAME commit in 12.7s — 60000 is too tight
-// for this class of spawn. 120000ms is the load-tested norm and is what
-// every one of install-shared.cjs's 37+ importers now inherits, so it must
-// stay generous rather than tight.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout (bounds the previously-unbounded spawnSync in
+// runMinimalInstall) — not a per-suite value. See helpers/timeouts.cjs for
+// the justification; every one of install-shared.cjs's 37+ importers
+// inherits this value, so it must stay generous rather than tight.
+const { INSTALL_TIMEOUT_MS } = require('./timeouts.cjs');
 
 const BUILD_SCRIPT = path.join(__dirname, '..', '..', 'scripts', 'build-hooks.js');
 const HOOKS_DIST = path.join(__dirname, '..', '..', 'hooks', 'dist');

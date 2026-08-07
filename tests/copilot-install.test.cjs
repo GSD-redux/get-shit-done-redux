@@ -1358,13 +1358,8 @@ const EXPECTED_SKILLS = fs.readdirSync(path.join(__dirname, '..', 'commands', 'g
 // Source-roster count (gsd-*.md basenames) — shared helper.
 const EXPECTED_AGENTS = listAgentFiles().length;
 
-// A single short CLI query or inline `bash -c` probe against a small fixture.
-const PROBE_TIMEOUT_MS = 15000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function runCopilotInstall(cwd) {
   const env = { ...process.env };

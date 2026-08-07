@@ -231,10 +231,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createTempGitProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
-
-// 15000ms: git plumbing (diff/rev-parse) on a small mkdtemp fixture repo —
-// far over any observed duration for that class of call.
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // Repo root resolution. This test file lives in `<repo>/tests/`. Use a single
 // parent reference (the established repo-wide pattern, e.g. tests/helpers.cjs

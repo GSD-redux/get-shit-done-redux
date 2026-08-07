@@ -13,11 +13,8 @@ const fs = require('fs');
 const path = require('path');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
-
-// 15000ms: git plumbing (init/config/add/commit/branch/worktree/merge/checkout)
-// on a small mkdtemp fixture repo — far over any observed duration for that
-// class of call.
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // Lazy-loaded so tests can fail clearly when the export doesn't exist yet.
 function getPruneOrphanedWorktrees() {

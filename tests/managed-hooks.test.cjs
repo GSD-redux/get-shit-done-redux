@@ -134,12 +134,10 @@ const _CHECK_UPDATE_FILE = path.join(HOOKS_DIR, 'gsd-check-update.js');
 const WORKER_FILE = path.join(HOOKS_DIR, 'gsd-check-update-worker.js');
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a full `bin/install.js` run / a build (hooks bundling) — see
-// install.test.cjs:5505-5513 for the load-tested class norm.
-const INSTALL_TIMEOUT_MS = 120000;
-const BUILD_TIMEOUT_MS = 120000;
-// 15000: a single short `node -e` probe script (no install, no build).
-const PROBE_TIMEOUT_MS = 15000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS, BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const SH_HOOKS = [
   'gsd-phase-boundary.sh',
@@ -446,12 +444,10 @@ const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
-// 120000: a full `bin/install.js` run / a build (hooks bundling); 15000: a
-// single short gsd-tools.cjs CLI query. See install.test.cjs:5505-5513 for
-// the install/build class norm.
-const INSTALL_TIMEOUT_MS = 120000;
-const BUILD_TIMEOUT_MS = 120000;
-const PROBE_TIMEOUT_MS = 15000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS, BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { HOOKS_TO_COPY } = require('../scripts/build-hooks.js');
 

@@ -35,10 +35,8 @@ const {
 } = require('./helpers/install-shared.cjs');
 const { evaluateEmittedCaps, formatCapReport } = require('./helpers/emitted-caps.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // hooks/dist is gitignored and built (DEFECT.HOOKS-DIST-SCOPED-CI). Build it
 // idempotently before the shared real-install fixture, mirroring

@@ -626,8 +626,11 @@ describe('install: Claude full → minimal downgrade removes stale agents', () =
 
 // ─── Section 13: Hooks copy, manifest, uninstall settings cleanup ─────────────
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: SECTION13_BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 before(() => {
-  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_SCRIPT}`);
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: SECTION13_BUILD_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 const isWindows = process.platform === 'win32';
@@ -1233,10 +1236,13 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /** Idempotently ensure hooks/dist contains built .js files. */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_HOOKS_SCRIPT}`);
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -1684,13 +1690,16 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /**
  * Idempotently ensure hooks/dist contains built .js files.
  * Runs build-hooks.js only when the directory is absent or empty of .js files.
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_HOOKS_SCRIPT}`);
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -2986,10 +2995,13 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /** Idempotently ensure hooks/dist contains built .js files. */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_HOOKS_SCRIPT}`);
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -3437,13 +3449,16 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /**
  * Idempotently ensure hooks/dist contains built .js files.
  * Runs build-hooks.js only when the directory is absent or empty of .js files.
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_HOOKS_SCRIPT}`);
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -4096,6 +4111,9 @@ const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const isWindows = process.platform === 'win32';
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 const SH_HOOKS = [
   'gsd-session-state.sh',
   'gsd-validate-commit.sh',
@@ -4105,7 +4123,7 @@ const SH_HOOKS = [
 // ─── Ensure hooks/dist/ is populated before any install test ────────────────
 
 before(() => {
-  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_SCRIPT}`);
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

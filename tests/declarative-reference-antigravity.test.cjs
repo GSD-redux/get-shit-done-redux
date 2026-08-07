@@ -51,9 +51,12 @@ const DESC = path.join(__dirname, '..', 'capabilities', 'antigravity', 'capabili
 const ANTIGRAVITY_CAP = JSON.parse(fs.readFileSync(DESC, 'utf8'));
 const ANTIGRAVITY_AXES = ANTIGRAVITY_CAP.runtime.hostIntegration;
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // hooks/dist is gitignored and built (mirrors golden-install-parity harness).
 before(() => {
-  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_SCRIPT}`);
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 test('Antigravity classifies as the declarative-cli reference profile (profileOf)', () => {

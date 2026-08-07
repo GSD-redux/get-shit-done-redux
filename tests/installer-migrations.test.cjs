@@ -1903,9 +1903,11 @@ const { install, parseTomlToObject, reconcileCodexHooksJsonEvent } = installModu
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling) run in beforeEach on a fresh worktree
-// where hooks/dist/ is empty — a full build, not a query.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything, even
+// run in beforeEach on a fresh worktree. See tests/helpers/timeouts.cjs for
+// the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const previousCodexHome = process.env.CODEX_HOME;

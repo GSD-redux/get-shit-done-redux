@@ -33,9 +33,8 @@ const { createTempDir, createTempProject, cleanup, parseFrontmatter } = require(
 const { runNode } = require('./helpers/process-seam.cjs');
 const pkg = require('../package.json');
 
-// A single short CLI query (installed cli.cjs --help / extract) against a
-// small fixture — no full install or build involved.
-const PROBE_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   getDirName,
@@ -3514,15 +3513,11 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 before(() => {
   const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
@@ -4655,10 +4650,8 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 // With --test-concurrency=4, other install tests (bug-1834, bug-1924) run
@@ -4789,10 +4782,8 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup, captureConsole } = require('./helpers.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
@@ -4952,10 +4943,8 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
@@ -5501,15 +5490,11 @@ const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 /**
  * Ensure hooks/dist is populated before any suite that reads it.
@@ -7574,15 +7559,11 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 before(() => {
   const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
@@ -8715,10 +8696,8 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 // With --test-concurrency=4, other install tests (bug-1834, bug-1924) run
@@ -8849,10 +8828,8 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup, captureConsole } = require('./helpers.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
@@ -9012,10 +8989,8 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
@@ -9561,15 +9536,11 @@ const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 /**
  * Ensure hooks/dist is populated before any suite that reads it.
@@ -10004,15 +9975,11 @@ const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 // leaves hooks/dist empty and install.js hard-fails "directory is empty" (#1926).
 const BUILD_HOOKS = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
-// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
-// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
-// 60000 cap on a loaded bench while another lane passed the same commit
-// in 12.7s; idle runs measure 13-30s.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Helpers

@@ -46,10 +46,8 @@ const {
 } = require('../gsd-core/bin/lib/install-engine.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
-// 120000: a full `bin/install.js` run. install.test.cjs:5505-5513 records a
-// real `spawnSync ETIMEDOUT` at a 60000 cap on a loaded bench while another
-// lane passed the same commit in 12.7s — 120000 is the load-tested norm.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const HOOKS_SRC = path.join(__dirname, '..', 'hooks');
 const REAL_COMMANDS_DIR = path.join(__dirname, '..', 'commands', 'gsd');
 const MANIFEST = loadSkillsManifest(REAL_COMMANDS_DIR);
@@ -1109,9 +1107,10 @@ const os = require('os');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
-// 120000: a build (hooks bundling via scripts/build-hooks.js), per the
-// 120000-180000 build-class norm — not a query, so it must not be undersized.
-const BUILD_TIMEOUT_MS = 120000;
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before any install test ─────────────────
 

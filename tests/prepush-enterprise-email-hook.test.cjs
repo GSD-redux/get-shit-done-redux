@@ -11,8 +11,8 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_PATH = path.join(ROOT, '.githooks', 'pre-push');
 
-// A mocked git pre-push hook run against a small fixture — no install or build.
-const PROBE_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Write a mock bash script to a .sh file in tmpDir and return its absolute path.

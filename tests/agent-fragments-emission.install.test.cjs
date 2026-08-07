@@ -52,9 +52,8 @@ const { RUNTIME_META, installerEnv, walk } = require('./helpers/install-shared.c
 const { buildOverlayRepo } = require('./helpers/overlay-repo.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
-// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for
-// the load-tested class norm.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /** The agent used as the marker probe. Any agent works — this suite proves the
  *  EMISSION PATH, not this file's own content. gsd-codebase-mapper is the

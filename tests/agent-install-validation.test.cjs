@@ -16,9 +16,8 @@ const { runNode } = require('./helpers/process-seam.cjs');
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 const { installerEnv } = require('./helpers/install-shared.cjs');
 
-// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for
-// the load-tested class norm.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const AGENTS_DIR_NAME = 'agents';
 const MODEL_PROFILES = require('../gsd-core/bin/lib/model-profiles.cjs').MODEL_PROFILES;
 const EXPECTED_AGENTS = Object.keys(MODEL_PROFILES);

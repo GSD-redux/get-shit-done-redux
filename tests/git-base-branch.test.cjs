@@ -34,13 +34,8 @@ const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 
-/**
- * Bound for every subprocess in this file: git plumbing (init/config/add/
- * commit/clone/symbolic-ref/remote/branch) against small mkdtemp fixture
- * repos, plus the one short handle_branching bash-script run below — all
- * orders of magnitude under this. #3144.
- */
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 

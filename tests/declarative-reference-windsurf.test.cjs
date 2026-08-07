@@ -62,10 +62,8 @@ const DESC = path.join(__dirname, '..', 'capabilities', 'windsurf', 'capability.
 const WINDSURF_CAP = JSON.parse(fs.readFileSync(DESC, 'utf8'));
 const WINDSURF_AXES = WINDSURF_CAP.runtime.hostIntegration;
 
-// scripts/build-hooks.js only copies already-built hook/lib files into
-// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
-// margin far beyond that without risking the full-install-class 120000.
-const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // hooks/dist is gitignored and built (mirrors golden-install-parity harness).
 before(() => {

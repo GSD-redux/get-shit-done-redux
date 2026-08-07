@@ -58,9 +58,8 @@ const { executionContextRefs } = require('../scripts/command-contract-helpers.cj
 const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
-// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for
-// the load-tested class norm.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const PILOT_REL = path.join('gsd-core', 'workflows', 'execute-phase.md');
 const PILOT_PATH = path.join(REPO_ROOT, PILOT_REL);
 // plan-phase.md was the original #2930 pilot but was reverted to unmarked

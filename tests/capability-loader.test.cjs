@@ -24,8 +24,8 @@ const { buildRegistry } = require('../scripts/gen-capability-registry.cjs');
 
 const HOST = '1.6.0';
 
-// A single `mkfifo` system call creating a fixture FIFO — no install or build.
-const PROBE_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /** Create a FIFO at `fifoPath` via `mkfifo`, throwing on failure. */
 function mkfifo(fifoPath) {

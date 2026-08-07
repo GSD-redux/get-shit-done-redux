@@ -40,9 +40,8 @@ const {
   installerEnv,
   INSTALL_SCRIPT,
 } = require('./helpers/install-shared.cjs');
-// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for
-// the load-tested class norm.
-const INSTALL_TIMEOUT_MS = 120000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { cleanup } = require('./helpers.cjs');
 const {
   resolveRuntimeArtifactLayout,

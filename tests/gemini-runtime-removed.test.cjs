@@ -32,10 +32,13 @@ const { runMinimalInstall, BUILD_SCRIPT } = require('./helpers/install-shared.cj
 const ROOT = path.join(__dirname, '..');
 const INSTALL_JS = path.join(ROOT, 'bin', 'install.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // hooks/dist is gitignored + built; build it idempotently so a real install
 // emits hooks (mirrors golden-install-parity / install-minimal-hooks).
 before(() => {
-  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_SCRIPT}`);
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 const {
