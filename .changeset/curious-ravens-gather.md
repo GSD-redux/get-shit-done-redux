@@ -2,4 +2,4 @@
 type: Fixed
 pr: 0
 ---
-**GSD no longer creates a `hooks/` directory in pi installs** — pi reserves that name for its deprecated extension location and warned on every startup; the shared hook bundle now installs to `gsd-hooks/` instead, and an upgrade migration retires the old directory. (#3023)
+**pi installs no longer trigger pi's deprecated-directory startup warning, respect `PI_CODING_AGENT_DIR`, and never lose custom files during an update** — the shared hook bundle now installs to `gsd-hooks/` instead of `hooks/` (which pi reserves for its own deprecated extension location and warns about on every startup), with an upgrade migration retiring the old directory; pi's own `PI_CODING_AGENT_DIR` override is now honored when resolving where GSD writes; and `/gsd-update`'s custom-file detection now recognizes the renamed bundle, so user files placed under it are backed up before a clean install instead of being silently wiped. (#3023)

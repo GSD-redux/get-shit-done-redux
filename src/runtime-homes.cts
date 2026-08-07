@@ -47,6 +47,24 @@ function expandTilde(p: string, home: string = os.homedir()): string {
   return p;
 }
 
+/**
+ * True when `val` is a usable env-var override: a real string that contains
+ * at least one non-whitespace character. Every env-override consumption site
+ * in resolveConfigHomeFromDescriptor gates on this instead of a bare truthy
+ * check, so `FOO_DIR=''` (empty), `FOO_DIR` unset (`undefined`), and
+ * `FOO_DIR='   '` (whitespace-only — e.g. from a shell templating bug that
+ * leaves a variable substitution blank but quoted) all fall back to the
+ * descriptor default identically. Deliberately does NOT trim: a value that
+ * merely has leading/trailing whitespace around otherwise-real content (or
+ * interior whitespace, e.g. `~/My Agent Dir`) is passed through byte-for-byte
+ * unchanged, exactly as this module already treats every other env-var
+ * override (no site here or elsewhere in this file trims a path value) — so
+ * default behavior for every non-whitespace value is unaffected by this guard.
+ */
+function hasNonBlankOverride(val: string | undefined): val is string {
+  return typeof val === 'string' && val.trim() !== '';
+}
+
 export interface ResolveAntigravityOpts {
   env?: Record<string, string | undefined>;
   home?: string;
@@ -181,7 +199,7 @@ export function resolveConfigHomeFromDescriptor(
       // First env var that is set wins
       for (const varName of configHome.env) {
         const val = env[varName];
-        if (val) return expandTilde(val, home);
+        if (hasNonBlankOverride(val)) return expandTilde(val, home);
       }
       return path.join(home, configHome.name);
     }
@@ -189,7 +207,7 @@ export function resolveConfigHomeFromDescriptor(
     case 'dot-home-nested': {
       // env override
       const nestedEnv0Val = env[configHome.env[0]];
-      if (configHome.env[0] && nestedEnv0Val) {
+      if (configHome.env[0] && hasNonBlankOverride(nestedEnv0Val)) {
         return expandTilde(nestedEnv0Val, home);
       }
       const base = path.join(home, configHome.parent);
@@ -222,17 +240,17 @@ export function resolveConfigHomeFromDescriptor(
     case 'xdg': {
       // env[0]: direct override dir
       const xdgEnv0Val = env[configHome.env[0]];
-      if (configHome.env[0] && xdgEnv0Val) {
+      if (configHome.env[0] && hasNonBlankOverride(xdgEnv0Val)) {
         return expandTilde(xdgEnv0Val, home);
       }
       // env[1]: FILE path → dirname
       const xdgEnv1Val = env[configHome.env[1]];
-      if (configHome.env[1] && xdgEnv1Val) {
+      if (configHome.env[1] && hasNonBlankOverride(xdgEnv1Val)) {
         return path.dirname(expandTilde(xdgEnv1Val, home));
       }
       // env[2]: XDG_CONFIG_HOME → subdir
       const xdgEnv2Val = env[configHome.env[2]];
-      if (configHome.env[2] && xdgEnv2Val) {
+      if (configHome.env[2] && hasNonBlankOverride(xdgEnv2Val)) {
         return path.join(expandTilde(xdgEnv2Val, home), configHome.name);
       }
       return path.join(home, '.config', configHome.name);
@@ -241,7 +259,7 @@ export function resolveConfigHomeFromDescriptor(
     case 'generic-agents-root': {
       // env override
       const garEnv0Val = env[configHome.env[0]];
-      if (configHome.env[0] && garEnv0Val) {
+      if (configHome.env[0] && hasNonBlankOverride(garEnv0Val)) {
         return expandTilde(garEnv0Val, home);
       }
       // probe each candidate; return first where probeExists subpath exists

@@ -341,6 +341,165 @@ describe('expandTilde honors an injected opts.home (regression)', () => {
   });
 });
 
+// ── #3023 review finding 1: whitespace-only env override must fall back ──────
+//
+// expandTilde's old call sites gated on a bare `if (val)`, which is falsy
+// only for `''`. A whitespace-only value (e.g. `PI_CODING_AGENT_DIR='   '`,
+// which a broken shell template can produce when a substitution is blank but
+// still quoted) passed the truthy check and resolved to the literal
+// three-space string instead of falling back to the descriptor default. The
+// fix gates every env-override consumption site in
+// resolveConfigHomeFromDescriptor on `hasNonBlankOverride` (real string, at
+// least one non-whitespace char) instead of bare truthiness — covering
+// dot-home, dot-home-nested, all three xdg steps, and generic-agents-root
+// alike (same class, same fix, not just pi's branch).
+//
+// Leading/trailing whitespace on an otherwise non-blank value is deliberately
+// NOT trimmed (see hasNonBlankOverride's doc comment in runtime-homes.cts):
+// this module never trims env-var path values elsewhere, so trimming here
+// would make some non-whitespace values behave differently from before this
+// fix, violating "default behavior for every non-whitespace value must stay
+// byte-identical". Only entirely-blank values are rejected.
+describe('#3023 review finding 1: whitespace-only env override falls back to default (regression)', () => {
+  const CLAUDE_DESCRIPTOR = { kind: 'dot-home', name: '.claude', env: ['CLAUDE_CONFIG_DIR'] };
+  const PI_DESCRIPTOR = { kind: 'dot-home-nested', name: 'agent', parent: '.pi', env: ['PI_CODING_AGENT_DIR'] };
+
+  describe('claude (dot-home)', () => {
+    test('whitespace-only env value falls back to the descriptor default, never the literal whitespace string', () => {
+      const result = resolveConfigHomeFromDescriptor(CLAUDE_DESCRIPTOR, {
+        env: { CLAUDE_CONFIG_DIR: '   ' },
+        home: '/home/u',
+      });
+      assert.strictEqual(result, path.join('/home/u', '.claude'));
+      assert.notStrictEqual(result, '   ');
+    });
+
+    test('empty-string env value falls back to the default (existing behavior preserved)', () => {
+      const result = resolveConfigHomeFromDescriptor(CLAUDE_DESCRIPTOR, {
+        env: { CLAUDE_CONFIG_DIR: '' },
+        home: '/home/u',
+      });
+      assert.strictEqual(result, path.join('/home/u', '.claude'));
+    });
+
+    test('unset env value falls back to the default', () => {
+      const result = resolveConfigHomeFromDescriptor(CLAUDE_DESCRIPTOR, {
+        env: {},
+        home: '/home/u',
+      });
+      assert.strictEqual(result, path.join('/home/u', '.claude'));
+    });
+
+    test('env value with interior spaces resolves under the injected home, spaces intact (guard is not over-broad)', () => {
+      const result = resolveConfigHomeFromDescriptor(CLAUDE_DESCRIPTOR, {
+        env: { CLAUDE_CONFIG_DIR: '~/My Agent Dir' },
+        home: '/home/u',
+      });
+      assert.strictEqual(result, path.join('/home/u', 'My Agent Dir'));
+    });
+
+    test('normal absolute path env value is unchanged', () => {
+      const result = resolveConfigHomeFromDescriptor(CLAUDE_DESCRIPTOR, {
+        env: { CLAUDE_CONFIG_DIR: '/custom/claude' },
+        home: '/home/u',
+      });
+      assert.strictEqual(result, '/custom/claude');
+    });
+  });
+
+  describe('pi (dot-home-nested)', () => {
+    test('whitespace-only env value falls back to the descriptor default, never the literal whitespace string', () => {
+      const result = resolveConfigHomeFromDescriptor(PI_DESCRIPTOR, {
+        env: { PI_CODING_AGENT_DIR: '   ' },
+        home: '/home/u',
+        existsSync: () => false,
+      });
+      assert.strictEqual(result, path.join('/home/u', '.pi', 'agent'));
+      assert.notStrictEqual(result, '   ');
+    });
+
+    test('empty-string env value falls back to the default (existing behavior preserved)', () => {
+      const result = resolveConfigHomeFromDescriptor(PI_DESCRIPTOR, {
+        env: { PI_CODING_AGENT_DIR: '' },
+        home: '/home/u',
+        existsSync: () => false,
+      });
+      assert.strictEqual(result, path.join('/home/u', '.pi', 'agent'));
+    });
+
+    test('unset env value falls back to the default', () => {
+      const result = resolveConfigHomeFromDescriptor(PI_DESCRIPTOR, {
+        env: {},
+        home: '/home/u',
+        existsSync: () => false,
+      });
+      assert.strictEqual(result, path.join('/home/u', '.pi', 'agent'));
+    });
+
+    test('env value with interior spaces resolves under the injected home, spaces intact (guard is not over-broad)', () => {
+      const result = resolveConfigHomeFromDescriptor(PI_DESCRIPTOR, {
+        env: { PI_CODING_AGENT_DIR: '~/My Agent Dir' },
+        home: '/home/u',
+        existsSync: () => false,
+      });
+      assert.strictEqual(result, path.join('/home/u', 'My Agent Dir'));
+    });
+
+    test('normal absolute path env value is unchanged', () => {
+      const result = resolveConfigHomeFromDescriptor(PI_DESCRIPTOR, {
+        env: { PI_CODING_AGENT_DIR: '/custom/pi-agent' },
+        home: '/home/u',
+        existsSync: () => false,
+      });
+      assert.strictEqual(result, '/custom/pi-agent');
+    });
+  });
+
+  // Full branch coverage: the same whitespace-only guard applies to every
+  // env-override consumption site in resolveConfigHomeFromDescriptor, not
+  // just dot-home/dot-home-nested. Each of these fails before the fix and
+  // passes after.
+  describe('remaining branches (xdg all 3 steps, generic-agents-root)', () => {
+    test('xdg env[0] (direct override): whitespace-only falls back to default', () => {
+      const result = resolveConfigHomeFromDescriptor(
+        { kind: 'xdg', name: 'opencode', env: ['OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG', 'XDG_CONFIG_HOME'] },
+        { env: { OPENCODE_CONFIG_DIR: '   ' }, home: '/home/u' },
+      );
+      assert.strictEqual(result, path.join('/home/u', '.config', 'opencode'));
+    });
+
+    test('xdg env[1] (file-path override): whitespace-only falls through to default (not env[2])', () => {
+      const result = resolveConfigHomeFromDescriptor(
+        { kind: 'xdg', name: 'opencode', env: ['OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG', 'XDG_CONFIG_HOME'] },
+        { env: { OPENCODE_CONFIG: '   ' }, home: '/home/u' },
+      );
+      assert.strictEqual(result, path.join('/home/u', '.config', 'opencode'));
+    });
+
+    test('xdg env[2] (XDG_CONFIG_HOME): whitespace-only falls back to default', () => {
+      const result = resolveConfigHomeFromDescriptor(
+        { kind: 'xdg', name: 'opencode', env: ['OPENCODE_CONFIG_DIR', 'OPENCODE_CONFIG', 'XDG_CONFIG_HOME'] },
+        { env: { XDG_CONFIG_HOME: '   ' }, home: '/home/u' },
+      );
+      assert.strictEqual(result, path.join('/home/u', '.config', 'opencode'));
+    });
+
+    test('generic-agents-root: whitespace-only env override falls back to probe/default', () => {
+      const result = resolveConfigHomeFromDescriptor(
+        {
+          kind: 'generic-agents-root',
+          name: 'agents',
+          env: ['KIMI_CONFIG_DIR'],
+          probe: ['~/.config/agents', '~/.agents'],
+          probeExists: 'skills',
+        },
+        { env: { KIMI_CONFIG_DIR: '   ' }, home: '/home/u', existsSync: () => false },
+      );
+      assert.strictEqual(result, path.join('/home/u', '.config', 'agents'));
+    });
+  });
+});
+
 // ── GOLDEN XDG SCENARIOS ──────────────────────────────────────────────────────
 
 describe('descriptor-driven equivalence: xdg runtimes (opencode, kilo)', () => {

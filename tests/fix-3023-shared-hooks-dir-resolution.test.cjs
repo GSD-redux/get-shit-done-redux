@@ -455,6 +455,55 @@ describe('GROUP B: pi adapter resolveSharedHooksDir (pi/gsd.cjs)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// GROUP D — parity assertion: installer descriptor vs pi's own candidate list
+// ---------------------------------------------------------------------------
+//
+// bin/install.js derives the shared-hooks directory NAME for a runtime from
+// the capability registry (resolveSharedHooksDirName). pi/gsd.cjs cannot read
+// that registry at runtime — it must resolve correctly in a dev checkout AND
+// in a half-upgraded tree, where the registry's CURRENT answer would be the
+// wrong one to probe for (see the SHARED_HOOKS_DIR_CANDIDATES doc comment in
+// pi/gsd.cjs) — so it keeps its own hardcoded probe list instead. That is two
+// independent sources of truth for the same name: exactly the "Generative Fix
+// Divergence" anti-pattern (CLAUDE.md -> KNOWN DEFECTS: "When sharing
+// constants/arrays/parsers between parallel surfaces, add a parity assertion
+// test that fails if they diverge."). If a future descriptor rename is not
+// mirrored into pi/gsd.cjs, this is the guard that fails loudly instead of
+// every pi hook going quiet with no error.
+describe('GROUP D: parity — installer descriptor vs pi/gsd.cjs SHARED_HOOKS_DIR_CANDIDATES', () => {
+  const REMEDY = 'if the descriptor changes, update SHARED_HOOKS_DIR_CANDIDATES in pi/gsd.cjs to match';
+
+  test('the installer-resolved pi descriptor name is a member of the adapter probe list', () => {
+    const descriptorName = installMod.resolveSharedHooksDirName('pi');
+    assert.ok(
+      SHARED_HOOKS_DIR_CANDIDATES.includes(descriptorName),
+      `pi's capability descriptor resolves to "${descriptorName}", which is NOT in pi/gsd.cjs's ` +
+      `SHARED_HOOKS_DIR_CANDIDATES (${JSON.stringify(SHARED_HOOKS_DIR_CANDIDATES)}) — ${REMEDY}.`,
+    );
+  });
+
+  test('the installer-resolved pi descriptor name is the FIRST candidate (must outrank the legacy dir)', () => {
+    const descriptorName = installMod.resolveSharedHooksDirName('pi');
+    assert.equal(
+      SHARED_HOOKS_DIR_CANDIDATES[0],
+      descriptorName,
+      `pi/gsd.cjs's SHARED_HOOKS_DIR_CANDIDATES probes "${SHARED_HOOKS_DIR_CANDIDATES[0]}" first, but the ` +
+      `installer's current descriptor for pi resolves to "${descriptorName}" — a half-upgraded tree (both dirs ` +
+      `present) would bind to the stale bundle first. ${REMEDY}, with the descriptor's current name listed first.`,
+    );
+  });
+
+  test('the back-compat default ("hooks") is present in the adapter probe list', () => {
+    assert.ok(
+      SHARED_HOOKS_DIR_CANDIDATES.includes(installMod.SHARED_HOOKS_DIR_DEFAULT),
+      `pi/gsd.cjs's SHARED_HOOKS_DIR_CANDIDATES (${JSON.stringify(SHARED_HOOKS_DIR_CANDIDATES)}) no longer ` +
+      `contains the installer's back-compat default ("${installMod.SHARED_HOOKS_DIR_DEFAULT}") — dropping it ` +
+      `breaks the dev-checkout/back-compat path (a checkout with only a legacy hooks/ dir would resolve to null). ${REMEDY}.`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GROUP C — bundle-directory-NAME-agnostic hook scripts
 // ---------------------------------------------------------------------------
 
