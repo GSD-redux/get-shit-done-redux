@@ -345,6 +345,68 @@ const GSD_WINDSURF_HOOK_SCRIPTS = [
 // that does receive hooks/lib.
 const GSD_HOOK_LIB_FILES = ['git-cmd.js', 'gsd-graphify-rebuild.sh', 'cursor-workspace.js'];
 
+/**
+ * Directory name GSD stages its shared hook bundle under, inside a runtime's
+ * install root. Defaults to 'hooks' — the name every runtime used before #3023.
+ *
+ * pi (pi.dev) reserves `hooks/` as its own now-deprecated extension location and
+ * prints a migration warning on every startup when one exists, so pi overrides
+ * this via hostBehaviors.sharedHooksDirName. Following pi's advised remediation
+ * (move it into extensions/) would break the adapter's path resolution AND expose
+ * GSD's .js helpers to pi's extension auto-discovery, so the bundle is renamed in
+ * place instead — same depth, so every `__dirname/..`-relative resolution inside
+ * the bundle (e.g. hooks/gsd-context-monitor.js reaching ../gsd-core/bin/) keeps
+ * working.
+ */
+const SHARED_HOOKS_DIR_DEFAULT = 'hooks';
+
+/**
+ * Resolve a runtime's shared-hooks directory name from its descriptor.
+ *
+ * The value is a single path SEGMENT. This string is joined onto a user's config
+ * root and then written to and recursively read, so anything that is not a plain,
+ * non-empty, separator-free, non-dot segment is rejected back to the default —
+ * a descriptor typo must never let the installer write outside the install root.
+ *
+ * The "non-dot" part of that contract is enforced beyond the literal '.' / '..'
+ * segments: an all-dot (or dot-and-whitespace-only) segment is rejected as a
+ * meaningless name, a segment with a trailing dot or space is rejected because
+ * Windows silently strips it at directory-creation time (which would split the
+ * name the installer creates from the name callers probe for), and a Windows
+ * reserved device name (CON, PRN, AUX, NUL, COM1-9, LPT1-9, with or without an
+ * extension) is rejected because it cannot exist as a directory on Windows at
+ * all. These checks are unconditional on every platform: the descriptor is
+ * authored once and shipped everywhere, so a value invalid on Windows must be
+ * rejected identically on Linux/macOS, or the install and its fixtures disagree
+ * cross-platform.
+ *
+ * @param {string} runtime
+ * @returns {string}
+ */
+function resolveSharedHooksDirName(runtime) {
+  const raw = _hostBehaviors(runtime).sharedHooksDirName;
+  if (typeof raw !== 'string') return SHARED_HOOKS_DIR_DEFAULT;
+  const name = raw.trim();
+  if (name === '') return SHARED_HOOKS_DIR_DEFAULT;
+  if (name === '.' || name === '..') return SHARED_HOOKS_DIR_DEFAULT;
+  // All-dot or dot+whitespace segments ('...', '. .') are not meaningful
+  // directory names and are almost certainly a descriptor typo.
+  if (name.replace(/[.\s]/g, '') === '') return SHARED_HOOKS_DIR_DEFAULT;
+  // Windows silently strips a trailing dot or space at creation time, so the
+  // directory the installer creates would not match the name the adapter
+  // probes for — a split-brain that only reproduces off-Linux.
+  if (/[. ]$/.test(name)) return SHARED_HOOKS_DIR_DEFAULT;
+  // Windows reserved device names cannot exist as directories.
+  if (/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?$/i.test(name)) return SHARED_HOOKS_DIR_DEFAULT;
+  if (name.includes('/') || name.includes('\\')) return SHARED_HOOKS_DIR_DEFAULT;
+  // Belt-and-braces: reject anything path.basename() would reduce, and any
+  // Windows drive/UNC-flavoured value.
+  if (path.basename(name) !== name) return SHARED_HOOKS_DIR_DEFAULT;
+  if (path.isAbsolute(name)) return SHARED_HOOKS_DIR_DEFAULT;
+  if (name.includes('\0')) return SHARED_HOOKS_DIR_DEFAULT;
+  return name;
+}
+
 const CODEX_AGENT_SANDBOX = {
   'gsd-executor': 'workspace-write',
   'gsd-planner': 'workspace-write',
@@ -8469,7 +8531,8 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   }
 
   // 4. Remove GSD hooks
-  const hooksDir = path.join(targetDir, 'hooks');
+  // #3023: mirror the install site's descriptor-driven bundle dir name.
+  const hooksDir = path.join(targetDir, resolveSharedHooksDirName(runtime));
   if (fs.existsSync(hooksDir)) {
     let hookCount = 0;
     for (const hook of GSD_UNINSTALL_HOOKS) {
@@ -9568,7 +9631,10 @@ function writeManifest(configDir, runtime = DEFAULT_RUNTIME, options = {}) {
   // #2100: Windsurf's exclusion is likewise descriptor-driven (windsurf declares
   // skipSharedHooksInstall:true) — the redundant `&& !isWindsurf` was removed.
   if (!isCodex && _hostBehaviors(runtime).skipSharedHooksInstall !== true) {
-    const hooksDir = path.join(configDir, 'hooks');
+    // #3023: manifest keys must track the bundle wherever the descriptor put it,
+    // or uninstall/saveLocalPatches silently orphan the tree.
+    const sharedHooksDirName = resolveSharedHooksDirName(runtime);
+    const hooksDir = path.join(configDir, sharedHooksDirName);
     if (fs.existsSync(hooksDir)) {
       // Drive from INSTALLED_HOOK_FILES (the canonical HOOKS_TO_COPY set from
       // scripts/build-hooks.js) rather than a prefix/extension regex, so the
@@ -9580,7 +9646,7 @@ function writeManifest(configDir, runtime = DEFAULT_RUNTIME, options = {}) {
       for (const hook of INSTALLED_HOOK_FILES) {
         const hookPath = path.join(hooksDir, hook);
         if (fs.existsSync(hookPath)) {
-          manifest.files['hooks/' + hook] = fileHash(hookPath);
+          manifest.files[sharedHooksDirName + '/' + hook] = fileHash(hookPath);
         }
       }
       // Track hooks/lib/ helpers so saveLocalPatches() can back up user edits
@@ -9589,7 +9655,7 @@ function writeManifest(configDir, runtime = DEFAULT_RUNTIME, options = {}) {
       if (fs.existsSync(hooksLibDir)) {
         for (const file of fs.readdirSync(hooksLibDir)) {
           if (GSD_HOOK_LIB_FILES.includes(file)) {
-            manifest.files['hooks/lib/' + file] = fileHash(path.join(hooksLibDir, file));
+            manifest.files[sharedHooksDirName + '/lib/' + file] = fileHash(path.join(hooksLibDir, file));
           }
         }
       }
@@ -11106,6 +11172,11 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // a safe no-op when the dir is already present.
     fs.mkdirSync(destRootDir, { recursive: true });
 
+    // #3023: the bundle's directory NAME is descriptor-driven — a host that
+    // reserves `hooks/` (pi) must be able to opt out. Resolved once here so the
+    // stage / lib / marker sites can never disagree about where the bundle is.
+    const sharedHooksDirName = resolveSharedHooksDirName(runtime);
+
     // #2544: the CommonJS marker is NOT written here (destRootDir is the
     // runtime's shared config root — user-writable territory on OpenCode and
     // Kilo, where it is the documented place to declare local-plugin npm
@@ -11121,7 +11192,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // Template paths for the target runtime (replaces '.claude' with correct config dir)
     const hooksSrc = path.join(src, 'hooks', 'dist');
     if (fs.existsSync(hooksSrc)) {
-      const hooksDest = path.join(destRootDir, 'hooks');
+      const hooksDest = path.join(destRootDir, sharedHooksDirName);
       fs.mkdirSync(hooksDest, { recursive: true });
       const hookEntries = fs.readdirSync(hooksSrc);
       if (hookEntries.some((e) => fs.statSync(path.join(hooksSrc, e)).isFile())) stagedHooks = true;
@@ -11187,7 +11258,7 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
         }
       }
       if (verifyInstalled(hooksDest, 'hooks')) {
-        console.log(`  ${green}✓${reset} Installed hooks (bundled)`);
+        console.log(`  ${green}✓${reset} Installed ${sharedHooksDirName} (bundled)`);
         // Warn if expected community .sh hooks are missing (non-fatal)
         const expectedShHooks = ['gsd-session-state.sh', 'gsd-validate-commit.sh', 'gsd-phase-boundary.sh', 'gsd-graphify-update.sh'];
         for (const sh of expectedShHooks) {
@@ -11216,11 +11287,11 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // below; this helper itself only checks source presence.)
     const hooksLibSrc = path.join(src, 'hooks', 'lib');
     if (fs.existsSync(hooksLibSrc)) {
-      const hooksLibDest = path.join(destRootDir, 'hooks', 'lib');
+      const hooksLibDest = path.join(destRootDir, sharedHooksDirName, 'lib');
       fs.mkdirSync(hooksLibDest, { recursive: true });
       copyLibDir(hooksLibSrc, hooksLibDest, GSD_HOOK_LIB_FILES);
       if (GSD_HOOK_LIB_FILES.some((f) => fs.existsSync(path.join(hooksLibDest, f)))) stagedHooks = true;
-      console.log(`  ${green}✓${reset} Installed hooks/lib/ helpers (git-cmd, graphify-rebuild, ...)`);
+      console.log(`  ${green}✓${reset} Installed ${sharedHooksDirName}/lib/ helpers (git-cmd, graphify-rebuild, ...)`);
     }
 
     // #2544: pin the staged hook scripts to CommonJS from inside hooks/ — the
@@ -11241,19 +11312,19 @@ function install(isGlobal, runtime = DEFAULT_RUNTIME, options = {}) {
     // populate as CommonJS claims an ownership the install did not earn — the
     // two flags answer different questions ("did we intend to fill it" vs "is
     // it actually filled"), and the marker needs both.
-    const hooksMarkerDir = path.join(destRootDir, 'hooks');
+    const hooksMarkerDir = path.join(destRootDir, sharedHooksDirName);
     if (stagedHooks && hooksOk) {
       switch (ensureCommonJsMarker(hooksMarkerDir)) {
         case 'written':
-          console.log(`  ${green}✓${reset} Wrote hooks/package.json (CommonJS mode)`);
+          console.log(`  ${green}✓${reset} Wrote ${sharedHooksDirName}/package.json (CommonJS mode)`);
           break;
         case 'preserved-foreign':
-          console.warn(`  ${yellow}⚠${reset}  Left existing hooks/package.json untouched (not GSD's marker) — GSD hooks may not resolve as CommonJS`);
+          console.warn(`  ${yellow}⚠${reset}  Left existing ${sharedHooksDirName}/package.json untouched (not GSD's marker) — GSD hooks may not resolve as CommonJS`);
           break;
         case 'failed':
           // Best-effort: a read-only or full config dir must not abort the
           // install with a raw stack trace. The hooks themselves are staged.
-          console.warn(`  ${yellow}⚠${reset}  Could not write hooks/package.json (CommonJS mode) — install continued; GSD hooks may not resolve as CommonJS`);
+          console.warn(`  ${yellow}⚠${reset}  Could not write ${sharedHooksDirName}/package.json (CommonJS mode) — install continued; GSD hooks may not resolve as CommonJS`);
           break;
         default:
           break;
@@ -13407,6 +13478,9 @@ module.exports = {
     // #2086 — host-behavior resolution + the #338 privacy fail-safe floor (exported for tests)
     _resolveHostBehaviors,
     FALLBACK_HOST_BEHAVIORS,
+    // #3023 — shared hook bundle directory name, descriptor-driven
+    SHARED_HOOKS_DIR_DEFAULT,
+    resolveSharedHooksDirName,
     convertSlashCommandsToCodexSkillMentions,
     convertClaudeCommandToCodexSkill,
     convertClaudeCommandToKimiSkill,

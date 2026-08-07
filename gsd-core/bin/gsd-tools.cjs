@@ -2221,6 +2221,86 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           teamsStatus.cmdTeamsStatus(cwd, { active: args.includes('--active') });
   }
 
+  // #3023 follow-up (adversarial review finding): the shared hook bundle's
+  // directory name is runtime-descriptor-driven (bin/install.js
+  // `hostBehaviors.sharedHooksDirName`; default 'hooks', pi renames it to
+  // 'gsd-hooks'). A hardcoded 'hooks' literal in GSD_PREFIX_MANAGED_DIRS left
+  // this scan blind to a renamed bundle: `fs.existsSync(configDir/hooks)` is
+  // false for a pi install, so the ENTIRE gsd-hooks/ tree — including any
+  // user-added file inside it — was invisible to detect-custom-files and
+  // therefore never backed up before the next clean-install wipe (silent
+  // data loss).
+  //
+  // Resolution order, mirroring bin/install.js's own resolveSharedHooksDirName:
+  //   1. Read the per-install runtime marker written by the installer at
+  //      <configDir>/gsd-core/.gsd-runtime (#2297).
+  //   2. Look up that runtime's `hostBehaviors.sharedHooksDirName` in the
+  //      SHIPPED capability registry (./lib/capability-registry.cjs — a data
+  //      module in the same installed tree as this file). Deliberately NOT
+  //      `require('bin/install.js')`: that file is never shipped into an
+  //      installed tree (the #3024/#2071 bug class), so only the shipped data
+  //      module is read here.
+  //
+  // Asymmetric fallback: when the runtime or its descriptor cannot be
+  // determined (an install predating the marker, an unreadable/corrupt
+  // registry, or an unrecognized runtime id) this does NOT guess a single
+  // name — it returns every known candidate name instead. Over-scanning is
+  // safe here: a candidate directory that does not exist is silently skipped
+  // by the caller's `fs.existsSync` guard, and a file already tracked in the
+  // manifest is never reported as custom. Under-scanning is the actual bug
+  // being fixed: it would make a user's file vanish on the next wipe without
+  // ever being backed up.
+  function resolveSharedHooksDirCandidates(configDir) {
+    const DEFAULT_NAME = 'hooks';
+    // A resolved name is joined onto configDir and read back — reject
+    // anything that isn't a plain, separator-free segment so a corrupt
+    // registry value can never walk the scan outside the config root.
+    const isSafeSegment = (name) =>
+      typeof name === 'string' &&
+      name.trim() !== '' &&
+      name.trim() === name &&
+      name !== '.' &&
+      name !== '..' &&
+      !name.includes('/') &&
+      !name.includes('\\');
+
+    let registry = null;
+    try {
+      registry = require('./lib/capability-registry.cjs');
+    } catch {
+      registry = null;
+    }
+
+    const knownNames = new Set([DEFAULT_NAME]);
+    if (registry && registry.runtimes && typeof registry.runtimes === 'object') {
+      for (const desc of Object.values(registry.runtimes)) {
+        const name = desc && desc.runtime && desc.runtime.hostBehaviors &&
+          desc.runtime.hostBehaviors.sharedHooksDirName;
+        if (isSafeSegment(name)) knownNames.add(name);
+      }
+    }
+
+    let runtimeId = null;
+    try {
+      const markerPath = path.join(configDir, 'gsd-core', '.gsd-runtime');
+      const raw = fs.readFileSync(markerPath, 'utf8').trim();
+      runtimeId = raw || null;
+    } catch {
+      runtimeId = null;
+    }
+
+    if (runtimeId && registry && registry.runtimes && registry.runtimes[runtimeId]) {
+      const desc = registry.runtimes[runtimeId];
+      const name = desc && desc.runtime && desc.runtime.hostBehaviors &&
+        desc.runtime.hostBehaviors.sharedHooksDirName;
+      return [isSafeSegment(name) ? name : DEFAULT_NAME];
+    }
+
+    // Runtime undeterminable: scan every known candidate (see asymmetric
+    // fallback comment above).
+    return Array.from(knownNames);
+  }
+
   async function routeDetectCustomFiles({ args, cwd, raw, error }) {
     const configDirIdx = args.indexOf('--config-dir');
           const configDir = configDirIdx !== -1 ? args[configDirIdx + 1] : null;
@@ -2261,7 +2341,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           ];
           const GSD_PREFIX_MANAGED_DIRS = [
             'agents',
-            'hooks',
+            ...resolveSharedHooksDirCandidates(resolvedConfigDir),
             'skills',
           ];
 

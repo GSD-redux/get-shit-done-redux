@@ -224,6 +224,11 @@ function assertHasGsdDirectory(root, relPath) {
 function assertFreshInstallContract(runtime, targetDir) {
   const contract = RUNTIME_INSTALL_CONTRACTS[runtime];
   assert.ok(contract, `missing runtime install contract for ${runtime}`);
+  // #3023: the shared hooks bundle's staged directory name is per-runtime
+  // (hostBehaviors.sharedHooksDirName; pi renames it to `gsd-hooks/` to avoid
+  // pi's own host-reserved `hooks/`) — resolve it the same way the installer
+  // does rather than hardcoding 'hooks', which is only the default.
+  const hooksDirName = installModule.resolveSharedHooksDirName(runtime);
 
   if (contract.workflowPayload !== false) {
     assert.equal(
@@ -297,10 +302,13 @@ function assertFreshInstallContract(runtime, targetDir) {
     // programmatically by the native extension and dispatches via a bounded
     // subprocess to gsd-tools.cjs — pi has no host-read markdown surface, so
     // NO commands/, agents/, or skills/ dir is written. The extension DOES
-    // spawn the shared hooks/*.js bundle as bounded subprocesses (Stage 2
+    // spawn the shared hooks bundle as bounded subprocesses (Stage 2
     // adversarial-review fix — hooksSurface:'none' no longer implies
-    // skipSharedHooksInstall for pi, mirroring OpenCode), so hooks/ + the
-    // git-cmd.js tokenizer helper ARE part of the artifact surface now.
+    // skipSharedHooksInstall for pi, mirroring OpenCode), so the bundle + the
+    // git-cmd.js tokenizer helper ARE part of the artifact surface now. #3023:
+    // that bundle is staged under `gsd-hooks/` for pi (hooksDirName above), not
+    // the generic `hooks/` — pi reserves `hooks/` for its own deprecated
+    // extension location.
     // #2470: the dest filename comes from pi's descriptor, and must satisfy
     // pi's isExtensionFile() auto-discovery filter (.ts/.js only) — otherwise
     // the file installs but pi never loads it and /gsd never registers.
@@ -316,12 +324,12 @@ function assertFreshInstallContract(runtime, targetDir) {
       `${runtime} should install the native extension file at ${piNativePlugin.dir}/${piNativePlugin.file}`
     );
     assert.ok(
-      fs.existsSync(path.join(targetDir, 'hooks', 'gsd-ensure-canonical-path.js')),
-      `${runtime} should install the shared hooks/ bundle (spawned by the native extension's event bridges)`
+      fs.existsSync(path.join(targetDir, hooksDirName, 'gsd-ensure-canonical-path.js')),
+      `${runtime} should install the shared ${hooksDirName}/ bundle (spawned by the native extension's event bridges)`
     );
     assert.ok(
-      fs.existsSync(path.join(targetDir, 'hooks', 'lib', 'git-cmd.js')),
-      `${runtime} should install hooks/lib/git-cmd.js (the /gsd command tokenizer)`
+      fs.existsSync(path.join(targetDir, hooksDirName, 'lib', 'git-cmd.js')),
+      `${runtime} should install ${hooksDirName}/lib/git-cmd.js (the /gsd command tokenizer)`
     );
     assert.equal(
       fs.existsSync(path.join(targetDir, 'commands')),
@@ -389,13 +397,14 @@ function assertFreshInstallContract(runtime, targetDir) {
     contract.settings,
     `${runtime} settings.json presence should match the runtime contract`
   );
-  // #2544: the CommonJS marker lives in hooks/ (the dir GSD fills with its own
-  // .js scripts), never at the config root — that file is user-owned territory
-  // on OpenCode/Kilo and was being clobbered on every install.
+  // #2544: the CommonJS marker lives in the shared hooks dir (the dir GSD
+  // fills with its own .js scripts — `gsd-hooks/` for pi, `hooks/` for every
+  // other runtime, #3023), never at the config root — that file is user-owned
+  // territory on OpenCode/Kilo and was being clobbered on every install.
   assert.equal(
-    fs.existsSync(path.join(targetDir, 'hooks', 'package.json')),
+    fs.existsSync(path.join(targetDir, hooksDirName, 'package.json')),
     contract.hooksPackageJson,
-    `${runtime} hooks/package.json presence should match the runtime contract`
+    `${runtime} ${hooksDirName}/package.json presence should match the runtime contract`
   );
   assert.equal(
     fs.existsSync(path.join(targetDir, 'package.json')),

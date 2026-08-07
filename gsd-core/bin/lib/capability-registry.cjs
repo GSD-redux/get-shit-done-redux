@@ -2777,7 +2777,9 @@ const capabilities = {
         "kind": "dot-home-nested",
         "name": "agent",
         "parent": ".pi",
-        "env": []
+        "env": [
+          "PI_CODING_AGENT_DIR"
+        ]
       },
       "localConfigDir": ".pi",
       "configFormat": "none",
@@ -2819,7 +2821,8 @@ const capabilities = {
           "file": "gsd.js",
           "source": "pi/gsd.cjs"
         },
-        "pluginOnlyInstall": true
+        "pluginOnlyInstall": true,
+        "sharedHooksDirName": "gsd-hooks"
       }
     }
   },
@@ -6323,7 +6326,9 @@ const runtimes = {
         "kind": "dot-home-nested",
         "name": "agent",
         "parent": ".pi",
-        "env": []
+        "env": [
+          "PI_CODING_AGENT_DIR"
+        ]
       },
       "localConfigDir": ".pi",
       "configFormat": "none",
@@ -6365,7 +6370,8 @@ const runtimes = {
           "file": "gsd.js",
           "source": "pi/gsd.cjs"
         },
-        "pluginOnlyInstall": true
+        "pluginOnlyInstall": true,
+        "sharedHooksDirName": "gsd-hooks"
       }
     }
   },

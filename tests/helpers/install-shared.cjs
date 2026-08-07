@@ -542,6 +542,11 @@ function runMinimalInstall({ runtime, scope, extraArgs = [], installScript = INS
       codex: '.codex', copilot: '.github', antigravity: '.agents', cursor: '.cursor',
       windsurf: '.windsurf', augment: '.augment', trae: '.trae', qwen: '.qwen',
       codebuddy: '.codebuddy', cline: '.',
+      // #3023: pi was in RUNTIME_META but absent here, so `scope: 'local'` for pi
+      // resolved `path.join(root, undefined)` and threw — no local-scope pi install
+      // could ever be exercised. pi's local config dir is `.pi`
+      // (capabilities/pi/capability.json runtime.localConfigDir).
+      pi: '.pi',
     };
     let configDir;
     let cwd = process.cwd();

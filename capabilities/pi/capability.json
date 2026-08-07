@@ -14,7 +14,7 @@
       "kind": "dot-home-nested",
       "name": "agent",
       "parent": ".pi",
-      "env": []
+      "env": ["PI_CODING_AGENT_DIR"]
     },
     "localConfigDir": ".pi",
     "configFormat": "none",
@@ -56,7 +56,8 @@
         "file": "gsd.js",
         "source": "pi/gsd.cjs"
       },
-      "pluginOnlyInstall": true
+      "pluginOnlyInstall": true,
+      "sharedHooksDirName": "gsd-hooks"
     }
   }
 }

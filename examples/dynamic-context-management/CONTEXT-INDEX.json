@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "count": 415,
+  "count": 416,
   "classes": {
     "ARCH": 1,
     "CI": 2,
     "CONFIG": 1,
-    "DEFECT": 167,
+    "DEFECT": 168,
     "EXEC": 8,
     "GSD-RESEARCH": 6,
     "LEARNING": 1,
@@ -28,553 +28,559 @@
       "id": "ARCH.SKILL.improve-codebase.next-candidates",
       "klass": "ARCH",
       "value": "[Workstream Progress Projection Module]",
-      "line": 564
+      "line": 567
     },
     {
       "id": "CI.GATE.changeset-lint",
       "klass": "CI",
       "value": "hard-fail for user-facing code diffs unless .changeset/* or PR has no-changelog label",
-      "line": 548
+      "line": 551
     },
     {
       "id": "CI.GATE.issue-link-required",
       "klass": "CI",
       "value": "hard-fail if PR body lacks closes/fixes/resolves #<issue>",
-      "line": 547
+      "line": 550
     },
     {
       "id": "CONFIG.SEAM.loadConfig-context",
       "klass": "CONFIG",
       "value": "loadConfig(cwd,{workstream}) replaces env-mutation fallback; no temporary process.env GSD_WORKSTREAM rewrites",
-      "line": 578
+      "line": 581
     },
     {
       "id": "DEFECT.AGENT-FILE-SIZE-CAP-BREACH.detect",
       "klass": "DEFECT",
       "value": "tests/planner-decomposition.test.cjs (\"planner is under 45K chars (proves mode sections were extracted)\") and tests/reachability-check.test.cjs (\"file stays under 50000 char limit\")",
-      "line": 780
+      "line": 783
     },
     {
       "id": "DEFECT.AGENT-FILE-SIZE-CAP-BREACH.fix-forward",
       "klass": "DEFECT",
       "value": "mirror MVP mode pattern — extract full rules to gsd-core/references/planner-<mode>.md, leave a slim Detection section in the agent file with @-reference to the new file",
-      "line": 781
+      "line": 784
     },
     {
       "id": "DEFECT.AGENT-FILE-SIZE-CAP-BREACH.state",
       "klass": "DEFECT",
       "value": "gsd-planner.md is 49,125 chars on main, just under the test's actual PLANNER_EXTRACTED_LIMIT of 48K (49,152 chars — the test's own title still says \"45K\" but the enforced constant was raised in #2341); the test currently passes, but any further net-new content risks pushing it over",
-      "line": 779
+      "line": 782
     },
     {
       "id": "DEFECT.AGENT-FILE-SIZE-CAP-BREACH.symptom",
       "klass": "DEFECT",
       "value": "adding to agents/gsd-planner.md (or other large agent files) exceeds the 45K char extraction-evidence threshold",
-      "line": 778
+      "line": 781
     },
     {
       "id": "DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT.detect",
       "klass": "DEFECT",
       "value": "tests/slash-command-namespace.test.cjs prints \"Found N retired /gsd-<cmd> reference(s) — use /gsd:<cmd> instead\" with line-number-precise violations",
-      "line": 986
+      "line": 991
     },
     {
       "id": "DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT.examples",
       "klass": "DEFECT",
       "value": "#3541 implementation included a typical /gsd-update path comment in installer-migration-report.cjs; caught by tests/slash-command-namespace.test.cjs (#3443 invariant)",
-      "line": 985
+      "line": 990
     },
     {
       "id": "DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT.fix-forward",
       "klass": "DEFECT",
       "value": "replace /gsd-<cmd> with /gsd:<cmd> at the cited file:line; healthy emergent property — project-wide invariant test catches drift agents would never self-correct",
-      "line": 987
+      "line": 992
     },
     {
       "id": "DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT.lesson",
       "klass": "DEFECT",
       "value": "agent-trust-but-verify is load-bearing — sub-agent reporting \"done\" is not a substitute for running the full suite; the invariant test surfaces drift even in doc-only changes",
-      "line": 988
+      "line": 993
     },
     {
       "id": "DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT.symptom",
       "klass": "DEFECT",
       "value": "sub-agent writes /gsd-<cmd> (legacy hyphen syntax) in code comments or doc strings while implementing a fix; lands as part of the implementation diff",
-      "line": 984
+      "line": 989
     },
     {
       "id": "DEFECT.BOT-BRANCH-STALE-BASE.detect",
       "klass": "DEFECT",
       "value": "git merge-base origin/<bot-branch> origin/main returns the bot branch tip — confirms the bot branch is an ancestor of main, just stale",
-      "line": 760
+      "line": 763
     },
     {
       "id": "DEFECT.BOT-BRANCH-STALE-BASE.examples",
       "klass": "DEFECT",
       "value": "#3309 fix/3309-checkpoint-type-human-verify-burns-token (was at e14ef535; main at 2e87c60a)",
-      "line": 759
+      "line": 762
     },
     {
       "id": "DEFECT.BOT-BRANCH-STALE-BASE.fix-forward",
       "klass": "DEFECT",
       "value": "git checkout --detach origin/main; do work; git checkout -b <same-branch-name>; force-push with --force-with-lease",
-      "line": 761
+      "line": 764
     },
     {
       "id": "DEFECT.BOT-BRANCH-STALE-BASE.symptom",
       "klass": "DEFECT",
       "value": "auto-branch.yml creates fix/{N}-{slug} when issue is filed; branch is anchored to issue-creation main; by the time work begins, main has moved",
-      "line": 758
+      "line": 761
     },
     {
       "id": "DEFECT.CANARY-VERSION-LEAK.detect",
       "klass": "DEFECT",
       "value": "jq -r .version package.json on origin/main shows a -canary suffix; OR npm view <pkg> dist-tags shows latest != main's version",
-      "line": 941
+      "line": 946
     },
     {
       "id": "DEFECT.CANARY-VERSION-LEAK.examples",
       "klass": "DEFECT",
       "value": "2026-05-16 audit found origin/main + origin/feat/3575-enforcement-hardening both at \"version\": \"1.50.0-canary.0\" in sdk/package.json AND root package.json; npm view @opengsd/gsd-sdk versions returned [\"0.1.0\"] only, dist-tag latest=0.1.0, @1.50.0-canary.0 404 — confirms the string is metadata-only, never published. git log -S '\"version\": \"1.50.0-canary.0\"' origin/main blamed commit 2d32ad82 fix(plan-phase)... (#3206), a fix PR that accidentally carried the version bump from a dev-branch base",
-      "line": 940
+      "line": 945
     },
     {
       "id": "DEFECT.CANARY-VERSION-LEAK.fix-forward",
       "klass": "DEFECT",
       "value": "open a chore/* PR against main that resets the version strings to the canonical pre-canary stable; rebase open PRs to pick it up; gate at PR open with a CI check that rejects -canary versions on PRs targeting main",
-      "line": 942
+      "line": 947
     },
     {
       "id": "DEFECT.CANARY-VERSION-LEAK.symptom",
       "klass": "DEFECT",
       "value": "package.json version on main carries a -canary.<N> suffix that per release policy belongs to the dev branch only; nothing publishable depends on the version string at runtime, but every consumer of the version metadata (release flow, install banners, statusline) sees the dev-channel label",
-      "line": 939
+      "line": 944
     },
     {
       "id": "DEFECT.CHANGESET-PR-FIELD-DRIFT.detect",
       "klass": "DEFECT",
       "value": "changeset pr: value mismatches the actual PR number returned by gh api POST /pulls",
-      "line": 785
+      "line": 788
     },
     {
       "id": "DEFECT.CHANGESET-PR-FIELD-DRIFT.examples",
       "klass": "DEFECT",
       "value": "#3316 (pr:3312 was the issue), #3325 (pr:3319 was a guess); recurs every cycle",
-      "line": 784
+      "line": 787
     },
     {
       "id": "DEFECT.CHANGESET-PR-FIELD-DRIFT.fix-forward",
       "klass": "DEFECT",
       "value": "author changeset with placeholder pr:0; immediately after gh api POST /pulls returns the number, edit changeset and amend or follow-up commit; never guess",
-      "line": 786
+      "line": 789
     },
     {
       "id": "DEFECT.CHANGESET-PR-FIELD-DRIFT.symptom",
       "klass": "DEFECT",
       "value": ".changeset/*.md frontmatter pr: value is the issue number, a guess made before PR opened, or a stale stacked-PR number",
-      "line": 783
+      "line": 786
     },
     {
       "id": "DEFECT.DEFAULT-FLIP-DOCUMENTATION.detect",
       "klass": "DEFECT",
       "value": "any PR that changes a default value in CONFIG_DEFAULTS or buildNewProjectConfig; check that PR body Breaking Changes section explicitly covers (a) when the new default takes effect, (b) opt-back-in command, (c) effect on in-flight artifacts",
-      "line": 820
+      "line": 823
     },
     {
       "id": "DEFECT.DEFAULT-FLIP-DOCUMENTATION.examples",
       "klass": "DEFECT",
       "value": "#3309 v2 default flip from mid-flight to end-of-phase",
-      "line": 819
+      "line": 822
     },
     {
       "id": "DEFECT.DEFAULT-FLIP-DOCUMENTATION.fix-forward",
       "klass": "DEFECT",
       "value": "template — \"new default takes effect when .planning/config.json is rewritten (config-set, fresh project, regenerated config); existing artifacts continue to work; opt-back-in: gsd config-set <key> <old-value>\"",
-      "line": 821
+      "line": 824
     },
     {
       "id": "DEFECT.DEFAULT-FLIP-DOCUMENTATION.symptom",
       "klass": "DEFECT",
       "value": "PR flips a config default but does not call out the migration semantics (when does the new default take effect; existing configs vs new configs; what the opt-back-in looks like)",
-      "line": 818
+      "line": 821
     },
     {
       "id": "DEFECT.FORMAT",
       "klass": "DEFECT",
       "value": "class.sub-key=value | classes are greppable; each class carries detect / fix / anchor sub-keys when applicable",
-      "line": 735
+      "line": 738
     },
     {
       "id": "DEFECT.FRONTMATTER-SCALAR-BROAD-GREP.detect",
       "klass": "DEFECT",
       "value": "grep \"^<key>:\" on a *.md whose result is compared to exact tokens, with no frontmatter scoping and no -m1; one body line beginning <key>: is enough to break it",
-      "line": 833
+      "line": 836
     },
     {
       "id": "DEFECT.FRONTMATTER-SCALAR-BROAD-GREP.examples",
       "klass": "DEFECT",
       "value": "#586/PR #650 ship.md verification gate — grep \"^status:\" also matched body status: lines, yielding passed+gaps_found+human_needed instead of passed and blocking a passed phase; execute-phase.md has since been fixed to the frontmatter-scoped form (#651)",
-      "line": 832
+      "line": 835
     },
     {
       "id": "DEFECT.FRONTMATTER-SCALAR-BROAD-GREP.fix-forward",
       "klass": "DEFECT",
       "value": "scope to the leading frontmatter block and take the first match: sed -n '/^---$/,/^---$/p' \"$f\" | grep -m1 \"^<key>:\" | cut -d: -f2 | tr -d ' '; fix every parallel copy in the same change or consolidate behind one queryable seam (#651)",
-      "line": 834
+      "line": 837
     },
     {
       "id": "DEFECT.FRONTMATTER-SCALAR-BROAD-GREP.symptom",
       "klass": "DEFECT",
       "value": "a YAML-frontmatter scalar (e.g. VERIFICATION.md status) read with grep \"^key:\" over the WHOLE markdown report instead of the frontmatter block; a key: line in the body (code block, copied artifact, example) returns extra matches that concatenate after cut|tr into a value matching no expected token, so a valid state is misrouted",
-      "line": 831
+      "line": 834
     },
     {
       "id": "DEFECT.GENERATIVE-EXEMPLAR",
       "klass": "DEFECT",
       "value": "tests/runtime-launcher-parity.test.cjs (asserts every workflow bash block uses the canonical gsd_run launcher — the in-repo pattern for enforcing equality across parallel surfaces)",
-      "line": 829
+      "line": 832
     },
     {
       "id": "DEFECT.GENERATIVE-FIX",
       "klass": "DEFECT",
       "value": "for any new constant/array/parser shared between two parallel surfaces (two workflow surfaces, or a generated artifact and its hand-authored source), the same commit MUST add a parity assertion that fails when the two diverge",
-      "line": 828
+      "line": 831
     },
     {
       "id": "DEFECT.GENERATIVE-PRIORITY",
       "klass": "DEFECT",
       "value": "these defect classes share a common root: parallel implementations diverge silently because no parity test enforces equality at the test layer",
-      "line": 827
+      "line": 830
     },
     {
       "id": "DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION.detect",
       "klass": "DEFECT",
       "value": "two gsd-test-summary --both runs in flight; UnicodeDecodeError in parse_events_from_string traceback; /tmp/gsd-test-*.jsonl size mismatch vs total events emitted",
-      "line": 977
+      "line": 982
     },
     {
       "id": "DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION.fix-forward",
       "klass": "DEFECT",
       "value": "set per-invocation LOCAL_OUT=/tmp/gsd-test-<tag>-local.jsonl DOCKER_OUT=/tmp/gsd-test-<tag>-docker.jsonl env vars; or serialize the runs; upstream fix tracked in #3545 (default to tempfile.mkstemp + advisory flock)",
-      "line": 978
+      "line": 983
     },
     {
       "id": "DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION.root-cause",
       "klass": "DEFECT",
       "value": "gsd-test-summary lines 126-127 default LOCAL_OUT/DOCKER_OUT to fixed /tmp/gsd-test-{local,docker}.jsonl; concurrent line-buffered writers interleave bytes mid-multibyte → split UTF-8 sequence → decoder explodes on f.read()",
-      "line": 976
+      "line": 981
     },
     {
       "id": "DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION.symptom",
       "klass": "DEFECT",
       "value": "two simultaneous gsd-test-summary --both invocations (e.g. one per worktree) both crash with UnicodeDecodeError in parse_events_from_file; \"local exit=1 docker exit=1\" reported even though remote containers ran fine",
-      "line": 975
+      "line": 980
     },
     {
       "id": "DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION.upstream",
       "klass": "DEFECT",
       "value": "open-gsd/gsd-test-runner#4 (moved from #3545 in the predecessor repo, filed in the wrong repo; now CLOSED/COMPLETED — fix shipped)",
-      "line": 979
+      "line": 984
     },
     {
       "id": "DEFECT.GSD-TEST-HOST-MID-RUN-DEATH.detect",
       "klass": "DEFECT",
       "value": "gsd-test-summary's task output file at /private/tmp/claude-*/tasks/<id>.output stays 0 bytes for >5 min after launch; ps shows the test still alive; ssh -o ConnectTimeout=5 <probed-host> true now times out",
-      "line": 945
+      "line": 950
     },
     {
       "id": "DEFECT.GSD-TEST-HOST-MID-RUN-DEATH.examples",
       "klass": "DEFECT",
       "value": "2026-05-16 redshirt probed up at 12:48 UTC, gsd-test-summary picked it, docker container spawned, then redshirt's ssh daemon stopped responding — banner-exchange timeout. Test stalled 20+ minutes with the wrapper's output file at 0 bytes",
-      "line": 944
+      "line": 949
     },
     {
       "id": "DEFECT.GSD-TEST-HOST-MID-RUN-DEATH.fix-forward",
       "klass": "DEFECT",
       "value": "TaskStop the wrapper; pkill -f gsd-test-summary + pkill -f \"ssh <dead-host>\"; re-run gsd-test-summary so pick_host re-randomizes from the live set (probe each ~/.config/gsd-test/hosts entry first to confirm). Upstream fix candidate: gsd-test should add a heartbeat read on the ssh-stdin channel and abort + retry on a different host after N silent seconds",
-      "line": 946
+      "line": 951
     },
     {
       "id": "DEFECT.GSD-TEST-HOST-MID-RUN-DEATH.related",
       "klass": "DEFECT",
       "value": "DEFECT.GSD-TEST-MIRROR-POISONED (legacy bind-mount ownership); GSD-TEST-CONCURRENT-OUTPUT-COLLISION (file collision) — host-mid-run-death is the third independent gsd-test infra failure mode this month",
-      "line": 947
+      "line": 952
     },
     {
       "id": "DEFECT.GSD-TEST-HOST-MID-RUN-DEATH.symptom",
       "klass": "DEFECT",
       "value": "pick_host succeeds at probe time (ssh -o ConnectTimeout=3 -o BatchMode=yes \"$h\" true); subsequent ssh \"$h\" 'docker run ...' hangs indefinitely because the chosen host went unreachable between probe and exec; gsd-test-summary buffers stderr until the wrapper exits, so the operator sees no progress at all",
-      "line": 943
+      "line": 948
     },
     {
       "id": "DEFECT.GSD-TEST-MIRROR-POISONED.detect",
       "klass": "DEFECT",
       "value": "docker stderr shows rsync: [generator] delete_file: unlink(...) failed: Permission denied (13) OR [receiver] mkstemp \".gsd-*.<suffix>\" failed",
-      "line": 969
+      "line": 974
     },
     {
       "id": "DEFECT.GSD-TEST-MIRROR-POISONED.recovery",
       "klass": "DEFECT",
       "value": "ssh <host> 'docker run --rm -v ~/gsd-mirror-gsd-core:/work gsd-test:node22 chown -R <remote-uid>:<remote-gid> /work'; remote-uid is the SSH user's uid on the remote (1000 on holodeck, NOT local Mac 501)",
-      "line": 971
+      "line": 976
     },
     {
       "id": "DEFECT.GSD-TEST-MIRROR-POISONED.root-cause",
       "klass": "DEFECT",
       "value": "container ran without --user; build:hooks wrote into bind-mount as root; chown-back-before-exec patch closes forward path but not legacy hosts",
-      "line": 970
+      "line": 975
     },
     {
       "id": "DEFECT.GSD-TEST-MIRROR-POISONED.symptom",
       "klass": "DEFECT",
       "value": "gsd-test-summary --both exits docker=23 (rsync partial transfer) with mkstemp Permission denied on remote mirror files; mirror has root-owned artifacts from prior cold runs",
-      "line": 968
+      "line": 973
     },
     {
       "id": "DEFECT.GSD-TEST-MIRROR-POISONED.upstream",
       "klass": "DEFECT",
       "value": "trek-e/gsd-test-runner#1 — proposes self-healing init-time chown probe",
-      "line": 972
+      "line": 977
     },
     {
       "id": "DEFECT.HALT-COST-PATTERN.detect",
       "klass": "DEFECT",
       "value": "any subagent-spawning workflow with mid-flight pause-and-resume that does not preserve subagent context",
-      "line": 810
+      "line": 813
     },
     {
       "id": "DEFECT.HALT-COST-PATTERN.examples",
       "klass": "DEFECT",
       "value": "#3309 checkpoint:human-verify (mid-flight halt = full executor cold-start per round-trip; reporter measured \"tens of thousands of tokens\" per halt)",
-      "line": 809
+      "line": 812
     },
     {
       "id": "DEFECT.HALT-COST-PATTERN.fix-forward",
       "klass": "DEFECT",
       "value": "offer config flag for end-of-phase aggregation; if cost dominates make end-of-phase the default; route deferred items through existing verifier surface, do not invent new writer",
-      "line": 811
+      "line": 814
     },
     {
       "id": "DEFECT.HALT-COST-PATTERN.symptom",
       "klass": "DEFECT",
       "value": "architecturally-sound checkpoint pattern produces hidden token cost because subagent context is discarded across the pause and respawn",
-      "line": 808
+      "line": 811
     },
     {
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.detect",
       "klass": "DEFECT",
       "value": "hook re-fires on each invocation regardless of session-state read receipts",
-      "line": 815
+      "line": 818
     },
     {
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.examples",
       "klass": "DEFECT",
       "value": "this session repeatedly hit \"Refusing to run gh issue create|edit / gh pr create|edit\" despite reading every listed file",
-      "line": 814
+      "line": 817
     },
     {
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.fix-forward",
       "klass": "DEFECT",
       "value": "use gh api -X PATCH repos/{owner}/{repo}/pulls/{N} or repos/{owner}/{repo}/issues/{N} directly — same effect, hook regex does not match",
-      "line": 816
+      "line": 819
     },
     {
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.read-tool-tracking",
       "klass": "DEFECT",
       "value": "gh-templates-first PreToolUse hook tracks Read tool invocations specifically; Bash cat/head of the same file does NOT satisfy the hook; future-self must use Read tool from the first contact with template files",
-      "line": 974
+      "line": 979
     },
     {
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.symptom",
       "klass": "DEFECT",
       "value": "PreToolUse hook keeps blocking gh pr edit / gh issue edit even after all required files are read in the session",
-      "line": 813
+      "line": 816
     },
     {
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.write-bypass",
       "klass": "DEFECT",
       "value": "security_reminder_hook can block Write on substring match (e.g. a literal child-process call-expression token); workaround is heredoc to /tmp then mv into place, or use Edit instead — Edit hooks are more lenient than Write hooks",
-      "line": 993
+      "line": 998
+    },
+    {
+      "id": "DEFECT.HOST-RESERVED-DIR-NAME",
+      "klass": "DEFECT",
+      "value": "a host runtime reserves a directory NAME that GSD also writes verbatim, so the mere presence of GSD's directory trips the host's own reserved-name detection regardless of contents; example: pi (#3023) treats GSD's shared-hooks bundle dir hooks/ as its own deprecated extension location and printed a startup warning purely because checkDeprecatedExtensionDirs() in packages/coding-agent/src/migrations.ts gates on a bare existsSync(hooksDir) with no readdir/emptiness check (unlike its tools/ sibling); fix-forward=make the shared-hooks directory name descriptor-driven (hostBehaviors.sharedHooksDirName, default hooks) and override it per-runtime when a name collision is detected (pi sets gsd-hooks), with adapters probing the new name then falling back to the legacy name for dev/half-upgraded trees",
+      "line": 881
     },
     {
       "id": "DEFECT.INVENTORY-DRIFT.detect",
       "klass": "DEFECT",
       "value": "tests/inventory-manifest-sync.test.cjs fails with \"New surfaces not in manifest\"; tests/inventory-headings-countfree.test.cjs fails if a (N shipped) count is re-added to a heading",
-      "line": 775
+      "line": 778
     },
     {
       "id": "DEFECT.INVENTORY-DRIFT.examples",
       "klass": "DEFECT",
       "value": "#3309 planner-human-verify-mode.md (caught by tests/inventory-manifest-sync.test.cjs)",
-      "line": 774
+      "line": 777
     },
     {
       "id": "DEFECT.INVENTORY-DRIFT.fix-forward",
       "klass": "DEFECT",
       "value": "update INVENTORY.md row entry; run node scripts/gen-inventory-manifest.cjs --write to regen INVENTORY-MANIFEST.json (all eight families.* arrays are canonical — see RULESET.MANIFEST-CANONICAL-KEY); a workflow SUB-file (gsd-core/workflows/<wf>/steps/*.md or modes/*.md) lands in workflow_steps/workflow_modes, not in workflows, which is keyed by bare basename and cannot hold a nested path",
-      "line": 776
+      "line": 779
     },
     {
       "id": "DEFECT.INVENTORY-DRIFT.symptom",
       "klass": "DEFECT",
       "value": "new file added under gsd-core/references/ or gsd-core/workflows/ without updating docs/INVENTORY.md row AND docs/INVENTORY-MANIFEST.json",
-      "line": 773
+      "line": 776
     },
     {
       "id": "DEFECT.NAME-COLLISION.detect",
       "klass": "DEFECT",
       "value": "trace every CLI/test caller of the canonical name → if any caller's argv shape differs from the rebound handler's args[0] expectation, the migration broke the legacy contract",
-      "line": 916
+      "line": 921
     },
     {
       "id": "DEFECT.NAME-COLLISION.examples",
       "klass": "DEFECT",
       "value": "#3577 config-ensure-section (legacy = no-arg full-default init via ensureConfigFile→buildNewProjectConfig; the rebound configEnsureSection = single-section ensure requiring args[0]; all CLI callers pass no args; handler throws \"Usage: config-ensure-section <section>\")",
-      "line": 915
+      "line": 920
     },
     {
       "id": "DEFECT.NAME-COLLISION.fix-forward",
       "klass": "DEFECT",
       "value": "either (a) bind the dispatch to a handler whose body mirrors legacy semantics (e.g. configNewProject when no args), or (b) keep the dispatch case calling the original handler directly (precedent: 7d5dfa9d codex runtime carve-out). Whichever path, add a behavioral test that round-trips the legacy invocation shape to lock the contract",
-      "line": 917
+      "line": 922
     },
     {
       "id": "DEFECT.NAME-COLLISION.symptom",
       "klass": "DEFECT",
       "value": "a router migration rebinds CLI dispatch for a canonical command name to a handler with a different positional-arg shape; every legacy no-arg / wrong-arg caller then errors out at the new handler's own validation throw",
-      "line": 914
+      "line": 919
     },
     {
       "id": "DEFECT.PARSER-BRITTLE-MARKER-WHITELIST.detect",
       "klass": "DEFECT",
       "value": "any parser with hard-coded marker list; any parser that returns empty for non-matching input without warning",
-      "line": 805
+      "line": 808
     },
     {
       "id": "DEFECT.PARSER-BRITTLE-MARKER-WHITELIST.examples",
       "klass": "DEFECT",
       "value": "ac518646/#3263 code-review SUMMARY parser rejected BL-/blocker variants",
-      "line": 804
+      "line": 807
     },
     {
       "id": "DEFECT.PARSER-BRITTLE-MARKER-WHITELIST.fix-forward",
       "klass": "DEFECT",
       "value": "accept variants explicitly (case-insensitive, hyphen/space alternatives); on unknown marker emit a structured WARN with the original line so the human can fix the source",
-      "line": 806
+      "line": 809
     },
     {
       "id": "DEFECT.PARSER-BRITTLE-MARKER-WHITELIST.symptom",
       "klass": "DEFECT",
       "value": "human-output parser whitelists known markers (severity, status); silently drops unfamiliar markers as malformed",
-      "line": 803
+      "line": 806
     },
     {
       "id": "DEFECT.PHASE-DIR-PREFIX-DRIFT.anchor",
       "klass": "DEFECT",
       "value": "tests/phase.test.cjs (expected_phase_dir assertions; consolidated from tests/bug-3298-phase-dir-prefix-drift-in-workflows.test.cjs into the Phase Lifecycle Module test suite in #3741)",
-      "line": 751
+      "line": 754
     },
     {
       "id": "DEFECT.PHASE-DIR-PREFIX-DRIFT.detect",
       "klass": "DEFECT",
       "value": "grep mkdir/touch/path.join with {NN}-{slug} or padded_phase + phase_slug; if not consuming expected_phase_dir from init.* JSON it is drifting",
-      "line": 749
+      "line": 752
     },
     {
       "id": "DEFECT.PHASE-DIR-PREFIX-DRIFT.examples",
       "klass": "DEFECT",
       "value": "#3287 (init.phase-op + init.plan-phase first-touch), #3306/PRED.k015 (plan-milestone-gaps + import + add-backlog), #3297/#3298 (sibling reports)",
-      "line": 748
+      "line": 751
     },
     {
       "id": "DEFECT.PHASE-DIR-PREFIX-DRIFT.fix-forward",
       "klass": "DEFECT",
       "value": "consume expected_phase_dir from init.phase-op / init.plan-phase output; never re-construct from padded_phase + slug in workflow steps",
-      "line": 750
+      "line": 753
     },
     {
       "id": "DEFECT.PHASE-DIR-PREFIX-DRIFT.symptom",
       "klass": "DEFECT",
       "value": "multiple workflow files independently construct .planning/phases/{NN}-{slug} paths; project_code prefix or slug normalization missing in some surfaces",
-      "line": 747
+      "line": 750
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION-WITH-TESTS.detect",
       "klass": "DEFECT",
       "value": "CI security lane (Prompt injection scan step) reports FAIL: tests/<not-in-allowlist>.test.cjs with a line number pointing at a string literal; the literal is inside an assert.throws() or array of malicious inputs; the test file name is not in scripts/prompt-injection-scan.sh ALLOWLIST",
-      "line": 868
+      "line": 871
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION-WITH-TESTS.examples",
       "klass": "DEFECT",
       "value": "PR #1622 commit 4ed208e74 added convertClaudeCommandToWindsurfWorkflow commandName validation with 22 malicious-name fixtures; scanner matched an instruction-override phrase at tests/windsurf-conversion.test.cjs:122; CI security lane failed even though the test is the security control",
-      "line": 867
+      "line": 870
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION-WITH-TESTS.fix-forward",
       "klass": "DEFECT",
       "value": "ADD the test file to scripts/prompt-injection-scan.sh ALLOWLIST array with a comment citing this defect class; for large fixture sets, move them to tests/fixtures/adversarial/security/ (auto-allowlisted dir) and load via readFileSync; never weaken or fragment the payload to evade the scanner — that defeats the test's purpose; ALSO when documenting this defect in CONTEXT.md, do NOT quote the literal pattern — describe it generically (the scanner scans CONTEXT.md too)",
-      "line": 869
+      "line": 872
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION-WITH-TESTS.prevention",
       "klass": "DEFECT",
       "value": "when writing a security regression test that uses real injection payloads as fixtures, immediately add the test file path to scripts/prompt-injection-scan.sh ALLOWLIST in the same commit; when documenting this defect class anywhere under scanner scope (CONTEXT.md, docs/, agent .md), use descriptive references like 'scanner-matching payload' rather than quoting the literal pattern; ref DEFECT.PROMPT-INJECTION-SCAN-COLLISION (the older XML-tag-collision variant)",
-      "line": 870
+      "line": 873
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION-WITH-TESTS.symptom",
       "klass": "DEFECT",
       "value": "scripts/prompt-injection-scan.sh flags a NEW test file as a finding because the test contains real injection payloads as fixtures (strings that match one of the scanner's PATTERNS — see scripts/prompt-injection-scan.sh lines 18-64) to prove the validator under test rejects them; scanner cannot distinguish fixture from real injection; CI security lane fails on the test that ADDS the security validation",
-      "line": 866
+      "line": 869
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION.detect",
       "klass": "DEFECT",
       "value": "any new bare <system|assistant|human|user> tag in agents/*.md",
-      "line": 770
+      "line": 773
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION.examples",
       "klass": "DEFECT",
       "value": "#3309 added a bare 'human' element (angle-bracket-wrapped) for verify-block harvesting; tests/prompt-injection-scan.security.test.cjs flags angle-bracket-wrapped names matching system|assistant|human (open or close form)",
-      "line": 769
+      "line": 772
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION.fix-forward",
       "klass": "DEFECT",
       "value": "hyphenate the tag (<human-check>, <assistant-prompt>) — scanner regex matches bare names only",
-      "line": 771
+      "line": 774
     },
     {
       "id": "DEFECT.PROMPT-INJECTION-SCAN-COLLISION.symptom",
       "klass": "DEFECT",
       "value": "custom XML element name in agent .md file matches scripts/scan-prompt-injection regex; legitimate agent vocabulary trips the security gate",
-      "line": 768
+      "line": 771
     },
     {
       "id": "DEFECT.REMOVED-BUT-NEEDED.detect",
       "klass": "DEFECT",
       "value": "before deletion, grep filename across .github/workflows, gsd-core/, docs/, package.json scripts; if any reference exists removal is incomplete",
-      "line": 739
+      "line": 742
     },
     {
       "id": "DEFECT.REMOVED-BUT-NEEDED.examples",
       "klass": "DEFECT",
       "value": "#3316 root package-lock.json (root package.json declares deps; workflows use cache:'npm' + npm ci), e3b52c70 docs referenced removed /gsd-new-workspace",
-      "line": 738
+      "line": 741
     },
     {
       "id": "DEFECT.REMOVED-BUT-NEEDED.fix-forward",
       "klass": "DEFECT",
       "value": "restore the file or update every consumer in the same commit; do not paper over with --no-package-lock or workflow workarounds that lose reproducibility",
-      "line": 740
+      "line": 743
     },
     {
       "id": "DEFECT.REMOVED-BUT-NEEDED.symptom",
       "klass": "DEFECT",
       "value": "file/key removed because \"no longer used\" without verifying every consumer (workflows, docs, manifests, npm scripts)",
-      "line": 737
+      "line": 740
     },
     {
       "id": "DEFECT.RESEARCH-PROVIDER-PROSE-DRIFT",
@@ -586,517 +592,517 @@
       "id": "DEFECT.SCOPE.window",
       "klass": "DEFECT",
       "value": "PRs #3306..#3325 + sibling fixes #3240/#3242/#3245/#3257/#3261/#3267/#3286/#3287",
-      "line": 734
+      "line": 737
     },
     {
       "id": "DEFECT.SDK-PORT-NAME-COLLISION.generative-tie",
       "klass": "DEFECT",
       "value": "instance of DEFECT.GENERATIVE-PRIORITY — parity assertion at the test layer between CJS handler shape and SDK handler shape would have failed at PR open",
-      "line": 918
+      "line": 923
     },
     {
       "id": "DEFECT.SHARED-ARTIFACT-MUTATION-IN-CONCURRENT-TEST.detect",
       "klass": "DEFECT",
       "value": "grep tests for fs.unlinkSync|rmSync|writeFileSync|renameSync|cpSync targeting paths resolved from the repo root (join(__dirname,'..',...)) under gsd-core/bin/lib or a shared committed fixture, instead of a mkdtempSync temp dir; any build helper (e.g. ensureBuiltArtifacts) invoked with real-tree paths during the concurrent test phase; any tsBuildInfoFile / build-cache path that lands inside a copied/shipped dir (gsd-core/bin/)",
-      "line": 929
+      "line": 934
     },
     {
       "id": "DEFECT.SHARED-ARTIFACT-MUTATION-IN-CONCURRENT-TEST.examples",
       "klass": "DEFECT",
       "value": "#996/88e30d53 — bug-969 hardening tests fs.unlinkSync'd + restored the real gsd-core/bin/lib/core.cjs and set tsBuildInfoFile inside gsd-core/bin/ → next red across the full-test matrix (macOS/Windows) + ubuntu-24 coverage leg, ~40-50 MODULE_NOT_FOUND/ENOENT per leg; reproduced locally on iteration 1; fixed #1001/#1002",
-      "line": 928
+      "line": 933
     },
     {
       "id": "DEFECT.SHARED-ARTIFACT-MUTATION-IN-CONCURRENT-TEST.fix-forward",
       "klass": "DEFECT",
       "value": "tests mutate ONLY isolated mkdtempSync copies — never delete/rewrite shared real build outputs while node --test runs files concurrently; parameterize build helpers to accept {root,srcDir,outDir,tsBuildInfoPath,tsconfigPath} overrides and point the test at a throwaway temp project (precedent: #1002 ensureBuiltArtifacts(overrides)); keep mutable build state (tsbuildinfo) OUTSIDE copied/shipped trees (repo root, gitignored) + best-effort self-heal of stale bin-local copies; this is the concrete instance of the RULESET.TESTS.delete-bad-tests real-race class",
-      "line": 930
+      "line": 935
     },
     {
       "id": "DEFECT.SHARED-ARTIFACT-MUTATION-IN-CONCURRENT-TEST.symptom",
       "klass": "DEFECT",
       "value": "a test deletes/rewrites a SHARED REAL build artifact or fixture (e.g. gsd-core/bin/lib/*.cjs, the build tsbuildinfo) that other test files require; node --test runs files concurrently, so innocent concurrent tests intermittently fail with \"Cannot find module\" / ENOENT while the racy test itself passes (victim-not-culprit, leg-asymmetric red); placing mutable build state inside a copied/shipped tree (gsd-core/bin/) additionally races install-test fs.cpSync copies → copyfile ENOENT",
-      "line": 927
+      "line": 932
     },
     {
       "id": "DEFECT.SHARED-ARTIFACT-MUTATION-IN-CONCURRENT-TEST.test-anchor",
       "klass": "DEFECT",
       "value": "tests/run-tests-harness.test.cjs (hermetic temp-project rewrite); regression gate = 10x concurrent run of that suite + tests/state.test.cjs + tests/install.test.cjs must be clean (reproduces on iter 1 when racy)",
-      "line": 931
+      "line": 936
     },
     {
       "id": "DEFECT.SOURCE-GREP-IN-NEW-TESTS.detect",
       "klass": "DEFECT",
       "value": "npm run lint (AST ESLint rule local/no-source-grep, eslint-rules/no-source-grep.cjs) fails with a line-number-precise violation",
-      "line": 824
+      "line": 827
     },
     {
       "id": "DEFECT.SOURCE-GREP-IN-NEW-TESTS.fix-forward",
       "klass": "DEFECT",
       "value": "replace with runGsdTools(...) behavioral test capturing JSON; if asserting agent .md content (which IS the runtime contract) add // allow-test-rule: source-text-is-the-product with one-line justification",
-      "line": 825
+      "line": 828
     },
     {
       "id": "DEFECT.SOURCE-GREP-IN-NEW-TESTS.symptom",
       "klass": "DEFECT",
       "value": "new test file uses readFileSync + .includes() / .match() against source code (RULESET.TESTS.no-source-grep); contradicts the test rule lint script",
-      "line": 823
+      "line": 826
     },
     {
       "id": "DEFECT.STACKED-PR-AUTO-RETARGET.detect",
       "klass": "DEFECT",
       "value": "ls-remote shows base ref absent; PR base still points at the deleted ref; mergeable=CONFLICTING with no real diff conflicts",
-      "line": 755
+      "line": 758
     },
     {
       "id": "DEFECT.STACKED-PR-AUTO-RETARGET.examples",
       "klass": "DEFECT",
       "value": "#3311 base fix/3255-add-json-errors-mode-gsd-tools deleted after #3304 merged",
-      "line": 754
+      "line": 757
     },
     {
       "id": "DEFECT.STACKED-PR-AUTO-RETARGET.fix-forward",
       "klass": "DEFECT",
       "value": "PATCH /repos/{owner}/{repo}/pulls/{N} -f base=main; rebase head onto current main; resolve carry-over commits (parent commits will auto-drop as patch contents already upstream)",
-      "line": 756
+      "line": 759
     },
     {
       "id": "DEFECT.STACKED-PR-AUTO-RETARGET.symptom",
       "klass": "DEFECT",
       "value": "PR #N is stacked on branch B; branch B merges to main and is deleted; GitHub does not reliably auto-retarget #N to main; PR shows DIRTY/CONFLICTING with phantom conflicts",
-      "line": 753
+      "line": 756
     },
     {
       "id": "DEFECT.STACKED-PR-CANNOT-STAND-ALONE.anti-pattern",
       "klass": "DEFECT",
       "value": "blindly running git rebase --onto origin/main on the patch branch — produces \"conflicts\" that are really \"the scaffolding doesn't exist yet\"; resolving them means reinventing the upstream PR's contribution, which duplicates work and creates merge hazards. Recognize the shape early via cat-file probe before rebasing",
-      "line": 937
+      "line": 942
     },
     {
       "id": "DEFECT.STACKED-PR-CANNOT-STAND-ALONE.detect",
       "klass": "DEFECT",
       "value": "gh pr view <n> --json baseRefName shows non-main base; OR git rebase --onto origin/main <upstream-pr-branch> <patch-pr-branch> produces real (not whitespace) conflicts at files the patch claims to modify; OR git cat-file -e origin/main:<patch-target-file> errors with \"does not exist in origin/main\"",
-      "line": 935
+      "line": 940
     },
     {
       "id": "DEFECT.STACKED-PR-CANNOT-STAND-ALONE.examples",
       "klass": "DEFECT",
       "value": "#3639 + #3637 both targeted base=feat/3575-enforcement-hardening (the Phase 6 PR #3577); #3639 modifies SDK-bridge calls in 6 family-router files that on main do NOT have any SDK-bridge call yet; #3637 patches scripts/lint-shared-module-handsync.cjs which does not exist on main at all",
-      "line": 934
+      "line": 939
     },
     {
       "id": "DEFECT.STACKED-PR-CANNOT-STAND-ALONE.fix-forward",
       "klass": "DEFECT",
       "value": "user policy (this session, 2026-05-16): every PR must stand alone. Resolution = cherry-pick the patch's unique commits onto the upstream PR head, push to upstream PR branch, close patch PR with \"subsumed by #<upstream>\". Alternatives explicitly rejected: leaving stacked open (\"no, fold them in\") and closing-without-folding (\"we want the fix\")",
-      "line": 936
+      "line": 941
     },
     {
       "id": "DEFECT.STACKED-PR-CANNOT-STAND-ALONE.symptom",
       "klass": "DEFECT",
       "value": "patch PR was authored against scaffolding (handler files, lint scripts, generated modules) that exists only on an unmerged upstream feature branch; the PR's \"base\" on GitHub is the feature branch, not main; merging requires the upstream PR to land first",
-      "line": 933
+      "line": 938
     },
     {
       "id": "DEFECT.STATE-TRAMPLE.detect",
       "klass": "DEFECT",
       "value": "any state writer that calls buildStateFrontmatter without preserving existing progress.* keys; any mutation surface that does not honor shouldPreserveExistingProgress",
-      "line": 744
+      "line": 747
     },
     {
       "id": "DEFECT.STATE-TRAMPLE.examples",
       "klass": "DEFECT",
       "value": "#3242 (Last Activity overwrote progress.completed_plans), #3257 (nested plans/ files uncounted), #3261 (buildStateFrontmatter), #3265 (canonical fields), #3286 (record-metric/add-decision sections)",
-      "line": 743
+      "line": 746
     },
     {
       "id": "DEFECT.STATE-TRAMPLE.fix-forward",
       "klass": "DEFECT",
       "value": "route through state-document.cjs/.ts shouldPreserveExistingProgress + normalizeProgressNumbers (extracted in #3316; the sdk/ tree that PR originally targeted has since been fully retired per ADR-0174 — these functions now live solely in src/state-document.cts)",
-      "line": 745
+      "line": 748
     },
     {
       "id": "DEFECT.STATE-TRAMPLE.symptom",
       "klass": "DEFECT",
       "value": "state-mutation paths overwrite curated values when body-derived computation is narrower than what's stored in frontmatter",
-      "line": 742
+      "line": 745
     },
     {
       "id": "DEFECT.SUBAGENT-LONG-RUNNING-BG-STALL.anchor",
       "klass": "DEFECT",
       "value": "lesson: cross-turn task notifications are delivered only to the top-level orchestrator, never to a sub-agent — load-bearing for multi-worktree parallel fix dispatch (the CLAUDE.md passage this entry previously quoted verbatim has since been removed/rewritten; no live replacement citation exists)",
-      "line": 983
+      "line": 988
     },
     {
       "id": "DEFECT.SUBAGENT-LONG-RUNNING-BG-STALL.detect",
       "klass": "DEFECT",
       "value": "sub-agent returns prematurely with text like \"I should wait for the notification per CLAUDE.md\" and incomplete work in its worktree (commits absent, push absent, PR absent)",
-      "line": 981
+      "line": 986
     },
     {
       "id": "DEFECT.SUBAGENT-LONG-RUNNING-BG-STALL.fix-forward",
       "klass": "DEFECT",
       "value": "keep gsd-test-summary --both at the top-level orchestrator; sub-agents either run it foreground with timeout: 1500000 (25min) and block, OR delegate the test step back to the orchestrator (write commits + return); never have a sub-agent fire-and-await a backgrounded long task",
-      "line": 982
+      "line": 987
     },
     {
       "id": "DEFECT.SUBAGENT-LONG-RUNNING-BG-STALL.symptom",
       "klass": "DEFECT",
       "value": "spawned sub-agent kicks off gsd-test-summary --both via Bash run_in_background, then stops on the harness \"you will be notified\" message; never receives the notification because cross-turn task-notifications are only delivered to the top-level orchestrator",
-      "line": 980
+      "line": 985
     },
     {
       "id": "DEFECT.SUPERSEDED-CONCURRENT-PRS.detect",
       "klass": "DEFECT",
       "value": "after a fix lands on main, grep recently-merged PR title for shared keyword/issue; check open PRs touching same files; if open PRs are subsets of merged work they are superseded",
-      "line": 765
+      "line": 768
     },
     {
       "id": "DEFECT.SUPERSEDED-CONCURRENT-PRS.examples",
       "klass": "DEFECT",
       "value": "#3303 + #3307 superseded by #3306 (all addressing #3297/#3298 project_code prefix family)",
-      "line": 764
+      "line": 767
     },
     {
       "id": "DEFECT.SUPERSEDED-CONCURRENT-PRS.fix-forward",
       "klass": "DEFECT",
       "value": "close superseded PRs via gh api PATCH state=closed; do not comment on self-authored PRs (k101); the link to the merged PR makes supersession discoverable in PR history",
-      "line": 766
+      "line": 769
     },
     {
       "id": "DEFECT.SUPERSEDED-CONCURRENT-PRS.symptom",
       "klass": "DEFECT",
       "value": "multiple in-flight PRs attack overlapping subsets of the same issue; the broadest one merges first; narrower siblings remain open with phantom conflicts",
-      "line": 763
+      "line": 766
     },
     {
       "id": "DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE.detect",
       "klass": "DEFECT",
       "value": "test does readFileSync(md).match for a bash fence with literal \\n, OR execFileSync('bash',...) gated only on a bash-presence probe; also verifying a new test with a file-scoped run instead of the full suite hides repo-wide static guards; now enforced at write-time + CI by local/no-crlf-fragile-split (CRLF fence/frontmatter regex + readFileSync split-on-\\n) and local/no-unguarded-nonportable-exec (bash+chmod), eslint, ADR-1703",
-      "line": 837
+      "line": 840
     },
     {
       "id": "DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE.examples",
       "klass": "DEFECT",
       "value": "#586/PR #650 tests/ship-586-verification-routing.test.cjs — the fence \\n offender failed ubuntu-24/macos/coverage, then the Windows tmpdir-path glob failed full test (windows-latest,22) at fail 3; both were invisible to file-scoped gsd-test-both runs because the parity guard is only scanned by the full suite",
-      "line": 836
+      "line": 839
     },
     {
       "id": "DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE.fix-forward",
       "klass": "DEFECT",
       "value": "match the fence with \\r?\\n and normalize the captured block to LF; gate pipeline execution on process.platform !== 'win32' && hasBash since the extraction LOGIC is platform-independent and POSIX coverage suffices; run the full suite (or the parity/lint guards) before push when adding a test file",
-      "line": 838
+      "line": 841
     },
     {
       "id": "DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE.symptom",
       "klass": "DEFECT",
       "value": "a test that parses a workflow bash block out of a *.md and runs it via execFileSync('bash',...) breaks on Windows two ways: the fence regex uses a literal \\n after the bash fence that will not match CRLF and is flagged by local/no-crlf-fragile-split (the windows-test-parity-guard ratchet it formerly tripped was deleted in ADR-1703 Phase 4 #1726); and git-bash exists so a bash-presence probe is true, but an os.tmpdir() Windows path (C:\\...) is un-globbable in bash so the pipeline returns empty and assertions fail",
-      "line": 835
+      "line": 838
     },
     {
       "id": "DEFECT.UNBOUNDED-SUBPROCESS.detect",
       "klass": "DEFECT",
       "value": "execSync/execFileSync/spawnSync without timeout option in non-test code; especially git list-worktrees, git fetch, npm view",
-      "line": 800
+      "line": 803
     },
     {
       "id": "DEFECT.UNBOUNDED-SUBPROCESS.examples",
       "klass": "DEFECT",
       "value": "a33cbe72 worktree fix bound git subprocesses with timeout",
-      "line": 799
+      "line": 802
     },
     {
       "id": "DEFECT.UNBOUNDED-SUBPROCESS.fix-forward",
       "klass": "DEFECT",
       "value": "add timeout (5-30s for git, 60s for npm); on timeout return degraded result + structured warning rather than throw",
-      "line": 801
+      "line": 804
     },
     {
       "id": "DEFECT.UNBOUNDED-SUBPROCESS.symptom",
       "klass": "DEFECT",
       "value": "git/npm subprocess shelled out without timeout; CLI hangs indefinitely on stuck remote, large repo, or missing network",
-      "line": 798
+      "line": 801
     },
     {
       "id": "DEFECT.WINDOWS-ARGV-OVERFLOW.detect",
       "klass": "DEFECT",
       "value": "Windows CI job at \"Run unit tests\" exits with code 1 within seconds of starting, no node:test output between \"run-tests: suite=… files=N: …\" line and \"Process completed with exit code 1\"; same job on Linux/macOS runs full duration",
-      "line": 922
+      "line": 927
     },
     {
       "id": "DEFECT.WINDOWS-ARGV-OVERFLOW.examples",
       "klass": "DEFECT",
       "value": "#3649 scripts/run-tests.cjs spawning 546 paths (~85 chars each ≈ 46 KB); Linux ARG_MAX 2 MB allows it, Windows aborts in ~70 ms with zero test output making the failure look like the runner itself crashed",
-      "line": 921
+      "line": 926
     },
     {
       "id": "DEFECT.WINDOWS-ARGV-OVERFLOW.fix-forward",
       "klass": "DEFECT",
       "value": "chunk argv into batches whose total length stays under 28,000 chars (headroom under the 32,767 ceiling); run each chunk sequentially; aggregate exit codes (first non-zero wins). Expose RUN_TESTS_MAX_CMDLINE_CHARS env override so cross-platform regression tests can force chunking with short tmp paths",
-      "line": 923
+      "line": 928
     },
     {
       "id": "DEFECT.WINDOWS-ARGV-OVERFLOW.prevention",
       "klass": "DEFECT",
       "value": "a RUNTIME argv-length property (args-array size not statically knowable) — NOT AST-lint-enforceable; addressed at the source by the production run-tests.cjs chunking under RUN_TESTS_MAX_CMDLINE_CHARS plus its test-anchor (tests/run-tests-harness.test.cjs). ADR-1703 Phase 3 (#1720) evaluated and dropped a no-oversized-test-argv lint rule as unsound (it could not detect the canonical execFileSync(node,[...paths]) array overflow)",
-      "line": 925
+      "line": 930
     },
     {
       "id": "DEFECT.WINDOWS-ARGV-OVERFLOW.symptom",
       "klass": "DEFECT",
       "value": "execFileSync(node, ['--test', ...N paths]) succeeds on Linux/macOS, instantly exits with code 1 and no test output on Windows when N×avg(path_len) exceeds 32,767 chars (CreateProcess lpCommandLine cap)",
-      "line": 920
+      "line": 925
     },
     {
       "id": "DEFECT.WINDOWS-ARGV-OVERFLOW.test-anchor",
       "klass": "DEFECT",
       "value": "tests/run-tests-harness.test.cjs \"Windows argv-overflow chunking (issue #3597)\" — 30 long-named fixture files + RUN_TESTS_MAX_CMDLINE_CHARS=2000 → asserts run-tests: chunk N/M marker in stderr; pattern works on every platform",
-      "line": 924
+      "line": 929
     },
     {
       "id": "DEFECT.WINDOWS-FS-OPS.detect",
       "klass": "DEFECT",
       "value": "ADR-1703 Phase 6: enforced by local/require-fs-op-fallback (AST ESLint rule, error) over src/**/*.cts + bin/install.js + scripts/build-hooks.js — flags an unguarded fs.rename/fs.renameSync (the atomic-publish primitive named in .symptom) that lacks a transient-errno retry or a Windows platform guard; a catch that silently swallows or cleans-up-and-rethrows without an errno check does NOT satisfy the .fix-forward clause. copyFile/unlink are the fallback primitives (out of scope); delegated retry helpers (retryRenameSync from shell-command-projection) are the recognized compliant shape",
-      "line": 795
+      "line": 798
     },
     {
       "id": "DEFECT.WINDOWS-FS-OPS.examples",
       "klass": "DEFECT",
       "value": "c47c2c5d build-hooks rename → copy fallback, d2412271 install Windows persistent SDK shim",
-      "line": 794
+      "line": 797
     },
     {
       "id": "DEFECT.WINDOWS-FS-OPS.fix-forward",
       "klass": "DEFECT",
       "value": "catch EPERM/EBUSY/EACCES, fall back to copy + unlink with retry, surface degraded-mode message; never silently swallow; the canonical production cure is retryRenameSync (shell-command-projection.cjs) or a bounded RENAME_RETRY_ERRNOS = new Set(['EPERM','EBUSY','EACCES']) loop",
-      "line": 796
+      "line": 799
     },
     {
       "id": "DEFECT.WINDOWS-FS-OPS.symptom",
       "klass": "DEFECT",
       "value": "fs.renameSync / fs.copyFileSync hits EPERM/EBUSY on Windows when antivirus or another process holds a transient handle on the target",
-      "line": 793
+      "line": 796
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT.detect",
       "klass": "DEFECT",
       "value": "any function returning a filesystem path that flows into markdown/text body substitution; grep for path.join/raw resolvedTarget/${configDir}/ in code paths writing workflow .md, agent .md, or generated docs; smoke pattern is ${resolvedTarget}/ or ${configDir}/... templates that bypass normalization; NOW enforced at write-time + CI by local/normalize-path-in-content (eslint, error, src/**/*.cts; ADR-1703 Phase 5 #1733) — flags a path-returning fn result (path.basename excluded — returns a separator-less filename) interpolated DIRECTLY into @-reference content (shape a: @~/, @$, @/) or into a template immediately followed by a /…\\.md or /…\\.json quasi (shape b); INDIRECT data-flow (path stored in a variable/object field then interpolated, e.g. ${entry.ref}) is NOT detected by the rule — normalize at the assignment source or at the emit site; one known indirect leak (src/init.cts cmdAgentSkills entry.ref) fixed in PR #1733 by normalizing at emit; zero opt-out (the out-of-band disable-ban scans src/**/*.cts too)",
-      "line": 854
+      "line": 857
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT.examples",
       "klass": "DEFECT",
       "value": "PR #1622 computePathPrefix returned ${resolvedTarget}/ verbatim — rewrites of @~/.claude/gsd-core/commands/gsd/X.md wrote @C:\\...\\gsd-ial-windsurf-XXX\\gsd-core/commands/gsd/help.md (trailing forward slashes from the original literal survived, prefix backslashes did not); tests/install-runtime-artifacts.test.cjs:318 + tests/install.test.cjs:1323 failed on windows-latest only",
-      "line": 853
+      "line": 856
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT.fix-forward",
       "klass": "DEFECT",
       "value": "normalize at the SOURCE not the test: posixTarget=String(resolvedTarget).replace(/\\\\/g,'/'), posixHome=homeDir?String(homeDir).replace(/\\\\/g,'/'):homeDir; markdown body is POSIX-only; .replace(/\\\\/g,'/') is idempotent on POSIX (no backslashes present) so safe to apply unconditionally; isWindowsHost arg is a no-op tripwire (enh-1511) — do NOT branch on it, normalize always",
-      "line": 855
+      "line": 858
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT.prevention",
       "klass": "DEFECT",
       "value": "enforced by local/normalize-path-in-content (eslint, error; ADR-1703 Phase 5 #1733) per RULESET.CONTENT-PATH-NORMALIZATION; tests are downstream signal, never the fix; ref DEFECT.WINDOWS-TEST-PORTABILITY for test-side parity (normalize expected substrings too: ${configDir}/foo.replace(/\\\\/g,'/'))",
-      "line": 856
+      "line": 859
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT.symptom",
       "klass": "DEFECT",
       "value": "path.join() result on Windows (backslashes) substituted verbatim into markdown body (@-references, workflow files, generated docs); content gains mixed separators; cross-platform substring assertions fail on windows-latest CI lane only; macOS/Linux CI green so defect ships undetected",
-      "line": 852
+      "line": 855
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LITERAL-IN-ASSERT.detect",
       "klass": "DEFECT",
       "value": "any assert*/expect call whose ACTUAL operand is a call to a path-returning fn (path.join, path.resolve, resolveAgentDir, getPathX, computePathPrefix, os.homedir(), path.dirname/basename) AND whose EXPECTED operand is a string literal containing '/' that does NOT first flow through .replace(/\\\\/g,'/'); the literal-vs-fnCall shape is the tripwire — assert.equal(pathFn(...), '/hardcoded/posix/path') is the violation; assert.equal(String(pathFn(...)).replace(/\\\\/g,'/'), '/hardcoded/posix/path') is the compliant form; NOW mechanically enforced by the AST ESLint rule local/no-path-literal-in-assert (eslint-rules/no-path-literal-in-assert.cjs, ADR-1703 Phase 1 #1707) — platform-guard-aware (won't flag an assertion control-dependent on a process.platform !== 'win32' guard; eslint-rules/lib/platform-guard.cjs), fn list single-sourced as eslint-rules/lib/portability-vocab.cjs PATH_RETURNING_FNS (drift-guarded vs src/runtime-homes.cts)",
-      "line": 862
+      "line": 865
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LITERAL-IN-ASSERT.examples",
       "klass": "DEFECT",
       "value": "PR #1692 tests/stale-bake-guard.test.cjs resolveAgentDir suite: assert.equal(resolveAgentDir('opencode',{homedir:()=>'/H'}), '/H/.config/opencode/agent') — green on macOS+ubuntu (docker gate PASS 21101/21101), red on test (windows-latest,24) + full test (windows-latest,22, shard 2/3); same root cause as DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT but on the TEST side against a function return, not the production-markdown side",
-      "line": 861
+      "line": 864
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LITERAL-IN-ASSERT.fix-forward",
       "klass": "DEFECT",
       "value": "normalize the ACTUAL value to POSIX before comparing: assert.equal(String(pathFn(...)).replace(/\\\\/g,'/'), '/posix/literal'). Do NOT instead path.join the expected value to match the platform separator — that passes on every platform but masks a malformed backslash-on-POSIX return (both sides wrong together). The .replace is idempotent on POSIX so it is safe unconditionally. For values that are conceptually never paths (null/undefined/numbers), no normalization needed.",
-      "line": 863
+      "line": 866
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LITERAL-IN-ASSERT.prevention",
       "klass": "DEFECT",
       "value": "enforced at write-time (editor) and in CI by the AST ESLint rule local/no-path-literal-in-assert (error, scoped to tests/**/*.test.cjs in eslint.config.mjs; ADR-1703 Phase 1 #1707); inline suppression is banned out-of-band by tests/portability-rule-disable-ban.test.cjs (zero escape hatches — structure platform-specific code behind a recognized process.platform guard, never opt out); run npm run lint before push; treat the CI windows-latest lane as the only true Windows signal — gsd-test (Mac/Linux only) cannot substitute; ref umbrella DEFECT.WINDOWS-TEST-PORTABILITY and production-side analogue DEFECT.WINDOWS-PATH-LEAK-IN-MARKDOWN-CONTENT",
-      "line": 864
+      "line": 867
     },
     {
       "id": "DEFECT.WINDOWS-PATH-LITERAL-IN-ASSERT.symptom",
       "klass": "DEFECT",
       "value": "an assertion compares the return value of a path-returning function (resolveAgentDir, path.join, path.resolve, getPathX, computePathPrefix, etc.) to a HARDCODED forward-slash string literal like '/H/.config/opencode/agent' or 'C:/Users/...' — passes on POSIX (macOS/linux/ubuntu CI incl. gsd-test docker mirror, where path.join emits forward slashes so literal == actual), FAILS on windows-latest CI lane where path.join emits backslashes so literal != actual",
-      "line": 860
+      "line": 863
     },
     {
       "id": "DEFECT.WINDOWS-POSIX-MODE-BIT-ASSERT.detect",
       "klass": "DEFECT",
       "value": "grep tests for \\`.mode & 0o777\\` / \\`.mode) === 0o\\` / \\`writeFileSync(...{ mode: 0o\\` / \\`chmodSync\\` paired with a strict-equality assertion on the resulting mode; any such assertion is a POSIX-only fact that will diverge on Windows (write reads back as 0o666); NOW mechanically enforced by the AST ESLint rule local/no-posix-mode-bit-assert (eslint-rules/no-posix-mode-bit-assert.cjs, ADR-1703 Phase 2 #1711) — flags a .mode-vs-octal-literal equality assertion unless control-dependent on a process.platform !== 'win32' guard (eslint-rules/lib/platform-guard.cjs); zero opt-outs (tests/portability-rule-disable-ban.test.cjs)",
-      "line": 848
+      "line": 851
     },
     {
       "id": "DEFECT.WINDOWS-POSIX-MODE-BIT-ASSERT.examples",
       "klass": "DEFECT",
       "value": "#1634/PR #1638 tests/capability-lifecycle.test.cjs \"a .cjs hook command is node-prefixed so it runs without the executable bit\" failed windows-latest,24 on \"precondition: file staged without +x\" (expected 420/0o644, got 438/0o666); the node-prefix behavioral assertion was correct — only the mode-bit precondition was the POSIX-only fact",
-      "line": 847
+      "line": 850
     },
     {
       "id": "DEFECT.WINDOWS-POSIX-MODE-BIT-ASSERT.fix-forward",
       "klass": "DEFECT",
       "value": "gate the mode-bit precondition on if (process.platform !== 'win32') — the executable-bit/mode is a POSIX concept meaningless on Windows; KEEP the platform-independent behavioral assertion (the actual behavior under test) running on every OS; do NOT delete the precondition, scope it to POSIX",
-      "line": 849
+      "line": 852
     },
     {
       "id": "DEFECT.WINDOWS-POSIX-MODE-BIT-ASSERT.prevention",
       "klass": "DEFECT",
       "value": "ref DEFECT.WINDOWS-TEST-PORTABILITY — gsd-test is Mac/Linux only (no Windows host), only the CI windows-latest lane catches this; enforced at write-time + CI by the AST ESLint rule local/no-posix-mode-bit-assert (eslint, error; ADR-1703 Phase 2 #1711); run npm run lint before push; prefer asserting the BEHAVIOR (command shape, runnability) over the filesystem mode bit",
-      "line": 850
+      "line": 853
     },
     {
       "id": "DEFECT.WINDOWS-POSIX-MODE-BIT-ASSERT.symptom",
       "klass": "DEFECT",
       "value": "a test writes a file with a POSIX mode (fs.writeFileSync(p, data, {mode: 0o644}) or fs.chmodSync) then asserts fs.statSync(p).mode & 0o777 === <that exact octal>; passes on macOS/Linux/ubuntu CI, FAILS on the windows-latest CI lane — Windows fs does NOT honor POSIX write modes, Node reports the mode derived from the DOS readonly attribute (0o666 for writable / 0o444 for readonly), never the requested 0o644/0o755",
-      "line": 846
+      "line": 849
     },
     {
       "id": "DEFECT.WINDOWS-TEST-PORTABILITY.detect",
       "klass": "DEFECT",
       "value": "npm run lint (eslint) runs the local/* AST portability rules (ADR-1703): local/no-unguarded-nonportable-exec flags a test that chmods an exec bit AND runs it via sh/bash -c without a process.platform !== 'win32' guard (the retired scripts/lint-windows-test-portability.cjs tripwire, migrated to AST in #1720); local/no-path-literal-in-assert + local/no-posix-mode-bit-assert cover the assertion shapes; local/no-crlf-fragile-split (CRLF file-content split/regex), local/no-hardcoded-tmp (/tmp literal → os.tmpdir()), local/no-bare-npm-exec (npm needs shell:true on Windows) and local/require-userprofile-with-home (set USERPROFILE alongside HOME) replace the deleted windows-test-parity-guard ratchet (#1726); all are platform-guard-aware with zero opt-out (tests/portability-rule-disable-ban.test.cjs); watch CI windows matrix green before declaring a PR done",
-      "line": 842
+      "line": 845
     },
     {
       "id": "DEFECT.WINDOWS-TEST-PORTABILITY.examples",
       "klass": "DEFECT",
       "value": "PR #1084 (chmod 0o755 + bare-command execution failed on windows lane); PR #1692 tests/stale-bake-guard.test.cjs resolveAgentDir assertions hardcoded '/H/.config/opencode/agent' forward-slash literals against a path.join return — passed macOS/linux/ubuntu CI (incl. gsd-test docker mirror), failed windows-latest,24 + full test windows-latest,22 shard 2/3; test files that assert path.join result without normalizing to forward slashes",
-      "line": 841
+      "line": 844
     },
     {
       "id": "DEFECT.WINDOWS-TEST-PORTABILITY.fix-forward",
       "klass": "DEFECT",
       "value": "gate platform-specific execution with if (process.platform !== 'win32'); normalize path expectations to forward slashes with .replace(/\\\\/g, '/'); invoke scripts via explicit interpreter (sh <path>) rather than relying on exec-bit; there is NO opt-out for the local/* portability rules — structure platform-specific code behind a recognized process.platform !== 'win32' guard (ADR-1703 zero escape hatch)",
-      "line": 843
+      "line": 846
     },
     {
       "id": "DEFECT.WINDOWS-TEST-PORTABILITY.prevention",
       "klass": "DEFECT",
       "value": "run npm run lint (the local/* AST portability rules, ADR-1703) before opening a PR; treat the CI windows lane as the only true Windows signal — gsd-test (Mac/Linux only) cannot substitute for it",
-      "line": 844
+      "line": 847
     },
     {
       "id": "DEFECT.WINDOWS-TEST-PORTABILITY.symptom",
       "klass": "DEFECT",
       "value": "local gsd-test runs Mac+Linux only (no Windows host); Windows-only test failures (chmod exec-bit not honored for PATH-executing extension-less scripts in Git Bash msys2; / vs \\ path-separator in assertions; Git Bash msys2 shell semantics) surface ONLY in CI test (windows-latest,*) / full test (windows-latest,*) lanes, never locally",
-      "line": 840
+      "line": 843
     },
     {
       "id": "DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED.detect",
       "klass": "DEFECT",
       "value": "after install, for every workflow .md file under <targetDir>/<runtime-config-dir>/workflows/, extract the @<path> reference from the body and assert fs.existsSync(path); if any reference target is absent, this defect is present",
-      "line": 874
+      "line": 877
     },
     {
       "id": "DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED.examples",
       "klass": "DEFECT",
       "value": "PR #1622 (issue #1615) shipped Windsurf /gsd-* workflow wrappers that all reference <targetDir>/.windsurf/gsd-core/commands/gsd/X.md; that directory was never populated; none of the reviews (security, Codex adversarial, Memtrace) caught it; a #1629 regression test verifying 'every workflow @- reference target exists on disk' surfaced it post-merge",
-      "line": 873
+      "line": 876
     },
     {
       "id": "DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED.fix-forward",
       "klass": "DEFECT",
       "value": "copy the canonical command source (commands/gsd/*.md) into <targetDir>/gsd-core/commands/gsd/ during install, gated on the runtime that uses workflow delegation (currently Windsurf local only); use copyWithPathReplacement to apply the same path+brand rewrites as the rest of the install; verify with a regression test that every workflow's @-reference resolves",
-      "line": 875
+      "line": 878
     },
     {
       "id": "DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED.prevention",
       "klass": "DEFECT",
       "value": "any new converter that emits a wrapper file delegating to another file MUST verify the delegation target is actually written by the same install; add a post-install invariant test: for every @<path> reference in every generated wrapper, assert the target exists; the workflow converter's hardcoded path was copy-pasted from Claude's skill pattern without verifying the target exists for the new runtime",
-      "line": 876
+      "line": 879
     },
     {
       "id": "DEFECT.WORKFLOW-DELEGATION-TARGET-NOT-INSTALLED.symptom",
       "klass": "DEFECT",
       "value": "workflow wrapper file (e.g. Windsurf convertClaudeCommandToWindsurfWorkflow) delegates to a command body at <targetDir>/gsd-core/commands/gsd/X.md via a hardcoded @~/.claude/gsd-core/commands/gsd/ path that _applyRuntimeRewrites rewrites to the install target; the source gsd-core/ dir ships without commands/ (it lives at package-root commands/gsd/); install completes successfully, workflow files appear in the / menu, but invocation tells the LLM to read a file that does not exist; the slash commands silently fail",
-      "line": 872
+      "line": 875
     },
     {
       "id": "DEFECT.WORKTREE-FETCH-SHA-DIVERGENCE.detect",
       "klass": "DEFECT",
       "value": "git rev-parse HEAD~1 vs git rev-parse origin/<actual-branch-ref> — if they differ despite fetch the local copy was rewritten by some checkout-time hook",
-      "line": 790
+      "line": 793
     },
     {
       "id": "DEFECT.WORKTREE-FETCH-SHA-DIVERGENCE.examples",
       "klass": "DEFECT",
       "value": "this session, branch fix/3309-... and pr-3316",
-      "line": 789
+      "line": 792
     },
     {
       "id": "DEFECT.WORKTREE-FETCH-SHA-DIVERGENCE.fix-forward",
       "klass": "DEFECT",
       "value": "git checkout --detach origin/<actual-remote-branch> directly; do work from detached HEAD; push HEAD:<remote-branch>",
-      "line": 791
+      "line": 794
     },
     {
       "id": "DEFECT.WORKTREE-FETCH-SHA-DIVERGENCE.symptom",
       "klass": "DEFECT",
       "value": "in a worktree, git fetch origin pull/N/head:pr-N produces commits with SHAs different from the actual remote PR head SHA; force-push rejected as non-fast-forward despite recent fetch",
-      "line": 788
+      "line": 791
     },
     {
       "id": "EXEC.CLASSIFY.classes",
       "klass": "EXEC",
       "value": "{class:'quota-exceeded'|'classify-handoff-bug'|'unknown-failure', sentinel?, retryAfterSeconds?}",
-      "line": 961
+      "line": 966
     },
     {
       "id": "EXEC.CLASSIFY.cross-runtime",
       "klass": "EXEC",
       "value": "Anthropic/CC: usage limit|rate limit|quota|429|retry-after; Copilot CLI: rate_limit (stem); Codex CLI: 429|usage_limit_reached|too many requests",
-      "line": 963
+      "line": 968
     },
     {
       "id": "EXEC.CLASSIFY.handler",
       "klass": "EXEC",
       "value": "gsd-core/bin/lib/agent-command-router.cjs:classifyAgentFailure (registered via command-aliases.cjs; mutation:false outputMode:json)",
-      "line": 959
+      "line": 964
     },
     {
       "id": "EXEC.CLASSIFY.precedence",
       "klass": "EXEC",
       "value": "quota sentinel wins over classifyHandoffIfNeeded bug when both appear",
-      "line": 964
+      "line": 969
     },
     {
       "id": "EXEC.CLASSIFY.proactive-signal-not-usable",
       "klass": "EXEC",
       "value": "Anthropic exposes anthropic-ratelimit-* headers + Agent SDK RateLimitEvent; Claude Code subprocess does NOT forward to hooks/statusline today (upstream #33820, #22407, #32796)",
-      "line": 966
+      "line": 971
     },
     {
       "id": "EXEC.CLASSIFY.retry-after-parser",
       "klass": "EXEC",
       "value": "\\bretry[-_ ]after[:\\s]+(\\d+)\\b avoids embedded-word false matches like noretry-after",
-      "line": 965
+      "line": 970
     },
     {
       "id": "EXEC.CLASSIFY.sentinel-order",
       "klass": "EXEC",
       "value": "most specific first: 429 beats too-many-requests; resource_exhausted beats quota (array order in src/agent-command-router.cts QUOTA_SENTINELS checks resource_exhausted before quota); case-insensitive; canonical sentinel value is lower-cased form",
-      "line": 962
+      "line": 967
     },
     {
       "id": "EXEC.CLASSIFY.workflow",
       "klass": "EXEC",
       "value": "gsd-core/workflows/execute-phase.md step 7; class-distinct prompts (quota-to-wait-for-reset; classify-handoff-bug-to-spot-check; unknown-to-continue/stop)",
-      "line": 960
+      "line": 965
     },
     {
       "id": "GSD-RESEARCH.CONTEXT-DISCIPLINE",
@@ -1138,895 +1144,895 @@
       "id": "LEARNING.prompt-budget.boundary-gap",
       "klass": "LEARNING",
       "value": "PR #3708 commit 2df566ed reserved NOTE_RESERVE_TOKENS in pressure-threshold AND in minSet pre-check; both buggy paths only fire when baseTokens ∈ (effectiveBudget - NOTE_RESERVE_TOKENS, effectiveBudget]; original test suite used budgets far from that band so neither path was exercised; fix bde1ae8f confines NOTE_RESERVE accounting to post-trim assembly path only; future budget/limit code MUST add boundary fixtures per RULESET.TESTS.boundary-coverage.fixtures",
-      "line": 495
+      "line": 498
     },
     {
       "id": "META.RULE.brief-must-cite-doc",
       "klass": "META",
       "value": "agent prompts MUST quote the canonical doc line being applied; paraphrasing from predicate memory drifts and produces violations",
-      "line": 629
+      "line": 632
     },
     {
       "id": "META.RULE.brief-no-paraphrase",
       "klass": "META",
       "value": "writing \"k040 — never leave changelog box unchecked\" caused 5 of 8 agents to edit CHANGELOG.md in violation of CONTRIBUTING.md L110",
-      "line": 630
+      "line": 633
     },
     {
       "id": "META.RULE.canonical-source-precedence",
       "klass": "META",
       "value": "CONTRIBUTING.md > docs/adr/* > CONTEXT.md > agent memory",
-      "line": 627
+      "line": 630
     },
     {
       "id": "META.RULE.read-contributing-first",
       "klass": "META",
       "value": "read CONTRIBUTING.md sections \"Pull Request Guidelines\" + \"CHANGELOG Entries\" before EVERY agent dispatch",
-      "line": 628
+      "line": 631
     },
     {
       "id": "PLANNING.PATH.PARITY.project-scope",
       "klass": "PLANNING",
       "value": ".planning/<project> (never .planning/projects/<project>); mirror planning-workspace.cjs planningDir()",
-      "line": 573
+      "line": 576
     },
     {
       "id": "PLANNING.PATH.SEAM.helpers",
       "klass": "PLANNING",
       "value": "helpers.planningPaths delegates to workspacePlanningPaths + resolveWorkspaceContext; precedence explicit-ws > env-ws > env-project > root",
-      "line": 574
+      "line": 577
     },
     {
       "id": "PLANNING.PATH.SEAM.init-handlers",
       "klass": "PLANNING",
       "value": "[initExecutePhase, initPlanPhase, initPhaseOp, initMilestoneOp] consume helpers.planningPaths().planning (no direct relPlanningPath join)",
-      "line": 575
+      "line": 578
     },
     {
       "id": "PR.3267.POSTMORTEM.recovery",
       "klass": "PR",
       "value": "[issue#3270 created, label approved-enhancement applied, PR reopened, body includes \"Closes #3270\", label no-changelog applied]",
-      "line": 552
+      "line": 555
     },
     {
       "id": "PR.3267.POSTMORTEM.root-cause",
       "klass": "PR",
       "value": "[missing issue link, missing changeset/no-changelog]",
-      "line": 551
+      "line": 554
     },
     {
       "id": "PRED.k320.canonical-source",
       "klass": "PRED",
       "value": "CONTRIBUTING.md L193-211",
-      "line": 633
+      "line": 636
     },
     {
       "id": "PRED.k320.ci-enforcement",
       "klass": "PRED",
       "value": "scripts/changeset/lint.cjs",
-      "line": 639
+      "line": 642
     },
     {
       "id": "PRED.k320.ci-paths-monitored",
       "klass": "PRED",
       "value": "bin/ gsd-core/ src/ agents/ commands/ hooks/ sdk/src/ sdk/prompts/",
-      "line": 640
+      "line": 643
     },
     {
       "id": "PRED.k320.cure",
       "klass": "PRED",
       "value": "drop .changeset/<adj>-<noun>-<noun>.md fragment ONLY",
-      "line": 635
+      "line": 638
     },
     {
       "id": "PRED.k320.evidence",
       "klass": "PRED",
       "value": "PR #3302 merge-conflict against #3308 CHANGELOG.md row 2026-05-09",
-      "line": 642
+      "line": 645
     },
     {
       "id": "PRED.k320.opt-out-label",
       "klass": "PRED",
       "value": "no-changelog",
-      "line": 638
+      "line": 641
     },
     {
       "id": "PRED.k320.recovery",
       "klass": "PRED",
       "value": "open Removed-typed cleanup PR deleting only the redundant row",
-      "line": 641
+      "line": 644
     },
     {
       "id": "PRED.k320.rule",
       "klass": "PRED",
       "value": "do not edit CHANGELOG.md in feature/fix/enhancement PRs",
-      "line": 634
+      "line": 637
     },
     {
       "id": "PRED.k320.signal",
       "klass": "PRED",
       "value": "changelog-direct-edit-forbidden",
-      "line": 632
+      "line": 635
     },
     {
       "id": "PRED.k320.tool",
       "klass": "PRED",
       "value": "npm run changeset -- --type <T> --pr <NNN> --body \"...\"",
-      "line": 636
+      "line": 639
     },
     {
       "id": "PRED.k320.types",
       "klass": "PRED",
       "value": "Added|Changed|Deprecated|Removed|Fixed|Security",
-      "line": 637
+      "line": 640
     },
     {
       "id": "PRED.k321.evidence",
       "klass": "PRED",
       "value": "PRs #3304/#3305 (2026-05-09): real Minor/Major findings in body, 0 threads",
-      "line": 648
+      "line": 651
     },
     {
       "id": "PRED.k321.poll-shape",
       "klass": "PRED",
       "value": "parse pulls/<n>/reviews body AND graphql reviewThreads",
-      "line": 646
+      "line": 649
     },
     {
       "id": "PRED.k321.resolution",
       "klass": "PRED",
       "value": "address in code; no GraphQL resolveReviewThread needed for body-only findings",
-      "line": 647
+      "line": 650
     },
     {
       "id": "PRED.k321.shape",
       "klass": "PRED",
       "value": "CR posts \"[!CAUTION] outside the diff\" findings in review BODY, not in reviewThreads",
-      "line": 645
+      "line": 648
     },
     {
       "id": "PRED.k321.signal",
       "klass": "PRED",
       "value": "cr-outside-diff-range-finding",
-      "line": 644
+      "line": 647
     },
     {
       "id": "PRED.k322.cure-1",
       "klass": "PRED",
       "value": "2nd retrigger ~10min after first ack",
-      "line": 653
+      "line": 656
     },
     {
       "id": "PRED.k322.cure-2",
       "klass": "PRED",
       "value": "if silent at 50min, treat as silent-pass with maintainer flag in merge-commit body",
-      "line": 654
+      "line": 657
     },
     {
       "id": "PRED.k322.distinct-from",
       "klass": "PRED",
       "value": "k080",
-      "line": 651
+      "line": 654
     },
     {
       "id": "PRED.k322.evidence",
       "klass": "PRED",
       "value": "PR #3306 (2026-05-09): 0 reviews after 50min + 2 retriggers",
-      "line": 656
+      "line": 659
     },
     {
       "id": "PRED.k322.merge-gate-impact",
       "klass": "PRED",
       "value": "k070 real_coderabbit_review_present unsatisfied; requires maintainer judgment",
-      "line": 655
+      "line": 658
     },
     {
       "id": "PRED.k322.shape",
       "klass": "PRED",
       "value": "ack posted, real review never lands within [5s, 410s] cooldown after burst of N PRs <15min",
-      "line": 652
+      "line": 655
     },
     {
       "id": "PRED.k322.signal",
       "klass": "PRED",
       "value": "cr-sustained-throttle",
-      "line": 650
+      "line": 653
     },
     {
       "id": "PRED.k323.cure-alt",
       "klass": "PRED",
       "value": "consolidate into single PR when 2+ issues share root cause",
-      "line": 661
+      "line": 664
     },
     {
       "id": "PRED.k323.cure-pre-dispatch",
       "klass": "PRED",
       "value": "brief one agent canonical-owner; brief others to EXCLUDE shared site",
-      "line": 660
+      "line": 663
     },
     {
       "id": "PRED.k323.evidence",
       "klass": "PRED",
       "value": "#3300 (#3297) overlapped #3306 (#3298) on add-backlog.md hunks 2026-05-09",
-      "line": 663
+      "line": 666
     },
     {
       "id": "PRED.k323.recovery",
       "klass": "PRED",
       "value": "close smaller PR as \"subsumed by #N\" or rebase second to drop overlap hunk",
-      "line": 662
+      "line": 665
     },
     {
       "id": "PRED.k323.shape",
       "klass": "PRED",
       "value": "2+ open issues touch same canonical bug site; each fix's sibling-audit produces overlapping diff",
-      "line": 659
+      "line": 662
     },
     {
       "id": "PRED.k323.signal",
       "klass": "PRED",
       "value": "sibling-audit-cross-pr-overlap",
-      "line": 658
+      "line": 661
     },
     {
       "id": "PRED.k324.cure",
       "klass": "PRED",
       "value": "verify via gh api on every agent-completion notification; never trust narrative",
-      "line": 667
+      "line": 670
     },
     {
       "id": "PRED.k324.evidence",
       "klass": "PRED",
       "value": "2026-05-09 session: 5+ mid-monitor terminations across PRs #3232/#3271/#3251/#3255/#3262",
-      "line": 669
+      "line": 672
     },
     {
       "id": "PRED.k324.k095-restatement",
       "klass": "PRED",
       "value": "k095 confirmed shape: agent reports \"waiting for monitor\" / \"tests still running\" then terminates",
-      "line": 666
+      "line": 669
     },
     {
       "id": "PRED.k324.poll-shape",
       "klass": "PRED",
       "value": "gh pr view <n> --json mergeStateStatus,statusCheckRollup + pulls/<n>/reviews + graphql reviewThreads + issues/<n>/comments tail",
-      "line": 668
+      "line": 671
     },
     {
       "id": "PRED.k324.signal",
       "klass": "PRED",
       "value": "agent-terminates-mid-monitor",
-      "line": 665
+      "line": 668
     },
     {
       "id": "PRED.k325.cleanup",
       "klass": "PRED",
       "value": "git worktree remove --force <path> for aged agent worktrees",
-      "line": 674
+      "line": 677
     },
     {
       "id": "PRED.k325.cure",
       "klass": "PRED",
       "value": "detached-HEAD: git checkout --detach $(git ls-remote origin <branch>); modify; commit; git push --force-with-lease=<branch>:<remote-sha> origin HEAD:refs/heads/<branch>",
-      "line": 673
+      "line": 676
     },
     {
       "id": "PRED.k325.evidence",
       "klass": "PRED",
       "value": "2026-05-09 CHANGELOG.md strip on PRs #3300/#3302/#3304/#3305 required detached-HEAD",
-      "line": 675
+      "line": 678
     },
     {
       "id": "PRED.k325.shape",
       "klass": "PRED",
       "value": "git checkout <branch> errors \"already used by worktree at <agent-worktree>\"",
-      "line": 672
+      "line": 675
     },
     {
       "id": "PRED.k325.signal",
       "klass": "PRED",
       "value": "worktree-branch-lock-on-force-push",
-      "line": 671
+      "line": 674
     },
     {
       "id": "PRED.k326.cure",
       "klass": "PRED",
       "value": "quote canonical doc verbatim in brief; mentally simulate \"if all N agents follow this brief literally, do they violate any rule?\"",
-      "line": 679
+      "line": 682
     },
     {
       "id": "PRED.k326.evidence",
       "klass": "PRED",
       "value": "2026-05-09 brief \"k040 — update CHANGELOG.md\" → 5 of 8 agents violated CONTRIBUTING.md L110",
-      "line": 680
+      "line": 683
     },
     {
       "id": "PRED.k326.shape",
       "klass": "PRED",
       "value": "N parallel agents amplify a single brief-vs-doc contradiction into N violations",
-      "line": 678
+      "line": 681
     },
     {
       "id": "PRED.k326.signal",
       "klass": "PRED",
       "value": "brief-contradicts-canonical-doc",
-      "line": 677
+      "line": 680
     },
     {
       "id": "PRED.k327.ack-shape",
       "klass": "PRED",
       "value": "body \"✅ Actions performed - Full review triggered\"",
-      "line": 683
+      "line": 686
     },
     {
       "id": "PRED.k327.cooldown-normal",
       "klass": "PRED",
       "value": "[5s, 410s]",
-      "line": 686
+      "line": 689
     },
     {
       "id": "PRED.k327.cooldown-throttled",
       "klass": "PRED",
       "value": "k322",
-      "line": 687
+      "line": 690
     },
     {
       "id": "PRED.k327.distinguish-key",
       "klass": "PRED",
       "value": "len(pulls/<n>/reviews) — ack=0, real=≥1",
-      "line": 685
+      "line": 688
     },
     {
       "id": "PRED.k327.real-review-shape",
       "klass": "PRED",
       "value": "body starts \"Actionable comments posted: N\" OR \"[!CAUTION] Some comments are outside the diff\"",
-      "line": 684
+      "line": 687
     },
     {
       "id": "PRED.k327.signal",
       "klass": "PRED",
       "value": "cr-ack-vs-real-review",
-      "line": 682
+      "line": 685
     },
     {
       "id": "PRED.k328.audit-list",
       "klass": "PRED",
       "value": "[heading-matches-class, closing-keyword-present, changeset-fragment-or-no-changelog-label]",
-      "line": 692
+      "line": 695
     },
     {
       "id": "PRED.k328.canonical-source",
       "klass": "PRED",
       "value": "CONTRIBUTING.md L48,L64,L81 (template links) + .github/PULL_REQUEST_TEMPLATE/{fix,enhancement,feature}.md L1 (heading text)",
-      "line": 690
+      "line": 693
     },
     {
       "id": "PRED.k328.k100-restatement",
       "klass": "PRED",
       "value": "heading must match issue class: bug→## Fix PR, enhancement→## Enhancement PR, feature→## Feature PR",
-      "line": 691
+      "line": 694
     },
     {
       "id": "PRED.k328.signal",
       "klass": "PRED",
       "value": "pr-template-typed-heading-required",
-      "line": 689
+      "line": 692
     },
     {
       "id": "PRED.k329.body",
       "klass": "PRED",
       "value": "**<Bold user-visible change>** — <symptom-led explanation>. (#<NNN>)",
-      "line": 698
+      "line": 701
     },
     {
       "id": "PRED.k329.canonical-source",
       "klass": "PRED",
       "value": "CONTRIBUTING.md L196-202 + .changeset/README.md",
-      "line": 695
+      "line": 698
     },
     {
       "id": "PRED.k329.filename",
       "klass": "PRED",
       "value": ".changeset/<adj>-<noun>-<noun>.md",
-      "line": 696
+      "line": 699
     },
     {
       "id": "PRED.k329.frontmatter",
       "klass": "PRED",
       "value": "---\\\\ntype: <Added|Changed|Deprecated|Removed|Fixed|Security>\\\\npr: <NNN>\\\\n---",
-      "line": 697
+      "line": 700
     },
     {
       "id": "PRED.k329.observed-clean",
       "klass": "PRED",
       "value": "#3299 sunny-ibex-wave, #3301 sturdy-rams-caper, #3306 3298-phase-dir-prefix-drift-workflows",
-      "line": 699
+      "line": 702
     },
     {
       "id": "PRED.k329.signal",
       "klass": "PRED",
       "value": "changeset-fragment-canonical-shape",
-      "line": 694
+      "line": 697
     },
     {
       "id": "PRED.k330.fallback",
       "klass": "PRED",
       "value": "append predicate-format findings directly to CONTEXT.md",
-      "line": 703
+      "line": 706
     },
     {
       "id": "PRED.k330.shape",
       "klass": "PRED",
       "value": "mempalace MCP tools require explicit user call; AI cannot trigger",
-      "line": 702
+      "line": 705
     },
     {
       "id": "PRED.k330.signal",
       "klass": "PRED",
       "value": "mempalace-diary-not-callable-by-ai",
-      "line": 701
+      "line": 704
     },
     {
       "id": "PRED.k331.cure",
       "klass": "PRED",
       "value": "gh pr close <n> with NO --comment flag",
-      "line": 708
+      "line": 711
     },
     {
       "id": "PRED.k331.evidence",
       "klass": "PRED",
       "value": "2026-05-09 wave-3: violation on #3300 close, deleted within 30s",
-      "line": 710
+      "line": 713
     },
     {
       "id": "PRED.k331.k101-restatement",
       "klass": "PRED",
       "value": "k101 includes close-time --comment flag; rationale belongs in subsuming PR's squash-merge body",
-      "line": 707
+      "line": 710
     },
     {
       "id": "PRED.k331.recovery",
       "klass": "PRED",
       "value": "if violation lands, gh api -X DELETE repos/<o>/<r>/issues/comments/<id>",
-      "line": 709
+      "line": 712
     },
     {
       "id": "PRED.k331.shape",
       "klass": "PRED",
       "value": "instruction \"close with no comment (rationale)\" — parenthetical is rationale, NOT comment body",
-      "line": 706
+      "line": 709
     },
     {
       "id": "PRED.k331.signal",
       "klass": "PRED",
       "value": "close-with-no-comment-is-literal",
-      "line": 705
+      "line": 708
     },
     {
       "id": "PROBE.ci.surface",
       "klass": "PROBE",
       "value": "the contract (parse/validate, projection round-trip, fail-closed guards), NEVER the LLM judgment (ADR-550 D5)",
-      "line": 466
+      "line": 469
     },
     {
       "id": "PROBE.core.seam",
       "klass": "PROBE",
       "value": "analyzeCoverage(items,resolutions?,validators) ingests ALREADY-proposed items; does NOT assume deterministic propose (ADR-550 D7b)",
-      "line": 459
+      "line": 462
     },
     {
       "id": "PROBE.edge.verification",
       "klass": "PROBE",
       "value": "explicit|backstop",
-      "line": 461
+      "line": 464
     },
     {
       "id": "PROBE.family",
       "klass": "PROBE",
       "value": "edge-probe(shape-axis)+prohibition-probe(must-NOT-axis)+ui-consideration-probe(UI-state-axis), shared probe-core, run as spec-phase/ui-phase soft gates (ADR-550 D7; #1867)",
-      "line": 457
+      "line": 460
     },
     {
       "id": "PROBE.item.axes",
       "klass": "PROBE",
       "value": "status{resolved|dismissed|unresolved} x verification{<probe-defined>|null} — orthogonal; the lifecycle enum carries no verification fact (ADR-550 D7a)",
-      "line": 460
+      "line": 463
     },
     {
       "id": "PROBE.principle",
       "klass": "PROBE",
       "value": "verifier-reach-equals-spec-reach (a goal-backward verifier only checks assertions that exist; probes make omitted assertions exist before code) — ADR-857 verification-substrate boundary; docs/design/verifier-reach.md",
-      "line": 456
+      "line": 459
     },
     {
       "id": "PROBE.prohib.verification",
       "klass": "PROBE",
       "value": "test|judgment",
-      "line": 462
+      "line": 465
     },
     {
       "id": "PROBE.protocol",
       "klass": "PROBE",
       "value": "recall(adversarial over-generate)->precision(drop routine-engineering); dismissals require a non-empty reason",
-      "line": 458
+      "line": 461
     },
     {
       "id": "PROBE.ui.axis",
       "klass": "PROBE",
       "value": "MIXED — closed compiled shape-rooted 8 (empty/loading/error/populated/partial/overflow/zero-one-many/long-text) via ui-consideration-probe adapter; open UX (real-time/a11y/i18n-RTL) prose-owned in references/domain-probes.md, NOT compiled (#1867)",
-      "line": 464
+      "line": 467
     },
     {
       "id": "PROBE.ui.seam",
       "klass": "PROBE",
       "value": "ui-phase Step 9.5 post-verification: element-cue classify -> propose-then-confirm (partial-cue mitigation, Goodhart) -> autoResolve --auto floor (never dismiss; unclassified stays unresolved #1110) -> ## UI Considerations write-back -> plan-phase `## UI Considerations` lift rule (#1867)",
-      "line": 465
+      "line": 468
     },
     {
       "id": "PROBE.ui.verification",
       "klass": "PROBE",
       "value": "explicit|backstop",
-      "line": 463
+      "line": 466
     },
     {
       "id": "PROC.AGENT-DISPATCH.completion-verify",
       "klass": "PROC",
       "value": "run k324.poll-shape on every agent-completion notification",
-      "line": 714
+      "line": 717
     },
     {
       "id": "PROC.AGENT-DISPATCH.parallel-overlap-audit",
       "klass": "PROC",
       "value": "before dispatching N sibling-audit fixers, compute file-set union and assign canonical owners",
-      "line": 713
+      "line": 716
     },
     {
       "id": "PROC.AGENT-DISPATCH.preflight",
       "klass": "PROC",
       "value": "[read-CONTRIBUTING.md-fresh, read-relevant-ADRs, cite-specific-line-in-brief, require-closing-keyword, require-changeset-fragment, forbid-CHANGELOG.md-edit, require-isolation-worktree, forbid-self-PR-comment, mandate-trust-but-verify]",
-      "line": 712
+      "line": 715
     },
     {
       "id": "PROC.MERGE-WAVE.changelog-strip-pattern",
       "klass": "PROC",
       "value": "detached-HEAD per k325 + git checkout main -- CHANGELOG.md + commit + force-with-lease",
-      "line": 718
+      "line": 721
     },
     {
       "id": "PROC.MERGE-WAVE.merge-tool",
       "klass": "PROC",
       "value": "gh pr merge <n> --squash --delete-branch",
-      "line": 719
+      "line": 722
     },
     {
       "id": "PROC.MERGE-WAVE.merge-tool-warning",
       "klass": "PROC",
       "value": "delete-branch may fail with \"used by worktree at\" — harmless; remote branch still deleted",
-      "line": 720
+      "line": 723
     },
     {
       "id": "PROC.MERGE-WAVE.ordering",
       "klass": "PROC",
       "value": "[wave1: isolated-files, wave2: CHANGELOG-only-overlap (better: strip per k320), wave3: same-file-overlap with explicit decision]",
-      "line": 716
+      "line": 719
     },
     {
       "id": "PROC.MERGE-WAVE.preflight",
       "klass": "PROC",
       "value": "gh pr view <n> --json files for every PR; identify overlap pairs; surface to maintainer",
-      "line": 717
+      "line": 720
     },
     {
       "id": "PROC.PARALLEL-FIX-DISPATCH.observed",
       "klass": "PROC",
       "value": "#3541 + #3542 dispatched simultaneously this session; PRs #3546 #3547 opened green; one syntax slip caught by AGENT-RETIRED-SLASH-SYNTAX-DRIFT and fixed before second PR opened",
-      "line": 991
+      "line": 996
     },
     {
       "id": "PROC.PARALLEL-FIX-DISPATCH.pattern",
       "klass": "PROC",
       "value": "bot triage brief → worktree per branch → parallel sub-agents do rubber-duck/RCA/TDD implementation only → top-level orchestrator owns commit + gsd-test + push + PR + changeset-pr-backfill",
-      "line": 989
+      "line": 994
     },
     {
       "id": "PROC.PARALLEL-FIX-DISPATCH.rationale",
       "klass": "PROC",
       "value": "long-running test runs need cross-turn notifications (orchestrator-only); CONTRIBUTING.md gh-templates-first hook requires session-scoped Read calls sub-agents wouldn't otherwise make; sequencing test runs avoids GSD-TEST-CONCURRENT-OUTPUT-COLLISION",
-      "line": 990
+      "line": 995
     },
     {
       "id": "PROC.TRIAGE.comment-shape",
       "klass": "PROC",
       "value": "lead with \"duplicate of #NNNN, fixed by PR #MMMM, in v1.X.Y\"; show current code snippet proving bug-surface gone; give @latest and @next upgrade commands; close",
-      "line": 996
+      "line": 1001
     },
     {
       "id": "PROC.TRIAGE.no-duplicate-label",
       "klass": "PROC",
       "value": "this repo has no duplicate label; framing lives in comment text + closing the issue",
-      "line": 997
+      "line": 1002
     },
     {
       "id": "PROC.TRIAGE.routing-incoming",
       "klass": "PROC",
       "value": "stale-bug-already-fixed to close as duplicate of originating issue + cite fix PR + first stable tag; release-publish-or-backport to ready-for-human; reporter-can-self-test to awaiting-retest",
-      "line": 995
+      "line": 1000
     },
     {
       "id": "PROHIB.canon-referral",
       "klass": "PROHIB",
       "value": "OWASP/GDPR/fairness-canon are REFERRED to /gsd:secure-phase+eslint, never minted as prohibitions (ADR-550 D6)",
-      "line": 468
+      "line": 471
     },
     {
       "id": "PROHIB.descriptor.shape",
       "klass": "PROHIB",
       "value": "5 FLAT scalars (check_kind,check_target,check_rule,check_violation_fixture,check_clean_fixture) — NEVER a nested check:{} (parseMustHavesBlock is a flat parser, src/frontmatter.cts)",
-      "line": 473
+      "line": 476
     },
     {
       "id": "PROHIB.enforce.adr",
       "klass": "PROHIB",
       "value": "docs/adr/1606 (verify-time enforcement seam) + docs/adr/550 (spec-phase contract)",
-      "line": 476
+      "line": 479
     },
     {
       "id": "PROHIB.enforce.causation",
       "klass": "PROHIB",
       "value": "clean-fixture control proves the red is content-caused not env-var-set; MANDATORY for node-test (#1906 supersedes #1346 opt-in) — absent clean-fixture ⇒ node-test un-provable/fail-closed; lint-rule needs none (its subject IS the linted file)",
-      "line": 472
+      "line": 475
     },
     {
       "id": "PROHIB.enforce.failfirst",
       "klass": "PROHIB",
       "value": "MACHINE-PROVEN against an author-supplied violation fixture (#1279); caller failFirst attestation DEMOTED to a non-authoritative hint (FF-08)",
-      "line": 471
+      "line": 474
     },
     {
       "id": "PROHIB.enforce.green-rule",
       "klass": "PROHIB",
       "value": "passed iff provenFailFirst===true && run.passed===true (runProhibitionEnforcement); every miss/fail/un-provable HARD-GATES both modes via dispositionForProhibition's fail-closed default",
-      "line": 469
+      "line": 472
     },
     {
       "id": "PROHIB.enforce.kinds",
       "klass": "PROHIB",
       "value": "node-test (non-vacuous red via isNonVacuousNodeTestRed; pass-side vacuity via isNonVacuousNodeTestPass) | lint-rule (eslint --format json filtered by ruleId)",
-      "line": 470
+      "line": 473
     },
     {
       "id": "PROHIB.judgment-tier",
       "klass": "PROHIB",
       "value": "never-silent / never-hard-halt soft gate; autonomous emits \"unverified-prohibition — human review recommended\" (exogenous grading, ADR-550 D4)",
-      "line": 475
+      "line": 478
     },
     {
       "id": "PROHIB.rail",
       "klass": "PROHIB",
       "value": "core verify rail, non-toggleable (ADR-857 verification-substrate boundary / decision #6); the verifier<->predicate contract is NOT an off-by-default capability",
-      "line": 474
+      "line": 477
     },
     {
       "id": "PROHIB.recall",
       "klass": "PROHIB",
       "value": "LLM-prose; no compiled prohibition-probe recall engine (only the schema/projection layer is code, ADR-550 D7b)",
-      "line": 467
+      "line": 470
     },
     {
       "id": "RELEASE-NOTES.ANTI-PATTERN",
       "klass": "RELEASE-NOTES",
       "value": "raw \"What's Changed\" PR list as final body for hotfix or feature release; \"Full Changelog only\" body for tagged release with >0 user-facing fixes",
-      "line": 609
+      "line": 612
     },
     {
       "id": "RELEASE-NOTES.ANTI-PATTERN.implementation-first",
       "klass": "RELEASE-NOTES",
       "value": "do not lead bullet with file path or function name; lead with symptom/user-visible behavior",
-      "line": 610
+      "line": 613
     },
     {
       "id": "RELEASE-NOTES.ANTI-PATTERN.risk-commentary",
       "klass": "RELEASE-NOTES",
       "value": "do not include \"may break\", \"be careful\", \"test thoroughly\" - release notes state what changed, not hedges about what might go wrong",
-      "line": 611
+      "line": 614
     },
     {
       "id": "RELEASE-NOTES.DEFAULT-STATE",
       "klass": "RELEASE-NOTES",
       "value": "auto-generated body is \"What's Changed\" PR list + Full Changelog link; treat as draft, not final",
-      "line": 585
+      "line": 588
     },
     {
       "id": "RELEASE-NOTES.EXAMPLE.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "v1.41.1 (https://github.com/open-gsd/gsd-core/releases/tag/v1.41.1) - 14 fixes grouped by 6 subgroups",
-      "line": 613
+      "line": 616
     },
     {
       "id": "RELEASE-NOTES.EXAMPLE.minor-auto-acceptable",
       "klass": "RELEASE-NOTES",
       "value": "v1.41.0 - kept auto-generated body; many small fixes with clean conventional-commit titles",
-      "line": 615
+      "line": 618
     },
     {
       "id": "RELEASE-NOTES.EXAMPLE.rc",
       "klass": "RELEASE-NOTES",
       "value": "v1.7.0-rc.1 (https://github.com/open-gsd/gsd-core/releases/tag/v1.7.0-rc.1) - intro + Added/Changed/Fixed/Documentation taxonomy",
-      "line": 614
+      "line": 617
     },
     {
       "id": "RELEASE-NOTES.GATE.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "manual edit required; auto-generated body for vX.Y.{Z>0} is \"Full Changelog only\" and must be replaced with structured body",
-      "line": 586
+      "line": 589
     },
     {
       "id": "RELEASE-NOTES.GATE.minor",
       "klass": "RELEASE-NOTES",
       "value": "auto-generated body acceptable when PR titles are clean; promote to structured body when >20 PRs or contains feature+refactor+fix mix",
-      "line": 588
+      "line": 591
     },
     {
       "id": "RELEASE-NOTES.GATE.rc",
       "klass": "RELEASE-NOTES",
       "value": "manual edit recommended; auto-generated PR list is acceptable for early RCs but final RC before vX.Y.0 should match standard",
-      "line": 587
+      "line": 590
     },
     {
       "id": "RELEASE-NOTES.RELEASE-STREAM.main-branch",
       "klass": "RELEASE-NOTES",
       "value": "next (RCs) + latest (stable); install via @next or @latest",
-      "line": 620
+      "line": 623
     },
     {
       "id": "RELEASE-NOTES.RELEASE-STREAM.rule",
       "klass": "RELEASE-NOTES",
       "value": "streams do not mix; do not document @next in hotfix/stable notes",
-      "line": 621
+      "line": 624
     },
     {
       "id": "RELEASE-NOTES.SCOPE",
       "klass": "RELEASE-NOTES",
       "value": "GitHub Releases body for tags vX.Y.Z, vX.Y.Z-rc.N; not CHANGELOG.md (changeset workflow owns that)",
-      "line": 584
+      "line": 587
     },
     {
       "id": "RELEASE-NOTES.SOURCE.changesets",
       "klass": "RELEASE-NOTES",
       "value": ".changeset/*.md (frontmatter pr: + body bullets)",
-      "line": 600
+      "line": 603
     },
     {
       "id": "RELEASE-NOTES.SOURCE.commits",
       "klass": "RELEASE-NOTES",
       "value": "git log <prev-tag>..<this-tag> --pretty=format:'%s%n%n%b' --no-merges",
-      "line": 599
+      "line": 602
     },
     {
       "id": "RELEASE-NOTES.SOURCE.pr-bodies",
       "klass": "RELEASE-NOTES",
       "value": "gh pr view <NNN> --json title,body for fixes lacking a changeset",
-      "line": 601
+      "line": 604
     },
     {
       "id": "RELEASE-NOTES.SOURCE.precedence",
       "klass": "RELEASE-NOTES",
       "value": "changeset body > commit body > PR body > commit subject (prefer authored content over auto-generated)",
-      "line": 602
+      "line": 605
     },
     {
       "id": "RELEASE-NOTES.STANDARD.bullet-shape",
       "klass": "RELEASE-NOTES",
       "value": "**Bold user-visible change** — explanation of what was broken or what's new, leading with symptom not implementation. Trailing (#NNN) PR ref.",
-      "line": 592
+      "line": 595
     },
     {
       "id": "RELEASE-NOTES.STANDARD.footer.full-changelog",
       "klass": "RELEASE-NOTES",
       "value": "**Full Changelog**: https://github.com/open-gsd/gsd-core/compare/<prev>...<this>",
-      "line": 596
+      "line": 599
     },
     {
       "id": "RELEASE-NOTES.STANDARD.footer.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "Install/upgrade: \\`npx @opengsd/gsd-core@latest\\`",
-      "line": 594
+      "line": 597
     },
     {
       "id": "RELEASE-NOTES.STANDARD.footer.rc",
       "klass": "RELEASE-NOTES",
       "value": "Install for testing: \\`npx @opengsd/gsd-core@next\\` (per branch->dist-tag policy)",
-      "line": 595
+      "line": 598
     },
     {
       "id": "RELEASE-NOTES.STANDARD.heading-level",
       "klass": "RELEASE-NOTES",
       "value": "## for category, ### for subgroup (area), - for bullet",
-      "line": 591
+      "line": 594
     },
     {
       "id": "RELEASE-NOTES.STANDARD.intro",
       "klass": "RELEASE-NOTES",
       "value": "optional one-paragraph framing for RC/feature releases; omit for pure-fix hotfixes",
-      "line": 597
+      "line": 600
     },
     {
       "id": "RELEASE-NOTES.STANDARD.subgroups",
       "klass": "RELEASE-NOTES",
       "value": "phase-planning-state | workstream | query-dispatch-cli | code-review | install | capture | docs | architecture | security",
-      "line": 593
+      "line": 596
     },
     {
       "id": "RELEASE-NOTES.STANDARD.taxonomy",
       "klass": "RELEASE-NOTES",
       "value": "Keep-a-Changelog 1.1.0: Added | Changed | Deprecated | Removed | Fixed | Security | Documentation",
-      "line": 590
+      "line": 593
     },
     {
       "id": "RELEASE-NOTES.TEMPLATE.hotfix",
       "klass": "RELEASE-NOTES",
       "value": "## Fixed\\n\\n### <subgroup>\\n- **<bold change>** — <explanation>. (#<PR>)\\n\\n---\\n\\nInstall/upgrade: \\`npx @opengsd/gsd-core@latest\\`\\n\\n**Full Changelog**: <compare-url>",
-      "line": 617
+      "line": 620
     },
     {
       "id": "RELEASE-NOTES.TEMPLATE.rc",
       "klass": "RELEASE-NOTES",
       "value": "<one-paragraph intro>\\n\\n## Added\\n### <subgroup>\\n- **<change>** — <explanation>. (#<PR>)\\n\\n## Changed\\n### Architecture\\n- **<refactor>** — <user-visible benefit>. (#<PR>)\\n\\n## Fixed\\n### <subgroup>\\n- **<fix>** — <explanation>. (#<PR>)\\n\\n## Documentation\\n- **<docs change>** — <reason>. (#<PR>)\\n\\n---\\n\\nThis is a release candidate. Install for testing:\\n\\`\\`\\`bash\\nnpx @opengsd/gsd-core@next\\n\\`\\`\\`\\n\\n**Full Changelog**: <compare-url>",
-      "line": 618
+      "line": 621
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.edit",
       "klass": "RELEASE-NOTES",
       "value": "gh release edit <tag> --notes-file <path>",
-      "line": 604
+      "line": 607
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.idempotency",
       "klass": "RELEASE-NOTES",
       "value": "gh release edit overwrites body wholesale; safe to re-run after refining",
-      "line": 607
+      "line": 610
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.token",
       "klass": "RELEASE-NOTES",
       "value": "must use .envrc GITHUB_TOKEN per RULESET.GH.AUTH.DEFAULT (this doc); never ambient gh auth",
-      "line": 606
+      "line": 609
     },
     {
       "id": "RELEASE-NOTES.WORKFLOW.view",
       "klass": "RELEASE-NOTES",
       "value": "gh release view <tag> --json body --jq .body",
-      "line": 605
+      "line": 608
     },
     {
       "id": "RULESET.ADR-HEADER",
       "klass": "RULESET",
       "value": "every docs/adr/NNNN-*.md must open with - **Status:** Accepted|Proposed|Superseded (by [ADR-NNNN](file.md))|Legacy + - **Date:** YYYY-MM-DD immediately after title",
-      "line": 519
+      "line": 522
     },
     {
       "id": "RULESET.AGENT_SIZE_BUDGET",
       "klass": "RULESET",
       "value": "agent-size-budget (#1074; sibling of WORKFLOW_SIZE_BUDGET; BYTES not lines per #717/#683, rebased from lines in PR 3/3) = differential attribution size ratchet (PRIMARY anti-creep since #2724/ADR-2719 §4, same mechanism and same ack fragments (tests/emitted-drift-acks/, #2914; legacy tests/emitted-drift-ack.json still honored) as WORKFLOW_SIZE_BUDGET, scoped to agents/gsd-*.md) + loose tier hard caps (red lines, never raised on approach: XL<=57344 / LARGE<=49152 / DEFAULT<=24576); net-new agents are DEFAULT-tier (no separate new-file cap). Sizes are measured via the shared scripts/workflow-size.cjs measureMdFiles(dir,predicate) counter (tests/helpers/emitted-runtime.cjs's currentSizes() and the guard's own tier-cap checks both import it). A grown agent fails the differential guard — ack + justify, or extract LAZILY to gsd-core/references/. DISTINCT from DEFECT.AGENT-FILE-SIZE-CAP-BREACH (a separate 45K-CHAR extraction-evidence threshold on gsd-planner via planner-decomposition/reachability tests): that guard proves mode-sections were extracted; this one bounds total agent bytes. Two guards, two units (chars vs bytes), two purposes. The prior per-file baseline (tests/agent-size-baseline.json, `npm run size:baseline`) is REMOVED by #2724",
-      "line": 508
+      "line": 511
     },
     {
       "id": "RULESET.ALLOWED-TOOLS-FRONTMATTER",
       "klass": "RULESET",
       "value": "command's allowed-tools must cover every tool the workflow calls (including Write for file creation); thin-wrapper pattern makes this easy to miss",
-      "line": 515
+      "line": 518
     },
     {
       "id": "RULESET.ARGUMENTS-SANITIZE",
       "klass": "RULESET",
       "value": "any workflow step constructing .planning/.../{SLUG}.md path from user input ($ARGUMENTS, parsed remainder) must sanitize inline ([a-z0-9-] only, reject ..//\\\\, max-length) — \"(already sanitized)\" must trace back to explicit guard; RESUME/fallback modes need own guards",
-      "line": 516
+      "line": 519
     },
     {
       "id": "RULESET.AUDIT.search-source-not-generated",
       "klass": "RULESET",
       "value": "verify an invariant/validation EXISTS by searching the AUTHORED source (src/*.cts OR the scripts/gen-*.cjs generator), never the generated bin/lib/*.cjs (gitignored, ADR-457); gen-time checks live in gen-*.cjs not the .cts it consumes → search BOTH before declaring absent; read generated .cjs only for output drift. Repro: grep src/*.cts for VALID_CONVERTER_NAMES → false \"5e ConverterName unenforced\"; actually enforced in gen-capability-registry.cjs. cf RULESET.TESTS.no-source-grep",
-      "line": 504
+      "line": 507
     },
     {
       "id": "RULESET.CAPABILITY.cutover-self-gating",
@@ -2056,463 +2062,463 @@
       "id": "RULESET.CODERABBIT.GUARD.COMPLETE",
       "klass": "RULESET",
       "value": "required_checks_green && coderabbit_check_pass && graphQL(reviewThreads.unresolved_count)==0",
-      "line": 541
+      "line": 544
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.GRAPHQL",
       "klass": "RULESET",
       "value": "reviewThreads(first:100){nodes{id isResolved comments{nodes{author body path line originalLine url}}}}; use unresolved threads as authoritative, not badge text alone",
-      "line": 542
+      "line": 545
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.OPEN_PRS",
       "klass": "RULESET",
       "value": "gh pr list --repo open-gsd/gsd-core --author @me --state open; repeat near end because open PR set can change mid-run",
-      "line": 540
+      "line": 543
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.RERUN",
       "klass": "RULESET",
       "value": "after every push wait for CodeRabbit completion, then re-query unresolved threads; CodeRabbit can add new findings after earlier threads were resolved",
-      "line": 543
+      "line": 546
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.RESOLVE",
       "klass": "RULESET",
       "value": "fix validated finding -> focused tests -> commit/push -> resolveReviewThread(threadId) -> wait CI/CodeRabbit -> final unresolved_count query",
-      "line": 544
+      "line": 547
     },
     {
       "id": "RULESET.CODERABBIT.GUARD.SCOPE",
       "klass": "RULESET",
       "value": "if a new @me open PR appears during final list, include it in the same guard pass before declaring all-open-PRs complete",
-      "line": 545
+      "line": 548
     },
     {
       "id": "RULESET.CONTENT-PATH-NORMALIZATION",
       "klass": "RULESET",
       "value": "filesystem paths substituted into markdown body text (@-references, workflow .md, agent .md, generated docs, command bodies) MUST be normalized to POSIX forward slashes via .replace(/\\\\/g,'/') at the production source BEFORE substitution; never push normalization to tests; cross-platform content is POSIX-only; applies to: computePathPrefix output, install-path rewrites, generated shim paths emitted into .md bodies; idempotent on POSIX so unconditional; mechanically enforced by local/normalize-path-in-content (eslint, src/**/*.cts; #1733)",
-      "line": 858
+      "line": 861
     },
     {
       "id": "RULESET.CONTRIB.CLASSIFY.enhancement",
       "klass": "RULESET",
       "value": "requires approved-enhancement before implementation",
-      "line": 534
+      "line": 537
     },
     {
       "id": "RULESET.CONTRIB.CLASSIFY.feature",
       "klass": "RULESET",
       "value": "requires approved-feature before implementation",
-      "line": 535
+      "line": 538
     },
     {
       "id": "RULESET.CONTRIB.CLASSIFY.fix",
       "klass": "RULESET",
       "value": "requires confirmed-bug before implementation (legacy 'confirmed' label is back-compat only for duplicate-sweep exemption, not a valid implementation gate)",
-      "line": 533
+      "line": 536
     },
     {
       "id": "RULESET.CONTRIB.GATE.ORDER",
       "klass": "RULESET",
       "value": "issue-first -> approval-label -> code -> PR-link -> changeset/no-changelog",
-      "line": 532
+      "line": 535
     },
     {
       "id": "RULESET.CR-THREAD-RESOLVE",
       "klass": "RULESET",
       "value": "after adding // allow-test-rule: to silence lint, resolve existing inline CR threads via graphql resolveReviewThread mutation before merge — open threads mislead future reviewers; pattern: gh api graphql -f query='mutation { resolveReviewThread(input:{threadId:\"PRRT_...\"}) { thread { isResolved } } }'",
-      "line": 526
+      "line": 529
     },
     {
       "id": "RULESET.EMITTED_ATTRIBUTION",
       "klass": "RULESET",
       "value": "the emitted-artifact family (ADR-2719, epic #2719) — POST-CUTOVER (#2724, Phase 4). Historically tests/fixtures/golden-install-parity/*.json (19 path→hash manifests) + tests/workflow-size-baseline.json + tests/agent-size-baseline.json were all committed, PURE FUNCTIONS of the source tree whose correct merge was ALWAYS \"recompute\" — 140 of 143 conflicted-file instances across the open PR queue were these files. #2724 DELETES all three, the golden test (tests/golden-install-parity.test.cjs), the generator (scripts/gen-golden-install-parity-zcode.cjs), `npm run gen:golden`, `UPDATE_GOLDEN`, the merge-driver bridge (scripts/git-merge-regen-driver.cjs, `npm run setup:merge-driver`, the .gitattributes merge=gsd-regen block), and scripts/update-size-baseline.cjs (`npm run size:baseline`). The differential attribution check (tests/emitted-attribution.test.cjs + tests/emitted-provenance.test.cjs) is now the SOLE gate for emitted-artifact propagation AND size growth — no committed artifact, nothing to hand-merge, nothing to regenerate. `npm run regen:derived` still exists for what remains committed and derived: build, registry, ADR index, capability matrix, inventory manifest, manifest versions, and `tests/fixtures/install-tree/*.json` (now `npm run gen:install-tree`, folded into `regen:derived`). tests/fixtures/install-tree/*.json is DELIBERATELY EXCLUDED from the cutover (ADR-2719 §7): it conflicts on 0 of 7, its diffs are readable, and it preserves \"the installer stopped shipping X\" as a hard absolute failure — capturing it would convert that absolute into an attribution-free auto-resolve. The baseline the differential compares against is now published by `scripts/gen-emitted-baseline.cjs` on every push to `next` (cached, keyed on sha) and restored in PR lanes via `GSD_EMITTED_BASELINE`/`resolveBaseline()` (tests/helpers/emitted-baseline.cjs); a cache miss falls back to an in-job build via a throwaway `git worktree` (tests/helpers/emitted-runtime.cjs's `buildBaselineAtRef`). REMEDIATION IS PART OF THE GATE (#2778): the failure output names its own remedy, because a gate that states a requirement and withholds the means of satisfying it is a maintainer round-trip, not a gate — ADR-2719 §3's \"conspicuous declaration\" only works if the contributor can discover how to make it. Both failing branches name a NEW fragment to create under `tests/emitted-drift-acks/` (#2914; pick a name nobody else is using), say it may not exist yet (absence is the healthy steady state), print a minimal valid document, and repeat \"do NOT regenerate anything\" — post-#2724 there is nothing left to regenerate, and hunting for a deleted baseline is the predictable wrong guess. The two branches key on DIFFERENT spaces and each says which: the hash pass keys on the EMITTED PATH (always contains a `/`), the size ratchet keys on the BARE FILENAME (`currentSizes` writes `sizes[entry.name]` from readdirSync over `gsd-core/workflows/` + `agents/`). A stale-ack failure additionally says to delete the FILE when removing its last entry, since an empty-but-present ack parses fine yet signals nothing; post-#2789 it also offers CORRECTING the entry to name the ripple actually made, which is the other honest resolution and the one a contributor usually wants. NOT ack-able and deliberately given no ack text: the `NEW_FILE_CAP` branch, whose remedy is extraction. Text is sourced from one frozen `REMEDIATION` export in tests/helpers/emitted-diff.cjs whose example document is rendered from `ACK_VERSION` via `JSON.stringify`, so the taught schema cannot drift from the accepted one (a round-trip test feeds the printed document back through `parseAck`); the message teaches ONE canonical shape even though `parseAck` also accepts a bare-string reason and a missing `version` — liberal in what it accepts, conservative in what it sends. Note the ADR's Consequences originally called the #2724 migration \"terminal\"; #2778 corrected that — it is terminal only for a PR that grows no shipped file. #2914 replaced the single shared ack file with per-PR fragments under `tests/emitted-drift-acks/` — exactly the shape `.changeset/` already uses for the identical \"every PR rewrites one shared document\" conflict problem — so two PRs needing an ack can no longer collide with each other, and a fragment left on `next` after merge is inert rather than a shared cell; the legacy file is still read and unioned in for branches that predate the split, and a duplicate path key across two sources is a hard, loudly-reported error, never silent last-wins. `tests/emitted-drift-ack.json` (the LEGACY file specifically, NOT the fragment directory) must NEVER persist on `next` (#2914): every entry is scoped to the diff that introduced it, so once merged it is by definition already at the base — spent and inert regardless of shape — and a persistent copy makes that ONE file a shared merge-conflict cell across every open PR that also carries an ack, exactly the \"140 of 143\" cost this whole cutover exists to remove; a persisting FRAGMENT is harmless by construction and is deliberately not what this guard checks. This is enforced on `next` itself only, never as a PR-lane check: the `guard-no-ack-on-next` job in `.github/workflows/test.yml` (push-to-`next` trigger) runs `scripts/lint-emitted-drift-ack.cjs --guard-next` (`assertAbsentOnNext`), which fails on the LEGACY file's PRESENCE alone, valid or not — a PR-lane \"base ack must be absent\" check would red every open PR the instant a spent ack merged, which is the #2768 shape #2789 already ended. cf `RULESET.WORKFLOW_SIZE_BUDGET`, `RULESET.AGENT_SIZE_BUDGET`; see `### Emitted Artifact Provenance`",
-      "line": 509
+      "line": 512
     },
     {
       "id": "RULESET.GH.AUTH.DEFAULT",
       "klass": "RULESET",
       "value": "source .envrc GITHUB_TOKEN before gh; exception=ambient allowed only when user explicitly says machine-only fallback",
-      "line": 539
+      "line": 542
     },
     {
       "id": "RULESET.HARNESS.test-memory-guard",
       "klass": "RULESET",
       "value": "~/.claude/hooks/test-memory-guard.sh fires on every Bash PreToolUse; if argv[0]∈{node|vitest|jest|mocha|tsx|ts-node|tap|ava|playwright|cypress} OR matches (npm|pnpm|yarn|bun) (run )?(t|test|tests|vitest|jest); blocks via hookSpecificOutput.permissionDecision=deny when sum(RSS of running matching procs, excluding tsserver|*-mcp|claude|Electron|...) ≥ 4 GiB OR when argv[0] basename matches a running process's argv[0]. Exception: node --version|-v|--help|-h|-p|-e are trivial probes and skip the check. Designed for a 24 GB Mac where prior accidental fan-out exhausted RAM",
-      "line": 949
+      "line": 954
     },
     {
       "id": "RULESET.MANIFEST-CANONICAL-KEY",
       "klass": "RULESET",
       "value": "docs/INVENTORY-MANIFEST.json has a single top-level key: families; ALL EIGHT families.* arrays (agents/commands/workflows/references/cli_modules/hooks flat, plus workflow_modes/workflow_steps nested — #2996, epic #1671 Phase 6.5) are canonical, consumed by test suites — tests/inventory-manifest-sync.test.cjs reads all eight, edit-phase/enh-2380/enh-2430 tests read commands+workflows; the six flat families are keyed by BARE BASENAME while the two nested families are keyed by <workflow>/<subdir>/<file> path, deliberately, because two workflows may each own a same-named step file and a basename key would silently drop one under a JSON-equality comparison; recursion is bounded at exactly one named subdirectory, never a general walk; the family tables live ONCE in scripts/gen-inventory-manifest.cjs and are IMPORTED by the test (the test formerly redeclared them, a DEFECT.GENERATIVE-FIX divergence that let a new family be verified by nobody while still reporting green); the old generated date field and the stale top-level workflows key are both gone; regen via node scripts/gen-inventory-manifest.cjs --write, AFTER build:lib",
-      "line": 520
+      "line": 523
     },
     {
       "id": "RULESET.PR-FLOW.docker-before-push",
       "klass": "RULESET",
       "value": "before ANY git push of any fix to any PR, run gsd-test (docker on the remote, mirrors ubuntu CI) and confirm exit 0. macOS-local node --test is NOT a substitute — many failures are platform-specific (path separators, case sensitivity, locale, fs semantics). Watchdog with Monitor on the output log; never set a sleep/timer and walk away. Source: user feedback 2026-05-16 — \"we don't set a timer we actively watch and record results in real time as possible\". SUPERSEDED 2026-07-17: 'confirm exit 0' is a false-green trap — piping/backgrounding can report exit 0 on a failed suite; gate on the verdict-line outcome:\"passed\" for the exact HEAD sha instead. See CLAUDE.md's gsd-test rule and the gsd-test-is-ref-based-commit-first predicate for the current, correct gating contract.",
-      "line": 951
+      "line": 956
     },
     {
       "id": "RULESET.PR-FLOW.templates-mandatory",
       "klass": "RULESET",
       "value": "every gh pr create|edit|gh issue create|edit MUST first invoke the gh-templates-first skill and Read (Read tool, not Bash cat — k321 read-tracking) the matching template in .github/. Apply ALL required sections; never write freeform bodies. Repo enforces this via gsd-pr-template-policy GitHub Action which flags any non-templated body — the bot allows the PR to stay open only because authors are contributors-or-higher, but the warning is a real complaint that must be cured. Source: user feedback 2026-05-16 (multi-message escalation) — \"the whole reason i have that github action is because you fucking blow through and ignore using the templates\"",
-      "line": 953
+      "line": 958
     },
     {
       "id": "RULESET.PR-SCOPE.one-concern-per-pr",
       "klass": "RULESET",
       "value": "split unrelated changes into separate PRs; cherry-pick doc changes to dedicated docs/ branch immediately, then force-push original to remove the commit",
-      "line": 522
+      "line": 525
     },
     {
       "id": "RULESET.SHARED-HELPERS-LINT-VS-TEST",
       "klass": "RULESET",
       "value": "when a lint script and test suite both implement same constant (CANONICAL_TOOLS) or parser (parseFrontmatter, executionContextRefs), extract to scripts/*-helpers.cjs required by both — silent divergence otherwise",
-      "line": 517
+      "line": 520
     },
     {
       "id": "RULESET.TESTS.CODERABBIT_FIX",
       "klass": "RULESET",
       "value": "prefer exported-function behavioral tests over source-grep; lint-no-source-grep rejects readFileSync source assertions without allow-test-rule",
-      "line": 546
+      "line": 549
     },
     {
       "id": "RULESET.TESTS.boundary-coverage",
       "klass": "RULESET",
       "value": "tests MUST exercise inputs at and near the threshold/limit, not only trivial-fit and trivial-overflow; pick inputs where N ∈ {limit-1, limit, limit+1} and where pre-trim/pre-check accumulators ≈ effective limit; \"very small\" and \"very large\" inputs alone do not constitute edge-case coverage and routinely miss off-by-one + reservation-accounting bugs",
-      "line": 491
+      "line": 494
     },
     {
       "id": "RULESET.TESTS.boundary-coverage.anti-pattern",
       "klass": "RULESET",
       "value": "test suites that pair budget:1_000_000 (trivially fits) with budget:1 (trivially overflows) and skip the boundary region; failure mode that shipped PR #3708 UNNEEDED_TRIM + FALSE_HARDFAIL regressions (commit 2df566ed, fixed bde1ae8f)",
-      "line": 494
+      "line": 497
     },
     {
       "id": "RULESET.TESTS.boundary-coverage.fixtures",
       "klass": "RULESET",
       "value": "for any code with budget/limit/quota/threshold parameter, test suite MUST include: (a) input where SUT estimate == limit exactly, (b) input where estimate == limit - 1, (c) input where estimate == limit + 1, (d) input where any internal reserve/safety constant pushes baseline within reserve-distance of limit (catches early-pressure firing)",
-      "line": 493
+      "line": 496
     },
     {
       "id": "RULESET.TESTS.clock-seam",
       "klass": "RULESET",
       "value": "concurrency logic must accept an optional {clock=Date} parameter; tests control time via t.mock.timers.enable(['Date']) + t.mock.timers.setTime(0) + t.mock.timers.tick(N); real OS scheduler races are not a permitted test pattern after ADR 456 (2026-05-28); real-race tests are deleted once deterministic seam tests cover the same logical path; clock.cjs realClock adds nowIso() (→ new Date(this.now()).toISOString()) and today() (→ nowIso().split('T')[0]) so all date-stamping in state.cjs routes through the seam; subprocess time-pin adapter: set GSD_TEST_MODE=1 + GSD_NOW_MS=<epoch-ms> in runGsdTools env to pin the date written by the SUT without touching real wall-clock (issue #474)",
-      "line": 498
+      "line": 501
     },
     {
       "id": "RULESET.TESTS.coderabbit-fix-prefer",
       "klass": "RULESET",
       "value": "behavioral tests (call exported fn, capture JSON, assert typed fields) over source-grep",
-      "line": 489
+      "line": 492
     },
     {
       "id": "RULESET.TESTS.delete-bad-tests",
       "klass": "RULESET",
       "value": "pass-always / vacuous-truth / source-grep / elapsed-time / real-race / permanent-allow-test-rule tests are DELETED and replaced with compliant tests in the same PR; not skipped, not commented out, not permanently exempted; replacement must cover the same logical path via typed-surface assertion or clock-seam pattern",
-      "line": 501
+      "line": 504
     },
     {
       "id": "RULESET.TESTS.diagnostics",
       "klass": "RULESET",
       "value": "after JSON.parse, assert output shape (Array.isArray(output.phases)) with raw-output-prefix diagnostics before .map() — prevents opaque TypeErrors when CLI output shape changes",
-      "line": 490
+      "line": 493
     },
     {
       "id": "RULESET.TESTS.escape-regex",
       "klass": "RULESET",
       "value": "new RegExp(\"prefix${var}\") must escapeRegex(var); phase-id.cjs exports escapeRegex (core.cjs re-export spine retired in epic #1267); phase IDs like 5.1 contain . which is metacharacter",
-      "line": 486
+      "line": 489
     },
     {
       "id": "RULESET.TESTS.eslint-harness",
       "klass": "RULESET",
       "value": "ADR 452 (2026-05-28): ESLint flat config + typescript-eslint + eslint-plugin-n + eslint-plugin-no-only-tests + local plugin at eslint-rules/ (repo root, NOT scripts/eslint-rules/); replaces scripts/lint-*.cjs regex scanners (fully removed in #632); of the three test-rigor rules, local/no-source-grep and local/no-magic-sleep-in-tests are already promoted to error in tests/**/*.test.cjs scope (post-cleanup), local/no-elapsed-assertion remains at warn pending open epic #1885 (its dedicated ratchet issue #453 already merged without completing this promotion; follow-up #1888 was closed not-planned and folded into #1885)",
-      "line": 502
+      "line": 505
     },
     {
       "id": "RULESET.TESTS.feedback-loop-convergence",
       "klass": "RULESET",
       "value": "when a feature's OUTPUT feeds back into its own INPUT (calibration, retry backoff, adaptive budgets, ratchets, any self-correcting signal), step-wise tests are NOT sufficient evidence of correctness: they assert `given X return Y` while the defect lives in the TRAJECTORY across iterations. Required: a closed-loop test that (a) drives the REAL end-to-end surface — not the pure core alone, since composition bugs live between surfaces — for N >= 2x the loop's window, (b) asserts convergence on the known-true value, (c) asserts the fixed point (an already-correct history must produce NO correction), and (d) asserts boundedness under an adversarial/oscillating history. Two defects shipped past a green ~26,800-test suite in epic #1952 for want of exactly this: calibration applied twice across two surfaces (factor^2, #2631) and calibration measured against its own corrected output so it oscillated to ~1.41 instead of converging on 2.0 (#2632). Every unit, boundary, property and round-trip test passed for both. HOW TO SPOT ONE (the detection tell, not a judgment call): the feature's own acceptance criterion carries a TEMPORAL QUANTIFIER — \"after N phases\", \"subsequent\", \"over time\", \"improves\", \"learns\", \"adapts\". That phrasing means the claim is about a TRAJECTORY, so a step-wise `given X return Y` test does not test the claim that was made. #1952's AC4 read \"After N phases, the error is computed and applied as a correction to SUBSEQUENT estimates\" — the tell was in plain sight and was still tested as a point. Survey of this repo (2026-07): estimation calibration is the ONLY true instance; size/mutation ratchets are exempt because they fail on both growth AND shrinkage (cannot self-satisfy), and retry ladders (node_repair_budget, plan_bounce_passes, provider_escalation) terminate rather than feed back. Test anchor: tests/estimate-loop-convergence.test.cjs",
-      "line": 492
+      "line": 495
     },
     {
       "id": "RULESET.TESTS.guard-toplevel-readFileSync",
       "klass": "RULESET",
       "value": "module-level const src = readFileSync(...) throws before any test() registers — wrap in try/catch in test() or use lazy load",
-      "line": 488
+      "line": 491
     },
     {
       "id": "RULESET.TESTS.mutation-score",
       "klass": "RULESET",
       "value": "Stryker runs incremental (--since origin/next) on ubuntu-latest/Node24 CI leg; default threshold 80% killed/total; surviving mutants in scope block merge unless path is listed in stryker.config.mjs with documented reason; treat surviving mutant as a failing test specification",
-      "line": 500
+      "line": 503
     },
     {
       "id": "RULESET.TESTS.no-dead-regex-in-includes",
       "klass": "RULESET",
       "value": "src.includes(\"foo.*bar\") is always false — .* is regex metacharacter not wildcard; use new RegExp(...).test(src) or delete",
-      "line": 487
+      "line": 490
     },
     {
       "id": "RULESET.TESTS.no-source-grep",
       "klass": "RULESET",
       "value": "local/no-source-grep ESLint AST rule (eslint-rules/no-source-grep.cjs) rejects readFileSync of a source .cjs/.js/.ts path bound to a var later hit with .includes()/.match()/.startsWith()/.endsWith()/.indexOf()/.search(); error in tests/**/*.test.cjs, warn in gsd-core/bin/**/*.cjs + scripts/**/*.cjs (ADR 452 retired the old regex script, removed for good in #632)",
-      "line": 482
+      "line": 485
     },
     {
       "id": "RULESET.TESTS.no-source-grep.exemption",
       "klass": "RULESET",
       "value": "// allow-test-rule: <runtime-contract-is-the-product> with one-line justification; reserved for tests where the file content IS the product surface (STATE.md, config.toml, hooks.json, agent .md). Migration to typed-IR parser tracked in #2974.",
-      "line": 483
+      "line": 486
     },
     {
       "id": "RULESET.TESTS.no-source-grep.tmp-file-traps",
       "klass": "RULESET",
       "value": "reading tmp files written by the SUT in tests still trips lint; round-trip through CLI (e.g. frontmatter get) instead of readFileSync+.includes()",
-      "line": 484
+      "line": 487
     },
     {
       "id": "RULESET.TESTS.no-timing-assertion",
       "klass": "RULESET",
       "value": "do not assert on wall-clock elapsed time (Date.now() delta, performance.now(), process.hrtime() comparison); such assertions test the host machine not the SUT and flake on loaded CI runners; enforcement: local/no-elapsed-assertion ESLint rule, currently warn (promotion to error tracked under open epic #1885, not #453 which already merged without completing it); canonical replacement: clock-seam pattern with node:test mock.timers",
-      "line": 497
+      "line": 500
     },
     {
       "id": "RULESET.TESTS.property-based-testing",
       "klass": "RULESET",
       "value": "modules implementing parsing / transformation / budget-limit / bijective contracts must include at least one fast-check (fc) property test asserting a domain invariant; invariant categories: round-trip, monotonicity, boundary-containment, idempotency; property tests live in *.test.cjs alongside unit tests; CI signal: Stryker mutation score below 80% blocks merge",
-      "line": 499
+      "line": 502
     },
     {
       "id": "RULESET.TRIAGE-EXISTING-WORK",
       "klass": "RULESET",
       "value": "before writing agent brief for confirmed bug, check (1) local branches git branch -a | grep <issue>, (2) untracked/modified files on that branch, (3) stash, (4) open PRs with matching head branch — recover existing work rather than re-implement",
-      "line": 524
+      "line": 527
     },
     {
       "id": "RULESET.WORKFLOW.COVERAGE-METADATA",
       "klass": "RULESET",
       "value": "#1602 SUMMARY frontmatter `coverage:` block (list of {id,description,requirement?,verification:[{kind∈unit|integration|e2e|automated_ui|manual_procedural|other, ref, status∈pass|fail|unknown}],human_judgment:bool,rationale?}) is the per-deliverable RTM consumed DETERMINISTICALLY by verify-work extract_tests via `gsd-tools uat classify-coverage --summary <f>` (src/coverage.cts → bin/lib/coverage.cjs). AUTHORING: execute-plan create_summary populates it from task <verify> results; every deliverable MUST be classified; fail-safe default = human_judgment:true + rationale. CLASSIFY CONTRACT: auto-pass (skip human) ONLY when human_judgment===false (strict boolean) AND verification non-empty AND every status==='pass' AND zero validation errors — else PRESENT to human. mode:legacy (no block) ⇒ byte-identical prose `## Accomplishments` fall-through; `coverage: []` ⇒ mode:coverage, zero entries (single-confirmation). Frozen IR: MODE/PRESENT_REASON/ERROR_CODE enums locked by tests/coverage-metadata-parser.test.cjs. extractFrontmatter CANNOT parse it (scalars-only `-` items) → dedicated parser, sibling of parseMustHavesBlock. Asymmetry by design: false-negative=redundant prompt (status quo); false-positive=shipped bug UAT existed to catch",
-      "line": 513
+      "line": 516
     },
     {
       "id": "RULESET.WORKFLOW_EXECUTE_END_TO_END",
       "klass": "RULESET",
       "value": "standard for single-workflow commands is \"Execute end-to-end.\" (no bolded **Follow the X workflow** fragments); flag-dispatch routing uses \"execute the X workflow end-to-end.\" in routing bullets — convention verified live across ~20 commands/gsd/*.md files; no ADR currently documents this specific phrasing rule (ADR-0002 covers the adjacent but distinct command-contract/@-ref-resolution seam, not this convention)",
-      "line": 512
+      "line": 515
     },
     {
       "id": "RULESET.WORKFLOW_EXECUTION_CONTEXT",
       "klass": "RULESET",
       "value": "@-ref in commands/gsd/*.md must resolve to an existing file on disk; regression test in tests/docs-update.test.cjs (folds former \\`bug-3135-capture-backlog-workflow\\`, consolidation epic #1969); INVENTORY.md row + INVENTORY-MANIFEST.json families.workflows must stay in sync; \"Invoked by\" attribution must move when a flag absorbs a micro-skill",
-      "line": 511
+      "line": 514
     },
     {
       "id": "RULESET.WORKFLOW_FILE_NAMES",
       "klass": "RULESET",
       "value": "workflow files use hyphens; <step name=\"...\"> XML attributes must match (extract-learnings not extract_learnings); tests should pin exact hyphenated name",
-      "line": 510
+      "line": 513
     },
     {
       "id": "RULESET.WORKFLOW_MARKDOWN.FENCES",
       "klass": "RULESET",
       "value": "preserve opening language fence when editing shell snippets in workflow markdown; malformed fence creates fresh CR threads (MD040)",
-      "line": 506
+      "line": 509
     },
     {
       "id": "RULESET.WORKFLOW_SIZE_BUDGET",
       "klass": "RULESET",
       "value": "workflow size enforcement (#1074; BYTES not lines per #717; LF-normalized per #683) = differential attribution size ratchet (PRIMARY anti-creep since #2724/ADR-2719 §4: tests/emitted-attribution.test.cjs's real-tree test reports growth in any gsd-core/workflows/*.md with its exact byte delta vs `next`, no committed snapshot, requires an ack entry — a fragment under tests/emitted-drift-acks/, #2914; the legacy tests/emitted-drift-ack.json is still honored and unioned in) + loose tier hard caps (outer red lines, NEVER raised on approach: XL<=98304 / LARGE<=61440 / DEFAULT<=40960) + discuss-phase<32000; a file that grew fails the differential guard — add an ack entry naming the file and reason, justify the growth in the PR (or extract LAZILY-loaded content; eager @-imports don't reduce loaded context); crossing a hard cap means EXTRACT, not bump. The prior per-file baseline (tests/workflow-size-baseline.json, `npm run size:baseline`) is REMOVED by #2724. Its new-file cap (ADR-1610 Decision point 3, un-baselined files <=32768, the Codex anchor) is REVIVED inside the differential's size ratchet itself (`NEW_FILE_CAP` in tests/helpers/emitted-diff.cjs) rather than lost: \"not yet baselined\" is exactly \"present in sizeCurrent, absent from sizeBaseline\", a signal the ratchet already computes for its own reasons. NOT ack-able — same as the tier hard caps, the fix is extraction. Narrower than the original: this check cannot see XL/LARGE tiering (tests/workflow-size-budget.test.cjs's classification, invisible to the pure differential module), so a legitimately large NEW file must extract rather than tier in, one release earlier than an existing file would need to — a disclosed, deliberate simplification",
-      "line": 507
+      "line": 510
     },
     {
       "id": "SESSION.2026-05-05",
       "klass": "SESSION",
       "value": "[PRED.k320..k331 introduced; DEFECT.SOURCE-GREP-IN-NEW-TESTS, DEFECT.CHANGESET-PR-FIELD-DRIFT, DEFECT.PHASE-DIR-PREFIX-DRIFT, DEFECT.PROMPT-INJECTION-SCAN-COLLISION; ADR-0002 thin-wrapper pattern findings folded into RULESET.WORKFLOW_*]",
-      "line": 904
+      "line": 909
     },
     {
       "id": "SESSION.2026-05-05.sdk-bridge",
       "klass": "SESSION",
       "value": "PR #3158 SDK Runtime Bridge — observability isolation rule; strict-mode dispatchMode reporting invariant; transport decision ordering (guard before event emission); folded into Dispatch Policy Module glossary",
-      "line": 905
+      "line": 910
     },
     {
       "id": "SESSION.2026-05-09",
       "klass": "SESSION",
       "value": "[8-PR triage wave, 7 merged + 1 subsumed; META.RULE.* introduced; WAVE.LESSON.* captured; k320/k322/k323/k326/k331 evidence; AI Ops Memory predicate format established]",
-      "line": 906
+      "line": 911
     },
     {
       "id": "SESSION.2026-05-10",
       "klass": "SESSION",
       "value": "[ai-ops memory consolidation; release-notes standard taxonomy + templates; RELEASE-NOTES.* predicates introduced]",
-      "line": 907
+      "line": 912
     },
     {
       "id": "SESSION.2026-05-13",
       "klass": "SESSION",
       "value": "[Shell Command Projection Module expansion (#3465-#3468); ADR-0009 superseded; new exports for subprocess dispatch and platform file I/O; phase-gated migration plan; PR #3464 three-gate invariant CI+CR+unresolved=0; PR #3470 stash-include-untracked rebase pattern]",
-      "line": 908
+      "line": 913
     },
     {
       "id": "SESSION.2026-05-14",
       "klass": "SESSION",
       "value": "[#3095/PR #3490 EXEC.CLASSIFY.* introduced (Anthropic/Copilot/Codex/Gemini [runtime removed #1928] cross-runtime rate-limit sentinel coverage); #3489/PR #3499 DEFECT.STATE-TRAMPLE.idempotency-oracle (STATE.md current_phase field is oracle for state.complete-phase); #3488/PR #3501 DAG resolver same-phase short-form depends_on (shortFormToId index added to sdk/src/query/phase.ts); #3491/PR #3502 DEFECT.NESTED-GIT-INIT (gitWorktreeInfoInternal helper); #3493/PR #3500 extractCurrentMilestone generic Phase Details continuation past planned-milestone siblings; #3503/PR #3504 DEFECT.PATH-SUBSTRING-CHECK (trailing-slash anchor for homedir checks); #3346/PR #3505 codex AoT TOML leaf-key via extractFlatHookEventName; #3506/PR #3507 label-scoped stale-bot sub-job pattern; multi-PR triage operational lessons folded into PROC.TRIAGE.*; #3508 DEFECT.AGENT-ISOLATION-SILENT-FAIL; gsd-test image-missing auto-build (locally-built image via embedded heredoc Dockerfile); refined PRED.k322 threshold to 3 PRs/<10min]",
-      "line": 909
+      "line": 914
     },
     {
       "id": "SESSION.2026-05-15",
       "klass": "SESSION",
       "value": "[#3537/PR #3538 DEFECT.PHASE-REGEX-FANOUT — phaseMarkdownRegexSource promoted to core.cjs and wired to 7 sites; parity-style regression test established as DEFECT.GENERATIVE-FIX exemplar; trek-e/gsd-test-runner#1 filed for DEFECT.GSD-TEST-MIRROR-POISONED — chown-back-before-exec legacy gap (poisoned holodeck mirror unstuck via authorized docker chown to remote 1000:1000); RULESET.PR-FLOW.* codified from project CLAUDE.md load-bearing rule; first dispatch under run-tests-before-create held cleanly (PR #3520 worker stopped on Docker exit 12 infra failure, orchestrator opened PR after unblock); CONTEXT.md refactored from 882 lines of mixed prose+predicates into ~500 lines of pure-predicate format with chronological session log]",
-      "line": 910
+      "line": 915
     },
     {
       "id": "SESSION.2026-05-15.parallel-fix-dispatch",
       "klass": "SESSION",
       "value": "[#3542/PR #3546 prohibit git stash family in executor agents (shared refs/stash across worktrees); #3541/PR #3547 non-TTY resolution for installer prompt-user actions (default remove for SDK build artifacts, keep for skills/gsd-*/SKILL.md); #3545 filed for gsd-test-summary concurrent /tmp output collision; new predicates DEFECT.HOOK-OVER-ENFORCEMENT.read-tool-tracking, DEFECT.GSD-TEST-CONCURRENT-OUTPUT-COLLISION, DEFECT.SUBAGENT-LONG-RUNNING-BG-STALL, DEFECT.AGENT-RETIRED-SLASH-SYNTAX-DRIFT, PROC.PARALLEL-FIX-DISPATCH; agent-trust-but-verify caught /gsd-update retired-syntax comment slip in #3541 implementation before PR open]",
-      "line": 911
+      "line": 916
     },
     {
       "id": "SESSION.2026-05-16",
       "klass": "SESSION",
       "value": "[multi-PR triage wave (#3577/3581/3640/3641/3642/3648/3649/3637/3639). Established global PreToolUse hook ~/.claude/hooks/test-memory-guard.sh denying new node/test spawns when sum(RSS of node|vitest|jest|...) >= 4 GiB on the 24 GB Mac OR when a same-runner process is already in argv[0] — hard deny via hookSpecificOutput.permissionDecision=deny. PR #3577 fix: revert config-ensure-section dispatch to CJS cmdConfigEnsureSection (SDK author wrote single-section semantics under a name whose legacy callers expect full-default config init); plus 3 SDK parity carve-outs (configNewProject defaults align with sdk/shared/config-defaults.manifest.json, return relative .planning/config.json path, drop quotes from Unknown config key, lead malformed-JSON error with \"Failed to read config.json:\"). PR #3649 fix: chunk node --test spawn at 28K argv ceiling (Windows CreateProcess lpCommandLine cap 32,767 was instantly aborting unchunked spawn of 546 paths). Chunking fix surfaced 14 pre-existing Windows-only test bugs (4010 pass / 14 fail; vs 0/0 before — entire suite was un-runnable on Windows). PRs #3639 + #3637 confirmed unable to stand alone (legitimately depend on Phase 6 scaffolding only present on feat/3575-enforcement-hardening) — user decision: cherry-pick into #3577 and close. Five other PRs each had ≤1 unresolved CR thread of the changeset-pr-number / null-vs-throw / implicit-Claude-runtime / docs-stale-guidance / hardcoded-tests-path family — all quick wins. New predicates: DEFECT.SDK-PORT-NAME-COLLISION, DEFECT.WINDOWS-ARGV-OVERFLOW, DEFECT.STACKED-PR-CANNOT-STAND-ALONE, DEFECT.CANARY-VERSION-LEAK, DEFECT.GSD-TEST-HOST-MID-RUN-DEATH, RULESET.HARNESS.test-memory-guard, RULESET.PR-FLOW.docker-before-push, RULESET.PR-FLOW.templates-mandatory]",
-      "line": 912
+      "line": 917
     },
     {
       "id": "WAVE.LESSON.agent-narrative-unreliable",
       "klass": "WAVE",
       "value": "k095/k324 confirmed at scale: 5 of 8 agents terminated mid-monitor with stale claims requiring direct verification",
-      "line": 727
+      "line": 730
     },
     {
       "id": "WAVE.LESSON.changelog-policy-violation-multiplier",
       "klass": "WAVE",
       "value": "brief contradicting CONTRIBUTING.md's changelog-fragment policy (\"CHANGELOG Entries — Drop a Fragment\" section) produced violations on 5 of 8 PRs (#3300, #3302, #3304, #3305, #3308); k326 + k320 capture",
-      "line": 724
+      "line": 727
     },
     {
       "id": "WAVE.LESSON.cr-throttle-burst-correlation",
       "klass": "WAVE",
       "value": "8 PRs in <15min triggered k322 sustained-throttle on multiple PRs (#3306 worst case)",
-      "line": 725
+      "line": 728
     },
     {
       "id": "WAVE.LESSON.k101-still-trips",
       "klass": "WAVE",
       "value": "even after CONTEXT.md k101 reinforcement, agent of record posted self-PR comment on close; k331 adds explicit close-time literal-instruction guard",
-      "line": 728
+      "line": 731
     },
     {
       "id": "WAVE.LESSON.sibling-audit-overlap",
       "klass": "WAVE",
       "value": "k015-family parallel dispatch on #3297 + #3298 produced k323 add-backlog.md cross-PR overlap",
-      "line": 726
+      "line": 729
     },
     {
       "id": "WORKSTREAM.INVARIANT.migrate-name",
       "klass": "WORKSTREAM",
       "value": "must normalize through canonical slug policy",
-      "line": 560
+      "line": 563
     },
     {
       "id": "WORKSTREAM.INVARIANT.slug-contract",
       "klass": "WORKSTREAM",
       "value": "all .planning/workstreams/<name> must be addressable by set/get/status/complete",
-      "line": 561
+      "line": 564
     },
     {
       "id": "WORKSTREAM.NAME.POLICY.cjs-module",
       "klass": "WORKSTREAM",
       "value": "gsd-core/bin/lib/workstream-name-policy.cjs owns toWorkstreamSlug + active-name/path-segment validation",
-      "line": 576
+      "line": 579
     },
     {
       "id": "WORKSTREAM.POINTER.SEAM.cjs-module",
       "klass": "WORKSTREAM",
       "value": "gsd-core/bin/lib/active-workstream-store.cjs owns read/write self-heal for .planning/active-workstream",
-      "line": 577
+      "line": 580
     },
     {
       "id": "WORKSTREAM.REGRESSION.test-anchor",
       "klass": "WORKSTREAM",
       "value": "tests/workstream.test.cjs::normalizes --migrate-name to a valid workstream slug",
-      "line": 562
+      "line": 565
     },
     {
       "id": "WORKTREE.SEAM.caller-rule",
       "klass": "WORKTREE",
       "value": "verify.cjs must consume inspectWorktreeHealth for W017 classification; no ad-hoc porcelain parsing in callers",
-      "line": 570
+      "line": 573
     },
     {
       "id": "WORKTREE.SEAM.current",
       "klass": "WORKTREE",
       "value": "Worktree Safety Policy Module",
-      "line": 554
+      "line": 557
     },
     {
       "id": "WORKTREE.SEAM.decision-1",
       "klass": "WORKTREE",
       "value": "retain non-destructive default; destructive path only as explicit future opt-in scaffold",
-      "line": 558
+      "line": 561
     },
     {
       "id": "WORKTREE.SEAM.default-prune-policy",
       "klass": "WORKTREE",
       "value": "metadata_prune_only (non-destructive)",
-      "line": 557
+      "line": 560
     },
     {
       "id": "WORKTREE.SEAM.files",
       "klass": "WORKTREE",
       "value": "[gsd-core/bin/lib/worktree-safety.cjs]",
-      "line": 555
+      "line": 558
     },
     {
       "id": "WORKTREE.SEAM.interface",
       "klass": "WORKTREE",
       "value": "[resolveWorktreeContext, parseWorktreePorcelain, planWorktreePrune, executeWorktreePrunePlan, planWorktreeRecordAgent, cmdWorktreeRecordAgent]",
-      "line": 556
+      "line": 559
     },
     {
       "id": "WORKTREE.SEAM.invariant",
       "klass": "WORKTREE",
       "value": "parser failure must degrade to metadata_prune_only and never escalate to destructive removal",
-      "line": 568
+      "line": 571
     },
     {
       "id": "WORKTREE.SEAM.inventory-interface",
       "klass": "WORKTREE",
       "value": "[listLinkedWorktreePaths, inspectWorktreeHealth]",
-      "line": 569
+      "line": 572
     },
     {
       "id": "WORKTREE.SEAM.inventory-snapshot",
       "klass": "WORKTREE",
       "value": "snapshotWorktreeInventory(repoRoot,{staleAfterMs,nowMs}) is canonical linked-worktree health snapshot for callers",
-      "line": 572
+      "line": 575
     },
     {
       "id": "WORKTREE.SEAM.test-anchor-w017",
       "klass": "WORKTREE",
       "value": "tests/orphan-worktree-detection.test.cjs + tests/worktree-safety-policy.test.cjs",
-      "line": 571
+      "line": 574
     },
     {
       "id": "WORKTREE.SEAM.test-anchors",
       "klass": "WORKTREE",
       "value": "[resolveWorktreeContext:has_local_planning|linked_worktree|not_git_repo|main_worktree, planWorktreePrune:git_list_failed|worktrees_present|no_worktrees|parser_throw_fallback, executeWorktreePrunePlan:missing_plan|skip_passthrough|unsupported_action|metadata_prune_only]",
-      "line": 567
+      "line": 570
     },
     {
       "id": "WORKTREE.SEAM.test-policy",
       "klass": "WORKTREE",
       "value": "cover all decision branches in policy module before changing prune behavior",
-      "line": 566
+      "line": 569
     }
   ],
   "duplicates": []

@@ -144,6 +144,41 @@ test('rejects destructive migration actions without ownership evidence', (t) => 
   );
 });
 
+test('rejects remove-empty-dir actions without ownership evidence (same bar as remove-managed)', (t) => {
+  const configDir = createTempDir('gsd-migration-authoring-dir-action-');
+  t.after(() => cleanup(configDir));
+
+  fs.writeFileSync(
+    path.join(configDir, 'gsd-file-manifest.json'),
+    JSON.stringify({
+      version: '1.50.0',
+      timestamp: '2026-05-11T00:00:00.000Z',
+      mode: 'full',
+      files: {},
+    }),
+    'utf8'
+  );
+
+  assert.throws(
+    () => planInstallerMigrations({
+      configDir,
+      migrations: [
+        completeMigrationRecord({
+          plan: () => [
+            {
+              type: 'remove-empty-dir',
+              relPath: 'hooks',
+              reason: 'retired reserved directory',
+            },
+          ],
+        }),
+      ],
+      scope: 'global',
+    }),
+    /migration action remove-empty-dir must include ownershipEvidence: 2026-05-11-authoring-guard-test hooks/
+  );
+});
+
 test('rejects migration actions with absolute or traversal relPaths', (t) => {
   const configDir = createTempDir('gsd-migration-authoring-relpath-');
   t.after(() => cleanup(configDir));

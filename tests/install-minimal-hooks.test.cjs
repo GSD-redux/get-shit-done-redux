@@ -35,6 +35,7 @@ const { createTempDir, cleanup } = require('./helpers.cjs');
 const {
   writeManifest,
   GSD_UNINSTALL_HOOKS,
+  resolveSharedHooksDirName,
 } = require('../bin/install.js');
 
 const {
@@ -688,8 +689,8 @@ describe('#1755: .sh hooks are copied and executable after install', () => {
 // hooks; Kilo/OpenCode/pi (and Claude) do.
 
 describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude keep their hooks', () => {
-  function gsdHookFilesUnder(configDir) {
-    const hooksDir = path.join(configDir, 'hooks');
+  function gsdHookFilesUnder(configDir, hooksDirName) {
+    const hooksDir = path.join(configDir, hooksDirName);
     if (!fs.existsSync(hooksDir)) return [];
     return walk(hooksDir).filter((f) => {
       const base = path.basename(f);
@@ -709,10 +710,15 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
         `installer exited with status ${result.status} for --${runtime} --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
       // Collect results while targetDir still exists — cleanup() below removes it.
       const pluginRelPath = opts.pluginRelPath || path.join('plugins', 'gsd-core.js');
+      // #3023: the shared hooks bundle's staged directory name is per-runtime
+      // (hostBehaviors.sharedHooksDirName; pi renames it to `gsd-hooks/`) —
+      // resolve it the same way the installer does rather than hardcoding
+      // 'hooks', or every non-default runtime would look hookless.
+      const hooksDirName = resolveSharedHooksDirName(runtime);
       return {
-        hookFiles: gsdHookFilesUnder(targetDir),
-        hooksLibExists: fs.existsSync(path.join(targetDir, 'hooks', 'lib')),
-        gitCmdExists: fs.existsSync(path.join(targetDir, 'hooks', 'lib', 'git-cmd.js')),
+        hookFiles: gsdHookFilesUnder(targetDir, hooksDirName),
+        hooksLibExists: fs.existsSync(path.join(targetDir, hooksDirName, 'lib')),
+        gitCmdExists: fs.existsSync(path.join(targetDir, hooksDirName, 'lib', 'git-cmd.js')),
         pluginExists: fs.existsSync(path.join(targetDir, pluginRelPath)),
       };
     } finally {
@@ -767,14 +773,16 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
 
   // pi ALSO declares hooksSurface:'none', but — like OpenCode — it is NOT a
   // dead-weight case: pi's native extension (pi/gsd.cjs → extensions/gsd.js)
-  // spawns the staged hooks/*.js scripts as bounded subprocesses (session_start
+  // spawns the staged gsd-hooks/*.js scripts as bounded subprocesses (session_start
   // → gsd-ensure-canonical-path.js, before_agent_start → gsd-workflow-guard.js,
   // session_before_compact → gsd-context-monitor.js — #2102 Stage 2), and its
-  // /gsd command handler tokenizes raw args via the shared hooks/lib/git-cmd.js
+  // /gsd command handler tokenizes raw args via the shared gsd-hooks/lib/git-cmd.js
   // tokenizer. hostBehaviors.skipSharedHooksInstall is therefore NOT set for
   // pi (unlike Kilo/ZCode/Cursor/Cline/Trae/Copilot/Windsurf/Kimi) — pi is in
-  // the OpenCode group, not the Kilo/ZCode group.
-  test('pi --global install still copies hooks (spawned by the native extension) + hooks/lib/git-cmd.js + the extension itself', () => {
+  // the OpenCode group, not the Kilo/ZCode group. #3023: pi's bundle is staged
+  // under `gsd-hooks/` (hostBehaviors.sharedHooksDirName), not the default
+  // `hooks/` every other runtime in this describe block uses.
+  test('pi --global install still copies gsd-hooks/ (spawned by the native extension) + gsd-hooks/lib/git-cmd.js + the extension itself', () => {
     // #2470: derive the extension filename from pi's own descriptor rather than
     // hardcoding it, and assert it satisfies pi's isExtensionFile() discovery
     // filter (.ts/.js only) — a dest pi cannot discover installs "successfully"
@@ -797,8 +805,8 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
         `pi install must copy ${expected} (spawned by pi/gsd.cjs's event bridges), found: ${basenames.join(', ')}`,
       );
     }
-    assert.ok(hooksLibExists, 'pi install must create hooks/lib/');
-    assert.ok(gitCmdExists, 'pi install must copy hooks/lib/git-cmd.js (the /gsd command tokenizer)');
+    assert.ok(hooksLibExists, 'pi install must create gsd-hooks/lib/');
+    assert.ok(gitCmdExists, 'pi install must copy gsd-hooks/lib/git-cmd.js (the /gsd command tokenizer)');
     assert.ok(
       pluginExists,
       `pi install must install ${piNativePlugin.dir}/${piNativePlugin.file} (the native-extension hook bridge)`,
@@ -4208,3 +4216,84 @@ describe('#1834: installer deploys .sh hooks alongside .js hooks', () => {
 });
   });
 }
+
+// ─── #3023: pi must not stage its shared-hooks bundle in pi's reserved hooks/ ──
+//
+// pi (pi.dev) renamed its `hooks/` directory to `extensions/` and now prints a
+// deprecation warning on every startup when a `hooks/` directory exists in its
+// agent dir. GSD's installer stages the shared hook bundle at
+// `<destRootDir>/hooks` for every runtime that does not set
+// hostBehaviors.skipSharedHooksInstall — which since #2102 Stage 2 includes pi.
+// The bundle must live under a name pi does not reserve.
+//
+// The expected directory name is asserted as a LITERAL on purpose: importing the
+// production constant would make the assertion re-derive the very value under
+// test, and it could then never catch that value changing.
+describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory', () => {
+  const PI_RESERVED_DIR = 'hooks';
+  const PI_BUNDLE_DIR = 'gsd-hooks';
+
+  for (const scope of ['local', 'global']) {
+    test(`pi ${scope} install does not create the host-reserved hooks/ directory`, (t) => {
+      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      const reserved = path.join(configDir, PI_RESERVED_DIR);
+      assert.equal(
+        fs.existsSync(reserved),
+        false,
+        `pi reserves <configDir>/${PI_RESERVED_DIR} as its deprecated extension location; ` +
+        `GSD must not create it (found ${reserved})`
+      );
+    });
+
+    test(`pi ${scope} install stages the shared hooks bundle under ${PI_BUNDLE_DIR}/`, (t) => {
+      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      const bundle = path.join(configDir, PI_BUNDLE_DIR);
+      assert.equal(
+        fs.existsSync(bundle) && fs.statSync(bundle).isDirectory(),
+        true,
+        `pi's shared hook bundle must be staged at ${bundle}`
+      );
+
+      // The adapter's live require target (pi/gsd.cjs parseGsdCommandArgs).
+      const gitCmd = path.join(bundle, 'lib', 'git-cmd.js');
+      assert.equal(
+        fs.existsSync(gitCmd) && fs.statSync(gitCmd).isFile(),
+        true,
+        `pi adapter requires ${gitCmd}; the hooks/lib helpers must move with the bundle`
+      );
+
+      // #2544 CommonJS marker follows the bundle, and is NOT dropped at the
+      // shared config root (user-owned territory).
+      assert.equal(
+        fs.existsSync(path.join(bundle, 'package.json')),
+        true,
+        'the CommonJS marker must live inside the bundle directory'
+      );
+    });
+
+    test(`pi ${scope} install manifests the bundle under ${PI_BUNDLE_DIR}/`, (t) => {
+      const { manifest, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      assert.ok(manifest && manifest.files, 'pi install must write a file manifest');
+      const keys = Object.keys(manifest.files);
+
+      const stale = keys.filter((k) => k.startsWith(`${PI_RESERVED_DIR}/`));
+      assert.deepEqual(
+        stale,
+        [],
+        'no manifest key may reference the host-reserved hooks/ directory'
+      );
+
+      const staged = keys.filter((k) => k.startsWith(`${PI_BUNDLE_DIR}/`));
+      assert.ok(
+        staged.length > 0,
+        `manifest must track the staged bundle under ${PI_BUNDLE_DIR}/ so uninstall can remove it`
+      );
+    });
+  }
+});
