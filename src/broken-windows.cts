@@ -401,7 +401,12 @@ function parseFrontmatterStrict(raw: string): Record<string, number | string> {
   }
   const yamlBody = raw.slice(headerEnd, closeIdx);
   const out: Record<string, number | string> = {};
-  for (const line of yamlBody.split(/\r?\n/)) {
+  for (const rawLine of yamlBody.split(/\r?\n/)) {
+    // #3116: the `\n---` scan leaves the final line's CR attached on a CRLF
+    // ledger, and `.` never matches CR, so the key: value regex below fails on
+    // it. Strip the trailing CR per line so the rest of `raw` (which
+    // parseJsonBlock also slices by byte offset) is unaffected.
+    const line = rawLine.replace(/\r$/, '');
     if (line.trim() === '') continue;
     const m = line.match(/^([a-zA-Z0-9_]+):\s*(.*)$/);
     if (!m) {
