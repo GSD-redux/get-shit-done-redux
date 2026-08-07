@@ -1190,6 +1190,22 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return i !== -1 && args[i + 1] && !String(args[i + 1]).startsWith('--') ? args[i + 1] : null;
     };
     const sub = args[1];
+    // Fail fast on an unrecognized subcommand. Without this check, `sub` fell through
+    // to the `sub !== 'invoke'` usage-error branch far below (after loading the
+    // capability registry AND building a per-lane plan for every lane — which itself
+    // spawns one child `query resolve-execution` process per lane via `effortFor`,
+    // up to 12 subprocess spawns for the default lane set) before ever reporting the
+    // error. That made an invalid subcommand slow instead of instant, and under bench
+    // load (many sequential node spawns) `review-lane bogus` could exceed a caller's
+    // spawn timeout and be killed before writing anything to stderr — the CI-observed
+    // failure was empty stdout AND stderr, not the expected usage message (#3148).
+    // `plan`/`invoke` are the only subs that need the expensive plan-building path
+    // below; `sections`/`flags` return earlier still. Anything else errors here, before
+    // any of that work starts.
+    if (!['plan', 'invoke', 'sections', 'flags'].includes(sub)) {
+      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
+      return;
+    }
     const runDir = flag('--run-dir') || '.';
     const repoRoot = flag('--repo-root') || cwd;
 

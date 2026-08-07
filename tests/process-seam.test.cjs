@@ -23,7 +23,7 @@ const path = require('node:path');
 
 const { createTempDir, cleanup, runGsdTools, TOOLS_PATH } = require('./helpers.cjs');
 const processSeam = require('./helpers/process-seam.cjs');
-const { runNode, runGit, runHook, OUTCOME } = processSeam;
+const { runNode, runGit, runHook, OUTCOME, toSeamResult } = processSeam;
 
 // ---- fixture sources -------------------------------------------------
 
@@ -262,6 +262,24 @@ describe('process-seam', () => {
       assert.equal(result.timedOut, true);
       assert.equal(result.exitCode, null);
     }
+  });
+
+  test('toSeamResult classifies a raced status+ETIMEDOUT as EXITED, not TIMED_OUT', () => {
+    // Synthetic reproduction of the exact-bound race: spawnSync's timer
+    // fired (error.code === 'ETIMEDOUT') just as the child finished on its
+    // own (status: 0). Evidence (a real status) must outrank the attached
+    // error — the old discrimination order checked error.code first and
+    // reported TIMED_OUT with exitCode: 0, an incoherent shape.
+    const result = toSeamResult({
+      status: 0,
+      error: { code: 'ETIMEDOUT' },
+      signal: null,
+      stdout: '',
+      stderr: '',
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.exitCode, 0);
   });
 
   test('child overrunning the bound is TIMED_OUT', () => {
