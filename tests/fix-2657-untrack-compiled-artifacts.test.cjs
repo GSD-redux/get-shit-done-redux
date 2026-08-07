@@ -37,6 +37,7 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { runGit, runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { trackedCompiledArtifacts } = require('../scripts/lint-compiled-artifact-sync.cjs');
@@ -72,7 +73,7 @@ function run(cmd, args, opts) {
       `${cmd} ${args.join(' ')} failed to spawn (cwd=${REPO_ROOT}): ${result.stderr || result.code}`,
     );
   }
-  return { status: result.exitCode, stdout: result.stdout, stderr: result.stderr, signal: result.signal };
+  return { ...toLegacyResult(result), signal: result.signal };
 }
 
 /** Render a failed command's full context for an assertion message. */

@@ -77,9 +77,7 @@ describe('#2590: emitted Workflow scripts satisfy the Workflow tool contract', (
     fs.writeFileSync(f, script);
     try {
       const result = runNode(['--check', f], { timeoutMs: PROBE_TIMEOUT_MS });
-      if (result.exitCode !== 0) {
-        assert.fail(`emitted script does not parse: ${result.stderr}`);
-      }
+      throwIfFailed(result, `node --check ${f} (emitted script must parse)`);
     } finally {
       cleanup(dir);
     }
