@@ -57,7 +57,13 @@ const DEFAULT_GIT_TIMEOUT_MS = 15000;
  *   - `outcome` — the seam's `OUTCOME` discriminant.
  */
 function gitOrThrow(args, options = {}) {
-  const r = runGit(args, { timeoutMs: DEFAULT_GIT_TIMEOUT_MS, ...options });
+  // Destructure (not spread-after) so an explicit `timeoutMs: undefined` in
+  // `options` still resolves to the default: a destructure default applies
+  // on `undefined`, whereas `{ timeoutMs: DEFAULT, ...options }` would let
+  // an own `undefined` key silently overwrite it and fall through to the
+  // seam's much larger default timeout.
+  const { timeoutMs = DEFAULT_GIT_TIMEOUT_MS, ...rest } = options;
+  const r = runGit(args, { ...rest, timeoutMs });
 
   if (r.outcome === OUTCOME.EXITED && r.exitCode === 0) {
     return r.stdout;

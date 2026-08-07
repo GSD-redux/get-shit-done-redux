@@ -201,21 +201,47 @@ const rule = {
       return null;
     }
 
+    /** Recursion depth cap for evalNumeric — guards against a pathological
+     * nested-expression chain blowing the stack. */
+    const MAX_EVAL_DEPTH = 20;
+
     /**
-     * Evaluates a numeric-ish AST node to a JS number, or returns
-     * undefined if it's not one of the recognized numeric-literal shapes.
+     * Recursively evaluates a numeric-ish AST node to a JS number, or
+     * returns undefined if it's not one of the recognized numeric shapes.
+     * Handles a numeric Literal, a unary +/- of a recursively-numeric
+     * argument, and a BinaryExpression (*, +, -, /) where both sides are
+     * recursively numeric — so a multi-term chain like `60 * 60 * 1000`
+     * resolves instead of bailing out on the first nested BinaryExpression.
      */
-    function evalNumericLiteral(node) {
+    function evalNumeric(node, depth = 0) {
+      if (depth > MAX_EVAL_DEPTH) return undefined;
       if (node.type === 'Literal' && typeof node.value === 'number') {
         return node.value;
       }
+      if (node.type === 'UnaryExpression' && (node.operator === '-' || node.operator === '+')) {
+        const arg = evalNumeric(node.argument, depth + 1);
+        if (arg === undefined) return undefined;
+        return node.operator === '-' ? -arg : arg;
+      }
       if (
-        node.type === 'UnaryExpression' &&
-        node.operator === '-' &&
-        node.argument.type === 'Literal' &&
-        typeof node.argument.value === 'number'
+        node.type === 'BinaryExpression' &&
+        (node.operator === '*' || node.operator === '+' || node.operator === '-' || node.operator === '/')
       ) {
-        return -node.argument.value;
+        const left = evalNumeric(node.left, depth + 1);
+        const right = evalNumeric(node.right, depth + 1);
+        if (left === undefined || right === undefined) return undefined;
+        switch (node.operator) {
+          case '*':
+            return left * right;
+          case '+':
+            return left + right;
+          case '-':
+            return left - right;
+          case '/':
+            return left / right;
+          default:
+            return undefined;
+        }
       }
       return undefined;
     }
@@ -235,17 +261,9 @@ const rule = {
 
       const value = timeoutProp.value;
       let v;
-      const numeric = evalNumericLiteral(value);
+      const numeric = evalNumeric(value);
       if (numeric !== undefined) {
         v = numeric;
-      } else if (
-        value.type === 'BinaryExpression' &&
-        (value.operator === '*' || value.operator === '+')
-      ) {
-        const left = evalNumericLiteral(value.left);
-        const right = evalNumericLiteral(value.right);
-        if (left === undefined || right === undefined) return 'bounded';
-        v = value.operator === '*' ? left * right : left + right;
       } else if (value.type === 'Literal' && value.value === null) {
         return 'unbounded';
       } else if (
@@ -264,22 +282,57 @@ const rule = {
       return 'bounded';
     }
 
-    return {
-      VariableDeclarator(node) {
-        if (node.id.type === 'ObjectPattern' && isChildProcessRequire(node.init)) {
-          registerDestructureAliases(node.id);
-        }
-      },
+    /**
+     * Registers alias imports from an ImportDeclaration: `import
+     * { execSync } from 'node:child_process'` or an aliased
+     * `import { execSync as exec } from ...`.
+     */
+    function registerImportAliases(node) {
+      if (typeof node.source.value !== 'string' || !CP_SOURCES.has(node.source.value)) return;
+      for (const spec of node.specifiers) {
+        if (spec.type !== 'ImportSpecifier') continue;
+        const importedName =
+          spec.imported.type === 'Identifier' ? spec.imported.name : stringValue(spec.imported);
+        if (!importedName || !TARGET_FNS.has(importedName)) continue;
+        aliases.set(spec.local.name, importedName);
+      }
+    }
 
-      ImportDeclaration(node) {
-        if (typeof node.source.value !== 'string' || !CP_SOURCES.has(node.source.value)) return;
-        for (const spec of node.specifiers) {
-          if (spec.type !== 'ImportSpecifier') continue;
-          const importedName =
-            spec.imported.type === 'Identifier' ? spec.imported.name : stringValue(spec.imported);
-          if (!importedName || !TARGET_FNS.has(importedName)) continue;
-          aliases.set(spec.local.name, importedName);
+    /**
+     * Recursively walks the whole AST from `root`, over own enumerable
+     * object/array properties (skipping `parent` to avoid walking back up
+     * and re-visiting already-visited nodes), invoking `visit` on every
+     * node encountered. Used to build the alias map in a pre-pass so that
+     * `CallExpression` — visited during the normal single top-down walk —
+     * can resolve an alias regardless of where in the file it was declared
+     * relative to the call site.
+     */
+    function walk(node, visit) {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        for (const item of node) walk(item, visit);
+        return;
+      }
+      if (typeof node.type !== 'string') return;
+      visit(node);
+      for (const key of Object.keys(node)) {
+        if (key === 'parent') continue;
+        const value = node[key];
+        if (value && typeof value === 'object') {
+          walk(value, visit);
         }
+      }
+    }
+
+    return {
+      Program(node) {
+        walk(node, (n) => {
+          if (n.type === 'VariableDeclarator' && n.id.type === 'ObjectPattern' && isChildProcessRequire(n.init)) {
+            registerDestructureAliases(n.id);
+          } else if (n.type === 'ImportDeclaration') {
+            registerImportAliases(n);
+          }
+        });
       },
 
       CallExpression(node) {

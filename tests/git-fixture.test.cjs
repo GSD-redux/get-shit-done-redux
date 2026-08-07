@@ -33,6 +33,24 @@ after(() => mock.restoreAll());
 const { gitOrThrow, DEFAULT_GIT_TIMEOUT_MS } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
+/**
+ * Runs `fn`, returning the error it throws. Fails the calling test with a
+ * clear assertion if `fn` does not throw. A standalone helper (not inline
+ * in a test body) is the CONTRIBUTING.md-compliant place for a try/catch of
+ * this shape — "try/finally is only permitted inside standalone utility or
+ * helper functions".
+ */
+function captureThrown(fn) {
+  let caught;
+  try {
+    fn();
+  } catch (e) {
+    caught = e;
+  }
+  assert.ok(caught, 'expected fn to throw');
+  return caught;
+}
+
 /** Initialize a fresh repo with a known branch name and one commit. */
 function initRepo(prefix = 'git-fixture-test-') {
   const dir = createTempDir(prefix);
@@ -71,71 +89,45 @@ describe('git-fixture: E — gitOrThrow', () => {
   test('E4: thrown error exposes .status (legacy execSync idiom)', () => {
     const raw = processSeam.runGit(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir });
     assert.notEqual(raw.exitCode, 0);
-    let caught;
-    try {
-      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir });
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught, 'expected gitOrThrow to throw');
+    const caught = captureThrown(() =>
+      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir })
+    );
     assert.equal(caught.status, raw.exitCode);
   });
 
   test('E5: thrown error exposes .exitCode (seam idiom), aliasing .status', () => {
-    let caught;
-    try {
-      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir });
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught, 'expected gitOrThrow to throw');
+    const caught = captureThrown(() =>
+      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir })
+    );
     assert.equal(caught.exitCode, caught.status);
   });
 
   test('E6: thrown error carries both streams as strings', () => {
-    let caught;
-    try {
-      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir });
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught, 'expected gitOrThrow to throw');
+    const caught = captureThrown(() =>
+      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir })
+    );
     assert.equal(typeof caught.stdout, 'string');
     assert.equal(typeof caught.stderr, 'string');
     assert.ok(caught.stderr.length > 0, 'expected git to write a fatal message to stderr');
   });
 
   test('E7: non-zero exit is EXITED, not a failure outcome', () => {
-    let caught;
-    try {
-      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir });
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught, 'expected gitOrThrow to throw');
+    const caught = captureThrown(() =>
+      gitOrThrow(['rev-parse', '--verify', 'refs/heads/does-not-exist'], { cwd: dir })
+    );
     assert.equal(caught.outcome, OUTCOME.EXITED);
     assert.equal(caught.timedOut, false);
   });
 
   test('E8: spawn failure throws with SPAWN_FAILED', () => {
-    let caught;
-    try {
-      gitOrThrow(['--version'], { cwd: path.join(dir, 'no-such-subdirectory') });
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught, 'expected gitOrThrow to throw');
+    const caught = captureThrown(() =>
+      gitOrThrow(['--version'], { cwd: path.join(dir, 'no-such-subdirectory') })
+    );
     assert.equal(caught.outcome, OUTCOME.SPAWN_FAILED);
   });
 
   test('E9: timeout throws and reports timedOut', () => {
-    let caught;
-    try {
-      gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir, timeoutMs: 1 });
-    } catch (e) {
-      caught = e;
-    }
-    assert.ok(caught, 'expected gitOrThrow to throw on a 1ms timeout');
+    const caught = captureThrown(() => gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir, timeoutMs: 1 }));
     assert.equal(caught.timedOut, true);
     assert.equal(caught.outcome, OUTCOME.TIMED_OUT);
   });

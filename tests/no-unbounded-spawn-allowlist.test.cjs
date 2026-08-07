@@ -75,6 +75,10 @@ function findDuplicates(list) {
   return [...dupes];
 }
 
+// Built via concatenation, not a string literal, so this file does not
+// itself contain the literal directive text (`local/no-unbounded-spawn`)
+// that D7 below scans every test file for — a literal here would make this
+// guard flag itself.
 const GUARDED_RULE = 'local' + '/' + 'no-unbounded-spawn';
 
 function containsDisableDirective(contents, ruleName) {

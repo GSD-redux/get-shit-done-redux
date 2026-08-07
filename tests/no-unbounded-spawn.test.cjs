@@ -181,6 +181,18 @@ describe('no-unbounded-spawn: A — detection', () => {
     });
   });
 
+  test('seam-routed calls are never flagged (runGit/runNode/runHook/gitOrThrow)', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [
+        { code: `runGit(args, { timeoutMs: 5000 });`, filename: FILE },
+        { code: `runNode([script], { timeoutMs: 5000 });`, filename: FILE },
+        { code: `runHook(HOOK, [], { input: payload, timeoutMs: 5000 });`, filename: FILE },
+        { code: `gitOrThrow(['status'], { cwd });`, filename: FILE },
+      ],
+      invalid: [],
+    });
+  });
+
   test('A13: property-name match is deliberately object-blind (documented false positive)', () => {
     ruleTester.run('local/no-unbounded-spawn', rule, {
       valid: [],
