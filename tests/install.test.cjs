@@ -10448,8 +10448,16 @@ describe('sync-skills.md — required behavioral specs', () => {
     }
     const expectedIds = registryIds.filter((id) => !DELIBERATE_EXCLUSIONS.includes(id)).sort();
 
-    const supportedLineMatch = content.match(/\*\*Supported runtime names:\*\*\s*(.+)/);
-    assert.ok(supportedLineMatch, 'workflow must have a "Supported runtime names:" line');
+    // Anchored to the "Supported runtime names:" line's id list ONLY: capture
+    // stops at the " — the full capability registry runtime set" prose that
+    // follows the list. A file-wide backtick sweep over the rest of that
+    // sentence (which explains the vscode exclusion) previously also matched
+    // `runtimes`, `null`, and `vscode` from unrelated inline-code spans in the
+    // explanatory prose — this scopes extraction to the list construct itself.
+    const supportedLineMatch = content.match(
+      /\*\*Supported runtime names:\*\*\s*([^\n]*?)\s+—\s+the full capability registry runtime set/
+    );
+    assert.ok(supportedLineMatch, 'workflow must have a "Supported runtime names:" line ending at " — the full capability registry runtime set"');
     const docIds = [...supportedLineMatch[1].matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]).sort();
 
     const toAllMatch = content.match(/TO_RUNTIMES=\(([^)]*)\)/);
