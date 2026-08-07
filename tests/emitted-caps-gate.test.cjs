@@ -24,7 +24,8 @@
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const {
@@ -34,11 +35,17 @@ const {
 } = require('./helpers/install-shared.cjs');
 const { evaluateEmittedCaps, formatCapReport } = require('./helpers/emitted-caps.cjs');
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+
 // hooks/dist is gitignored and built (DEFECT.HOOKS-DIST-SCOPED-CI). Build it
 // idempotently before the shared real-install fixture, mirroring
 // tests/emitted-sizes.test.cjs.
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Shared real LOCAL windsurf install, built once ───────────────────────────

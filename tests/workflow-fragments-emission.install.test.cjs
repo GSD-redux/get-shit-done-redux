@@ -49,7 +49,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const { RUNTIME_META, runMinimalInstall, installerEnv } = require('./helpers/install-shared.cjs');
@@ -58,6 +58,9 @@ const { executionContextRefs } = require('../scripts/command-contract-helpers.cj
 const { composeWorkflow } = require('../gsd-core/bin/lib/workflow-fragments.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
+// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for
+// the load-tested class norm.
+const INSTALL_TIMEOUT_MS = 120000;
 const PILOT_REL = path.join('gsd-core', 'workflows', 'execute-phase.md');
 const PILOT_PATH = path.join(REPO_ROOT, PILOT_REL);
 // plan-phase.md was the original #2930 pilot but was reverted to unmarked
@@ -88,11 +91,12 @@ function spawnGlobalInstall(installScript, runtime, extraArgs = []) {
     root,
     ...extraArgs,
   ];
-  const result = spawnSync(process.execPath, args, {
+  const seamResult = runNode(args, {
     cwd: root,
-    encoding: 'utf8',
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  const result = { status: seamResult.exitCode, stdout: seamResult.stdout, stderr: seamResult.stderr };
   return { result, configDir: root, root };
 }
 

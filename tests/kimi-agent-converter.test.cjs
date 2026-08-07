@@ -174,7 +174,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const { installerEnv } = require('./helpers/install-shared.cjs');
@@ -185,6 +185,10 @@ const ROOT = path.join(__dirname, '..');
 const KIMI_CFG = path.join(os.tmpdir(), 'gsd-kimi-config-test').replace(/\\/g, '/');
 const XDG_HOME = path.join(os.tmpdir(), 'gsd-xdg-home-test');
 const INSTALL_SCRIPT = path.join(ROOT, 'bin', 'install.js');
+// 120000: a full `bin/install.js` run — see install.test.cjs:5505-5513 for the
+// load-tested class norm (a 60000 cap ETIMEDOUT on a loaded bench while
+// another lane passed the same commit in 12.7s).
+const INSTALL_TIMEOUT_MS = 120000;
 
 const {
   getGlobalConfigDir,
@@ -306,18 +310,17 @@ describe('Kimi runtime homes', () => {
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-existing-agents-home-'));
     try {
       fs.mkdirSync(path.join(tmpHome, '.agents', 'skills'), { recursive: true });
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, '--kimi', '--global', '--no-sdk'],
         {
           cwd: tmpProject,
-          encoding: 'utf8',
           env: installerEnv({ HOME: tmpHome, USERPROFILE: tmpHome }),
+          timeoutMs: INSTALL_TIMEOUT_MS,
         },
       );
 
       assert.strictEqual(
-        result.status,
+        result.exitCode,
         0,
         `expected --kimi --global to reuse existing ~/.agents/skills\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
       );
@@ -362,18 +365,17 @@ describe('Kimi local install guard', () => {
     const tmpProject = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-local-project-'));
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-local-home-'));
     try {
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, '--kimi', '--local', '--no-sdk'],
         {
           cwd: tmpProject,
-          encoding: 'utf8',
           env: installerEnv({ HOME: tmpHome, USERPROFILE: tmpHome }),
+          timeoutMs: INSTALL_TIMEOUT_MS,
         },
       );
 
       assert.strictEqual(
-        result.status,
+        result.exitCode,
         0,
         `expected --kimi --local guard to no-op successfully\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
       );
@@ -396,18 +398,17 @@ describe('Kimi local install guard', () => {
     const tmpConfig = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-global-config-'));
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-kimi-global-home-'));
     try {
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, '--kimi', '--global', '--config-dir', tmpConfig, '--no-sdk'],
         {
           cwd: tmpProject,
-          encoding: 'utf8',
           env: installerEnv({ HOME: tmpHome, USERPROFILE: tmpHome }),
+          timeoutMs: INSTALL_TIMEOUT_MS,
         },
       );
 
       assert.strictEqual(
-        result.status,
+        result.exitCode,
         0,
         `expected --kimi --global to install Kimi skills successfully\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
       );
@@ -480,13 +481,13 @@ describe('Kimi local install guard', () => {
 
     try {
       const installArgs = [INSTALL_SCRIPT, '--kimi', '--global', '--config-dir', tmpConfig, '--no-sdk'];
-      const first = spawnSync(process.execPath, installArgs, {
+      const first = runNode(installArgs, {
         cwd: tmpProject,
-        encoding: 'utf8',
         env,
+        timeoutMs: INSTALL_TIMEOUT_MS,
       });
       assert.strictEqual(
-        first.status,
+        first.exitCode,
         0,
         `first install failed\nstdout: ${first.stdout}\nstderr: ${first.stderr}`,
       );
@@ -496,13 +497,13 @@ describe('Kimi local install guard', () => {
       fs.appendFileSync(skillFile, '\nUSER LOCAL KIMI SKILL EDIT\n');
       fs.appendFileSync(agentPrompt, '\nUSER LOCAL KIMI AGENT EDIT\n');
 
-      const second = spawnSync(process.execPath, installArgs, {
+      const second = runNode(installArgs, {
         cwd: tmpProject,
-        encoding: 'utf8',
         env,
+        timeoutMs: INSTALL_TIMEOUT_MS,
       });
       assert.strictEqual(
-        second.status,
+        second.exitCode,
         0,
         `second install failed\nstdout: ${second.stdout}\nstderr: ${second.stderr}`,
       );
@@ -534,13 +535,13 @@ describe('Kimi local install guard', () => {
 
     try {
       const installArgs = [INSTALL_SCRIPT, '--kimi', '--global', '--config-dir', tmpConfig, '--no-sdk'];
-      const installResult = spawnSync(process.execPath, installArgs, {
+      const installResult = runNode(installArgs, {
         cwd: tmpProject,
-        encoding: 'utf8',
         env,
+        timeoutMs: INSTALL_TIMEOUT_MS,
       });
       assert.strictEqual(
-        installResult.status,
+        installResult.exitCode,
         0,
         `install failed\nstdout: ${installResult.stdout}\nstderr: ${installResult.stderr}`,
       );
@@ -554,17 +555,16 @@ describe('Kimi local install guard', () => {
       fs.writeFileSync(foreignRootAgent, 'version: 1\n', 'utf8');
       fs.writeFileSync(foreignSubagent, 'version: 1\n', 'utf8');
 
-      const uninstallResult = spawnSync(
-        process.execPath,
+      const uninstallResult = runNode(
         [INSTALL_SCRIPT, '--kimi', '--global', '--config-dir', tmpConfig, '--uninstall'],
         {
           cwd: tmpProject,
-          encoding: 'utf8',
           env,
+          timeoutMs: INSTALL_TIMEOUT_MS,
         },
       );
       assert.strictEqual(
-        uninstallResult.status,
+        uninstallResult.exitCode,
         0,
         `uninstall failed\nstdout: ${uninstallResult.stdout}\nstderr: ${uninstallResult.stderr}`,
       );

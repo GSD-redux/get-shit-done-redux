@@ -43,7 +43,8 @@ const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const {
   profileOf,
@@ -62,7 +63,7 @@ const COPILOT_AXES = COPILOT_CAP.runtime.hostIntegration;
 
 // hooks/dist is gitignored and built (mirrors golden-install-parity harness).
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: 120000 }), `node ${BUILD_SCRIPT}`);
 });
 
 test('Copilot classifies as the declarative-cli reference profile (profileOf)', () => {

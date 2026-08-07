@@ -30,7 +30,12 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { createTempDir, createTempProject, cleanup, parseFrontmatter } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 const pkg = require('../package.json');
+
+// A single short CLI query (installed cli.cjs --help / extract) against a
+// small fixture — no full install or build involved.
+const PROBE_TIMEOUT_MS = 15000;
 
 const {
   getDirName,
@@ -930,8 +935,7 @@ describe('install — changeset CLI lands at scripts/changeset/cli.cjs (#935)', 
     install(false, 'claude');
     const claudeDir = path.join(tmpDir, '.claude');
     const cliPath = path.join(claudeDir, 'scripts', 'changeset', 'cli.cjs');
-    const { spawnSync } = require('node:child_process');
-    const result = spawnSync(process.execPath, [cliPath, '--help'], { encoding: 'utf8' });
+    const result = runNode([cliPath, '--help'], { timeoutMs: PROBE_TIMEOUT_MS });
     // --help exits with code 1 (usage shown), but must NOT throw a MODULE_NOT_FOUND error
     assert.ok(
       !result.stderr.includes('MODULE_NOT_FOUND'),
@@ -952,11 +956,9 @@ describe('install — changeset CLI lands at scripts/changeset/cli.cjs (#935)', 
     // Use the CHANGELOG.md that was installed into gsd-core/ (installed by the installer)
     const changelogPath = path.join(claudeDir, 'gsd-core', 'CHANGELOG.md');
     assert.ok(fs.existsSync(changelogPath), 'CHANGELOG.md must be installed under gsd-core/');
-    const { spawnSync } = require('node:child_process');
-    const result = spawnSync(
-      process.execPath,
+    const result = runNode(
       [cliPath, 'extract', '--from', '0.0.0', '--to', '9999.0.0', '--changelog', changelogPath, '--json'],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
     // extract must NOT throw a MODULE_NOT_FOUND or Cannot find module error
     assert.ok(
@@ -966,8 +968,8 @@ describe('install — changeset CLI lands at scripts/changeset/cli.cjs (#935)', 
     // extract exit code 0 (found entries) or 2 (no entries in range) are both valid;
     // any other exit code is an error
     assert.ok(
-      result.status === 0 || result.status === 2,
-      `installed cli.cjs extract must exit 0 or 2; got ${result.status}; stderr=${result.stderr}`,
+      result.exitCode === 0 || result.exitCode === 2,
+      `installed cli.cjs extract must exit 0 or 2; got ${result.exitCode}; stderr=${result.stderr}`,
     );
   });
 
@@ -3503,7 +3505,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
@@ -3511,18 +3514,30 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
+
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 function runInstaller(configDir) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
   delete env.GSD_TEST_MODE;
-  return execFileSync(
-    process.execPath,
+  const r = runNode(
     [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'],
-    { encoding: 'utf-8', stdio: 'pipe', env }
+    { env, timeoutMs: INSTALL_TIMEOUT_MS }
   );
+  throwIfFailed(r, `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`);
+  return r.stdout;
 }
 
 // ─── Test 1: writeManifest must NOT record USER-PROFILE.md ────────────────────
@@ -4632,12 +4647,18 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
+
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 // With --test-concurrency=4, other install tests (bug-1834, bug-1924) run
@@ -4646,10 +4667,8 @@ const { cleanup } = require('./helpers.cjs');
 // install() fails with "directory is empty" → process.exit(1).
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #1736 + #1367: local install deploys commands in flat gsd-<cmd>.md layout ───
@@ -4762,19 +4781,23 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup, captureConsole } = require('./helpers.cjs');
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #2248: local install must NOT write statusLine to repo settings.json ────
@@ -4921,19 +4944,23 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helper: run both install phases ─────────────────────────────────────────
@@ -5465,13 +5492,24 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
+
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
 
 /**
  * Ensure hooks/dist is populated before any suite that reads it.
@@ -5482,7 +5520,8 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    const r = runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+    throwIfFailed(r, `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -5497,22 +5536,21 @@ function ensureHooksDist() {
 function runInstall(cwd, args) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, ...args], {
+  // 120s, not 60s. A full install copies and converts the whole shipped
+  // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
+  // measures 13-30s on an idle runner — under 2x headroom at the old cap.
+  // On a loaded bench that margin is not enough: the Cursor suite's before
+  // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
+  // lane passed the SAME commit in 12.7s, cancelling three child tests as
+  // collateral. The cap also shrinks in real terms every time a file joins
+  // the payload. Matches the 120s already used for the heavy install case
+  // below. Aligned with the other runInstall helper in this file.
+  const r = runNode([INSTALL_PATH, ...args], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
-    // 120s, not 60s. A full install copies and converts the whole shipped
-    // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
-    // measures 13-30s on an idle runner — under 2x headroom at the old cap.
-    // On a loaded bench that margin is not enough: the Cursor suite's before
-    // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
-    // lane passed the SAME commit in 12.7s, cancelling three child tests as
-    // collateral. The cap also shrinks in real terms every time a file joins
-    // the payload. Matches the 120s already used for the heavy install case
-    // below. Aligned with the other runInstall helper in this file.
-    timeout: 120000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} ${args.join(' ')}`);
 }
 
 /**
@@ -7527,7 +7565,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
@@ -7535,18 +7574,30 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
+
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 function runInstaller(configDir) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
   delete env.GSD_TEST_MODE;
-  return execFileSync(
-    process.execPath,
+  const r = runNode(
     [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'],
-    { encoding: 'utf-8', stdio: 'pipe', env }
+    { env, timeoutMs: INSTALL_TIMEOUT_MS }
   );
+  throwIfFailed(r, `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`);
+  return r.stdout;
 }
 
 // ─── Test 1: writeManifest must NOT record USER-PROFILE.md ────────────────────
@@ -8656,12 +8707,18 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
+
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 // With --test-concurrency=4, other install tests (bug-1834, bug-1924) run
@@ -8670,10 +8727,8 @@ const { cleanup } = require('./helpers.cjs');
 // install() fails with "directory is empty" → process.exit(1).
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #1736 + #1367: local install deploys commands in flat gsd-<cmd>.md layout ───
@@ -8786,19 +8841,23 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup, captureConsole } = require('./helpers.cjs');
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #2248: local install must NOT write statusLine to repo settings.json ────
@@ -8945,19 +9004,23 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helper: run both install phases ─────────────────────────────────────────
@@ -9489,13 +9552,24 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
+
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
 
 /**
  * Ensure hooks/dist is populated before any suite that reads it.
@@ -9506,7 +9580,8 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    const r = runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+    throwIfFailed(r, `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -9521,22 +9596,21 @@ function ensureHooksDist() {
 function runInstall(cwd, args) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, ...args], {
+  // 120s, not 60s. A full install copies and converts the whole shipped
+  // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
+  // measures 13-30s on an idle runner — under 2x headroom at the old cap.
+  // On a loaded bench that margin is not enough: the Cursor suite's before
+  // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
+  // lane passed the SAME commit in 12.7s, cancelling three child tests as
+  // collateral. The cap also shrinks in real terms every time a file joins
+  // the payload. Matches the 120s already used for the heavy install case
+  // below. Aligned with the other runInstall helper in this file.
+  const r = runNode([INSTALL_PATH, ...args], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
-    // 120s, not 60s. A full install copies and converts the whole shipped
-    // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
-    // measures 13-30s on an idle runner — under 2x headroom at the old cap.
-    // On a loaded bench that margin is not enough: the Cursor suite's before
-    // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
-    // lane passed the SAME commit in 12.7s, cancelling three child tests as
-    // collateral. The cap also shrinks in real terms every time a file joins
-    // the payload. Matches the 120s already used for the heavy install case
-    // below. Aligned with the other runInstall helper in this file.
-    timeout: 120000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} ${args.join(' ')}`);
 }
 
 /**
@@ -9918,7 +9992,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -9928,6 +10003,16 @@ const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 // this, the unit lane — whose ensureBuiltArtifacts() builds only bin/lib, not hooks —
 // leaves hooks/dist empty and install.js hard-fails "directory is empty" (#1926).
 const BUILD_HOOKS = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
+
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -9940,12 +10025,12 @@ const BUILD_HOOKS = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 function runClaudeLocalInstall(cwd) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --claude --local --no-sdk`);
 }
 
 // ---------------------------------------------------------------------------
@@ -9958,11 +10043,11 @@ describe('bug #1367 — Claude local install uses flat gsd-<cmd>.md command layo
   before(() => {
     // #1926: build hooks/dist/ so the installer's verifyInstalled(hooks) doesn't hit an
     // empty directory. Self-contained — no dependency on the lane having pre-built hooks.
-    execFileSync(process.execPath, [BUILD_HOOKS], {
+    const r = runNode([BUILD_HOOKS], {
       cwd: REPO_ROOT,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: BUILD_HOOKS_TIMEOUT_MS,
     });
+    throwIfFailed(r, `node ${BUILD_HOOKS}`);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1367-'));
     runClaudeLocalInstall(tmpDir);
   });
@@ -10100,8 +10185,12 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
+
+// A single short CLI query (install.js --skills-root <runtime>) — no full
+// install or build involved.
+const SKILLS_ROOT_PROBE_TIMEOUT_MS = 15000;
 
 const INSTALL_JS = path.join(__dirname, '../bin/install.js');
 const WORKFLOW = path.join(__dirname, '../gsd-core/workflows/sync-skills.md');
@@ -10126,9 +10215,9 @@ describe('install.js --skills-root', () => {
 
   for (const { runtime, expected } of CASES) {
     test(`resolves correct skills root for ${runtime}`, () => {
-      const result = spawnSync(process.execPath, [INSTALL_JS, '--skills-root', runtime], {
-        encoding: 'utf-8',
+      const result = runNode([INSTALL_JS, '--skills-root', runtime], {
         env: { ...process.env, GSD_TEST_MODE: undefined }, // ensure not in test mode
+        timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
       });
       // Strip trailing newline
       const actual = result.stdout.trim();
@@ -10137,15 +10226,15 @@ describe('install.js --skills-root', () => {
   }
 
   test('exits non-zero when runtime arg is missing', () => {
-    const result = spawnSync(process.execPath, [INSTALL_JS, '--skills-root'], {
-      encoding: 'utf-8',
+    const result = runNode([INSTALL_JS, '--skills-root'], {
+      timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
     });
-    assert.notStrictEqual(result.status, 0, 'Should exit with error when runtime arg is missing');
+    assert.notStrictEqual(result.exitCode, 0, 'Should exit with error when runtime arg is missing');
   });
 
   test('returns a path ending in /skills', () => {
-    const result = spawnSync(process.execPath, [INSTALL_JS, '--skills-root', 'windsurf'], {
-      encoding: 'utf-8',
+    const result = runNode([INSTALL_JS, '--skills-root', 'windsurf'], {
+      timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
     });
     assert.ok(result.stdout.trim().endsWith('skills'), 'Skills root must end in /skills');
   });

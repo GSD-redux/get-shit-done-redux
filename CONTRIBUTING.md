@@ -476,6 +476,23 @@ Two things it deliberately rejects, because both look bounded and are not:
 A non-literal value (`timeout: GIT_TIMEOUT_MS`) is trusted — that is the shape you should be
 writing.
 
+When a call genuinely needs more than the 600000 ms ceiling — a full installer run, a build plus
+generators — the escape is an inline marker comment, exactly the `// allow-test-rule: <reason>`
+idiom above:
+
+```javascript
+// allow-spawn-timeout-ceiling: regen:derived chains a full build plus eight generators
+timeout: 900000,
+```
+
+The reason is required and must be non-empty; a bare `// allow-spawn-timeout-ceiling:` (or one
+with only whitespace after the colon) is not an audit trail and still reports `timeoutTooLarge`.
+The marker binds only to the call it decorates — either the line immediately above it, or
+anywhere inside that call's own source range — never to the rest of the file. Critically, the
+escape only ever raises the ceiling for a call that already resolves to a numeric timeout: it
+never waives the requirement for a bound. A marked call with no `timeout` at all still reports
+`unboundedSpawn`.
+
 `eslint-rules/no-unbounded-spawn.allowlist.json` grandfathers files that predate the rule. It only
 ratchets **down**: once a file is clean, the rule reports its allowlist line as stale and you delete
 it. Never add an entry, and never reach for `eslint-disable` on this rule — a test asserts that no

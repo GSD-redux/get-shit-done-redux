@@ -23,17 +23,24 @@ const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const { RUNTIME_META, runMinimalInstall, BUILD_SCRIPT, buildInstallTree } = require('./helpers/install-shared.cjs');
+
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
 
 // hooks/dist is gitignored and built (DEFECT.HOOKS-DIST-SCOPED-CI). The scoped
 // CI test lane does not run build:hooks, so a real install there emits no hooks/
 // dir — making the harness report "removed (N) hooks/…". Build it idempotently
 // here so the harness is lane-independent (mirrors golden-install-parity.test.cjs).
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 const UPDATE = process.env.UPDATE_INSTALL_TREE === '1';

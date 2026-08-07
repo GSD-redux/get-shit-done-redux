@@ -20,7 +20,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const {
@@ -32,6 +33,16 @@ const {
 
 const PKG_VERSION = require('../package.json').version;
 
+// scripts/build-hooks.js only copies already-built hook/lib files into
+// hooks/dist — measured locally at ~80ms. 30000 gives a loaded-bench
+// margin far beyond that without risking the full-install-class 120000.
+const BUILD_HOOKS_TIMEOUT_MS = 30000;
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
+
 // The four-file hook set the Codex surface must deliver together (#2695).
 const CODEX_HOOK_FILES = [
   'gsd-check-update.js',
@@ -42,7 +53,8 @@ const CODEX_HOOK_FILES = [
 
 // Build hooks/dist before any install runs (the installer copies from there).
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 function hooksDirOf(configDir) {
@@ -62,10 +74,9 @@ function runCodexInstall({ profile, preseed }) {
   // Sandbox HOME/USERPROFILE to configDir: Codex's skills-kind `home: ".agents"`
   // override resolves via os.homedir(); sandboxing keeps the spawn self-contained
   // (mirrors tests/install-minimal-hooks.test.cjs Codex downgrade test).
-  const result = spawnSync(
-    process.execPath,
+  const result = runNode(
     [INSTALL_SCRIPT, '--codex', '--global', '--config-dir', configDir, `--profile=${profile}`],
-    { encoding: 'utf8', env: installerEnv({ HOME: configDir, USERPROFILE: configDir }) },
+    { env: installerEnv({ HOME: configDir, USERPROFILE: configDir }), timeoutMs: INSTALL_TIMEOUT_MS },
   );
   return { configDir, result };
 }
@@ -212,10 +223,9 @@ describe('#2695: re-running the installer is idempotent for the four-file set', 
     const first = runCodexInstall({ profile: 'full' });
     t.after(() => cleanup(first.configDir));
     // Second run into the SAME config dir.
-    const result2 = spawnSync(
-      process.execPath,
+    const result2 = runNode(
       [INSTALL_SCRIPT, '--codex', '--global', '--config-dir', first.configDir, '--profile=full'],
-      { encoding: 'utf8', env: installerEnv({ HOME: first.configDir, USERPROFILE: first.configDir }) },
+      { env: installerEnv({ HOME: first.configDir, USERPROFILE: first.configDir }), timeoutMs: INSTALL_TIMEOUT_MS },
     );
     assert.ok(result2.stdout || result2.stderr);
 

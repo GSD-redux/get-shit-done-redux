@@ -35,7 +35,8 @@ const { test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const {
   profileOf,
@@ -51,10 +52,16 @@ const { walk, runMinimalInstall, BUILD_SCRIPT } = require('./helpers/install-sha
 const DESC = path.join(__dirname, '..', 'capabilities', 'zcode', 'capability.json');
 const ZCODE_CAP = JSON.parse(fs.readFileSync(DESC, 'utf8'));
 const ZCODE_AXES = ZCODE_CAP.runtime.hostIntegration;
+// 120000: a build (hooks bundling), not a query — see install.test.cjs:5505-5513
+// for the install/build class norm.
+const BUILD_TIMEOUT_MS = 120000;
 
 // hooks/dist is gitignored and built (mirrors golden-install-parity harness).
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  throwIfFailed(
+    runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+    `node ${BUILD_SCRIPT}`,
+  );
 });
 
 test('ZCode classifies as the declarative-cli reference profile (profileOf)', () => {

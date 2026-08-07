@@ -55,6 +55,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
 const { RUNTIME_META, installerEnv } = require('./helpers/install-shared.cjs');
@@ -215,11 +217,12 @@ function installOverlay(overlayRoot, runtime, extraArgs = []) {
     root,
     ...extraArgs,
   ];
-  const result = spawnSync(process.execPath, args, {
+  const result = runNode(args, {
     cwd: root,
-    encoding: 'utf8',
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: 120000,
   });
+  result.status = result.exitCode;
   assert.equal(
     result.status,
     0,
@@ -250,11 +253,12 @@ function installOverlayExpectingFailure(overlayRoot, runtime, extraArgs = []) {
     root,
     ...extraArgs,
   ];
-  const result = spawnSync(process.execPath, args, {
+  const result = runNode(args, {
     cwd: root,
-    encoding: 'utf8',
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: 120000,
   });
+  result.status = result.exitCode;
   return { configDir: root, root, result };
 }
 
@@ -268,11 +272,13 @@ function installOverlayExpectingFailure(overlayRoot, runtime, extraArgs = []) {
  */
 function runOverlayCheck(overlayRoot, scriptRelPath, extraArgs = []) {
   const scriptPath = path.join(overlayRoot, ...scriptRelPath.split('/'));
-  return spawnSync(process.execPath, [scriptPath, '--check', ...extraArgs], {
+  const result = runNode([scriptPath, '--check', ...extraArgs], {
     cwd: overlayRoot,
-    encoding: 'utf8',
     env: installerEnv(),
+    timeoutMs: 120000,
   });
+  result.status = result.exitCode;
+  return result;
 }
 
 /**
@@ -284,11 +290,13 @@ function runOverlayCheck(overlayRoot, scriptRelPath, extraArgs = []) {
  */
 function runOverlayGenerate(overlayRoot, scriptRelPath) {
   const scriptPath = path.join(overlayRoot, ...scriptRelPath.split('/'));
-  return spawnSync(process.execPath, [scriptPath], {
+  const result = runNode([scriptPath], {
     cwd: overlayRoot,
-    encoding: 'utf8',
     env: installerEnv(),
+    timeoutMs: 120000,
   });
+  result.status = result.exitCode;
+  return result;
 }
 
 /**
@@ -311,14 +319,11 @@ function runOverlayGenerate(overlayRoot, scriptRelPath) {
  * config (unlike `git config --global --add safe.directory`).
  */
 function trackedFileSet(repoRoot) {
-  const lsFiles = spawnSync('git', ['-c', 'safe.directory=*', 'ls-files'], {
+  const stdout = gitOrThrow(['-c', 'safe.directory=*', 'ls-files'], {
     cwd: repoRoot,
-    encoding: 'utf8',
+    timeoutMs: 120000,
   });
-  if (lsFiles.status !== 0) {
-    throw new Error(`git ls-files must succeed in ${repoRoot}\nstderr: ${lsFiles.stderr}`);
-  }
-  return lsFiles.stdout.split('\n').map((line) => line.trim()).filter(Boolean);
+  return stdout.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
 /**
@@ -1187,6 +1192,10 @@ test('regenDerivedPropagatesSingleFragmentEditWithNoSecondSourceSurface', (t) =>
     // completed run on a loaded bench (linux-node22), not from a real hang.
     // 900_000 (15min) is deliberately generous so this can never again flake
     // on load while still catching a true hang.
+    // allow-spawn-timeout-ceiling: regen:derived is a full build plus eight
+    // generators; 300_000 was observed killing a genuinely-completed run
+    // near the end on a loaded bench, not a real hang, so 900_000 is
+    // deliberately above the 600000 ceiling to never repeat that flake.
     timeout: 900000,
     maxBuffer: 64 * 1024 * 1024,
   });

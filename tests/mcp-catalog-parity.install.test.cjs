@@ -60,7 +60,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const { runMinimalInstall, installerEnv } = require('./helpers/install-shared.cjs');
@@ -70,6 +70,12 @@ const { buildCatalog, readResource, shouldCompose } = require('../gsd-core/bin/l
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const MARKER_TOKEN = 'gsd:section';
+
+// A full `bin/install.js` run. install.test.cjs:5514/9538/10354 already
+// use 120000 for this class: a real spawnSync ETIMEDOUT was recorded at a
+// 60000 cap on a loaded bench while another lane passed the same commit
+// in 12.7s; idle runs measure 13-30s.
+const INSTALL_TIMEOUT_MS = 120000;
 
 /** Recursively collect `.md` file paths under `absDir`, relative to `REPO_ROOT`, POSIX-normalized. */
 function collectMarkdownFiles(absDir, out = []) {
@@ -130,10 +136,10 @@ function installOverlay(overlayRoot, runtime, extraArgs = []) {
     root,
     ...extraArgs,
   ];
-  const result = spawnSync(process.execPath, args, {
+  const result = runNode(args, {
     cwd: root,
-    encoding: 'utf8',
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
   return { configDir: root, root, result };
 }
@@ -242,7 +248,7 @@ describe('a marker-documenting non-workflow composes on neither surface (row 50)
     const dest = installOverlay(overlayRepo, 'claude');
     t.after(() => cleanup(dest.root));
     assert.equal(
-      dest.result.status,
+      dest.result.exitCode,
       0,
       `install must succeed: a non-workflow doc's marker-shaped line must never reach composeWorkflow\nstderr: ${dest.result.stderr}`,
     );
@@ -291,7 +297,7 @@ describe('the parity gate is non-vacuous against a real installer regression (ro
     const dest = installOverlay(brokenPredicateRepo, 'claude');
     t.after(() => cleanup(dest.root));
     assert.equal(
-      dest.result.status,
+      dest.result.exitCode,
       0,
       `broken-predicate install must still succeed (composeWorkflow simply never runs)\nstderr: ${dest.result.stderr}`,
     );
