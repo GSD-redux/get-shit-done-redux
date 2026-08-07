@@ -195,6 +195,30 @@ function getRegistry(): { runtimes: Record<string, { runtime?: RuntimeDescriptor
 }
 
 /**
+ * True when `runtime` is a real, registered runtime id in the capability
+ * registry (`capability-registry.cjs`'s `runtimes` object).
+ *
+ * Guarded with an own-property lookup — never a bare index — so a
+ * prototype-chain id (`__proto__`, `constructor`, `prototype`, `toString`,
+ * …) can never resolve to an inherited value and be mistaken for a real
+ * entry. Without this, `getGlobalSkillsBase`/`getGlobalConfigDir`'s bare
+ * `runtimes[runtime]` lookups fall through the prototype chain for those
+ * ids, find no usable descriptor, and silently resolve to claude's
+ * fallback path instead of failing loudly (#3024).
+ *
+ * Single shared validator for every `--skills-root` entry point
+ * (`gsd-tools query skills-root`'s `routeSkillsRoot`, `install.js
+ * --skills-root`) so the two surfaces can never diverge on which runtime
+ * ids they accept.
+ */
+export function isRegisteredRuntimeId(runtime: unknown): boolean {
+  if (typeof runtime !== 'string') return false;
+  const trimmed = runtime.trim();
+  if (!trimmed) return false;
+  return Object.prototype.hasOwnProperty.call(getRegistry().runtimes, trimmed);
+}
+
+/**
  * Resolve a configHome descriptor to an absolute directory path.
  *
  * Implements the four descriptor kinds:

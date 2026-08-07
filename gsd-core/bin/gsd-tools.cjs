@@ -266,7 +266,7 @@ const phase = require('./lib/phase.cjs');
 const roadmap = require('./lib/roadmap.cjs');
 // #3024: resolve skills root for the sync-skills workflow (install.js is not
 // shipped in installed trees; gsd-tools IS shipped, so the workflow calls this).
-const { getGlobalSkillsBase } = require('./lib/runtime-homes.cjs');
+const { getGlobalSkillsBase, isRegisteredRuntimeId } = require('./lib/runtime-homes.cjs');
 // #1561 — assumption-delta advisory checkpoint detector (pure function).
 const { detectAssumptionDelta } = require('./lib/assumption-delta.cjs');
 const verify = require('./lib/verify.cjs');
@@ -1062,13 +1062,15 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // branch to claude's skills root for ANY id it doesn't recognize, so an
     // unknown, empty/whitespace-only, path-traversal, or shell-metacharacter
     // runtime arg would otherwise silently resolve to claude's path instead of
-    // failing loudly. Own-property lookup (not a bare index) rejects
-    // `__proto__`/`constructor`/`prototype` runtime ids.
-    const trimmedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
-    const { runtimes: registeredRuntimes } = require('./lib/capability-registry.cjs');
-    if (!trimmedRuntime || !Object.prototype.hasOwnProperty.call(registeredRuntimes, trimmedRuntime)) {
+    // failing loudly. isRegisteredRuntimeId does an own-property lookup (not a
+    // bare index), rejecting `__proto__`/`constructor`/`prototype` runtime
+    // ids, and is the SAME validator install.js's `--skills-root` entry point
+    // calls, so the two shipped entry points can never diverge on which
+    // runtime ids they accept.
+    if (!isRegisteredRuntimeId(runtime)) {
       error(`Unknown runtime "${runtime}" — must be a registered runtime id`);
     }
+    const trimmedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
     const skillsRoot = getGlobalSkillsBase(trimmedRuntime);
     if (skillsRoot === null) {
       error(`No skills root found for runtime "${trimmedRuntime}"`);

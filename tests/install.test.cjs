@@ -10308,35 +10308,70 @@ describe('#3024: gsd-tools query skills-root', () => {
     assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
   });
 
-  test('parity: gsd-tools query skills-root matches install.js --skills-root for every registered runtime', () => {
+  // #3024 review BLOCKER (finding 2): install.js --skills-root had NO
+  // own-property gate, so a prototype-chain id silently resolved to claude's
+  // skills root via prototype fallthrough in getGlobalConfigDir, while
+  // gsd-tools' routeSkillsRoot (this same PR) rejects it. HOSTILE ids are
+  // included in the SAME loop as the registered runtimes so both surfaces are
+  // asserted to agree (or both reject) with one shared mechanism, and the
+  // hostile branch below additionally pins the outcome to "both reject" —
+  // agreement alone would not catch a defect where both sides silently
+  // accepted the same wrong value.
+  const HOSTILE_RUNTIME_IDS = ['__proto__', 'constructor', 'prototype', 'toString', '', '   '];
+
+  test('parity: gsd-tools query skills-root matches install.js --skills-root for every registered runtime and every hostile id', () => {
     const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
     const runtimeIds = Object.keys(runtimes);
     assert.ok(runtimeIds.length > 0, 'capability registry must list at least one runtime');
 
-    for (const runtime of runtimeIds) {
+    for (const runtime of [...runtimeIds, ...HOSTILE_RUNTIME_IDS]) {
+      const isHostile = HOSTILE_RUNTIME_IDS.includes(runtime);
       const toolsResult = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
         env: { ...process.env, GSD_TEST_MODE: '1' },
       });
       const installResult = runNode([INSTALL_JS, '--skills-root', runtime], {
         env: { ...process.env, GSD_TEST_MODE: undefined },
       });
-      assert.equal(toolsResult.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly for ${runtime}: ${JSON.stringify(toolsResult)}`);
-      assert.equal(installResult.outcome, OUTCOME.EXITED, `install.js did not exit cleanly for ${runtime}: ${JSON.stringify(installResult)}`);
+      assert.equal(toolsResult.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(toolsResult)}`);
+      assert.equal(installResult.outcome, OUTCOME.EXITED, `install.js did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(installResult)}`);
       const toolsIsZero = toolsResult.exitCode === 0;
       const installIsZero = installResult.exitCode === 0;
       assert.strictEqual(
         toolsIsZero, installIsZero,
-        `runtime ${runtime}: exit-code agreement mismatch (gsd-tools=${toolsResult.exitCode}, install.js=${installResult.exitCode})`
+        `runtime ${JSON.stringify(runtime)}: exit-code agreement mismatch (gsd-tools=${toolsResult.exitCode}, install.js=${installResult.exitCode})`
       );
+      if (isHostile) {
+        assert.strictEqual(toolsIsZero, false, `HOSTILE id ${JSON.stringify(runtime)}: gsd-tools must reject, not accept`);
+        assert.strictEqual(installIsZero, false, `HOSTILE id ${JSON.stringify(runtime)}: install.js must reject, not accept`);
+      }
       if (toolsIsZero && installIsZero) {
         const toolsPath = String(toolsResult.stdout.trim()).replace(/\\/g, '/');
         const installPath = String(installResult.stdout.trim()).replace(/\\/g, '/');
         assert.strictEqual(
           toolsPath, installPath,
-          `runtime ${runtime}: gsd-tools (${toolsPath}) and install.js (${installPath}) must resolve the same skills root`
+          `runtime ${JSON.stringify(runtime)}: gsd-tools (${toolsPath}) and install.js (${installPath}) must resolve the same skills root`
         );
       }
     }
+  });
+
+  // #3024 review BLOCKER (finding 2 regression pin): before the fix,
+  // `node bin/install.js --skills-root __proto__` printed claude's skills
+  // root via prototype fallthrough instead of rejecting. Pin the exact
+  // observable symptom, not just the exit code, so a future regression that
+  // reintroduces a bare `runtimes[runtime]` lookup is caught even if it
+  // happens to also exit non-zero for some unrelated reason.
+  test('HOSTILE: install.js --skills-root __proto__ does not silently resolve to claude skills root', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([INSTALL_JS, '--skills-root', '__proto__'], {
+      env: { ...process.env, GSD_TEST_MODE: undefined },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `install.js did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, '__proto__ runtime must exit non-zero');
+    assert.ok(
+      !result.stdout.includes(claudeSkillsRoot),
+      `stdout must not silently emit claude's skills root for __proto__; got: ${result.stdout}`
+    );
   });
 });
 
@@ -10381,6 +10416,59 @@ describe('sync-skills.md — required behavioral specs', () => {
     assert.ok(
       content.includes('gsd-*') && (content.includes('non-GSD') || content.includes('Non-GSD') || content.includes('not starting with')),
       'workflow must document that only gsd-* dirs are modified'
+    );
+  });
+
+  // #3024 review BLOCKER (finding 1): the "Supported runtime names" prose
+  // list and the `--to all` TO_RUNTIMES expansion were both hand-copied
+  // runtime-id lists that had drifted from the capability registry — `grok`
+  // and `gemini` were listed but are not registered runtime ids, while this
+  // same PR's routeSkillsRoot own-property gate rejects any unregistered id,
+  // so `--to all` (a documented first-class feature) aborted. This parity
+  // test fails the moment either list next diverges from the registry, in
+  // EITHER direction (an id in the doc but not the registry, or an id in the
+  // registry but missing from the doc).
+  test('parity: documented runtime list matches the capability registry (minus deliberate exclusions)', () => {
+    content = content || readWorkflow();
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const registryIds = Object.keys(runtimes);
+    assert.ok(registryIds.length > 0, 'capability registry must list at least one runtime');
+
+    // Deliberate, named exclusion: vscode is `installSurface: 'none'` (#2103)
+    // and `getGlobalSkillsBase('vscode')` returns null, so a skills-root sync
+    // to/from it can never succeed. It is named as excluded in the workflow's
+    // own "Supported runtime names" prose, and excluded here identically, so
+    // this test cannot silently drift from the prose that documents it.
+    const DELIBERATE_EXCLUSIONS = ['vscode'];
+    for (const excluded of DELIBERATE_EXCLUSIONS) {
+      assert.ok(
+        registryIds.includes(excluded),
+        `deliberate exclusion "${excluded}" must itself be a real registry id (nothing to exclude otherwise)`
+      );
+    }
+    const expectedIds = registryIds.filter((id) => !DELIBERATE_EXCLUSIONS.includes(id)).sort();
+
+    const supportedLineMatch = content.match(/\*\*Supported runtime names:\*\*\s*(.+)/);
+    assert.ok(supportedLineMatch, 'workflow must have a "Supported runtime names:" line');
+    const docIds = [...supportedLineMatch[1].matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]).sort();
+
+    const toAllMatch = content.match(/TO_RUNTIMES=\(([^)]*)\)/);
+    assert.ok(toAllMatch, 'workflow must define TO_RUNTIMES=(...) for `--to all`');
+    const toAllIds = toAllMatch[1].trim().split(/\s+/).filter(Boolean).sort();
+
+    assert.deepStrictEqual(
+      docIds, expectedIds,
+      '"Supported runtime names" list must match the capability registry minus deliberate ' +
+      `exclusions (${DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in doc but not registry: ${JSON.stringify(docIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  in registry but missing from doc: ${JSON.stringify(expectedIds.filter((id) => !docIds.includes(id)))}`
+    );
+    assert.deepStrictEqual(
+      toAllIds, expectedIds,
+      '`--to all` TO_RUNTIMES expansion must match the capability registry minus deliberate ' +
+      `exclusions (${DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in --to-all but not registry: ${JSON.stringify(toAllIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  in registry but missing from --to-all: ${JSON.stringify(expectedIds.filter((id) => !toAllIds.includes(id)))}`
     );
   });
 
@@ -10445,6 +10533,63 @@ describe('sync-skills.md — required behavioral specs', () => {
     assert.ok(
       content.includes('gsd_run query skills-root'),
       'workflow Step 2 must resolve skills roots via `gsd_run query skills-root`'
+    );
+  });
+
+  // #3024 follow-up hardening: neither `gsd_run query skills-root` call in
+  // Step 2 checked its exit status or for an empty result, so an unregistered
+  // runtime id silently produced an empty root that Step 5 fed straight into
+  // `rm -rf`/`cp -r`. These assert the guard is present in the shipped text.
+  test('Step 2 guards the SOURCE skills-root resolution (exit status + non-empty)', () => {
+    content = content || readWorkflow();
+    const step2 = content.slice(content.indexOf('## Step 2:'), content.indexOf('## Step 3:'));
+    assert.ok(
+      /SRC_SKILLS_ROOT\s*=\s*\$\(gsd_run query skills-root[^)]*\)\s*\n\s*if\s*\[\s*\$\?\s*-ne\s*0\s*\]\s*\|\|\s*\[\s*-z\s*"\$SRC_SKILLS_ROOT"\s*\]/.test(step2),
+      'Step 2 must check exit status ($?) and non-empty (-z) immediately after resolving SRC_SKILLS_ROOT'
+    );
+    assert.match(
+      step2,
+      /exit 1/,
+      'Step 2 must exit non-zero when SRC_SKILLS_ROOT resolution fails'
+    );
+  });
+
+  test('Step 2 guards each DESTINATION skills-root resolution (exit status + non-empty)', () => {
+    content = content || readWorkflow();
+    const step2 = content.slice(content.indexOf('## Step 2:'), content.indexOf('## Step 3:'));
+    assert.ok(
+      /for DEST_RUNTIME in "\$\{TO_RUNTIMES\[@\]\}"; do[\s\S]*?gsd_run query skills-root "\$DEST_RUNTIME"[^)]*\)[\s\S]*?if\s*\[\s*\$\?\s*-ne\s*0\s*\]\s*\|\|\s*\[\s*-z\s*"\$RESOLVED_DEST_ROOT"\s*\][\s\S]*?exit 1[\s\S]*?done/.test(step2),
+      'Step 2 must check exit status and non-empty for each resolved destination root inside the TO_RUNTIMES loop, and exit 1 on failure'
+    );
+  });
+
+  test('prose guard documents destination skills-root resolution failure (mirrors source guard)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      /resolving the skills root for the source OR any destination runtime fails/i.test(content),
+      'workflow must document a guard for destination skills-root resolution failure alongside the source-not-found guard'
+    );
+  });
+
+  test('Step 5 requires non-empty/absolute roots before any rm -rf or cp -r', () => {
+    content = content || readWorkflow();
+    const step5 = content.slice(content.indexOf('## Step 5:'));
+    const rmIndex = step5.indexOf('rm -rf "$DEST_ROOT/$SKILL"');
+    const cpIndex = step5.indexOf('cp -r "$SRC_SKILLS_ROOT/$SKILL"');
+    assert.ok(rmIndex > -1, 'Step 5 must contain rm -rf "$DEST_ROOT/$SKILL"');
+    assert.ok(cpIndex > -1, 'Step 5 must contain cp -r "$SRC_SKILLS_ROOT/$SKILL"');
+
+    const srcGuardIndex = step5.indexOf('[[ "$SRC_SKILLS_ROOT" == /* ]]');
+    const destGuardIndex = step5.indexOf('[[ "$DEST_ROOT" == /* ]]');
+    assert.ok(srcGuardIndex > -1, 'Step 5 must guard SRC_SKILLS_ROOT as a non-empty absolute path before use');
+    assert.ok(destGuardIndex > -1, 'Step 5 must guard DEST_ROOT as a non-empty absolute path before use');
+    assert.ok(
+      srcGuardIndex < rmIndex && destGuardIndex < rmIndex,
+      'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede the first rm -rf in Step 5'
+    );
+    assert.ok(
+      srcGuardIndex < cpIndex && destGuardIndex < cpIndex,
+      'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede cp -r in Step 5'
     );
   });
 });
