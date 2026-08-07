@@ -120,6 +120,35 @@ describe('slug parity: every entry point delegates to the canonical generator', 
     }
   });
 
+  /**
+   * #2986: `toDir` is the fifth entry point, and it used to keep a private
+   * inline character-class filter — so it REJECTED Cyrillic that the canonical
+   * generator transliterates fine. This asserts on the OUTPUT, not on the
+   * source text: it is the behavioural pin that an earlier revision of this
+   * branch deleted rather than kept.
+   *
+   * `Number.POSITIVE_INFINITY` is the reference limit because a directory name
+   * is not cut at the 60-char default — the same distinguishing property
+   * `slugify` in gsd2-import preserves. That makes this a non-truncation pin
+   * too: the long CORPUS entry exceeds 40 and must survive whole.
+   *
+   * The ASCII CORPUS entries are the positive control: they passed under the
+   * OLD implementation as well, so a failure on them means the probe never
+   * reached its subject rather than that the subject regressed.
+   */
+  test('toDir embeds the canonical slug verbatim, non-truncated (#2986)', () => {
+    const id = { project: 'GSD', milestone: '02', phase: '05' };
+    for (const text of CORPUS) {
+      const canonical = generateSlugInternal(text, Number.POSITIVE_INFINITY);
+      assert.ok(canonical, `CORPUS entry is degenerate, belongs in DEGENERATE: ${JSON.stringify(text)}`);
+      assert.strictEqual(
+        phaseId.toDir(id, text),
+        `GSD.02-05-${canonical}`,
+        `toDir diverged from the canonical generator for ${JSON.stringify(text)}`,
+      );
+    }
+  });
+
   test('phase_slug reported by the phase locator is the canonical slug', () => {
     const tmp = createTempProject();
     try {
@@ -152,6 +181,31 @@ describe('slug parity: degenerate input fails loudly everywhere', () => {
       }
     } finally {
       cleanup(tmp);
+    }
+  });
+
+  /**
+   * The two properties `toDir` must NOT lose when it stops re-implementing the
+   * filter: a slug that sanitizes to nothing, and an all-digit slug (which is
+   * string-indistinguishable from the plan tail, breaking the disk↔identity
+   * bijection on read-back). Both guards live AFTER the sanitize step, so
+   * delegating the sanitizer cannot silently drop them — this pins that.
+   */
+  test('toDir still refuses an empty or all-digit slug after delegating (#2986)', () => {
+    const id = { project: 'GSD', milestone: '02', phase: '05' };
+    for (const text of DEGENERATE) {
+      assert.throws(
+        () => phaseId.toDir(id, text),
+        /toDir: slug sanitizes to empty/,
+        `toDir silently accepted degenerate input ${JSON.stringify(text)}`,
+      );
+    }
+    for (const digits of ['2026', '007', '--2026--']) {
+      assert.throws(
+        () => phaseId.toDir(id, digits),
+        /toDir: slug must not be all-digit/,
+        `toDir silently accepted an all-digit slug ${JSON.stringify(digits)}`,
+      );
     }
   });
 
@@ -277,7 +331,6 @@ describe('slug truncation is a single point', () => {
  */
 const NON_SLUG_ALLOWLIST = [
   // guard
-  ['src/phase-id.cts', "const safeSlug = slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');"],
   ['src/workstream-name-policy.cts', ".replace(/[^a-z0-9]+/g, '-')"],
   ['src/active-workstream-store.cts', "const token = raw.trim().replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '');"],
   // other
@@ -336,7 +389,7 @@ describe('slug generation is not re-implemented anywhere', () => {
   });
 
   test('no source file outside the canon and the allowlist generates a slug', () => {
-    const allowed = new Set(NON_SLUG_ALLOWLIST.map(([file, line]) => `${file} ${line}`));
+    const allowed = new Set(NON_SLUG_ALLOWLIST.map(([file, line]) => `${file}\u0000${line}`));
     const offenders = [];
     let scanned = 0;
 
@@ -348,7 +401,7 @@ describe('slug generation is not re-implemented anywhere', () => {
       scanned += lines.length;
       for (const line of lines) {
         if (!FILTER_CLASS.test(line)) continue;
-        if (allowed.has(`${rel} ${line}`)) continue;
+        if (allowed.has(`${rel}\u0000${line}`)) continue;
         offenders.push(`${rel}: ${line}`);
       }
     }

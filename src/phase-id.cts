@@ -361,7 +361,19 @@ function toDir(id: PhaseId, slug: string): string {
   const sub = id.subphase ? `.${id.subphase}` : '';
   // Slug guard: the slug becomes an on-disk path segment, so collapse it to a
   // safe lowercase token — never a path separator or `..` traversal.
-  const safeSlug = slug.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+  // Deferred require: core-utils.cjs imports this module at load time, so a
+  // top-level import here would be a cycle — same pattern as
+  // getPhaseDirFromPhaseId above. Re-export, never re-implement (#2848/#2986).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const coreUtils = require('./core-utils.cjs') as {
+    generateSlugInternal(text: string | null | undefined, maxLength?: number): string | null;
+  };
+  // No truncation: a directory name is not cut at the 60-char default, the
+  // same distinguishing property slugify in gsd2-import preserves through the
+  // maxLength parameter rather than through a private copy of the expression.
+  // `|| ''` and not `??`, because the generator returns '' (not null) for
+  // input with no slug-safe characters.
+  const safeSlug = coreUtils.generateSlugInternal(slug, Number.POSITIVE_INFINITY) || '';
   // A slug that sanitizes to nothing (e.g. '!!!') would otherwise emit a
   // dangling trailing hyphen.
   if (!safeSlug) {

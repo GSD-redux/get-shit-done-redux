@@ -509,7 +509,11 @@ describe('bracket grammar: slug content abuse — null byte / control / unicode 
     assert.strictEqual(core.toDir(id, 'foo\x07bar'), 'GSD.02-05-foo-bar', 'control char → hyphen');
     assert.strictEqual(core.toDir(id, 'a\nb'), 'GSD.02-05-a-b', 'newline → hyphen (safe on emit, unlike read)');
     assert.strictEqual(core.toDir(id, 'a\rb'), 'GSD.02-05-a-b', 'carriage return → hyphen');
-    assert.strictEqual(core.toDir(id, ACCENTED), 'GSD.02-05-caf', 'non-ASCII dropped, trailing hyphen stripped');
+    // #2986: toDir now delegates to generateSlugInternal, so a Latin diacritic
+    // is NFKD-folded to its ASCII base instead of being dropped as
+    // out-of-class. `café` → `cafe`, not `caf` — the behaviour the canonical
+    // generator has always advertised, now reaching this emitter too.
+    assert.strictEqual(core.toDir(id, ACCENTED), 'GSD.02-05-cafe', 'Latin diacritic folded, not dropped');
   });
 
   test('toDir rejects a slug that sanitizes to empty (emoji-only / null-only) rather than a dangling hyphen', () => {
