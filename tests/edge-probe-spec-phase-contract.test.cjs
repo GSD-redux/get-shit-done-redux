@@ -244,6 +244,8 @@ test('#3132: specless-probe-fallback.md uses resolved+verification — not cover
     'specless-probe-fallback.md must not use auto-"backstop" as a status (backstop is a verification tier only)');
   assert.doesNotMatch(content, /`covered` edge/,
     'specless-probe-fallback.md must not reference "covered" edges as a status');
-  assert.match(content, /auto-`resolved`.*verification: explicit/,
-    'specless-probe-fallback.md must use "resolved" with "verification: explicit"');
+  assert.match(content, /auto-`resolved`/,
+    'specless-probe-fallback.md must use auto-"resolved" (not auto-"covered"/"backstop")');
+  assert.match(content, /verification: explicit/,
+    'specless-probe-fallback.md must reference "verification: explicit"');
 });
