@@ -22,19 +22,22 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
+// 60000ms: matches the process seam's own default for a Node CLI run — this
+// is a real build step (scripts/build-hooks.js), not fixture plumbing.
+const BUILD_TIMEOUT_MS = 60000;
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
+  throwIfFailed(r, 'build-hooks.js (before install tests)');
 });
 
 // ─── Helper: run both install phases (mirrors installAllRuntimes two-phase) ──

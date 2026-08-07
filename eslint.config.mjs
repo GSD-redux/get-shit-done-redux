@@ -5,6 +5,7 @@ import pluginN from 'eslint-plugin-n';
 import noOnlyTests from 'eslint-plugin-no-only-tests';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -24,6 +25,10 @@ import noBareNpmExec from './eslint-rules/no-bare-npm-exec.cjs';
 import requireUserprofileWithHome from './eslint-rules/require-userprofile-with-home.cjs';
 import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs';
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
+import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
+
+const require = createRequire(import.meta.url);
+const unboundedSpawnAllowlist = require('./eslint-rules/no-unbounded-spawn.allowlist.json');
 
 const localPlugin = {
   rules: {
@@ -42,6 +47,7 @@ const localPlugin = {
     'require-userprofile-with-home': requireUserprofileWithHome,
     'normalize-path-in-content': normalizePathInContent,
     'require-fs-op-fallback': requireFsOpFallback,
+    'no-unbounded-spawn': noUnboundedSpawn,
   },
 };
 
@@ -391,6 +397,8 @@ export default tseslint.config(
       'local/no-bare-npm-exec': 'error',
       // Require USERPROFILE alongside HOME assignments (ADR-1703 Phase 4)
       'local/require-userprofile-with-home': 'error',
+      // Ban unbounded sync child_process spawns in tests (DEFECT.UNBOUNDED-SUBPROCESS)
+      'local/no-unbounded-spawn': ['error', { allowlist: unboundedSpawnAllowlist }],
       // Ban raw setTimeout sync + elapsed/duration-style assertions via no-restricted-syntax
       'no-restricted-syntax': [
         'error',

@@ -335,7 +335,8 @@ const STOP_H2_ONLY = (lv: number): boolean => lv === 2;
 
 function cmdStateLoad(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const planDir = planningPaths(cwd).planning;
+  const paths = planningPaths(cwd);
+  const planDir = paths.planning;
 
   const stateRaw = platformReadSync(path.join(planDir, 'STATE.md')) || '';
 
@@ -351,10 +352,12 @@ function cmdStateLoad(cwd: string, raw: boolean): void {
     config_exists: configExists,
     // #2376: absolute (anchored on cwd), not orchestrator-cwd-relative — a
     // spawned subagent's own cwd may differ from the orchestrator's.
-    // debug.md has no init.* call of its own; it reads this field from
-    // `state load` to build debug_file_path for its gsd-debug-session-manager
-    // spawns instead of hardcoding '.planning/debug/{slug}.md'.
-    debug_dir: toPosixPath(path.join(planDir, 'debug')),
+    // #3149: debug.md now has its own `init.debug` entry point and reads this
+    // field from there, not from `state load`. This stays on the state.load
+    // bundle regardless: it is a shipped query surface with its own test anchor
+    // (tests/state.test.cjs), so narrowing it would break unseen consumers for
+    // no gain (Hyrum's Law). Both emit the SAME `planningPaths(cwd).debug`.
+    debug_dir: toPosixPath(paths.debug),
   };
 
   // For --raw, output a condensed key=value format

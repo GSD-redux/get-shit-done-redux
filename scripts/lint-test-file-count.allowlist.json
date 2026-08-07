@@ -22,6 +22,15 @@
       ],
       "issue": "622"
     },
+    "init": {
+      "files": [
+        "init-debug-workflow-contract.test.cjs",
+        "init-debug.test.cjs",
+        "init-manager.test.cjs",
+        "init.test.cjs"
+      ],
+      "issue": "3149"
+    },
     "milestone": {
       "files": [
         "milestone-archive.test.cjs",
