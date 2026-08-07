@@ -10459,10 +10459,32 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
     assert.ok(supportedLineMatch, 'workflow must have a "Supported runtime names:" line ending at " — the full capability registry runtime set"');
     const docIds = [...supportedLineMatch[1].matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]).sort();
+    assert.ok(
+      docIds.length > 0 && docIds.every((id) => /^[a-z0-9-]+$/.test(id)),
+      '"Supported runtime names:" extractor matched nothing plausible: expected one or more ' +
+      `backtick-wrapped runtime ids (e.g. \`claude\`) in the line's id list, got ${JSON.stringify(docIds)}`
+    );
 
-    const toAllMatch = content.match(/TO_RUNTIMES=\(([^)]*)\)/);
-    assert.ok(toAllMatch, 'workflow must define TO_RUNTIMES=(...) for `--to all`');
+    // Anchored to the `--to all` branch specifically: the file defines
+    // TO_RUNTIMES=() three times (an empty initializer, this branch's full
+    // expansion, and the explicit `--to <runtime>` branch's command
+    // substitution), and an unanchored match on the FIRST occurrence anywhere
+    // in the file silently captures the empty initializer instead (#3024
+    // remote-runner regression: toAllIds resolved to [] with no assertion
+    // failure until the final deepStrictEqual). Locate the `--to all` marker
+    // first, then take the first TO_RUNTIMES=(...) assignment after it —
+    // which is this branch's expansion, not the empty initializer that
+    // precedes the marker or the `$(...)` substitution branch that follows it.
+    const toAllMarkerIndex = content.indexOf('"--to all"');
+    assert.ok(toAllMarkerIndex > -1, 'workflow must contain a `--to all` branch marker (`"--to all"`)');
+    const toAllMatch = content.slice(toAllMarkerIndex).match(/TO_RUNTIMES=\(([^)]*)\)/);
+    assert.ok(toAllMatch, 'workflow must define TO_RUNTIMES=(...) for `--to all` after the `--to all` marker');
     const toAllIds = toAllMatch[1].trim().split(/\s+/).filter(Boolean).sort();
+    assert.ok(
+      toAllIds.length > 0 && toAllIds.every((id) => /^[a-z0-9-]+$/.test(id)),
+      '`--to all` TO_RUNTIMES extractor matched nothing plausible: expected one or more ' +
+      `space-separated runtime ids inside TO_RUNTIMES=(...) after the \`--to all\` marker, got ${JSON.stringify(toAllIds)}`
+    );
 
     assert.deepStrictEqual(
       docIds, expectedIds,
