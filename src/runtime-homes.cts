@@ -141,11 +141,28 @@ interface GenericAgentsRootDescriptor {
   skillsHome?: ConfigHomeDescriptor;
 }
 
+/**
+ * #2103: a runtime with NO file-projected config directory at all (e.g.
+ * vscode — Marketplace/VSIX extension, `installSurface: 'none'`). There is
+ * no directory to resolve, so this descriptor kind is deliberately excluded
+ * from `resolveConfigHomeFromDescriptor`'s directory-resolving switch (see
+ * that function's 'none' case, which throws rather than silently falling
+ * through). Callers that need a nullable result (e.g. `getGlobalSkillsBase`)
+ * must check `configHome.kind === 'none'` themselves before resolving.
+ */
+interface NoneDescriptor {
+  kind: 'none';
+  name: string;
+  env: string[];
+  skillsHome?: ConfigHomeDescriptor;
+}
+
 type ConfigHomeDescriptor =
   | DotHomeDescriptor
   | DotHomeNestedDescriptor
   | XdgDescriptor
-  | GenericAgentsRootDescriptor;
+  | GenericAgentsRootDescriptor
+  | NoneDescriptor;
 
 interface RuntimeArtifactKindDescriptor {
   kind: string;
@@ -271,6 +288,20 @@ export function resolveConfigHomeFromDescriptor(
       }
       // fallback: first probe candidate
       return expandTilde(configHome.probe[0], home);
+    }
+
+    case 'none': {
+      // #2103: no file-projected config directory exists for this runtime
+      // (e.g. vscode). Previously this kind had no matching case, so the
+      // switch fell through and implicitly returned `undefined` — which
+      // then crashed a downstream `path.join(undefined, ...)` with a
+      // cryptic `TypeError [ERR_INVALID_ARG_TYPE]` far from the real cause.
+      // Throwing here makes the failure mode explicit; callers that need a
+      // nullable result (getGlobalSkillsBase) check `configHome.kind` and
+      // short-circuit BEFORE ever reaching this function.
+      throw new Error(
+        `Runtime "${configHome.name}" has no config-home directory (configHome.kind === "none")`,
+      );
     }
   }
 }
@@ -483,6 +514,16 @@ export function resolveSkillsBaseFromDescriptor(
 export function getGlobalSkillsBase(runtime: string): string | null {
   const runtimeEntry = getRegistry().runtimes[runtime];
   const descriptor = runtimeEntry?.runtime;
+  // #2103: a runtime with `configHome.kind === 'none'` (e.g. vscode —
+  // Marketplace/VSIX extension, installSurface:'none') has no file-projected
+  // config directory at all, and therefore no skills root. Short-circuit to
+  // null BEFORE falling through to getGlobalConfigDir below, which would
+  // otherwise throw resolving a 'none' configHome (see
+  // resolveConfigHomeFromDescriptor's 'none' case). null is the correct
+  // answer here, not a crash — the `=== null` guard at every call site
+  // (bin/install.js --skills-root, gsd-tools routeSkillsRoot) already
+  // handles it as "this runtime does not use a skills directory".
+  if (descriptor?.configHome?.kind === 'none') return null;
   const globalSkillsKind = descriptor?.artifactLayout?.global?.find((entry) => entry.kind === 'skills');
   // ADR-1239 upgrade 3 (#2088): honor a skills-kind `home` override (e.g. Codex
   // → $HOME/.agents/skills, independent of $CODEX_HOME) so the reported skills

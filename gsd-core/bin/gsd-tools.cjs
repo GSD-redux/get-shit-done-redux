@@ -1056,11 +1056,24 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     if (!runtime) {
       error('Usage: gsd-tools query skills-root <runtime>');
     }
-    const skillsRoot = getGlobalSkillsBase(runtime);
-    if (skillsRoot === null) {
-      error(`No skills root found for runtime "${runtime}"`);
+    // Defect B (#3024): validate the runtime id against the shipped capability
+    // registry's canonical runtime set BEFORE resolving anything.
+    // getGlobalSkillsBase falls through getGlobalConfigDir's unknown-runtime
+    // branch to claude's skills root for ANY id it doesn't recognize, so an
+    // unknown, empty/whitespace-only, path-traversal, or shell-metacharacter
+    // runtime arg would otherwise silently resolve to claude's path instead of
+    // failing loudly. Own-property lookup (not a bare index) rejects
+    // `__proto__`/`constructor`/`prototype` runtime ids.
+    const trimmedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
+    const { runtimes: registeredRuntimes } = require('./lib/capability-registry.cjs');
+    if (!trimmedRuntime || !Object.prototype.hasOwnProperty.call(registeredRuntimes, trimmedRuntime)) {
+      error(`Unknown runtime "${runtime}" — must be a registered runtime id`);
     }
-    output({ skills_root: skillsRoot }, raw);
+    const skillsRoot = getGlobalSkillsBase(trimmedRuntime);
+    if (skillsRoot === null) {
+      error(`No skills root found for runtime "${trimmedRuntime}"`);
+    }
+    output({ skills_root: skillsRoot }, raw, skillsRoot);
   }
 
   function routeProjectInstructionFile({ args, cwd, raw, error }) {
@@ -3581,7 +3594,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
-  'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
+  'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
   '  --raw              Emit raw output without post-processing\n' +

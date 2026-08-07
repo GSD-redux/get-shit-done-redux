@@ -10392,11 +10392,16 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
   });
 
-  test('install.js --skills-root is used for path resolution', () => {
+  test('gsd_run query skills-root is used for path resolution (#3024)', () => {
+    // #3024: sync-skills.md moved off the unshipped `install.js --skills-root`
+    // entry point onto `gsd_run query skills-root`, which IS shipped (routes
+    // through gsd-tools.cjs — see routeSkillsRoot). This asserts the new
+    // contract; the old install.js reference is covered as an explicit
+    // regression by "defect C: workflow contains zero references to install.js".
     content = content || readWorkflow();
     assert.ok(
-      content.includes('--skills-root'),
-      'workflow must reference install.js --skills-root for path resolution'
+      content.includes('gsd_run query skills-root'),
+      'workflow must reference gsd_run query skills-root for path resolution'
     );
   });
 

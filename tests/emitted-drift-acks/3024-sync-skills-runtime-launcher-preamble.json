@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "paths": {
+    "sync-skills.md": {
+      "reason": "#3024: Step 2 now resolves skills roots via `gsd_run query skills-root <runtime>` instead of shelling out to the unshipped `install.js --skills-root`. Because the workflow now calls `gsd_run`, it must carry the canonical runtime-launcher preamble (`node scripts/sync-runtime-launcher.cjs`, per runtime-launcher-parity.test.cjs) so `gsd_run` resolves on every non-Claude runtime, not just Claude Code — without it the fix would be dead exactly where the original #3024 bug bit. The single-line preamble (~4.4KB, one bash line with a resolver arm per supported runtime home) accounts for essentially all of the growth (6,125 -> 10,928 bytes); the remainder is the reworded Step 2 lead-in and error-guidance text that no longer references the unshipped install.js entry point (defect C)."
+    }
+  }
+}
