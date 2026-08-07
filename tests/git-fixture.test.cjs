@@ -126,8 +126,27 @@ describe('git-fixture: E — gitOrThrow', () => {
     assert.equal(caught.outcome, OUTCOME.SPAWN_FAILED);
   });
 
-  test('E9: timeout throws and reports timedOut', () => {
-    const caught = captureThrown(() => gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir, timeoutMs: 1 }));
+  test('E9: gitOrThrow propagates a TIMED_OUT seam result as a throw', () => {
+    // Not an integration timeout test: a real `git rev-parse HEAD` racing a
+    // 1ms bound is a real-race test (on a warm/unloaded container the
+    // command can finish first, spawnSync then reports a clean EXITED with
+    // no error, and gitOrThrow correctly does not throw — see #3148). This
+    // drives `gitOrThrow` with a synthetic TIMED_OUT result from the
+    // `runGit` spy installed at module scope (line 30), so it exercises the
+    // exact propagation behavior with zero timing dependence. Deterministic
+    // coverage of `throwIfFailed`'s TIMED_OUT branch itself already lives in
+    // the `throwIfFailed` describe block below (the `for (const outcome of
+    // [OUTCOME.TIMED_OUT, ...])` case).
+    runGitSpy.mock.mockImplementationOnce(() => ({
+      outcome: OUTCOME.TIMED_OUT,
+      exitCode: null,
+      stdout: '',
+      stderr: '',
+      timedOut: true,
+      signal: 'SIGTERM',
+      code: 'ETIMEDOUT',
+    }));
+    const caught = captureThrown(() => gitOrThrow(['rev-parse', 'HEAD'], { cwd: dir }));
     assert.equal(caught.timedOut, true);
     assert.equal(caught.outcome, OUTCOME.TIMED_OUT);
   });
