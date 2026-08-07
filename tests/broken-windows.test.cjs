@@ -783,3 +783,87 @@ describe('broken-windows CLI: lifecycle', () => {
     assert.equal(status.ledger.total_count, 2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3116: parseFrontmatterStrict throws on CRLF WINDOWS.md
+// On repos with core.autocrlf=true (Windows default), .planning/WINDOWS.md is
+// checked out CRLF. The `\n---` close-fence scan leaves the last line's CR
+// attached, and `.` doesn't match CR, so the key:value regex fails.
+// ---------------------------------------------------------------------------
+
+describe('#3116: parseLedger handles CRLF ledgers', () => {
+  test('CRLF ledger parses without throwing', () => {
+    // Build a CRLF ledger (every \n replaced with \r\n)
+    const lfLedger = [
+      '---',
+      'schema_version: 1',
+      'open_count: 0',
+      'waived_count: 0',
+      'fixed_count: 0',
+      'total_count: 0',
+      'last_updated: 2026-08-06T09:43:08.354Z',
+      '---',
+      '',
+      '```json',
+      '[]',
+      '```',
+      '',
+    ].join('\n');
+    const crlfLedger = lfLedger.replace(/\n/g, '\r\n');
+
+    // Must not throw — before the fix this throws WINDOWS_LEDGER_MALFORMED
+    // on the last frontmatter key ("last_updated: ...\r")
+    const parsed = parseLedger(crlfLedger);
+    assert.equal(parsed.schema_version, 1);
+    assert.equal(parsed.open_count, 0);
+    assert.equal(parsed.last_updated, '2026-08-06T09:43:08.354Z');
+  });
+
+  test('CRLF ledger with non-zero counts parses correctly', () => {
+    const lfLedger = [
+      '---',
+      'schema_version: 1',
+      'open_count: 3',
+      'waived_count: 1',
+      'fixed_count: 2',
+      'total_count: 6',
+      'last_updated: 2026-08-06T12:00:00.000Z',
+      '---',
+      '',
+      '```json',
+      '[]',
+      '```',
+      '',
+    ].join('\n');
+    const crlfLedger = lfLedger.replace(/\n/g, '\r\n');
+
+    const parsed = parseLedger(crlfLedger);
+    assert.equal(parsed.open_count, 3);
+    assert.equal(parsed.waived_count, 1);
+    assert.equal(parsed.fixed_count, 2);
+    assert.equal(parsed.total_count, 6);
+  });
+
+  test('CRLF and LF ledgers produce identical parse results', () => {
+    const lfLedger = [
+      '---',
+      'schema_version: 1',
+      'open_count: 2',
+      'waived_count: 0',
+      'fixed_count: 1',
+      'total_count: 3',
+      'last_updated: 2026-08-06T09:43:08.354Z',
+      '---',
+      '',
+      '```json',
+      '[]',
+      '```',
+      '',
+    ].join('\n');
+
+    const lfParsed = parseLedger(lfLedger);
+    const crlfParsed = parseLedger(lfLedger.replace(/\n/g, '\r\n'));
+
+    assert.deepEqual(crlfParsed, lfParsed);
+  });
+});
