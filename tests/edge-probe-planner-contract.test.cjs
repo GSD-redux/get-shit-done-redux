@@ -128,7 +128,7 @@ test('RR-01 reachability: SPEC_FILE resolution is NOT gated inside the AI-SPEC a
 // templates/planner-subagent-prompt.md file is orphaned (loaded by nothing), so asserting the
 // contract there is false assurance — the test stays green even if the runtime never consumes it.
 // Pin the contract to the <downstream_consumer> block plan-phase.md actually sends the planner.
-test('RR-02 consumer: plan-phase.md downstream_consumer instructs lifting covered/backstop edges into must_haves.truths', () => {
+test('RR-02 consumer: plan-phase.md downstream_consumer instructs lifting resolved edges into must_haves.truths', () => {
   const block = extractDownstreamConsumerBlock(readPlanPhase());
 
   assert.ok(block.length > 0, 'sanity: plan-phase.md must contain a <downstream_consumer> block to scope this test');
@@ -154,15 +154,15 @@ test('RR-02 consumer: plan-phase.md downstream_consumer instructs lifting covere
   );
 });
 
-// Test D (RR-03): plan-phase.md <quality_gate> contains a covered/backstop ↔ must_haves item
-// This MUST FAIL before the RR-03 fix (no such quality_gate item exists today)
-test('RR-03: planner quality_gate requires covered/backstop edges represented in must_haves', () => {
+// Test D (RR-03): plan-phase.md <quality_gate> contains a resolved-edge ↔ must_haves item
+// #3132: vocabulary realigned from covered/backstop-as-status to resolved+verification
+test('RR-03: planner quality_gate requires resolved edges represented in must_haves', () => {
   const content = readPlanPhase();
   const qgBlock = extractQualityGateBlock(content);
 
   assert.match(
     qgBlock,
-    /covered.*backstop.*must_haves|backstop.*covered.*must_haves/i,
-    'planner quality_gate must contain a checklist item tying covered/backstop edges to must_haves'
+    /resolved.*edge.*must_haves/i,
+    'planner quality_gate must contain a checklist item tying resolved edges to must_haves'
   );
 });

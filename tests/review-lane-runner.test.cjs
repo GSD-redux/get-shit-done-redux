@@ -19,6 +19,7 @@ const {
   writeReviewOrStub,
   handleOpencodeOutput,
   stampBlindReview,
+  antigravityWatermark,
   antigravityTranscriptFallback,
   runOpenAiCompatible,
 } = require('../gsd-core/bin/lib/review-lane-runner.cjs');
@@ -342,6 +343,141 @@ describe('runner — antigravity handler (#2073 / #2176)', () => {
     assert.equal(antigravityTranscriptFallback(ROOT, { convId: '', lines: 0 }, d), '');
   });
 
+  // ── antigravityWatermark (#3118) ───────────────────────────────────────────
+  //
+  // Every test above hands the fallback a HAND-WRITTEN mark. None of them calls
+  // `antigravityWatermark`, so none says anything about whether the mark a real run produces is
+  // correct. The producer had zero test references before this block; the fail-open below lived
+  // entirely in that gap.
+  describe('antigravityWatermark — the mark a real run actually produces', () => {
+    test('returns an empty mark when the conversation cache is absent', () => {
+      assert.deepEqual(antigravityWatermark(ROOT, deps()), { convId: '', lines: 0 });
+    });
+
+    test('returns an empty mark when the cache is not valid JSON', () => {
+      const d = deps({ files: { [CACHE]: 'NOT JSON' } });
+      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0 });
+    });
+
+    test('returns an empty mark when the workspace has no conversation', () => {
+      const d = deps({ files: { [CACHE]: JSON.stringify({ '/somewhere/else': 'c9' }) } });
+      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0 });
+    });
+
+    for (const [label, body] of [
+      ['a number', '0'],
+      ['a string', '"just a string"'],
+      ['an array', '[]'],
+      ['null', 'null'],
+      ['a boolean', 'true'],
+    ]) {
+      test(`a conversation cache that is ${label} yields an empty mark`, () => {
+        // Valid JSON that is not an object still reaches hasOwnProperty / Object.entries.
+        const d = deps({ files: { [CACHE]: body } });
+        assert.deepEqual(antigravityWatermark(ROOT, d), { convId: '', lines: 0 });
+      });
+    }
+
+    test('ignores a non-string conversation id', () => {
+      const d = deps({ files: { [CACHE]: JSON.stringify({ [ROOT]: 42 }) } });
+      assert.equal(antigravityWatermark(ROOT, d).convId, '');
+    });
+
+    test('ignores an empty-string conversation id', () => {
+      const d = deps({ files: { [CACHE]: JSON.stringify({ [ROOT]: '' }) } });
+      assert.equal(antigravityWatermark(ROOT, d).convId, '');
+    });
+
+    test('resolves the workspace case-insensitively', () => {
+      const d = deps({ files: { [CACHE]: JSON.stringify({ '/REPO': 'c1' }), [TX('c1')]: entry('x') } });
+      assert.equal(antigravityWatermark('/repo', d).convId, 'c1');
+    });
+
+    test('keeps the conversation id when the transcript does not exist yet', () => {
+      // Distinct from the cases above: the conversation is KNOWN, it simply has no transcript.
+      const d = deps({ files: { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }) } });
+      assert.deepEqual(antigravityWatermark(ROOT, d), { convId: 'c1', lines: 0 });
+    });
+
+    test('counts the non-blank transcript lines', () => {
+      const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: [entry('a'), entry('b')].join('\n') };
+      assert.equal(antigravityWatermark(ROOT, deps({ files })).lines, 2);
+    });
+
+    test('an empty transcript is zero lines, not an unreadable one', () => {
+      // Negative space for the fix: a genuinely empty transcript must NOT degrade.
+      const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: '' };
+      const mark = antigravityWatermark(ROOT, deps({ files }));
+      assert.equal(mark.lines, 0);
+      assert.notEqual(mark.unreadable, true, 'an empty transcript is readable, just empty');
+    });
+
+    test('whitespace-only transcript lines are not counted', () => {
+      const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: '\n   \n\t\n' };
+      const mark = antigravityWatermark(ROOT, deps({ files }));
+      assert.equal(mark.lines, 0);
+      assert.notEqual(mark.unreadable, true);
+    });
+
+    test('counts CRLF transcript lines the same as LF', () => {
+      const lf = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: [entry('a'), entry('b')].join('\n') };
+      const crlf = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: [entry('a'), entry('b')].join('\r\n') };
+      assert.equal(
+        antigravityWatermark(ROOT, deps({ files: lf })).lines,
+        antigravityWatermark(ROOT, deps({ files: crlf })).lines,
+      );
+    });
+
+    test('does not report zero lines when the transcript could not be read', () => {
+      // THE FAIL-OPEN. The transcript EXISTS and its conversation pre-dates this run, so its
+      // content is definitionally stale — but the read threw, so the count is unknown. Returning
+      // `lines: 0` is indistinguishable from "genuinely empty" and asserts a fact the function
+      // could not verify.
+      const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: 'unused' };
+      const d = deps({ files });
+      const realRead = d.readFile;
+      d.readFile = (p) => {
+        if (p === TX('c1')) throw new Error('EACCES');
+        return realRead(p);
+      };
+
+      const mark = antigravityWatermark(ROOT, d);
+      assert.equal(mark.convId, 'c1', 'the conversation id was resolved and stays trustworthy');
+      assert.equal(mark.unreadable, true, 'an unreadable transcript must be distinguishable from an empty one');
+    });
+
+    test('the fallback declines when the watermark could not be established', () => {
+      // The CONSEQUENCE of the branch above. The watermark read fails; the fallback's own read
+      // then succeeds (transient EACCES, a concurrent writer, a partial flush). With `lines: 0`
+      // and a matching convId the fallback skips nothing and returns a PREVIOUS run's review as
+      // this run's — the precise failure the "never stale" docstring promises cannot happen.
+      const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: entry('STALE FROM LAST RUN') };
+      const marking = deps({ files });
+      const realRead = marking.readFile;
+      marking.readFile = (p) => {
+        if (p === TX('c1')) throw new Error('EACCES');
+        return realRead(p);
+      };
+      const mark = antigravityWatermark(ROOT, marking);
+
+      assert.equal(
+        antigravityTranscriptFallback(ROOT, mark, deps({ files })),
+        '',
+        'an unverified watermark must not license replaying the transcript',
+      );
+    });
+
+    test('the fallback still skips exactly the pre-run lines when the mark is sound', () => {
+      // Negative space for the fix: a sound mark must keep working end-to-end, producer included.
+      const files = { [CACHE]: JSON.stringify({ [ROOT]: 'c1' }), [TX('c1')]: entry('old') };
+      const mark = antigravityWatermark(ROOT, deps({ files }));
+      assert.equal(mark.lines, 1);
+
+      files[TX('c1')] = [entry('old'), entry('THIS RUN')].join('\n');
+      assert.equal(antigravityTranscriptFallback(ROOT, mark, deps({ files })), 'THIS RUN');
+    });
+  });
+
   test('the blind-review marker is anchored to the head of the output', () => {
     assert.ok(stampBlindReview('REVIEWED-WITHOUT-REPO-ACCESS\nbody').startsWith('> [reviewed-without-repo-access]'));
   });
@@ -525,5 +661,46 @@ describe('runner — orchestration', () => {
         assert.ok(s.o.timeoutMs > 0, `${lane.slug} spawned unbounded`);
       }
     }
+  });
+});
+
+// #3086: spawn errors (ENOENT on Windows .cmd shims, ETIMEDOUT, etc.) must be
+// surfaced in the err file so the stub reviewer output explains WHY the lane
+// produced nothing, rather than silently dropping the error code.
+
+describe('runner — #3086: spawn errorCode surfaced in err file', () => {
+  test('a spawn ENOENT writes the error code to the err file', async () => {
+    const p = plan('gemini');
+    const d = deps({
+      spawn: () => ({ status: null, stdout: '', stderr: '', errorCode: 'ENOENT' }),
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+    const errContent = d.files[p.errPath] || '';
+    assert.ok(errContent.includes('ENOENT'),
+      `err file must include the spawn error code; got: ${errContent}`);
+  });
+
+  test('a spawn ETIMEDOUT writes the error code to the err file', async () => {
+    const p = plan('codex');
+    const d = deps({
+      spawn: () => ({ status: null, stdout: '', stderr: '', errorCode: 'ETIMEDOUT' }),
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+    const errContent = d.files[p.errPath] || '';
+    assert.ok(errContent.includes('ETIMEDOUT'),
+      `err file must include the spawn error code; got: ${errContent}`);
+  });
+
+  test('a successful spawn with stderr does NOT add a spawn error marker', async () => {
+    const p = plan('gemini');
+    const d = deps({
+      spawn: () => ({ status: 0, stdout: '## Review\nok', stderr: 'some warning', errorCode: undefined }),
+    });
+    await runLane(p, d, { repoRoot: ROOT });
+    const errContent = d.files[p.errPath] || '';
+    assert.ok(!errContent.includes('[spawn error:'),
+      `err file must NOT contain a spawn error marker on success; got: ${errContent}`);
+    assert.ok(errContent.includes('some warning'),
+      'legitimate stderr should still be written');
   });
 });

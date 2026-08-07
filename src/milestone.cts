@@ -792,7 +792,7 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         version,
         nextMilestoneCommand: formatGsdSlash('new-milestone', resolveRuntime(cwd)) as string,
       },
-      { clock: realClock, progressProvider: () => null, sourcePath: statePath },
+      { clock: realClock, sourcePath: statePath },
     );
     writeStateMd(statePath, result.content, cwd);
   }

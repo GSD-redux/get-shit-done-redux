@@ -467,7 +467,7 @@ function cmdStatePatch(cwd: string, patches: Record<string, string>, raw: boolea
     // and the resync-progress decision stay in this adapter.
     let results: { updated: string[]; failed: string[] } = { updated: [], failed: [] };
     readModifyWriteStateMd(statePath, (content) => {
-      const result = transitionCore(content, { kind: 'patch', patches }, { clock: realClock, progressProvider: () => null });
+      const result = transitionCore(content, { kind: 'patch', patches }, { clock: realClock });
       results = (result.data as { updated: string[]; failed: string[] }) ?? results;
       return result.content;
     }, cwd, { resync: shouldResync });
@@ -505,7 +505,7 @@ function cmdStateUpdate(cwd: string, field: string | undefined, value: string | 
       const result = transitionCore(
         content,
         { kind: 'update', field: field as string, value: value as string },
-        { clock: realClock, progressProvider: () => null },
+        { clock: realClock },
       );
       updated = (result.data as { updated: boolean } | undefined)?.updated === true;
       return result.content;
@@ -556,7 +556,6 @@ function cmdStateAdvancePlan(cwd: string, raw: boolean): void {
   const intent: StateTransitionIntent = { kind: 'advancePlan' };
   const deps: StateTransitionDeps = {
     clock: realClock,
-    progressProvider: () => null,
     sourcePath: statePath,
   };
 
@@ -1390,6 +1389,13 @@ function preferNewerLastActivity(
   if (!/^\d{4}-\d{2}-\d{2}$/.test(exDate) || !/^\d{4}-\d{2}-\d{2}$/.test(derDate)) return;
   if (derDate < exDate) {
     derivedFm['last_activity'] = exRaw;
+    if (existingFm['last_activity_desc'] !== undefined) {
+      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
+    }
+  } else if (derDate === exDate) {
+    // #3052: same-date — frontmatter is authoritative for this date, so
+    // preserve its last_activity_desc rather than letting the derived body
+    // prose (which may be stale) overwrite it.
     if (existingFm['last_activity_desc'] !== undefined) {
       derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
     }
@@ -2435,7 +2441,6 @@ function cmdStateBeginPhase(cwd: string, phaseNumber: string | number, phaseName
   };
   const deps: StateTransitionDeps = {
     clock: realClock,
-    progressProvider: () => null, // beginPhase doesn't consult disk progress; syncStateFrontmatter's scan is authoritative
     sourcePath: statePath,
   };
 
@@ -2713,7 +2718,6 @@ function cmdStatePlannedPhase(cwd: string, phaseNumber: string | number, planCou
   };
   const deps: StateTransitionDeps = {
     clock: realClock,
-    progressProvider: () => null,
     sourcePath: statePath,
   };
 
@@ -2751,7 +2755,7 @@ function cmdStateMilestoneSwitch(cwd: string, version: string | undefined, name:
   // milestoneSwitch rebuilds frontmatter directly and must not run the
   // steady-state syncStateFrontmatter post-sync.
   const intent: StateTransitionIntent = { kind: 'milestoneSwitch', version, name: resolvedName };
-  const deps: StateTransitionDeps = { clock: realClock, progressProvider: () => null, sourcePath: statePath };
+  const deps: StateTransitionDeps = { clock: realClock, sourcePath: statePath };
 
   const lockPath = acquireStateLock(statePath);
   try {
@@ -2990,7 +2994,7 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   const syncResult = transitionCore(
     modified,
     { kind: 'sync', totalPlansInPhase: highestIncompletePhase ? highestIncompletePhaseplanCount : null, percent },
-    { clock: realClock, progressProvider: () => null },
+    { clock: realClock },
   );
   modified = syncResult.content;
   const coreChanges = (syncResult.data as { changes?: string[] } | undefined)?.changes ?? [];
@@ -3066,7 +3070,7 @@ function cmdStatePrune(cwd: string, options: StatePruneOptions, raw: boolean): v
   // This adapter owns currentPhase derivation (#1760 `Phase`/`Current Phase`
   // fallback above), dry-run, and STATE-ARCHIVE.md writes.
   const runPruneCore = (content: string): { newContent: string; archivedSections: PrunedSection[] } => {
-    const result = transitionCore(content, { kind: 'prune', cutoff }, { clock: realClock, progressProvider: () => null });
+    const result = transitionCore(content, { kind: 'prune', cutoff }, { clock: realClock });
     return {
       newContent: result.content,
       archivedSections: ((result.data as { archivedSections?: PrunedSection[] } | undefined)?.archivedSections) ?? [],
@@ -3184,7 +3188,6 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
   };
 
   const deps: StateTransitionDeps = {
-    progressProvider: () => null,
     clock: realClock,
     phaseInventoryProvider,
     // Without this, `state rebuild --dry-run` reported a truncated STATE.md anonymously: the

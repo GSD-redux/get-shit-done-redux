@@ -1390,7 +1390,7 @@ describe('commit command', () => {
     const logCount = execSync('git log --oneline', { cwd: tmpDir, encoding: 'utf-8' }).trim().split('\n').length;
     assert.strictEqual(logCount, 2, 'should have 2 commits (initial + amended)');
   });
-  test('creates strategy branch before first commit when branching_strategy is milestone', () => {
+  test('creates strategy branch before first commit when branching_strategy is milestone (#3079: no switch)', () => {
     // Configure milestone branching strategy
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1415,13 +1415,16 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // Verify we're on the strategy branch
+    // #3079: the branch should be CREATED but NOT switched to.
     const { execFileSync } = require('child_process');
     const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
-    assert.strictEqual(branch, 'gsd/v1.0-initial-release', 'should be on milestone branch');
+    assert.notStrictEqual(branch, 'gsd/v1.0-initial-release', '#3079: must NOT switch to the milestone branch');
+    // Verify the branch WAS created (exists as a ref)
+    const branchExists = execFileSync('git', ['rev-parse', '--verify', 'gsd/v1.0-initial-release'], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    assert.ok(branchExists.trim(), 'milestone branch should be created even without switching');
   });
 
-  test('creates strategy branch before first commit when branching_strategy is phase', () => {
+  test('creates strategy branch before first commit when branching_strategy is phase (#3079: no switch)', () => {
     // Configure phase branching strategy
     fs.writeFileSync(
       path.join(tmpDir, '.planning', 'config.json'),
@@ -1450,10 +1453,15 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // Verify we're on the strategy branch
+    // #3079: the branch should be CREATED but NOT switched to. The commit
+    // lands on the current branch (master/main), and the phase branch exists
+    // as a ref but HEAD did not move.
     const { execFileSync } = require('child_process');
     const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
-    assert.strictEqual(branch, 'gsd/phase-01-setup', 'should be on phase branch');
+    assert.notStrictEqual(branch, 'gsd/phase-01-setup', '#3079: must NOT switch to the phase branch');
+    // Verify the branch WAS created (exists as a ref)
+    const branchExists = execFileSync('git', ['rev-parse', '--verify', 'gsd/phase-01-setup'], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    assert.ok(branchExists.trim(), 'phase branch should be created even without switching');
   });
 
   test('decimal phase numbers are captured correctly in branching strategy', () => {
@@ -1485,10 +1493,13 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // Verify we're on the correct branch (45.14, not 14)
+    // #3079: verify branch is created but NOT switched to (decimal phase)
     const { execFileSync } = require('child_process');
     const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
-    assert.strictEqual(branch, 'gsd/phase-45.14-golden-capture', 'should be on decimal phase branch, not integer-only');
+    assert.notStrictEqual(branch, 'gsd/phase-45.14-golden-capture', '#3079: must NOT switch to the phase branch');
+    // Verify the correct branch name was resolved (not integer-only)
+    const branchExists = execFileSync('git', ['rev-parse', '--verify', 'gsd/phase-45.14-golden-capture'], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    assert.ok(branchExists.trim(), 'decimal phase branch should be created (45.14, not 14)');
   });
 
   // #2539: the phase-token extraction must be anchored to the path segment under
@@ -1545,18 +1556,23 @@ describe('commit command', () => {
     const output = JSON.parse(result.output);
     assert.strictEqual(output.committed, true, 'should have committed');
 
-    // The commit must land on the phase-07 branch. Pre-fix this resolved the
-    // `2-` in `PROJECT_V2-` and silently switched onto the archived phase-02
-    // branch instead.
+    // #3079: the commit no longer switches to the phase branch. The phase-07
+    // branch should be CREATED (resolving correctly to 07, not the archived 02),
+    // but the commit lands on the current branch.
     const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
-    assert.strictEqual(
+    assert.notStrictEqual(
       branch,
-      'gsd/phase-07-active-phase',
-      `should be on the active phase-07 branch, not the archived phase-02 branch (got ${branch})`
+      'gsd/phase-02-archived-phase',
+      `must NOT be on the archived phase-02 branch (got ${branch})`
     );
+    // Verify the correct phase-07 branch was created (not the archived 02)
+    const phase07Exists = execFileSync(
+      'git', ['rev-parse', '--verify', 'gsd/phase-07-active-phase'],
+      { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    assert.ok(phase07Exists.trim(), 'phase-07 branch should be created (not the archived phase-02)');
 
-    // The committed file must exist on the phase-07 branch's HEAD, proving the
-    // commit did not silently land on the wrong branch.
+    // The committed file must exist on HEAD, proving the commit landed.
     const committedFile = execFileSync(
       'git',
       ['show', 'HEAD:.planning/phases/PROJECT_V2-07-active-phase/07-CONTEXT.md'],
@@ -1631,10 +1647,12 @@ describe('commit command', () => {
       `must not silently switch onto an existing phase branch mid-commit (was ${beforeBranch}, now ${afterBranch})`
     );
 
-    // #2539 AC2: the no-switch path must not be silent either. The warning
+    // #2539/#3079 AC2: the no-switch path must not be silent. The warning
     // surfaces the resolved branch and the branch the commit actually lands on.
+    // Note: stderr may also contain config-loader warnings; the branching warning
+    // is the one we assert on.
     assert.ok(
-      /Warning: resolved phase branch .* already exists/.test(stderr),
+      /Warning: resolved.*branch .* already exists/.test(stderr),
       `expected a non-silent warning on stderr when the resolved branch already exists; got stderr=${stderr}`
     );
   });

@@ -863,21 +863,29 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     if (branchName) {
       const currentBranch = execGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
       if (currentBranch.exitCode === 0 && currentBranch.stdout.trim() !== branchName) {
-        // #2539: the #1278 intent is to CREATE the phase/milestone branch
+        // #2539/#3079: the #1278 intent is to CREATE the phase/milestone branch
         // before the FIRST commit on it — not to force-switch an already-
         // checked-out working branch onto a DIFFERENT existing branch. The
-        // prior fallback to a bare `git checkout <branch>` silently switched
-        // the whole working tree onto an existing unrelated branch in the same
-        // call that then committed (the only trace was a reflog entry). So:
-        // create-if-absent only. If the resolved branch already exists and the
-        // tree is on some other branch, do NOT switch — but never silently: log
-        // the resolution so the operator sees that the phase branch was
-        // resolved and deliberately not switched to (#2539 AC2: an auto-
-        // checkout mid-commit must never happen silently).
-        const create = execGit(['checkout', '-b', branchName], { cwd });
-        if (create.exitCode !== 0) {
-          // `git checkout -b` fails (non-zero) when the branch already exists.
-          // The operator is on the branch they intend to be on; commit there.
+        // prior `git checkout -b` both created AND switched (silently moving
+        // HEAD), which resurrected merged-and-deleted phase branches (#3079).
+        // Now: create-if-absent WITHOUT switching, using `git branch` instead
+        // of `git checkout -b`. The commit always lands on the current branch.
+        // If the resolved branch already exists, log the resolution so the
+        // operator sees that the phase branch was resolved and deliberately
+        // not switched to (#2539 AC2: an auto-checkout mid-commit must never
+        // happen silently).
+        const verify = execGit(['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd });
+        if (verify.exitCode !== 0) {
+          // Branch does not exist — create it WITHOUT switching.
+          const create = execGit(['branch', branchName], { cwd });
+          if (create.exitCode !== 0) {
+            process.stderr.write(
+              `Warning: could not create ${branchingStrategy} branch "${branchName}" ` +
+              `(${create.stderr.trim()}); committing on the current branch "${currentBranch.stdout.trim()}".\n`
+            );
+          }
+        } else {
+          // Branch already exists — do NOT switch, commit on current branch.
           process.stderr.write(
             `Warning: resolved ${branchingStrategy} branch "${branchName}" already exists; ` +
             `committing on the current branch "${currentBranch.stdout.trim()}" instead of switching.\n`

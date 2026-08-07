@@ -251,7 +251,8 @@ if ! node -e 'const a=require(process.argv[1]);if(!Array.isArray(a)||a.length===
   exit 1
 fi
 # Invoke the compiled engine and CAPTURE its report — it computes which categories apply per
-# requirement. The covered/backstop/dismissed/unresolved rows in $COVERAGE drive the
+# requirement. The resolved/dismissed/unresolved rows in $COVERAGE (resolved items carry
+# verification: explicit|backstop) drive the
 # resolution loop below (canonical taxonomy compute, NOT LLM re-derivation from prose).
 # The engine FAILS CLOSED (exit 2) on an invalid authored shape or bad input — so the capture
 # MUST be exit-checked. A bare `COVERAGE=$(node …)` swallows that exit code, leaves $COVERAGE
@@ -288,14 +289,15 @@ an empty `## Edge Coverage` section after explicit confirmation.
 For each Requirement gathered so far:
 1. Classify its shape and raise only applicable edge categories (relevance filter — see
    the taxonomy in the reference). Reuse any edges the Round-4 Failure Analyst already
-   surfaced as pre-`covered`.
+   surfaced as pre-resolved.
 2. For each raised category, propose a CONCRETE candidate edge (not "consider
    boundaries" — e.g. "R2 merges intervals; what about `[[1,2],[2,3]]` that only touch?").
 3. Resolve each with the user (AskUserQuestion; text mode → numbered list):
    - **Specify it** → write a new pass/fail line into Acceptance Criteria AND mark the
-     edge `covered`.
+     edge `resolved` with `verification: explicit`.
    - **Dismiss (reason)** → mark `dismissed` with a required non-empty reason.
-   - **Backstop with a test** → mark `backstop`; note "held-out edge test" for plan-phase.
+   - **Backstop with a test** → mark `resolved` with `verification: backstop`; note
+     "held-out edge test" for plan-phase.
    - **Defer** → leave `unresolved`.
    - An `unclassified` row (probe `unclassified — review manually`) means the requirement's
      prose matched no shape cue (#1110) — treat it like any other candidate (**Specify**,
@@ -311,13 +313,14 @@ For each Requirement gathered so far:
   - On "anyway": write SPEC.md with those rows marked `⚠ Edge unresolved — planner must
     treat as assumption`.
 
-**`--auto` mode:** auto-`covered` where a defensible acceptance criterion can be written;
-otherwise auto-`backstop` (never auto-dismiss — a wrong dismissal is the exact silent
-failure being eliminated). Log: `[auto] edge coverage: C covered, B backstop, U unresolved`.
+**`--auto` mode:** auto-`resolved` (verification: explicit) where a defensible acceptance
+criterion can be written; otherwise auto-`resolved` (verification: backstop) (never
+auto-dismiss — a wrong dismissal is the exact silent failure being eliminated). Log:
+`[auto] edge coverage: E explicit, B backstop, U unresolved`.
 
 **`unclassified` exception (#1110):** `--auto` leaves an `unclassified` candidate
 **`unresolved`** (the soft gate surfaces it as a flagged planner assumption) — it never
-auto-`backstop`s it. A missing shape is not evidence an edge exists, so minting a held-out
+auto-resolves it with `verification: backstop`. A missing shape is not evidence an edge exists, so minting a held-out
 edge obligation on a requirement that may be genuinely edge-free would be a false claim and
 risks a vacuous edge test. Leaving it `unresolved` keeps the zero-cue requirement visible
 (never a silent drop) without fabricating an edge — which is exactly #1110's purpose: surface
@@ -425,7 +428,7 @@ downstream rather than blocking authoring.
 
 Use the SPEC.md template from @~/.claude/gsd-core/templates/spec.md.
 
-- Populate the **Edge Coverage** section from Step 5.5 (covered/dismissed/backstop/unresolved rows).
+- Populate the **Edge Coverage** section from Step 5.5 (resolved/dismissed/unresolved rows; resolved items carry `verification: explicit|backstop`).
 - Populate the **Prohibitions** section from Step 5.6 (resolved/dismissed/unresolved rows with the test|judgment tier).
 
 **Requirements for every requirement entry:**
