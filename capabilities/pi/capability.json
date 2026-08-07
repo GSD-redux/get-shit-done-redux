@@ -56,7 +56,8 @@
         "file": "gsd.js",
         "source": "pi/gsd.cjs"
       },
-      "pluginOnlyInstall": true
+      "pluginOnlyInstall": true,
+      "sharedHooksDirName": "gsd-hooks"
     }
   }
 }

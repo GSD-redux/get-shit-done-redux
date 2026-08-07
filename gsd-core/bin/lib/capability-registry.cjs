@@ -2819,7 +2819,8 @@ const capabilities = {
           "file": "gsd.js",
           "source": "pi/gsd.cjs"
         },
-        "pluginOnlyInstall": true
+        "pluginOnlyInstall": true,
+        "sharedHooksDirName": "gsd-hooks"
       }
     }
   },
@@ -6365,7 +6366,8 @@ const runtimes = {
           "file": "gsd.js",
           "source": "pi/gsd.cjs"
         },
-        "pluginOnlyInstall": true
+        "pluginOnlyInstall": true,
+        "sharedHooksDirName": "gsd-hooks"
       }
     }
   },

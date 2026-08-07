@@ -56,14 +56,20 @@ try {
 } catch (e) {}
 
 // Check for stale hooks — compare hook version headers against installed VERSION
-// Hooks are installed at configDir/hooks/ (e.g. ~/.claude/hooks/) (#1421)
+// Since #3023 the bundle directory name is resolved from __dirname (this
+// worker is staged INSIDE the bundle), not assumed to be configDir/hooks —
+// the directory name is runtime-descriptor-driven (e.g. `gsd-hooks/` for pi).
 // Only check hooks that GSD currently ships — orphaned files from removed features
 // (e.g., gsd-intel-*.js) must be ignored to avoid permanent stale warnings (#1750)
 // MANAGED_HOOKS is imported from ./managed-hooks-registry.cjs above.
 
 let staleHooks = [];
 if (configDir) {
-  const hooksDir = path.join(configDir, 'hooks');
+  // #3023: the bundle's directory name is runtime-descriptor-driven (pi stages
+  // it as `gsd-hooks/`), so deriving it as `<configDir>/hooks` silently scanned
+  // nothing there. This worker is staged INSIDE the bundle, so __dirname is the
+  // bundle directory by construction — name-agnostic and one fewer assumption.
+  const hooksDir = __dirname;
   try {
     if (fs.existsSync(hooksDir)) {
       const hookFiles = fs.readdirSync(hooksDir).filter(f => MANAGED_HOOKS.includes(f));
