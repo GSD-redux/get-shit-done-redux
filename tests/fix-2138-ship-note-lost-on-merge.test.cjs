@@ -46,6 +46,8 @@ describe('#2138 ship.md track_shipping pushes the ship-note onto the PR branch',
   });
 
   test('the ship-note commit carries a [ci skip] trailer to avoid a redundant pipeline', () => {
+    // GitHub honors `[ci skip]` / `[skip ci]`; the trailer suppresses the second
+    // pipeline the post-create_pr push would otherwise trigger.
     assert.ok(
       /\[ci skip\]|\[skip ci\]/.test(step),
       'track_shipping ship-note commit must include a [ci skip] trailer',

@@ -47,6 +47,8 @@ function runTrackShipping(responses) {
       'git() {',
       '  if [ "$1" = "rev-parse" ] && [ "$2" = "HEAD" ]; then',
       '    printf "%s\\n" "$EXPECTED_HEAD"',
+      '  elif [ "$1" = "log" ]; then',
+      '    printf "[ci skip]\\n"',
       '  elif [ "$1" = "commit" ]; then',
       '    printf "commit\\n" >> "$GIT_CALLS"',
       '  elif [ "$1" = "push" ]; then',
@@ -161,6 +163,54 @@ describe('#2783 ship-note recovery decisions use current GitHub state', { skip: 
       result.gitCalls.filter(call => call === 'commit').length,
       1,
       'a confirmed skip-token wedge must create exactly one recovery commit',
+    );
+  });
+
+  test('recovers successfully on the 4th polling attempt', () => {
+    const result = runTrackShipping([
+      { head: 'stale-head', status: 'BLOCKED', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'BLOCKED', checks: 0, review: '' },
+    ]);
+    assert.strictEqual(result.ghCalls.length, 4, 'must poll exactly 4 times');
+    assert.strictEqual(
+      result.gitCalls.filter(call => call === 'commit').length,
+      1,
+      'must recover after resolving on the 4th attempt',
+    );
+  });
+
+  test('recovers successfully on the 5th (final) polling attempt', () => {
+    const result = runTrackShipping([
+      { head: 'stale-head', status: 'BLOCKED', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'BLOCKED', checks: 0, review: '' },
+    ]);
+    assert.strictEqual(result.ghCalls.length, 5, 'must poll exactly 5 times');
+    assert.strictEqual(
+      result.gitCalls.filter(call => call === 'commit').length,
+      1,
+      'must recover after resolving on the 5th attempt',
+    );
+  });
+
+  test('exhausts the polling bound after 5 attempts and warns without recovering (attempt 6)', () => {
+    const result = runTrackShipping([
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
+      { head: 'current-head', status: 'BLOCKED', checks: 0, review: '' },
+    ]);
+    assert.strictEqual(result.ghCalls.length, 5, 'must exhaust after exactly 5 polling attempts');
+    assert.strictEqual(
+      result.gitCalls.filter(call => call === 'commit').length,
+      0,
+      'must not recover if the status is unresolved when polling exhausts',
     );
   });
 });

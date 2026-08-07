@@ -481,7 +481,7 @@ for i in {1..5}; do
   sleep 3
 done
 
-if [ "$STATUS" = "BLOCKED" ] && [ "$CHECKS" = "0" ] && [ "$REVIEW_DECISION" != "REVIEW_REQUIRED" ] && [ "$REVIEW_DECISION" != "CHANGES_REQUESTED" ]; then
+if [ "$STATUS" = "BLOCKED" ] && [ "$CHECKS" = "0" ] && [ "$REVIEW_DECISION" != "REVIEW_REQUIRED" ] && [ "$REVIEW_DECISION" != "CHANGES_REQUESTED" ] && git log -1 --format=%B "$SHIP_NOTE_SHA" | grep -q '\[ci skip\]'; then
   echo "⚠ PR is BLOCKED with zero checks. The [ci skip] trailer wedged the PR due to required checks."
   echo "Pushing an empty commit to trigger the required pipelines..."
   # gsd_run query commit requires a file list; use git directly for this intentionally empty commit.
