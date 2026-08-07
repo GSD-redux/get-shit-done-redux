@@ -1392,6 +1392,13 @@ function preferNewerLastActivity(
     if (existingFm['last_activity_desc'] !== undefined) {
       derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
     }
+  } else if (derDate === exDate) {
+    // #3052: same-date — frontmatter is authoritative for this date, so
+    // preserve its last_activity_desc rather than letting the derived body
+    // prose (which may be stale) overwrite it.
+    if (existingFm['last_activity_desc'] !== undefined) {
+      derivedFm['last_activity_desc'] = existingFm['last_activity_desc'];
+    }
   }
 }
 
