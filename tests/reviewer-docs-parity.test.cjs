@@ -723,11 +723,12 @@ describe('reviewer docs parity — the shipped repo', () => {
 
 describe('review-lane flags — emitted shape', () => {
   const { runNode } = require('./helpers/process-seam.cjs');
+  const { toLegacyResult } = require('./helpers/git-fixture.cjs');
   const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
   const TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
   const runFlags = (args = []) => {
     const r = runNode([TOOLS, 'review-lane', 'flags', ...args], { timeoutMs: PROBE_TIMEOUT_MS });
-    return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+    return toLegacyResult(r);
   };
 
   test('emitsEveryDeclaredFlagInDescriptorOrder', () => {

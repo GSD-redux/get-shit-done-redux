@@ -26,6 +26,14 @@ const GUARD_SCRIPT = path.resolve(__dirname, '..', 'scripts', 'lint-legacy-dir-n
 // suite already uses for the sibling check-npm-integrity.cjs script
 // invocation in tests/npm-integrity-gate.test.cjs (also a small-fixture,
 // single-subprocess CLI script).
+//
+// NOT sourced from `tests/helpers/timeouts.cjs`'s `BUILD_TIMEOUT_MS` even
+// though the literal happens to coincide (both 30000): that shared constant
+// is scoped to hooks bundling via `scripts/build-hooks.js` — a heavier,
+// different class of work than this lint/guard script's single small-fixture
+// git-and-regex pass. Aliasing onto BUILD_TIMEOUT_MS would tie this value's
+// meaning to hook-bundling duration, which is not what bounds this call
+// (#3147 pre-PR review finding).
 const GUARD_TIMEOUT_MS = 30_000;
 
 function createTempRepo() {

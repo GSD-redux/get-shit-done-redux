@@ -613,6 +613,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
@@ -721,7 +722,7 @@ function runBlock(block) {
     },
     timeoutMs: PROBE_TIMEOUT_MS,
   });
-  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+  return toLegacyResult(r);
 }
 
 // ─── tests ───────────────────────────────────────────────────────────────────

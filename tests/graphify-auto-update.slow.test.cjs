@@ -255,6 +255,9 @@ describe('auto-update', () => {
     // suite and the hook itself dispatches a detached graphify rebuild that
     // some tests wait on separately; the hook's own synchronous return (gate
     // checks + status-file write) is fast, so 30s stays generous headroom.
+    // Original invoked the hook with stdio: 'ignore' — the seam always
+    // captures stdout/stderr instead, but every call site of this wrapper
+    // below reads only `.status`; the captured output is simply unread.
     const r = seamRunHook(HOOK, [], {
       interpreter: 'bash',
       cwd: tmpDir,
@@ -309,6 +312,9 @@ describe('auto-update', () => {
         // `kill -0` on a live PID exits 0; on a dead PID (or missing `kill`)
         // it exits non-zero — this loop only cares about that distinction,
         // so it reads exitCode as data instead of preserving a throw.
+        // Original ran with stdio: 'ignore' — the seam always captures
+        // stdout/stderr instead, but only `probe.exitCode` is read below;
+        // the captured output is simply unread.
         const probe = seamRunHook('-0', [String(pid)], { interpreter: 'kill', timeoutMs: PROBE_TIMEOUT_MS });
         if (probe.exitCode !== 0) break; // PID dead → safe to clean up
       } catch {

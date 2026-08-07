@@ -20,14 +20,13 @@ const {
   renderGithubReleaseNotes,
 } = require(path.join(ROOT, 'scripts', 'changeset', 'github-release-notes.cjs'));
 
-// Every call site in this file passes 'git' as `command` — the generic
-// parameter is retained to avoid changing every call site's arity, but the
-// implementation is git-only (gitOrThrow), which preserves this helper's
-// original throw-on-failure semantics (it used to assert.equal(status, 0)).
-function run(command, args, cwd, env) {
-  if (command !== 'git') {
-    throw new Error(`run(): only 'git' is supported by this test helper, got ${command}`);
-  }
+// Every call site in this file runs `git` — this helper is git-only
+// (gitOrThrow), which preserves its original throw-on-failure semantics (it
+// used to assert.equal(status, 0)). The generic `command` parameter this
+// used to carry was dropped (#3147 pre-PR review finding): every call site
+// passed the literal 'git' and immediately asserted it, so the parameter
+// carried no information.
+function run(args, cwd, env) {
   return gitOrThrow(args, { cwd, env: env || process.env });
 }
 
@@ -50,23 +49,23 @@ function createTaggedRepo() {
     GIT_CONFIG_GLOBAL: emptyGitConfig,
     GIT_CONFIG_SYSTEM: emptyGitConfig,
   };
-  run('git', ['init', '-q'], repo, gitEnv);
+  run(['init', '-q'], repo, gitEnv);
   // Belt-and-suspenders: also set local repo config to disable signing
-  run('git', ['config', 'user.email', 'test@example.com'], repo, gitEnv);
-  run('git', ['config', 'user.name', 'Test User'], repo, gitEnv);
-  run('git', ['config', 'commit.gpgSign', 'false'], repo, gitEnv);
-  run('git', ['config', 'tag.gpgSign', 'false'], repo, gitEnv);
-  run('git', ['config', 'tag.forceSignAnnotated', 'false'], repo, gitEnv);
+  run(['config', 'user.email', 'test@example.com'], repo, gitEnv);
+  run(['config', 'user.name', 'Test User'], repo, gitEnv);
+  run(['config', 'commit.gpgSign', 'false'], repo, gitEnv);
+  run(['config', 'tag.gpgSign', 'false'], repo, gitEnv);
+  run(['config', 'tag.forceSignAnnotated', 'false'], repo, gitEnv);
   fs.writeFileSync(path.join(repo, 'README.md'), 'fixture\n');
-  run('git', ['add', 'README.md'], repo, gitEnv);
-  run('git', ['commit', '-q', '-m', 'initial'], repo, gitEnv);
-  run('git', ['tag', 'v1.0.0'], repo, gitEnv);
+  run(['add', 'README.md'], repo, gitEnv);
+  run(['commit', '-q', '-m', 'initial'], repo, gitEnv);
+  run(['tag', 'v1.0.0'], repo, gitEnv);
 
   writeFragment(repo, 'fix-install-sdk', 'Fixed', 101, '**`gsd-sdk` now installs reliably** — persistent PATH is checked.');
   writeFragment(repo, 'remove-intel-noise', 'Removed', 102, '**`gsd-intel-updater` no longer emits layout detection noise** — ordinary projects stay quiet.');
-  run('git', ['add', '.changeset'], repo, gitEnv);
-  run('git', ['commit', '-q', '-m', 'add changesets'], repo, gitEnv);
-  run('git', ['tag', 'v1.0.1'], repo, gitEnv);
+  run(['add', '.changeset'], repo, gitEnv);
+  run(['commit', '-q', '-m', 'add changesets'], repo, gitEnv);
+  run(['tag', 'v1.0.1'], repo, gitEnv);
   return repo;
 }
 

@@ -14,13 +14,14 @@ const path = require('path');
 const os = require('os');
 const { cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const LINT_SCRIPT = path.join(__dirname, '..', 'scripts', 'lint-skill-deps.cjs');
 
 function runLint(args = []) {
   const r = runNode([LINT_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
-  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+  return toLegacyResult(r);
 }
 
 function createFixtureDir() {

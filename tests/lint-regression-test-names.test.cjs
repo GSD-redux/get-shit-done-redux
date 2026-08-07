@@ -11,6 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
@@ -35,9 +36,10 @@ function runLint({ files, allowlist, args = [] }) {
       GSD_LINT_REGRESSION_ALLOWLIST: allowlistPath,
     },
   });
-  const r = { status: result.exitCode, stdout: result.stdout, stderr: result.stderr };
-  r.allowlistPath = allowlistPath;
-  return r;
+  // Composes toLegacyResult with the site-specific allowlistPath rather than
+  // folding it into the shared helper — see git-fixture.cjs's toLegacyResult
+  // JSDoc.
+  return { ...toLegacyResult(result), allowlistPath };
 }
 
 describe('lint-regression-test-names', () => {

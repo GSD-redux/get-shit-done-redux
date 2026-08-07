@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
@@ -38,7 +39,7 @@ function runRender(args = []) {
 
 function runRenderRaw(args = []) {
   const r = runNode([SCRIPT, 'render', '--repo', tmp, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
-  return { status: r.exitCode, stdout: r.stdout || '', stderr: r.stderr || '' };
+  return toLegacyResult(r);
 }
 
 before(() => { tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-changeset-')); });
@@ -86,10 +87,11 @@ function runExtract(args = [], changelogText = null) {
     [SCRIPT, 'extract', '--changelog', changelogFile, ...args],
     { timeoutMs: PROBE_TIMEOUT_MS },
   );
+  // Composes toLegacyResult with the site-specific parsed-JSON `json` field
+  // rather than folding it into the shared helper — see git-fixture.cjs's
+  // toLegacyResult JSDoc.
   return {
-    status: r.exitCode,
-    stdout: r.stdout || '',
-    stderr: r.stderr || '',
+    ...toLegacyResult(r),
     json: (() => {
       try { return JSON.parse(r.stdout); } catch { return null; }
     })(),
@@ -473,11 +475,7 @@ function runVerify(args, changelogText) {
     [SCRIPT, 'verify', '--changelog', changelogFile, ...args],
     { timeoutMs: PROBE_TIMEOUT_MS },
   );
-  return {
-    status: r.exitCode,
-    stdout: r.stdout || '',
-    stderr: r.stderr || '',
-  };
+  return toLegacyResult(r);
 }
 
 describe('changeset cli verify subcommand (not yet implemented — TDD red step)', () => {
@@ -643,7 +641,7 @@ describe('changeset cli render --allow-empty', () => {
       [SCRIPT, 'verify', '--version', version, '--changelog', changelogPath],
       { timeoutMs: PROBE_TIMEOUT_MS },
     );
-    return { status: r.exitCode, stdout: r.stdout || '', stderr: r.stderr || '' };
+    return toLegacyResult(r);
   }
 
   // Test 1: --allow-empty with zero fragments writes a dated heading +

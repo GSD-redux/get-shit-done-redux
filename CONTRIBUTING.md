@@ -468,6 +468,30 @@ const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
 throwIfFailed(r, 'build-hooks.js (before install tests)');
 ```
 
+#### When you want the legacy shape without a throw: `toLegacyResult`
+
+Some call sites never wanted a throw in the first place — they already branch on exit status as
+data, reading `.status`/`.stdout`/`.stderr` off the result themselves. Those still need the seam's
+`exitCode` renamed to the legacy `status` field their assertions expect. Use `toLegacyResult`
+instead of hand-rolling the three-line mapping — ~8 test files did exactly that independently
+before this export existed (#3147):
+
+```javascript
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+
+function runLint(args = []) {
+  const r = runNode([LINT_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
+  return toLegacyResult(r); // { status, stdout, stderr }
+}
+```
+
+It is a bare mapping and nothing more. If your call site needs an extra field beyond that shape (a
+parsed-JSON body, a fixture-specific path alongside the result), compose it rather than extending
+the helper: `{ ...toLegacyResult(result), extra }`. And if your site's return shape genuinely
+diverges from `{ status, stdout, stderr }` — e.g. it substitutes a parsed report object for raw
+`stdout` — leave it as its own local mapping; forcing every result-reshaping helper onto one shared
+function is the same drift `toLegacyResult` exists to prevent, just in the other direction.
+
 #### The lint rule that enforces it
 
 `local/no-unbounded-spawn` (`eslint-rules/no-unbounded-spawn.cjs`) fails any `spawnSync`,

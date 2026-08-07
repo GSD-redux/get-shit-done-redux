@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { cleanup } = require('./helpers.cjs');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const SCRIPT_PATH = path.join(__dirname, '..', 'scripts', 'validate-registry.cjs');
@@ -97,7 +98,7 @@ function withReviewerFixture(capabilityEntries, reviewerEntries, fn) {
 
 function runValidate(cwd, args = []) {
   const r = runNode([SCRIPT_PATH, ...args], { cwd, timeoutMs: PROBE_TIMEOUT_MS });
-  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
+  return toLegacyResult(r);
 }
 
 describe('validate-registry CLI (subprocess)', () => {
