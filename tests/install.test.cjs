@@ -10155,10 +10155,9 @@ const path = require('node:path');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
 
-// #3145 class-norm timeout: a single short CLI query (install.js
-// --skills-root <runtime>) — no full install or build involved. Not a
-// per-suite value; see tests/helpers/timeouts.cjs.
-const { PROBE_TIMEOUT_MS: SKILLS_ROOT_PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+// A single short CLI query (install.js --skills-root <runtime>) — no full
+// install or build involved.
+const SKILLS_ROOT_PROBE_TIMEOUT_MS = 15000;
 
 const INSTALL_JS = path.join(__dirname, '../bin/install.js');
 const WORKFLOW = path.join(__dirname, '../gsd-core/workflows/sync-skills.md');
