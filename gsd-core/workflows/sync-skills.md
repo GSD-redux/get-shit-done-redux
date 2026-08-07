@@ -71,9 +71,10 @@ for DEST_RUNTIME in "${TO_RUNTIMES[@]}"; do
     echo "error: failed to resolve skills root for runtime '$DEST_RUNTIME' (gsd_run query skills-root $DEST_RUNTIME --raw)" >&2
     exit 1
   fi
-  DEST_SKILLS_ROOTS["$DEST_RUNTIME"]="$RESOLVED_DEST_ROOT"
 done
 ```
+
+This loop validates every destination in `TO_RUNTIMES` up front — a bad runtime id anywhere in a multi-destination `--to` aborts here, before Step 3 or Step 5 touch anything. The resolved value itself is not retained: each of Steps 3 and 5 re-resolves `DEST_ROOT` for the specific `$DEST_RUNTIME` it is currently processing (see those steps), so `$DEST_ROOT` is always unambiguously scoped to one destination and never threaded through a shared array.
 
 **Guard:** If the source skills root does not exist, print:
 ```
@@ -100,6 +101,12 @@ Then exit. Never proceed to Step 3 or Step 5 with an empty or unresolved root �
 For each destination runtime:
 
 ```bash
+# Bind the destination root for this iteration's destination runtime. Already
+# validated to resolve successfully in Step 2's eager-validation loop;
+# re-resolving here (rather than reading back a shared array) keeps this
+# value unambiguously scoped to the destination currently being processed.
+DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
+
 # List gsd-* subdirectories in source
 SRC_SKILLS=$(ls -1 "$SRC_SKILLS_ROOT" 2>/dev/null | grep '^gsd-')
 
@@ -155,6 +162,10 @@ If `--dry-run` (or no flag): skip this step entirely and exit after printing the
 For each destination with changes:
 
 ```bash
+# Bind DEST_ROOT for this iteration's destination (see Step 3's identical
+# re-resolution note — Step 2 already validated this resolves successfully).
+DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
+
 [[ "$SRC_SKILLS_ROOT" == /* ]] || { echo "error: SRC_SKILLS_ROOT is empty or not absolute: '$SRC_SKILLS_ROOT'" >&2; exit 1; }
 [[ "$DEST_ROOT" == /* ]] || { echo "error: DEST_ROOT is empty or not absolute: '$DEST_ROOT'" >&2; exit 1; }
 

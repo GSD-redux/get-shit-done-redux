@@ -10621,6 +10621,79 @@ describe('sync-skills.md — required behavioral specs', () => {
       'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede cp -r in Step 5'
     );
   });
+
+  // #3024 follow-up (this fix): `DEST_SKILLS_ROOTS` was assigned in Step 2 as a
+  // keyed map but never `declare -A`'d and never read back anywhere — on bash 3.2
+  // (macOS system /bin/bash) that assignment silently collapses every destination's
+  // resolved root into index [0], and since nothing ever reads it, Steps 3/5's
+  // `$DEST_ROOT` was always unbound. The fix drops the array entirely; this pins
+  // the regression so it cannot silently come back.
+  test('defect: DEST_SKILLS_ROOTS array is gone (bash-3.2 hazard, was never read)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      !content.includes('DEST_SKILLS_ROOTS'),
+      'workflow must not reference DEST_SKILLS_ROOTS anywhere; it was an unread, ' +
+      'bash-3.2-hostile associative-array assignment'
+    );
+  });
+
+  test('no associative-array syntax anywhere in the file (bash 3.2 compatibility)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      !/\bdeclare\s+-A\b/.test(content),
+      'workflow must not use `declare -A` (bash4+-only; system /bin/bash on macOS is 3.2)'
+    );
+    assert.ok(
+      !/\btypeset\s+-A\b/.test(content),
+      'workflow must not use `typeset -A` (bash4+-only associative-array declaration)'
+    );
+  });
+
+  // #3024 follow-up (this fix): every fenced bash block that reads `$DEST_ROOT`
+  // must itself assign `DEST_ROOT` before that read — Steps 3 and 5 are separate
+  // bash constructs (not one continuously-executing script), so each one has to
+  // bind DEST_ROOT for the destination it is currently processing rather than
+  // relying on a value threaded in from elsewhere. This is the actual fix for the
+  // dangling-variable defect; assert it holds for every ```bash block in the file,
+  // not just Steps 3/5, so a future edit that introduces a new $DEST_ROOT read
+  // elsewhere is held to the same rule.
+  test('every $DEST_ROOT read is preceded by a DEST_ROOT= assignment in the same bash block', () => {
+    content = content || readWorkflow();
+    const bashBlocks = [...content.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+    assert.ok(
+      bashBlocks.length > 0,
+      'extractor matched no fenced ```bash blocks at all — the workflow must contain some'
+    );
+
+    const blocksUsingDestRoot = bashBlocks.filter((block) => /\$DEST_ROOT\b/.test(block));
+    assert.ok(
+      blocksUsingDestRoot.length > 0,
+      'extractor found no fenced bash block referencing $DEST_ROOT — expected Step 3 and Step 5 to reference it'
+    );
+    // This is the exact bug: Steps 3 and 5 both use $DEST_ROOT, so there must be at
+    // least two such blocks (one per step). A single match would mean one of the two
+    // steps lost its reference to $DEST_ROOT entirely rather than being fixed.
+    assert.ok(
+      blocksUsingDestRoot.length >= 2,
+      'expected at least 2 fenced bash blocks referencing $DEST_ROOT (Step 3 and Step 5), got '
+      + String(blocksUsingDestRoot.length)
+    );
+
+    for (const block of blocksUsingDestRoot) {
+      const assignMatch = block.match(/^\s*DEST_ROOT=/m);
+      assert.ok(
+        assignMatch,
+        'a fenced bash block reads $DEST_ROOT but never assigns it: ' + JSON.stringify(block.slice(0, 200))
+      );
+      const assignIndex = block.indexOf(assignMatch[0]);
+      const firstReadIndex = block.search(/\$DEST_ROOT\b/);
+      assert.ok(
+        firstReadIndex > -1 && assignIndex <= firstReadIndex,
+        'DEST_ROOT= assignment (index ' + assignIndex + ') must precede the first $DEST_ROOT read '
+        + '(index ' + firstReadIndex + ') in the same bash block: ' + JSON.stringify(block.slice(0, 200))
+      );
+    }
+  });
 });
 
 // ── commands/gsd/sync-skills.md ───────────────────────────────────────────────
