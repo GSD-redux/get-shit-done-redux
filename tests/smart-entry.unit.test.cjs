@@ -549,3 +549,89 @@ describe('#2427 — roadmap-grounded completion + tightened status regex', () =>
       `legacy fallback must still reject completion when current_phase < total_phases. Got: ${result.situation}`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3099: unusable last_activity emits a diagnostic (ADR-1411 amendment:
+// corrupt is not absent — the fallback stays, the silence is the defect)
+// ---------------------------------------------------------------------------
+
+describe('#3099: unusable last_activity emits a diagnostic', () => {
+  const {
+    _resetUnusableInputWarningsForTests,
+    _unusableInputWarningCountForTests,
+  } = require('../gsd-core/bin/lib/unusable-input.cjs');
+
+  function makeStateWithActivity(activity) {
+    return [
+      '---',
+      'status: executing',
+      `last_activity: ${activity}`,
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+  }
+
+  test('unusable last_activity still resolves stale_activity: false (fallback unchanged)', () => {
+    _resetUnusableInputWarningsForTests();
+    const dir = track(makeProject({
+      state: makeStateWithActivity('yesterday - did some work'),
+    }));
+    const signals = detectSignals(dir);
+    assert.equal(signals.stale_activity, false,
+      'unusable last_activity must still resolve stale_activity: false (continuity is correct)');
+  });
+
+  test('unusable last_activity emits LAST_ACTIVITY_UNPARSEABLE diagnostic', () => {
+    _resetUnusableInputWarningsForTests();
+    const dir = track(makeProject({
+      state: makeStateWithActivity('not-a-date-at-all'),
+    }));
+    detectSignals(dir);
+    assert.equal(_unusableInputWarningCountForTests(), 1,
+      'unusable last_activity must emit exactly one diagnostic');
+  });
+
+  test('absent last_activity emits nothing (distinguishable from unusable)', () => {
+    _resetUnusableInputWarningsForTests();
+    const dir = track(makeProject({
+      state: [
+        '---',
+        'status: executing',
+        '---',
+        '',
+        '# Project State',
+        '',
+        'Phase: 1',
+        '',
+      ].join('\n'),
+    }));
+    detectSignals(dir);
+    assert.equal(_unusableInputWarningCountForTests(), 0,
+      'absent last_activity must NOT emit a diagnostic (it is genuinely absent, not corrupt)');
+  });
+
+  test('well-formed last_activity emits nothing', () => {
+    _resetUnusableInputWarningsForTests();
+    const dir = track(makeProject({
+      state: makeStateWithActivity('2026-06-13T12:00:00Z'),
+    }));
+    detectSignals(dir);
+    assert.equal(_unusableInputWarningCountForTests(), 0,
+      'well-formed last_activity must NOT emit a diagnostic');
+  });
+
+  test('unusable last_activity does not re-emit on second call (dedup)', () => {
+    _resetUnusableInputWarningsForTests();
+    const dir = track(makeProject({
+      state: makeStateWithActivity('gibberish'),
+    }));
+    detectSignals(dir);
+    detectSignals(dir);
+    assert.equal(_unusableInputWarningCountForTests(), 1,
+      'dedup: second call on the same source must not re-emit');
+  });
+});
