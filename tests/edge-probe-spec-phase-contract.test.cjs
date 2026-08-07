@@ -233,3 +233,17 @@ test('#3132: ui-phase.md resolution loop uses resolved+verification — not cove
   assert.match(content, /→ `resolved`.*verification: explicit/,
     'ui-phase.md resolution must use "resolved" with "verification: explicit"');
 });
+
+test('#3132: specless-probe-fallback.md uses resolved+verification — not covered/backstop', () => {
+  const fallbackPath = path.join(__dirname, '..', 'gsd-core', 'references', 'specless-probe-fallback.md');
+  const content = fs.readFileSync(fallbackPath, 'utf8');
+  // The fallback reference is @-loaded by plan-phase.md when EDGE_ABSENT
+  assert.doesNotMatch(content, /auto-`covered`/,
+    'specless-probe-fallback.md must not use auto-"covered" (retired status)');
+  assert.doesNotMatch(content, /auto-`backstop`/,
+    'specless-probe-fallback.md must not use auto-"backstop" as a status (backstop is a verification tier only)');
+  assert.doesNotMatch(content, /`covered` edge/,
+    'specless-probe-fallback.md must not reference "covered" edges as a status');
+  assert.match(content, /auto-`resolved`.*verification: explicit/,
+    'specless-probe-fallback.md must use "resolved" with "verification: explicit"');
+});

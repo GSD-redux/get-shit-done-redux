@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "paths": {
+    "gsd-core/workflows/spec-phase.md": "#3132: realigned retired covered/backstop-as-status vocab to resolved+verification model (probe-core Status enum). Step 5.5 resolution options, --auto mode, comment, Step 6 row list.",
+    "gsd-core/workflows/plan-phase.md": "#3132: realigned lift rule and quality gate from covered/backstop-as-status to resolved+verification.",
+    "gsd-core/workflows/ui-phase.md": "#3132: realigned resolution loop and write-back format from covered/backstop-as-status to resolved+verification.",
+    "gsd-core/references/specless-probe-fallback.md": "#3132: realigned --auto resolution rules and §C authoring rule from covered/backstop-as-status to resolved+verification (found by code review — this reference is @-loaded by plan-phase when EDGE_ABSENT)."
+  }
+}
