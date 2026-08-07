@@ -830,6 +830,25 @@ describe('scaffold command', () => {
     );
   });
 
+  /**
+   * #2848 named this call site: an unrenderable name used to produce
+   * `.planning/phases/05-`, a directory whose name ends in a bare separator.
+   * The happy path above is the positive control — it proves the probe reaches
+   * its subject rather than failing on everything alike. The assertion is on
+   * the DISK, not on the presence of an operator in the source.
+   */
+  test('refuses a phase name with no slug-safe characters instead of naming a directory after nothing', () => {
+    const result = runGsdTools("scaffold phase-dir --phase 5 --name '!!!'", tmpDir);
+    assert.strictEqual(result.success, false, `command should have failed: ${result.output}`);
+    assert.match(result.error, /phase name has no slug-safe characters/);
+
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    const dangling = fs.existsSync(phasesDir)
+      ? fs.readdirSync(phasesDir).filter(entry => entry.endsWith('-'))
+      : [];
+    assert.deepStrictEqual(dangling, [], 'no phase directory may end in a bare separator');
+  });
+
   test('does not overwrite existing files', () => {
     const phaseDir = path.join(tmpDir, '.planning', 'phases', '03-api');
     fs.mkdirSync(phaseDir, { recursive: true });

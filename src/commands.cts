@@ -1810,7 +1810,14 @@ function cmdScaffold(cwd: string, type: string, options: ScaffoldOptions, raw: b
       if (!phase || !name) {
         error('phase and name required for phase-dir scaffold');
       }
-      const slug = generateSlugInternal(name);
+      // The slug becomes the phase directory name, so an unrenderable name
+      // must stop here rather than create `phases/05-` with nothing after the
+      // hyphen (#2848 named this exact call site). Logical OR, because the
+      // generator returns an empty string for input with no slug-safe
+      // characters, not only a missing value — a nullish check alone lets
+      // that case through.
+      const slug = generateSlugInternal(name)
+        || error(`phase name has no slug-safe characters: ${JSON.stringify(name)}`);
       // #3287: apply project_code prefix to stay consistent with phase.add/phase.insert
       const scaffoldConfig = loadConfig(cwd);
       const scaffoldProjectCode = (scaffoldConfig['project_code'] as string) || '';
