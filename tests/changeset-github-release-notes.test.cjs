@@ -6,8 +6,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 const helpers = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'changeset', 'cli.cjs');
@@ -18,10 +20,15 @@ const {
   renderGithubReleaseNotes,
 } = require(path.join(ROOT, 'scripts', 'changeset', 'github-release-notes.cjs'));
 
+// Every call site in this file passes 'git' as `command` — the generic
+// parameter is retained to avoid changing every call site's arity, but the
+// implementation is git-only (gitOrThrow), which preserves this helper's
+// original throw-on-failure semantics (it used to assert.equal(status, 0)).
 function run(command, args, cwd, env) {
-  const result = cp.spawnSync(command, args, { cwd, encoding: 'utf8', env: env || process.env });
-  assert.equal(result.status, 0, `${command} ${args.join(' ')}\nstdout=${result.stdout}\nstderr=${result.stderr}`);
-  return result.stdout;
+  if (command !== 'git') {
+    throw new Error(`run(): only 'git' is supported by this test helper, got ${command}`);
+  }
+  return gitOrThrow(args, { cwd, env: env || process.env });
 }
 
 function writeFragment(repo, name, type, pr, body) {
@@ -101,8 +108,7 @@ describe('changeset github release notes: tag-range renderer (#3382)', () => {
   test('CLI writes a notes file suitable for gh release edit --notes-file', () => {
     const repo = (_repo = createTaggedRepo());
     const output = path.join(repo, 'release-notes.md');
-    const result = cp.spawnSync(
-      process.execPath,
+    const result = runNode(
       [
         SCRIPT,
         'github-release-notes',
@@ -113,10 +119,10 @@ describe('changeset github release notes: tag-range renderer (#3382)', () => {
         '--output', output,
         '--json',
       ],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
 
-    assert.equal(result.status, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
+    assert.equal(result.exitCode, 0, `stdout=${result.stdout}\nstderr=${result.stderr}`);
     const report = JSON.parse(result.stdout);
     assert.deepEqual(
       { consumed: report.consumed, output: report.output, hasBodyInJson: report.body !== null },
