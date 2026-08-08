@@ -153,13 +153,8 @@ When `CONTEXT_WINDOW < 200000` (sub-200K models), subagent prompts are thinned t
 
 When `parallelization` is false, plans within a wave execute sequentially.
 
-**Runtime detection for Copilot:**
-Check if the current runtime is Copilot by testing for the `@gsd-executor` agent pattern
-or absence of the `Agent()` subagent API. If running under Copilot, force sequential inline
-execution regardless of the `parallelization` setting — Copilot's subagent completion
-signals are unreliable (see `<runtime_compatibility>`). Set `COPILOT_SEQUENTIAL=true`
-internally and skip the `execute_waves` step in favor of `check_interactive_mode`'s
-inline path for each plan.
+**Runtime detection for one-shot sessions:**
+Check if the current runtime requires sequential execution by evaluating the `workflow.background_dispatch` config parameter or detecting runtimes (like Copilot) where subagent APIs are absent or unreliable. If background execution is unsupported or disabled, force sequential inline execution regardless of the `parallelization` setting. Set `SEQUENTIAL_INLINE=true` internally and skip the `execute_waves` step in favor of `check_interactive_mode`'s inline path for each plan.
 
 **REQUIRED — Sync chain flag with intent.** If user invoked manually (no `--auto`), clear the ephemeral chain flag from any previous interrupted `--auto` chain. This prevents stale `_auto_chain_active: true` from causing unwanted auto-advance. This does NOT touch `workflow.auto_advance` (the user's persistent settings preference). You MUST execute this bash block before any config reads:
 ```bash
@@ -176,6 +171,11 @@ if [[ "$ARGUMENTS" =~ (^|[[:space:]])--mvp([[:space:]]|$) ]]; then MVP_FLAG_ARG=
 MVP_MODE=$(gsd_run query phase.mvp-mode "${PHASE_NUMBER}" $MVP_FLAG_ARG --pick active)
 EXECUTE_POST_HOOKS_JSON=$(gsd_run loop render-hooks execute:post --raw)
 TDD_MODE=$(gsd_run loop render-hooks execute:post --active-cap tdd)
+BACKGROUND_DISPATCH=$(gsd_run query config-get workflow.background_dispatch 2>/dev/null || echo "true")
+SEQUENTIAL_INLINE=false
+if [ "$BACKGROUND_DISPATCH" = "false" ]; then
+  SEQUENTIAL_INLINE=true
+fi
 ```
 
 <step name="safe_resume_gate">

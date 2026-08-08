@@ -1,0 +1,55 @@
+[tools]
+node = "22"
+
+[tasks.start]
+description = "Sync next from upstream, validate environment, and create a feature/fix branch"
+shell = "fish"
+run = """
+if test (count $argv) -lt 3
+    echo "Usage: mise run start <type> <issue-number> <description-slug>"
+    echo "Example: mise run start fix 2783 wedged-pr-note"
+    exit 1
+end
+set -l type $argv[1]
+set -l issue $argv[2]
+set -l desc $argv[3]
+set -l branch "$type/$issue-$desc"
+
+echo "--> 1. Syncing local 'next' with upstream/next..."
+git checkout next
+and git pull upstream next
+and git checkout -b "$branch"
+and echo "--> 2. Validating dev environment..."
+and npm run check:env
+
+if test $status -eq 0
+    echo ""
+    echo "✨ Branch '$branch' created successfully off upstream/next!"
+    echo "💡 Recommended next step: In chat, run '/gsd-progress' to plan your task."
+end
+"""
+
+[tasks.sync]
+description = "Sync local next branch with upstream/next"
+shell = "fish"
+run = """
+git checkout next
+and git pull upstream next
+"""
+
+[tasks.check]
+description = "Run pre-flight lint, typecheck, and unit tests"
+shell = "fish"
+run = """
+npm run check:env
+and npm run build:lib
+and npm run test:unit
+and npm run lint:ci
+"""
+
+[tasks.pr]
+description = "Open a Pull Request targeting upstream/next"
+shell = "fish"
+run = """
+gh pr create --base next --repo open-gsd/gsd-core
+"""

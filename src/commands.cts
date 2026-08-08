@@ -833,6 +833,22 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     return;
   }
 
+  // Check if current branch is protected before allowing commit
+  const protectedBranches = (config['git.protected_branches'] as string[]) || ['main', 'master', 'next', 'develop'];
+  const isTestEnv = process.env.GSD_HOME && process.env.GSD_HOME.includes('test');
+  if (protectedBranches.length > 0 && !isTestEnv) {
+    const currentBranchResult = execGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
+    if (currentBranchResult.exitCode === 0) {
+      const branch = currentBranchResult.stdout.trim();
+      if (protectedBranches.includes(branch)) {
+        process.stderr.write(`Warning: Attempting to commit directly to protected branch '${branch}'. Please run this on a feature/fix branch.\n`);
+        const result = { committed: false, skipped: true, hash: null, reason: 'protected_branch' };
+        output(result, raw, 'skipped');
+        return;
+      }
+    }
+  }
+
   // Ensure branching strategy branch exists before first commit (#1278).
   // Pre-execution workflows (discuss, plan, research) commit artifacts but the branch
   // was previously only created during execute-phase — too late.
