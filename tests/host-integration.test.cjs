@@ -35,7 +35,7 @@ const {
   _HOST_INTEGRATION_VOCAB,
   validateCapability,
 } = require('../gsd-core/bin/lib/capability-validator.cjs');
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 
@@ -1965,26 +1965,28 @@ describe('#2627 dispatch-isolation CLI route', () => {
 // one migrated and the others silently stale. This guard fails when any dispatch
 // site reintroduces a runtime-name test around its isolation decision.
 // ---------------------------------------------------------------------------
-describe('#2652 dispatch-site parity — isolation gates on capability, not runtime id', () => {
-  // Scan workflows AND the reference fragments they inline: scheduler branches that
-  // mutate USE_WORKTREES live in gsd-core/references/ too (execute-phase-wave-guard,
-  // execute-phase-between-wave-reset), and a workflows-only scan misses them.
-  const SCAN_ROOTS = [
-    path.join(REPO_ROOT, 'gsd-core', 'workflows'),
-    path.join(REPO_ROOT, 'gsd-core', 'references'),
-  ];
+// Scan workflows AND the reference fragments they inline: scheduler branches that
+// mutate USE_WORKTREES live in gsd-core/references/ too (execute-phase-wave-guard,
+// execute-phase-between-wave-reset), and a workflows-only scan misses them.
+// Shared by both #2652 and #2728 suites below — a second, hand-listed copy is how
+// the degrade scan silently narrowed to three files (round-7 review, Major 6).
+const SCAN_ROOTS = [
+  path.join(REPO_ROOT, 'gsd-core', 'workflows'),
+  path.join(REPO_ROOT, 'gsd-core', 'references'),
+];
 
-  function collectMarkdown(dir) {
-    const out = [];
-    if (!fs.existsSync(dir)) return out;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) out.push(...collectMarkdown(full));
-      else if (entry.name.endsWith('.md')) out.push(full);
-    }
-    return out;
+function collectMarkdown(dir) {
+  const out = [];
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) out.push(...collectMarkdown(full));
+    else if (entry.name.endsWith('.md')) out.push(full);
   }
+  return out;
+}
 
+describe('#2652 dispatch-site parity — isolation gates on capability, not runtime id', () => {
   const ISOLATION_TOKEN = /USE_WORKTREES|ISOLATION|isolation="worktree"|harnessFlag/;
 
   // Any shape that reads RUNTIME as a branch condition. Line-based matching missed
@@ -2254,9 +2256,18 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
 
   const WORKFLOWS = path.join(REPO_ROOT, 'gsd-core', 'workflows');
 
-  /** Pull the fenced ```bash block containing `marker` out of a workflow. */
+  /**
+   * Pull the fenced ```bash block containing `marker` out of a workflow.
+   *
+   * DEFECT.WINDOWS-CRLF-TEST-PORTABILITY: the captured body is handed to
+   * `bash` below, so it must be CRLF-free. A `\r?\n` fence regex is NOT
+   * sufficient — it only protects the delimiter match, leaving embedded `\r`
+   * on every line of the body, which bash treats as part of the token
+   * (helpers.cjs documents exactly this trap). Normalize at the READ
+   * boundary so everything downstream is LF-only by construction.
+   */
   function bashBlockContaining(file, marker) {
-    const text = fs.readFileSync(file, 'utf-8');
+    const text = readFileNormalized(file);
     for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
       if (m[1].includes(marker)) return m[1];
     }
@@ -2373,14 +2384,41 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
     // Coverage guard: a NEW degrade site added later cannot silently skip the
     // re-record. Scans the shipped shell rather than a hand-listed set.
     const offenders = [];
-    const scan = [
-      path.join(WORKFLOWS, 'quick.md'),
-      path.join(WORKFLOWS, 'diagnose-issues.md'),
-      path.join(REPO_ROOT, 'gsd-core', 'references', 'dispatch-isolation-gate.md'),
-    ];
+    // DERIVED, not hand-listed. The previous revision named three files, so a
+    // degrade added anywhere else passed a check whose name claims "every"
+    // (#2728 round-7 review, Major 6). Scan every workflow and reference.
+    const scan = SCAN_ROOTS.flatMap(collectMarkdown);
+    assert.ok(
+      scan.length > 10,
+      `the degrade scan collected only ${scan.length} files — the walk is broken, not the tree`,
+    );
+
+    // Wave sites re-record PER PLAN, not inline: `execute-phase-wave-guard.md` and
+    // `execute-phase-between-wave-reset.md` degrade `USE_WORKTREES=false` together
+    // with `ISOLATION=none`, and `per-plan-worktree-gate.md` seeds
+    // `USE_WORKTREES_FOR_PLAN="$USE_WORKTREES"` and pushes `--force-isolation none`
+    // before each plan's dispatch. That is a real re-record, just delegated — so
+    // these two are exempt. The exemption is ASSERTED below rather than assumed,
+    // so deleting the delegate fails this test instead of silently widening a hole.
+    const DELEGATED_TO_PER_PLAN_GATE = new Set([
+      'gsd-core/references/execute-phase-wave-guard.md',
+      'gsd-core/references/execute-phase-between-wave-reset.md',
+    ]);
+    const perPlanGate = readFileNormalized(
+      path.join(WORKFLOWS, 'execute-phase', 'steps', 'per-plan-worktree-gate.md'),
+    );
+    assert.ok(
+      perPlanGate.includes('USE_WORKTREES_FOR_PLAN="$USE_WORKTREES"') &&
+        perPlanGate.includes('--force-isolation none'),
+      'per-plan-worktree-gate.md no longer inherits USE_WORKTREES and re-records `none`, so the ' +
+        'wave degrade sites above are no longer covered by delegation — either restore the ' +
+        'delegate or make those sites re-record inline',
+    );
+
     for (const file of scan) {
-      const text = fs.readFileSync(file, 'utf-8');
       const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/');
+      if (DELEGATED_TO_PER_PLAN_GATE.has(rel)) continue;
+      const text = readFileNormalized(file);
       for (const m of text.matchAll(/```bash\r?\n([\s\S]*?)```/g)) {
         const block = m[1];
         if (!/^\s*ISOLATION=none\s*$/m.test(block)) continue;

@@ -97,14 +97,6 @@ RUNTIME=$(gsd_run query config-get runtime --default claude --raw 2>/dev/null ||
 grep -n "type=\"checkpoint" .planning/phases/XX-name/{phase}-{plan}-PLAN.md
 ```
 
-**Resolve isolation now (#2584/#2652).** Read @gsd-core/references/dispatch-isolation-gate.md
-and run its `Resolve ISOLATION`, `Single-agent dispatch sites`, and `Resolve the harness flag`
-blocks in order; they set `ISOLATION`/`HARNESS_FLAG` via `query dispatch-isolation`.
-`ISOLATION` — not `RUNTIME` — gates the Pattern A worktree decision below. Substitute
-`{harnessFlag}` in Pattern A's `Agent()` with `$HARNESS_FLAG`+comma when
-`ISOLATION = "harness-worktree"`, else empty. `{harnessFlag}`
-is a template placeholder, not a shell variable.
-
 **Primary routing: task count threshold (#1979)**
 
 If `INLINE_THRESHOLD > 0` AND `TASK_COUNT <= INLINE_THRESHOLD`: Use Pattern C (inline) regardless of checkpoint type. Small plans execute faster inline — avoids ~14K token subagent spawn overhead and preserves prompt cache. Configure threshold via `workflow.inline_plan_threshold` (default: 2, set to `0` to always spawn subagents).
@@ -119,13 +111,38 @@ Otherwise: Apply checkpoint-based routing below.
 | Verify-only | B (segmented) | Segments between checkpoints. After none/human-verify → SUBAGENT. After decision/human-action → MAIN |
 | Decision | C (main) | Execute entirely in main context |
 
+**Resolve isolation now — AFTER the pattern is chosen, and only for a pattern that dispatches
+(#2584/#2652).**
+
+- **Pattern C: skip this entirely.** It executes inline in the main context and spawns no
+  agent, so there is nothing to isolate. Running the gate here would abort an
+  `isolation`-`none` host with a FATAL for a run that was never going to dispatch anything.
+- **Pattern A:** read @gsd-core/references/dispatch-isolation-gate.md and run its
+  `Resolve ISOLATION`, `Single-agent dispatch sites`, and `Resolve the harness flag` blocks in
+  order; they set `ISOLATION`/`HARNESS_FLAG` via `query dispatch-isolation`. `ISOLATION` — not
+  `RUNTIME` — gates the worktree decision. Substitute `{harnessFlag}` in Pattern A's `Agent()`
+  with `$HARNESS_FLAG`+comma when `ISOLATION = "harness-worktree"`, else empty.
+  `{harnessFlag}` is a template placeholder, not a shell variable.
+- **Pattern B: segments are NOT isolated, and must record that before dispatching.** Each
+  segment subagent continues on the working tree the previous segment left behind, so putting
+  them in per-agent worktrees would break the sequence. Record `none` before the first segment
+  dispatch, or the sentinel still asserts the phase-level `harness-worktree` and the #3045
+  `PreToolUse` guard denies every segment dispatch with `exit 2`:
+
+  ```bash
+  ISOLATION=none
+  gsd_run query dispatch-isolation --raw --force-isolation none >/dev/null 2>&1 || true
+  ```
+
+  Segment dispatches therefore carry no `{harnessFlag}`.
+
 <!-- #2508 runtime-aware-dispatch -->
 
 > **Runtime-aware dispatch (#2508 Phase 4).** GSD workflows dispatch specialized subagents by role. Before dispatching on a built-in-only runtime (kimi-code — three built-ins only), resolve the role to a built-in via `gsd_run query resolve-dispatch-type --requested <role> --raw`. On named-dispatch runtimes (Claude/OpenCode/…) the role is returned unchanged; on kimi-code it maps to `coder`/`explore`/`plan` by role-suffix. The persona rides `${AGENT_SKILLS_<ROLE>}` (Phase 3) regardless. See @gsd-core/references/runtime-aware-dispatch.md.
 
 **Pattern A:** init_agent_tracking → capture `EXPECTED_BASE=$(git rev-parse HEAD)` → **before spawning, run the #2649 pre-dispatch worktree base-check** (mirrors execute-phase #683/#1369 and quick #1941): if `ISOLATION = "harness-worktree"`, run `gsd_run query worktree.base-check --pick shouldDegrade`; if it returns `true`, print its `--pick message` to stderr, emit the `⚠ [#2649] Worktree fork base diverged from orchestrator HEAD — auto-degrading to sequential mode for this plan to avoid a base-mismatch halt.` warning, and treat `ISOLATION` as `"none"` for this dispatch (spawn without `{harnessFlag}`), **then re-record the degrade before spawning** — run `gsd_run query dispatch-isolation --raw --force-isolation none >/dev/null 2>&1 || true`. That re-record is mandatory, not bookkeeping: the resolve step already persisted `harness-worktree` to the run-scoped sentinel, the degrade above happens where the resolver cannot see it, and the shipped `PreToolUse` isolation guard (#3045) reads that sentinel at the instant of the `Agent()` call — a stale `harness-worktree` against a dispatch that correctly omits `{harnessFlag}` is denied with `exit 2`, so the plan does not run at all. See `Re-record after every degrade` in `gsd-core/references/dispatch-isolation-gate.md`. Claude Code's `isolation="worktree"` forks from `origin/HEAD`, not live local HEAD; without this gate a plan whose commit advanced local HEAD past a stale `origin/HEAD` hits the verify-only guard's `exit 42` mid-execution with no auto-degrade. → print `Spawning executor agent (runs in a subagent — no output until it returns, ~1–5 min; expected, not a freeze)` → spawn Agent(subagent_type="gsd-executor", model=executor_model) with prompt: execute plan at [path], autonomous, all tasks + SUMMARY + commit, follow deviation/auth rules, report: plan name, tasks, SUMMARY path, commit hash → track agent_id → wait → update tracking → report. **Include `{harnessFlag}` only when `ISOLATION = "harness-worktree"` and the #2649 base-check did not degrade** — never hardcode `isolation="worktree"`, which is Claude Code's own literal and wrong on any other harness-worktree host. **When dispatching with `{harnessFlag}`, embed the `<worktree_branch_check>` block from `gsd-core/references/worktree-branch-check.md` into the prompt, substituting `{EXPECTED_BASE}` with the captured base SHA.** That guard is **verify-only and fail-closed** (#48) and stays active as a backstop whether or not the base-check degraded: it asserts a per-agent `agent-*` / `worktree-agent-*` branch and the exact base, forbids `git update-ref` self-recovery (#2924), and on any mismatch prints `FATAL:` and `exit 42` so the orchestrator can recover — the sub-agent never rewrites a worktree it did not create. This supersedes the former self-recovery (#2015), whose destructive base rewrite could fail silently under a deny rule; the base-drift it addressed affects all platforms, and base correction is now the orchestrator's responsibility.
 
-**Pattern B:** Execute segment-by-segment. Autonomous segments: spawn subagent for assigned tasks only (no SUMMARY/commit). Checkpoints: main context. After all segments: aggregate, create SUMMARY, commit. See segment_execution.
+**Pattern B:** Execute segment-by-segment. Autonomous segments: spawn subagent for assigned tasks only (no SUMMARY/commit). Checkpoints: main context. After all segments: aggregate, create SUMMARY, commit. See segment_execution. **Segments run unisolated on the main working tree by design** — each continues where the previous one stopped — so dispatch them WITHOUT `{harnessFlag}`, and only after the `ISOLATION=none` re-record above has run (#2652/#3045).
 
 **Pattern C:** Execute in main using standard flow (step name="execute").
 

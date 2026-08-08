@@ -126,7 +126,16 @@ fi
 gsd_run query dispatch-isolation --raw --force-isolation "$ISOLATION" >/dev/null 2>&1 || true
 ```
 
-**Spawn debug agents in parallel:**
+**Spawn debug agents — parallel only when each one is isolated:**
+
+**`ISOLATION` decides the fan-out, not just the flag (#2652).** When
+`ISOLATION = "harness-worktree"`, spawn all agents in a single message: each gets its own
+worktree, so concurrent edits cannot collide. When `ISOLATION = "none"` — including after the
+`orchestrator-worktree` fallback and after the #2649 base-check degrade — the agents would all
+run against the **primary checkout**, so spawn them **one at a time**, waiting for each to
+return before spawning the next. Fanning out unisolated debuggers is the outcome the
+`orchestrator-worktree` degrade exists to avoid; degrading the flag while keeping the
+parallelism would announce sequential mode and then do the opposite.
 
 For each gap, fill the debug-subagent-prompt template and spawn:
 
@@ -159,7 +168,7 @@ Agent(
 
 > **ORCHESTRATOR RULE — CODEX RUNTIME**: After calling Agent() above to spawn debug agent(s), stop working on this task immediately. Do not read more files, edit code, or run tests related to these gaps while the subagent(s) are active. Wait for all subagents to return before proceeding. This prevents duplicate work, conflicting edits, and wasted context.
 
-**All agents spawn in single message** (parallel execution).
+**All agents spawn in a single message (parallel execution) ONLY when `ISOLATION = "harness-worktree"`.** When `ISOLATION = "none"`, spawn one agent per message and wait for each to return — see the fan-out rule above (#2652).
 
 Template placeholders:
 - `{truth}`: The expected behavior that failed
