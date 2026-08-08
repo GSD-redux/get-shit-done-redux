@@ -49,6 +49,8 @@ const {
   configureKiloPermissions,
   selectRuntimesFromArgs,
   normalizeNodePath,
+  GSD_CHANGESET_FILES,
+  GSD_SCRIPTS_LIB_FILES,
 } = require('../bin/install.js');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
@@ -11105,5 +11107,50 @@ describe('#3026: installer --help documents every accepted runtime flag', () => 
     );
     assert.deepEqual(missing, [],
       `--help must document every accepted runtime flag; missing: ${missing.join(', ')}`);
+  });
+});
+
+// ─── #3184: scripts/lib/ and scripts/changeset/ install/uninstall parity ────
+//
+// install() copies both source directories WHOLESALE (every file present —
+// see bin/install.js's "and any future lib helpers" comment), but uninstall()
+// removes files via an EXPLICIT hardcoded enumeration (GSD_SCRIPTS_LIB_FILES /
+// GSD_CHANGESET_FILES). Nothing keeps the two in sync: a file added to either
+// source directory ships to every install and then orphans on uninstall (it
+// survives removal, keeps the target dir non-empty, and blocks its rmdir).
+// This guard fails the moment the real directory outgrows the enumeration.
+
+/**
+ * Pure comparison: every file actually present in a source dir must be named
+ * in the corresponding uninstall enumeration. Decoupled from fs so it can be
+ * exercised directly with doctored input (see the probe in the PR report).
+ */
+function findUnenumeratedFiles(actualFiles, enumeratedFiles) {
+  const enumerated = new Set(enumeratedFiles);
+  return actualFiles.filter(f => !enumerated.has(f));
+}
+
+describe('#3184: scripts/lib/ and scripts/changeset/ install/uninstall parity', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+
+  function realFilesIn(relativeDir) {
+    const dir = path.join(REPO_ROOT, relativeDir);
+    return fs.readdirSync(dir).filter(entry => fs.statSync(path.join(dir, entry)).isFile());
+  }
+
+  test('every file in scripts/lib/ is enumerated in GSD_SCRIPTS_LIB_FILES (bin/install.js)', () => {
+    const unenumerated = findUnenumeratedFiles(realFilesIn(path.join('scripts', 'lib')), GSD_SCRIPTS_LIB_FILES);
+    assert.deepEqual(unenumerated, [],
+      `scripts/lib/${unenumerated.join(', scripts/lib/')} exist on disk but are missing from ` +
+      `GSD_SCRIPTS_LIB_FILES in bin/install.js — add ${unenumerated.length === 1 ? 'it' : 'them'} to that ` +
+      'array so uninstall() removes it (otherwise it ships to every install and orphans on uninstall).');
+  });
+
+  test('every file in scripts/changeset/ is enumerated in GSD_CHANGESET_FILES (bin/install.js)', () => {
+    const unenumerated = findUnenumeratedFiles(realFilesIn(path.join('scripts', 'changeset')), GSD_CHANGESET_FILES);
+    assert.deepEqual(unenumerated, [],
+      `scripts/changeset/${unenumerated.join(', scripts/changeset/')} exist on disk but are missing from ` +
+      `GSD_CHANGESET_FILES in bin/install.js — add ${unenumerated.length === 1 ? 'it' : 'them'} to that ` +
+      'array so uninstall() removes it (otherwise it ships to every install and orphans on uninstall).');
   });
 });

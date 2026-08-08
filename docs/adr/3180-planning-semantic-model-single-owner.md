@@ -244,4 +244,110 @@ Considered and not applicable: `choose-boring-technology` (no new dependency; fi
 
 ## Amendments
 
-None yet. Decision 2's contract is provisional; any amendment arising from Phase 1's validation is recorded here before Phase 2 begins.
+### Amendment 1 — Phase 1 (#3183) validation: the boundary between Phases 1 and 3 was mis-cut
+
+Decision 2 marked the contract provisional and required amendment before Phase 2 rather than a
+workaround in code. Phase 1 exercised it and the contract itself **held** — `SCOPE` needed no
+change. What did not hold was the **phase boundary**.
+
+**What Phase 1 found.** Building the Decision 4(a) whole-repo guard — the one that may not use a
+file allowlist — turned up **26 live-plan re-derivations across 9 files**. The epic scoped this
+derivation at **3 copies**. Per-site triage classified them 21 true re-derivations, 2 asking a
+genuinely different question, 2 dead.
+
+**Why the boundary was wrong.** `commands.cts`'s `cmdProgressRender` re-derives *both* enumeration
+(assigned to Phase 3) *and* plan counting (Phase 1), on adjacent lines. So DW4's "no caller
+re-derives it from filenames" was **unsatisfiable within Phase 1's original file scope** — Phase 1
+would have shipped failing its own acceptance criterion while Phase 3 inherited half a derivation.
+
+**Amended scope (maintainer decision).** Phase 1 owns **every** live-plan-counting re-derivation
+repo-wide. **Phase 3 narrows** to milestone-window + sentinel-filter enumeration only; its files are
+already plan-count-clean when it starts, and its own drift guard inherits a green baseline.
+
+**Two consequential changes to Decision 1's owner surface:**
+
+1. **`scanPhasePlans` gains `allPlanFiles`** (every plan on disk, *pre*-supersession) alongside
+   `planFiles` (the live set). `verify.cts` conflated two questions in one loop — numbering-gap
+   detection legitimately wants every file on disk, pairing wants the live set. The fix is for the
+   owner to answer both explicitly, not to exempt the caller. Single ownership is preserved; the
+   owner simply stopped under-serving. Additive — no existing field changed.
+2. **`findOrphanSummaries` joins `findUnsummarizedPlans`** in core-utils, sharing the same
+   `summaryCandidates` rule. `verify.cts` needed the inverse question (summaries with no plan) and
+   had no canonical primitive, so it had hand-rolled one — a third pairing rule of exactly the kind
+   Decision 1 exists to prevent.
+
+**Exemptions are by documented reason, never by file allowlist** (Decision 4(a)). Two sites are
+exempt, each carrying an inline comment stating the question it actually asks: `audit.cts`
+`scanQuickTasks` checks one quick task's own directory for a single completion record, and
+`gsd2-import.cts` `readTasksDir` reads a foreign GSD-2 `tasks/` layout during a one-time import.
+Neither is a `.planning/` phase directory.
+
+**Decision 3's Tier-2 table is re-derived for Phase 1**, per its own contingency clause. Beyond the
+superseded-plan change, the migration also corrects: phases on the post-#3139 **nested `plans/`
+layout** (previously counted as zero by every migrated site), **loosely-named plan files**, and
+**stray summaries** that inflated completion. The sharpest is `phase.cts`'s `cmdPhasePlanIndex`,
+which feeds execute-phase **wave scheduling** — it was scheduling `status: superseded` plans into
+waves and reporting zero plans for nested-layout phases.
+
+**Regression caught during migration, recorded because it is a trap for Phases 2–5:** passing the
+superseded-filtered `planFiles` into `describeNonCanonicalPlans` made a superseded-but-correctly-named
+plan report as a naming violation — the diagnostic reads non-membership as a defect. It takes
+`allPlanFiles`. The general rule: a **diagnostic about file naming** wants the physical set; only a
+question about outstanding *work* wants the live set. Later phases must make that choice explicitly
+per call site rather than swapping in `planFiles` mechanically.
+
+### Amendment 2 — Phase 2 (#3184) validation: the contract held; the copy count was low again
+
+Decision 2's contract needed **no change** for its second consumer: `SCOPE`'s four values covered
+every row of the windowing derivation's behavior table, including the two rows the epic's text does
+not distinguish (a free-form legacy ROADMAP with no versioned milestones is `COMPLETE`, not
+`UNSCOPED` — whole-document genuinely *is* the milestone there). Phase 2 adds no member and changes
+no semantics. `src/planning-scope.cts` needed no edit, so Phase 2 carries no `.cts` six-gate ripple.
+
+**What Phase 2 found.** The epic and this ADR both scope milestone windowing at **three** copies, all
+inside `roadmap-parser.cts`. Building the Decision 4(a) whole-repo guard found **two more**, in a
+different module and one function down: `state.cts` `buildStateFrontmatter` and `syncStateFrontmatter`
+each hand-roll `^#{1,3}\s+(?!Phase\s+\S).*${escapeRegex(version)}` to answer "is this milestone
+bounded to a versioned ROADMAP heading" — the heading-location half of the derivation, byte-identical
+to each other. This is Phase 1's finding repeating with a different derivation: **the epic's copy
+counts are a lower bound derived from the reported issues, and the whole-repo guard is what makes them
+real.** Both sites now call the owner's `isMilestoneBoundedInRoadmap`, which is a straight
+consolidation of the two identical `state.cts` regexes onto `locateMilestoneHeadings` with **no
+behavior change** — which is all it should ever have been.
+
+**A boundary tightening was tried and reverted.** A first pass at `locateMilestoneHeadings` swapped its
+`\b` version-token boundary for the stricter `(?![\w.-])` used by `isMilestoneShippedInRoadmap`
+(#2562), reasoning that `v2.0` should not match inside `v2.0.1` anywhere windowing happens. That broke
+`extractCurrentMilestoneScoped`'s #730 contract: a milestone STATE of `v8.0` legitimately selects the
+`## v8.0-B …` active sub-milestone heading over a closed `v8.0-A` sibling (`0` is a word character, `-`
+is not, so `\b` matches; `(?![\w.-])` does not, because `-` is in its excluded set). `\b` is restored in
+`locateMilestoneHeadings`; the stricter boundary stays local to `isMilestoneShippedInRoadmap` and to the
+#730 `detailsVersionBoundary`, which answer a narrower question ("is exactly this milestone shipped" /
+"which Phase Details section is exactly this one's version token's") than "which heading does this
+milestone STATE select." The consolidation itself (three `roadmap-parser.cts` copies plus the two
+`state.cts` copies onto one owner) is behavior-preserving.
+
+**A composition-level re-derivation, caught in review of this phase's own diff.** Decision 4(c)
+anticipated a consumer post-*filtering* an owner's result. The shape that actually appeared is its
+mirror: two sites re-*assembling* a window out of the owner's primitives —
+`locateMilestoneHeadings` → pick a heading → `computeMilestoneSectionEnd` → slice — in
+`getMilestonePhaseFilter`'s `versionOverride` branch and in `milestone.cts`'s unstarted-phase guard.
+Both call the canonical owner at every step, so the drift guard and an owner-level identity test are
+both green, and the two compositions had **already diverged** on whether to skip a closed milestone
+heading. Decision 4(c) is therefore read to cover **assembly as well as post-processing**: where a
+derivation has a composition, the composition is itself an owner. Added as
+`sliceMilestoneWindow`; both sites route through it.
+
+**Decision 3's Tier-2 table, re-derived for Phase 2** per its own contingency clause. The row this
+ADR predicted lands as written, plus two the prediction did not contain:
+
+| Command surface | Output change |
+|---|---|
+| `roadmap analyze` | gains a `scope` field. `phase_count: 0` is still emitted verbatim — what changes is that a sibling field now says whether that zero is an answer. Stated precisely because the first draft of this row claimed the count itself changed, which is not what shipped |
+| `/gsd:progress --next` Route 0 | `gsd-core/workflows/next.md` treats a non-`complete` scope as scan-failed (warn + fall through to the prior-phase check) instead of looping a phase list the scan could not populate. Without this the new field would be a diagnostic no consumer reads, and #3165's actual symptom — the resume invariant reporting clean because it could not run — would still reproduce |
+| `milestone complete` | refuses (unless `--force`) when the window's scope is `TRUNCATED` — the milestone heading was found but its section closes before reaching any phase entries, even though the ROADMAP has phase entries elsewhere — instead of pass-all archiving every phase directory on disk (#3166). `UNREADABLE` and `UNSCOPED` are pre-existing, legitimately-handled states (`missingExplicitVersion` errors where that matters; a missing ROADMAP.md has its own documented graceful path) and are not refused here. |
+| `milestone complete` unstarted-phase guard — **not predicted** | the guard scoped its window by STATE.md's `milestone:` field while the filter beside it scoped by the `version` argument; the two could disagree, and the guard under-detected unstarted phases on the destructive path. Both now use the `version` argument. |
+
+**Scope note.** Phase 3 (enumeration) inherits a window layer that is now single-owner and
+scope-carrying; its own guard starts from a green windowing baseline, exactly as Phase 1 left plan
+counting clean for Phase 3.

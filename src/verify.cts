@@ -11,7 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { phaseVariants, buildRoadmapPhaseVariants, buildNotStartedPhaseVariants } from './validate.cjs';
 import { realClock } from './clock.cjs';
-import { phaseDirNameRe, PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE, canonicalPlanStem, textEncodingError } from './validate.cjs';
+import { phaseDirNameRe, PHASE_TOKEN_FROM_DIR_RE, MILESTONE_ARCHIVE_DIR_RE, textEncodingError } from './validate.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -22,6 +22,12 @@ import stateMod = require('./state.cjs');
 import modelProfilesMod = require('./model-profiles.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import planScanMod = require('./plan-scan.cjs');
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- core-utils.cjs is an export= CommonJS module
+import coreUtilsMod = require('./core-utils.cjs');
+const { findOrphanSummaries, findUnsummarizedPlans } = coreUtilsMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-scope.cjs is an export= CommonJS module
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 import { execGit, platformReadSync as safeReadFile, platformWriteSync, posixNormalize } from './shell-command-projection.cjs';
 import { PACKAGE_NAME } from './package-identity.cjs';
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
@@ -940,26 +946,28 @@ function cmdVerifyPhaseCompleteness(cwd: string, phase: string, raw: boolean): v
   const warnings: string[] = [];
   const phaseDir = path.join(cwd, phaseInfo['directory'] as string);
 
-  let files: string[];
-  try {
-    files = fs.readdirSync(phaseDir);
-  } catch {
+  // #3183 (lint-plan-count-drift / ADR-3180 Decision 2): source plans/
+  // summaries and their pairing from the single owner (scanPhasePlans +
+  // findUnsummarizedPlans/findOrphanSummaries) instead of a bespoke
+  // root-only `-PLAN.md`/`-SUMMARY.md` filter and exact-suffix-stem
+  // Set-diff. The prior pairing missed bare PLAN.md/SUMMARY.md, nested
+  // (#3139 layout) plans, and any of the canonical pairing's other
+  // recognized naming forms — producing false "Plans without summaries" /
+  // "Summaries without plans" for names it could not recognize as paired
+  // (the same failure class #1988/#2648 fixed for the owner's own callers).
+  const scan = planScanMod.scanPhasePlans(phaseDir);
+  if (scan.scope === SCOPE.UNREADABLE) {
     output({ error: 'Cannot read phase directory' }, raw);
     return;
   }
+  const { planFiles, summaryFiles } = scan;
 
-  const plans = files.filter((f) => f.match(/-PLAN\.md$/i));
-  const summaries = files.filter((f) => f.match(/-SUMMARY\.md$/i));
-
-  const planIds = new Set(plans.map((p) => p.replace(/-PLAN\.md$/i, '')));
-  const summaryIds = new Set(summaries.map((s) => s.replace(/-SUMMARY\.md$/i, '')));
-
-  const incompletePlans = [...planIds].filter((id) => !summaryIds.has(id));
+  const incompletePlans = findUnsummarizedPlans(planFiles, summaryFiles);
   if (incompletePlans.length > 0) {
     errors.push(`Plans without summaries: ${incompletePlans.join(', ')}`);
   }
 
-  const orphanSummaries = [...summaryIds].filter((id) => !planIds.has(id));
+  const orphanSummaries = findOrphanSummaries(planFiles, summaryFiles);
   if (orphanSummaries.length > 0) {
     warnings.push(`Summaries without plans: ${orphanSummaries.join(', ')}`);
   }
@@ -968,8 +976,8 @@ function cmdVerifyPhaseCompleteness(cwd: string, phase: string, raw: boolean): v
     {
       complete: errors.length === 0,
       phase: phaseInfo['phase_number'],
-      plan_count: plans.length,
-      summary_count: summaries.length,
+      plan_count: planFiles.length,
+      summary_count: summaryFiles.length,
       incomplete_plans: incompletePlans,
       orphan_summaries: orphanSummaries,
       errors,
@@ -1461,15 +1469,42 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
       for (const dir of dirs) {
         const phasePath = path.join(phaseRoot, dir);
         const phaseLabel = posixNormalize(path.relative(planBase, phasePath));
-        const phaseFiles = fs.readdirSync(phasePath);
-        const plans = phaseFiles.filter((f) => f.endsWith('-PLAN.md')).sort();
 
-        const planNums = plans
+        // #3183: this loop mixes two DIFFERENT questions — split explicitly
+        // rather than migrating it as one blind swap-in.
+
+        // QUESTION 1 — physical numbering-gap detection: wants EVERY plan
+        // file that physically exists, superseded or not (a retired plan
+        // still occupied a number in the sequence), root+nested. Uses the
+        // single owner's allPlanFiles rather than a root-only readdirSync
+        // filter. The strict `-NN-PLAN.md` suffix regex below already
+        // ignores any entry (nested, loose-named, bare PLAN.md) that isn't
+        // in the root canonical numbered form, so widening the input set is
+        // a pure visibility fix with no change to which files feed a number.
+        //
+        // One scan serves both questions below: `allPlanFiles` answers
+        // Question 1 (numbering-gap), `planFiles`/`summaryFiles` answer
+        // Question 2 (pairing) a few lines down.
+        const { allPlanFiles, planFiles, summaryFiles } = planScanMod.scanPhasePlans(phasePath);
+
+        // Root-canonical numbered plans only (`<phase>-NN-PLAN.md`) — the
+        // shape the numbering-gap sequence check operates on. Matched via
+        // the numbering regex itself rather than a separate suffix filter,
+        // so this stays a single derivation from the owner's output, not a
+        // second independent re-derivation of its filename grammar.
+        const numberedPlans = allPlanFiles
           .map((p) => {
             const pm = p.match(/-(\d{2})-PLAN\.md$/);
-            return pm ? parseInt(pm[1], 10) : null;
+            return pm ? { file: p, num: parseInt(pm[1], 10) } : null;
           })
-          .filter((n): n is number => n !== null);
+          .filter((e): e is { file: string; num: number } => e !== null)
+          .sort((a, b) => a.num - b.num);
+        // numberedPlans (and planNums below) answers Question 1 ONLY — the
+        // numbering-gap sequence check. It is a strict `-NN-PLAN.md` subset
+        // and must NOT be reused as a general "all live plans" set: a plan
+        // whose filename isn't in that canonical 2-digit form (a 3-digit
+        // continuation, a bare PLAN.md, etc.) is silently absent from it.
+        const planNums = numberedPlans.map((e) => e.num);
 
         for (let i = 1; i < planNums.length; i++) {
           if (planNums[i] !== planNums[i - 1] + 1) {
@@ -1479,17 +1514,25 @@ function cmdValidateConsistency(cwd: string, raw: boolean): void {
           }
         }
 
-        const summaries = phaseFiles.filter((f) => f.endsWith('-SUMMARY.md'));
-        const planIds = new Set(plans.map((p) => p.replace('-PLAN.md', '')));
-        const summaryIds = new Set(summaries.map((s) => s.replace('-SUMMARY.md', '')));
-
-        for (const sid of summaryIds) {
-          if (!planIds.has(sid)) {
-            warnings.push(`Summary ${sid}-SUMMARY.md in ${phaseLabel} has no matching PLAN.md`);
-          }
+        // QUESTION 2 — plan↔summary pairing: "does this summary have a
+        // matching LIVE plan" wants the single owner's superseded-excluded
+        // planFiles and the canonical summaryCandidates-based pairing
+        // (findOrphanSummaries) instead of an exact-suffix Set-diff, which
+        // produced false "orphan summary" warnings for legacy/nested naming
+        // forms it could not recognize as paired.
+        const orphanSummaries = findOrphanSummaries(planFiles, summaryFiles);
+        for (const orphan of orphanSummaries) {
+          warnings.push(`Summary ${orphan} in ${phaseLabel} has no matching PLAN.md`);
         }
 
-        for (const plan of plans) {
+        // QUESTION 3 — wave-frontmatter presence: "does every LIVE plan
+        // declare a wave" wants the same live (superseded-excluded) set as
+        // Question 2's pairing check — planFiles, NOT numberedPlans/Question
+        // 1's strict 2-digit subset. A superseded plan legitimately carries
+        // no wave, and a live plan whose filename isn't in canonical 2-digit
+        // form (a 3-digit continuation, a bare PLAN.md, etc.) must still be
+        // checked here even though it is invisible to the numbering-gap scan.
+        for (const plan of planFiles) {
           const planFilePath = path.join(phasePath, plan);
           const content = fs.readFileSync(planFilePath, 'utf-8');
           const fmData = extractFrontmatter(content, planFilePath);
@@ -1737,6 +1780,14 @@ function cmdValidateHealth(
 
   let phaseDirEntries: fs.Dirent[] = [];
   const phaseDirFiles = new Map<string, string[]>();
+  // #3183: companion map of the single owner's scan per phase dir
+  // (root+nested, superseded-excluded plan/summary sets + canonical
+  // pairing), computed alongside the raw readdirSync listing above. The
+  // W023 duplicate-dir describer and the I001 unsummarized-plan detector
+  // below use THIS map for plan/summary counts and pairing; phaseDirFiles
+  // stays raw for the RESEARCH/VALIDATION and phase-dir-naming checks that
+  // are not plan-count questions.
+  const phaseDirScans = new Map<string, ReturnType<typeof planScanMod.scanPhasePlans>>();
   try {
     phaseDirEntries = fs
       .readdirSync(phasesDir, { withFileTypes: true })
@@ -1747,6 +1798,7 @@ function cmdValidateHealth(
       } catch {
         phaseDirFiles.set(e.name, []);
       }
+      phaseDirScans.set(e.name, planScanMod.scanPhasePlans(path.join(phasesDir, e.name)));
     }
   } catch {
     /* intentionally empty */
@@ -1793,9 +1845,11 @@ function cmdValidateHealth(
         .slice()
         .sort((a, b) => comparePhaseNum(a, b) || String(a).localeCompare(String(b)))
         .map((d) => {
-          const files = phaseDirFiles.get(d) || [];
-          const plans = files.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-          const summaries = files.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+          // #3183: canonical plan/summary counts (root+nested,
+          // superseded-excluded, canonical pairing) from the single owner.
+          const scan = phaseDirScans.get(d);
+          const plans = scan ? scan.planCount : 0;
+          const summaries = scan ? scan.summaryCount : 0;
           const status = determinePhaseStatus(plans, summaries, path.join(phasesDir, d), 'Not Started');
           return `${d} (${status})`;
         })
@@ -1809,23 +1863,18 @@ function cmdValidateHealth(
     }
   }
 
+  // I001 (#3183): this IS findUnsummarizedPlans's exact question — routed
+  // through the single owner's scan (root+nested, superseded-excluded plan
+  // set) and the canonical summaryCandidates-based pairing, instead of a
+  // bespoke canonicalPlanStem reimplementation. Fixes: a superseded plan is
+  // no longer permanently flagged "may be in progress" (false noise
+  // forever), and nested (#3139 layout) plans are no longer invisible.
   for (const e of phaseDirEntries) {
-    const phaseFiles = phaseDirFiles.get(e.name) || [];
-    const plans = phaseFiles.filter((f) => f.endsWith('-PLAN.md') || f === 'PLAN.md');
-    const summaries = phaseFiles.filter((f) => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
-    const summaryBases = new Set<string>();
-    for (const s of summaries) {
-      const summaryBase = s.replace('-SUMMARY.md', '').replace('SUMMARY.md', '');
-      summaryBases.add(summaryBase);
-      summaryBases.add(canonicalPlanStem(summaryBase));
-    }
-
-    for (const plan of plans) {
-      const planBase = plan.replace('-PLAN.md', '').replace('PLAN.md', '');
-      const canonicalBase = canonicalPlanStem(planBase);
-      if (!summaryBases.has(planBase) && !summaryBases.has(canonicalBase)) {
-        addIssue('info', 'I001', `${e.name}/${plan} has no SUMMARY.md`, 'May be in progress');
-      }
+    const scan = phaseDirScans.get(e.name);
+    const planFiles = scan ? scan.planFiles : [];
+    const summaryFiles = scan ? scan.summaryFiles : [];
+    for (const plan of findUnsummarizedPlans(planFiles, summaryFiles)) {
+      addIssue('info', 'I001', `${e.name}/${plan} has no SUMMARY.md`, 'May be in progress');
     }
   }
 
@@ -2473,8 +2522,15 @@ function cmdVerifySchemaDrift(
     return;
   }
 
+  // #3183: canonical LIVE plan/summary sets (root+nested,
+  // status: superseded EXCLUDED) from the single owner, rather than a
+  // root-only readdirSync filter — a superseded plan's claimed
+  // files_modified is no longer treated as an expected drift target, and
+  // nested (#3139 layout) plans/summaries are no longer invisible to the
+  // drift check.
+  const { planFiles, summaryFiles } = planScanMod.scanPhasePlans(phaseDir);
+
   const allFiles: string[] = [];
-  const planFiles = fs.readdirSync(phaseDir).filter((f) => f.endsWith('-PLAN.md'));
   for (const pf of planFiles) {
     const content = fs.readFileSync(path.join(phaseDir, pf), 'utf-8');
     const fmMatch = content.match(/files_modified:\s*\[([^\]]{0,8000})\]/);
@@ -2485,7 +2541,6 @@ function cmdVerifySchemaDrift(
   }
 
   let executionLog = '';
-  const summaryFiles = fs.readdirSync(phaseDir).filter((f) => f.endsWith('-SUMMARY.md'));
   for (const sf of summaryFiles) {
     executionLog += fs.readFileSync(path.join(phaseDir, sf), 'utf-8') + '\n';
   }
