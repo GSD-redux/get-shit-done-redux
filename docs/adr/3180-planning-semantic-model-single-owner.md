@@ -1,6 +1,6 @@
 # ADR-3180: Planning Semantic Model — Single Owner per Derivation
 
-- **Status:** Accepted (Phase 0 — ADR only; locks the contract Phases 1–5 execute against. No production code lands in this PR.)
+- **Status:** Accepted. Phase 0 shipped this file alone; Amendment 3 (2026-08-08) adds Decision 7 — the normative behavior contract — and lands the guards and the completion-ratio consolidation described there.
 - **Date:** 2026-08-07
 - **Issue:** [#3180](https://github.com/open-gsd/gsd-core/issues/3180) is the **scope authority** (`epic` + `approved-enhancement` + `type: chore`), which is why this ADR carries its number. [#3182](https://github.com/open-gsd/gsd-core/issues/3182) is the Phase-0 tracking sub-issue this PR closes — the epic stays open until the final phase merges. This follows [ADR-3128](3128-adaptive-runtime-evidence.md), whose filename likewise tracks its scope-authority issue while its PR referenced a separate docs sub-issue.
 - **Supersedes:** nothing
@@ -176,6 +176,21 @@ Therefore each derivation's identity test compares **each consumer's observable 
 
 *Rejected:* a lint that asserts all sites match a golden regex — it enforces textual sameness, not single ownership, and cannot see semantic divergence (this is ADR-2121 Decision 1's rejected option (C), and it applies unchanged here).
 
+**(d) A guard's scan surface is every AUTHORED surface that can express the derivation — not `src/`.** Constraint (a) said "whole-repo scan, never an allowlist of known files", and both guards built under it read that as *the whole `src/` tree*. That is itself an allowlist, one directory wide. #1762's second reproduction traced a wrong `30 plans, 24 summaries` figure to a raw `ls -1 … *-PLAN.md | wc -l` snippet inside `gsd-core/workflows/progress.md` — a live-plan re-derivation `lint-plan-count-drift.cjs` reported clean because it was not looking there.
+
+A derivation is re-derived wherever it is *expressed*, and this product expresses these four in two languages: TypeScript under `src/`, and shell embedded in the workflow/command markdown that ships to every runtime. A guard covering one of the two measures half the surface and reports zero. Each derivation's guard therefore declares its scan surface explicitly, and any derivation reachable from the prompt layer is covered there too — `scripts/lint-planning-prompt-drift.cjs` scans `gsd-core/workflows`, `commands`, `agents` and `skills`.
+
+The same constraint applies inward: **a guard's owner FILE is not exempt, only its named canonical FUNCTIONS are.** A whole-file exemption on the owner is constraint (a)'s forbidden allowlist aimed at the one file most likely to grow the next copy, and it did — see Amendment 3.
+
+**(e) Where a surface cannot be consolidated in the same change, the guard ships RATCHETED — never absent.** A derivation expressed in the prompt layer cannot be routed onto its `.cts` owner by an import; it needs a CLI surface to call, which is a phase of its own. The guard still lands, carrying a baseline of the sites that exist at that moment, and follows `scripts/qa-smell-ratchet.cjs`'s invariants exactly:
+
+- a recorded site never fails — it is acknowledged, in writing, with the issue that owns its removal;
+- an unrecorded site fails — nobody has looked at it;
+- a recorded site that no longer fires **also** fails, so the baseline can only shrink and an acknowledgment can never outlive the thing it describes;
+- entries are keyed on `(file, trimmed source text)`, never on a line number, which churns on every unrelated edit to the same file.
+
+*Rejected:* land the guard later, together with the migration. That is the "found it, wrote it down, moved on" posture this epic exists to remove — between the finding and the migration the surface is known-broken *and* unwatched, which is strictly worse than unknown. *Rejected:* a bare `eslint-disable`-style suppression. A suppressed guard and a green guard are indistinguishable at a glance; a ratchet reports its own remaining debt on every run.
+
 ### 5. Migration order — live-plan counting ships BEFORE milestone windowing
 
 **Locked order:** Phase 1 (live-plan counting) → Phase 2 (milestone windowing) → Phase 3 (enumeration) → Phase 4 (completion) → Phase 5 (state field extraction).
@@ -205,6 +220,101 @@ Each phase's PR **names** the child issues it subsumes and records the evidence 
 Recording the subsumption explicitly because both silences are failures: a phase that demonstrably removes a defect's symptom while claiming to change nothing is a shipped lie, and a phase that closes an issue the epic disclaimed is scope it never had. Naming the effect without claiming the disposition is the only honest position available here.
 
 **Scope note on Phase 5.** State field extraction is *not* one of #3180's seven "Done when" items — the epic describes it in evidence as "a fifth instance of the same shape" and lists #3162 among the out-of-scope child defects, while its Goal ("one canonical owner per semantic derivation") covers it. That inconsistency was surfaced during planning and resolved by maintainer decision to include it. #3180's Done-when list should be amended to match, or Phase 5 reads as unclaimed scope.
+
+### 7. The behavior contract — this section is the SOURCE OF TRUTH
+
+Decisions 1–6 answer *who owns* each derivation. They do not say *what the right answer is*, and that omission is why the 2026-08-08 coverage audit could find six copies the epic had never named: a reviewer with no written rule to check a call site against can only ask "does this look like the others", which is how a fifth copy passes review.
+
+This section is that written rule. It is **normative**, and it is what the guards and identity tests of Decision 4 test *against*:
+
+- **Where this section and the code disagree, the code is the defect** — not this section, and not a caller's local expectation.
+- A behavior not stated here is **not decided**. It is recorded below as an open question with a forcing function, never resolved silently inside an implementation PR.
+- Amending a rule here is an amendment to this ADR (Amendments section), not a code change with a comment.
+- Each rule carries a **status**: *Enforced* (owner exists, guard green) or *Required — Phase N* (contract locked, migration outstanding). A *Required* rule is as binding as an *Enforced* one; the only difference is whether the tree satisfies it yet.
+
+#### 7.1 Milestone windowing — *Enforced (Phase 2)*
+
+**Question.** Which byte range of `ROADMAP.md` belongs to milestone `M`?
+
+**Owner.** `src/roadmap-parser.cts` — `locateMilestoneHeadings`, `computeMilestoneSectionEnd`, `isMilestoneBoundedInRoadmap`, and the composition `sliceMilestoneWindow`.
+
+**Rule.** The window opens at the heading `locateMilestoneHeadings` selects for `M` and closes where `computeMilestoneSectionEnd` says. A `### Phase N: …` heading never opens or closes a milestone window. The version token's boundary is `\b`, **not** `(?![\w.-])` — a milestone STATE of `v8.0` legitimately selects `## v8.0-B …` over a closed `v8.0-A` sibling (#730; Amendment 2 tried the stricter boundary and reverted it). A free-form legacy ROADMAP carrying no versioned milestone heading is `COMPLETE`, not `UNSCOPED`: whole-document genuinely *is* the milestone there. **A composition of these primitives is itself an owner** — assembling `locate → pick → computeEnd → slice` at a call site is a re-derivation even though every step calls the owner (Amendment 2).
+
+**Failure signal.** `ScopedResult.scope` per Decision 2.
+
+**Guard.** `scripts/lint-milestone-window-drift.cjs`.
+
+#### 7.2 Milestone identity — *Required — Phase 6*
+
+**Question.** Which milestone is current, and what is it called?
+
+**Owner (to be).** `getMilestoneInfo` binds to `locateMilestoneHeadings` and deletes its own heading regexes. It is a **sixth derivation family** — the coverage audit's gap 2 — that no phase of the original decomposition touches.
+
+**Rule.**
+1. `STATE.md`'s `milestone:` field selects the version when present; the ROADMAP heuristics are the fallback, not the primary.
+2. The heading is located by the canonical locator of §7.1, which already excludes phase headings. A `### Phase N: Close v3.3 gaps` heading is **never** the milestone heading (#3197 — reproduced live, writing a wrong `milestone:` to disk).
+3. The **name** is the heading text following the version token with a leading delimiter (`—`, `–`, `:`, `-`) stripped. `(` is an ordinary name character: the name is **not** truncated at a parenthetical (#3171).
+4. A failure returns a `scope` other than `COMPLETE`. It does **not** return `{version: 'v1.0', name: 'milestone'}` presented as an answer — that default is output-identical to a successful read of a genuine `v1.0` project, which is this epic's defining failure mode.
+
+**Guard.** `lint-milestone-window-drift.cjs` today keys on the `#{N,M}` heading-level quantifier; `getMilestoneInfo`'s regexes anchor on a literal `##` and therefore slip past it. **Phase 6 ships the token widening together with the consolidation**, never after — a guard added later measures a surface already cleaned and reports a zero it did not earn.
+
+#### 7.3 Phase enumeration — *Required — Phase 3*
+
+**Question.** Which directories under `<planning>/phases/` are phases of milestone `M`?
+
+**Owner.** `src/phase-locator.cts` · `listMilestonePhaseDirs` (Decision 1).
+
+**Rule.** A directory counts **iff all three** hold: its identifier parses per `src/phase-id.cts`; it is not a sentinel per `isSentinelPhaseId`; and its ROADMAP entry falls inside `M`'s window per §7.1. Both filters, in that order. Any surface answering "how many phases does this milestone have" reports the same set for the same input — the progress renderer, the roadmap analysis, the statistics command and the phase listing are not allowed to disagree.
+
+**Consumers that must route through the owner.** `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats`, `cmdPhasesList`, **and `buildStateFrontmatter` / `syncStateFrontmatter`** — the fifth copy, reached by `state.record-session`, `state.sync`, `phase.complete` and every other state-mutating verb, which the epic's original scope did not name (coverage-audit gap 1).
+
+**Note on #3204.** Routing `buildStateFrontmatter` through the owner does not by itself fix #3204: its defect is the discriminator one layer *above* enumeration — "is the ROADMAP's phase count safe to trust" — which misclassifies ordinary `## Overview` / `## Progress` headings as milestone sectioning. That discriminator **is** §7.1's `isMilestoneBoundedInRoadmap`, and Phase 3 replaces the hand-rolled test with that call. The enumeration routing and the discriminator replacement ship together or the defect survives the consolidation.
+
+#### 7.4 Phase completion — *Required — Phase 4, blocked*
+
+**Question.** Is phase `P` complete?
+
+**Owner.** `src/verification.cts` · `isPhaseComplete` (Decision 1).
+
+**Rule.** `readVerificationStatus` is called **unconditionally**. Plan count is not a precondition: a phase with zero plans and a passing `*-VERIFICATION.md` is complete. The read path and the write path share this predicate, so "`phase.complete` succeeds while `init.manager` reports incomplete" is unrepresentable for identical input.
+
+**OPEN QUESTION — does a ROADMAP checkbox override disk state? (#2957).** There are **three** completion implementations, not the two the epic recorded: `cmdPhaseComplete`, `buildPhaseCompletionProjection`, and `buildStateFrontmatter`, which computes completed phases from plan scanning alone and never consults the ROADMAP checkbox that `cmdRoadmapAnalyze` deliberately honors. Checkbox-override versus disk-strict is a **product decision**, and it is not made here.
+
+**Forcing function.** Phase 4's drift guard fails while more than one completion predicate exists. It cannot be satisfied by consolidating two of three and leaving the third, and Phase 4 must not ship before #2957 is decided — a shared predicate that silently adopts whichever semantics its author happened to hold is a product decision made by typing order.
+
+#### 7.5 Live-plan counting — *Enforced (Phase 1), with a known representation gap*
+
+**Question.** How many plans in phase `P` are outstanding?
+
+**Owner.** `src/plan-scan.cts` · `scanPhasePlans`, exposing `planFiles` (live) **and** `allPlanFiles` (every plan on disk, pre-supersession).
+
+**Rule.** A plan is **live** unless it carries a machine-readable terminal state. The only terminal state today is frontmatter `status: superseded` (#2349). Choosing between the two sets is explicit per call site, never mechanical: **a diagnostic about file naming takes `allPlanFiles`; a question about outstanding work takes `planFiles`** (Amendment 1 — passing the filtered set into `describeNonCanonicalPlans` made a superseded-but-correctly-named plan report as a naming violation).
+
+**GAP — the lifecycle has exactly one machine-readable terminal state (#1762, coverage-audit gap 6).** Plans retired through ROADMAP prose or HTML-comment fences carry no `status` key, so the canonical owner counts them live. Consolidation cannot fix this; it needs a representation that does not exist yet. The contract, locked now so no surface invents its own: **the plan lifecycle's terminal states are a closed, frontmatter-expressed vocabulary. Prose is not a lifecycle signal.** Until the vocabulary is extended, a plan a human considers retired but that carries no `status` key **is live**, and every surface reports it that way — a caller may not compensate by reading prose locally.
+
+#### 7.6 Completion ratio — *arithmetic Enforced; scoping Required — Phase 7*
+
+**Question.** What percentage of a scoped set is complete?
+
+**Owner.** `src/phase-lifecycle.cts` · `clampPercent(completed, total)` and `clampPercentFromFraction(fraction)`. A **seventh derivation family**, absent from the epic's table: the identical expression `total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0` was hand-inlined at six call sites across five modules while the owner sat exported beside them, unused by any of them.
+
+**Rule.**
+1. Exactly one expression of `fraction → integer percent` exists: round-half-up, ceiling 100.
+2. A non-positive or absent denominator yields **0**. "Nothing to complete" is 0%, never 100%.
+3. **The numerator and the denominator come from the same scoped set.** A percentage inherits the `scope` of the counts that produced it.
+4. **A derivation whose scope is not `COMPLETE` does not render a percentage at all.**
+
+**Status.** Rules 1 and 2 are enforced now: six sites migrated onto the owner, guarded by `scripts/lint-completion-ratio-drift.cjs`. Rules 3 and 4 are **Phase 7**, and #3161 is **not fixed** by the arithmetic consolidation — its `100`-while-plans-are-outstanding is rule 3 violated, a denominator computed over a window the numerator was not, which is why the epic's "blessed" `cmdRoadmapAnalyze` carries the same bug as the copies. Stated explicitly because a green ratio guard beside an unfixed #3161 is exactly the "measure became the target" outcome Decision 4 exists to prevent.
+
+#### 7.7 State field extraction — *Required — Phase 5*
+
+**Question.** What is the value of field `F` in a `.planning/` state document?
+
+**Owner.** `src/state-document.cts` · `stateExtractField`, carrying the #1760 fallback chain.
+
+**Rule.** Every consumer calls the owner; none re-derives the field's location or its fallback order locally. `state validate` reports invalid for a genuinely invalid document — an unconditional `{valid: true, warnings: [], drift: {}}` is a gate that cannot fail, which is worse than no gate (Decision 3).
+
+**Call-site sweep is driven from the graph, not from the epic's text** — `find_symbol` reports 20 direct callers where #3180 says five.
 
 ## Consequences
 
@@ -238,9 +348,26 @@ Considered and not applicable: `choose-boring-technology` (no new dependency; fi
 - [ADR-2121](2121-phase-identifier-parsing-consolidation.md) — the proven precedent this extends
 - [ADR-2143](2143-markdown-table-and-mutation-consolidation.md) — the document-parsing layer beneath
 - `scripts/lint-phase-id-drift.cjs` — the guard pattern Decision 4 models
+- `scripts/qa-smell-ratchet.cjs` — the ratchet invariants Decision 4(e) adopts verbatim
+- `scripts/lib/drift-scan.cjs` — the one tree-walk/confinement/sanitizer implementation every guard shares
 - `CONTRIBUTING.md` § *Prohibited: Raw Text Matching on Test Outputs* — why `scope` is a frozen enum
 - `CONTRIBUTING.md` § *Fixture provenance (#2371)* — why the identity test alone is insufficient
-- Phase sub-issues: [#3183](https://github.com/open-gsd/gsd-core/issues/3183), [#3184](https://github.com/open-gsd/gsd-core/issues/3184), [#3185](https://github.com/open-gsd/gsd-core/issues/3185), [#3186](https://github.com/open-gsd/gsd-core/issues/3186), [#3187](https://github.com/open-gsd/gsd-core/issues/3187)
+- Phase sub-issues: [#3183](https://github.com/open-gsd/gsd-core/issues/3183), [#3184](https://github.com/open-gsd/gsd-core/issues/3184), [#3185](https://github.com/open-gsd/gsd-core/issues/3185), [#3186](https://github.com/open-gsd/gsd-core/issues/3186), [#3187](https://github.com/open-gsd/gsd-core/issues/3187). Phases 6–8 (Amendment 3) are defined in §7.2, §7.6 and Decision 4(d)/(e) and are not yet filed as sub-issues.
+
+### Guard roster
+
+One row per derivation. A blank owner is a derivation whose contract is locked (§7) but whose owner does not exist yet.
+
+| Derivation | Owner | Guard | Scan surface | Status |
+|---|---|---|---|---|
+| Milestone windowing (§7.1) | `roadmap-parser.cts` | `lint-milestone-window-drift.cjs` | `src/` | enforced |
+| Milestone identity (§7.2) | — (Phase 6) | same guard, token set widened by Phase 6 | `src/` | contract only |
+| Phase enumeration (§7.3) | `phase-locator.cts` (Phase 3) | Phase 3 | `src/` | contract only |
+| Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | blocked on #2957 |
+| Live-plan counting (§7.5) | `plan-scan.cts` | `lint-plan-count-drift.cjs` | `src/` | enforced |
+| Live-plan counting, prompt layer (§7.5) | — (Phase 8) | `lint-planning-prompt-drift.cjs` | `gsd-core/workflows`, `commands`, `agents`, `skills` | ratcheted, 7 sites |
+| Completion ratio (§7.6) | `phase-lifecycle.cts` | `lint-completion-ratio-drift.cjs` | `src/` | arithmetic enforced; scoping is Phase 7 |
+| State field extraction (§7.7) | `state-document.cts` (Phase 5) | Phase 5 | `src/` | contract only |
 
 ## Amendments
 
@@ -351,3 +478,59 @@ ADR predicted lands as written, plus two the prediction did not contain:
 **Scope note.** Phase 3 (enumeration) inherits a window layer that is now single-owner and
 scope-carrying; its own guard starts from a green windowing baseline, exactly as Phase 1 left plan
 counting clean for Phase 3.
+
+### Amendment 3 — the 2026-08-08 coverage audit: two more derivation families, a fifth enumeration copy, and a guard that was looking at half the surface
+
+Source: the coverage audit posted to #3180 on 2026-08-08, which tested every open non-PR'd `bug`
+on the tracker against one question — *would executing this epic's stated work, by itself, make the
+reported symptom stop?* Four issues passed and were closed into the epic (#3164 and #3166 as already
+discharged by Phases 1 and 2; #3167 and #3168 as covered by open Phases 3 and 4). Seven did not.
+This amendment is what the seven change.
+
+**The copy count was a lower bound for the third consecutive time.** Amendment 1 found 26 live-plan
+re-derivations where the epic scoped 3. Amendment 2 found 5 windowing copies where the epic and this
+ADR both scoped 3. The audit now adds a fifth enumeration copy, a third completion predicate, and
+**two derivation families the epic never named at all**. Promoted to a standing rule, because three
+occurrences is a pattern and not a coincidence:
+
+> **A derivation's copy count is discovered by its whole-surface guard, never by the issues that
+> reported it.** The guard is therefore built and run *before* the phase's scope is fixed, not after
+> the migration it is meant to certify. Every phase from here forward states its copy count as
+> *"N found by the guard"*, never as *"N per the epic"*.
+
+**Scope changes.**
+
+| # | Change | Why the existing phases do not cover it |
+|---|---|---|
+| 1 | **Phase 3 widens** to include `buildStateFrontmatter` and `syncStateFrontmatter`, and to replace their "is the ROADMAP count trustworthy" discriminator with §7.1's `isMilestoneBoundedInRoadmap` (#3204) | Phase 3's Done-when named only `cmdProgressRender`, `cmdStats` and `cmdPhasesList`. Routing alone would not fix #3204 — its defect is the discriminator one layer above enumeration |
+| 2 | **Phase 4 blocks on #2957** and its guard must fail while a third predicate exists | The audit found `buildStateFrontmatter` computing completed phases from plan scanning alone, ignoring the ROADMAP checkbox `cmdRoadmapAnalyze` honors. Checkbox-override vs disk-strict is an undecided product question, not a consolidation |
+| 3 | **Phase 6 — milestone identity** (§7.2): bind `getMilestoneInfo` to `locateMilestoneHeadings`, widen the windowing guard's token set in the same change (#3171, #3197) | A sixth derivation family. Phase 2 consolidated *windowing*; `getMilestoneInfo` hand-rolls its own heading regexes to answer a different question — *which milestone is this and what is it called* — and no named phase touches it |
+| 4 | **Phase 7 — completion-ratio scoping** (§7.6 rules 3–4), which is where #3161 is actually fixed | A seventh derivation family. The arithmetic half ships with this amendment; the scoping half does not, and the epic's "blessed" `cmdRoadmapAnalyze` carries the same bug as the copies, so enumeration consolidation changes nothing here |
+| 5 | **Phase 8 — the prompt layer**: give the workflow layer a CLI surface to ask for plan and phase counts, and burn the ratchet baseline to zero | The re-derivation lives in shell inside `gsd-core/workflows/*.md`. No `.cts`-scoped guard can see it, and no import can route it — it needs a command to call |
+| 6 | **Plan-lifecycle terminal states** (§7.5) are declared a closed frontmatter vocabulary, with the gap recorded rather than papered over | Consolidation cannot fix #1762's prose-retired plans; the canonical owner counts them live and is *correct* to, under the contract as written |
+
+**Ordering.** Phase 6 is independent of Phases 3–5 and may ship at any point. Phase 7 follows Phase 3
+(its scoping is what makes rules 3–4 expressible). Phase 8 follows whichever phase first exposes the
+CLI surface it calls. Decision 5's locked 1→2→3→4→5 order is unchanged.
+
+**What shipped in this amendment's own change.**
+
+- Decision 4(d) — scan surface is every authored surface, and an owner **file** is no longer exempt, only its named canonical **functions**. `lint-milestone-window-drift.cjs` exempted `src/roadmap-parser.cts` wholesale, which is constraint (a)'s forbidden allowlist pointed at the file most likely to grow the next copy — and it had: `getMilestoneInfo` sits inside it, invisible.
+- Decision 4(e) — the ratchet mechanism, so a surface that cannot be consolidated today is watched today.
+- Decision 7 — the behavior contract, this ADR's normative core.
+- **Completion ratio consolidated**: `clampPercentFromFraction` added beside `clampPercent`; six inline copies across `roadmap.cts`, `state.cts`, `commands.cts` (×2), `workstream-inventory-builder.cts`, `gsd2-import.cts` and `state-document.cts` migrated onto the owner; `scripts/lint-completion-ratio-drift.cjs` added, reporting zero re-derivations with no file-level exemption.
+- **Prompt layer made visible**: `scripts/lint-planning-prompt-drift.cjs` added with a 7-entry shrink-only baseline covering `progress.md`, `execute-plan.md`, `plan-phase.md` and `plan-review-convergence.md`. Phase 8 owns its removal.
+
+**Decision 3's Tier-2 table, re-derived for this amendment: no rows.** Every percent migration is
+behavior-identical — `clampPercent`'s first line *is* the `total > 0 ? … : 0` ternary each copy
+carried. The single deliberate difference is `gsd2-import`'s `pct`, which gains a 100 ceiling it did
+not have; `donePhases` is a subset count of `totalPhases`, so the ceiling is unreachable and no
+emitted value changes.
+
+**Explicitly NOT absorbed, and left open on their own issues.** #3165's *answer* remains unrepaired —
+Phase 2 made the truncated window decidable (`SCOPE.TRUNCATED`) but `phase_count` is still `0` and
+`current_phase`/`next_phase` still `null`, so its first acceptance criterion is unmet and the
+underlying document-layout ambiguity is untouched by design. #3163 belongs to #2143's sectionizer
+layer and is not enumerated there yet; #3169 and #3170 are standalone parser/extraction defects with
+no epic home. Recording them here as *not covered* rather than leaving them to be re-tested by the
+next audit.

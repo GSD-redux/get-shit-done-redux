@@ -1119,6 +1119,42 @@ test('root confinement holds', { skip: process.platform === 'win32' ? 'symlink c
   assert.strictEqual(violations.length, 0);
 });
 
+// The guard's owner file (src/roadmap-parser.cts) is no longer exempt as a
+// whole file — only its named canonical functions are (FUNCTION_SCOPED_EXEMPTIONS).
+// These synthesize a relPath of 'src/roadmap-parser.cts' WITHOUT touching the
+// real source file, exercising findMilestoneWindowDrift directly.
+test('a non-exempt top-level function in src/roadmap-parser.cts IS reported', () => {
+  const relPath = path.join('src', 'roadmap-parser.cts');
+  const text = [
+    'function someOtherFunction() {',
+    `  ${violatingLine().trim()}`,
+    '}',
+  ].join('\n');
+  const violations = driftGuard.findMilestoneWindowDrift(text, relPath);
+  assert.strictEqual(violations.length, 1);
+  assert.strictEqual(violations[0].line, 2);
+});
+
+const OWNER_FILE_EXEMPT_FUNCTIONS = [
+  'isMilestoneShippedInRoadmap',
+  'locateMilestoneHeadings',
+  'hasMilestoneSectioning',
+  'extractCurrentMilestoneScoped',
+];
+
+for (const fnName of OWNER_FILE_EXEMPT_FUNCTIONS) {
+  test(`owner-file exempt function ${fnName} in src/roadmap-parser.cts is NOT reported`, () => {
+    const relPath = path.join('src', 'roadmap-parser.cts');
+    const text = [
+      `function ${fnName}() {`,
+      `  ${violatingLine().trim()}`,
+      '}',
+    ].join('\n');
+    const violations = driftGuard.findMilestoneWindowDrift(text, relPath);
+    assert.deepStrictEqual(violations, []);
+  });
+}
+
 test('report output is sanitized', () => {
   // findMilestoneWindowDrift returns the RAW fragment; main() sanitizes both
   // `file` and `found` at the reporting boundary via the shared

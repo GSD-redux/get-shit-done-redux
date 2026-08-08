@@ -54,6 +54,7 @@ import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sec
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -760,7 +761,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     }
   }
 
-  const percent = totalPlans > 0 ? Math.min(100, Math.round(totalSummaries / totalPlans * 100)) : 0;
+  const percent = clampPercent(totalSummaries, totalPlans);
   const barWidth = 10;
   const filled = Math.round(percent / 100 * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);

@@ -110,10 +110,31 @@ export function deriveProgressFromRoadmap(roadmapContent: string): RoadmapProgre
 }
 
 /**
+ * Compute progress percent clamped to 100 from an already-computed FRACTION.
+ *
+ * ADR-3180 Decision 7 (#3180): the completion-RATIO derivation has exactly one
+ * owner, and this is its kernel — the single place the `fraction -> integer
+ * percent` rounding and the 100 ceiling are expressed. `clampPercent` below is
+ * the count-shaped entry point and delegates here; a caller that already holds a
+ * fraction (rather than a completed/total pair) calls this directly instead of
+ * re-deriving `Math.min(100, Math.round(f * 100))` locally.
+ *
+ * Enforced by `scripts/lint-completion-ratio-drift.cjs`.
+ */
+export function clampPercentFromFraction(fraction: number): number {
+  return Math.min(100, Math.round(fraction * 100));
+}
+
+/**
  * Compute progress percent clamped to 100.
  * Root cause fix for issue #4 — see gen-phase-lifecycle.mjs for full documentation.
+ *
+ * A non-positive (or absent) denominator yields `0` — "nothing to complete" is
+ * reported as 0%, never as 100%. Every `.planning/` completion percentage in this
+ * codebase routes through here (ADR-3180 Decision 7); the `total > 0 ? ... : 0`
+ * ternary that used to precede each inline copy IS this function's first line.
  */
 export function clampPercent(completed: number, total: number): number {
   if (!total || total <= 0) return 0;
-  return Math.min(100, Math.round((completed / total) * 100));
+  return clampPercentFromFraction(completed / total);
 }

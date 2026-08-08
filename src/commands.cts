@@ -48,6 +48,7 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
@@ -1589,7 +1590,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     }
   } catch { /* intentionally empty */ }
 
-  const percent = totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0;
+  const percent = clampPercent(totalSummaries, totalPlans);
 
   if (format === 'table') {
     // Render markdown table
@@ -1935,8 +1936,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   const phases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
   const completedPhases = phases.filter(p => p.status === 'Complete').length;
-  const planPercent = totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0;
-  const percent = phases.length > 0 ? Math.min(100, Math.round((completedPhases / phases.length) * 100)) : 0;
+  const planPercent = clampPercent(totalSummaries, totalPlans);
+  const percent = clampPercent(completedPhases, phases.length);
 
   // Requirements stats
   let requirementsTotal = 0;
