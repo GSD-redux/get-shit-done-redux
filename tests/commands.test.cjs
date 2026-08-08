@@ -2815,6 +2815,7 @@ describe('pr-subrepo', () => {
       const rejectingBare = path.join(rootDir, '_rejecting-bare.git');
       fs.mkdirSync(rejectingBare, { recursive: true });
       gitOrThrow(['init', '--bare'], { cwd: rejectingBare });
+      gitOrThrow(['config', 'core.hooksPath', path.join(rejectingBare, 'hooks')], { cwd: rejectingBare });
       const hookPath = path.join(rejectingBare, 'hooks', 'pre-receive');
       fs.writeFileSync(hookPath, '#!/bin/sh\nexit 1\n');
       fs.chmodSync(hookPath, 0o755);
