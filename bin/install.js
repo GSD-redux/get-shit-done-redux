@@ -8647,7 +8647,7 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
     'github-release-notes.cjs', 'lint.cjs', 'new.cjs',
     'README.md', // documentation only — not user-authored
   ];
-  const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs'];
+  const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs'];
 
   const changesetUninstallDir = path.join(targetDir, 'scripts', 'changeset');
   if (fs.existsSync(changesetUninstallDir)) {
