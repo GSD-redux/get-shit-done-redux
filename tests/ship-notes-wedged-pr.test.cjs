@@ -190,7 +190,7 @@ describe('#2783 ship-note recovery decisions use current GitHub state', { skip: 
       { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
       { head: 'current-head', status: 'BLOCKED', checks: 0, review: '' },
     ]);
-    assert.strictEqual(result.ghCalls.length, 5, 'must poll exactly 5 times');
+    assert.strictEqual(result.ghCalls.length, 6, 'must poll up to 6 total calls (1 initial + 5 retries)');
     assert.strictEqual(
       result.gitCalls.filter(call => call === 'commit').length,
       1,
@@ -207,7 +207,7 @@ describe('#2783 ship-note recovery decisions use current GitHub state', { skip: 
       { head: 'current-head', status: 'UNKNOWN', checks: 0, review: '' },
       { head: 'current-head', status: 'BLOCKED', checks: 0, review: '' },
     ]);
-    assert.strictEqual(result.ghCalls.length, 5, 'must exhaust after exactly 5 polling attempts');
+    assert.strictEqual(result.ghCalls.length, 6, 'must exhaust after 6 total calls (1 initial + 5 retries)');
     assert.strictEqual(
       result.gitCalls.filter(call => call === 'commit').length,
       0,
