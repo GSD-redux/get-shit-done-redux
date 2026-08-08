@@ -12,7 +12,9 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const nodeFs = require('node:fs');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const GSD_TOOLS = path.join(ROOT, 'gsd-core', 'bin', 'gsd-tools.cjs');
@@ -127,12 +129,12 @@ describe('gsd-tools update-context (CLI): emits the JSON contract', () => {
       nodeFs.mkdirSync(path.join(tmp, 'gsd-core', 'workflows'), { recursive: true });
       nodeFs.writeFileSync(path.join(tmp, 'gsd-core', 'VERSION'), '1.42.0\n');
       nodeFs.writeFileSync(path.join(tmp, 'gsd-core', 'workflows', 'update.md'), 'x');
-      const out = execFileSync(
-        process.execPath,
+      const r = runNode(
         [GSD_TOOLS, 'update-context', '--config-dir', tmp, '--runtime', 'kilo', '--json'],
-        { encoding: 'utf8', env: { ...process.env, GSD_TEST_MODE: '1' } },
+        { env: { ...process.env, GSD_TEST_MODE: '1' }, timeoutMs: PROBE_TIMEOUT_MS },
       );
-      const ctx = JSON.parse(out);
+      throwIfFailed(r, 'gsd-tools update-context --json');
+      const ctx = JSON.parse(r.stdout);
       assert.deepEqual(Object.keys(ctx).sort(), ['gsdDir', 'installedVersion', 'runtime', 'scope']);
       assert.equal(ctx.installedVersion, '1.42.0');
       assert.equal(ctx.scope, 'GLOBAL');

@@ -34,6 +34,7 @@ const {
   getGlobalConfigDir,
   getGlobalSkillsBase,
   resolveKimiHooksTomlDir,
+  isRegisteredRuntimeId,
 } = require('../gsd-core/bin/lib/runtime-homes.cjs');
 // getDirName (runtime -> local config dir name) is relocated out of this
 // installer to the runtime-name-policy leaf (ADR-1508 / #1510 Phase 1) so the
@@ -13662,7 +13663,19 @@ if (require.main === module && !process.env.GSD_TEST_MODE) {
       console.error('Usage: node install.js --skills-root <runtime>');
       process.exit(1);
     }
-    const skillsRoot = getGlobalSkillsBase(runtimeArg);
+    // #3024: validate the runtime id against the shipped capability registry
+    // BEFORE resolving anything. getGlobalSkillsBase's bare `runtimes[runtime]`
+    // lookup falls through the prototype chain to claude's skills root for an
+    // unregistered/hostile id (`__proto__`, `constructor`, `prototype`, …)
+    // instead of failing loudly. isRegisteredRuntimeId is the SAME validator
+    // gsd-tools' `routeSkillsRoot` calls, so this entry point and the shipped
+    // `gsd-tools query skills-root` entry point can never diverge on which
+    // runtime ids they accept.
+    if (!isRegisteredRuntimeId(runtimeArg)) {
+      console.error(`Unknown runtime "${runtimeArg}" — must be a registered runtime id`);
+      process.exit(1);
+    }
+    const skillsRoot = getGlobalSkillsBase(runtimeArg.trim());
     if (skillsRoot === null) {
       console.error(`${runtimeArg} does not use a skills directory`);
       process.exit(1);

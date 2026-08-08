@@ -264,6 +264,9 @@ const { resolveActiveWorkstream, applyResolvedWorkstreamEnv } = require('./lib/a
 const state = require('./lib/state.cjs');
 const phase = require('./lib/phase.cjs');
 const roadmap = require('./lib/roadmap.cjs');
+// #3024: resolve skills root for the sync-skills workflow (install.js is not
+// shipped in installed trees; gsd-tools IS shipped, so the workflow calls this).
+const { getGlobalSkillsBase, isRegisteredRuntimeId } = require('./lib/runtime-homes.cjs');
 // #1561 — assumption-delta advisory checkpoint detector (pure function).
 const { detectAssumptionDelta } = require('./lib/assumption-delta.cjs');
 const verify = require('./lib/verify.cjs');
@@ -1044,6 +1047,37 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           commands.cmdCurrentTimestamp(args[1] || 'full', raw);
   }
 
+  function routeSkillsRoot({ args, raw, error }) {
+    // #3024: resolve the global skills base directory for a runtime.
+    // The sync-skills workflow previously shelled out to install.js --skills-root,
+    // but install.js is not shipped in installed trees. gsd-tools IS shipped, so
+    // the workflow now calls `gsd-tools query skills-root <runtime>` instead.
+    const runtime = args[1];
+    if (!runtime) {
+      error('Usage: gsd-tools query skills-root <runtime>');
+    }
+    // Defect B (#3024): validate the runtime id against the shipped capability
+    // registry's canonical runtime set BEFORE resolving anything.
+    // getGlobalSkillsBase falls through getGlobalConfigDir's unknown-runtime
+    // branch to claude's skills root for ANY id it doesn't recognize, so an
+    // unknown, empty/whitespace-only, path-traversal, or shell-metacharacter
+    // runtime arg would otherwise silently resolve to claude's path instead of
+    // failing loudly. isRegisteredRuntimeId does an own-property lookup (not a
+    // bare index), rejecting `__proto__`/`constructor`/`prototype` runtime
+    // ids, and is the SAME validator install.js's `--skills-root` entry point
+    // calls, so the two shipped entry points can never diverge on which
+    // runtime ids they accept.
+    if (!isRegisteredRuntimeId(runtime)) {
+      error(`Unknown runtime "${runtime}" — must be a registered runtime id`);
+    }
+    const trimmedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
+    const skillsRoot = getGlobalSkillsBase(trimmedRuntime);
+    if (skillsRoot === null) {
+      error(`No skills root found for runtime "${trimmedRuntime}"`);
+    }
+    output({ skills_root: skillsRoot }, raw, skillsRoot);
+  }
+
   function routeProjectInstructionFile({ args, cwd, raw, error }) {
     // #1529: pure runtime→filename projection. Backs the
           // `gsd_run query project-instruction-file --runtime <r>` call in
@@ -1156,6 +1190,22 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return i !== -1 && args[i + 1] && !String(args[i + 1]).startsWith('--') ? args[i + 1] : null;
     };
     const sub = args[1];
+    // Fail fast on an unrecognized subcommand. Without this check, `sub` fell through
+    // to the `sub !== 'invoke'` usage-error branch far below (after loading the
+    // capability registry AND building a per-lane plan for every lane — which itself
+    // spawns one child `query resolve-execution` process per lane via `effortFor`,
+    // up to 12 subprocess spawns for the default lane set) before ever reporting the
+    // error. That made an invalid subcommand slow instead of instant, and under bench
+    // load (many sequential node spawns) `review-lane bogus` could exceed a caller's
+    // spawn timeout and be killed before writing anything to stderr — the CI-observed
+    // failure was empty stdout AND stderr, not the expected usage message (#3148).
+    // `plan`/`invoke` are the only subs that need the expensive plan-building path
+    // below; `sections`/`flags` return earlier still. Anything else errors here, before
+    // any of that work starts.
+    if (!['plan', 'invoke', 'sections', 'flags'].includes(sub)) {
+      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
+      return;
+    }
     const runDir = flag('--run-dir') || '.';
     const repoRoot = flag('--repo-root') || cwd;
 
@@ -3345,6 +3395,7 @@ const HOST_COMMAND_ROUTERS = {
     'user-story': routeUserStory,
     'drift-guard': routeDriftGuard,
     'windows': routeWindows,
+    'skills-root': routeSkillsRoot,
 };
 
 // Returns true when consumed (suppress "Unknown command"), false to fall
@@ -3561,7 +3612,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
-  'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
+  'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
   '  --raw              Emit raw output without post-processing\n' +

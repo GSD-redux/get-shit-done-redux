@@ -10152,7 +10152,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { runNode } = require('./helpers/process-seam.cjs');
+const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
 
 // A single short CLI query (install.js --skills-root <runtime>) — no full
@@ -10207,6 +10207,224 @@ describe('install.js --skills-root', () => {
   });
 });
 
+// ── gsd-tools query skills-root (#3024) ──────────────────────────────────────
+
+describe('#3024: gsd-tools query skills-root', () => {
+  const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  // Must agree with install.js --skills-root for every runtime (same underlying
+  // getGlobalSkillsBase function, just a different entry point that IS shipped).
+  const CASES = [
+    { runtime: 'claude', expected: path.join(os.homedir(), '.claude', 'skills') },
+    { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
+  ];
+
+  for (const { runtime, expected } of CASES) {
+    test(`resolves correct skills root for ${runtime}`, () => {
+      const result = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
+        env: { ...process.env, GSD_TEST_MODE: '1' },
+      });
+      assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+      assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+      const actual = result.stdout.trim();
+      assert.strictEqual(actual, expected, `Expected ${expected}, got ${actual}`);
+    });
+  }
+
+  test('errors when runtime arg is missing', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Should exit with error when runtime arg is missing');
+  });
+
+  test('non-raw form: query skills-root claude parses as JSON with expected skills_root', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+    const expected = path.join(os.homedir(), '.claude', 'skills');
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.skills_root, expected, `Expected ${expected}, got ${parsed.skills_root}`);
+  });
+
+  // Defect B regression: an unknown runtime must NOT silently resolve to
+  // claude's skills root. getGlobalSkillsBase falls back through
+  // getGlobalConfigDir instead of returning null, so routeSkillsRoot's
+  // `if (skillsRoot === null)` guard never fires for a bogus runtime id.
+  test('defect B: unknown runtime does not silently resolve to claude skills root', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'bogus-runtime', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Unknown runtime must exit non-zero');
+    assert.ok(
+      !result.stdout.includes(claudeSkillsRoot),
+      `stdout must not silently emit claude's skills root for an unknown runtime; got: ${result.stdout}`
+    );
+  });
+
+  test('empty runtime arg exits non-zero', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Empty runtime must exit non-zero');
+  });
+
+  test('whitespace-only runtime arg exits non-zero', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '   ', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Whitespace-only runtime must exit non-zero');
+  });
+
+  test('HOSTILE: path-traversal runtime arg exits non-zero and emits no path', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '../../etc', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Path-traversal runtime must exit non-zero');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
+  });
+
+  // HOSTILE: the seam spawns via an argv array (see process-seam.cjs), never a
+  // shell string, so this value can never reach a shell for interpolation.
+  // The assertion below confirms the command rejects the runtime value and
+  // produces no output — it cannot (and does not need to) prove
+  // shell-injection safety, because no shell is ever invoked.
+  test('HOSTILE: shell-metacharacter runtime arg exits non-zero with no output', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude; rm -rf /', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Shell-metacharacter runtime must exit non-zero');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
+  });
+
+  // #3024 review BLOCKER (finding 2): install.js --skills-root had NO
+  // own-property gate, so a prototype-chain id silently resolved to claude's
+  // skills root via prototype fallthrough in getGlobalConfigDir, while
+  // gsd-tools' routeSkillsRoot (this same PR) rejects it. HOSTILE ids are
+  // included in the SAME loop as the registered runtimes so both surfaces are
+  // asserted to agree (or both reject) with one shared mechanism, and the
+  // hostile branch below additionally pins the outcome to "both reject" —
+  // agreement alone would not catch a defect where both sides silently
+  // accepted the same wrong value.
+  const HOSTILE_RUNTIME_IDS = ['__proto__', 'constructor', 'prototype', 'toString', '', '   '];
+
+  test('parity: gsd-tools query skills-root matches install.js --skills-root for every registered runtime and every hostile id', () => {
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const runtimeIds = Object.keys(runtimes);
+    assert.ok(runtimeIds.length > 0, 'capability registry must list at least one runtime');
+
+    for (const runtime of [...runtimeIds, ...HOSTILE_RUNTIME_IDS]) {
+      const isHostile = HOSTILE_RUNTIME_IDS.includes(runtime);
+      const toolsResult = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
+        env: { ...process.env, GSD_TEST_MODE: '1' },
+      });
+      const installResult = runNode([INSTALL_JS, '--skills-root', runtime], {
+        env: { ...process.env, GSD_TEST_MODE: undefined },
+      });
+      assert.equal(toolsResult.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(toolsResult)}`);
+      assert.equal(installResult.outcome, OUTCOME.EXITED, `install.js did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(installResult)}`);
+      const toolsIsZero = toolsResult.exitCode === 0;
+      const installIsZero = installResult.exitCode === 0;
+      assert.strictEqual(
+        toolsIsZero, installIsZero,
+        `runtime ${JSON.stringify(runtime)}: exit-code agreement mismatch (gsd-tools=${toolsResult.exitCode}, install.js=${installResult.exitCode})`
+      );
+      if (isHostile) {
+        assert.strictEqual(toolsIsZero, false, `HOSTILE id ${JSON.stringify(runtime)}: gsd-tools must reject, not accept`);
+        assert.strictEqual(installIsZero, false, `HOSTILE id ${JSON.stringify(runtime)}: install.js must reject, not accept`);
+      }
+      if (toolsIsZero && installIsZero) {
+        const toolsPath = String(toolsResult.stdout.trim()).replace(/\\/g, '/');
+        const installPath = String(installResult.stdout.trim()).replace(/\\/g, '/');
+        assert.strictEqual(
+          toolsPath, installPath,
+          `runtime ${JSON.stringify(runtime)}: gsd-tools (${toolsPath}) and install.js (${installPath}) must resolve the same skills root`
+        );
+      }
+    }
+  });
+
+  // #3024 review BLOCKER (finding 2 regression pin): before the fix,
+  // `node bin/install.js --skills-root __proto__` printed claude's skills
+  // root via prototype fallthrough instead of rejecting. Pin the exact
+  // observable symptom, not just the exit code, so a future regression that
+  // reintroduces a bare `runtimes[runtime]` lookup is caught even if it
+  // happens to also exit non-zero for some unrelated reason.
+  test('HOSTILE: install.js --skills-root __proto__ does not silently resolve to claude skills root', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([INSTALL_JS, '--skills-root', '__proto__'], {
+      env: { ...process.env, GSD_TEST_MODE: undefined },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `install.js did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, '__proto__ runtime must exit non-zero');
+    assert.ok(
+      !result.stdout.includes(claudeSkillsRoot),
+      `stdout must not silently emit claude's skills root for __proto__; got: ${result.stdout}`
+    );
+  });
+
+  // #3024 review BLOCKER (finding 1 regression pin): the first fix pass
+  // rejected `grok` outright, and a test that only asserts "grok is
+  // accepted" would not have caught that regression's root cause — an
+  // allow-list membership check proves nothing about whether the id
+  // actually resolves anywhere real. This asserts the REAL contract: grok
+  // must both be accepted AND resolve to its own dedicated `~/.agents`
+  // layout (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+  // `src/runtime-homes.cts`), not to claude's wrong-runtime fallback.
+  test('grok: accepted, and resolves under .agents — NOT claude\'s skills root (inclusion is real, not merely allow-listed)', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const grokSkillsRoot = path.join(os.homedir(), '.agents', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'grok', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1', GROK_AGENTS_HOME: undefined },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.exitCode, 0, `grok must be accepted; gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+    const actual = result.stdout.trim();
+    assert.strictEqual(actual, grokSkillsRoot, `Expected grok to resolve under .agents (${grokSkillsRoot}), got ${actual}`);
+    assert.notStrictEqual(actual, claudeSkillsRoot, "grok must NOT resolve to claude's skills root");
+  });
+
+  // #3024 review BLOCKER (finding 1, rejection-side teeth): `gemini` must
+  // stay rejected, and — critically — for the RIGHT reason. It is not
+  // merely "unregistered" (grok is unregistered too, and is correctly
+  // accepted via LEGACY_NON_REGISTRY_RUNTIME_IDS); gemini has no dedicated
+  // resolution branch anywhere, so `getGlobalSkillsBase('gemini')` silently
+  // falls through to claude's wrong-runtime fallback path. The CLI-level
+  // assertion proves gemini is rejected; the direct-resolution assertion
+  // below proves WHY it must stay rejected — if gemini ever grew a real
+  // dedicated branch (making it grok's true peer), this second assertion
+  // would fail and force a conscious decision, instead of someone
+  // reflexively adding it to LEGACY_NON_REGISTRY_RUNTIME_IDS.
+  test("gemini: rejected — because its bare resolution is claude's fallback, not because it is merely unregistered", () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'gemini', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'gemini must be rejected by isRegisteredRuntimeId');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path for rejected gemini; got: ${result.stdout}`);
+
+    // Prove the reason: gemini's underlying (ungated) resolution IS claude's
+    // wrong-runtime fallback — unlike grok's, which resolves to a real,
+    // distinct path (see the sibling grok test above).
+    const { getGlobalSkillsBase } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    assert.strictEqual(
+      getGlobalSkillsBase('gemini'), claudeSkillsRoot,
+      "gemini's bare resolution must be claude's fallback path — this is the wrong-runtime bug that justifies keeping gemini rejected"
+    );
+  });
+});
+
 // ── sync-skills.md workflow content ──────────────────────────────────────────
 
 describe('sync-skills.md — required behavioral specs', () => {
@@ -10251,6 +10469,117 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
   });
 
+  // #3024 review BLOCKER (finding 1 — REGRESSION): this branch's first fix
+  // pass hand-derived the "expected" set from the registry alone and dropped
+  // `grok` from both the doc list and the `--to all` expansion, on the
+  // mistaken assumption that "not in the registry" means "not a real
+  // runtime". `grok` has a live, dedicated `~/.agents`-layout resolution
+  // branch in `getGlobalConfigDir` (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+  // `src/runtime-homes.cts`) predating the capability registry, so removing
+  // it silently broke working, documented `--skills-root`/`sync-skills`
+  // support. `gemini`, by contrast, is correctly excluded: it has NO
+  // dedicated branch and falls through to claude's skills root — the
+  // wrong-runtime bug this whole PR exists to fix. This parity test fails
+  // the moment either doc list next diverges from (registry ∪
+  // NAMED_LEGACY_INCLUSIONS) minus NAMED_DELIBERATE_EXCLUSIONS, in EITHER
+  // direction (an id in the doc but not expected, or an id expected but
+  // missing from the doc).
+  test('parity: documented runtime list matches the capability registry (minus deliberate exclusions)', () => {
+    content = content || readWorkflow();
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const { LEGACY_NON_REGISTRY_RUNTIME_IDS } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    const registryIds = Object.keys(runtimes);
+    assert.ok(registryIds.length > 0, 'capability registry must list at least one runtime');
+
+    // Named, single-source inclusion: runtime ids with a genuine dedicated
+    // resolution branch (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+    // `src/runtime-homes.cts`) but no capability-registry descriptor. As of
+    // #3024 this is `grok` only — imported directly from the same constant
+    // `isRegisteredRuntimeId` gates on, so this test and the validator can
+    // never independently drift on which legacy ids are "real".
+    const NAMED_LEGACY_INCLUSIONS = [...LEGACY_NON_REGISTRY_RUNTIME_IDS];
+    assert.ok(
+      NAMED_LEGACY_INCLUSIONS.length > 0 && NAMED_LEGACY_INCLUSIONS.includes('grok'),
+      `expected LEGACY_NON_REGISTRY_RUNTIME_IDS to include 'grok'; got ${JSON.stringify(NAMED_LEGACY_INCLUSIONS)}`
+    );
+    for (const included of NAMED_LEGACY_INCLUSIONS) {
+      assert.ok(
+        !registryIds.includes(included),
+        `named legacy inclusion "${included}" is already a registry id — remove it from LEGACY_NON_REGISTRY_RUNTIME_IDS, not from this test`
+      );
+    }
+
+    // Deliberate, named exclusion: vscode is `installSurface: 'none'` (#2103)
+    // and `getGlobalSkillsBase('vscode')` returns null, so a skills-root sync
+    // to/from it can never succeed. It is named as excluded in the workflow's
+    // own "Supported runtime names" prose, and excluded here identically, so
+    // this test cannot silently drift from the prose that documents it.
+    const NAMED_DELIBERATE_EXCLUSIONS = ['vscode'];
+    for (const excluded of NAMED_DELIBERATE_EXCLUSIONS) {
+      assert.ok(
+        registryIds.includes(excluded),
+        `deliberate exclusion "${excluded}" must itself be a real registry id (nothing to exclude otherwise)`
+      );
+    }
+    const expectedIds = registryIds
+      .filter((id) => !NAMED_DELIBERATE_EXCLUSIONS.includes(id))
+      .concat(NAMED_LEGACY_INCLUSIONS)
+      .sort();
+
+    // Anchored to the "Supported runtime names:" line's id list ONLY: capture
+    // stops at the " — the full capability registry runtime set" prose that
+    // follows the list. A file-wide backtick sweep over the rest of that
+    // sentence (which explains the vscode exclusion) previously also matched
+    // `runtimes`, `null`, and `vscode` from unrelated inline-code spans in the
+    // explanatory prose — this scopes extraction to the list construct itself.
+    const supportedLineMatch = content.match(
+      /\*\*Supported runtime names:\*\*\s*([^\n]*?)\s+—\s+the full capability registry runtime set/
+    );
+    assert.ok(supportedLineMatch, 'workflow must have a "Supported runtime names:" line ending at " — the full capability registry runtime set"');
+    const docIds = [...supportedLineMatch[1].matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]).sort();
+    assert.ok(
+      docIds.length > 0 && docIds.every((id) => /^[a-z0-9-]+$/.test(id)),
+      '"Supported runtime names:" extractor matched nothing plausible: expected one or more ' +
+      `backtick-wrapped runtime ids (e.g. \`claude\`) in the line's id list, got ${JSON.stringify(docIds)}`
+    );
+
+    // Anchored to the `--to all` branch specifically: the file defines
+    // TO_RUNTIMES=() three times (an empty initializer, this branch's full
+    // expansion, and the explicit `--to <runtime>` branch's command
+    // substitution), and an unanchored match on the FIRST occurrence anywhere
+    // in the file silently captures the empty initializer instead (#3024
+    // remote-runner regression: toAllIds resolved to [] with no assertion
+    // failure until the final deepStrictEqual). Locate the `--to all` marker
+    // first, then take the first TO_RUNTIMES=(...) assignment after it —
+    // which is this branch's expansion, not the empty initializer that
+    // precedes the marker or the `$(...)` substitution branch that follows it.
+    const toAllMarkerIndex = content.indexOf('"--to all"');
+    assert.ok(toAllMarkerIndex > -1, 'workflow must contain a `--to all` branch marker (`"--to all"`)');
+    const toAllMatch = content.slice(toAllMarkerIndex).match(/TO_RUNTIMES=\(([^)]*)\)/);
+    assert.ok(toAllMatch, 'workflow must define TO_RUNTIMES=(...) for `--to all` after the `--to all` marker');
+    const toAllIds = toAllMatch[1].trim().split(/\s+/).filter(Boolean).sort();
+    assert.ok(
+      toAllIds.length > 0 && toAllIds.every((id) => /^[a-z0-9-]+$/.test(id)),
+      '`--to all` TO_RUNTIMES extractor matched nothing plausible: expected one or more ' +
+      `space-separated runtime ids inside TO_RUNTIMES=(...) after the \`--to all\` marker, got ${JSON.stringify(toAllIds)}`
+    );
+
+    assert.deepStrictEqual(
+      docIds, expectedIds,
+      '"Supported runtime names" list must match (capability registry ∪ named legacy inclusions ' +
+      `[${NAMED_LEGACY_INCLUSIONS.join(', ')}]) minus deliberate exclusions (${NAMED_DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in doc but not expected: ${JSON.stringify(docIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  expected but missing from doc: ${JSON.stringify(expectedIds.filter((id) => !docIds.includes(id)))}`
+    );
+    assert.deepStrictEqual(
+      toAllIds, expectedIds,
+      '`--to all` TO_RUNTIMES expansion must match (capability registry ∪ named legacy inclusions ' +
+      `[${NAMED_LEGACY_INCLUSIONS.join(', ')}]) minus deliberate exclusions (${NAMED_DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in --to-all but not expected: ${JSON.stringify(toAllIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  expected but missing from --to-all: ${JSON.stringify(expectedIds.filter((id) => !toAllIds.includes(id)))}`
+    );
+  });
+
   test('idempotency documented (second apply = zero changes)', () => {
     content = content || readWorkflow();
     assert.ok(
@@ -10259,11 +10588,16 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
   });
 
-  test('install.js --skills-root is used for path resolution', () => {
+  test('gsd_run query skills-root is used for path resolution (#3024)', () => {
+    // #3024: sync-skills.md moved off the unshipped `install.js --skills-root`
+    // entry point onto `gsd_run query skills-root`, which IS shipped (routes
+    // through gsd-tools.cjs — see routeSkillsRoot). This asserts the new
+    // contract; the old install.js reference is covered as an explicit
+    // regression by "defect C: workflow contains zero references to install.js".
     content = content || readWorkflow();
     assert.ok(
-      content.includes('--skills-root'),
-      'workflow must reference install.js --skills-root for path resolution'
+      content.includes('gsd_run query skills-root'),
+      'workflow must reference gsd_run query skills-root for path resolution'
     );
   });
 
@@ -10289,6 +10623,155 @@ describe('sync-skills.md — required behavioral specs', () => {
       safetySection || content.includes('no writes') || content.includes('--dry-run performs no writes'),
       'workflow must have a safety rule that dry-run performs no writes'
     );
+  });
+
+  // Defect C regression: the workflow must not send users back to the
+  // unshipped `install.js` entry point this issue moved away from (#3024).
+  test('defect C: workflow contains zero references to install.js', () => {
+    content = content || readWorkflow();
+    const occurrences = (content.match(/install\.js/g) || []).length;
+    assert.strictEqual(
+      occurrences, 0,
+      `sync-skills.md must not reference install.js (unshipped in installed trees); found ${occurrences} occurrence(s)`
+    );
+  });
+
+  test('Step 2 resolves skills roots via gsd_run query skills-root', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      content.includes('gsd_run query skills-root'),
+      'workflow Step 2 must resolve skills roots via `gsd_run query skills-root`'
+    );
+  });
+
+  // #3024 follow-up hardening: neither `gsd_run query skills-root` call in
+  // Step 2 checked its exit status or for an empty result, so an unregistered
+  // runtime id silently produced an empty root that Step 5 fed straight into
+  // `rm -rf`/`cp -r`. These assert the guard is present in the shipped text.
+  test('Step 2 guards the SOURCE skills-root resolution (exit status + non-empty)', () => {
+    content = content || readWorkflow();
+    const step2 = content.slice(content.indexOf('## Step 2:'), content.indexOf('## Step 3:'));
+    assert.ok(
+      /SRC_SKILLS_ROOT\s*=\s*\$\(gsd_run query skills-root[^)]*\)\s*\n\s*if\s*\[\s*\$\?\s*-ne\s*0\s*\]\s*\|\|\s*\[\s*-z\s*"\$SRC_SKILLS_ROOT"\s*\]/.test(step2),
+      'Step 2 must check exit status ($?) and non-empty (-z) immediately after resolving SRC_SKILLS_ROOT'
+    );
+    assert.match(
+      step2,
+      /exit 1/,
+      'Step 2 must exit non-zero when SRC_SKILLS_ROOT resolution fails'
+    );
+  });
+
+  test('Step 2 guards each DESTINATION skills-root resolution (exit status + non-empty)', () => {
+    content = content || readWorkflow();
+    const step2 = content.slice(content.indexOf('## Step 2:'), content.indexOf('## Step 3:'));
+    assert.ok(
+      /for DEST_RUNTIME in "\$\{TO_RUNTIMES\[@\]\}"; do[\s\S]*?gsd_run query skills-root "\$DEST_RUNTIME"[^)]*\)[\s\S]*?if\s*\[\s*\$\?\s*-ne\s*0\s*\]\s*\|\|\s*\[\s*-z\s*"\$RESOLVED_DEST_ROOT"\s*\][\s\S]*?exit 1[\s\S]*?done/.test(step2),
+      'Step 2 must check exit status and non-empty for each resolved destination root inside the TO_RUNTIMES loop, and exit 1 on failure'
+    );
+  });
+
+  test('prose guard documents destination skills-root resolution failure (mirrors source guard)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      /resolving the skills root for the source OR any destination runtime fails/i.test(content),
+      'workflow must document a guard for destination skills-root resolution failure alongside the source-not-found guard'
+    );
+  });
+
+  test('Step 5 requires non-empty/absolute roots before any rm -rf or cp -r', () => {
+    content = content || readWorkflow();
+    const step5 = content.slice(content.indexOf('## Step 5:'));
+    const rmIndex = step5.indexOf('rm -rf "$DEST_ROOT/$SKILL"');
+    const cpIndex = step5.indexOf('cp -r "$SRC_SKILLS_ROOT/$SKILL"');
+    assert.ok(rmIndex > -1, 'Step 5 must contain rm -rf "$DEST_ROOT/$SKILL"');
+    assert.ok(cpIndex > -1, 'Step 5 must contain cp -r "$SRC_SKILLS_ROOT/$SKILL"');
+
+    const srcGuardIndex = step5.indexOf('[[ "$SRC_SKILLS_ROOT" == /* ]]');
+    const destGuardIndex = step5.indexOf('[[ "$DEST_ROOT" == /* ]]');
+    assert.ok(srcGuardIndex > -1, 'Step 5 must guard SRC_SKILLS_ROOT as a non-empty absolute path before use');
+    assert.ok(destGuardIndex > -1, 'Step 5 must guard DEST_ROOT as a non-empty absolute path before use');
+    assert.ok(
+      srcGuardIndex < rmIndex && destGuardIndex < rmIndex,
+      'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede the first rm -rf in Step 5'
+    );
+    assert.ok(
+      srcGuardIndex < cpIndex && destGuardIndex < cpIndex,
+      'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede cp -r in Step 5'
+    );
+  });
+
+  // #3024 follow-up (this fix): `DEST_SKILLS_ROOTS` was assigned in Step 2 as a
+  // keyed map but never `declare -A`'d and never read back anywhere — on bash 3.2
+  // (macOS system /bin/bash) that assignment silently collapses every destination's
+  // resolved root into index [0], and since nothing ever reads it, Steps 3/5's
+  // `$DEST_ROOT` was always unbound. The fix drops the array entirely; this pins
+  // the regression so it cannot silently come back.
+  test('defect: DEST_SKILLS_ROOTS array is gone (bash-3.2 hazard, was never read)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      !content.includes('DEST_SKILLS_ROOTS'),
+      'workflow must not reference DEST_SKILLS_ROOTS anywhere; it was an unread, ' +
+      'bash-3.2-hostile associative-array assignment'
+    );
+  });
+
+  test('no associative-array syntax anywhere in the file (bash 3.2 compatibility)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      !/\bdeclare\s+-A\b/.test(content),
+      'workflow must not use `declare -A` (bash4+-only; system /bin/bash on macOS is 3.2)'
+    );
+    assert.ok(
+      !/\btypeset\s+-A\b/.test(content),
+      'workflow must not use `typeset -A` (bash4+-only associative-array declaration)'
+    );
+  });
+
+  // #3024 follow-up (this fix): every fenced bash block that reads `$DEST_ROOT`
+  // must itself assign `DEST_ROOT` before that read — Steps 3 and 5 are separate
+  // bash constructs (not one continuously-executing script), so each one has to
+  // bind DEST_ROOT for the destination it is currently processing rather than
+  // relying on a value threaded in from elsewhere. This is the actual fix for the
+  // dangling-variable defect; assert it holds for every ```bash block in the file,
+  // not just Steps 3/5, so a future edit that introduces a new $DEST_ROOT read
+  // elsewhere is held to the same rule.
+  test('every $DEST_ROOT read is preceded by a DEST_ROOT= assignment in the same bash block', () => {
+    content = content || readWorkflow();
+    const bashBlocks = [...content.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+    assert.ok(
+      bashBlocks.length > 0,
+      'extractor matched no fenced ```bash blocks at all — the workflow must contain some'
+    );
+
+    const blocksUsingDestRoot = bashBlocks.filter((block) => /\$DEST_ROOT\b/.test(block));
+    assert.ok(
+      blocksUsingDestRoot.length > 0,
+      'extractor found no fenced bash block referencing $DEST_ROOT — expected Step 3 and Step 5 to reference it'
+    );
+    // This is the exact bug: Steps 3 and 5 both use $DEST_ROOT, so there must be at
+    // least two such blocks (one per step). A single match would mean one of the two
+    // steps lost its reference to $DEST_ROOT entirely rather than being fixed.
+    assert.ok(
+      blocksUsingDestRoot.length >= 2,
+      'expected at least 2 fenced bash blocks referencing $DEST_ROOT (Step 3 and Step 5), got '
+      + String(blocksUsingDestRoot.length)
+    );
+
+    for (const block of blocksUsingDestRoot) {
+      const assignMatch = block.match(/^\s*DEST_ROOT=/m);
+      assert.ok(
+        assignMatch,
+        'a fenced bash block reads $DEST_ROOT but never assigns it: ' + JSON.stringify(block.slice(0, 200))
+      );
+      const assignIndex = block.indexOf(assignMatch[0]);
+      const firstReadIndex = block.search(/\$DEST_ROOT\b/);
+      assert.ok(
+        firstReadIndex > -1 && assignIndex <= firstReadIndex,
+        'DEST_ROOT= assignment (index ' + assignIndex + ') must precede the first $DEST_ROOT read '
+        + '(index ' + firstReadIndex + ') in the same bash block: ' + JSON.stringify(block.slice(0, 200))
+      );
+    }
   });
 });
 
