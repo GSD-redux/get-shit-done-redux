@@ -295,3 +295,48 @@ plan report as a naming violation — the diagnostic reads non-membership as a d
 `allPlanFiles`. The general rule: a **diagnostic about file naming** wants the physical set; only a
 question about outstanding *work* wants the live set. Later phases must make that choice explicitly
 per call site rather than swapping in `planFiles` mechanically.
+
+### Amendment 2 — Phase 2 (#3184) validation: the contract held; the copy count was low again
+
+Decision 2's contract needed **no change** for its second consumer: `SCOPE`'s four values covered
+every row of the windowing derivation's behavior table, including the two rows the epic's text does
+not distinguish (a free-form legacy ROADMAP with no versioned milestones is `COMPLETE`, not
+`UNSCOPED` — whole-document genuinely *is* the milestone there). Phase 2 adds no member and changes
+no semantics. `src/planning-scope.cts` needed no edit, so Phase 2 carries no `.cts` six-gate ripple.
+
+**What Phase 2 found.** The epic and this ADR both scope milestone windowing at **three** copies, all
+inside `roadmap-parser.cts`. Building the Decision 4(a) whole-repo guard found **two more**, in a
+different module and one function down: `state.cts` `buildStateFrontmatter` and `syncStateFrontmatter`
+each hand-roll `^#{1,3}\s+(?!Phase\s+\S).*${escapeRegex(version)}` to answer "is this milestone
+bounded to a versioned ROADMAP heading" — the heading-location half of the derivation, byte-identical
+to each other, and **carrying a defect neither reported copy has**: no boundary assertion after the
+version token, so `v2.0` matches inside `v2.0.1`. `\b` does not save it (`.` is a non-word character),
+which is precisely the defect #2562 fixed in `isMilestoneShippedInRoadmap` and never propagated. This
+is Phase 1's finding repeating with a different derivation: **the epic's copy counts are a lower
+bound derived from the reported issues, and the whole-repo guard is what makes them real.** Both sites
+now call the owner's `isMilestoneBoundedInRoadmap`.
+
+**A composition-level re-derivation, caught in review of this phase's own diff.** Decision 4(c)
+anticipated a consumer post-*filtering* an owner's result. The shape that actually appeared is its
+mirror: two sites re-*assembling* a window out of the owner's primitives —
+`locateMilestoneHeadings` → pick a heading → `computeMilestoneSectionEnd` → slice — in
+`getMilestonePhaseFilter`'s `versionOverride` branch and in `milestone.cts`'s unstarted-phase guard.
+Both call the canonical owner at every step, so the drift guard and an owner-level identity test are
+both green, and the two compositions had **already diverged** on whether to skip a closed milestone
+heading. Decision 4(c) is therefore read to cover **assembly as well as post-processing**: where a
+derivation has a composition, the composition is itself an owner. Added as
+`sliceMilestoneWindow`; both sites route through it.
+
+**Decision 3's Tier-2 table, re-derived for Phase 2** per its own contingency clause. The row this
+ADR predicted lands as written, plus two the prediction did not contain:
+
+| Command surface | Output change |
+|---|---|
+| `roadmap analyze` | gains a `scope` field; a truncated window stops reporting `phase_count: 0` as if it were a real empty (#3165) |
+| `milestone complete` | refuses (unless `--force`) when the window's scope is not `COMPLETE`, instead of pass-all archiving every phase directory on disk (#3166) |
+| `milestone complete`, `state sync`, `state json`, `roadmap get-phase` — **not predicted** | the version token is now boundary-matched everywhere. A project whose STATE asserts `v2.0` against a ROADMAP that only has a `v2.0.1` heading previously matched it by substring and scoped to that section; it now reports the milestone unbounded/unscoped. This is the correct answer and a behavior change for any roadmap using dotted sub-versions. |
+| `milestone complete` unstarted-phase guard — **not predicted** | the guard scoped its window by STATE.md's `milestone:` field while the filter beside it scoped by the `version` argument; the two could disagree, and the guard under-detected unstarted phases on the destructive path. Both now use the `version` argument. |
+
+**Scope note.** Phase 3 (enumeration) inherits a window layer that is now single-owner and
+scope-carrying; its own guard starts from a green windowing baseline, exactly as Phase 1 left plan
+counting clean for Phase 3.

@@ -19,7 +19,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone } = roadmapParserMod;
+const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -1775,11 +1775,12 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // downstream (mirrors the sync write-path guard).
             let milestoneBounded = true;
             if (milestone && roadmapRaw !== null) {
-              const versionedHeading = new RegExp(
-                `^#{1,3}\\s+(?!Phase\\s+\\S).*${escapeRegex(String(milestone).trim())}`,
-                'mi',
-              );
-              milestoneBounded = versionedHeading.test(roadmapRaw);
+              // #3184: routed through the single owner (roadmap-parser.cjs)
+              // instead of a hand-rolled, unbounded-substring re-derivation —
+              // the prior inline regex had no boundary assertion after the
+              // version token, so `v2.0` matched inside `v2.0.1` (#2562-class
+              // defect, design row 17).
+              milestoneBounded = isMilestoneBoundedInRoadmap(roadmapRaw, String(milestone).trim());
             }
             // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
             // at all — only Phase headings) from a MILESTONED-but-unbounded one
@@ -1787,10 +1788,14 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // On a flat roadmap the whole-doc count is correct (no sibling milestones to
             // conflate); on a sectioned-but-unbounded one it conflates siblings (#1761),
             // so fall back to phaseDirs.length.
-            const hasMilestoneSectioning = roadmapRaw !== null
-              && /^#{2,3}\s+(?!Phase\s+\S)/mi.test(roadmapRaw);
+            // #3184: routed through the single owner (roadmap-parser.cjs) —
+            // deliberately weaker than isMilestoneBoundedInRoadmap above (no
+            // version-token requirement); see hasMilestoneSectioning's own
+            // doc comment for why that distinction is load-bearing.
+            const roadmapHasMilestoneSectioning = roadmapRaw !== null
+              && hasMilestoneSectioning(roadmapRaw);
             const safeToUseRoadmapCount = milestoneBounded
-              || (roadmapPhaseCount > 0 && !hasMilestoneSectioning);
+              || (roadmapPhaseCount > 0 && !roadmapHasMilestoneSectioning);
             return {
               totalPhases: safeToUseRoadmapCount
                 ? Math.max(phaseDirs.length, roadmapPhaseCount)
@@ -2986,8 +2991,10 @@ function cmdStateSync(cwd: string, options: StateSyncOptions | undefined, raw: b
   const versionStr = typeof fmVersion === 'string' && fmVersion.trim() ? fmVersion.trim() : null;
   let milestoneBounded = true;
   if (versionStr !== null && syncRoadmapRaw !== null) {
-    const versionedHeading = new RegExp(`^#{1,3}\\s+(?!Phase\\s+\\S).*${escapeRegex(versionStr)}`, 'mi');
-    milestoneBounded = versionedHeading.test(syncRoadmapRaw);
+    // #3184: routed through the single owner (roadmap-parser.cjs) instead of
+    // a hand-rolled, unbounded-substring re-derivation — see the identical
+    // fix in buildStateFrontmatter above.
+    milestoneBounded = isMilestoneBoundedInRoadmap(syncRoadmapRaw, versionStr);
   }
   let percent: number | null = null;
   if (!milestoneBounded) {
