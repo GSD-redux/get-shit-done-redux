@@ -1790,6 +1790,12 @@ test('fencedHeadingStillMatchesAsADocumentedKnownLimit', (t) => {
   assert.strictEqual(result.value.name, 'Fenced Name');
 });
 
+// #40-design.md row 28's actual requirement: `escapeRegex` holds -- no
+// crash, no catastrophic match. It does NOT require a hostile version ending
+// in regex metacharacters to successfully RESOLVE to a milestone (with `\b`
+// restored per ADR-3180 §7.1, `v1.0+(x)` sits between two non-word
+// characters on both sides of its own boundary and structurally cannot
+// match there -- that is the LOCKED `\b` semantics, not a defect).
 test('versionWithRegexMetacharactersIsEscaped', (t) => {
   const cwd = createTempDir('gsd-milestone-identity-');
   t.after(() => cleanup(cwd));
@@ -1797,11 +1803,31 @@ test('versionWithRegexMetacharactersIsEscaped', (t) => {
   writeState(cwd, { milestone: hostileVersion });
   writeRoadmap(cwd, [`## ${hostileVersion} — Name`, '', 'body'].join('\n'));
 
+  // 1. No crash.
   assert.doesNotThrow(() => getMilestoneInfo(cwd));
   const result = getMilestoneInfo(cwd);
-  assert.equal(result.scope, SCOPE.COMPLETE);
-  assert.strictEqual(result.value.version, hostileVersion);
-  assert.strictEqual(result.value.name, 'Name');
+  assert.strictEqual(result.value.version, hostileVersion, 'the raw hostile version is preserved verbatim');
+
+  // 2. Metacharacters are treated as literals, never as regex operators. If
+  // `+` and `(x)` were left unescaped, `v1.0+(x)` would compile to "v1",
+  // then literal ".", then "one-or-more '0'", then a capturing group
+  // matching literal "x" -- which would falsely match a document like
+  // "v1.00000(x)" that the ESCAPED literal string must never match.
+  const unescapedWouldFalselyMatch = ['## v1.00000(x) — Wrong Match', '', 'body'].join('\n');
+  assert.strictEqual(
+    locateMilestoneHeadings(unescapedWouldFalselyMatch, hostileVersion).length,
+    0,
+    'escaped metacharacters must not act as regex operators against an unrelated document',
+  );
+
+  // 3. Completes promptly -- no catastrophic backtracking. No elapsed-time
+  // bound is asserted (see normalize-test-command.test.cjs's identical
+  // rationale): a real ReDoS regression manifests as the run hanging /
+  // being killed, which is a louder, more reliable signal than a threshold.
+  const hostileRepeated = 'v1.0+(x)'.repeat(5000);
+  writeState(cwd, { milestone: hostileRepeated });
+  writeRoadmap(cwd, [`## ${hostileRepeated} — Name`, '', 'body'].join('\n'));
+  assert.doesNotThrow(() => getMilestoneInfo(cwd));
 });
 
 test('versionWithReplacementPatternIsTreatedLiterally', (t) => {
@@ -2157,6 +2183,25 @@ test('listMilestoneHeadingsRetainsParentheticalNames', () => {
   assert.ok(result[0].heading.includes('Portability (Windows)'), result[0].heading);
 });
 
+// (RED) #3216 review Finding 4: the shared grammar's `[^\n]*` captures a
+// trailing `\r` on a CRLF-encoded ROADMAP, and unlike the inline
+// `cmdRoadmapAnalyze` regex this replaced (which called `.trim()`),
+// `listMilestoneHeadings` did not trim its `heading` extraction -- so a CRLF
+// ROADMAP's `heading` field carried a stray trailing `\r` a LF ROADMAP never
+// would. Every entry's `heading` must be `\r`-free and carry no leading/
+// trailing whitespace, for every milestone in the document, not just one.
+test('listMilestoneHeadingsHeadingFieldIsCrlfFreeAndTrimmed', () => {
+  const content = ['## v3.3 — Portability (Windows)', '', '## v2.0 — Old ✅'].join('\r\n');
+  const result = listMilestoneHeadings(content);
+  assert.strictEqual(result.length, 2);
+  for (const entry of result) {
+    assert.ok(!entry.heading.includes('\r'), `CRLF leaked into heading: ${JSON.stringify(entry.heading)}`);
+    assert.strictEqual(entry.heading, entry.heading.trim(), `heading not trimmed: ${JSON.stringify(entry.heading)}`);
+  }
+  assert.strictEqual(result[0].name, 'Portability (Windows)');
+  assert.strictEqual(result[1].name, 'Old');
+});
+
 test('listMilestoneHeadingsRespectsTheOneToThreeLevelBound', () => {
   const content = [
     '# v1.0 — Level One',
@@ -2218,9 +2263,18 @@ test('roadmapAnalyzeMilestonesMatchTheOwnersEnumeration', (t) => {
   }
 });
 
-// Parity (anti-drift seam): the version-filtered subset of
-// `listMilestoneHeadings` must equal what `locateMilestoneHeadings` selects
-// for the SAME version, for every version present in the document.
+// Parity (anti-drift seam): `listMilestoneHeadings` (version-agnostic
+// enumeration) and `locateMilestoneHeadings` (version-filtered locator) must
+// agree on WHICH milestone headings are selected for a given version — NOT
+// on raw heading text. The two are legitimately different representations:
+// `locateMilestoneHeadings` returns raw `RegExpExecArray`s (`m[1]` is the
+// full matched line, `#`s included), while `listMilestoneHeadings` returns
+// structured entries whose `heading` field has the `#{1,3}` prefix and
+// following whitespace stripped (matching the inline `cmdRoadmapAnalyze`
+// regex this replaced). Comparing raw strings between the two would make
+// this test assert an accidental implementation detail rather than the
+// actual parity contract, and would silently regress if either owner's
+// textual representation ever changed for an unrelated reason.
 test('versionFilteredEnumerationMatchesTheLocator', () => {
   const content = [
     '# Roadmap',
@@ -2241,9 +2295,18 @@ test('versionFilteredEnumerationMatchesTheLocator', () => {
   assert.ok(versions.length > 1, 'fixture must exercise more than one version');
 
   for (const version of versions) {
-    const filtered = enumerated.filter((h) => h.version === version).map((h) => h.heading.trim());
-    const located = locateMilestoneHeadings(content, version).map((m) => m[1].trim());
-    assert.deepStrictEqual(filtered, located, `parity mismatch for ${version}`);
+    const enumeratedCount = enumerated.filter((h) => h.version === version).length;
+    const located = locateMilestoneHeadings(content, version);
+    assert.strictEqual(
+      located.length > 0,
+      enumeratedCount > 0,
+      `selection disagreement for ${version}: listMilestoneHeadings found ${enumeratedCount}, locateMilestoneHeadings found ${located.length}`,
+    );
+    assert.strictEqual(
+      located.length,
+      enumeratedCount,
+      `selection count mismatch for ${version}`,
+    );
   }
 });
 
