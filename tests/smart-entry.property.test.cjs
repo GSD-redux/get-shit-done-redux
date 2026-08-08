@@ -163,6 +163,40 @@ describe('smart-entry stale_activity — properties (#2570)', () => {
     );
   });
 
+  // #2571: a NAMED timezone (GMT/EST/...) is not captured by ISO_LEADING_RE's
+  // offset group, so with a description suffix it lands in the un-reconstructable
+  // remainder and drives the fallback branch. The fix fails open to not-stale
+  // rather than reconstruct a host-dependent local instant. min age = 1 week so
+  // a ±14h zone error can never cross the 72h boundary on any host — the pre-fix
+  // reconstruction reads stale=true everywhere, making this fail-first.
+  const namedZone = fc.constantFrom('GMT', 'UTC', 'EST', 'CST', 'PST', 'CET', 'IST', 'JST');
+  test('(f) a named zone + description suffix fails open to not-stale for any zone/age', () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 24 * 7, max: 24 * 365 }),
+        fc.integer({ min: 0, max: 23 }),
+        namedZone,
+        descriptionSuffix,
+        (hoursAgo, hod, zone, suffix) => {
+          const hh = String(hod).padStart(2, '0');
+          const value = `${dateOffsetHours(hoursAgo)}T${hh}:30:00 ${zone}${suffix}`;
+          const signals = detectSignals(makeProject(value), FIXED_NOW);
+          assert.equal(
+            typeof signals.stale_activity,
+            'boolean',
+            'must stay total for zone-designator inputs',
+          );
+          assert.equal(
+            signals.stale_activity,
+            false,
+            `a named zone (${zone}) the reconstruction cannot preserve must fail open to ` +
+              `not-stale, never a host-dependent wrong instant (value: ${value})`,
+          );
+        },
+      ),
+    );
+  });
+
   test('(c) arbitrary last_activity never throws; stale_activity stays a boolean', () => {
     fc.assert(
       fc.property(

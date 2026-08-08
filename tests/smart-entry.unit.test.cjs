@@ -812,6 +812,40 @@ describe('smart-entry: stale_activity honors the template\'s "date — descripti
     );
   });
 
+  // #2571 B1 (fail-first): the SAME trailing zone but WITH a description suffix.
+  // The suffix makes the whole-string Date.parse fail (the #2570 premise), so
+  // control reaches the FALLBACK — the branch the test above never exercises,
+  // and the exact gap the round-4 review flagged. ISO_LEADING_RE's offset group
+  // captures only Z / +-HH:MM, so " GMT" is not in the leading token;
+  // reconstructing `${date}${time}` without it and letting Date.parse read the
+  // result as LOCAL time produces a wrong, host-dependent instant. The fix
+  // returns null (fails open to not-stale, ADR-227) instead of guessing.
+  //
+  // Fail-first and host-independent: on pre-fix code the reconstruction yields a
+  // still-~54-day-old local instant on ANY host (±14h can't cross 72h at that
+  // age) -> stale=true; the fix -> null -> false.
+  test('#2571: a named zone + description suffix fails open to not-stale, never a wrong local-time instant', () => {
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-06-08T12:00:00 GMT — Milestone 2 executed autonomously',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(
+      signals.stale_activity,
+      false,
+      'an unpreservable named zone must fail open to not-stale (null), not reconstruct a ' +
+        'local-time instant whose verdict depends on the host UTC offset',
+    );
+  });
+
   // CONTRIBUTING.md QA Matrix: "Mixed CRLF/LF newlines" for frontmatter parsing
   // changes. No live defect — the fallback branch trims before matching — but
   // the standard asks for the fixture, and this pins it.

@@ -228,7 +228,20 @@ function parseActivityTimestamp(raw: string | null): number | null {
     // shifting the instant by the host's UTC offset.
     const whole = Date.parse(trimmed);
     if (!Number.isNaN(whole)) return whole;
-    // Whole-string failed: the value carries a description suffix (#2570).
+    // Whole-string failed: the value carries a suffix the engine can't read
+    // as one instant (#2570). Before reconstructing from the token, guard the
+    // hazard the comment above names: ISO_LEADING_RE's offset group captures
+    // only `Z` / `+-HH:MM`, so a NAMED zone (GMT, EST, ...) is NOT in `time` --
+    // it sits in the trailing remainder. Reconstructing without it and letting
+    // Date.parse read the result as LOCAL time would shift the instant by the
+    // host's UTC offset: a wrong, host-dependent value. A named zone shows up
+    // as an alphabetic token after the matched date/time; the #2570 template
+    // suffix (" -- description") starts with a separator instead. So if the
+    // remainder begins with a letter we cannot preserve its zone -- fail open
+    // to null (ADR-227: never propagate a wrong instant; null is the base's
+    // not-stale default) rather than compute a plausible-but-wrong one.
+    const rest = trimmed.slice(iso[0].length);
+    if (/^\s*[A-Za-z]/.test(rest)) return null;
     const ms = Date.parse(`${year}-${month}-${day}${time}`);
     return Number.isNaN(ms) ? null : ms;
   }
