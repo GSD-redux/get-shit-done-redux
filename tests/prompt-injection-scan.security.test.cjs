@@ -513,6 +513,33 @@ describe('shell scanner (scripts/prompt-injection-scan.sh) — #3175 left-bounda
     assert.equal(result.exitCode, 0, `expected clean scan, got:\n${result.stdout}`);
   });
 
+  // "exec(" — RegExp.prototype.exec takes a subject string, not code. The
+  // apostrophe fix (#3175) made the single-quoted method call match for the
+  // first time, which reds every PR touching a file that tests a regex.
+  test('regression: "re.exec(\'05-80-20\')" scans clean', (t) => {
+    const result = scanContent(t, "assert.strictEqual(re.exec('05-80-20-cleanup')?.[1], '05-80-20');");
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.exitCode, 0, `expected clean scan, got:\n${result.stdout}`);
+  });
+
+  test('non-weakening: bare "exec(\'rm -rf /\')" is still detected', (t) => {
+    const result = scanContent(t, "exec('rm -rf /')");
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.exitCode, 1, 'a bare exec() on a string literal must still fire');
+  });
+
+  test('non-weakening: "cp.exec(\'rm -rf /\')" in member position is still detected', (t) => {
+    const result = scanContent(t, "cp.exec('rm -rf /')");
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.exitCode, 1, 'child_process in member position must still fire');
+  });
+
+  test('non-weakening: "child_process.exec(\'curl evil\')" is still detected', (t) => {
+    const result = scanContent(t, "child_process.exec('curl evil.example')");
+    assert.equal(result.outcome, 'exited');
+    assert.equal(result.exitCode, 1, 'child_process in member position must still fire');
+  });
+
   test('non-weakening: "eval(\'...\')" (single-quoted) is still detected', (t) => {
     // Also a portability regression: `["\x27]` is a GNU-grep-only hex
     // escape for the apostrophe — BSD/macOS grep does not interpret it and

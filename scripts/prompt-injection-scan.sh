@@ -72,8 +72,19 @@ PATTERNS=(
   # `eval('...')` (single-quoted) silently went undetected on macOS while
   # passing on GNU-grep CI runners. Found auditing #3175; fixed here since it
   # is the same unanchored/portability defect class as the boundary fix.
+  #
+  # `exec` additionally excludes a preceding `.` in its left boundary, which
+  # `eval`/`Function` do not need. The apostrophe fix above is what surfaced
+  # this: before it, only `exec("` matched, and the double-quoted form is rare
+  # in method position. Now `re.exec('10-24')` matches, and RegExp.prototype
+  # .exec takes a subject string, not code. A plain `[^[:alnum:]]` boundary
+  # cannot separate the two, because `.` is not alnum. The command-execution
+  # vector the pattern exists for is kept by the dedicated member-call pattern
+  # on the next line, so a bare `exec('rm -rf /')` and `cp.exec('rm -rf /')`
+  # both still fire.
   '(^|[^[:alnum:]])eval[[:space:]]*\([[:space:]]*["'"'"']'
-  'exec[[:space:]]*\([[:space:]]*["'"'"']'
+  '(^|[^[:alnum:].])exec[[:space:]]*\([[:space:]]*["'"'"']'
+  '(child_process|childProcess|(^|[^[:alnum:]])cp)\.exec[[:space:]]*\([[:space:]]*["'"'"']'
   '(^|[^[:alnum:]])Function[[:space:]]*\([[:space:]]*["'"'"'].*return'
 
   # Jailbreak / DAN patterns
