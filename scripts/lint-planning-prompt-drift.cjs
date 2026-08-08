@@ -118,6 +118,29 @@ const { sanitizeForReport, scanTree } = driftScan;
 // there is nothing here for a backtracking engine to explore more than once.
 const PLAN_SUMMARY_GLOB_RE = /\*[-A-Za-z0-9_.{}$]*(?:PLAN|SUMMARY)\.md/;
 
+// `scanTree` (scripts/lib/drift-scan.cjs) builds its repo-relative path via
+// `path.relative()`, which uses NATIVE separators: on Windows that is
+// `gsd-core\workflows\execute-plan.md`, while the committed baseline
+// (`scripts/baselines/planning-prompt-drift-baseline.json`) stores POSIX
+// paths (`gsd-core/workflows/execute-plan.md`). Every baseline lookup in this
+// guard is keyed on that path, so an un-normalized Windows path silently
+// fails to match ANY baseline entry — every real violation reports as FRESH
+// and every baseline entry reports as STALE (100% failure rate on Windows,
+// caught by GitHub Actions' Windows CI lane on PR #3223; the remote runner
+// this repo otherwise gates on is Linux-only and cannot see this class).
+// Normalized UNCONDITIONALLY — never gated on `process.platform` — because a
+// platform-conditional normalizer is itself the bug: it makes the POSIX path
+// the tested case and leaves the Windows branch exercised only on Windows.
+// Applied at the single seam `findPromptDrift` owns (the only place a
+// repo-relative path enters this guard's violation objects), so ONE
+// normalized value flows into all four consumers: the baseline key
+// (`diffAgainstBaseline`), the `--update` writer (`writeBaseline` via
+// `dedupeViolationsForBaseline`), the violation report (`main`), and the
+// tests.
+function toPosixRel(relPath) {
+  return relPath.replace(/\\/g, '/');
+}
+
 // (b) A counting operation: `wc -l`, or `grep -c` optionally followed by
 // bundled short flags before the next space (e.g. `grep -cE`, `grep -cE`).
 // `[A-Za-z]{0,4}` bounds the bundled-flag run so the alternative branch is
@@ -141,13 +164,15 @@ const RATCHET_OWNER_ISSUE = '#3218';
 
 /**
  * Pure: find every plan/summary-count re-derivation line in `text`.
- * `relPath` is the repo-relative path, carried through only for the caller to
- * attach to each result (this function itself applies no per-file exemption).
- * Returns [{ line, found, text }] — `text` is the TRIMMED source line, the
- * same value the baseline keys on.
+ * `relPath` is the repo-relative path (native separators or POSIX, either
+ * is accepted) — normalized via `toPosixRel` and attached as `file` on every
+ * result; this function applies no per-file exemption, so `relPath` is not
+ * otherwise consulted for detection.
+ * Returns [{ file, line, found, text }] — `file` is always POSIX-separated,
+ * `text` is the TRIMMED source line, the same value the baseline keys on.
  */
 function findPromptDrift(text, relPath) {
-  void relPath; // no per-file exemption in this guard; kept for signature parity with the sibling guards
+  const file = toPosixRel(relPath);
   const out = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -155,14 +180,15 @@ function findPromptDrift(text, relPath) {
     const globMatch = PLAN_SUMMARY_GLOB_RE.exec(line);
     if (!globMatch) continue;
     if (!COUNTING_OP_RE.test(line)) continue;
-    out.push({ line: i + 1, found: globMatch[0], text: line.trim() });
+    out.push({ file, line: i + 1, found: globMatch[0], text: line.trim() });
   }
   return out;
 }
 
 /**
  * Scan the prompt-layer markdown tree and return every re-derivation, each
- * annotated with the repo-relative file path.
+ * annotated with the repo-relative file path (POSIX-normalized — see
+ * `toPosixRel`).
  */
 function scanRepo(root) {
   return scanTree({
@@ -170,7 +196,7 @@ function scanRepo(root) {
     scanDirs: SCAN_DIRS,
     scanExt: SCAN_EXT,
     onFile(rel, text) {
-      return findPromptDrift(text, rel).map((d) => ({ file: rel, ...d }));
+      return findPromptDrift(text, rel);
     },
   });
 }
@@ -396,6 +422,7 @@ if (require.main === module) main();
 module.exports = {
   findPromptDrift,
   scanRepo,
+  toPosixRel,
   loadBaseline,
   diffAgainstBaseline,
   writeBaseline,

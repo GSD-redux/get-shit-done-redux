@@ -24,7 +24,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const drift = require('../scripts/lint-planning-prompt-drift.cjs');
-const { findPromptDrift, scanRepo, loadBaseline, diffAgainstBaseline } = drift;
+const { findPromptDrift, scanRepo, loadBaseline, diffAgainstBaseline, toPosixRel, writeBaseline } = drift;
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
@@ -210,7 +210,11 @@ describe('scanRepo — synthetic tree', () => {
 
     const violations = scanRepo(root);
     assert.strictEqual(violations.length, 1);
-    assert.strictEqual(violations[0].file, path.join('gsd-core', 'workflows', 'fake.md'));
+    // Always POSIX-separated regardless of the host OS's native separator
+    // (`path.join` would build native separators here, which is exactly the
+    // Windows-vs-POSIX mismatch this guard's baseline keying must not have —
+    // see the Windows-shaped-path coverage below).
+    assert.strictEqual(violations[0].file, 'gsd-core/workflows/fake.md');
     assert.strictEqual(violations[0].line, 1);
     assert.strictEqual(violations[0].found, '*-PLAN.md');
   });
@@ -223,6 +227,72 @@ describe('scanRepo — synthetic tree', () => {
 
     const violations = scanRepo(root);
     assert.deepStrictEqual(violations, []);
+  });
+});
+
+// ─── WINDOWS PATH-SEPARATOR NORMALIZATION — the #3223 regression ─────────
+//
+// `scanTree` (scripts/lib/drift-scan.cjs) builds its repo-relative path via
+// `path.relative()`, which uses NATIVE separators. On Windows that is
+// `gsd-core\workflows\progress.md`, while the committed baseline
+// (`scripts/baselines/planning-prompt-drift-baseline.json`) stores POSIX
+// paths — an un-normalized Windows path silently fails to match ANY
+// baseline entry, so every violation reports FRESH and every baseline entry
+// reports STALE (a 100% guard failure on Windows, caught by GitHub Actions'
+// Windows CI lane on PR #3223; the Linux-only remote runner this repo
+// otherwise gates on cannot see this class at all).
+//
+// This coverage drives the pure functions with a Windows-shaped path
+// directly — no mocking of the filesystem and NOT gated on
+// `process.platform` — so it fails identically on every OS pre-fix and
+// passes identically on every OS post-fix. Skipping it on non-Windows would
+// recreate the exact blind spot that let this ship.
+
+describe('Windows-shaped repo-relative paths are normalized to POSIX', () => {
+  const WINDOWS_REL = 'gsd-core\\workflows\\progress.md';
+  const POSIX_REL = 'gsd-core/workflows/progress.md';
+  const WINDOWS_LINE = 'X=$(ls dir/*-PLAN.md 2>/dev/null | wc -l)';
+
+  test('toPosixRel converts a Windows-shaped separator run to POSIX, and is a no-op on an already-POSIX path', () => {
+    assert.strictEqual(toPosixRel(WINDOWS_REL), POSIX_REL);
+    assert.strictEqual(toPosixRel(POSIX_REL), POSIX_REL);
+  });
+
+  test('findPromptDrift on a Windows-shaped relPath reports a POSIX `file`, regardless of input separator', () => {
+    const out = findPromptDrift(WINDOWS_LINE, WINDOWS_REL);
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].file, POSIX_REL);
+    assert.ok(!out[0].file.includes('\\'), 'reported file must carry no backslashes');
+  });
+
+  test('a violation produced from a Windows-shaped path matches a POSIX baseline entry: classified KNOWN, not fresh and not stale', () => {
+    const baseline = [{ file: POSIX_REL, text: WINDOWS_LINE }];
+    const violations = findPromptDrift(WINDOWS_LINE, WINDOWS_REL);
+    const { fresh, stale } = diffAgainstBaseline(violations, baseline);
+    assert.deepStrictEqual(fresh, []);
+    assert.deepStrictEqual(stale, []);
+  });
+
+  test('a violation produced from a Windows-shaped path does NOT match if left un-normalized (sanity check the assertion above is meaningful)', () => {
+    // Same inputs as the previous test, but bypassing toPosixRel to prove the
+    // KNOWN classification above is actually exercising normalization, not a
+    // coincidence of the fixture.
+    const baseline = [{ file: POSIX_REL, text: WINDOWS_LINE }];
+    const violations = [{ file: WINDOWS_REL, line: 1, found: '*-PLAN.md', text: WINDOWS_LINE }];
+    const { fresh, stale } = diffAgainstBaseline(violations, baseline);
+    assert.strictEqual(fresh.length, 1);
+    assert.strictEqual(stale.length, 1);
+  });
+
+  test('--update (writeBaseline) serializes a POSIX `file` for a Windows-shaped input', (t) => {
+    const root = createTempDir('gsd-planning-prompt-drift-update-');
+    t.after(() => cleanup(root));
+    const violations = findPromptDrift(WINDOWS_LINE, WINDOWS_REL);
+    writeBaseline(root, violations);
+    const written = JSON.parse(fs.readFileSync(path.join(root, 'scripts', 'baselines', 'planning-prompt-drift-baseline.json'), 'utf8'));
+    assert.strictEqual(written.entries.length, 1);
+    assert.strictEqual(written.entries[0].file, POSIX_REL);
+    assert.ok(!written.entries[0].file.includes('\\'), 'written baseline entry must carry no backslashes');
   });
 });
 
