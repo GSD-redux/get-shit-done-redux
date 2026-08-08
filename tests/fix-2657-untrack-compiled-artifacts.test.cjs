@@ -36,7 +36,9 @@
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runGit, runNode, OUTCOME } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { trackedCompiledArtifacts } = require('../scripts/lint-compiled-artifact-sync.cjs');
 
@@ -56,19 +58,22 @@ const NINE_ARTIFACTS = [
 ].map((name) => `${LIB_DIR}/${name}`);
 
 /**
- * Run a command via spawnSync (never throws) and return the raw result.
- * Throws immediately, with full context, only on a genuine spawn failure
- * (binary not found, etc.) — a condition no caller here can meaningfully
- * interpret as a match/no-match answer.
+ * Run a command via the process seam (never throws) and return a legacy
+ * `{status, stdout, stderr, signal}` shape. `cmd` is either `'git'` (routed
+ * through `runGit`) or `process.execPath` (routed through `runNode`) — the
+ * only two callers below. Throws immediately, with full context, only on a
+ * genuine spawn failure (binary not found, etc.) — a condition no caller
+ * here can meaningfully interpret as a match/no-match answer.
  */
 function run(cmd, args, opts) {
-  const result = spawnSync(cmd, args, { cwd: REPO_ROOT, encoding: 'utf8', ...opts });
-  if (result.error) {
+  const options = { cwd: REPO_ROOT, timeoutMs: PROBE_TIMEOUT_MS, ...opts };
+  const result = cmd === 'git' ? runGit(args, options) : runNode(args, options);
+  if (result.outcome === OUTCOME.SPAWN_FAILED) {
     throw new Error(
-      `${cmd} ${args.join(' ')} failed to spawn (cwd=${REPO_ROOT}): ${result.error.message}`,
+      `${cmd} ${args.join(' ')} failed to spawn (cwd=${REPO_ROOT}): ${result.stderr || result.code}`,
     );
   }
-  return result;
+  return { ...toLegacyResult(result), signal: result.signal };
 }
 
 /** Render a failed command's full context for an assertion message. */

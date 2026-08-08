@@ -29,6 +29,9 @@ import planningWorkspace = require('./planning-workspace.cjs');
 const { planningPaths, planningDir, findContextMdIn } = planningWorkspace;
 import { parseDecisions, extractDecisions } from './decisions.cjs';
 import { iterateBullets } from './markdown-sectionizer.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -318,7 +321,12 @@ function runGapAnalysis(cwd: string, phaseDir: string, options: RunGapAnalysisOp
   let planText = '';
   try {
     if (phaseDirFiles.length > 0) {
-      const files = phaseDirFiles.filter(f => /-PLAN\.md$/.test(f));
+      // #3183 (lint-plan-count-drift): source the live plan-file list from
+      // the single owner (scanPhasePlans) instead of a local `-PLAN\.md$`
+      // filter on the already-read listing — picks up bare PLAN.md, nested
+      // plans/, and excludes superseded plans, none of which the prior
+      // root-only exact-suffix filter did.
+      const files = scanPhasePlans(absPhaseDir).planFiles;
       planText = files.map(f => {
         try { return fs.readFileSync(path.join(absPhaseDir, f), 'utf-8'); }
         catch { return ''; }

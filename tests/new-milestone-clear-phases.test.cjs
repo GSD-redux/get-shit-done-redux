@@ -10,9 +10,10 @@
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runGsdTools, createTempProject, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
 const { writeState } = require('./fixtures/index.cjs');
 
@@ -176,7 +177,7 @@ describe('phases clear: uncommitted-changes guard (#1447)', () => {
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, 'PLAN.md'), '# Plan (staged)');
     // Stage the file but do not commit
-    execSync('git add .planning/phases/', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/phases/'], { cwd: tmpDir });
 
     const result = runGsdTools('phases clear --confirm', tmpDir);
     assert.ok(!result.success, 'phases clear should fail when staged-but-uncommitted changes exist');
@@ -207,8 +208,8 @@ describe('phases clear: uncommitted-changes guard (#1447)', () => {
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, 'PLAN.md'), '# Plan (committed)');
     // Commit the phase files
-    execSync('git add .planning/phases/', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add phase"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/phases/'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'add phase'], { cwd: tmpDir });
 
     const result = runGsdTools('phases clear --confirm', tmpDir);
     assert.ok(result.success, `should succeed when phase files are committed: ${result.error}`);
@@ -645,7 +646,9 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
     function runStep1(argumentsValue) {
       const script = `ARGUMENTS=${JSON.stringify(argumentsValue)}\n${step1Fence}\n` +
         'printf \'GSD_WS=[%s]\\nMILESTONE_ARG=[%s]\\n\' "$GSD_WS" "$MILESTONE_ARG"';
-      const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      const r = runHookSeam('-c', [script], { interpreter: 'bash' });
+      throwIfFailed(r, 'bash <step1 fence>');
+      const out = r.stdout;
       return {
         gsdWs: /GSD_WS=\[(.*)\]/.exec(out)[1],
         milestoneArg: /MILESTONE_ARG=\[(.*)\]/.exec(out)[1],
@@ -676,7 +679,9 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
     function runStep6Commit(argumentsValue) {
       const gsdRunStub = 'gsd_run() { printf "%s\\n" "gsd_run_call:$*"; }\n';
       const script = `ARGUMENTS=${JSON.stringify(argumentsValue)}\n${gsdRunStub}${step6CommitFence}`;
-      return execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      const r = runHookSeam('-c', [script], { interpreter: 'bash' });
+      throwIfFailed(r, 'bash <step6 commit fence>');
+      return r.stdout;
     }
 
     // Step 4 Part A's guard — not this commit — is what protects the shared

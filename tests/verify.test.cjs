@@ -7,7 +7,20 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, createTempGitProject, cleanup } = require('./helpers.cjs');
-const { execSync } = require('child_process');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+/**
+ * Bound for the grep/sed availability probes and region-extraction calls in
+ * the region-scoped negative-gate proof below (#3144). These are not git —
+ * reusing `GIT_TIMEOUT_MS` for them would tie an unrelated tool's budget to
+ * git's, so they get their own named constant even though the value happens
+ * to match; a `grep -Eq`/`sed -n` over a small temp file is well under this.
+ */
+const TEXT_TOOL_TIMEOUT_MS = 15000;
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -787,10 +800,10 @@ describe('verify summary command', () => {
     // Create a source file and commit it
     fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
     fs.writeFileSync(path.join(tmpDir, 'src', 'app.js'), 'console.log("hello");\n');
-    execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add app.js"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '-A'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'add app.js'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS });
 
-    const hash = execSync('git rev-parse --short HEAD', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const hash = gitOrThrow(['rev-parse', '--short', 'HEAD'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
 
     // Write SUMMARY.md referencing the file and commit hash
     const summaryPath = path.join(tmpDir, '.planning', 'phases', '01-test', '01-01-SUMMARY.md');
@@ -1082,7 +1095,7 @@ describe('verify commits command', () => {
   });
 
   test('validates real commit hashes', () => {
-    const hash = execSync('git rev-parse --short HEAD', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const hash = gitOrThrow(['rev-parse', '--short', 'HEAD'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
 
     const result = runGsdTools(`verify commits ${hash}`, tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -1105,7 +1118,7 @@ describe('verify commits command', () => {
   });
 
   test('handles mixed valid and invalid hashes', () => {
-    const hash = execSync('git rev-parse --short HEAD', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const hash = gitOrThrow(['rev-parse', '--short', 'HEAD'], { cwd: tmpDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
 
     const result = runGsdTools(`verify commits ${hash} abcdef1234567`, tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -1914,7 +1927,6 @@ const { test, describe, before, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const os = require('node:os');
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 
@@ -2650,9 +2662,9 @@ describe('doc-contract: guidance prose is in place', () => {
 describe('AC3: executable proof — file-wide ban vs region-scoped simultaneously satisfiable', () => {
   test('case 22 — grep/sed proof: both gates simultaneously satisfiable', () => {
     // Check if grep and sed are available
-    const grepAvail = spawnSync('grep', ['--version']).status === 0;
-    const sedAvail = spawnSync('sed', ['--version']).status === 0 ||
-                    spawnSync('sed', ['-n', '1p', '/dev/null']).status === 0;
+    const grepAvail = runHook('--version', [], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS }).exitCode === 0;
+    const sedAvail = runHook('--version', [], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS }).exitCode === 0 ||
+                    runHook('-n', ['1p', '/dev/null'], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS }).exitCode === 0;
 
     if (!grepAvail || !sedAvail) {
       // Skip gracefully if tools are unavailable
@@ -2679,39 +2691,39 @@ describe('AC3: executable proof — file-wide ban vs region-scoped simultaneousl
     try {
       // (a) File-wide: grep -Eq 'await .*refresh' <file> — should EXIT 0 (pattern found)
       //     This means a file-wide ban (! grep -Eq ...) WOULD FAIL
-      const fileWide = spawnSync('grep', ['-Eq', 'await .*refresh', tmpFile]);
+      const fileWide = runHook('-Eq', ['await .*refresh', tmpFile], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
       assert.strictEqual(
-        fileWide.status,
+        fileWide.exitCode,
         0,
         'grep file-wide should find the pattern (exits 0) — proving the file-wide ban would fail',
       );
 
       // (b) Region-scoped (make_page only): sed extracts lines 1-3, piped to grep → pattern NOT found
       //     The factory region is clean: ban PASSES
-      const makePageLines = spawnSync('sed', ['-n', '1,3p', tmpFile]);
-      assert.strictEqual(makePageLines.status, 0, 'sed should succeed');
+      const makePageLines = runHook('-n', ['1,3p', tmpFile], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
+      assert.strictEqual(makePageLines.exitCode, 0, 'sed should succeed');
       const makePageRegion = makePageLines.stdout.toString();
 
       // Write to a temp file and grep it
       const regionFile = path.join(os.tmpdir(), `gsd-968-region-${process.pid}.py`);
       fs.writeFileSync(regionFile, makePageRegion);
       try {
-        const regionBan = spawnSync('grep', ['-Eq', 'await .*refresh', regionFile]);
+        const regionBan = runHook('-Eq', ['await .*refresh', regionFile], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
         assert.strictEqual(
-          regionBan.status,
+          regionBan.exitCode,
           1,
           'grep in make_page region should NOT find pattern (exits 1) — ban PASSES in factory region',
         );
 
         // (c) Region-scoped (reindex_handler): grep should FIND the pattern → requirement met
-        const reindexLines = spawnSync('sed', ['-n', '6,9p', tmpFile]);
+        const reindexLines = runHook('-n', ['6,9p', tmpFile], { interpreter: 'sed', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
         const reindexRegion = reindexLines.stdout.toString();
         const reindexFile = path.join(os.tmpdir(), `gsd-968-reindex-${process.pid}.py`);
         fs.writeFileSync(reindexFile, reindexRegion);
         try {
-          const reindexCheck = spawnSync('grep', ['-Eq', 'await .*refresh', reindexFile]);
+          const reindexCheck = runHook('-Eq', ['await .*refresh', reindexFile], { interpreter: 'grep', timeoutMs: TEXT_TOOL_TIMEOUT_MS });
           assert.strictEqual(
-            reindexCheck.status,
+            reindexCheck.exitCode,
             0,
             'grep in reindex_handler region MUST find pattern (exits 0) — requirement met',
           );
@@ -2736,7 +2748,6 @@ describe('verifySummaryCore — reusable structured contract (#2572)', () => {
   const os = require('node:os');
   const path = require('node:path');
   const { after } = require('node:test');
-  const { execSync } = require('node:child_process');
   const { cleanup } = require('./helpers.cjs');
   const { verifySummaryCore } = require('../gsd-core/bin/lib/verify.cjs');
 
@@ -2746,16 +2757,17 @@ describe('verifySummaryCore — reusable structured contract (#2572)', () => {
   function repo(summaryBody, extraFiles = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2572-'));
     dirs.push(dir);
-    execSync('git init -q', { cwd: dir, stdio: 'pipe' });
-    execSync('git config user.email "t@t.com"', { cwd: dir, stdio: 'pipe' });
-    execSync('git config user.name "T"', { cwd: dir, stdio: 'pipe' });
-    execSync('git config commit.gpgsign false', { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['init', '-q'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'user.email', 't@t.com'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'user.name', 'T'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
     for (const [rel, body] of Object.entries(extraFiles)) {
       fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
       fs.writeFileSync(path.join(dir, rel), body);
     }
     fs.writeFileSync(path.join(dir, 'SUMMARY.md'), summaryBody);
-    execSync('git add -A && git commit -q -m seed', { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['add', '-A'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-q', '-m', 'seed'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
     return dir;
   }
 

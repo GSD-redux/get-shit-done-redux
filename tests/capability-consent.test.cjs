@@ -27,7 +27,18 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const { cleanup } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const consent = require('../gsd-core/bin/lib/capability-consent.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+/** Create a FIFO at `fifoPath` via `mkfifo`, throwing on failure. */
+function mkfifo(fifoPath) {
+  const r = runHook(fifoPath, [], { interpreter: 'mkfifo', timeoutMs: PROBE_TIMEOUT_MS });
+  throwIfFailed(r, `mkfifo ${fifoPath}`);
+}
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix || 'cap-consent-test-'));
@@ -144,8 +155,7 @@ test('bundleContentHash: refuses to follow a symlink in the bundle (fail closed)
 test('bundleContentHash: refuses a non-regular (FIFO) entry in the bundle (fail closed)', { skip: process.platform === 'win32' }, () => {
   const dir = makeBundle({ manifest: { id: 'cap', role: 'feature', version: '1.0.0' } });
   try {
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [path.join(dir, 'fifo')]);
+    mkfifo(path.join(dir, 'fifo'));
     assert.throws(() => consent.bundleContentHash(dir), /non-regular/i, 'a FIFO in the bundle is rejected');
   } finally {
     cleanup(dir);
@@ -504,8 +514,7 @@ test('readConsentStore: a FIFO at the store path does not block; returns empty',
   const home = tmpDir();
   try {
     fs.mkdirSync(path.join(home, '.gsd'), { recursive: true });
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [consent.consentStorePath(home)]);
+    mkfifo(consent.consentStorePath(home));
     assert.deepStrictEqual(consent.readConsentStore(home), { records: {} });
   } finally {
     cleanup(home);

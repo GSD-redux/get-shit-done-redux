@@ -166,6 +166,7 @@ interface PlanningPaths {
   config: string;
   phases: string;
   requirements: string;
+  debug: string;
 }
 
 function planningPaths(cwd: string, ws?: string | null): PlanningPaths {
@@ -178,6 +179,10 @@ function planningPaths(cwd: string, ws?: string | null): PlanningPaths {
     config: path.join(base, 'config.json'),
     phases: path.join(base, 'phases'),
     requirements: path.join(base, 'REQUIREMENTS.md'),
+    // #3149: the debug-session directory. Single source for both `state.load`'s
+    // `debug_dir` field and `init.debug`'s — previously each composed its own
+    // `path.join(planning, 'debug')` (DEFECT.GENERATIVE-FIX).
+    debug: path.join(base, 'debug'),
   };
 }
 

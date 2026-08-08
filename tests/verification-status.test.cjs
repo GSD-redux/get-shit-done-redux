@@ -28,6 +28,8 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { cleanup } = require('./helpers.cjs');
+const { runGit: seamRunGit, OUTCOME } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const {
   VERIFIER_STATUSES,
@@ -35,6 +37,9 @@ const {
   defaultPhaseCleanCommitTimesMs,
   readVerificationStatus,
 } = require('../gsd-core/bin/lib/verification.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -407,12 +412,10 @@ describe('verification-status', () => {
 
   // git availability for the real-subprocess integration test below.
   const GIT_AVAILABLE = (() => {
-    try {
-      require('node:child_process').execFileSync('git', ['--version'], { stdio: 'ignore' });
-      return true;
-    } catch {
-      return false;
-    }
+    // Soft probe — a missing/broken git binary must resolve to `false`, not
+    // throw, so seamRunGit is used directly rather than gitOrThrow.
+    const r = seamRunGit(['--version'], { timeoutMs: GIT_TIMEOUT_MS });
+    return r.outcome === OUTCOME.EXITED && r.exitCode === 0;
   })();
 
   test('committed passed verification is NOT stale from mtime skew alone when the summary was not committed later (#2348)', () => {
@@ -605,12 +608,11 @@ describe('verification-status', () => {
     'real git: a summary committed after the verification reads stale via the real git clock, even for a dash-named file (#2348 end-to-end + `--` argv guard)',
     { skip: GIT_AVAILABLE ? false : 'git binary not available' },
     () => {
-      const { execFileSync } = require('node:child_process');
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2348-realgit-'));
       const runGit = (args, extraEnv) =>
-        execFileSync('git', args, {
+        gitOrThrow(args, {
           cwd: repo,
-          stdio: 'pipe',
+          timeoutMs: GIT_TIMEOUT_MS,
           env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(extraEnv || {}) },
         });
       const commitEnvAt = (iso) => ({ GIT_AUTHOR_DATE: iso + '+00:00', GIT_COMMITTER_DATE: iso + '+00:00' });
@@ -658,12 +660,11 @@ describe('verification-status', () => {
     'real git: a committed summary edited on disk (dirty) reads stale via mtime, not shadowed by its commit time (#2348 dirty regression, end-to-end)',
     { skip: GIT_AVAILABLE ? false : 'git binary not available' },
     () => {
-      const { execFileSync } = require('node:child_process');
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2348-realgit-dirty-'));
       const runGit = (args, extraEnv) =>
-        execFileSync('git', args, {
+        gitOrThrow(args, {
           cwd: repo,
-          stdio: 'pipe',
+          timeoutMs: GIT_TIMEOUT_MS,
           env: { ...process.env, GIT_TERMINAL_PROMPT: '0', ...(extraEnv || {}) },
         });
       const commitEnvAt = (iso) => ({ GIT_AUTHOR_DATE: iso + '+00:00', GIT_COMMITTER_DATE: iso + '+00:00' });

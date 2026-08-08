@@ -16,7 +16,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const {
@@ -28,6 +29,10 @@ const {
 } = require('../gsd-core/bin/ensure-runtime-build.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
+// 180000: a build — this driver invokes ensureRuntimeBuild against a REAL
+// tsc compile (not a query), at the tsc-compile end of the
+// 120000-180000 build-class norm.
+const BUILD_TIMEOUT_MS = 180000;
 
 /** Fresh isolated package dir (auto-cleaned) with a libDir and optional tsconfig. */
 function makeEnv(t, { withTsconfig = true, prebuilt = false } = {}) {
@@ -333,8 +338,9 @@ test('integration: real tsc heals a missing lib end-to-end (subprocess)', (t) =>
   );
 
   assert.ok(!isBuilt(path.join(dir, 'gsd-core', 'bin', 'lib')), 'lib starts empty');
-  const out = execFileSync(process.execPath, [driver], { encoding: 'utf8', cwd: dir });
-  const parsed = JSON.parse(out);
+  const driverResult = runNode([driver], { cwd: dir, timeoutMs: BUILD_TIMEOUT_MS });
+  throwIfFailed(driverResult, `node ${driver}`);
+  const parsed = JSON.parse(driverResult.stdout);
   assert.equal(parsed.healed, true, 'self-healed the missing build');
   assert.equal(parsed.run, 'ok', 'the freshly-compiled cli-exit.cjs loads and runs');
 });

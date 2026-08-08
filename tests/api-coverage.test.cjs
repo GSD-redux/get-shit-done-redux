@@ -131,6 +131,31 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
     });
   }
 
+  // ── #2784/#3127: negation suppression + its #3127 perf regression ────────
+  // PR #3127 added clause-local negation suppression (hasNegatedVerb /
+  // hasNegatedNoun) but the noun-side check was O(verbs × nouns) with a
+  // slice+split per pair — effectively cubic in clause length. A clause with
+  // a few hundred repeated "integrate api" pairs took seconds; fast-check's
+  // property test then generated documents large enough to hang the whole
+  // file past node:test's 600s timeout (fail 0 / cancelled 1). These two
+  // tests pin the O(verbs + nouns) fix at a size (~500 pairs) chosen so that
+  // a re-regression to the old quadratic-per-pair behavior makes this file
+  // exceed the runner's own timeout — that hang, not a wall-clock assertion
+  // (CLAUDE.md forbids those), is the failure signal for a re-regression.
+  test('suppresses a negated pair regardless of how many terms precede it', () => {
+    const pairs = Array(500).fill('integrate api').join(' ');
+    const scope = pairs + ' but we integrate no api here';
+    const r = detectApiIntegration(scope);
+    assert.strictEqual(r.detected, false);
+  });
+
+  test('still detects a genuine pair in a very long clause', () => {
+    const pairs = Array(500).fill('integrate api').join(' ');
+    const r = detectApiIntegration(pairs);
+    assert.strictEqual(r.detected, true);
+    assert.ok(r.signals.length > 0);
+  });
+
   test('fenced code blocks are stripped — trigger inside a code fence does not fire', () => {
     const scope = [
       'Refactor the helpers.',
@@ -164,6 +189,74 @@ describe('detectApiIntegration — pure detector (#1562)', () => {
     assert.strictEqual(detectApiIntegration(sameLine).detected, false);
     assert.strictEqual(detectApiIntegration(splitLine).detected, false);
     assert.strictEqual(detectApiIntegration('integrates the api').detected, true);
+  });
+
+  // ── #3127 follow-up: hasNegatedVerb offset regression coverage ───────────
+  // The `hasNegatedVerb` window previously subtracted `clause.start` a SECOND
+  // time from an already clause-local `v.start`, which only accidentally
+  // worked for the first clause on a line (clause.start === 0) and silently
+  // mis-windowed (via negative-index slice wraparound) every later clause.
+  test('suppresses a pair when the verb is directly negated', () => {
+    const r = detectApiIntegration('This phase does not integrate any external API.');
+    assert.strictEqual(r.detected, false);
+  });
+
+  test('suppresses a pair when a negation sits between verb and noun', () => {
+    const r = detectApiIntegration('This phase integrates no external API.');
+    assert.strictEqual(r.detected, false);
+  });
+
+  test('still detects a genuine integration', () => {
+    const r = detectApiIntegration('We integrate the Stripe API.');
+    assert.strictEqual(r.detected, true);
+    const compound = r.signals.find((s) => s.verb !== '(surface)');
+    assert.ok(compound, 'expected a compound verb+noun signal');
+    assert.strictEqual(compound.verb, 'integrate');
+    assert.strictEqual(compound.noun, 'api');
+  });
+
+  test('a distant negation does not suppress a genuine pair', () => {
+    // #2784's own documented example: "without changing runtime dependencies"
+    // inside a long clause must NOT negate an unrelated genuine pairing later
+    // in the SAME clause — the negation-window checks are scoped to the
+    // verb's immediate context, not a blanket clause-wide scan.
+    const r = detectApiIntegration(
+      'The migration proceeds without changing runtime dependencies while we integrate the Stripe API for payment processing across the whole checkout flow.'
+    );
+    assert.strictEqual(r.detected, true);
+  });
+
+  test('suppression works for a clause that is not the first on the line', () => {
+    // THE REGRESSION TEST for the double-offset bug: before the fix, this
+    // failed (wrongly detected === true) because the negation window for the
+    // second clause was computed against the wrong index base (v.start was
+    // re-based against clause.start even though it was already clause-local),
+    // producing an empty/garbage "before" window via negative-index slice()
+    // wraparound so the verb-adjacent negation was never seen.
+    const r = detectApiIntegration('We ship a thing; this phase does not integrate an external API.');
+    assert.strictEqual(r.detected, false);
+  });
+
+  test('suppression in an early clause does not mask a genuine pair in a later clause', () => {
+    // Intended semantics: negation suppression is scoped PER CLAUSE (matching
+    // the "no cross-clause binding" design elsewhere in this module — see the
+    // CLAUSE_BOUNDARY_CHARS note). A negated pair in clause 1 must not swallow
+    // an independent, unnegated, genuine pair in clause 2: each clause is
+    // evaluated on its own, and `detected` is true if ANY clause fires.
+    const r = detectApiIntegration('This phase integrates no external API; we also integrate the Stripe API.');
+    assert.strictEqual(r.detected, true);
+  });
+
+  test('a negation outside the lookback window does not suppress — fail-closed by design', () => {
+    // This pins DELIBERATE fail-closed behavior, not an aspiration: "without"
+    // sits outside hasNegatedVerb's 2-word lookback before the verb, and the
+    // noun ("integration") precedes the verb ("Ships") so hasNegatedNoun's
+    // verb-to-noun window never applies either. Widening the lookback to catch
+    // this phrase would trade a cheap false positive (a one-line COVERAGE.md
+    // declaration) for a silent false negative — a real external-API phase
+    // slipping past a blocking gate — which is the dangerous direction.
+    const r = detectApiIntegration('Ships without any API integration.');
+    assert.strictEqual(r.detected, true);
   });
 });
 

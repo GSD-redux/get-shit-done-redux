@@ -12,7 +12,9 @@ const { test, describe, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
@@ -25,10 +27,8 @@ describe('#1656: community .sh hooks must be present in hooks/dist', () => {
   // hooks/dist/ is gitignored so it must be generated; this mirrors what
   // `npm run build:hooks` (prepublishOnly) does before publish.
   before(() => {
-    execFileSync(process.execPath, [BUILD_SCRIPT], {
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
+    const result = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
+    throwIfFailed(result, `node ${BUILD_SCRIPT}`);
   });
 
   test('gsd-session-state.sh exists in hooks/dist', () => {

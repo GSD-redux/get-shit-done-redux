@@ -45,13 +45,15 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { cleanup } = require('./helpers.cjs');
 const { RUNTIME_META, installerEnv, walk } = require('./helpers/install-shared.cjs');
 const { buildOverlayRepo } = require('./helpers/overlay-repo.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /** The agent used as the marker probe. Any agent works — this suite proves the
  *  EMISSION PATH, not this file's own content. gsd-codebase-mapper is the
@@ -124,11 +126,12 @@ function spawnInstall(repoRoot, runtime, scope) {
   const cwd = root;
   if (scope === 'global') args.push('--global', '--config-dir', root);
   else args.push('--local');
-  const result = spawnSync(process.execPath, args, {
+  const seamResult = runNode(args, {
     cwd,
-    encoding: 'utf8',
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  const result = { status: seamResult.exitCode, stdout: seamResult.stdout, stderr: seamResult.stderr };
   return { result, root };
 }
 

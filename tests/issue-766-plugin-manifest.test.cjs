@@ -92,11 +92,12 @@ describe('A: .claude-plugin/plugin.json', () => {
     assert.ok(mdFiles.length > 0, `commands dir must contain at least one .md file`);
   });
 
-  test('hooks field is "./hooks/hooks.json" and that file exists', (t) => {
+  test('#3029: hooks field is ABSENT — Claude Code auto-loads hooks/hooks.json (explicit declaration caused duplicate-rejection)', (t) => {
     if (!manifest) { t.skip('manifest could not be parsed'); return; }
-    assert.equal(manifest.hooks, './hooks/hooks.json', 'hooks must be "./hooks/hooks.json"');
-    const resolvedHooks = path.resolve(path.dirname(PLUGIN_JSON_PATH), '..', manifest.hooks);
-    assert.ok(fs.existsSync(resolvedHooks), `resolved hooks file must exist: ${resolvedHooks}`);
+    assert.ok(!manifest.hooks, 'plugin.json must NOT declare hooks — Claude Code auto-loads hooks/hooks.json; an explicit declaration causes a duplicate-rejection that silently disables all hooks (#3029)');
+    // The auto-loaded hooks file must still exist on disk.
+    const resolvedHooks = path.resolve(path.dirname(PLUGIN_JSON_PATH), '..', 'hooks', 'hooks.json');
+    assert.ok(fs.existsSync(resolvedHooks), `hooks/hooks.json must exist for auto-loading: ${resolvedHooks}`);
   });
 
   test('no "$schema" key (intentionally omitted)', (t) => {

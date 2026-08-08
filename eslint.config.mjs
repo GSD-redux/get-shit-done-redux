@@ -24,6 +24,7 @@ import noBareNpmExec from './eslint-rules/no-bare-npm-exec.cjs';
 import requireUserprofileWithHome from './eslint-rules/require-userprofile-with-home.cjs';
 import normalizePathInContent from './eslint-rules/normalize-path-in-content.cjs';
 import requireFsOpFallback from './eslint-rules/require-fs-op-fallback.cjs';
+import noUnboundedSpawn from './eslint-rules/no-unbounded-spawn.cjs';
 
 const localPlugin = {
   rules: {
@@ -42,6 +43,7 @@ const localPlugin = {
     'require-userprofile-with-home': requireUserprofileWithHome,
     'normalize-path-in-content': normalizePathInContent,
     'require-fs-op-fallback': requireFsOpFallback,
+    'no-unbounded-spawn': noUnboundedSpawn,
   },
 };
 
@@ -142,6 +144,9 @@ export default tseslint.config(
       // builtins — so tsc emits its `__importDefault` helper, which uses `var`
       // and trips no-var. ADR-457: the linted source is the .cts.
       'gsd-core/bin/lib/installer-migrations/007-retire-config-root-commonjs-marker.cjs',
+      // 009 also imports node builtins (fs, path) like 007, so tsc emits the
+      // same `__importDefault` helper. ADR-457: the linted source is the .cts.
+      'gsd-core/bin/lib/installer-migrations/009-pi-retire-reserved-hooks-dir.cjs',
       'gsd-core/bin/lib/observability/logger.cjs',
       'gsd-core/bin/lib/active-workstream-store.cjs',
       'gsd-core/bin/lib/adr-parser.cjs',
@@ -155,6 +160,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/worktree-safety.cjs',
       'gsd-core/bin/lib/worktree-base-ref.cjs',
       'gsd-core/bin/lib/planning-workspace.cjs',
+      'gsd-core/bin/lib/planning-scope.cjs',
       'gsd-core/bin/lib/command-roster.cjs',
       'gsd-core/bin/lib/runtime-artifact-conversion.cjs',
       'gsd-core/bin/lib/runtime-artifact-install-plan.cjs',
@@ -390,6 +396,11 @@ export default tseslint.config(
       'local/no-bare-npm-exec': 'error',
       // Require USERPROFILE alongside HOME assignments (ADR-1703 Phase 4)
       'local/require-userprofile-with-home': 'error',
+      // Ban unbounded sync child_process spawns in tests (DEFECT.UNBOUNDED-SUBPROCESS).
+      // No allowlist: the epic (#3064) migrated every site; the rule runs with no
+      // exemption surface. The only sanctioned escapes are an explicit `timeout` on
+      // a raw spawn or the `// allow-spawn-timeout-ceiling: <reason>` marker.
+      'local/no-unbounded-spawn': 'error',
       // Ban raw setTimeout sync + elapsed/duration-style assertions via no-restricted-syntax
       'no-restricted-syntax': [
         'error',

@@ -18,7 +18,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 const fc = require('fast-check');
 const { CLAUDE_AGENT_ALIASES } = require('../gsd-core/bin/lib/model-resolver.cjs');
@@ -32,12 +33,16 @@ const { CLAUDE_AGENT_ALIASES } = require('../gsd-core/bin/lib/model-resolver.cjs
 // Build on demand so the test passes regardless of runner ordering.
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], {
-      encoding: 'utf-8',
-      stdio: 'pipe',
-    });
+    throwIfFailed(
+      runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }),
+      `node ${BUILD_HOOKS_SCRIPT}`,
+    );
   }
 });
 
@@ -2976,19 +2981,24 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { install, GSD_CODEX_MARKER } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
 // Ensure hooks/dist/ is populated before install tests
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  throwIfFailed(
+    runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+    `node ${BUILD_SCRIPT}`,
+  );
 });
 
 describe('#2698: CRLF stale gsd-update-check block is removed on Codex reinstall', () => {
@@ -4788,7 +4798,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const { parseTomlToObject, validateCodexConfigSchema, install } = require('../bin/install.js');
@@ -4803,9 +4814,16 @@ if (previousGsdTestMode === undefined) {
 // Ensure hooks/dist/ is populated — mirrors the pattern used by codex-config.test.cjs.
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+    throwIfFailed(
+      runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+      `node ${BUILD_HOOKS_SCRIPT}`,
+    );
   }
 });
 
@@ -5314,7 +5332,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { validateCodexConfigSchema, install } = require('../bin/install.js');
 const { cleanup } = require('./helpers.cjs');
@@ -5329,9 +5348,16 @@ if (previousGsdTestMode === undefined) {
 const { before, beforeEach, afterEach } = require('node:test');
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
   if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+    throwIfFailed(
+      runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+      `node ${BUILD_HOOKS_SCRIPT}`,
+    );
   }
 });
 
@@ -6347,13 +6373,18 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install, uninstall, parseTomlToObject } = require('../bin/install.js');
 const { createTempDir, cleanup, parseFrontmatter } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -6399,7 +6430,10 @@ describe('#3427 + #3433 — Codex installer avoids duplicate skills and mixed ho
 
   beforeEach(() => {
     if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-      execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+      throwIfFailed(
+        runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+        `node ${BUILD_HOOKS_SCRIPT}`,
+      );
     }
     tmpRoot = createTempDir('gsd-3427-3433-');
     codexHome = path.join(tmpRoot, '.codex');
@@ -6561,13 +6595,18 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install } = require('../bin/install.js');
 const { createTempDir, cleanup, parseFrontmatter } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -6601,7 +6640,10 @@ describe('#3562 — Codex install produces discoverable $gsd-* skill surface', {
 
   beforeEach(() => {
     if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-      execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+      throwIfFailed(
+        runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+        `node ${BUILD_HOOKS_SCRIPT}`,
+      );
     }
     tmpRoot = createTempDir('gsd-3562-');
     codexHome = path.join(tmpRoot, '.codex');
@@ -6723,13 +6765,18 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install, uninstall, parseTomlToObject } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -6776,7 +6823,10 @@ describe('#3566 — Codex feature flag is canonical "hooks" (not legacy "codex_h
 
   beforeEach(() => {
     if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-      execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+      throwIfFailed(
+        runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+        `node ${BUILD_HOOKS_SCRIPT}`,
+      );
     }
     tmpRoot = createTempDir('gsd-3566-');
     codexHome = path.join(tmpRoot, '.codex');
@@ -7445,7 +7495,8 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const {
   install,
@@ -7455,6 +7506,10 @@ const { createTempDir, cleanup, captureConsole } = require('./helpers.cjs');
 
 const HOOKS_DIST = path.join(__dirname, '..', 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function withCodexHome(codexHome, fn) {
   const prev = process.env.CODEX_HOME;
@@ -7488,7 +7543,10 @@ describe('#570 — Codex leak scanner sub-bugs', { concurrency: false }, () => {
 
   beforeEach(() => {
     if (!fs.existsSync(HOOKS_DIST) || fs.readdirSync(HOOKS_DIST).length === 0) {
-      execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+      throwIfFailed(
+        runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+        `node ${BUILD_HOOKS_SCRIPT}`,
+      );
     }
     tmpRoot = createTempDir('gsd-570-');
     codexHome = path.join(tmpRoot, '.codex');

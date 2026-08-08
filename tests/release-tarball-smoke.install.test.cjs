@@ -459,6 +459,69 @@ describe('bug-131: runNpm isolates HOME from the caller environment', () => {
       'isolatedNpmEnv() should disable npm update-notifier notices for npm versions that honor NO_UPDATE_NOTIFIER',
     );
   });
+
+  // ── Test 4 — runNpm's 180000ms bound survives an explicit `timeout: undefined` ──
+  // (#3148 wave 4) runNpm() used to spread `...defaults` (which carries
+  // `timeout: 180000`) and then `...otherOptions` AFTER it, so a caller
+  // passing an own `timeout: undefined` key (not an omission) silently won
+  // the spread and erased the bound, leaving the underlying execFileSync call
+  // unbounded. The fix destructures `timeout` off `options` with a default
+  // and passes it explicitly after both spreads, so an own `undefined` key
+  // resolves to the default instead of erasing it.
+  //
+  // Proof is behavioral, not textual: a fresh child process monkeypatches
+  // `child_process.execFileSync` to capture the options object it actually
+  // receives — before `helpers.cjs` is required in that child, so its
+  // top-level `const { execFileSync } = require('child_process')` picks up
+  // the patched function — then calls `runNpm(['--version'], { timeout:
+  // undefined })` and reports back the captured `timeout` value. Reverting
+  // the destructure-with-default fix (restoring the plain `{ ...defaults,
+  // ...otherOptions, env: mergedEnv }` spread order) makes this test fail:
+  // the captured `timeout` becomes `undefined` instead of `180000`.
+  test('runNpm resolves an explicit `timeout: undefined` to the 180000ms bound, not unbounded', () => {
+    const script = `
+      const cp = require('node:child_process');
+      const seen = [];
+      cp.execFileSync = (cmd, args, options) => {
+        seen.push(options);
+        return '9.9.9';
+      };
+      const { runNpm } = require(${JSON.stringify(path.join(__dirname, 'helpers.cjs'))});
+      // An own \`timeout: undefined\` key — not an omitted key — is the exact
+      // hazard: a caller-controlled property that must not erase the bound.
+      runNpm(['--version'], { timeout: undefined });
+      process.stdout.write(JSON.stringify({ timeout: seen[0] && seen[0].timeout }));
+    `;
+
+    let stdout = '';
+    let stderr = '';
+    let exitCode = 0;
+    try {
+      stdout = execFileSync(process.execPath, ['-e', script], {
+        encoding: 'utf-8',
+        timeout: 30_000,
+      });
+    } catch (err) {
+      stdout = err.stdout || '';
+      stderr = err.stderr || '';
+      exitCode = err.status ?? 1;
+    }
+
+    assert.equal(
+      exitCode,
+      0,
+      `runNpm timeout-capture probe failed with exit ${exitCode}. stderr: ${stderr}`,
+    );
+
+    const captured = JSON.parse(stdout.trim());
+    assert.equal(
+      captured.timeout,
+      180000,
+      `runNpm must resolve an explicit timeout: undefined to the 180000ms bound; ` +
+        `captured options.timeout was ${JSON.stringify(captured.timeout)} — an unset bound ` +
+        `is not a bound (DEFECT.UNBOUNDED-SUBPROCESS)`,
+    );
+  });
 });
   });
 }

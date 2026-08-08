@@ -10,13 +10,18 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const WORKFLOW = path.join(ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
 const GUARD_MARKER = 'gsd:guard=orchestrator-cwd-drift';
+
+// 30s: git plumbing (init/config/add/commit/checkout/rev-parse) against a
+// small mkdtemp fixture repo — already the file's calibrated bound
+// pre-migration (see runGuard below), reused here for consistency.
+const GIT_TIMEOUT_MS = 30_000;
 
 /**
  * Pull the guard's bash block out of the workflow. Anchored on a stable marker
@@ -35,8 +40,7 @@ function guardScript() {
   );
 }
 
-const git = (cwd, ...args) =>
-  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+const git = (cwd, ...args) => gitOrThrow(args, { cwd, timeoutMs: GIT_TIMEOUT_MS });
 
 /** A real repo with a base branch and one commit. */
 function makeRepo() {
