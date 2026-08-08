@@ -73,6 +73,31 @@
  * baseline would need hand-maintenance on changes that have nothing to do
  * with this derivation at all.
  *
+ * COUNT, not duplicate rows. Two DIFFERENT source lines can carry the exact
+ * same (file, TRIMMED text) pair — `gsd-core/workflows/plan-phase.md` has two
+ * byte-identical `DISK_PLANS=$(ls "${PHASE_DIR}"/*-PLAN.md 2>/dev/null | wc -l
+ * | tr -d ' ')` sites. Keying on (file, text) alone with one baseline row per
+ * OCCURRENCE made a partial migration invisible: migrating ONE of the two
+ * sites still leaves a violation matching the row, so nothing goes fresh and
+ * nothing goes stale — the remaining, unmigrated copy is silently covered by
+ * the row meant to acknowledge the pair NO LONGER MIGRATING. Each baseline
+ * entry therefore carries a `count` — the number of byte-identical
+ * occurrences of that (file, text) pair acknowledged at this site, not a
+ * duplicated row per occurrence:
+ *   - actual occurrences this run < entry.count  -> STALE as a PARTIAL
+ *     migration: some but not all acknowledged copies are gone, so the entry
+ *     no longer describes reality and must be re-recorded via `--update`;
+ *   - actual occurrences this run > entry.count  -> the occurrences beyond
+ *     the acknowledged count are FRESH: a new copy landed next to one that
+ *     was already acknowledged;
+ *   - actual occurrences this run === 0          -> fully STALE, the
+ *     existing "site was migrated, delete the row" case;
+ *   - actual occurrences this run === entry.count -> fully acknowledged, no
+ *     failure.
+ * Line numbers stay OUT of the key even with counting — that is still what
+ * keeps the baseline immune to unrelated churn; `count` answers "how many",
+ * never "which lines".
+ *
  * KNOWN, ACCEPTED limits of a per-line textual scan (same tradeoff the
  * sibling guards document): a re-derivation whose glob and counting operator
  * are split across two DIFFERENT lines (e.g. a variable holding the glob,
@@ -105,6 +130,14 @@ const SCAN_DIRS = ['gsd-core/workflows', 'commands', 'agents', 'skills'];
 const SCAN_EXT = new Set(['.md']);
 
 const BASELINE_REL_PATH = path.join('scripts', 'baselines', 'planning-prompt-drift-baseline.json');
+
+// ADR-3180 Decision 4(e): a baseline entry is "acknowledged, in writing, with
+// the issue that owns its removal" — that is Phase 8 (#3218, "the prompt
+// layer": give the workflow layer a CLI surface to ask for plan and phase
+// counts, and burn this ratchet baseline to zero), NOT the epic (#3180)
+// itself. #3180 is the scope authority for the whole consolidation; #3218 is
+// the phase that actually deletes these shell re-derivations.
+const RATCHET_OWNER_ISSUE = '#3218';
 
 /**
  * Pure: find every plan/summary-count re-derivation line in `text`.
@@ -185,6 +218,13 @@ function loadBaseline(root) {
       errors.push(`${where}.text must be a non-empty string, got ${JSON.stringify(entry.text)}`);
       return;
     }
+    // `count` is optional on read (diffAgainstBaseline defaults an absent
+    // count to 1) but when present must be a positive integer — the number
+    // of byte-identical (file, text) occurrences this entry acknowledges.
+    if (entry.count !== undefined && !(Number.isInteger(entry.count) && entry.count >= 1)) {
+      errors.push(`${where}.count must be a positive integer when present, got ${JSON.stringify(entry.count)}`);
+      return;
+    }
     entries.push(entry);
   });
   return { entries, errors };
@@ -192,25 +232,69 @@ function loadBaseline(root) {
 
 /**
  * Diff scanned `violations` (from `scanRepo`) against baseline `entries`,
- * matched by the pair (`file`, TRIMMED `text`) — never the line number.
- * Returns `{ fresh, stale }`:
- *   - `fresh`: violations whose (file, text) pair is NOT in the baseline —
- *     these fail the build as NEW.
- *   - `stale`: baseline entries whose (file, text) pair matched no violation
- *     in this run — these fail the build too, forcing `--update` to prune
- *     them (this is what keeps the baseline shrink-only).
+ * matched by the pair (`file`, TRIMMED `text`) — never the line
+ * number — and COUNT-aware: an entry acknowledges `entry.count`
+ * (default 1 when absent) byte-identical occurrences of that pair, not
+ * merely its presence. Returns `{ fresh, stale }`:
+ *   - `fresh`: violations whose (file, text) pair is NOT in the baseline at
+ *     all (a brand new site), PLUS any occurrences of a KNOWN pair beyond
+ *     its acknowledged `count` (a new copy landed next to an
+ *     already-acknowledged one) — both fail the build as NEW.
+ *   - `stale`: baseline entries whose actual occurrence count this run is
+ *     LESS than their acknowledged `count` — zero actual
+ *     occurrences is the fully-migrated case ("site was migrated, delete
+ *     the row"); a positive but short count is a PARTIAL migration (some
+ *     but not all acknowledged copies are gone). Both fail the build,
+ *     forcing `--update` to re-record the pair (this is what keeps the
+ *     baseline shrink-only and what makes a partial migration visible
+ *     instead of silently covered by the still-present sibling
+ *     occurrence).
  */
 function diffAgainstBaseline(violations, baseline) {
   const key = (file, text) => `${file} ${text}`;
-  const known = new Set(baseline.map((e) => key(e.file, e.text)));
-  const seen = new Set();
-  const fresh = [];
+
+  // Group this run's violations by (file, text) so a duplicated pair's
+  // occurrence COUNT — not merely its presence — can be
+  // compared against what the baseline entry acknowledges.
+  const actualByKey = new Map();
   for (const v of violations) {
     const k = key(v.file, v.text);
-    seen.add(k);
-    if (!known.has(k)) fresh.push(v);
+    let vs = actualByKey.get(k);
+    if (!vs) { vs = []; actualByKey.set(k, vs); }
+    vs.push(v);
   }
-  const stale = baseline.filter((e) => !seen.has(key(e.file, e.text)));
+
+  const knownKeys = new Set(baseline.map((e) => key(e.file, e.text)));
+
+  const fresh = [];
+  const stale = [];
+
+  // Every occurrence of a pair the baseline has never recorded at all is NEW.
+  for (const [k, vs] of actualByKey) {
+    if (!knownKeys.has(k)) fresh.push(...vs);
+  }
+
+  // For every RECORDED pair, compare its acknowledged count against how
+  // many occurrences this run actually found.
+  for (const entry of baseline) {
+    const k = key(entry.file, entry.text);
+    const expected = entry.count ?? 1;
+    const vs = actualByKey.get(k) || [];
+    const actual = vs.length;
+    if (actual < expected) {
+      // Zero actual occurrences is the fully-stale case; 0 < actual <
+      // expected is a partial migration — both are STALE, and
+      // both carry the expected/actual counts so the caller can name the
+      // mismatch.
+      stale.push({ ...entry, count: expected, actualCount: actual });
+    } else if (actual > expected) {
+      // Occurrences beyond the acknowledged count are a NEW copy landing
+      // next to one that was already acknowledged.
+      fresh.push(...vs.slice(expected));
+    }
+    // actual === expected: fully acknowledged, no failure.
+  }
+
   return { fresh, stale };
 }
 
@@ -223,14 +307,35 @@ function sortEntries(entries) {
   });
 }
 
+/**
+ * Collapse `violations` into one baseline row per distinct (file, text) pair,
+ * carrying a `count` of how many occurrences that pair has in THIS run — see
+ * the module header's "COUNT, not duplicate rows" note. Pure; no I/O.
+ */
+function dedupeViolationsForBaseline(violations) {
+  const order = [];
+  const byKey = new Map();
+  for (const v of violations) {
+    const k = `${v.file} ${v.text}`;
+    let entry = byKey.get(k);
+    if (!entry) {
+      entry = { file: v.file, text: v.text, derivation: 'plan-count', owner_issue: RATCHET_OWNER_ISSUE, count: 0 };
+      byKey.set(k, entry);
+      order.push(entry);
+    }
+    entry.count += 1;
+  }
+  return order;
+}
+
 function writeBaseline(root, violations) {
-  const entries = sortEntries(
-    violations.map((v) => ({ file: v.file, text: v.text, derivation: 'plan-count', owner_issue: '#3180' })),
-  );
+  const entries = sortEntries(dedupeViolationsForBaseline(violations));
   const doc = {
     $comment:
-      'ADR-3180 Decision 4(e) ratchet. See scripts/lint-planning-prompt-drift.cjs. SHRINK-ONLY: entries are '
-      + 'removed as sites migrate to the gsd-core CLI; new or changed entries fail lint:ci.',
+      'ADR-3180 Decision 4(e) ratchet, owned by Phase 8 (#3218). See scripts/lint-planning-prompt-drift.cjs. '
+      + 'SHRINK-ONLY: entries are removed as sites migrate to the gsd-core CLI; new or changed entries fail '
+      + 'lint:ci. `count` is the number of byte-identical (file, text) occurrences acknowledged at this site '
+      + '— a run producing fewer fails as a partial migration, more fails as an unacknowledged new copy.',
     entries,
   };
   const baselinePath = path.join(root, BASELINE_REL_PATH);
@@ -276,9 +381,9 @@ function main() {
   }
 
   if (stale.length > 0) {
-    process.stderr.write('\nplanning-prompt-drift: STALE baseline entr' + (stale.length === 1 ? 'y' : 'ies') + " (no longer produced by this run — the site was migrated, delete the row):\n");
+    process.stderr.write('\nplanning-prompt-drift: STALE baseline entr' + (stale.length === 1 ? 'y' : 'ies') + " (fully migrated, or a PARTIAL migration — fewer occurrences found than acknowledged; delete or re-record the row):\n");
     for (const e of stale) {
-      process.stderr.write(`  ${sanitizeForReport(e.file)}  ${sanitizeForReport(e.text)}\n`);
+      process.stderr.write(`  ${sanitizeForReport(e.file)}  ${sanitizeForReport(e.text)}  (found ${e.actualCount}/${e.count} acknowledged occurrence${e.count === 1 ? '' : 's'})\n`);
     }
     process.stderr.write(`\n  remedy: node scripts/lint-planning-prompt-drift.cjs --update\n`);
   }

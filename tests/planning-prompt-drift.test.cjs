@@ -132,6 +132,68 @@ describe('diffAgainstBaseline — ratchet invariants (synthetic)', () => {
     assert.deepStrictEqual(fresh, []);
     assert.deepStrictEqual(stale, []);
   });
+
+  // ─── count-aware ratchet (Finding-3 fix): duplicate (file, text) pairs no
+  // longer make a partial migration invisible ───────────────────────────
+
+  test('a pair with count:2 fully matched by TWO occurrences is KNOWN: neither fresh nor stale', () => {
+    const baseline = [{ file: 'a.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)', count: 2 }];
+    const violations = [
+      { file: 'a.md', line: 10, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+      { file: 'a.md', line: 40, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+    ];
+    const { fresh, stale } = diffAgainstBaseline(violations, baseline);
+    assert.deepStrictEqual(fresh, []);
+    assert.deepStrictEqual(stale, []);
+  });
+
+  test('a pair with count:2 but only ONE occurrence this run is a PARTIAL-migration STALE, naming both numbers', () => {
+    // This is the exact defect Finding 3 closes: migrating only ONE of two
+    // byte-identical sites must not be invisible to the ratchet just because
+    // the OTHER site still matches the (file, text) pair.
+    const baseline = [{ file: 'a.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)', count: 2 }];
+    const violations = [
+      { file: 'a.md', line: 10, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+    ];
+    const { fresh, stale } = diffAgainstBaseline(violations, baseline);
+    assert.deepStrictEqual(fresh, []);
+    assert.strictEqual(stale.length, 1);
+    assert.strictEqual(stale[0].count, 2);
+    assert.strictEqual(stale[0].actualCount, 1);
+  });
+
+  test('a pair with count:2 and ZERO occurrences this run is fully STALE (both sites migrated)', () => {
+    const baseline = [{ file: 'a.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)', count: 2 }];
+    const { fresh, stale } = diffAgainstBaseline([], baseline);
+    assert.deepStrictEqual(fresh, []);
+    assert.strictEqual(stale.length, 1);
+    assert.strictEqual(stale[0].actualCount, 0);
+    assert.strictEqual(stale[0].count, 2);
+  });
+
+  test('a pair with count:1 but a THIRD occurrence appears this run: the excess occurrence is FRESH (new copy)', () => {
+    const baseline = [{ file: 'a.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)', count: 1 }];
+    const violations = [
+      { file: 'a.md', line: 10, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+      { file: 'a.md', line: 55, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+    ];
+    const { fresh, stale } = diffAgainstBaseline(violations, baseline);
+    assert.deepStrictEqual(stale, []);
+    assert.strictEqual(fresh.length, 1);
+    assert.strictEqual(fresh[0].line, 55);
+  });
+
+  test('an entry with no `count` field defaults to acknowledging exactly ONE occurrence', () => {
+    const baseline = [{ file: 'a.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' }];
+    const violations = [
+      { file: 'a.md', line: 10, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+      { file: 'a.md', line: 55, found: '*-PLAN.md', text: 'DISK_PLANS=$(ls *-PLAN.md | wc -l)' },
+    ];
+    const { fresh, stale } = diffAgainstBaseline(violations, baseline);
+    assert.deepStrictEqual(stale, []);
+    assert.strictEqual(fresh.length, 1);
+    assert.strictEqual(fresh[0].line, 55);
+  });
 });
 
 // ─── scanRepo — tree-walk mechanics on a synthetic tree ───────────────────
@@ -166,10 +228,19 @@ describe('scanRepo — synthetic tree', () => {
 
 // ─── BASELINE INTEGRITY — both directions, against the real repo ─────────
 
-test('loadBaseline on the committed baseline returns exactly 7 entries', () => {
+test('loadBaseline on the committed baseline returns exactly 6 entries (one row per distinct (file, text) pair)', () => {
+  // 7 total ACKNOWLEDGED occurrences across 6 distinct pairs: plan-phase.md's
+  // byte-identical DISK_PLANS site fires at two different lines and is
+  // recorded as ONE row carrying `count: 2` (the Finding-3 fix — a
+  // duplicated-row baseline made migrating only one of the two sites
+  // invisible to the ratchet).
   const { entries, errors } = loadBaseline(REPO_ROOT);
   assert.deepStrictEqual(errors, []);
-  assert.strictEqual(entries.length, 7);
+  assert.strictEqual(entries.length, 6);
+  const totalAcknowledgedOccurrences = entries.reduce((sum, e) => sum + (e.count ?? 1), 0);
+  assert.strictEqual(totalAcknowledgedOccurrences, 7);
+  const planPhaseEntry = entries.find((e) => e.file === 'gsd-core/workflows/plan-phase.md');
+  assert.strictEqual(planPhaseEntry.count, 2);
 });
 
 test('scanRepo(repoRoot) matches the baseline exactly: zero fresh AND zero stale', () => {

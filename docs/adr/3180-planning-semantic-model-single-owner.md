@@ -187,7 +187,7 @@ The same constraint applies inward: **a guard's owner FILE is not exempt, only i
 - a recorded site never fails — it is acknowledged, in writing, with the issue that owns its removal;
 - an unrecorded site fails — nobody has looked at it;
 - a recorded site that no longer fires **also** fails, so the baseline can only shrink and an acknowledgment can never outlive the thing it describes;
-- entries are keyed on `(file, trimmed source text)`, never on a line number, which churns on every unrelated edit to the same file.
+- entries are keyed on `(file, trimmed source text)` plus an occurrence **count**, never on a line number, which churns on every unrelated edit to the same file. The count is what makes a *partial* migration visible: two byte-identical sites in one file would otherwise be one indistinguishable key, so migrating one of them would leave the ratchet green while the other survived. Fewer occurrences than acknowledged fails as a partial migration; more fails as a new copy planted beside an acknowledged one.
 
 *Rejected:* land the guard later, together with the migration. That is the "found it, wrote it down, moved on" posture this epic exists to remove — between the finding and the migration the surface is known-broken *and* unwatched, which is strictly worse than unknown. *Rejected:* a bare `eslint-disable`-style suppression. A suppressed guard and a green guard are indistinguishable at a glance; a ratchet reports its own remaining debt on every run.
 
@@ -519,7 +519,7 @@ CLI surface it calls. Decision 5's locked 1→2→3→4→5 order is unchanged.
 - Decision 4(e) — the ratchet mechanism, so a surface that cannot be consolidated today is watched today.
 - Decision 7 — the behavior contract, this ADR's normative core.
 - **Completion ratio consolidated**: `clampPercentFromFraction` added beside `clampPercent`; six inline copies across `roadmap.cts`, `state.cts`, `commands.cts` (×2), `workstream-inventory-builder.cts`, `gsd2-import.cts` and `state-document.cts` migrated onto the owner; `scripts/lint-completion-ratio-drift.cjs` added, reporting zero re-derivations with no file-level exemption.
-- **Prompt layer made visible**: `scripts/lint-planning-prompt-drift.cjs` added with a 7-entry shrink-only baseline covering `progress.md`, `execute-plan.md`, `plan-phase.md` and `plan-review-convergence.md`. Phase 8 owns its removal.
+- **Prompt layer made visible**: `scripts/lint-planning-prompt-drift.cjs` added with a shrink-only baseline covering the 7 sites across `progress.md`, `execute-plan.md`, `plan-phase.md` and `plan-review-convergence.md`. **Phase 8 (#3218) owns their removal, and every baseline entry names it** — Decision 4(e) requires the acknowledgment to point at the issue that removes it, not at the epic.
 
 **Decision 3's Tier-2 table, re-derived for this amendment: no rows.** Every percent migration is
 behavior-identical — `clampPercent`'s first line *is* the `total > 0 ? … : 0` ternary each copy
