@@ -1319,3 +1319,973 @@ test('classification is newline-invariant', (t) => {
   }
   assert.strictEqual(report.failed, false, 'classification must be newline-invariant');
 });
+
+// ═════════════════════════════════════════════════════════════════════════
+// Section H — Milestone identity has one owner (#3216, epic #3180 Phase 6)
+// Matrix: .gsd/phase/refactor-3216-milestone-identity-single-owner/50-test-matrix.md
+// ═════════════════════════════════════════════════════════════════════════
+//
+// `getMilestoneInfo(cwd)` moves from a bare `{version, name}` return (with a
+// `{v1.0,'milestone'}` failure default output-identical to a genuine v1.0
+// project) to `ScopedResult<MilestoneInfo | null>` -- `{value, scope}`, scope
+// drawn from the same frozen SCOPE enum Section A uses. `listMilestoneHeadings`
+// is a new version-agnostic sibling of `locateMilestoneHeadings`, consolidating
+// the THIRD copy the widened drift guard found at `roadmap.cts:454`
+// (`cmdRoadmapAnalyze`'s inline milestone-heading regex).
+//
+// Neither symbol exists in this shape yet -- every test below is failing-first
+// by construction, not only the rows the matrix marks (RED). Both are
+// destructured locally (not added to the top-of-file import block) so this
+// section is a pure append.
+
+const {
+  getMilestoneInfo,
+  listMilestoneHeadings,
+} = roadmapParser;
+const unusableInputMod = require('../gsd-core/bin/lib/unusable-input.cjs');
+const {
+  _resetUnusableInputWarningsForTests,
+  _unusableInputEmissionCountForTests,
+} = unusableInputMod;
+// `createTempGitProject`/`gitOrThrow` (not added to the top-of-file import
+// block, same "pure append" rationale as above): the four destructive
+// `phases clear --confirm` tests below need a real, clean git repo so the
+// command's own uncommitted-changes guard behaves deterministically instead
+// of being bypassed with `--force`.
+const { createTempGitProject } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+
+// ─── Shared CRLF-twinned fixture table (rows 1, 3, 4, 5, 18, 19, 24) ──────
+
+const H_CRLF_TABLE = [
+  {
+    label: 'H1 named-heading',
+    version: 'v3.3',
+    lines: ['# Roadmap', '', '## v3.3 — Portability', '', 'body text'],
+  },
+  {
+    label: 'H3 parenthetical-name',
+    version: 'v3.3',
+    lines: ['# Roadmap', '', '## v3.3 — Portability (Windows)', '', 'body text'],
+  },
+  {
+    label: 'H4 phase-heading-only',
+    version: 'v3.3',
+    lines: ['# Roadmap', '', '### Phase 7: Close v3.3 gaps', '', 'body text'],
+  },
+  {
+    label: 'H5 phase-heading-only-unscoped',
+    version: null,
+    lines: ['# Roadmap', '', '### Phase 7: Close v3.3 gaps', '', 'body text'],
+  },
+  {
+    label: 'H18 phase-and-real-heading',
+    version: 'v3.3',
+    lines: ['# Roadmap', '', '### Phase 7: Close v3.3 gaps', '', '## v3.3 — Real Name', '', 'body text'],
+  },
+  {
+    label: 'H19 closed-then-live',
+    version: 'v3.3',
+    lines: ['# Roadmap', '', '## v3.3 — Old ✅ SHIPPED', '', '## v3.3 — New', '', 'body text'],
+  },
+];
+
+function buildHFixture(t, entry, crlf = false) {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  if (entry.version) writeState(cwd, { milestone: entry.version });
+  const content = entry.lines.join('\n');
+  writeRoadmap(cwd, crlf ? content.replace(/\n/g, '\r\n') : content);
+  return cwd;
+}
+
+test('stateVersionWithNamedHeadingReportsBothAndCompleteScope', (t) => {
+  const cwd = buildHFixture(t, H_CRLF_TABLE[0]);
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.deepStrictEqual(result.value, { version: 'v3.3', name: 'Portability' });
+});
+
+test('progressMarkerBulletIsConsultedBeforeHeading', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  const content = [
+    '# Roadmap',
+    '',
+    '🚧 **v3.3** Bullet Name (Windows)',
+    '',
+    '## v3.3 — Decoy Heading Name',
+  ].join('\n');
+  writeRoadmap(cwd, content);
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  // The 🚧 bullet is consulted BEFORE the heading (#2135) -- its name wins
+  // even though a differently-named heading for the same version exists too.
+  assert.strictEqual(result.value.name, 'Bullet Name (Windows)');
+});
+
+// (RED) #3171: the heading-name capture must not truncate at '('.
+test('headingNameRetainsParentheticalInsteadOfTruncating', (t) => {
+  const cwd = buildHFixture(t, H_CRLF_TABLE[1]);
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, 'Portability (Windows)');
+});
+
+// (RED) #3197: a Phase heading mentioning the milestone's version is never a
+// milestone heading -- even on the STATE-anchored path.
+test('phaseHeadingIsNeverAcceptedAsTheMilestoneHeadingOnStatePath', (t) => {
+  const cwd = buildHFixture(t, H_CRLF_TABLE[2]);
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.TRUNCATED);
+  assert.deepStrictEqual(result.value, { version: 'v3.3', name: null });
+});
+
+// (RED) #3197: same defect, the UNANCHORED `:806` fallback path (no STATE
+// version to anchor on).
+test('phaseHeadingIsNeverAcceptedAsTheMilestoneHeadingOnFallbackPath', (t) => {
+  const cwd = buildHFixture(t, H_CRLF_TABLE[3]);
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.UNSCOPED);
+  assert.strictEqual(result.value, null);
+});
+
+test('shippedHeadingIsNotReportedAsCurrentMilestone', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['# Roadmap', '', '## v3.3 — Old ✅ SHIPPED', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  // A shipped heading for the STATE-stored version is not "current" -- this
+  // reduces to the same disposition as "no live heading found".
+  assert.equal(result.scope, SCOPE.TRUNCATED);
+  assert.deepStrictEqual(result.value, { version: 'v3.3', name: null });
+});
+
+test('knownVersionWithNoHeadingReportsVersionAndNullName', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['# Roadmap', '', '## Overview', '', 'No milestone headings here.'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.TRUNCATED);
+  assert.deepStrictEqual(result.value, { version: 'v3.3', name: null });
+});
+
+// (RED) #3197: free-form legacy ROADMAP with zero version tokens anywhere --
+// the version is genuinely unresolvable and must not be invented.
+test('freeFormRoadmapWithNoVersionYieldsUnscopedNotV1Default', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeRoadmap(cwd, ['# Roadmap', '', '## Overview', '', '### Phase 1: Foo'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.UNSCOPED);
+  assert.strictEqual(result.value, null);
+});
+
+// (RED) THE load-bearing row. Every other row in this section can pass while
+// the scope wiring is inverted (e.g. COMPLETE and UNREADABLE swapped) -- only
+// a genuine v1.0 project reporting {v1.0, <its real name>}/COMPLETE proves the
+// old `{version:'v1.0', name:'milestone'}` failure default is actually GONE,
+// rather than renamed to a scope label nobody checks.
+test('genuineV1ProjectIsDistinguishableFromTheOldFailureDefault', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v1.0' });
+  writeRoadmap(cwd, ['# Roadmap', '', '## v1.0 — Foundation Release', '', '### Phase 1: Bootstrap'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.deepStrictEqual(result.value, { version: 'v1.0', name: 'Foundation Release' });
+  // The name is deliberately NOT the literal string 'milestone' -- that is the
+  // old failure default's signature, and a project that legitimately named
+  // its v1.0 milestone "milestone" is not this test's concern.
+  assert.notStrictEqual(result.value.name, 'milestone');
+});
+
+test('absentRoadmapIsUnreadableScopeAndStaysSilent', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  // No ROADMAP.md written at all -- ENOENT.
+  _resetUnusableInputWarningsForTests();
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.UNREADABLE);
+  assert.strictEqual(result.value, null);
+  // #1881: absence alone must never be reported -- every brand-new project
+  // has no ROADMAP.md yet, and flagging that as corrupt would be noise.
+  assert.strictEqual(_unusableInputEmissionCountForTests(), 0);
+});
+
+test('unreadableRoadmapReportsDiagnosticAndUnreadableScope', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  writeRoadmap(cwd, ['# Roadmap', '', '## v3.3 — Name'].join('\n'));
+  writeState(cwd, { milestone: 'v3.3' });
+  _resetUnusableInputWarningsForTests();
+
+  mock.method(shellProj, 'platformReadSync', () => {
+    const err = new Error('EACCES: simulated permission denied');
+    err.code = 'EACCES';
+    throw err;
+  });
+  t.after(() => {
+    mock.restoreAll();
+    cleanup(cwd);
+  });
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.UNREADABLE);
+  assert.strictEqual(result.value, null);
+  // ADR-1411: unlike absence, a genuine read fault IS reported.
+  assert.strictEqual(_unusableInputEmissionCountForTests(), 1);
+});
+
+test('unreadableStateFallsBackWithoutFabricatingAVersion', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  // No versioned milestones anywhere in the ROADMAP, so the fallback path
+  // (once STATE.md is unreachable) has no version evidence to find either.
+  writeRoadmap(cwd, ['# Roadmap', '', '## Overview', '', '### Phase 1: Foo'].join('\n'));
+  writeState(cwd, { milestone: 'v3.3' });
+
+  const originalRead = shellProj.platformReadSync;
+  mock.method(shellProj, 'platformReadSync', (targetPath) => {
+    if (typeof targetPath === 'string' && targetPath.endsWith('STATE.md')) {
+      const err = new Error('EACCES: simulated permission denied');
+      err.code = 'EACCES';
+      throw err;
+    }
+    return originalRead(targetPath);
+  });
+  t.after(() => {
+    mock.restoreAll();
+    cleanup(cwd);
+  });
+
+  const result = getMilestoneInfo(cwd);
+  // Falls back to ROADMAP-only heuristics -- which find no version -- rather
+  // than fabricating v1.0 or trusting a version it could not actually read.
+  assert.equal(result.scope, SCOPE.UNSCOPED);
+  assert.strictEqual(result.value, null);
+});
+
+test('emptyRoadmapYieldsUnscoped', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeRoadmap(cwd, '');
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.UNSCOPED);
+  assert.strictEqual(result.value, null);
+});
+
+test('whitespaceOnlyRoadmapYieldsUnscoped', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeRoadmap(cwd, '   \n\n\t  \n');
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.UNSCOPED);
+  assert.strictEqual(result.value, null);
+});
+
+test('headingLevelsOneThroughThreeAreAllAccepted', (t) => {
+  const tmpDirs = [];
+  t.after(() => { for (const d of tmpDirs) cleanup(d); });
+
+  for (const level of [1, 2, 3]) {
+    const cwd = createTempDir('gsd-milestone-identity-');
+    tmpDirs.push(cwd);
+    writeState(cwd, { milestone: 'v3.3' });
+    writeRoadmap(cwd, [`${'#'.repeat(level)} v3.3 — Name`, '', 'body'].join('\n'));
+
+    const result = getMilestoneInfo(cwd);
+    assert.equal(result.scope, SCOPE.COMPLETE, `level ${level}`);
+    assert.strictEqual(result.value.name, 'Name', `level ${level}`);
+  }
+});
+
+test('headingLevelFourIsRejected', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['#### v3.3 — Name', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  // #{1,3} is the owner's level ceiling -- a level-4 heading is invisible to
+  // it, same as no heading at all.
+  assert.equal(result.scope, SCOPE.TRUNCATED);
+  assert.deepStrictEqual(result.value, { version: 'v3.3', name: null });
+});
+
+test('versionSegmentCountsAtAndAroundTwoAreHandled', (t) => {
+  const tmpDirs = [];
+  t.after(() => { for (const d of tmpDirs) cleanup(d); });
+
+  for (const version of ['v3', 'v3.3', 'v3.3.3']) {
+    const cwd = createTempDir('gsd-milestone-identity-');
+    tmpDirs.push(cwd);
+    writeState(cwd, { milestone: version });
+    writeRoadmap(cwd, [`## ${version} — Name`, '', 'body'].join('\n'));
+
+    const result = getMilestoneInfo(cwd);
+    assert.equal(result.scope, SCOPE.COMPLETE, version);
+    assert.deepStrictEqual(result.value, { version, name: 'Name' }, version);
+  }
+});
+
+test('realMilestoneHeadingWinsOverAPhaseHeadingMentioningTheSameVersion', (t) => {
+  const cwd = buildHFixture(t, H_CRLF_TABLE[4]);
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, 'Real Name');
+});
+
+test('prefersTheNonClosedHeadingWhenAVersionAppearsTwice', (t) => {
+  const cwd = buildHFixture(t, H_CRLF_TABLE[5]);
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, 'New');
+});
+
+// #730 regression guard: `v8.0` (STATE) must select the LIVE `v8.0-B`
+// sub-milestone heading over the CLOSED `v8.0-A` one -- the `\b` boundary
+// that makes this possible is deliberate, load-bearing behavior (§7.1).
+test('subMilestoneSelectionIsPreservedForBoundaryWordChars', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v8.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v8.0-A — Old ✅ SHIPPED',
+    '',
+    '## v8.0-B — LiveMarker',
+  ].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.version, 'v8.0');
+  // Exact equality, not .includes(): the name derives from the heading's OWN
+  // version token (v8.0-B), not the requested v8.0 -- an .includes() check
+  // would also pass on a leaked prefix from the closed v8.0-A heading, which
+  // is the specific misselection this row guards against (pinned rule,
+  // .gsd/phase/refactor-3216-milestone-identity-single-owner/40-design.md).
+  assert.equal(result.value.name, 'LiveMarker', `expected exact name LiveMarker, got ${JSON.stringify(result.value.name)}`);
+});
+
+// ADR-3180 §7.1 locks the `\b` boundary deliberately: `v2.0` (STATE) matching
+// `## v2.0.1 — Name` is CORRECT, not a bug. Amendment 2 tried the stricter
+// `(?![\w.-])` boundary specifically to stop this and REVERTED it because it
+// breaks #730 sub-milestone selection (the row above). Do not "fix" this.
+test('versionPrefixMatchInsideLongerVersionIsRetainedDeliberately', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v2.0' });
+  writeRoadmap(cwd, ['## v2.0.1 — Name', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.version, 'v2.0');
+  // Exact equality, not .includes(): the name derives from the heading's OWN
+  // version token (v2.0.1), not the requested v2.0 -- an .includes() check
+  // would also pass on the '.1 — Name' leftover that stripping the
+  // *requested* token (instead of the heading's own) would produce, which is
+  // precisely the defect the pinned name-extraction rule excludes
+  // (.gsd/phase/refactor-3216-milestone-identity-single-owner/40-design.md).
+  assert.equal(result.value.name, 'Name', `expected exact name Name, got ${JSON.stringify(result.value.name)}`);
+});
+
+test('leadingDelimiterIsStrippedFromName', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['## v3.3 — Delimited Name', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, 'Delimited Name');
+});
+
+// #2135: a name beginning with '#' is a heading-parse failure -- it must stay
+// loud (unstripped) rather than being silently cleaned, unlike a whitespace/
+// dash/colon/em-dash leading delimiter.
+test('hashLedNameIsLeftLoudRatherThanCleaned', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['## v3.3 #HashName', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, '#HashName');
+});
+
+test('crlfRoadmapsProduceIdenticalIdentityToLf', (t) => {
+  const tmpDirs = [];
+  t.after(() => { for (const d of tmpDirs) cleanup(d); });
+
+  for (const entry of H_CRLF_TABLE) {
+    const lfCwd = createTempDir('gsd-milestone-identity-crlf-lf-');
+    const crlfCwd = createTempDir('gsd-milestone-identity-crlf-crlf-');
+    tmpDirs.push(lfCwd, crlfCwd);
+    if (entry.version) {
+      writeState(lfCwd, { milestone: entry.version });
+      writeState(crlfCwd, { milestone: entry.version });
+    }
+    const lfContent = entry.lines.join('\n');
+    writeRoadmap(lfCwd, lfContent);
+    writeRoadmap(crlfCwd, lfContent.replace(/\n/g, '\r\n'));
+
+    const lfResult = getMilestoneInfo(lfCwd);
+    const crlfResult = getMilestoneInfo(crlfCwd);
+    assert.equal(crlfResult.scope, lfResult.scope, `scope mismatch for ${entry.label}`);
+    assert.strictEqual(crlfResult.value?.name ?? null, lfResult.value?.name ?? null, `name mismatch for ${entry.label}`);
+    if (crlfResult.value?.name) {
+      assert.ok(!crlfResult.value.name.includes('\r'), `CRLF leaked into name for ${entry.label}: ${JSON.stringify(crlfResult.value.name)}`);
+    }
+  }
+});
+
+test('unicodeNameIsPreserved', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['## v3.3 — Ünïcode ▲', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, 'Ünïcode ▲');
+});
+
+test('veryLongNameIsNotTruncated', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  const longName = 'X'.repeat(4096);
+  writeRoadmap(cwd, [`## v3.3 — ${longName}`, '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name.length, 4096);
+  assert.strictEqual(result.value.name, longName);
+});
+
+// #2143: fence-awareness is explicitly out of scope for this phase (Decision
+// 6) -- a milestone-shaped heading at line-start INSIDE a fenced code block
+// still matches. Documented known limit, not a regression to fix here.
+test('fencedHeadingStillMatchesAsADocumentedKnownLimit', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['# Roadmap', '', '```markdown', '## v3.3 — Fenced Name', '```', '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.name, 'Fenced Name');
+});
+
+test('versionWithRegexMetacharactersIsEscaped', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  const hostileVersion = 'v1.0+(x)';
+  writeState(cwd, { milestone: hostileVersion });
+  writeRoadmap(cwd, [`## ${hostileVersion} — Name`, '', 'body'].join('\n'));
+
+  assert.doesNotThrow(() => getMilestoneInfo(cwd));
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.version, hostileVersion);
+  assert.strictEqual(result.value.name, 'Name');
+});
+
+test('versionWithReplacementPatternIsTreatedLiterally', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  const hostileVersion = 'v1.0$&$1';
+  writeState(cwd, { milestone: hostileVersion });
+  writeRoadmap(cwd, [`## ${hostileVersion} — Name`, '', 'body'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.COMPLETE);
+  assert.strictEqual(result.value.version, hostileVersion);
+  // '$&'/'$1' must never be interpreted as a String.replace() substitution
+  // pattern -- the extracted name must be exactly 'Name', not a corrupted
+  // expansion of the hostile version token.
+  assert.strictEqual(result.value.name, 'Name');
+});
+
+// Hostile / sink (#2288 defense in depth): a traversal-shaped STATE
+// `milestone:` value must never let `archivePhaseDirectories` move phase
+// history outside `.planning/milestones/`.
+test('traversalVersionNeverEscapesTheMilestonesDirectory', (t) => {
+  // `createTempGitProject` (git init + initial commit) gives the command's
+  // own uncommitted-changes guard a deterministic clean repo, so the test
+  // proves the real destructive-command guard rather than bypassing it with
+  // `--force` -- `--force` is exactly the safety this row exercises.
+  const cwd = createTempGitProject('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeRoadmap(cwd, ['# Roadmap', '', 'No milestone headings here.'].join('\n'));
+  const hostileVersion = '../../etc/passwd';
+  writeState(cwd, { milestone: hostileVersion });
+  writeFile(cwd, path.join('.planning', 'phases', '01-example', 'PLAN.md'), '# Plan');
+  gitOrThrow(['add', '-A'], { cwd });
+  gitOrThrow(['commit', '-m', 'seed fixture'], { cwd });
+
+  const escapeTarget = path.resolve(cwd, '.planning', 'milestones', '..', '..', 'etc', 'passwd-phases');
+  assert.strictEqual(fs.existsSync(escapeTarget), false, 'precondition: escape target must not pre-exist');
+
+  const result = runGsdTools(['phases', 'clear', '--confirm', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+
+  // Negative proof: the traversal string never left `.planning/milestones/`.
+  assert.strictEqual(fs.existsSync(escapeTarget), false);
+  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  const entries = fs.existsSync(milestonesDir) ? fs.readdirSync(milestonesDir) : [];
+  assert.ok(entries.length > 0, 'expected the dated-fallback archive dir to exist');
+  for (const entry of entries) {
+    assert.ok(!entry.includes('etc') && !entry.includes('passwd'), `traversal string leaked into archive dir name: ${entry}`);
+    // ARCHIVE_VERSION_LABEL_RE rejects the traversal string, so the archive
+    // falls back to the dated label -- never the hostile STATE value.
+    assert.match(entry, /^archived-\d{8}-phases$/);
+  }
+});
+
+test('controlCharacterVersionIsRefusedAsAPathComponent', (t) => {
+  // `createTempGitProject`, not a bare temp dir + `--force`: see rationale on
+  // `traversalVersionNeverEscapesTheMilestonesDirectory` above.
+  const cwd = createTempGitProject('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeRoadmap(cwd, ['# Roadmap', '', 'No milestone headings here.'].join('\n'));
+  const ESC = String.fromCharCode(0x1b);
+  const hostileVersion = `v1.0${ESC}[31mHACK`;
+  writeState(cwd, { milestone: hostileVersion });
+  writeFile(cwd, path.join('.planning', 'phases', '01-example', 'PLAN.md'), '# Plan');
+  gitOrThrow(['add', '-A'], { cwd });
+  gitOrThrow(['commit', '-m', 'seed fixture'], { cwd });
+
+  const result = runGsdTools(['phases', 'clear', '--confirm', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  // Nothing replayed to the terminal: the hostile version never reaches the
+  // command's own output.
+  assert.strictEqual((result.output || '').includes(ESC), false);
+
+  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  const entries = fs.existsSync(milestonesDir) ? fs.readdirSync(milestonesDir) : [];
+  assert.ok(entries.length > 0, 'expected the dated-fallback archive dir to exist');
+  for (const entry of entries) {
+    assert.ok(!entry.includes(ESC), `control character leaked into archive dir name: ${JSON.stringify(entry)}`);
+    assert.match(entry, /^archived-\d{8}-phases$/);
+  }
+});
+
+test('undefinedCwdDoesNotThrow', () => {
+  // The shipping caller shape: buildStateFrontmatter guards `if (cwd)` before
+  // calling getMilestoneInfo, but getMilestoneInfo itself must survive being
+  // called with cwd === undefined directly (#2245).
+  let result;
+  assert.doesNotThrow(() => { result = getMilestoneInfo(undefined); });
+  assert.ok(result && typeof result === 'object' && 'scope' in result && 'value' in result);
+  assert.ok(Object.values(SCOPE).includes(result.scope));
+});
+
+test('getMilestoneInfoNeverThrowsAcrossEveryInputClass', (t) => {
+  const tmpDirs = [];
+  t.after(() => { for (const d of tmpDirs) cleanup(d); });
+
+  function freshDir() {
+    const cwd = createTempDir('gsd-milestone-identity-');
+    tmpDirs.push(cwd);
+    return cwd;
+  }
+
+  const inputClasses = [
+    // 1. No ROADMAP.md at all (ENOENT).
+    () => freshDir(),
+    // 2. Empty ROADMAP.
+    () => { const c = freshDir(); writeRoadmap(c, ''); return c; },
+    // 3. Whitespace-only ROADMAP.
+    () => { const c = freshDir(); writeRoadmap(c, '   \n\t\n'); return c; },
+    // 4. Phase-heading-only, V set.
+    () => {
+      const c = freshDir();
+      writeState(c, { milestone: 'v3.3' });
+      writeRoadmap(c, '### Phase 7: Close v3.3 gaps');
+      return c;
+    },
+    // 5. Free-form legacy, no version anywhere.
+    () => { const c = freshDir(); writeRoadmap(c, '## Overview\n### Phase 1: Foo'); return c; },
+    // 6. Hostile regex-metacharacter version.
+    () => {
+      const c = freshDir();
+      writeState(c, { milestone: 'v1.0+(x)[y]' });
+      writeRoadmap(c, '## v1.0+(x)[y] — Name');
+      return c;
+    },
+    // 7. Control-character version.
+    () => {
+      const c = freshDir();
+      writeState(c, { milestone: `v1.0${String.fromCharCode(0x1b)}HACK` });
+      writeRoadmap(c, '## Overview');
+      return c;
+    },
+    // 8. Traversal-shaped version.
+    () => {
+      const c = freshDir();
+      writeState(c, { milestone: '../../etc/passwd' });
+      writeRoadmap(c, '## Overview');
+      return c;
+    },
+    // 9. CRLF roadmap.
+    () => {
+      const c = freshDir();
+      writeState(c, { milestone: 'v3.3' });
+      writeRoadmap(c, '## v3.3 — Name\r\n\r\nbody\r\n');
+      return c;
+    },
+    // 10. Sub-milestone selection shape.
+    () => {
+      const c = freshDir();
+      writeState(c, { milestone: 'v8.0' });
+      writeRoadmap(c, '## v8.0-A — Old ✅ SHIPPED\n\n## v8.0-B — Live');
+      return c;
+    },
+    // 11. cwd === undefined.
+    () => undefined,
+    // 12. cwd pointing at a nonexistent directory.
+    () => path.join(freshDir(), 'does-not-exist-subdir'),
+  ];
+
+  for (const build of inputClasses) {
+    const cwd = build();
+    assert.doesNotThrow(() => getMilestoneInfo(cwd), `getMilestoneInfo threw for input class producing cwd=${cwd}`);
+  }
+});
+
+// Identity (4c): the consumers' OBSERVABLE output must agree with the
+// owner's ScopedResult for the same fixture -- not a locally-reassembled
+// copy of it (ADR-3180 Decision 4c: "post-filtering the canonical result" is
+// itself a bypass this row is designed to catch).
+test('consumerOutputsMatchTheOwnersScopedResultForTheSameFixture', (t) => {
+  // `createTempGitProject`, not a bare temp dir + `--force`: see rationale on
+  // `traversalVersionNeverEscapesTheMilestonesDirectory` above.
+  const cwd = createTempGitProject('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  writeRoadmap(cwd, ['# Roadmap', '', '## v3.3 — Consolidated Name', '', 'body'].join('\n'));
+  writeFile(cwd, path.join('.planning', 'phases', '01-example', 'PLAN.md'), '# Plan');
+  gitOrThrow(['add', '-A'], { cwd });
+  gitOrThrow(['commit', '-m', 'seed fixture'], { cwd });
+
+  const owner = getMilestoneInfo(cwd);
+  assert.equal(owner.scope, SCOPE.COMPLETE);
+
+  // Consumer 1: buildStateFrontmatter, via `state sync` -> `state json`.
+  const syncResult = runGsdTools(['state', 'sync', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(syncResult.success, true, syncResult.error);
+  const jsonResult = runGsdTools(['state', 'json', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(jsonResult.success, true, jsonResult.error);
+  const parsedJson = JSON.parse(jsonResult.output);
+  assert.strictEqual(parsedJson.milestone, owner.value.version);
+  assert.strictEqual(parsedJson.milestone_name, owner.value.name);
+
+  // Consumer 2: archivePhaseDirectories, via `phases clear --confirm`.
+  const clearResult = runGsdTools(['phases', 'clear', '--confirm', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(clearResult.success, true, clearResult.error);
+  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  const entries = fs.readdirSync(milestonesDir);
+  assert.deepStrictEqual(entries, [`${owner.value.version}-phases`]);
+});
+
+// (RED) Identity (4c), CLI: the full untruncated name must PERSIST through
+// `state sync`, and a non-COMPLETE identity must never persist a fabricated
+// name.
+test('stateSyncPersistsTheOwnersIdentityNotAFabricatedOne', (t) => {
+  const tmpDirs = [];
+  t.after(() => { for (const d of tmpDirs) cleanup(d); });
+
+  // Row-3 fixture: parenthetical name must persist UNTRUNCATED.
+  const cwd3 = createTempDir('gsd-milestone-identity-');
+  tmpDirs.push(cwd3);
+  writeState(cwd3, { milestone: 'v3.3' });
+  writeRoadmap(cwd3, ['# Roadmap', '', '## v3.3 — Portability (Windows)', '', 'body'].join('\n'));
+  const sync3 = runGsdTools(['state', 'sync', '--cwd', cwd3, '--raw'], cwd3);
+  assert.strictEqual(sync3.success, true, sync3.error);
+  const json3result = runGsdTools(['state', 'json', '--cwd', cwd3, '--raw'], cwd3);
+  assert.strictEqual(json3result.success, true, json3result.error);
+  const json3 = JSON.parse(json3result.output);
+  assert.strictEqual(json3.milestone_name, 'Portability (Windows)');
+
+  // Row-4 fixture: only a Phase heading -- must persist NO fabricated name.
+  const cwd4 = createTempDir('gsd-milestone-identity-');
+  tmpDirs.push(cwd4);
+  writeState(cwd4, { milestone: 'v3.3' });
+  writeRoadmap(cwd4, ['# Roadmap', '', '### Phase 7: Close v3.3 gaps', '', 'body'].join('\n'));
+  const sync4 = runGsdTools(['state', 'sync', '--cwd', cwd4, '--raw'], cwd4);
+  assert.strictEqual(sync4.success, true, sync4.error);
+  const json4result = runGsdTools(['state', 'json', '--cwd', cwd4, '--raw'], cwd4);
+  assert.strictEqual(json4result.success, true, json4result.error);
+  const json4 = JSON.parse(json4result.output);
+  assert.strictEqual(json4.milestone, 'v3.3');
+  assert.strictEqual('milestone_name' in json4, false, `milestone_name must be absent, not fabricated: ${JSON.stringify(json4.milestone_name)}`);
+});
+
+// (RED) Identity (4c), CLI: `archivePhaseDirectories` must refuse a
+// syntactically-valid-but-not-COMPLETE version and fall back to the dated
+// label instead -- #3197's exact bug (a fabricated-but-well-formed 'v3.3'
+// passing ARCHIVE_VERSION_LABEL_RE and misfiling phase history).
+test('phasesClearFallsBackToDatedLabelWhenIdentityIsNotComplete', (t) => {
+  // `createTempGitProject`, not a bare temp dir + `--force`: see rationale on
+  // `traversalVersionNeverEscapesTheMilestonesDirectory` above.
+  const cwd = createTempGitProject('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  // Row-4 fixture: only a Phase heading -- scope is TRUNCATED, not COMPLETE,
+  // even though 'v3.3' alone is a syntactically VALID archive label.
+  writeRoadmap(cwd, ['# Roadmap', '', '### Phase 7: Close v3.3 gaps', '', 'body'].join('\n'));
+  writeFile(cwd, path.join('.planning', 'phases', '01-example', 'PLAN.md'), '# Plan');
+  gitOrThrow(['add', '-A'], { cwd });
+  gitOrThrow(['commit', '-m', 'seed fixture'], { cwd });
+
+  const owner = getMilestoneInfo(cwd);
+  assert.notEqual(owner.scope, SCOPE.COMPLETE);
+
+  const result = runGsdTools(['phases', 'clear', '--confirm', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const entries = fs.readdirSync(path.join(cwd, '.planning', 'milestones'));
+  assert.strictEqual(entries.length, 1);
+  // Must NOT be 'v3.3-phases' -- that is #3197's fabricated-but-well-formed
+  // label misfiling phase history under the wrong milestone.
+  assert.notStrictEqual(entries[0], 'v3.3-phases');
+  assert.match(entries[0], /^archived-\d{8}-phases$/);
+});
+
+// (RED) Property: any name without a newline, rendered into a
+// `## <v> — <name>` heading, round-trips through getMilestoneInfo with no
+// truncation -- document-shaped (#2371): built from a local grammar here,
+// never via any renderer in roadmap-parser.cjs.
+test('propertyHeadingNameRoundTripsWithoutTruncation', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-property-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+
+  // Starts with a letter so it can never collide with a leading-delimiter
+  // strip; letters/digits/spaces/parens exercise the #3171 parenthetical
+  // retention without ambiguity about what "round-trips" means.
+  const nameGen = fc.stringMatching(/^[A-Za-z][A-Za-z0-9 ()]{0,60}$/).filter((s) => s.trim() === s && s.length > 0);
+
+  const report = fc.check(
+    fc.property(nameGen, (name) => {
+      writeRoadmap(cwd, [`## v3.3 — ${name}`, '', 'body'].join('\n'));
+      const result = getMilestoneInfo(cwd);
+      return result.scope === SCOPE.COMPLETE && result.value.name === name;
+    }),
+    { seed: 3216, numRuns: 100 },
+  );
+  if (report.failed) {
+    t.diagnostic(`H43 counterexample (replay seed=3216): ${JSON.stringify(report.counterexample)}`);
+  }
+  assert.strictEqual(report.failed, false, 'heading name must round-trip without truncation');
+});
+
+// Property: no generated `### Phase N …` heading -- with or without an
+// embedded version token -- ever yields COMPLETE from getMilestoneInfo when
+// it is the only heading in the document.
+test('propertyPhaseHeadingsNeverYieldCompleteScope', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-property-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+
+  const phaseWordGen = fc.stringMatching(/^[A-Za-z][A-Za-z0-9]{0,12}$/);
+  const phaseNumGen = fc.integer({ min: 1, max: 999 });
+
+  const report = fc.check(
+    fc.property(phaseNumGen, phaseWordGen, (num, word) => {
+      writeRoadmap(cwd, [`### Phase ${num}: Close v3.3 ${word}`, '', 'body'].join('\n'));
+      const result = getMilestoneInfo(cwd);
+      return result.scope !== SCOPE.COMPLETE;
+    }),
+    { seed: 3216, numRuns: 100 },
+  );
+  if (report.failed) {
+    t.diagnostic(`H44 counterexample (replay seed=3216): ${JSON.stringify(report.counterexample)}`);
+  }
+  assert.strictEqual(report.failed, false, 'a Phase heading alone must never yield COMPLETE');
+});
+
+test('listMilestoneHeadingsEnumeratesEveryMilestoneInDocumentOrder', () => {
+  const content = [
+    '# Roadmap',
+    '',
+    '## v1.0 — First ✅ SHIPPED',
+    '',
+    '## v2.0 — Second',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '## v3.0 — Third 🚧',
+  ].join('\n');
+
+  const result = listMilestoneHeadings(content);
+  assert.strictEqual(result.length, 3);
+  assert.strictEqual(result[0].version, 'v1.0');
+  assert.strictEqual(result[0].closed, true);
+  assert.strictEqual(result[1].version, 'v2.0');
+  assert.strictEqual(result[1].closed, false);
+  assert.strictEqual(result[2].version, 'v3.0');
+  assert.strictEqual(result[2].closed, false);
+});
+
+// (RED) #3197: a phase heading is never a milestone -- this is the SAME
+// consolidation defect as site 1/2, in the THIRD copy (`roadmap.cts:454`).
+test('listMilestoneHeadingsExcludesPhaseHeadings', () => {
+  const content = ['# Roadmap', '', '### Phase 7: Close v3.3 gaps'].join('\n');
+  const result = listMilestoneHeadings(content);
+  assert.deepStrictEqual(result, []);
+});
+
+// (RED) #3171: the enumerated heading text must not be cut at a parenthetical.
+test('listMilestoneHeadingsRetainsParentheticalNames', () => {
+  const content = ['# Roadmap', '', '## v3.3 — Portability (Windows)'].join('\n');
+  const result = listMilestoneHeadings(content);
+  assert.strictEqual(result.length, 1);
+  assert.ok(result[0].heading.includes('Portability (Windows)'), result[0].heading);
+});
+
+test('listMilestoneHeadingsRespectsTheOneToThreeLevelBound', () => {
+  const content = [
+    '# v1.0 — Level One',
+    '',
+    '## v2.0 — Level Two',
+    '',
+    '### v3.0 — Level Three',
+    '',
+    '#### v4.0 — Level Four',
+  ].join('\n');
+
+  const result = listMilestoneHeadings(content);
+  const versions = result.map((h) => h.version);
+  assert.deepStrictEqual(versions, ['v1.0', 'v2.0', 'v3.0']);
+});
+
+test('listMilestoneHeadingsFlagsClosedMilestones', () => {
+  const content = ['## v1.0 — Closed ✅ SHIPPED', '', '## v2.0 — Live 🚧'].join('\n');
+  const result = listMilestoneHeadings(content);
+  assert.strictEqual(result.length, 2);
+  assert.strictEqual(result[0].closed, true);
+  assert.strictEqual(result[1].closed, false);
+});
+
+// (RED) Identity (4c), CLI: `roadmap analyze`'s `milestones[]` must agree
+// with `listMilestoneHeadings` over the SAME scoped content the consumer
+// actually used (extractCurrentMilestoneScoped's `.value`), not a
+// re-derivation of it.
+test('roadmapAnalyzeMilestonesMatchTheOwnersEnumeration', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v3.3' });
+  const rawContent = [
+    '# Roadmap',
+    '',
+    '## v3.3 — Portability (Windows)',
+    '',
+    '### Phase 7: Close v3.3 gaps',
+    '',
+    '### Phase 1: Foo',
+  ].join('\n');
+  writeRoadmap(cwd, rawContent);
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const parsed = JSON.parse(result.output);
+
+  assert.strictEqual(parsed.milestones.length, 1);
+  assert.ok(parsed.milestones[0].heading.includes('Portability (Windows)'), parsed.milestones[0].heading);
+  assert.ok(!parsed.milestones.some((m) => /Phase\s+7/.test(m.heading)), 'a Phase heading must never be reported as a milestone');
+
+  // Agreement with the owner's enumeration over the SAME scoped content the
+  // consumer actually used.
+  const ownerContent = extractCurrentMilestoneScoped(rawContent, cwd).value;
+  const ownerHeadings = listMilestoneHeadings(ownerContent);
+  assert.strictEqual(parsed.milestones.length, ownerHeadings.length);
+  for (let i = 0; i < ownerHeadings.length; i += 1) {
+    assert.strictEqual(parsed.milestones[i].version, ownerHeadings[i].version);
+  }
+});
+
+// Parity (anti-drift seam): the version-filtered subset of
+// `listMilestoneHeadings` must equal what `locateMilestoneHeadings` selects
+// for the SAME version, for every version present in the document.
+test('versionFilteredEnumerationMatchesTheLocator', () => {
+  const content = [
+    '# Roadmap',
+    '',
+    '## v1.0 — First ✅ SHIPPED',
+    '',
+    '## v2.0 — Second',
+    '',
+    '## v2.0 — Second Redux 🚧',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '## v3.0 — Third',
+  ].join('\n');
+
+  const enumerated = listMilestoneHeadings(content);
+  const versions = [...new Set(enumerated.map((h) => h.version))];
+  assert.ok(versions.length > 1, 'fixture must exercise more than one version');
+
+  for (const version of versions) {
+    const filtered = enumerated.filter((h) => h.version === version).map((h) => h.heading.trim());
+    const located = locateMilestoneHeadings(content, version).map((m) => m[1].trim());
+    assert.deepStrictEqual(filtered, located, `parity mismatch for ${version}`);
+  }
+});
+
+// H-P: document-shaped generator (#2371) local to this section -- built from
+// a heading/prose grammar, never by calling any renderer in
+// roadmap-parser.cjs. Deliberately independent of Section G's blockGen so a
+// regression in one generator cannot mask a regression in the other.
+const H_SAFE_WORD = fc.stringMatching(/^[A-Za-z][A-Za-z0-9]{0,8}$/);
+
+const hHeadingBlockGen = fc.record({
+  level: fc.integer({ min: 1, max: 4 }),
+  isPhase: fc.boolean(),
+  hasVersion: fc.boolean(),
+  word: H_SAFE_WORD,
+}).map((b) => ({
+  render() {
+    const prefix = '#'.repeat(b.level);
+    const phasePart = b.isPhase ? 'Phase 3: ' : '';
+    const versionPart = b.hasVersion ? ' v2.0' : '';
+    return `${prefix} ${phasePart}${b.word}${versionPart}`;
+  },
+}));
+
+const hProseBlockGen = H_SAFE_WORD.map((word) => ({ render() { return `prose ${word} line`; } }));
+
+const hBlockGen = fc.oneof(hHeadingBlockGen, hProseBlockGen);
+
+// Property: for any generated document, no entry `listMilestoneHeadings`
+// returns ever has a heading beginning with 'Phase '.
+test('propertyEnumerationNeverReturnsAPhaseHeading', (t) => {
+  const documentGen = fc.array(hBlockGen, { minLength: 1, maxLength: 12 });
+
+  const report = fc.check(
+    fc.property(documentGen, (blocks) => {
+      const content = blocks.map((b) => b.render()).join('\n');
+      const result = listMilestoneHeadings(content);
+      return result.every((h) => !/^Phase\s/i.test(h.heading.replace(/^#{1,3}\s+/, '').trim()));
+    }),
+    { seed: 3216, numRuns: 100 },
+  );
+  if (report.failed) {
+    t.diagnostic(`H54 counterexample (replay seed=3216): ${JSON.stringify(report.counterexample)}`);
+  }
+  assert.strictEqual(report.failed, false, 'listMilestoneHeadings must never enumerate a Phase heading');
+});
