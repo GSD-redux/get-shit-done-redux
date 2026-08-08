@@ -21,6 +21,9 @@
  */
 
 import { findTableWithColumns } from './markdown-table.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-id.cjs is an export= CommonJS module
+import phaseIdMod = require('./phase-id.cjs');
+const { isSentinelPhaseId } = phaseIdMod;
 
 /** Result of deriveProgressFromRoadmap. */
 export interface RoadmapProgress {
@@ -90,10 +93,11 @@ export function deriveProgressFromRoadmap(roadmapContent: string): RoadmapProgre
     const completed = allRows.filter((r) => /^complete$/i.test((r['Status'] ?? '').trim())).length;
     completedPhases = completed > 0 ? completed : null;
 
-    // Data rows only (exclude 999.x backlog phases). Mirrors init.cts /^999(?:\.|$)/ filter.
+    // Data rows only (exclude sentinel phases 0 and 999.x).
+    // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
     const dataRows = allRows.filter((r) => {
       const phase = (r['Phase'] ?? '').trim();
-      return /^\d/.test(phase) && !/^999\b/.test(phase);
+      return /^\d/.test(phase) && !isSentinelPhaseId(phase);
     });
     totalPhases = dataRows.length > 0 ? dataRows.length : null;
 

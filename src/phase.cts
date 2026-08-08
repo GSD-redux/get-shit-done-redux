@@ -42,10 +42,10 @@ const {
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, getArchivedPhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, getMilestonePhaseFilter, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
+const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -209,26 +209,51 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
   }
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    let dirs: string[] = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    // #3185 (ADR-3180 Decision 1): only the ENUMERATION routes through the
+    // single owner. The two other modes below ask genuinely DIFFERENT
+    // questions and are exempt by documented reason, never by a file
+    // allowlist (ADR-3180 Decision 4a):
+    //
+    //   --phase <n>        locating ONE phase by token is phase LOCATION, a
+    //                      question src/phase-locator.cts already owns via
+    //                      findPhaseInternal/searchPhaseInDir. Scoping it to
+    //                      the current milestone would make an out-of-window
+    //                      phase report "Phase not found".
+    //   --include-archived archived directories are BY DEFINITION from other
+    //                      milestones; filtering them through the CURRENT
+    //                      milestone window would return nothing at all.
+    //
+    // Generalizing #3183's rule ("a diagnostic about file NAMING wants the
+    // physical set; only a question about outstanding WORK wants the live
+    // set"): a LOOKUP wants the physical set; only "which phases belong to
+    // this milestone" wants the scoped set.
+    const archivedLabels: string[] = includeArchived
+      ? getArchivedPhaseDirs(cwd).map((a) => `${a.name} [${a.milestone}]`)
+      : [];
 
-    if (includeArchived) {
-      const archived = getArchivedPhaseDirs(cwd);
-      for (const a of archived) {
-        dirs.push(`${a.name} [${a.milestone}]`);
-      }
-    }
-
-    dirs.sort((a, b) => comparePhaseNum(a, b));
-
+    let dirs: string[];
+    // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+    // can tell a genuinely-empty milestone from one it could not scope. Only
+    // the ENUMERATION path scopes anything; the LOOKUP path below has no
+    // enumeration to report a scope for.
+    let phaseScope: string | null = null;
     if (phase) {
+      // LOOKUP (b): search the physical set, plus archived when asked.
+      const lookupPool = [...readSubdirectories(phasesDir, true), ...archivedLabels];
       const normalized = normalizePhaseName(phase);
-      const match = dirs.find((d) => phaseTokenMatches(d, normalized));
+      const match = lookupPool.find((d) => phaseTokenMatches(d, normalized));
       if (!match) {
         output({ files: [], count: 0, phase_dir: null, error: 'Phase not found' }, raw, '');
         return;
       }
       dirs = [match];
+    } else {
+      // ENUMERATION (a): milestone-scoped and sentinel-filtered, plus
+      // archived when asked (c).
+      const enumerated = listMilestonePhaseDirs(phasesDir, { cwd });
+      phaseScope = enumerated.scope;
+      dirs = [...enumerated.value, ...archivedLabels];
+      dirs.sort((a, b) => comparePhaseNum(a, b));
     }
 
     if (type) {
@@ -274,13 +299,18 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
         files,
         count: files.length,
         phase_dir: phase ? dirs[0].replace(/^\d+(?:\.\d+)*-?/, '') : null,
+        // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+        // can tell a genuinely-empty milestone from one it could not scope.
+        phase_scope: phaseScope,
       };
       if (warnings.length) result['warning'] = warnings.join(' | ');
       output(result, raw, files.join('\n'));
       return;
     }
 
-    output({ directories: dirs, count: dirs.length }, raw, dirs.join('\n'));
+    // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+    // can tell a genuinely-empty milestone from one it could not scope.
+    output({ directories: dirs, count: dirs.length, phase_scope: phaseScope }, raw, dirs.join('\n'));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     error('Failed to list phases: ' + msg);
@@ -979,11 +1009,13 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
 
       while ((m = headerPattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
-        if (num !== 999) usedPhaseNums.add(num);
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (!isSentinelPhaseId(num)) usedPhaseNums.add(num);
       }
       while ((m = bulletPattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
-        if (num !== 999) usedPhaseNums.add(num);
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (!isSentinelPhaseId(num)) usedPhaseNums.add(num);
       }
 
       // 3) On-disk phase directories (e.g. phases/11-foo/ with no header yet)
@@ -994,7 +1026,8 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
           const match = entry.match(dirNumPattern);
           if (!match) continue;
           const num = parseInt(match[1], 10);
-          if (num !== 999) usedPhaseNums.add(num);
+          // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+          if (!isSentinelPhaseId(num)) usedPhaseNums.add(num);
         }
       }
 
@@ -1072,7 +1105,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
       let m: RegExpExecArray | null;
       while ((m = phasePattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
-        if (num === 999) continue;
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (isSentinelPhaseId(num)) continue;
         if (num > maxPhase) maxPhase = num;
       }
       const phasesOnDisk = path.join(planningDir(cwd), 'phases');
@@ -1082,7 +1116,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
           const match = entry.match(dirNumPattern);
           if (!match) continue;
           const num = parseInt(match[1], 10);
-          if (num === 999) continue;
+          // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+          if (isSentinelPhaseId(num)) continue;
           if (num > maxPhase) maxPhase = num;
         }
       }
@@ -1376,7 +1411,8 @@ function renameIntegerPhases(
       const m = dir.match(/^(\d+)([A-Z])?(?:\.(\d+))?-(.+)$/i);
       if (!m) return null;
       const dirInt = parseInt(m[1], 10);
-      return dirInt > removedInt && dirInt !== 999
+      // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+      return dirInt > removedInt && !isSentinelPhaseId(dirInt)
         ? {
             dir,
             oldInt: dirInt,
@@ -1418,7 +1454,8 @@ function renameIntegerPhases(
 
 function decrementRoadmapPhaseNumber(raw: string, removedInt: number): string {
   const num = parseInt(raw, 10);
-  if (!Number.isInteger(num) || num <= removedInt || num === 999) return raw;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return raw;
   return String(num - 1);
 }
 
@@ -1426,13 +1463,15 @@ function decrementRoadmapPhaseToken(raw: string, removedInt: number): string {
   const match = String(raw).match(/^(\d+)(\.\d+)?$/);
   if (!match) return raw;
   const num = parseInt(match[1], 10);
-  if (!Number.isInteger(num) || num <= removedInt || num === 999) return raw;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return raw;
   return `${num - 1}${match[2] || ''}`;
 }
 
 function decrementRoadmapPaddedPhaseNumber(raw: string, removedInt: number): string {
   const num = parseInt(raw, 10);
-  if (!Number.isInteger(num) || num <= removedInt || num === 999) return raw;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return raw;
   return String(num - 1).padStart(raw.length, '0');
 }
 
@@ -1621,7 +1660,8 @@ function updateRoadmapAfterPhaseRemoval(
               const m = phaseCellShapeRe.exec(row['Phase'] ?? '');
               if (!m) return false;
               const num = parseInt(m[1], 10);
-              if (!Number.isInteger(num) || num <= removedInt || num === 999) return false;
+              // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+              if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return false;
               processedOrdinalRows.add(index);
               matchedRowIndex = index;
               return true;
@@ -2590,18 +2630,20 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       }
 
       try {
-        const isDirInMilestone = getMilestonePhaseFilter(cwd);
-        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-        const dirs = entries
-          .filter((e) => e.isDirectory())
-          .map((e) => e.name)
-          .filter(isDirInMilestone)
-          .sort((a, b) => comparePhaseNum(a, b));
+        // #3185 (ADR-3180 Decision 1): "which phase directories belong to
+        // the CURRENT milestone" — routed through the canonical owner
+        // instead of a hand-rolled readdirSync + isDirInMilestone filter
+        // (which also never excluded sentinels on its own, unlike the
+        // owner; the per-directory isSentinelPhaseId check below stays as a
+        // defensive second check against the REGEX-EXTRACTED token, which
+        // is not necessarily identical to the raw directory name).
+        const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
 
         for (const dir of dirs) {
           const dm = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
           if (dm) {
-            if (/^999(?:\.|$)/.test(dm[1])) continue;
+            // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+            if (isSentinelPhaseId(dm[1])) continue;
             if (comparePhaseNum(dm[1], phaseNum) > 0) {
               nextPhaseNum = dm[1];
               nextPhaseName = dm[2] || null;
@@ -2645,9 +2687,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           let pm: RegExpExecArray | null;
           while ((pm = phasePattern.exec(roadmapForPhases)) !== null) {
             // #2786: skip sentinel phase ids (999.x backlog, 0.x drafts) — stage 1
-            // already skips 999 dirs on disk; stage 2's heading scan must not
-            // advance into backlog headings. Mirrors the /^999(?:\.|$)/ guard
-            // stage 1 uses at line 2536, but via isSentinelPhaseId for both ranges.
+            // already skips sentinel dirs on disk via isSentinelPhaseId (#3185);
+            // stage 2's heading scan must not advance into backlog headings either.
             if (isSentinelPhaseId(pm[1])) continue;
             if (comparePhaseNum(pm[1], phaseNum) > 0) {
               nextPhaseNum = pm[1];

@@ -79,16 +79,15 @@ const {
 const { output, error } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
-const { findPhaseInternal } = phaseLocator;
+const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocator;
 const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
-  getMilestonePhaseFilter,
   stripShippedMilestones,
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery } = phaseId;
+const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -1212,19 +1211,11 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
   const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
   const latestCompleted = getLatestCompletedMilestone(cwd);
   const phasesDir = path.join(planningDir(cwd), 'phases');
-  let phaseDirCount = 0;
-
-  try {
-    if (fs.existsSync(phasesDir)) {
-      const isDirInMilestone = getMilestonePhaseFilter(cwd);
-      phaseDirCount = fs
-        .readdirSync(phasesDir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && isDirInMilestone(entry.name))
-        .length;
-    }
-  } catch {
-    /* intentionally empty */
-  }
+  // #3185 (ADR-3180 Decision 1): "how many phase directories belong to the
+  // CURRENT milestone" is exactly the scoped question listMilestonePhaseDirs
+  // owns — routed through it instead of a local readdirSync + hand-rolled
+  // window filter (which also never excluded sentinels, unlike the owner).
+  const phaseDirCount = listMilestonePhaseDirs(phasesDir, { cwd }).value.length;
 
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
@@ -2012,7 +2003,8 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = phasePattern.exec(currentSection)) !== null) {
-      if (/^999(?:\.|$)/.test(m[1])) continue;
+      // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+      if (isSentinelPhaseId(m[1])) continue;
       roadmapPhaseNumbers.push(m[1]);
     }
   } catch {
@@ -2050,8 +2042,12 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     }
   } else {
     try {
-      const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+      // #3185 (ADR-3180 Decision 1): the ROADMAP heading scan above found no
+      // current-milestone phase headings — fall back to asking the canonical
+      // owner "which phase directories belong to the current milestone"
+      // directly, instead of a hand-rolled readdirSync over every directory
+      // on disk (which also never excluded sentinels, unlike the owner).
+      const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
       phaseCount = dirs.length;
       for (const dir of dirs) {
         try {
@@ -2152,18 +2148,13 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   const rawContent = fs.readFileSync(paths.roadmap, 'utf-8');
   const content = extractCurrentMilestone(rawContent, cwd);
   const phasesDir = paths.phases;
-  const isDirInMilestone = getMilestonePhaseFilter(cwd);
 
-  const _phaseDirEntries = (() => {
-    try {
-      return fs
-        .readdirSync(phasesDir, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name);
-    } catch {
-      return [];
-    }
-  })();
+  // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+  // CURRENT milestone" is the scoped question listMilestonePhaseDirs owns —
+  // routed through it instead of a hand-rolled readdirSync + a separate
+  // getMilestonePhaseFilter window check (which also never excluded
+  // sentinels, unlike the owner).
+  const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, { cwd }).value;
 
   const _checkboxStates = new Map<string, boolean>();
   const _cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
@@ -2213,8 +2204,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     );
 
     try {
-      const dirs = _phaseDirEntries.filter(isDirInMilestone);
-      const dirMatch = dirs.find((d) => phaseTokenMatches(d, normalized));
+      const dirMatch = _phaseDirEntries.find((d) => phaseTokenMatches(d, normalized));
 
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);
@@ -2387,7 +2377,8 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   const recommendedActions: Record<string, unknown>[] = [];
   for (const phase of phases) {
     if (phase['disk_status'] === 'complete') continue;
-    if (/^999(?:\.|$)/.test(phase['number'] as string)) continue;
+    // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+    if (isSentinelPhaseId(phase['number'])) continue;
 
     if (phase['disk_status'] === 'executed') {
       recommendedActions.push({
@@ -2455,7 +2446,8 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     return true;
   });
 
-  const nonBacklogPhases = phases.filter((p) => !/^999(?:\.|$)/.test(p['number'] as string));
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  const nonBacklogPhases = phases.filter((p) => !isSentinelPhaseId(p['number'] as string));
   const completedCount = nonBacklogPhases.filter((p) => p['phase_complete'] === true).length;
 
   const sanitizeFlags = (rawVal: unknown): string => {
@@ -2806,21 +2798,16 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     /* intentionally empty */
   }
 
-  const isDirInMilestone = getMilestonePhaseFilter(cwd);
   const seenPhaseNums = new Set<string>();
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .filter(isDirInMilestone)
-      .sort((a, b) => {
-        const pa = a.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
-        const pb = b.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
-        if (!pa || !pb) return a.localeCompare(b);
-        return parseInt(pa[1], 10) - parseInt(pb[1], 10);
-      });
+    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+    // CURRENT milestone" — routed through the canonical owner instead of a
+    // hand-rolled readdirSync + isDirInMilestone filter + local sort (which
+    // also never excluded sentinels, unlike the owner; the final `phases`
+    // array is re-sorted below anyway, so dropping the local sort here is
+    // behavior-preserving).
+    const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
 
     for (const dir of dirs) {
       const dirMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
