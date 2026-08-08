@@ -551,6 +551,322 @@ describe('#2427 — roadmap-grounded completion + tightened status regex', () =>
   });
 });
 
+describe('smart-entry: stale_activity honors the template\'s "date — description" shape (#2570)', () => {
+  afterEach(removeAll);
+
+  // A fixed "now" far enough past 2026-06-08 that any real date there is well
+  // beyond IDLE_STALE_MS (72h). Injected so the test is deterministic and does
+  // not depend on the wall clock.
+  const FIXED_NOW = () => Date.parse('2026-08-01T00:00:00Z');
+
+  // gsd-core's own STATE.md carries last_activity as "YYYY-MM-DD — <description>"
+  // (templates/state.md prescribes `Last activity: [YYYY-MM-DD] — [What happened]`
+  // for the body; the frontmatter mirrors it). Before the fix, parseActivityTimestamp
+  // ran Date.parse on the whole string → NaN → staleActivity failed OPEN to false,
+  // so the ONLY idle/staleness detector never fired on any project whose
+  // last_activity retained its description.
+
+  test('frontmatter last_activity with " — description" suffix is detected stale', () => {
+    const stateMd = [
+      '---',
+      'gsd_state_version: 1.0',
+      'status: executing',
+      'last_activity: 2026-06-08 — Milestone 2 executed autonomously (all passed)',
+      'progress:',
+      '  total_phases: 5',
+      '  percent: 40',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 3',
+      '',
+      '**Status:** executing',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(
+      signals.stale_activity,
+      true,
+      'a 54-day-old last_activity carrying a description must read stale, not fail open to false',
+    );
+  });
+
+  test('body "Last activity: <date> — <desc>" fallback is detected stale', () => {
+    const stateMd = [
+      '# Project State',
+      '',
+      '## Current Position',
+      '',
+      'Phase: 1 of 1 (X)',
+      'Status: In progress',
+      'Last activity: 2026-06-08 — started the widget',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(signals.stale_activity, true, 'body-field fallback must also parse the leading date');
+  });
+
+  test('bare ISO date (control) still reads stale', () => {
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-06-08',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(signals.stale_activity, true, 'bare-date parsing must be unchanged');
+  });
+
+  test('recent activity with a description is NOT stale (no false positive)', () => {
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-07-31 — shipped a thing',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(
+      signals.stale_activity,
+      false,
+      'a next-day activity with a description must NOT be flagged stale',
+    );
+  });
+
+  // Boundary coverage for the fallback branch. NOTE: these are NOT fail-first
+  // regressions — a malformed or empty value returned null before the fix too.
+  // They pin the degrade-safely contract so a future change to the leading-date
+  // regex cannot start throwing, or start guessing, on unparseable input.
+  for (const [label, value] of [
+    ['a malformed leading date', '2026-13-45 — nonsense month and day'],
+    ['a non-date prefix', 'yesterday — did some work'],
+    ['an empty value', ''],
+    ['a whitespace-only value', '   '],
+  ]) {
+    test(`${label} degrades to not-stale without throwing`, () => {
+      const stateMd = [
+        '---',
+        'status: executing',
+        `last_activity: ${value}`,
+        '---',
+        '',
+        '# Project State',
+        '',
+        'Phase: 1',
+        '',
+      ].join('\n');
+      const dir = track(makeProject({ state: stateMd, roadmap: true }));
+      let signals;
+      assert.doesNotThrow(() => {
+        signals = detectSignals(dir, FIXED_NOW);
+      }, `${label} must not throw`);
+      // Unparseable reads as not-stale because staleActivity treats null as
+      // "not stale". That fail-open is pre-existing and out of scope for #2570
+      // (which is fenced to the description-suffix parse); asserted here so the
+      // behavior is recorded rather than silently assumed.
+      assert.equal(
+        signals.stale_activity,
+        false,
+        `${label} must degrade to not-stale, not throw or guess`,
+      );
+    });
+  }
+
+  // ADR-227: shape validation alone is not enough. Date.parse rolls an
+  // out-of-range DAY forward instead of rejecting it, so a shape-only guard
+  // propagates a different, wrong instant rather than failing safe. The
+  // pre-existing '2026-13-45' case above only exercises an invalid MONTH,
+  // which Date.parse happens to reject outright — it cannot catch this class.
+  //
+  // Only the two BARE cases are fail-first. On pre-fix code '2026-02-30'
+  // parses to 2026-03-02 and '2026-06-31' to 2026-07-01 — both read
+  // stale=true where the fix now reads false.
+  //
+  // The two suffixed cases are NOT fail-first: the trailing description
+  // already makes the pre-fix whole-string Date.parse return NaN, so
+  // stale_activity is false both before and after. They are kept because
+  // they pin the new calendar-validity behaviour for the suffix-carrying
+  // shape templates/state.md prescribes — but they do not demonstrate the
+  // regression, and should not be cited as if they did.
+  for (const [label, value] of [
+    ['Feb 30 with a description', '2026-02-30 — fat-fingered the day'],
+    ['Feb 30 bare', '2026-02-30'],
+    ['Apr 31 with a description', '2026-04-31 — thirty days hath September'],
+    ['Jun 31 bare', '2026-06-31'],
+  ]) {
+    test(`an impossible calendar date (${label}) fails safe instead of rolling forward`, () => {
+      const stateMd = [
+        '---',
+        'status: executing',
+        `last_activity: ${value}`,
+        '---',
+        '',
+        '# Project State',
+        '',
+        'Phase: 1',
+        '',
+      ].join('\n');
+      const dir = track(makeProject({ state: stateMd, roadmap: true }));
+      const signals = detectSignals(dir, FIXED_NOW);
+      assert.equal(
+        signals.stale_activity,
+        false,
+        `${label} must coerce to the safe default, not a rolled-forward instant`,
+      );
+    });
+  }
+
+  test('a real leap day still parses (the guard must not over-reject)', () => {
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2024-02-29 — leap day is a real date',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(
+      signals.stale_activity,
+      true,
+      'a valid Feb 29 in a leap year must parse and read stale, not be rejected',
+    );
+  });
+
+  // RULESET.TESTS.boundary-coverage on IDLE_STALE_MS (72h). The comparison is a
+  // strict `now() - lastActivityMs > IDLE_STALE_MS`, so exactly-72h is NOT
+  // stale. Full ISO instants (not bare dates) are used deliberately: a bare
+  // date truncates to UTC midnight, which cannot express limit±1.
+  //
+  // NOT fail-first — these pass pre-fix too. They close the [24,95]h band the
+  // property tests skip, so an off-by-one in the threshold cannot land green.
+  for (const [label, value, expected] of [
+    ['71h — one hour inside the window', '2026-07-29T01:00:00Z — 71h ago', false],
+    ['72h — exactly at the limit (strict >)', '2026-07-29T00:00:00Z — 72h ago', false],
+    ['73h — one hour past the limit', '2026-07-28T23:00:00Z — 73h ago', true],
+  ]) {
+    test(`staleness boundary: ${label} -> stale=${expected}`, () => {
+      const stateMd = [
+        '---',
+        'status: executing',
+        `last_activity: ${value}`,
+        '---',
+        '',
+        '# Project State',
+        '',
+        'Phase: 1',
+        '',
+      ].join('\n');
+      const dir = track(makeProject({ state: stateMd, roadmap: true }));
+      const signals = detectSignals(dir, FIXED_NOW);
+      assert.equal(
+        signals.stale_activity,
+        expected,
+        `${label} must read stale=${expected} against the 72h threshold`,
+      );
+    });
+  }
+
+  // Leniency guard. The calendar check must not narrow what already parsed:
+  // reading the leading token in preference to the whole string would DROP a
+  // trailing zone name and re-read the time as local, shifting the instant by
+  // the host's UTC offset. Pinned with a value whose verdict flips if that
+  // happens on a host east of UTC.
+  test('a trailing zone name is still honored, not dropped for the leading token', () => {
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-07-28 23:30:00 GMT',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    // 2026-07-28T23:30:00Z is 72.5h before FIXED_NOW -> stale.
+    assert.equal(
+      signals.stale_activity,
+      true,
+      'GMT must be read as UTC; dropping it re-reads the time as local and moves the instant',
+    );
+  });
+
+  // CONTRIBUTING.md QA Matrix: "Mixed CRLF/LF newlines" for frontmatter parsing
+  // changes. No live defect — the fallback branch trims before matching — but
+  // the standard asks for the fixture, and this pins it.
+  test('a CRLF-terminated STATE.md parses the suffixed date identically', () => {
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-06-08 — started the widget',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\r\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(
+      signals.stale_activity,
+      true,
+      'CRLF line endings must not change the parsed instant',
+    );
+  });
+
+  // #2570 × #3099 composition: a suffixed value whose LEADING DATE parses must
+  // take the stale path AND must NOT emit LAST_ACTIVITY_UNPARSEABLE. Guards
+  // against two independent staleness signals firing on one field — #3099's
+  // diagnostic is for genuinely unusable values, and #2570 makes this shape
+  // usable, so the diagnostic must stay silent here.
+  test('suffixed-but-parseable last_activity is stale and emits NO diagnostic (composes with #3099)', () => {
+    const {
+      _resetUnusableInputWarningsForTests,
+      _unusableInputEmissionCountForTests,
+    } = require('../gsd-core/bin/lib/unusable-input.cjs');
+    _resetUnusableInputWarningsForTests();
+    const stateMd = [
+      '---',
+      'status: executing',
+      'last_activity: 2026-06-08 — Milestone 2 executed autonomously',
+      '---',
+      '',
+      '# Project State',
+      '',
+      'Phase: 1',
+      '',
+    ].join('\n');
+    const dir = track(makeProject({ state: stateMd, roadmap: true }));
+    const signals = detectSignals(dir, FIXED_NOW);
+    assert.equal(signals.stale_activity, true,
+      'a suffixed value whose leading date parses must read stale');
+    assert.equal(_unusableInputEmissionCountForTests(), 0,
+      'a now-parseable value must NOT emit LAST_ACTIVITY_UNPARSEABLE (no double staleness signal)');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #3099: unusable last_activity emits a diagnostic (ADR-1411 amendment:
 // corrupt is not absent — the fallback stays, the silence is the defect)

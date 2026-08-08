@@ -172,11 +172,68 @@ function phaseTokenFromDirName(name: string): string | null {
 /**
  * Parse a `last_activity` value that may be an ISO date or a free-form string
  * into an epoch-ms timestamp. Returns null when unparseable.
+ *
+ * #2570: `last_activity` routinely carries a trailing " — <description>" — the
+ * shape `templates/state.md` itself prescribes (`Last activity: [YYYY-MM-DD] —
+ * [What happened]`), which gsd-core's own STATE.md mirrors into frontmatter.
+ * `Date.parse` on the whole string returns NaN, and because `staleActivity`
+ * treats null as "not stale" (fails open), the ONLY idle/staleness detector
+ * never fired on any project whose last_activity retained its description.
+ * Be liberal in what we accept (Postel): read the leading ISO date/time token
+ * when the value carries one, so the description suffix — whatever separator
+ * (em dash or hyphen) it uses — no longer silently blinds the detector; fall
+ * back to a whole-string parse for any other shape a hand edit might use.
  */
+
+/** Leading ISO date, with an optional time-of-day and offset. */
+const ISO_LEADING_RE =
+  /^(\d{4})-(\d{2})-(\d{2})((?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?)/;
+
+/**
+ * True only when y/m/d name a date that actually exists on the calendar.
+ *
+ * `Date.parse` validates shape but not value: it rolls an out-of-range day
+ * FORWARD rather than rejecting it (`2026-02-30` -> `2026-03-02`,
+ * `2026-04-31` -> `2026-05-01`). Shape-only validation would therefore
+ * propagate a different, wrong instant instead of failing safe — precisely
+ * what ADR-227 ("validate shape AND value; on failure of either layer coerce
+ * to the contract's safe default, never propagate") exists to prevent. A
+ * round-trip through Date.UTC detects the rollover: any component the
+ * constructor normalised comes back changed.
+ */
+function isRealCalendarDate(year: number, month: number, day: number): boolean {
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return (
+    probe.getUTCFullYear() === year &&
+    probe.getUTCMonth() === month - 1 &&
+    probe.getUTCDate() === day
+  );
+}
+
 function parseActivityTimestamp(raw: string | null): number | null {
   if (!raw) return null;
-  const ms = Date.parse(raw);
-  return Number.isNaN(ms) ? null : ms;
+  const trimmed = raw.trim();
+  const iso = trimmed.match(ISO_LEADING_RE);
+  if (iso) {
+    const [, year, month, day, time] = iso;
+    // Reject an impossible calendar date outright rather than letting
+    // Date.parse substitute a rolled-forward one. null = "no activity signal",
+    // the safe default staleActivity already fails open on.
+    if (!isRealCalendarDate(Number(year), Number(month), Number(day))) return null;
+    // The date is real, so stay as liberal as before (Postel): a whole-string
+    // parse still wins when the engine can make sense of the value. Reading the
+    // token first would silently DROP a trailing zone name -- "2026-06-08
+    // 12:34:56 GMT" parses whole as 12:34:56Z but as local time from the token,
+    // shifting the instant by the host's UTC offset.
+    const whole = Date.parse(trimmed);
+    if (!Number.isNaN(whole)) return whole;
+    // Whole-string failed: the value carries a description suffix (#2570).
+    const ms = Date.parse(`${year}-${month}-${day}${time}`);
+    return Number.isNaN(ms) ? null : ms;
+  }
+  const direct = Date.parse(trimmed);
+  return Number.isNaN(direct) ? null : direct;
 }
 
 interface GitSignals {
