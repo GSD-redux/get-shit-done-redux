@@ -21,13 +21,13 @@ import coreUtilsMod = require('./core-utils.cjs');
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { getArchivedPhaseDirs, findPhaseInternal } = phaseLocatorMod;
+const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getMilestonePhaseFilter, getRoadmapPhaseInternal } = roadmapParserMod;
+const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getRoadmapPhaseInternal } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelResolverMod = require('./model-resolver.cjs');
 const { resolveModelInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
@@ -1567,8 +1567,12 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
   let totalSummaries = 0;
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort((a, b) => comparePhaseNum(a, b));
+    // #3185 (ADR-3180 Decision 1): the single owner applies the milestone
+    // window AND the sentinel filter and returns dirs already sorted by
+    // comparePhaseNum. This command previously read the phases directory
+    // directly with neither, which is why `query progress` listed 999.*
+    // backlog directories as current-milestone phases (#3167).
+    const { value: dirs } = listMilestonePhaseDirs(phasesDir, { cwd });
 
     for (const dir of dirs) {
       const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
@@ -1856,7 +1860,6 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   const reqPath = planningPaths(cwd).requirements;
   const statePath = planningPaths(cwd).state;
   const milestone = getMilestoneInfo(cwd);
-  const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
 
   // Phase & plan stats (reuse progress pattern)
   const phasesByNumber = new Map<string, {
@@ -1879,6 +1882,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
     let match: RegExpExecArray | null;
     while ((match = headingPattern.exec(roadmapContent)) !== null) {
+      // #3185: the heading seed carried no sentinel filter, so a
+      // `### Phase 999.1:` backlog heading produced a stats row even with no
+      // directory on disk. Uses the canonical predicate (phase-id.cts), not a
+      // local literal — the rule had five copies and three regex variants
+      // before this phase, disagreeing about Phase 0.
+      if (isSentinelPhaseId(match[1])) continue;
       const key = normalizePhaseName(match[1]);
       phasesByNumber.set(key, {
         number: key,
@@ -1891,12 +1900,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   } catch { /* intentionally empty */ }
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries
-      .filter(e => e.isDirectory())
-      .map(e => e.name)
-      .filter(isDirInMilestone)
-      .sort((a, b) => comparePhaseNum(a, b));
+    // #3185 (ADR-3180 Decision 1): route through the single owner. This
+    // previously applied the milestone window but NOT a directory-level
+    // sentinel filter — and getMilestonePhaseFilter degrades to a pass-all
+    // predicate when its heading set is empty, at which point every directory
+    // on disk passed, backlog included (#3167).
+    const { value: dirs } = listMilestonePhaseDirs(phasesDir, { cwd });
 
     for (const dir of dirs) {
       // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.

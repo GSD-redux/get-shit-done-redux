@@ -26,7 +26,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const {
@@ -949,7 +949,13 @@ function cmdPhasesClear(cwd: string, raw: boolean, args: string[]): void {
 
   if (fs.existsSync(phasesDir)) {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory() && !/^999(?:\.|$)/.test(e.name));
+    // #3185 (ADR-3180 Decision 1): this carried the FIFTH copy of the
+    // sentinel rule and its THIRD regex variant — `/^999(?:\.|$)/` — which
+    // excluded 999 but NOT 0. Because this is the DESTRUCTIVE path, that
+    // divergence meant a `0-*` directory `roadmap analyze` preserves as a
+    // sentinel was DELETED here. Routed through the canonical predicate so
+    // every reader of "is this a sentinel phase" agrees by construction.
+    const dirs = entries.filter((e) => e.isDirectory() && !isSentinelPhaseId(e.name));
 
     if (dirs.length > 0 && !confirm) {
       error(

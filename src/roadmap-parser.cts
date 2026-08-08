@@ -28,6 +28,7 @@ const {
   // #2121: roadmapPhaseLookupSources now lives in phase-id.cjs (single owner of
   // the lookup-source ordering); imported here rather than defined locally.
   roadmapPhaseLookupSources,
+  extractPhaseToken,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -1039,6 +1040,20 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       const sm = stripped.match(numericRe);
       if (sm && normalized.has(normalizePhaseIdSegments(sm[1]).toLowerCase())) return true;
     }
+    // #3185: last resort — ask the CANONICAL phase-id token extractor. The
+    // three attempts above are all leading-DIGIT or bare-alnum shapes, so none
+    // of them can match a #1324 letter-prefixed-DECIMAL directory
+    // (`P0.0-foundation`) against its own `### Phase P0.0:` heading: numericRe
+    // needs a leading digit, `customMatch` stops at the `.` and yields `P0`,
+    // and stripProjectCodePrefix needs a dash before the digit. The observable
+    // symptom was `stats` reporting such a phase with plans: 0 while its
+    // directory held plan files, because the heading seeded the row but the
+    // directory never folded in. extractPhaseToken is #2121's single owner of
+    // "what is this directory's phase token", so this defers to it rather than
+    // widening a fourth bespoke regex here. Additive: it can only ADMIT a
+    // directory, never exclude one the attempts above already matched.
+    const token = extractPhaseToken(dirName);
+    if (token && normalized.has(normalizePhaseIdSegments(String(token)).toLowerCase())) return true;
     return false;
   }
   (isDirInMilestone as MilestonePhaseFilter).phaseCount = milestonePhaseNums.size;

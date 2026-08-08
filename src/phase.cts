@@ -42,7 +42,7 @@ const {
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { findPhaseInternal, getArchivedPhaseDirs } = phaseLocatorMod;
+const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { stripShippedMilestones, extractCurrentMilestone, getMilestonePhaseFilter, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
@@ -209,26 +209,44 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
   }
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    let dirs: string[] = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+    // #3185 (ADR-3180 Decision 1): only the ENUMERATION routes through the
+    // single owner. The two other modes below ask genuinely DIFFERENT
+    // questions and are exempt by documented reason, never by a file
+    // allowlist (ADR-3180 Decision 4a):
+    //
+    //   --phase <n>        locating ONE phase by token is phase LOCATION, a
+    //                      question src/phase-locator.cts already owns via
+    //                      findPhaseInternal/searchPhaseInDir. Scoping it to
+    //                      the current milestone would make an out-of-window
+    //                      phase report "Phase not found".
+    //   --include-archived archived directories are BY DEFINITION from other
+    //                      milestones; filtering them through the CURRENT
+    //                      milestone window would return nothing at all.
+    //
+    // Generalizing #3183's rule ("a diagnostic about file NAMING wants the
+    // physical set; only a question about outstanding WORK wants the live
+    // set"): a LOOKUP wants the physical set; only "which phases belong to
+    // this milestone" wants the scoped set.
+    const archivedLabels: string[] = includeArchived
+      ? getArchivedPhaseDirs(cwd).map((a) => `${a.name} [${a.milestone}]`)
+      : [];
 
-    if (includeArchived) {
-      const archived = getArchivedPhaseDirs(cwd);
-      for (const a of archived) {
-        dirs.push(`${a.name} [${a.milestone}]`);
-      }
-    }
-
-    dirs.sort((a, b) => comparePhaseNum(a, b));
-
+    let dirs: string[];
     if (phase) {
+      // LOOKUP (b): search the physical set, plus archived when asked.
+      const lookupPool = [...readSubdirectories(phasesDir, true), ...archivedLabels];
       const normalized = normalizePhaseName(phase);
-      const match = dirs.find((d) => phaseTokenMatches(d, normalized));
+      const match = lookupPool.find((d) => phaseTokenMatches(d, normalized));
       if (!match) {
         output({ files: [], count: 0, phase_dir: null, error: 'Phase not found' }, raw, '');
         return;
       }
       dirs = [match];
+    } else {
+      // ENUMERATION (a): milestone-scoped and sentinel-filtered, plus
+      // archived when asked (c).
+      dirs = [...listMilestonePhaseDirs(phasesDir, { cwd }).value, ...archivedLabels];
+      dirs.sort((a, b) => comparePhaseNum(a, b));
     }
 
     if (type) {
