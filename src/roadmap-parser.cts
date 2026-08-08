@@ -158,7 +158,22 @@ function listMilestoneHeadings(content: string): Array<{ heading: string; versio
   const out: Array<{ heading: string; version: string; name: string | null; closed: boolean }> = [];
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(content)) !== null) {
-    const heading = m[0].replace(/^#{1,3}\s+/, '');
+    // #3216 review (Finding 4): the shared grammar's `[^\n]*` captures a
+    // trailing `\r` on a CRLF-encoded ROADMAP (the inline `cmdRoadmapAnalyze`
+    // regex this replaced called `.trim()`; this did not). `.trim()` here
+    // matches that prior behavior. `version` (digits/dots/letters only, via
+    // `extractMilestoneHeadingName`'s regex) and `name` (already run through
+    // `stripLeadingDelimiter`, which ends in `.trim()`) cannot carry a
+    // trailing `\r`, so only `heading` needs the fix.
+    //
+    // `heading` carries the heading text WITHOUT the leading `#{1,3}` run and
+    // its following whitespace — matching the inline `cmdRoadmapAnalyze`
+    // regex this function replaced (`/##\s*(.*v(\d+(?:\.\d+)+)[^(\n]*)/gi`,
+    // whose capture group 1 begins AFTER `##\s*`). `locateMilestoneHeadings`
+    // legitimately returns a DIFFERENT representation (`m[1]`, `#`s included)
+    // — the two owners agree on WHICH milestone headings are selected, not on
+    // raw heading text.
+    const heading = m[0].replace(/^#{1,3}\s+/, '').trim();
     const extracted = extractMilestoneHeadingName(heading);
     if (extracted === null) continue; // no version token on this heading — not a milestone heading
     out.push({
@@ -200,6 +215,11 @@ const MILESTONE_HEADING_LINE_SOURCE = '^#{1,3}\\s+(?!Phase\\s+\\S)[^\\n]*';
  */
 function locateMilestoneHeadings(content: string, version: string): RegExpExecArray[] {
   const escapedVersion = escapeRegex(version);
+  // ADR-3180 §7.1 locks this boundary as `\b`, not the stricter
+  // `(?![\w.-])` — Amendment 2 tried the stricter boundary and reverted it.
+  // `\b` alone is what preserves the #730 sub-milestone selection this
+  // function owns: `v2.0` still matches inside `v2.0.1`, `v8.0` still
+  // matches `## v8.0-B …`.
   const boundary = new RegExp(`${escapedVersion}\\b`, 'i');
   const pattern = new RegExp(`(${MILESTONE_HEADING_LINE_SOURCE})`, 'gmi');
   const matches: RegExpExecArray[] = [];
@@ -795,9 +815,37 @@ function stripLeadingDelimiter(s: string): string {
  * by `listMilestoneHeadings` and `getMilestoneInfo` so this rule has exactly
  * one implementation. Returns `null` when `headingText` carries no version
  * token at all (e.g. a non-milestone heading reached this by mistake).
+ *
+ * @param expectedVersion - When the caller already knows the exact version it
+ *   is looking for (the STATE-anchored `getMilestoneInfo` path, which located
+ *   this heading via `selectMilestoneHeading(roadmap, stateVersion)`), pass it
+ *   here so the "own version token" is found by anchoring to that KNOWN
+ *   literal (escaped, then extended by the same dash/dot continuation grammar
+ *   for the row-16/17 sub-milestone cases) instead of independently
+ *   re-deriving a version-shaped pattern from scratch. `listMilestoneHeadings`
+ *   (version-agnostic enumeration — no target version exists) omits this and
+ *   keeps the generic re-derivation. Anchoring on the known literal is what
+ *   makes a hostile STATE `milestone:` value (regex metacharacters, single-
+ *   segment `vN`, a literal `$&`/`$1`) resolve correctly: the generic pattern
+ *   only recognizes the real GSD version grammar and stops early on anything
+ *   outside it, leaving hostile characters in the extracted "name".
  */
-function extractMilestoneHeadingName(headingText: string): { version: string; name: string | null } | null {
-  const versionMatch = headingText.match(/v\d+(?:\.\d+)+(?:[-.][A-Za-z0-9]+)*/i);
+function extractMilestoneHeadingName(
+  headingText: string,
+  expectedVersion?: string,
+): { version: string; name: string | null } | null {
+  const versionMatch = expectedVersion
+    // Anchor to the KNOWN literal version, then extend across any immediate
+    // dash/dot continuation the heading's OWN token carries beyond it (e.g.
+    // requested v8.0 -> heading's own v8.0-B; requested v2.0 -> v2.0.1).
+    // `.match()` here — never `.replace()` — so a `$&`/`$1`-bearing version
+    // is located as a literal substring and never interpreted as a
+    // String.replace() substitution pattern.
+    ? headingText.match(new RegExp(`${escapeRegex(expectedVersion)}(?:[-.][A-Za-z0-9]+)*`, 'i'))
+    // No known target: re-derive a version-shaped token generically. `v3` /
+    // `v3.3` / `v3.3.3` must all resolve to themselves (§7.2), so the dotted
+    // continuation is zero-or-more, not one-or-more.
+    : headingText.match(/v\d+(?:\.\d+)*(?:[-.][A-Za-z0-9]+)*/i);
   if (!versionMatch) return null;
   const version = versionMatch[0];
   const afterVersion = headingText.slice((versionMatch.index ?? 0) + version.length);
@@ -873,8 +921,14 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
       // (the active-milestone bullet). A `##` heading is often nameless
       // ("## vX.Y — Active Milestone") and, when unanchored, was matched
       // spuriously on a copy quoted inside backticks in this very bullet.
+      // #3216 fix (progressMarkerBulletIsConsultedBeforeHeading): the version
+      // is commonly wrapped in its OWN bold pair — `🚧 **v3.3** Name` — so a
+      // trailing `\*?\*?` after the version (mirroring the leading one) is
+      // required before the `\s+` that anchors the name capture; without it
+      // the closing `**` sits between the version and the required whitespace
+      // and the whole match fails, silently falling through to the heading.
       const listMatch = roadmap.match(
-        new RegExp(`🚧\\s*\\*?\\*?${escapedVer}\\s+([^*\\n]+)`, 'i')
+        new RegExp(`🚧\\s*\\*?\\*?${escapedVer}\\*?\\*?\\s+([^*\\n]+)`, 'i')
       );
       if (listMatch) {
         const name = stripLeadingDelimiter(listMatch[1]);
@@ -892,7 +946,12 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
       if (selected) {
         const headingText = selected[1].replace(/^#{1,3}\s+/, '');
         if (!isClosedMilestoneHeading(headingText)) {
-          const extracted = extractMilestoneHeadingName(headingText);
+          // #3216 fix: pass the KNOWN stateVersion so name extraction anchors
+          // to it (see extractMilestoneHeadingName's `expectedVersion` doc) —
+          // fixes single-segment versions (`v3`, no dot) and hostile STATE
+          // values (regex metacharacters, literal `$&`/`$1`) that the generic
+          // re-derivation used by listMilestoneHeadings cannot recognize.
+          const extracted = extractMilestoneHeadingName(headingText, stateVersion);
           if (extracted && extracted.name) {
             return { value: { version: stateVersion, name: extracted.name }, scope: SCOPE.COMPLETE };
           }
