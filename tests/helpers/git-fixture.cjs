@@ -1,5 +1,7 @@
 'use strict';
 
+process.env.GSD_TEST_MODE = '1';
+
 /**
  * git-fixture — the shared throw-on-failure mechanism for process-seam
  * results, its non-throwing counterpart, plus a throw-preserving wrapper
