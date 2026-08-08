@@ -215,7 +215,8 @@ function searchPhaseInContent(content: string, escapedPhase: string, phaseNum: s
  * phase resolution as `roadmap.get-phase` — not a milestone-only subset.
  */
 function getRoadmapPhaseWithFallback(cwd: string, phaseNum: string): string | null {
-  if (/^999(?:\.|$)/.test(stripProjectCodePrefix(phaseNum))) return null;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (isSentinelPhaseId(stripProjectCodePrefix(phaseNum))) return null;
   const roadmapPath = planningPaths(cwd).roadmap;
   // Read directly rather than gating on fs.existsSync: existsSync returns false
   // on EACCES/EIO too, which would mask an UNREADABLE roadmap as "missing" and
@@ -247,7 +248,8 @@ function getRoadmapPhaseWithFallback(cwd: string, phaseNum: string): string | nu
 // ─── cmdRoadmapGetPhase ───────────────────────────────────────────────────────
 
 function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
-  if (/^999(?:\.|$)/.test(stripProjectCodePrefix(phaseNum))) {
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (isSentinelPhaseId(stripProjectCodePrefix(phaseNum))) {
     output({ found: false, phase_number: phaseNum }, raw, '');
     return;
   }

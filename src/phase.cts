@@ -997,11 +997,13 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
 
       while ((m = headerPattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
-        if (num !== 999) usedPhaseNums.add(num);
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (!isSentinelPhaseId(num)) usedPhaseNums.add(num);
       }
       while ((m = bulletPattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
-        if (num !== 999) usedPhaseNums.add(num);
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (!isSentinelPhaseId(num)) usedPhaseNums.add(num);
       }
 
       // 3) On-disk phase directories (e.g. phases/11-foo/ with no header yet)
@@ -1012,7 +1014,8 @@ function cmdPhaseAdd(cwd: string, description: string, raw: boolean, customId?: 
           const match = entry.match(dirNumPattern);
           if (!match) continue;
           const num = parseInt(match[1], 10);
-          if (num !== 999) usedPhaseNums.add(num);
+          // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+          if (!isSentinelPhaseId(num)) usedPhaseNums.add(num);
         }
       }
 
@@ -1090,7 +1093,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
       let m: RegExpExecArray | null;
       while ((m = phasePattern.exec(content)) !== null) {
         const num = parseInt(m[1], 10);
-        if (num === 999) continue;
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+        if (isSentinelPhaseId(num)) continue;
         if (num > maxPhase) maxPhase = num;
       }
       const phasesOnDisk = path.join(planningDir(cwd), 'phases');
@@ -1100,7 +1104,8 @@ function cmdPhaseAddBatch(cwd: string, descriptions: string[], raw: boolean): vo
           const match = entry.match(dirNumPattern);
           if (!match) continue;
           const num = parseInt(match[1], 10);
-          if (num === 999) continue;
+          // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+          if (isSentinelPhaseId(num)) continue;
           if (num > maxPhase) maxPhase = num;
         }
       }
@@ -1394,7 +1399,8 @@ function renameIntegerPhases(
       const m = dir.match(/^(\d+)([A-Z])?(?:\.(\d+))?-(.+)$/i);
       if (!m) return null;
       const dirInt = parseInt(m[1], 10);
-      return dirInt > removedInt && dirInt !== 999
+      // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+      return dirInt > removedInt && !isSentinelPhaseId(dirInt)
         ? {
             dir,
             oldInt: dirInt,
@@ -1436,7 +1442,8 @@ function renameIntegerPhases(
 
 function decrementRoadmapPhaseNumber(raw: string, removedInt: number): string {
   const num = parseInt(raw, 10);
-  if (!Number.isInteger(num) || num <= removedInt || num === 999) return raw;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return raw;
   return String(num - 1);
 }
 
@@ -1444,13 +1451,15 @@ function decrementRoadmapPhaseToken(raw: string, removedInt: number): string {
   const match = String(raw).match(/^(\d+)(\.\d+)?$/);
   if (!match) return raw;
   const num = parseInt(match[1], 10);
-  if (!Number.isInteger(num) || num <= removedInt || num === 999) return raw;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return raw;
   return `${num - 1}${match[2] || ''}`;
 }
 
 function decrementRoadmapPaddedPhaseNumber(raw: string, removedInt: number): string {
   const num = parseInt(raw, 10);
-  if (!Number.isInteger(num) || num <= removedInt || num === 999) return raw;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return raw;
   return String(num - 1).padStart(raw.length, '0');
 }
 
@@ -1639,7 +1648,8 @@ function updateRoadmapAfterPhaseRemoval(
               const m = phaseCellShapeRe.exec(row['Phase'] ?? '');
               if (!m) return false;
               const num = parseInt(m[1], 10);
-              if (!Number.isInteger(num) || num <= removedInt || num === 999) return false;
+              // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+              if (!Number.isInteger(num) || num <= removedInt || isSentinelPhaseId(num)) return false;
               processedOrdinalRows.add(index);
               matchedRowIndex = index;
               return true;
@@ -2619,7 +2629,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
         for (const dir of dirs) {
           const dm = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
           if (dm) {
-            if (/^999(?:\.|$)/.test(dm[1])) continue;
+            // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+            if (isSentinelPhaseId(dm[1])) continue;
             if (comparePhaseNum(dm[1], phaseNum) > 0) {
               nextPhaseNum = dm[1];
               nextPhaseName = dm[2] || null;
@@ -2663,9 +2674,8 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
           let pm: RegExpExecArray | null;
           while ((pm = phasePattern.exec(roadmapForPhases)) !== null) {
             // #2786: skip sentinel phase ids (999.x backlog, 0.x drafts) — stage 1
-            // already skips 999 dirs on disk; stage 2's heading scan must not
-            // advance into backlog headings. Mirrors the /^999(?:\.|$)/ guard
-            // stage 1 uses at line 2536, but via isSentinelPhaseId for both ranges.
+            // already skips sentinel dirs on disk via isSentinelPhaseId (#3185);
+            // stage 2's heading scan must not advance into backlog headings either.
             if (isSentinelPhaseId(pm[1])) continue;
             if (comparePhaseNum(pm[1], phaseNum) > 0) {
               nextPhaseNum = pm[1];
