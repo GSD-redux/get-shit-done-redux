@@ -46,6 +46,32 @@
  * character-index scan), or one whose literal and test operator are split
  * across two DIFFERENT lines with no single line carrying both, is not
  * caught by this narrow shape. That is left to code review, not this regex.
+ *
+ * `isInsideRoot`'s root-confinement check (used by the symlink-following
+ * `walk`, below) is an EXACT string comparison, deliberately not
+ * case-normalized. On a case-insensitive filesystem (macOS default; not CI,
+ * which is ubuntu) a symlink whose target is a case-VARIANT of an in-root
+ * path — a path the OS itself would still resolve to the same file — is
+ * REJECTED by this exact comparison and silently left unscanned. This is a
+ * fail-CLOSED miss (a re-derivation goes unreported), never an escape (never
+ * a wrongly-admitted outside-root read), so it is left as-is: making the
+ * comparison case-insensitive would WEAKEN confinement (a resolved path
+ * merely case-differing from a sibling-of-root name, `/repo-Evil` vs
+ * `/repo-evil`, could then be wrongly admitted) to fix a gap that only ever
+ * under-reports on a platform this guard is not gated on.
+ *
+ * A regex literal longer than MAX_REGEX_LITERAL_LEN (400) characters is not
+ * read, and is therefore not caught. That bound is what keeps the scan
+ * linear; no real plan/summary filename filter approaches it. The scan is
+ * scoped to SCAN_DIRS (`src`) with SCAN_EXT (.cts/.ts/.mts) — 186 files and
+ * 4,299 lines matching FILENAME_TEST_RE within SCAN_DIRS/SCAN_EXT as of this
+ * commit, 43 of them holding 7 or more backslashes and one (`src/milestone.cts`)
+ * holding 16. (Definition used, so this is reproducible: walk SCAN_DIRS
+ * filtering by SCAN_EXT exactly as `walk` does, split each file on `\n`, and
+ * count every line for which the exported `FILENAME_TEST_RE.test(line)` is
+ * true — independent of whether a PLAN/SUMMARY literal is also present on
+ * that line.) Those are the lines the old backtracking detector had to
+ * survive, and the reason the detector is now a tokenizer.
  */
 
 const fs = require('node:fs');
@@ -70,16 +96,35 @@ const FILENAME_TEST_RE = /\.(?:filter|test|match|exec|endsWith|startsWith|includ
 // closing quote must match).
 const PLAN_SUMMARY_LITERAL_RE = /(['"])-?(?:PLAN|SUMMARY)\.md\1/;
 
-// An unquoted regex literal that mentions PLAN or SUMMARY and an escaped
-// `.md` suffix together, e.g. `/-PLAN\.md$/`, `/^PLAN-\d+.*\.md$/i`,
-// `/-SUMMARY-\d+.*\.md$/i`. Delimited by `/…/` with optional trailing flags;
-// PLAN/SUMMARY may appear before or after the `\.md` token within the same
-// literal.
-const REGEX_LITERAL_MD_RE = /\/(?:\\.|[^/\r\n])*?(?:(?:PLAN|SUMMARY)(?:\\.|[^/\r\n])*?\\\.md|\\\.md(?:\\.|[^/\r\n])*?(?:PLAN|SUMMARY))(?:\\.|[^/\r\n])*?\/[a-z]*/i;
+// Longest regex literal this scanner will consider, in characters. Real
+// plan/summary filename filters are far shorter; the bound is what keeps the
+// scan linear. The tokenizer restarts at every `/` on the line (so that a
+// literal preceded by a stray unpaired `/` is still found, matching the
+// previous regex's "find anywhere" behaviour), which without a per-literal
+// bound would be quadratic on a pathological line. With it the whole-line
+// cost is O(n * MAX_REGEX_LITERAL_LEN) with no backtracking at all.
+const MAX_REGEX_LITERAL_LEN = 400;
+
+// The two tokens that, appearing together INSIDE one regex literal, make it a
+// plan/summary filename filter. `\.md` is matched as literal source text, not
+// as a pattern, so there is nothing here to backtrack.
+const PLAN_SUMMARY_TOKEN_RE = /PLAN|SUMMARY/i;
+const ESCAPED_MD_TOKEN = '\\.md';
 
 // Authored TypeScript source only (the generated bin/lib/*.cjs mirror it).
 const SCAN_DIRS = ['src'];
 const SCAN_EXT = new Set(['.cts', '.ts', '.mts']);
+
+// Directory names this scanner never descends into or reports out of —
+// `.git` (repo internals, e.g. a persisted CI token in `.git/config`),
+// `node_modules` (thousands of third-party files, none of them authored
+// source), `dist` (build output). Named once and used at BOTH skip sites
+// below: the cheap `entry.name` fast path in `walk`, and the resolved-path
+// component check in `isUnderSkippedDir` — a symlink whose OWN name is not
+// in this set but whose target resolves through a directory that IS (e.g.
+// `src/g -> ../.git`, `src/nm -> ../node_modules`) must still be skipped, or
+// the name-only check is a trivial bypass.
+const SKIP_DIR_NAMES = new Set(['node_modules', 'dist', '.git']);
 
 // The canonical owner defines the grammar; it is exempt by construction.
 const OWNER_FILE = path.join('src', 'plan-scan.cts');
@@ -152,7 +197,136 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
 // FUNCTION_SCOPED_EXEMPTIONS entry above to take effect.
 const TOP_LEVEL_FUNCTION_RE = /^(?:export\s+)?function\s+([A-Za-z0-9_]+)\s*\(/;
 
-function walk(dir, acc) {
+/**
+ * Read the JS regex literal starting at `line[start]` (which must be `/`).
+ * Returns `{ text, end }` — `text` includes the delimiters and any trailing
+ * flags, `end` is the index one past the literal — or null if no literal
+ * closes within MAX_REGEX_LITERAL_LEN characters.
+ *
+ * Single left-to-right pass, no backtracking. It models the two constructs a
+ * backtracking pattern gets wrong, which is why this is a tokenizer and not a
+ * regex:
+ *   - `\x` escapes consume BOTH characters, so an escaped `\/` never
+ *     terminates the literal;
+ *   - inside a `[...]` character class a bare `/` does NOT terminate, so
+ *     `/PLAN[\\/].*\.md$/` is one literal rather than two fragments. The
+ *     previous regex silently MISSED every re-derivation using a
+ *     cross-platform path-separator class for exactly this reason.
+ */
+function readRegexLiteralAt(line, start) {
+  if (line[start] !== '/') return null;
+  const limit = Math.min(line.length, start + MAX_REGEX_LITERAL_LEN);
+  let inClass = false;
+  for (let i = start + 1; i < limit; i++) {
+    const ch = line[i];
+    if (ch === '\\') {
+      i++; // escape consumes the next character, whatever it is
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') return null; // a literal cannot span lines
+    if (ch === '[') {
+      inClass = true;
+    } else if (ch === ']') {
+      inClass = false;
+    } else if (ch === '/' && !inClass) {
+      // Trailing flags are bounded by the SAME `limit` as the literal body
+      // itself (not `line.length`) — a literal followed by an unbounded run
+      // of lowercase letters must not make `text` grow past
+      // MAX_REGEX_LITERAL_LEN either.
+      let end = i + 1;
+      while (end < limit && line[end] >= 'a' && line[end] <= 'z') end++;
+      return { text: line.slice(start, end), end };
+    }
+  }
+  return null;
+}
+
+/**
+ * The regex literal on `line` that mentions PLAN or SUMMARY together with an
+ * escaped `.md` suffix — e.g. `/-PLAN\.md$/`, `/^PLAN-\d+.*\.md$/i`,
+ * `/-SUMMARY-\d+.*\.md$/i` — or null if there is none. Replaces the former
+ * `REGEX_LITERAL_MD_RE`, which was both exponentially/cubically backtracking
+ * (CodeQL js/redos; this guard runs in `lint:ci` on fork PRs) and unable to
+ * see a `[\\/]` character class.
+ */
+function findRegexLiteralMdMatch(line) {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] !== '/') continue;
+    const literal = readRegexLiteralAt(line, i);
+    if (!literal) continue;
+    // Case-insensitive `\.md` test — the regex literal this replaced carried
+    // the `i` flag, so `\.MD`/`\.Md` must still match. A lowercased-copy
+    // `.includes()` preserves that behaviour without reintroducing a
+    // backtracking regex.
+    if (PLAN_SUMMARY_TOKEN_RE.test(literal.text) && literal.text.toLowerCase().includes(ESCAPED_MD_TOKEN)) {
+      return literal.text;
+    }
+  }
+  return null;
+}
+
+// Symlinks report `isDirectory()`/`isFile()` as false on the Dirent from
+// `readdirSync`, so a symlinked `src/*.cts` (or a symlinked directory
+// containing one) was previously invisible to this scanner — an evasion of a
+// guard whose stated design principle (ADR-3180 Decision 4a) is whole-repo
+// discovery with no allowlist. Resolve each entry with `fs.statSync` (which
+// follows symlinks) to classify it, skipping broken links. `ctx.visitedRealDirs`
+// guards against a symlink cycle sending `walk` into infinite recursion.
+//
+// Every sibling drift guard in `scripts/` (`lint-phase-id-drift.cjs`,
+// `lint-package-identity-drift.cjs`, `lint-portable-timeout.cjs`,
+// `lint-test-file-count.cjs`, `lint-allow-test-rule-refs.cjs`) uses the
+// `Dirent` classification straight off `readdirSync` and does NOT follow
+// symlinks at all. This guard follows them so a symlinked `src/*.cts` cannot
+// evade ADR-3180 Decision 4a's whole-repo discovery — root confinement
+// (`isInsideRoot` below) is the price of doing so: without it, a symlink
+// planted anywhere under `src/` could walk this scanner out to read and
+// report arbitrary files elsewhere on disk.
+//
+// DIRECTORY vs FILE symlinks are confined to two DIFFERENT roots, tracked as
+// `ctx.scanDirRoot` (the realpath of the current top-level SCAN_DIRS entry,
+// e.g. `<realRoot>/src`) vs `ctx.realRoot` (the whole repo):
+//   - a DIRECTORY symlink is descended ONLY if its resolved realpath is
+//     inside `ctx.scanDirRoot` — NOT merely inside `ctx.realRoot`. Without
+//     this, `src/up -> ..` (or `-> <realRoot>`) resolves inside the repo
+//     root and `walk` descends the ENTIRE repo, reporting violations under
+//     paths like `tests/not-src.cts` or `docs/other.cts` — files the header
+//     above says the scan is scoped OUT of (`SCAN_DIRS`). This is a
+//     deliberate, fail-CLOSED trade-off: a directory symlink pointing
+//     elsewhere INSIDE the repo (but outside the scan directory) is simply
+//     not followed. The alternative — descending it — is exactly the
+//     whole-repo sweep this rule exists to prevent, and a fork PR could use
+//     that sweep to redden `lint:ci` on files this guard was never meant to
+//     read. The narrower rule is worth more than the missed edge case.
+//   - a FILE symlink is still scanned if its resolved realpath is inside
+//     `ctx.realRoot` (the whole repo, not just the scan directory) — this is
+//     what keeps `src/alias.cts -> vendor/real.cts` covered (test (f)): an
+//     aliased file genuinely is part of the compiled surface even when its
+//     real target lives outside `src/`, and it is still reported under its
+//     canonical (real) path.
+//
+// A resolved path is inside a root only if it IS that root or begins with
+// root + separator — a plain `startsWith(root)` would also accept a sibling
+// directory whose name merely starts with the root's name (`/repo-evil`).
+function isInsideRoot(realPath, realRoot) {
+  return realPath === realRoot || realPath.startsWith(realRoot + path.sep);
+}
+
+// True when `realPath` (already confirmed inside `realRoot` by `isInsideRoot`)
+// resolves THROUGH a skip-list directory anywhere along its path relative to
+// the root — not just when `realPath` itself IS one. This is what closes the
+// symlink bypass the `entry.name` fast path alone cannot: `walk` tests
+// `entry.name` (the symlink's OWN name in its parent directory), but a
+// symlink named something innocuous can still RESOLVE into `.git` /
+// `node_modules` / `dist` (`src/g -> ../.git`, `src/leak.cts ->
+// ../.git/config`, `src/nm -> ../node_modules`) — `isInsideRoot` alone admits
+// all three, because every one of those real paths is still under the root.
+function isUnderSkippedDir(realPath, realRoot) {
+  const rel = path.relative(realRoot, realPath);
+  return rel.split(path.sep).some((segment) => SKIP_DIR_NAMES.has(segment));
+}
+
+function walk(dir, acc, ctx) {
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -161,11 +335,38 @@ function walk(dir, acc) {
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === 'node_modules' || entry.name === 'dist' || entry.name === '.git') continue;
-      walk(full, acc);
-    } else if (entry.isFile() && SCAN_EXT.has(path.extname(entry.name))) {
-      acc.push(full);
+    if (SKIP_DIR_NAMES.has(entry.name)) continue; // cheap fast path
+    let stat;
+    try {
+      stat = entry.isSymbolicLink() ? fs.statSync(full) : entry;
+    } catch {
+      continue; // broken symlink target
+    }
+    let realPath;
+    try {
+      realPath = fs.realpathSync(full);
+    } catch {
+      continue; // broken symlink target (race, or a link stat() followed but realpath cannot)
+    }
+    if (stat.isDirectory()) {
+      // Directories (symlinked or real) are confined to the CURRENT scan
+      // directory root, not merely the repo root — see the comment above
+      // `isInsideRoot` for why (`src/up -> ..` whole-repo sweep).
+      if (!isInsideRoot(realPath, ctx.scanDirRoot)) continue;
+      if (isUnderSkippedDir(realPath, ctx.realRoot)) continue; // symlink resolves through a skipped dir
+      if (ctx.visitedRealDirs.has(realPath)) continue; // symlink cycle guard
+      ctx.visitedRealDirs.add(realPath);
+      walk(full, acc, ctx);
+    } else if (stat.isFile() && SCAN_EXT.has(path.extname(entry.name))) {
+      // Files are confined to the whole repo root — a symlinked FILE whose
+      // real target lives outside the scan directory but inside the repo
+      // (e.g. `src/alias.cts -> vendor/real.cts`) is still part of the
+      // compiled surface and must be scanned.
+      if (!isInsideRoot(realPath, ctx.realRoot)) continue;
+      if (isUnderSkippedDir(realPath, ctx.realRoot)) continue; // symlink resolves through a skipped dir
+      if (ctx.visitedRealFiles.has(realPath)) continue; // two symlinks, same real file
+      ctx.visitedRealFiles.add(realPath);
+      acc.push(realPath);
     }
   }
   return acc;
@@ -188,12 +389,13 @@ function findPlanCountDrift(text, relPath) {
     if (fnMatch) currentFunction = fnMatch[1];
 
     if (!FILENAME_TEST_RE.test(line)) continue;
-    const literalMatch = PLAN_SUMMARY_LITERAL_RE.exec(line) || REGEX_LITERAL_MD_RE.exec(line);
-    if (!literalMatch) continue;
+    const quoted = PLAN_SUMMARY_LITERAL_RE.exec(line);
+    const found = quoted ? quoted[0] : findRegexLiteralMdMatch(line);
+    if (!found) continue;
 
     if (exemptFunctions && exemptFunctions.has(currentFunction)) continue;
 
-    out.push({ line: i + 1, found: literalMatch[0] });
+    out.push({ line: i + 1, found });
   }
   return out;
 }
@@ -204,9 +406,28 @@ function findPlanCountDrift(text, relPath) {
  */
 function scanRepo(root) {
   const violations = [];
+  let realRoot;
+  try {
+    realRoot = fs.realpathSync(root);
+  } catch {
+    return violations; // root itself does not exist / is unreadable
+  }
   for (const dir of SCAN_DIRS) {
-    for (const file of walk(path.join(root, dir), [])) {
-      const rel = path.relative(root, file);
+    const scanDirPath = path.join(root, dir);
+    let scanDirRoot;
+    try {
+      scanDirRoot = fs.realpathSync(scanDirPath);
+    } catch {
+      continue; // scan directory itself does not exist / is unreadable
+    }
+    const ctx = { realRoot, scanDirRoot, visitedRealDirs: new Set(), visitedRealFiles: new Set() };
+    for (const file of walk(scanDirPath, [], ctx)) {
+      // `file` is already the REAL path (walk pushes realPath, not the
+      // symlink path), so `rel` is the file's single canonical location
+      // regardless of which symlink reached it — this is what makes
+      // FUNCTION_SCOPED_EXEMPTIONS/OWNER_FILE, which are keyed on the
+      // repo-relative path, match consistently.
+      const rel = path.relative(realRoot, file);
       if (rel === OWNER_FILE) continue;
       let text;
       try {
@@ -222,6 +443,26 @@ function scanRepo(root) {
   return violations;
 }
 
+// Both a `found` fragment AND a reported file path are attacker-controlled
+// source text on a fork PR (a repo can legally track a filename containing
+// control bytes, so the path is exactly as attacker-controlled as the
+// fragment — see the call sites in main() below), and both are written
+// straight to a CI log. Replace C0/C1 control bytes (ANSI escapes included)
+// with a visible \xNN, AND the non-Latin-1 formatting/bidi/line-separator
+// codepoints below with \uNNNN, so a crafted literal or filename cannot
+// rewrite the terminal rendering of the report or hide/reorder its own text:
+//   - U+200B-U+200F: zero-width space/joiners and directional marks
+//   - U+2028/U+2029: Unicode LINE SEPARATOR / PARAGRAPH SEPARATOR (line
+//     breaks a `\n`-only log scan would not catch)
+//   - U+202A-U+202E: bidi embedding/override controls (RLO etc.)
+//   - U+2066-U+2069: bidi isolate controls
+function sanitizeForReport(text) {
+  return text
+    // eslint-disable-next-line no-control-regex -- the control range IS the target
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => '\\x' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+    .replace(/[\u200B-\u200F\u2028\u2029\u202A-\u202E\u2066-\u2069]/g, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'));
+}
+
 function main() {
   const root = path.join(__dirname, '..');
   const violations = scanRepo(root);
@@ -233,7 +474,11 @@ function main() {
   process.stderr.write('Use src/plan-scan.cjs `scanPhasePlans` (or core-utils.cjs `getPhaseFileStats`, which now\n');
   process.stderr.write('sources plans/summaries from it) instead of re-deriving the -PLAN.md/-SUMMARY.md filter:\n');
   for (const d of violations) {
-    process.stderr.write(`  ${d.file}:${d.line}  ${d.found}\n`);
+    // `d.file` is exactly as attacker-controlled as `d.found`: a repo can
+    // legally track a filename containing control bytes / bidi overrides,
+    // and it is a fork-PR-authored value reaching a CI log the same way the
+    // matched literal does — sanitize it at the same reporting boundary.
+    process.stderr.write(`  ${sanitizeForReport(d.file)}:${d.line}  ${sanitizeForReport(d.found)}\n`);
   }
   process.exitCode = 1;
 }
@@ -246,5 +491,9 @@ module.exports = {
   FILTER_CALL_RE,
   FILENAME_TEST_RE,
   PLAN_SUMMARY_LITERAL_RE,
-  REGEX_LITERAL_MD_RE,
+  findRegexLiteralMdMatch,
+  readRegexLiteralAt,
+  MAX_REGEX_LITERAL_LEN,
+  isInsideRoot,
+  sanitizeForReport,
 };

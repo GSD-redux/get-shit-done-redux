@@ -25,11 +25,14 @@ const { test, describe, mock } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 const planScan = require('../gsd-core/bin/lib/plan-scan.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const coreUtils = require('../gsd-core/bin/lib/core-utils.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+const drift = require('../scripts/lint-plan-count-drift.cjs');
 
 function writeFile(dir, relName, content) {
   const full = path.join(dir, relName);
@@ -542,5 +545,400 @@ describe('isCanonicalPlanFile — strict predicate excludes the loose /PLAN/i fa
   test('loose-fallback-only root matches (lowercase plan.md) do NOT satisfy the strict predicate', () => {
     assert.strictEqual(planScan.isCanonicalPlanFile('plan.md'), false);
     assert.strictEqual(planScan.isCanonicalPlanFile('Plan.md'), false);
+  });
+});
+
+// ─── findRegexLiteralMdMatch — literal tokenizer regression
+// (scripts/lint-plan-count-drift.cjs)
+//
+// The scanner's "unquoted regex literal that mentions PLAN/SUMMARY and \.md"
+// detector used to be a single backtracking regex (REGEX_LITERAL_MD_RE). An
+// independent security review found it was STILL defective after a prior
+// backslash-exclusion fix: it was cubic (not just exponential) on
+// `"/" + "PLAN\\.md".repeat(N)` with no closing `/`, and it structurally
+// could not see a character class containing a BARE, unescaped `/` between
+// the PLAN/SUMMARY token and `\.md` (e.g. `/SUMMARY[^/]*\.md$/`) — the old
+// regex treated that `/` as the literal's terminator and stopped scanning
+// before ever reaching `\.md`, silently missing real re-derivation shapes.
+// A class holding an ESCAPED `\/` (e.g. `/PLAN[\\/].*\.md$/`) was already
+// matched by the old regex's `\\.` alternative, so those shapes are parity
+// coverage, not regressions. Both genuine defects share one root cause:
+// regex-literal grammar (escapes, and `/` inside `[...]` not terminating) is
+// not expressible in a backtracking regex. The fix replaces it with
+// `readRegexLiteralAt`/`findRegexLiteralMdMatch`, a deterministic
+// single-pass tokenizer with no backtracking at all.
+describe('findRegexLiteralMdMatch — literal tokenizer (ReDoS + character-class regression)', () => {
+  test('findPlanCountDrift completes on backslash-dense and repetition-dense lines (ReDoS regression)', (t) => {
+    // Catastrophic backtracking is synchronous and cannot be interrupted
+    // in-process — a hang here would freeze the whole suite instead of
+    // failing this one test. Spawn a child process with a hard timeout.
+    // Exercises BOTH pathological shapes the old regex blew up on:
+    //   - exponential: `/\.mdplan` + `\.`.repeat(reps) + `X` (no closing `/`)
+    //     at reps 24 / 28 / 32;
+    //   - cubic: `/` + `PLAN\.md`.repeat(reps) + ` ` (no closing `/`) at reps
+    //     400 / 800 / 1600.
+    // These are GROWTH-RATE samples, deliberately doubling, not limit-1/limit/
+    // limit+1 boundary coverage — there is no limit here to sit either side
+    // of, and under the old regex each step multiplied the runtime (~2x per
+    // rep exponential, ~8x per doubling cubic) so a tokenizer that had
+    // silently regressed to backtracking blows the child's timeout at the top
+    // of either ladder. The one real numeric limit in this module,
+    // MAX_REGEX_LITERAL_LEN, gets true limit-1/limit/limit+1 coverage in the
+    // readRegexLiteralAt test below.
+    const dir = createTempDir('gsd-plan-count-drift-redos-');
+    t.after(() => cleanup(dir));
+
+    const guardPath = path.join(__dirname, '..', 'scripts', 'lint-plan-count-drift.cjs');
+    const childPath = path.join(dir, 'probe.cjs');
+    const childSource = [
+      "'use strict';",
+      "const { findPlanCountDrift } = require(process.argv[2]);",
+      "for (const reps of [24, 28, 32]) {",
+      "  const attack = '\\\\.'.repeat(reps);",
+      "  const line = `const RE = /\\\\.mdplan${attack}X; names.filter(n => RE.test(n));`;",
+      "  findPlanCountDrift(line, 'src/probe.cts');",
+      "}",
+      "for (const reps of [400, 800, 1600]) {",
+      "  const attack = 'PLAN\\\\.md'.repeat(reps);",
+      "  const line = `const RE = /${attack} ; names.filter(n => RE.test(n));`;",
+      "  findPlanCountDrift(line, 'src/probe.cts');",
+      "}",
+      "process.stdout.write('done');",
+    ].join('\n');
+    fs.writeFileSync(childPath, childSource);
+
+    try {
+      const output = execFileSync(process.execPath, [childPath, guardPath], {
+        encoding: 'utf8',
+        timeout: PROBE_TIMEOUT_MS,
+      });
+      assert.strictEqual(output, 'done');
+    } catch (err) {
+      // `code === 'ETIMEDOUT'` is the canonical execFileSync timeout signal;
+      // on darwin the kill yields signal 'SIGTERM' with `killed` undefined,
+      // so all three are checked rather than relying on any one platform's
+      // spelling.
+      if (err.code === 'ETIMEDOUT' || err.signal === 'SIGTERM' || err.killed) {
+        assert.fail(
+          'findPlanCountDrift did not complete within PROBE_TIMEOUT_MS: the child probe ' +
+            'process was killed instead of exiting. Catastrophic backtracking (ReDoS) in ' +
+            'the literal tokenizer is the expected cause; an externally killed child would ' +
+            'also land here.',
+        );
+      }
+      throw err;
+    }
+  });
+
+  test('findRegexLiteralMdMatch semantics: matches genuine plan/summary literals, ' +
+    'catches path-separator character-class shapes, rejects near-misses and attack lines', () => {
+    const matchOf = (line) => drift.findRegexLiteralMdMatch(line);
+
+    // Positive: genuine plan/summary regex literals must still match.
+    assert.strictEqual(
+      matchOf("if (/-PLAN\\.md$/.test(name)) return true;"),
+      '/-PLAN\\.md$/',
+    );
+    assert.strictEqual(
+      matchOf('names.filter((n) => /^PLAN-\\d+.*\\.md$/i.test(n));'),
+      '/^PLAN-\\d+.*\\.md$/i',
+    );
+    assert.strictEqual(
+      matchOf('names.filter((n) => /-SUMMARY-\\d+.*\\.md$/i.test(n));'),
+      '/-SUMMARY-\\d+.*\\.md$/i',
+    );
+    assert.strictEqual(
+      matchOf('names.filter((n) => /\\.md.*SUMMARY/.test(n));'),
+      '/\\.md.*SUMMARY/',
+    );
+
+    // Character classes containing an ESCAPED `\/` pair. The old backtracking
+    // regex also matched these (its `\\.` alternative consumed the `\/`), so
+    // they are NOT regression cases — they are parity coverage proving the
+    // tokenizer did not LOSE behaviour when it replaced the regex.
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /PLAN[\\/].*\.md$/.test(f));`),
+      String.raw`/PLAN[\\/].*\.md$/`,
+    );
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /PLAN[\\/]\d+\.md$/.test(f));`),
+      String.raw`/PLAN[\\/]\d+\.md$/`,
+    );
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /SUMMARY[\\/][^x]*\.md$/.test(f));`),
+      String.raw`/SUMMARY[\\/][^x]*\.md$/`,
+    );
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /\.md[\\/]SUMMARY/.test(f));`),
+      String.raw`/\.md[\\/]SUMMARY/`,
+    );
+
+    // Character classes containing a BARE, UNESCAPED `/`. These are the real
+    // regression cases: the old regex treated that `/` as the literal's
+    // terminator, so it stopped scanning before reaching `\.md` and MISSED
+    // every one of them — verified against the parent-commit blob, where all
+    // four return null. A guard that cannot see `/SUMMARY[^/]*\.md$/` is
+    // blind to an ordinary path-excluding filter.
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /PLAN[/\\].*\.md$/.test(f));`),
+      String.raw`/PLAN[/\\].*\.md$/`,
+    );
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /PLAN[a/b]\.md$/.test(f));`),
+      String.raw`/PLAN[a/b]\.md$/`,
+    );
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /SUMMARY[^/]*\.md$/.test(f));`),
+      String.raw`/SUMMARY[^/]*\.md$/`,
+    );
+    assert.strictEqual(
+      matchOf(String.raw`files.filter(f => /PLAN[/]\.md$/.test(f));`),
+      String.raw`/PLAN[/]\.md$/`,
+    );
+
+    // Positive: an escaped slash (`\/`) inside the literal must not
+    // terminate it early — the whole literal is returned, not a truncated
+    // fragment up to the escaped `/`.
+    assert.strictEqual(
+      matchOf(String.raw`names.filter(n => /PLAN\/\d+\.md$/.test(n));`),
+      String.raw`/PLAN\/\d+\.md$/`,
+    );
+
+    // Negative: \.md with no PLAN/SUMMARY token in the literal.
+    assert.strictEqual(matchOf('names.filter((n) => /\\.md$/.test(n));'), null);
+    // Negative: PLAN with no escaped \.md token in the literal.
+    assert.strictEqual(matchOf('names.filter((n) => /PLAN/.test(n));'), null);
+    // Negative: the backslash-dense ReDoS attack construction (no closing
+    // `/`, so the literal never resolves).
+    const attack = '\\.'.repeat(8);
+    const attackLine = `const RE = /\\.mdplan${attack}X; names.filter(n => RE.test(n));`;
+    assert.strictEqual(matchOf(attackLine), null);
+  });
+
+  // Direct coverage of readRegexLiteralAt — the tokenizer's single-pass
+  // scan primitive. Replaces the deleted `!source.includes('[^/')`
+  // structural check, which was a gameable substring test (respelling the
+  // class as `[^\r\n/]` would still pass it while remaining exponential)
+  // inspecting a constant (REGEX_LITERAL_MD_RE) that no longer exists.
+  describe('readRegexLiteralAt', () => {
+    test('an unterminated literal (no closing `/`) returns null', () => {
+      assert.strictEqual(
+        drift.readRegexLiteralAt('/PLAN and no closing slash at all', 0),
+        null,
+      );
+    });
+
+    test('MAX_REGEX_LITERAL_LEN boundary: limit-1 reads, limit reads, limit+1 returns null', () => {
+      // Derived from the exported constant so the boundary cannot silently
+      // drift from it (a missing/undefined export must fail loudly, not
+      // vacuously pass a boundary computed from `undefined`).
+      const MAX = drift.MAX_REGEX_LITERAL_LEN;
+      assert.ok(Number.isInteger(MAX) && MAX > 10, `MAX_REGEX_LITERAL_LEN must be exported as an integer > 10, got ${MAX}`);
+
+      // Total literal length (both delimiters included) = contentLen + 2.
+      const build = (contentLen) => '/' + 'a'.repeat(contentLen) + '/';
+      const underBound = build(MAX - 3); // total length MAX-1 — limit-1
+      const atBound = build(MAX - 2); // total length MAX — limit (MAX_REGEX_LITERAL_LEN)
+      const overBound = build(MAX - 1); // total length MAX+1 — limit+1
+
+      assert.strictEqual(drift.readRegexLiteralAt(underBound, 0)?.text, underBound);
+      assert.strictEqual(drift.readRegexLiteralAt(atBound, 0)?.text, atBound);
+      assert.strictEqual(drift.readRegexLiteralAt(overBound, 0), null);
+    });
+
+    test('a `/` inside a `[...]` character class does not terminate the literal', () => {
+      const line = '/a[/]b/';
+      assert.strictEqual(drift.readRegexLiteralAt(line, 0)?.text, line);
+    });
+
+    test('an escaped `\\/` does not terminate the literal', () => {
+      const line = String.raw`/a\/b/`;
+      assert.strictEqual(drift.readRegexLiteralAt(line, 0)?.text, line);
+    });
+
+    test('trailing flags are included in the returned literal text', () => {
+      const line = '/foo/gi';
+      assert.strictEqual(drift.readRegexLiteralAt(line, 0)?.text, line);
+    });
+  });
+
+  // scanRepo's `walk` follows symlinks (via fs.statSync) to close the
+  // Dirent-classification evasion documented at `walk`'s definition, which
+  // means it must also confine itself to the repo root — an unconfined
+  // symlink follow would let a fork PR read and leak arbitrary files outside
+  // the repo into the CI-log report. `{ skip }` mirrors the win32 symlink
+  // guard used elsewhere in this repo (tests/phase.test.cjs) — symlink
+  // creation needs elevated privilege on Windows CI runners.
+  describe('walk — symlink handling and root confinement', () => {
+    const skip = process.platform === 'win32' ? 'symlink creation needs privilege on Windows' : false;
+
+    function violatingLine() {
+      return "module.exports.isPlan = (f) => f.endsWith('-PLAN.md');\n";
+    }
+
+    test('(a) a symlinked .cts INSIDE the root IS scanned, reported under its canonical real path', { skip }, (t) => {
+      const root = createTempDir('gsd-plan-count-drift-root-');
+      t.after(() => cleanup(root));
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'vendor'), { recursive: true });
+      const realFile = path.join(root, 'vendor', 'real-target.cts');
+      fs.writeFileSync(realFile, violatingLine());
+      fs.symlinkSync(realFile, path.join(root, 'src', 'linked.cts'));
+
+      const violations = drift.scanRepo(root);
+      assert.strictEqual(violations.length, 1);
+      assert.strictEqual(violations[0].file, path.join('vendor', 'real-target.cts'));
+    });
+
+    test('(b) a symlinked .cts pointing OUTSIDE the root is NOT scanned: zero violations reported', { skip }, (t) => {
+      const root = createTempDir('gsd-plan-count-drift-root-');
+      const outside = createTempDir('gsd-plan-count-drift-outside-');
+      t.after(() => cleanup(root));
+      t.after(() => cleanup(outside));
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      const outsideFile = path.join(outside, 'evil.cts');
+      fs.writeFileSync(outsideFile, violatingLine());
+      fs.symlinkSync(outsideFile, path.join(root, 'src', 'evil.cts'));
+
+      const violations = drift.scanRepo(root);
+      assert.strictEqual(violations.length, 0);
+    });
+
+    test('(c) a directory symlink pointing OUTSIDE the root is not descended into', { skip }, (t) => {
+      const root = createTempDir('gsd-plan-count-drift-root-');
+      const outside = createTempDir('gsd-plan-count-drift-outside-');
+      t.after(() => cleanup(root));
+      t.after(() => cleanup(outside));
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      const outsideDir = path.join(outside, 'dir');
+      fs.mkdirSync(outsideDir, { recursive: true });
+      fs.writeFileSync(path.join(outsideDir, 'evil.cts'), violatingLine());
+      fs.symlinkSync(outsideDir, path.join(root, 'src', 'outdir'), 'dir');
+
+      const violations = drift.scanRepo(root);
+      assert.strictEqual(violations.length, 0);
+    });
+
+    test('(d) a symlink CYCLE terminates rather than recursing forever, and dedupes the real file', { skip }, (t) => {
+      const root = createTempDir('gsd-plan-count-drift-root-');
+      t.after(() => cleanup(root));
+      const srcDir = path.join(root, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      fs.writeFileSync(path.join(srcDir, 'real.cts'), violatingLine());
+      fs.symlinkSync(srcDir, path.join(srcDir, 'loop'), 'dir');
+
+      const violations = drift.scanRepo(root);
+      assert.strictEqual(violations.filter((v) => v.file === path.join('src', 'real.cts')).length, 1);
+    });
+
+    test('(e) a BROKEN symlink is skipped without throwing', { skip }, (t) => {
+      const root = createTempDir('gsd-plan-count-drift-root-');
+      t.after(() => cleanup(root));
+      const srcDir = path.join(root, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      fs.symlinkSync(path.join(srcDir, '.does-not-exist.cts'), path.join(srcDir, 'broken.cts'));
+
+      assert.doesNotThrow(() => drift.scanRepo(root));
+      assert.strictEqual(drift.scanRepo(root).length, 0);
+    });
+
+    test('(f) two symlinks inside the root to the SAME real file yield ONE entry, not two', { skip }, (t) => {
+      const root = createTempDir('gsd-plan-count-drift-root-');
+      t.after(() => cleanup(root));
+      fs.mkdirSync(path.join(root, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(root, 'vendor'), { recursive: true });
+      const realFile = path.join(root, 'vendor', 'shared-target.cts');
+      fs.writeFileSync(realFile, violatingLine());
+      fs.symlinkSync(realFile, path.join(root, 'src', 'link1.cts'));
+      fs.symlinkSync(realFile, path.join(root, 'src', 'link2.cts'));
+
+      const violations = drift.scanRepo(root);
+      assert.strictEqual(violations.length, 1);
+      assert.strictEqual(violations[0].file, path.join('vendor', 'shared-target.cts'));
+    });
+  });
+});
+
+// Direct coverage of isInsideRoot — a reviewer mutating its body to a bare
+// `realPath.startsWith(realRoot)` left every existing test above still
+// passing, because none of those temp fixtures ever produce a SIBLING
+// directory sharing the root's name as a strict prefix. This describe closes
+// that gap so the mutant is actually killed (relevant to the repo's 80%
+// Stryker mutation gate).
+describe('isInsideRoot', () => {
+  test('the root itself is inside', () => {
+    const root = path.join(path.sep, 'tmp', 'repo');
+    assert.strictEqual(drift.isInsideRoot(root, root), true);
+  });
+
+  test('a child path is inside', () => {
+    const root = path.join(path.sep, 'tmp', 'repo');
+    const child = path.join(root, 'src', 'file.cts');
+    assert.strictEqual(drift.isInsideRoot(child, root), true);
+  });
+
+  test('a SIBLING whose name is the root plus a suffix is NOT inside', () => {
+    // This is the case that kills the `startsWith(realRoot)` mutant: a bare
+    // prefix check wrongly admits `/tmp/repo-evil/x.cts` as "inside"
+    // `/tmp/repo`, because the string "/tmp/repo-evil/x.cts" does start with
+    // the string "/tmp/repo". The real implementation requires an exact
+    // match or a root+separator prefix, so this must be rejected.
+    const root = path.join(path.sep, 'tmp', 'repo');
+    const sibling = path.join(path.sep, 'tmp', 'repo-evil', 'x.cts');
+    assert.strictEqual(drift.isInsideRoot(sibling, root), false);
+  });
+
+  test('a parent path is not inside', () => {
+    const root = path.join(path.sep, 'tmp', 'repo', 'src');
+    const parent = path.join(path.sep, 'tmp', 'repo');
+    assert.strictEqual(drift.isInsideRoot(parent, root), false);
+  });
+
+  test('an unrelated absolute path is not inside', () => {
+    const root = path.join(path.sep, 'tmp', 'repo');
+    const unrelated = path.join(path.sep, 'var', 'other', 'x.cts');
+    assert.strictEqual(drift.isInsideRoot(unrelated, root), false);
+  });
+});
+
+// Direct coverage of sanitizeForReport — both a matched `found` fragment and
+// a reported file path are attacker-controlled source text on a fork PR, and
+// both are written straight to a CI log; this asserts the escaping contract
+// documented at the function's definition (C0/C1 control bytes plus the
+// listed bidi/line-separator/zero-width codepoints), and that ordinary
+// printable text — including the regex-literal punctuation this module
+// itself tokenizes — passes through completely unchanged.
+describe('sanitizeForReport', () => {
+  test('escapes a C0 control byte (ESC 0x1b)', () => {
+    assert.strictEqual(drift.sanitizeForReport(String.fromCharCode(0x1b)), '\\x1b');
+  });
+
+  test('escapes DEL (0x7f)', () => {
+    assert.strictEqual(drift.sanitizeForReport(String.fromCharCode(0x7f)), '\\x7f');
+  });
+
+  test('escapes a C1 byte (0x9b)', () => {
+    assert.strictEqual(drift.sanitizeForReport(String.fromCharCode(0x9b)), '\\x9b');
+  });
+
+  test('escapes ZERO WIDTH SPACE (U+200B)', () => {
+    assert.strictEqual(drift.sanitizeForReport('\u200B'), '\\u200b');
+  });
+
+  test('escapes LINE SEPARATOR (U+2028)', () => {
+    assert.strictEqual(drift.sanitizeForReport('\u2028'), '\\u2028');
+  });
+
+  test('escapes PARAGRAPH SEPARATOR (U+2029)', () => {
+    assert.strictEqual(drift.sanitizeForReport('\u2029'), '\\u2029');
+  });
+
+  test('escapes RIGHT-TO-LEFT OVERRIDE (U+202E)', () => {
+    assert.strictEqual(drift.sanitizeForReport('\u202E'), '\\u202e');
+  });
+
+  test('ordinary printable text, including regex-literal punctuation, is unchanged', () => {
+    const text = String.raw`/-PLAN\.md$/i names.filter([].$^*+ )`;
+    assert.strictEqual(drift.sanitizeForReport(text), text);
   });
 });
