@@ -1391,7 +1391,10 @@ const EXPECTED_AGENTS = listAgentFiles().length;
 const { PROBE_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function runCopilotInstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode([INSTALL_PATH, '--copilot', '--local', '--no-sdk'], {
     cwd,
@@ -1403,7 +1406,10 @@ function runCopilotInstall(cwd) {
 }
 
 function runCopilotUninstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode([INSTALL_PATH, '--copilot', '--local', '--uninstall', '--no-sdk'], {
     cwd,
@@ -1702,7 +1708,10 @@ describe('E2E: Copilot uninstall verification', () => {
 // ─── E2E: Copilot global scope (#786) ──────────────────────────────────────────
 
 function runCopilotInstallGlobal(cwd, configDir) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode(
     [INSTALL_PATH, '--copilot', '--global', '--config-dir', configDir, '--no-sdk'],
@@ -1713,7 +1722,10 @@ function runCopilotInstallGlobal(cwd, configDir) {
 }
 
 function runCopilotUninstallGlobal(cwd, configDir) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode(
     [INSTALL_PATH, '--copilot', '--global', '--config-dir', configDir, '--uninstall', '--no-sdk'],
@@ -1763,7 +1775,10 @@ describe('E2E: Copilot global install (#786)', () => {
 // ─── Claude uninstall: user file preservation (#1423) ─────────────────────────
 
 function runClaudeInstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,
@@ -1775,7 +1790,10 @@ function runClaudeInstall(cwd) {
 }
 
 function runClaudeUninstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode([INSTALL_PATH, '--claude', '--local', '--uninstall', '--no-sdk'], {
     cwd,

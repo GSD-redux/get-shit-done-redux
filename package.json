@@ -23,6 +23,10 @@
     "scripts",
     "!scripts/gen-emitted-baseline.cjs",
     "!scripts/qa-smell-ratchet.cjs",
+    "!scripts/live-config-guard.cjs",
+    "!scripts/run-tests.cjs",
+    "!scripts/affected-tests-lib.cjs",
+    "!scripts/run-affected-tests.cjs",
     "pi",
     "vscode"
   ],

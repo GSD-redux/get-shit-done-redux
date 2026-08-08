@@ -389,6 +389,9 @@ test('installer copies plugin as .js, records it in the manifest, and removes it
   const run = (args) => {
     const result = runNode([installer, '--opencode', '--global', '--config-dir', cfg, ...args], {
       timeoutMs: 120000,
+      // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+      // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+      env: require('./helpers.cjs').installSpawnEnv(),
     });
     result.status = result.exitCode;
     return result;

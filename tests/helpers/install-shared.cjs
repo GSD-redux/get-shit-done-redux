@@ -520,7 +520,15 @@ function simulateHookCopy(hooksSrc, hooksDest) {
 /** Build a clean env for spawned installer processes.
  *  Must strip GSD_TEST_MODE so the child runs the real install, not the no-op guard. */
 function installerEnv(overrides = {}) {
-  const env = { ...process.env, ...overrides };
+  // #3156: delegate to the ONE canonical raw-installer-spawn env rather than
+  // carrying a second shape of it. The installer writes GSD's own user store to
+  // <home>/.gsd/defaults.json through os.homedir() DIRECTLY
+  // (bin/install.js writeNonClaudeDefaults, #2834), which reads no GSD variable,
+  // so no config-location scrub can reach it — only a sandboxed HOME can. Every
+  // caller that already passes an explicit { HOME, USERPROFILE } still wins:
+  // overrides spread last.
+  const { installSpawnEnv } = require('../helpers.cjs');
+  const env = installSpawnEnv(overrides);
   delete env.GSD_TEST_MODE;
   return env;
 }
