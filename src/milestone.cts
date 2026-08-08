@@ -26,7 +26,7 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { escapeRegex, normalizePhaseName, phaseTokenMatches, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const {
@@ -44,6 +44,9 @@ const { extractOneLinerFromBody, countMatchedSummaries } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
+import phaseLocatorMod = require('./phase-locator.cjs');
+const { listMilestonePhaseDirs } = phaseLocatorMod;
 const { planningPaths } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
 const { writeStateMd } = stateMod;
@@ -653,8 +656,8 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
         // milestone completion. Mirrors the engine-wide sentinel convention
         // (phase-id getMilestoneFromPhaseId, roadmap-command-router SENTINELS,
         // the #1445 /^999/ progress filters). (#1580)
-        const major = parseInt(phaseNum, 10);
-        if (major === 0 || major === 999) continue;
+        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this local check already covered both 0 and 999; now delegates to the single canonical owner.
+        if (isSentinelPhaseId(phaseNum)) continue;
         const normalized = normalizePhaseName(phaseNum);
         // A phase has disk_status: 'no_directory' when no phase directory
         // with a matching token exists on disk. Use the same phaseTokenMatches
@@ -686,15 +689,14 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   const accomplishments: string[] = [];
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort();
+    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+    // CURRENT milestone" — routed through the canonical owner (with the
+    // explicit `version` this command already resolved) instead of a
+    // hand-rolled readdirSync + isDirInMilestone filter, which also never
+    // excluded sentinels, unlike the owner.
+    const dirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
 
     for (const dir of dirs) {
-      if (!isDirInMilestone(dir)) continue;
-
       phaseCount++;
       // #3183: canonical plan/summary sets (root+nested, superseded-excluded)
       // from the single owner, rather than a root-only hand-rolled readdirSync
@@ -745,14 +747,10 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   if (options.dryRun) {
     const phaseDirsToArchive: string[] = [];
     if (options.archivePhases !== false) {
-      try {
-        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-        for (const e of entries) {
-          if (e.isDirectory() && isDirInMilestone(e.name)) {
-            phaseDirsToArchive.push(e.name);
-          }
-        }
-      } catch { /* phasesDir missing — nothing to archive */ }
+      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats loop
+      // above — the dry-run preview must list exactly what the real archive
+      // pass below would move.
+      phaseDirsToArchive.push(...listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value);
     }
     const dryRunResult = {
       dry_run: true,
@@ -876,10 +874,12 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       const phaseArchiveDir = path.join(archiveDir, `${version}-phases`);
       platformEnsureDir(phaseArchiveDir);
 
-      const phaseEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const phaseDirNames = phaseEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats
+      // loop above — only the CURRENT milestone's phase directories move,
+      // never a sentinel or an out-of-window directory left for a later
+      // milestone.
+      const phaseDirNames = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
       for (const dir of phaseDirNames) {
-        if (!isDirInMilestone(dir)) continue;
         retryRenameSync(path.join(phasesDir, dir), path.join(phaseArchiveDir, dir));
         archivedCount++;
       }
@@ -949,7 +949,13 @@ function cmdPhasesClear(cwd: string, raw: boolean, args: string[]): void {
 
   if (fs.existsSync(phasesDir)) {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries.filter((e) => e.isDirectory() && !/^999(?:\.|$)/.test(e.name));
+    // #3185 (ADR-3180 Decision 1): this carried the FIFTH copy of the
+    // sentinel rule and its THIRD regex variant — `/^999(?:\.|$)/` — which
+    // excluded 999 but NOT 0. Because this is the DESTRUCTIVE path, that
+    // divergence meant a `0-*` directory `roadmap analyze` preserves as a
+    // sentinel was DELETED here. Routed through the canonical predicate so
+    // every reader of "is this a sentinel phase" agrees by construction.
+    const dirs = entries.filter((e) => e.isDirectory() && !isSentinelPhaseId(e.name));
 
     if (dirs.length > 0 && !confirm) {
       error(
@@ -1041,7 +1047,13 @@ function archivePhaseDirectories(cwd: string, phasesDir: string, dirs: ReadonlyA
   let archiveVersion: string | null = safeOverride;
   if (!archiveVersion) {
     try {
-      const liveVersion = getMilestoneInfo(cwd).version ?? null;
+      // #3216 (ADR-3180 §7.2 Decision): getMilestoneInfo's version becomes a
+      // DIRECTORY NAME below — only a COMPLETE scope's identity is trustworthy
+      // enough to act on destructively. On any other scope, treat the version
+      // as unavailable so control falls through to the dated-label fallback,
+      // same as an unreadable ROADMAP/STATE.
+      const info = getMilestoneInfo(cwd);
+      const liveVersion = info.scope === SCOPE.COMPLETE ? (info.value?.version ?? null) : null;
       // Defense in depth (#2288 security): getMilestoneInfo reads STATE.md's
       // `milestone:` field, which is unvalidated file content. Only accept it
       // as a path component if it is a safe version label; a crafted value

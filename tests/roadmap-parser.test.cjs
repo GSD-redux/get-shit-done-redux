@@ -23,6 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const roadmapParser = require('../gsd-core/bin/lib/roadmap-parser.cjs');
+const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const { createTempProject, cleanup, runGsdTools } = require('./helpers.cjs');
 
 const {
@@ -512,25 +513,26 @@ describe('roadmap-parser: getMilestoneInfo', () => {
   beforeEach(() => { tmpDir = createTempProject(); });
   afterEach(() => { cleanup(tmpDir); });
 
-  test('returns default when ROADMAP.md missing', () => {
+  test('returns UNREADABLE scope (value null) when ROADMAP.md missing (#3216: the v1.0/"milestone" default was deleted per ADR-3180 §7.2 rule 4)', () => {
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v1.0');
-    assert.strictEqual(info.name, 'milestone');
+    assert.deepStrictEqual(info, { value: null, scope: SCOPE.UNREADABLE });
   });
 
   test('reads version from STATE.md and heading name', () => {
     writeState(tmpDir, { milestone: 'v2.0' });
     writeRoadmap(tmpDir, '## v2.0: The Big Launch\n### Phase 1: Setup\n');
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v2.0');
-    assert.match(info.name, /Big Launch/);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v2.0');
+    assert.match(info.value.name, /Big Launch/);
   });
 
   test('falls back to 🚧 WIP marker when STATE.md has no milestone', () => {
     writeRoadmap(tmpDir, '## 🚧 **v1.5 Work In Progress**\n### Phase 1: Do stuff\n');
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v1.5');
-    assert.match(info.name, /Work In Progress/i);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v1.5');
+    assert.match(info.value.name, /Work In Progress/i);
   });
 
   test('extracts from heading when no STATE.md and no WIP marker', () => {
@@ -539,8 +541,9 @@ describe('roadmap-parser: getMilestoneInfo', () => {
       '### Phase 1: Not started',
     ].join('\n'));
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v3.0');
-    assert.match(info.name, /Future Milestone/);
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v3.0');
+    assert.match(info.value.name, /Future Milestone/);
   });
 
   test('skips completed ✅ milestones', () => {
@@ -550,7 +553,8 @@ describe('roadmap-parser: getMilestoneInfo', () => {
     ].join('\n'));
     const info = getMilestoneInfo(tmpDir);
     // Should not use the ✅-prefixed version as the current milestone
-    assert.strictEqual(info.version, 'v2.0');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v2.0');
   });
 });
 
@@ -580,8 +584,9 @@ describe('roadmap-parser: getMilestoneInfo #2135 — milestone_name clobber', ()
       '### Phase 36: Something',
     ].join('\n'));
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v1.8');
-    assert.strictEqual(info.name, 'user session cleanup');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v1.8');
+    assert.strictEqual(info.value.name, 'user session cleanup');
   });
 
   test('case B: nameless ## heading + 🚧 marker carries the real name', () => {
@@ -594,32 +599,36 @@ describe('roadmap-parser: getMilestoneInfo #2135 — milestone_name clobber', ()
       '### Phase 1: Hypothesis',
     ].join('\n'));
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v1.9');
-    assert.strictEqual(info.name, 'Falsifiability');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v1.9');
+    assert.strictEqual(info.value.name, 'Falsifiability');
   });
 
   test('case C: canonical ## vX.Y: Name (no regression)', () => {
     writeState(tmpDir, { gsd_state_version: '1.0', milestone: 'v2.0' });
     writeRoadmap(tmpDir, '## v2.0: The Big Launch\n### Phase 1: Setup\n');
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v2.0');
-    assert.strictEqual(info.name, 'The Big Launch');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v2.0');
+    assert.strictEqual(info.value.name, 'The Big Launch');
   });
 
   test('case D: canonical ## vX.Y — Name (em-dash delimiter stripped)', () => {
     writeState(tmpDir, { gsd_state_version: '1.0', milestone: 'v2.5' });
     writeRoadmap(tmpDir, '## v2.5 — Galaxy Release\n### Phase 1: Start\n');
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v2.5');
-    assert.strictEqual(info.name, 'Galaxy Release');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v2.5');
+    assert.strictEqual(info.value.name, 'Galaxy Release');
   });
 
   test('case E: 🚧 bullet only, no ## heading (no regression)', () => {
     writeState(tmpDir, { gsd_state_version: '1.0', milestone: 'v1.5' });
     writeRoadmap(tmpDir, 'Some intro text.\n\n- 🚧 **v1.5 Quick Fix** — minor\n');
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.version, 'v1.5');
-    assert.strictEqual(info.name, 'Quick Fix');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.version, 'v1.5');
+    assert.strictEqual(info.value.name, 'Quick Fix');
   });
 
   test('anchored regex never matches a ## heading quoted inside backticks mid-line', () => {
@@ -632,7 +641,8 @@ describe('roadmap-parser: getMilestoneInfo #2135 — milestone_name clobber', ()
       '## v3.0: Real Name',
     ].join('\n'));
     const info = getMilestoneInfo(tmpDir);
-    assert.strictEqual(info.name, 'Real Name');
+    assert.strictEqual(info.scope, SCOPE.COMPLETE);
+    assert.strictEqual(info.value.name, 'Real Name');
   });
 });
 
@@ -2726,10 +2736,12 @@ describe('feat-3594: roadmap parser does not crash on ANY corpus fixture', () =>
 // ─── #1881: an unreadable ROADMAP is not an absent one ───────────────────────
 //
 // getRoadmapPhaseInternal returns null for a read failure exactly as it does for
-// "phase not found", and getMilestoneInfo returns {v1.0, milestone} — which reads
-// as a brand-new project — for a read failure exactly as it does for "no ROADMAP
-// yet". Per ADR-1411's "corrupt is not absent" amendment both return values are
-// preserved and the cause is surfaced out of band instead.
+// "phase not found", and getMilestoneInfo (#3216: now {value, scope}) returns
+// {value:null, scope:SCOPE.UNREADABLE} for a read failure exactly as it does for
+// "no ROADMAP yet" — the shared return shape stays sentinel-identical between the
+// two causes; only the out-of-band diagnostic distinguishes them. Per ADR-1411's
+// "corrupt is not absent" amendment both return values are preserved and the
+// cause is surfaced out of band instead.
 //
 // The discriminator is the errno, and it is load-bearing in the silent direction:
 // getMilestoneInfo has no existsSync guard, so platformReadSync's null-for-ENOENT
@@ -2822,7 +2834,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     const dir = project(t, HEALTHY);
     let info;
     const emitted = emissionsDuring(() => { info = getMilestoneInfo(dir); });
-    assert.deepStrictEqual(info, { version: 'v2.3', name: 'Alpha' });
+    assert.deepStrictEqual(info, { value: { version: 'v2.3', name: 'Alpha' }, scope: SCOPE.COMPLETE });
     assert.strictEqual(emitted, 0);
   });
 
@@ -2836,14 +2848,14 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     assert.strictEqual(emitted, 1);
   });
 
-  test('an unreadable roadmap is reported on a milestone lookup, and still returns the default', (t) => {
+  test('an unreadable roadmap is reported on a milestone lookup, and returns {value:null, scope:UNREADABLE} (#3216: the plausible-looking v1.0 default was deleted)', (t) => {
     _resetUnusableInputWarningsForTests();
     const dir = project(t, HEALTHY);
     failReads(t, (p) => p.endsWith('ROADMAP.md'), eacces());
     let info;
     const emitted = emissionsDuring(() => { info = getMilestoneInfo(dir); });
-    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' },
-      'the plausible-looking default must be preserved exactly');
+    assert.deepStrictEqual(info, { value: null, scope: SCOPE.UNREADABLE },
+      'a read fault must surface as UNREADABLE, never a fabricated version/name');
     assert.strictEqual(emitted, 1);
   });
 
@@ -2857,7 +2869,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
       info = getMilestoneInfo(dir);
     });
     assert.strictEqual(phase, null);
-    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+    assert.deepStrictEqual(info, { value: null, scope: SCOPE.UNREADABLE });
     assert.strictEqual(emitted, 0, 'a missing ROADMAP.md must never be reported as unreadable');
   });
 
@@ -2883,7 +2895,8 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     });
     assert.strictEqual(phase, null);
     assert.strictEqual(emitted, 0);
-    assert.ok(info, 'still returns a milestone default');
+    assert.deepStrictEqual(info, { value: null, scope: SCOPE.UNSCOPED },
+      'no version token anywhere reachable — UNSCOPED, not a fabricated version');
   });
 
   test('an unreadable STATE.md alone stays silent — the inner catch is deliberate', (t) => {
@@ -2897,7 +2910,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     failReads(t, (p) => p.endsWith('STATE.md'), eacces());
     let info;
     const emitted = emissionsDuring(() => { info = getMilestoneInfo(dir); });
-    assert.deepStrictEqual(info, { version: 'v2.3', name: 'Alpha' });
+    assert.deepStrictEqual(info, { value: { version: 'v2.3', name: 'Alpha' }, scope: SCOPE.COMPLETE });
     assert.strictEqual(emitted, 0);
   });
 
@@ -2980,7 +2993,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
     emissionsDuring(() => {
       assert.doesNotThrow(() => { info = getMilestoneInfo(dir); });
     });
-    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+    assert.deepStrictEqual(info, { value: null, scope: SCOPE.UNREADABLE });
   });
 
   test('getRoadmapPhaseInternal does not throw when the read fails', (t) => {
@@ -3014,7 +3027,7 @@ describe('#1881 unreadable ROADMAP vs absent ROADMAP', () => {
       assert.doesNotThrow(() => { info = getMilestoneInfo(dir); });
       assert.doesNotThrow(() => { phase = getRoadmapPhaseInternal(dir, '1'); });
     });
-    assert.deepStrictEqual(info, { version: 'v1.0', name: 'milestone' });
+    assert.deepStrictEqual(info, { value: null, scope: SCOPE.UNREADABLE });
     assert.strictEqual(phase, null);
     assert.strictEqual(emitted, 0,
       'the path never resolved, so there is no file to name');

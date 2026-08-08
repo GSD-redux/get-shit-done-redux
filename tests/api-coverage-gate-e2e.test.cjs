@@ -20,7 +20,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
 const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 // In-process seam for the fail-closed read-injection tests at the bottom of this
 // file (#2365 review): readPhaseScope is the pure phase-scope reader behind the
@@ -28,23 +28,6 @@ const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const { readPhaseScope } = require('../gsd-core/bin/lib/check-command-router.cjs');
 
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
-
-const TEST_ENV_BASE = {
-  GSD_SESSION_KEY: '',
-  CODEX_THREAD_ID: '',
-  CLAUDE_SESSION_ID: '',
-  CLAUDE_CODE_SSE_PORT: '',
-  OPENCODE_SESSION_ID: '',
-  GEMINI_SESSION_ID: '',
-  CURSOR_SESSION_ID: '',
-  WINDSURF_SESSION_ID: '',
-  TERM_SESSION: '',
-  WT_SESSION: '',
-  TMUX_PANE: '',
-  ZELLIJ_SESSION_NAME: '',
-  TTY: '',
-  SSH_TTY: '',
-};
 
 function runTools(args, cwd) {
   const argv = Array.isArray(args)
