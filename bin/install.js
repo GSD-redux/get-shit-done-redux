@@ -361,6 +361,21 @@ const GSD_HOOK_LIB_FILES = ['git-cmd.js', 'gsd-graphify-rebuild.sh', 'cursor-wor
  */
 const SHARED_HOOKS_DIR_DEFAULT = 'hooks';
 
+// #3184 — GSD-managed file enumerations for scripts/changeset/ and scripts/lib/
+// uninstall. The install-side copy of both directories is wholesale ("copy every
+// file present"), so these enumerations MUST be kept in parity with the real
+// directory contents or an added file ships on install and then orphans on
+// uninstall (survives removal, keeps the dir non-empty, blocks its rmdir).
+// Hoisted to module scope (and exported below) so tests/install.test.cjs can
+// assert parity against fs.readdirSync(scripts/lib) / fs.readdirSync(scripts/changeset)
+// without source-grepping this file.
+const GSD_CHANGESET_FILES = [
+  'cli.cjs', 'parse.cjs', 'render.cjs', 'serialize.cjs',
+  'github-release-notes.cjs', 'lint.cjs', 'new.cjs',
+  'README.md', // documentation only — not user-authored
+];
+const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs', 'drift-scan.cjs'];
+
 /**
  * Resolve a runtime's shared-hooks directory name from its descriptor.
  *
@@ -8642,13 +8657,8 @@ function uninstall(isGlobal, runtime = DEFAULT_RUNTIME) {
   // Any file NOT in this set is user-owned and must survive uninstall.
   // After removing GSD files, attempt to rmdir — if the directory is still
   // non-empty (user has custom helpers) it stays; otherwise it goes cleanly.
-  const GSD_CHANGESET_FILES = [
-    'cli.cjs', 'parse.cjs', 'render.cjs', 'serialize.cjs',
-    'github-release-notes.cjs', 'lint.cjs', 'new.cjs',
-    'README.md', // documentation only — not user-authored
-  ];
-  const GSD_SCRIPTS_LIB_FILES = ['cli-exit.cjs', 'allowlist-ratchet.cjs'];
-
+  // GSD_CHANGESET_FILES / GSD_SCRIPTS_LIB_FILES are module-scoped (#3184) so
+  // tests can assert their parity against the real directory contents.
   const changesetUninstallDir = path.join(targetDir, 'scripts', 'changeset');
   if (fs.existsSync(changesetUninstallDir)) {
     let removedChangeset = 0;
@@ -13482,6 +13492,10 @@ module.exports = {
     // #3023 — shared hook bundle directory name, descriptor-driven
     SHARED_HOOKS_DIR_DEFAULT,
     resolveSharedHooksDirName,
+    // #3184 — uninstall-side GSD-managed file enumerations, exported for
+    // parity assertions against the wholesale-copy source directories
+    GSD_CHANGESET_FILES,
+    GSD_SCRIPTS_LIB_FILES,
     convertSlashCommandsToCodexSkillMentions,
     convertClaudeCommandToCodexSkill,
     convertClaudeCommandToKimiSkill,

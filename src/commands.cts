@@ -48,6 +48,9 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -421,7 +424,14 @@ function cmdHistoryDigest(cwd: string, raw: boolean): void {
 
   try {
     for (const { name: dir, fullPath: dirPath } of allPhaseDirs) {
-      const summaries = fs.readdirSync(dirPath).filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
+      // #3183: canonical summary set (root+nested) from the single owner.
+      // This call also opens every plan file's frontmatter to check
+      // superseded status even though cmdHistoryDigest never uses planFiles
+      // or the superseded distinction — that per-phase-dir cost is accepted
+      // deliberately (correctness/single-ownership over micro-optimization;
+      // summaryFiles itself is not superseded-filtered either way). Do not
+      // "optimize" this back into a second hand-rolled summary derivation.
+      const summaries = scanPhasePlans(dirPath).summaryFiles;
 
       for (const summary of summaries) {
         const summaryFilePath = path.join(dirPath, summary);
@@ -1564,9 +1574,11 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
       const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
       const phaseNum = dm ? dm[1] : dir;
       const phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-      const summaries = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+      // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
+      // canonical pairing) from the single owner.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const plans = phaseScan.planCount;
+      const summaries = phaseScan.summaryCount;
 
       totalPlans += plans;
       totalSummaries += summaries;
@@ -1675,7 +1687,9 @@ function cmdTodoMatchPhase(cwd: string, phase: string | undefined, raw: boolean)
   if (phaseInfoDisk && phaseInfoDisk['found']) {
     try {
       const phaseDir = path.join(cwd, phaseInfoDisk['directory'] as string);
-      const planFiles = fs.readdirSync(phaseDir).filter(f => f.endsWith('-PLAN.md'));
+      // #3183: canonical plan set (root+nested, superseded-excluded) from the
+      // single owner, rather than a root-only hand-rolled readdirSync filter.
+      const planFiles = scanPhasePlans(phaseDir).planFiles;
       for (const pf of planFiles) {
         const planContent = platformReadSync(path.join(phaseDir, pf));
         if (planContent === null) continue;
@@ -1891,9 +1905,11 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
       // phaseName is everything after the token (strip leading '-')
       const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
       const phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-      const summaries = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+      // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
+      // canonical pairing) from the single owner.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const plans = phaseScan.planCount;
+      const summaries = phaseScan.summaryCount;
 
       totalPlans += plans;
       totalSummaries += summaries;

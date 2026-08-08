@@ -160,6 +160,7 @@ export default tseslint.config(
       'gsd-core/bin/lib/worktree-safety.cjs',
       'gsd-core/bin/lib/worktree-base-ref.cjs',
       'gsd-core/bin/lib/planning-workspace.cjs',
+      'gsd-core/bin/lib/planning-scope.cjs',
       'gsd-core/bin/lib/command-roster.cjs',
       'gsd-core/bin/lib/runtime-artifact-conversion.cjs',
       'gsd-core/bin/lib/runtime-artifact-install-plan.cjs',

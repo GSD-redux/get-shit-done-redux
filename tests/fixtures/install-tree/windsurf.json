@@ -385,5 +385,6 @@
   "scripts/gen-capability-registry.cjs",
   "scripts/gen-loop-host-contract.cjs",
   "scripts/lib/allowlist-ratchet.cjs",
-  "scripts/lib/cli-exit.cjs"
+  "scripts/lib/cli-exit.cjs",
+  "scripts/lib/drift-scan.cjs"
 ]
