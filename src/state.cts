@@ -3187,22 +3187,18 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
     try {
       const phasesDir = path.join(planningPaths(cwd).planning, 'phases');
       if (!fs.existsSync(phasesDir) || !fs.statSync(phasesDir).isDirectory()) return { ok: true, phases: [] };
-      // #3185 (ADR-3180 Decision 1): route the ENUMERATION through the single
-      // owner. This previously read the phases directory directly with its own
-      // `/^(\d+)-(.+)$/` convention regex, no milestone window and no sentinel
-      // filter, so a rebuilt STATE.md inventory carried 999.* backlog and
-      // Phase 0 directories as if they were current-milestone phases. A
-      // non-COMPLETE scope is not a trustworthy inventory — throw so it
-      // surfaces via the outer catch as a real scan failure (ok:false),
-      // mirroring the per-phase scanPhasePlans contract just below rather than
-      // silently reporting an undercount.
-      const enumerated = listMilestonePhaseDirs(phasesDir, { cwd });
-      if (enumerated.scope !== SCOPE.COMPLETE) {
-        throw new Error(`could not fully enumerate phase directories (scope ${enumerated.scope}): ${phasesDir}`);
-      }
+      // #3185: deliberately NOT listMilestonePhaseDirs. `state rebuild` is a
+      // RECONCILIATION pass against ground truth -- it must see every phase
+      // directory on disk so an orphan STATE.md row for a phase that no longer
+      // exists (or sits outside the current window) is dropped. Scoping this
+      // would make the rebuild silently preserve stale rows.
+      const entries = fs.readdirSync(phasesDir);
       const records: PhaseInventoryRecord[] = [];
-      for (const entry of enumerated.value) {
+      for (const entry of entries) {
         const full = path.join(phasesDir, entry);
+        let stat: fs.Stats;
+        try { stat = fs.statSync(full); } catch { continue; }
+        if (!stat.isDirectory()) continue;
         // Directory-name convention: `<NN>-<slug>` (e.g. `03-test-phase`).
         const m = entry.match(/^(\d+)-(.+)$/);
         if (!m) continue;

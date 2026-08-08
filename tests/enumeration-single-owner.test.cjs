@@ -38,6 +38,7 @@ const {
   cleanup,
   runGsdTools,
 } = require('./helpers.cjs');
+const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 
 // ─── Fixture helpers ───────────────────────────────────────────────────────
 
@@ -316,4 +317,124 @@ test('pass-all degrade stays over-inclusive for NON-sentinel directories', (t) =
     numbers.length > 0,
     'an ordinary phase directory must still be listed under the pass-all degrade',
   );
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// `phases list` — ADR-3180 Decision 4(c): the identity assertion belongs at
+// EACH consumer's own observable output, not only at progress/stats.
+// ═════════════════════════════════════════════════════════════════════════
+
+test('phases list excludes a 999 backlog dir and a 0-sentinel dir, keeps the real one', (t) => {
+  const cwd = createTempProject('gsd-phase-enum-list-');
+  t.after(() => cleanup(cwd));
+
+  writeState(cwd, { milestone: 'v1.0' });
+  writeRoadmap(cwd, roadmapWithBacklog());
+  makePhaseDir(cwd, '01-foundation', { '01-PLAN.md': '# Plan\n' });
+  makePhaseDir(cwd, '999.1-icebox', { '01-PLAN.md': '# Plan\n' });
+  makePhaseDir(cwd, '0-prep', { '01-PLAN.md': '# Plan\n' });
+
+  const report = parseJson(runGsdTools('phases list', cwd), 'phases list');
+  const dirs = report.directories || [];
+
+  assert.ok(
+    !dirs.some((d) => d.startsWith('999')),
+    `999.* backlog directories must not appear in phases list; got ${JSON.stringify(dirs)}`,
+  );
+  assert.ok(
+    !dirs.some((d) => /^0(?:[-.]|$)/.test(d)),
+    `phase-0 sentinel directories must not appear in phases list; got ${JSON.stringify(dirs)}`,
+  );
+  assert.ok(
+    dirs.includes('01-foundation'),
+    `the real in-window phase directory must still be listed; got ${JSON.stringify(dirs)}`,
+  );
+});
+
+test('phases list --phase still finds an out-of-window phase (documented exemption)', (t) => {
+  const cwd = createTempProject('gsd-phase-enum-list-lookup-');
+  t.after(() => cleanup(cwd));
+
+  // v1.0 is current; phase 5 belongs to a different (later) milestone and is
+  // never mentioned in v1.0's window, so it is genuinely OUT-OF-WINDOW.
+  writeState(cwd, { milestone: 'v1.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v1.0 Current 🚧',
+    '',
+    '### Phase 1: Foundation',
+    '',
+    '## v2.0 Next',
+    '',
+    '### Phase 5: Later Work',
+    '',
+  ]);
+  makePhaseDir(cwd, '01-foundation', { '01-PLAN.md': '# Plan\n' });
+  makePhaseDir(cwd, '05-later-work', { '01-PLAN.md': '# Plan\n' });
+
+  const result = runGsdTools('phases list --phase 5', cwd);
+  const report = parseJson(result, 'phases list --phase 5');
+
+  assert.strictEqual(
+    report.error,
+    undefined,
+    `--phase lookup must find an out-of-window phase by design (ADR-3180 Decision 4a); got ${JSON.stringify(report)}`,
+  );
+  assert.deepStrictEqual(report.directories, ['05-later-work']);
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// `phase_scope` — epic #3180 Done-when #7: the enumeration path can fail
+// distinguishably. Mirrors the TRUNCATED fixture shape from
+// tests/milestone-window-single-owner.test.cjs's buildTruncatedFixture: an
+// ACTIVE milestone heading with no phase headings inside its own window,
+// followed by a later milestone heading whose section DOES carry phase
+// headings -- the window closes before the phase region.
+// ═════════════════════════════════════════════════════════════════════════
+
+function writeTruncatedRoadmap(cwd) {
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v3.0 In Progress 🚧',
+    '',
+    'Some preamble notes. No phase headings here.',
+    '',
+    '## v4.0 Next',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '### Phase 2: Bar',
+    '',
+  ]);
+}
+
+test('progress json phase_scope is not complete when the milestone window is truncated', (t) => {
+  const cwd = createTempProject('gsd-phase-enum-scope-truncated-');
+  t.after(() => cleanup(cwd));
+
+  writeState(cwd, { milestone: 'v3.0' });
+  writeTruncatedRoadmap(cwd);
+  makePhaseDir(cwd, '1-foo', { '01-PLAN.md': '# Plan\n' });
+  makePhaseDir(cwd, '2-bar', { '01-PLAN.md': '# Plan\n' });
+
+  const report = parseJson(runGsdTools('progress json', cwd), 'progress json');
+  assert.notStrictEqual(
+    report.phase_scope,
+    SCOPE.COMPLETE,
+    `a truncated window must not report phase_scope: "complete"; got ${JSON.stringify(report.phase_scope)}`,
+  );
+});
+
+test('progress json phase_scope is complete for a healthy, in-window fixture', (t) => {
+  const cwd = createTempProject('gsd-phase-enum-scope-complete-');
+  t.after(() => cleanup(cwd));
+
+  writeState(cwd, { milestone: 'v1.0' });
+  writeRoadmap(cwd, roadmapWithBacklog());
+  makePhaseDir(cwd, '01-foundation', { '01-PLAN.md': '# Plan\n' });
+
+  const report = parseJson(runGsdTools('progress json', cwd), 'progress json');
+  assert.strictEqual(report.phase_scope, SCOPE.COMPLETE);
 });

@@ -199,6 +199,32 @@ function findRegexLiteralMdMatch(line) {
 }
 
 /**
+ * Strip comment text from a line before detection. A guard that fires on a
+ * COMMENT — including a comment documenting that the code below uses the
+ * canonical owner, or prose quoting this guard's own detector shapes — reports
+ * prose as drift and trains readers to add exemptions for documentation.
+ * Handles the three shapes that appear in this codebase: a whole-line
+ * block-comment continuation (`*` or `/*` leading), a `//` line comment, and
+ * a trailing `//` after code. Mirrors `lint-phase-enumeration-drift.cjs`'s
+ * own copy (not shared — each guard applies it at a slightly different point
+ * in its detection pipeline).
+ *
+ * Deliberately simple and conservative: it does not attempt full block-comment
+ * state tracking across lines (this is a per-line scan, same tradeoff the
+ * sibling guards document). A `//` inside a string literal would be stripped
+ * early — accepted, because the effect is to UNDER-report on a pathological
+ * line, never to over-report prose as drift.
+ */
+function stripComments(line) {
+  const trimmed = line.trim();
+  // Whole-line block comment or JSDoc continuation.
+  if (trimmed.startsWith('*') || trimmed.startsWith('/*') || trimmed.startsWith('//')) return '';
+  // Trailing line comment after code.
+  const idx = line.indexOf('//');
+  return idx === -1 ? line : line.slice(0, idx);
+}
+
+/**
  * Pure: find every unsanctioned plan/summary-filter re-derivation in `text`.
  * `relPath` is the repo-relative path, used both to report file:line and to
  * apply the narrow, function-scoped core-utils.cts exemption.
@@ -214,9 +240,12 @@ function findPlanCountDrift(text, relPath) {
     const fnMatch = TOP_LEVEL_FUNCTION_RE.exec(line);
     if (fnMatch) currentFunction = fnMatch[1];
 
-    if (!FILENAME_TEST_RE.test(line)) continue;
-    const quoted = PLAN_SUMMARY_LITERAL_RE.exec(line);
-    const found = quoted ? quoted[0] : findRegexLiteralMdMatch(line);
+    const code = stripComments(line);
+    if (!code.trim()) continue;
+
+    if (!FILENAME_TEST_RE.test(code)) continue;
+    const quoted = PLAN_SUMMARY_LITERAL_RE.exec(code);
+    const found = quoted ? quoted[0] : findRegexLiteralMdMatch(code);
     if (!found) continue;
 
     if (exemptFunctions && exemptFunctions.has(currentFunction)) continue;
@@ -279,4 +308,5 @@ module.exports = {
   MAX_REGEX_LITERAL_LEN,
   isInsideRoot,
   sanitizeForReport,
+  stripComments,
 };

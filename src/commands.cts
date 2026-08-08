@@ -1565,6 +1565,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
   const phases: PhaseProgress[] = [];
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: string | null = null;
 
   try {
     // #3185 (ADR-3180 Decision 1): the single owner applies the milestone
@@ -1572,7 +1573,8 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     // comparePhaseNum. This command previously read the phases directory
     // directly with neither, which is why `query progress` listed 999.*
     // backlog directories as current-milestone phases (#3167).
-    const { value: dirs } = listMilestonePhaseDirs(phasesDir, { cwd });
+    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
 
     for (const dir of dirs) {
       const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
@@ -1623,6 +1625,9 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
       total_plans: totalPlans,
       total_summaries: totalSummaries,
       percent,
+      // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+      // can tell a genuinely-empty milestone from one it could not scope.
+      phase_scope: phaseScope,
     }, raw, undefined);
   }
 }
@@ -1871,6 +1876,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   }>();
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: string | null = null;
 
   try {
     const roadmapRaw = platformReadSync(roadmapPath);
@@ -1905,7 +1911,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     // sentinel filter — and getMilestonePhaseFilter degrades to a pass-all
     // predicate when its heading set is empty, at which point every directory
     // on disk passed, backlog included (#3167).
-    const { value: dirs } = listMilestonePhaseDirs(phasesDir, { cwd });
+    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
 
     for (const dir of dirs) {
       // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.
@@ -2000,6 +2007,9 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     git_commits: gitCommits,
     git_first_commit_date: gitFirstCommitDate,
     last_activity: lastActivity,
+    // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+    // can tell a genuinely-empty milestone from one it could not scope.
+    phase_scope: phaseScope,
   };
 
   if (format === 'table') {

@@ -394,6 +394,15 @@ narrowing is sentinel-only: pass-all still stands for every non-sentinel directo
 filter cannot place, so Decision 3's promise is narrowed minimally, not revoked (Decision 3 /
 Hyrum's Law).
 
+**#3161 is subsumed alongside #3167, as the Tier-2 table predicted.** #3161 ("aggregate percent
+reports 100 while plans are outstanding") shared the same upstream cause: `cmdStats`'s and
+`cmdProgressRender`'s `totalPlans`/`totalSummaries` accumulation now iterates the single owner's
+scoped, sentinel-filtered `dirs` set (`listMilestonePhaseDirs`'s `value`) instead of an unscoped
+`readdirSync` of the phases directory, so a `999.*`/`0-*` directory with its own already-summarized
+plans can no longer inflate `totalSummaries` (or `totalPlans`) against a milestone that has not
+actually finished — the same backlog-dir listing bug row 3 named, manifesting in the percent
+aggregate rather than the phase list.
+
 **Two destructive-path defects the sweep exposed.** `phases clear` carried the fifth sentinel copy
 and its third regex variant (`/^999(?:\.|$)/`) — it excluded `999` but not `0`, so a `0-*`
 pre-milestone directory was deleted (or, pre-#1871, hard-removed) on this irreversible path.

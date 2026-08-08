@@ -121,6 +121,14 @@
  *     `--include-archived` merge are phase LOCATION and archive
  *     enumeration, not current-milestone enumeration; both legitimately
  *     read the physical set. Its ENUMERATION path routes through the owner.
+ *   - `src/roadmap-parser.cts` `getMilestonePhaseFilter`: its two heading/
+ *     bullet scans that seed `milestonePhaseNums` deliberately use the local
+ *     `999`-only literal, NOT `isSentinelPhaseId`. That canonical predicate
+ *     additionally treats a leading `0` as sentinel milestone 0 (via its
+ *     `/^0*(\d+)/` backtrack), which would swallow #2554's decimal phase ids
+ *     ("00.1" is a real phase, not milestone 0). This scan asks a narrower
+ *     question — "which phase ids does this milestone's window declare" —
+ *     where only the 999 icebox range is excluded.
  *   - `src/state.cts` `cmdStateValidate` ("Gate 1: Validate STATE.md against
  *     filesystem"): resolves ONE directory — the disk match for STATE.md's
  *     own `Current Phase` field — by prefix, a single-phase LOOKUP, not an
@@ -135,6 +143,15 @@
  *     owner, scoped to the stored milestone, because it exists specifically
  *     to answer the milestone-scoped question at STATE.md construction
  *     time).
+ *   - `src/state.cts` `cmdStateRebuild`: its nested `phaseInventoryProvider`
+ *     deliberately does NOT route through `listMilestonePhaseDirs`. `state
+ *     rebuild` is a RECONCILIATION pass against ground truth — it must see
+ *     every phase directory on disk so an orphan STATE.md row for a phase
+ *     that no longer exists (or sits outside the current milestone window) is
+ *     dropped. Scoping this enumeration would make the rebuild silently
+ *     preserve stale rows instead of dropping them, and a non-`readdirSync`-
+ *     shaped owner call also cannot propagate the original fault message the
+ *     #3057 B1 contract requires to surface verbatim.
  *   - `src/phase.cts` `cmdPhaseNextDecimal`: computes the next free decimal
  *     sub-phase id (e.g. `2.3`) by scanning EVERY on-disk directory and the
  *     WHOLE ROADMAP (not milestone-scoped) for existing `2.N` ids — an id
@@ -249,9 +266,10 @@ const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
   [path.join('src', 'audit.cts'), new Set(['scanUatGaps', 'scanVerificationGaps', 'scanContextQuestions', 'scanDeferredItems'])],
   [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
-  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync'])],
+  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync', 'cmdStateRebuild'])],
   [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
   [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
+  [path.join('src', 'roadmap-parser.cts'), new Set(['getMilestonePhaseFilter'])],
 ]);
 
 // Optional `export ` modifier, mirroring the sibling guards' function

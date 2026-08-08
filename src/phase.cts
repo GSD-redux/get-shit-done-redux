@@ -232,6 +232,11 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
       : [];
 
     let dirs: string[];
+    // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+    // can tell a genuinely-empty milestone from one it could not scope. Only
+    // the ENUMERATION path scopes anything; the LOOKUP path below has no
+    // enumeration to report a scope for.
+    let phaseScope: string | null = null;
     if (phase) {
       // LOOKUP (b): search the physical set, plus archived when asked.
       const lookupPool = [...readSubdirectories(phasesDir, true), ...archivedLabels];
@@ -245,7 +250,9 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
     } else {
       // ENUMERATION (a): milestone-scoped and sentinel-filtered, plus
       // archived when asked (c).
-      dirs = [...listMilestonePhaseDirs(phasesDir, { cwd }).value, ...archivedLabels];
+      const enumerated = listMilestonePhaseDirs(phasesDir, { cwd });
+      phaseScope = enumerated.scope;
+      dirs = [...enumerated.value, ...archivedLabels];
       dirs.sort((a, b) => comparePhaseNum(a, b));
     }
 
@@ -292,13 +299,18 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
         files,
         count: files.length,
         phase_dir: phase ? dirs[0].replace(/^\d+(?:\.\d+)*-?/, '') : null,
+        // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+        // can tell a genuinely-empty milestone from one it could not scope.
+        phase_scope: phaseScope,
       };
       if (warnings.length) result['warning'] = warnings.join(' | ');
       output(result, raw, files.join('\n'));
       return;
     }
 
-    output({ directories: dirs, count: dirs.length }, raw, dirs.join('\n'));
+    // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+    // can tell a genuinely-empty milestone from one it could not scope.
+    output({ directories: dirs, count: dirs.length, phase_scope: phaseScope }, raw, dirs.join('\n'));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     error('Failed to list phases: ' + msg);

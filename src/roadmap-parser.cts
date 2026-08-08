@@ -961,8 +961,12 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     for (const h of tokenizeHeadings(roadmap)) {
       if (h.level < 2 || h.level > 4) continue;
       const pm = phaseHeadingPattern.exec(h.text);
-      // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
-      if (pm && !isSentinelPhaseId(pm[1])) milestonePhaseNums.add(pm[1]);
+      // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
+      // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
+      // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
+      // narrower question -- "which phase ids does this milestone's window
+      // declare" -- where only the 999 icebox range is excluded.
+      if (pm && !/^999\b/.test(pm[1])) milestonePhaseNums.add(pm[1]);
     }
     // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
     // so a bullet-house-style ROADMAP populates the milestone phase set instead of
@@ -976,8 +980,12 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
       const roadmapUnfenced = stripFencedCode(roadmap).text;
       while ((bm = scanner.exec(roadmapUnfenced)) !== null) {
-        // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
-        if (!isSentinelPhaseId(bm[1])) milestonePhaseNums.add(bm[1]);
+        // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
+        // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
+        // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
+        // narrower question -- "which phase ids does this milestone's window
+        // declare" -- where only the 999 icebox range is excluded.
+        if (!/^999\b/.test(bm[1])) milestonePhaseNums.add(bm[1]);
       }
     }
   } catch {
