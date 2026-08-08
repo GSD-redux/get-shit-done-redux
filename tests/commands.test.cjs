@@ -8,11 +8,12 @@
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { execSync, execFileSync } = require('node:child_process');
 const fs = require('fs');
 const path = require('path');
 const { runGsdTools, createTempProject, createTempDir, cleanup } = require('./helpers.cjs');
 const fc = require('./helpers/fast-check-setup.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 describe('history-digest command', () => {
   let tmpDir;
@@ -1303,7 +1304,8 @@ describe('resolve-model command', () => {
 
 describe('commit command', () => {
   const { createTempGitProject } = require('./helpers.cjs');
-  const { execSync, execFileSync } = require('child_process');
+  const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+  const { runNode } = require('./helpers/process-seam.cjs');
   let tmpDir;
 
   beforeEach(() => {
@@ -1332,8 +1334,8 @@ describe('commit command', () => {
   test('skips when .planning is gitignored', () => {
     // Add .planning/ to .gitignore and commit it so git recognizes the ignore
     fs.writeFileSync(path.join(tmpDir, '.gitignore'), '.planning/\n');
-    execSync('git add .gitignore', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add gitignore"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.gitignore'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'add gitignore'], { cwd: tmpDir });
 
     const result = runGsdTools('commit "test message"', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -1366,7 +1368,7 @@ describe('commit command', () => {
     assert.strictEqual(output.reason, 'committed');
 
     // Verify via git log
-    const gitLog = execSync('git log --oneline -1', { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const gitLog = gitOrThrow(['log', '--oneline', '-1'], { cwd: tmpDir }).trim();
     assert.ok(gitLog.includes('test: add test file'), 'git log should contain the commit message');
     assert.ok(gitLog.includes(output.hash), 'git log should contain the returned hash');
   });
@@ -1374,8 +1376,8 @@ describe('commit command', () => {
   test('amend mode works without crashing', () => {
     // Create a file and commit it first
     fs.writeFileSync(path.join(tmpDir, '.planning', 'amend-file.md'), '# Initial\n');
-    execSync('git add .planning/amend-file.md', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "initial file"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/amend-file.md'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'initial file'], { cwd: tmpDir });
 
     // Modify the file and amend
     fs.writeFileSync(path.join(tmpDir, '.planning', 'amend-file.md'), '# Amended\n');
@@ -1387,7 +1389,7 @@ describe('commit command', () => {
     assert.strictEqual(output.committed, true, 'amend should succeed');
 
     // Verify only 2 commits total (initial setup + amended)
-    const logCount = execSync('git log --oneline', { cwd: tmpDir, encoding: 'utf-8' }).trim().split('\n').length;
+    const logCount = gitOrThrow(['log', '--oneline'], { cwd: tmpDir }).trim().split('\n').length;
     assert.strictEqual(logCount, 2, 'should have 2 commits (initial + amended)');
   });
   test('creates strategy branch before first commit when branching_strategy is milestone (#3079: no switch)', () => {
@@ -1416,11 +1418,10 @@ describe('commit command', () => {
     assert.strictEqual(output.committed, true, 'should have committed');
 
     // #3079: the branch should be CREATED but NOT switched to.
-    const { execFileSync } = require('child_process');
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.notStrictEqual(branch, 'gsd/v1.0-initial-release', '#3079: must NOT switch to the milestone branch');
     // Verify the branch WAS created (exists as a ref)
-    const branchExists = execFileSync('git', ['rev-parse', '--verify', 'gsd/v1.0-initial-release'], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/v1.0-initial-release'], { cwd: tmpDir });
     assert.ok(branchExists.trim(), 'milestone branch should be created even without switching');
   });
 
@@ -1456,11 +1457,10 @@ describe('commit command', () => {
     // #3079: the branch should be CREATED but NOT switched to. The commit
     // lands on the current branch (master/main), and the phase branch exists
     // as a ref but HEAD did not move.
-    const { execFileSync } = require('child_process');
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.notStrictEqual(branch, 'gsd/phase-01-setup', '#3079: must NOT switch to the phase branch');
     // Verify the branch WAS created (exists as a ref)
-    const branchExists = execFileSync('git', ['rev-parse', '--verify', 'gsd/phase-01-setup'], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/phase-01-setup'], { cwd: tmpDir });
     assert.ok(branchExists.trim(), 'phase branch should be created even without switching');
   });
 
@@ -1494,11 +1494,10 @@ describe('commit command', () => {
     assert.strictEqual(output.committed, true, 'should have committed');
 
     // #3079: verify branch is created but NOT switched to (decimal phase)
-    const { execFileSync } = require('child_process');
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.notStrictEqual(branch, 'gsd/phase-45.14-golden-capture', '#3079: must NOT switch to the phase branch');
     // Verify the correct branch name was resolved (not integer-only)
-    const branchExists = execFileSync('git', ['rev-parse', '--verify', 'gsd/phase-45.14-golden-capture'], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    const branchExists = gitOrThrow(['rev-parse', '--verify', 'gsd/phase-45.14-golden-capture'], { cwd: tmpDir });
     assert.ok(branchExists.trim(), 'decimal phase branch should be created (45.14, not 14)');
   });
 
@@ -1559,24 +1558,23 @@ describe('commit command', () => {
     // #3079: the commit no longer switches to the phase branch. The phase-07
     // branch should be CREATED (resolving correctly to 07, not the archived 02),
     // but the commit lands on the current branch.
-    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir, encoding: 'utf-8' }).trim();
+    const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.notStrictEqual(
       branch,
       'gsd/phase-02-archived-phase',
       `must NOT be on the archived phase-02 branch (got ${branch})`
     );
     // Verify the correct phase-07 branch was created (not the archived 02)
-    const phase07Exists = execFileSync(
-      'git', ['rev-parse', '--verify', 'gsd/phase-07-active-phase'],
-      { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    const phase07Exists = gitOrThrow(
+      ['rev-parse', '--verify', 'gsd/phase-07-active-phase'],
+      { cwd: tmpDir }
     );
     assert.ok(phase07Exists.trim(), 'phase-07 branch should be created (not the archived phase-02)');
 
     // The committed file must exist on HEAD, proving the commit landed.
-    const committedFile = execFileSync(
-      'git',
+    const committedFile = gitOrThrow(
       ['show', 'HEAD:.planning/phases/PROJECT_V2-07-active-phase/07-CONTEXT.md'],
-      { cwd: tmpDir, encoding: 'utf-8' }
+      { cwd: tmpDir }
     );
     assert.ok(committedFile.includes('# Context'), 'phase-07 file must be in the commit');
   });
@@ -1611,36 +1609,29 @@ describe('commit command', () => {
     // default branch so the working tree is NOT on the phase branch when commit
     // runs. The resolved branch already exists; the pre-fix code silently
     // switched onto it.
-    execFileSync('git', ['branch', 'gsd/phase-01-first-phase'], { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['branch', 'gsd/phase-01-first-phase'], { cwd: tmpDir });
     // Ensure the file is staged only by the commit command itself (it must run
     // from the current/default branch and must not be force-switched).
-    const beforeBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: tmpDir, encoding: 'utf-8',
-    }).trim();
+    const beforeBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
 
-    // Invoke gsd-tools via spawnSync so stderr is observable on the success
-    // path — the warning that proves the no-switch path is not silent (#2539
-    // AC2) is written to stderr, which execFileSync discards on success.
+    // Invoke gsd-tools via the process seam so stderr is observable on the
+    // success path — the warning that proves the no-switch path is not silent
+    // (#2539 AC2) is written to stderr, which execFileSync discards on success.
     const { TOOLS_PATH } = require('./helpers.cjs');
-    const { spawnSync } = require('child_process');
-    const proc = spawnSync(process.execPath, [
+    const proc = runNode([
       TOOLS_PATH, 'commit', 'docs(01): add context',
       '--files', '.planning/phases/01-first-phase/01-CONTEXT.md',
-    ], { cwd: tmpDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+    ], { cwd: tmpDir });
+    throwIfFailed(proc, 'gsd-tools commit (#2539 no-switch fixture)');
     const stdout = proc.stdout || '';
     const stderr = proc.stderr || '';
-    if (proc.status !== 0) {
-      throw new Error(`gsd-tools commit exited ${proc.status}: stdout=${stdout} stderr=${stderr}`);
-    }
 
     const output = JSON.parse(stdout.trim());
     assert.strictEqual(output.committed, true, 'should have committed');
 
     // The command must NOT have silently switched the working tree onto the
     // pre-existing phase branch. The commit lands on the branch we were on.
-    const afterBranch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
-      cwd: tmpDir, encoding: 'utf-8',
-    }).trim();
+    const afterBranch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: tmpDir }).trim();
     assert.strictEqual(
       afterBranch,
       beforeBranch,
@@ -2163,15 +2154,14 @@ describe('stats command', () => {
   });
 
   test('reports git commit count and first commit date from repository history', () => {
-    execSync('git init', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git config user.email "test@example.com"', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git config user.name "Test User"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['init'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: tmpDir });
+    gitOrThrow(['config', 'user.name', 'Test User'], { cwd: tmpDir });
 
     fs.writeFileSync(path.join(tmpDir, '.planning', 'PROJECT.md'), '# Project\n');
-    execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "initial commit"', {
+    gitOrThrow(['add', '-A'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'initial commit'], {
       cwd: tmpDir,
-      stdio: 'pipe',
       env: {
         ...process.env,
         GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z',
@@ -2180,10 +2170,9 @@ describe('stats command', () => {
     });
 
     fs.writeFileSync(path.join(tmpDir, 'README.md'), '# Updated\n');
-    execSync('git add README.md', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "second commit"', {
+    gitOrThrow(['add', 'README.md'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'second commit'], {
       cwd: tmpDir,
-      stdio: 'pipe',
       env: {
         ...process.env,
         GIT_AUTHOR_DATE: '2026-02-01T00:00:00Z',
@@ -2425,7 +2414,7 @@ describe('check-commit command', () => {
     );
     // Stage a non-planning file
     fs.writeFileSync(path.join(tmpDir, 'src.js'), 'console.log("hi")');
-    execSync('git add src.js', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', 'src.js'], { cwd: tmpDir });
 
     const result = runGsdTools('check-commit', tmpDir);
     assert.ok(result.success, `Command failed: ${result.error}`);
@@ -2439,7 +2428,7 @@ describe('check-commit command', () => {
       JSON.stringify({ commit_docs: false })
     );
     fs.writeFileSync(path.join(tmpDir, '.planning', 'STATE.md'), '# State');
-    execSync('git add .planning/STATE.md', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/STATE.md'], { cwd: tmpDir });
 
     const result = runGsdTools('check-commit', tmpDir);
     assert.ok(!result.success, 'should block commit');
@@ -2650,25 +2639,23 @@ describe('pr-subrepo', () => {
 
   function initPrSubrepo(dir) {
     fs.mkdirSync(dir, { recursive: true });
-    execFileSync('git', ['init'], { cwd: dir, stdio: 'pipe' });
-    execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir, stdio: 'pipe' });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['init'], { cwd: dir });
+    gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: dir });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd: dir });
     fs.writeFileSync(path.join(dir, '.gitkeep'), '');
     fs.writeFileSync(path.join(dir, 'feature.js'), '// initial\n');
     fs.writeFileSync(path.join(dir, 'a.js'), '// initial\n');
     fs.writeFileSync(path.join(dir, 'b.js'), '// initial\n');
-    execFileSync('git', ['add', '.gitkeep', 'feature.js', 'a.js', 'b.js'], { cwd: dir, stdio: 'pipe' });
-    execFileSync('git', ['commit', '-m', 'chore: initial commit'], { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['add', '.gitkeep', 'feature.js', 'a.js', 'b.js'], { cwd: dir });
+    gitOrThrow(['commit', '-m', 'chore: initial commit'], { cwd: dir });
   }
 
   function wirePrSubrepoRemote(repoDir, bareDir) {
     fs.mkdirSync(bareDir, { recursive: true });
-    execFileSync('git', ['init', '--bare'], { cwd: bareDir, stdio: 'pipe' });
-    execFileSync('git', ['remote', 'add', 'origin', bareDir], { cwd: repoDir, stdio: 'pipe' });
-    const branch = execFileSync('git', ['branch', '--show-current'], {
-      cwd: repoDir, encoding: 'utf8',
-    }).trim();
-    execFileSync('git', ['push', 'origin', branch], { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['init', '--bare'], { cwd: bareDir });
+    gitOrThrow(['remote', 'add', 'origin', bareDir], { cwd: repoDir });
+    const branch = gitOrThrow(['branch', '--show-current'], { cwd: repoDir }).trim();
+    gitOrThrow(['push', 'origin', branch], { cwd: repoDir });
   }
 
   describe('regressions (#666 — cmdPrSubrepo seam)', () => {
@@ -2827,13 +2814,13 @@ describe('pr-subrepo', () => {
       // Wire a bare remote with a pre-receive hook that rejects all pushes.
       const rejectingBare = path.join(rootDir, '_rejecting-bare.git');
       fs.mkdirSync(rejectingBare, { recursive: true });
-      execFileSync('git', ['init', '--bare'], { cwd: rejectingBare, stdio: 'pipe' });
+      gitOrThrow(['init', '--bare'], { cwd: rejectingBare });
       const hookPath = path.join(rejectingBare, 'hooks', 'pre-receive');
       fs.writeFileSync(hookPath, '#!/bin/sh\nexit 1\n');
       fs.chmodSync(hookPath, 0o755);
 
       // Point origin at the rejecting bare (overwrite the working one wired in beforeEach).
-      execFileSync('git', ['remote', 'set-url', 'origin', rejectingBare], { cwd: subDir, stdio: 'pipe' });
+      gitOrThrow(['remote', 'set-url', 'origin', rejectingBare], { cwd: subDir });
 
       fs.writeFileSync(path.join(subDir, 'feature.js'), 'IMPORTANT USER WORK\n');
 
@@ -2847,21 +2834,17 @@ describe('pr-subrepo', () => {
       assert.ok(!res.success, `Expected failure on rejected push, got success: ${res.output}`);
 
       // The local branch must still exist — work must not be lost.
-      const branches = execFileSync('git', ['branch', '--list', branch], {
-        cwd: subDir, encoding: 'utf8',
-      });
+      const branches = gitOrThrow(['branch', '--list', branch], { cwd: subDir });
       assert.ok(branches.trim().length > 0, `Branch ${branch} was deleted after push failure — user work lost`);
 
       // The commit on that branch must contain the user's changes.
-      const log = execFileSync('git', ['log', branch, '--oneline', '-1'], {
-        cwd: subDir, encoding: 'utf8',
-      });
+      const log = gitOrThrow(['log', branch, '--oneline', '-1'], { cwd: subDir });
       assert.ok(log.trim().length > 0, `No commit on ${branch} — staged work was lost`);
     });
 
     test('pr-subrepo porcelain: staged rename — both old and new paths in result.files', () => {
       // git mv produces "R  old -> new" in porcelain v1; both paths must be staged.
-      execFileSync('git', ['mv', 'feature.js', 'renamed-feature.js'], { cwd: subDir, stdio: 'pipe' });
+      gitOrThrow(['mv', 'feature.js', 'renamed-feature.js'], { cwd: subDir });
 
       const res = runGsdTools(
         ['query', 'pr-subrepo', 'fix(backend): rename',
@@ -2877,8 +2860,8 @@ describe('pr-subrepo', () => {
     test('pr-subrepo porcelain: non-ASCII filename (core.quotePath=false)', () => {
       // Without -c core.quotePath=false, "café.js" is C-escaped → slice(2) parse breaks.
       fs.writeFileSync(path.join(subDir, 'café.js'), '// initial\n');
-      execFileSync('git', ['add', 'café.js'], { cwd: subDir, stdio: 'pipe' });
-      execFileSync('git', ['commit', '-m', 'chore: add café.js'], { cwd: subDir, stdio: 'pipe' });
+      gitOrThrow(['add', 'café.js'], { cwd: subDir });
+      gitOrThrow(['commit', '-m', 'chore: add café.js'], { cwd: subDir });
       fs.writeFileSync(path.join(subDir, 'café.js'), 'updated\n');
 
       const res = runGsdTools(
@@ -2986,12 +2969,12 @@ describe('pr-subrepo', () => {
       // making the assertions vacuous. A tracked modification ensures that WITHOUT the
       // guard the repo WOULD be reported dirty, so the test genuinely fails-first.
       const initDirtyRepo = (dir, file) => {
-        execFileSync('git', ['init'], { cwd: dir, stdio: 'pipe' });
-        execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir, stdio: 'pipe' });
-        execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir, stdio: 'pipe' });
+        gitOrThrow(['init'], { cwd: dir });
+        gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: dir });
+        gitOrThrow(['config', 'user.name', 'Test'], { cwd: dir });
         fs.writeFileSync(path.join(dir, file), 'committed\n');
-        execFileSync('git', ['add', file], { cwd: dir, stdio: 'pipe' });
-        execFileSync('git', ['-c', 'commit.gpgsign=false', 'commit', '-m', 'init'], { cwd: dir, stdio: 'pipe' });
+        gitOrThrow(['add', file], { cwd: dir });
+        gitOrThrow(['-c', 'commit.gpgsign=false', 'commit', '-m', 'init'], { cwd: dir });
         fs.writeFileSync(path.join(dir, file), 'modified\n');
       };
 
@@ -3020,7 +3003,8 @@ describe('pr-subrepo', () => {
       const subReposJson = JSON.stringify(entries);
 
       try {
-        execFileSync('node', ['-e', script, subReposJson, scanRoot, dirtyFile], { stdio: 'pipe' });
+        const scanResult = runNode(['-e', script, subReposJson, scanRoot, dirtyFile]);
+        throwIfFailed(scanResult, 'node -e <dirty-scan script from pr-branch.md>');
         const dirty = fs.existsSync(dirtyFile) ? fs.readFileSync(dirtyFile, 'utf-8') : '';
         const lines = dirty.split('\n').filter(Boolean);
         assert.ok(
@@ -3453,18 +3437,23 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync } = require('node:child_process');
-
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
 
 const GSD_TOOLS = path.resolve(__dirname, '../gsd-core/bin/gsd-tools.cjs');
 
+// This is a DISTINCT, independently-scoped `runCli` — not the file's other
+// local helper of a similar shape (`runGsdTools` above, folded from
+// feat-3251, which already carries its own `timeout: 30000`). This one
+// returns the legacy `{status, stdout, stderr}` shape its callers below read
+// directly (never a throw contract), so it is bounded via `runNode` +
+// `toLegacyResult` rather than `gitOrThrow`/`throwIfFailed`.
 function runCli(args, env = {}) {
-  const result = spawnSync(process.execPath, [GSD_TOOLS, ...args], {
-    encoding: 'utf8',
+  const result = runNode([GSD_TOOLS, ...args], {
     env: { ...process.env, GSD_TEST_MODE: '1', ...env },
   });
-  return result;
+  return toLegacyResult(result);
 }
 
 function makeTmpDir(prefix) {

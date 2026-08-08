@@ -126,13 +126,18 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const HOOKS_DIR = path.join(__dirname, '..', 'hooks');
 const _CHECK_UPDATE_FILE = path.join(HOOKS_DIR, 'gsd-check-update.js');
 const WORKER_FILE = path.join(HOOKS_DIR, 'gsd-check-update-worker.js');
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS, BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const SH_HOOKS = [
   'gsd-phase-boundary.sh',
@@ -143,10 +148,10 @@ const SH_HOOKS = [
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  throwIfFailed(
+    runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+    `node ${BUILD_SCRIPT}`,
+  );
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -163,11 +168,13 @@ function cleanup(dir) {
 function runInstaller(configDir) {
   // --no-sdk: this test covers .sh hook version stamping only; skip SDK
   // build (covered by install-smoke.yml).
-  execFileSync(process.execPath, [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-    env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-  });
+  throwIfFailed(
+    runNode(
+      [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'],
+      { env: { ...process.env, CLAUDE_CONFIG_DIR: configDir }, timeoutMs: INSTALL_TIMEOUT_MS },
+    ),
+    `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`,
+  );
   return path.join(configDir, 'hooks');
 }
 
@@ -377,8 +384,9 @@ describe('bug #2136 part 4: installed .sh hooks contain stamped concrete version
       process.stdout.write(JSON.stringify(staleHooks));
     `;
 
-    const result = execFileSync(process.execPath, ['-e', checkScript], { encoding: 'utf8' });
-    const staleHooks = JSON.parse(result);
+    const probeResult = runNode(['-e', checkScript], { timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(probeResult, 'node -e <bug-2136 stale-hook probe script>');
+    const staleHooks = JSON.parse(probeResult.stdout);
 
     assert.deepStrictEqual(
       staleHooks,
@@ -428,23 +436,28 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const crypto = require('node:crypto');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS, BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const { HOOKS_TO_COPY } = require('../scripts/build-hooks.js');
 
 // ─── Ensure hooks/dist/ is populated before any install test ────────────────
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  throwIfFailed(
+    runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS }),
+    `node ${BUILD_SCRIPT}`,
+  );
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -469,11 +482,13 @@ function runInstaller(configDir) {
   // must not skip the main() gate or the install is a no-op.
   const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_SCRIPT, '--claude', '--global', '--yes'], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-    env,
-  });
+  throwIfFailed(
+    runNode(
+      [INSTALL_SCRIPT, '--claude', '--global', '--yes'],
+      { env, timeoutMs: INSTALL_TIMEOUT_MS },
+    ),
+    `node ${INSTALL_SCRIPT} --claude --global --yes`,
+  );
   return configDir;
 }
 
@@ -481,12 +496,12 @@ function runInstaller(configDir) {
  * Run detect-custom-files and return parsed JSON output.
  */
 function detectCustomFiles(configDir) {
-  const result = execFileSync(process.execPath, [TOOLS_PATH, 'detect-custom-files', '--config-dir', configDir], {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, GSD_SESSION_KEY: '' },
-  });
-  return JSON.parse(result.trim());
+  const result = runNode(
+    [TOOLS_PATH, 'detect-custom-files', '--config-dir', configDir],
+    { env: { ...process.env, GSD_SESSION_KEY: '' }, timeoutMs: PROBE_TIMEOUT_MS },
+  );
+  throwIfFailed(result, `node ${TOOLS_PATH} detect-custom-files --config-dir ${configDir}`);
+  return JSON.parse(result.stdout.trim());
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────

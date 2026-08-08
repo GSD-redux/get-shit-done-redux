@@ -1008,8 +1008,13 @@ describe('capability consent store (#1459)', () => {
     const capId = 'fifo-list-cap';
     const dir = path.join(cwd, '.gsd', 'capabilities', capId);
     fs.mkdirSync(dir, { recursive: true });
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [path.join(dir, 'capability.json')]);
+    const { runHook } = require('./helpers/process-seam.cjs');
+    const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+    const fifoPath = path.join(dir, 'capability.json');
+    throwIfFailed(
+      runHook(fifoPath, [], { interpreter: 'mkfifo', timeoutMs: 15000 }),
+      `mkfifo ${fifoPath}`,
+    );
     // A committed project ledger so the list iterates this entry (the FIFO is on the metadata-read path).
     fs.writeFileSync(path.join(cwd, '.gsd-capabilities.json'), JSON.stringify({
       version: '1', updatedAt: '2026-01-01T00:00:00Z',

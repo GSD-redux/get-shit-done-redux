@@ -37,6 +37,7 @@
         "milestone-helper.test.cjs",
         "milestone-prefixed-convention.test.cjs",
         "milestone-summary.test.cjs",
+        "milestone-window-single-owner.test.cjs",
         "milestone.test.cjs"
       ],
       "issue": "TBD"

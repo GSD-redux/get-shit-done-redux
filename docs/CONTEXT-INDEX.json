@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "count": 415,
+  "count": 416,
   "classes": {
     "ARCH": 1,
     "CI": 2,
     "CONFIG": 1,
-    "DEFECT": 167,
+    "DEFECT": 168,
     "EXEC": 8,
     "GSD-RESEARCH": 6,
     "LEARNING": 1,
@@ -333,6 +333,11 @@
       "id": "DEFECT.HOOK-OVER-ENFORCEMENT.write-bypass",
       "klass": "DEFECT",
       "value": "security_reminder_hook can block Write on substring match (e.g. a literal child-process call-expression token); workaround is heredoc to /tmp then mv into place, or use Edit instead — Edit hooks are more lenient than Write hooks"
+    },
+    {
+      "id": "DEFECT.HOST-RESERVED-DIR-NAME",
+      "klass": "DEFECT",
+      "value": "a host runtime reserves a directory NAME that GSD also writes verbatim, so the mere presence of GSD's directory trips the host's own reserved-name detection regardless of contents; example: pi (#3023) treats GSD's shared-hooks bundle dir hooks/ as its own deprecated extension location and printed a startup warning purely because checkDeprecatedExtensionDirs() in packages/coding-agent/src/migrations.ts gates on a bare existsSync(hooksDir) with no readdir/emptiness check (unlike its tools/ sibling); fix-forward=make the shared-hooks directory name descriptor-driven (hostBehaviors.sharedHooksDirName, default hooks) and override it per-runtime when a name collision is detected (pi sets gsd-hooks), with adapters probing the new name then falling back to the legacy name for dev/half-upgraded trees"
     },
     {
       "id": "DEFECT.INVENTORY-DRIFT.detect",

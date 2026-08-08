@@ -51,6 +51,21 @@ const path = require('path');
  * `allowlist` (repo-relative POSIX paths) grandfathers pre-existing
  * violations. The allowlist only ratchets down: a listed file with zero
  * violations reports `staleAllowlistEntry` so the dead entry gets deleted.
+ *
+ * ## The ceiling escape — `allow-spawn-timeout-ceiling`
+ *
+ * A literal timeout over `maxTimeoutMs` is permitted, without triggering
+ * `timeoutTooLarge`, only when the call carries an inline
+ * `// allow-spawn-timeout-ceiling: <reason>` marker comment with a
+ * non-empty reason — the same idiom as `// allow-test-rule: <reason>`
+ * documented in CONTRIBUTING.md. The marker may sit on the line
+ * immediately above the call, or anywhere inside the call's own source
+ * range (e.g. next to the `timeout:` property itself). It binds only to
+ * the call it decorates, never file-wide, and a bare/whitespace-only
+ * reason does not count. Critically, the escape only ever raises the
+ * ceiling for a call that already has a resolvable numeric timeout — it
+ * never waives the requirement for a bound: a marked call with no
+ * timeout at all still reports `unboundedSpawn`.
  */
 
 /** @type {import('eslint').Rule.RuleModule} */
@@ -101,6 +116,29 @@ const rule = {
 
     /** Map from local (in-scope) name -> canonical target function name. */
     const aliases = new Map();
+
+    /** Requires a non-empty, non-whitespace-only reason after the colon. */
+    const CEILING_MARKER_RE = /allow-spawn-timeout-ceiling:\s*\S/;
+
+    /**
+     * Returns true if `node` (a CallExpression) carries a valid
+     * `// allow-spawn-timeout-ceiling: <reason>` marker comment — either on
+     * the line immediately above the call, or anywhere inside the call's
+     * own source range. Binds to this call only: a marker decorating a
+     * different call elsewhere in the file is never considered.
+     */
+    function hasCeilingMarkerComment(node) {
+      const sourceCode = context.sourceCode || context.getSourceCode();
+      const allComments = sourceCode.getAllComments();
+      for (const comment of allComments) {
+        const isInline = comment.range[0] >= node.range[0] && comment.range[1] <= node.range[1];
+        const isImmediatelyAbove = comment.loc.end.line === node.loc.start.line - 1;
+        if ((isInline || isImmediatelyAbove) && CEILING_MARKER_RE.test(comment.value)) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     const filename = context.filename || context.getFilename();
     const cwd = context.cwd || (context.getCwd ? context.getCwd() : process.cwd());
@@ -346,6 +384,18 @@ const rule = {
         const verdict = optionsNode ? timeoutVerdict(optionsNode) : 'unbounded';
 
         if (verdict === 'bounded') return;
+
+        // The ceiling escape only ever raises the ceiling for a call that
+        // already resolved to a numeric-but-too-large timeout. It never
+        // applies to an 'unbounded' verdict — a marker cannot waive the
+        // requirement for a bound.
+        if (
+          typeof verdict === 'object' &&
+          verdict.tooLarge !== undefined &&
+          hasCeilingMarkerComment(node)
+        ) {
+          return;
+        }
 
         violations += 1;
         if (allowlisted) return;

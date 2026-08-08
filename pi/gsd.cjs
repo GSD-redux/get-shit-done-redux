@@ -63,6 +63,43 @@ function resolveEngineRoot(startDir) {
 const ENGINE_ROOT = resolveEngineRoot(__dirname);
 const GSD_CORE = path.join(ENGINE_ROOT, 'gsd-core');
 
+// #3023: pi reserves `hooks/` as its (now deprecated) extension directory and
+// warns on every startup when one exists, so the installer stages GSD's shared
+// hook bundle under `gsd-hooks/` for pi. Probe in preference order rather than
+// hardcoding either name: an installed pi tree has `gsd-hooks/`, a dev checkout
+// has the repo-root `hooks/`, and a half-upgraded tree can transiently have both
+// — in which case the renamed bundle is the current one and wins.
+const SHARED_HOOKS_DIR_CANDIDATES = ['gsd-hooks', 'hooks'];
+
+/**
+ * Absolute path to the staged shared-hook bundle, or null when none is present.
+ * Never throws — a stat failure on any candidate is treated as "not this one".
+ *
+ * A candidate qualifies only when it is a directory AND non-empty. An install
+ * can be interrupted between `mkdirSync(gsd-hooks)` and the file copy, leaving
+ * a directory that exists but is empty; `gsd-hooks` is probed FIRST (it is the
+ * preferred, current name), so an empty `gsd-hooks/` would otherwise win over
+ * a fully-staged legacy `hooks/` and every hook would silently no-op —
+ * `runHook`'s `fs.existsSync(hookPath)` guard degrades per-file, so binding to
+ * an empty bundle produces no error at all, just silent inaction. A
+ * partially-staged bundle must lose to a fully-staged one for that reason.
+ * @param {string} engineRoot
+ * @returns {string|null}
+ */
+function resolveSharedHooksDir(engineRoot) {
+  for (const name of SHARED_HOOKS_DIR_CANDIDATES) {
+    const candidate = path.join(engineRoot, name);
+    try {
+      if (!fs.statSync(candidate).isDirectory()) continue;
+      if (fs.readdirSync(candidate).length === 0) continue;
+      return candidate;
+    } catch { /* absent or unreadable — try the next candidate */ }
+  }
+  return null;
+}
+
+const SHARED_HOOKS_DIR = resolveSharedHooksDir(ENGINE_ROOT);
+
 // ── curated top-level command families (gsd-tools.cjs TOP_LEVEL_USAGE) ──────
 // readCmdNames() (scripts/fix-slash-commands.cjs) reads commands/, which pi
 // does NOT install (it ships a single native-extension file, no shared
@@ -95,8 +132,8 @@ function getArgumentCompletions(prefix) {
 /**
  * Tokenize the raw `/gsd <args>` string into { family, subcommand, args }.
  * Reuses the quote-aware whitespace tokenizer already shipped for hooks
- * (hooks/lib/git-cmd.js's `tokenize`) rather than re-implementing shell-word
- * splitting a second time. #2102 Stage 2: pi's capability descriptor no
+ * (the staged shared-hook bundle's `lib/git-cmd.js`'s `tokenize`) rather than
+ * re-implementing shell-word splitting a second time. #2102 Stage 2: pi's capability descriptor no
  * longer sets `hostBehaviors.skipSharedHooksInstall` (adversarial-review
  * finding #1/#2 — pi ships NO hooks/ with that flag set, so this require was
  * dead in a real install), so the shared hooks/ bundle — including
@@ -112,7 +149,8 @@ function getArgumentCompletions(prefix) {
 function parseGsdCommandArgs(rawArgs) {
   let tokenize;
   try {
-    ({ tokenize } = require(path.join(ENGINE_ROOT, 'hooks', 'lib', 'git-cmd.js')));
+    if (!SHARED_HOOKS_DIR) throw new Error('no staged hook bundle');
+    ({ tokenize } = require(path.join(SHARED_HOOKS_DIR, 'lib', 'git-cmd.js')));
   } catch {
     tokenize = (s) => String(s || '').split(/\s+/).filter(Boolean);
   }
@@ -244,13 +282,14 @@ function buildBeforeProviderRequestHandler({ tier = 'sonnet' } = {}) {
  * `node <hooks/hookFile>` with the payload piped to stdin, on a bounded
  * timeout. NEVER throws — a missing hook file, a spawn error, or a timeout
  * all degrade to a silent-allow result so a hook problem can never block pi.
- * @param {string} hookFile  filename under hooks/, e.g. "gsd-context-monitor.js"
+ * @param {string} hookFile  filename under the resolved shared-hook bundle, e.g. "gsd-context-monitor.js"
  * @param {object} payload
  * @param {{ timeout?: number, cwd?: string }} [opts]
  * @returns {{ stdout: string, exitCode: number, timedOut: boolean }}
  */
 function runHook(hookFile, payload, opts = {}) {
-  const hookPath = path.join(ENGINE_ROOT, 'hooks', hookFile);
+  if (!SHARED_HOOKS_DIR) return { stdout: '', exitCode: 0, timedOut: false };
+  const hookPath = path.join(SHARED_HOOKS_DIR, hookFile);
   if (!fs.existsSync(hookPath)) return { stdout: '', exitCode: 0, timedOut: false };
   const timeout = opts.timeout || 8000;
   let result;
@@ -380,6 +419,8 @@ module.exports = function gsdPiExtension(pi) {
 // resolution WITHOUT a live pi runtime.
 module.exports._internals = {
   resolveEngineRoot,
+  resolveSharedHooksDir,
+  SHARED_HOOKS_DIR_CANDIDATES,
   parseGsdCommandArgs,
   getArgumentCompletions,
   PI_COMMAND_FAMILIES,

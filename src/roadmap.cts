@@ -20,7 +20,7 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, replaceInCurrentMilestone } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone } = roadmapParserModule;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { updateTableCell } from './markdown-table.cjs';
 import { platformWriteSync } from './shell-command-projection.cjs';
@@ -309,7 +309,10 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   }
 
   const rawContent = fs.readFileSync(roadmapPath, 'utf-8');
-  const content = extractCurrentMilestone(rawContent, cwd);
+  // #3184/#3165: use the scoped variant so a truncated window is a
+  // distinguishable signal in the output instead of a silent `phase_count: 0`
+  // indistinguishable from a genuinely empty milestone.
+  const { value: content, scope } = extractCurrentMilestoneScoped(rawContent, cwd);
   const phasesDir = planningPaths(cwd).phases;
 
   // Extract all phase headings: ## Phase N: Name or ### Phase N: Name
@@ -486,6 +489,11 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     current_phase: currentPhase ? currentPhase.number : null,
     next_phase: nextPhase ? nextPhase.number : null,
     missing_phase_details: missingDetails.length > 0 ? missingDetails : null,
+    // #3184/#3165: distinguishes a genuinely empty milestone (`scope:
+    // "complete"`, `phase_count: 0`) from a window that could not be fully
+    // resolved (`"truncated"` / `"unscoped"` / `"unreadable"`) — those cases
+    // were previously output-identical.
+    scope,
   };
 
   output(result, raw, undefined);

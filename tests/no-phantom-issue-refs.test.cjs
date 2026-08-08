@@ -31,13 +31,26 @@ const ROOT = path.resolve(__dirname, '..');
 // digit-bearing strings like an `id_ed25519` SSH key fingerprint are NOT
 // false-positives.
 //
-// Re-verified against the live repo on 2026-07-25, when the shared issue/PR
-// counter stood at 2654: 3182 is still a 404; 2551 and 2361 now resolve to
-// merged PRs and were removed (#2653).
-const PHANTOM = ['3182'];
-const REF_RE = new RegExp(
-  '(?:#(?:' + PHANTOM.join('|') + ')\\b)|(?:issues/(?:' + PHANTOM.join('|') + ')\\b)',
-);
+// Re-verified against the live repo on 2026-08-07: the shared issue/PR
+// counter has now passed 3182 — it is the real Phase-0 sub-issue of epic
+// #3180 — so it was pruned per the maintenance rule above, leaving the list
+// empty.
+const PHANTOM = [];
+
+// Builds the phantom-ref regex from a list of numbers. Returns null when the
+// list is empty — that null is load-bearing, not defensive: interpolating an
+// empty list into the alternation produces `(?:#(?:)\b)|(?:issues/(?:)\b)`,
+// whose empty alternative matches EVERY issue reference (`#1073`,
+// `issues/2653`, etc.), turning the guard into a false-positive machine.
+// Callers must treat null as "no phantom numbers defined, nothing to scan".
+function buildRefRe(phantom) {
+  if (!phantom.length) return null;
+  return new RegExp(
+    '(?:#(?:' + phantom.join('|') + ')\\b)|(?:issues/(?:' + phantom.join('|') + ')\\b)',
+  );
+}
+
+const REF_RE = buildRefRe(PHANTOM);
 
 const SCAN_EXT = new Set(['.md', '.cjs', '.js', '.cts', '.ts']);
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.changeset']);
@@ -58,7 +71,11 @@ function walk(dir, acc) {
   return acc;
 }
 
-test('no phantom pre-migration issue references remain in repo text (#1073)', () => {
+test('no phantom pre-migration issue references remain in repo text (#1073)', (t) => {
+  if (!REF_RE) {
+    t.skip('PHANTOM list is empty — no phantom numbers to guard against');
+    return;
+  }
   const offenders = [];
   for (const file of walk(ROOT, [])) {
     const rel = path.relative(ROOT, file);
@@ -113,3 +130,19 @@ test('walk() skips broken symlinks and does not throw ENOENT (#1545)', (t) => {
     fs.rmSync(fixture, { recursive: true, force: true });
   }
 });
+
+test('buildRefRe() boundaries — empty list is inert, single/double entries match exactly', () => {
+  assert.strictEqual(buildRefRe([]), null, 'empty list must build no regex');
+
+  const single = buildRefRe(['9999']);
+  assert.ok(single.test('#9999'), 'single-entry list must match #<n>');
+  assert.ok(single.test('issues/9999'), 'single-entry list must match issues/<n>');
+  assert.ok(!single.test('#99990'), 'word boundary must reject a longer number sharing the prefix');
+  assert.ok(!single.test('9999'), 'bare digits with no # or issues/ prefix must not match');
+
+  const double = buildRefRe(['9999', '8888']);
+  assert.ok(double.test('#9999'), 'two-entry list must match the first entry');
+  assert.ok(double.test('#8888'), 'two-entry list must match the second entry');
+});
+
+module.exports = { buildRefRe };

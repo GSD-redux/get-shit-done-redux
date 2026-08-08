@@ -22,10 +22,8 @@ const { cleanup } = require('./helpers.cjs');
 
 const RELEASE_WORKFLOW = path.join(__dirname, '..', '.github', 'workflows', 'release.yml');
 
-// 15000ms: git plumbing (config, add, commit, rev-parse, checkout, cherry-pick)
-// against a small mkdtemp fixture repo — gitOrThrow's own documented default,
-// reused here as the named constant for this file's calls.
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── git helpers ────────────────────────────────────────────────────────────
 

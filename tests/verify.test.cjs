@@ -10,11 +10,8 @@ const { runGsdTools, createTempProject, createTempGitProject, cleanup } = requir
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const { runHook } = require('./helpers/process-seam.cjs');
 
-/**
- * Bound for every git subprocess in this file: plumbing (init/config/add/
- * commit/rev-parse) against small fixture repos — well under this. #3144.
- */
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Bound for the grep/sed availability probes and region-extraction calls in

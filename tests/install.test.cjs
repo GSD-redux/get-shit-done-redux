@@ -30,7 +30,11 @@ const path = require('node:path');
 const os = require('node:os');
 
 const { createTempDir, createTempProject, cleanup, parseFrontmatter } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 const pkg = require('../package.json');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   getDirName,
@@ -45,6 +49,8 @@ const {
   configureKiloPermissions,
   selectRuntimesFromArgs,
   normalizeNodePath,
+  GSD_CHANGESET_FILES,
+  GSD_SCRIPTS_LIB_FILES,
 } = require('../bin/install.js');
 
 const { getGlobalConfigDir } = require('../gsd-core/bin/lib/runtime-homes.cjs');
@@ -930,8 +936,7 @@ describe('install — changeset CLI lands at scripts/changeset/cli.cjs (#935)', 
     install(false, 'claude');
     const claudeDir = path.join(tmpDir, '.claude');
     const cliPath = path.join(claudeDir, 'scripts', 'changeset', 'cli.cjs');
-    const { spawnSync } = require('node:child_process');
-    const result = spawnSync(process.execPath, [cliPath, '--help'], { encoding: 'utf8' });
+    const result = runNode([cliPath, '--help'], { timeoutMs: PROBE_TIMEOUT_MS });
     // --help exits with code 1 (usage shown), but must NOT throw a MODULE_NOT_FOUND error
     assert.ok(
       !result.stderr.includes('MODULE_NOT_FOUND'),
@@ -952,11 +957,9 @@ describe('install — changeset CLI lands at scripts/changeset/cli.cjs (#935)', 
     // Use the CHANGELOG.md that was installed into gsd-core/ (installed by the installer)
     const changelogPath = path.join(claudeDir, 'gsd-core', 'CHANGELOG.md');
     assert.ok(fs.existsSync(changelogPath), 'CHANGELOG.md must be installed under gsd-core/');
-    const { spawnSync } = require('node:child_process');
-    const result = spawnSync(
-      process.execPath,
+    const result = runNode(
       [cliPath, 'extract', '--from', '0.0.0', '--to', '9999.0.0', '--changelog', changelogPath, '--json'],
-      { encoding: 'utf8' },
+      { timeoutMs: PROBE_TIMEOUT_MS },
     );
     // extract must NOT throw a MODULE_NOT_FOUND or Cannot find module error
     assert.ok(
@@ -966,8 +969,8 @@ describe('install — changeset CLI lands at scripts/changeset/cli.cjs (#935)', 
     // extract exit code 0 (found entries) or 2 (no entries in range) are both valid;
     // any other exit code is an error
     assert.ok(
-      result.status === 0 || result.status === 2,
-      `installed cli.cjs extract must exit 0 or 2; got ${result.status}; stderr=${result.stderr}`,
+      result.exitCode === 0 || result.exitCode === 2,
+      `installed cli.cjs extract must exit 0 or 2; got ${result.exitCode}; stderr=${result.stderr}`,
     );
   });
 
@@ -3503,7 +3506,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
@@ -3511,18 +3515,26 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
+
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 function runInstaller(configDir) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
   delete env.GSD_TEST_MODE;
-  return execFileSync(
-    process.execPath,
+  const r = runNode(
     [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'],
-    { encoding: 'utf-8', stdio: 'pipe', env }
+    { env, timeoutMs: INSTALL_TIMEOUT_MS }
   );
+  throwIfFailed(r, `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`);
+  return r.stdout;
 }
 
 // ─── Test 1: writeManifest must NOT record USER-PROFILE.md ────────────────────
@@ -4632,12 +4644,16 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 // With --test-concurrency=4, other install tests (bug-1834, bug-1924) run
@@ -4646,10 +4662,8 @@ const { cleanup } = require('./helpers.cjs');
 // install() fails with "directory is empty" → process.exit(1).
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #1736 + #1367: local install deploys commands in flat gsd-<cmd>.md layout ───
@@ -4762,19 +4776,21 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup, captureConsole } = require('./helpers.cjs');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #2248: local install must NOT write statusLine to repo settings.json ────
@@ -4921,19 +4937,21 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helper: run both install phases ─────────────────────────────────────────
@@ -5465,13 +5483,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
+
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 /**
  * Ensure hooks/dist is populated before any suite that reads it.
@@ -5482,7 +5507,8 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    const r = runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+    throwIfFailed(r, `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -5497,22 +5523,21 @@ function ensureHooksDist() {
 function runInstall(cwd, args) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, ...args], {
+  // 120s, not 60s. A full install copies and converts the whole shipped
+  // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
+  // measures 13-30s on an idle runner — under 2x headroom at the old cap.
+  // On a loaded bench that margin is not enough: the Cursor suite's before
+  // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
+  // lane passed the SAME commit in 12.7s, cancelling three child tests as
+  // collateral. The cap also shrinks in real terms every time a file joins
+  // the payload. Matches the 120s already used for the heavy install case
+  // below. Aligned with the other runInstall helper in this file.
+  const r = runNode([INSTALL_PATH, ...args], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
-    // 120s, not 60s. A full install copies and converts the whole shipped
-    // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
-    // measures 13-30s on an idle runner — under 2x headroom at the old cap.
-    // On a loaded bench that margin is not enough: the Cursor suite's before
-    // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
-    // lane passed the SAME commit in 12.7s, cancelling three child tests as
-    // collateral. The cap also shrinks in real terms every time a file joins
-    // the payload. Matches the 120s already used for the heavy install case
-    // below. Aligned with the other runInstall helper in this file.
-    timeout: 120000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} ${args.join(' ')}`);
 }
 
 /**
@@ -7527,7 +7552,8 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
@@ -7535,18 +7561,26 @@ const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const MANIFEST_NAME = 'gsd-file-manifest.json';
 const PATCHES_DIR_NAME = 'gsd-local-patches';
 
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
+
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 function runInstaller(configDir) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
   delete env.GSD_TEST_MODE;
-  return execFileSync(
-    process.execPath,
+  const r = runNode(
     [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'],
-    { encoding: 'utf-8', stdio: 'pipe', env }
+    { env, timeoutMs: INSTALL_TIMEOUT_MS }
   );
+  throwIfFailed(r, `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`);
+  return r.stdout;
 }
 
 // ─── Test 1: writeManifest must NOT record USER-PROFILE.md ────────────────────
@@ -8656,12 +8690,16 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 // With --test-concurrency=4, other install tests (bug-1834, bug-1924) run
@@ -8670,10 +8708,8 @@ const { cleanup } = require('./helpers.cjs');
 // install() fails with "directory is empty" → process.exit(1).
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #1736 + #1367: local install deploys commands in flat gsd-<cmd>.md layout ───
@@ -8786,19 +8822,21 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup, captureConsole } = require('./helpers.cjs');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── #2248: local install must NOT write statusLine to repo settings.json ────
@@ -8945,19 +8983,21 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+  throwIfFailed(r, `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helper: run both install phases ─────────────────────────────────────────
@@ -9489,13 +9529,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
+
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 /**
  * Ensure hooks/dist is populated before any suite that reads it.
@@ -9506,7 +9553,8 @@ const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    const r = runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
+    throwIfFailed(r, `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -9521,22 +9569,21 @@ function ensureHooksDist() {
 function runInstall(cwd, args) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, ...args], {
+  // 120s, not 60s. A full install copies and converts the whole shipped
+  // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
+  // measures 13-30s on an idle runner — under 2x headroom at the old cap.
+  // On a loaded bench that margin is not enough: the Cursor suite's before
+  // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
+  // lane passed the SAME commit in 12.7s, cancelling three child tests as
+  // collateral. The cap also shrinks in real terms every time a file joins
+  // the payload. Matches the 120s already used for the heavy install case
+  // below. Aligned with the other runInstall helper in this file.
+  const r = runNode([INSTALL_PATH, ...args], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
-    // 120s, not 60s. A full install copies and converts the whole shipped
-    // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
-    // measures 13-30s on an idle runner — under 2x headroom at the old cap.
-    // On a loaded bench that margin is not enough: the Cursor suite's before
-    // hook died with `spawnSync ETIMEDOUT` on the node24 lane while the node22
-    // lane passed the SAME commit in 12.7s, cancelling three child tests as
-    // collateral. The cap also shrinks in real terms every time a file joins
-    // the payload. Matches the 120s already used for the heavy install case
-    // below. Aligned with the other runInstall helper in this file.
-    timeout: 120000,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} ${args.join(' ')}`);
 }
 
 /**
@@ -9918,7 +9965,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -9928,6 +9976,12 @@ const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
 // this, the unit lane — whose ensureBuiltArtifacts() builds only bin/lib, not hooks —
 // leaves hooks/dist empty and install.js hard-fails "directory is empty" (#1926).
 const BUILD_HOOKS = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
+
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const {
+  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
+  INSTALL_TIMEOUT_MS,
+} = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -9940,12 +9994,12 @@ const BUILD_HOOKS = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 function runClaudeLocalInstall(cwd) {
   const env = { ...process.env };
   delete env.GSD_TEST_MODE;
-  execFileSync(process.execPath, [INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
+  const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
     env,
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  throwIfFailed(r, `node ${INSTALL_PATH} --claude --local --no-sdk`);
 }
 
 // ---------------------------------------------------------------------------
@@ -9958,11 +10012,11 @@ describe('bug #1367 — Claude local install uses flat gsd-<cmd>.md command layo
   before(() => {
     // #1926: build hooks/dist/ so the installer's verifyInstalled(hooks) doesn't hit an
     // empty directory. Self-contained — no dependency on the lane having pre-built hooks.
-    execFileSync(process.execPath, [BUILD_HOOKS], {
+    const r = runNode([BUILD_HOOKS], {
       cwd: REPO_ROOT,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
+      timeoutMs: BUILD_HOOKS_TIMEOUT_MS,
     });
+    throwIfFailed(r, `node ${BUILD_HOOKS}`);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-1367-'));
     runClaudeLocalInstall(tmpDir);
   });
@@ -10100,8 +10154,12 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode, OUTCOME } = require('./helpers/process-seam.cjs');
 const os = require('node:os');
+
+// A single short CLI query (install.js --skills-root <runtime>) — no full
+// install or build involved.
+const SKILLS_ROOT_PROBE_TIMEOUT_MS = 15000;
 
 const INSTALL_JS = path.join(__dirname, '../bin/install.js');
 const WORKFLOW = path.join(__dirname, '../gsd-core/workflows/sync-skills.md');
@@ -10126,9 +10184,9 @@ describe('install.js --skills-root', () => {
 
   for (const { runtime, expected } of CASES) {
     test(`resolves correct skills root for ${runtime}`, () => {
-      const result = spawnSync(process.execPath, [INSTALL_JS, '--skills-root', runtime], {
-        encoding: 'utf-8',
+      const result = runNode([INSTALL_JS, '--skills-root', runtime], {
         env: { ...process.env, GSD_TEST_MODE: undefined }, // ensure not in test mode
+        timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
       });
       // Strip trailing newline
       const actual = result.stdout.trim();
@@ -10137,17 +10195,235 @@ describe('install.js --skills-root', () => {
   }
 
   test('exits non-zero when runtime arg is missing', () => {
-    const result = spawnSync(process.execPath, [INSTALL_JS, '--skills-root'], {
-      encoding: 'utf-8',
+    const result = runNode([INSTALL_JS, '--skills-root'], {
+      timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
     });
-    assert.notStrictEqual(result.status, 0, 'Should exit with error when runtime arg is missing');
+    assert.notStrictEqual(result.exitCode, 0, 'Should exit with error when runtime arg is missing');
   });
 
   test('returns a path ending in /skills', () => {
-    const result = spawnSync(process.execPath, [INSTALL_JS, '--skills-root', 'windsurf'], {
-      encoding: 'utf-8',
+    const result = runNode([INSTALL_JS, '--skills-root', 'windsurf'], {
+      timeoutMs: SKILLS_ROOT_PROBE_TIMEOUT_MS,
     });
     assert.ok(result.stdout.trim().endsWith('skills'), 'Skills root must end in /skills');
+  });
+});
+
+// ── gsd-tools query skills-root (#3024) ──────────────────────────────────────
+
+describe('#3024: gsd-tools query skills-root', () => {
+  const TOOLS_PATH = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
+
+  // Must agree with install.js --skills-root for every runtime (same underlying
+  // getGlobalSkillsBase function, just a different entry point that IS shipped).
+  const CASES = [
+    { runtime: 'claude', expected: path.join(os.homedir(), '.claude', 'skills') },
+    { runtime: 'codex', expected: path.join(os.homedir(), '.agents', 'skills') },
+    { runtime: 'cursor', expected: path.join(os.homedir(), '.cursor', 'skills') },
+  ];
+
+  for (const { runtime, expected } of CASES) {
+    test(`resolves correct skills root for ${runtime}`, () => {
+      const result = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
+        env: { ...process.env, GSD_TEST_MODE: '1' },
+      });
+      assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+      assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+      const actual = result.stdout.trim();
+      assert.strictEqual(actual, expected, `Expected ${expected}, got ${actual}`);
+    });
+  }
+
+  test('errors when runtime arg is missing', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Should exit with error when runtime arg is missing');
+  });
+
+  test('non-raw form: query skills-root claude parses as JSON with expected skills_root', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.exitCode, 0, `gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+    const expected = path.join(os.homedir(), '.claude', 'skills');
+    const parsed = JSON.parse(result.stdout);
+    assert.strictEqual(parsed.skills_root, expected, `Expected ${expected}, got ${parsed.skills_root}`);
+  });
+
+  // Defect B regression: an unknown runtime must NOT silently resolve to
+  // claude's skills root. getGlobalSkillsBase falls back through
+  // getGlobalConfigDir instead of returning null, so routeSkillsRoot's
+  // `if (skillsRoot === null)` guard never fires for a bogus runtime id.
+  test('defect B: unknown runtime does not silently resolve to claude skills root', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'bogus-runtime', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Unknown runtime must exit non-zero');
+    assert.ok(
+      !result.stdout.includes(claudeSkillsRoot),
+      `stdout must not silently emit claude's skills root for an unknown runtime; got: ${result.stdout}`
+    );
+  });
+
+  test('empty runtime arg exits non-zero', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Empty runtime must exit non-zero');
+  });
+
+  test('whitespace-only runtime arg exits non-zero', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '   ', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Whitespace-only runtime must exit non-zero');
+  });
+
+  test('HOSTILE: path-traversal runtime arg exits non-zero and emits no path', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', '../../etc', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Path-traversal runtime must exit non-zero');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
+  });
+
+  // HOSTILE: the seam spawns via an argv array (see process-seam.cjs), never a
+  // shell string, so this value can never reach a shell for interpolation.
+  // The assertion below confirms the command rejects the runtime value and
+  // produces no output — it cannot (and does not need to) prove
+  // shell-injection safety, because no shell is ever invoked.
+  test('HOSTILE: shell-metacharacter runtime arg exits non-zero with no output', () => {
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'claude; rm -rf /', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'Shell-metacharacter runtime must exit non-zero');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path; got: ${result.stdout}`);
+  });
+
+  // #3024 review BLOCKER (finding 2): install.js --skills-root had NO
+  // own-property gate, so a prototype-chain id silently resolved to claude's
+  // skills root via prototype fallthrough in getGlobalConfigDir, while
+  // gsd-tools' routeSkillsRoot (this same PR) rejects it. HOSTILE ids are
+  // included in the SAME loop as the registered runtimes so both surfaces are
+  // asserted to agree (or both reject) with one shared mechanism, and the
+  // hostile branch below additionally pins the outcome to "both reject" —
+  // agreement alone would not catch a defect where both sides silently
+  // accepted the same wrong value.
+  const HOSTILE_RUNTIME_IDS = ['__proto__', 'constructor', 'prototype', 'toString', '', '   '];
+
+  test('parity: gsd-tools query skills-root matches install.js --skills-root for every registered runtime and every hostile id', () => {
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const runtimeIds = Object.keys(runtimes);
+    assert.ok(runtimeIds.length > 0, 'capability registry must list at least one runtime');
+
+    for (const runtime of [...runtimeIds, ...HOSTILE_RUNTIME_IDS]) {
+      const isHostile = HOSTILE_RUNTIME_IDS.includes(runtime);
+      const toolsResult = runNode([TOOLS_PATH, 'query', 'skills-root', runtime, '--raw'], {
+        env: { ...process.env, GSD_TEST_MODE: '1' },
+      });
+      const installResult = runNode([INSTALL_JS, '--skills-root', runtime], {
+        env: { ...process.env, GSD_TEST_MODE: undefined },
+      });
+      assert.equal(toolsResult.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(toolsResult)}`);
+      assert.equal(installResult.outcome, OUTCOME.EXITED, `install.js did not exit cleanly for ${JSON.stringify(runtime)}: ${JSON.stringify(installResult)}`);
+      const toolsIsZero = toolsResult.exitCode === 0;
+      const installIsZero = installResult.exitCode === 0;
+      assert.strictEqual(
+        toolsIsZero, installIsZero,
+        `runtime ${JSON.stringify(runtime)}: exit-code agreement mismatch (gsd-tools=${toolsResult.exitCode}, install.js=${installResult.exitCode})`
+      );
+      if (isHostile) {
+        assert.strictEqual(toolsIsZero, false, `HOSTILE id ${JSON.stringify(runtime)}: gsd-tools must reject, not accept`);
+        assert.strictEqual(installIsZero, false, `HOSTILE id ${JSON.stringify(runtime)}: install.js must reject, not accept`);
+      }
+      if (toolsIsZero && installIsZero) {
+        const toolsPath = String(toolsResult.stdout.trim()).replace(/\\/g, '/');
+        const installPath = String(installResult.stdout.trim()).replace(/\\/g, '/');
+        assert.strictEqual(
+          toolsPath, installPath,
+          `runtime ${JSON.stringify(runtime)}: gsd-tools (${toolsPath}) and install.js (${installPath}) must resolve the same skills root`
+        );
+      }
+    }
+  });
+
+  // #3024 review BLOCKER (finding 2 regression pin): before the fix,
+  // `node bin/install.js --skills-root __proto__` printed claude's skills
+  // root via prototype fallthrough instead of rejecting. Pin the exact
+  // observable symptom, not just the exit code, so a future regression that
+  // reintroduces a bare `runtimes[runtime]` lookup is caught even if it
+  // happens to also exit non-zero for some unrelated reason.
+  test('HOSTILE: install.js --skills-root __proto__ does not silently resolve to claude skills root', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([INSTALL_JS, '--skills-root', '__proto__'], {
+      env: { ...process.env, GSD_TEST_MODE: undefined },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `install.js did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, '__proto__ runtime must exit non-zero');
+    assert.ok(
+      !result.stdout.includes(claudeSkillsRoot),
+      `stdout must not silently emit claude's skills root for __proto__; got: ${result.stdout}`
+    );
+  });
+
+  // #3024 review BLOCKER (finding 1 regression pin): the first fix pass
+  // rejected `grok` outright, and a test that only asserts "grok is
+  // accepted" would not have caught that regression's root cause — an
+  // allow-list membership check proves nothing about whether the id
+  // actually resolves anywhere real. This asserts the REAL contract: grok
+  // must both be accepted AND resolve to its own dedicated `~/.agents`
+  // layout (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+  // `src/runtime-homes.cts`), not to claude's wrong-runtime fallback.
+  test('grok: accepted, and resolves under .agents — NOT claude\'s skills root (inclusion is real, not merely allow-listed)', () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const grokSkillsRoot = path.join(os.homedir(), '.agents', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'grok', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1', GROK_AGENTS_HOME: undefined },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.strictEqual(result.exitCode, 0, `grok must be accepted; gsd-tools exited ${result.exitCode}: ${result.stderr}`);
+    const actual = result.stdout.trim();
+    assert.strictEqual(actual, grokSkillsRoot, `Expected grok to resolve under .agents (${grokSkillsRoot}), got ${actual}`);
+    assert.notStrictEqual(actual, claudeSkillsRoot, "grok must NOT resolve to claude's skills root");
+  });
+
+  // #3024 review BLOCKER (finding 1, rejection-side teeth): `gemini` must
+  // stay rejected, and — critically — for the RIGHT reason. It is not
+  // merely "unregistered" (grok is unregistered too, and is correctly
+  // accepted via LEGACY_NON_REGISTRY_RUNTIME_IDS); gemini has no dedicated
+  // resolution branch anywhere, so `getGlobalSkillsBase('gemini')` silently
+  // falls through to claude's wrong-runtime fallback path. The CLI-level
+  // assertion proves gemini is rejected; the direct-resolution assertion
+  // below proves WHY it must stay rejected — if gemini ever grew a real
+  // dedicated branch (making it grok's true peer), this second assertion
+  // would fail and force a conscious decision, instead of someone
+  // reflexively adding it to LEGACY_NON_REGISTRY_RUNTIME_IDS.
+  test("gemini: rejected — because its bare resolution is claude's fallback, not because it is merely unregistered", () => {
+    const claudeSkillsRoot = path.join(os.homedir(), '.claude', 'skills');
+    const result = runNode([TOOLS_PATH, 'query', 'skills-root', 'gemini', '--raw'], {
+      env: { ...process.env, GSD_TEST_MODE: '1' },
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED, `gsd-tools did not exit cleanly: ${JSON.stringify(result)}`);
+    assert.notStrictEqual(result.exitCode, 0, 'gemini must be rejected by isRegisteredRuntimeId');
+    assert.strictEqual(result.stdout.trim(), '', `stdout must not emit a path for rejected gemini; got: ${result.stdout}`);
+
+    // Prove the reason: gemini's underlying (ungated) resolution IS claude's
+    // wrong-runtime fallback — unlike grok's, which resolves to a real,
+    // distinct path (see the sibling grok test above).
+    const { getGlobalSkillsBase } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    assert.strictEqual(
+      getGlobalSkillsBase('gemini'), claudeSkillsRoot,
+      "gemini's bare resolution must be claude's fallback path — this is the wrong-runtime bug that justifies keeping gemini rejected"
+    );
   });
 });
 
@@ -10195,6 +10471,117 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
   });
 
+  // #3024 review BLOCKER (finding 1 — REGRESSION): this branch's first fix
+  // pass hand-derived the "expected" set from the registry alone and dropped
+  // `grok` from both the doc list and the `--to all` expansion, on the
+  // mistaken assumption that "not in the registry" means "not a real
+  // runtime". `grok` has a live, dedicated `~/.agents`-layout resolution
+  // branch in `getGlobalConfigDir` (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+  // `src/runtime-homes.cts`) predating the capability registry, so removing
+  // it silently broke working, documented `--skills-root`/`sync-skills`
+  // support. `gemini`, by contrast, is correctly excluded: it has NO
+  // dedicated branch and falls through to claude's skills root — the
+  // wrong-runtime bug this whole PR exists to fix. This parity test fails
+  // the moment either doc list next diverges from (registry ∪
+  // NAMED_LEGACY_INCLUSIONS) minus NAMED_DELIBERATE_EXCLUSIONS, in EITHER
+  // direction (an id in the doc but not expected, or an id expected but
+  // missing from the doc).
+  test('parity: documented runtime list matches the capability registry (minus deliberate exclusions)', () => {
+    content = content || readWorkflow();
+    const { runtimes } = require('../gsd-core/bin/lib/capability-registry.cjs');
+    const { LEGACY_NON_REGISTRY_RUNTIME_IDS } = require('../gsd-core/bin/lib/runtime-homes.cjs');
+    const registryIds = Object.keys(runtimes);
+    assert.ok(registryIds.length > 0, 'capability registry must list at least one runtime');
+
+    // Named, single-source inclusion: runtime ids with a genuine dedicated
+    // resolution branch (see `LEGACY_NON_REGISTRY_RUNTIME_IDS` in
+    // `src/runtime-homes.cts`) but no capability-registry descriptor. As of
+    // #3024 this is `grok` only — imported directly from the same constant
+    // `isRegisteredRuntimeId` gates on, so this test and the validator can
+    // never independently drift on which legacy ids are "real".
+    const NAMED_LEGACY_INCLUSIONS = [...LEGACY_NON_REGISTRY_RUNTIME_IDS];
+    assert.ok(
+      NAMED_LEGACY_INCLUSIONS.length > 0 && NAMED_LEGACY_INCLUSIONS.includes('grok'),
+      `expected LEGACY_NON_REGISTRY_RUNTIME_IDS to include 'grok'; got ${JSON.stringify(NAMED_LEGACY_INCLUSIONS)}`
+    );
+    for (const included of NAMED_LEGACY_INCLUSIONS) {
+      assert.ok(
+        !registryIds.includes(included),
+        `named legacy inclusion "${included}" is already a registry id — remove it from LEGACY_NON_REGISTRY_RUNTIME_IDS, not from this test`
+      );
+    }
+
+    // Deliberate, named exclusion: vscode is `installSurface: 'none'` (#2103)
+    // and `getGlobalSkillsBase('vscode')` returns null, so a skills-root sync
+    // to/from it can never succeed. It is named as excluded in the workflow's
+    // own "Supported runtime names" prose, and excluded here identically, so
+    // this test cannot silently drift from the prose that documents it.
+    const NAMED_DELIBERATE_EXCLUSIONS = ['vscode'];
+    for (const excluded of NAMED_DELIBERATE_EXCLUSIONS) {
+      assert.ok(
+        registryIds.includes(excluded),
+        `deliberate exclusion "${excluded}" must itself be a real registry id (nothing to exclude otherwise)`
+      );
+    }
+    const expectedIds = registryIds
+      .filter((id) => !NAMED_DELIBERATE_EXCLUSIONS.includes(id))
+      .concat(NAMED_LEGACY_INCLUSIONS)
+      .sort();
+
+    // Anchored to the "Supported runtime names:" line's id list ONLY: capture
+    // stops at the " — the full capability registry runtime set" prose that
+    // follows the list. A file-wide backtick sweep over the rest of that
+    // sentence (which explains the vscode exclusion) previously also matched
+    // `runtimes`, `null`, and `vscode` from unrelated inline-code spans in the
+    // explanatory prose — this scopes extraction to the list construct itself.
+    const supportedLineMatch = content.match(
+      /\*\*Supported runtime names:\*\*\s*([^\n]*?)\s+—\s+the full capability registry runtime set/
+    );
+    assert.ok(supportedLineMatch, 'workflow must have a "Supported runtime names:" line ending at " — the full capability registry runtime set"');
+    const docIds = [...supportedLineMatch[1].matchAll(/`([a-z0-9-]+)`/g)].map((m) => m[1]).sort();
+    assert.ok(
+      docIds.length > 0 && docIds.every((id) => /^[a-z0-9-]+$/.test(id)),
+      '"Supported runtime names:" extractor matched nothing plausible: expected one or more ' +
+      `backtick-wrapped runtime ids (e.g. \`claude\`) in the line's id list, got ${JSON.stringify(docIds)}`
+    );
+
+    // Anchored to the `--to all` branch specifically: the file defines
+    // TO_RUNTIMES=() three times (an empty initializer, this branch's full
+    // expansion, and the explicit `--to <runtime>` branch's command
+    // substitution), and an unanchored match on the FIRST occurrence anywhere
+    // in the file silently captures the empty initializer instead (#3024
+    // remote-runner regression: toAllIds resolved to [] with no assertion
+    // failure until the final deepStrictEqual). Locate the `--to all` marker
+    // first, then take the first TO_RUNTIMES=(...) assignment after it —
+    // which is this branch's expansion, not the empty initializer that
+    // precedes the marker or the `$(...)` substitution branch that follows it.
+    const toAllMarkerIndex = content.indexOf('"--to all"');
+    assert.ok(toAllMarkerIndex > -1, 'workflow must contain a `--to all` branch marker (`"--to all"`)');
+    const toAllMatch = content.slice(toAllMarkerIndex).match(/TO_RUNTIMES=\(([^)]*)\)/);
+    assert.ok(toAllMatch, 'workflow must define TO_RUNTIMES=(...) for `--to all` after the `--to all` marker');
+    const toAllIds = toAllMatch[1].trim().split(/\s+/).filter(Boolean).sort();
+    assert.ok(
+      toAllIds.length > 0 && toAllIds.every((id) => /^[a-z0-9-]+$/.test(id)),
+      '`--to all` TO_RUNTIMES extractor matched nothing plausible: expected one or more ' +
+      `space-separated runtime ids inside TO_RUNTIMES=(...) after the \`--to all\` marker, got ${JSON.stringify(toAllIds)}`
+    );
+
+    assert.deepStrictEqual(
+      docIds, expectedIds,
+      '"Supported runtime names" list must match (capability registry ∪ named legacy inclusions ' +
+      `[${NAMED_LEGACY_INCLUSIONS.join(', ')}]) minus deliberate exclusions (${NAMED_DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in doc but not expected: ${JSON.stringify(docIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  expected but missing from doc: ${JSON.stringify(expectedIds.filter((id) => !docIds.includes(id)))}`
+    );
+    assert.deepStrictEqual(
+      toAllIds, expectedIds,
+      '`--to all` TO_RUNTIMES expansion must match (capability registry ∪ named legacy inclusions ' +
+      `[${NAMED_LEGACY_INCLUSIONS.join(', ')}]) minus deliberate exclusions (${NAMED_DELIBERATE_EXCLUSIONS.join(', ')}).\n` +
+      `  in --to-all but not expected: ${JSON.stringify(toAllIds.filter((id) => !expectedIds.includes(id)))}\n` +
+      `  expected but missing from --to-all: ${JSON.stringify(expectedIds.filter((id) => !toAllIds.includes(id)))}`
+    );
+  });
+
   test('idempotency documented (second apply = zero changes)', () => {
     content = content || readWorkflow();
     assert.ok(
@@ -10203,11 +10590,16 @@ describe('sync-skills.md — required behavioral specs', () => {
     );
   });
 
-  test('install.js --skills-root is used for path resolution', () => {
+  test('gsd_run query skills-root is used for path resolution (#3024)', () => {
+    // #3024: sync-skills.md moved off the unshipped `install.js --skills-root`
+    // entry point onto `gsd_run query skills-root`, which IS shipped (routes
+    // through gsd-tools.cjs — see routeSkillsRoot). This asserts the new
+    // contract; the old install.js reference is covered as an explicit
+    // regression by "defect C: workflow contains zero references to install.js".
     content = content || readWorkflow();
     assert.ok(
-      content.includes('--skills-root'),
-      'workflow must reference install.js --skills-root for path resolution'
+      content.includes('gsd_run query skills-root'),
+      'workflow must reference gsd_run query skills-root for path resolution'
     );
   });
 
@@ -10233,6 +10625,155 @@ describe('sync-skills.md — required behavioral specs', () => {
       safetySection || content.includes('no writes') || content.includes('--dry-run performs no writes'),
       'workflow must have a safety rule that dry-run performs no writes'
     );
+  });
+
+  // Defect C regression: the workflow must not send users back to the
+  // unshipped `install.js` entry point this issue moved away from (#3024).
+  test('defect C: workflow contains zero references to install.js', () => {
+    content = content || readWorkflow();
+    const occurrences = (content.match(/install\.js/g) || []).length;
+    assert.strictEqual(
+      occurrences, 0,
+      `sync-skills.md must not reference install.js (unshipped in installed trees); found ${occurrences} occurrence(s)`
+    );
+  });
+
+  test('Step 2 resolves skills roots via gsd_run query skills-root', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      content.includes('gsd_run query skills-root'),
+      'workflow Step 2 must resolve skills roots via `gsd_run query skills-root`'
+    );
+  });
+
+  // #3024 follow-up hardening: neither `gsd_run query skills-root` call in
+  // Step 2 checked its exit status or for an empty result, so an unregistered
+  // runtime id silently produced an empty root that Step 5 fed straight into
+  // `rm -rf`/`cp -r`. These assert the guard is present in the shipped text.
+  test('Step 2 guards the SOURCE skills-root resolution (exit status + non-empty)', () => {
+    content = content || readWorkflow();
+    const step2 = content.slice(content.indexOf('## Step 2:'), content.indexOf('## Step 3:'));
+    assert.ok(
+      /SRC_SKILLS_ROOT\s*=\s*\$\(gsd_run query skills-root[^)]*\)\s*\n\s*if\s*\[\s*\$\?\s*-ne\s*0\s*\]\s*\|\|\s*\[\s*-z\s*"\$SRC_SKILLS_ROOT"\s*\]/.test(step2),
+      'Step 2 must check exit status ($?) and non-empty (-z) immediately after resolving SRC_SKILLS_ROOT'
+    );
+    assert.match(
+      step2,
+      /exit 1/,
+      'Step 2 must exit non-zero when SRC_SKILLS_ROOT resolution fails'
+    );
+  });
+
+  test('Step 2 guards each DESTINATION skills-root resolution (exit status + non-empty)', () => {
+    content = content || readWorkflow();
+    const step2 = content.slice(content.indexOf('## Step 2:'), content.indexOf('## Step 3:'));
+    assert.ok(
+      /for DEST_RUNTIME in "\$\{TO_RUNTIMES\[@\]\}"; do[\s\S]*?gsd_run query skills-root "\$DEST_RUNTIME"[^)]*\)[\s\S]*?if\s*\[\s*\$\?\s*-ne\s*0\s*\]\s*\|\|\s*\[\s*-z\s*"\$RESOLVED_DEST_ROOT"\s*\][\s\S]*?exit 1[\s\S]*?done/.test(step2),
+      'Step 2 must check exit status and non-empty for each resolved destination root inside the TO_RUNTIMES loop, and exit 1 on failure'
+    );
+  });
+
+  test('prose guard documents destination skills-root resolution failure (mirrors source guard)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      /resolving the skills root for the source OR any destination runtime fails/i.test(content),
+      'workflow must document a guard for destination skills-root resolution failure alongside the source-not-found guard'
+    );
+  });
+
+  test('Step 5 requires non-empty/absolute roots before any rm -rf or cp -r', () => {
+    content = content || readWorkflow();
+    const step5 = content.slice(content.indexOf('## Step 5:'));
+    const rmIndex = step5.indexOf('rm -rf "$DEST_ROOT/$SKILL"');
+    const cpIndex = step5.indexOf('cp -r "$SRC_SKILLS_ROOT/$SKILL"');
+    assert.ok(rmIndex > -1, 'Step 5 must contain rm -rf "$DEST_ROOT/$SKILL"');
+    assert.ok(cpIndex > -1, 'Step 5 must contain cp -r "$SRC_SKILLS_ROOT/$SKILL"');
+
+    const srcGuardIndex = step5.indexOf('[[ "$SRC_SKILLS_ROOT" == /* ]]');
+    const destGuardIndex = step5.indexOf('[[ "$DEST_ROOT" == /* ]]');
+    assert.ok(srcGuardIndex > -1, 'Step 5 must guard SRC_SKILLS_ROOT as a non-empty absolute path before use');
+    assert.ok(destGuardIndex > -1, 'Step 5 must guard DEST_ROOT as a non-empty absolute path before use');
+    assert.ok(
+      srcGuardIndex < rmIndex && destGuardIndex < rmIndex,
+      'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede the first rm -rf in Step 5'
+    );
+    assert.ok(
+      srcGuardIndex < cpIndex && destGuardIndex < cpIndex,
+      'the absolute-path guards for SRC_SKILLS_ROOT and DEST_ROOT must precede cp -r in Step 5'
+    );
+  });
+
+  // #3024 follow-up (this fix): `DEST_SKILLS_ROOTS` was assigned in Step 2 as a
+  // keyed map but never `declare -A`'d and never read back anywhere — on bash 3.2
+  // (macOS system /bin/bash) that assignment silently collapses every destination's
+  // resolved root into index [0], and since nothing ever reads it, Steps 3/5's
+  // `$DEST_ROOT` was always unbound. The fix drops the array entirely; this pins
+  // the regression so it cannot silently come back.
+  test('defect: DEST_SKILLS_ROOTS array is gone (bash-3.2 hazard, was never read)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      !content.includes('DEST_SKILLS_ROOTS'),
+      'workflow must not reference DEST_SKILLS_ROOTS anywhere; it was an unread, ' +
+      'bash-3.2-hostile associative-array assignment'
+    );
+  });
+
+  test('no associative-array syntax anywhere in the file (bash 3.2 compatibility)', () => {
+    content = content || readWorkflow();
+    assert.ok(
+      !/\bdeclare\s+-A\b/.test(content),
+      'workflow must not use `declare -A` (bash4+-only; system /bin/bash on macOS is 3.2)'
+    );
+    assert.ok(
+      !/\btypeset\s+-A\b/.test(content),
+      'workflow must not use `typeset -A` (bash4+-only associative-array declaration)'
+    );
+  });
+
+  // #3024 follow-up (this fix): every fenced bash block that reads `$DEST_ROOT`
+  // must itself assign `DEST_ROOT` before that read — Steps 3 and 5 are separate
+  // bash constructs (not one continuously-executing script), so each one has to
+  // bind DEST_ROOT for the destination it is currently processing rather than
+  // relying on a value threaded in from elsewhere. This is the actual fix for the
+  // dangling-variable defect; assert it holds for every ```bash block in the file,
+  // not just Steps 3/5, so a future edit that introduces a new $DEST_ROOT read
+  // elsewhere is held to the same rule.
+  test('every $DEST_ROOT read is preceded by a DEST_ROOT= assignment in the same bash block', () => {
+    content = content || readWorkflow();
+    const bashBlocks = [...content.matchAll(/```bash\r?\n([\s\S]*?)```/g)].map((m) => m[1]);
+    assert.ok(
+      bashBlocks.length > 0,
+      'extractor matched no fenced ```bash blocks at all — the workflow must contain some'
+    );
+
+    const blocksUsingDestRoot = bashBlocks.filter((block) => /\$DEST_ROOT\b/.test(block));
+    assert.ok(
+      blocksUsingDestRoot.length > 0,
+      'extractor found no fenced bash block referencing $DEST_ROOT — expected Step 3 and Step 5 to reference it'
+    );
+    // This is the exact bug: Steps 3 and 5 both use $DEST_ROOT, so there must be at
+    // least two such blocks (one per step). A single match would mean one of the two
+    // steps lost its reference to $DEST_ROOT entirely rather than being fixed.
+    assert.ok(
+      blocksUsingDestRoot.length >= 2,
+      'expected at least 2 fenced bash blocks referencing $DEST_ROOT (Step 3 and Step 5), got '
+      + String(blocksUsingDestRoot.length)
+    );
+
+    for (const block of blocksUsingDestRoot) {
+      const assignMatch = block.match(/^\s*DEST_ROOT=/m);
+      assert.ok(
+        assignMatch,
+        'a fenced bash block reads $DEST_ROOT but never assigns it: ' + JSON.stringify(block.slice(0, 200))
+      );
+      const assignIndex = block.indexOf(assignMatch[0]);
+      const firstReadIndex = block.search(/\$DEST_ROOT\b/);
+      assert.ok(
+        firstReadIndex > -1 && assignIndex <= firstReadIndex,
+        'DEST_ROOT= assignment (index ' + assignIndex + ') must precede the first $DEST_ROOT read '
+        + '(index ' + firstReadIndex + ') in the same bash block: ' + JSON.stringify(block.slice(0, 200))
+      );
+    }
   });
 });
 
@@ -10566,5 +11107,50 @@ describe('#3026: installer --help documents every accepted runtime flag', () => 
     );
     assert.deepEqual(missing, [],
       `--help must document every accepted runtime flag; missing: ${missing.join(', ')}`);
+  });
+});
+
+// ─── #3184: scripts/lib/ and scripts/changeset/ install/uninstall parity ────
+//
+// install() copies both source directories WHOLESALE (every file present —
+// see bin/install.js's "and any future lib helpers" comment), but uninstall()
+// removes files via an EXPLICIT hardcoded enumeration (GSD_SCRIPTS_LIB_FILES /
+// GSD_CHANGESET_FILES). Nothing keeps the two in sync: a file added to either
+// source directory ships to every install and then orphans on uninstall (it
+// survives removal, keeps the target dir non-empty, and blocks its rmdir).
+// This guard fails the moment the real directory outgrows the enumeration.
+
+/**
+ * Pure comparison: every file actually present in a source dir must be named
+ * in the corresponding uninstall enumeration. Decoupled from fs so it can be
+ * exercised directly with doctored input (see the probe in the PR report).
+ */
+function findUnenumeratedFiles(actualFiles, enumeratedFiles) {
+  const enumerated = new Set(enumeratedFiles);
+  return actualFiles.filter(f => !enumerated.has(f));
+}
+
+describe('#3184: scripts/lib/ and scripts/changeset/ install/uninstall parity', () => {
+  const REPO_ROOT = path.join(__dirname, '..');
+
+  function realFilesIn(relativeDir) {
+    const dir = path.join(REPO_ROOT, relativeDir);
+    return fs.readdirSync(dir).filter(entry => fs.statSync(path.join(dir, entry)).isFile());
+  }
+
+  test('every file in scripts/lib/ is enumerated in GSD_SCRIPTS_LIB_FILES (bin/install.js)', () => {
+    const unenumerated = findUnenumeratedFiles(realFilesIn(path.join('scripts', 'lib')), GSD_SCRIPTS_LIB_FILES);
+    assert.deepEqual(unenumerated, [],
+      `scripts/lib/${unenumerated.join(', scripts/lib/')} exist on disk but are missing from ` +
+      `GSD_SCRIPTS_LIB_FILES in bin/install.js — add ${unenumerated.length === 1 ? 'it' : 'them'} to that ` +
+      'array so uninstall() removes it (otherwise it ships to every install and orphans on uninstall).');
+  });
+
+  test('every file in scripts/changeset/ is enumerated in GSD_CHANGESET_FILES (bin/install.js)', () => {
+    const unenumerated = findUnenumeratedFiles(realFilesIn(path.join('scripts', 'changeset')), GSD_CHANGESET_FILES);
+    assert.deepEqual(unenumerated, [],
+      `scripts/changeset/${unenumerated.join(', scripts/changeset/')} exist on disk but are missing from ` +
+      `GSD_CHANGESET_FILES in bin/install.js — add ${unenumerated.length === 1 ? 'it' : 'them'} to that ` +
+      'array so uninstall() removes it (otherwise it ships to every install and orphans on uninstall).');
   });
 });
