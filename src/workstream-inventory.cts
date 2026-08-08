@@ -78,11 +78,26 @@ function workstreamsRoot(cwd: string): string {
   return path.join(planningRoot(cwd), 'workstreams');
 }
 
-function countRoadmapPhases(roadmapPath: string, fallbackCount: number): number {
+/**
+ * #3185 (ADR-3180 Decision 1): count the phases the CURRENT milestone
+ * declares, not every `Phase` heading in the file.
+ *
+ * This previously matched `^#{2,4}\s+Phase\s+…` across the whole ROADMAP with
+ * no milestone window and no sentinel filter, so it counted 999.* backlog and
+ * Phase 0 headings and spanned every milestone the document had ever had.
+ * `getMilestonePhaseFilter` already computes exactly this number for the
+ * scoped window (`phaseCount`, sentinel-filtered), and `inspectWorkstream` in
+ * this same file already passes a resolved `currentVersion` to it — this
+ * function was the sibling copy that never got the fix.
+ */
+function countRoadmapPhases(roadmapPath: string, fallbackCount: number, cwd?: string, ws?: string | null, versionOverride?: string | null): number {
   try {
-    const roadmapContent = fs.readFileSync(roadmapPath, 'utf-8');
-    const matches = roadmapContent.match(/^#{2,4}\s+Phase\s+[\w][\w.-]*/gm);
-    return matches ? matches.length : fallbackCount;
+    if (!fs.existsSync(roadmapPath)) return fallbackCount;
+    if (!cwd) return fallbackCount;
+    const filter = getMilestonePhaseFilter(cwd, versionOverride ?? null, null, ws ?? null);
+    // A pass-all degrade (phaseCount 0) means the window declared no phases —
+    // fall back rather than reporting a confident zero.
+    return filter.phaseCount > 0 ? filter.phaseCount : fallbackCount;
   } catch {
     return fallbackCount;
   }
@@ -717,7 +732,7 @@ function inspectWorkstream(cwd: string, name: string, options: InspectWorkstream
   // declares in its Progress table but never scaffolded — the heading-only
   // count drops them, even when other headings exist. Union the declared rows
   // with the phase directories so neither source can silently shrink it.
-  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length);
+  let fallbackPhaseCount = countRoadmapPhases(p.roadmap, phaseDirNames.length, cwd, name, currentVersion);
   if (!scoped && progressRows.length > 0) {
     const union = new Set(progressRows.map(row => row.key));
     for (const entry of phaseFilesCounts) union.add(entry.phaseKey);
