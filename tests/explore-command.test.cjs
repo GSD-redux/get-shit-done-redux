@@ -87,13 +87,6 @@ describe('explore research-pass claim disposition (#2229)', () => {
   const workflowPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'explore.md');
   const readWorkflow = () => fs.readFileSync(workflowPath, 'utf-8');
 
-  test('research pass documents the three-way admit/refute/abstain disposition', () => {
-    const content = readWorkflow().toLowerCase();
-    assert.ok(content.includes('admit'), 'research pass must document the "admit" disposition');
-    assert.ok(content.includes('refute'), 'research pass must document the "refute" disposition');
-    assert.ok(content.includes('abstain'), 'research pass must document the "abstain" disposition');
-  });
-
   test('abstained claims route to an unresolved ledger, never smoothed into prose', () => {
     const content = readWorkflow();
     assert.ok(
@@ -106,22 +99,15 @@ describe('explore research-pass claim disposition (#2229)', () => {
     );
   });
 
-  test('admit arm requires a prompted-to-refute pass AND grounding in a source', () => {
-    const content = readWorkflow().toLowerCase();
-    assert.ok(
-      content.includes('refute') && (content.includes('ground') || content.includes('source')),
-      'admit must survive a refute pass and be grounded in a source'
-    );
-  });
-
   test('#2543 M1: the researcher agent is taught the disposition enum, so admit is reachable', () => {
     // The admit arm only fires if the spawned researcher actually emits
     // [admit/refute/abstain] tags. explore.md's spawn prompt asks for them, but
     // gsd-phase-researcher is a SHARED agent carrying its own [VERIFIED]/[CITED]/
     // [ASSUMED] contract — if it never learned the disposition enum it follows its
     // own template, every finding returns untagged, and the three-way disposition
-    // degenerates to all-abstain. Assert BOTH ends of the contract, not just the
-    // word "admit" somewhere in the workflow (the vacuous version above).
+    // degenerates to all-abstain. Assert BOTH ends of the contract (the spawn
+    // prompt asks for the tags AND the agent defines them), not a bare
+    // word-presence grep — the two vacuous checks that did that were deleted (#2543 B1).
     const explore = readWorkflow();
     const spawn = explore.slice(
       explore.indexOf('Agent('),
@@ -309,6 +295,46 @@ describe('explore research-pass claim disposition (#2229)', () => {
     assert.ok(
       content.includes('#1154'),
       'the disposition must cite its #1154 honest-verifier precedent so the reuse is traceable'
+    );
+  });
+
+  test('#2543 B2: the research pass bootstraps gsd_run before the tier-floor probes', () => {
+    // The tier floor abstains EVERY claim when both resolve-model probes come back
+    // empty. On a fresh shell that happens unless gsd_run is defined IN the same
+    // bash block — a required_reading @-ref does not put a shell function in scope.
+    // Assert the resolver shim is inlined ahead of the FIRST resolve-model probe,
+    // not only in the later commit block, so the admit arm is actually reachable.
+    const explore = readWorkflow();
+    const probe = explore.indexOf('resolve-model gsd-phase-researcher --pick model');
+    assert.ok(probe !== -1, 'the research pass must call resolve-model to arm the tier floor');
+    const fenceStart = explore.lastIndexOf('```bash', probe);
+    assert.ok(fenceStart !== -1 && fenceStart < probe, 'the probe must sit inside a bash fence');
+    const block = explore.slice(fenceStart, probe);
+    assert.ok(
+      block.includes('_GSD_SHIM_NAME="gsd-tools.cjs"') || /gsd_run\(\)\s*\{/.test(block),
+      'the gsd_run resolver shim must be bootstrapped inside the research bash block, before ' +
+        'the resolve-model probe — otherwise gsd_run is undefined, both probes return empty, ' +
+        'and the tier floor abstains every claim (#2543 B2)',
+    );
+  });
+
+  test('#2543 B3: the crystallize step carries the disposition into durable artifacts', () => {
+    // An abstained claim must not be laundered into a flat Note/Requirement/phase.
+    // Assert Steps 4-5 (the durable-write surface) forbid crystallizing an
+    // unresolved-ledger claim as a flat assertion and mandate carrying the
+    // disposition — keyed on that region, not a generic earlier mention.
+    const explore = readWorkflow();
+    const step4 = explore.indexOf('## Step 4');
+    const step6 = explore.indexOf('## Step 6');
+    assert.ok(step4 !== -1 && step6 !== -1 && step4 < step6, 'Steps 4 and 6 must exist in order');
+    const crystallize = explore.slice(step4, step6).toLowerCase();
+    assert.ok(
+      /unresolved[^.]{0,60}never[^.]{0,60}crystalliz/.test(crystallize),
+      'Steps 4-5 must forbid crystallizing an unresolved-ledger claim as a flat assertion (#2543 B3)',
+    );
+    assert.ok(
+      /carry[^.]{0,60}disposition/.test(crystallize),
+      'Steps 4-5 must carry the research disposition into the durable artifact (#2543 B3)',
     );
   });
 });
