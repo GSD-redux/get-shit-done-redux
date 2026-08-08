@@ -3493,6 +3493,22 @@ describe('state validate command', () => {
     assert.strictEqual(output.warnings.length, 0, 'Should have no warnings');
   });
 
+  test('archived "Current Phase:" line does not trigger false-positive conflict when frontmatter is correct', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      `---\ncurrent_phase: 2\n---\n# Project State\n\n## Current Position\n**Phase:** 2\n\n## Archive\n**Current Phase:** 1 (completed last week)\n`
+    );
+
+    const phaseDir = path.join(tmpDir, '.planning', 'phases', '02-core');
+    fs.mkdirSync(phaseDir, { recursive: true });
+
+    const result = runGsdTools('state validate', tmpDir);
+    assert.ok(result.success, `Command failed: ${result.error}`);
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.valid, true, 'Should be valid, legacy extractor should not read the archive');
+    assert.strictEqual(output.warnings.length, 0, 'Should have no phase_reference conflict warnings');
+  });
+
   test('missing STATE.md returns graceful error', () => {
     const result = runGsdTools('state validate', tmpDir);
     assert.ok(result.success, 'Should not crash');
