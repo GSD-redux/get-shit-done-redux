@@ -59,12 +59,26 @@
  * quoted/backticked strings (not shared — `lint-plan-count-drift.cjs` has no
  * equivalent need, since its own literal-bearing shape is regex-only).
  *
- * Owner file (exempt by construction): `src/roadmap-parser.cts` — it not only
- * DEFINES this grammar but composes `#{1,3}` with `(?!Phase...)`/marker
- * alternations at several internal call sites (`computeMilestoneSectionEnd`,
- * `locateMilestoneHeadings`, `extractCurrentMilestoneScoped`'s
- * `anyMilestonePattern`/`anyMilestoneOrDetails`) that are the canonical
- * implementation, not copies of it.
+ * Owner file: `src/roadmap-parser.cts` DEFINES this grammar, but it is NOT
+ * exempt as a whole file — that was the original design (a bare per-file
+ * allowlist) and it closed off exactly the blind spot ADR-3180 Decision 4(a)
+ * warns about: `getMilestoneInfo`, added later in this same owner file,
+ * hand-rolled its own milestone-heading regex (issues #3171, #3197) and the
+ * whole-file exemption made it invisible to this guard. The owner file is now
+ * scanned like every other file in SCAN_DIRS; only its named canonical
+ * functions are exempt (`FUNCTION_SCOPED_EXEMPTIONS`, keyed on `OWNER_FILE`),
+ * each with a written reason — `isMilestoneShippedInRoadmap`,
+ * `locateMilestoneHeadings`, `hasMilestoneSectioning`, and
+ * `extractCurrentMilestoneScoped` (whose `anyMilestonePattern`/
+ * `anyMilestoneOrDetails` locals compose `#{1,3}` with the `(?!Phase...)`/
+ * marker alternations as part of the canonical implementation, not a copy of
+ * it). `computeMilestoneSectionEnd` carries (a) and (b) on two DIFFERENT
+ * lines (the heading-quantifier match and the version/marker test are two
+ * separate statements) rather than one line carrying both, so this guard's
+ * own documented per-line-scan limit means it never fires there and it needs
+ * no listed exemption. An unrelated re-derivation added anywhere else
+ * in this file — including inside a function added after this guard, such as
+ * a future `getMilestoneInfo`-shaped one — is still caught.
  *
  * The tree-walk / root-confinement / regex-literal-tokenizer / sanitizer
  * machinery is SHARED with `scripts/lint-plan-count-drift.cjs` via
@@ -156,9 +170,35 @@ const OWNER_FILE = path.join('src', 'roadmap-parser.cts');
 //     does not itself carry token (b) as this guard defines it (no
 //     `(?!Phase` lookahead, no marker-emoji pairing) — this exemption
 //     currently documents intent rather than suppressing a live match.
+//   - roadmap-parser.cts isMilestoneShippedInRoadmap: composes the heading
+//     quantifier with the shipped/active MARKER check (via
+//     isClosedMilestoneHeading) to answer "is THIS milestone version marked
+//     shipped by the ROADMAP" — a documented, narrower question than
+//     computeMilestoneSectionEnd/locateMilestoneHeadings' "where does it
+//     end"/"which heading is it", not a copy of either.
+//   - roadmap-parser.cts locateMilestoneHeadings: this literally IS the
+//     canonical heading-locator this guard exists to protect (see the
+//     function's own header comment) — every other module's heading lookup
+//     is expected to call it, not re-express it.
+//   - roadmap-parser.cts hasMilestoneSectioning: the canonical "does this
+//     ROADMAP use milestone sectioning at all" predicate — a deliberately
+//     WEAKER, version-agnostic composition of the same two tokens, owned
+//     here per its own header comment so the milestone-heading vocabulary
+//     has one home rather than a third hand-rolled copy in state.cts.
+//   - roadmap-parser.cts extractCurrentMilestoneScoped: its
+//     `anyMilestoneOrDetails`/`anyMilestonePattern` locals are the two
+//     internal call sites the header comment already names as part of the
+//     canonical implementation (composing `#{1,3}` with the
+//     `(?!Phase...)`/marker alternations to find "the next milestone
+//     boundary" while assembling the current-milestone window) — not
+//     re-derivations of a question answered elsewhere.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap-command-router.cts'), new Set(['checkW021'])],
   [path.join('src', 'verify.cts'), new Set(['checkMilestonePrefixMismatches'])],
+  [
+    OWNER_FILE,
+    new Set(['isMilestoneShippedInRoadmap', 'locateMilestoneHeadings', 'hasMilestoneSectioning', 'extractCurrentMilestoneScoped']),
+  ],
 ]);
 
 // Optional `export ` modifier, mirroring `lint-plan-count-drift.cjs`'s
@@ -196,13 +236,42 @@ function readStringLiteralAt(line, start) {
 }
 
 /**
+ * Strip comment text from a line before detection. A guard that fires on a
+ * COMMENT — including a comment documenting that the code below uses the
+ * canonical owner, or prose quoting this guard's own detector shapes — reports
+ * prose as drift and trains readers to add exemptions for documentation.
+ * Handles the three shapes that appear in this codebase: a whole-line
+ * block-comment continuation (`*` or `/*` leading), a `//` line comment, and
+ * a trailing `//` after code. Mirrors `lint-phase-enumeration-drift.cjs`'s
+ * own copy (not shared — each guard applies it at a slightly different point
+ * in its detection pipeline).
+ *
+ * Deliberately simple and conservative: it does not attempt full block-comment
+ * state tracking across lines (this is a per-line scan, same tradeoff the
+ * sibling guards document). A `//` inside a string literal would be stripped
+ * early — accepted, because the effect is to UNDER-report on a pathological
+ * line, never to over-report prose as drift.
+ */
+function stripComments(line) {
+  const trimmed = line.trim();
+  // Whole-line block comment or JSDoc continuation.
+  if (trimmed.startsWith('*') || trimmed.startsWith('/*') || trimmed.startsWith('//')) return '';
+  // Trailing line comment after code.
+  const idx = line.indexOf('//');
+  return idx === -1 ? line : line.slice(0, idx);
+}
+
+/**
  * The first literal (regex OR quoted/backtick string) on `line` whose text
  * contains a HEADING_QUANTIFIER_RE match — the "smoking gun" fragment worth
  * reporting, mirroring `findRegexLiteralMdMatch`'s role in the sibling guard.
  * Falls back to a bounded, trimmed slice of the raw line when the tokens are
  * not both inside one located literal (not currently reachable against this
  * repo — see the header comment's per-file audit — but a fail-safe rather
- * than a thrown error if a future line splits them).
+ * than a thrown error if a future line splits them). Takes the RAW `line`
+ * (not comment-stripped) so a reported fragment still shows the actual source
+ * text — comment-stripping is applied only to the detection decision, never
+ * to the reported fragment.
  */
 function extractFragment(line) {
   for (let i = 0; i < line.length; i++) {
@@ -233,8 +302,11 @@ function findMilestoneWindowDrift(text, relPath) {
     const fnMatch = TOP_LEVEL_FUNCTION_RE.exec(line);
     if (fnMatch) currentFunction = fnMatch[1];
 
-    if (!HEADING_QUANTIFIER_RE.test(line)) continue;
-    const isMilestoneWindowToken = PHASE_LOOKAHEAD_RE.test(line) || (VERSION_TOKEN_RE.test(line) && MARKER_EMOJI_RE.test(line));
+    const code = stripComments(line);
+    if (!code.trim()) continue;
+
+    if (!HEADING_QUANTIFIER_RE.test(code)) continue;
+    const isMilestoneWindowToken = PHASE_LOOKAHEAD_RE.test(code) || (VERSION_TOKEN_RE.test(code) && MARKER_EMOJI_RE.test(code));
     if (!isMilestoneWindowToken) continue;
 
     if (exemptFunctions && exemptFunctions.has(currentFunction)) continue;
@@ -255,10 +327,12 @@ function scanRepo(root) {
     scanExt: SCAN_EXT,
     onFile(rel, text) {
       // `rel` is already the REAL (canonical) path (scanTree resolves
-      // symlinks before calling onFile), so this comparison — and
+      // symlinks before calling onFile), so this — and
       // FUNCTION_SCOPED_EXEMPTIONS above, also keyed on `rel` — match
-      // consistently regardless of which symlink reached the file.
-      if (rel === OWNER_FILE) return [];
+      // consistently regardless of which symlink reached the file. The owner
+      // file is NOT short-circuited here; it is scanned like every other
+      // file, and only its named canonical functions are exempt (see
+      // FUNCTION_SCOPED_EXEMPTIONS).
       return findMilestoneWindowDrift(text, rel).map((d) => ({ file: rel, ...d }));
     },
   });
@@ -297,4 +371,5 @@ module.exports = {
   FUNCTION_SCOPED_EXEMPTIONS,
   readStringLiteralAt,
   extractFragment,
+  stripComments,
 };

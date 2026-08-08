@@ -16,10 +16,10 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir } = phaseIdMod;
+const { escapeRegex, parsePhaseFromProse, PHASE_NUMBER_TOKEN_SOURCE, phaseKeyFromToken, phaseKeyFromDir, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { getMilestoneInfo, getMilestonePhaseFilter, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
+const { getMilestoneInfo, extractCurrentMilestone, isMilestoneBoundedInRoadmap, hasMilestoneSectioning } = roadmapParserMod;
 import { platformWriteSync, platformReadSync, platformEnsureDir, retryRenameSync, toPosixPath } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -33,6 +33,9 @@ import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningScopeMod = require('./planning-scope.cjs');
 const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import phaseLocatorMod = require('./phase-locator.cjs');
+const { listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateTransitionMod = require('./state-transition.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
@@ -54,6 +57,7 @@ import { tokenizeHeadings, collectSection, replaceSection } from './markdown-sec
 import type { HeadingToken } from './markdown-sectionizer.cjs';
 import { parseMarkdownTable, updateTableCell, deleteTableRow, insertTableRow, splitTableRow, isDelimiterRow } from './markdown-table.cjs';
 import { textEncodingError } from './validate.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -748,11 +752,14 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
   let totalPlans = 0;
   let totalSummaries = 0;
 
-  if (fs.existsSync(phasesDir)) {
-    const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
-    const phaseDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
-      .filter(e => e.isDirectory()).map(e => e.name)
-      .filter(isDirInMilestone);
+  {
+    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+    // CURRENT milestone" — routed through the canonical owner instead of a
+    // hand-rolled readdirSync + isDirInMilestone filter (which also never
+    // excluded sentinels, unlike the owner). The owner already handles an
+    // absent phasesDir as a real empty, so the fs.existsSync guard folds
+    // into it.
+    const phaseDirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
     for (const dir of phaseDirs) {
       const { planCount, summaryCount } = scanPhasePlans(path.join(phasesDir, dir));
       totalPlans += planCount;
@@ -760,7 +767,7 @@ function cmdStateUpdateProgress(cwd: string, raw: boolean): void {
     }
   }
 
-  const percent = totalPlans > 0 ? Math.min(100, Math.round(totalSummaries / totalPlans * 100)) : 0;
+  const percent = clampPercent(totalSummaries, totalPlans);
   const barWidth = 10;
   const filled = Math.round(percent / 100 * barWidth);
   const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
@@ -1697,10 +1704,11 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
           // #3017: scope the milestone filter to the STORED milestone when available,
           // so a state.* write doesn't auto-derive (and mis-bind) to a different
           // milestone's heading and clobber the stored value + progress counts.
-          const isDirInMilestone = getMilestonePhaseFilter(cwd, storedMilestone ?? undefined) as (dir: string) => boolean;
-          const allMatchingDirs = fs.readdirSync(phasesDir, { withFileTypes: true })
-            .filter(e => e.isDirectory()).map(e => e.name)
-            .filter(isDirInMilestone);
+          // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+          // CURRENT (stored) milestone" — routed through the canonical owner
+          // instead of a hand-rolled readdirSync + isDirInMilestone filter
+          // (which also never excluded sentinels, unlike the owner).
+          const allMatchingDirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: storedMilestone ?? null }).value;
 
           // Bug #2445: when stale phase dirs from a prior milestone remain in
           // .planning/phases/ alongside new dirs with the same phase number,
@@ -1756,8 +1764,9 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
               // Only count tokens that contain at least one digit — excludes
               // pure-word section headings (Overview, Details) while keeping
               // numeric phases (01, 05.1) and project-code IDs (PROJ-42).
-              // Also exclude 999.x backlog phases. Mirrors init.cts filter.
-              if (!/\d/.test(m[1]) || /^999\b/.test(m[1])) continue;
+              // Also exclude sentinel phases (0 and 999.x backlog).
+              // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+              if (!/\d/.test(m[1]) || isSentinelPhaseId(m[1])) continue;
               // #1514: retired/folded phases are struck through in the ROADMAP;
               // exclude them from the denominator (they can never be completed).
               if (retiredPhaseNums.has(phaseKeyFromToken(m[1]))) continue;
@@ -3179,6 +3188,11 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
     try {
       const phasesDir = path.join(planningPaths(cwd).planning, 'phases');
       if (!fs.existsSync(phasesDir) || !fs.statSync(phasesDir).isDirectory()) return { ok: true, phases: [] };
+      // #3185: deliberately NOT listMilestonePhaseDirs. `state rebuild` is a
+      // RECONCILIATION pass against ground truth -- it must see every phase
+      // directory on disk so an orphan STATE.md row for a phase that no longer
+      // exists (or sits outside the current window) is dropped. Scoping this
+      // would make the rebuild silently preserve stale rows.
       const entries = fs.readdirSync(phasesDir);
       const records: PhaseInventoryRecord[] = [];
       for (const entry of entries) {
