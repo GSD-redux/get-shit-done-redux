@@ -1662,11 +1662,17 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
   if (cwd) {
     // DEAD catch removed (#2245 audit): getMilestoneInfo has its own outer
     // try/catch (roadmap-parser.cts) that already swallows every internal
-    // failure and always returns a MilestoneInfo — it never throws, so this
+    // failure and always returns a ScopedResult — it never throws, so this
     // wrapper could never be triggered.
+    // #3216 (ADR-3180 §7.2 Decision): this is the #3197 disk-write path — only
+    // a COMPLETE scope's identity is trustworthy enough to persist. On any
+    // other scope, write null for both fields rather than a fabricated
+    // milestone identity.
     const info = getMilestoneInfo(cwd);
-    milestone = info.version;
-    milestoneName = info.name;
+    if (info.scope === SCOPE.COMPLETE && info.value) {
+      milestone = info.value.version;
+      milestoneName = info.value.name;
+    }
   }
 
   let totalPhases: number | null = totalPhasesRaw ? parseInt(totalPhasesRaw, 10) : null;

@@ -227,12 +227,26 @@ const OWNER_FILE = path.join('src', 'roadmap-parser.cts');
 //     `(?!Phase...)`/marker alternations to find "the next milestone
 //     boundary" while assembling the current-milestone window) — not
 //     re-derivations of a question answered elsewhere.
+//   - roadmap-parser.cts listMilestoneHeadings: #3216 (epic #3180 §7.2's
+//     Scope amendment) — the version-AGNOSTIC sibling of
+//     `locateMilestoneHeadings`, and the function that textually DEFINES
+//     `MILESTONE_HEADING_LINE_SOURCE` (the one shared grammar constant both
+//     it and `locateMilestoneHeadings` build their pattern from) in its own
+//     source span. It is a named canonical function defining the grammar,
+//     not a copy of it — replacing the third independent re-derivation the
+//     widened guard found at `roadmap.cts:454`.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap-command-router.cts'), new Set(['checkW021'])],
   [path.join('src', 'verify.cts'), new Set(['checkMilestonePrefixMismatches'])],
   [
     OWNER_FILE,
-    new Set(['isMilestoneShippedInRoadmap', 'locateMilestoneHeadings', 'hasMilestoneSectioning', 'extractCurrentMilestoneScoped']),
+    new Set([
+      'isMilestoneShippedInRoadmap',
+      'locateMilestoneHeadings',
+      'listMilestoneHeadings',
+      'hasMilestoneSectioning',
+      'extractCurrentMilestoneScoped',
+    ]),
   ],
 ]);
 

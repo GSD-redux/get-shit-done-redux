@@ -864,7 +864,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         }
       }
     } else if (branchingStrategy === 'milestone') {
-      const milestone = getMilestoneInfo(cwd);
+      const milestone = getMilestoneInfo(cwd).value;
       if (milestone && milestone.version) {
         branchName = (config['milestone_branch_template'] as string)
           .replace('{milestone}', milestone.version)
@@ -1561,7 +1561,7 @@ async function cmdWebsearch(query: string | undefined, options: WebsearchOptions
 
 function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
-  const milestone = getMilestoneInfo(cwd);
+  const milestone = getMilestoneInfo(cwd).value;
 
   const phases: PhaseProgress[] = [];
   let totalPlans = 0;
@@ -1603,7 +1603,7 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     const barWidth = 10;
     const filled = Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone.version} ${milestone.name}\n\n`;
+    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
     out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
@@ -1620,8 +1620,8 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
   } else {
     // JSON format
     output({
-      milestone_version: milestone.version,
-      milestone_name: milestone.name,
+      milestone_version: milestone?.version ?? null,
+      milestone_name: milestone?.name ?? null,
       phases,
       total_plans: totalPlans,
       total_summaries: totalSummaries,
@@ -1865,7 +1865,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   const roadmapPath = planningPaths(cwd).roadmap;
   const reqPath = planningPaths(cwd).requirements;
   const statePath = planningPaths(cwd).state;
-  const milestone = getMilestoneInfo(cwd);
+  const milestone = getMilestoneInfo(cwd).value;
 
   // Phase & plan stats (reuse progress pattern)
   const phasesByNumber = new Map<string, {
@@ -1994,8 +1994,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   }
 
   const result = {
-    milestone_version: milestone.version,
-    milestone_name: milestone.name,
+    milestone_version: milestone?.version ?? null,
+    milestone_name: milestone?.name ?? null,
     phases,
     phases_completed: completedPhases,
     phases_total: phases.length,
@@ -2017,7 +2017,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     const barWidth = 10;
     const filled = Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone.version} ${milestone.name} — Statistics\n\n`;
+    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
     out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases (${percent}%)\n`;
     if (totalPlans > 0) {
       out += `**Plans:** ${totalSummaries}/${totalPlans} complete (${planPercent}%)\n`;

@@ -130,6 +130,55 @@ function computeMilestoneSectionEnd(content: string, headingText: string, headin
 }
 
 /**
+ * #3216 (epic #3180 §7.2 Scope amendment): the version-AGNOSTIC sibling of
+ * `locateMilestoneHeadings` — enumerates EVERY milestone heading in document
+ * order, carrying its own version token, curated name, and shipped/closed
+ * status. Consolidates the THIRD independent re-derivation the widened guard
+ * found at `roadmap.cts:454` (`cmdRoadmapAnalyze`'s inline
+ * `/##\s*(.*v(\d+(?:\.\d+)+)[^(\n]*)/gi`), which truncated names at a
+ * parenthetical and had no phase-heading exclusion.
+ *
+ * `MILESTONE_HEADING_LINE_SOURCE` immediately below is the ONE textual
+ * expression of the grammar `^#{1,3}\s+(?!Phase\s+\S)` in this file;
+ * `locateMilestoneHeadings` builds its own pattern from the SAME constant
+ * instead of re-typing the pattern text, so it is a version-FILTERED VIEW
+ * over this function's grammar, never a second expression of it.
+ *
+ * Name extraction follows the pinned rule (ADR-3180 §7.2 amendment, "Name
+ * extraction — pinned rule" via `extractMilestoneHeadingName`): strip
+ * everything through the heading's OWN version token — not necessarily one a
+ * caller is separately asking about — then ONE leading delimiter and
+ * surrounding whitespace via the shared `stripLeadingDelimiter`. `(` is an
+ * ordinary name character and is never a terminator (#3171). `getMilestoneInfo`
+ * shares this same extraction so the parenthetical rule has exactly one
+ * implementation.
+ */
+function listMilestoneHeadings(content: string): Array<{ heading: string; version: string; name: string | null; closed: boolean }> {
+  const pattern = new RegExp(MILESTONE_HEADING_LINE_SOURCE, 'gmi');
+  const out: Array<{ heading: string; version: string; name: string | null; closed: boolean }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(content)) !== null) {
+    const heading = m[0].replace(/^#{1,3}\s+/, '');
+    const extracted = extractMilestoneHeadingName(heading);
+    if (extracted === null) continue; // no version token on this heading — not a milestone heading
+    out.push({
+      heading,
+      version: extracted.version,
+      name: extracted.name,
+      closed: isClosedMilestoneHeading(heading),
+    });
+  }
+  return out;
+}
+
+// #3216: the ONE textual expression of "level-bounded (h1-h3), phase-excluded
+// heading line" in this file. `listMilestoneHeadings` and
+// `locateMilestoneHeadings` both build their pattern from this constant
+// rather than typing `^#{1,3}\s+(?!Phase\s+\S)` a second time — the exact
+// duplication class ADR-3180 §7.2's widened guard exists to catch.
+const MILESTONE_HEADING_LINE_SOURCE = '^#{1,3}\\s+(?!Phase\\s+\\S)[^\\n]*';
+
+/**
  * #3184: the sole milestone-heading locator. Boundary-matched on the version
  * token with `\b`, NOT the stricter `(?![\w.-])`: this function keeps `\b`
  * because a milestone STATE legitimately selects its own sub-milestone
@@ -142,17 +191,21 @@ function computeMilestoneSectionEnd(content: string, headingText: string, headin
  * selection. `extractCurrentMilestoneScoped`, `currentMilestoneRawRanges`,
  * and `getMilestonePhaseFilter`'s versionOverride branch all consume this
  * instead of re-deriving their own heading-location regex.
+ *
+ * #3216: rewritten as a version-FILTERED VIEW over `MILESTONE_HEADING_LINE_SOURCE`
+ * — the SAME grammar `listMilestoneHeadings` enumerates — rather than a
+ * second expression of it. The returned `RegExpExecArray[]` contract
+ * (`m[0] === m[1]`, `m.index` at the heading's start) is byte-for-byte
+ * unchanged, so its 4 existing callers are unaffected.
  */
 function locateMilestoneHeadings(content: string, version: string): RegExpExecArray[] {
   const escapedVersion = escapeRegex(version);
-  const pattern = new RegExp(
-    `(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}\\b[^\\n]*)`,
-    'gmi',
-  );
+  const boundary = new RegExp(`${escapedVersion}\\b`, 'i');
+  const pattern = new RegExp(`(${MILESTONE_HEADING_LINE_SOURCE})`, 'gmi');
   const matches: RegExpExecArray[] = [];
   let m: RegExpExecArray | null;
   while ((m = pattern.exec(content)) !== null) {
-    matches.push(m);
+    if (boundary.test(m[1])) matches.push(m);
   }
   return matches;
 }
@@ -715,7 +768,7 @@ function reportUnreadableRoadmap(err: unknown, roadmapPath: string): void {
 
 interface MilestoneInfo {
   version: string;
-  name: string;
+  name: string | null;
 }
 
 /**
@@ -731,7 +784,55 @@ function stripLeadingDelimiter(s: string): string {
   return s.replace(/^[\s—–:-]+/, '').trim();
 }
 
-function getMilestoneInfo(cwd: string): MilestoneInfo {
+/**
+ * #3216 (ADR-3180 §7.2's "Name extraction — pinned rule"): the sole "milestone
+ * heading text → version + curated name" rule. Strips everything through the
+ * heading's OWN version token — NOT necessarily a version a caller is
+ * separately asking about (a `v2.0` STATE selecting a `## v2.0.1 — Portability`
+ * heading yields the name `Portability`, never `.1 — Portability`) — then ONE
+ * leading delimiter and surrounding whitespace via `stripLeadingDelimiter`.
+ * `(` is an ordinary name character and is never a terminator (#3171). Shared
+ * by `listMilestoneHeadings` and `getMilestoneInfo` so this rule has exactly
+ * one implementation. Returns `null` when `headingText` carries no version
+ * token at all (e.g. a non-milestone heading reached this by mistake).
+ */
+function extractMilestoneHeadingName(headingText: string): { version: string; name: string | null } | null {
+  const versionMatch = headingText.match(/v\d+(?:\.\d+)+(?:[-.][A-Za-z0-9]+)*/i);
+  if (!versionMatch) return null;
+  const version = versionMatch[0];
+  const afterVersion = headingText.slice((versionMatch.index ?? 0) + version.length);
+  // Amendment (§7.2 pinned rule): after stripping the leading delimiter, also
+  // strip a trailing run of status markers (✅ 📋 🚧) plus surrounding
+  // whitespace — the marker is already carried structurally by `closed`, so
+  // duplicating it inside `name` (e.g. "Old ✅") is redundant and wrong. Only
+  // these three markers, only at the end; a marker inside a name is untouched.
+  const name = stripLeadingDelimiter(afterVersion).replace(/\s*(?:[✅📋🚧]\s*)+$/, '') || null;
+  return { version, name };
+}
+
+/**
+ * #3216 (epic #3180 §7.2, "Milestone identity"): which milestone is current,
+ * and what is it called. Binds to the canonical `locateMilestoneHeadings` /
+ * `listMilestoneHeadings` / `extractMilestoneHeadingName` owners and deletes
+ * both hand-rolled heading regexes this function used to carry — the
+ * level-blind STATE-version regex (#3197) and the unanchored fallback regex
+ * (#3171) — so the class of defect they produced ("### Phase N: … v3.3 …"
+ * read as milestone `v3.3`; a name truncated at `(`) is structurally
+ * unrepresentable rather than merely fixed on this one copy.
+ *
+ * Never throws (#2245) — the outer try/catch returns `{value: null, scope:
+ * UNREADABLE}` on any failure, preserving `state.cts:1663`'s "this wrapper
+ * could never be triggered" invariant. Absence (ENOENT) is silent (#1881,
+ * ADR-1411); a genuine read fault (e.g. EACCES) still reports via
+ * `reportUnreadableRoadmap`, which discriminates on the errno exactly as
+ * before.
+ *
+ * The `{version:'v1.0', name:'milestone'}` default this function used to
+ * return on every unresolved path is DELETED per §7.2 rule 4 — it was
+ * output-identical to a successful read of a genuine v1.0 project. Every
+ * unresolved path now returns a `scope` other than `COMPLETE` instead.
+ */
+function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: Scope } {
   // Declared here but RESOLVED INSIDE the try, so the catch can name the file without
   // moving planningDir() out of the protected region. planningDir throws a plain Error
   // for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and hoisting the call let that
@@ -740,6 +841,8 @@ function getMilestoneInfo(cwd: string): MilestoneInfo {
   // skipped and the default is returned exactly as before.
   let roadmapPath: string | undefined;
   try {
+    if (!cwd) return { value: null, scope: SCOPE.UNREADABLE };
+
     roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
     const roadmap = platformReadSync(roadmapPath);
     if (roadmap === null) throw new Error('missing');
@@ -775,53 +878,82 @@ function getMilestoneInfo(cwd: string): MilestoneInfo {
       );
       if (listMatch) {
         const name = stripLeadingDelimiter(listMatch[1]);
-        if (name) return { version: stateVersion, name };
+        if (name) return { value: { version: stateVersion, name }, scope: SCOPE.COMPLETE };
       }
 
-      // Fall back to the `##` heading — ANCHORED to line start (`^` + `m` flag)
-      // so a heading quoted inside backticks or prose mid-line can no longer
-      // match. Skip shipped (✅) headings.
-      const headingMatch = roadmap.match(
-        new RegExp(`^##[^\\n]*${escapedVer}[:\\s]+([^\\n(]+)`, 'im')
-      );
-      if (headingMatch && !headingMatch[0].includes('✅')) {
-        // Strip a leading delimiter — `.trim()` removes whitespace, not the
-        // em-dash/colon that conventionally separates version from name.
-        const name = stripLeadingDelimiter(headingMatch[1]);
-        if (name) return { version: stateVersion, name };
+      // #3216: heading selection routes through the shared owner
+      // (`selectMilestoneHeading` — locate → prefer-non-closed, mirroring
+      // `sliceMilestoneWindow`), deleting the level-blind `^##…` regex (#3197)
+      // and the unanchored `[:\s]+([^\n(]+)` name capture that truncated at a
+      // parenthetical (#3171). A CLOSED/shipped heading is not "current" (row
+      // 5) — it falls through to the TRUNCATED return below exactly as a
+      // missing heading would.
+      const selected = selectMilestoneHeading(roadmap, stateVersion);
+      if (selected) {
+        const headingText = selected[1].replace(/^#{1,3}\s+/, '');
+        if (!isClosedMilestoneHeading(headingText)) {
+          const extracted = extractMilestoneHeadingName(headingText);
+          if (extracted && extracted.name) {
+            return { value: { version: stateVersion, name: extracted.name }, scope: SCOPE.COMPLETE };
+          }
+        }
       }
 
-      return { version: stateVersion, name: 'milestone' };
+      // Version is known (STATE.md), but no name-bearing evidence resolved:
+      // no 🚧 bullet, no usable heading (absent, phase-only-excluded, shipped,
+      // or heading-but-nameless). §7.2 rule 4 — never fabricate a name.
+      return { value: { version: stateVersion, name: null }, scope: SCOPE.TRUNCATED };
     }
 
+    // No STATE.md version. The 🚧 in-progress bullet is still consulted first
+    // (unchanged from the pre-#3216 fallback).
     const inProgressMatch = roadmap.match(/🚧\s*\*\*v(\d+(?:\.\d+)+)\s+([^*]+)\*\*/);
     if (inProgressMatch) {
       return {
-        version: 'v' + inProgressMatch[1],
-        name: inProgressMatch[2].trim(),
+        value: { version: 'v' + inProgressMatch[1], name: inProgressMatch[2].trim() },
+        scope: SCOPE.COMPLETE,
       };
     }
 
+    // #3216: enumerate every OPEN (non-shipped) milestone heading via the
+    // shared owner and take the first in document order — deletes the
+    // unanchored `/## (?!.*✅).*v(\d+(?:\.\d+)+)[:\s]+([^\n(]+)/` fallback
+    // regex (#3171/#3197), whose `## ` prefix matched starting at the SECOND
+    // `#` of a `### Phase N: …` heading.
     const cleaned = stripShippedMilestones(roadmap);
-    const headingMatch = cleaned.match(/## (?!.*✅).*v(\d+(?:\.\d+)+)[:\s]+([^\n(]+)/);
-    if (headingMatch) {
-      return {
-        version: 'v' + headingMatch[1],
-        name: headingMatch[2].trim(),
-      };
+    const openHeadings = listMilestoneHeadings(cleaned).filter((h) => !h.closed);
+    if (openHeadings.length > 0) {
+      const first = openHeadings[0];
+      if (first.name) {
+        return { value: { version: first.version, name: first.name }, scope: SCOPE.COMPLETE };
+      }
+      return { value: { version: first.version, name: null }, scope: SCOPE.TRUNCATED };
     }
-    const versionMatch = cleaned.match(/v(\d+(?:\.\d+)+)/);
-    return {
-      version: versionMatch ? versionMatch[0] : 'v1.0',
-      name: 'milestone',
-    };
+
+    // No usable milestone heading anywhere. A version token mentioned ONLY
+    // inside an excluded `### Phase N: … vX.Y …` heading is not evidence
+    // (#3197) and must not be reported as if it were a real version — value
+    // stays null, scope UNSCOPED. A version token mentioned OUTSIDE any Phase
+    // heading (prose, a bullet, a non-milestone heading) is weak-but-real
+    // evidence — version retained, name null, scope TRUNCATED.
+    const withoutPhaseHeadingLines = cleaned.replace(/^#{1,4}\s*Phase\s+\S[^\n]*$/gim, '');
+    const bareVersionMatch = withoutPhaseHeadingLines.match(/v\d+(?:\.\d+)+/i);
+    if (bareVersionMatch) {
+      return { value: { version: bareVersionMatch[0], name: null }, scope: SCOPE.TRUNCATED };
+    }
+
+    // Free-form legacy ROADMAP with no version anywhere reachable, OR the
+    // only version-bearing heading was a `### Phase N` heading. §7.1's
+    // "free-form is COMPLETE" governs WINDOWING (whole document is the
+    // window); identity has no version to report and must not invent one.
+    return { value: null, scope: SCOPE.UNSCOPED };
   } catch (err) {
     // This function has no existsSync guard, so an absent ROADMAP arrives here too, as a
-    // synthetic Error with no errno. Only a real read fault is reported; the populated
-    // default is returned unchanged either way, and a plausible-looking default needs the
-    // diagnostic more than an empty sentinel does, not less (ADR-1411).
+    // synthetic Error with no errno. Only a real read fault is reported; `value: null` is
+    // returned unchanged either way, and a plausible-looking default needs the diagnostic
+    // more than an empty sentinel does, not less (ADR-1411).
     if (roadmapPath !== undefined) reportUnreadableRoadmap(err, roadmapPath);
-    return { version: 'v1.0', name: 'milestone' };
+    return { value: null, scope: SCOPE.UNREADABLE };
   }
 }
 
@@ -1156,6 +1288,7 @@ export = {
   withPhaseSection,
   computeMilestoneSectionEnd,
   locateMilestoneHeadings,
+  listMilestoneHeadings,
   selectMilestoneHeading,
   classifyMilestoneWindow,
   // #3184: the sole "give me this version's window" composition — see its

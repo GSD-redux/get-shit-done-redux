@@ -825,7 +825,12 @@ function cmdInitExecutePhase(
 
   const config = loadConfig(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: getMilestoneInfo now returns a ScopedResult — `.value` carries the
+  // MilestoneInfo (or null on any non-COMPLETE scope). Display-only site;
+  // bracket-access below naturally reads `undefined` when unresolved, and
+  // `output()`'s JSON.stringify already omits an undefined-valued key, so the
+  // JSON bundle's existing null-handling is preserved unchanged.
+  const milestone = (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
 
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
   phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
@@ -905,10 +910,10 @@ function cmdInitExecutePhase(
             .replace('{slug}', (phaseInfo['phase_slug'] as string) || 'phase')
         : config.branching_strategy === 'milestone'
           ? (config.milestone_branch_template as string)
-              .replace('{milestone}', milestone['version'] as string)
+              .replace('{milestone}', (milestone['version'] as string | undefined) ?? '')
               .replace(
                 '{slug}',
-                generateSlugInternal(milestone['name'] as string) || 'milestone',
+                generateSlugInternal(milestone['name'] as string | undefined) || 'milestone',
               )
           : null,
 
@@ -1208,7 +1213,8 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
 
 function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: display-only — see cmdInitExecutePhase's comment on the same pattern.
+  const milestone = (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
   const latestCompleted = getLatestCompletedMilestone(cwd);
   const phasesDir = path.join(planningDir(cwd), 'phases');
   // #3185 (ADR-3180 Decision 1): "how many phase directories belong to the
@@ -1988,7 +1994,8 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
 
 function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: display-only — see cmdInitExecutePhase's comment on the same pattern.
+  const milestone = (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
 
   let phaseCount = 0;
   let completedPhases = 0;
@@ -2134,7 +2141,8 @@ function cmdInitMapCodebase(cwd: string, raw: boolean): void {
 
 function cmdInitManager(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: display-only — see cmdInitExecutePhase's comment on the same pattern.
+  const milestone = (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
   const _slashRuntime = resolveRuntime(cwd);
 
   const paths = planningPaths(cwd);
@@ -2751,7 +2759,8 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     /* intentionally empty */
   }
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: display-only — see cmdInitExecutePhase's comment on the same pattern.
+  const milestone = (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
   const _slashRuntime = resolveRuntime(cwd);
 
   // #1912: fail safe in workstream mode with no active workstream. With no active
