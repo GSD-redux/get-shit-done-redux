@@ -48,6 +48,9 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -421,7 +424,14 @@ function cmdHistoryDigest(cwd: string, raw: boolean): void {
 
   try {
     for (const { name: dir, fullPath: dirPath } of allPhaseDirs) {
-      const summaries = fs.readdirSync(dirPath).filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
+      // #3183: canonical summary set (root+nested) from the single owner.
+      // This call also opens every plan file's frontmatter to check
+      // superseded status even though cmdHistoryDigest never uses planFiles
+      // or the superseded distinction — that per-phase-dir cost is accepted
+      // deliberately (correctness/single-ownership over micro-optimization;
+      // summaryFiles itself is not superseded-filtered either way). Do not
+      // "optimize" this back into a second hand-rolled summary derivation.
+      const summaries = scanPhasePlans(dirPath).summaryFiles;
 
       for (const summary of summaries) {
         const summaryFilePath = path.join(dirPath, summary);
@@ -863,21 +873,29 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
     if (branchName) {
       const currentBranch = execGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
       if (currentBranch.exitCode === 0 && currentBranch.stdout.trim() !== branchName) {
-        // #2539: the #1278 intent is to CREATE the phase/milestone branch
+        // #2539/#3079: the #1278 intent is to CREATE the phase/milestone branch
         // before the FIRST commit on it — not to force-switch an already-
         // checked-out working branch onto a DIFFERENT existing branch. The
-        // prior fallback to a bare `git checkout <branch>` silently switched
-        // the whole working tree onto an existing unrelated branch in the same
-        // call that then committed (the only trace was a reflog entry). So:
-        // create-if-absent only. If the resolved branch already exists and the
-        // tree is on some other branch, do NOT switch — but never silently: log
-        // the resolution so the operator sees that the phase branch was
-        // resolved and deliberately not switched to (#2539 AC2: an auto-
-        // checkout mid-commit must never happen silently).
-        const create = execGit(['checkout', '-b', branchName], { cwd });
-        if (create.exitCode !== 0) {
-          // `git checkout -b` fails (non-zero) when the branch already exists.
-          // The operator is on the branch they intend to be on; commit there.
+        // prior `git checkout -b` both created AND switched (silently moving
+        // HEAD), which resurrected merged-and-deleted phase branches (#3079).
+        // Now: create-if-absent WITHOUT switching, using `git branch` instead
+        // of `git checkout -b`. The commit always lands on the current branch.
+        // If the resolved branch already exists, log the resolution so the
+        // operator sees that the phase branch was resolved and deliberately
+        // not switched to (#2539 AC2: an auto-checkout mid-commit must never
+        // happen silently).
+        const verify = execGit(['rev-parse', '--verify', `refs/heads/${branchName}`], { cwd });
+        if (verify.exitCode !== 0) {
+          // Branch does not exist — create it WITHOUT switching.
+          const create = execGit(['branch', branchName], { cwd });
+          if (create.exitCode !== 0) {
+            process.stderr.write(
+              `Warning: could not create ${branchingStrategy} branch "${branchName}" ` +
+              `(${create.stderr.trim()}); committing on the current branch "${currentBranch.stdout.trim()}".\n`
+            );
+          }
+        } else {
+          // Branch already exists — do NOT switch, commit on current branch.
           process.stderr.write(
             `Warning: resolved ${branchingStrategy} branch "${branchName}" already exists; ` +
             `committing on the current branch "${currentBranch.stdout.trim()}" instead of switching.\n`
@@ -1556,9 +1574,11 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
       const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
       const phaseNum = dm ? dm[1] : dir;
       const phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-      const summaries = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+      // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
+      // canonical pairing) from the single owner.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const plans = phaseScan.planCount;
+      const summaries = phaseScan.summaryCount;
 
       totalPlans += plans;
       totalSummaries += summaries;
@@ -1667,7 +1687,9 @@ function cmdTodoMatchPhase(cwd: string, phase: string | undefined, raw: boolean)
   if (phaseInfoDisk && phaseInfoDisk['found']) {
     try {
       const phaseDir = path.join(cwd, phaseInfoDisk['directory'] as string);
-      const planFiles = fs.readdirSync(phaseDir).filter(f => f.endsWith('-PLAN.md'));
+      // #3183: canonical plan set (root+nested, superseded-excluded) from the
+      // single owner, rather than a root-only hand-rolled readdirSync filter.
+      const planFiles = scanPhasePlans(phaseDir).planFiles;
       for (const pf of planFiles) {
         const planContent = platformReadSync(path.join(phaseDir, pf));
         if (planContent === null) continue;
@@ -1883,9 +1905,11 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
       // phaseName is everything after the token (strip leading '-')
       const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
       const phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-      const summaries = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+      // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
+      // canonical pairing) from the single owner.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const plans = phaseScan.planCount;
+      const summaries = phaseScan.summaryCount;
 
       totalPlans += plans;
       totalSummaries += summaries;

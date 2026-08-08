@@ -18,7 +18,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 const helpers = require(path.join(__dirname, 'helpers.cjs'));
@@ -279,8 +279,11 @@ describe('C: regression guard — version-bearing JSON files must be registered'
     // filter to .json in JS instead).
     let lines;
     try {
-      const out = execFileSync('git', ['ls-files'], { cwd: ROOT });
-      lines = out.toString().split('\n').filter((f) => f.endsWith('.json'));
+      // `gitOrThrow` returns a string (the seam is always utf-8), so no
+      // `.toString()` is needed here — the original Buffer#toString() call
+      // this replaces was a no-op on the seam's already-string stdout.
+      const out = gitOrThrow(['ls-files'], { cwd: ROOT });
+      lines = out.split('\n').filter((f) => f.endsWith('.json'));
     } catch (err) {
       t.skip('git unavailable: ' + err.message);
       return;

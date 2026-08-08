@@ -283,6 +283,34 @@ Pure Agent Skills (A alone) and pure MCP (D alone) were rejected as the foundati
 - **Determinism + drift-guard:** every generated artifact follows the universal `--check`/`--write` idiom and is committed; any constant shared between two surfaces gets a `DEFECT.GENERATIVE-FIX` parity assertion. Caps are asserted on **emitted per-runtime bytes** via real spawn-install tests (engine-direct tests are false-green for install behavior).
 - **Boundary coverage:** the composer's budget logic is tested at `cap-1 / cap / cap+1` per `RULESET.TESTS.boundary-coverage`.
 
+  **Amended by #3128 (Phase 0, design lock — [ADR-3128](3128-adaptive-runtime-evidence.md)) — one atom
+  RESERVED, not yet shipped.** This is the first amendment recorded *ahead of* the code rather than
+  alongside or after it, so the vocabulary count is unchanged at **29** until #3128's implementation
+  PR lands; the reservation exists so the widening is a coordinated decision rather than an organic
+  edit discovered in review.
+
+  *Reserved (1).* `state:runtime-evidence-eligible`, gating the contiguous runtime-evidence protocol
+  section in `debug.md`.
+
+  Two things about it are worth recording here rather than only in ADR-3128, because both are this
+  ADR's own rules biting:
+
+  1. **The atom is deliberately NOT `flag:--runtime-probes`.** #3128's probe policy is tri-state
+     (`adaptive` | `force` | `off`), resolved from an explicit flag, then a valid saved session
+     policy, then an `adaptive` default. Gating on the raw flag would exclude the protocol section
+     from every *default* invocation — `adaptive` carries no flag — so the feature's primary mode
+     could never activate. That is exactly the silent-exclusion failure admission gate (2) exists to
+     prevent, arriving through a different door: not "a fact nobody computes", but "a fact computed
+     for only one of three policies". The disjunction is therefore folded into a single boolean in
+     the FACT (`policy !== 'off'`, resolved by `cmdInitDebug`), the `state:chunked-mode` discipline.
+  2. **Gate (2) was satisfied ahead of the atom by a separate change.** #3149 gave `/gsd:debug` its
+     own `cmdInitDebug` entry point specifically so a debug-scoped fact could exist at all — the same
+     unblock `flag:--fix`, `state:fallow-enabled`, `state:git-create-tag`,
+     `state:reviewer-instances-configured` and `state:auto-advance-active` each needed, but landed as
+     its own PR rather than bundled with the atom it enables. Gate (1) — a named consuming section of
+     at least 400 bytes — remains unsatisfied until #3128 authors the section, which is why this is a
+     reservation and not a widening.
+
 ## Migration path
 
 Sequenced to de-risk — prove the pattern on the smallest surface first, scale last:

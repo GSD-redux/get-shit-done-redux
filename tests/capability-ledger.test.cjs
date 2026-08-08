@@ -25,12 +25,14 @@ const {
 // Destructure optional exports (new in this patch) — will be undefined until implemented.
 const { LedgerIOError, isValidLedgerEntry, readLedgerStrict, readSmallRegularFile } = capLedger;
 
-const cp = require('node:child_process');
+const { runHook } = require('./helpers/process-seam.cjs');
+// A single `mkfifo` system call creating a fixture FIFO — no install or build.
+const MKFIFO_TIMEOUT_MS = 15000;
 /** POSIX-only: make a FIFO at `p` (skips/returns false where mkfifo is unavailable). */
 function tryMkfifo(p) {
   if (process.platform === 'win32') return false;
-  const res = cp.spawnSync('mkfifo', [p], { stdio: 'ignore' });
-  return res.status === 0;
+  const res = runHook(p, [], { interpreter: 'mkfifo', timeoutMs: MKFIFO_TIMEOUT_MS });
+  return res.exitCode === 0;
 }
 
 // ---------------------------------------------------------------------------

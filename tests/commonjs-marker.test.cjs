@@ -33,9 +33,10 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawnSync } = require('node:child_process');
 
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { BUILD_TIMEOUT_MS, INSTALL_TIMEOUT_MS, PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   COMMONJS_MARKER,
@@ -75,15 +76,14 @@ function mkTmp(prefix) {
 function runInstall(root, runtime, extraArgs = []) {
   const env = { ...process.env, HOME: root, USERPROFILE: root, CLAUDE_CONFIG_DIR: root };
   delete env.GSD_TEST_MODE;
-  const result = spawnSync(
-    process.execPath,
+  const result = runNode(
     [INSTALL_SCRIPT, `--${runtime}`, '--global', '--config-dir', root, ...extraArgs],
-    { cwd: root, encoding: 'utf8', env },
+    { cwd: root, env, timeoutMs: INSTALL_TIMEOUT_MS },
   );
   assert.equal(
-    result.status,
+    result.exitCode,
     0,
-    `installer exited ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    `installer exited ${result.exitCode}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
   );
   return result;
 }
@@ -354,8 +354,8 @@ describe('#2544 regression: install must not clobber the config-root package.jso
   // hooks/dist is gitignored and built; scoped CI lanes do not run build:hooks,
   // so build it idempotently before driving a real install.
   before(() => {
-    const build = spawnSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf8' });
-    assert.equal(build.status, 0, `build:hooks failed: ${build.stderr}`);
+    const build = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
+    assert.equal(build.exitCode, 0, `build:hooks failed: ${build.stderr}`);
   });
 
   for (const runtime of ['opencode', 'claude']) {
@@ -410,13 +410,12 @@ describe('#2544 regression: install must not clobber the config-root package.jso
     // ERR_REQUIRE_ESM / "require is not defined" — the regression AC3 forbids.
     const target = path.join(root, 'hooks', 'lib', 'git-cmd.js');
     assert.ok(fs.existsSync(target), 'hooks/lib/git-cmd.js must be staged');
-    const probe = spawnSync(
-      process.execPath,
+    const probe = runNode(
       ['-e', `const m = require(${JSON.stringify(target)}); if (typeof m.isGitSubcommand !== 'function') { throw new Error('unexpected exports'); } console.log('loaded');`],
-      { cwd: root, encoding: 'utf8' },
+      { cwd: root, timeoutMs: PROBE_TIMEOUT_MS },
     );
     assert.equal(
-      probe.status,
+      probe.exitCode,
       0,
       `staged hook helper must load as CommonJS under an ESM config root\nstderr: ${probe.stderr}`,
     );

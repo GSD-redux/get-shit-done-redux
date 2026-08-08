@@ -104,11 +104,22 @@ Illustrative bash:
 ```bash
 INCOMPLETE_PHASE=""
 ROADMAP_JSON=$(gsd_run query roadmap.analyze)
+ROADMAP_SCOPE=$(echo "$ROADMAP_JSON" | jq -r '.scope // "complete"')
 if [ $? -ne 0 ] || [ -z "$ROADMAP_JSON" ]; then
   echo "⚠ WARNING: resume-incomplete-phase scan could not run (roadmap.analyze failed)." >&2
   echo "  The incomplete-phase invariant (#160) could not be verified." >&2
   echo "  Proceeding to prior-phase completeness check — review project state carefully." >&2
   # Fall through to prior_phase_completeness rather than silently skipping
+elif [ "$ROADMAP_SCOPE" != "complete" ]; then
+  # #3184/#3165: roadmap.analyze succeeded and returned a well-formed document,
+  # but its milestone window did not see all of its input, so `.phases[]` is a
+  # NON-answer rather than a real empty. Looping it would run the invariant over
+  # a phase list the scan could not populate and report "clean" — the silent
+  # disarm #3165 reports. Treated as scan-failed, same as an outright failure.
+  echo "⚠ WARNING: resume-incomplete-phase scan could not be scoped (roadmap.analyze scope: $ROADMAP_SCOPE)." >&2
+  echo "  The milestone window did not cover the whole ROADMAP, so the phase list is incomplete." >&2
+  echo "  The incomplete-phase invariant (#160) could not be verified — review project state carefully." >&2
+  # Fall through to prior_phase_completeness rather than silently passing
 else
   for PHASE_NUM in $(echo "$ROADMAP_JSON" | jq -r '.phases[] | (.number // .phase_number // empty)'); do
     PHASE_JSON=$(gsd_run query find-phase "$PHASE_NUM")
@@ -338,6 +349,7 @@ Resume with: `/gsd:progress --next --auto` once resolved.
 - [ ] `--no-resume`: Route 0 skipped, prior_phase_completeness defer prompt runs as before
 - [ ] `--force`: everything skipped (Gates, Route 0, prior_phase_completeness) → straight to `determine_next_action`
 - [ ] Scan uses `gsd_run` (canonical resolver form); errors are surfaced rather than suppressed
+- [ ] A `roadmap.analyze` result whose `scope` is not `complete` is treated as scan-failed (warn + fall through), never as a clean empty scan (#3184/#3165)
 - [ ] Predicate is plans-without-summaries (`plans.length > summaries.length`) — consistent with `determine_next_action` Route 4
 - [ ] Next action correctly determined from routing rules
 - [ ] Command invoked immediately without user confirmation

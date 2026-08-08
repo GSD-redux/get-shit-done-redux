@@ -449,6 +449,14 @@ export const INIT_COMMAND_ALIASES: CommandAlias[] = [
     "mutation": false
   },
   {
+    "canonical": "init.debug",
+    "aliases": [
+      "init debug"
+    ],
+    "subcommand": "debug",
+    "mutation": false
+  },
+  {
     "canonical": "init.new-workspace",
     "aliases": [
       "init new-workspace"

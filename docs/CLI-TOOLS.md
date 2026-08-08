@@ -184,6 +184,39 @@ node gsd-tools.cjs roadmap analyze
 node gsd-tools.cjs roadmap update-plan-progress <N>
 ```
 
+### Milestone window scope (`roadmap analyze`)
+
+`roadmap analyze` scopes its phase list to the current milestone's section of
+`ROADMAP.md`. Its JSON output carries a `scope` field describing how much of the
+intended input that scoping actually saw:
+
+| `scope` | Meaning |
+|---|---|
+| `complete` | The window was computed over the whole intended input. `phase_count: 0` here is a **real** answer — a freshly-declared milestone genuinely has no phases yet. |
+| `truncated` | The milestone's heading was found, but its window closed before reaching the document's phase region — typically because a closed-milestone heading sits between the active milestone and its `### Phase N:` sections. `phase_count: 0` here is a **non**-answer. |
+| `unscoped` | No milestone version could be resolved (or its section is absent) on a ROADMAP that does use versioned milestones, so the result is not milestone-scoped. |
+| `unreadable` | `ROADMAP.md` could not be read. |
+
+Before this field existed, all four cases produced the same well-formed
+`phase_count: 0` with no error, so a consumer could not tell a genuinely empty
+milestone from a scoping failure. Branch on `scope`, not on `phase_count` alone.
+
+A ROADMAP with no versioned milestone headings at all (the free-form legacy
+shape) reports `complete`: the whole document *is* the milestone there.
+
+### `milestone complete` refuses an untrustworthy window
+
+`milestone complete` archives `ROADMAP.md`/`REQUIREMENTS.md` and **moves phase
+directories** — a one-way door. When the milestone window's `scope` is
+`truncated` — the milestone heading was found but its section closes before
+reaching any phase entries, even though the ROADMAP has phase entries
+elsewhere — phase scoping cannot be trusted, and the command now refuses
+rather than falling back to an over-inclusive filter that would archive every
+phase directory in the project. `unreadable` (no ROADMAP.md at all) and
+`unscoped` (no section for this version) are pre-existing, legitimately
+handled states and are not refused here. Pass `--force` to override, the same
+affordance the unstarted-phase guard uses.
+
 ---
 
 ## Config Commands

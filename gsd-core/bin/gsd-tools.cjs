@@ -264,6 +264,9 @@ const { resolveActiveWorkstream, applyResolvedWorkstreamEnv } = require('./lib/a
 const state = require('./lib/state.cjs');
 const phase = require('./lib/phase.cjs');
 const roadmap = require('./lib/roadmap.cjs');
+// #3024: resolve skills root for the sync-skills workflow (install.js is not
+// shipped in installed trees; gsd-tools IS shipped, so the workflow calls this).
+const { getGlobalSkillsBase, isRegisteredRuntimeId } = require('./lib/runtime-homes.cjs');
 // #1561 — assumption-delta advisory checkpoint detector (pure function).
 const { detectAssumptionDelta } = require('./lib/assumption-delta.cjs');
 const verify = require('./lib/verify.cjs');
@@ -1044,6 +1047,37 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           commands.cmdCurrentTimestamp(args[1] || 'full', raw);
   }
 
+  function routeSkillsRoot({ args, raw, error }) {
+    // #3024: resolve the global skills base directory for a runtime.
+    // The sync-skills workflow previously shelled out to install.js --skills-root,
+    // but install.js is not shipped in installed trees. gsd-tools IS shipped, so
+    // the workflow now calls `gsd-tools query skills-root <runtime>` instead.
+    const runtime = args[1];
+    if (!runtime) {
+      error('Usage: gsd-tools query skills-root <runtime>');
+    }
+    // Defect B (#3024): validate the runtime id against the shipped capability
+    // registry's canonical runtime set BEFORE resolving anything.
+    // getGlobalSkillsBase falls through getGlobalConfigDir's unknown-runtime
+    // branch to claude's skills root for ANY id it doesn't recognize, so an
+    // unknown, empty/whitespace-only, path-traversal, or shell-metacharacter
+    // runtime arg would otherwise silently resolve to claude's path instead of
+    // failing loudly. isRegisteredRuntimeId does an own-property lookup (not a
+    // bare index), rejecting `__proto__`/`constructor`/`prototype` runtime
+    // ids, and is the SAME validator install.js's `--skills-root` entry point
+    // calls, so the two shipped entry points can never diverge on which
+    // runtime ids they accept.
+    if (!isRegisteredRuntimeId(runtime)) {
+      error(`Unknown runtime "${runtime}" — must be a registered runtime id`);
+    }
+    const trimmedRuntime = typeof runtime === 'string' ? runtime.trim() : '';
+    const skillsRoot = getGlobalSkillsBase(trimmedRuntime);
+    if (skillsRoot === null) {
+      error(`No skills root found for runtime "${trimmedRuntime}"`);
+    }
+    output({ skills_root: skillsRoot }, raw, skillsRoot);
+  }
+
   function routeProjectInstructionFile({ args, cwd, raw, error }) {
     // #1529: pure runtime→filename projection. Backs the
           // `gsd_run query project-instruction-file --runtime <r>` call in
@@ -1156,6 +1190,22 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
       return i !== -1 && args[i + 1] && !String(args[i + 1]).startsWith('--') ? args[i + 1] : null;
     };
     const sub = args[1];
+    // Fail fast on an unrecognized subcommand. Without this check, `sub` fell through
+    // to the `sub !== 'invoke'` usage-error branch far below (after loading the
+    // capability registry AND building a per-lane plan for every lane — which itself
+    // spawns one child `query resolve-execution` process per lane via `effortFor`,
+    // up to 12 subprocess spawns for the default lane set) before ever reporting the
+    // error. That made an invalid subcommand slow instead of instant, and under bench
+    // load (many sequential node spawns) `review-lane bogus` could exceed a caller's
+    // spawn timeout and be killed before writing anything to stderr — the CI-observed
+    // failure was empty stdout AND stderr, not the expected usage message (#3148).
+    // `plan`/`invoke` are the only subs that need the expensive plan-building path
+    // below; `sections`/`flags` return earlier still. Anything else errors here, before
+    // any of that work starts.
+    if (!['plan', 'invoke', 'sections', 'flags'].includes(sub)) {
+      error("Usage: review-lane <plan|invoke|sections|flags> [--selected a,b] [--run-dir D] [--repo-root R]");
+      return;
+    }
     const runDir = flag('--run-dir') || '.';
     const repoRoot = flag('--repo-root') || cwd;
 
@@ -1330,7 +1380,16 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
     // cannot be interrupted by --test-force-exit and hangs a whole CI chunk to its 10-minute kill.
     const deps = {
       spawn: (binary, argv, opts) => {
-        const r = cp.spawnSync(binary, argv, {
+        // #3086: on Windows, reviewer CLIs (gemini, codex, etc.) are installed
+        // as .cmd shims. spawnSync with a bare name + shell:false fails with
+        // ENOENT (CreateProcess cannot start .cmd). Apply the same #2667 shim
+        // gate used in runWithTimeout: detect .cmd/.bat and mediate through
+        // cmd.exe /d /s /c with an explicit argv array (no shell:true).
+        const isWin = process.platform === 'win32';
+        const winShim = isWin && /\.(cmd|bat)$/i.test(path.basename(binary));
+        const spawnBinary = winShim ? (process.env.ComSpec || 'cmd.exe') : binary;
+        const spawnArgv = winShim ? ['/d', '/s', '/c', binary, ...argv] : argv;
+        const r = cp.spawnSync(spawnBinary, spawnArgv, {
           input: opts.input,
           encoding: 'utf8',
           timeout: opts.timeoutMs,
@@ -2212,6 +2271,86 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           teamsStatus.cmdTeamsStatus(cwd, { active: args.includes('--active') });
   }
 
+  // #3023 follow-up (adversarial review finding): the shared hook bundle's
+  // directory name is runtime-descriptor-driven (bin/install.js
+  // `hostBehaviors.sharedHooksDirName`; default 'hooks', pi renames it to
+  // 'gsd-hooks'). A hardcoded 'hooks' literal in GSD_PREFIX_MANAGED_DIRS left
+  // this scan blind to a renamed bundle: `fs.existsSync(configDir/hooks)` is
+  // false for a pi install, so the ENTIRE gsd-hooks/ tree — including any
+  // user-added file inside it — was invisible to detect-custom-files and
+  // therefore never backed up before the next clean-install wipe (silent
+  // data loss).
+  //
+  // Resolution order, mirroring bin/install.js's own resolveSharedHooksDirName:
+  //   1. Read the per-install runtime marker written by the installer at
+  //      <configDir>/gsd-core/.gsd-runtime (#2297).
+  //   2. Look up that runtime's `hostBehaviors.sharedHooksDirName` in the
+  //      SHIPPED capability registry (./lib/capability-registry.cjs — a data
+  //      module in the same installed tree as this file). Deliberately NOT
+  //      `require('bin/install.js')`: that file is never shipped into an
+  //      installed tree (the #3024/#2071 bug class), so only the shipped data
+  //      module is read here.
+  //
+  // Asymmetric fallback: when the runtime or its descriptor cannot be
+  // determined (an install predating the marker, an unreadable/corrupt
+  // registry, or an unrecognized runtime id) this does NOT guess a single
+  // name — it returns every known candidate name instead. Over-scanning is
+  // safe here: a candidate directory that does not exist is silently skipped
+  // by the caller's `fs.existsSync` guard, and a file already tracked in the
+  // manifest is never reported as custom. Under-scanning is the actual bug
+  // being fixed: it would make a user's file vanish on the next wipe without
+  // ever being backed up.
+  function resolveSharedHooksDirCandidates(configDir) {
+    const DEFAULT_NAME = 'hooks';
+    // A resolved name is joined onto configDir and read back — reject
+    // anything that isn't a plain, separator-free segment so a corrupt
+    // registry value can never walk the scan outside the config root.
+    const isSafeSegment = (name) =>
+      typeof name === 'string' &&
+      name.trim() !== '' &&
+      name.trim() === name &&
+      name !== '.' &&
+      name !== '..' &&
+      !name.includes('/') &&
+      !name.includes('\\');
+
+    let registry = null;
+    try {
+      registry = require('./lib/capability-registry.cjs');
+    } catch {
+      registry = null;
+    }
+
+    const knownNames = new Set([DEFAULT_NAME]);
+    if (registry && registry.runtimes && typeof registry.runtimes === 'object') {
+      for (const desc of Object.values(registry.runtimes)) {
+        const name = desc && desc.runtime && desc.runtime.hostBehaviors &&
+          desc.runtime.hostBehaviors.sharedHooksDirName;
+        if (isSafeSegment(name)) knownNames.add(name);
+      }
+    }
+
+    let runtimeId = null;
+    try {
+      const markerPath = path.join(configDir, 'gsd-core', '.gsd-runtime');
+      const raw = fs.readFileSync(markerPath, 'utf8').trim();
+      runtimeId = raw || null;
+    } catch {
+      runtimeId = null;
+    }
+
+    if (runtimeId && registry && registry.runtimes && registry.runtimes[runtimeId]) {
+      const desc = registry.runtimes[runtimeId];
+      const name = desc && desc.runtime && desc.runtime.hostBehaviors &&
+        desc.runtime.hostBehaviors.sharedHooksDirName;
+      return [isSafeSegment(name) ? name : DEFAULT_NAME];
+    }
+
+    // Runtime undeterminable: scan every known candidate (see asymmetric
+    // fallback comment above).
+    return Array.from(knownNames);
+  }
+
   async function routeDetectCustomFiles({ args, cwd, raw, error }) {
     const configDirIdx = args.indexOf('--config-dir');
           const configDir = configDirIdx !== -1 ? args[configDirIdx + 1] : null;
@@ -2252,7 +2391,7 @@ function dispatchOverlayCapabilityCommand({ command, args, cwd, raw, error, load
           ];
           const GSD_PREFIX_MANAGED_DIRS = [
             'agents',
-            'hooks',
+            ...resolveSharedHooksDirCandidates(resolvedConfigDir),
             'skills',
           ];
 
@@ -3256,6 +3395,7 @@ const HOST_COMMAND_ROUTERS = {
     'user-story': routeUserStory,
     'drift-guard': routeDriftGuard,
     'windows': routeWindows,
+    'skills-root': routeSkillsRoot,
 };
 
 // Returns true when consumed (suppress "Unknown command"), false to fall
@@ -3472,7 +3612,7 @@ const TOP_LEVEL_USAGE = 'Usage: gsd-tools <command> [args] [--raw] [--pick <fiel
   'capability, classify-confidence, git, learnings, list-seeds, list-todos, loop, milestone, package-legitimacy, phase, phase-plan-index, phases, profile-questionnaire, ' +
   'profile-sample, progress, project-instruction-file, prompt-budget, quick-tasks-append, requirements, research-plan, research-store, resolve-granularity, resolve-model, restore-custom-files, roadmap, scaffold, smart-entry, state, ' +
   'config-set-model-profile, dispatch-isolation, dispatch-should-flatten, record-dispatch-isolation, estimate-calibrate, estimate-calibration, estimate-check, resolve-dispatch-type, ' +
-  'resolve-execution, review-lane, skill-manifest, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
+  'resolve-execution, review-lane, skill-manifest, skills-root, state-snapshot, stats, summary-extract, teams-status, todo, uat, update-context, verification, websearch, windows, ' +
   'task, template, user-story, validate, verify, verify-path-exists, verify-summary, eval, workstream, worktree\n\n' +
   'Global flags:\n' +
   '  --raw              Emit raw output without post-processing\n' +

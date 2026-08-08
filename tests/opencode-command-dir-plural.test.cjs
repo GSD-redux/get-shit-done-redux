@@ -33,13 +33,15 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const {
   runMinimalInstall,
   installerEnv,
   INSTALL_SCRIPT,
 } = require('./helpers/install-shared.cjs');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { cleanup } = require('./helpers.cjs');
 const {
   resolveRuntimeArtifactLayout,
@@ -61,11 +63,12 @@ function reinstallOpencode(root, scope = 'global') {
     args.push('--local');
     cwd = root;
   }
-  return spawnSync(process.execPath, args, {
+  const r = runNode(args, {
     cwd,
-    encoding: 'utf8',
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: INSTALL_TIMEOUT_MS,
   });
+  return { status: r.exitCode, stdout: r.stdout, stderr: r.stderr };
 }
 
 function gsdMdFiles(dir) {

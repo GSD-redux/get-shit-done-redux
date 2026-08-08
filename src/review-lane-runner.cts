@@ -330,7 +330,7 @@ interface TranscriptEntry {
 export function antigravityWatermark(
   workspace: string,
   deps: RunnerDeps,
-): { convId: string; lines: number } {
+): { convId: string; lines: number; unreadable?: boolean } {
   const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
   if (!deps.exists(cachePath)) return { convId: '', lines: 0 };
   let cache: Record<string, unknown>;
@@ -346,18 +346,31 @@ export function antigravityWatermark(
   try {
     return { convId, lines: deps.readFile(tx).split(/\r?\n/).filter((l) => l.trim()).length };
   } catch {
-    return { convId, lines: 0 };
+    // #3118: this conv-id pre-dates this run, so its transcript exists but this run cannot verify
+    // its line count. Reporting `lines: 0` would assert a fact we could not check — flag it instead
+    // so the fallback can decline rather than silently skip zero and replay a stale response.
+    return { convId, lines: 0, unreadable: true };
   }
 }
 
-/** Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides. */
-function resolveConvId(cache: Record<string, unknown>, workspace: string): string {
-  if (Object.prototype.hasOwnProperty.call(cache, workspace)) {
-    const direct = cache[workspace];
+/**
+ * Workspace lookup is case-insensitive — the leg's jq did `ascii_downcase` on both sides.
+ *
+ * #3118: a successful `JSON.parse` does not by itself make the payload a usable object —
+ * `JSON.parse('null')` succeeds and returns `null`, so a truncated/zeroed cache file slips past
+ * the callers' parse-only try/catch. `typeof null === 'object'`, so the guard below must exclude
+ * `null` explicitly. Arrays are excluded too (not a workspace map), which also falls out of the
+ * `Object.entries`/`hasOwnProperty` lookups below returning nothing for array input.
+ */
+function resolveConvId(cache: unknown, workspace: string): string {
+  if (cache === null || typeof cache !== 'object') return '';
+  const record = cache as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(record, workspace)) {
+    const direct = record[workspace];
     if (typeof direct === 'string' && direct) return direct;
   }
   const target = workspace.toLowerCase();
-  for (const [k, v] of Object.entries(cache)) {
+  for (const [k, v] of Object.entries(record)) {
     if (k.toLowerCase() === target && typeof v === 'string' && v) return v;
   }
   return '';
@@ -376,7 +389,7 @@ function transcriptPath(homeDir: string, convId: string): string {
  */
 export function antigravityTranscriptFallback(
   workspace: string,
-  mark: { convId: string; lines: number },
+  mark: { convId: string; lines: number; unreadable?: boolean },
   deps: RunnerDeps,
 ): string {
   const cachePath = `${deps.homeDir}/.gemini/antigravity-cli/cache/last_conversations.json`;
@@ -389,6 +402,9 @@ export function antigravityTranscriptFallback(
   }
   const convId = resolveConvId(cache, workspace);
   if (!convId) return '';
+  // #3118: the watermark could not read this conversation's transcript, so there is no trustworthy
+  // skip for it. Declining is the fail-closed answer; skipping 0 would replay a prior run's review.
+  if (mark.unreadable === true && convId === mark.convId) return '';
   const tx = transcriptPath(deps.homeDir, convId);
   if (!deps.exists(tx)) return '';
   let lines: string[];
@@ -648,7 +664,13 @@ function runSpawnLane(plan: SpawnPlan, deps: RunnerDeps, repoRoot: string): Lane
       : plan.argv;
 
   const out = deps.spawn(plan.binary, argv, { input, timeoutMs: plan.timeoutMs });
-  deps.writeFile(plan.errPath, out.stderr ?? '');
+  // #3086: surface spawn errors (ENOENT, ETIMEDOUT, etc.) that would otherwise
+  // be silently dropped — the review path read only stdout/stderr and treated
+  // an empty-stderr spawn failure as "the model had nothing to say".
+  const errContent = out.errorCode
+    ? `${out.stderr ?? ''}\n[spawn error: ${out.errorCode}]\n`
+    : (out.stderr ?? '');
+  deps.writeFile(plan.errPath, errContent);
 
   // `file-arg` lanes write the review themselves and their stdout is deliberately discarded (#1698).
   let review =

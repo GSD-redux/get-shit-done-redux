@@ -2290,11 +2290,13 @@ describe('feat-3210 / H5: enum validation for code_quality.fallow.scope and .pro
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 
@@ -2303,10 +2305,11 @@ function read(relativePath) {
 }
 
 function runGsd(args, cwd) {
-  return spawnSync(process.execPath, [path.join(ROOT, 'gsd-core/bin/gsd-tools.cjs'), ...args], {
+  const result = runNode([path.join(ROOT, 'gsd-core/bin/gsd-tools.cjs'), ...args], {
     cwd,
-    encoding: 'utf8',
+    timeoutMs: PROBE_TIMEOUT_MS,
   });
+  return toLegacyResult(result);
 }
 
 describe('bug #3212 execute-phase stall detection and safe resume', () => {

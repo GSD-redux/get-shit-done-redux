@@ -35,6 +35,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
 const { runGit } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { makeFaultyGit, withFaultyFs } = require('./helpers/faulty-deps.cjs');
 
 const {
@@ -51,6 +52,11 @@ const STALE_MTIME = new Date(0);
 /** The lock-owner PID written into every fixture; liveness is always injected. */
 const LOCK_OWNER_PID = '4242';
 
+// #3145: deliberately double the GIT_TIMEOUT_MS class norm (see
+// helpers/timeouts.cjs) — each test here does real-git worktree/branch setup
+// AND a `.git/worktrees/<name>/` admin-directory mutation AND one or more
+// reapOrphanWorktrees invocations, more subprocess work per test than the
+// plain fixture-setup case the norm is sized for.
 const GIT_TIMEOUT_MS = 30000;
 
 // ─── Path + git helpers ──────────────────────────────────────────────────────
@@ -70,9 +76,7 @@ function resolvedTmpDir() {
 /** Run git for FIXTURE SETUP; throws on anything but a clean exit. */
 function git(args, cwd) {
   const r = runGit(args, { cwd, timeoutMs: GIT_TIMEOUT_MS });
-  if (r.exitCode !== 0) {
-    throw new Error(`git ${args.join(' ')} failed (${r.outcome}/${r.exitCode}): ${r.stderr}`);
-  }
+  throwIfFailed(r, `git ${args.join(' ')}`);
   return r.stdout;
 }
 

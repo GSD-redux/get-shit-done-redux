@@ -488,6 +488,7 @@
   "scripts/gen-loop-host-contract.cjs",
   "scripts/lib/allowlist-ratchet.cjs",
   "scripts/lib/cli-exit.cjs",
+  "scripts/lib/drift-scan.cjs",
   "skills/gsd-add-tests/SKILL.md",
   "skills/gsd-ai-integration-phase/SKILL.md",
   "skills/gsd-audit-fix/SKILL.md",

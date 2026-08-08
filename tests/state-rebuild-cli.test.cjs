@@ -10,7 +10,9 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   createTempProject,
@@ -295,12 +297,14 @@ describe('ADR-1817 Phase 2: `state rebuild` CLI subcommand dispatch (criterion #
 
     // runGsdTools returns stdout only on success; --verbose writes to stderr,
     // so invoke gsd-tools directly to capture both streams separately.
-    const stdout = execFileSync(
-      process.execPath,
+    const r = runNode(
       [TOOLS_PATH, 'state', 'rebuild', '--verbose'],
-      { cwd, encoding: 'utf8' },
+      { cwd, timeoutMs: PROBE_TIMEOUT_MS },
     );
-    // execFileSync does not separate stderr — stderr is inherited by default.
+    throwIfFailed(r, 'gsd-tools state rebuild --verbose');
+    const stdout = r.stdout;
+    // The seam's runNode captures stderr separately (unlike execFileSync's
+    // default inherited stderr) but this test does not need it — see below.
     // Assert via the canonical record written to STATE.md: the audit log
     // section is always appended (mutated fixture), and --verbose merely
     // tees the same entries to stderr. The functional guarantee (audit log

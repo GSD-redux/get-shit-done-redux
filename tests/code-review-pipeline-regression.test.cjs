@@ -25,7 +25,9 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runHook } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 const { createTempDir, cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -627,10 +629,13 @@ describe('Bug 4 (#2352) — compute_file_scope tilde-path expansion', () => {
   function runPostProcessing(homeDir, files) {
     const script = extractPostProcessingScript();
     // "bash" as $0 so the real REVIEW_FILES entries land in "$@" from $1.
-    return spawnSync('bash', ['-c', script, 'bash', ...files], {
-      encoding: 'utf8',
-      env: { ...process.env, HOME: homeDir },
-    });
+    return toLegacyResult(
+      runHook('-c', [script, 'bash', ...files], {
+        interpreter: 'bash',
+        env: { ...process.env, HOME: homeDir },
+        timeoutMs: PROBE_TIMEOUT_MS,
+      })
+    );
   }
 
   let tmpHome;

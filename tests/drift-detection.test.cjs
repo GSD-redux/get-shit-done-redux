@@ -17,13 +17,14 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const {
   createTempProject,
   createTempGitProject,
   cleanup,
   runGsdTools,
 } = require('./helpers.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const DRIFT_PATH = path.join(
   __dirname,
@@ -52,9 +53,11 @@ const {
   DRIFT_CATEGORIES,
 } = require(DRIFT_PATH);
 
-// Small wrapper around execFileSync so tests don't sprinkle shell=true calls.
+// Small wrapper so tests don't sprinkle shell=true calls. Routed through
+// gitOrThrow (bounded, throw-on-failure) rather than bare `runGit` — this
+// helper's 16 callers all rely on the throw-on-failure contract.
 function git(cwd, ...args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  return gitOrThrow(args, { cwd }).trim();
 }
 
 // ─── Unit: classifyFile ──────────────────────────────────────────────────────
@@ -823,7 +826,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
 
 const GATE_MD = path.join(
@@ -832,9 +834,9 @@ const GATE_MD = path.join(
 const SNIPPET_FILE = path.join(__dirname, '..', 'gsd-core', 'workflows', '_runtime-launcher.snippet.sh');
 
 // readFileNormalized() strips \r\n -> \n before bashBlock() slices a fence
-// out of the result and hands it to execFileSync('bash', ...) below — an
-// un-normalized read on a Windows checkout would break bash mid-script
-// (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
+// out of the result and hands it to runHook('-c', ..., {interpreter:'bash'})
+// below — an un-normalized read on a Windows checkout would break bash
+// mid-script (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE, #2650).
 function readGate() {
   return readFileNormalized(GATE_MD);
 }
@@ -923,10 +925,12 @@ describe('bug #619 — codebase-drift-gate resolves gsd-tools via the runtime sh
       );
 
       const block = bashBlock(readGate(), 0) + '\nprintf "%s" "$DRIFT"\n';
-      const out = execFileSync('bash', ['-c', block], {
+      const shimResult = runHook('-c', [block], {
+        interpreter: 'bash',
         env: { ...process.env, RUNTIME_DIR: tmp },
-        encoding: 'utf8',
       });
+      throwIfFailed(shimResult, 'bash -c <shim-only drift-check block>');
+      const out = shimResult.stdout;
 
       assert.match(out, /SHIM_RAN/, 'the drift check must execute the resolved shim, proving gsd_run resolution');
       assert.doesNotMatch(out, /sdk-failed/, 'the gate must NOT silently skip when the shim is present (#619)');
@@ -940,10 +944,12 @@ describe('bug #619 — codebase-drift-gate resolves gsd-tools via the runtime sh
     // hits the 127 → `|| echo` skip path even though the shim (gsd-tools.cjs) exists.
     const oldForm =
       'DRIFT=$(gsd-tools verify codebase-drift 2>/dev/null || echo \'{"skipped":true,"reason":"sdk-failed"}\'); printf "%s" "$DRIFT"';
-    const out = execFileSync('bash', ['-c', 'export PATH=/nonexistent-empty-path; ' + oldForm], {
+    const oldFormResult = runHook('-c', ['export PATH=/nonexistent-empty-path; ' + oldForm], {
+      interpreter: 'bash',
       env: { ...process.env },
-      encoding: 'utf8',
     });
+    throwIfFailed(oldFormResult, 'bash -c <#619 bare-binary red-proof>');
+    const out = oldFormResult.stdout;
     assert.match(out, /sdk-failed/, 'sanity: the bare-binary form skips without gsd-tools on PATH — the bug the fix removes');
   });
 });

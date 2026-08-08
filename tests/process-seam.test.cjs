@@ -20,11 +20,10 @@ const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 const { createTempDir, cleanup, runGsdTools, TOOLS_PATH } = require('./helpers.cjs');
 const processSeam = require('./helpers/process-seam.cjs');
-const { runNode, runGit, runHook, OUTCOME } = processSeam;
+const { runNode, runGit, runHook, OUTCOME, toSeamResult } = processSeam;
 
 // ---- fixture sources -------------------------------------------------
 
@@ -265,6 +264,24 @@ describe('process-seam', () => {
     }
   });
 
+  test('toSeamResult classifies a raced status+ETIMEDOUT as EXITED, not TIMED_OUT', () => {
+    // Synthetic reproduction of the exact-bound race: spawnSync's timer
+    // fired (error.code === 'ETIMEDOUT') just as the child finished on its
+    // own (status: 0). Evidence (a real status) must outrank the attached
+    // error — the old discrimination order checked error.code first and
+    // reported TIMED_OUT with exitCode: 0, an incoherent shape.
+    const result = toSeamResult({
+      status: 0,
+      error: { code: 'ETIMEDOUT' },
+      signal: null,
+      stdout: '',
+      stderr: '',
+    });
+    assert.equal(result.outcome, OUTCOME.EXITED);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.exitCode, 0);
+  });
+
   test('child overrunning the bound is TIMED_OUT', () => {
     const fixture = writeFixture(tmpDir, 'sleeper.cjs', FIXTURE_SLEEPER);
     const result = runNode([fixture, '5000'], { timeoutMs: 200 });
@@ -443,8 +460,8 @@ describe('runHook interpreter option', () => {
   // node-only container may not have bash on PATH.
   function isBashAvailable() {
     if (process.platform === 'win32') return false;
-    const probeResult = spawnSync('bash', ['-c', 'exit 0']);
-    return !probeResult.error;
+    const probeResult = runHook('-c', ['exit 0'], { interpreter: 'bash' });
+    return probeResult.outcome !== OUTCOME.SPAWN_FAILED;
   }
 
   const bashAvailable = isBashAvailable();

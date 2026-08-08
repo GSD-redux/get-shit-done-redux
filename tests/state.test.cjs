@@ -2896,6 +2896,63 @@ describe('state planned-phase command', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// #3052: state planned-phase must not overwrite authoritative same-date
+// last_activity_desc from stale body prose
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('#3052: planned-phase preserves same-date last_activity_desc', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = createFixture();
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  test('same-date conflicting desc: frontmatter desc is preserved', () => {
+    // Frontmatter has authoritative desc; body has stale desc for the SAME date
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'last_activity: 2020-09-10',
+        'last_activity_desc: authoritative description',
+        '---',
+        '',
+        '# Project State',
+        '',
+        '**Status:** Planning',
+        '**Last Activity:** 2020-09-10 — stale description',
+        '**Current Phase:** 1',
+        '',
+      ].join('\n'),
+    );
+
+    const result = runGsdTools(
+      ['state', 'planned-phase', '--phase', '1', '--plans', '3'],
+      tmpDir,
+      { GSD_NOW_MS: String(Date.parse('2020-09-10T15:00:00.000Z')) },
+    );
+    assert.ok(result.success, `Command failed: ${result.error}`);
+
+    const stateContent = fs.readFileSync(path.join(tmpDir, '.planning', 'STATE.md'), 'utf-8');
+    // Extract only the frontmatter (between --- fences) to check the desc
+    const fmMatch = stateContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    const frontmatter = fmMatch ? fmMatch[1] : '';
+    assert.ok(
+      frontmatter.includes('authoritative description'),
+      'frontmatter last_activity_desc must be preserved when same-date body prose conflicts',
+    );
+    assert.ok(
+      !frontmatter.includes('stale description'),
+      'stale body desc must NOT appear in frontmatter (it may remain in body prose)',
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // bug #1070 regression: "Complete ✓" terminal status must yield to planned-phase
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -7107,7 +7164,8 @@ function readState(dir) {
 }
 
 function runGsdState(args, cwd) {
-  const { execFileSync } = require('child_process');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
   const env = {
     ...process.env,
     GSD_SESSION_KEY: '',
@@ -7116,17 +7174,9 @@ function runGsdState(args, cwd) {
     CLAUDE_CODE_SSE_PORT: '',
     OPENCODE_SESSION_ID: '',
   };
-  try {
-    execFileSync(process.execPath, [TOOLS_PATH, 'state', ...args], {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: err.stderr?.toString().trim() || err.message };
-  }
+  const r = runNode([TOOLS_PATH, 'state', ...args], { cwd, env, timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.exitCode === 0) return { success: true };
+  return { success: false, error: r.stderr.trim() || `exited with outcome=${r.outcome} exitCode=${r.exitCode}` };
 }
 
 // ---------------------------------------------------------------------------

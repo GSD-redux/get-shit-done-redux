@@ -28,10 +28,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
 
 const { runGsdTools, cleanup, readFileNormalized } = require('./helpers.cjs');
 const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -42,14 +46,14 @@ const { makeFaultyGit } = require('./helpers/faulty-deps.cjs');
 function createGitRepo(opts = {}) {
   const { prefix = 'gsd-1146-', defaultBranch = 'master' } = opts;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  execSync(`git init -b ${defaultBranch}`, { cwd: dir, stdio: 'pipe' });
-  execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
-  execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
-  execSync('git config commit.gpgsign false', { cwd: dir, stdio: 'pipe' });
+  gitOrThrow(['init', '-b', defaultBranch], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
   // Need at least one commit so branches exist
   fs.writeFileSync(path.join(dir, 'README.md'), '# test\n');
-  execSync('git add README.md', { cwd: dir, stdio: 'pipe' });
-  execSync('git commit -m "init"', { cwd: dir, stdio: 'pipe' });
+  gitOrThrow(['add', 'README.md'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['commit', '-m', 'init'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
   return dir;
 }
 
@@ -125,13 +129,13 @@ describe('#1146: git.base-branch resolver', () => {
     t.after(() => { cleanup(originDir); cleanup(worktreeDir); });
 
     // Clone from origin — this sets origin/HEAD
-    execSync(`git clone "${originDir}" "${worktreeDir}"`, { stdio: 'pipe' });
-    execSync('git config user.email "test@test.com"', { cwd: worktreeDir, stdio: 'pipe' });
-    execSync('git config user.name "Test"', { cwd: worktreeDir, stdio: 'pipe' });
+    gitOrThrow(['clone', originDir, worktreeDir], { timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS });
     addPlanning(worktreeDir);
 
     // Verify origin/HEAD is set (it should be after clone)
-    const symref = execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd: worktreeDir, encoding: 'utf8' }).trim();
+    const symref = gitOrThrow(['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS }).trim();
     assert.ok(symref.includes('origin/main'), `Expected origin/HEAD→origin/main, got: ${symref}`);
 
     const result = runGsdTools(['query', 'git.base-branch'], worktreeDir);
@@ -149,22 +153,22 @@ describe('#1146: git.base-branch resolver', () => {
     t.after(() => { cleanup(originDir); cleanup(cloneDir); });
 
     // Manually add remote WITHOUT cloning (so origin/HEAD is never set)
-    execSync('git init', { cwd: cloneDir, stdio: 'pipe' });
-    execSync('git config user.email "test@test.com"', { cwd: cloneDir, stdio: 'pipe' });
-    execSync('git config user.name "Test"', { cwd: cloneDir, stdio: 'pipe' });
-    execSync('git config commit.gpgsign false', { cwd: cloneDir, stdio: 'pipe' });
-    execSync(`git remote add origin "${originDir}"`, { cwd: cloneDir, stdio: 'pipe' });
-    execSync('git fetch origin', { cwd: cloneDir, stdio: 'pipe' });
+    gitOrThrow(['init'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'user.name', 'Test'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['remote', 'add', 'origin', originDir], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['fetch', 'origin'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
     // Explicitly delete origin/HEAD in case git fetch auto-set it (newer git versions may do this)
     try {
-      execSync('git remote set-head origin --delete', { cwd: cloneDir, stdio: 'pipe' });
+      gitOrThrow(['remote', 'set-head', 'origin', '--delete'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
     } catch (_) { /* ignore — may not exist */ }
     addPlanning(cloneDir);
 
     // Confirm origin/HEAD is unset
     let hasSymref = true;
     try {
-      execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd: cloneDir, stdio: 'pipe' });
+      gitOrThrow(['symbolic-ref', 'refs/remotes/origin/HEAD'], { cwd: cloneDir, timeoutMs: GIT_TIMEOUT_MS });
     } catch (_) {
       hasSymref = false;
     }
@@ -237,8 +241,7 @@ describe('#1146: git.base-branch resolver', () => {
     t.after(() => cleanup(dir));
     addPlanning(dir);
     // Create a "main" branch alongside the existing "master"
-    const { execSync: exec } = require('node:child_process');
-    exec('git branch main', { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['branch', 'main'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
     // No remote configured — falls to tier-4 (local branch existence)
 
     const result = runGsdTools(['query', 'git.base-branch'], dir);
@@ -768,7 +771,7 @@ describe('#3057 W3: gitWorktreeInfoInternal — no work tree, and git failing mi
     // and it is reachable without any injection.
     const dir = createTempDir('gsd-3057-w3-bare-');
     t.after(() => cleanup(dir));
-    execSync('git init --bare', { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['init', '--bare'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
 
     assert.deepStrictEqual(
       gitBaseBranch.gitWorktreeInfoInternal(dir),
@@ -1040,7 +1043,6 @@ describe('bug #2004: pr-branch preserves structural planning commits', () => {
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -1064,13 +1066,7 @@ const GIT_ENV = Object.freeze({
 });
 
 function git(cwd, ...args) {
-  return execFileSync('git', args, {
-    cwd,
-    env: GIT_ENV,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
-    .toString()
-    .trim();
+  return gitOrThrow(args, { cwd, env: GIT_ENV, timeoutMs: GIT_TIMEOUT_MS }).trim();
 }
 
 /**
@@ -1178,11 +1174,9 @@ function runHandleBranchingStep(bash, cwd, branchName) {
   const script = `#!/usr/bin/env bash\nset -uo pipefail\nBRANCH_NAME="${branchName}"\n${bash}\n`;
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
   try {
-    return execFileSync('bash', [scriptPath], {
-      cwd,
-      env: GIT_ENV,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).toString();
+    const r = runHook(scriptPath, [], { interpreter: 'bash', cwd, env: GIT_ENV, timeoutMs: GIT_TIMEOUT_MS });
+    throwIfFailed(r, `runHandleBranchingStep: bash ${scriptPath}`);
+    return r.stdout;
   } finally {
     cleanup(scriptDir);
   }

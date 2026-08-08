@@ -1,7 +1,7 @@
 {
   "id": "cursor",
   "role": "runtime",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "title": "Cursor",
   "description": "Cursor IDE — skills-only workflow surface; hooks.json surface; Claude hook event dialect; recursive skill loader (flat nesting); tier-2 support.",
   "tier": "core",

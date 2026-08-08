@@ -23,7 +23,7 @@ import phaseIdModule = require('./phase-id.cjs');
 const { normalizePhaseName, phaseTokenMatches, extractPhaseToken } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsModule = require('./core-utils.cjs');
-const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath } = coreUtilsModule;
+const { readSubdirectories, getPhaseFileStats, extractCanonicalPlanId, toPosixPath, findUnsummarizedPlans } = coreUtilsModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
 const { planningDir } = planningWorkspace;
@@ -178,18 +178,13 @@ function searchPhaseInDir(baseDir: string, relBase: string, normalized: string):
     const plans = unsortedPlans.sort();
     const summaries = unsortedSummaries.sort();
 
-    const completedPlanIds = new Set(
-      summaries.flatMap(s => {
-        const exact = s.replace('-SUMMARY.md', '').replace('SUMMARY.md', '');
-        const canonical = extractCanonicalPlanId(s);
-        return canonical === exact ? [exact] : [exact, canonical];
-      })
-    );
-    const incompletePlans = plans.filter(p => {
-      const planId = p.replace('-PLAN.md', '').replace('PLAN.md', '');
-      const canonical = extractCanonicalPlanId(p);
-      return !completedPlanIds.has(planId) && !completedPlanIds.has(canonical);
-    });
+    // #3183 (ADR-3180 Decision 2): the summary→plan pairing used to be a
+    // bespoke rule local to this function (a third pairing rule alongside
+    // scanPhasePlans's completion check and countMatchedSummaries). Routed
+    // through the canonical core-utils.findUnsummarizedPlans instead, which
+    // shares its `summaryCandidates` matching rule with countMatchedSummaries
+    // so the count and this named list can never disagree.
+    const incompletePlans = findUnsummarizedPlans(plans, summaries);
 
     // #2830: reverse lookup from a completed plan's id (exact or canonical) to
     // its actual summary filename. Shared builder (also used by phase.cts's
