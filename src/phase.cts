@@ -243,10 +243,22 @@ function cmdPhasesList(cwd: string, options: PhaseListOptions, raw: boolean): vo
           // #3183: this is a "what plan files physically exist" query (this
           // IS the file-listing command), not a live-completion question, so
           // it uses the single owner's allPlanFiles (root+nested, INCLUDING
-          // status: superseded — unlike planFiles) rather than a root-only
-          // isCanonicalPlanFile filter that also missed nested/loose-named
-          // plans.
-          filtered = scanPhasePlans(dirPath).allPlanFiles;
+          // status: superseded) rather than a root-only readdirSync filter
+          // that also missed nested plans.
+          //
+          // #2893 (regression fix): `allPlanFiles` also carries
+          // `isRootPlanFile`'s loose `/PLAN/i` fallback (deliberately
+          // permissive for live-plan COUNTING elsewhere — see
+          // plan-count-single-owner.test.cjs). That fallback silently
+          // recognized a non-canonically-named file (e.g.
+          // `01-PLAN-01-foundation.md`) as "matched", which defeated this
+          // command's #2893 naming-convention diagnostic entirely (no
+          // warning, file listed as if valid). Intersect with the STRICT
+          // `isCanonicalPlanFile` predicate so this diagnostic — and the
+          // `files` list this command actually returns — only ever
+          // recognizes the canonical root/nested forms, exactly like the
+          // pre-#3183 behavior this feature was built and tested against.
+          filtered = scanPhasePlans(dirPath).allPlanFiles.filter(isCanonicalPlanFile);
           const w = describeNonCanonicalPlans(dirFiles, filtered);
           if (w) warnings.push(`${dir}: ${w}`);
         } else if (type === 'summaries') {
@@ -477,15 +489,28 @@ function cmdFindPhase(cwd: string, phase: string, raw: boolean): void {
       // #3183: canonical, live (superseded-excluded) plan/summary sets
       // (root+nested) from the single owner, rather than a root-only
       // isCanonicalPlanFile filter + hand-rolled summary filter.
+      //
+      // #2893 (regression fix): both `plans` and the naming-diagnostic
+      // "matched" set are further intersected with the STRICT
+      // `isCanonicalPlanFile` predicate — scanPhasePlans's own
+      // planFiles/allPlanFiles carry `isRootPlanFile`'s loose `/PLAN/i`
+      // fallback (deliberately permissive for live-plan COUNTING elsewhere),
+      // which silently recognized a non-canonically-named file (e.g.
+      // `01-PLAN-01-foundation.md`) as a valid plan here and defeated this
+      // command's #2893 naming-convention diagnostic (no warning, offender
+      // listed in `plans` as if valid).
       const phaseScan = scanPhasePlans(phaseDir);
-      const plans = phaseScan.planFiles.slice().sort();
+      const plans = phaseScan.planFiles.filter(isCanonicalPlanFile).sort();
       const summaries = phaseScan.summaryFiles.slice().sort();
       // describeNonCanonicalPlans is a NAMING-CONVENTION diagnostic, unrelated
       // to supersession — compare against allPlanFiles (every plan-shaped file
       // the owner recognizes, canonical or not) rather than the live-only
       // `plans`, so a superseded-but-canonically-named plan is not misreported
       // as a naming violation.
-      const planNamingWarning = describeNonCanonicalPlans(phaseFiles, phaseScan.allPlanFiles);
+      const planNamingWarning = describeNonCanonicalPlans(
+        phaseFiles,
+        phaseScan.allPlanFiles.filter(isCanonicalPlanFile),
+      );
 
       const result: Record<string, unknown> = {
         found: true,
@@ -653,15 +678,26 @@ function cmdPhasePlanIndex(cwd: string, phase: string, raw: boolean): void {
   // an execution wave, and (2) a phase using the #3139 nested `plans/`
   // layout used to report ZERO plans (root-only readdirSync, no `plans/`
   // join).
+  // #2893 (regression fix): intersected with the STRICT `isCanonicalPlanFile`
+  // predicate — scanPhasePlans's own planFiles/allPlanFiles carry
+  // `isRootPlanFile`'s loose `/PLAN/i` fallback (deliberately permissive for
+  // live-plan COUNTING elsewhere), which silently scheduled a
+  // non-canonically-named file (e.g. `01-PLAN-01-foundation.md`) into a wave
+  // here and defeated this command's #2893 naming-convention diagnostic (no
+  // warning). Restores the pre-#3183, tested behavior: only canonical
+  // root/nested filenames are ever counted or scheduled by this command.
   const phaseScan = scanPhasePlans(phaseDir);
-  const planFiles = phaseScan.planFiles.slice().sort();
+  const planFiles = phaseScan.planFiles.filter(isCanonicalPlanFile).sort();
   const summaryFiles = phaseScan.summaryFiles;
   // describeNonCanonicalPlans is a NAMING-CONVENTION diagnostic, unrelated to
   // supersession — compare against allPlanFiles (every plan-shaped file the
   // owner recognizes, canonical or not) rather than the live-only planFiles,
   // so a superseded-but-canonically-named plan is not misreported as a
   // naming violation.
-  const planNamingWarning = describeNonCanonicalPlans(phaseFiles, phaseScan.allPlanFiles);
+  const planNamingWarning = describeNonCanonicalPlans(
+    phaseFiles,
+    phaseScan.allPlanFiles.filter(isCanonicalPlanFile),
+  );
 
   // #3183: completion pairing via the canonical findUnsummarizedPlans
   // (shares its `summaryCandidates` matching rule with countMatchedSummaries,
@@ -2842,7 +2878,7 @@ function cmdPhaseUatPassed(
 // paths without re-discovering the phase directory themselves.
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import planScanMod = require('./plan-scan.cjs');
-const { scanPhasePlans } = planScanMod;
+const { scanPhasePlans, isCanonicalPlanFile } = planScanMod;
 
 function cmdPhaseListPlans(cwd: string, phaseNum: string | undefined, raw: boolean): void {
   if (!phaseNum) {

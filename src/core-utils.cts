@@ -340,6 +340,34 @@ function summaryCandidates(plan: string): string[] {
   ];
   const extended = base.match(/^(\d+)-PLAN-(\d+)/i);
   if (extended) candidates.push(dir + extended[1] + '-' + extended[2] + '-SUMMARY.md');
+  // #3183: canonical-id form. Restores the coverage of the pre-migration
+  // bespoke I001 rule (verify.cts, pre-#3183, via validate.cjs's now-unused
+  // `canonicalPlanStem` — behaviourally identical to `extractCanonicalPlanId`,
+  // confirmed empirically), which matched a plan carrying a descriptive slug
+  // after its <phase>-<plan> id — e.g. `68-01-scaffolding-PLAN.md` — against
+  // a summary named only by the bare id — `68-01-SUMMARY.md`. None of the
+  // three candidates above produce that filename.
+  //
+  // Narrowed to the case `extractCanonicalPlanId` actually extracted an
+  // <id>-<id> pair (its result differs from the plan's own PLAN-stripped
+  // base). When no pair is found it falls back to returning that same base
+  // unchanged, which would otherwise push a redundant candidate identical to
+  // the `<stem>-SUMMARY.md` form above (e.g. `setup-PLAN.md` -> canonical
+  // 'setup' -> 'setup-SUMMARY.md', already candidate #2) rather than the
+  // original rule's actual behavior of matching only real id pairs.
+  //
+  // Collision, matching the original rule byte-for-behaviour: two plans that
+  // share the same <phase>-<plan> id but differ only in their descriptive
+  // slug (`68-01-alpha-PLAN.md` + `68-01-beta-PLAN.md`) both generate the
+  // SAME candidate `68-01-SUMMARY.md` and therefore BOTH read as summarized
+  // off one shared summary file. This is not a new regression: the
+  // pre-migration bespoke rule collapsed the same way (it populated one
+  // `summaryBases` Set keyed by canonical stem, so any plan whose canonical
+  // stem hit the set counted as matched, with no cardinality check against
+  // how many plans shared that stem).
+  const planStem = base.replace(/-PLAN$/i, '');
+  const canonicalId = extractCanonicalPlanId(base + '.md');
+  if (canonicalId !== planStem) candidates.push(dir + canonicalId + '-SUMMARY.md');
   return candidates;
 }
 

@@ -31,6 +31,9 @@ const { extractFrontmatter, reconstructFrontmatter, stripFrontmatter } = frontma
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import scanPhasePlans = require('./plan-scan.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import stateTransitionMod = require('./state-transition.cjs');
 const { transitionCore, applyStatePreservation, sliceCurrentPositionSection } = stateTransitionMod;
 type StateTransitionIntent = stateTransitionMod.StateTransitionIntent;
@@ -3179,9 +3182,21 @@ function cmdStateRebuild(cwd: string, options: StateRebuildOptions, raw: boolean
         // Directory-name convention: `<NN>-<slug>` (e.g. `03-test-phase`).
         const m = entry.match(/^(\d+)-(.+)$/);
         if (!m) continue;
-        const files = fs.readdirSync(full);
-        const planCount = files.filter(f => /-PLAN\.md$/i.test(f)).length;
-        const summaryCount = files.filter(f => /-SUMMARY\.md$/i.test(f)).length;
+        // #3183 (lint-plan-count-drift / ADR-3180 Decision 2): source
+        // planCount/summaryCount from the single owner (scanPhasePlans)
+        // instead of a local root-only `-PLAN.md`/`-SUMMARY.md` readdirSync
+        // filter — picks up bare PLAN.md/SUMMARY.md and nested plans/. A
+        // non-COMPLETE scope (TRUNCATED: nested plans/ unreadable;
+        // UNREADABLE: `full` itself unreadable) is not a trustworthy count —
+        // throw so it surfaces via the outer catch as a real scan failure
+        // (`ok:false`), mirroring the #3057 B1 contract documented above for
+        // the sibling `fs.readdirSync(phasesDir)` failure mode, rather than
+        // silently reporting an undercount.
+        const scan = scanPhasePlans(full);
+        if (scan.scope !== SCOPE.COMPLETE) {
+          throw new Error(`could not fully scan plan directory (scope ${scan.scope}): ${full}`);
+        }
+        const { planCount, summaryCount } = scan;
         records.push({ number: m[1], name: m[2], planCount, summaryCount });
       }
       return { ok: true, phases: records };

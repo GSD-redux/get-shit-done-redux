@@ -23,32 +23,59 @@
  * over authored TypeScript source, with a short, explicitly-named exemption
  * list — not a general-purpose AST/control-flow analysis. A line counts as a
  * re-derivation when it contains BOTH:
- *   (a) a `.filter(` call, and
- *   (b) a quoted plan/summary filename-suffix literal
- *       ('-PLAN.md', 'PLAN.md', '-SUMMARY.md', or 'SUMMARY.md')
- * on the same source line — the shape every current re-derivation in this
- * codebase takes (`files.filter(f => f.endsWith('-PLAN.md') || f ===
- * 'PLAN.md')`, `fs.readdirSync(dir).filter(f => f.endsWith('-SUMMARY.md'))`,
- * etc).
+ *   (a) a filename-TEST operation — `.filter(`, `.test(`, `.match(`,
+ *       `.exec(`, `.endsWith(`, `.startsWith(`, `.includes(`, `.some(`,
+ *       `.every(`, or `===` — and
+ *   (b) a plan/summary filename-suffix pattern, either a quoted literal
+ *       ('-PLAN.md', 'PLAN.md', '-SUMMARY.md', 'SUMMARY.md') OR an unquoted
+ *       regex literal that mentions PLAN or SUMMARY and `\.md` together
+ *       (`/-PLAN\.md$/`, `/^PLAN-\d+.*\.md$/i`)
+ * on the same source line. #3183 originally required (a) to be specifically
+ * `.filter(` on the SAME line as the literal — that missed a regex-literal
+ * predicate (`files.filter(f => /-PLAN\.md$/.test(f))`, no quotes) and a
+ * predicate defined on one line and consumed by `.filter(` on another
+ * (`const isPlan = f => f.endsWith('-PLAN.md'); … files.filter(isPlan)`).
+ * Widening (a) to any filename-test operator — not just `.filter(` itself —
+ * catches both: the predicate's OWN line already carries a qualifying test
+ * operation (`.test(`/`.endsWith(`) alongside the literal, independent of
+ * where `.filter(` ends up.
  *
  * KNOWN, ACCEPTED limits of a per-line textual scan (same tradeoff the
  * phase-id-drift guard documents): a re-derivation that filters via a
- * hand-rolled loop instead of `.filter(...)`, or one split across multiple
- * lines/helper functions, is not caught by this narrow shape. That is left
- * to code review, not this regex.
+ * hand-rolled loop with none of the listed test operators (e.g. a manual
+ * character-index scan), or one whose literal and test operator are split
+ * across two DIFFERENT lines with no single line carrying both, is not
+ * caught by this narrow shape. That is left to code review, not this regex.
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 
 // A `.filter(` call on the line — the shape every current re-derivation uses
-// to turn a directory listing into a plan-or-summary subset.
+// to turn a directory listing into a plan-or-summary subset. Kept as its own
+// export for back-compat / documentation; FILENAME_TEST_RE below is the
+// broadened detector actually used (any filename-test operator, not just
+// `.filter(`).
 const FILTER_CALL_RE = /\.filter\(/;
+
+// A filename-TEST operation: `.filter(`, `.test(`, `.match(`, `.exec(`,
+// `.endsWith(`, `.startsWith(`, `.includes(`, `.some(`, `.every(`, or a
+// strict-equality comparison. Any one of these on a line asking "is this
+// filename a plan/summary" is a re-derivation, independent of whether the
+// literal shows up as a `.filter(...)` predicate specifically.
+const FILENAME_TEST_RE = /\.(?:filter|test|match|exec|endsWith|startsWith|includes|some|every)\(|===/;
 
 // A quoted plan/summary filename-suffix literal: 'PLAN.md', '-PLAN.md',
 // 'SUMMARY.md', or '-SUMMARY.md', single- or double-quoted (opening and
 // closing quote must match).
 const PLAN_SUMMARY_LITERAL_RE = /(['"])-?(?:PLAN|SUMMARY)\.md\1/;
+
+// An unquoted regex literal that mentions PLAN or SUMMARY and an escaped
+// `.md` suffix together, e.g. `/-PLAN\.md$/`, `/^PLAN-\d+.*\.md$/i`,
+// `/-SUMMARY-\d+.*\.md$/i`. Delimited by `/…/` with optional trailing flags;
+// PLAN/SUMMARY may appear before or after the `\.md` token within the same
+// literal.
+const REGEX_LITERAL_MD_RE = /\/(?:\\.|[^/\r\n])*?(?:(?:PLAN|SUMMARY)(?:\\.|[^/\r\n])*?\\\.md|\\\.md(?:\\.|[^/\r\n])*?(?:PLAN|SUMMARY))(?:\\.|[^/\r\n])*?\/[a-z]*/i;
 
 // Authored TypeScript source only (the generated bin/lib/*.cjs mirror it).
 const SCAN_DIRS = ['src'];
@@ -82,13 +109,48 @@ const CORE_UTILS_EXEMPT_FUNCTIONS = new Set([
 //   - gsd2-import.cts readTasksDir: reads a FOREIGN GSD-2 legacy project's
 //     `tasks/` dir convention during a one-time import, not this project's
 //     `.planning/phases/` layout at all.
+//   - estimate-cli.cts collectCalibrationSamples: pairs a PLAN.md and a
+//     SUMMARY.md by their identical `<stem>` to build an estimation
+//     CALIBRATION sample (projected vs. actual token counts) — a stem-keyed
+//     join for a statistics question, not a live-plan/completion count.
+//     It intentionally does NOT use the canonical three-candidate pairing
+//     rule (marker-swap / `-SUMMARY.md` / extended) or exclude superseded
+//     plans — an unmatched or superseded plan simply yields no sample,
+//     which is correct for calibration, not a live-completion determination.
+//   - roadmap.cts cmdRoadmapAnnotateDependencies: matches a plan-ID token
+//     out of an ALREADY-RENDERED ROADMAP.md checklist LINE OF TEXT
+//     (`- [ ] 01-01-PLAN.md — …`), not a filesystem directory listing — it
+//     can never diverge from scanPhasePlans's file-existence rule because it
+//     never tests file existence at all.
+//   - worktree-safety.cts defaultFindSummaryFiles: a recursive walk of the
+//     ENTIRE `.planning/` tree (not a single phase directory) for a
+//     pre-merge rescue of any `*SUMMARY.md` artifact, deliberately mirroring
+//     the shell fallback's own `find … -name "*SUMMARY.md"` glob (quick.md,
+//     #2296/#2070/#2838) byte-for-behaviour rather than the phase-scoped
+//     plan-scan owner's root+nested rule — "rescue every summary before a
+//     merge blows it away" is not a live-plan/completion count.
+//   - verify.cts cmdValidateConsistency: the strict `-(\d{2})-PLAN\.md$`
+//     match extracts a zero-padded SEQUENCE NUMBER from filenames the owner
+//     (`allPlanFiles`) already classified as plans — it does not re-derive
+//     "is this a plan", it answers a different, narrower question (does the
+//     canonical 2-digit numbering sequence have a gap) that the owner's
+//     boolean plan/summary classification cannot answer. See the extended
+//     inline comment at that call site for the full Question 1/2/3 split.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [CORE_UTILS_FILE, CORE_UTILS_EXEMPT_FUNCTIONS],
   [path.join('src', 'audit.cts'), new Set(['scanQuickTasks'])],
   [path.join('src', 'gsd2-import.cts'), new Set(['readTasksDir'])],
+  [path.join('src', 'estimate-cli.cts'), new Set(['collectCalibrationSamples'])],
+  [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnnotateDependencies'])],
+  [path.join('src', 'worktree-safety.cts'), new Set(['defaultFindSummaryFiles'])],
+  [path.join('src', 'verify.cts'), new Set(['cmdValidateConsistency'])],
 ]);
 
-const TOP_LEVEL_FUNCTION_RE = /^function\s+([A-Za-z0-9_]+)\s*\(/;
+// Optional `export ` modifier: `collectCalibrationSamples` (estimate-cli.cts)
+// is declared `export function …` rather than a bare `function …`, and the
+// function-boundary tracker below must still recognize it for its
+// FUNCTION_SCOPED_EXEMPTIONS entry above to take effect.
+const TOP_LEVEL_FUNCTION_RE = /^(?:export\s+)?function\s+([A-Za-z0-9_]+)\s*\(/;
 
 function walk(dir, acc) {
   let entries;
@@ -125,8 +187,8 @@ function findPlanCountDrift(text, relPath) {
     const fnMatch = TOP_LEVEL_FUNCTION_RE.exec(line);
     if (fnMatch) currentFunction = fnMatch[1];
 
-    if (!FILTER_CALL_RE.test(line)) continue;
-    const literalMatch = PLAN_SUMMARY_LITERAL_RE.exec(line);
+    if (!FILENAME_TEST_RE.test(line)) continue;
+    const literalMatch = PLAN_SUMMARY_LITERAL_RE.exec(line) || REGEX_LITERAL_MD_RE.exec(line);
     if (!literalMatch) continue;
 
     if (exemptFunctions && exemptFunctions.has(currentFunction)) continue;
@@ -178,4 +240,11 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { findPlanCountDrift, scanRepo, FILTER_CALL_RE, PLAN_SUMMARY_LITERAL_RE };
+module.exports = {
+  findPlanCountDrift,
+  scanRepo,
+  FILTER_CALL_RE,
+  FILENAME_TEST_RE,
+  PLAN_SUMMARY_LITERAL_RE,
+  REGEX_LITERAL_MD_RE,
+};

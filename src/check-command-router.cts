@@ -46,6 +46,9 @@ import { execTool, platformReadSync, posixNormalize } from './shell-command-proj
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -136,13 +139,13 @@ function gateEnabled(projectDir: string): boolean {
 
 function loadPlanContents(phaseDir: string): string[] {
   if (!fs.existsSync(phaseDir)) return [];
-  try {
-    return fs.readdirSync(phaseDir)
-      .filter((entry) => /-PLAN\.md$/.test(entry))
-      .map((entry) => readIfExists(path.join(phaseDir, entry)));
-  } catch {
-    return [];
-  }
+  // #3183 (lint-plan-count-drift): source live plan files from the single
+  // owner (scanPhasePlans) instead of a local `-PLAN.md` readdirSync filter
+  // — picks up bare PLAN.md and nested plans/, and excludes plans marked
+  // `status: superseded`, which the prior root-only exact-suffix filter did
+  // neither for.
+  return scanPhasePlans(phaseDir).planFiles
+    .map((entry) => readIfExists(path.join(phaseDir, entry)));
 }
 
 const DESIGNATED_HEADINGS_RE = /^#{1,6}\s+(?:must[_ ]haves?|truths?|tasks?|objective)\b/i;
@@ -437,8 +440,11 @@ function cmdDecisionCoverageVerify(projectDir: string, args: string[], raw: bool
   }
 
   const planContents = loadPlanContents(phaseDir);
+  // #3183 (lint-plan-count-drift): same single-owner sourcing as
+  // loadPlanContents above — scanPhasePlans's summaryFiles instead of a
+  // local `-SUMMARY.md` readdirSync filter.
   const summaryParts = fs.existsSync(phaseDir)
-    ? fs.readdirSync(phaseDir).filter((entry) => /-SUMMARY\.md$/.test(entry)).map((entry) => readIfExists(path.join(phaseDir, entry)))
+    ? scanPhasePlans(phaseDir).summaryFiles.map((entry) => readIfExists(path.join(phaseDir, entry)))
     : [];
   const haystack = [
     planContents.join('\n\n'),
@@ -1399,12 +1405,26 @@ function isRealReadFailure(err: unknown): boolean {
 function readPhaseScope(projectDir: string, phaseDir: string, phaseNumber: string): PhaseScopeRead {
   const chunks: string[] = [];
   let readError: string | null = null;
-  try {
-    const entries = fs.readdirSync(phaseDir, { withFileTypes: true });
-    const plans = entries
-      .filter((e) => e.isFile() && /-PLAN\.md$/i.test(e.name))
-      .map((e) => e.name)
-      .sort();
+  // A MISSING phase directory is fine (no plans yet → fall through to the
+  // roadmap). Checked up front (rather than via a readdirSync catch) because
+  // #3183 (lint-plan-count-drift) now sources the plan-file list from the
+  // single owner (scanPhasePlans) instead of a local `-PLAN\.md$` readdirSync
+  // filter — picks up bare PLAN.md and nested plans/, and excludes
+  // superseded plans, none of which the prior root-only exact-suffix filter
+  // did.
+  if (fs.existsSync(phaseDir)) {
+    const scan = scanPhasePlans(phaseDir);
+    if (scan.scope === SCOPE.UNREADABLE) {
+      // Directory exists but scanPhasePlans's own readdirSync(phaseDir) call
+      // failed (EACCES/EIO race) — a real read failure the gate must not
+      // silently pass (#2365 review), mirroring the prior isRealReadFailure
+      // branch below for the readdirSync-throws case.
+      return {
+        text: '',
+        readError: 'could not read the phase directory: scanPhasePlans reported scope UNREADABLE',
+      };
+    }
+    const plans = [...scan.planFiles].sort();
     for (const p of plans) {
       try {
         chunks.push(fs.readFileSync(path.join(phaseDir, p), 'utf8'));
@@ -1415,16 +1435,6 @@ function readPhaseScope(projectDir: string, phaseDir: string, phaseNumber: strin
           readError = `could not read ${p}: ${err instanceof Error ? err.message : String(err)}`;
         }
       }
-    }
-  } catch (err) {
-    // A MISSING phase directory is fine (no plans yet → fall through to the
-    // roadmap). A directory that exists but cannot be enumerated (EACCES/EIO)
-    // is a real read failure the gate must not silently pass (#2365 review).
-    if (isRealReadFailure(err)) {
-      return {
-        text: '',
-        readError: `could not read the phase directory: ${err instanceof Error ? err.message : String(err)}`,
-      };
     }
   }
   if (readError) return { text: chunks.join('\n\n'), readError };
