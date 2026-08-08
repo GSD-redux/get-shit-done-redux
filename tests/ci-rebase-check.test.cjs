@@ -26,10 +26,8 @@ const SCRIPT = path.join(ROOT, 'scripts', 'ci-rebase-check.cjs');
 const NODE   = process.execPath;
 const { cleanup } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
-
-// 15000ms: git plumbing (init/clone/config/checkout/add/commit) on a small
-// mkdtemp fixture repo — far over any observed duration for that class of call.
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Helper: run a small inline Node snippet that requires the run() helper

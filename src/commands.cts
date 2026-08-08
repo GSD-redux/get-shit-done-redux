@@ -21,13 +21,16 @@ import coreUtilsMod = require('./core-utils.cjs');
 const { toPosixPath, generateSlugInternal, extractOneLinerFromBody } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
+const { normalizePhaseName, comparePhaseNum, extractPhaseToken, PHASE_NUMBER_TOKEN_SOURCE, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
-const { getArchivedPhaseDirs, findPhaseInternal } = phaseLocatorMod;
+const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getMilestonePhaseFilter, getRoadmapPhaseInternal } = roadmapParserMod;
+const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getRoadmapPhaseInternal } = roadmapParserMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelResolverMod = require('./model-resolver.cjs');
 const { resolveModelInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
@@ -48,6 +51,10 @@ import modelProfiles = require('./model-profiles.cjs');
 const { MODEL_PROFILES, VALID_PHASE_TYPES } = modelProfiles;
 import { formatGsdSlash, resolveRuntime } from './runtime-slash.cjs';
 import { realClock } from './clock.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -421,7 +428,14 @@ function cmdHistoryDigest(cwd: string, raw: boolean): void {
 
   try {
     for (const { name: dir, fullPath: dirPath } of allPhaseDirs) {
-      const summaries = fs.readdirSync(dirPath).filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
+      // #3183: canonical summary set (root+nested) from the single owner.
+      // This call also opens every plan file's frontmatter to check
+      // superseded status even though cmdHistoryDigest never uses planFiles
+      // or the superseded distinction — that per-phase-dir cost is accepted
+      // deliberately (correctness/single-ownership over micro-optimization;
+      // summaryFiles itself is not superseded-filtered either way). Do not
+      // "optimize" this back into a second hand-rolled summary derivation.
+      const summaries = scanPhasePlans(dirPath).summaryFiles;
 
       for (const summary of summaries) {
         const summaryFilePath = path.join(dirPath, summary);
@@ -853,7 +867,19 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         }
       }
     } else if (branchingStrategy === 'milestone') {
-      const milestone = getMilestoneInfo(cwd);
+      const milestoneInfo = getMilestoneInfo(cwd);
+      // #3216 review Finding 3: explicit scope gate instead of plain truthiness.
+      // COMPLETE and TRUNCATED both carry a real `version` (ADR-3180 §7.2 rule
+      // 6 — TRUNCATED means the version resolved but the milestone's NAME did
+      // not), so a TRUNCATED identity is acceptable here: `milestone.version`
+      // only feeds a BRANCH NAME, and `generateSlugInternal(null) || 'milestone'`
+      // already degrades the missing name to the literal "milestone" slug on
+      // purpose. This differs from `archivePhaseDirectories` (milestone.cts),
+      // which uses the same value as a DIRECTORY NAME and therefore demands
+      // COMPLETE only — a real-but-unnamed version is not safe enough there.
+      const milestone = milestoneInfo.scope === SCOPE.COMPLETE || milestoneInfo.scope === SCOPE.TRUNCATED
+        ? milestoneInfo.value
+        : null;
       if (milestone && milestone.version) {
         branchName = (config['milestone_branch_template'] as string)
           .replace('{milestone}', milestone.version)
@@ -1550,23 +1576,31 @@ async function cmdWebsearch(query: string | undefined, options: WebsearchOptions
 
 function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean): void {
   const phasesDir = planningPaths(cwd).phases;
-  const milestone = getMilestoneInfo(cwd);
+  const milestone = getMilestoneInfo(cwd).value;
 
   const phases: PhaseProgress[] = [];
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: string | null = null;
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort((a, b) => comparePhaseNum(a, b));
+    // #3185 (ADR-3180 Decision 1): the single owner applies the milestone
+    // window AND the sentinel filter and returns dirs already sorted by
+    // comparePhaseNum. This command previously read the phases directory
+    // directly with neither, which is why `query progress` listed 999.*
+    // backlog directories as current-milestone phases (#3167).
+    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
 
     for (const dir of dirs) {
       const dm = dir.match(/^(\d+(?:\.\d+)*)-?(.*)/);
       const phaseNum = dm ? dm[1] : dir;
       const phaseName = dm && dm[2] ? dm[2].replace(/-/g, ' ') : '';
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-      const summaries = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+      // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
+      // canonical pairing) from the single owner.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const plans = phaseScan.planCount;
+      const summaries = phaseScan.summaryCount;
 
       totalPlans += plans;
       totalSummaries += summaries;
@@ -1577,14 +1611,14 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
     }
   } catch { /* intentionally empty */ }
 
-  const percent = totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0;
+  const percent = clampPercent(totalSummaries, totalPlans);
 
   if (format === 'table') {
     // Render markdown table
     const barWidth = 10;
     const filled = Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone.version} ${milestone.name}\n\n`;
+    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n\n`;
     out += `**Progress:** [${bar}] ${totalSummaries}/${totalPlans} plans (${percent}%)\n\n`;
     out += `| Phase | Name | Plans | Status |\n`;
     out += `|-------|------|-------|--------|\n`;
@@ -1601,12 +1635,15 @@ function cmdProgressRender(cwd: string, format: string | undefined, raw: boolean
   } else {
     // JSON format
     output({
-      milestone_version: milestone.version,
-      milestone_name: milestone.name,
+      milestone_version: milestone?.version ?? null,
+      milestone_name: milestone?.name ?? null,
       phases,
       total_plans: totalPlans,
       total_summaries: totalSummaries,
       percent,
+      // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+      // can tell a genuinely-empty milestone from one it could not scope.
+      phase_scope: phaseScope,
     }, raw, undefined);
   }
 }
@@ -1675,7 +1712,9 @@ function cmdTodoMatchPhase(cwd: string, phase: string | undefined, raw: boolean)
   if (phaseInfoDisk && phaseInfoDisk['found']) {
     try {
       const phaseDir = path.join(cwd, phaseInfoDisk['directory'] as string);
-      const planFiles = fs.readdirSync(phaseDir).filter(f => f.endsWith('-PLAN.md'));
+      // #3183: canonical plan set (root+nested, superseded-excluded) from the
+      // single owner, rather than a root-only hand-rolled readdirSync filter.
+      const planFiles = scanPhasePlans(phaseDir).planFiles;
       for (const pf of planFiles) {
         const planContent = platformReadSync(path.join(phaseDir, pf));
         if (planContent === null) continue;
@@ -1841,8 +1880,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   const roadmapPath = planningPaths(cwd).roadmap;
   const reqPath = planningPaths(cwd).requirements;
   const statePath = planningPaths(cwd).state;
-  const milestone = getMilestoneInfo(cwd);
-  const isDirInMilestone = getMilestonePhaseFilter(cwd) as (dir: string) => boolean;
+  const milestone = getMilestoneInfo(cwd).value;
 
   // Phase & plan stats (reuse progress pattern)
   const phasesByNumber = new Map<string, {
@@ -1854,6 +1892,7 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   }>();
   let totalPlans = 0;
   let totalSummaries = 0;
+  let phaseScope: string | null = null;
 
   try {
     const roadmapRaw = platformReadSync(roadmapPath);
@@ -1865,6 +1904,12 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     const headingPattern = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:\s*([^\n]+)/gi;
     let match: RegExpExecArray | null;
     while ((match = headingPattern.exec(roadmapContent)) !== null) {
+      // #3185: the heading seed carried no sentinel filter, so a
+      // `### Phase 999.1:` backlog heading produced a stats row even with no
+      // directory on disk. Uses the canonical predicate (phase-id.cts), not a
+      // local literal — the rule had five copies and three regex variants
+      // before this phase, disagreeing about Phase 0.
+      if (isSentinelPhaseId(match[1])) continue;
       const key = normalizePhaseName(match[1]);
       phasesByNumber.set(key, {
         number: key,
@@ -1877,12 +1922,13 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   } catch { /* intentionally empty */ }
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries
-      .filter(e => e.isDirectory())
-      .map(e => e.name)
-      .filter(isDirInMilestone)
-      .sort((a, b) => comparePhaseNum(a, b));
+    // #3185 (ADR-3180 Decision 1): route through the single owner. This
+    // previously applied the milestone window but NOT a directory-level
+    // sentinel filter — and getMilestonePhaseFilter degrades to a pass-all
+    // predicate when its heading set is empty, at which point every directory
+    // on disk passed, backlog included (#3167).
+    const { value: dirs, scope } = listMilestonePhaseDirs(phasesDir, { cwd });
+    phaseScope = scope;
 
     for (const dir of dirs) {
       // Use extractPhaseToken to correctly parse M-NN-style and code-prefixed dir names.
@@ -1891,9 +1937,11 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
       // phaseName is everything after the token (strip leading '-')
       const afterToken = dir.slice(phaseToken ? phaseToken.length : 0).replace(/^-/, '');
       const phaseName = afterToken ? afterToken.replace(/-/g, ' ') : '';
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md').length;
-      const summaries = phaseFiles.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md').length;
+      // #3183: canonical plan/summary counts (root+nested, superseded-excluded,
+      // canonical pairing) from the single owner.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const plans = phaseScan.planCount;
+      const summaries = phaseScan.summaryCount;
 
       totalPlans += plans;
       totalSummaries += summaries;
@@ -1919,8 +1967,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
 
   const phases = [...phasesByNumber.values()].sort((a, b) => comparePhaseNum(a.number, b.number));
   const completedPhases = phases.filter(p => p.status === 'Complete').length;
-  const planPercent = totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0;
-  const percent = phases.length > 0 ? Math.min(100, Math.round((completedPhases / phases.length) * 100)) : 0;
+  const planPercent = clampPercent(totalSummaries, totalPlans);
+  const percent = clampPercent(completedPhases, phases.length);
 
   // Requirements stats
   let requirementsTotal = 0;
@@ -1961,8 +2009,8 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
   }
 
   const result = {
-    milestone_version: milestone.version,
-    milestone_name: milestone.name,
+    milestone_version: milestone?.version ?? null,
+    milestone_name: milestone?.name ?? null,
     phases,
     phases_completed: completedPhases,
     phases_total: phases.length,
@@ -1975,13 +2023,16 @@ function cmdStats(cwd: string, format: string | undefined, raw: boolean): void {
     git_commits: gitCommits,
     git_first_commit_date: gitFirstCommitDate,
     last_activity: lastActivity,
+    // #3185 (ADR-3180 Decision 2): the enumeration's scope, so a consumer
+    // can tell a genuinely-empty milestone from one it could not scope.
+    phase_scope: phaseScope,
   };
 
   if (format === 'table') {
     const barWidth = 10;
     const filled = Math.round((percent / 100) * barWidth);
     const bar = '█'.repeat(filled) + '░'.repeat(barWidth - filled);
-    let out = `# ${milestone.version} ${milestone.name} — Statistics\n\n`;
+    let out = `# ${milestone?.version ?? ''} ${milestone?.name ?? ''} — Statistics\n\n`;
     out += `**Progress:** [${bar}] ${completedPhases}/${phases.length} phases (${percent}%)\n`;
     if (totalPlans > 0) {
       out += `**Plans:** ${totalSummaries}/${totalPlans} complete (${planPercent}%)\n`;

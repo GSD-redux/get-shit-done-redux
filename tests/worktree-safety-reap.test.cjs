@@ -52,6 +52,11 @@ const STALE_MTIME = new Date(0);
 /** The lock-owner PID written into every fixture; liveness is always injected. */
 const LOCK_OWNER_PID = '4242';
 
+// #3145: deliberately double the GIT_TIMEOUT_MS class norm (see
+// helpers/timeouts.cjs) — each test here does real-git worktree/branch setup
+// AND a `.git/worktrees/<name>/` admin-directory mutation AND one or more
+// reapOrphanWorktrees invocations, more subprocess work per test than the
+// plain fixture-setup case the norm is sized for.
 const GIT_TIMEOUT_MS = 30000;
 
 // ─── Path + git helpers ──────────────────────────────────────────────────────

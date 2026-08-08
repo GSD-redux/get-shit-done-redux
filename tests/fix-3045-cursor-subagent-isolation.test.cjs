@@ -27,9 +27,11 @@ const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync, spawnSync } = require('node:child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { SENTINEL_RELATIVE_PATH, SENTINEL_STALE_MS } = require('../hooks/lib/isolation-sentinel.js');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const HOOK_PATH = path.join(__dirname, '..', 'hooks', 'gsd-cursor-subagent-start.js');
 
@@ -56,12 +58,12 @@ function runHook(payload, extraEnv = {}) {
   // `USERPROFILE` too so that redirection actually takes effect on Windows
   // instead of silently leaking the real CI runner's profile directory.
   if ('HOME' in extraEnv) env.USERPROFILE = extraEnv.HOME;
-  return spawnSync(process.execPath, [HOOK_PATH], {
+  return toLegacyResult(runNode([HOOK_PATH], {
     input: typeof payload === 'string' ? payload : JSON.stringify(payload),
-    encoding: 'utf8',
     cwd: require('node:os').tmpdir(),
     env,
-  });
+    timeoutMs: PROBE_TIMEOUT_MS,
+  }));
 }
 
 function subagentPayload(workspaceRoots, overrides = {}) {
@@ -82,7 +84,7 @@ function subagentPayload(workspaceRoots, overrides = {}) {
 }
 
 function git(args, cwd) {
-  return execFileSync('git', args, { cwd, stdio: 'pipe', encoding: 'utf8' });
+  return gitOrThrow(args, { cwd });
 }
 
 /** A real git repo with a committed .planning/config.json. */
@@ -600,17 +602,17 @@ describe('executor-identity parity: hooks/gsd-agent-isolation-guard.js (Claude) 
     test(`subagent_type="${subagentType}": Claude block-decision and Cursor deny-decision agree`, () => {
       const claudeEnv = { ...process.env };
       delete claudeEnv.GSD_RUNTIME;
-      const claudeResult = spawnSync(process.execPath, [CLAUDE_HOOK_PATH], {
+      const claudeResult = runNode([CLAUDE_HOOK_PATH], {
         input: JSON.stringify({
           hook_event_name: 'PreToolUse',
           tool_name: 'Agent',
           tool_input: { subagent_type: subagentType },
         }),
-        encoding: 'utf8',
         cwd: claudeProject,
         env: claudeEnv,
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
-      const claudeBlocked = claudeResult.status === 2;
+      const claudeBlocked = claudeResult.exitCode === 2;
 
       const cursorResult = runHook(subagentPayload([cursorProject], { subagent_type: subagentType }));
       const cursorOut = JSON.parse(cursorResult.stdout);

@@ -9,6 +9,7 @@
  */
 
 import path from 'node:path';
+import { clampPercent } from './phase-lifecycle.cjs';
 
 // Internal helpers
 function toPosixPath(p: string): string {
@@ -425,13 +426,10 @@ export function buildWorkstreamInventory(inputs: BuildWorkstreamInventoryInputs)
     roadmap_phase_count: effectivePhaseCount,
     total_plans: totalPlans,
     completed_plans: completedPlans,
-    // The `Math.min` cap is unreachable under milestone scoping (the invariant
-    // above throws first) and survives only for the legacy unscoped path, where
-    // the denominator is a roadmap heading count that a caller cannot guarantee
-    // bounds the numerator.
-    progress_percent:
-      effectivePhaseCount > 0
-        ? Math.min(100, Math.round((completedPhases / effectivePhaseCount) * 100))
-        : 0,
+    // `clampPercent`'s 100 ceiling is unreachable under milestone scoping (the
+    // invariant above throws first) and matters only for the legacy unscoped
+    // path, where the denominator is a roadmap heading count that a caller
+    // cannot guarantee bounds the numerator.
+    progress_percent: clampPercent(completedPhases, effectivePhaseCount),
   };
 }

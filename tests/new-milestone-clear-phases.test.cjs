@@ -10,9 +10,10 @@
 
 const { test, describe, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { execSync, execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { runHook: runHookSeam } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { runGsdTools, createTempProject, createTempGitProject, cleanup, readFileNormalized } = require('./helpers.cjs');
 const { writeState } = require('./fixtures/index.cjs');
 
@@ -176,7 +177,7 @@ describe('phases clear: uncommitted-changes guard (#1447)', () => {
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, 'PLAN.md'), '# Plan (staged)');
     // Stage the file but do not commit
-    execSync('git add .planning/phases/', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/phases/'], { cwd: tmpDir });
 
     const result = runGsdTools('phases clear --confirm', tmpDir);
     assert.ok(!result.success, 'phases clear should fail when staged-but-uncommitted changes exist');
@@ -207,8 +208,8 @@ describe('phases clear: uncommitted-changes guard (#1447)', () => {
     fs.mkdirSync(phase1, { recursive: true });
     fs.writeFileSync(path.join(phase1, 'PLAN.md'), '# Plan (committed)');
     // Commit the phase files
-    execSync('git add .planning/phases/', { cwd: tmpDir, stdio: 'pipe' });
-    execSync('git commit -m "add phase"', { cwd: tmpDir, stdio: 'pipe' });
+    gitOrThrow(['add', '.planning/phases/'], { cwd: tmpDir });
+    gitOrThrow(['commit', '-m', 'add phase'], { cwd: tmpDir });
 
     const result = runGsdTools('phases clear --confirm', tmpDir);
     assert.ok(result.success, `should succeed when phase files are committed: ${result.error}`);
@@ -327,12 +328,16 @@ describe('phases clear: archive-version override (#2288)', () => {
     );
   });
 
-  test('override omitted with no ROADMAP uses getMilestoneInfo default (no-override path unchanged)', () => {
-    // createTempProject writes no ROADMAP.md, so getMilestoneInfo does NOT throw —
-    // it returns its documented default version ('v1.0'). The dated `archived-*`
-    // label is only reached if no safe version label is resolvable at all, which
-    // this common case is not. This pins the no-override path to its pre-#2288
-    // behavior (getMilestoneInfo-derived label), not a dated fallback.
+  test('override omitted with no ROADMAP archives under the dated fallback label (#3216: getMilestoneInfo default deleted)', () => {
+    // #3216 (ADR-3180 §7.2 Decision, roadmap-parser.cjs:788-791): getMilestoneInfo's
+    // plausible-looking {version:'v1.0', name:'milestone'} default — output-identical
+    // to a genuine v1.0 project — was deleted. With no ROADMAP.md, getMilestoneInfo
+    // now returns {value:null, scope:SCOPE.UNREADABLE}; archivePhaseDirectories only
+    // trusts a SCOPE.COMPLETE identity as a directory-name-safe version
+    // (milestone.cjs:959-965), so a non-COMPLETE scope falls through to the dated
+    // `archived-<YYYYMMDD>` label (milestone.cjs:977-978) instead of 'v1.0'. This
+    // was previously misfiled under 'v1.0-phases', which read as a genuine v1.0
+    // milestone's archive rather than "no resolvable milestone identity".
     // eslint-disable-next-line local/no-raw-rmsync-in-tests -- ensure no ROADMAP.md (SUT fallback path, not teardown)
     fs.rmSync(path.join(tmpDir, '.planning', 'ROADMAP.md'), { recursive: true, force: true });
 
@@ -345,8 +350,19 @@ describe('phases clear: archive-version override (#2288)', () => {
     assert.ok(result.success, `Command failed: ${result.error}`);
 
     assert.ok(
-      fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases', '01-foundation')),
-      'no override + no ROADMAP archives under getMilestoneInfo default (v1.0), unchanged from pre-#2288'
+      !fs.existsSync(path.join(tmpDir, '.planning', 'milestones', 'v1.0-phases')),
+      'no version identity is resolvable — must NOT be misfiled under a plausible-looking v1.0-phases'
+    );
+    const archive = findPhasesArchive(tmpDir);
+    assert.ok(archive, 'a milestones/*-phases/ archive should still be created');
+    assert.match(
+      path.basename(archive),
+      /^archived-\d{8}-phases$/,
+      'no resolvable milestone identity — must use the dated archived-<YYYYMMDD> fallback label'
+    );
+    assert.ok(
+      fs.existsSync(path.join(archive, '01-foundation')),
+      'the phase directory must still be archived (moved, not deleted) under the dated label'
     );
   });
 
@@ -645,7 +661,9 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
     function runStep1(argumentsValue) {
       const script = `ARGUMENTS=${JSON.stringify(argumentsValue)}\n${step1Fence}\n` +
         'printf \'GSD_WS=[%s]\\nMILESTONE_ARG=[%s]\\n\' "$GSD_WS" "$MILESTONE_ARG"';
-      const out = execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      const r = runHookSeam('-c', [script], { interpreter: 'bash' });
+      throwIfFailed(r, 'bash <step1 fence>');
+      const out = r.stdout;
       return {
         gsdWs: /GSD_WS=\[(.*)\]/.exec(out)[1],
         milestoneArg: /MILESTONE_ARG=\[(.*)\]/.exec(out)[1],
@@ -676,7 +694,9 @@ describe('new-milestone.md: workstream-aware PROJECT.md guard (#2308)', () => {
     function runStep6Commit(argumentsValue) {
       const gsdRunStub = 'gsd_run() { printf "%s\\n" "gsd_run_call:$*"; }\n';
       const script = `ARGUMENTS=${JSON.stringify(argumentsValue)}\n${gsdRunStub}${step6CommitFence}`;
-      return execFileSync('bash', ['-c', script], { encoding: 'utf8' });
+      const r = runHookSeam('-c', [script], { interpreter: 'bash' });
+      throwIfFailed(r, 'bash <step6 commit fence>');
+      return r.stdout;
     }
 
     // Step 4 Part A's guard — not this commit — is what protects the shared

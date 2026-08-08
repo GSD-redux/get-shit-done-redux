@@ -38,7 +38,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { runMinimalInstall, INSTALL_SCRIPT, installerEnv } = require('./helpers/install-shared.cjs');
 const { cleanup, createTempDir, toPosixPath } = require('./helpers.cjs');
@@ -142,12 +142,13 @@ test('kimi --global: reinstalling is idempotent — the GSD [[hooks]] block is n
   // Reinstall over the SAME root/config (runMinimalInstall always mkdtemps a
   // fresh root, so the reinstall is driven directly against this test's root
   // exactly the way runMinimalInstall drives its own install internally).
-  const reinstall = spawnSync(process.execPath, [INSTALL_SCRIPT, '--kimi', '--global', '--config-dir', root], {
-    cwd: process.cwd(), encoding: 'utf8',
+  const reinstall = runNode([INSTALL_SCRIPT, '--kimi', '--global', '--config-dir', root], {
+    cwd: process.cwd(),
     env: installerEnv({ HOME: root, USERPROFILE: root }),
+    timeoutMs: 120000,
   });
-  assert.strictEqual(reinstall.status, 0,
-    `reinstall exited with status ${reinstall.status}\nstdout: ${reinstall.stdout}\nstderr: ${reinstall.stderr}`);
+  assert.strictEqual(reinstall.exitCode, 0,
+    `reinstall exited with status ${reinstall.exitCode}\nstdout: ${reinstall.stdout}\nstderr: ${reinstall.stderr}`);
   const second = fs.readFileSync(tomlPath, 'utf8');
   assert.equal(beginMarkers(second), 1, 'reinstall must not duplicate the BEGIN marker');
   assert.equal(endMarkers(second), 1, 'reinstall must not duplicate the END marker');

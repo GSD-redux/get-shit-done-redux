@@ -7164,7 +7164,8 @@ function readState(dir) {
 }
 
 function runGsdState(args, cwd) {
-  const { execFileSync } = require('child_process');
+  const { runNode } = require('./helpers/process-seam.cjs');
+  const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
   const env = {
     ...process.env,
     GSD_SESSION_KEY: '',
@@ -7173,17 +7174,9 @@ function runGsdState(args, cwd) {
     CLAUDE_CODE_SSE_PORT: '',
     OPENCODE_SESSION_ID: '',
   };
-  try {
-    execFileSync(process.execPath, [TOOLS_PATH, 'state', ...args], {
-      cwd,
-      encoding: 'utf-8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env,
-    });
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: err.stderr?.toString().trim() || err.message };
-  }
+  const r = runNode([TOOLS_PATH, 'state', ...args], { cwd, env, timeoutMs: PROBE_TIMEOUT_MS });
+  if (r.exitCode === 0) return { success: true };
+  return { success: false, error: r.stderr.trim() || `exited with outcome=${r.outcome} exitCode=${r.exitCode}` };
 }
 
 // ---------------------------------------------------------------------------

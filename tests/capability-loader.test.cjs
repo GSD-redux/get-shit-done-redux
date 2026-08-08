@@ -16,11 +16,22 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { cleanup } = require('./helpers.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { loadRegistry, _setValidatorForTest, _setGeneratorForTest } = require('../gsd-core/bin/lib/capability-loader.cjs');
 const baseRegistry = require('../gsd-core/bin/lib/capability-registry.cjs');
 const { buildRegistry } = require('../scripts/gen-capability-registry.cjs');
 
 const HOST = '1.6.0';
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+/** Create a FIFO at `fifoPath` via `mkfifo`, throwing on failure. */
+function mkfifo(fifoPath) {
+  const r = runHook(fifoPath, [], { interpreter: 'mkfifo', timeoutMs: PROBE_TIMEOUT_MS });
+  throwIfFailed(r, `mkfifo ${fifoPath}`);
+}
 
 function featureCap(id, extra) {
   return {
@@ -598,8 +609,7 @@ describe('loadRegistry — project-scope consent gate (#1459)', () => {
     const { proj, home, writeCap } = projectFixture();
     t.after(() => { cleanup(proj); cleanup(home); });
     writeCap(featureCap('fifo-ledger-cap', { skills: ['fifo-skill'] }));
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [path.join(proj, '.gsd-capabilities.json')]);
+    mkfifo(path.join(proj, '.gsd-capabilities.json'));
     let reg;
     assert.doesNotThrow(() => { reg = loadRegistry({ includeInstalled: true, gsdHome: home, cwd: proj, hostVersion: HOST }); });
     assert.ok(!reg.capabilities || !reg.capabilities['fifo-ledger-cap'], 'FIFO ledger → no committed ids → inactive');
@@ -796,8 +806,7 @@ describe('loadRegistry — project-scope consent gate (#1459)', () => {
     t.after(() => cleanup(home));
     const dir = path.join(home, '.gsd', 'capabilities', 'fifo-manifest');
     fs.mkdirSync(dir, { recursive: true });
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [path.join(dir, 'capability.json')]);
+    mkfifo(path.join(dir, 'capability.json'));
     // Co-located GLOBAL committed ledger so the cap is on the hot path (committed → manifest read reached).
     fs.writeFileSync(path.join(home, '.gsd-capabilities.json'), JSON.stringify({ version: '1', updatedAt: '2026-01-01T00:00:00Z', entries: { 'fifo-manifest': { id: 'fifo-manifest', version: '1.0.0', source: 's', integrity: '', files: [], sharedEdits: [] } } }), 'utf8');
     let reg;
@@ -866,8 +875,7 @@ describe('loadRegistry — convergence: gate-before-materialize + realpath fail-
     });
     const dir = writeCap(cap);
     // The fragment.path points at a FIFO INSIDE the cap dir (passes the escape guard; only the READ hangs).
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [path.join(dir, 'frag.md')]);
+    mkfifo(path.join(dir, 'frag.md'));
     // A committed in-repo ledger marks it committed — but the user never consented HERE.
     writeProjectLedger(proj, [{ id: 'conv1-fifo-frag', integrity: '' }]);
     // No consent record written.
@@ -892,8 +900,7 @@ describe('loadRegistry — convergence: gate-before-materialize + realpath fail-
     const dir = path.join(home, '.gsd', 'capabilities', 'conv1b-fifo-frag');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'capability.json'), JSON.stringify(cap), 'utf8');
-    const { execFileSync } = require('node:child_process');
-    execFileSync('mkfifo', [path.join(dir, 'frag.md')]);
+    mkfifo(path.join(dir, 'frag.md'));
     let reg;
     assert.doesNotThrow(() => { reg = loadRegistry({ includeInstalled: true, gsdHome: home, cwd: home, hostVersion: HOST }); });
     assert.ok(!reg.capabilities || !reg.capabilities['conv1b-fifo-frag'], 'a global overlay with a FIFO fragment is inactive (materialize fails closed)');

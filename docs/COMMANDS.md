@@ -472,7 +472,11 @@ If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowle
 
 > **Note:** the `deferred-items.md` category is the per-phase SCOPE BOUNDARY log a phase agent writes when it finds a defect it should not fix. It is a different artifact from the `## Deferred Items` section `[A]` writes into `STATE.md`, which records what you acknowledged at close.
 
+> **Truncated-window guard.** Archiving also refuses when the milestone's ROADMAP window is truncated — `Cannot mark milestone complete: the ROADMAP window for "<version>" is truncated`. This is the case where the milestone's heading is found but its section closes before reaching the roadmap's `### Phase N:` region (typically a closed-milestone heading sitting in between), which previously degraded to an over-inclusive filter and archived *every* phase directory in the project rather than the milestone's own. An unreadable ROADMAP.md or a version with no matching section at all are pre-existing, legitimately-handled states and are not refused here. Same override as below: `gsd-tools milestone complete <version> --force`. A window that is genuinely empty — a freshly-declared milestone with no phases yet — is *not* affected and still completes normally.
+
 > **Unstarted-phase guard.** Archiving refuses if the milestone's ROADMAP still lists a phase with no phase directory on disk — `Cannot mark milestone complete: ROADMAP lists N unstarted phase(s)`. If a phase was intentionally deferred or merged without a directory, run `gsd-tools milestone complete <version> --force` (the `/gsd-complete-milestone` workflow runs the underlying command without `--force`, so use the CLI directly to override). A `STATE.md` `milestone:` value that does not match `<version>` prints a WARNING and still runs the guard (#2946).
+
+> **Sentinel directories stay put.** Moving phase directories into the archive (the default, unless `--no-archive-phases` is passed) now excludes `999.*` (backlog) and `0-*` (pre-milestone) directories via the same sentinel predicate the unstarted-phase guard already uses. Previously the archive move was scoped only by the milestone window, so a sentinel directory sitting inside that window could be archived along with the milestone's own phases.
 
 ---
 
@@ -652,6 +656,14 @@ Show status, next steps, and automatically advance to the next logical workflow 
 | `--do "task description"` | Analyze freeform intent and dispatch to the most appropriate GSD command |
 | `--forensic` | Append a 6-check integrity audit after the standard report (STATE consistency, orphaned handoffs, deferred scope drift, memory-flagged pending work, blocking todos, uncommitted code) |
 
+> **Milestone name and version.** The milestone this report shows comes from one
+> implementation shared with `/gsd-stats`, `/gsd-manager` and `roadmap analyze`.
+> A name is no longer cut short at a parenthesis (`v3.3 — Portability (Windows)`
+> keeps its full name), a `### Phase N:` heading that mentions a version is never
+> mistaken for the milestone heading, and a milestone that cannot be identified is
+> shown as absent rather than as a plausible-looking `v1.0`/`milestone`. See
+> [CLI-TOOLS.md → Milestone identity](CLI-TOOLS.md#milestone-identity-which-milestone-and-what-it-is-called).
+
 **Auto-routing behavior (`--next`):**
 - No project → suggests `/gsd-new-project`
 - Phase needs discussion → runs `/gsd-discuss-phase`
@@ -659,6 +671,8 @@ Show status, next steps, and automatically advance to the next logical workflow 
 - Phase needs execution → runs `/gsd-execute-phase`
 - Phase needs verification → runs `/gsd-verify-work`
 - All phases complete → suggests `/gsd-complete-milestone`
+
+Status reporting is scoped to the current milestone's `ROADMAP.md` window and sentinel-filtered: `999.*` backlog directories and `0-*` pre-milestone directories are not counted as current-milestone phases, so the reported progress percentage no longer holds at `100` while phases in the active window are still outstanding.
 
 ```bash
 /gsd-progress                       # "Where am I? What's next?" with auto-routing
@@ -939,6 +953,8 @@ Display project statistics.
 ```bash
 /gsd-stats                          # Project metrics dashboard
 ```
+
+Scoped to the current milestone's `ROADMAP.md` window and sentinel-filtered: `999.*` backlog directories and `0-*` pre-milestone directories are not counted as current-milestone phases.
 
 ### `/gsd-profile-user`
 

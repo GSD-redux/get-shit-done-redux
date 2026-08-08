@@ -2,22 +2,21 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('node:os');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'ci-test-scope.cjs');
 const WORKFLOWS_DIR = path.join(ROOT, '.github', 'workflows');
 
 function scopeFor(files) {
-  const r = spawnSync(process.execPath, [SCRIPT, '--files', files.join(' ')], {
-    cwd: ROOT,
-    encoding: 'utf8',
-  });
-  assert.strictEqual(r.status, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
+  const r = runNode([SCRIPT, '--files', files.join(' ')], { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS });
+  assert.strictEqual(r.exitCode, 0, `stderr: ${r.stderr}\nstdout: ${r.stdout}`);
   return JSON.parse(r.stdout);
 }
 
@@ -171,11 +170,8 @@ describe('ci-test-scope.cjs', () => {
   });
 
   test('missing required CLI values fail with usage', () => {
-    const r = spawnSync(process.execPath, [SCRIPT, '--files'], {
-      cwd: ROOT,
-      encoding: 'utf8',
-    });
-    assert.notStrictEqual(r.status, 0);
+    const r = runNode([SCRIPT, '--files'], { cwd: ROOT, timeoutMs: PROBE_TIMEOUT_MS });
+    assert.notStrictEqual(r.exitCode, 0);
     // allow-test-rule: pending-migration-to-typed-ir [#3090]
     // Regex-matches the CLI's human-readable stderr formatter (usage banner +
     // arg-parser Error#message) — CONTRIBUTING's own BAD example verbatim.
@@ -226,11 +222,7 @@ describe('ci-test-scope.cjs', () => {
     // GitHub's PR semantics) must see ONLY the docs change.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ci-scope-837-'));
     try {
-      const git = (...a) => {
-        const r = spawnSync('git', a, { cwd: tmp, encoding: 'utf8' });
-        assert.strictEqual(r.status, 0, `git ${a.join(' ')} failed: ${r.stderr}`);
-        return r.stdout.trim();
-      };
+      const git = (...a) => gitOrThrow(a, { cwd: tmp }).trim();
       git('init', '-q');
       git('config', 'user.email', 'test@example.com');
       git('config', 'user.name', 'Test');
@@ -259,11 +251,8 @@ describe('ci-test-scope.cjs', () => {
       git('commit', '-qm', 'chore: bump version on next');
       const base = git('rev-parse', 'HEAD');
 
-      const r = spawnSync(process.execPath, [SCRIPT, '--base', base, '--head', head], {
-        cwd: tmp,
-        encoding: 'utf8',
-      });
-      assert.strictEqual(r.status, 0, `script failed: stderr=${r.stderr}\nstdout=${r.stdout}`);
+      const r = runNode([SCRIPT, '--base', base, '--head', head], { cwd: tmp, timeoutMs: PROBE_TIMEOUT_MS });
+      assert.strictEqual(r.exitCode, 0, `script failed: stderr=${r.stderr}\nstdout=${r.stdout}`);
       const result = JSON.parse(r.stdout);
 
       assert.deepStrictEqual(
@@ -897,13 +886,21 @@ describe('code_changed=false implies clean output invariant', () => {
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
-
-const HARNESS = path.join(__dirname, '..', 'scripts', 'run-tests.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+// Exported so the suite-token resolution contract below can be asserted
+// in-process rather than through a timed subprocess spawn (see evidence
+// comment above describe('bug #641 ...')).
+const {
+  walkTestFiles,
+  selectExplicitFiles,
+  selectFiles,
+  parseArgs,
+} = require('../scripts/run-tests.cjs');
 
 const PASS_BODY = `'use strict';
 const { test } = require('node:test');
@@ -916,16 +913,42 @@ function seed(dir, names) {
   }
 }
 
-function runHarness(testDir, args = [], extraEnv = {}) {
-  const env = { ...process.env, GSD_TEST_DIR: testDir, ...extraEnv };
-  delete env.NODE_TEST_CONTEXT;
-  return spawnSync(process.execPath, [HARNESS, ...args], {
-    cwd: path.join(__dirname, '..'),
-    env,
-    encoding: 'utf8',
-  });
+// Mirrors scripts/run-tests.cjs main()'s selection path (parseArgs ->
+// walkTestFiles -> selectExplicitFiles/selectFiles) exactly, called
+// in-process instead of through a spawned child that then spawns a nested
+// `node --test`. See the evidence comment above describe('bug #641 ...').
+function selectInProcess(testDir, args) {
+  const parsed = parseArgs(args);
+  if (parsed.error) return parsed;
+  const allFiles = walkTestFiles(testDir, '').sort();
+  const usingExplicitFiles = parsed.files !== null || parsed.filesFrom !== null;
+  if (usingExplicitFiles) {
+    return selectExplicitFiles(allFiles, parsed.files, parsed.filesFrom);
+  }
+  return { files: selectFiles(allFiles, parsed.suite) };
 }
 
+// Redesign evidence (2026-08-08): these probes originally spawned
+// scripts/run-tests.cjs as a real child — which itself spawns a NESTED
+// `node --test` — under a fixed PROBE_TIMEOUT_MS=15000 wall-clock budget,
+// concurrently with the ~31k-test full suite running in the same container.
+// On the remote runner this produced intermittent failures shaped
+// `null !== 0` (r.status === null: the child was KILLED at the timeout),
+// never a failed assertion about suite-token resolution. Reproduced on
+// `next` alone (sha e705652ba): 5 failures on linux-node22, 0 failures on
+// linux-node24. The victim subset varied by run and by lane, and the
+// failure count went DOWN (7 -> 4 unique failures) as an unrelated diff got
+// heavier — a resource collision, not a flake. The subject under test is
+// suite-TOKEN RESOLUTION (parseArgs / selectExplicitFiles / selectFiles),
+// not test execution; running the seeded trivial fixture files was
+// incidental and was the entire timeout surface. These probes now call the
+// exported selection functions in-process — removing the wall-clock budget
+// around a nested spawn, not raising its number. Real end-to-end coverage of
+// run-tests.cjs spawning and running to completion (exit 0 from a real
+// harness run) already exists in tests/run-tests-harness.test.cjs (e.g. 'no
+// flag runs ALL test files', '--suite unit excludes marked suites',
+// 'non-zero from node:test propagates through harness'), so no execution
+// coverage is lost by converting the "(tests run successfully)" probe below.
 describe('bug #641 — --files-from with bare suite token', () => {
   let tmpDir;
 
@@ -943,57 +966,45 @@ describe('bug #641 — --files-from with bare suite token', () => {
     const listPath = path.join(tmpDir, 'ci-selected-tests.txt');
     fs.writeFileSync(listPath, 'unit\n', 'utf8');
 
-    const r = runHarness(tmpDir, ['--files-from', listPath]);
+    const r = selectInProcess(tmpDir, ['--files-from', listPath]);
 
-    // Must NOT exit 2 with the "not found" error.
-    assert.notStrictEqual(
-      r.status,
-      2,
-      `Expected exit 0 or 1, got 2.\nstderr: ${r.stderr}\nstdout: ${r.stdout}`,
-    );
-    assert.doesNotMatch(
-      r.stderr,
-      /requested test file\(s\) not found: unit/,
-      `Must not emit "not found: unit".\nstderr: ${r.stderr}`,
-    );
-    // The unit suite file (a.test.cjs) must appear in the run.
+    // Must NOT be the "not found" error shape (the old exit-2 crash).
+    assert.strictEqual(r.error, undefined, `Expected a resolved file list, got error: ${r.error}`);
+    // The unit suite file (a.test.cjs) must appear in the resolution.
     assert.ok(
-      r.stderr.includes('a.test.cjs'),
-      `Expected a.test.cjs (unit suite) to be selected.\nstderr: ${r.stderr}`,
+      r.files.includes('a.test.cjs'),
+      `Expected a.test.cjs (unit suite) to be selected. Resolved: ${r.files}`,
     );
     // The security suite file must NOT be included (unit token = unit only).
     assert.ok(
-      !r.stderr.includes('b.security.test.cjs'),
-      `Expected b.security.test.cjs (security suite) to be excluded.\nstderr: ${r.stderr}`,
+      !r.files.includes('b.security.test.cjs'),
+      `Expected b.security.test.cjs (security suite) to be excluded. Resolved: ${r.files}`,
     );
   });
 
   test('--files-from with bare "unit" token exits 0 (tests run successfully)', () => {
+    // "Exits 0" is determined entirely by selection succeeding with a
+    // non-empty list — the seeded fixture is a trivial no-op, so executing
+    // it contributes nothing this in-process call doesn't already prove.
+    // End-to-end execution coverage of run-tests.cjs lives in
+    // tests/run-tests-harness.test.cjs (see the evidence comment above).
     seed(tmpDir, ['a.test.cjs']);
     const listPath = path.join(tmpDir, 'ci-selected-tests.txt');
     fs.writeFileSync(listPath, 'unit\n', 'utf8');
 
-    const r = runHarness(tmpDir, ['--files-from', listPath]);
+    const r = selectInProcess(tmpDir, ['--files-from', listPath]);
 
-    assert.strictEqual(
-      r.status,
-      0,
-      `Expected exit 0.\nstderr: ${r.stderr}\nstdout: ${r.stdout}`,
-    );
+    assert.strictEqual(r.error, undefined, `Expected a resolved file list, got error: ${r.error}`);
+    assert.deepStrictEqual(r.files, ['a.test.cjs']);
   });
 
   test('--files with bare "unit" token also resolves correctly', () => {
     seed(tmpDir, ['a.test.cjs', 'b.security.test.cjs']);
-    const r = runHarness(tmpDir, ['--files', 'unit']);
+    const r = selectInProcess(tmpDir, ['--files', 'unit']);
 
-    assert.notStrictEqual(
-      r.status,
-      2,
-      `Expected exit 0, got 2.\nstderr: ${r.stderr}`,
-    );
-    assert.doesNotMatch(r.stderr, /requested test file\(s\) not found: unit/);
-    assert.ok(r.stderr.includes('a.test.cjs'), `a.test.cjs must be selected.\nstderr: ${r.stderr}`);
-    assert.ok(!r.stderr.includes('b.security.test.cjs'), `security file must not be selected.\nstderr: ${r.stderr}`);
+    assert.strictEqual(r.error, undefined, `Expected exit 0, got error: ${r.error}`);
+    assert.ok(r.files.includes('a.test.cjs'), `a.test.cjs must be selected. Resolved: ${r.files}`);
+    assert.ok(!r.files.includes('b.security.test.cjs'), `security file must not be selected. Resolved: ${r.files}`);
   });
 
   test('mixed: suite token "unit" alongside an explicit file resolves both', () => {
@@ -1002,13 +1013,14 @@ describe('bug #641 — --files-from with bare suite token', () => {
     // 'unit' expands to [a.test.cjs, b.test.cjs]; b.test.cjs is explicit too.
     fs.writeFileSync(listPath, 'unit\nb.test.cjs\n', 'utf8');
 
-    const r = runHarness(tmpDir, ['--files-from', listPath]);
+    const r = selectInProcess(tmpDir, ['--files-from', listPath]);
 
-    assert.strictEqual(r.status, 0, `stderr: ${r.stderr}`);
-    // Both unit files present; security not.
-    assert.ok(r.stderr.includes('a.test.cjs'), `a.test.cjs must be selected.\nstderr: ${r.stderr}`);
-    assert.ok(r.stderr.includes('b.test.cjs'), `b.test.cjs must be selected.\nstderr: ${r.stderr}`);
-    assert.ok(!r.stderr.includes('c.security.test.cjs'), `c.security.test.cjs must be excluded.\nstderr: ${r.stderr}`);
+    assert.strictEqual(r.error, undefined, `Expected a resolved file list, got error: ${r.error}`);
+    // Both unit files present exactly once (the union dedupes them); security not.
+    assert.ok(r.files.includes('a.test.cjs'), `a.test.cjs must be selected. Resolved: ${r.files}`);
+    assert.ok(r.files.includes('b.test.cjs'), `b.test.cjs must be selected. Resolved: ${r.files}`);
+    assert.ok(!r.files.includes('c.security.test.cjs'), `c.security.test.cjs must be excluded. Resolved: ${r.files}`);
+    assert.strictEqual(r.files.length, 2, `expected no duplicate b.test.cjs. Resolved: ${r.files}`);
   });
 
   test('#408 fallback: ci-test-scope "unit" sentinel does not crash run-tests', () => {
@@ -1021,15 +1033,10 @@ describe('bug #641 — --files-from with bare suite token', () => {
     const listPath = path.join(tmpDir, '.ci-selected-tests.txt');
     fs.writeFileSync(listPath, 'unit\n', 'utf8');
 
-    const r = runHarness(tmpDir, ['--files-from', listPath]);
+    const r = selectInProcess(tmpDir, ['--files-from', listPath]);
 
-    assert.strictEqual(
-      r.status,
-      0,
-      `#408 fallback: expected exit 0 but got ${r.status}.\nstderr: ${r.stderr}`,
-    );
-    assert.doesNotMatch(r.stderr, /not found: unit/);
-    assert.ok(r.stderr.includes('a.test.cjs'), `unit test must run.\nstderr: ${r.stderr}`);
+    assert.strictEqual(r.error, undefined, `#408 fallback: expected a resolved file list, got error: ${r.error}`);
+    assert.ok(r.files.includes('a.test.cjs'), `unit test must resolve. Resolved: ${r.files}`);
   });
 });
 
@@ -1114,12 +1121,15 @@ describe('bug #1329 — ci-prepare-test-scope fallback never emits a deleted fil
     for (const f of FALLBACK) {
       fs.writeFileSync(path.join(tmpDir, f), PASS_BODY, 'utf8');
     }
-    const prep = spawnSync(
-      process.execPath,
+    const prep = runNode(
       [path.join(REPO_ROOT, 'scripts', 'ci-prepare-test-scope.cjs')],
-      { cwd: tmpDir, env: { ...process.env, TEST_SCOPE: 'targeted', TARGETED_TESTS: '', WINDOWS_TESTS: '' }, encoding: 'utf8' },
+      {
+        cwd: tmpDir,
+        env: { ...process.env, TEST_SCOPE: 'targeted', TARGETED_TESTS: '', WINDOWS_TESTS: '' },
+        timeoutMs: PROBE_TIMEOUT_MS,
+      },
     );
-    assert.strictEqual(prep.status, 0, `prepare step failed: ${prep.stderr}`);
+    assert.strictEqual(prep.exitCode, 0, `prepare step failed: ${prep.stderr}`);
 
     const selected = fs.readFileSync(path.join(tmpDir, '.ci-selected-tests.txt'), 'utf8');
     for (const line of selected.split(/\r?\n/).filter(Boolean)) {

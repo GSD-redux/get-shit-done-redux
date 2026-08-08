@@ -5,8 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const LINT_SCRIPT = path.join(ROOT, 'scripts', 'lint-pr-check-project-dir.cjs');
@@ -23,7 +25,8 @@ function createFixtureDir() {
 }
 
 function runLint(args = []) {
-  return spawnSync(process.execPath, [LINT_SCRIPT, ...args], { encoding: 'utf8' });
+  const r = runNode([LINT_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
+  return toLegacyResult(r);
 }
 
 describe('lint-pr-check-project-dir', () => {
@@ -116,7 +119,7 @@ describe('lint-pr-check-project-dir', () => {
   });
 
   test('script parses without syntax errors', () => {
-    const result = spawnSync(process.execPath, ['--check', LINT_SCRIPT], { encoding: 'utf8' });
-    assert.strictEqual(result.status, 0, result.stderr);
+    const result = runNode(['--check', LINT_SCRIPT], { timeoutMs: PROBE_TIMEOUT_MS });
+    assert.strictEqual(result.exitCode, 0, result.stderr);
   });
 });

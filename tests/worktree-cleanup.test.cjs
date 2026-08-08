@@ -1503,10 +1503,9 @@ const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
 
-// 15000ms: git plumbing (init/config/add/commit/worktree) against a small
-// mkdtemp fixture repo — gitOrThrow's own documented default; the guard
-// itself keeps its separately-justified 30000ms (see runGuard below).
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+// The guard itself keeps its separately-justified 30000ms (see runGuard below).
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Extract the cwd-drift guard bash block from execute-phase.md

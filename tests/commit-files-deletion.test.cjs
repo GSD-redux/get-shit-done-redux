@@ -15,10 +15,8 @@ const fs = require('fs');
 const path = require('path');
 const { createTempGitProject, cleanup, runGsdTools } = require('./helpers.cjs');
 const { gitOrThrow } = require('./helpers/git-fixture.cjs');
-
-// 15000ms: git plumbing (add/commit/diff) on a small mkdtemp fixture repo —
-// far over any observed duration for that class of call.
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 describe('commit --files: missing files must not stage deletions (#2014)', () => {
   let tmpDir;

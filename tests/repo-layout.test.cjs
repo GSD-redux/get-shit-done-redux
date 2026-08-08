@@ -23,7 +23,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { runGit } = require('./helpers/process-seam.cjs');
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.resolve(__dirname, '..');
 
@@ -33,15 +34,10 @@ test('repo-layout: root AGENTS.md is not git-tracked — no ad-hoc AI instructio
   // may exist on disk — that's expected after a local install. What must NOT
   // happen is committing it to git, where editors and AI tools would silently
   // pick up the installer-generated stub instead of CONTEXT.md.
-  let tracked;
-  try {
-    execFileSync('git', ['ls-files', '--error-unmatch', 'AGENTS.md'], {
-      cwd: ROOT, encoding: 'utf8', stdio: 'pipe',
-    });
-    tracked = true;
-  } catch {
-    tracked = false;
-  }
+  const r = runGit(['ls-files', '--error-unmatch', 'AGENTS.md'], {
+    cwd: ROOT, timeoutMs: GIT_TIMEOUT_MS,
+  });
+  const tracked = r.exitCode === 0;
   assert.equal(
     tracked,
     false,

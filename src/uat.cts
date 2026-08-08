@@ -21,9 +21,6 @@ const { collectSection, tokenizeHeadings } = markdownSectionizer;
 import markdownTable = require('./markdown-table.cjs');
 const { splitTableRow, isDelimiterRow } = markdownTable;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-import roadmapParser = require('./roadmap-parser.cjs');
-const { getMilestonePhaseFilter } = roadmapParser;
-// eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtils = require('./core-utils.cjs');
 const { toPosixPath } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -37,7 +34,7 @@ import phaseIdMod = require('./phase-id.cjs');
 const { PHASE_NUMBER_TOKEN_SOURCE } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocator = require('./phase-locator.cjs');
-const { getArchivedPhaseDirs } = phaseLocator;
+const { getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocator;
 import { requireSafePath, sanitizeForDisplay } from './security.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- config-loader.cjs is an export= CommonJS module
 import configLoader = require('./config-loader.cjs');
@@ -105,21 +102,20 @@ function cmdAuditUat(cwd: string, raw: boolean): void {
     error('No phases directory found in planning directory');
   }
 
-  const isDirInMilestone = getMilestonePhaseFilter(cwd);
   const results: UatFileResult[] = [];
 
   // Active dirs are milestone-filtered; archived dirs deliberately are NOT.
-  // getMilestonePhaseFilter derives the CURRENT milestone's phase numbers from
-  // ROADMAP.md, and archived phases belong to past milestones by definition — so
-  // applying it to them discards every one and silently reinstates the bug.
+  // listMilestonePhaseDirs derives the CURRENT milestone's phase directories
+  // (window + sentinel filtered) from ROADMAP.md, and archived phases belong
+  // to past milestones by definition — so applying it to them discards every
+  // one and silently reinstates the bug.
   const scanTargets: { dir: string; phaseDir: string; milestone?: string }[] = [];
 
   if (hasActivePhases) {
-    const dirs = fs.readdirSync(phasesDir, { withFileTypes: true })
-      .filter(e => e.isDirectory())
-      .map(e => e.name)
-      .filter(isDirInMilestone)
-      .sort();
+    // #3185 (ADR-3180 Decision 1): routed through the canonical owner
+    // instead of a hand-rolled readdirSync + isDirInMilestone filter, which
+    // also never excluded sentinels, unlike the owner.
+    const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
     for (const dir of dirs) {
       scanTargets.push({ dir, phaseDir: path.join(phasesDir, dir) });
     }

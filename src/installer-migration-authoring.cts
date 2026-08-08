@@ -122,7 +122,9 @@ export function validateInstallerMigrationActions(actions: unknown, migration: M
     // Ownership and runtime-contract evidence are required by
     // docs/installer-migrations.md#action-types and
     // docs/adr/0008-installer-migration-module.md#runtime-contract-decision.
-    if (actType === 'remove-managed' || actType === 'rewrite-json') {
+    // `remove-empty-dir` carries the same evidence bar as `remove-managed`: it is
+    // still a destructive removal, just of a directory node instead of a file.
+    if (actType === 'remove-managed' || actType === 'rewrite-json' || actType === 'remove-empty-dir') {
       requireActionEvidence(act, 'ownershipEvidence', migration);
     }
     if (actType === 'rewrite-json') {
