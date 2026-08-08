@@ -15,7 +15,14 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('node:os');
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+
+// `phase complete` against a real STATE.md rewrite; matches the 60000ms bound
+// already used for the same CLI call elsewhere in this file (runPhaseComplete
+// above, and `run()` below at 15000ms for a lighter query-only call).
+const PHASE_COMPLETE_TIMEOUT_MS = 60000;
 const { runGsdTools, createTempProject, cleanup } = require('./helpers.cjs');
 
 const GSD_TOOLS_BIN = path.resolve(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
@@ -6138,11 +6145,11 @@ describe('bug-3287 — init plan-phase exposes expected_phase_dir with project_c
       const { planningDir } = setupPhase1316Project(tmpDir);
       writePassedVerificationForPhase(tmpDir, '32');
 
-      const result = spawnSync(process.execPath, [GSD_TOOLS_BIN, 'phase', 'complete', '32'], {
+      const result = toLegacyResult(runNode([GSD_TOOLS_BIN, 'phase', 'complete', '32'], {
         cwd: tmpDir,
-        encoding: 'utf8',
         env: process.env,
-      });
+        timeoutMs: PHASE_COMPLETE_TIMEOUT_MS,
+      }));
 
       assert.strictEqual(result.status, 0, `phase complete failed: ${result.stderr || result.stdout}`);
       assert.ok(

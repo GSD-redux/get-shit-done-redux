@@ -2108,11 +2108,27 @@ describe('regressions: --runtime override bypasses persisted runtime (#2003)', (
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cap-rt-cli-'));
     try {
       writePersistedRuntime(tmpDir, 'codex');
-      const result = runGsdTools('capability state --runtime claude --raw', tmpDir);
+      // #2665: sandbox HOME and let the config-location vars stay BLANK (helpers'
+      // TEST_ENV_BASE zeroes them), so the child resolves through the home-derived
+      // FALLBACK branch of getGlobalConfigDir. The original test compared the
+      // child's answer against the PARENT process's getGlobalConfigDir() -- two
+      // different environments, agreeing only because the child inherited the
+      // developer's ambient CLAUDE_CONFIG_DIR.
+      //
+      // Injecting CLAUDE_CONFIG_DIR here instead would fix that leak but move the
+      // test onto the env-FIRST branch, silently dropping the only coverage this
+      // #2003 regression has of the fallback branch. Sandboxing HOME keeps the
+      // expectation test-controlled AND keeps the branch under test unchanged.
+      const result = runGsdTools('capability state --runtime claude --raw', tmpDir, {
+        HOME: tmpDir,
+        USERPROFILE: tmpDir,
+      });
       assert.ok(result.success, `capability state --runtime should succeed: ${result.error || ''}`);
       const parsed = JSON.parse(result.output);
-      const runtimeHomes = require('../gsd-core/bin/lib/runtime-homes.cjs');
-      assert.strictEqual(parsed.runtimeConfigDir, runtimeHomes.getGlobalConfigDir('claude'),
+      // Home-derived Claude dir. That this is NOT <tmpDir>/.codex is the #2003
+      // assertion; a separate notStrictEqual against the codex dir would be dead,
+      // since it cannot fail whenever this strictEqual passes.
+      assert.strictEqual(parsed.runtimeConfigDir, path.join(tmpDir, '.claude'),
         '`capability state --runtime claude` must resolve to the Claude config dir, not the persisted codex dir');
     } finally {
       cleanup(tmpDir);

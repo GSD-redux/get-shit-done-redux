@@ -21,12 +21,21 @@
 
 const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { execSync } = require('child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
+
+/**
+ * Bound for every subprocess in this file: git plumbing/worktree commands
+ * against small mkdtemp fixture repos, plus the bash discovery-pipeline and
+ * process-substitution probes below — all orders of magnitude under this.
+ * #3144.
+ */
+const WORKTREE_TIMEOUT_MS = 30000;
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
@@ -198,30 +207,32 @@ const DISCOVERY_PIPELINE =
   'grep "^worktree " | grep "\\.claude/worktrees/agent-" | sed \'s/^worktree //\'';
 
 function runDiscoveryAgainstFixture(porcelain) {
-  const out = execSync(DISCOVERY_PIPELINE, {
+  const out = runHook('-c', [DISCOVERY_PIPELINE], {
+    interpreter: 'bash',
     input: porcelain,
-    encoding: 'utf-8',
-  });
+    timeoutMs: WORKTREE_TIMEOUT_MS,
+  }).stdout;
   return out.split('\n').filter((l) => l.length > 0);
 }
 
 function runDiscoveryAgainstRepo(repoCwd) {
-  const out = execSync(
-    `git worktree list --porcelain | ${DISCOVERY_PIPELINE}`,
-    { cwd: repoCwd, encoding: 'utf-8' }
-  );
+  const out = runHook('-c', [`git worktree list --porcelain | ${DISCOVERY_PIPELINE}`], {
+    interpreter: 'bash',
+    cwd: repoCwd,
+    timeoutMs: WORKTREE_TIMEOUT_MS,
+  }).stdout;
   return out.split('\n').filter((l) => l.length > 0);
 }
 
 function makeTempUpstreamRepo(prefix) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-  execSync('git init -b main', { cwd: tmpDir, stdio: 'pipe' });
-  execSync('git config user.email "test@test.com"', { cwd: tmpDir, stdio: 'pipe' });
-  execSync('git config user.name "Test"', { cwd: tmpDir, stdio: 'pipe' });
-  execSync('git config commit.gpgsign false', { cwd: tmpDir, stdio: 'pipe' });
+  gitOrThrow(['init', '-b', 'main'], { cwd: tmpDir, timeoutMs: WORKTREE_TIMEOUT_MS });
+  gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: tmpDir, timeoutMs: WORKTREE_TIMEOUT_MS });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: tmpDir, timeoutMs: WORKTREE_TIMEOUT_MS });
+  gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: tmpDir, timeoutMs: WORKTREE_TIMEOUT_MS });
   fs.writeFileSync(path.join(tmpDir, 'README.md'), '# upstream\n');
-  execSync('git add -A', { cwd: tmpDir, stdio: 'pipe' });
-  execSync('git commit -m "initial"', { cwd: tmpDir, stdio: 'pipe' });
+  gitOrThrow(['add', '-A'], { cwd: tmpDir, timeoutMs: WORKTREE_TIMEOUT_MS });
+  gitOrThrow(['commit', '-m', 'initial'], { cwd: tmpDir, timeoutMs: WORKTREE_TIMEOUT_MS });
   return tmpDir;
 }
 
@@ -708,10 +719,11 @@ while IFS= read -r WT; do
 done < <(${DISCOVERY_PIPELINE})
 `;
       // bash needed for process substitution `< <(...)`.
-      const out = execSync(`bash -c '${script.replace(/'/g, `'\\''`)}'`, {
+      const out = runHook('-c', [script], {
+        interpreter: 'bash',
         input: porcelain,
-        encoding: 'utf-8',
-      });
+        timeoutMs: WORKTREE_TIMEOUT_MS,
+      }).stdout;
       const iterations = out
         .split('\n')
         .filter((l) => l.startsWith('ITER:'))
@@ -747,23 +759,23 @@ done < <(${DISCOVERY_PIPELINE})
         path.join(os.tmpdir(), 'gsd-2774-workspaces-')
       );
       workspace = path.join(workspacesParent, 'feature-x');
-      execSync(`git worktree add -b workspace/feature-x "${workspace}"`, {
+      gitOrThrow(['worktree', 'add', '-b', 'workspace/feature-x', workspace], {
         cwd: upstream,
-        stdio: 'pipe',
+        timeoutMs: WORKTREE_TIMEOUT_MS,
       });
 
       const agentDir = path.join(workspace, '.claude', 'worktrees');
       fs.mkdirSync(agentDir, { recursive: true });
       agentWorktree = path.join(agentDir, 'agent-deadbeef');
-      execSync(
-        `git worktree add -b worktree-agent-deadbeef "${agentWorktree}"`,
-        { cwd: upstream, stdio: 'pipe' }
+      gitOrThrow(
+        ['worktree', 'add', '-b', 'worktree-agent-deadbeef', agentWorktree],
+        { cwd: upstream, timeoutMs: WORKTREE_TIMEOUT_MS }
       );
     });
 
     afterEach(() => {
       try {
-        execSync('git worktree prune', { cwd: upstream, stdio: 'pipe' });
+        gitOrThrow(['worktree', 'prune'], { cwd: upstream, timeoutMs: WORKTREE_TIMEOUT_MS });
       } catch (_) {
         /* ignore */
       }
@@ -805,9 +817,9 @@ done < <(${DISCOVERY_PIPELINE})
       // Execute the cleanup behavior end-to-end: `git worktree remove --force`
       // each discovered path. This mirrors the workflow's cleanup loop.
       for (const wt of discovered) {
-        execSync(`git worktree remove --force "${wt}"`, {
+        gitOrThrow(['worktree', 'remove', '--force', wt], {
           cwd: workspace,
-          stdio: 'pipe',
+          timeoutMs: WORKTREE_TIMEOUT_MS,
         });
       }
 
@@ -837,9 +849,9 @@ done < <(${DISCOVERY_PIPELINE})
       );
 
       // Workspace must still be a functional git worktree.
-      const branch = execSync('git rev-parse --abbrev-ref HEAD', {
+      const branch = gitOrThrow(['rev-parse', '--abbrev-ref', 'HEAD'], {
         cwd: workspace,
-        encoding: 'utf-8',
+        timeoutMs: WORKTREE_TIMEOUT_MS,
       }).trim();
       assert.equal(
         branch,

@@ -1309,10 +1309,17 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const EXECUTE_PHASE_MD = path.join(__dirname, '..', 'gsd-core', 'workflows', 'execute-phase.md');
+
+// 30000ms: git plumbing (init/config/add/commit/worktree/rev-parse) against a
+// small mkdtemp fixture repo, and a `node -e <manifest-reader>` one-liner
+// extracted from the shipped workflow — well over any observed duration for
+// either class of call in this bug-630 block.
+const BUG_630_TIMEOUT_MS = 30_000;
 
 function readMd() {
   return fs.readFileSync(EXECUTE_PHASE_MD, 'utf8');
@@ -1330,11 +1337,17 @@ function extractManifestReaderScript() {
 }
 
 function git(cwd, args) {
-  return execFileSync('git', args, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  }).trim();
+  return gitOrThrow(args, { cwd, timeoutMs: BUG_630_TIMEOUT_MS }).trim();
+}
+
+// runNode never throws; the shipped manifest-reader one-liner is expected to
+// exit cleanly (it emits either a resolved path or nothing — never an
+// error), so a non-clean exit here is a genuine defect and must still abort
+// the test loudly, matching the pre-migration execFileSync throw.
+function runManifestReaderOrThrow(args, opts) {
+  const r = runNode(args, opts);
+  throwIfFailed(r, `node ${args.join(' ')}`);
+  return r.stdout;
 }
 
 // Canonicalize a path the way the OS does. On Windows, os.tmpdir() can yield an 8.3
@@ -1418,10 +1431,10 @@ describe('bug #630 — wave-cleanup pins to the orchestrator root, not git-workt
 
       // Run the EXACT shipped reader one-liner.
       const script = extractManifestReaderScript();
-      const resolved = execFileSync('node', ['-e', script], {
+      const resolved = runManifestReaderOrThrow(['-e', script], {
         cwd: laneDir,
         env: { ...process.env, MANIFEST: manifest },
-        encoding: 'utf8',
+        timeoutMs: BUG_630_TIMEOUT_MS,
       }).trim();
 
       // The buggy first-entry resolution (run from the lane) yields the MAIN checkout.
@@ -1453,9 +1466,9 @@ describe('bug #630 — wave-cleanup pins to the orchestrator root, not git-workt
       // Pre-#630 manifest shape: no orchestrator_root.
       fs.writeFileSync(manifest, JSON.stringify({ worktrees: [] }) + '\n');
       const script = extractManifestReaderScript();
-      const out = execFileSync('node', ['-e', script], {
+      const out = runManifestReaderOrThrow(['-e', script], {
         env: { ...process.env, MANIFEST: manifest },
-        encoding: 'utf8',
+        timeoutMs: BUG_630_TIMEOUT_MS,
       });
       assert.equal(out, '', 'reader must emit nothing for a manifest without orchestrator_root so the first-entry fallback engages');
     } finally {
@@ -1480,15 +1493,19 @@ describe('bug #630 — wave-cleanup pins to the orchestrator root, not git-workt
 
 const { describe, test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { execSync, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
-const { runHook } = require('./helpers/process-seam.cjs');
+const { runHook, runGit } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const EXECUTE_PHASE_PATH = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'execute-phase.md');
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+// The guard itself keeps its separately-justified 30000ms (see runGuard below).
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Extract the cwd-drift guard bash block from execute-phase.md
@@ -1593,12 +1610,15 @@ let agentSubdir;      // subdirectory inside agentWtDir
 let legitUnderClaude; // non-agent worktree whose PATH is under .claude/worktrees/
 const dirsToCleanup = [];
 
+// Migrated off a hand-rolled shell string (naive per-arg double-quoting,
+// run through execSync) onto gitOrThrow's argv form directly — every call
+// site below passes a plain args array with no shell metacharacters, so
+// running it as direct argv is behaviorally identical and drops the
+// quoting hazard. Return value stays the RAW, un-trimmed stdout string
+// (gitOrThrow does not trim), matching what execSync returned and what
+// this block's ~10 callers expect.
 function git(cwd, args) {
-  return execSync(`git ${args.map(a => `"${a}"`).join(' ')}`, {
-    cwd,
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  return gitOrThrow(args, { cwd, timeoutMs: GIT_TIMEOUT_MS });
 }
 
 before(() => {
@@ -1705,11 +1725,11 @@ describe('bug #48: orchestrator cwd-drift guard — executable e2e', () => {
       // Verify that git rev-parse --show-toplevel actually fails here.
       // On some systems /tmp itself might be inside a git repo (e.g. if the
       // user's HOME is a git repo). If it resolves, we must skip this test.
-      const check = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+      const check = runGit(['rev-parse', '--show-toplevel'], {
         cwd: nonRepoDir,
-        encoding: 'utf-8',
+        timeoutMs: GIT_TIMEOUT_MS,
       });
-      if (check.status === 0) {
+      if (check.exitCode === 0) {
         t.skip('nonRepoDir unexpectedly resolved to a git repo — skipping');
         return;
       }

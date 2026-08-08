@@ -25,6 +25,9 @@ const ROOT   = path.resolve(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'scripts', 'ci-rebase-check.cjs');
 const NODE   = process.execPath;
 const { cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ---------------------------------------------------------------------------
 // Helper: run a small inline Node snippet that requires the run() helper
@@ -129,19 +132,24 @@ describe('ci-rebase-check: fetch-retry loop resolves when git fetch succeeds', (
     const workDir   = path.join(tmpDir, 'work');
 
     try {
-      // Build a bare remote with a `main` branch containing one commit.
+      // Build a bare remote with a `main` branch containing one commit. Each
+      // setup step uses gitOrThrow (not the bare seam) so a failure here aborts
+      // loudly at the point of failure instead of surfacing as a baffling
+      // assertion mismatch against the script's exit code further down —
+      // matching the throw-on-failure behavior the pre-migration `spawnSync`
+      // calls this replaced never had either.
       fs.mkdirSync(remoteDir, { recursive: true });
-      spawnSync('git', ['init', '--bare', remoteDir], { encoding: 'utf8' });
+      gitOrThrow(['init', '--bare', remoteDir], { timeoutMs: GIT_TIMEOUT_MS });
 
       // Create a working clone to push an initial commit.
-      spawnSync('git', ['clone', remoteDir, workDir], { encoding: 'utf8' });
+      gitOrThrow(['clone', remoteDir, workDir], { timeoutMs: GIT_TIMEOUT_MS });
       fs.writeFileSync(path.join(workDir, 'seed.txt'), 'init\n');
-      spawnSync('git', ['-C', workDir, 'config', 'user.email', 'ci@test'], { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'config', 'user.name', 'CI Test'],  { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'checkout', '-b', 'main'],           { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'add', 'seed.txt'],                  { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'commit', '-m', 'init'],             { encoding: 'utf8' });
-      spawnSync('git', ['-C', workDir, 'push', 'origin', 'main'],          { encoding: 'utf8' });
+      gitOrThrow(['-C', workDir, 'config', 'user.email', 'ci@test'], { timeoutMs: GIT_TIMEOUT_MS });
+      gitOrThrow(['-C', workDir, 'config', 'user.name', 'CI Test'],  { timeoutMs: GIT_TIMEOUT_MS });
+      gitOrThrow(['-C', workDir, 'checkout', '-b', 'main'],           { timeoutMs: GIT_TIMEOUT_MS });
+      gitOrThrow(['-C', workDir, 'add', 'seed.txt'],                  { timeoutMs: GIT_TIMEOUT_MS });
+      gitOrThrow(['-C', workDir, 'commit', '-m', 'init'],             { timeoutMs: GIT_TIMEOUT_MS });
+      gitOrThrow(['-C', workDir, 'push', 'origin', 'main'],          { timeoutMs: GIT_TIMEOUT_MS });
 
       // Run the script from `workDir` with origin pointing at our bare remote.
       // GITHUB_BASE_REF=main so it fetches `origin main`.

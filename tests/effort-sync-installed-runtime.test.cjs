@@ -21,7 +21,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const { runMinimalInstall } = require('./helpers/install-shared.cjs');
 const { cleanup } = require('./helpers.cjs');
@@ -44,16 +44,11 @@ describe('#2071: effort sync runs in an installed runtime (no package-root bin/i
       );
 
       const gsdTools = path.join(configDir, 'gsd-core', 'bin', 'gsd-tools.cjs');
-      let combined = '';
-      try {
-        combined = execFileSync(
-          process.execPath,
-          [gsdTools, 'effort', 'sync', '--config-dir', configDir],
-          { cwd: root, encoding: 'utf-8', env: { ...process.env, HOME: root } },
-        );
-      } catch (e) {
-        combined = `${e.stdout || ''}${e.stderr || ''}${e.message || ''}`;
-      }
+      const result = runNode(
+        [gsdTools, 'effort', 'sync', '--config-dir', configDir],
+        { cwd: root, env: { ...process.env, HOME: root }, timeoutMs: 15000 },
+      );
+      const combined = `${result.stdout || ''}${result.stderr || ''}`;
 
       assert.doesNotMatch(
         combined,

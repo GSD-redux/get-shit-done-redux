@@ -15,13 +15,21 @@
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { cleanup, readFileNormalized } = require('./helpers.cjs');
+const { gitOrThrow, throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { runHook } = require('./helpers/process-seam.cjs');
 
 const QUICK_PATH = path.join(__dirname, '..', 'gsd-core', 'workflows', 'quick.md');
+
+/**
+ * Bound for every subprocess in this file: git plumbing against small mkdtemp
+ * fixture repos, plus the Step 2.5 bash-script run below — both orders of
+ * magnitude under this. #3144.
+ */
+const GIT_TIMEOUT_MS = 20000;
 
 const GIT_ENV = Object.freeze({
   ...process.env,
@@ -32,13 +40,7 @@ const GIT_ENV = Object.freeze({
 });
 
 function git(cwd, ...args) {
-  return execFileSync('git', args, {
-    cwd,
-    env: GIT_ENV,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  })
-    .toString()
-    .trim();
+  return gitOrThrow(args, { cwd, env: GIT_ENV, timeoutMs: GIT_TIMEOUT_MS }).trim();
 }
 
 /**
@@ -144,11 +146,9 @@ function runStep(bash, cwd, branchName) {
   const script = `#!/usr/bin/env bash\nset -uo pipefail\nbranch_name="${branchName}"\n${bash}\n`;
   fs.writeFileSync(scriptPath, script, { mode: 0o755 });
   try {
-    return execFileSync('bash', [scriptPath], {
-      cwd,
-      env: GIT_ENV,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }).toString();
+    const r = runHook(scriptPath, [], { interpreter: 'bash', cwd, env: GIT_ENV, timeoutMs: GIT_TIMEOUT_MS });
+    throwIfFailed(r, `runStep: bash ${scriptPath}`);
+    return r.stdout;
   } finally {
     cleanup(scriptDir);
   }

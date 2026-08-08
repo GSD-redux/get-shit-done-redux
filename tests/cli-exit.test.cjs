@@ -2,10 +2,12 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 
 const { ExitError, runMain } = require('../scripts/lib/cli-exit.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // Paths to the compiled product seam (src/cli-exit.cts → gsd-core/bin/lib/cli-exit.cjs)
 // used for json-error mode regression tests which require io.cjs integration.
@@ -197,7 +199,7 @@ describe('regressions', () => {
       runMain(() => { throw ${throwExpr}; });
       setImmediate(() => {});
     `;
-    return spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    return toLegacyResult(runNode(['-e', script], { timeoutMs: PROBE_TIMEOUT_MS }));
   }
 
   describe('bug-965: unexpected throw in json-error mode emits structured envelope', () => {

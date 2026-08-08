@@ -22,7 +22,9 @@ const { describe, test, before } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const fs = require('node:fs');
-const { spawnSync, execFileSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 const { runMinimalInstall, BUILD_SCRIPT } = require('./helpers/install-shared.cjs');
@@ -30,10 +32,13 @@ const { runMinimalInstall, BUILD_SCRIPT } = require('./helpers/install-shared.cj
 const ROOT = path.join(__dirname, '..');
 const INSTALL_JS = path.join(ROOT, 'bin', 'install.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 // hooks/dist is gitignored + built; build it idempotently so a real install
 // emits hooks (mirrors golden-install-parity / install-minimal-hooks).
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { stdio: 'pipe' });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 const {

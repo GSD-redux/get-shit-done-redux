@@ -15,36 +15,20 @@ const { describe, test, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const { createTempProject, cleanup, TOOLS_PATH } = require('./helpers.cjs');
-
-const TEST_ENV_BASE = {
-  GSD_SESSION_KEY: '',
-  CODEX_THREAD_ID: '',
-  CLAUDE_SESSION_ID: '',
-  CLAUDE_CODE_SSE_PORT: '',
-  OPENCODE_SESSION_ID: '',
-  GEMINI_SESSION_ID: '',
-  CURSOR_SESSION_ID: '',
-  WINDSURF_SESSION_ID: '',
-  TERM_SESSION_ID: '',
-  WT_SESSION: '',
-  TMUX_PANE: '',
-  ZELLIJ_SESSION_NAME: '',
-  TTY: '',
-  SSH_TTY: '',
-};
+const { createTempProject, cleanup, TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 function runMigrateConfig(cwd, extraArgs = [], env = {}) {
-  const result = spawnSync(process.execPath, [TOOLS_PATH, 'migrate-config', ...extraArgs], {
+  const result = runNode([TOOLS_PATH, 'migrate-config', ...extraArgs], {
     cwd,
-    encoding: 'utf-8',
     env: { ...process.env, ...TEST_ENV_BASE, ...env },
+    timeoutMs: PROBE_TIMEOUT_MS,
   });
   return {
     stdout: result.stdout || '',
     stderr: result.stderr || '',
-    status: result.status,
+    status: result.exitCode,
   };
 }
 

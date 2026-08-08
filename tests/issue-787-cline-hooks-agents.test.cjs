@@ -31,10 +31,13 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
+
+// #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS, INSTALL_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const {
   install,
@@ -68,8 +71,8 @@ describe('#787 Cline pure helpers', () => {
     try {
       const p = path.join(tmp, 'PreToolUse');
       fs.writeFileSync(p, script);
-      const res = spawnSync(process.execPath, ['--check', p], { encoding: 'utf8' });
-      assert.equal(res.status, 0, `node --check failed: ${res.stderr}`);
+      const res = runNode(['--check', p], { timeoutMs: PROBE_TIMEOUT_MS });
+      assert.equal(res.exitCode, 0, `node --check failed: ${res.stderr}`);
     } finally {
       cleanup(tmp);
     }
@@ -80,11 +83,11 @@ describe('#787 Cline pure helpers', () => {
     try {
       const p = path.join(tmp, 'PreToolUse');
       fs.writeFileSync(p, buildClinePreToolUseHook());
-      const res = spawnSync(process.execPath, [p], {
+      const res = runNode([p], {
         input: JSON.stringify({ toolName: 'read_file', toolInput: { path: 'src/index.ts' } }),
-        encoding: 'utf8',
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
-      assert.equal(res.status, 0);
+      assert.equal(res.exitCode, 0);
       const out = JSON.parse(res.stdout);
       assert.equal(out.cancel, false);
     } finally {
@@ -97,11 +100,11 @@ describe('#787 Cline pure helpers', () => {
     try {
       const p = path.join(tmp, 'PreToolUse');
       fs.writeFileSync(p, buildClinePreToolUseHook());
-      const res = spawnSync(process.execPath, [p], {
+      const res = runNode([p], {
         input: JSON.stringify({ toolName: 'write_to_file', toolInput: { path: '.planning/ROADMAP.md', content: 'x' } }),
-        encoding: 'utf8',
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
-      assert.equal(res.status, 0);
+      assert.equal(res.exitCode, 0);
       const out = JSON.parse(res.stdout);
       assert.equal(out.cancel, true);
       assert.match(out.errorMessage, /\.planning/);
@@ -115,14 +118,14 @@ describe('#787 Cline pure helpers', () => {
     try {
       const p = path.join(tmp, 'PreToolUse');
       fs.writeFileSync(p, buildClinePreToolUseHook());
-      const res = spawnSync(process.execPath, [p], {
+      const res = runNode([p], {
         input: JSON.stringify({
           toolName: 'write_to_file',
           toolInput: { path: 'docs/guide.md', content: 'Edit your .planning/ROADMAP.md via /gsd commands.' },
         }),
-        encoding: 'utf8',
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
-      assert.equal(res.status, 0);
+      assert.equal(res.exitCode, 0);
       assert.equal(JSON.parse(res.stdout).cancel, false, 'content mentioning .planning must not trigger a cancel');
     } finally {
       cleanup(tmp);
@@ -134,8 +137,8 @@ describe('#787 Cline pure helpers', () => {
     try {
       const p = path.join(tmp, 'PreToolUse');
       fs.writeFileSync(p, buildClinePreToolUseHook());
-      const res = spawnSync(process.execPath, [p], { input: 'not json{', encoding: 'utf8' });
-      assert.equal(res.status, 0);
+      const res = runNode([p], { input: 'not json{', timeoutMs: PROBE_TIMEOUT_MS });
+      assert.equal(res.exitCode, 0);
       assert.equal(JSON.parse(res.stdout).cancel, false);
     } finally {
       cleanup(tmp);
@@ -263,10 +266,9 @@ describe('#787 Cline global install — ~/.agents/AGENTS.md', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-787-cline-global-'));
     const env = { ...process.env, HOME: root, USERPROFILE: root };
     delete env.GSD_TEST_MODE;
-    const res = spawnSync(
-      process.execPath,
+    const res = runNode(
       [INSTALL_SCRIPT, '--cline', '--global', '--config-dir', path.join(root, '.cline')],
-      { cwd: root, encoding: 'utf8', env },
+      { cwd: root, env, timeoutMs: INSTALL_TIMEOUT_MS },
     );
     return { root, res };
   }
@@ -274,7 +276,7 @@ describe('#787 Cline global install — ~/.agents/AGENTS.md', () => {
   test('writes ~/.agents/AGENTS.md with a GSD marker block', () => {
     const { root, res } = runGlobalClineInstall();
     try {
-      assert.equal(res.status, 0, `installer failed: ${res.stderr}`);
+      assert.equal(res.exitCode, 0, `installer failed: ${res.stderr}`);
       const agents = path.join(root, '.agents', 'AGENTS.md');
       assert.ok(fs.existsSync(agents), '~/.agents/AGENTS.md must exist after a global Cline install');
       const content = fs.readFileSync(agents, 'utf8');

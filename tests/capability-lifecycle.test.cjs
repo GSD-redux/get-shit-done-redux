@@ -26,12 +26,14 @@ const { CAP_MARKER } = lifecycle;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const cp = require('node:child_process');
+const { runHook } = require('./helpers/process-seam.cjs');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 /** POSIX-only: make a FIFO at `p` (returns false where mkfifo is unavailable). */
 function tryMkfifoLife(p) {
   if (process.platform === 'win32') return false;
-  const res = cp.spawnSync('mkfifo', [p], { stdio: 'ignore' });
-  return res.status === 0;
+  const res = runHook(p, [], { interpreter: 'mkfifo', timeoutMs: PROBE_TIMEOUT_MS });
+  return res.exitCode === 0;
 }
 
 const cleanups = [];

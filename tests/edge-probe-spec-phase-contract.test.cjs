@@ -192,3 +192,60 @@ test('adversarial review: Step 5.5 guards a zero-applicable coverage report', ()
     'Step 5.5 must read coverage.applicable and guard the zero-applicable case (warn/confirm, not silently proceed)'
   );
 });
+
+// #3132: the retired covered/backstop-as-status vocabulary must not appear in
+// the workflow prose. probe-core.cts locks Status to resolved|dismissed|unresolved;
+// backstop survives only as a verification tier on a resolved item.
+test('#3132: spec-phase.md uses resolved/dismissed/unresolved — not covered/backstop as status', () => {
+  const content = readSpecPhase();
+  // "mark the edge `covered`" or "mark `backstop`" would indicate the retired vocab
+  assert.doesNotMatch(content, /mark the edge `covered`/,
+    'spec-phase.md must not instruct agents to mark edges as "covered" (retired status)');
+  assert.doesNotMatch(content, /mark `backstop`[^;]/,
+    'spec-phase.md must not instruct agents to mark edges as "backstop" (retired status; backstop is a verification tier only)');
+  // The resolution options should reference resolved+verification
+  assert.match(content, /resolved.*verification: explicit/,
+    'spec-phase.md must use "resolved" with "verification: explicit" for specified edges');
+  assert.match(content, /resolved.*verification: backstop/,
+    'spec-phase.md must use "resolved" with "verification: backstop" for backstopped edges');
+});
+
+test('#3132: plan-phase.md lift rule uses resolved+verification — not covered/backstop', () => {
+  const planPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'plan-phase.md');
+  const content = fs.readFileSync(planPath, 'utf8');
+  // The lift rule should not reference "covered edge" or "backstop edge" as statuses
+  assert.doesNotMatch(content, /`covered` edge/,
+    'plan-phase.md must not reference "covered" edges as a status');
+  assert.doesNotMatch(content, /`backstop` edge/,
+    'plan-phase.md must not reference "backstop" edges as a status');
+  // It should use "resolved (verification: ...)"
+  assert.match(content, /resolved \(verification: explicit\)/,
+    'plan-phase.md lift rule must use "resolved (verification: explicit)"');
+});
+
+test('#3132: ui-phase.md resolution loop uses resolved+verification — not covered/backstop', () => {
+  const uiPath = path.join(__dirname, '..', 'gsd-core', 'workflows', 'ui-phase.md');
+  const content = fs.readFileSync(uiPath, 'utf8');
+  // The resolution options should not use covered/backstop as status values
+  assert.doesNotMatch(content, /→ `covered`/,
+    'ui-phase.md must not use "covered" as a resolution status');
+  // It should use resolved+verification
+  assert.match(content, /→ `resolved`.*verification: explicit/,
+    'ui-phase.md resolution must use "resolved" with "verification: explicit"');
+});
+
+test('#3132: specless-probe-fallback.md uses resolved+verification — not covered/backstop', () => {
+  const fallbackPath = path.join(__dirname, '..', 'gsd-core', 'references', 'specless-probe-fallback.md');
+  const content = fs.readFileSync(fallbackPath, 'utf8');
+  // The fallback reference is @-loaded by plan-phase.md when EDGE_ABSENT
+  assert.doesNotMatch(content, /auto-`covered`/,
+    'specless-probe-fallback.md must not use auto-"covered" (retired status)');
+  assert.doesNotMatch(content, /auto-`backstop`/,
+    'specless-probe-fallback.md must not use auto-"backstop" as a status (backstop is a verification tier only)');
+  assert.doesNotMatch(content, /`covered` edge/,
+    'specless-probe-fallback.md must not reference "covered" edges as a status');
+  assert.match(content, /auto-`resolved`/,
+    'specless-probe-fallback.md must use auto-"resolved" (not auto-"covered"/"backstop")');
+  assert.match(content, /verification: explicit/,
+    'specless-probe-fallback.md must reference "verification: explicit"');
+});

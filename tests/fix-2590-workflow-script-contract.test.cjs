@@ -32,8 +32,10 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const core = require('../gsd-core/bin/lib/claude-orchestration.cjs');
 const TOOLS = path.join(__dirname, '..', 'gsd-core', 'bin', 'gsd-tools.cjs');
@@ -74,9 +76,8 @@ describe('#2590: emitted Workflow scripts satisfy the Workflow tool contract', (
     const f = path.join(dir, 'emitted.mjs');
     fs.writeFileSync(f, script);
     try {
-      execFileSync(process.execPath, ['--check', f], { stdio: 'pipe' });
-    } catch (e) {
-      assert.fail(`emitted script does not parse: ${e.stderr ? e.stderr.toString() : e.message}`);
+      const result = runNode(['--check', f], { timeoutMs: PROBE_TIMEOUT_MS });
+      throwIfFailed(result, `node --check ${f} (emitted script must parse)`);
     } finally {
       cleanup(dir);
     }
@@ -211,13 +212,14 @@ describe('#2590: the backend is reachable without hand-passed flags', () => {
   }
 
   function resolve(dir, extraArgs) {
-    const out = execFileSync(process.execPath, [
+    const result = runNode([
       TOOLS, 'claude-orchestration', 'resolve-wave-dispatch',
       '--waves', 'waves.json', '--run-id', 'execute-1',
       '--phase-dir', '.planning/phases/01', '--raw',
       ...(extraArgs || []),
-    ], { cwd: dir, encoding: 'utf8' });
-    return JSON.parse(out);
+    ], { cwd: dir, timeoutMs: PROBE_TIMEOUT_MS });
+    throwIfFailed(result, 'gsd-tools claude-orchestration resolve-wave-dispatch');
+    return JSON.parse(result.stdout);
   }
 
   test('5+6. no --runtime and no --agent-sdk-version still reaches the version gate', () => {
@@ -264,12 +266,13 @@ describe('#2590: the backend is reachable without hand-passed flags', () => {
   test('GSD_AGENT_SDK_VERSION is honored between the flag and the installed version', () => {
     const dir = repro();
     try {
-      const out = execFileSync(process.execPath, [
+      const result = runNode([
         TOOLS, 'claude-orchestration', 'resolve-wave-dispatch',
         '--waves', 'waves.json', '--run-id', 'execute-1',
         '--phase-dir', '.planning/phases/01', '--raw',
-      ], { cwd: dir, encoding: 'utf8', env: { ...process.env, GSD_AGENT_SDK_VERSION: '0.3.149' } });
-      assert.equal(JSON.parse(out).backend, 'workflow');
+      ], { cwd: dir, env: { ...process.env, GSD_AGENT_SDK_VERSION: '0.3.149' }, timeoutMs: PROBE_TIMEOUT_MS });
+      throwIfFailed(result, 'gsd-tools claude-orchestration resolve-wave-dispatch (GSD_AGENT_SDK_VERSION)');
+      assert.equal(JSON.parse(result.stdout).backend, 'workflow');
     } finally {
       cleanup(dir);
     }

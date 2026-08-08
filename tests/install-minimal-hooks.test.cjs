@@ -28,13 +28,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { spawnSync, execFileSync } = require('node:child_process');
+
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { createTempDir, cleanup } = require('./helpers.cjs');
 
 const {
   writeManifest,
   GSD_UNINSTALL_HOOKS,
+  resolveSharedHooksDirName,
 } = require('../bin/install.js');
 
 const {
@@ -114,10 +117,9 @@ describe('install-profiles: MINIMAL_SKILL_ALLOWLIST', () => {
 
 describe('install: --help profile counts match PROFILES (#834)', () => {
   function helpText() {
-    return execFileSync(process.execPath, [INSTALL_SCRIPT, '--help'], {
-      encoding: 'utf8',
-      env: installerEnv(),
-    });
+    const r = runNode([INSTALL_SCRIPT, '--help'], { env: installerEnv(), timeoutMs: 15000 });
+    throwIfFailed(r, `node ${INSTALL_SCRIPT} --help`);
+    return r.stdout;
   }
 
   test('core line advertises PROFILES.core.length main-loop skills', () => {
@@ -441,10 +443,9 @@ describe('install: manifest records mode for both profiles', () => {
   function manifestModeAfterInstall(extraArgs) {
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-manifest-mode-'));
     try {
-      spawnSync(
-        process.execPath,
+      runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, ...extraArgs],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
       const manifestPath = path.join(targetDir, MANIFEST_NAME);
       if (!fs.existsSync(manifestPath)) return { mode: '<no manifest>', skillCount: 0, agentCount: 0 };
@@ -495,10 +496,9 @@ describe('install-minimal-backcompat: --minimal and --profile=core produce same 
   function installAndGetManifest(extraArgs) {
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-backcompat-'));
     try {
-      spawnSync(
-        process.execPath,
+      runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, ...extraArgs],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
       const manifestPath = path.join(targetDir, MANIFEST_NAME);
       if (!fs.existsSync(manifestPath)) return { mode: null, skillCount: 0, profileMarker: null };
@@ -572,10 +572,9 @@ describe('install: Codex full → minimal downgrade cleans stale agent state', (
       // unsandboxed spawn here would write gsd-* skill dirs into the developer's
       // real $HOME/.agents/skills. This test only asserts on agents/ and
       // config.toml (both under targetDir), so the sandbox has no effect on intent.
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, '--codex', '--global', '--config-dir', targetDir, '--minimal'],
-        { encoding: 'utf8', env: installerEnv({ HOME: targetDir, USERPROFILE: targetDir }) },
+        { env: installerEnv({ HOME: targetDir, USERPROFILE: targetDir }), timeoutMs: 120000 },
       );
       assert.ok(result.stdout || result.stderr);
 
@@ -610,10 +609,9 @@ describe('install: Claude full → minimal downgrade removes stale agents', () =
       fs.writeFileSync(path.join(agentsDir, 'gsd-planner.md'), 'stale\n');
       fs.writeFileSync(path.join(agentsDir, 'my-custom-agent.md'), 'user owns this\n');
 
-      spawnSync(
-        process.execPath,
+      runNode(
         [INSTALL_SCRIPT, '--claude', '--global', '--config-dir', targetDir, '--minimal'],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
 
       const remaining = fs.existsSync(agentsDir) ? fs.readdirSync(agentsDir) : [];
@@ -629,8 +627,11 @@ describe('install: Claude full → minimal downgrade removes stale agents', () =
 
 // ─── Section 13: Hooks copy, manifest, uninstall settings cleanup ─────────────
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: SECTION13_BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf-8', stdio: 'pipe' });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: SECTION13_BUILD_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 const isWindows = process.platform === 'win32';
@@ -688,8 +689,8 @@ describe('#1755: .sh hooks are copied and executable after install', () => {
 // hooks; Kilo/OpenCode/pi (and Claude) do.
 
 describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude keep their hooks', () => {
-  function gsdHookFilesUnder(configDir) {
-    const hooksDir = path.join(configDir, 'hooks');
+  function gsdHookFilesUnder(configDir, hooksDirName) {
+    const hooksDir = path.join(configDir, hooksDirName);
     if (!fs.existsSync(hooksDir)) return [];
     return walk(hooksDir).filter((f) => {
       const base = path.basename(f);
@@ -700,19 +701,23 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
   function installAndCollect(runtime, opts = {}) {
     const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), `gsd-1821-${runtime}-`));
     try {
-      const result = spawnSync(
-        process.execPath,
+      const result = runNode(
         [INSTALL_SCRIPT, `--${runtime}`, '--global', '--config-dir', targetDir],
-        { encoding: 'utf8', env: installerEnv() },
+        { env: installerEnv(), timeoutMs: 120000 },
       );
-      assert.strictEqual(result.status, 0,
-        `installer exited with status ${result.status} for --${runtime} --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+      assert.strictEqual(result.exitCode, 0,
+        `installer exited with status ${result.exitCode} for --${runtime} --global\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
       // Collect results while targetDir still exists — cleanup() below removes it.
       const pluginRelPath = opts.pluginRelPath || path.join('plugins', 'gsd-core.js');
+      // #3023: the shared hooks bundle's staged directory name is per-runtime
+      // (hostBehaviors.sharedHooksDirName; pi renames it to `gsd-hooks/`) —
+      // resolve it the same way the installer does rather than hardcoding
+      // 'hooks', or every non-default runtime would look hookless.
+      const hooksDirName = resolveSharedHooksDirName(runtime);
       return {
-        hookFiles: gsdHookFilesUnder(targetDir),
-        hooksLibExists: fs.existsSync(path.join(targetDir, 'hooks', 'lib')),
-        gitCmdExists: fs.existsSync(path.join(targetDir, 'hooks', 'lib', 'git-cmd.js')),
+        hookFiles: gsdHookFilesUnder(targetDir, hooksDirName),
+        hooksLibExists: fs.existsSync(path.join(targetDir, hooksDirName, 'lib')),
+        gitCmdExists: fs.existsSync(path.join(targetDir, hooksDirName, 'lib', 'git-cmd.js')),
         pluginExists: fs.existsSync(path.join(targetDir, pluginRelPath)),
       };
     } finally {
@@ -767,14 +772,16 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
 
   // pi ALSO declares hooksSurface:'none', but — like OpenCode — it is NOT a
   // dead-weight case: pi's native extension (pi/gsd.cjs → extensions/gsd.js)
-  // spawns the staged hooks/*.js scripts as bounded subprocesses (session_start
+  // spawns the staged gsd-hooks/*.js scripts as bounded subprocesses (session_start
   // → gsd-ensure-canonical-path.js, before_agent_start → gsd-workflow-guard.js,
   // session_before_compact → gsd-context-monitor.js — #2102 Stage 2), and its
-  // /gsd command handler tokenizes raw args via the shared hooks/lib/git-cmd.js
+  // /gsd command handler tokenizes raw args via the shared gsd-hooks/lib/git-cmd.js
   // tokenizer. hostBehaviors.skipSharedHooksInstall is therefore NOT set for
   // pi (unlike Kilo/ZCode/Cursor/Cline/Trae/Copilot/Windsurf/Kimi) — pi is in
-  // the OpenCode group, not the Kilo/ZCode group.
-  test('pi --global install still copies hooks (spawned by the native extension) + hooks/lib/git-cmd.js + the extension itself', () => {
+  // the OpenCode group, not the Kilo/ZCode group. #3023: pi's bundle is staged
+  // under `gsd-hooks/` (hostBehaviors.sharedHooksDirName), not the default
+  // `hooks/` every other runtime in this describe block uses.
+  test('pi --global install still copies gsd-hooks/ (spawned by the native extension) + gsd-hooks/lib/git-cmd.js + the extension itself', () => {
     // #2470: derive the extension filename from pi's own descriptor rather than
     // hardcoding it, and assert it satisfies pi's isExtensionFile() discovery
     // filter (.ts/.js only) — a dest pi cannot discover installs "successfully"
@@ -797,8 +804,8 @@ describe('#1821/#2305: ZCode receives no dead hook files; Kilo/OpenCode/Claude k
         `pi install must copy ${expected} (spawned by pi/gsd.cjs's event bridges), found: ${basenames.join(', ')}`,
       );
     }
-    assert.ok(hooksLibExists, 'pi install must create hooks/lib/');
-    assert.ok(gitCmdExists, 'pi install must copy hooks/lib/git-cmd.js (the /gsd command tokenizer)');
+    assert.ok(hooksLibExists, 'pi install must create gsd-hooks/lib/');
+    assert.ok(gitCmdExists, 'pi install must copy gsd-hooks/lib/git-cmd.js (the /gsd command tokenizer)');
     assert.ok(
       pluginExists,
       `pi install must install ${piNativePlugin.dir}/${piNativePlugin.file} (the native-extension hook bridge)`,
@@ -1230,16 +1237,20 @@ const { test, describe, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /** Idempotently ensure hooks/dist contains built .js files. */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -1669,7 +1680,8 @@ const { test, describe, before, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -1686,13 +1698,16 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /**
  * Idempotently ensure hooks/dist contains built .js files.
  * Runs build-hooks.js only when the directory is absent or empty of .js files.
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -2981,16 +2996,20 @@ const { test, describe, before } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /** Idempotently ensure hooks/dist contains built .js files. */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -3420,7 +3439,8 @@ const { test, describe, before, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const { install } = require('../bin/install.js');
 const { createTempDir, cleanup } = require('./helpers.cjs');
@@ -3437,13 +3457,16 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
 const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
 /**
  * Idempotently ensure hooks/dist contains built .js files.
  * Runs build-hooks.js only when the directory is absent or empty of .js files.
  */
 function ensureHooksDist() {
   if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    execFileSync(process.execPath, [BUILD_HOOKS_SCRIPT], { stdio: 'pipe' });
+    throwIfFailed(runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_HOOKS_SCRIPT}`);
   }
 }
 
@@ -4089,11 +4112,15 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 
 const INSTALL_SCRIPT = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const isWindows = process.platform === 'win32';
+
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const SH_HOOKS = [
   'gsd-session-state.sh',
@@ -4104,10 +4131,7 @@ const SH_HOOKS = [
 // ─── Ensure hooks/dist/ is populated before any install test ────────────────
 
 before(() => {
-  execFileSync(process.execPath, [BUILD_SCRIPT], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-  });
+  throwIfFailed(runNode([BUILD_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS }), `node ${BUILD_SCRIPT}`);
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -4130,14 +4154,16 @@ function runInstaller(configDir) {
   // --no-sdk: this test covers hook deployment only; skip SDK build to avoid
   // flakiness and keep the test fast (SDK install path has dedicated coverage
   // in install-smoke.yml).
-  execFileSync(process.execPath, [INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'], {
-    encoding: 'utf-8',
-    stdio: 'pipe',
-    env: {
-      ...process.env,
-      CLAUDE_CONFIG_DIR: configDir,
-    },
-  });
+  throwIfFailed(
+    runNode([INSTALL_SCRIPT, '--claude', '--global', '--yes', '--no-sdk'], {
+      timeoutMs: 120000,
+      env: {
+        ...process.env,
+        CLAUDE_CONFIG_DIR: configDir,
+      },
+    }),
+    `node ${INSTALL_SCRIPT} --claude --global --yes --no-sdk`,
+  );
   return path.join(configDir, 'hooks');
 }
 
@@ -4208,3 +4234,84 @@ describe('#1834: installer deploys .sh hooks alongside .js hooks', () => {
 });
   });
 }
+
+// ─── #3023: pi must not stage its shared-hooks bundle in pi's reserved hooks/ ──
+//
+// pi (pi.dev) renamed its `hooks/` directory to `extensions/` and now prints a
+// deprecation warning on every startup when a `hooks/` directory exists in its
+// agent dir. GSD's installer stages the shared hook bundle at
+// `<destRootDir>/hooks` for every runtime that does not set
+// hostBehaviors.skipSharedHooksInstall — which since #2102 Stage 2 includes pi.
+// The bundle must live under a name pi does not reserve.
+//
+// The expected directory name is asserted as a LITERAL on purpose: importing the
+// production constant would make the assertion re-derive the very value under
+// test, and it could then never catch that value changing.
+describe('#3023 pi shared-hooks bundle avoids the host-reserved hooks/ directory', () => {
+  const PI_RESERVED_DIR = 'hooks';
+  const PI_BUNDLE_DIR = 'gsd-hooks';
+
+  for (const scope of ['local', 'global']) {
+    test(`pi ${scope} install does not create the host-reserved hooks/ directory`, (t) => {
+      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      const reserved = path.join(configDir, PI_RESERVED_DIR);
+      assert.equal(
+        fs.existsSync(reserved),
+        false,
+        `pi reserves <configDir>/${PI_RESERVED_DIR} as its deprecated extension location; ` +
+        `GSD must not create it (found ${reserved})`
+      );
+    });
+
+    test(`pi ${scope} install stages the shared hooks bundle under ${PI_BUNDLE_DIR}/`, (t) => {
+      const { configDir, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      const bundle = path.join(configDir, PI_BUNDLE_DIR);
+      assert.equal(
+        fs.existsSync(bundle) && fs.statSync(bundle).isDirectory(),
+        true,
+        `pi's shared hook bundle must be staged at ${bundle}`
+      );
+
+      // The adapter's live require target (pi/gsd.cjs parseGsdCommandArgs).
+      const gitCmd = path.join(bundle, 'lib', 'git-cmd.js');
+      assert.equal(
+        fs.existsSync(gitCmd) && fs.statSync(gitCmd).isFile(),
+        true,
+        `pi adapter requires ${gitCmd}; the hooks/lib helpers must move with the bundle`
+      );
+
+      // #2544 CommonJS marker follows the bundle, and is NOT dropped at the
+      // shared config root (user-owned territory).
+      assert.equal(
+        fs.existsSync(path.join(bundle, 'package.json')),
+        true,
+        'the CommonJS marker must live inside the bundle directory'
+      );
+    });
+
+    test(`pi ${scope} install manifests the bundle under ${PI_BUNDLE_DIR}/`, (t) => {
+      const { manifest, root } = runMinimalInstall({ runtime: 'pi', scope });
+      t.after(() => cleanup(root));
+
+      assert.ok(manifest && manifest.files, 'pi install must write a file manifest');
+      const keys = Object.keys(manifest.files);
+
+      const stale = keys.filter((k) => k.startsWith(`${PI_RESERVED_DIR}/`));
+      assert.deepEqual(
+        stale,
+        [],
+        'no manifest key may reference the host-reserved hooks/ directory'
+      );
+
+      const staged = keys.filter((k) => k.startsWith(`${PI_BUNDLE_DIR}/`));
+      assert.ok(
+        staged.length > 0,
+        `manifest must track the staged bundle under ${PI_BUNDLE_DIR}/ so uninstall can remove it`
+      );
+    });
+  }
+});

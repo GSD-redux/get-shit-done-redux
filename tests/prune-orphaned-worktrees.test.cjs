@@ -11,8 +11,10 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 const { createTempDir, cleanup } = require('./helpers.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // Lazy-loaded so tests can fail clearly when the export doesn't exist yet.
 function getPruneOrphanedWorktrees() {
@@ -30,7 +32,7 @@ function canonicalPath(p) {
 }
 
 function listedWorktreePaths(repoDir) {
-  const out = execSync('git worktree list --porcelain', { cwd: repoDir, encoding: 'utf8' });
+  const out = gitOrThrow(['worktree', 'list', '--porcelain'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
   return new Set(
     out
       .split('\n')
@@ -41,16 +43,16 @@ function listedWorktreePaths(repoDir) {
 
 function createGitRepo(dir) {
   fs.mkdirSync(dir, { recursive: true });
-  execSync('git init', { cwd: dir, stdio: 'pipe' });
-  execSync('git config user.email "test@test.com"', { cwd: dir, stdio: 'pipe' });
-  execSync('git config user.name "Test"', { cwd: dir, stdio: 'pipe' });
-  execSync('git config commit.gpgsign false', { cwd: dir, stdio: 'pipe' });
+  gitOrThrow(['init'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['config', 'user.email', 'test@test.com'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['config', 'commit.gpgsign', 'false'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
   fs.writeFileSync(path.join(dir, 'README.md'), '# Test\n');
-  execSync('git add -A', { cwd: dir, stdio: 'pipe' });
-  execSync('git commit -m "initial commit"', { cwd: dir, stdio: 'pipe' });
+  gitOrThrow(['add', '-A'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
+  gitOrThrow(['commit', '-m', 'initial commit'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
   // Rename to main if it isn't already (handles older git defaults)
   try {
-    execSync('git branch -m master main', { cwd: dir, stdio: 'pipe' });
+    gitOrThrow(['branch', '-m', 'master', 'main'], { cwd: dir, timeoutMs: GIT_TIMEOUT_MS });
   } catch { /* already named main */ }
 }
 
@@ -75,16 +77,16 @@ describe('pruneOrphanedWorktrees', () => {
     createGitRepo(repoDir);
 
     // Create worktree on a new branch (main is checked out in repoDir)
-    execSync('git worktree add "' + worktreeDir + '" -b fix/old-work', { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['worktree', 'add', worktreeDir, '-b', 'fix/old-work'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
     assert.ok(fs.existsSync(worktreeDir), 'worktree dir should exist before prune');
 
     // Add a commit in the worktree
     fs.writeFileSync(path.join(worktreeDir, 'feature.txt'), 'work\n');
-    execSync('git add -A', { cwd: worktreeDir, stdio: 'pipe' });
-    execSync('git commit -m "old work"', { cwd: worktreeDir, stdio: 'pipe' });
+    gitOrThrow(['add', '-A'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'old work'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS });
 
     // Merge the branch into main from repoDir
-    execSync('git merge fix/old-work --no-ff -m "merge old-work"', { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['merge', 'fix/old-work', '--no-ff', '-m', 'merge old-work'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
 
     // Act
     const pruneOrphanedWorktrees = getPruneOrphanedWorktrees();
@@ -112,12 +114,12 @@ describe('pruneOrphanedWorktrees', () => {
     createGitRepo(repoDir);
 
     // Create the worktree on a new branch (main is checked out in repoDir)
-    execSync('git worktree add "' + worktreeDir + '" -b fix/active-work', { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['worktree', 'add', worktreeDir, '-b', 'fix/active-work'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
 
     // Add a commit in the worktree (NOT merged into main)
     fs.writeFileSync(path.join(worktreeDir, 'active.txt'), 'active\n');
-    execSync('git add -A', { cwd: worktreeDir, stdio: 'pipe' });
-    execSync('git commit -m "active work"', { cwd: worktreeDir, stdio: 'pipe' });
+    gitOrThrow(['add', '-A'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'active work'], { cwd: worktreeDir, timeoutMs: GIT_TIMEOUT_MS });
     // main stays at its original commit — no merge
 
     // Act
@@ -139,12 +141,12 @@ describe('pruneOrphanedWorktrees', () => {
     createGitRepo(repoDir);
 
     // Create a worktree, add a commit, merge it into main
-    execSync('git worktree add "' + wtDir + '" -b fix/another-merged', { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['worktree', 'add', wtDir, '-b', 'fix/another-merged'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
     fs.writeFileSync(path.join(wtDir, 'more.txt'), 'more\n');
-    execSync('git add -A', { cwd: wtDir, stdio: 'pipe' });
-    execSync('git commit -m "another merged"', { cwd: wtDir, stdio: 'pipe' });
-    execSync('git checkout main', { cwd: repoDir, stdio: 'pipe' });
-    execSync('git merge fix/another-merged --no-ff -m "merge another"', { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['add', '-A'], { cwd: wtDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['commit', '-m', 'another merged'], { cwd: wtDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['checkout', 'main'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
+    gitOrThrow(['merge', 'fix/another-merged', '--no-ff', '-m', 'merge another'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
 
     // Run pruning
     const pruneOrphanedWorktrees = getPruneOrphanedWorktrees();
@@ -168,7 +170,7 @@ describe('pruneOrphanedWorktrees', () => {
     createGitRepo(repoDir);
 
     // Create a worktree
-    execSync('git worktree add "' + worktreeDir + '" -b fix/stale-ref', { cwd: repoDir, stdio: 'pipe' });
+    gitOrThrow(['worktree', 'add', worktreeDir, '-b', 'fix/stale-ref'], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS });
     assert.ok(fs.existsSync(worktreeDir), 'worktree dir should exist before manual deletion');
 
     // Use the canonicalPath helper so Windows 8.3 short-name (RUNNER~1) vs

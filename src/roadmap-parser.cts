@@ -36,8 +36,12 @@ import { platformReadSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInputMod = require('./unusable-input.cjs');
 const { UNUSABLE_REASON, warnUnusableInput } = unusableInputMod;
-import { tokenizeHeadings, stripTaggedBlocks, withSection } from './markdown-sectionizer.cjs';
+import { tokenizeHeadings, stripTaggedBlocks, withSection, stripFencedCode } from './markdown-sectionizer.cjs';
 import type { HeadingToken } from './markdown-sectionizer.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+type Scope = planningScopeMod.Scope;
 
 // ─── Roadmap milestone scoping ───────────────────────────────────────────────
 
@@ -97,7 +101,194 @@ function isMilestoneShippedInRoadmap(content: string, version: string): boolean 
 }
 
 /**
- * Extract the current milestone section from ROADMAP.md by positive lookup.
+ * #3184 (epic #3180 Phase 2): the sole owner of "where does this milestone
+ * heading's section end". Lifted from `currentMilestoneRawRanges`'s prior
+ * inline copy — the only one of three byte-identical copies that carried a
+ * "keep in sync" comment (evidence the risk was known, not controlled).
+ * `extractCurrentMilestoneScoped`, `currentMilestoneRawRanges`, and
+ * `getMilestonePhaseFilter`'s versionOverride branch all call this instead of
+ * re-deriving it.
+ */
+function computeMilestoneSectionEnd(content: string, headingText: string, headingStart: number): number {
+  const level = (headingText.match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
+  const afterHeading = headingStart + headingText.length;
+  // Use tokenizeHeadings (fence-aware, offsets into original content) to find
+  // the next stop boundary without re-implementing fence detection. T4 seam migration.
+  const headings = tokenizeHeadings(content);
+  for (const h of headings) {
+    if (h.offset <= headingStart) continue;
+    if (h.offset < afterHeading) continue;
+    if (h.level > level) continue;
+    // Mirrors old stopPattern: level-bounded, not a Phase heading, milestone marker
+    if (/^Phase\s+\S/i.test(h.text)) continue;
+    if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
+    return h.offset;
+  }
+  return content.length;
+}
+
+/**
+ * #3184: the sole milestone-heading locator. Boundary-matched on the version
+ * token with `\b`, NOT the stricter `(?![\w.-])`: this function keeps `\b`
+ * because a milestone STATE legitimately selects its own sub-milestone
+ * heading (`v8.0` matching `## v8.0-B …` — `0` is a word char, `-` is not, so
+ * `\b` matches) — that is deliberate, load-bearing behavior (#730). The
+ * stricter `(?![\w.-])` boundary answers a DIFFERENT question — "is exactly
+ * this milestone shipped" (`isMilestoneShippedInRoadmap`) / "which Phase
+ * Details section belongs to exactly this one's version token"
+ * (`detailsVersionBoundary`) — and applying it here breaks #730 sub-milestone
+ * selection. `extractCurrentMilestoneScoped`, `currentMilestoneRawRanges`,
+ * and `getMilestonePhaseFilter`'s versionOverride branch all consume this
+ * instead of re-deriving their own heading-location regex.
+ */
+function locateMilestoneHeadings(content: string, version: string): RegExpExecArray[] {
+  const escapedVersion = escapeRegex(version);
+  const pattern = new RegExp(
+    `(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}\\b[^\\n]*)`,
+    'gmi',
+  );
+  const matches: RegExpExecArray[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = pattern.exec(content)) !== null) {
+    matches.push(m);
+  }
+  return matches;
+}
+
+/**
+ * #3184: named predicate replacing the two `state.cts` re-derivations
+ * (`buildStateFrontmatter`, `syncStateFrontmatter`) that each hand-rolled the
+ * same "is this version bounded to a versioned ROADMAP heading" regex. A
+ * straight consolidation of the two identical `state.cts` regexes onto the
+ * shared `locateMilestoneHeadings` owner — no behavior change.
+ */
+function isMilestoneBoundedInRoadmap(content: string, version: string): boolean {
+  return locateMilestoneHeadings(content, version).length > 0;
+}
+
+/**
+ * #3184: does this ROADMAP carry ANY versioned milestone heading (`v1.2`-style
+ * token on a level 1-3 non-Phase heading), independent of any particular
+ * version. `extractCurrentMilestoneScoped` (free-form-vs-versioned row 3/4
+ * classification) and `getMilestonePhaseFilter` (the deprecation warning +
+ * the same row 3/4 classification for its versionOverride branch) each
+ * hand-rolled this identically — the guard does not catch intra-owner-file
+ * copies by construction, so this was found by review instead.
+ */
+function hasVersionedMilestones(content: string): boolean {
+  return /^#{1,3}\s+.*v\d+\.\d+/mi.test(content);
+}
+
+/**
+ * #3184/#2828/#1761: does this ROADMAP use milestone SECTIONING at all — i.e.
+ * does it carry any non-Phase heading at level 2-3? Deliberately weaker than
+ * `hasVersionedMilestones`: this needs to distinguish a FLAT unmilestoned
+ * roadmap (Phase headings only, where a whole-document phase count is
+ * correct) from a MILESTONED-but-unbounded one (where that count conflates
+ * sibling milestones, #1761) — that distinction is load-bearing and must not
+ * be collapsed into the versioned-milestone check. Owned here so the
+ * milestone heading vocabulary has one home; routes `state.cts`'s
+ * `buildStateFrontmatter` #2828 guard instead of a third hand-rolled copy.
+ */
+function hasMilestoneSectioning(content: string): boolean {
+  return /^#{2,3}\s+(?!Phase\s+\S)/mi.test(content);
+}
+
+/**
+ * #3184: the sole "which heading is this milestone's" rule — locate the version's
+ * headings, prefer the first that is not marked CLOSED/SHIPPED, else fall back to the
+ * first match. Returns null when the version has no heading at all.
+ *
+ * Extracted because three sites had written this same two-line selection
+ * independently (sliceMilestoneWindow, extractCurrentMilestoneScoped,
+ * currentMilestoneRawRanges) — the composition-level divergence ADR-3180
+ * Decision 4(c) covers: calling the owner's primitives and re-assembling the
+ * result locally is indistinguishable from re-deriving it.
+ */
+function selectMilestoneHeading(content: string, version: string): RegExpExecArray | null {
+  const matches = locateMilestoneHeadings(content, version);
+  if (matches.length === 0) return null;
+  return matches.find((m) => !isClosedMilestoneHeading(m[1])) ?? matches[0];
+}
+
+/**
+ * #3184: the sole "give me this version's window" composition. Delegates
+ * heading selection to `selectMilestoneHeading` (the sole selection owner)
+ * and then to `computeMilestoneSectionEnd` for the slice. Returns null when
+ * the version has no heading at all, so callers can distinguish "no such
+ * milestone section" from "empty section".
+ *
+ * Review finding (post-merge of this phase's first pass): `getMilestonePhaseFilter`'s
+ * versionOverride branch and `cmdMilestoneComplete`'s unstarted-phase guard
+ * had each independently composed `locateMilestoneHeadings` +
+ * `computeMilestoneSectionEnd` into a window — the SAME derivation written
+ * twice, and they disagreed (one skipped CLOSED headings, the other did not)
+ * — exactly the composition-level divergence ADR-3180 Decision 4(c) warns
+ * about: calling the owner and then re-assembling the result locally is
+ * indistinguishable from re-deriving it. Both sites now call this instead.
+ */
+function sliceMilestoneWindow(content: string, version: string): string | null {
+  const selected = selectMilestoneHeading(content, version);
+  if (selected === null) return null;
+  return content.slice(selected.index, computeMilestoneSectionEnd(content, selected[0], selected.index));
+}
+
+/**
+ * #3184: counts RAW phase references — a `#{2,4} Phase <id>:` heading
+ * (fence-aware via `tokenizeHeadings`) or a `#2199` bullet entry — BEFORE any
+ * sentinel filter. Used for BOTH sides of `classifyMilestoneWindow`'s row-8
+ * comparison (does the window contain phase entries; does the document).
+ * Deliberately does NOT filter `999.x`/Phase 0 sentinels: the question here
+ * is "did the window reach the phase region", not "how many real phases
+ * exist" — a window containing only sentinel phases still reached the
+ * region and must read COMPLETE, not TRUNCATED.
+ */
+function hasPhaseEntries(markdown: string): boolean {
+  // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
+  const phaseHeadingPattern = /^(?:\[[^\]]{1,200}\]\s*)?Phase\s+([\w][\w.-]*)(?:\s*\([^)\n]{0,200}\))?\s*:/i;
+  for (const h of tokenizeHeadings(markdown)) {
+    if (h.level < 2 || h.level > 4) continue;
+    if (phaseHeadingPattern.test(h.text)) return true;
+  }
+  // #3184 review finding: the bullet fallback must be fence-aware too, or a
+  // FENCED markdown EXAMPLE of the `- [ ] **Phase N — Name**` syntax (e.g. a
+  // doc showing the convention) counts as a real phase entry. Strip fences
+  // through the canonical seam before testing, matching tokenizeHeadings'
+  // fence-awareness above.
+  return BULLET_PHASE_LINE_PATTERN.test(stripFencedCode(markdown).text);
+}
+
+/**
+ * #3184: pure decision table (no I/O, no regex construction from caller
+ * data) implementing the design's Behavior table rows 1-8 (the remaining
+ * rows 9-17 reduce to one of these six through how the caller constructs its
+ * input, not additional branches here). Kernighan's Law fired during design:
+ * `getMilestonePhaseFilter` is already cyclomatic 36, so this discriminator
+ * is extracted as its own named, separately-testable function rather than
+ * inlined.
+ */
+function classifyMilestoneWindow(input: {
+  readable: boolean;
+  versionResolved: boolean;
+  hasVersionedMilestones: boolean;
+  headingFound: boolean;
+  windowHasPhaseEntries: boolean;
+  documentHasPhaseEntries: boolean;
+}): Scope {
+  const { readable, versionResolved, hasVersionedMilestones, headingFound, windowHasPhaseEntries, documentHasPhaseEntries } = input;
+  return (
+    !readable ? SCOPE.UNREADABLE :                                                       // row 2
+    !versionResolved && !hasVersionedMilestones ? SCOPE.COMPLETE :                       // row 3: free-form legacy roadmap
+    !versionResolved && hasVersionedMilestones ? SCOPE.UNSCOPED :                        // row 4
+    versionResolved && !headingFound ? SCOPE.UNSCOPED :                                  // row 5
+    headingFound && !windowHasPhaseEntries && documentHasPhaseEntries ? SCOPE.TRUNCATED : // row 8
+    SCOPE.COMPLETE                                                                        // rows 6, 7
+  );
+}
+
+/**
+ * Extract the current milestone section from ROADMAP.md by positive lookup,
+ * carrying a `scope` discriminator (ADR-3180 Decision 2) alongside the value.
  *
  * @param content - ROADMAP.md content.
  * @param cwd - Project working directory, used to read the companion STATE.md
@@ -106,9 +297,18 @@ function isMilestoneShippedInRoadmap(content: string, version: string): boolean 
  *   `.planning/workstreams/<ws>/` instead of the project root. Omitted (the
  *   default) preserves the prior `planningDir(cwd)` resolution exactly,
  *   including its `GSD_WORKSTREAM` env fallback.
+ *
+ * #3184: `extractCurrentMilestone`'s CRITICAL blast radius (200+ affected
+ * symbols, 20 direct callers) means its signature and return type do not
+ * change. This is the real owner; `extractCurrentMilestone` becomes a
+ * one-line wrapper returning `.value` so every existing caller is untouched.
  */
-function extractCurrentMilestone(content: string, cwd?: string, ws?: string | null): string {
-  if (!cwd) return stripShippedMilestones(content);
+function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: string | null): { value: string; scope: Scope } {
+  if (!cwd) {
+    // Row 1: a deliberate unscoped read (no cwd supplied) is a real answer —
+    // the caller asked for no scoping, so whole-document is COMPLETE.
+    return { value: stripShippedMilestones(content), scope: SCOPE.COMPLETE };
+  }
 
   let version: string | null = null;
   try {
@@ -129,18 +329,33 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     }
   }
 
-  if (!version) return stripShippedMilestones(content);
+  const versionResolved = version !== null;
+  // #3184: routed through the shared owner (was an inline copy — see the
+  // twin copy in `getMilestonePhaseFilter`, the intra-owner-file duplicate
+  // review caught since the drift guard exempts this file by construction).
+  const versionedMilestonesPresent = hasVersionedMilestones(content);
 
-  const escapedVersion = escapeRegex(version);
-  const sectionPattern = new RegExp(
-    `(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}\\b[^\\n]*)`,
-    'gmi'
-  );
+  if (!version) {
+    const value = stripShippedMilestones(content);
+    return {
+      value,
+      scope: classifyMilestoneWindow({
+        readable: true,
+        versionResolved,
+        hasVersionedMilestones: versionedMilestonesPresent,
+        headingFound: false,
+        windowHasPhaseEntries: hasPhaseEntries(value),
+        documentHasPhaseEntries: hasPhaseEntries(value),
+      }),
+    };
+  }
+
+  const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(content));
   const summaryPattern = new RegExp(
-    `<summary[^>]*>([^<]*${escapedVersion}[^<]*)<\\/summary>`,
+    `<summary[^>]*>([^<]*${escapeRegex(version)}[^<]*)<\\/summary>`,
     'i'
   );
-  const headingMatches = [...content.matchAll(sectionPattern)];
+  const headingMatches = locateMilestoneHeadings(content, version);
 
   if (headingMatches.length === 0) {
     const summaryMatch = content.match(summaryPattern);
@@ -161,39 +376,46 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
           // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
           .replace(/^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim, '')
           .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
-        return preamble + content.slice(detailsOpenIdx, detailsEnd);
+        const value = preamble + content.slice(detailsOpenIdx, detailsEnd);
+        return {
+          value,
+          scope: classifyMilestoneWindow({
+            readable: true,
+            versionResolved,
+            hasVersionedMilestones: versionedMilestonesPresent,
+            headingFound: true,
+            windowHasPhaseEntries: hasPhaseEntries(value),
+            documentHasPhaseEntries,
+          }),
+        };
       }
     }
-    return stripShippedMilestones(content);
+    const value = stripShippedMilestones(content);
+    return {
+      value,
+      scope: classifyMilestoneWindow({
+        readable: true,
+        versionResolved,
+        hasVersionedMilestones: versionedMilestonesPresent,
+        headingFound: false,
+        windowHasPhaseEntries: hasPhaseEntries(value),
+        documentHasPhaseEntries,
+      }),
+    };
   }
 
   const allMatches = headingMatches;
 
   const isClosed = isClosedMilestoneHeading;
   const firstMatch = allMatches[0];
-  const selected = allMatches.find((m) => !isClosed(m[1])) || firstMatch;
+  // #3184: selection collapses to the sole owner; `allMatches` is still needed
+  // below (offsets, detailsMatch search), so only the selection itself routes
+  // through `selectMilestoneHeading` rather than the whole block.
+  const selected = selectMilestoneHeading(content, version)!;
 
   const sectionStart = selected.index;
 
-  const computeSectionEnd = (headingText: string, headingStart: number): number => {
-    const level = (headingText.match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
-    const afterHeading = headingStart + headingText.length;
-    // Use tokenizeHeadings (fence-aware, offsets into original content) to find
-    // the next stop boundary without re-implementing fence detection. T4 seam migration.
-    const headings = tokenizeHeadings(content);
-    for (const h of headings) {
-      if (h.offset <= headingStart) continue;
-      if (h.offset < afterHeading) continue;
-      if (h.level > level) continue;
-      // Mirrors old stopPattern: level-bounded, not a Phase heading, milestone marker
-      if (/^Phase\s+\S/i.test(h.text)) continue;
-      if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
-      return h.offset;
-    }
-    return content.length;
-  };
-
-  const sectionEnd = computeSectionEnd(selected[0], sectionStart);
+  const sectionEnd = computeMilestoneSectionEnd(content, selected[0], sectionStart);
 
   const anyMilestonePattern = /^#{1,3}\s+(?!Phase\s+\S)(?:.*v\d+\.\d+|✅|📋|🚧)/im;
   const firstMilestoneMatch = content.match(anyMilestonePattern);
@@ -231,7 +453,7 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     const detailsStart = detailsMatch.index ?? 0;
     detailsSection = content.slice(
       detailsStart,
-      computeSectionEnd(detailsMatch[0], detailsStart),
+      computeMilestoneSectionEnd(content, detailsMatch[0], detailsStart),
     );
   }
 
@@ -250,9 +472,31 @@ function extractCurrentMilestone(content: string, cwd?: string, ws?: string | nu
     .replace(currentSectionHasPhaseDetails ? /^#{2,4}\s*Phase\s+[\w][\w.-]*(?:\s*\([^)\n]{0,200}\))?\s*:[^\n]*(?:\n(?!#{1,6}\s)[^\n]*)*\n?/gim : /$/, '')
     .replace(/^#{1,4}\s*Phase Details\b[^\n]*\n?/gim, '');
 
-  return detailsSection
+  const value = detailsSection
     ? preamble + currentSection + '\n' + detailsSection
     : preamble + currentSection;
+
+  return {
+    value,
+    scope: classifyMilestoneWindow({
+      readable: true,
+      versionResolved,
+      hasVersionedMilestones: versionedMilestonesPresent,
+      headingFound: true,
+      windowHasPhaseEntries: hasPhaseEntries(value),
+      documentHasPhaseEntries,
+    }),
+  };
+}
+
+/**
+ * #3184: thin wrapper preserving `extractCurrentMilestone`'s exact signature
+ * and return type — CRITICAL blast radius (20 direct callers), so the type
+ * stays `string`. `extractCurrentMilestoneScoped` is the real owner; callers
+ * that need to branch on scope opt in to it directly.
+ */
+function extractCurrentMilestone(content: string, cwd?: string, ws?: string | null): string {
+  return extractCurrentMilestoneScoped(content, cwd, ws).value;
 }
 
 /**
@@ -603,6 +847,13 @@ type MilestonePhaseFilter = ((dirName: string) => boolean) & {
    * the current milestone's.
    */
   versionSectionFound: boolean;
+  /**
+   * #3184 (ADR-3180 Decision 2): the same window-classification carried by
+   * `extractCurrentMilestoneScoped`. The filter's FUNCTION behavior is
+   * UNCHANGED by this field — pass-all still passes all; a destructive
+   * consumer (`cmdMilestoneComplete`) reads `scope` to refuse instead.
+   */
+  scope: Scope;
 };
 
 /**
@@ -629,13 +880,23 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   let missingExplicitVersion = false;
   let versionScoped = false;
   let versionSectionFound = false;
+  let scope: Scope = SCOPE.UNREADABLE;
   try {
     const roadmapPath = path.join(planningDir(cwd, ws), 'ROADMAP.md');
     const roadmapContent = platformReadSync(roadmapPath);
     if (roadmapContent === null) throw new Error('missing');
-    let roadmap = extractCurrentMilestone(roadmapContent, cwd, ws);
+    const scopedResult = extractCurrentMilestoneScoped(roadmapContent, cwd, ws);
+    let roadmap = scopedResult.value;
+    // Default: the filter's window IS extractCurrentMilestoneScoped's own
+    // window (reused verbatim, not re-derived — ADR-3180 Decision 4c).
+    // Overwritten below when `versionOverride` scopes to a DIFFERENT window.
+    scope = scopedResult.scope;
 
-    const hasVersionedMilestonesGlobal = /^#{1,3}\s+.*v\d+\.\d+/mi.test(roadmapContent);
+    // #3184: routed through the shared owner (was an inline copy — see the
+    // twin copy in `extractCurrentMilestoneScoped`, the intra-owner-file
+    // duplicate review caught since the drift guard exempts this file by
+    // construction).
+    const hasVersionedMilestonesGlobal = hasVersionedMilestones(roadmapContent);
     const hasPhaseHeadings = /#{2,4}\s*(?:\[[^\]]{1,200}\]\s*)?Phase\s+[\w]/i.test(roadmapContent);
     if (!hasVersionedMilestonesGlobal && hasPhaseHeadings && phaseIdConvention === 'milestone-prefixed') {
       console.warn(
@@ -646,51 +907,48 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     }
 
     if (versionOverride) {
-      const escapedVersion = escapeRegex(versionOverride);
-      const sectionPattern = new RegExp(`(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}[^\\n]*)`, 'mi');
-      let sectionMatch = roadmapContent.match(sectionPattern);
+      // #3184: route the whole "locate headings -> pick the active one ->
+      // section-end" composition through the single owner (sliceMilestoneWindow)
+      // instead of assembling it here. This branch used to be a bare `.match()`
+      // — first hit, no closed-heading skip, no version-token boundary — and a
+      // review pass caught it independently re-composing the SAME primitives
+      // `cmdMilestoneComplete`'s guard composed, disagreeing on closed-heading
+      // skipping. Now both sites call one function. Boundary-matched
+      // (`(?![\w.-])`) and closed-heading-skipping is a declared Tier-2 change
+      // affecting every caller that passes `versionOverride`: `roadmap.analyze`
+      // / `milestone complete` (this module, `cmdMilestoneComplete` in
+      // milestone.cts), `inspectWorkstream` (workstream-inventory.cts:518,
+      // via `currentVersion`), and `buildStateFrontmatter` (state.cts:1700,
+      // via `storedMilestone`).
+      const sliced = sliceMilestoneWindow(roadmapContent, versionOverride);
 
-      if (!sectionMatch) {
-        const summaryPat = new RegExp(`<summary[^>]*>[^<]*${escapedVersion}[^<]*<\\/summary>`, 'i');
-        const summaryHit = roadmapContent.match(summaryPat);
-        if (summaryHit) {
-          const beforeSummary = roadmapContent.slice(0, summaryHit.index);
-          const detailsIdx = beforeSummary.lastIndexOf('<details');
-          if (detailsIdx !== -1) {
-            sectionMatch = null;
-          }
-        }
-      }
+      const documentHasPhaseEntries = hasPhaseEntries(stripShippedMilestones(roadmapContent));
 
-      if (!sectionMatch) {
-        const hasVersionedMilestones = /^#{1,3}\s+(?!Phase\s+\S).*v\d+\.\d+/mi.test(roadmapContent);
+      if (sliced !== null) {
+        versionScoped = true;
+        versionSectionFound = true;
+        roadmap = sliced;
+      } else {
+        const escapedVersion = escapeRegex(versionOverride);
         const versionInSummary = new RegExp(`<summary[^>]*>[^<]*${escapedVersion}[^<]*<\\/summary>`, 'i').test(roadmapContent);
-        if (hasVersionedMilestones && !versionInSummary) {
+        if (hasVersionedMilestonesGlobal && !versionInSummary) {
           roadmap = '';
           missingExplicitVersion = true;
         }
-      } else {
-        versionScoped = true;
-        versionSectionFound = true;
-        const sectionStart = sectionMatch.index!;
-        const headingLevel = (sectionMatch[1].match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
-        const afterHeading = sectionStart + sectionMatch[0].length;
-        // Use tokenizeHeadings (fence-aware, offsets into original content) to find
-        // the next milestone-boundary heading. T4 seam migration.
-        const allHeadings = tokenizeHeadings(roadmapContent);
-        let sectionEnd = roadmapContent.length;
-        for (const h of allHeadings) {
-          if (h.offset < afterHeading) continue;
-          if (h.level > headingLevel) continue;
-          if (/^Phase\s+\S/i.test(h.text)) continue;
-          if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
-          sectionEnd = h.offset;
-          break;
-        }
-
-        const currentSection = roadmapContent.slice(sectionStart, sectionEnd);
-        roadmap = currentSection;
+        // else: version appears only inside a `<summary>`, or there are no
+        // versioned milestones anywhere — `roadmap` keeps
+        // extractCurrentMilestoneScoped's own (STATE-scoped) result, matching
+        // the pre-existing summary-block / free-form fallback shape.
       }
+
+      scope = classifyMilestoneWindow({
+        readable: true,
+        versionResolved: true,
+        hasVersionedMilestones: hasVersionedMilestonesGlobal,
+        headingFound: sliced !== null,
+        windowHasPhaseEntries: hasPhaseEntries(roadmap),
+        documentHasPhaseEntries,
+      });
     }
 
     // Use tokenizeHeadings (fence-aware) instead of stripFencedLines + regex.
@@ -706,10 +964,15 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
     // so a bullet-house-style ROADMAP populates the milestone phase set instead of
     // collapsing to a zero-count pass-all filter.
+    // #3184 review finding: this scan must be fence-aware like `hasPhaseEntries`
+    // above — otherwise a fenced markdown EXAMPLE of the bullet syntax inflates
+    // milestonePhaseNums / phaseCount. Strip fences through the canonical seam
+    // first.
     {
       let bm: RegExpExecArray | null;
       const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
-      while ((bm = scanner.exec(roadmap)) !== null) {
+      const roadmapUnfenced = stripFencedCode(roadmap).text;
+      while ((bm = scanner.exec(roadmapUnfenced)) !== null) {
         if (!/^999\b/.test(bm[1])) milestonePhaseNums.add(bm[1]);
       }
     }
@@ -719,7 +982,9 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
      * any failure milestonePhaseNums stays empty, which below already
      * degrades to the same pass-all filter this function returns when a
      * ROADMAP genuinely has zero recognizable phase headings — a safe,
-     * non-corrupting (over-inclusive, never under-inclusive) degrade. */
+     * non-corrupting (over-inclusive, never under-inclusive) degrade.
+     * #3184: `scope` was set to SCOPE.UNREADABLE before the try (row 2) and
+     * is left as-is here — the read/parse fault IS the unreadable case. */
   }
 
   if (milestonePhaseNums.size === 0) {
@@ -731,6 +996,10 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     // `versionScoped` is reset here — this is the only surviving evidence that
     // the current milestone exists in the ROADMAP and simply has no phases yet.
     passAll.versionSectionFound = versionSectionFound;
+    // #3184: the filter's FUNCTION behavior is unchanged — pass-all still
+    // passes all. `scope` is the decidable signal a destructive consumer
+    // reads to refuse instead (ADR-3180 Decision 3's two-tier policy).
+    passAll.scope = scope;
     return passAll;
   }
 
@@ -776,6 +1045,7 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
   (isDirInMilestone as MilestonePhaseFilter).missingExplicitVersion = missingExplicitVersion;
   (isDirInMilestone as MilestonePhaseFilter).versionScoped = versionScoped;
   (isDirInMilestone as MilestonePhaseFilter).versionSectionFound = versionSectionFound;
+  (isDirInMilestone as MilestonePhaseFilter).scope = scope;
   return isDirInMilestone as MilestonePhaseFilter;
 }
 
@@ -785,12 +1055,12 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
  * writer) so they cannot touch a backticked prose literal, a Backlog entry, or a
  * same-numbered phase in a shipped milestone.
  *
- * Mirrors the region selection in `extractCurrentMilestone` (version detection →
- * active heading → next milestone boundary → optional Phase Details section).
- * Returns null when there is no versioned active milestone; callers then fall
- * back to whole-content mutation (the prior behaviour).
- *
- * NOTE: keep the region logic here in sync with extractCurrentMilestone.
+ * Mirrors the region selection in `extractCurrentMilestoneScoped` (version
+ * detection → active heading → next milestone boundary → optional Phase
+ * Details section) — both consume the same `locateMilestoneHeadings` /
+ * `computeMilestoneSectionEnd` owner (#3184), so there is no separate copy to
+ * keep in sync. Returns null when there is no versioned active milestone;
+ * callers then fall back to whole-content mutation (the prior behaviour).
  */
 function currentMilestoneRawRanges(
   content: string,
@@ -813,33 +1083,16 @@ function currentMilestoneRawRanges(
   }
   if (!version) return null;
 
-  const escapedVersion = escapeRegex(version);
-  const sectionPattern = new RegExp(
-    `(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}\\b[^\\n]*)`,
-    'gmi',
-  );
-  const headingMatches = [...content.matchAll(sectionPattern)];
+  const headingMatches = locateMilestoneHeadings(content, version);
   if (headingMatches.length === 0) return null;
 
   const isClosed = isClosedMilestoneHeading;
-  const firstMatch = headingMatches[0];
-  const selected = headingMatches.find((m) => !isClosed(m[1])) || firstMatch;
+  // #3184: selection collapses to the sole owner; `headingMatches` is still
+  // needed below for the detailsMatch search over all headings.
+  const selected = selectMilestoneHeading(content, version)!;
   const sectionStart = selected.index ?? 0;
 
-  const computeSectionEnd = (headingText: string, headingStart: number): number => {
-    const level = (headingText.match(/^(#{1,3})\s/) ?? ['', '#'])[1].length;
-    const afterHeading = headingStart + headingText.length;
-    for (const h of tokenizeHeadings(content)) {
-      if (h.offset <= headingStart) continue;
-      if (h.offset < afterHeading) continue;
-      if (h.level > level) continue;
-      if (/^Phase\s+\S/i.test(h.text)) continue;
-      if (!/v\d+\.\d+|✅|📋|🚧/i.test(h.text)) continue;
-      return h.offset;
-    }
-    return content.length;
-  };
-  const sectionEnd = computeSectionEnd(selected[0], sectionStart);
+  const sectionEnd = computeMilestoneSectionEnd(content, selected[0], sectionStart);
 
   const selectedVersionToken = selected[1].match(
     /v\d+(?:\.\d+)+(?:[-.][A-Za-z0-9]+)*/i,
@@ -857,7 +1110,7 @@ function currentMilestoneRawRanges(
   let details: { start: number; end: number } | null = null;
   if (detailsMatch) {
     const detailsStart = detailsMatch.index ?? 0;
-    details = { start: detailsStart, end: computeSectionEnd(detailsMatch[0], detailsStart) };
+    details = { start: detailsStart, end: computeMilestoneSectionEnd(content, detailsMatch[0], detailsStart) };
   }
 
   return { primary: { start: sectionStart, end: sectionEnd }, details };
@@ -866,11 +1119,23 @@ function currentMilestoneRawRanges(
 export = {
   stripShippedMilestones,
   extractCurrentMilestone,
+  extractCurrentMilestoneScoped,
   isMilestoneShippedInRoadmap,
+  isMilestoneBoundedInRoadmap,
   replaceInCurrentMilestone,
   getRoadmapPhaseInternal,
   getMilestoneInfo,
   getMilestonePhaseFilter,
   currentMilestoneRawRanges,
   withPhaseSection,
+  computeMilestoneSectionEnd,
+  locateMilestoneHeadings,
+  selectMilestoneHeading,
+  classifyMilestoneWindow,
+  // #3184: the sole "give me this version's window" composition — see its
+  // own doc comment. milestone.cts's destructive-consumer guard consumes
+  // this instead of composing locate+select+section-end itself.
+  sliceMilestoneWindow,
+  hasVersionedMilestones,
+  hasMilestoneSectioning,
 };

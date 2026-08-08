@@ -20,6 +20,11 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
+// 30000ms: shared by both folded `runVerifier()` blocks below — each runs a
+// single deterministic verifier pass over a small mkdtemp fixture tree, well
+// over any observed duration for this class of call.
+const VERIFIER_TIMEOUT_MS = 30_000;
+
 const WORKFLOW_PATH = path.join(
   __dirname, '..', 'gsd-core', 'workflows', 'reapply-patches.md'
 );
@@ -142,8 +147,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const ROOT = path.join(__dirname, '..');
 // Script lives at gsd-core/bin/ so the installer ships it under
@@ -180,9 +185,9 @@ function runVerifier({ includePristine = true } = {}) {
     ...(includePristine ? ['--pristine-dir', pristineDir] : []),
     '--json',
   ];
-  const r = cp.spawnSync(process.execPath, args, { encoding: 'utf8' });
+  const r = runNode(args, { timeoutMs: VERIFIER_TIMEOUT_MS });
   return {
-    status: r.status,
+    status: r.exitCode,
     report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
   };
 }
@@ -409,8 +414,8 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
-const cp = require('node:child_process');
 const { cleanup } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const SCRIPT = path.join(ROOT, 'gsd-core', 'bin', 'verify-reapply-patches.cjs');
@@ -457,9 +462,9 @@ function runVerifier({ pristine = true } = {}) {
     ...(pristine ? ['--pristine-dir', pristineDir] : []),
     '--json',
   ];
-  const r = cp.spawnSync(process.execPath, args, { encoding: 'utf8' });
+  const r = runNode(args, { timeoutMs: VERIFIER_TIMEOUT_MS });
   return {
-    status: r.status,
+    status: r.exitCode,
     report: r.stdout && r.stdout.length ? JSON.parse(r.stdout) : null,
   };
 }

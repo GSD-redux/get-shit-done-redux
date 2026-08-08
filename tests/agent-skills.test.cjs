@@ -16,24 +16,9 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { runGsdTools, createTempProject, cleanup, TOOLS_PATH } = require('./helpers.cjs');
-const TEST_ENV_BASE = {
-  GSD_SESSION_KEY: '',
-  CODEX_THREAD_ID: '',
-  CLAUDE_SESSION_ID: '',
-  CLAUDE_CODE_SSE_PORT: '',
-  OPENCODE_SESSION_ID: '',
-  GEMINI_SESSION_ID: '',
-  CURSOR_SESSION_ID: '',
-  WINDSURF_SESSION_ID: '',
-  TERM_SESSION_ID: '',
-  WT_SESSION: '',
-  TMUX_PANE: '',
-  ZELLIJ_SESSION_NAME: '',
-  GSD_WORKSTREAM: '',
-  TTY: '',
-  SSH_TTY: '',
-};
+const { runGsdTools, createTempProject, cleanup, TOOLS_PATH, TEST_ENV_BASE } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 /**
  * Run gsd-tools and capture BOTH stdout and stderr on success.
@@ -41,21 +26,13 @@ const TEST_ENV_BASE = {
  */
 function runGsdToolsWithStderr(args, cwd, env) {
   const childEnv = { ...process.env, ...TEST_ENV_BASE, ...(env || {}) };
-  try {
-    const result = spawnSync(process.execPath, [TOOLS_PATH, ...args], {
-      cwd,
-      encoding: 'utf-8',
-      env: childEnv,
-    });
-    return {
-      success: result.status === 0,
-      stdout: (result.stdout || '').trim(),
-      stderr: (result.stderr || '').trim(),
-      exitCode: result.status,
-    };
-  } catch (err) {
-    return { success: false, stdout: '', stderr: String(err), exitCode: 1 };
-  }
+  const result = runNode([TOOLS_PATH, ...args], { cwd, env: childEnv, timeoutMs: PROBE_TIMEOUT_MS });
+  return {
+    success: result.exitCode === 0,
+    stdout: result.stdout.trim(),
+    stderr: result.stderr.trim(),
+    exitCode: result.exitCode,
+  };
 }
 
 const { loadTrustedGlobalRoots, validatePath } = require('../gsd-core/bin/lib/security.cjs');
@@ -1759,6 +1736,10 @@ describe('#1400 regression: plain agent-skills output survives pipe/file stdout'
     const outPath = path.join(tmpDir, 'agent-skills.out');
     const fd = fs.openSync(outPath, 'w');
     try {
+      // Kept as a raw spawnSync (not the process-seam): the seam does not
+      // forward a `stdio` option, and this test needs stdout wired directly
+      // to a real file descriptor to reproduce the exit-before-flush
+      // truncation bug — capturing via a pipe would defeat the point.
       const result = spawnSync(
         process.execPath,
         [TOOLS_PATH, 'query', 'agent-skills', agentType],
@@ -1766,6 +1747,7 @@ describe('#1400 regression: plain agent-skills output survives pipe/file stdout'
           cwd: tmpDir,
           env: { ...process.env, ...TEST_ENV_BASE, HOME: tmpDir, USERPROFILE: tmpDir },
           stdio: ['ignore', fd, 'pipe'],
+          timeout: PROBE_TIMEOUT_MS,
         },
       );
       return { status: result.status, contents: fs.readFileSync(outPath, 'utf-8') };
@@ -1822,20 +1804,16 @@ describe('#1400 regression: plain agent-skills output survives pipe/file stdout'
     writeConfig(tmpDir, { agent_skills: { 'gsd-executor': skillPaths } });
 
     // stdout to a pipe (the truncation-prone case the bug is about), captured
-    // by spawnSync — proves writeAllSync drained every byte before exit.
-    const result = spawnSync(
-      process.execPath,
-      [TOOLS_PATH, 'query', 'agent-skills', 'gsd-executor'],
-      {
-        cwd: tmpDir,
-        encoding: 'utf-8',
-        maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, ...TEST_ENV_BASE, HOME: tmpDir, USERPROFILE: tmpDir },
-        stdio: ['ignore', 'pipe', 'pipe'],
-      },
-    );
+    // via the process seam — proves writeAllSync drained every byte before
+    // exit. Actual output here is well under the seam's implicit 1MB
+    // spawnSync maxBuffer default, so no override is needed.
+    const result = runNode([TOOLS_PATH, 'query', 'agent-skills', 'gsd-executor'], {
+      cwd: tmpDir,
+      env: { ...process.env, ...TEST_ENV_BASE, HOME: tmpDir, USERPROFILE: tmpDir },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    });
     const out = result.stdout || '';
-    assert.strictEqual(result.status, 0, `command must exit 0; stderr=${result.stderr}`);
+    assert.strictEqual(result.exitCode, 0, `command must exit 0; stderr=${result.stderr}`);
     assert.ok(
       Buffer.byteLength(out, 'utf-8') > PIPE_BUFFER,
       `block must exceed the ${PIPE_BUFFER}-byte pipe buffer to exercise partial writes (got ${Buffer.byteLength(out, 'utf-8')} bytes)`,

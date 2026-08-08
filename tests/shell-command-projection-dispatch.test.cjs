@@ -17,6 +17,17 @@ const {
   platformEnsureDir,
   dispatchGsdCommand,
   resolveGsdToolsPath,
+  projectPathActionProjection,
+  projectPathExportLine,
+  posixNormalize,
+  PATH_ACTION_REASON,
+  renderShellActionLines,
+  formatManagedHookScriptToken,
+  escapeTomlDoubleQuotedString,
+  escapePowerShellSingleQuoted,
+  escapePosixDoubleQuoted,
+  escapeSingleQuotedShellLiteral,
+  retryRenameSync,
 } = require(path.join(__dirname, '..', 'gsd-core', 'bin', 'lib', 'shell-command-projection.cjs'));
 
 const { createTempGitProject, createTempDir, cleanup } = require('./helpers.cjs');
@@ -961,7 +972,9 @@ describe('bug #3441: PATH guidance is projected from typed shell action IR', () 
     assert.equal(projected.shellActions[1].command.includes("/tmp/O'\\''Neil/bin"), true);
     // #323: fish entry single-quotes the dir with the same POSIX literal
     // escaping (`'\''` is also a valid escaped quote in fish unquoted context).
-    assert.equal(projected.shellActions[2].command, "fish_add_path '/tmp/O'\\''Neil/bin'");
+    // #3118: `--` is fish's end-of-options separator, added so a leading-dash
+    // directory name is not misparsed as a flag; every fish_add_path lane carries it now.
+    assert.equal(projected.shellActions[2].command, "fish_add_path -- '/tmp/O'\\''Neil/bin'");
   });
 
   test('maybeSuggestPathExport renders commands projected by path-action seam', () => {
@@ -1619,3 +1632,391 @@ test('platformWriteSync survives a concurrent collision on the same target path'
 });
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// #3118 — failing-first coverage for a path-export projection API that does
+// not exist yet in this module (projectPathExportLine, escapeCmdDoubleQuotedArgument).
+// These tests are EXPECTED TO FAIL until that API lands.
+// ────────────────────────────────────────────────────────────────────────
+
+describe('path export projection — escaping (#3118)', () => {
+  const laneCommand = (mode, targetDir, platform, shell) => {
+    const { shellActions } = projectPathActionProjection({ mode, targetDir, platform });
+    const a = shellActions.find((x) => x.shell === shell);
+    return a ? a.command : null;
+  };
+
+  // The fish lane is the ONE deliberate output change for ordinary paths: fish_add_path
+  // misparses a leading-dash directory name without the `--` end-of-options separator
+  // (#3118 review finding), so every path — hostile or ordinary — now gets `--` on the
+  // fish lane. Every other lane (posix export, zsh/bash echo, PowerShell, cmd) remains
+  // byte-identical for an ordinary path.
+  test('leaves an ordinary path unchanged on every lane except fish', () => {
+    const repairLinux = projectPathActionProjection({ mode: 'repair', targetDir: '/usr/local/bin', platform: 'linux' });
+    assert.deepEqual(repairLinux.shellActions, [
+      { label: null, shell: 'posix', command: 'export PATH="/usr/local/bin:$PATH"' },
+    ]);
+    assert.deepEqual(repairLinux.actionLines, [
+      'export PATH="/usr/local/bin:$PATH"',
+    ]);
+
+    const persistLinux = projectPathActionProjection({ mode: 'persist', targetDir: '/usr/local/bin', platform: 'linux' });
+    assert.deepEqual(persistLinux.shellActions, [
+      { label: 'zsh', shell: 'zsh', command: `echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc` },
+      { label: 'bash', shell: 'bash', command: `echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc` },
+      { label: 'fish', shell: 'fish', command: `fish_add_path -- '/usr/local/bin'` },
+    ]);
+    assert.deepEqual(persistLinux.actionLines, [
+      `zsh: echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.zshrc`,
+      `bash: echo 'export PATH="/usr/local/bin:$PATH"' >> ~/.bashrc`,
+      `fish: fish_add_path -- '/usr/local/bin'`,
+    ]);
+
+    const repairWin32 = projectPathActionProjection({ mode: 'repair', targetDir: 'C:/Users/dev/bin', platform: 'win32' });
+    assert.deepEqual(repairWin32.shellActions, [
+      {
+        label: 'PowerShell',
+        shell: 'powershell',
+        command: `[Environment]::SetEnvironmentVariable('PATH', 'C:/Users/dev/bin;' + [Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')`,
+      },
+      {
+        label: 'cmd.exe',
+        shell: 'cmd',
+        command: `powershell -Command "[Environment]::SetEnvironmentVariable('PATH', 'C:/Users/dev/bin;' + [Environment]::GetEnvironmentVariable('PATH', 'User'), 'User')"`,
+      },
+      {
+        label: 'Git Bash',
+        shell: 'bash',
+        command: `echo 'export PATH="C:/Users/dev/bin:$PATH"' >> ~/.bashrc`,
+      },
+    ]);
+  });
+
+  test('the fish lane gains the end-of-options separator for every path', () => {
+    const command = laneCommand('persist', '/usr/local/bin', 'linux', 'fish');
+    assert.equal(command, `fish_add_path -- '/usr/local/bin'`);
+  });
+
+  test('does not write a command substitution into the rc file', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a$(id)b');
+    assert.equal(escapedDir, '/tmp/a\\$(id)b');
+  });
+
+  test('does not write a backtick substitution into the rc file', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a`whoami`b');
+    assert.equal(escapedDir, '/tmp/a\\`whoami\\`b');
+  });
+
+  test('keeps the persisted rc line quote-balanced', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a"b');
+    assert.equal(escapedDir, '/tmp/a\\"b');
+  });
+
+  test('escapes a backslash in the persisted line', () => {
+    const { escapedDir } = projectPathExportLine('/tmp/a\\b');
+    assert.equal(escapedDir, '/tmp/a\\\\b');
+  });
+
+  // #3118 review finding (now fixed): the other four escapers' target contexts
+  // (PowerShell single-quoted, POSIX double-quoted, POSIX single-quoted, and the win32
+  // JSON.stringify-based hook token) all treat a raw newline/CR/NUL as literal data that
+  // stays inside the quoting/escaping without breaking out, so those four DO survive
+  // intact and are pinned exactly below. escapeTomlDoubleQuotedString is exercised
+  // separately below — it now escapes TOML's required control-character ranges rather
+  // than passing them through raw.
+  test('the escapers survive newlines and null bytes', () => {
+    const cases = [
+      ['\n', '\n', 'a\\nb'],
+      ['\r\n', '\r\n', 'a\\r\\nb'],
+      ['\0', '\0', 'a\\u0000b'],
+    ];
+    for (const [raw, , tomlExpected] of cases) {
+      const value = `a${raw}b`;
+      assert.equal(escapePowerShellSingleQuoted(value), `a${raw}b`);
+      assert.equal(escapePosixDoubleQuoted(value), `a${raw}b`);
+      assert.equal(escapeSingleQuotedShellLiteral(value), `a${raw}b`);
+      assert.equal(formatManagedHookScriptToken(value, { platform: 'win32' }), JSON.stringify(`a${raw}b`));
+      assert.equal(escapeTomlDoubleQuotedString(value), tomlExpected);
+    }
+  });
+
+  // TOML v1.0.0 basic-string grammar (https://toml.io/en/v1.0.0#string): a basic string
+  // must escape the quotation mark, backslash, and control characters other than tab
+  // (U+0000-U+0008, U+000A-U+001F, U+007F). Compact escapes (\b \t \n \f \r \" \\) are
+  // used where TOML defines them; every other required character falls back to \uXXXX.
+  // Tab (U+0009) is explicitly excluded from the "must escape" set, so it passes through
+  // unescaped. Exact expected outputs below were derived by running the built function
+  // (see dispatch report table).
+  test('escapes control characters to a parseable TOML basic string', () => {
+    assert.equal(escapeTomlDoubleQuotedString('\n'), '\\n');
+    assert.equal(escapeTomlDoubleQuotedString('\r'), '\\r');
+    assert.equal(escapeTomlDoubleQuotedString('\r\n'), '\\r\\n');
+    assert.equal(escapeTomlDoubleQuotedString('\0'), '\\u0000');
+    assert.equal(escapeTomlDoubleQuotedString('\t'), '\t');
+    assert.equal(escapeTomlDoubleQuotedString('\b'), '\\b');
+    assert.equal(escapeTomlDoubleQuotedString('\f'), '\\f');
+    assert.equal(escapeTomlDoubleQuotedString('\x1F'), '\\u001f');
+    assert.equal(escapeTomlDoubleQuotedString('\x7F'), '\\u007f');
+    // Ordering pin: backslash escaped FIRST (doubled), then quote, then control chars —
+    // so a backslash introduced by an earlier escape step is never re-escaped.
+    assert.equal(escapeTomlDoubleQuotedString('a\\b"c\nd'), 'a\\\\b\\"c\\nd');
+  });
+
+  test('leaves an ordinary value byte-identical', () => {
+    const value = 'C:/Users/dev/gsd.js';
+    assert.equal(escapeTomlDoubleQuotedString(value), value);
+  });
+
+  test('produces a TOML basic string that parses back to the original', () => {
+    // No built-in or dependency TOML parser is available in this environment (Node has
+    // no built-in TOML support, and neither `toml` nor `@iarna/toml` nor `smol-toml` is a
+    // project dependency), so this round-trips through a minimal inline unescape that
+    // implements only the escape forms escapeTomlDoubleQuotedString can produce
+    // (\\ \" \b \t \n \f \r \uXXXX) — sufficient to invert this encoder, not a general
+    // TOML parser.
+    const unescapeTomlBasicString = (escaped) => {
+      let out = '';
+      for (let i = 0; i < escaped.length; i += 1) {
+        const ch = escaped[i];
+        if (ch !== '\\') {
+          out += ch;
+          continue;
+        }
+        const next = escaped[i + 1];
+        if (next === 'u') {
+          out += String.fromCodePoint(parseInt(escaped.slice(i + 2, i + 6), 16));
+          i += 5;
+          continue;
+        }
+        const compact = { b: '\b', t: '\t', n: '\n', f: '\f', r: '\r', '"': '"', '\\': '\\' }[next];
+        if (compact === undefined) throw new Error(`unsupported escape: \\${next}`);
+        out += compact;
+        i += 1;
+      }
+      return out;
+    };
+
+    const hostileInputs = ['\n', '\r', '\r\n', '\0', '\t', '\b', '\f', '\x1F', '\x7F', 'a\\b"c\nd'];
+    for (const input of hostileInputs) {
+      const escaped = escapeTomlDoubleQuotedString(input);
+      const tomlLine = `k = "${escaped}"`;
+      const quoted = tomlLine.slice(tomlLine.indexOf('"') + 1, tomlLine.lastIndexOf('"'));
+      assert.equal(unescapeTomlBasicString(quoted), input, `round-trip failed for ${JSON.stringify(input)}`);
+    }
+  });
+
+  // A newline in the target directory lands inside a single-quoted `echo '...'` argument
+  // in the persisted bash/zsh rc lines. POSIX single quotes preserve a literal newline as
+  // data — they do NOT terminate on a bare newline — so the whole `echo '...' >> ~/.bashrc`
+  // stays ONE shell command; the newline just makes the persisted PATH assignment a broken,
+  // two-line value inside .bashrc, not a second executable command. (Contrast: had the
+  // value been embedded unquoted or inside double quotes followed by an unescaped command
+  // separator, a newline COULD start a new command — that is not the case here.)
+  test('a newline in the target directory cannot start a new rc-file command', () => {
+    const command = laneCommand('persist', '/tmp/a\nmalicious', 'linux', 'bash');
+    assert.equal(command, `echo 'export PATH="/tmp/a\nmalicious:$PATH"' >> ~/.bashrc`);
+    // The newline sits between the opening and closing `'` of the echo argument — it is
+    // literal data inside one quoted token, not a shell command terminator.
+    const singleQuoteSpan = command.slice(command.indexOf(`'`) + 1, command.lastIndexOf(`'`));
+    assert.ok(singleQuoteSpan.includes('\n'), 'the newline must be inside the single-quoted region');
+  });
+
+  test('keeps the existing apostrophe escaping', () => {
+    const command = laneCommand('persist', "/tmp/o'brien", 'linux', 'bash');
+    assert.ok(command.includes(`'\\''`), 'bash lane must retain the POSIX single-quote escape sequence');
+  });
+
+  test('escapes an apostrophe and a dollar in one path', () => {
+    const command = laneCommand('persist', "/tmp/o'b$(id)", 'linux', 'bash');
+    assert.ok(command.includes(`'\\''`), 'must still contain the POSIX single-quote escape');
+    assert.ok(command.includes('\\$('), 'must also contain the escaped dollar-paren');
+  });
+
+  test('all three lanes escape the export line identically', () => {
+    const { escapedDir: token } = projectPathExportLine('/tmp/a$(id)b');
+    const repairCommand = laneCommand('repair', '/tmp/a$(id)b', 'linux', 'posix');
+    const persistCommand = laneCommand('persist', '/tmp/a$(id)b', 'linux', 'bash');
+    const win32TargetDir = 'C:/a$(id)b';
+    const win32Command = laneCommand('repair', win32TargetDir, 'win32', 'bash');
+    // #3118: the win32 bash lane posix-normalizes targetDir before escaping it, so its token
+    // must be compared against the SAME (posix-normalized) input, not against the '/tmp/...'
+    // token above — those are two different inputs and legitimately escape differently.
+    const { escapedDir: win32Token } = projectPathExportLine(posixNormalize(win32TargetDir));
+    assert.ok(repairCommand.includes(token), 'repair posix lane must use the same escaped token');
+    assert.ok(persistCommand.includes(token), 'persist bash lane must use the same escaped token');
+    assert.ok(win32Command.includes(win32Token), 'win32 bash lane must use the same escaped token');
+  });
+
+  test('does not let a quote break out of the cmd lane', () => {
+    const { shellActions, actionLines } = projectPathActionProjection({
+      mode: 'repair',
+      targetDir: 'C:/a"&calc&"b',
+      platform: 'win32',
+    });
+    // `"` is a reserved character that cannot appear in any Windows path, so
+    // there is no valid command to suggest; the projection fails closed
+    // rather than emitting a cmd line whose quoting can be broken.
+    assert.deepEqual(shellActions, []);
+    assert.deepEqual(actionLines, []);
+  });
+
+  test('still projects win32 lanes for a legal path', () => {
+    const { shellActions } = projectPathActionProjection({
+      mode: 'repair',
+      targetDir: 'C:/Users/dev/bin',
+      platform: 'win32',
+    });
+    assert.equal(shellActions.length, 3);
+    assert.deepEqual(shellActions.map((a) => a.shell), ['powershell', 'cmd', 'bash']);
+  });
+
+  test('keeps the PowerShell doubling', () => {
+    assert.equal(escapePowerShellSingleQuoted("o'brien"), "o''brien");
+  });
+
+  test('an absent target directory produces no actions', () => {
+    for (const targetDir of [null, undefined, '']) {
+      assert.deepEqual(
+        projectPathActionProjection({ mode: 'repair', targetDir, platform: 'linux' }),
+        { shellActions: [], actionLines: [], reason: PATH_ACTION_REASON.NO_TARGET_DIR },
+      );
+    }
+  });
+
+  test('reports why a win32 quote produced no actions', () => {
+    const result = projectPathActionProjection({ mode: 'repair', targetDir: 'C:/a"b', platform: 'win32' });
+    assert.deepEqual(result.shellActions, []);
+    assert.equal(result.reason, PATH_ACTION_REASON.WIN32_RESERVED_QUOTE);
+  });
+
+  // Two empty results with different causes must stay distinguishable — that
+  // is the whole subject of epic #3051.
+  test('reports a missing target directory as a different cause', () => {
+    const result = projectPathActionProjection({ mode: 'repair', targetDir: null, platform: 'win32' });
+    assert.equal(result.reason, PATH_ACTION_REASON.NO_TARGET_DIR);
+  });
+
+  test('a successful projection carries no reason', () => {
+    const result = projectPathActionProjection({ mode: 'repair', targetDir: '/usr/local/bin', platform: 'linux' });
+    assert.equal(Object.prototype.hasOwnProperty.call(result, 'reason'), false);
+  });
+
+  test('the reason vocabulary is closed', () => {
+    assert.deepEqual(Object.keys(PATH_ACTION_REASON).sort(), ['NO_TARGET_DIR', 'WIN32_RESERVED_QUOTE']);
+    assert.ok(Object.isFrozen(PATH_ACTION_REASON));
+  });
+
+  test('leaves the fish lane escaping unchanged', () => {
+    const command = laneCommand('persist', '/tmp/a$(id)b', 'linux', 'fish');
+    assert.equal(command, `fish_add_path -- '/tmp/a$(id)b'`);
+  });
+
+  test('emits the fish end-of-options separator for an ordinary path', () => {
+    // #3118 review MINOR: a leading-dash `targetDir` (e.g. `-v`) is a legal
+    // directory name, but fish's argparse-based option scanning misparses an
+    // unseparated leading-dash token as a flag regardless of quoting —
+    // verified empirically against a real fish 4.8.1 install that
+    // `fish_add_path '-v'` fails ("No paths to add, not setting anything.")
+    // while `fish_add_path -- '-v'` succeeds. `--` is fish's standard
+    // end-of-options separator and is a no-op for ordinary paths.
+    const command = laneCommand('persist', '/tmp/x', 'linux', 'fish');
+    assert.equal(command, `fish_add_path -- '/tmp/x'`);
+  });
+
+  test('an empty platform string falls back to the host', () => {
+    assert.equal(
+      formatManagedHookScriptToken('/x/y.js', { platform: '' }),
+      formatManagedHookScriptToken('/x/y.js'),
+    );
+  });
+
+  test('projects no token off win32', () => {
+    assert.equal(formatManagedHookScriptToken('/x/y.js', { platform: 'linux' }), null);
+  });
+
+  test('projects a JSON-quoted posix-normalized token on win32', () => {
+    assert.equal(
+      formatManagedHookScriptToken('C:\\x\\y.js', { platform: 'win32' }),
+      JSON.stringify('C:/x/y.js'),
+    );
+  });
+
+  test('returns no lines when called with no arguments', () => {
+    assert.deepEqual(renderShellActionLines(), []);
+  });
+
+  test('drops entries without a command', () => {
+    assert.deepEqual(
+      renderShellActionLines([null, { label: 'a' }, { label: 'b', command: 'c' }]),
+      ['b: c'],
+    );
+  });
+
+  test('renders an unlabeled action as the bare command', () => {
+    assert.deepEqual(renderShellActionLines([{ label: null, command: 'x' }]), ['x']);
+  });
+
+  test('escapes a backslash-quote pair in the right order', () => {
+    // Input: a \ " b  (a literal backslash immediately followed by a quote).
+    const input = ['a', '\\', '"', 'b'].join('');
+    // Expected: backslash first doubles to two backslashes, THEN the quote
+    // gets its own backslash — so the quote ends up preceded by 3 backslashes.
+    const expected = ['a', '\\', '\\', '\\', '"', 'b'].join('');
+    assert.equal(escapeTomlDoubleQuotedString(input), expected);
+  });
+
+  test('coerces non-string values', () => {
+    const escapers = [
+      escapeTomlDoubleQuotedString,
+      escapePowerShellSingleQuoted,
+      escapePosixDoubleQuoted,
+      escapeSingleQuotedShellLiteral,
+    ];
+    for (const escaper of escapers) {
+      for (const value of [null, undefined, 0, [], {}]) {
+        assert.doesNotThrow(() => escaper(value));
+        assert.equal(typeof escaper(value), 'string');
+      }
+    }
+  });
+
+  test('returns empty for an empty value', () => {
+    const escapers = [
+      escapeTomlDoubleQuotedString,
+      escapePowerShellSingleQuoted,
+      escapePosixDoubleQuoted,
+      escapeSingleQuotedShellLiteral,
+    ];
+    for (const escaper of escapers) {
+      assert.equal(escaper(''), '');
+    }
+  });
+
+  describe('retryRenameSync (#3118)', () => {
+    afterEach(() => {
+      mock.restoreAll();
+    });
+
+    test('rethrows when the rename cannot be retried to success', () => {
+      mock.method(fs, 'renameSync', () => {
+        const e = new Error('EPERM');
+        e.code = 'EPERM';
+        throw e;
+      });
+      assert.throws(() => retryRenameSync('/a', '/b'));
+    });
+
+    test('returns silently on a successful rename', (t) => {
+      const dir = createTempDir('gsd-3118-rename-');
+      t.after(() => cleanup(dir));
+      const from = path.join(dir, 'source.txt');
+      const to = path.join(dir, 'dest.txt');
+      fs.writeFileSync(from, 'content');
+
+      retryRenameSync(from, to);
+
+      assert.ok(fs.statSync(to).isFile());
+      assert.equal(fs.existsSync(from), false);
+    });
+  });
+});

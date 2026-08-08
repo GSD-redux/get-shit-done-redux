@@ -17,7 +17,7 @@ Sync managed `gsd-*` skill directories from one canonical runtime's skills root 
 
 If neither `--dry-run` nor `--apply` is specified, dry-run is the default.
 
-**Supported runtime names:** `claude`, `codex`, `grok`, `copilot`, `cursor`, `windsurf`, `opencode`, `gemini`, `kilo`, `augment`, `trae`, `qwen`, `codebuddy`, `cline`, `antigravity` (grok uses the `~/.agents` layout)
+**Supported runtime names:** `antigravity`, `augment`, `claude`, `cline`, `codebuddy`, `codex`, `copilot`, `cursor`, `grok`, `hermes`, `kilo`, `kimi`, `kimi-code`, `opencode`, `pi`, `qwen`, `trae`, `windsurf`, `zcode` — the full capability registry runtime set (`gsd-core/bin/lib/capability-registry.cjs`'s `runtimes`) plus `grok` (a live, dedicated `~/.agents`-layout resolution branch in `getGlobalConfigDir` predating the capability registry — overridable via `GROK_AGENTS_HOME`), excluding `vscode`: it is `installSurface: 'none'` (#2103) and `getGlobalSkillsBase('vscode')` returns `null`, so a skills-root sync to/from it always aborts at Step 2's resolution guard — there is nowhere on disk to sync to.
 
 ---
 
@@ -35,7 +35,7 @@ fi
 
 # Parse --to
 if [[ "$@" == *"--to all"* ]]; then
-  TO_RUNTIMES=(claude codex grok copilot cursor windsurf opencode gemini kilo augment trae qwen codebuddy cline antigravity)
+  TO_RUNTIMES=(antigravity augment claude cline codebuddy codex copilot cursor grok hermes kilo kimi kimi-code opencode pi qwen trae windsurf zcode)
 elif [[ "$@" == *"--to"* ]]; then
   TO_RUNTIMES=( $(echo "$@" | grep -oP '(?<=--to )\S+') )
 fi
@@ -55,28 +55,42 @@ fi
 
 ## Step 2: Resolve Skills Roots
 
-Use `install.js --skills-root` to resolve paths — this reuses the single authoritative path table rather than duplicating it:
+Resolve paths via `gsd_run query skills-root` — this reuses the single authoritative path table via the shipped `gsd-tools` binary (#3024: the installer entry point is not shipped in installed trees, but `gsd-tools` is):
 
 ```bash
-INSTALL_JS="$(dirname "$0")/../gsd-core/bin/install.js"
-# If running from a global install, resolve relative to the GSD package
-INSTALL_JS_GLOBAL="$HOME/.claude/gsd-core/bin/install.js"
-[[ ! -f "$INSTALL_JS" ]] && INSTALL_JS="$INSTALL_JS_GLOBAL"
-
-SRC_SKILLS_ROOT=$(node "$INSTALL_JS" --skills-root "$FROM_RUNTIME")
+_GSD_SHIM_NAME="gsd-tools.cjs"; _GSD_RUNTIME_ROOT="${RUNTIME_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"; GSD_TOOLS="${_GSD_RUNTIME_ROOT}/gsd-core/bin/${_GSD_SHIM_NAME}"; if [ -f "$GSD_TOOLS" ]; then gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.claude/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${_GSD_RUNTIME_ROOT}/.codex/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif command -v gsd-tools >/dev/null 2>&1; then GSD_TOOLS="$(command -v gsd-tools)"; gsd_run() { "$GSD_TOOLS" "$@"; }; elif [ -f "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${HERMES_HOME:-$HOME/.hermes}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CURSOR_CONFIG_DIR:-$HOME/.cursor}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEX_HOME:-$HOME/.codex}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GEMINI_CONFIG_DIR:-$HOME/.gemini}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${COPILOT_CONFIG_DIR:-$HOME/.copilot}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${WINDSURF_CONFIG_DIR:-$HOME/.codeium/windsurf}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${AUGMENT_CONFIG_DIR:-$HOME/.augment}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${TRAE_CONFIG_DIR:-$HOME/.trae}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${QWEN_CONFIG_DIR:-$HOME/.qwen}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CODEBUDDY_CONFIG_DIR:-$HOME/.codebuddy}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${CLINE_CONFIG_DIR:-$HOME/.cline}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${GROK_AGENTS_HOME:-$HOME/.agents}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${ANTIGRAVITY_CONFIG_DIR:-$HOME/.gemini/antigravity}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${OPENCODE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/opencode}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; elif [ -f "${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}" ]; then GSD_TOOLS="${KILO_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/kilo}/gsd-core/bin/${_GSD_SHIM_NAME}"; gsd_run() { node "$GSD_TOOLS" "$@"; }; else echo "ERROR: gsd-tools.cjs not found at $GSD_TOOLS and gsd-tools is not on PATH. Run: npx -y @opengsd/gsd-core@latest --claude --local" >&2; exit 1; fi; if [ -n "${CLAUDE_ENV_FILE:-}" ] && [ -n "${GSD_TOOLS:-}" ]; then printf "export PATH='%s':\"\$PATH\"\n" "${GSD_TOOLS%/*}" >> "$CLAUDE_ENV_FILE" 2>/dev/null || true; fi
+SRC_SKILLS_ROOT=$(gsd_run query skills-root "$FROM_RUNTIME" --raw)
+if [ $? -ne 0 ] || [ -z "$SRC_SKILLS_ROOT" ]; then
+  echo "error: failed to resolve skills root for runtime '$FROM_RUNTIME' (gsd_run query skills-root $FROM_RUNTIME --raw)" >&2
+  exit 1
+fi
 
 for DEST_RUNTIME in "${TO_RUNTIMES[@]}"; do
-  DEST_SKILLS_ROOTS["$DEST_RUNTIME"]=$(node "$INSTALL_JS" --skills-root "$DEST_RUNTIME")
+  RESOLVED_DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
+  if [ $? -ne 0 ] || [ -z "$RESOLVED_DEST_ROOT" ]; then
+    echo "error: failed to resolve skills root for runtime '$DEST_RUNTIME' (gsd_run query skills-root $DEST_RUNTIME --raw)" >&2
+    exit 1
+  fi
 done
 ```
+
+This loop validates every destination in `TO_RUNTIMES` up front — a bad runtime id anywhere in a multi-destination `--to` aborts here, before Step 3 or Step 5 touch anything. The resolved value itself is not retained: each of Steps 3 and 5 re-resolves `DEST_ROOT` for the specific `$DEST_RUNTIME` it is currently processing (see those steps), so `$DEST_ROOT` is always unambiguously scoped to one destination and never threaded through a shared array.
 
 **Guard:** If the source skills root does not exist, print:
 ```
 error: source skills root not found: <path>
        Is GSD installed globally for the '<runtime>' runtime?
-       Run: node ~/.claude/gsd-core/bin/install.js --global --<runtime>
+       Run: npx -y @opengsd/gsd-core@latest --global --<runtime>
 ```
 Then exit.
+
+**Guard:** If resolving the skills root for the source OR any destination runtime fails (`gsd_run query skills-root <runtime> --raw` exits non-zero or prints nothing — see Step 2's bash), print:
+```
+error: failed to resolve skills root for runtime '<runtime>'
+       command: gsd_run query skills-root <runtime> --raw
+       Is '<runtime>' a registered runtime id? See supported runtime names above.
+```
+Then exit. Never proceed to Step 3 or Step 5 with an empty or unresolved root — an empty `$DEST_ROOT` turns `rm -rf "$DEST_ROOT/$SKILL"` into `rm -rf "/$SKILL"`.
 
 **Guard:** If `--to` contains the same runtime as `--from`, skip that destination silently.
 
@@ -87,6 +101,16 @@ Then exit.
 For each destination runtime:
 
 ```bash
+# Bind the destination root for this iteration's destination runtime. Already
+# validated to resolve successfully in Step 2's eager-validation loop;
+# re-resolving here (rather than reading back a shared array) keeps this
+# value unambiguously scoped to the destination currently being processed.
+DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
+if [ $? -ne 0 ] || [ -z "$DEST_ROOT" ]; then
+  echo "error: failed to resolve skills root for runtime '$DEST_RUNTIME' (gsd_run query skills-root $DEST_RUNTIME --raw)" >&2
+  exit 1
+fi
+
 # List gsd-* subdirectories in source
 SRC_SKILLS=$(ls -1 "$SRC_SKILLS_ROOT" 2>/dev/null | grep '^gsd-')
 
@@ -142,7 +166,21 @@ If `--dry-run` (or no flag): skip this step entirely and exit after printing the
 For each destination with changes:
 
 ```bash
+# Bind DEST_ROOT for this iteration's destination (see Step 3's identical
+# re-resolution note — Step 2 already validated this resolves successfully).
+DEST_ROOT=$(gsd_run query skills-root "$DEST_RUNTIME" --raw)
+
+[[ "$SRC_SKILLS_ROOT" == /* ]] || { echo "error: SRC_SKILLS_ROOT is empty or not absolute: '$SRC_SKILLS_ROOT'" >&2; exit 1; }
+[[ "$DEST_ROOT" == /* ]] || { echo "error: DEST_ROOT is empty or not absolute: '$DEST_ROOT'" >&2; exit 1; }
+
 mkdir -p "$DEST_ROOT"
+
+# #3025: verbatim cp -r copies the SOURCE runtime's converted skill form, which
+# corrupts skills for destinations that need a different conversion (e.g. Claude
+# SKILL.md → Codex TOML agent). Until the installer exposes a per-skill conversion
+# CLI, sync is limited to runtime pairs that share the same skill format.
+# Run `gsd install --<dest-runtime> --local` to get correctly converted skills
+# for a destination that uses a different format.
 
 for SKILL in $CREATE_LIST $UPDATE_LIST; do
   rm -rf "$DEST_ROOT/$SKILL"

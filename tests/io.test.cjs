@@ -13,12 +13,18 @@
 
 const { test, describe, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
 
 const io = require('../gsd-core/bin/lib/io.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
+
+function runScript(script) {
+  return toLegacyResult(runNode(['-e', script], { timeoutMs: PROBE_TIMEOUT_MS }));
+}
 
 // ─── ERROR_REASON constants ───────────────────────────────────────────────────
 
@@ -98,7 +104,7 @@ describe('output()', () => {
       const io = require(${JSON.stringify(ioPath)});
       io.output({ ok: true, value: 42 }, false);
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
     const parsed = JSON.parse(result.stdout);
     assert.deepStrictEqual(parsed, { ok: true, value: 42 });
@@ -109,7 +115,7 @@ describe('output()', () => {
       const io = require(${JSON.stringify(ioPath)});
       io.output({ ignored: true }, true, 'raw-text-output');
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
     assert.strictEqual(result.stdout, 'raw-text-output');
   });
@@ -119,7 +125,7 @@ describe('output()', () => {
       const io = require(${JSON.stringify(ioPath)});
       io.output({ fallback: true }, true);
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
     const parsed = JSON.parse(result.stdout);
     assert.deepStrictEqual(parsed, { fallback: true });
@@ -130,7 +136,7 @@ describe('output()', () => {
       const io = require(${JSON.stringify(ioPath)});
       io.output(null, false);
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
     assert.strictEqual(result.stdout, 'null');
   });
@@ -156,7 +162,7 @@ describe('output()', () => {
       const largeString = 'x'.repeat(60000);
       io.output({ large: largeString }, false);
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 0, `process exited non-zero: ${result.stderr}`);
 
     const stdout = result.stdout.trim();
@@ -187,7 +193,7 @@ describe('error()', () => {
       io.setJsonErrorMode(false);
       io.error('something went wrong');
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 1);
     assert.ok(result.stderr.includes('Error: something went wrong'), `stderr was: ${result.stderr}`);
     assert.strictEqual(result.stdout, '');
@@ -199,7 +205,7 @@ describe('error()', () => {
       io.setJsonErrorMode(false);
       io.error('no reason code expected');
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 1);
     // plain mode does NOT include the reason field
     assert.ok(!result.stderr.includes('"reason"'), `stderr unexpectedly contained reason: ${result.stderr}`);
@@ -211,7 +217,7 @@ describe('error()', () => {
       io.setJsonErrorMode(true);
       io.error('structured error', io.ERROR_REASON.SDK_FAIL_FAST);
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 1);
     assert.strictEqual(result.stdout, '');
     const payload = JSON.parse(result.stderr.trim());
@@ -226,7 +232,7 @@ describe('error()', () => {
       io.setJsonErrorMode(true);
       io.error('no reason given');
     `;
-    const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+    const result = runScript(script);
     assert.strictEqual(result.status, 1);
     const payload = JSON.parse(result.stderr.trim());
     assert.strictEqual(payload.reason, 'unknown');
@@ -246,7 +252,7 @@ describe('error()', () => {
         io.setJsonErrorMode(true);
         io.error('test', io.ERROR_REASON.${key});
       `;
-      const result = spawnSync(process.execPath, ['-e', script], { encoding: 'utf-8' });
+      const result = runScript(script);
       assert.strictEqual(result.status, 1, `key=${key}`);
       const payload = JSON.parse(result.stderr.trim());
       assert.strictEqual(payload.reason, expected, `key=${key}`);

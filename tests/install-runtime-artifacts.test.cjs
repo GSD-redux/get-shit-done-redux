@@ -3205,7 +3205,7 @@ describe('#778 (b) Qwen skills priority', () => {
  * Context: context:fork was added by #769 to protect context budget, but
  * plan-phase, execute-phase, and autonomous are spawning orchestrators — a
  * forked subagent has no Agent/Task tool, breaking their core function.
- * effort: max is preserved; context: fork is removed from these three.
+ * effort: high is clamped from max (thinking-disabled safety, #3039); context: fork is removed from these three.
  * The converter still passes context: fork through if a source file has it
  * (for any future leaf skill that legitimately needs isolation).
  *
@@ -3215,9 +3215,9 @@ describe('#778 (b) Qwen skills priority', () => {
  *   3. Source commands/gsd/plan-phase.md does NOT have context: fork, has effort: max
  *   4. Source commands/gsd/progress.md has effort: low
  *   5. Source commands/gsd/stats.md has effort: low
- *   6. Claude global install: SKILL.md for autonomous has effort: max, NOT context: fork
- *   7. Claude global install: SKILL.md for execute-phase has effort: max, NOT context: fork
- *   8. Claude global install: SKILL.md for plan-phase has effort: max, NOT context: fork
+ *   6. Claude global install: SKILL.md for autonomous has effort: high (clamped), NOT context: fork
+ *   7. Claude global install: SKILL.md for execute-phase has effort: high (clamped), NOT context: fork
+ *   8. Claude global install: SKILL.md for plan-phase has effort: high (clamped), NOT context: fork
  *   9. Claude global install: SKILL.md for progress has effort: low
  *  10. Claude global install: SKILL.md for stats has effort: low
  *  11. convertClaudeCommandToClaudeSkill still passes context: fork through (for non-orchestrator skills)
@@ -3302,7 +3302,7 @@ function runClaudeGlobalInstall(claudeHome) {
 // #921/#922: spawning orchestrators must NOT carry context: fork — a forked
 // subagent has no Agent/Task tool, making it impossible for orchestrators to
 // spawn their required subagents. context: fork is appropriate only for leaf
-// skills that do not themselves dispatch agents. effort: max is portable across Claude Code models.
+// skills that do not themselves dispatch agents. effort: max in source; clamped to high in emitted SKILL.md (#3039: max rejected when thinking disabled).
 describe('#769/#921/#1319 source commands: spawning orchestrators have effort: max but NOT context: fork', () => {
   test('commands/gsd/autonomous.md does NOT have context: fork (#921)', () => {
     const fm = readFrontmatter(path.join(SOURCE_COMMANDS_DIR, 'autonomous.md'));
@@ -3313,7 +3313,7 @@ describe('#769/#921/#1319 source commands: spawning orchestrators have effort: m
   test('commands/gsd/autonomous.md has effort: max (#1319)', () => {
     const fm = readFrontmatter(path.join(SOURCE_COMMANDS_DIR, 'autonomous.md'));
     assert.match(fm, /^effort:[ \t]*max$/m,
-      `autonomous.md frontmatter must have effort: max\nActual:\n${fm}`);
+      `autonomous.md SOURCE frontmatter must have effort: max (#1319)\nActual:\n${fm}`);
     assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
       `autonomous.md frontmatter must not have rejected effort: xhigh (#1319)\nActual:\n${fm}`);
   });
@@ -3387,7 +3387,7 @@ describe('#769/#1319 convertClaudeCommandToClaudeSkill: preserves context and em
       `SKILL.md frontmatter must include context: fork\nActual frontmatter:\n${fm}`);
   });
 
-  test('normalizes effort: xhigh to effort: max in emitted SKILL.md frontmatter (#1319)', () => {
+  test('normalizes effort: xhigh/max to effort: high in emitted SKILL.md frontmatter (#1319/#3039)', () => {
     const input = [
       '---',
       'name: gsd:test-heavy',
@@ -3406,10 +3406,10 @@ describe('#769/#1319 convertClaudeCommandToClaudeSkill: preserves context and em
     const end = result.indexOf('---', 3);
     const fm = result.substring(3, end);
 
-    assert.match(fm, /^effort:[ \t]*max$/m,
-      `SKILL.md frontmatter must include portable effort: max\nActual frontmatter:\n${fm}`);
-    assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `SKILL.md frontmatter must not include rejected effort: xhigh (#1319)\nActual frontmatter:\n${fm}`);
+    assert.match(fm, /^effort:[ \t]*high$/m,
+      `SKILL.md frontmatter must include portable effort: high (#3039)\nActual frontmatter:\n${fm}`);
+    assert.doesNotMatch(fm, /^effort:[ \t]*(xhigh|max)$/m,
+      `SKILL.md frontmatter must not include rejected effort: xhigh or max (#1319/#3039)\nActual frontmatter:\n${fm}`);
   });
 
   test('preserves effort: low in emitted SKILL.md frontmatter', () => {
@@ -3460,7 +3460,7 @@ describe('#769/#1319 convertClaudeCommandToClaudeSkill: preserves context and em
 
 // #921/#922: after install, spawning orchestrators must NOT carry context: fork
 // in their emitted SKILL.md. #1319: heavyweight skills must use portable max effort.
-describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md files have effort: max but NOT context: fork', () => {
+describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md files have effort: high (clamped from max) but NOT context: fork', () => {
   let tmpDir;
   let claudeHome;
 
@@ -3486,10 +3486,10 @@ describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md 
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'autonomous');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*max$/m,
-      `gsd-autonomous SKILL.md must have effort: max\nActual:\n${fm}`);
+    assert.match(fm, /^effort:[ \t]*high$/m,
+      `gsd-autonomous SKILL.md must have effort: high\nActual:\n${fm}`);
     assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `gsd-autonomous SKILL.md must not have rejected effort: xhigh (#1319)\nActual:\n${fm}`);
+      `gsd-autonomous SKILL.md must not have rejected effort: xhigh or max (#1319/#3039)\nActual:\n${fm}`);
   });
 
   test('gsd-execute-phase SKILL.md does NOT have context: fork after global install (#921)', () => {
@@ -3504,10 +3504,10 @@ describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md 
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'execute-phase');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*max$/m,
-      `gsd-execute-phase SKILL.md must have effort: max\nActual:\n${fm}`);
+    assert.match(fm, /^effort:[ \t]*high$/m,
+      `gsd-execute-phase SKILL.md must have effort: high\nActual:\n${fm}`);
     assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `gsd-execute-phase SKILL.md must not have rejected effort: xhigh (#1319)\nActual:\n${fm}`);
+      `gsd-execute-phase SKILL.md must not have rejected effort: xhigh or max (#1319/#3039)\nActual:\n${fm}`);
   });
 
   test('gsd-plan-phase SKILL.md does NOT have context: fork after global install (#921)', () => {
@@ -3522,10 +3522,10 @@ describe('#769/#921/#1319 Claude global install: spawning-orchestrator SKILL.md 
     runClaudeGlobalInstall(claudeHome);
     const skillPath = flatSkillPath(path.join(claudeHome, 'skills'),'plan-phase');
     const fm = readFrontmatter(skillPath);
-    assert.match(fm, /^effort:[ \t]*max$/m,
-      `gsd-plan-phase SKILL.md must have effort: max\nActual:\n${fm}`);
+    assert.match(fm, /^effort:[ \t]*high$/m,
+      `gsd-plan-phase SKILL.md must have effort: high\nActual:\n${fm}`);
     assert.doesNotMatch(fm, /^effort:[ \t]*xhigh$/m,
-      `gsd-plan-phase SKILL.md must not have rejected effort: xhigh (#1319)\nActual:\n${fm}`);
+      `gsd-plan-phase SKILL.md must not have rejected effort: xhigh or max (#1319/#3039)\nActual:\n${fm}`);
   });
 
   test('gsd-progress SKILL.md has effort: low after global install', () => {
@@ -4646,7 +4646,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const PROFILE_OUTPUT = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'profile-output.cjs');
@@ -4672,7 +4672,12 @@ describe('Bug #2973: dev-preferences default writer path is skills/gsd-dev-prefe
         m.cmdGenerateDevPreferences(${JSON.stringify(tmpHome)}, { analysis: ${JSON.stringify(analysisPath)} }, false);
       `);
       const result = cp.spawnSync(process.execPath, [driver], {
-        env: Object.assign({}, process.env, { HOME: tmpHome, USERPROFILE: tmpHome }),
+        // #2665: TEST_ENV_BASE must be merged in explicitly here. This is a RAW
+        // spawn, not runGsdTools, so nothing scrubs the config-location vars for
+        // it -- and the writer under test resolves them env-FIRST. Sandboxing
+        // HOME alone let an ambient CLAUDE_CONFIG_DIR win, and the SKILL.md
+        // landed in the developer's live config dir instead of tmpHome.
+        env: Object.assign({}, process.env, TEST_ENV_BASE, { HOME: tmpHome, USERPROFILE: tmpHome }),
         encoding: 'utf-8',
         // Bound the subprocess so a regression that hangs the writer
         // (or the dispatcher) cannot deadlock CI (PR #3003 CR feedback).
