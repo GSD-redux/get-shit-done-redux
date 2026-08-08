@@ -35,12 +35,34 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 /**
- * Expand a leading ~ to os.homedir().
+ * Expand a leading ~ to the given home directory (defaults to os.homedir()).
+ * Every call site inside resolveConfigHomeFromDescriptor threads its
+ * resolved `home` local through here so an injected opts.home (used by
+ * hermetic tests) is honored instead of silently falling back to the real
+ * home directory.
  */
-function expandTilde(p: string): string {
+function expandTilde(p: string, home: string = os.homedir()): string {
   if (!p) return p;
-  if (p.startsWith('~/') || p === '~') return path.join(os.homedir(), p.slice(1));
+  if (p.startsWith('~/') || p === '~') return path.join(home, p.slice(1));
   return p;
+}
+
+/**
+ * True when `val` is a usable env-var override: a real string that contains
+ * at least one non-whitespace character. Every env-override consumption site
+ * in resolveConfigHomeFromDescriptor gates on this instead of a bare truthy
+ * check, so `FOO_DIR=''` (empty), `FOO_DIR` unset (`undefined`), and
+ * `FOO_DIR='   '` (whitespace-only — e.g. from a shell templating bug that
+ * leaves a variable substitution blank but quoted) all fall back to the
+ * descriptor default identically. Deliberately does NOT trim: a value that
+ * merely has leading/trailing whitespace around otherwise-real content (or
+ * interior whitespace, e.g. `~/My Agent Dir`) is passed through byte-for-byte
+ * unchanged, exactly as this module already treats every other env-var
+ * override (no site here or elsewhere in this file trims a path value) — so
+ * default behavior for every non-whitespace value is unaffected by this guard.
+ */
+function hasNonBlankOverride(val: string | undefined): val is string {
+  return typeof val === 'string' && val.trim() !== '';
 }
 
 export interface ResolveAntigravityOpts {
@@ -119,11 +141,28 @@ interface GenericAgentsRootDescriptor {
   skillsHome?: ConfigHomeDescriptor;
 }
 
+/**
+ * #2103: a runtime with NO file-projected config directory at all (e.g.
+ * vscode — Marketplace/VSIX extension, `installSurface: 'none'`). There is
+ * no directory to resolve, so this descriptor kind is deliberately excluded
+ * from `resolveConfigHomeFromDescriptor`'s directory-resolving switch (see
+ * that function's 'none' case, which throws rather than silently falling
+ * through). Callers that need a nullable result (e.g. `getGlobalSkillsBase`)
+ * must check `configHome.kind === 'none'` themselves before resolving.
+ */
+interface NoneDescriptor {
+  kind: 'none';
+  name: string;
+  env: string[];
+  skillsHome?: ConfigHomeDescriptor;
+}
+
 type ConfigHomeDescriptor =
   | DotHomeDescriptor
   | DotHomeNestedDescriptor
   | XdgDescriptor
-  | GenericAgentsRootDescriptor;
+  | GenericAgentsRootDescriptor
+  | NoneDescriptor;
 
 interface RuntimeArtifactKindDescriptor {
   kind: string;
@@ -156,6 +195,63 @@ function getRegistry(): { runtimes: Record<string, { runtime?: RuntimeDescriptor
 }
 
 /**
+ * Legacy runtime ids that have a genuine, dedicated resolution branch
+ * elsewhere in this module but no capability-registry descriptor (#3024
+ * review BLOCKER, finding 1).
+ *
+ * `isRegisteredRuntimeId`'s real contract is "does this id resolve to a
+ * real, runtime-specific path?", not "is it a key in the registry map" —
+ * registry membership is only a proxy for that, and the proxy is wrong for
+ * `grok`: `getGlobalConfigDir` has a live hardcoded branch for it (`~/.agents`,
+ * overridable via `GROK_AGENTS_HOME`), predating the capability-registry
+ * descriptor system, and it is documented end-user-facing surface
+ * (pre-fix `gsd-core/workflows/sync-skills.md` listed it explicitly, and
+ * `docs/discussions/grok-build-support-2026-05.md` records the support
+ * decision). Rejecting it here would silently remove working, documented
+ * `--skills-root`/`sync-skills` support for a runtime that never regressed.
+ *
+ * This set is enumerated by hand, not derived, and MUST stay in lockstep
+ * with `getGlobalConfigDir`'s hardcoded branches: as of #3024, `grok` is
+ * the ONLY id in this position (verified by reading the full function body
+ * — every other unregistered id there falls through to the claude
+ * fallback, which is the behavior this validator exists to reject). Do
+ * NOT add an id here just because it "should" work — add it only after
+ * confirming `getGlobalConfigDir` has a real dedicated branch for it, the
+ * way `grok`'s is confirmed above. Do not "clean this up" by removing it;
+ * that is exactly the regression this constant guards against.
+ */
+export const LEGACY_NON_REGISTRY_RUNTIME_IDS: ReadonlySet<string> = new Set(['grok']);
+
+/**
+ * True when `runtime` is a real runtime id with a genuine, runtime-specific
+ * resolution path — either a registered id in the capability registry
+ * (`capability-registry.cjs`'s `runtimes` object) or one of the small,
+ * explicitly named `LEGACY_NON_REGISTRY_RUNTIME_IDS` set (currently just
+ * `grok`) that resolves via a dedicated hardcoded branch instead of a
+ * registry descriptor.
+ *
+ * Guarded with an own-property lookup — never a bare index — so a
+ * prototype-chain id (`__proto__`, `constructor`, `prototype`, `toString`,
+ * …) can never resolve to an inherited value and be mistaken for a real
+ * entry. Without this, `getGlobalSkillsBase`/`getGlobalConfigDir`'s bare
+ * `runtimes[runtime]` lookups fall through the prototype chain for those
+ * ids, find no usable descriptor, and silently resolve to claude's
+ * fallback path instead of failing loudly (#3024).
+ *
+ * Single shared validator for every `--skills-root` entry point
+ * (`gsd-tools query skills-root`'s `routeSkillsRoot`, `install.js
+ * --skills-root`) so the two surfaces can never diverge on which runtime
+ * ids they accept.
+ */
+export function isRegisteredRuntimeId(runtime: unknown): boolean {
+  if (typeof runtime !== 'string') return false;
+  const trimmed = runtime.trim();
+  if (!trimmed) return false;
+  if (Object.prototype.hasOwnProperty.call(getRegistry().runtimes, trimmed)) return true;
+  return LEGACY_NON_REGISTRY_RUNTIME_IDS.has(trimmed);
+}
+
+/**
  * Resolve a configHome descriptor to an absolute directory path.
  *
  * Implements the four descriptor kinds:
@@ -177,7 +273,7 @@ export function resolveConfigHomeFromDescriptor(
       // First env var that is set wins
       for (const varName of configHome.env) {
         const val = env[varName];
-        if (val) return expandTilde(val);
+        if (hasNonBlankOverride(val)) return expandTilde(val, home);
       }
       return path.join(home, configHome.name);
     }
@@ -185,8 +281,8 @@ export function resolveConfigHomeFromDescriptor(
     case 'dot-home-nested': {
       // env override
       const nestedEnv0Val = env[configHome.env[0]];
-      if (configHome.env[0] && nestedEnv0Val) {
-        return expandTilde(nestedEnv0Val);
+      if (configHome.env[0] && hasNonBlankOverride(nestedEnv0Val)) {
+        return expandTilde(nestedEnv0Val, home);
       }
       const base = path.join(home, configHome.parent);
       if (configHome.probe && configHome.probe.length > 0) {
@@ -218,18 +314,18 @@ export function resolveConfigHomeFromDescriptor(
     case 'xdg': {
       // env[0]: direct override dir
       const xdgEnv0Val = env[configHome.env[0]];
-      if (configHome.env[0] && xdgEnv0Val) {
-        return expandTilde(xdgEnv0Val);
+      if (configHome.env[0] && hasNonBlankOverride(xdgEnv0Val)) {
+        return expandTilde(xdgEnv0Val, home);
       }
       // env[1]: FILE path → dirname
       const xdgEnv1Val = env[configHome.env[1]];
-      if (configHome.env[1] && xdgEnv1Val) {
-        return path.dirname(expandTilde(xdgEnv1Val));
+      if (configHome.env[1] && hasNonBlankOverride(xdgEnv1Val)) {
+        return path.dirname(expandTilde(xdgEnv1Val, home));
       }
       // env[2]: XDG_CONFIG_HOME → subdir
       const xdgEnv2Val = env[configHome.env[2]];
-      if (configHome.env[2] && xdgEnv2Val) {
-        return path.join(expandTilde(xdgEnv2Val), configHome.name);
+      if (configHome.env[2] && hasNonBlankOverride(xdgEnv2Val)) {
+        return path.join(expandTilde(xdgEnv2Val, home), configHome.name);
       }
       return path.join(home, '.config', configHome.name);
     }
@@ -237,29 +333,34 @@ export function resolveConfigHomeFromDescriptor(
     case 'generic-agents-root': {
       // env override
       const garEnv0Val = env[configHome.env[0]];
-      if (configHome.env[0] && garEnv0Val) {
-        return expandTilde(garEnv0Val);
+      if (configHome.env[0] && hasNonBlankOverride(garEnv0Val)) {
+        return expandTilde(garEnv0Val, home);
       }
       // probe each candidate; return first where probeExists subpath exists
       for (const candidate of configHome.probe) {
-        const resolved = expandTildeWithHome(candidate, home);
+        const resolved = expandTilde(candidate, home);
         if (existsSyncFn(path.join(resolved, configHome.probeExists))) {
           return resolved;
         }
       }
       // fallback: first probe candidate
-      return expandTildeWithHome(configHome.probe[0], home);
+      return expandTilde(configHome.probe[0], home);
+    }
+
+    case 'none': {
+      // #2103: no file-projected config directory exists for this runtime
+      // (e.g. vscode). Previously this kind had no matching case, so the
+      // switch fell through and implicitly returned `undefined` — which
+      // then crashed a downstream `path.join(undefined, ...)` with a
+      // cryptic `TypeError [ERR_INVALID_ARG_TYPE]` far from the real cause.
+      // Throwing here makes the failure mode explicit; callers that need a
+      // nullable result (getGlobalSkillsBase) check `configHome.kind` and
+      // short-circuit BEFORE ever reaching this function.
+      throw new Error(
+        `Runtime "${configHome.name}" has no config-home directory (configHome.kind === "none")`,
+      );
     }
   }
-}
-
-/**
- * Expand ~ using an explicit home directory (for hermetic testing).
- */
-function expandTildeWithHome(p: string, home: string): string {
-  if (!p) return p;
-  if (p.startsWith('~/') || p === '~') return path.join(home, p.slice(1));
-  return p;
 }
 
 /**
@@ -470,6 +571,16 @@ export function resolveSkillsBaseFromDescriptor(
 export function getGlobalSkillsBase(runtime: string): string | null {
   const runtimeEntry = getRegistry().runtimes[runtime];
   const descriptor = runtimeEntry?.runtime;
+  // #2103: a runtime with `configHome.kind === 'none'` (e.g. vscode —
+  // Marketplace/VSIX extension, installSurface:'none') has no file-projected
+  // config directory at all, and therefore no skills root. Short-circuit to
+  // null BEFORE falling through to getGlobalConfigDir below, which would
+  // otherwise throw resolving a 'none' configHome (see
+  // resolveConfigHomeFromDescriptor's 'none' case). null is the correct
+  // answer here, not a crash — the `=== null` guard at every call site
+  // (bin/install.js --skills-root, gsd-tools routeSkillsRoot) already
+  // handles it as "this runtime does not use a skills directory".
+  if (descriptor?.configHome?.kind === 'none') return null;
   const globalSkillsKind = descriptor?.artifactLayout?.global?.find((entry) => entry.kind === 'skills');
   // ADR-1239 upgrade 3 (#2088): honor a skills-kind `home` override (e.g. Codex
   // → $HOME/.agents/skills, independent of $CODEX_HOME) so the reported skills

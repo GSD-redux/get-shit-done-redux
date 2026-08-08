@@ -32,6 +32,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { runNode, runGit } = require('./helpers/process-seam.cjs');
 
 const { runMinimalInstall, BUILD_SCRIPT } = require('./helpers/install-shared.cjs');
 const { cleanup } = require('./helpers.cjs');
@@ -309,9 +310,13 @@ test('capabilities/kilo/capability.json extendedHookEvents is exactly [] (hooksS
 // hooks/dist is gitignored and built; the scoped CI lane does not run
 // build:hooks, so a real install there would stage no hooks/ dir. Build it
 // idempotently (mirrors golden-install-parity + install-minimal-hooks).
+// scripts/build-hooks.js copies pre-built hook files into hooks/dist and
+// syntax-checks them with vm — it does not compile/bundle anything. See
+// tests/helpers/timeouts.cjs for the class-norm justification.
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 before(() => {
-  const build = spawnSync(process.execPath, [BUILD_SCRIPT], { encoding: 'utf8' });
-  assert.equal(build.status, 0, `build:hooks failed: ${build.stderr}`);
+  const build = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
+  assert.equal(build.exitCode, 0, `build:hooks failed: ${build.stderr}`);
 });
 
 // The three PreToolUse guards the plugin spawns that ship today. When a new
@@ -373,8 +378,8 @@ test('kilo: a disallowed write through the REAL installed tree is rejected by th
   const mainRepo = path.join(scratch, 'main');
   fs.mkdirSync(mainRepo, { recursive: true });
   const git = (args, cwd) => {
-    const r = spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' });
-    assert.equal(r.status, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
+    const r = runGit(['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd });
+    assert.equal(r.exitCode, 0, `git ${args.join(' ')} failed: ${r.stderr}`);
     return r;
   };
   git(['init', '-q'], mainRepo);

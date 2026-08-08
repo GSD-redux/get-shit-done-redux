@@ -38,10 +38,8 @@ const {
   readVerificationStatus,
 } = require('../gsd-core/bin/lib/verification.cjs');
 
-// 15000ms: git plumbing (init/config/add/commit) against a small mkdtemp
-// fixture repo, plus a `git --version` availability probe — gitOrThrow's own
-// documented default, reused here as this file's named constant.
-const GIT_TIMEOUT_MS = 15000;
+// #3145: class-norm timeout, not a per-suite value — see helpers/timeouts.cjs.
+const { GIT_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

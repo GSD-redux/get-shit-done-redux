@@ -25,7 +25,9 @@ const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const RUNTIME_NAME_POLICY_PATH = path.join(
@@ -66,11 +68,13 @@ function queryInstructionFile(runtime) {
     '--runtime',
     runtime,
   ];
-  return execFileSync('node', args, {
+  const r = runNode(args, {
     cwd: ROOT,
-    encoding: 'utf8',
     env: { ...process.env, GSD_RUNTIME: '' },
-  }).trim();
+    timeoutMs: PROBE_TIMEOUT_MS,
+  });
+  throwIfFailed(r, `node ${args.join(' ')}`);
+  return r.stdout.trim();
 }
 
 describe('bug #1529: getProjectInstructionFile ↔ gsd-tools query parity', () => {

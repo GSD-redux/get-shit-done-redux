@@ -417,6 +417,14 @@ bench OOM. Inject faults in-process through a module's `deps` parameter instead.
 Per-suite wrappers are still expected and encouraged: bind your fixture (cwd, env, payload) in a
 local helper and delegate the spawn to the seam.
 
+**Class-norm timeouts live in `tests/helpers/timeouts.cjs`** — `PROBE_TIMEOUT_MS`,
+`GIT_TIMEOUT_MS`, `BUILD_TIMEOUT_MS`, `INSTALL_TIMEOUT_MS`. These describe how long a whole CLASS
+of subprocess call takes (a CLI probe, git plumbing on a fixture repo, a hooks build, a full
+`bin/install.js` run), not a single suite's preference, so import them rather than re-declaring the
+same literal with the same comment in yet another file. Only write a local constant when a site
+genuinely differs from its class (a real `tsc` compile, a `regen:derived` run, ...) — and give that
+local constant its own justifying comment explaining why it departs from the norm.
+
 #### When you want git to *throw*: `gitOrThrow`
 
 `runGit` never throws — that is the whole point of it. But `execSync` and `execFileSync` **do**
@@ -460,6 +468,30 @@ const r = runNode([BUILD_SCRIPT], { timeoutMs: BUILD_TIMEOUT_MS });
 throwIfFailed(r, 'build-hooks.js (before install tests)');
 ```
 
+#### When you want the legacy shape without a throw: `toLegacyResult`
+
+Some call sites never wanted a throw in the first place — they already branch on exit status as
+data, reading `.status`/`.stdout`/`.stderr` off the result themselves. Those still need the seam's
+`exitCode` renamed to the legacy `status` field their assertions expect. Use `toLegacyResult`
+instead of hand-rolling the three-line mapping — ~8 test files did exactly that independently
+before this export existed (#3147):
+
+```javascript
+const { toLegacyResult } = require('./helpers/git-fixture.cjs');
+
+function runLint(args = []) {
+  const r = runNode([LINT_SCRIPT, ...args], { timeoutMs: PROBE_TIMEOUT_MS });
+  return toLegacyResult(r); // { status, stdout, stderr }
+}
+```
+
+It is a bare mapping and nothing more. If your call site needs an extra field beyond that shape (a
+parsed-JSON body, a fixture-specific path alongside the result), compose it rather than extending
+the helper: `{ ...toLegacyResult(result), extra }`. And if your site's return shape genuinely
+diverges from `{ status, stdout, stderr }` — e.g. it substitutes a parsed report object for raw
+`stdout` — leave it as its own local mapping; forcing every result-reshaping helper onto one shared
+function is the same drift `toLegacyResult` exists to prevent, just in the other direction.
+
 #### The lint rule that enforces it
 
 `local/no-unbounded-spawn` (`eslint-rules/no-unbounded-spawn.cjs`) fails any `spawnSync`,
@@ -476,10 +508,33 @@ Two things it deliberately rejects, because both look bounded and are not:
 A non-literal value (`timeout: GIT_TIMEOUT_MS`) is trusted — that is the shape you should be
 writing.
 
-`eslint-rules/no-unbounded-spawn.allowlist.json` grandfathers files that predate the rule. It only
-ratchets **down**: once a file is clean, the rule reports its allowlist line as stale and you delete
-it. Never add an entry, and never reach for `eslint-disable` on this rule — a test asserts that no
-such comment exists.
+When a call genuinely needs more than the 600000 ms ceiling — a full installer run, a build plus
+generators — the escape is an inline marker comment, exactly the `// allow-test-rule: <reason>`
+idiom above:
+
+```javascript
+// allow-spawn-timeout-ceiling: regen:derived chains a full build plus eight generators
+timeout: 900000,
+```
+
+The reason is required and must be non-empty; a bare `// allow-spawn-timeout-ceiling:` (or one
+with only whitespace after the colon) is not an audit trail and still reports `timeoutTooLarge`.
+The marker binds only to the call it decorates — either the line immediately above it, or
+anywhere inside that call's own source range — never to the rest of the file. Critically, the
+escape only ever raises the ceiling for a call that already resolves to a numeric timeout: it
+never waives the requirement for a bound. A marked call with no `timeout` at all still reports
+`unboundedSpawn`.
+
+There is no allowlist. `eslint-rules/no-unbounded-spawn.allowlist.json` grandfathered files that
+predated the rule; the epic that introduced it (#3064) migrated every site across four waves and
+deleted the file in its terminal wave (#3148), so `local/no-unbounded-spawn` now runs with **no
+exemption surface** across `tests/**`. There is no file to add an entry to — fix the timeout at
+the call site instead. The only sanctioned escapes are an explicit `timeout` on a raw spawn (for a
+call shape the process seam cannot express, e.g. a `shell: true` invocation for `npm.cmd` on
+Windows, or `stdio` redirection to a real fd) and the `// allow-spawn-timeout-ceiling: <reason>`
+marker above for a bound over the 600000 ms ceiling. Never reach for `eslint-disable` on this rule
+— with the allowlist gone, that is the only remaining way to silence it, and a test asserts that no
+such comment exists anywhere under `tests/`.
 
 ### Test Structure
 

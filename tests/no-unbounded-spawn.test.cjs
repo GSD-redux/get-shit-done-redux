@@ -207,6 +207,207 @@ describe('no-unbounded-spawn: A — detection', () => {
   });
 });
 
+// ─── ceiling escape (allow-spawn-timeout-ceiling) — #3145 matrix section A ──
+//
+// Rows A1-A13 of .gsd/phase/chore-3145-bound-installer-runtime/50-test-matrix.md.
+// (Distinct from the "A — detection" section above, which is #3143's matrix.)
+
+describe('no-unbounded-spawn: ceiling escape (allow-spawn-timeout-ceiling)', () => {
+  test('A1: exactly the ceiling is still clean without a marker', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [{ code: `spawnSync(c, a, { timeout: 600000 });`, filename: FILE }],
+      invalid: [],
+    });
+  });
+
+  test('A2: just over the ceiling still reports without a marker', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code: `spawnSync(c, a, { timeout: 600001 });`,
+          filename: FILE,
+          errors: [{ messageId: 'timeoutTooLarge' }],
+        },
+      ],
+    });
+  });
+
+  test('A3: a reasoned marker permits an over-ceiling bound', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling: regen:derived runs a full build\n` +
+            `spawnSync(c, a, { timeout: 900000 });`,
+          filename: FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('A4: an empty reason is not an audit trail', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling:\n` +
+            `spawnSync(c, a, { timeout: 900000 });`,
+          filename: FILE,
+          errors: [{ messageId: 'timeoutTooLarge' }],
+        },
+      ],
+    });
+  });
+
+  test('A5: whitespace-only reason is rejected', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling:   \n` +
+            `spawnSync(c, a, { timeout: 900000 });`,
+          filename: FILE,
+          errors: [{ messageId: 'timeoutTooLarge' }],
+        },
+      ],
+    });
+  });
+
+  test('A6: the marker binds to its own call, not the file', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling: reason for the first call\n` +
+            `spawnSync(c, a, { timeout: 900000 });\n` +
+            `spawnSync(c, b, { timeout: 700000 });`,
+          filename: FILE,
+          errors: [{ messageId: 'timeoutTooLarge' }],
+        },
+      ],
+    });
+  });
+
+  test('A7: an inert marker is not itself an error', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling: reason\n` +
+            `spawnSync(c, a, { timeout: 5000 });`,
+          filename: FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('A8: the escape raises the ceiling, it never waives the bound', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling: reason\n` +
+            `spawnSync(c, a, {});`,
+          filename: FILE,
+          errors: [{ messageId: 'unboundedSpawn' }],
+        },
+      ],
+    });
+  });
+
+  test('A9: marker is recognized above the call', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [
+        {
+          code:
+            `// allow-spawn-timeout-ceiling: reason above the call\n` +
+            `spawnSync(c, a, { timeout: 900000 });`,
+          filename: FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('A10: marker is recognized inline at the timeout', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [
+        {
+          code:
+            `spawnSync(c, a, {\n` +
+            `  // allow-spawn-timeout-ceiling: reason inline at the timeout\n` +
+            `  timeout: 900000,\n` +
+            `});`,
+          filename: FILE,
+        },
+      ],
+      invalid: [],
+    });
+  });
+
+  test('A11: only a real comment counts as a marker', () => {
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code:
+            `const note = 'allow-spawn-timeout-ceiling: reason in a string';\n` +
+            `spawnSync(c, a, { timeout: 900000 });`,
+          filename: FILE,
+          errors: [{ messageId: 'timeoutTooLarge' }],
+        },
+      ],
+    });
+  });
+
+  test('A12: an unrelated marker does not apply', () => {
+    // The marker text is built via concatenation, not a string literal, so
+    // this file does not itself contain the contiguous exemption-directive
+    // text (the no-source-grep marker, name split across the concat below) —
+    // the refs linter that guards that directive can't tell fixture data
+    // proving non-suppression from a real exemption, and a literal here
+    // would be misread as an unreferenced one. Same idiom as GUARDED_RULE
+    // in no-unbounded-spawn-allowlist.test.cjs.
+    const UNRELATED_MARKER = '// ' + 'allow-test-rule' + ': unrelated escape\n';
+    ruleTester.run('local/no-unbounded-spawn', rule, {
+      valid: [],
+      invalid: [
+        {
+          code: UNRELATED_MARKER + `spawnSync(c, a, { timeout: 900000 });`,
+          filename: FILE,
+          errors: [{ messageId: 'timeoutTooLarge' }],
+        },
+      ],
+    });
+  });
+
+  test('A13: the real 900000 site passes with its marker', () => {
+    const { ESLint } = require('eslint');
+    const eslint = new ESLint({
+      overrideConfigFile: true,
+      overrideConfig: {
+        languageOptions: { ecmaVersion: 2022, sourceType: 'commonjs' },
+        plugins: { local: { rules: { 'no-unbounded-spawn': rule } } },
+        rules: { 'local/no-unbounded-spawn': ['error', { allowlist: [] }] },
+      },
+    });
+    return eslint
+      .lintFiles(['tests/fragment-single-edit-propagation.install.test.cjs'])
+      .then((results) => {
+        const messages = results[0] ? results[0].messages : [];
+        const tooLarge = messages.filter((m) => m.messageId === 'timeoutTooLarge');
+        assert.deepEqual(tooLarge, []);
+      });
+  });
+});
+
 // ─── B. the timeout value (Goodhart defenses) ──────────────────────────────
 
 describe('no-unbounded-spawn: B — timeout value boundaries', () => {

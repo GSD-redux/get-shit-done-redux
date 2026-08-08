@@ -177,6 +177,12 @@ function parseTaskMustHaves(content: string): string[] {
 /**
  * Read all task plan files from a GSD-2 tasks/ directory.
  */
+// #3183 (ADR-3180 Decision 4(a) — bucket B, out of scope for the
+// scanPhasePlans migration): this reads a FOREIGN GSD-2 legacy project's own
+// `tasks/` directory convention (`T##-PLAN.md`) during a one-time import —
+// it is not this project's `.planning/phases/<phase>/` layout at all, has no
+// nested-plans/superseded-status concept, and scanPhasePlans's grammar
+// (which is scoped to GSD's OWN phase directories) does not apply here.
 function readTasksDir(tasksDir: string): TaskInfo[] {
   if (!fs.existsSync(tasksDir)) return [];
 

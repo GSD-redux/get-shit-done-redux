@@ -8,8 +8,6 @@
  *   - extractOneLinerFromBody
  *   - pathExistsInternal
  *   - generateSlugInternal
- *   - filterPlanFiles
- *   - filterSummaryFiles
  *   - getPhaseFileStats
  *   - readSubdirectories
  *   - timeAgo
@@ -30,6 +28,7 @@ const path = require('node:path');
 const os = require('node:os');
 
 const coreUtils = require('../gsd-core/bin/lib/core-utils.cjs');
+const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
 const { cleanup } = require('./helpers.cjs');
 
 // ─── toPosixPath ─────────────────────────────────────────────────────────────
@@ -338,43 +337,6 @@ describe('generateSlugInternal', () => {
   });
 });
 
-// ─── filterPlanFiles ──────────────────────────────────────────────────────────
-
-describe('filterPlanFiles', () => {
-  test('returns only PLAN.md and *-PLAN.md files', () => {
-    const files = ['PLAN.md', '01-PLAN.md', 'SUMMARY.md', 'README.md', 'foo-PLAN.md'];
-    assert.deepEqual(coreUtils.filterPlanFiles(files), ['PLAN.md', '01-PLAN.md', 'foo-PLAN.md']);
-  });
-
-  test('empty array → empty array', () => {
-    assert.deepEqual(coreUtils.filterPlanFiles([]), []);
-  });
-
-  test('no matching files → empty array', () => {
-    assert.deepEqual(coreUtils.filterPlanFiles(['SUMMARY.md', 'CONTEXT.md']), []);
-  });
-
-  test('case-sensitive: plan.md is not matched', () => {
-    assert.deepEqual(coreUtils.filterPlanFiles(['plan.md', 'Plan.md']), []);
-  });
-});
-
-// ─── filterSummaryFiles ───────────────────────────────────────────────────────
-
-describe('filterSummaryFiles', () => {
-  test('returns only SUMMARY.md and *-SUMMARY.md files', () => {
-    const files = ['SUMMARY.md', '01-SUMMARY.md', 'PLAN.md', 'foo-SUMMARY.md'];
-    assert.deepEqual(coreUtils.filterSummaryFiles(files), ['SUMMARY.md', '01-SUMMARY.md', 'foo-SUMMARY.md']);
-  });
-
-  test('empty array → empty array', () => {
-    assert.deepEqual(coreUtils.filterSummaryFiles([]), []);
-  });
-
-  test('no matching files → empty array', () => {
-    assert.deepEqual(coreUtils.filterSummaryFiles(['PLAN.md', 'CONTEXT.md']), []);
-  });
-});
 
 // ─── readSubdirectories ───────────────────────────────────────────────────────
 
@@ -492,6 +454,36 @@ describe('getPhaseFileStats', () => {
     fs.writeFileSync(path.join(tmpDir, 'CONTEXT.md'), '');
     const stats = coreUtils.getPhaseFileStats(tmpDir);
     assert.strictEqual(stats.hasContext, true);
+  });
+
+  // ─── #3183 (ADR-3180 Decision 2): scope field + degrade-not-throw ─────────
+
+  test('#3183 row 17: scope is COMPLETE for a readable, empty phase dir', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
+    const stats = coreUtils.getPhaseFileStats(tmpDir);
+    assert.strictEqual(stats.scope, SCOPE.COMPLETE);
+  });
+
+  test('#3183 row 15: scope is UNREADABLE and getPhaseFileStats does not throw for a nonexistent dir', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
+    const missing = path.join(tmpDir, 'does-not-exist');
+    assert.doesNotThrow(() => coreUtils.getPhaseFileStats(missing));
+    const stats = coreUtils.getPhaseFileStats(missing);
+    assert.strictEqual(stats.scope, SCOPE.UNREADABLE);
+    assert.deepEqual(stats.plans, []);
+    assert.deepEqual(stats.summaries, []);
+    assert.strictEqual(stats.hasResearch, false);
+    assert.strictEqual(stats.hasContext, false);
+    assert.strictEqual(stats.hasVerification, false);
+    assert.strictEqual(stats.hasReviews, false);
+  });
+
+  test('#3183 row 7 regression: nested plans/PLAN-01.md ONLY is reported (used to report 0)', () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cu-test-'));
+    fs.mkdirSync(path.join(tmpDir, 'plans'));
+    fs.writeFileSync(path.join(tmpDir, 'plans', 'PLAN-01.md'), '# Plan\n');
+    const stats = coreUtils.getPhaseFileStats(tmpDir);
+    assert.deepEqual(stats.plans, ['plans/PLAN-01.md']);
   });
 });
 

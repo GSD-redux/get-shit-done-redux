@@ -342,29 +342,31 @@ const { describe, test, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const childProc = require('node:child_process');
 const { createTempProject, cleanup, TOOLS_PATH } = require('./helpers.cjs');
+const { runNode } = require('./helpers/process-seam.cjs');
+const { PROBE_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const REPO_ROOT = path.join(__dirname, '..');
 const WORKFLOW_FILE = path.join(REPO_ROOT, 'gsd-core', 'workflows', 'ingest-docs.md');
 
+// Note (#3147 migration): the original execFileSync-based implementation
+// caught its own throw and degraded it into `{exitCode, stdout}` data —
+// nothing here ever propagated err.status/err.stdout/err.stderr to a
+// caller, and every call site below asserts exitCode === 0. That is the
+// "already reads exit status as data" shape (never-throwing runX, map
+// .exitCode), not a throw-preserving one, so this uses `runNode` directly
+// rather than `throwIfFailed`. stdout/stderr are concatenated on a non-zero
+// exit to match the original catch-block behavior exactly.
 function spawnGsdTools(args, projectDir) {
-  let stdout = '';
-  let exitCode = 0;
-  try {
-    stdout = childProc.execFileSync(
-      process.execPath,
-      [TOOLS_PATH, ...args, '--cwd', projectDir],
-      {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, GSD_SESSION_KEY: '' },
-      }
-    );
-  } catch (err) {
-    exitCode = err.status ?? 1;
-    stdout = (err.stdout?.toString() ?? '') + (err.stderr?.toString() ?? '');
-  }
+  const result = runNode(
+    [TOOLS_PATH, ...args, '--cwd', projectDir],
+    {
+      env: { ...process.env, GSD_SESSION_KEY: '' },
+      timeoutMs: PROBE_TIMEOUT_MS,
+    }
+  );
+  const exitCode = result.exitCode ?? 1;
+  const stdout = exitCode === 0 ? result.stdout : result.stdout + result.stderr;
   return { exitCode, stdout };
 }
 

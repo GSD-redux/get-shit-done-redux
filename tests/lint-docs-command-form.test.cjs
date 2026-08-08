@@ -10,19 +10,19 @@
 
 const { describe, test } = require('node:test');
 const assert = require('node:assert/strict');
-const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
+const { gitOrThrow } = require('./helpers/git-fixture.cjs');
 
 const GUARD_SCRIPT = path.resolve(__dirname, '..', 'scripts', 'lint-docs-command-form.cjs');
 
 function createTempRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-lint-docs-command-form-test-'));
-  execFileSync('git', ['init', '--initial-branch=main'], { cwd: dir });
-  execFileSync('git', ['config', 'user.email', 'test@example.com'], { cwd: dir });
-  execFileSync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+  gitOrThrow(['init', '--initial-branch=main'], { cwd: dir });
+  gitOrThrow(['config', 'user.email', 'test@example.com'], { cwd: dir });
+  gitOrThrow(['config', 'user.name', 'Test'], { cwd: dir });
   // Roster source: the guard reads commands/gsd/*.md filenames as valid
   // command names, regardless of tracked/staged status.
   writeFile(dir, 'commands/gsd/plan-phase.md', '# plan-phase\n');
@@ -36,7 +36,7 @@ function writeFile(dir, relPath, content) {
 }
 
 function gitAdd(dir, relPath) {
-  execFileSync('git', ['add', relPath], { cwd: dir });
+  gitOrThrow(['add', relPath], { cwd: dir });
 }
 
 function cleanup(dir) {

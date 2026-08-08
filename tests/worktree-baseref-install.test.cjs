@@ -24,15 +24,12 @@ const path = require('path');
 const os = require('os');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
+const { BUILD_TIMEOUT_MS } = require('./helpers/timeouts.cjs');
 
 const INSTALL_SRC = path.join(__dirname, '..', 'bin', 'install.js');
 const BUILD_SCRIPT = path.join(__dirname, '..', 'scripts', 'build-hooks.js');
 const { install, finishInstall } = require(INSTALL_SRC);
 const { cleanup } = require('./helpers.cjs');
-
-// 60000ms: matches the process seam's own default for a Node CLI run — this
-// is a real build step (scripts/build-hooks.js), not fixture plumbing.
-const BUILD_TIMEOUT_MS = 60000;
 
 // ─── Ensure hooks/dist/ is populated before install tests ────────────────────
 before(() => {
