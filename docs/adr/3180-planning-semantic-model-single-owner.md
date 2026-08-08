@@ -352,7 +352,7 @@ Considered and not applicable: `choose-boring-technology` (no new dependency; fi
 - `scripts/lib/drift-scan.cjs` — the one tree-walk/confinement/sanitizer implementation every guard shares
 - `CONTRIBUTING.md` § *Prohibited: Raw Text Matching on Test Outputs* — why `scope` is a frozen enum
 - `CONTRIBUTING.md` § *Fixture provenance (#2371)* — why the identity test alone is insufficient
-- Phase sub-issues: [#3183](https://github.com/open-gsd/gsd-core/issues/3183), [#3184](https://github.com/open-gsd/gsd-core/issues/3184), [#3185](https://github.com/open-gsd/gsd-core/issues/3185), [#3186](https://github.com/open-gsd/gsd-core/issues/3186), [#3187](https://github.com/open-gsd/gsd-core/issues/3187). Phases 6–8 (Amendment 3) are defined in §7.2, §7.6 and Decision 4(d)/(e) and are not yet filed as sub-issues.
+- Phase sub-issues: [#3183](https://github.com/open-gsd/gsd-core/issues/3183), [#3184](https://github.com/open-gsd/gsd-core/issues/3184), [#3185](https://github.com/open-gsd/gsd-core/issues/3185), [#3186](https://github.com/open-gsd/gsd-core/issues/3186), [#3187](https://github.com/open-gsd/gsd-core/issues/3187), and the three added by Amendment 3 — [#3216](https://github.com/open-gsd/gsd-core/issues/3216) (Phase 6, §7.2), [#3217](https://github.com/open-gsd/gsd-core/issues/3217) (Phase 7, §7.6), [#3218](https://github.com/open-gsd/gsd-core/issues/3218) (Phase 8, §7.5 + Decision 4(d)/(e)).
 
 ### Guard roster
 
