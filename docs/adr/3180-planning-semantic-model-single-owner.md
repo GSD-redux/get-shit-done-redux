@@ -255,7 +255,7 @@ This section is that written rule. It is **normative**, and it is what the guard
 2. The heading is located by the canonical locator of §7.1, which already excludes phase headings. A `### Phase N: Close v3.3 gaps` heading is **never** the milestone heading (#3197 — reproduced live, writing a wrong `milestone:` to disk).
 3. The **name** derives from the heading's **own** version token, not the requested one: remove everything up to and including that token, strip one leading delimiter (`—`, `–`, `:`, `-`), then strip any trailing run of the status markers `✅`/`📋`/`🚧`. `(` is an ordinary name character: the name is **not** truncated at a parenthetical (#3171). *(Requested `v2.0` against heading `## v2.0.1 — Portability` yields exactly `Portability`, not `.1 — Portability`; `## v2.0 — Old ✅` yields `Old`, because the shipped state is already carried structurally and must not be duplicated into the name.)*
 4. A failure returns a `scope` other than `COMPLETE`. It does **not** return `{version: 'v1.0', name: 'milestone'}` presented as an answer — that default is output-identical to a successful read of a genuine `v1.0` project, which is this epic's defining failure mode.
-5. **A free-form legacy ROADMAP carrying no version heading anywhere is `UNSCOPED` with no identity** — *not* `COMPLETE`, and not a defaulted `v1.0`. §7.1's "free-form is `COMPLETE`" governs *windowing*, where whole-document genuinely is the window; identity has no version to report and must not invent one. **Decided 2026-08-08** (maintainer), closing the gap this section previously left unstated.
+5. **A free-form legacy ROADMAP carrying no version token anywhere is `UNSCOPED` with no identity** — *not* `COMPLETE`, and not a defaulted `v1.0`. §7.1's "free-form is `COMPLETE`" governs *windowing*, where whole-document genuinely is the window; identity has no version to report and must not invent one. **Decided 2026-08-08** (maintainer), closing the gap this section previously left unstated. **Corollary, stated because it is a distinct case and was initially left implicit:** a bare version token appearing only in prose or in a non-milestone heading — no `milestone:` field, no milestone heading — is weak but *real* evidence, and yields `TRUNCATED` with that version and a `null` name under rule 6, not `UNSCOPED`. `UNSCOPED` is reserved for a document carrying no version token at all.
 6. A version known but no name resolvable is `TRUNCATED` carrying `{version, name: null}` — the version is a real answer, the name is a non-answer, and collapsing the two is the failure this contract exists to prevent.
 
 **Guard.** `lint-milestone-window-drift.cjs`, token set widened by Phase 6 in the same change as the consolidation — never after, since a guard added later measures a surface already cleaned and reports a zero it did not earn. Token (a) now admits a **literal** `#`-run heading anchor in addition to the `#{N,M}` quantifier, but only inside a heading-**matcher** literal (a regex literal, or a string handed to `new RegExp(`), so a heading-**builder** template is not mistaken for a re-derivation. Token (b) additionally admits the grouped `v(\d+(?:\.\d+)+)` shape and an interpolated `${…Ver…}` placeholder.
@@ -714,6 +714,22 @@ running the consumers was the outcome metric.
 no longer truncates names and no longer lists phase headings; `phases clear` falls back to its dated
 archive label rather than misfiling under a fabricated version; `query progress`, `stats`,
 `init manager`, `validate health` and `workstream create` render the full name.
+
+Five further Tier-2 surfaces were missed in this amendment's first draft and are recorded here after
+the Phase 6 spec review caught the omission — Decision 3 requires *every* Tier-2 change be called
+out, and an incomplete list is the same defect in miniature that this epic exists to remove:
+
+- **`commit`** (`cmdCommit`) — when `branching_strategy` is `milestone`, the constructed branch name
+  now derives from a scope-checked identity. A `COMPLETE` identity produces the same branch name as
+  before; a `TRUNCATED` one (real version, unresolved name) still produces a branch, deliberately,
+  because the version is real — the acceptance is now explicit in code rather than incidental to a
+  truthiness check. Contrast `archivePhaseDirectories`, which demands `COMPLETE` because it uses the
+  value as a filesystem path component.
+- **The four `init` JSON bundles** — `init execute-phase`, `init new-milestone`, `init milestone-op`
+  and `init progress` — emit `milestone_version` / `milestone_name` / `current_milestone` as an
+  explicit `null` when identity is unavailable, where they previously carried the fabricated
+  `v1.0` / `milestone`. The keys are always PRESENT so the prompt layer cannot render a bare
+  placeholder; `JSON.stringify` had been dropping them when the value went `undefined`.
 
 **Guard.** The owner file stays scanned; `listMilestoneHeadings` joins `FUNCTION_SCOPED_EXEMPTIONS`
 as a *named canonical function* — the only sanctioned exemption form. `locateMilestoneHeadings` was
