@@ -69,6 +69,7 @@ function runTrackShipping(responses) {
     const result = spawnSync('bash', ['-c', `${preamble}\n${extractTrackShippingScript()}`], {
       cwd: tmpDir,
       encoding: 'utf8',
+      timeout: 10000,
       env: {
         ...process.env,
         CURRENT_BRANCH: 'fix/ship-note',
