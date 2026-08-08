@@ -28,3 +28,10 @@
 ## 4. Reference Notes
 * See [scratch/FORK_NOTES.md](file:///home/denniyahh/Github/gsd-core/scratch/FORK_NOTES.md) for local environment notes and shortcuts.
 * Keep the shared DevFlow dogfooding ledger at [scratch/UPSTREAM-GSD-ISSUES.md](file:///home/denniyahh/Github/gsd-core/scratch/UPSTREAM-GSD-ISSUES.md). DevFlow links to this file; record only upstream GSD issues there.
+
+## 5. PR & Contribution Formatting (CRITICAL)
+* **PR Title Format**: Must strictly follow `type(#<issue>): short summary` (e.g. `fix(#3158): branch protection checks`). Do not use brackets like `[fix]`.
+* **Changesets Required**: Every PR with user-facing changes MUST have a `.changeset/*.md` fragment created via `npm run changeset`. The fragment MUST include `pr: <NNN>` in its frontmatter.
+* **PR Templates**: You must use the correct GitHub template for the PR type (e.g. `.github/PULL_REQUEST_TEMPLATE/fix.md`). Do NOT use the default template or overwrite it with a blank body.
+* **Documentation**: If your changeset type is `Added`, `Changed`, `Deprecated`, or `Removed`, you must update the relevant file in `docs/` OR add the `<!-- docs-exempt: <reason> -->` marker in the changeset fragment.
+* **PR Maintainer Comments**: NEVER post a comment to maintainers stating that a PR is ready for review until ALL GitHub Actions CI checks have completed successfully (100% green).

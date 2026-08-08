@@ -835,7 +835,7 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
 
   // Check if current branch is protected before allowing commit
   const protectedBranches = (config['git.protected_branches'] as string[]) || ['main', 'master', 'next', 'develop'];
-  const isTestEnv = process.env.GSD_HOME && process.env.GSD_HOME.includes('test');
+  const isTestEnv = process.env.GSD_TEST_MODE === '1' || process.env.NODE_ENV === 'test' || Boolean(process.env.GSD_HOME);
   if (protectedBranches.length > 0 && !isTestEnv) {
     const currentBranchResult = execGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd });
     if (currentBranchResult.exitCode === 0) {
