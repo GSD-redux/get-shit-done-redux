@@ -10426,6 +10426,189 @@ test('real install: cursor-emitted execute-phase.md resolves runtime=cursor (#15
   );
 });
 
+// ---------------------------------------------------------------------------
+// #2652 review round-5/6 Major 2 — Cursor end-to-end, not by reasoning.
+//
+// Cursor is the runtime this PR newly enables: it declares
+// `dispatch.isolation: harness-worktree` with `harnessIsolationFlag: "--worktree"`,
+// and narrowing the #1521 `use_worktrees=false` stamp is what lets its
+// negotiation be reached at all. The resolver agreeing with itself is not
+// evidence that `--worktree` — rather than Claude Code's own
+// `isolation="worktree"` literal, or nothing at all — is what ends up in the
+// `{harnessFlag}` slot of the `Agent()` call.
+//
+// So: run a REAL cursor install, then execute the gate blocks THAT INSTALL
+// EMITTED against the gsd-tools.cjs THAT INSTALL EMITTED, and read the two
+// shell variables the dispatch sites substitute. Nothing here is a fixture.
+// ---------------------------------------------------------------------------
+
+/** Is a POSIX shell available? (false on windows-latest, where these skip.) */
+function hasBash() {
+  const r = spawnSync('which', ['bash'], { encoding: 'utf8', timeout: 10000 });
+  return r.status === 0 && String(r.stdout).trim().length > 0;
+}
+
+test('real install: cursor negotiates --worktree through its own emitted gate and it lands in the emitted Agent() slot (#2652)', { skip: !hasBash() }, () => {
+  const { readFileNormalized } = require('./helpers.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-inst-cursor-gate-'));
+  try {
+    const res = spawnSync(
+      process.execPath,
+      [INSTALL, '--cursor', '--global', '--config-dir', dir],
+      { encoding: 'utf8', timeout: 120000, env: { ...process.env, HOME: dir, USERPROFILE: dir } },
+    );
+    assert.strictEqual(res.status, 0, `install --cursor failed: ${res.stderr || res.stdout}`);
+
+    const tools = path.join(dir, 'gsd-core', 'bin', 'gsd-tools.cjs');
+    const gate = path.join(dir, 'gsd-core', 'references', 'dispatch-isolation-gate.md');
+    assert.ok(fs.existsSync(tools), `cursor install emitted no gsd-tools.cjs at ${tools}`);
+    assert.ok(fs.existsSync(gate), `cursor install emitted no dispatch-isolation-gate.md at ${gate}`);
+
+    // Precondition, stated as an assertion rather than assumed: the emitted
+    // quick.md must still carry the UNSTAMPED use_worktrees read. If #1521's
+    // `--default false` stamp came back for cursor, USE_WORKTREES resolves
+    // false and the gate below degrades to none before negotiating anything —
+    // the harness flag would then be empty for a reason unrelated to the flag.
+    const quick = readFileNormalized(path.join(dir, 'gsd-core', 'workflows', 'quick.md'));
+    assert.ok(
+      quick.includes('config-get workflow.use_worktrees --raw 2>/dev/null || echo "true"'),
+      'cursor-emitted quick.md lost the unstamped use_worktrees read — the isolation negotiation is pre-empted at install time (#2652)',
+    );
+
+    // Pull the gate's OWN blocks — the ones a dispatch site is told to run —
+    // out of the emitted reference. readFileNormalized strips CRLF first
+    // (DEFECT.TEST-SHELL-PIPELINE-NONPORTABLE).
+    const blocks = [...readFileNormalized(gate).matchAll(/```bash\r?\n([\s\S]*?)```/g)].map(m => m[1]);
+    const resolveBlock = blocks.find(b => b.includes('ISOLATION=$(gsd_run query dispatch-isolation --raw'));
+    const flagBlock = blocks.find(b => b.includes('HARNESS_FLAG='));
+    assert.ok(resolveBlock, 'emitted dispatch-isolation-gate.md has no `Resolve ISOLATION` bash block');
+    assert.ok(flagBlock, 'emitted dispatch-isolation-gate.md has no `Resolve the harness flag` bash block');
+
+    // A disposable project dir: `query dispatch-isolation` writes the #3045
+    // sentinel into its cwd as an unconditional side effect.
+    const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-cursor-gate-proj-'));
+    try {
+      // Declare the runtime the way a real Cursor project does — through
+      // `.planning/config.json`, which is the tier `resolveRuntime` actually
+      // reads (GSD_RUNTIME > .planning/config.json > 'claude'). Injecting
+      // GSD_RUNTIME=cursor instead would prove the resolver works when handed
+      // the answer, not that a Cursor install reaches it on its own. (The
+      // install's ~/.gsd/defaults.json `runtime` is NOT a resolveRuntime tier.)
+      fs.mkdirSync(path.join(proj, '.planning'), { recursive: true });
+      fs.writeFileSync(path.join(proj, '.planning', 'config.json'), JSON.stringify({ runtime: 'cursor' }));
+
+      const script = [
+        'set -u',
+        `gsd_run() { node ${JSON.stringify(tools)} "$@"; }`,
+        'USE_WORKTREES=$(gsd_run query config-get workflow.use_worktrees --raw 2>/dev/null || echo "true")',
+        'RUNTIME=$(gsd_run query config-get runtime --default cursor --raw 2>/dev/null || echo "cursor")',
+        resolveBlock,
+        flagBlock,
+        'printf "ISOLATION=%s\\nHARNESS_FLAG=%s\\n" "$ISOLATION" "$HARNESS_FLAG"',
+      ].join('\n');
+
+      // Bounded (DEFECT.UNBOUNDED-SUBPROCESS): a handful of local gsd-tools
+      // invocations, no network and no git beyond repo introspection.
+      // GSD_RUNTIME outranks the config tier in resolveRuntime, so an ambient
+      // one in the developer's shell would satisfy this test without the
+      // install's own config ever being read. Blank it explicitly.
+      const hermeticEnv = { ...process.env, HOME: dir, USERPROFILE: dir };
+      delete hermeticEnv.GSD_RUNTIME;
+
+      const run = spawnSync('bash', ['-c', script], {
+        cwd: proj,
+        encoding: 'utf8',
+        timeout: 60000,
+        env: hermeticEnv,
+      });
+      if (run.error || run.signal) {
+        assert.fail(
+          `emitted cursor gate did not complete: ${run.error ? run.error.code || run.error.message : `killed by ${run.signal}`}`,
+        );
+      }
+      assert.strictEqual(run.status, 0, `emitted cursor gate exited ${run.status}: ${run.stderr}`);
+
+      assert.match(
+        run.stdout,
+        /^ISOLATION=harness-worktree$/m,
+        `cursor declares dispatch.isolation=harness-worktree but its own emitted gate resolved otherwise:\n${run.stdout}\n${run.stderr}`,
+      );
+      const flagLine = run.stdout.match(/^HARNESS_FLAG=(.*)$/m);
+      assert.ok(flagLine, `the gate printed no HARNESS_FLAG line:\n${run.stdout}\n${run.stderr}`);
+      const harnessFlag = flagLine[1];
+      assert.strictEqual(
+        harnessFlag,
+        '--worktree',
+        `cursor resolved "${harnessFlag}" instead of its declared --worktree. Claude Code's own isolation="worktree" literal reaching a Cursor dispatch is the #2652 defect inverted.`,
+      );
+      // The reviewer framed this as argv-injection-shaped: the value is spliced
+      // into an argument list. Pin that it stays a single bare token.
+      assert.ok(
+        /^[-\w=".]+$/.test(harnessFlag),
+        `the harness flag carries shell/argv-significant characters and is spliced into an argument slot: ${JSON.stringify(harnessFlag)}`,
+      );
+
+      // ── The slot itself ──────────────────────────────────────────────────
+      // Resolving the value is only half of it. Perform the substitution the
+      // emitted workflows document ("{harnessFlag}" → "$HARNESS_FLAG" plus a
+      // comma when ISOLATION = harness-worktree) against the Agent() call THIS
+      // INSTALL EMITTED, and assert on the rendered dispatch. Without this,
+      // deleting the placeholder from the emitted Agent() — the exact way the
+      // flag would stop reaching the dispatch — leaves the test green.
+      // Name the dispatch each site's isolated agent actually goes through, so
+      // "some Agent() call in the file has the placeholder" cannot stand in for
+      // "the EXECUTOR/DEBUGGER dispatch has it". Both files contain other
+      // Agent() calls (quick.md dispatches a reviewer too); the placeholder
+      // drifting onto one of those is a real defect that a `.find()` alone
+      // would report as a pass.
+      for (const { wf, agent } of [
+        { wf: 'quick.md', agent: 'gsd-executor' },
+        { wf: 'diagnose-issues.md', agent: 'gsd-debugger' },
+      ]) {
+        const text = readFileNormalized(path.join(dir, 'gsd-core', 'workflows', wf));
+        const calls = text.match(/Agent\(\n(?:[^\n]*\n)*?\)/g) || [];
+        const withSlot = calls.filter(b => b.includes('{harnessFlag}'));
+        assert.strictEqual(
+          withSlot.length,
+          1,
+          `${wf}: expected exactly one emitted Agent() call carrying {harnessFlag}, found ${withSlot.length}. ` +
+            'Zero means the negotiated flag has no slot to reach; more than one means the isolated ' +
+            `dispatch is ambiguous.\n${withSlot.join('\n---\n')}`,
+        );
+        const call = withSlot[0];
+        assert.ok(
+          call.includes(`subagent_type="${agent}"`),
+          `${wf}: the {harnessFlag} slot is not on the ${agent} dispatch — it drifted onto a different Agent() call, so the isolated agent would be spawned without it:\n${call}`,
+        );
+        assert.strictEqual(
+          (call.match(/\{harnessFlag\}/g) || []).length,
+          1,
+          `${wf}: expected exactly one {harnessFlag} slot in the dispatch call, got:\n${call}`,
+        );
+
+        const rendered = call.replace('{harnessFlag}', `${harnessFlag},`);
+        assert.match(
+          rendered,
+          /^\s*--worktree,$/m,
+          `${wf}: rendering the emitted Agent() call for cursor did not put --worktree in its argument list:\n${rendered}`,
+        );
+        assert.ok(
+          !rendered.includes('{harnessFlag}'),
+          `${wf}: an unsubstituted {harnessFlag} survives into the dispatch:\n${rendered}`,
+        );
+        assert.ok(
+          !rendered.includes('isolation="worktree"'),
+          `${wf}: the rendered cursor dispatch carries Claude Code's own harness literal — the flag is descriptor data, never hardcoded:\n${rendered}`,
+        );
+      }
+    } finally {
+      cleanup(proj);
+    }
+  } finally {
+    cleanup(dir);
+  }
+});
+
 test('real install: claude-emitted execute-phase.md keeps claude default + worktrees on (#1521)', () => {
   const c = installAndRead('claude');
   assert.ok(

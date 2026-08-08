@@ -1218,6 +1218,114 @@ test('regression #2652: _negotiatedDispatchIsolation fails closed on an undeclar
 });
 
 // ---------------------------------------------------------------------------
+// #2652 review round-5/6 Major 1 — PARITY with the runtime resolver.
+//
+// `_negotiatedDispatchIsolation` (install time, this module) and
+// `routeDispatchIsolation` (dispatch time, gsd-core/bin/gsd-tools.cjs) are two
+// implementations of ONE rule: what isolation may this host negotiate. They
+// read the same inputs — the capability registry and `resolveOrchestratorExec`
+// — but duplicate the DECISION on top of them, on two surfaces (the install
+// engine and the CLI query hub) with no call edge between them. So neither
+// symbol appears in the other's impact graph and no static analysis sees the
+// duplication. Divergence would be silent, and its consequence is the #2652
+// defect returning by the back door: the installer stamping
+// `use_worktrees=false` for a host the resolver would have granted a worktree
+// (or the reverse — an unstamped host whose dispatch then refuses).
+//
+// The assertion is therefore behavioral on BOTH sides: the resolver leg drives
+// the REAL CLI and reads its actual stdout.
+// ---------------------------------------------------------------------------
+
+test('regression #2652: _negotiatedDispatchIsolation agrees with the routeDispatchIsolation CLI for every registered runtime', () => {
+  const { runGsdTools, createTempProject, cleanup: cleanupDir } = require('./helpers.cjs');
+  const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
+  const RUNTIME_IDS = Object.keys(registry.runtimes).sort();
+
+  // Install time cannot know the worktree a future dispatch will target, so
+  // `_negotiatedDispatchIsolation` probes the orchestrator descriptor with a
+  // placeholder. The CLI is asked BOTH ways, because the two calls are both real:
+  //
+  //   --cwd-target <probe>  the executor-spawn call, which resolves the descriptor.
+  //                         Same question install time asks; must match exactly.
+  //   (no --cwd-target)     the FIRST call every dispatch site makes — the
+  //                         `Resolve ISOLATION` block in dispatch-isolation-gate.md.
+  //                         It skips descriptor resolution, so it can only differ
+  //                         from install time for an orchestrator host whose
+  //                         descriptor does not resolve. No such host exists today
+  //                         and that is worth pinning: if one lands, the install
+  //                         stamps `use_worktrees=false` while the workflow gate
+  //                         still reports `orchestrator-worktree` — the #2652 split
+  //                         brain, in the one shape the target-bound leg cannot see.
+  const PROBE_TARGET = '/gsd-orchestrator-worktree-probe';
+
+  const dir = createTempProject('gsd-2652-parity-');
+  try {
+    const disagreements = [];
+    const seen = new Set();
+    for (const rt of RUNTIME_IDS) {
+      const res = runGsdTools(
+        ['query', 'dispatch-isolation', '--json', '--cwd-target', PROBE_TARGET],
+        dir,
+        { GSD_RUNTIME: rt, HOME: dir },
+      );
+      assert.equal(res.success, true, `${rt}: dispatch-isolation query failed: ${res.error}`);
+      const parsed = JSON.parse(res.output);
+
+      // Guard the guard: if resolveRuntime normalized `rt` to some other id, the
+      // comparison below would be pinning the wrong host and silently pass.
+      assert.equal(
+        parsed.runtime,
+        rt,
+        `${rt}: the CLI resolved runtime "${parsed.runtime}" instead — parity would be measured against the wrong host`,
+      );
+
+      const gateRes = runGsdTools(
+        ['query', 'dispatch-isolation', '--raw'],
+        dir,
+        { GSD_RUNTIME: rt, HOME: dir },
+      );
+      assert.equal(gateRes.success, true, `${rt}: no-target dispatch-isolation query failed: ${gateRes.error}`);
+      const gateIsolation = gateRes.output.trim();
+
+      const installTime = conversion._negotiatedDispatchIsolation(rt);
+      seen.add(installTime);
+      if (installTime !== parsed.isolation) {
+        disagreements.push(
+          `${rt}: install-time _negotiatedDispatchIsolation → "${installTime}", ` +
+            `dispatch-time routeDispatchIsolation (--cwd-target) → "${parsed.isolation}"`,
+        );
+      }
+      if (installTime !== gateIsolation) {
+        disagreements.push(
+          `${rt}: install-time _negotiatedDispatchIsolation → "${installTime}", ` +
+            `workflow-gate routeDispatchIsolation (no --cwd-target) → "${gateIsolation}"`,
+        );
+      }
+    }
+
+    assert.deepEqual(
+      disagreements,
+      [],
+      'the install-time and dispatch-time isolation resolvers disagree. One of them was ' +
+        'changed without the other (DEFECT.GENERATIVE-FIX-DIVERGENCE): the installer and the ' +
+        'dispatch gate would then make opposite isolation decisions for the same host.\n' +
+        disagreements.join('\n'),
+    );
+
+    // A parity check over a set that only ever answers `none` proves nothing —
+    // both legs could be stubbed to a constant and still agree.
+    for (const mode of ['harness-worktree', 'orchestrator-worktree', 'none']) {
+      assert.ok(
+        seen.has(mode),
+        `no registered runtime resolves to "${mode}" — the parity above never exercised that branch`,
+      );
+    }
+  } finally {
+    cleanupDir(dir);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Claude unchanged — no stamping for the native runtime
 // ---------------------------------------------------------------------------
 

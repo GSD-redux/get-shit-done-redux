@@ -2288,7 +2288,17 @@ describe('#2728 B1 — isolation degrades re-record through the single write pat
       'printf "FINAL_LOCAL=%s\\n" "$ISOLATION"',
     ].join('\n');
 
-    const res = spawnSync('bash', ['-c', harness], { encoding: 'utf-8' });
+    // Bounded by construction (DEFECT.UNBOUNDED-SUBPROCESS): the harness is
+    // pure shell against a `gsd_run` stub — no git, no network, no real CLI —
+    // so it completes in milliseconds. 15s is the ceiling that turns a wedged
+    // shell into a named failure instead of a macOS-CI run that goes quiet.
+    const res = spawnSync('bash', ['-c', harness], { encoding: 'utf-8', timeout: 15000 });
+    if (res.error || res.signal) {
+      cleanup(dir);
+      assert.fail(
+        `degrade block did not complete: ${res.error ? res.error.code || res.error.message : `killed by ${res.signal}`}`,
+      );
+    }
     assert.equal(res.status, 0, `degrade block exited ${res.status}: ${res.stderr}`);
     assert.match(res.stdout, /FINAL_LOCAL=none/, 'the degrade must set $ISOLATION=none locally');
 
