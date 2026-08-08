@@ -29,6 +29,9 @@ const { getArchivedPhaseDirs, findPhaseInternal, listMilestonePhaseDirs } = phas
 import roadmapParserMod = require('./roadmap-parser.cjs');
 const { extractCurrentMilestone, stripShippedMilestones: _stripShippedMilestones, getMilestoneInfo, getRoadmapPhaseInternal } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import modelResolverMod = require('./model-resolver.cjs');
 const { resolveModelInternal, resolveModelForTier, resolveProviderEscalation, resolveEffortInternal, resolveFastModeInternal, resolveEffortForTier, resolveGranularityInternal, assertValidGranularityOverride } = modelResolverMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -864,7 +867,19 @@ function cmdCommit(cwd: string, message: string | undefined, files: string[] | u
         }
       }
     } else if (branchingStrategy === 'milestone') {
-      const milestone = getMilestoneInfo(cwd).value;
+      const milestoneInfo = getMilestoneInfo(cwd);
+      // #3216 review Finding 3: explicit scope gate instead of plain truthiness.
+      // COMPLETE and TRUNCATED both carry a real `version` (ADR-3180 §7.2 rule
+      // 6 — TRUNCATED means the version resolved but the milestone's NAME did
+      // not), so a TRUNCATED identity is acceptable here: `milestone.version`
+      // only feeds a BRANCH NAME, and `generateSlugInternal(null) || 'milestone'`
+      // already degrades the missing name to the literal "milestone" slug on
+      // purpose. This differs from `archivePhaseDirectories` (milestone.cts),
+      // which uses the same value as a DIRECTORY NAME and therefore demands
+      // COMPLETE only — a real-but-unnamed version is not safe enough there.
+      const milestone = milestoneInfo.scope === SCOPE.COMPLETE || milestoneInfo.scope === SCOPE.TRUNCATED
+        ? milestoneInfo.value
+        : null;
       if (milestone && milestone.version) {
         branchName = (config['milestone_branch_template'] as string)
           .replace('{milestone}', milestone.version)

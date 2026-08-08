@@ -880,6 +880,17 @@ function extractMilestoneHeadingName(
  * output-identical to a successful read of a genuine v1.0 project. Every
  * unresolved path now returns a `scope` other than `COMPLETE` instead.
  */
+/**
+ * #3216 review Finding 2: `getMilestoneInfo`'s `{ value, scope }` return shape
+ * was hand-built as an inline object literal at every return point — factored
+ * out once so the shape itself cannot drift between call sites. Purely a
+ * literal-shape constructor: does not decide, validate, or alter any value or
+ * scope — every per-branch rationale comment stays exactly where it was.
+ */
+function scoped(value: MilestoneInfo | null, scope: Scope): { value: MilestoneInfo | null; scope: Scope } {
+  return { value, scope };
+}
+
 function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: Scope } {
   // Declared here but RESOLVED INSIDE the try, so the catch can name the file without
   // moving planningDir() out of the protected region. planningDir throws a plain Error
@@ -889,7 +900,7 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
   // skipped and the default is returned exactly as before.
   let roadmapPath: string | undefined;
   try {
-    if (!cwd) return { value: null, scope: SCOPE.UNREADABLE };
+    if (!cwd) return scoped(null, SCOPE.UNREADABLE);
 
     roadmapPath = path.join(planningDir(cwd), 'ROADMAP.md');
     const roadmap = platformReadSync(roadmapPath);
@@ -932,7 +943,7 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
       );
       if (listMatch) {
         const name = stripLeadingDelimiter(listMatch[1]);
-        if (name) return { value: { version: stateVersion, name }, scope: SCOPE.COMPLETE };
+        if (name) return scoped({ version: stateVersion, name }, SCOPE.COMPLETE);
       }
 
       // #3216: heading selection routes through the shared owner
@@ -953,7 +964,7 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
           // re-derivation used by listMilestoneHeadings cannot recognize.
           const extracted = extractMilestoneHeadingName(headingText, stateVersion);
           if (extracted && extracted.name) {
-            return { value: { version: stateVersion, name: extracted.name }, scope: SCOPE.COMPLETE };
+            return scoped({ version: stateVersion, name: extracted.name }, SCOPE.COMPLETE);
           }
         }
       }
@@ -961,17 +972,17 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
       // Version is known (STATE.md), but no name-bearing evidence resolved:
       // no 🚧 bullet, no usable heading (absent, phase-only-excluded, shipped,
       // or heading-but-nameless). §7.2 rule 4 — never fabricate a name.
-      return { value: { version: stateVersion, name: null }, scope: SCOPE.TRUNCATED };
+      return scoped({ version: stateVersion, name: null }, SCOPE.TRUNCATED);
     }
 
     // No STATE.md version. The 🚧 in-progress bullet is still consulted first
     // (unchanged from the pre-#3216 fallback).
     const inProgressMatch = roadmap.match(/🚧\s*\*\*v(\d+(?:\.\d+)+)\s+([^*]+)\*\*/);
     if (inProgressMatch) {
-      return {
-        value: { version: 'v' + inProgressMatch[1], name: inProgressMatch[2].trim() },
-        scope: SCOPE.COMPLETE,
-      };
+      return scoped(
+        { version: 'v' + inProgressMatch[1], name: inProgressMatch[2].trim() },
+        SCOPE.COMPLETE,
+      );
     }
 
     // #3216: enumerate every OPEN (non-shipped) milestone heading via the
@@ -984,9 +995,9 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
     if (openHeadings.length > 0) {
       const first = openHeadings[0];
       if (first.name) {
-        return { value: { version: first.version, name: first.name }, scope: SCOPE.COMPLETE };
+        return scoped({ version: first.version, name: first.name }, SCOPE.COMPLETE);
       }
-      return { value: { version: first.version, name: null }, scope: SCOPE.TRUNCATED };
+      return scoped({ version: first.version, name: null }, SCOPE.TRUNCATED);
     }
 
     // No usable milestone heading anywhere. A version token mentioned ONLY
@@ -998,21 +1009,21 @@ function getMilestoneInfo(cwd?: string): { value: MilestoneInfo | null; scope: S
     const withoutPhaseHeadingLines = cleaned.replace(/^#{1,4}\s*Phase\s+\S[^\n]*$/gim, '');
     const bareVersionMatch = withoutPhaseHeadingLines.match(/v\d+(?:\.\d+)+/i);
     if (bareVersionMatch) {
-      return { value: { version: bareVersionMatch[0], name: null }, scope: SCOPE.TRUNCATED };
+      return scoped({ version: bareVersionMatch[0], name: null }, SCOPE.TRUNCATED);
     }
 
     // Free-form legacy ROADMAP with no version anywhere reachable, OR the
     // only version-bearing heading was a `### Phase N` heading. §7.1's
     // "free-form is COMPLETE" governs WINDOWING (whole document is the
     // window); identity has no version to report and must not invent one.
-    return { value: null, scope: SCOPE.UNSCOPED };
+    return scoped(null, SCOPE.UNSCOPED);
   } catch (err) {
     // This function has no existsSync guard, so an absent ROADMAP arrives here too, as a
     // synthetic Error with no errno. Only a real read fault is reported; `value: null` is
     // returned unchanged either way, and a plausible-looking default needs the diagnostic
     // more than an empty sentinel does, not less (ADR-1411).
     if (roadmapPath !== undefined) reportUnreadableRoadmap(err, roadmapPath);
-    return { value: null, scope: SCOPE.UNREADABLE };
+    return scoped(null, SCOPE.UNREADABLE);
   }
 }
 
