@@ -140,6 +140,7 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      GSD_SKIP_LIVE_CONFIG_GUARD: '1'
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
       # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
       # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
@@ -333,6 +334,7 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      GSD_SKIP_LIVE_CONFIG_GUARD: '1'
       # #2854: same pin as the other rebase-merged lanes. This lane runs a targeted
       # list that can include the emitted gate, and the invariant is easier to keep
       # with no exceptions: if a job merges a pinned base, the gate uses that base.
@@ -410,6 +412,7 @@ jobs:
     timeout-minutes: 30
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      GSD_SKIP_LIVE_CONFIG_GUARD: '1'
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
       # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
       # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
@@ -610,6 +613,7 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      GSD_SKIP_LIVE_CONFIG_GUARD: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
