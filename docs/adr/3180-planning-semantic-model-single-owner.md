@@ -442,6 +442,31 @@ returns. `phases list --phase N` and `--include-archived` (lookup/archive) and `
 | `milestone complete` | its phase-archival move no longer sweeps sentinel directories into `.planning/milestones/<version>-phases/` alongside the milestone's own phases |
 | `stats` P0.0 plan-count correction — **not predicted** | `isDirInMilestone` could not match a #1324 letter-prefixed-decimal directory (`P0.0-foundation`) to its own `### Phase P0.0:` ROADMAP heading, so `stats` reported that phase with `plans: 0` while its directory held real plan files. Fixed inline as part of the same sweep; not a Decision-1 owner change, but a defect the whole-repo guard's investigation surfaced in the same code path |
 
+**A single owner is not always a single RULE — the `0.x` split.** The sharpest finding of this
+phase, and a correction to how Decision 1 reads. An isolated security review observed that
+`isSentinelPhaseId` classifies `0.1` / `00.1` as sentinel milestone 0 (its `/^0*(\d+)/` backtracks
+to capture `0`), and that this looked wrong against #2554. Changing the canonical predicate to
+exempt `0.x` made the suite fail **six** tests, because two PINNED contracts disagree — and both
+are right, because they ask different questions:
+
+| Contract | Question | Verdict on `0.x` |
+|---|---|---|
+| #2554 (`roadmap-parser.test.cjs`) | is this directory part of the current milestone's phase SET? | **count it** — a `00.1-<slug>` dir declared as `### Phase 00.1:` is a real phase |
+| #2949 (`issue-2949-phase-complete-stage3-sentinel.test.cjs`) | must this phase COMPLETE before the milestone can close? | **sentinel** — a `0.x` must not block `is_last_phase` |
+
+No single global predicate answers both. The resolution is layered, not unified: `isSentinelPhaseId`
+keeps its semantics (`0.x` IS a sentinel, satisfying #2949), and the milestone-WINDOW layer keeps a
+narrower 999-only rule (satisfying #2554), carried as a function-scoped guard exemption with a
+written reason rather than a second silent copy.
+
+**The lesson for Phases 4 and 5:** "one owner per derivation" governs *who computes an answer*, not
+*how many questions share it*. Before folding a call site onto a canonical predicate, establish
+which question that site asks — an over-broad canonical rule is as much a defect as a divergent
+copy, and it fails in a worse way, because it looks like consolidation. Note also that the
+security review's data-completeness concern here was *inference* about intent, while #2949 is
+*pinned* intent; where the two conflict, the pinned contract wins and the review finding is
+recorded as adjudicated rather than fixed.
+
 **Scope note.** Phase 3 is the last consumer of the enumeration/window layer; Phases 4 and 5 build
 on the completion and state-extraction derivations respectively and do not depend on
 `listMilestonePhaseDirs`.
