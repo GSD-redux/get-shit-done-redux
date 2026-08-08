@@ -1753,9 +1753,14 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // neither the denominator nor the numerator (mirrors the heading
             // exclusion below). Project-code-aware via phaseKeyFromDir.
             if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir))) continue;
-            // phase-id-owner: dir-name dedup grouping; diverges from extractPhaseToken/phaseKeyFromDir on project-code-prefixed and multi-segment milestone dirs. Kept local.
-            const m = dir.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
-            const key = m ? m[1].toLowerCase() : dir;
+            // #3185: dedup grouping routed through the canonical phaseKeyFromDir
+            // (src/phase-id.cts) instead of a local `^0*(\d+[A-Za-z]?(?:\.\d+)*)`
+            // regex that diverged from extractPhaseToken/phaseKeyFromDir on
+            // project-code-prefixed dirs (whole dirname fell through as the key,
+            // so a `PROJ-05`/`PROJ-05-slug` pair never deduped) and on
+            // multi-segment milestone dirs. Same key surface used two lines
+            // above for the retiredPhaseNums exclusion, so both filters agree.
+            const key = phaseKeyFromDir(dir);
             if (!seenPhaseNums.has(key)) {
               seenPhaseNums.set(key, dir);
             } else {
