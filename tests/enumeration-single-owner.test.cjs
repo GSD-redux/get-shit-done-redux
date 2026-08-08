@@ -39,6 +39,7 @@ const {
   runGsdTools,
 } = require('./helpers.cjs');
 const { SCOPE } = require('../gsd-core/bin/lib/planning-scope.cjs');
+const { isSentinelPhaseId } = require('../gsd-core/bin/lib/phase-id.cjs');
 
 // ─── Fixture helpers ───────────────────────────────────────────────────────
 
@@ -437,4 +438,29 @@ test('progress json phase_scope is complete for a healthy, in-window fixture', (
 
   const report = parseJson(runGsdTools('progress json', cwd), 'progress json');
   assert.strictEqual(report.phase_scope, SCOPE.COMPLETE);
+});
+
+// ═════════════════════════════════════════════════════════════════════════
+// isSentinelPhaseId boundary (#3185): the legacy branch's `/^0*(\d+)/`
+// backtrack-captured a bare "0" for ANY id whose leading digit run was all
+// zeros followed by a non-digit -- including the "." that starts a decimal
+// part -- so "00.1"/"0.1"/"0.2554" all silently misclassified as sentinel
+// milestone 0, swallowing #2554's real decimal phase ids. The 999 icebox
+// stays sentinel with or without a decimal part (it is a whole reserved
+// MILESTONE); milestone 0 is reserved only in its bare/non-decimal form.
+// ═════════════════════════════════════════════════════════════════════════
+
+const SENTINEL_IDS = ['0', '00', '0-prep', '00-prep', '999', '999.1', '999.1-icebox', 'GSD-999-icebox'];
+const NON_SENTINEL_IDS = ['0.1', '00.1', '0.1-slug', '00.1-slug', '01-foundation', 'P0.0-foundation', '9990-x', '998-x', '1000-x'];
+
+test('isSentinelPhaseId: sentinel boundary table', () => {
+  for (const id of SENTINEL_IDS) {
+    assert.strictEqual(isSentinelPhaseId(id), true, `expected sentinel: ${JSON.stringify(id)}`);
+  }
+});
+
+test('isSentinelPhaseId: NOT-sentinel boundary table (#2554 decimal phases must survive)', () => {
+  for (const id of NON_SENTINEL_IDS) {
+    assert.strictEqual(isSentinelPhaseId(id), false, `expected NOT sentinel: ${JSON.stringify(id)}`);
+  }
 });

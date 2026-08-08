@@ -373,6 +373,24 @@ function toDir(id: PhaseId, slug: string): string {
 
 // Milestone integers reserved as non-milestone sentinels (0.x backlog / 999.x
 // icebox); a phase id in these ranges has no real milestone.
+//
+// #3185 (deliberately ASYMMETRIC, do not "simplify" to a flat membership
+// test): the two reserved integers are reserved for DIFFERENT reasons, and
+// isSentinelPhaseId's legacy branch must resolve that asymmetry rather than
+// treat `SENTINEL_RANGES.includes(major)` as the whole answer.
+//   - 999 is a whole reserved MILESTONE (the icebox) — "999.1" is exactly as
+//     sentinel as "999"; there is a pinned regression asserting a
+//     `999.1-icebox` directory is excluded from milestone enumeration.
+//   - 0 is reserved only in its BARE/non-decimal form ("0", "00", "0-prep").
+//     #2554 pins that a DECIMAL phase id whose major is 0 ("00.1", "0.1",
+//     "0.2554") is a REAL phase, not sentinel milestone 0.
+// The old legacy-branch regex (`/^0*(\d+)/`) could not see this distinction
+// at all: it backtrack-captured a bare "0" for ANY id whose leading digit
+// run was all zeros followed by a non-digit — including the "." that starts
+// a decimal part — so "00.1"/"0.1"/"0.2554" all silently misclassified as
+// sentinel milestone 0, swallowing #2554's real phases. See
+// tests/enumeration-single-owner.test.cjs and
+// tests/adr-612-bracket-grammar.test.cjs for the boundary this pins.
 const SENTINEL_RANGES: readonly number[] = Object.freeze([0, 999]);
 
 function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
@@ -384,13 +402,35 @@ function isSentinelPhaseId(phaseId: unknown, convention?: string): boolean {
   // phase, NOT sentinel milestone 0) whenever the code ends in a digit. A
   // convention-less caller uses the legacy/bare leading-int rule below, so no
   // existing reader gains a false positive; the bracket reading is opt-in.
+  //
+  // #3185: the bracket MM position is NOT exposed to the #2554 decimal
+  // ambiguity the legacy branch below must resolve. Under the bracket
+  // grammar (`{PROJECT}.{MM}-{PP}[.{SS}][-tail]`, PhaseId above) a decimal
+  // can only ever appear in the PP[.SS] segment, which is separated from MM
+  // by a mandatory `-`, never a `.` — so this `\d+` capture of MM can never
+  // itself carry a decimal continuation the way the legacy branch's bare
+  // leading-int capture can. No asymmetric decimal carve-out is needed here.
   if (convention === 'bracket') {
     const bracket = s.match(/^[A-Z][A-Z0-9_]*\.(\d+)/); // bracket: milestone in the prefix
     if (bracket) return SENTINEL_RANGES.includes(parseInt(bracket[1], 10));
   }
-  const legacy = stripProjectCodePrefix(s).match(/^0*(\d+)/); // legacy/bare: leading int
+  // Legacy/bare: leading int, with an explicit optional decimal-continuation
+  // capture (group 2) so the asymmetry documented on SENTINEL_RANGES above
+  // can be resolved. `0*(\d+)` still strips leading zeros the same way it
+  // always did ("00.1" and "0.1" both capture major "0"); the new `(\.\d)?`
+  // group only RECORDS whether a decimal part follows immediately — it does
+  // not change what group 1 captures, so this is not a behavior change for
+  // any id the old regex already handled correctly.
+  const legacy = stripProjectCodePrefix(s).match(/^0*(\d+)(\.\d)?/);
   if (!legacy) return false;
-  return SENTINEL_RANGES.includes(parseInt(legacy[1], 10));
+  const major = parseInt(legacy[1], 10);
+  if (!SENTINEL_RANGES.includes(major)) return false;
+  // 999 is reserved as a whole milestone regardless of a decimal part
+  // ("999.1" stays sentinel); 0 is reserved only in its bare/non-decimal
+  // form ("0.1"/"00.1"/"0.2554" are real #2554 phases, not sentinel
+  // milestone 0).
+  if (major === 999) return true;
+  return legacy[2] === undefined;
 }
 
 /**

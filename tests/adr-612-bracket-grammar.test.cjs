@@ -248,9 +248,21 @@ describe('bracket grammar: sentinel guard', () => {
     // Bracket forms: milestone in the `{CODE}.{MM}` prefix (gated on convention).
     assert.strictEqual(core.isSentinelPhaseId('GSD.999-01', 'bracket'), true);
     assert.strictEqual(core.isSentinelPhaseId('GSD.00-01', 'bracket'), true);
-    // Legacy/bare leading-int forms need no convention.
+    // Legacy/bare leading-int forms need no convention. 999 stays sentinel
+    // whether or not a decimal part follows (the icebox is a whole reserved
+    // milestone).
     assert.strictEqual(core.isSentinelPhaseId('999.1'), true);
-    assert.strictEqual(core.isSentinelPhaseId('0.1'), true);
+  });
+
+  // #3185: the {0, 999} asymmetry — 999 is a whole reserved MILESTONE (with
+  // or without a decimal part); 0 is reserved ONLY in its bare/non-decimal
+  // form. A decimal phase id whose major is 0 ("0.1", "00.1") is a REAL
+  // #2554 phase, not sentinel milestone 0 — the previous `/^0*(\d+)/`
+  // backtrack could not see this and silently swallowed those ids.
+  test('isSentinelPhaseId is false for a decimal phase id whose major is 0 (#2554)', () => {
+    assert.strictEqual(core.isSentinelPhaseId('0.1'), false);
+    assert.strictEqual(core.isSentinelPhaseId('00.1'), false);
+    assert.strictEqual(core.isSentinelPhaseId('0.2554'), false);
   });
 
   test('isSentinelPhaseId is false for ordinary milestones and for tokens with no leading integer', () => {
