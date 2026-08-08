@@ -736,11 +736,21 @@ test('milestone.complete scoping matches the owner window', (t) => {
   const cwd = createTempDir('gsd-milestone-window-');
   t.after(() => cleanup(cwd));
   writeState(cwd, { milestone: 'v2.0' });
+  // #3184 review finding: the shipped v1.0 phase MUST use a phase NUMBER
+  // that does not also appear in v2.0's own window. getMilestonePhaseFilter
+  // scopes by matching a directory's NUMERIC phase-id prefix against the
+  // set of phase numbers found inside the target milestone's own sliced
+  // window -- it has no notion of "which milestone section a directory
+  // came from" beyond that number. The original fixture gave both the
+  // shipped v1.0 phase and the current v2.0 phase the SAME number ("1"),
+  // so both `01-old-shipped` and `01-foo` matched by numeric-prefix
+  // coincidence regardless of windowing -- that tested directory-naming
+  // overlap, not window scoping, and encoded a wrong expectation.
   writeRoadmap(cwd, [
     '<details>',
     '<summary>✅ v1.0 SHIPPED</summary>',
     '',
-    '### Phase 1: Foo',
+    '### Phase 5: Foo',
     '',
     '</details>',
     '',
@@ -748,7 +758,7 @@ test('milestone.complete scoping matches the owner window', (t) => {
     '',
     '### Phase 1: Foo',
   ].join('\n'));
-  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-old-shipped'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '05-old-shipped'), { recursive: true });
   fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-foo'), { recursive: true });
 
   const dryRun = runGsdTools(['milestone', 'complete', 'v2.0', '--dry-run', '--cwd', cwd, '--raw'], cwd);
@@ -756,10 +766,10 @@ test('milestone.complete scoping matches the owner window', (t) => {
   const parsed = JSON.parse(dryRun.output);
 
   const filter = getMilestonePhaseFilter(cwd, 'v2.0');
-  const expectedArchived = ['01-old-shipped', '01-foo'].filter((name) => filter(name)).sort();
+  const expectedArchived = ['05-old-shipped', '01-foo'].filter((name) => filter(name)).sort();
   assert.deepStrictEqual([...parsed.would_archive.phases].sort(), expectedArchived);
   assert.strictEqual(expectedArchived.includes('01-foo'), true);
-  assert.strictEqual(expectedArchived.includes('01-old-shipped'), false);
+  assert.strictEqual(expectedArchived.includes('05-old-shipped'), false);
 });
 
 test('filter membership matches the owner window', (t) => {

@@ -541,16 +541,24 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   }
   // #3184/#3166: `milestone complete` is the ONE-WAY-DOOR consumer of the
   // milestone window (ROADMAP/REQUIREMENTS archived, phase directories
-  // MOVED). A TRUNCATED/UNSCOPED/UNREADABLE window degrades the phase filter
-  // to pass-all (see getMilestonePhaseFilter above) — silently over-inclusive
-  // and, for this destructive command, exactly the archive-every-directory
-  // failure #3166 reports. The read-path consumers keep the pass-all degrade
+  // MOVED). #3166 is specifically the TRUNCATED case: the milestone's
+  // heading IS found but its section closes before the phase region, and the
+  // phase filter degrades to pass-all (see getMilestonePhaseFilter above) —
+  // silently archiving every phase directory on disk. UNREADABLE (no
+  // ROADMAP.md at all) and UNSCOPED (no section for this version) are
+  // pre-existing, legitimately-handled states — `missingExplicitVersion`
+  // above already errors where that matters, and a missing ROADMAP.md has
+  // its own documented graceful path — so only TRUNCATED is refused here.
+  // The read-path consumers keep the pass-all degrade for every scope
   // (ADR-3180 Decision 3's Rejected section: deny-all there would trade one
-  // silent wrong answer for another); this write path refuses instead.
-  if (isDirInMilestone.scope !== SCOPE.COMPLETE && !options.force) {
+  // silent wrong answer for another); this write path refuses on TRUNCATED
+  // alone, positioned before `platformEnsureDir` so a refusal stays a no-op
+  // on disk.
+  if (isDirInMilestone.scope === SCOPE.TRUNCATED && !options.force) {
     error(
-      `Cannot mark milestone complete: the ROADMAP window for "${version}" is ${isDirInMilestone.scope} ` +
-        `(the milestone could not be fully resolved to a versioned ROADMAP phase set), so phase scoping ` +
+      `Cannot mark milestone complete: the ROADMAP window for "${version}" is truncated ` +
+        `(the milestone heading was found but its section ends before reaching any phase ` +
+        `entries, even though the ROADMAP has phase entries elsewhere), so phase scoping ` +
         `cannot be trusted for this destructive operation. Re-run with --force to override.`,
     );
   }

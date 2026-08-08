@@ -207,10 +207,14 @@ shape) reports `complete`: the whole document *is* the milestone there.
 ### `milestone complete` refuses an untrustworthy window
 
 `milestone complete` archives `ROADMAP.md`/`REQUIREMENTS.md` and **moves phase
-directories** — a one-way door. When the milestone window's `scope` is anything
-other than `complete`, phase scoping cannot be trusted, and the command now
-refuses rather than falling back to an over-inclusive filter that would archive
-every phase directory in the project. Pass `--force` to override, the same
+directories** — a one-way door. When the milestone window's `scope` is
+`truncated` — the milestone heading was found but its section closes before
+reaching any phase entries, even though the ROADMAP has phase entries
+elsewhere — phase scoping cannot be trusted, and the command now refuses
+rather than falling back to an over-inclusive filter that would archive every
+phase directory in the project. `unreadable` (no ROADMAP.md at all) and
+`unscoped` (no section for this version) are pre-existing, legitimately
+handled states and are not refused here. Pass `--force` to override, the same
 affordance the unstarted-phase guard uses.
 
 ---

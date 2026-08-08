@@ -309,12 +309,23 @@ inside `roadmap-parser.cts`. Building the Decision 4(a) whole-repo guard found *
 different module and one function down: `state.cts` `buildStateFrontmatter` and `syncStateFrontmatter`
 each hand-roll `^#{1,3}\s+(?!Phase\s+\S).*${escapeRegex(version)}` to answer "is this milestone
 bounded to a versioned ROADMAP heading" — the heading-location half of the derivation, byte-identical
-to each other, and **carrying a defect neither reported copy has**: no boundary assertion after the
-version token, so `v2.0` matches inside `v2.0.1`. `\b` does not save it (`.` is a non-word character),
-which is precisely the defect #2562 fixed in `isMilestoneShippedInRoadmap` and never propagated. This
-is Phase 1's finding repeating with a different derivation: **the epic's copy counts are a lower
-bound derived from the reported issues, and the whole-repo guard is what makes them real.** Both sites
-now call the owner's `isMilestoneBoundedInRoadmap`.
+to each other. This is Phase 1's finding repeating with a different derivation: **the epic's copy
+counts are a lower bound derived from the reported issues, and the whole-repo guard is what makes them
+real.** Both sites now call the owner's `isMilestoneBoundedInRoadmap`, which is a straight
+consolidation of the two identical `state.cts` regexes onto `locateMilestoneHeadings` with **no
+behavior change** — which is all it should ever have been.
+
+**A boundary tightening was tried and reverted.** A first pass at `locateMilestoneHeadings` swapped its
+`\b` version-token boundary for the stricter `(?![\w.-])` used by `isMilestoneShippedInRoadmap`
+(#2562), reasoning that `v2.0` should not match inside `v2.0.1` anywhere windowing happens. That broke
+`extractCurrentMilestoneScoped`'s #730 contract: a milestone STATE of `v8.0` legitimately selects the
+`## v8.0-B …` active sub-milestone heading over a closed `v8.0-A` sibling (`0` is a word character, `-`
+is not, so `\b` matches; `(?![\w.-])` does not, because `-` is in its excluded set). `\b` is restored in
+`locateMilestoneHeadings`; the stricter boundary stays local to `isMilestoneShippedInRoadmap` and to the
+#730 `detailsVersionBoundary`, which answer a narrower question ("is exactly this milestone shipped" /
+"which Phase Details section is exactly this one's version token's") than "which heading does this
+milestone STATE select." The consolidation itself (three `roadmap-parser.cts` copies plus the two
+`state.cts` copies onto one owner) is behavior-preserving.
 
 **A composition-level re-derivation, caught in review of this phase's own diff.** Decision 4(c)
 anticipated a consumer post-*filtering* an owner's result. The shape that actually appeared is its
@@ -334,8 +345,7 @@ ADR predicted lands as written, plus two the prediction did not contain:
 |---|---|
 | `roadmap analyze` | gains a `scope` field. `phase_count: 0` is still emitted verbatim — what changes is that a sibling field now says whether that zero is an answer. Stated precisely because the first draft of this row claimed the count itself changed, which is not what shipped |
 | `/gsd:progress --next` Route 0 | `gsd-core/workflows/next.md` treats a non-`complete` scope as scan-failed (warn + fall through to the prior-phase check) instead of looping a phase list the scan could not populate. Without this the new field would be a diagnostic no consumer reads, and #3165's actual symptom — the resume invariant reporting clean because it could not run — would still reproduce |
-| `milestone complete` | refuses (unless `--force`) when the window's scope is not `COMPLETE`, instead of pass-all archiving every phase directory on disk (#3166) |
-| `milestone complete`, `state sync`, `state json`, `roadmap get-phase` — **not predicted** | the version token is now boundary-matched everywhere. A project whose STATE asserts `v2.0` against a ROADMAP that only has a `v2.0.1` heading previously matched it by substring and scoped to that section; it now reports the milestone unbounded/unscoped. This is the correct answer and a behavior change for any roadmap using dotted sub-versions. |
+| `milestone complete` | refuses (unless `--force`) when the window's scope is `TRUNCATED` — the milestone heading was found but its section closes before reaching any phase entries, even though the ROADMAP has phase entries elsewhere — instead of pass-all archiving every phase directory on disk (#3166). `UNREADABLE` and `UNSCOPED` are pre-existing, legitimately-handled states (`missingExplicitVersion` errors where that matters; a missing ROADMAP.md has its own documented graceful path) and are not refused here. |
 | `milestone complete` unstarted-phase guard — **not predicted** | the guard scoped its window by STATE.md's `milestone:` field while the filter beside it scoped by the `version` argument; the two could disagree, and the guard under-detected unstarted phases on the destructive path. Both now use the `version` argument. |
 
 **Scope note.** Phase 3 (enumeration) inherits a window layer that is now single-owner and

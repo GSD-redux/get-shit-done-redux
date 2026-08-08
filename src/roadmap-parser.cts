@@ -129,18 +129,22 @@ function computeMilestoneSectionEnd(content: string, headingText: string, headin
 
 /**
  * #3184: the sole milestone-heading locator. Boundary-matched on the version
- * token with `(?![\w.-])` (NOT `\b` — `.` is a non-word char, so `\b` matches
- * `v2.0` inside `v2.0.1`; this is the exact defect #2562 fixed in
- * `isMilestoneShippedInRoadmap` and never propagated to the other windowing
- * call sites until now). `extractCurrentMilestoneScoped`,
- * `currentMilestoneRawRanges`, and `getMilestonePhaseFilter`'s
- * versionOverride branch all consume this instead of re-deriving their own
- * heading-location regex.
+ * token with `\b`, NOT the stricter `(?![\w.-])`: this function keeps `\b`
+ * because a milestone STATE legitimately selects its own sub-milestone
+ * heading (`v8.0` matching `## v8.0-B …` — `0` is a word char, `-` is not, so
+ * `\b` matches) — that is deliberate, load-bearing behavior (#730). The
+ * stricter `(?![\w.-])` boundary answers a DIFFERENT question — "is exactly
+ * this milestone shipped" (`isMilestoneShippedInRoadmap`) / "which Phase
+ * Details section belongs to exactly this one's version token"
+ * (`detailsVersionBoundary`) — and applying it here breaks #730 sub-milestone
+ * selection. `extractCurrentMilestoneScoped`, `currentMilestoneRawRanges`,
+ * and `getMilestonePhaseFilter`'s versionOverride branch all consume this
+ * instead of re-deriving their own heading-location regex.
  */
 function locateMilestoneHeadings(content: string, version: string): RegExpExecArray[] {
   const escapedVersion = escapeRegex(version);
   const pattern = new RegExp(
-    `(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}(?![\\w.-])[^\\n]*)`,
+    `(^#{1,3}\\s+(?!Phase\\s+\\S).*${escapedVersion}\\b[^\\n]*)`,
     'gmi',
   );
   const matches: RegExpExecArray[] = [];
@@ -154,8 +158,9 @@ function locateMilestoneHeadings(content: string, version: string): RegExpExecAr
 /**
  * #3184: named predicate replacing the two `state.cts` re-derivations
  * (`buildStateFrontmatter`, `syncStateFrontmatter`) that each hand-rolled the
- * same "is this version bounded to a versioned ROADMAP heading" regex with no
- * boundary assertion (#2562-class defect, row 17 of the design).
+ * same "is this version bounded to a versioned ROADMAP heading" regex. A
+ * straight consolidation of the two identical `state.cts` regexes onto the
+ * shared `locateMilestoneHeadings` owner — no behavior change.
  */
 function isMilestoneBoundedInRoadmap(content: string, version: string): boolean {
   return locateMilestoneHeadings(content, version).length > 0;
