@@ -242,6 +242,66 @@ test('bullet-only doc still detects truncation', (t) => {
   assert.strictEqual(result.scope, SCOPE.TRUNCATED);
 });
 
+// #3184 review finding: `hasPhaseEntries`'s bullet fallback was not
+// fence-aware (unlike its ATX-heading path, which uses `tokenizeHeadings`).
+// A FENCED example of the bullet syntax -- e.g. documentation showing the
+// convention inside a non-<details>-wrapped SHIPPED milestone section --
+// inflated `documentHasPhaseEntries` and misclassified a genuinely-empty
+// active milestone TRUNCATED instead of COMPLETE, which then made
+// `cmdMilestoneComplete` refuse a legitimate archive without --force.
+test('fenced bullet-phase example is not a phase entry', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v1.0' });
+  const content = [
+    '# Roadmap',
+    '',
+    '## v0.9 Old ✅ SHIPPED',
+    '',
+    'Example bullet-phase syntax for reference:',
+    '',
+    '```markdown',
+    '- [ ] **Phase 3 — Name**',
+    '```',
+    '',
+    '## v1.0 Current 🚧',
+    '',
+    'Nothing planned yet.',
+  ].join('\n');
+
+  const result = extractCurrentMilestoneScoped(content, cwd);
+  // Genuinely empty active milestone: the only bullet-phase-shaped text
+  // anywhere in the document is fenced, so it must not count as a real
+  // phase entry on either side of the row-8 comparison -- COMPLETE, not
+  // TRUNCATED.
+  assert.strictEqual(result.scope, SCOPE.COMPLETE);
+});
+
+// Companion to the fenced case above: a real (unfenced) bullet phase entry
+// outside the window must still classify TRUNCATED, proving the fence-aware
+// fix strips fences rather than disabling bullet detection outright. This is
+// the same fixture as 'bullet-only doc still detects truncation' above,
+// asserted again here to pin both directions of the fix in one place.
+test('unfenced bullet-phase entry outside the window still truncates', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v1.0' });
+  const content = [
+    '# Roadmap',
+    '',
+    '## v1.0 Current 🚧',
+    '',
+    'No phases yet.',
+    '',
+    '## v2.0 Next',
+    '',
+    '- [ ] **Phase 1 — Foo**',
+  ].join('\n');
+
+  const result = extractCurrentMilestoneScoped(content, cwd);
+  assert.strictEqual(result.scope, SCOPE.TRUNCATED);
+});
+
 test('shipped-details phases do not fake a truncation', (t) => {
   const cwd = createTempDir('gsd-milestone-window-');
   t.after(() => cleanup(cwd));
@@ -604,6 +664,74 @@ test('roadmap.analyze phase set matches the owner window', (t) => {
   assert.strictEqual(analyzed.scope, SCOPE.COMPLETE);
 });
 
+test('roadmap analyze reports scope truncated on a truncated window', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  // #3165 layout: an ACTIVE milestone heading for STATE.md's version,
+  // immediately followed by a CLOSED milestone heading at the SAME heading
+  // level before any `### Phase N:` section -- the phase sections live
+  // under the CLOSED heading, outside the ACTIVE window.
+  writeState(cwd, { milestone: 'v3.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v3.0 Current 🚧',
+    '',
+    '## v2.0 Old ✅ SHIPPED',
+    '',
+    '### Phase 1: Foo',
+    '',
+    '### Phase 2: Bar',
+  ].join('\n'));
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const analyzed = JSON.parse(result.output);
+  assert.strictEqual(analyzed.scope, SCOPE.TRUNCATED);
+  // Deliberately unchanged: the count stays 0 either way -- `scope` is what
+  // carries the truncation signal, not `phase_count`.
+  assert.strictEqual(analyzed.phase_count, 0);
+});
+
+test('roadmap analyze reports scope complete on a genuinely empty milestone', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  // Same shape as the truncated fixture above, but the document carries no
+  // phase entries anywhere -- the negative proof that the truncated
+  // assertion above is not just "any zero-phase roadmap reports truncated".
+  writeState(cwd, { milestone: 'v3.0' });
+  writeRoadmap(cwd, [
+    '# Roadmap',
+    '',
+    '## v3.0 Current 🚧',
+    '',
+    '## v2.0 Old ✅ SHIPPED',
+    '',
+    'Nothing here either.',
+  ].join('\n'));
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const analyzed = JSON.parse(result.output);
+  assert.strictEqual(analyzed.scope, SCOPE.COMPLETE);
+  assert.strictEqual(analyzed.phase_count, 0);
+});
+
+test('roadmap analyze emits a scope field on every result', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v2.0' });
+  writeRoadmap(cwd, ['## v2.0 Current 🚧', '', '### Phase 1: Foo', '', '### Phase 2: Bar'].join('\n'));
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '01-foo'), { recursive: true });
+  fs.mkdirSync(path.join(cwd, '.planning', 'phases', '02-bar'), { recursive: true });
+
+  const result = runGsdTools(['roadmap', 'analyze', '--cwd', cwd, '--raw'], cwd);
+  assert.strictEqual(result.success, true, result.error);
+  const analyzed = JSON.parse(result.output);
+  assert.strictEqual(Object.hasOwn(analyzed, 'scope'), true);
+  assert.strictEqual(Object.values(SCOPE).includes(analyzed.scope), true);
+});
+
 test('milestone.complete scoping matches the owner window', (t) => {
   const cwd = createTempDir('gsd-milestone-window-');
   t.after(() => cleanup(cwd));
@@ -647,6 +775,35 @@ test('filter membership matches the owner window', (t) => {
   assert.strictEqual(filter('02-bar'), true);
   assert.strictEqual(filter('03-baz'), false);
   assert.strictEqual(filter.scope, SCOPE.COMPLETE);
+});
+
+// #3184 review finding: `getMilestonePhaseFilter`'s #2199 bullet scan ran
+// against un-stripped window content, so a fenced bullet-phase example
+// inflated `milestonePhaseNums` / `phaseCount` the same way it inflated
+// `hasPhaseEntries` above.
+test('fenced bullet-phase example does not inflate phaseCount', (t) => {
+  const cwd = createTempDir('gsd-milestone-window-');
+  t.after(() => cleanup(cwd));
+  writeState(cwd, { milestone: 'v1.0' });
+  const content = [
+    '## v1.0 Current 🚧',
+    '',
+    '### Phase 1: Foo',
+    '',
+    'Example bullet-phase syntax for reference:',
+    '',
+    '```markdown',
+    '- [ ] **Phase 3 — Name**',
+    '```',
+  ].join('\n');
+  writeRoadmap(cwd, content);
+
+  const filter = getMilestonePhaseFilter(cwd, 'v1.0');
+  // Only the real heading (Phase 1) counts -- the fenced bullet example
+  // (Phase 3) must not.
+  assert.strictEqual(filter.phaseCount, 1);
+  assert.strictEqual(filter('01-foo'), true);
+  assert.strictEqual(filter('03-name'), false);
 });
 
 test('state bounding matches the owner predicate', (t) => {

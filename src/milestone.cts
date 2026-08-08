@@ -528,14 +528,13 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   const today = realClock.localToday();
   const milestoneName = options.name || version;
 
-  // Ensure archive directory exists (skipped in dry-run — no mutations)
-  if (!options.dryRun) {
-    platformEnsureDir(archiveDir);
-  }
-
   // Scope stats and accomplishments to only the phases belonging to the
   // current milestone's ROADMAP.  Uses the shared filter from roadmap-parser.cjs
   // (same logic used by cmdPhasesList and other callers).
+  // #3184 review finding: this scope computation + refusal MUST run BEFORE
+  // `platformEnsureDir(archiveDir)` below — a refused run (scope not COMPLETE,
+  // no --force) must be a true no-op on disk, and creating the archive
+  // directory first left an empty directory behind even on refusal.
   const isDirInMilestone = getMilestonePhaseFilter(cwd, version);
   if (isDirInMilestone.missingExplicitVersion) {
     error(`no phases found for milestone ${version} in ROADMAP.md`);
@@ -773,6 +772,14 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
     output(dryRunResult, raw);
     return;
   }
+
+  // Ensure archive directory exists. Deliberately placed AFTER the dry-run
+  // early return and every refusal/guard above (missingExplicitVersion, the
+  // scope refusal, the unstarted-phase guard) — #3184 review finding: this
+  // used to run before those checks, so a refused run still left an empty
+  // archive directory behind. Reaching this point means the run is
+  // committed to mutating.
+  platformEnsureDir(archiveDir);
 
   // Archive ROADMAP.md
   if (fs.existsSync(roadmapPath)) {

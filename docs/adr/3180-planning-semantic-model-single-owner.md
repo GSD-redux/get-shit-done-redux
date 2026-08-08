@@ -332,7 +332,8 @@ ADR predicted lands as written, plus two the prediction did not contain:
 
 | Command surface | Output change |
 |---|---|
-| `roadmap analyze` | gains a `scope` field; a truncated window stops reporting `phase_count: 0` as if it were a real empty (#3165) |
+| `roadmap analyze` | gains a `scope` field. `phase_count: 0` is still emitted verbatim — what changes is that a sibling field now says whether that zero is an answer. Stated precisely because the first draft of this row claimed the count itself changed, which is not what shipped |
+| `/gsd:progress --next` Route 0 | `gsd-core/workflows/next.md` treats a non-`complete` scope as scan-failed (warn + fall through to the prior-phase check) instead of looping a phase list the scan could not populate. Without this the new field would be a diagnostic no consumer reads, and #3165's actual symptom — the resume invariant reporting clean because it could not run — would still reproduce |
 | `milestone complete` | refuses (unless `--force`) when the window's scope is not `COMPLETE`, instead of pass-all archiving every phase directory on disk (#3166) |
 | `milestone complete`, `state sync`, `state json`, `roadmap get-phase` — **not predicted** | the version token is now boundary-matched everywhere. A project whose STATE asserts `v2.0` against a ROADMAP that only has a `v2.0.1` heading previously matched it by substring and scoped to that section; it now reports the milestone unbounded/unscoped. This is the correct answer and a behavior change for any roadmap using dotted sub-versions. |
 | `milestone complete` unstarted-phase guard — **not predicted** | the guard scoped its window by STATE.md's `milestone:` field while the filter beside it scoped by the `version` argument; the two could disagree, and the guard under-detected unstarted phases on the destructive path. Both now use the `version` argument. |
