@@ -1476,6 +1476,22 @@ test('knownVersionWithNoHeadingReportsVersionAndNullName', (t) => {
   assert.deepStrictEqual(result.value, { version: 'v3.3', name: null });
 });
 
+// #3216 review Finding 4 / design row 10: no STATE `milestone:` field, no
+// milestone heading anywhere, but a bare version token appears in plain
+// prose (outside any Phase heading). That is weak-but-real evidence -- the
+// version is retained, the name stays `null` (never fabricated), scope
+// TRUNCATED. Sibling negative case (no version token anywhere) is
+// `freeFormRoadmapWithNoVersionYieldsUnscopedNotV1Default` immediately below.
+test('bareVersionInProseYieldsTruncatedWithNoName', (t) => {
+  const cwd = createTempDir('gsd-milestone-identity-');
+  t.after(() => cleanup(cwd));
+  writeRoadmap(cwd, ['# Roadmap', '', '## Overview', '', 'Targeting v3.3 for the next release.'].join('\n'));
+
+  const result = getMilestoneInfo(cwd);
+  assert.equal(result.scope, SCOPE.TRUNCATED);
+  assert.deepStrictEqual(result.value, { version: 'v3.3', name: null });
+});
+
 // (RED) #3197: free-form legacy ROADMAP with zero version tokens anywhere --
 // the version is genuinely unresolvable and must not be invented.
 test('freeFormRoadmapWithNoVersionYieldsUnscopedNotV1Default', (t) => {
