@@ -67,7 +67,7 @@ describe('gsd-tools validate context — JSON vs human rendering', () => {
     assert.strictEqual(r.success, true);
     assert.match(r.output, /20%/);
     assert.match(r.output, /healthy/);
-    assert.doesNotMatch(r.output, /\/gsd-thread/, 'healthy output must not nag the user');
+    assert.doesNotMatch(r.output, /[\/$]gsd[:-]thread/, 'healthy output must not nag the user');
   });
 });
 
