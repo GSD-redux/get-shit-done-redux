@@ -244,4 +244,54 @@ Considered and not applicable: `choose-boring-technology` (no new dependency; fi
 
 ## Amendments
 
-None yet. Decision 2's contract is provisional; any amendment arising from Phase 1's validation is recorded here before Phase 2 begins.
+### Amendment 1 — Phase 1 (#3183) validation: the boundary between Phases 1 and 3 was mis-cut
+
+Decision 2 marked the contract provisional and required amendment before Phase 2 rather than a
+workaround in code. Phase 1 exercised it and the contract itself **held** — `SCOPE` needed no
+change. What did not hold was the **phase boundary**.
+
+**What Phase 1 found.** Building the Decision 4(a) whole-repo guard — the one that may not use a
+file allowlist — turned up **26 live-plan re-derivations across 9 files**. The epic scoped this
+derivation at **3 copies**. Per-site triage classified them 21 true re-derivations, 2 asking a
+genuinely different question, 2 dead.
+
+**Why the boundary was wrong.** `commands.cts`'s `cmdProgressRender` re-derives *both* enumeration
+(assigned to Phase 3) *and* plan counting (Phase 1), on adjacent lines. So DW4's "no caller
+re-derives it from filenames" was **unsatisfiable within Phase 1's original file scope** — Phase 1
+would have shipped failing its own acceptance criterion while Phase 3 inherited half a derivation.
+
+**Amended scope (maintainer decision).** Phase 1 owns **every** live-plan-counting re-derivation
+repo-wide. **Phase 3 narrows** to milestone-window + sentinel-filter enumeration only; its files are
+already plan-count-clean when it starts, and its own drift guard inherits a green baseline.
+
+**Two consequential changes to Decision 1's owner surface:**
+
+1. **`scanPhasePlans` gains `allPlanFiles`** (every plan on disk, *pre*-supersession) alongside
+   `planFiles` (the live set). `verify.cts` conflated two questions in one loop — numbering-gap
+   detection legitimately wants every file on disk, pairing wants the live set. The fix is for the
+   owner to answer both explicitly, not to exempt the caller. Single ownership is preserved; the
+   owner simply stopped under-serving. Additive — no existing field changed.
+2. **`findOrphanSummaries` joins `findUnsummarizedPlans`** in core-utils, sharing the same
+   `summaryCandidates` rule. `verify.cts` needed the inverse question (summaries with no plan) and
+   had no canonical primitive, so it had hand-rolled one — a third pairing rule of exactly the kind
+   Decision 1 exists to prevent.
+
+**Exemptions are by documented reason, never by file allowlist** (Decision 4(a)). Two sites are
+exempt, each carrying an inline comment stating the question it actually asks: `audit.cts`
+`scanQuickTasks` checks one quick task's own directory for a single completion record, and
+`gsd2-import.cts` `readTasksDir` reads a foreign GSD-2 `tasks/` layout during a one-time import.
+Neither is a `.planning/` phase directory.
+
+**Decision 3's Tier-2 table is re-derived for Phase 1**, per its own contingency clause. Beyond the
+superseded-plan change, the migration also corrects: phases on the post-#3139 **nested `plans/`
+layout** (previously counted as zero by every migrated site), **loosely-named plan files**, and
+**stray summaries** that inflated completion. The sharpest is `phase.cts`'s `cmdPhasePlanIndex`,
+which feeds execute-phase **wave scheduling** — it was scheduling `status: superseded` plans into
+waves and reporting zero plans for nested-layout phases.
+
+**Regression caught during migration, recorded because it is a trap for Phases 2–5:** passing the
+superseded-filtered `planFiles` into `describeNonCanonicalPlans` made a superseded-but-correctly-named
+plan report as a naming violation — the diagnostic reads non-membership as a defect. It takes
+`allPlanFiles`. The general rule: a **diagnostic about file naming** wants the physical set; only a
+question about outstanding *work* wants the live set. Later phases must make that choice explicitly
+per call site rather than swapping in `planFiles` mechanically.
