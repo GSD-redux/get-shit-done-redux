@@ -4646,7 +4646,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const { cleanup } = require('./helpers.cjs');
+const { cleanup, TEST_ENV_BASE } = require('./helpers.cjs');
 
 const ROOT = path.join(__dirname, '..');
 const PROFILE_OUTPUT = path.join(ROOT, 'gsd-core', 'bin', 'lib', 'profile-output.cjs');
@@ -4672,7 +4672,12 @@ describe('Bug #2973: dev-preferences default writer path is skills/gsd-dev-prefe
         m.cmdGenerateDevPreferences(${JSON.stringify(tmpHome)}, { analysis: ${JSON.stringify(analysisPath)} }, false);
       `);
       const result = cp.spawnSync(process.execPath, [driver], {
-        env: Object.assign({}, process.env, { HOME: tmpHome, USERPROFILE: tmpHome }),
+        // #2665: TEST_ENV_BASE must be merged in explicitly here. This is a RAW
+        // spawn, not runGsdTools, so nothing scrubs the config-location vars for
+        // it -- and the writer under test resolves them env-FIRST. Sandboxing
+        // HOME alone let an ambient CLAUDE_CONFIG_DIR win, and the SKILL.md
+        // landed in the developer's live config dir instead of tmpHome.
+        env: Object.assign({}, process.env, TEST_ENV_BASE, { HOME: tmpHome, USERPROFILE: tmpHome }),
         encoding: 'utf-8',
         // Bound the subprocess so a regression that hangs the writer
         // (or the dispatcher) cannot deadlock CI (PR #3003 CR feedback).

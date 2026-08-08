@@ -3827,7 +3827,7 @@ const SHARED_DIR = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared');
 
 const { install } = require('../bin/install.js');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, scrubConfigLocationEnv } = require('./helpers.cjs');
 const makeTmpDir = () => createTempDir('gsd-3571-');
 
 function silenceConsole(fn) {
@@ -3853,6 +3853,7 @@ describe('bug #3571: configuration generated manifests resolve in install layout
   let savedHome;
   let savedUserProfile;
   let savedExplicitConfigDir;
+  let restoreConfigLocationEnv;
 
   beforeEach(() => {
     tmpRoot = makeTmpDir();
@@ -3861,6 +3862,12 @@ describe('bug #3571: configuration generated manifests resolve in install layout
     savedUserProfile = process.env.USERPROFILE;
     savedExplicitConfigDir = process.env.GSD_EXPLICIT_CONFIG_DIR;
     delete process.env.GSD_EXPLICIT_CONFIG_DIR;
+    // #2665: this block calls the real installer IN-PROCESS with only HOME
+    // sandboxed. getGlobalConfigDir is env-FIRST, so an ambient CLAUDE_CONFIG_DIR
+    // (or CODEX_HOME, or any other runtime's config-location var) overrides that
+    // sandbox and a complete global install lands in the developer's live config
+    // dir. TEST_ENV_BASE cannot reach this — it only scrubs CHILD process env.
+    restoreConfigLocationEnv = scrubConfigLocationEnv();
   });
 
   afterEach(() => {
@@ -3872,6 +3879,7 @@ describe('bug #3571: configuration generated manifests resolve in install layout
     } else {
       process.env.GSD_EXPLICIT_CONFIG_DIR = savedExplicitConfigDir;
     }
+    restoreConfigLocationEnv();
     cleanup(tmpRoot);
   });
 
@@ -3984,7 +3992,7 @@ const { install } = require('../bin/install.js');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, scrubConfigLocationEnv } = require('./helpers.cjs');
 const makeTmpDir = createTempDir;
 
 const rmTmpDir = cleanup;
@@ -4026,6 +4034,7 @@ describe('bug #3288: model-catalog.cjs install-layout resolution', () => {
   let savedHome;
   let savedUserProfile;
   let savedExplicitConfigDir;
+  let restoreConfigLocationEnv;
 
   beforeEach(() => {
     tmpRoot = makeTmpDir('gsd-3288-');
@@ -4040,6 +4049,12 @@ describe('bug #3288: model-catalog.cjs install-layout resolution', () => {
     // and target a different directory than tmpRoot (CR finding, PR #3293).
     savedExplicitConfigDir = process.env.GSD_EXPLICIT_CONFIG_DIR;
     delete process.env.GSD_EXPLICIT_CONFIG_DIR;
+    // #2665: this block calls the real installer IN-PROCESS with only HOME
+    // sandboxed. getGlobalConfigDir is env-FIRST, so an ambient CLAUDE_CONFIG_DIR
+    // (or CODEX_HOME, or any other runtime's config-location var) overrides that
+    // sandbox and a complete global install lands in the developer's live config
+    // dir. TEST_ENV_BASE cannot reach this — it only scrubs CHILD process env.
+    restoreConfigLocationEnv = scrubConfigLocationEnv();
   });
 
   afterEach(() => {
@@ -4051,6 +4066,7 @@ describe('bug #3288: model-catalog.cjs install-layout resolution', () => {
     } else {
       process.env.GSD_EXPLICIT_CONFIG_DIR = savedExplicitConfigDir;
     }
+    restoreConfigLocationEnv();
     rmTmpDir(tmpRoot);
   });
 
@@ -5521,7 +5537,10 @@ function ensureHooksDist() {
  * GSD_TEST_MODE is cleared so the install() main block executes.
  */
 function runInstall(cwd, args) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   // 120s, not 60s. A full install copies and converts the whole shipped
   // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
@@ -7873,7 +7892,7 @@ const SHARED_DIR = path.join(REPO_ROOT, 'gsd-core', 'bin', 'shared');
 
 const { install } = require('../bin/install.js');
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, scrubConfigLocationEnv } = require('./helpers.cjs');
 const makeTmpDir = () => createTempDir('gsd-3571-');
 
 function silenceConsole(fn) {
@@ -7899,6 +7918,7 @@ describe('bug #3571: configuration generated manifests resolve in install layout
   let savedHome;
   let savedUserProfile;
   let savedExplicitConfigDir;
+  let restoreConfigLocationEnv;
 
   beforeEach(() => {
     tmpRoot = makeTmpDir();
@@ -7907,6 +7927,12 @@ describe('bug #3571: configuration generated manifests resolve in install layout
     savedUserProfile = process.env.USERPROFILE;
     savedExplicitConfigDir = process.env.GSD_EXPLICIT_CONFIG_DIR;
     delete process.env.GSD_EXPLICIT_CONFIG_DIR;
+    // #2665: this block calls the real installer IN-PROCESS with only HOME
+    // sandboxed. getGlobalConfigDir is env-FIRST, so an ambient CLAUDE_CONFIG_DIR
+    // (or CODEX_HOME, or any other runtime's config-location var) overrides that
+    // sandbox and a complete global install lands in the developer's live config
+    // dir. TEST_ENV_BASE cannot reach this — it only scrubs CHILD process env.
+    restoreConfigLocationEnv = scrubConfigLocationEnv();
   });
 
   afterEach(() => {
@@ -7918,6 +7944,7 @@ describe('bug #3571: configuration generated manifests resolve in install layout
     } else {
       process.env.GSD_EXPLICIT_CONFIG_DIR = savedExplicitConfigDir;
     }
+    restoreConfigLocationEnv();
     cleanup(tmpRoot);
   });
 
@@ -8030,7 +8057,7 @@ const { install } = require('../bin/install.js');
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-const { createTempDir, cleanup } = require('./helpers.cjs');
+const { createTempDir, cleanup, scrubConfigLocationEnv } = require('./helpers.cjs');
 const makeTmpDir = createTempDir;
 
 const rmTmpDir = cleanup;
@@ -8072,6 +8099,7 @@ describe('bug #3288: model-catalog.cjs install-layout resolution', () => {
   let savedHome;
   let savedUserProfile;
   let savedExplicitConfigDir;
+  let restoreConfigLocationEnv;
 
   beforeEach(() => {
     tmpRoot = makeTmpDir('gsd-3288-');
@@ -8086,6 +8114,12 @@ describe('bug #3288: model-catalog.cjs install-layout resolution', () => {
     // and target a different directory than tmpRoot (CR finding, PR #3293).
     savedExplicitConfigDir = process.env.GSD_EXPLICIT_CONFIG_DIR;
     delete process.env.GSD_EXPLICIT_CONFIG_DIR;
+    // #2665: this block calls the real installer IN-PROCESS with only HOME
+    // sandboxed. getGlobalConfigDir is env-FIRST, so an ambient CLAUDE_CONFIG_DIR
+    // (or CODEX_HOME, or any other runtime's config-location var) overrides that
+    // sandbox and a complete global install lands in the developer's live config
+    // dir. TEST_ENV_BASE cannot reach this — it only scrubs CHILD process env.
+    restoreConfigLocationEnv = scrubConfigLocationEnv();
   });
 
   afterEach(() => {
@@ -8097,6 +8131,7 @@ describe('bug #3288: model-catalog.cjs install-layout resolution', () => {
     } else {
       process.env.GSD_EXPLICIT_CONFIG_DIR = savedExplicitConfigDir;
     }
+    restoreConfigLocationEnv();
     rmTmpDir(tmpRoot);
   });
 
@@ -9567,7 +9602,10 @@ function ensureHooksDist() {
  * GSD_TEST_MODE is cleared so the install() main block executes.
  */
 function runInstall(cwd, args) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   // 120s, not 60s. A full install copies and converts the whole shipped
   // payload (117 workflows, 100 references, 34 agents, ~71 skills) and
@@ -9992,7 +10030,10 @@ const {
  * GSD_TEST_MODE must be cleared so the install() main block executes.
  */
 function runClaudeLocalInstall(cwd) {
-  const env = { ...process.env };
+  // #3156: sandbox HOME — the installer writes <home>/.gsd/defaults.json via
+  // os.homedir() directly, which no env scrub can reach. See installSpawnEnv.
+  const { installSpawnEnv } = require('./helpers.cjs');
+  const env = installSpawnEnv();
   delete env.GSD_TEST_MODE;
   const r = runNode([INSTALL_PATH, '--claude', '--local', '--no-sdk'], {
     cwd,

@@ -140,7 +140,31 @@ node gsd-tools.cjs phase-plan-index <phase>
 
 # List phases with filtering
 node gsd-tools.cjs phases list [--type planned|executed|all] [--phase N] [--include-archived]
+
+# Archive (or, with --force, permanently delete) every current phase directory —
+# used by /gsd-new-milestone before roadmapping the next cycle
+node gsd-tools.cjs phases clear [--confirm] [--force] [--archive-version <version>]
 ```
+
+### Milestone-scoped phase listing (`phases list`)
+
+The bare `phases list` (no `--phase`, no `--include-archived`) is scoped to the
+current milestone's `ROADMAP.md` window **and** filtered through the canonical
+sentinel predicate: `999.*` backlog directories and `0-*` pre-milestone
+directories are not listed as current-milestone phases. `--phase <N>` (a direct
+lookup) and `--include-archived` (an archive listing) are deliberately **not**
+scoped or sentinel-filtered — they answer "does this phase exist" and "what has
+ever existed here," not "what belongs to this milestone," so they still see
+sentinel and out-of-window directories.
+
+### `phases clear` and sentinel directories
+
+`phases clear` moves (or, with `--force` and no prior archive, permanently
+deletes) every phase directory under `.planning/phases/` except sentinels. It
+now excludes both `999.*` (backlog) and `0-*` (pre-milestone) directories via
+the same canonical sentinel predicate `phases list` uses — previously its own
+regex excluded `999` but not `0`, so a `0-*` directory could be destroyed on
+this irreversible path.
 
 ### Phase SUMMARY artifact check
 
@@ -585,6 +609,8 @@ node gsd-tools.cjs requirements mark-complete <ids>
 
 **Unstarted-phase guard.** Before archiving, the command scans the ROADMAP scoped for `<version>` and refuses if any `### Phase N:` heading in that slice has no matching phase directory on disk (`disk_status: no_directory`). Phase 0 (pre-milestone) and Phase 999 (backlog) sentinels are excluded. The guard runs whenever `--force` is absent, independent of `STATE.md`'s `milestone:` field — if that field is present but does not match `<version>`, a WARNING naming both values is emitted to stderr and the scan still runs (#2946). Pass `--force` to override.
 
+**Sentinel directories are never archived.** The phase-directory move performed when `--no-archive-phases` is absent is now filtered through the same canonical sentinel predicate as `phases list` and `phases clear`: `999.*` (backlog) and `0-*` (pre-milestone) directories are left in place rather than moved into `.planning/milestones/<version>-phases/`. Previously this path was scoped only by the milestone window, with no sentinel filter, so a sentinel directory sitting inside the window could be archived along with the milestone's real phases.
+
 ---
 
 ## Agent Skills
@@ -670,7 +696,15 @@ node gsd-tools.cjs progress [json|table|bar]
 
 # Progress as typed JSON surface (#455)
 node gsd-tools.cjs progress --json
+```
 
+Both `stats` and `progress` are scoped to the current milestone's `ROADMAP.md`
+window and sentinel-filtered: `999.*` backlog directories and `0-*`
+pre-milestone directories are not counted as current-milestone phases, and the
+aggregate completion percentage no longer reads `100` while phases from the
+active window are still outstanding.
+
+```bash
 # Complete a todo
 node gsd-tools.cjs todo complete <filename>
 

@@ -39,6 +39,13 @@ const { readdirSync, readFileSync } = require('fs');
 const { join, basename } = require('path');
 const { execFileSync } = require('child_process');
 const { ExitError, runMain } = require('./lib/cli-exit.cjs');
+const {
+  resolveLiveConfigRoots,
+  resolveExtraWatchTargets,
+  snapshotLiveConfig,
+  diffLiveConfig,
+  formatViolations,
+} = require('./live-config-guard.cjs');
 
 const SUITES = ['all', 'unit', 'integration', 'install', 'security', 'slow', 'qa'];
 
@@ -965,6 +972,29 @@ function main() {
   // job cap. Operator/test override via RUN_TESTS_CHUNK_TIMEOUT_MS.
   const chunkTimeoutMs = positiveNumberEnv(process.env.RUN_TESTS_CHUNK_TIMEOUT_MS, 600000);
 
+  // #2665: snapshot GSD's install footprint in every LIVE runtime config dir
+  // before a single test runs. The suite must not write there; the check after
+  // the chunk loop is what makes a violation loud instead of silent. See
+  // scripts/live-config-guard.cjs for why the scope is narrow (it is deliberately
+  // NOT under scripts/lib/, which the installer copies to users wholesale).
+  const liveConfigGuardEnabled = process.env.GSD_SKIP_LIVE_CONFIG_GUARD !== '1';
+  let liveConfigRoots = [];
+  let liveConfigExtras = [];
+  let liveConfigBefore = null;
+  if (liveConfigGuardEnabled) {
+    liveConfigRoots = resolveLiveConfigRoots();
+    // #2665 round 3: $GSD_HOME/.gsd, and one native config.toml per non-registry
+    // config-home descriptor (Kimi CLI's and, since #2755, Kimi Code's), are live
+    // write surfaces that are not runtime config ROOTS, so they are invisible to the
+    // line above. Watched independently — and note the OR: the extras alone are
+    // reason enough to snapshot, so an unbuilt tree that yields zero roots no
+    // longer silently disables the whole guard.
+    liveConfigExtras = resolveExtraWatchTargets();
+    if (liveConfigRoots.length > 0 || liveConfigExtras.length > 0) {
+      liveConfigBefore = snapshotLiveConfig(liveConfigRoots, liveConfigExtras);
+    }
+  }
+
   let firstFailureExit = 0;
   for (let i = 0; i < chunks.length; i++) {
     if (chunks.length > 1) {
@@ -1030,6 +1060,24 @@ function main() {
       // and the first non-zero exit is reported at the end.
     }
   }
+  // #2665: post-suite hermeticity check. Runs even when tests failed — a leaked
+  // global install is worth reporting alongside the failure that hid it, and
+  // suppressing it on red would hide it exactly when the suite is least trusted.
+  if (liveConfigBefore) {
+    const violations = diffLiveConfig(
+      liveConfigBefore,
+      snapshotLiveConfig(liveConfigRoots, liveConfigExtras),
+    );
+    if (violations.length > 0) {
+      console.error(formatViolations(violations));
+      // Reports by default; fails only under opt-in strict mode. See the
+      // SEVERITY note in scripts/live-config-guard.cjs for why.
+      if (process.env.GSD_STRICT_LIVE_CONFIG_GUARD === '1' && firstFailureExit === 0) {
+        firstFailureExit = 1;
+      }
+    }
+  }
+
   if (firstFailureExit !== 0) return firstFailureExit;
 }
 
