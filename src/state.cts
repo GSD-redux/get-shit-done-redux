@@ -1676,14 +1676,27 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
     // try/catch (roadmap-parser.cts) that already swallows every internal
     // failure and always returns a ScopedResult — it never throws, so this
     // wrapper could never be triggered.
-    // #3216 (ADR-3180 §7.2 Decision): this is the #3197 disk-write path — only
-    // a COMPLETE scope's identity is trustworthy enough to persist. On any
-    // other scope, write null for both fields rather than a fabricated
-    // milestone identity.
+    // #3216 (ADR-3180 §7.2 rule 6): this is the #3197 disk-write path. Rule 6
+    // draws the line at the FIELD, not the scope as a whole — "a version known
+    // but no name resolvable is TRUNCATED carrying {version, name: null} — the
+    // version is a real answer, the name is a non-answer, and collapsing the
+    // two is the failure this contract exists to prevent." So `milestone`
+    // (the version) is written whenever COMPLETE or TRUNCATED — both carry a
+    // genuine version per rule 6 — while `milestoneName` is written only on
+    // COMPLETE, since TRUNCATED's name is by definition unresolved and must
+    // never be fabricated. UNSCOPED/UNREADABLE have no real version either
+    // way, so both stay null there. This mirrors cmdCommit (src/commands.cts),
+    // which accepts COMPLETE or TRUNCATED for the same reason (the version is
+    // real), and deliberately diverges from archivePhaseDirectories
+    // (src/milestone.cts), which demands COMPLETE only because it uses the
+    // value as a filesystem path component and a TRUNCATED version is not
+    // safe to use there.
     const info = getMilestoneInfo(cwd);
     assertedMilestoneVersion = info.value ? info.value.version : null;
-    if (info.scope === SCOPE.COMPLETE && info.value) {
+    if ((info.scope === SCOPE.COMPLETE || info.scope === SCOPE.TRUNCATED) && info.value) {
       milestone = info.value.version;
+    }
+    if (info.scope === SCOPE.COMPLETE && info.value) {
       milestoneName = info.value.name;
     }
   }
