@@ -2820,7 +2820,7 @@ describe('pr-subrepo', () => {
       fs.chmodSync(hookPath, 0o755);
 
       // Point origin at the rejecting bare (overwrite the working one wired in beforeEach).
-      gitOrThrow(['remote', 'set-url', 'origin', rejectingBare], { cwd: subDir });
+      gitOrThrow(['remote', 'set-url', 'origin', `file://${rejectingBare}`], { cwd: subDir });
 
       fs.writeFileSync(path.join(subDir, 'feature.js'), 'IMPORTANT USER WORK\n');
 
@@ -3572,22 +3572,29 @@ describe('feat-488: effort sync command', () => {
 
   test('injects effort: into agent files that lack the frontmatter key', () => {
     const tmpDir = makeTmpDir('effort-sync-inject-');
-    const agentsDir = makeAgentsDir(tmpDir);
-    const agentPath = path.join(agentsDir, 'gsd-executor.md');
-    fs.writeFileSync(agentPath, AGENT_WITHOUT_EFFORT);
-    writePlanningConfig(tmpDir, { default: 'max' });
+    const tmpHome = makeTmpDir('effort-sync-home-');
+    const origHome = process.env.HOME;
+    process.env.HOME = tmpHome;
+    try {
+      const agentsDir = makeAgentsDir(tmpDir);
+      const agentPath = path.join(agentsDir, 'gsd-executor.md');
+      fs.writeFileSync(agentPath, AGENT_WITHOUT_EFFORT);
+      writePlanningConfig(tmpDir, { default: 'max' });
 
-    const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
-    const result = captureOutput(() =>
-      cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
-    );
+      const { cmdEffortSync } = require('../gsd-core/bin/lib/commands.cjs');
+      const result = captureOutput(() =>
+        cmdEffortSync(tmpDir, false, { dryRun: false, configDir: tmpDir, runtime: 'claude' })
+      );
 
-    assert.equal(result.synced, 1, 'should inject effort into agent missing the key');
-    assert.equal(result.changes[0].from, null);
-    assert.equal(result.changes[0].to, 'max');
-    assert.ok(fs.readFileSync(agentPath, 'utf8').includes('effort: max'), 'effort must be injected');
-
-    cleanup(tmpDir);
+      assert.equal(result.synced, 1, 'should inject effort into agent missing the key');
+      assert.equal(result.changes[0].from, null);
+      assert.equal(result.changes[0].to, 'max');
+      assert.ok(fs.readFileSync(agentPath, 'utf8').includes('effort: max'), 'effort must be injected');
+    } finally {
+      process.env.HOME = origHome;
+      cleanup(tmpHome);
+      cleanup(tmpDir);
+    }
   });
 
   test('non-claude runtime exits cleanly with informative reason field', () => {
