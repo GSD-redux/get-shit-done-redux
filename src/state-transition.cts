@@ -98,6 +98,11 @@ export const FIELD_CLASSIFICATION: Readonly<Record<string, FieldClassification>>
       last_activity: { source: 'body', preservation: 'derive' } as FieldClassification, // always refresh on transition
       last_activity_desc: { source: 'body', preservation: 'preserve-when-unchanged' } as FieldClassification,
 
+      // Commit provenance (#2573) — ambient git read, recomputed on every write,
+      // exactly like last_updated. Never preserved: a stale stamp would claim
+      // STATE.md was written against a commit it wasn't.
+      state_head: { source: 'free', preservation: 'derive' } as FieldClassification, // #2573
+
       // Progress block (disk-derived, except the curated progress ratchet)
       progress: { source: 'curated', preservation: 'preserve-always' } as FieldClassification, // #3242, #1446
       'progress.total_phases': { source: 'disk', preservation: 'derive' } as FieldClassification,

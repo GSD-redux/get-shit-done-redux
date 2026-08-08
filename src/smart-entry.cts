@@ -52,6 +52,9 @@ const { stateExtractField } = stateDocument;
 import phaseId = require('./phase-id.cjs');
 const { comparePhaseNum, extractPhaseToken, normalizePhaseName, phaseTokenMatches } = phaseId;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
+import stateMod = require('./state.cjs');
+const { readStateHeadFreshness } = stateMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
 import unusableInput = require('./unusable-input.cjs');
 const { warnUnusableInput, UNUSABLE_REASON } = unusableInput;
 
@@ -104,6 +107,18 @@ export interface SmartEntrySignals {
    */
   roadmap_total_phases: number | null;
   roadmap_completed_phases: number | null;
+  /**
+   * Commits between STATE.md's recorded `state_head` and HEAD (#2573). Null
+   * when unknown — no stamp, no git, or an unresolvable commit.
+   */
+  state_commits_behind: number | null;
+  /**
+   * Tri-state freshness proxy: null = unknown, false = written at HEAD,
+   * true = the codebase has moved since STATE.md was written. Advisory only —
+   * classify() deliberately does NOT consume this (ADR-1787 locks the
+   * classification/routing boundary; this is a signal, not a route).
+   */
+  state_commit_stale: boolean | null;
 }
 
 export interface SmartEntryResult {
@@ -311,6 +326,9 @@ export function detectSignals(cwd: string, now: () => number = Date.now): SmartE
     stale_activity: false,
     roadmap_total_phases: null,
     roadmap_completed_phases: null,
+    // No STATE.md (or unreadable) → no stamp to compare. Unknown, not fresh.
+    state_commits_behind: null,
+    state_commit_stale: null,
   };
   if (!hasPlanning) return empty;
 
@@ -394,6 +412,12 @@ export function detectSignals(cwd: string, now: () => number = Date.now): SmartE
     }
   }
 
+  // #2573: commit-age freshness proxy. Derived through state.cjs's
+  // readStateHeadFreshness so the tri-state and the hash fence stay identical
+  // to validate.health's W024 — one derivation, two surfaces.
+  const stateHeadRaw = fmScalar(fm, body, 'state_head', 'State Head');
+  const freshness = readStateHeadFreshness(cwd, stateHeadRaw);
+
   return {
     current_phase: parseIntOrNull(currentPhaseRaw),
     total_phases: parseIntOrNull(totalPhasesRaw),
@@ -410,6 +434,8 @@ export function detectSignals(cwd: string, now: () => number = Date.now): SmartE
     stale_activity: staleActivity,
     roadmap_total_phases: roadmapTotalPhases,
     roadmap_completed_phases: roadmapCompletedPhases,
+    state_commits_behind: freshness.commits_behind,
+    state_commit_stale: freshness.commit_stale,
   };
 }
 

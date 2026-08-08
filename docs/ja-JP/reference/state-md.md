@@ -45,6 +45,7 @@ current_phase: "4"
 current_phase_name: Observability
 current_plan: "3"
 last_updated: "2026-06-01T12:34:56.789Z"
+state_head: 4f3c2b1a9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b
 last_activity: "2026-06-01"
 stopped_at: "Phase 4 P3 execution complete"
 paused_at: null
@@ -71,6 +72,7 @@ paused_at: null
 | `current_phase_name` | string | フェーズに名前がある場合 | 本文の `Current Phase Name:` フィールドから抽出したフェーズ名。 |
 | `current_plan` | string | プランが進行中の場合 | 本文の `Current Plan:` フィールドから抽出したプラン番号。 |
 | `last_updated` | ISO-8601 タイムスタンプ | 書き込み時に常時 | 最後の `syncStateFrontmatter` 呼び出しのタイムスタンプ。`realClock.nowIso()` によって書き込まれる。 |
+| `state_head` | string (40-char sha) | On write, when the project's own git repo resolves | Full commit sha STATE.md was written against (#2573). Omitted entirely outside a git repo, or when the resolved repo is not the project's own — an unverifiable stamp degrades to absent rather than asserting provenance the file does not have. Recomputed on every write and never carried forward. |
 | `last_activity` | string | 本文に設定されている場合 | 本文の `Last Activity:` フィールドから抽出した最終活動日。 |
 | `stopped_at` | string | 停止ポイントが記録された場合 | 最後に完了したアクションの説明。アーカイブの文章とのマッチを避けるため `## Session` 本文セクションにスコープを限定。 |
 | `paused_at` | string | プロジェクトが一時停止中の場合 | 一時停止ポイントの自由形式の説明。一時停止していない場合は省略または `null`。 |

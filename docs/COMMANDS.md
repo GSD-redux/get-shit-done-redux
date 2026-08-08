@@ -976,6 +976,18 @@ v1.40.0, [#2792](https://github.com/open-gsd/gsd-core/issues/2792)).
 /gsd-health --context               # Context-utilization triage
 ```
 
+**STATE.md freshness (`W024`).** STATE.md records the commit it was last written
+against (`state_head` in its frontmatter). When the codebase has moved a long way
+since — 20 commits or more — health adds an advisory noting that STATE.md's
+contents should be treated as approximate.
+
+This is a *freshness proxy, not a drift measurement*: the count includes commits
+that never touched anything STATE.md describes, and the stamp is refreshed by any
+command that writes STATE.md, so a low count means STATE.md was written recently
+rather than that its contents are correct. The advisory never changes health's
+pass/fail status, and stays silent when the stamp is absent or the project isn't
+a git repo — "unknown" is reported as unknown, not as fresh.
+
 ### `/gsd-cleanup`
 
 Archive accumulated phase directories from completed milestones and prune local branches whose upstream has been deleted.

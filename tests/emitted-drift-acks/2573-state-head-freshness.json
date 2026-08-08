@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "paths": {
+    "health.md": "#2573 registers W024 (STATE.md written many commits ago — treat its contents as approximate) in the health workflow's <error_codes> table, so the advisory health now emits is documented where every other W-code is listed. The growth is that single table row written inline, not relocated into an eagerly @-imported reference (ADR-1610 Decision 4). 12246 -> 12348 bytes (+102), DEFAULT tier, cap 40960."
+  }
+}

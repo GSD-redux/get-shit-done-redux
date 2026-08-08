@@ -56,7 +56,18 @@ const { determinePhaseStatus } = commandsMod;
 
 const { planningDir, planningRoot } = planningWorkspace;
 const { extractFrontmatter, parseMustHavesBlock } = frontmatterMod;
-const { writeStateMd } = stateMod;
+const { writeStateMd, readStateHeadFreshness } = stateMod;
+
+/**
+ * W024 (#2573) threshold — how many commits STATE.md may lag HEAD before
+ * `validate.health` mentions it.
+ *
+ * Deliberately coarse. `state_head` restamps on every state write, so a small
+ * count is normal for any active project; firing near zero would make health
+ * noisy for healthy projects without telling anyone anything. This is a
+ * freshness proxy, not a drift measurement — see readStateHeadFreshness.
+ */
+const STATE_HEAD_ADVISORY_COMMITS = 20;
 const { MODEL_PROFILES } = modelProfilesMod;
 
 // Unused but imported for structural parity
@@ -1599,6 +1610,29 @@ function cmdValidateHealth(
     repairs.push('regenerateState');
   } else {
     const stateContent = fs.readFileSync(statePath, 'utf-8');
+
+    // W024 (#2573): STATE.md commit-age freshness. Advisory ONLY — it appends
+    // to warnings[] and never touches `status`, the repair set, or any existing
+    // count. Silent when the stamp is absent or unresolvable: "unknown" is not
+    // a finding. The threshold is deliberately coarse so an ordinary project
+    // stays quiet — firing on every project would change health's observable
+    // "clean" state for anything gating on it.
+    {
+      const fm = extractFrontmatter(stateContent) as Record<string, unknown>;
+      const freshness = readStateHeadFreshness(cwd, fm['state_head']);
+      if (
+        freshness.commits_behind !== null &&
+        freshness.commits_behind >= STATE_HEAD_ADVISORY_COMMITS
+      ) {
+        addIssue(
+          'warning',
+          'W024',
+          `STATE.md was written ${freshness.commits_behind} commits ago (at ${freshness.state_head}) — treat its contents as approximate`,
+          'Re-read the current phase artifacts before relying on STATE.md, or run a GSD command that refreshes it',
+        );
+      }
+    }
+
     const phaseRefs = [
       ...stateContent.matchAll(new RegExp(`[Pp]hase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})`, 'g')),
     ].map(
@@ -2678,6 +2712,7 @@ export = {
   cmdValidateAgents,
   cmdVerifySchemaDrift,
   cmdVerifyCodebaseDrift,
+  STATE_HEAD_ADVISORY_COMMITS,
   // Test seam (#1883): listMilestoneArchiveDirs is private and exercised through
   // the validate command, which runs in a subprocess — an fs monkeypatch in the
   // test process cannot reach it. Exposed under a leading underscore so the

@@ -186,6 +186,7 @@ Report final status.
 | W009 | warning | Phase has Validation Architecture in RESEARCH.md but no VALIDATION.md | No |
 | W018 | warning | MILESTONES.md missing entry for archived milestone snapshot | Yes (`--backfill`) |
 | W019 | warning | Unrecognized .planning/ root file — not a canonical GSD artifact | No |
+| W024 | warning | STATE.md was written many commits ago — treat its contents as approximate | No |
 | I001 | info | Plan without SUMMARY (may be in progress) | No |
 
 </error_codes>

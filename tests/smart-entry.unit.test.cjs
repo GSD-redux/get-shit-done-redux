@@ -551,6 +551,149 @@ describe('#2427 — roadmap-grounded completion + tightened status regex', () =>
   });
 });
 
+// ─── #2573: STATE.md commit-age freshness signal ─────────────────────────────
+
+describe('detectSignals — state_head commit-age freshness (#2573)', () => {
+  const { runGit } = require('./helpers/process-seam.cjs');
+
+  const dirs = [];
+  const track = (d) => { dirs.push(d); return d; };
+  afterEach(() => { while (dirs.length) cleanup(dirs.pop()); });
+
+  function gitProject(stateHead) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-se-'));
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    runGit(['init', '-q'], { cwd: dir });
+    runGit(['config', 'user.email', 't@t.com'], { cwd: dir });
+    runGit(['config', 'user.name', 'T'], { cwd: dir });
+    runGit(['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    runGit(['add', '-A'], { cwd: dir });
+    runGit(['commit', '-q', '-m', 'seed'], { cwd: dir });
+    const base = runGit(['rev-parse', 'HEAD'], { cwd: dir }).stdout.trim();
+
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'status: executing',
+        ...(stateHead === null ? [] : [`state_head: ${stateHead === 'BASE' ? base : stateHead}`]),
+        '---',
+        '',
+        '# Project State',
+        '',
+        'Phase: 1',
+        '',
+      ].join('\n'),
+    );
+    return { dir: track(dir), base };
+  }
+
+  function advance(dir, n) {
+    for (let i = 0; i < n; i++) {
+      fs.writeFileSync(path.join(dir, `c${i}.txt`), `${i}\n`);
+      runGit(['add', '-A'], { cwd: dir });
+      runGit(['commit', '-q', '-m', `c${i}`], { cwd: dir });
+    }
+  }
+
+  test('state_head at HEAD → commits_behind 0, commit_stale false (known fresh)', () => {
+    const { dir } = gitProject('BASE');
+    const s = detectSignals(dir);
+    assert.strictEqual(s.state_commits_behind, 0);
+    assert.strictEqual(s.state_commit_stale, false);
+  });
+
+  test('state_head N commits back → commits_behind N', () => {
+    const { dir } = gitProject('BASE');
+    advance(dir, 3);
+    const s = detectSignals(dir);
+    assert.strictEqual(s.state_commits_behind, 3,
+      'commits_behind must count commits between state_head and HEAD');
+    assert.strictEqual(s.state_commit_stale, true);
+  });
+
+  test('missing state_head → tri-state null ("we don\'t know"), NOT false', () => {
+    // Mirrors graphify's shipped commit_stale contract (src/graphify.cts:446):
+    // null = unknown, distinct from false = known fresh. Collapsing unknown to
+    // false would assert freshness the engine cannot actually vouch for.
+    const { dir } = gitProject(null);
+    const s = detectSignals(dir);
+    assert.strictEqual(s.state_commits_behind, null);
+    assert.strictEqual(s.state_commit_stale, null);
+  });
+
+  test('malformed / unreachable state_head → null, never throws', () => {
+    for (const bad of ['not-a-sha', 'zzzz', 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef']) {
+      const { dir } = gitProject(bad);
+      let s;
+      assert.doesNotThrow(() => { s = detectSignals(dir); }, `${bad} must not throw`);
+      assert.strictEqual(s.state_commits_behind, null, `${bad} → null`);
+      assert.strictEqual(s.state_commit_stale, null, `${bad} → null`);
+    }
+  });
+
+  test('non-git project → null (no signal), never throws', () => {
+    const dir = track(fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-nogit-')));
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'STATE.md'),
+      ['---', 'status: executing', 'state_head: abc1234', '---', '', '# Project State', ''].join('\n'),
+    );
+    let s;
+    assert.doesNotThrow(() => { s = detectSignals(dir); });
+    assert.strictEqual(s.state_commit_stale, null);
+  });
+
+  // #2573 × #3099 composition: the commit-age freshness signal reads `state_head`
+  // while the LAST_ACTIVITY_UNPARSEABLE diagnostic reads `last_activity` — two
+  // DIFFERENT fields. A STATE.md carrying both an unparseable last_activity AND a
+  // valid state_head must resolve each independently: the diagnostic fires for
+  // last_activity, and the freshness signal still reads state_head. Neither
+  // shadows the other (they are not "two staleness signals on one field").
+  test('unparseable last_activity + valid state_head compose: diagnostic fires AND freshness reads independently (#3099)', () => {
+    const {
+      _resetUnusableInputWarningsForTests,
+      _unusableInputEmissionCountForTests,
+    } = require('../gsd-core/bin/lib/unusable-input.cjs');
+    _resetUnusableInputWarningsForTests();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gsd-2573-compose-'));
+    fs.mkdirSync(path.join(dir, '.planning'), { recursive: true });
+    runGit(['init', '-q'], { cwd: dir });
+    runGit(['config', 'user.email', 't@t.com'], { cwd: dir });
+    runGit(['config', 'user.name', 'T'], { cwd: dir });
+    runGit(['config', 'commit.gpgsign', 'false'], { cwd: dir });
+    fs.writeFileSync(path.join(dir, 'seed.txt'), 'seed\n');
+    runGit(['add', '-A'], { cwd: dir });
+    runGit(['commit', '-q', '-m', 'seed'], { cwd: dir });
+    const base = runGit(['rev-parse', 'HEAD'], { cwd: dir }).stdout.trim();
+    track(dir);
+    fs.writeFileSync(
+      path.join(dir, '.planning', 'STATE.md'),
+      [
+        '---',
+        'status: executing',
+        'last_activity: not-a-real-date at all',
+        `state_head: ${base}`,
+        '---',
+        '',
+        '# Project State',
+        '',
+        'Phase: 1',
+        '',
+      ].join('\n'),
+    );
+    const s = detectSignals(dir);
+    // last_activity is unusable → its diagnostic fires (its own field), exactly once.
+    assert.strictEqual(_unusableInputEmissionCountForTests(), 1,
+      'unparseable last_activity must emit exactly one LAST_ACTIVITY_UNPARSEABLE — the freshness path adds none');
+    // state_head still resolves independently → fresh (0 commits behind HEAD).
+    assert.strictEqual(s.state_commits_behind, 0,
+      'state_head freshness must resolve independently of the last_activity diagnostic');
+    assert.strictEqual(s.state_commit_stale, false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #3099: unusable last_activity emits a diagnostic (ADR-1411 amendment:
 // corrupt is not absent — the fallback stays, the silence is the defect)

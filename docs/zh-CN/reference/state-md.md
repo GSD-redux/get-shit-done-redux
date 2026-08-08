@@ -45,6 +45,7 @@ current_phase: "4"
 current_phase_name: Observability
 current_plan: "3"
 last_updated: "2026-06-01T12:34:56.789Z"
+state_head: 4f3c2b1a9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b
 last_activity: "2026-06-01"
 stopped_at: "Phase 4 P3 execution complete"
 paused_at: null
@@ -71,6 +72,7 @@ paused_at: null
 | `current_phase_name` | 字符串 | 阶段有名称时 | 从正文 `Current Phase Name:` 字段提取的阶段名称。 |
 | `current_plan` | 字符串 | 计划进行中时 | 从正文 `Current Plan:` 字段提取的计划编号。 |
 | `last_updated` | ISO-8601 时间戳 | 始终（写入时） | 最后一次 `syncStateFrontmatter` 调用的时间戳；由 `realClock.nowIso()` 写入。 |
+| `state_head` | string (40-char sha) | On write, when the project's own git repo resolves | Full commit sha STATE.md was written against (#2573). Omitted entirely outside a git repo, or when the resolved repo is not the project's own — an unverifiable stamp degrades to absent rather than asserting provenance the file does not have. Recomputed on every write and never carried forward. |
 | `last_activity` | 字符串 | 正文中设置时 | 最后活动日期，从正文 `Last Activity:` 字段提取。 |
 | `stopped_at` | 字符串 | 记录了停止点时 | 最后完成操作的描述；限定在 `## Session` 正文章节内，以避免匹配存档文本。 |
 | `paused_at` | 字符串 | 项目已暂停时 | 暂停点的自由描述；未暂停时缺失或为 `null`。 |
