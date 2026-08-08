@@ -71,16 +71,113 @@
  *     what is on disk against what the ROADMAP declares. It wants the
  *     physical set by definition — scoping it would make the diagnostic
  *     unable to see the very drift it exists to report.
+ *   - `src/verify.cts` `cmdValidateHealth`: a project-wide HEALTH-CHECK sweep
+ *     (config drift, phase-directory naming, duplicate-directory collisions,
+ *     unsummarized-plan detection) — same "sweep everything, report gaps"
+ *     shape as `collectDiskPhases` and the `audit.cts` scanners; it must see
+ *     every phase directory regardless of milestone window to catch a
+ *     naming/duplicate defect wherever it lives.
+ *   - `src/verify.cts` `cmdVerifySchemaDrift`: resolves ONE caller-supplied
+ *     `phase` argument to its directory (falling back to an exact-name
+ *     match) — a single-phase LOOKUP, not a current-milestone enumeration.
  *   - `src/init.cts` `detectHasPriorPhases`: answers "has this project EVER
  *     completed a phase", explicitly excluding the current one. A history
  *     probe across all milestones, not a current-milestone enumeration.
+ *   - `src/init.cts` `detectUiPhaseActive`: its `readdirSync` targets a
+ *     SINGLE already-resolved phase directory's own FILES
+ *     (`phases/<dirName>`) to check for a `*-UI-SPEC.md` file — not the
+ *     phases directory itself. It never enumerates which phases exist at
+ *     all, so it is not this derivation, only shaped like it textually.
+ *   - `src/init.cts` `cmdInitMilestoneOp`: `diskPhaseDirs` is a heading->
+ *     directory LOOKUP INDEX (same role as `cmdRoadmapAnalyze`'s
+ *     `_phaseDirNames` below) — the ROADMAP heading scan just above it
+ *     already scopes `roadmapPhaseNumbers` to the current milestone, so this
+ *     map must see the PHYSICAL set to resolve each heading's phase number
+ *     to its actual directory name; scoping it again would look up inside
+ *     an already-scoped set for no benefit. Its sibling readdirSync (the
+ *     no-ROADMAP-headings-found fallback, where there is no heading scope
+ *     to look inside) is a real current-milestone enumeration and is routed
+ *     through the owner, not exempted.
  *   - `src/milestone.cts` `archivePhaseDirectories`: archival MOVES the
  *     physical set. Scoping it would silently leave out-of-window
  *     directories behind in the live tree.
+ *   - `src/milestone.cts` `cmdMilestoneComplete`: its one remaining
+ *     unrouted readdirSync (`phaseDirEntries`, the unstarted-phase guard)
+ *     is a token-match LOOKUP against ROADMAP headings already scoped by
+ *     `sliceMilestoneWindow`/`extractCurrentMilestone` above it — same
+ *     "physical set feeds an already-scoped lookup" shape as
+ *     `cmdRoadmapAnalyze`'s `_phaseDirNames`. Its three OTHER former
+ *     readdirSync call sites (the stats aggregation, the dry-run archive
+ *     preview, and the real archive-move loop) all genuinely asked "which
+ *     phases belong to the current milestone" and are routed through the
+ *     owner with the resolved `version` as `versionOverride`.
+ *   - `src/milestone.cts` `cmdPhasesClear`: a destructive CLEAR that must
+ *     remove every live phase directory except sentinels, regardless of
+ *     milestone window — `new-milestone` runs this to wipe the ENTIRE
+ *     phases tree before starting fresh, not just the outgoing milestone's
+ *     slice. Scoping it to one milestone's window would silently leave
+ *     out-of-window directories behind instead of clearing/archiving them.
  *   - `src/phase.cts` `cmdPhasesList`: its `--phase <n>` lookup and
  *     `--include-archived` merge are phase LOCATION and archive
  *     enumeration, not current-milestone enumeration; both legitimately
  *     read the physical set. Its ENUMERATION path routes through the owner.
+ *   - `src/state.cts` `cmdStateValidate` ("Gate 1: Validate STATE.md against
+ *     filesystem"): resolves ONE directory — the disk match for STATE.md's
+ *     own `Current Phase` field — by prefix, a single-phase LOOKUP, not an
+ *     enumeration of the current milestone's phase set.
+ *   - `src/state.cts` `cmdStateSync` ("Gate 2: Sync STATE.md from filesystem
+ *     ground truth"): a ground-truth RECONCILIATION pass, same family as
+ *     `collectDiskPhases` below — it deliberately scans every phase
+ *     directory on disk (minus #1514 retired-phase exclusion) so STATE.md's
+ *     rewritten counters reflect the true disk state, not a re-derivation of
+ *     "which phases belong to the current milestone" the way its sibling
+ *     `buildStateFrontmatter` computes (that one IS routed through the
+ *     owner, scoped to the stored milestone, because it exists specifically
+ *     to answer the milestone-scoped question at STATE.md construction
+ *     time).
+ *   - `src/phase.cts` `cmdPhaseNextDecimal`: computes the next free decimal
+ *     sub-phase id (e.g. `2.3`) by scanning EVERY on-disk directory and the
+ *     WHOLE ROADMAP (not milestone-scoped) for existing `2.N` ids — an id
+ *     collision it must avoid can come from any milestone, so it needs the
+ *     physical set, matching the CREATE-adjacent exemption category.
+ *   - `src/phase.cts` `cmdPhasePlanIndex`: resolves ONE caller-supplied
+ *     `phase` id to its directory — a single-phase LOCATION lookup, not an
+ *     enumeration of the current milestone's phase set.
+ *   - `src/phase.cts` `cmdPhaseInsert`: the same next-free-decimal-id scan as
+ *     `cmdPhaseNextDecimal` (id collisions can come from any milestone),
+ *     immediately followed by creating the new phase directory — a CREATE
+ *     operation, physical set by definition.
+ *   - `src/phase.cts` `renameDecimalPhases`, `renameIntegerPhases`: RENAME
+ *     mutations. Each `readdirSync` targets a SINGLE just-renamed phase
+ *     directory's own FILES (`phasesDir/newDirName`) to rename the files
+ *     inside it to match — not an enumeration of the phases directory at
+ *     all; only shaped like one because `phasesDir` is a substring of the
+ *     joined path.
+ *   - `src/audit.cts` `scanUatGaps`, `scanVerificationGaps`,
+ *     `scanContextQuestions`, `scanDeferredItems`: the pre-milestone-close
+ *     audit gate (`gsd-tools.cjs audit-open`, called by `/gsd:complete-
+ *     milestone`'s pre-close gate). Each deliberately SWEEPS EVERY phase
+ *     directory on disk to report open UAT/VERIFICATION/CONTEXT/deferred-item
+ *     gaps — the audit's whole purpose is catching stragglers before a
+ *     milestone closes, so scoping it to the current milestone's window
+ *     would hide exactly the drift (e.g. a still-open item in a phase that
+ *     somehow fell outside the window) it exists to surface.
+ *   - `src/roadmap-upgrade.cts` `computeMigrationPlan`: a legacy-id-to-
+ *     milestone-prefixed-id MIGRATION. It must see and rename EVERY existing
+ *     phase directory across every milestone in one pass (a legacy phase
+ *     number can legitimately collide across milestones — that ambiguity is
+ *     exactly what the migration resolves) — the physical set by definition.
+ *   - `src/smart-entry.cts` `detectVerifyFailed`: resolves ONE phase — the
+ *     current phase from STATE.md, falling back to the highest-numbered
+ *     directory when STATE.md has none — to check its own verify/UAT
+ *     artifacts. A single-phase LOOKUP (with an explicit fallback rule of
+ *     its own), not a current-milestone enumeration.
+ *   - `src/commands.cts` `cmdHistoryDigest`: explicitly builds `allPhaseDirs`
+ *     as archived-milestone dirs (via `getArchivedPhaseDirs`) PLUS every
+ *     live phase directory, to produce a project-wide historical digest
+ *     spanning every milestone ever shipped — the union is a strict
+ *     superset of any one milestone's window by design; scoping the live
+ *     half would silently drop history the digest exists to preserve.
  *
  * The tree-walk / root-confinement / regex-literal-tokenizer / sanitizer
  * machinery is SHARED with the sibling drift guards via
@@ -146,10 +243,15 @@ const OWNER_FILES = new Set([
 // See the header comment for the full written reason behind each entry.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap.cts'), new Set(['cmdRoadmapAnalyze'])],
-  [path.join('src', 'verify.cts'), new Set(['collectDiskPhases'])],
-  [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases'])],
-  [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories'])],
-  [path.join('src', 'phase.cts'), new Set(['cmdPhasesList'])],
+  [path.join('src', 'verify.cts'), new Set(['collectDiskPhases', 'cmdValidateHealth', 'cmdVerifySchemaDrift'])],
+  [path.join('src', 'init.cts'), new Set(['detectHasPriorPhases', 'detectUiPhaseActive', 'cmdInitMilestoneOp'])],
+  [path.join('src', 'milestone.cts'), new Set(['archivePhaseDirectories', 'cmdMilestoneComplete', 'cmdPhasesClear'])],
+  [path.join('src', 'phase.cts'), new Set(['cmdPhasesList', 'cmdPhaseNextDecimal', 'cmdPhasePlanIndex', 'cmdPhaseInsert', 'renameDecimalPhases', 'renameIntegerPhases'])],
+  [path.join('src', 'audit.cts'), new Set(['scanUatGaps', 'scanVerificationGaps', 'scanContextQuestions', 'scanDeferredItems'])],
+  [path.join('src', 'commands.cts'), new Set(['cmdHistoryDigest'])],
+  [path.join('src', 'state.cts'), new Set(['cmdStateValidate', 'cmdStateSync'])],
+  [path.join('src', 'roadmap-upgrade.cts'), new Set(['computeMigrationPlan'])],
+  [path.join('src', 'smart-entry.cts'), new Set(['detectVerifyFailed'])],
 ]);
 
 // Optional `export ` modifier, mirroring the sibling guards' function

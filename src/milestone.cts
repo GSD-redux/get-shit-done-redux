@@ -44,6 +44,9 @@ const { extractOneLinerFromBody, countMatchedSummaries } = coreUtilsMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
 import planScanMod = require('./plan-scan.cjs');
 const { scanPhasePlans } = planScanMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- phase-locator.cjs is an export= CommonJS module
+import phaseLocatorMod = require('./phase-locator.cjs');
+const { listMilestonePhaseDirs } = phaseLocatorMod;
 const { planningPaths } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
 const { writeStateMd } = stateMod;
@@ -686,15 +689,14 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   const accomplishments: string[] = [];
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort();
+    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+    // CURRENT milestone" — routed through the canonical owner (with the
+    // explicit `version` this command already resolved) instead of a
+    // hand-rolled readdirSync + isDirInMilestone filter, which also never
+    // excluded sentinels, unlike the owner.
+    const dirs = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
 
     for (const dir of dirs) {
-      if (!isDirInMilestone(dir)) continue;
-
       phaseCount++;
       // #3183: canonical plan/summary sets (root+nested, superseded-excluded)
       // from the single owner, rather than a root-only hand-rolled readdirSync
@@ -745,14 +747,10 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
   if (options.dryRun) {
     const phaseDirsToArchive: string[] = [];
     if (options.archivePhases !== false) {
-      try {
-        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-        for (const e of entries) {
-          if (e.isDirectory() && isDirInMilestone(e.name)) {
-            phaseDirsToArchive.push(e.name);
-          }
-        }
-      } catch { /* phasesDir missing — nothing to archive */ }
+      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats loop
+      // above — the dry-run preview must list exactly what the real archive
+      // pass below would move.
+      phaseDirsToArchive.push(...listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value);
     }
     const dryRunResult = {
       dry_run: true,
@@ -876,10 +874,12 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       const phaseArchiveDir = path.join(archiveDir, `${version}-phases`);
       platformEnsureDir(phaseArchiveDir);
 
-      const phaseEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const phaseDirNames = phaseEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+      // #3185 (ADR-3180 Decision 1): same routed derivation as the stats
+      // loop above — only the CURRENT milestone's phase directories move,
+      // never a sentinel or an out-of-window directory left for a later
+      // milestone.
+      const phaseDirNames = listMilestonePhaseDirs(phasesDir, { cwd, versionOverride: version }).value;
       for (const dir of phaseDirNames) {
-        if (!isDirInMilestone(dir)) continue;
         retryRenameSync(path.join(phasesDir, dir), path.join(phaseArchiveDir, dir));
         archivedCount++;
       }

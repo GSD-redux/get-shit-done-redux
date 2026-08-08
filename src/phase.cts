@@ -45,7 +45,7 @@ import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, getArchivedPhaseDirs, listMilestonePhaseDirs } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- roadmap-parser.cjs is an export= CommonJS module
 import roadmapParserMod = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, getMilestonePhaseFilter, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
+const { stripShippedMilestones, extractCurrentMilestone, currentMilestoneRawRanges, withPhaseSection } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- planning-workspace.cjs is an export= CommonJS module
 import planningWorkspace = require('./planning-workspace.cjs');
 // eslint-disable-next-line @typescript-eslint/no-require-imports -- frontmatter.cjs is an export= CommonJS module
@@ -2618,13 +2618,14 @@ function cmdPhaseComplete(cwd: string, phaseNum: string, raw: boolean): void {
       }
 
       try {
-        const isDirInMilestone = getMilestonePhaseFilter(cwd);
-        const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-        const dirs = entries
-          .filter((e) => e.isDirectory())
-          .map((e) => e.name)
-          .filter(isDirInMilestone)
-          .sort((a, b) => comparePhaseNum(a, b));
+        // #3185 (ADR-3180 Decision 1): "which phase directories belong to
+        // the CURRENT milestone" — routed through the canonical owner
+        // instead of a hand-rolled readdirSync + isDirInMilestone filter
+        // (which also never excluded sentinels on its own, unlike the
+        // owner; the per-directory isSentinelPhaseId check below stays as a
+        // defensive second check against the REGEX-EXTRACTED token, which
+        // is not necessarily identical to the raw directory name).
+        const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
 
         for (const dir of dirs) {
           const dm = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
