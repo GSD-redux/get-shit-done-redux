@@ -140,6 +140,11 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2665: a live-config leak fails the run on Linux/macOS lanes. Windows
+      # stays report-only: the guard's first run found PRE-EXISTING USERPROFILE
+      # leaks there (~190 test sites sandbox HOME alone), a documented separate
+      # class — promote once that sweep lands (see live-config-guard.cjs SEVERITY).
+      GSD_STRICT_LIVE_CONFIG_GUARD: ${{ matrix.os != 'windows-latest' && '1' || '' }}
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
       # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
       # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
@@ -333,6 +338,8 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2665: ubuntu-only lane — strict unconditionally (see the `test` job note).
+      GSD_STRICT_LIVE_CONFIG_GUARD: '1'
       # #2854: same pin as the other rebase-merged lanes. This lane runs a targeted
       # list that can include the emitted gate, and the invariant is easier to keep
       # with no exceptions: if a job merges a pinned base, the gate uses that base.
@@ -410,6 +417,8 @@ jobs:
     timeout-minutes: 30
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # #2665: strict on Linux/macOS, report-only on Windows (see the `test` job note).
+      GSD_STRICT_LIVE_CONFIG_GUARD: ${{ matrix.os != 'windows-latest' && '1' || '' }}
       # #2854: pin the emitted gate's baseline to the SAME commit the tree was merged
       # with. "Rebase check" merges `pull_request.base.sha` (pinned by #2472 so all 12
       # matrix jobs agree on one tree), but `resolveBase()` otherwise falls through to
@@ -610,6 +619,10 @@ jobs:
     timeout-minutes: 15
     env:
       GSD_PLUGIN_ROOT: .ci-gsd-plugin-root-disabled
+      # `npm run test:qa` is `run-tests.cjs --suite qa`, so this lane runs the
+      # live-config guard like every other suite lane. ubuntu-only, so strict
+      # unconditionally — the Windows carve-out does not apply here.
+      GSD_STRICT_LIVE_CONFIG_GUARD: '1'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:

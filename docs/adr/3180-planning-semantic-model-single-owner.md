@@ -351,3 +351,122 @@ ADR predicted lands as written, plus two the prediction did not contain:
 **Scope note.** Phase 3 (enumeration) inherits a window layer that is now single-owner and
 scope-carrying; its own guard starts from a green windowing baseline, exactly as Phase 1 left plan
 counting clean for Phase 3.
+
+### Amendment 3 — Phase 3 (#3185) validation: the contract held; the load-bearing bug was upstream of enumeration itself
+
+Decision 2's contract **held** for its third consumer: `listMilestonePhaseDirs` returns
+`ScopedResult<string[]>` unchanged, and `SCOPE` needed no new member — every case Phase 3 hit
+(a genuinely empty milestone, a truncated window, an unscoped/legacy ROADMAP, an unreadable
+ROADMAP) was already one of the four frozen values.
+
+**Declared deviation from Decision 1's provisional signature.** Decision 1 locked
+`listMilestonePhaseDirs(roadmapContent: string, phasesDir: string, deps?): ScopedResult<string[]>`.
+That signature cannot work: the milestone window needs `cwd` (to read `STATE.md` for the active
+milestone version) and `ws` (workstream scoping), and `getMilestonePhaseFilter` — the post-#3184
+canonical owner of "read the ROADMAP and resolve the window" — reads `ROADMAP.md` itself rather
+than accepting its content as an argument. Threading a pre-read `roadmapContent` string past that
+owner would reintroduce a second ROADMAP-reading path beside it, which is exactly the divergence
+class this epic removes. Shipped signature:
+`listMilestonePhaseDirs(phasesDir, { cwd, ws, versionOverride, phaseIdConvention })`. This is a
+signature change, not a contract change — `ScopedResult<T>` and `SCOPE` are unaffected, so it does
+not require re-litigating Decision 2.
+
+**The copy count was a lower bound, a third consecutive time.** The epic scoped enumeration at
+**4 copies**. The Decision 4(a) whole-repo guard (`scripts/lint-phase-enumeration-drift.cjs`) found
+**54 violations**: 23 sentinel re-derivations across 8 modules, in three regex variants plus four
+integer-comparison forms, now consolidated onto the canonical `isSentinelPhaseId`
+(`SENTINEL_RANGES [0, 999]`); plus 31 unscoped `phasesDir` reads. Most of the 23 sentinel
+re-derivations tested only `999`, so Phase 0 previously slipped through every one of them.
+
+**The load-bearing finding: the sentinel exclusion lived on the wrong set.** The pre-existing
+sentinel exclusion was applied to the ROADMAP HEADING set (`### Phase N:` entries), not to
+phase-directory names — but `getMilestonePhaseFilter` degrades to a literal pass-all `() => true`
+when that heading set is empty, per Decision 3's documented "over-inclusive, never
+under-inclusive" promise. The exclusion was therefore unreachable exactly when it was needed: a
+backlog or pre-milestone directory has no corresponding ROADMAP heading to exclude by, so the
+filter that was supposed to keep it out degraded to accepting everything instead. This is the same
+path #3167 named, and it is why `cmdStats` already called `getMilestonePhaseFilter` and still
+listed backlog directories — calling the filter was not enough while the filter's own pass-all
+degrade could not distinguish "no phases in this milestone" from "no heading to test this directory
+against." The fix applies the sentinel test to **directory names**, unconditionally, after the
+window filter runs rather than folding it into the window filter's heading-matching logic. The
+narrowing is sentinel-only: pass-all still stands for every non-sentinel directory the window
+filter cannot place, so Decision 3's promise is narrowed minimally, not revoked (Decision 3 /
+Hyrum's Law).
+
+**#3161 is subsumed alongside #3167, as the Tier-2 table predicted.** #3161 ("aggregate percent
+reports 100 while plans are outstanding") shared the same upstream cause: `cmdStats`'s and
+`cmdProgressRender`'s `totalPlans`/`totalSummaries` accumulation now iterates the single owner's
+scoped, sentinel-filtered `dirs` set (`listMilestonePhaseDirs`'s `value`) instead of an unscoped
+`readdirSync` of the phases directory, so a `999.*`/`0-*` directory with its own already-summarized
+plans can no longer inflate `totalSummaries` (or `totalPlans`) against a milestone that has not
+actually finished — the same backlog-dir listing bug row 3 named, manifesting in the percent
+aggregate rather than the phase list.
+
+**Two destructive-path defects the sweep exposed.** `phases clear` carried the fifth sentinel copy
+and its third regex variant (`/^999(?:\.|$)/`) — it excluded `999` but not `0`, so a `0-*`
+pre-milestone directory was deleted (or, pre-#1871, hard-removed) on this irreversible path.
+`milestone complete`'s phase-archival move had no sentinel filter at all on its stats/dry-run/move
+paths — only the milestone window — so a sentinel directory sitting inside the window's phase range
+could be archived alongside the milestone's own phases. Both now route through
+`isSentinelPhaseId` directly (not through `listMilestonePhaseDirs`, since both need every
+non-sentinel directory regardless of milestone window — see the generalized rule below).
+
+**An unadvertised but correct Tier-2 change.** Phase 0 directories now drop out of
+`progress`/`stats`/`phases list` alongside Phase 999, because the canonical predicate treats both
+sentinels alike and the engine-wide convention (#1580) already declares both as sentinel ranges,
+while `roadmap analyze` (Phase 2) already honored it. This was not separately predicted by Decision
+3's table — it falls out of routing every reader through one predicate that was already correct.
+
+**The guard's own false positive, worth recording.** The first version of
+`scripts/lint-phase-enumeration-drift.cjs` flagged JSDoc comments and inline comments that merely
+*documented* that the code below already called the canonical owner — matching sentinel-shaped
+regex literals inside prose, not code. It is now comment-aware (skips block/line comments before
+matching). Recorded because a guard that reports prose as drift trains its readers to reflexively
+exempt documentation, which is the opposite of Decision 4(a)'s whole-repo, no-allowlist intent.
+
+**The generalized exemption rule**, restated from Amendment 1's file-naming case in this
+derivation's terms: a **lookup**, **diagnostic**, **archival**, or **mutation** pass wants the
+physical directory set — every non-sentinel directory on disk, regardless of milestone window.
+Only "which phases belong to the current milestone" wants the scoped set `listMilestonePhaseDirs`
+returns. `phases list --phase N` and `--include-archived` (lookup/archive) and `phases clear` /
+`milestone complete` (destructive mutation) take the first; `progress`, `stats`, and the bare
+`phases list` take the second.
+
+**Decision 3's Tier-2 table, re-derived for Phase 3** per its own contingency clause:
+
+| Command surface | Output change |
+|---|---|
+| `query progress`, `stats`, bare `phases list` | `999.*` backlog and `0-*` pre-milestone directories are no longer listed or counted as current-milestone phases; the aggregate completion percentage stops reading `100` while phases in the active window are still outstanding |
+| `phases clear` | no longer deletes/archives a `0-*` pre-milestone directory — previously excluded `999` but not `0` on this irreversible path |
+| `milestone complete` | its phase-archival move no longer sweeps sentinel directories into `.planning/milestones/<version>-phases/` alongside the milestone's own phases |
+| `stats` P0.0 plan-count correction — **not predicted** | `isDirInMilestone` could not match a #1324 letter-prefixed-decimal directory (`P0.0-foundation`) to its own `### Phase P0.0:` ROADMAP heading, so `stats` reported that phase with `plans: 0` while its directory held real plan files. Fixed inline as part of the same sweep; not a Decision-1 owner change, but a defect the whole-repo guard's investigation surfaced in the same code path |
+
+**A single owner is not always a single RULE — the `0.x` split.** The sharpest finding of this
+phase, and a correction to how Decision 1 reads. An isolated security review observed that
+`isSentinelPhaseId` classifies `0.1` / `00.1` as sentinel milestone 0 (its `/^0*(\d+)/` backtracks
+to capture `0`), and that this looked wrong against #2554. Changing the canonical predicate to
+exempt `0.x` made the suite fail **six** tests, because two PINNED contracts disagree — and both
+are right, because they ask different questions:
+
+| Contract | Question | Verdict on `0.x` |
+|---|---|---|
+| #2554 (`roadmap-parser.test.cjs`) | is this directory part of the current milestone's phase SET? | **count it** — a `00.1-<slug>` dir declared as `### Phase 00.1:` is a real phase |
+| #2949 (`issue-2949-phase-complete-stage3-sentinel.test.cjs`) | must this phase COMPLETE before the milestone can close? | **sentinel** — a `0.x` must not block `is_last_phase` |
+
+No single global predicate answers both. The resolution is layered, not unified: `isSentinelPhaseId`
+keeps its semantics (`0.x` IS a sentinel, satisfying #2949), and the milestone-WINDOW layer keeps a
+narrower 999-only rule (satisfying #2554), carried as a function-scoped guard exemption with a
+written reason rather than a second silent copy.
+
+**The lesson for Phases 4 and 5:** "one owner per derivation" governs *who computes an answer*, not
+*how many questions share it*. Before folding a call site onto a canonical predicate, establish
+which question that site asks — an over-broad canonical rule is as much a defect as a divergent
+copy, and it fails in a worse way, because it looks like consolidation. Note also that the
+security review's data-completeness concern here was *inference* about intent, while #2949 is
+*pinned* intent; where the two conflict, the pinned contract wins and the review finding is
+recorded as adjudicated rather than fixed.
+
+**Scope note.** Phase 3 is the last consumer of the enumeration/window layer; Phases 4 and 5 build
+on the completion and state-extraction derivations respectively and do not depend on
+`listMilestonePhaseDirs`.

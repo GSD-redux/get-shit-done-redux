@@ -196,13 +196,42 @@ function readStringLiteralAt(line, start) {
 }
 
 /**
+ * Strip comment text from a line before detection. A guard that fires on a
+ * COMMENT — including a comment documenting that the code below uses the
+ * canonical owner, or prose quoting this guard's own detector shapes — reports
+ * prose as drift and trains readers to add exemptions for documentation.
+ * Handles the three shapes that appear in this codebase: a whole-line
+ * block-comment continuation (`*` or `/*` leading), a `//` line comment, and
+ * a trailing `//` after code. Mirrors `lint-phase-enumeration-drift.cjs`'s
+ * own copy (not shared — each guard applies it at a slightly different point
+ * in its detection pipeline).
+ *
+ * Deliberately simple and conservative: it does not attempt full block-comment
+ * state tracking across lines (this is a per-line scan, same tradeoff the
+ * sibling guards document). A `//` inside a string literal would be stripped
+ * early — accepted, because the effect is to UNDER-report on a pathological
+ * line, never to over-report prose as drift.
+ */
+function stripComments(line) {
+  const trimmed = line.trim();
+  // Whole-line block comment or JSDoc continuation.
+  if (trimmed.startsWith('*') || trimmed.startsWith('/*') || trimmed.startsWith('//')) return '';
+  // Trailing line comment after code.
+  const idx = line.indexOf('//');
+  return idx === -1 ? line : line.slice(0, idx);
+}
+
+/**
  * The first literal (regex OR quoted/backtick string) on `line` whose text
  * contains a HEADING_QUANTIFIER_RE match — the "smoking gun" fragment worth
  * reporting, mirroring `findRegexLiteralMdMatch`'s role in the sibling guard.
  * Falls back to a bounded, trimmed slice of the raw line when the tokens are
  * not both inside one located literal (not currently reachable against this
  * repo — see the header comment's per-file audit — but a fail-safe rather
- * than a thrown error if a future line splits them).
+ * than a thrown error if a future line splits them). Takes the RAW `line`
+ * (not comment-stripped) so a reported fragment still shows the actual source
+ * text — comment-stripping is applied only to the detection decision, never
+ * to the reported fragment.
  */
 function extractFragment(line) {
   for (let i = 0; i < line.length; i++) {
@@ -233,8 +262,11 @@ function findMilestoneWindowDrift(text, relPath) {
     const fnMatch = TOP_LEVEL_FUNCTION_RE.exec(line);
     if (fnMatch) currentFunction = fnMatch[1];
 
-    if (!HEADING_QUANTIFIER_RE.test(line)) continue;
-    const isMilestoneWindowToken = PHASE_LOOKAHEAD_RE.test(line) || (VERSION_TOKEN_RE.test(line) && MARKER_EMOJI_RE.test(line));
+    const code = stripComments(line);
+    if (!code.trim()) continue;
+
+    if (!HEADING_QUANTIFIER_RE.test(code)) continue;
+    const isMilestoneWindowToken = PHASE_LOOKAHEAD_RE.test(code) || (VERSION_TOKEN_RE.test(code) && MARKER_EMOJI_RE.test(code));
     if (!isMilestoneWindowToken) continue;
 
     if (exemptFunctions && exemptFunctions.has(currentFunction)) continue;
@@ -297,4 +329,5 @@ module.exports = {
   FUNCTION_SCOPED_EXEMPTIONS,
   readStringLiteralAt,
   extractFragment,
+  stripComments,
 };

@@ -28,6 +28,8 @@ const {
   // #2121: roadmapPhaseLookupSources now lives in phase-id.cjs (single owner of
   // the lookup-source ordering); imported here rather than defined locally.
   roadmapPhaseLookupSources,
+  extractPhaseToken,
+  isSentinelPhaseId,
 } = phaseIdModule;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -643,7 +645,8 @@ function findRoadmapBulletPhaseInContent(content: string, phaseNum: unknown, pha
 function getRoadmapPhaseInternal(cwd: string, phaseNum: unknown): RoadmapPhaseResult | null {
   if (!phaseNum) return null;
   const normalizedPhase = stripProjectCodePrefix(phaseNum);
-  if (/^999(?:\.|$)/.test(normalizedPhase)) return null;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (isSentinelPhaseId(normalizedPhase)) return null;
   // Resolved INSIDE the try for the same reason as getMilestoneInfo below: planningDir
   // throws a plain Error for an invalid GSD_WORKSTREAM/GSD_PROJECT segment, and resolving
   // it outside let that escape uncaught, crashing every caller for a malformed workstream
@@ -958,7 +961,11 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     for (const h of tokenizeHeadings(roadmap)) {
       if (h.level < 2 || h.level > 4) continue;
       const pm = phaseHeadingPattern.exec(h.text);
-      // Exclude 999.x backlog phases from milestone phase set. Mirrors init.cts filter.
+      // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
+      // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
+      // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
+      // narrower question -- "which phase ids does this milestone's window
+      // declare" -- where only the 999 icebox range is excluded.
       if (pm && !/^999\b/.test(pm[1])) milestonePhaseNums.add(pm[1]);
     }
     // #2199: also count bullet/checkbox phase entries (`- [ ] **Phase N — name**`)
@@ -973,6 +980,11 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       const scanner = new RegExp(BULLET_PHASE_LINE_PATTERN.source, 'gim');
       const roadmapUnfenced = stripFencedCode(roadmap).text;
       while ((bm = scanner.exec(roadmapUnfenced)) !== null) {
+        // #3185: deliberately NOT isSentinelPhaseId here. That predicate treats a
+        // leading 0 as sentinel milestone 0, which would swallow the #2554 decimal
+        // phase ids ("00.1" is a real phase, not milestone 0). This scan asks a
+        // narrower question -- "which phase ids does this milestone's window
+        // declare" -- where only the 999 icebox range is excluded.
         if (!/^999\b/.test(bm[1])) milestonePhaseNums.add(bm[1]);
       }
     }
@@ -1039,6 +1051,20 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
       const sm = stripped.match(numericRe);
       if (sm && normalized.has(normalizePhaseIdSegments(sm[1]).toLowerCase())) return true;
     }
+    // #3185: last resort — ask the CANONICAL phase-id token extractor. The
+    // three attempts above are all leading-DIGIT or bare-alnum shapes, so none
+    // of them can match a #1324 letter-prefixed-DECIMAL directory
+    // (`P0.0-foundation`) against its own `### Phase P0.0:` heading: numericRe
+    // needs a leading digit, `customMatch` stops at the `.` and yields `P0`,
+    // and stripProjectCodePrefix needs a dash before the digit. The observable
+    // symptom was `stats` reporting such a phase with plans: 0 while its
+    // directory held plan files, because the heading seeded the row but the
+    // directory never folded in. extractPhaseToken is #2121's single owner of
+    // "what is this directory's phase token", so this defers to it rather than
+    // widening a fourth bespoke regex here. Additive: it can only ADMIT a
+    // directory, never exclude one the attempts above already matched.
+    const token = extractPhaseToken(dirName);
+    if (token && normalized.has(normalizePhaseIdSegments(String(token)).toLowerCase())) return true;
     return false;
   }
   (isDirInMilestone as MilestonePhaseFilter).phaseCount = milestonePhaseNums.size;

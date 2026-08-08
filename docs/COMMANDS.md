@@ -476,6 +476,8 @@ If any category is non-empty you are prompted with `[R] Resolve` / `[A] Acknowle
 
 > **Unstarted-phase guard.** Archiving refuses if the milestone's ROADMAP still lists a phase with no phase directory on disk — `Cannot mark milestone complete: ROADMAP lists N unstarted phase(s)`. If a phase was intentionally deferred or merged without a directory, run `gsd-tools milestone complete <version> --force` (the `/gsd-complete-milestone` workflow runs the underlying command without `--force`, so use the CLI directly to override). A `STATE.md` `milestone:` value that does not match `<version>` prints a WARNING and still runs the guard (#2946).
 
+> **Sentinel directories stay put.** Moving phase directories into the archive (the default, unless `--no-archive-phases` is passed) now excludes `999.*` (backlog) and `0-*` (pre-milestone) directories via the same sentinel predicate the unstarted-phase guard already uses. Previously the archive move was scoped only by the milestone window, so a sentinel directory sitting inside that window could be archived along with the milestone's own phases.
+
 ---
 
 ### `/gsd-milestone-summary`
@@ -661,6 +663,8 @@ Show status, next steps, and automatically advance to the next logical workflow 
 - Phase needs execution → runs `/gsd-execute-phase`
 - Phase needs verification → runs `/gsd-verify-work`
 - All phases complete → suggests `/gsd-complete-milestone`
+
+Status reporting is scoped to the current milestone's `ROADMAP.md` window and sentinel-filtered: `999.*` backlog directories and `0-*` pre-milestone directories are not counted as current-milestone phases, so the reported progress percentage no longer holds at `100` while phases in the active window are still outstanding.
 
 ```bash
 /gsd-progress                       # "Where am I? What's next?" with auto-routing
@@ -943,6 +947,8 @@ Display project statistics.
 ```bash
 /gsd-stats                          # Project metrics dashboard
 ```
+
+Scoped to the current milestone's `ROADMAP.md` window and sentinel-filtered: `999.*` backlog directories and `0-*` pre-milestone directories are not counted as current-milestone phases.
 
 ### `/gsd-profile-user`
 
