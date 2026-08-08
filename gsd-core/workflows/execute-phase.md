@@ -154,28 +154,19 @@ When `CONTEXT_WINDOW < 200000` (sub-200K models), subagent prompts are thinned t
 When `parallelization` is false, plans within a wave execute sequentially.
 
 **Runtime detection for one-shot sessions:**
-Check if the current runtime requires sequential execution by evaluating the `workflow.background_dispatch` config parameter or detecting runtimes (like Copilot) where subagent APIs are absent or unreliable. If background execution is unsupported or disabled, force sequential inline execution regardless of the `parallelization` setting. Set `SEQUENTIAL_INLINE=true` internally and skip the `execute_waves` step in favor of `check_interactive_mode`'s inline path for each plan.
+If `workflow.background_dispatch` is `false` or subagent APIs are unreliable (e.g. Copilot), set `SEQUENTIAL_INLINE=true` to force sequential inline execution.
 
 **REQUIRED — Sync chain flag with intent.** If user invoked manually (no `--auto`), clear the ephemeral chain flag from any previous interrupted `--auto` chain. This prevents stale `_auto_chain_active: true` from causing unwanted auto-advance. This does NOT touch `workflow.auto_advance` (the user's persistent settings preference). You MUST execute this bash block before any config reads:
 ```bash
-# REQUIRED: prevents stale auto-chain from previous --auto runs
-if [[ ! "$ARGUMENTS" =~ --auto ]]; then
-  gsd_run query config-set workflow._auto_chain_active false || true
-fi
-```
-
-Resolve `MVP_MODE` once via the centralized `phase.mvp-mode` query verb (precedence chain: CLI flag → ROADMAP `**Mode:** mvp` → `workflow.mvp_mode` config → false):
-```bash
+# Ephemeral state scrub — must run FIRST, before config reads
+[ "$AUTO_MODE" = "true" ] || gsd_run state set _auto_chain_active false >/dev/null 2>&1
+AUTO_ADVANCE=$(gsd_run query config-get workflow.auto_advance 2>/dev/null || echo "false")
 MVP_FLAG_ARG=""
-if [[ "$ARGUMENTS" =~ (^|[[:space:]])--mvp([[:space:]]|$) ]]; then MVP_FLAG_ARG="--cli-flag"; fi
+if [[ "$ARGUMENTS" =~ (^|[[:space:]])--mvp([[:space:]]|$) ]]; then MVP_FLAG_ARG="--mvp"; fi
 MVP_MODE=$(gsd_run query phase.mvp-mode "${PHASE_NUMBER}" $MVP_FLAG_ARG --pick active)
 EXECUTE_POST_HOOKS_JSON=$(gsd_run loop render-hooks execute:post --raw)
 TDD_MODE=$(gsd_run loop render-hooks execute:post --active-cap tdd)
-BACKGROUND_DISPATCH=$(gsd_run query config-get workflow.background_dispatch 2>/dev/null || echo "true")
-SEQUENTIAL_INLINE=false
-if [ "$BACKGROUND_DISPATCH" = "false" ]; then
-  SEQUENTIAL_INLINE=true
-fi
+[ "$(gsd_run query config-get workflow.background_dispatch 2>/dev/null)" = "false" ] && SEQUENTIAL_INLINE=true || SEQUENTIAL_INLINE=false
 ```
 
 <step name="safe_resume_gate">
