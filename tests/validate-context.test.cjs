@@ -6,7 +6,8 @@
  * The pure classifier's behavior is covered by
  * tests/context-utilization.test.cjs — these tests focus on what the CLI
  * adds on top: argument parsing, JSON vs human-readable rendering,
- * recommendation-string formatting, and exit-code semantics.
+ * recommendation-string formatting, and exit-code semantics. Supports both
+ * colon and hyphen slash-command syntax (/gsd:thread and /gsd-thread).
  */
 
 const { describe, test } = require('node:test');
@@ -58,7 +59,7 @@ describe('gsd-tools validate context — JSON vs human rendering', () => {
     assert.strictEqual(r.success, true);
     assert.match(r.output, /70%/);
     assert.match(r.output, /critical/);
-    assert.match(r.output, /[\/$]gsd-thread/);
+    assert.match(r.output, /[\/$]gsd[:-]thread/);
   });
 
   test('human mode omits the recommendation line for healthy state', () => {
@@ -77,14 +78,14 @@ describe('gsd-tools validate context — recommendation copy per state', () => {
     const r = runGsdTools(['validate', 'context', '--tokens-used', '130000', '--context-window', '200000', '--json']);
     const obj = JSON.parse(r.output);
     assert.strictEqual(obj.state, 'warning');
-    assert.match(obj.recommendation, /[\/$]gsd-thread/);
+    assert.match(obj.recommendation, /[\/$]gsd[:-]thread/);
   });
 
   test('critical state names the fracture-point reasoning risk', () => {
     const r = runGsdTools(['validate', 'context', '--tokens-used', '160000', '--context-window', '200000', '--json']);
     const obj = JSON.parse(r.output);
     assert.strictEqual(obj.state, 'critical');
-    assert.match(obj.recommendation, /[\/$]gsd-thread/);
+    assert.match(obj.recommendation, /[\/$]gsd[:-]thread/);
     assert.match(obj.recommendation, /reasoning|degrade|fracture/i);
   });
 });
