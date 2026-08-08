@@ -15,6 +15,9 @@ const { countMatchedSummaries } = coreUtils;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import frontmatterMod = require('./frontmatter.cjs');
 const { extractFrontmatter } = frontmatterMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planningScopeMod = require('./planning-scope.cjs');
+const { SCOPE } = planningScopeMod;
 
 // Excluded derivative files
 const PLAN_OUTLINE_RE = /-OUTLINE\.md$/i;
@@ -99,8 +102,16 @@ interface PhaseScanResult {
   summaryCount: number;
   completed: boolean;
   hasNestedPlans: boolean;
+  // Callers asking "which plans are OUTSTANDING" (live-completion tracking,
+  // pairing, wave scheduling) use planFiles — it is post status:superseded
+  // exclusion. Callers asking "what plan files physically exist on disk"
+  // (e.g. numbering-gap detection) use allPlanFiles — it is EVERY plan file
+  // found, root + nested, BEFORE the superseded exclusion. One owner, two
+  // questions.
   planFiles: string[];
+  allPlanFiles: string[];
   summaryFiles: string[];
+  scope: planningScopeMod.Scope;
 }
 
 function scanPhasePlans(phaseDir: string): PhaseScanResult {
@@ -114,7 +125,9 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
       completed: false,
       hasNestedPlans: false,
       planFiles: [],
+      allPlanFiles: [],
       summaryFiles: [],
+      scope: SCOPE.UNREADABLE,
     };
   }
 
@@ -123,6 +136,7 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
   let nestedPlanFiles: string[] = [];
   let nestedSummaryFiles: string[] = [];
   let hasNestedPlans = false;
+  let scope: planningScopeMod.Scope = SCOPE.COMPLETE;
 
   const nestedDir = join(phaseDir, 'plans');
   if (existsSync(nestedDir)) {
@@ -131,7 +145,12 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
       nestedPlanFiles = nestedFiles.filter(isNestedPlanFile).map((file) => `plans/${file}`);
       nestedSummaryFiles = nestedFiles.filter(isNestedSummaryFile).map((file) => `plans/${file}`);
       hasNestedPlans = nestedPlanFiles.length > 0;
-    } catch { /* ignore unreadable nested layout */ }
+    } catch {
+      // #3183 (ADR-3180 Decision 2): the nested plans/ dir exists but could not
+      // be read — this scan cannot see plans it knows are there, so zero is
+      // NOT a reliable answer; mark TRUNCATED rather than COMPLETE.
+      scope = SCOPE.TRUNCATED;
+    }
   }
 
   const allPlanFiles = rootPlanFiles.concat(nestedPlanFiles);
@@ -166,7 +185,9 @@ function scanPhasePlans(phaseDir: string): PhaseScanResult {
     completed: allPlanFiles.length > 0 && summaryCount >= planCount,
     hasNestedPlans,
     planFiles,
+    allPlanFiles,
     summaryFiles,
+    scope,
   };
 }
 

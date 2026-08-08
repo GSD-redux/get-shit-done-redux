@@ -32,7 +32,10 @@ import roadmapParserMod = require('./roadmap-parser.cjs');
 const { getMilestonePhaseFilter, extractCurrentMilestone, getMilestoneInfo } = roadmapParserMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import coreUtilsMod = require('./core-utils.cjs');
-const { extractOneLinerFromBody } = coreUtilsMod;
+const { extractOneLinerFromBody, countMatchedSummaries } = coreUtilsMod;
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- plan-scan.cjs is an export= CommonJS module
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
 const { planningPaths } = planningWorkspace;
 const { extractFrontmatter } = frontmatterMod;
 const { writeStateMd } = stateMod;
@@ -333,17 +336,21 @@ function cmdRequirementsReadyIds(cwd: string, args: string[], raw: boolean): voi
   }
 
   const planAbsPath = path.resolve(cwd, planPathArg);
-  const phaseDir = path.dirname(planAbsPath);
-  const currentBasename = path.basename(planAbsPath);
+  // #3183: `planPathArg` may point at a root plan (`<phaseDir>/<n>-PLAN.md`)
+  // or a nested plan (`<phaseDir>/plans/PLAN-<n>.md`, #3139 layout) —
+  // scanPhasePlans always operates on the PHASE dir, so a nested plan needs
+  // one extra `dirname` to reach it, and its planFiles-relative identity
+  // carries the `plans/` prefix scanPhasePlans itself applies.
+  const isNestedPlanPath = path.basename(path.dirname(planAbsPath)) === 'plans';
+  const phaseDir = isNestedPlanPath ? path.dirname(path.dirname(planAbsPath)) : path.dirname(planAbsPath);
+  const currentRelative = isNestedPlanPath ? `plans/${path.basename(planAbsPath)}` : path.basename(planAbsPath);
 
-  let siblingPlanFiles: string[] = [];
-  try {
-    siblingPlanFiles = fs
-      .readdirSync(phaseDir)
-      .filter((f) => f.endsWith('-PLAN.md') && f !== currentBasename);
-  } catch {
-    siblingPlanFiles = [];
-  }
+  // #3183: canonical plan/summary sets (root+nested, superseded-excluded)
+  // from the single owner, rather than a root-only hand-rolled readdirSync
+  // filter — a superseded sibling that still declares reqId with no SUMMARY
+  // used to block the ID forever (false-block); it is now excluded upstream.
+  const phaseScan = scanPhasePlans(phaseDir);
+  const siblingPlanFiles = phaseScan.planFiles.filter((f) => f !== currentRelative);
 
   const parseFrontmatterReqIds = (content: string, sourcePath?: string): string[] => {
     const fm = extractFrontmatter(content, sourcePath);
@@ -379,9 +386,11 @@ function cmdRequirementsReadyIds(cwd: string, args: string[], raw: boolean): voi
       if (!siblingDeclaresId) continue;
 
       // Sibling declares the SAME ID — it must have finished (produced a
-      // SUMMARY) before this ID is ready to mark Complete.
-      const siblingSummaryPath = siblingPath.replace(/-PLAN\.md$/, '-SUMMARY.md');
-      if (!fs.existsSync(siblingSummaryPath)) {
+      // SUMMARY) before this ID is ready to mark Complete. Canonical pairing
+      // via countMatchedSummaries (root+nested, all three naming forms)
+      // instead of a bespoke -PLAN.md→-SUMMARY.md regex swap.
+      const siblingHasSummary = countMatchedSummaries([siblingFile], phaseScan.summaryFiles) > 0;
+      if (!siblingHasSummary) {
         blockedBySibling = true;
         break;
       }
@@ -643,10 +652,12 @@ function cmdMilestoneComplete(cwd: string, version: string, options: MilestoneCo
       if (!isDirInMilestone(dir)) continue;
 
       phaseCount++;
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, dir));
-      const plans = phaseFiles.filter((f) => f.endsWith('-PLAN.md') || f === 'PLAN.md');
-      const summaries = phaseFiles.filter((f) => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
-      totalPlans += plans.length;
+      // #3183: canonical plan/summary sets (root+nested, superseded-excluded)
+      // from the single owner, rather than a root-only hand-rolled readdirSync
+      // filter.
+      const phaseScan = scanPhasePlans(path.join(phasesDir, dir));
+      const summaries = phaseScan.summaryFiles;
+      totalPlans += phaseScan.planCount;
 
       // Extract one-liners from summaries
       for (const s of summaries) {

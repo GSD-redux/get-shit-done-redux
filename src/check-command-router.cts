@@ -43,6 +43,9 @@ const { evaluatePredicate } = gatePredicateEval;
 import apiCoverageMod = require('./api-coverage.cjs');
 const { detectApiIntegration, validateCoverageMatrix } = apiCoverageMod;
 import { execTool, platformReadSync, posixNormalize } from './shell-command-projection.cjs';
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+import planScanMod = require('./plan-scan.cjs');
+const { scanPhasePlans } = planScanMod;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -757,7 +760,9 @@ function cmdTddReviewCheckpoint(projectDir: string, args: string[], raw: boolean
   const tddPlanFiles: string[] = [];
   if (phaseDir) {
     try {
-      const files = fs.readdirSync(phaseDir).filter(f => f.endsWith('-PLAN.md'));
+      // #3183: canonical plan set (root+nested, superseded-excluded) from the
+      // single owner, rather than a root-only hand-rolled readdirSync filter.
+      const files = scanPhasePlans(phaseDir).planFiles;
       for (const file of files) {
         const planPath = path.join(phaseDir, file);
         const content = readIfExists(planPath);

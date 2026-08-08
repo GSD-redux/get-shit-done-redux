@@ -239,6 +239,14 @@ function scanQuickTasks(planDir: string): QuickTaskItem[] {
 
     // workflows/quick.md mandates `${quick_id}-SUMMARY.md`; older flows used
     // bare `SUMMARY.md`. Accept either to avoid false-positive "missing".
+    //
+    // #3183 (ADR-3180 Decision 4(a) — bucket B, out of scope for the
+    // scanPhasePlans migration): this scans a quick task's OWN directory
+    // (`.planning/quick/<task>/`) for THAT task's single completion record —
+    // "does this one quick task have a SUMMARY.md" — not a phase directory's
+    // live-plan/summary counting question. scanPhasePlans is the wrong tool
+    // here; there is no plan/summary PAIRING to derive, only a single
+    // filename presence check local to a non-phase directory.
     let summaryPath: string | null = null;
     try {
       const summaryFiles = fs.readdirSync(safeTaskDir, { withFileTypes: true })
