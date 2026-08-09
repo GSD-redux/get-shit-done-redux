@@ -155,6 +155,67 @@ function walk(dir, acc) {
   return acc;
 }
 
+// ─── #2761 M4: the heading-baseline selector census ────────────────────────
+//
+// `phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.<MODE>)` is the other half
+// of this seam: it decides which intro grammar a call site compiles, and the
+// MODE argument is a fact about that site's history that no behavioural test
+// can recover — flipping verify's milestone-complete site from LABEL_ONLY to
+// ANY_BRACKET grants a tolerance it has never had, and every behavioural test
+// still passes. Pinning it therefore requires reading the authored source.
+//
+// That reading lives HERE, not in the test suite. `tests/**` runs
+// `local/no-source-grep` at ERROR, and its documented exemption
+// (CONTEXT.md: RULESET.TESTS.no-source-grep.exemption) is reserved for tests
+// whose subject is a runtime CONTRACT FILE — STATE.md, config.toml,
+// hooks.json, agent .md — which `src/*.cts` is not. The suite had claimed that
+// exemption anyway. Scripts are the sanctioned home for source scanning (the
+// rule runs at `warn` in `scripts/**`, and this file already scans src/ for the
+// grammar rules above), so the scan is exported as structured data and the test
+// asserts on the returned census instead of on file text.
+const SELECTOR_CALL_RE = /phaseHeadingPrefixSrcFor\(/g;
+const SELECTOR_BASELINE_RE = /phaseHeadingPrefixSrcFor\(\s*PHASE_HEADING_BASELINE\.(ANY_BRACKET|LABEL_ONLY)/g;
+
+/**
+ * Pure: census the heading-baseline selector calls in `text`.
+ *
+ * `total` counts EVERY invocation, so a call that does not name a
+ * `PHASE_HEADING_BASELINE` member shows up as `total > ANY_BRACKET +
+ * LABEL_ONLY` — a hole in the pin rather than a silently uncounted site.
+ * Returns { ANY_BRACKET, LABEL_ONLY, total }.
+ */
+function countSelectorBaselines(text) {
+  const out = { ANY_BRACKET: 0, LABEL_ONLY: 0, total: 0 };
+  for (const m of text.matchAll(SELECTOR_BASELINE_RE)) out[m[1]] += 1;
+  out.total = (text.match(SELECTOR_CALL_RE) || []).length;
+  return out;
+}
+
+/**
+ * Scan the authored source tree and return the selector census keyed by
+ * repo-relative path, for every file that consumes the selector at least once.
+ * `phase-id.cts` is excluded: it DEFINES the selector, so its own occurrences
+ * are the declaration, not a consumer's choice of baseline.
+ */
+function scanSelectorBaselines(root) {
+  const census = {};
+  for (const dir of SCAN_DIRS) {
+    for (const file of walk(path.join(root, dir), [])) {
+      const rel = path.relative(root, file);
+      if (EXEMPT.has(rel)) continue;
+      let text;
+      try {
+        text = fs.readFileSync(file, 'utf8');
+      } catch {
+        continue;
+      }
+      const counts = countSelectorBaselines(text);
+      if (counts.total > 0) census[path.basename(file)] = counts;
+    }
+  }
+  return census;
+}
+
 /**
  * Scan the authored source tree and return every unsanctioned phase-token
  * re-derivation, each annotated with the repo-relative file path.
@@ -207,6 +268,8 @@ module.exports = {
   findPhaseIdRegexDrift,
   findBracketGrammarDrift,
   scanRepo,
+  countSelectorBaselines,
+  scanSelectorBaselines,
   TOKEN_DRIFT_RE,
   BRACKET_CODE_DRIFT_RE,
 };
