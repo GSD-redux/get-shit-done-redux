@@ -1502,3 +1502,317 @@ describe('bug-936 — plan-review-convergence runs plan-phase inline, not inside
 });
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1956 — Cross-artifact fact-drift pass (second axis of the plan drift guard)
+//
+// The source-grounding pass answers "does this symbol exist in the source?".
+// This pass answers "does the project state the same FACT in two planning
+// artifacts, and do the two disagree?" — the DRY hazard the issue names, where
+// one copy is updated and the other silently steers a fresh-context agent wrong.
+//
+// ## What this suite locks
+//
+// The deployed contract, plus the two Hyrum contracts that are invisible from
+// the new section itself and would be silently broken by a plausible edit:
+//   1. the pass is ORCHESTRATOR-side, not inside the Agent(prompt=…) string —
+//      the review agent's return message must end with its two "## " sections
+//      and carry no others, because the workflow awk-parses them;
+//   2. the pass can never reach the convergence gate. Convergence is
+//      HIGH_COUNT + ACTIONABLE_COUNT == 0, and the workflow's own ACTIONABLE
+//      definition would otherwise swallow a fact-drift finding — which would
+//      turn an advisory check into an infinite replan loop for any project that
+//      already carries drift.
+//
+// ## What it cannot prove
+//
+// That the model acts on the text. The subject is an LLM prompt; no test in
+// this repo proves behavior for the source-grounding pass either. Stated so the
+// coverage claim is honest rather than implied.
+//
+// The file is read through readFileNormalized, the same LF-normalizing seam the
+// rest of this suite uses, so a CRLF checkout cannot skew the offsets.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('plan-review-convergence: cross-artifact fact-drift pass (#1956)', () => {
+  const WORKFLOW = readFileNormalized(WORKFLOW_PATH);
+
+  const DRIFT_HEADING = /^### Cross-artifact fact-drift pass/m;
+  const GROUNDING_HEADING = /^### Source-grounding pass/m;
+  const AFTER_AGENT_LINE = /^After agent returns, verify REVIEWS\.md exists/m;
+
+  function offsetOf(content, pattern) {
+    const m = content.match(pattern);
+    return m && typeof m.index === 'number' ? m.index : -1;
+  }
+
+  function driftSpan() {
+    const start = offsetOf(WORKFLOW, DRIFT_HEADING);
+    const end = offsetOf(WORKFLOW, AFTER_AGENT_LINE);
+    assert.ok(start >= 0, 'workflow must define a "### Cross-artifact fact-drift pass" heading');
+    assert.ok(end >= 0, 'workflow must retain the "After agent returns…" line that bounds the pass');
+    assert.ok(end > start, 'the fact-drift pass must precede the "After agent returns…" line');
+    return WORKFLOW.slice(start, end);
+  }
+
+  /**
+   * Top-level ordered-list items in a span — the trigger gate's arity, i.e. the
+   * "flag only when ALL N hold" conjunction. Widening it from 3 to 2 is exactly
+   * what turns a precise heuristic into a noise generator, so the COUNT is
+   * asserted rather than the prose.
+   */
+  function countOrderedItems(span) {
+    const matches = span.match(/^\d+\. /gm);
+    return matches ? matches.length : 0;
+  }
+
+  describe('the pass exists and extends the drift guard in place', () => {
+    test('defines a cross-artifact fact-drift pass', () => {
+      const heading = WORKFLOW.match(/^### Cross-artifact fact-drift pass(.*)$/m);
+      assert.ok(heading, 'workflow must define a "### Cross-artifact fact-drift pass" heading');
+    });
+
+    test('the pass extends the drift guard, in place', () => {
+      const grounding = offsetOf(WORKFLOW, GROUNDING_HEADING);
+      const drift = offsetOf(WORKFLOW, DRIFT_HEADING);
+      const after = offsetOf(WORKFLOW, AFTER_AGENT_LINE);
+      assert.ok(grounding >= 0 && drift >= 0 && after >= 0, 'all three anchors must be present');
+      assert.ok(grounding < drift, 'the fact-drift pass must follow the source-grounding pass — it extends it');
+      assert.ok(drift < after, 'the fact-drift pass must sit before the post-agent REVIEWS.md check');
+    });
+
+    test('the pass region is outside the review-agent prompt', () => {
+      // The Agent(prompt="…") string ends at its `mode="auto"` argument. Both
+      // drift passes must begin after it, or their findings would land in the
+      // review agent's return message — which the workflow awk-parses and which
+      // must end with its two "## " sections and carry no others.
+      const agentPromptEnd = WORKFLOW.lastIndexOf('mode="auto"');
+      assert.ok(agentPromptEnd >= 0, 'the review Agent block must still carry its mode="auto" argument');
+      assert.ok(
+        offsetOf(WORKFLOW, GROUNDING_HEADING) > agentPromptEnd,
+        'source-grounding pass must remain orchestrator-side (after the Agent block)'
+      );
+      assert.ok(
+        offsetOf(WORKFLOW, DRIFT_HEADING) > agentPromptEnd,
+        'the fact-drift pass must be orchestrator-side — inside the Agent prompt its findings ' +
+        'would break the "no additional ## headings" return contract the workflow parses'
+      );
+    });
+  });
+
+  describe('it adds no config surface', () => {
+    test('the pass is gated on the existing drift-guard key', () => {
+      assert.match(
+        driftSpan(),
+        /plan_review\.source_grounding/,
+        'the fact-drift pass must name plan_review.source_grounding as its gate — issue #1956 ' +
+        'scopes it as an extension of the existing guard, gated by the existing config'
+      );
+    });
+
+    test('the pass introduces no new config key', () => {
+      // The issue's pre-submission checklist asserts the change adds no new
+      // concept, and its breaking-change mitigation reads "gated behind the
+      // EXISTING plan_review config". A third key would also force a 25th
+      // setting into gsd-core/workflows/settings.md's six-section UX.
+      const keys = new Set([...WORKFLOW.matchAll(/plan_review\.([a-z_]+)/g)].map((m) => m[1]));
+      assert.deepStrictEqual(
+        [...keys].sort(),
+        ['source_grounding', 'source_grounding_authority'],
+        'plan-review-convergence must reference only the two existing plan_review keys'
+      );
+    });
+  });
+
+  describe('the trigger gate is a three-way conjunction', () => {
+    test('the trigger gate enumerates exactly three conditions', () => {
+      assert.strictEqual(
+        countOrderedItems(driftSpan()),
+        3,
+        'the fact-drift pass must gate on exactly three AND-ed conditions (same fact named on ' +
+        'both sides, the two representations contradict, and the pair is one of the declared ' +
+        'authority pairs). Dropping one widens it into a noise generator; adding one silently ' +
+        'narrows what it can catch.'
+      );
+    });
+
+    test('condition counter fires at 2 / 3 / 4', () => {
+      // The assertion above can only ever observe the real document's arity, so
+      // its inequality branch never executes. Exercise the counter at
+      // limit-1 / limit / limit+1 through the SAME function the guard uses, in
+      // both LF and CRLF form, so a future edit cannot neuter it.
+      const item = (n) => `${n}. condition ${n}`;
+      for (const eol of ['\n', '\r\n']) {
+        const spanOf = (count) =>
+          ['### Cross-artifact fact-drift pass', ...Array.from({ length: count }, (_, i) => item(i + 1))]
+            .join(eol);
+        assert.strictEqual(countOrderedItems(spanOf(2)), 2, `2 items must count as 2 (eol=${JSON.stringify(eol)})`);
+        assert.strictEqual(countOrderedItems(spanOf(3)), 3, `3 items must count as 3 (eol=${JSON.stringify(eol)})`);
+        assert.strictEqual(countOrderedItems(spanOf(4)), 4, `4 items must count as 4 (eol=${JSON.stringify(eol)})`);
+      }
+    });
+  });
+
+  describe('severity is advisory, and can never gate convergence', () => {
+    test('the finding is advisory and never a blocker', () => {
+      assert.match(
+        driftSpan(),
+        /never\s+a\s+blocker/i,
+        'the fact-drift pass must state that its finding is never a blocker — issue #1956 asks ' +
+        'for an advisory finding, and blocking would strand every project carrying prior drift'
+      );
+    });
+
+    test('the pass can never gate convergence', () => {
+      // Convergence is HIGH_COUNT + ACTIONABLE_COUNT == 0, and the workflow's
+      // own ACTIONABLE definition ("a non-HIGH finding invisible to
+      // execute-phase unless incorporated into PLAN.md") would otherwise
+      // swallow a fact-drift finding — making pre-existing drift an infinite
+      // replan loop. This has to be WRITTEN DOWN, not merely true today.
+      const span = driftSpan();
+      assert.match(span, /HIGH_COUNT/, 'the pass must name HIGH_COUNT when disclaiming the convergence gate');
+      assert.match(span, /ACTIONABLE_COUNT/, 'the pass must name ACTIONABLE_COUNT when disclaiming the convergence gate');
+      assert.match(
+        span,
+        /never sets\s+`?hardBlock/,
+        'the pass must state that it never sets hardBlock — the source-grounding pass uses ' +
+        'hardBlock to stop the review cycle, and this pass must not inherit that'
+      );
+    });
+
+    test('findings land in REVIEWS.md', () => {
+      assert.match(
+        driftSpan(),
+        /REVIEWS\.md/,
+        'the fact-drift pass must write to REVIEWS.md, matching the source-grounding pass — ' +
+        'not to the review agent\'s return message'
+      );
+    });
+  });
+
+  describe('negative space is enumerated', () => {
+    test('the pass keys on knowledge, not similar text', () => {
+      // The maintainer's own research comment on #1956: "The check must key on
+      // 'same knowledge, drifting representations,' not 'similar-looking text,'
+      // or it will produce false positives."
+      const span = driftSpan();
+      assert.match(span, /knowledge/i, 'the pass must frame the check in terms of knowledge');
+      assert.match(
+        span,
+        /contradict/i,
+        'the pass must require a CONTRADICTION, not a resemblance — this is the rule that ' +
+        'keeps it from firing on every restatement'
+      );
+    });
+
+    test('the pass enumerates its non-triggering cases', () => {
+      assert.match(driftSpan(), /Do NOT flag/, 'the fact-drift pass must carry an explicit non-triggering list');
+    });
+
+    test('non-triggering list covers every exclusion class', () => {
+      const span = driftSpan();
+      // Each token is a distinct exclusion class from the design's negative
+      // space. Their absence is what produces the false positives the issue's
+      // research comment warns about.
+      for (const [token, why] of [
+        [/wording/i, 'a wording-only difference asserting the same thing is not drift'],
+        [/single-source/i, 'a fact held in one artifact only is the TARGET state, not a finding'],
+        [/\bADDS\b/, 'a PLAN may ADD truths beyond the roadmap SCs — only subtraction/contradiction counts'],
+        [/lifecycle/i, 'STATE trailing ROADMAP by one lifecycle step is lag, not drift'],
+        [/Deferred Ideas/, 'CONTEXT.md non-authoritative sections must not be compared'],
+      ]) {
+        assert.match(span, token, `the non-triggering list must cover: ${why}`);
+      }
+    });
+
+    test('the pass defers overlapping axes to the plan checker', () => {
+      // Report once, not twice. plan-checker already owns requirement coverage
+      // (D1), scope reduction (D7b) and cross-plan data contracts (D9).
+      const span = driftSpan();
+      for (const dimension of [/Dimension 1\b/, /Dimension 7b\b/, /Dimension 9\b/]) {
+        assert.match(span, dimension, `the pass must defer the overlapping axis to ${dimension}`);
+      }
+    });
+  });
+
+  describe('authority and coverage', () => {
+    test('the pass names an authority for every artifact pair', () => {
+      const span = driftSpan();
+      for (const artifact of ['ROADMAP.md', 'PLAN.md', 'STATE.md', 'CONTEXT.md']) {
+        assert.ok(
+          span.includes(artifact),
+          `the fact-drift pass must name ${artifact} — issue #1956 spans all four planning artifacts`
+        );
+      }
+      assert.match(
+        span,
+        /Authority/i,
+        'the pass must declare which side of each pair is the source of truth — a finding that ' +
+        'names a divergence without naming the authority cannot be acted on'
+      );
+    });
+
+    test('a skipped axis is recorded, never silent', () => {
+      const span = driftSpan();
+      assert.match(span, /skip(ped)?/i, 'the pass must describe what happens when an artifact is absent');
+      assert.match(
+        span,
+        /coverage/i,
+        'a skipped axis must be recorded in the Verification coverage block — a clean pass must ' +
+        'never silently mean "nothing was compared"'
+      );
+    });
+  });
+
+  describe('independence — the surrounding contracts are unchanged', () => {
+    test('the source-grounding pass keeps its hard block', () => {
+      const start = offsetOf(WORKFLOW, GROUNDING_HEADING);
+      const end = offsetOf(WORKFLOW, DRIFT_HEADING);
+      assert.ok(start >= 0 && end > start, 'source-grounding pass must still precede the fact-drift pass');
+      const groundingSpan = WORKFLOW.slice(start, end);
+      assert.match(
+        groundingSpan,
+        /hardBlock: true/,
+        'the source-grounding pass must keep its hardBlock gating — #1956 is additive and must ' +
+        'not downgrade the existing guard'
+      );
+    });
+
+    test('the review-agent return contract is unchanged', () => {
+      assert.match(
+        WORKFLOW,
+        /no additional "## " headings after them/,
+        'the review agent\'s return-message contract must survive — the workflow awk-parses ' +
+        'those sections and a stray "## " heading breaks escalation-detail extraction'
+      );
+    });
+  });
+
+  describe('docs parity', () => {
+    test('CONFIGURATION.md documents both drift-guard axes', () => {
+      const configDoc = readFileNormalized(CONFIG_DOC_PATH);
+      const row = configDoc
+        .split('\n')
+        .find((l) => l.startsWith('|') && l.includes('`plan_review.source_grounding`'));
+      assert.ok(row, 'docs/CONFIGURATION.md must carry a table row for plan_review.source_grounding');
+      assert.match(
+        row,
+        /cross-artifact|fact drift/i,
+        'the plan_review.source_grounding row must document the second (fact-drift) axis — the ' +
+        'key now gates two checks, and a reader disabling it must know what else goes dark'
+      );
+    });
+
+    test('USER-GUIDE.md documents the second axis', () => {
+      const guide = readFileNormalized(path.join(__dirname, '..', 'docs', 'USER-GUIDE.md'));
+      const start = guide.indexOf('plan_review.source_grounding: true');
+      assert.ok(start >= 0, 'docs/USER-GUIDE.md must retain its Drift Guard section');
+      const section = guide.slice(start, start + 4000);
+      assert.match(
+        section,
+        /cross-artifact|fact drift/i,
+        'the USER-GUIDE Drift Guard section must describe the cross-artifact fact-drift axis'
+      );
+    });
+  });
+});
