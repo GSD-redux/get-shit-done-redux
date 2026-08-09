@@ -1578,6 +1578,29 @@ const KNOWN_REVIEWER_FIELDS = new Set([
   'handler',
 ]);
 
+/**
+ * Frozen reason codes for the non-fatal reviewer diagnostics (ADR-2782 D4.3).
+ *
+ * The IR behind `collectReviewerWarnings`' rendered strings. Tests assert on
+ * these codes; the rendered `message` is operator console output and tests must
+ * not depend on it (CONTRIBUTING.md, "Prohibited: Raw Text Matching on Test
+ * Outputs"), which is the same split `bin/verify-reapply-patches.cjs` uses.
+ *
+ * Adding a code is THREE coordinated changes: this enum, the emitting site in
+ * `collectReviewerWarningRecordFields`, and the test that locks
+ * `Object.keys(REVIEWER_WARNING).sort()`. That coupling is the point — it stops
+ * the code surface drifting from the test surface.
+ */
+const REVIEWER_WARNING = Object.freeze({
+  /** A key inside a `reviewer` body that this GSD version does not know. */
+  UNKNOWN_REVIEWER_FIELD: 'unknown_reviewer_field',
+  /** A `runtime.hostBehaviors` key that was removed from the vocabulary. */
+  REMOVED_HOST_BEHAVIOR: 'removed_host_behavior',
+});
+
+/** Dotted path of the field removed by ADR-2782 D9 / #2801. */
+const REMOVED_REVIEWER_CLI_FIELD = 'runtime.hostBehaviors.reviewerCli';
+
 const KNOWN_PROBE_FIELDS = new Set(['kind', 'binary', 'needle', 'timeoutMs', 'hostConfigKey', 'path']);
 
 /** A bounded probe timeout must be a finite, positive INTEGER of milliseconds. */
@@ -1661,8 +1684,39 @@ function validateEnumField(ctx, label, value, validSet) {
 }
 
 /**
- * Collect NON-FATAL reviewer diagnostics for a capability manifest
- * (ADR-2782 D4.3, plus the D9 `hostBehaviors.reviewerCli` removal notice, #2801).
+ * Collect NON-FATAL reviewer diagnostics for a capability manifest as TYPED
+ * RECORDS (ADR-2782 D4.3, plus the D9 `hostBehaviors.reviewerCli` removal
+ * notice, #2801).
+ *
+ * This is the IR. `collectReviewerWarnings` below renders it to strings for the
+ * two production consumers; tests assert on these records instead of matching
+ * the rendered prose (CONTRIBUTING.md, "Prohibited: Raw Text Matching on Test
+ * Outputs").
+ *
+ * Record shape — `code` and `capId` are always present; the rest is per-code:
+ *   { code: REVIEWER_WARNING.UNKNOWN_REVIEWER_FIELD,
+ *     capId, field: 'reviewer.<key>', knownFields: string[], message }
+ *   { code: REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR,
+ *     capId, field: 'runtime.hostBehaviors.reviewerCli',
+ *     replacement: 'reviewer', docs: '<how-to path>', message }
+ *
+ * TOTAL: returns an array for ANY input and never throws. It runs on
+ * loadRegistry's ACCEPT path, so a diagnostic that throws would cost the user a
+ * lane that is otherwise perfectly valid (#1461 OVL-1).
+ *
+ * @param {object} cap  A capability manifest.
+ * @returns {Array<object>}  Warning records; empty when there is nothing to say.
+ */
+function collectReviewerWarningRecords(cap) {
+  try {
+    return collectReviewerWarningRecordFields(cap);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Render the IR for operator console output.
  *
  * Kept separate from validateReviewerBody so validateCapability's contract
  * (`=> string[]` of ERRORS) is unchanged for its two existing callers. The
@@ -1670,29 +1724,24 @@ function validateEnumField(ctx, label, value, validSet) {
  * through OverlayMeta.warnings. A warning written only to a build log nobody
  * reads is not a warning (ADR-2782 D4, "Where warnings surface").
  *
+ * The `string[]` shape is load-bearing for both consumers and does not change.
+ *
  * @param {object} cap  A capability manifest.
  * @returns {string[]}  Warning strings; empty when there is nothing to say.
  */
 function collectReviewerWarnings(cap) {
-  // Same totality contract as validateReviewerBody, for the same reason: this is
-  // called from loadRegistry's accept path, and a diagnostic that throws must
-  // never cost the user a working lane.
-  try {
-    return collectReviewerWarningFields(cap);
-  } catch {
-    return [];
-  }
+  return collectReviewerWarningRecords(cap).map((record) => record.message);
 }
 
-function collectReviewerWarningFields(cap) {
-  const warnings = [];
-  if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return warnings;
+function collectReviewerWarningRecordFields(cap) {
+  const records = [];
+  if (typeof cap !== 'object' || cap === null || Array.isArray(cap)) return records;
 
   const capId = typeof cap.id === 'string' ? cap.id : '(unknown)';
 
   // ADR-2782 D9 / #2801 — the REMOVED `runtime.hostBehaviors.reviewerCli` alias.
   //
-  // Placed BEFORE the `reviewer`-body early-return below, deliberately. The
+  // Emitted BEFORE the `reviewer`-body early-return below, deliberately. The
   // manifest this notice exists for is the ALIAS-ONLY one, which by definition
   // carries no body; after that guard the check would fire only for
   // capabilities that already declare a lane — exactly the set that does not
@@ -1712,25 +1761,36 @@ function collectReviewerWarningFields(cap) {
       && !Array.isArray(hostBehaviors)
       && Object.prototype.hasOwnProperty.call(hostBehaviors, 'reviewerCli')
     ) {
-      warnings.push(
-        '⚠ capability "' + capId + '" runtime.hostBehaviors.reviewerCli was removed (ADR-2782 D9) ' +
-        '— ignored, and it contributes no reviewer lane. Declare a `reviewer` body instead; see ' +
-        'docs/how-to/ship-a-reviewer-lane.md',
-      );
+      records.push({
+        code: REVIEWER_WARNING.REMOVED_HOST_BEHAVIOR,
+        capId,
+        field: REMOVED_REVIEWER_CLI_FIELD,
+        replacement: 'reviewer',
+        docs: 'docs/how-to/ship-a-reviewer-lane.md',
+        message:
+          '⚠ capability "' + capId + '" ' + REMOVED_REVIEWER_CLI_FIELD + ' was removed (ADR-2782 D9) ' +
+          '— ignored, and it contributes no reviewer lane. Declare a `reviewer` body instead; see ' +
+          'docs/how-to/ship-a-reviewer-lane.md',
+      });
     }
   }
 
   const r = cap.reviewer;
-  if (typeof r !== 'object' || r === null || Array.isArray(r)) return warnings;
+  if (typeof r !== 'object' || r === null || Array.isArray(r)) return records;
 
   for (const key of Object.keys(r)) {
     if (isReservedName(key) || KNOWN_REVIEWER_FIELDS.has(key)) continue;
-    warnings.push(
-      '⚠ capability "' + capId + '" reviewer.' + key + ' is not a known reviewer field ' +
-      'in this GSD version — ignored. Known fields: ' + [...KNOWN_REVIEWER_FIELDS].join(', '),
-    );
+    records.push({
+      code: REVIEWER_WARNING.UNKNOWN_REVIEWER_FIELD,
+      capId,
+      field: 'reviewer.' + key,
+      knownFields: [...KNOWN_REVIEWER_FIELDS],
+      message:
+        '⚠ capability "' + capId + '" reviewer.' + key + ' is not a known reviewer field ' +
+        'in this GSD version — ignored. Known fields: ' + [...KNOWN_REVIEWER_FIELDS].join(', '),
+    });
   }
-  return warnings;
+  return records;
 }
 
 /**
@@ -3205,6 +3265,9 @@ module.exports = {
   KNOWN_REVIEWER_FIELDS,
   validateReviewerBody,
   collectReviewerWarnings,
+  collectReviewerWarningRecords,
+  REVIEWER_WARNING,
+  REMOVED_REVIEWER_CLI_FIELD,
   VALID_INSTALL_SURFACES,
   VALID_PERMISSION_WRITERS,
   VALID_EXTENDED_HOOK_EVENTS,
