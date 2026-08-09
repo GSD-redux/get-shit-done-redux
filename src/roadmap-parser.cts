@@ -897,11 +897,12 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
 
   // #2761 B3: resolve the boundary convention independently of whether the
   // version-heading owner already selected a match. Preserve an explicitly
-  // threaded convention; otherwise resolve from this call's workspace.
+  // threaded convention; otherwise resolve from the same workstream whose
+  // STATE/ROADMAP this call reads (#2761 B1).
   let bracketScopeConvention: string | null = phaseIdConvention ?? null;
   if (phaseIdConvention === undefined) {
     try {
-      bracketScopeConvention = resolvePhaseIdConvention(cwd);
+      bracketScopeConvention = resolvePhaseIdConvention(cwd, ws);
     } catch { /* unresolvable convention → preserve the legacy fallback */ }
   }
   if (headingMatches.length === 0 && bracketScopeConvention === 'bracket') {
@@ -1885,10 +1886,11 @@ function getMilestonePhaseFilter(cwd: string, versionOverride?: string | null, p
     }
 
     // Resolve once, then thread the same answer through the shared scan and
-    // the directory matcher. A split convention would widen the ROADMAP side
-    // while leaving every bracket directory unmatched.
+    // directory matcher. Resolve an omitted value from this call's `ws`;
+    // explicit null still means "resolved and non-bracket." A split convention
+    // would widen the ROADMAP side while leaving bracket directories unmatched.
     headingConvention = phaseIdConvention === undefined
-      ? resolvePhaseIdConvention(cwd)
+      ? resolvePhaseIdConvention(cwd, ws)
       : phaseIdConvention;
     // #3262 remains the single owner of the phase-set scan. #612 extends its
     // return with qualified bracket ids rather than restoring the superseded
