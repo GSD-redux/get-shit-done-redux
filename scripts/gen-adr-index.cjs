@@ -138,6 +138,74 @@ function canonicalId(raw) {
 const ADR_FILENAME_RE = /^[0-9]+-[a-z0-9-]+\.md$/;
 
 /**
+ * Whole-segment containment test: true if `abs` is NOT inside `root`.
+ *
+ * The SINGLE copy of this predicate. Before this PR it was hand-written
+ * inline in two places (the lexical pre-stat check in `validateLinks` and the
+ * post-realpath escape check in `existsCaseExact`) with no shared name; a
+ * third copy for `markdownFilesInAdrDir`'s own symlink check would have made
+ * three. All three call sites now share this one function.
+ *
+ * `rel.startsWith('..')` alone would also match an in-repo path whose first
+ * segment merely BEGINS with two dots (`..hidden.md`), and a false "escapes
+ * the repository" on a valid path is a worse failure than a miss — hence the
+ * whole-segment `rel === '..' || rel.startsWith('..' + sep)` form.
+ */
+function escapesRoot(abs, root) {
+  const rel = path.relative(root, abs);
+  return rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+}
+
+/**
+ * `fs.realpathSync(ROOT)`, tolerant of an unreadable/vanished ROOT (degrades
+ * to the lexical ROOT itself rather than throwing — callers still get a
+ * usable comparison root, just without symlink-normalization on hosts where
+ * ROOT itself sits under a symlinked ancestor, e.g. macOS's /var -> /private/var).
+ */
+function realRootOrFallback() {
+  try {
+    return fs.realpathSync(ROOT);
+  } catch {
+    return ROOT;
+  }
+}
+
+/**
+ * Whether `joined` (a `*.md` dirent directly under docs/adr/) should be
+ * treated as an ADR file: a regular file, or a symlink that resolves to a
+ * regular file WITHOUT leaving the repository. Applies the same rule to which
+ * FILES are read as `validateLinks` already applies to which link TARGETS
+ * resolve — a symlink escaping the repo is never followed and its content is
+ * never touched (no `statSync`/`readFileSync` past the `lstatSync`/
+ * `realpathSync` calls below), because `parseAdr` and `validateLinks` both
+ * read the FULL body of every accepted file and echo fragments into stderr.
+ */
+function isAcceptedAdrEntry(joined, realRoot) {
+  let lst;
+  try {
+    lst = fs.lstatSync(joined);
+  } catch {
+    return false; // vanished / unreadable
+  }
+  if (lst.isFile()) return true;
+  if (!lst.isSymbolicLink()) return false;
+
+  let real;
+  try {
+    real = fs.realpathSync(joined);
+  } catch {
+    return false; // broken symlink
+  }
+  if (escapesRoot(real, realRoot)) return false; // escapes the repository
+
+  try {
+    return fs.statSync(real).isFile();
+  } catch {
+    return false; // vanished between realpath and stat (TOCTOU)
+  }
+}
+
+/**
  * Every markdown file directly under docs/adr/, README.md included.
  *
  * Single source of the traversal rule: `adrFiles()` is this minus README.md
@@ -157,17 +225,18 @@ function markdownFilesInAdrDir() {
     // which would print `err.stack` (absolute host paths) to public CI logs.
     entries = [];
   }
+  const realRoot = realRootOrFallback();
   return entries
     .filter((f) => f.endsWith('.md'))
     .filter((f) => {
       try {
-        return fs.statSync(path.join(ADR_DIR, f)).isFile();
+        return isAcceptedAdrEntry(path.join(ADR_DIR, f), realRoot);
       } catch {
-        // A `*.md` dirent that cannot be stat'd — most commonly a broken
-        // symlink — is excluded here rather than crashing `statSync`'s
-        // caller. It is not silently dropped from the gate: `validateLinks`
-        // diffs this filtered list against the raw `readdirSync` listing and
-        // reports the exclusion as its own violation, naming the file.
+        // A `*.md` dirent that cannot be classified — most commonly a broken
+        // symlink — is excluded here rather than crashing the caller. It is
+        // not silently dropped from the gate: `validateLinks` diffs this
+        // filtered list against the raw `readdirSync` listing and reports
+        // the exclusion as its own violation, naming the file.
         return false;
       }
     })
@@ -491,9 +560,7 @@ function existsCaseExact(abs, dirCache, realRoot) {
         // Broken symlink — degrade to "does not resolve", never throw.
         return { exists: false, hint: null, escaped: false };
       }
-      const relReal = path.relative(realRoot, real);
-      const escapesReal = relReal === '..' || relReal.startsWith(`..${path.sep}`) || path.isAbsolute(relReal);
-      if (escapesReal) {
+      if (escapesRoot(real, realRoot)) {
         // No further readdirSync down this path, and no hint: both would
         // disclose facts about a directory outside the repo.
         return { exists: false, hint: null, escaped: true };
@@ -523,10 +590,17 @@ function existsCaseExact(abs, dirCache, realRoot) {
 function validateLinks(add) {
   const files = markdownFilesInAdrDir();
 
-  // Report any `*.md` dirent that `markdownFilesInAdrDir` silently excluded
-  // because it could not be stat'd (e.g. a broken symlink) — so it surfaces
-  // as a gate finding instead of quietly vanishing from the index. Reading
-  // the directory again here (rather than threading a second return value
+  // Computed ONCE per pass, never per-link/per-dirent: see existsCaseExact's
+  // doc comment for why comparing against the REAL root (not the lexical
+  // ROOT constant) is required to avoid false escapes when the repo checkout
+  // itself sits under a symlinked ancestor (e.g. macOS's /var -> /private/var).
+  const realRoot = realRootOrFallback();
+
+  // Report any `*.md` dirent that `markdownFilesInAdrDir` silently excluded —
+  // because it could not be stat'd (e.g. a broken symlink) OR because it IS a
+  // symlink that resolves outside the repository — so it surfaces as a gate
+  // finding instead of quietly vanishing from the index. Reading the
+  // directory again here (rather than threading a second return value
   // through `markdownFilesInAdrDir`) keeps that function's contract
   // (`string[]`) simple for its other callers. Wrapped in try/catch for the
   // same reason as inside `markdownFilesInAdrDir`: an unreadable ADR_DIR
@@ -538,29 +612,41 @@ function validateLinks(add) {
     dirents = [];
   }
   const included = new Set(files);
+  const BROKEN_MSG = 'could not be read (broken symlink?) and was excluded from the index. Remove it or fix its target.';
   for (const f of dirents) {
     if (!f.endsWith('.md') || included.has(f)) continue;
+    const joined = path.join(ADR_DIR, f);
+    let lst;
     try {
-      fs.statSync(path.join(ADR_DIR, f));
-      // stat succeeded — it's excluded for some other legitimate reason
+      lst = fs.lstatSync(joined);
+    } catch {
+      add(f, BROKEN_MSG);
+      continue;
+    }
+    if (!lst.isSymbolicLink()) {
+      // Not a symlink and still excluded — some other legitimate reason
       // (e.g. it's a directory literally named `*.md`), not unreadable.
       continue;
-    } catch {
-      add(f, 'could not be read (broken symlink?) and was excluded from the index. Remove it or fix its target.');
     }
+    let real;
+    try {
+      real = fs.realpathSync(joined);
+    } catch {
+      add(f, BROKEN_MSG);
+      continue;
+    }
+    if (escapesRoot(real, realRoot)) {
+      // Distinct message from the broken-symlink one above, and — same
+      // discipline as the link-target escape below — no path or hint from
+      // outside the repo is ever included: only the in-repo dirent name.
+      add(f, 'is a symlink that escapes the repository and was excluded from the index. Point it at a file inside docs/adr/, or remove it.');
+      continue;
+    }
+    // Resolves inside the repo but is not a regular file (e.g. a symlink to
+    // a directory) — a legitimate exclusion, not a disclosure hazard.
   }
 
   const dirCache = new Map();
-  // Computed ONCE per pass, never per-link: see existsCaseExact's doc comment
-  // for why comparing against the REAL root (not the lexical ROOT constant)
-  // is required to avoid false escapes when the repo checkout itself sits
-  // under a symlinked ancestor (e.g. macOS's /var -> /private/var).
-  let realRoot;
-  try {
-    realRoot = fs.realpathSync(ROOT);
-  } catch {
-    realRoot = ROOT;
-  }
 
   for (const file of files) {
     const text = fs.readFileSync(path.join(ADR_DIR, file), 'utf8');
@@ -594,11 +680,7 @@ function validateLinks(add) {
 
       // Containment BEFORE any filesystem call: never `stat` outside ROOT.
       const rel = path.relative(ROOT, abs);
-      // Whole-segment test: `rel.startsWith('..')` alone would also match an in-repo
-      // path whose first segment merely BEGINS with two dots (`..hidden.md`), and a
-      // false "escapes the repository" on a valid link is a worse failure than a miss.
-      const escapes = rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
-      if (escapes) {
+      if (escapesRoot(abs, ROOT)) {
         add(`${file}:${line}`, `link "${rawTarget}" escapes the repository. Link a path inside the repo.`);
         continue;
       }

@@ -1468,6 +1468,64 @@ describe('symlink escape guard (F1/F2)', () => {
     const res = run(root, ['--check']);
     assert.equal(res.status, 0, `an in-repo symlink must not be misclassified as an escape: ${res.stderr}`);
   });
+
+  // Same containment rule this describe block enforces for link TARGETS
+  // (`x/secret.txt` above) applies to the ADR FILES themselves:
+  // `markdownFilesInAdrDir` used `fs.statSync`, which follows symlinks, so a
+  // `docs/adr/*.md` symlinked out of the repo was accepted as an ADR and had
+  // its full body read by `parseAdr` and scanned for links by
+  // `validateLinks` — echoing fragments of an arbitrary outside file into
+  // public stderr on a fork PR.
+
+  test('an ADR file that is a symlink out of the repository is not read', (t) => {
+    const outside = createTempDir('gsd-adr-index-outside-');
+    t.after(() => cleanup(outside));
+    fs.writeFileSync(
+      path.join(outside, 'evil-source.md'),
+      adrBody('Evil', ['**Status:** Accepted'], ['SENTINEL-OUTSIDE-CONTENT', 'See [x](sentinel-target.md) for context.']),
+    );
+
+    const root = makeRepo(t, {});
+    if (
+      !trySymlink(t, path.join(outside, 'evil-source.md'), path.join(root, 'docs', 'adr', '0002-evil.md'), 'file')
+    ) {
+      return;
+    }
+
+    const res = run(root, ['--check']);
+    assert.equal(res.status, 1, 'an ADR file symlinked out of the repository must fail the gate');
+    assert.match(res.stderr, /0002-evil\.md/, 'must name the excluded file');
+    assert.match(res.stderr, /escap/i, 'must report the escape, distinct from the broken/unreadable message');
+    assert.doesNotMatch(
+      res.stderr,
+      /SENTINEL-OUTSIDE-CONTENT/,
+      'must never read or echo content from the file outside the repository',
+    );
+    assert.doesNotMatch(
+      res.stderr,
+      /sentinel-target\.md/,
+      'must never echo a link target found only inside the unread outside file',
+    );
+  });
+
+  test('an ADR file that is a symlink inside the repository is still read', (t) => {
+    const root = makeRepo(t, {
+      '0001-alpha.md': adr('Alpha module', ['**Status:** Accepted']),
+    });
+    if (
+      !trySymlink(
+        t,
+        path.join(root, 'docs', 'adr', '0001-alpha.md'),
+        path.join(root, 'docs', 'adr', '0003-alias.md'),
+        'file',
+      )
+    ) {
+      return;
+    }
+
+    const write = run(root, ['--write']);
+    assert.equal(write.status, 0, `a legitimate in-repo symlinked ADR file must still be read: ${write.stderr}`);
+  });
 });
 
 test('a broken symlink under docs/adr is reported, not a crash (F4)', (t) => {
