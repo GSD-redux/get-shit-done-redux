@@ -21,6 +21,7 @@
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const { toPosixPath } = require('./helpers.cjs');
 
 const { resolveScope, isGlobalScope } = require('../gsd-core/bin/lib/install-scope.cjs');
 const registry = require('../gsd-core/bin/lib/capability-registry.cjs');
@@ -186,7 +187,7 @@ describe('resolveScope', () => {
 
   // Row 15
   test('blank env override does not win', () => {
-    const expected = path.join(FAKE_HOME, '.claude');
+    const expected = toPosixPath(path.join(FAKE_HOME, '.claude'));
     const empty = resolveScope(fixture({ id: 'global', runtime: 'claude', env: { CLAUDE_CONFIG_DIR: '' } }));
     const whitespace = resolveScope(fixture({ id: 'global', runtime: 'claude', env: { CLAUDE_CONFIG_DIR: '   ' } }));
     assert.strictEqual(empty.configHome, expected);
@@ -251,8 +252,8 @@ describe('resolveScope', () => {
     const first = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project-a' }));
     const second = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project-b' }));
     assert.notStrictEqual(first.configHome, second.configHome);
-    assert.strictEqual(first.configHome, path.join('/fake/project-a', '.claude'));
-    assert.strictEqual(second.configHome, path.join('/fake/project-b', '.claude'));
+    assert.strictEqual(first.configHome, toPosixPath(path.join('/fake/project-a', '.claude')));
+    assert.strictEqual(second.configHome, toPosixPath(path.join('/fake/project-b', '.claude')));
   });
 });
 
