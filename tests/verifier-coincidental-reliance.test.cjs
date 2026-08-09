@@ -76,8 +76,12 @@ describe('#1955: coincidental-reliance advisory — the rule', () => {
 
   test('advisory applies only to truths that reached VERIFIED', () => {
     // The advisory explains why a PASSING truth passes. A truth that never
-    // reached ✓ VERIFIED has nothing to explain.
-    assert.match(verifier, /coincidental-reliance[\s\S]{0,600}?✓ VERIFIED/);
+    // reached ✓ VERIFIED has nothing to explain. Asserted on the window around
+    // the rule rather than a forward-only regex: the scoping clause precedes
+    // the first `coincidental-reliance` token, so `token[\s\S]{0,N}?✓ VERIFIED`
+    // structurally cannot see it.
+    const window = sectionAround(verifier, 'coincidental-reliance', 1400);
+    assert.match(window, /✓ VERIFIED truth/);
   });
 
   test('does not double-report truths already routed to human verification', () => {
@@ -196,7 +200,10 @@ describe('#1955: coincidental-reliance advisory — the report surface', () => {
 
   test('item shape names the truth, the reason, and the hardening', () => {
     // 1-flag boundary: an advisory that names no fix is not actionable.
-    const window = sectionAround(verifier, 'coincidental_reliance_items', 500);
+    // `coincidental_reliance_items: #` anchors the FRONTMATTER block. The bare
+    // key also appears earlier in the rule prose, and a window around that
+    // occurrence contains none of the item fields.
+    const window = sectionAround(verifier, 'coincidental_reliance_items: #', 500);
     assert.match(window, /truth:/);
     assert.match(window, /reason:/);
     assert.match(window, /(harden|fix|precondition)/i);
@@ -205,7 +212,7 @@ describe('#1955: coincidental-reliance advisory — the report surface', () => {
   test('items survive a gaps_found phase', () => {
     // many-flag / mixed boundary: same survival rule behavior_unverified_items
     // carries, so an advisory is not lost when the phase also has gaps.
-    const window = sectionAround(verifier, 'coincidental_reliance_items', 500);
+    const window = sectionAround(verifier, 'coincidental_reliance_items: #', 500);
     assert.match(window, /(regardless of (overall )?status|survive|never lost)/i);
   });
 });
