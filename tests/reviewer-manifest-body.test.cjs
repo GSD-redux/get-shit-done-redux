@@ -1700,3 +1700,203 @@ describe('J. Property-based (fast-check)', () => {
     );
   });
 });
+
+// ─── K. Removed `hostBehaviors.reviewerCli` alias (ADR-2782 D9, chore #2801) ──
+//
+// Phase 7 deletes the derived legacy alias. `collectReviewerWarnings` is the
+// channel the removal announces itself on, because it is already wired to BOTH
+// surfaces a manifest can arrive through: the build-time generator
+// (`gen-capability-registry.cjs` -> stderr) and the overlay loader
+// (`capability-loader.cts` -> OverlayMeta.warnings, on the ACCEPT path for every
+// accepted capability). An out-of-tree manifest still setting the alias reaches
+// the second one.
+//
+// Rows K1-K9 implement W1-W9 of
+// `.gsd/phase/chore-2801-remove-reviewercli-alias/50-test-matrix.md`.
+//
+// The load-bearing structural fact these rows pin down: the removal check must
+// run BEFORE `collectReviewerWarningFields`' `reviewer`-body early-return. An
+// alias-only manifest — precisely the case the deprecation window existed for —
+// has no `reviewer` body, so a check placed after that guard would fire only for
+// capabilities that do not need it. K1 is the row that fails if it is misplaced.
+
+describe('K. Removed hostBehaviors.reviewerCli alias (#2801)', () => {
+  /** A whole runtime manifest — the shape production passes to this function. */
+  function runtimeCapWithHostBehaviors(hostBehaviors, extra = {}) {
+    return {
+      id: 'legacy-cli',
+      role: 'runtime',
+      runtime: { hostBehaviors },
+      ...extra,
+    };
+  }
+
+  const REMOVED_KEY = 'hostBehaviors.reviewerCli';
+
+  function aliasWarnings(cap) {
+    return collectReviewerWarnings(cap).filter((w) => w.includes(REMOVED_KEY));
+  }
+
+  test('removedReviewerCliAliasWarnsWhenPresentWithoutABody', () => {
+    // No `reviewer` body at all — the alias-only manifest. This is the row that
+    // proves the check runs before the body early-return.
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true });
+    const warnings = aliasWarnings(cap);
+    assert.equal(
+      warnings.length, 1,
+      `expected exactly one removal warning for an alias-only manifest, got: ${JSON.stringify(collectReviewerWarnings(cap))}`,
+    );
+    assert.ok(
+      warnings[0].includes('legacy-cli'),
+      `the warning must name the capability, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  test('removedReviewerCliAliasWarnsAlongsideADeclaredBody', () => {
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true }, { reviewer: validLane() });
+    assert.equal(aliasWarnings(cap).length, 1, 'a declared body must not suppress the removal notice');
+    assert.deepEqual(
+      validateReviewerBody(cap), [],
+      'the vestigial key must stay a WARNING — never a validation error (Postel: liberal in what we accept)',
+    );
+  });
+
+  test('removedReviewerCliAliasWarnsRegardlessOfItsValue', () => {
+    // Presence-based, deliberately: after removal the key is unknown at ANY
+    // value, exactly as an unknown `reviewer.*` field is. A value-sensitive
+    // warning would tell an author carrying `reviewerCli: false` that their
+    // stale key is fine, when it is simply dead.
+    // (40-design.md -> Rejected 3.)
+    for (const value of [true, false, 'true', 0, 1, null, {}, []]) {
+      const cap = runtimeCapWithHostBehaviors({ reviewerCli: value });
+      assert.equal(
+        aliasWarnings(cap).length, 1,
+        `expected a removal warning for reviewerCli = ${JSON.stringify(value)}, got: ${JSON.stringify(collectReviewerWarnings(cap))}`,
+      );
+    }
+  });
+
+  test('similarlyNamedHostBehaviorKeysDoNotWarn', () => {
+    // `hostBehaviors` stays an OPEN, UNVALIDATED bag for its other keys
+    // (ADR-1016's deliberate seam). This phase adds ONE keyed removal notice,
+    // not general hostBehaviors validation — so a near-miss name is silent.
+    const cap = runtimeCapWithHostBehaviors({
+      reviewerCliPath: '/usr/bin/thing',
+      reviewer_cli: true,
+      reviewerCLI: true,
+      reviewer: true,
+      reapplyCommand: 'x',
+    });
+    assert.deepEqual(
+      collectReviewerWarnings(cap), [],
+      'only the exact own key `reviewerCli` is the removed field',
+    );
+  });
+
+  test('malformedHostBehaviorsNeitherWarnsNorThrows', () => {
+    const shapes = [
+      ['null', { id: 'c', role: 'runtime', runtime: { hostBehaviors: null } }],
+      ['array', { id: 'c', role: 'runtime', runtime: { hostBehaviors: [] } }],
+      ['string', { id: 'c', role: 'runtime', runtime: { hostBehaviors: 'reviewerCli' } }],
+      ['number', { id: 'c', role: 'runtime', runtime: { hostBehaviors: 42 } }],
+      ['empty object', { id: 'c', role: 'runtime', runtime: { hostBehaviors: {} } }],
+      ['no hostBehaviors', { id: 'c', role: 'runtime', runtime: {} }],
+      ['no runtime', { id: 'c', role: 'reviewer', reviewer: validLane() }],
+      ['runtime null', { id: 'c', role: 'runtime', runtime: null }],
+    ];
+    for (const [name, cap] of shapes) {
+      let warnings;
+      try {
+        warnings = collectReviewerWarnings(cap);
+      } catch (err) {
+        assert.fail(`collectReviewerWarnings threw for ${name}: ${err && err.message}`);
+      }
+      assert.deepEqual(
+        warnings.filter((w) => w.includes(REMOVED_KEY)), [],
+        `${name} must not produce a removal warning`,
+      );
+    }
+  });
+
+  test('removalWarningAndUnknownFieldWarningCoexist', () => {
+    // Two independent diagnostics on one manifest. Neither may swallow the other
+    // — an early `return` after the first would hide the second.
+    const lane = validLane();
+    lane.futureField = 'from-a-newer-gsd';
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true }, { id: 'both-cap', reviewer: lane });
+
+    const warnings = collectReviewerWarnings(cap);
+    assert.equal(
+      warnings.filter((w) => w.includes(REMOVED_KEY)).length, 1,
+      `expected the removal warning, got: ${JSON.stringify(warnings)}`,
+    );
+    assert.equal(
+      warnings.filter((w) => w.includes('reviewer.futureField')).length, 1,
+      `expected the unknown-field warning, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+
+  test('inheritedReviewerCliFromPrototypeDoesNotWarn', () => {
+    // Own-key read: a polluted prototype must not manufacture a removal warning
+    // on every otherwise-innocent manifest.
+    const polluted = Object.create({ reviewerCli: true });
+    polluted.reapplyCommand = 'x';
+    const cap = runtimeCapWithHostBehaviors(polluted);
+    assert.deepEqual(
+      collectReviewerWarnings(cap), [],
+      'an inherited reviewerCli is not a declared field',
+    );
+  });
+
+  test('removalWarningNamesTheReviewerBodyReplacement', () => {
+    // A removal notice that does not say what to do instead is not a migration
+    // path. The field was undocumented for its whole life and only documented at
+    // 1.9.0 as ALREADY deprecated, so we cannot enumerate who depends on it
+    // (Hyrum) — the exit has to carry its own instructions.
+    const cap = runtimeCapWithHostBehaviors({ reviewerCli: true });
+    const [warning] = aliasWarnings(cap);
+    assert.ok(warning, 'expected a removal warning');
+    assert.ok(
+      warning.includes('reviewer'),
+      `the warning must point at the replacement declaration, got: ${JSON.stringify(warning)}`,
+    );
+    assert.ok(
+      /removed/i.test(warning),
+      `the warning must say the field is removed, not merely deprecated, got: ${JSON.stringify(warning)}`,
+    );
+  });
+
+  test('collectReviewerWarningsStaysTotalOverTheNewHostBehaviorsReadPath', () => {
+    // W9 — the totality contract (#1461 OVL-1) now covers a second read path.
+    // A throwing getter or Proxy trap fires on the READ, before any message is
+    // built, so only the structural wrapper can save these.
+    const throwing = () => { throw new Error('boom'); };
+
+    const hostBehaviorsGetterThrows = { id: 'x', role: 'runtime', runtime: {} };
+    Object.defineProperty(hostBehaviorsGetterThrows.runtime, 'hostBehaviors', { get: throwing });
+
+    const reviewerCliGetterThrows = { id: 'x', role: 'runtime', runtime: { hostBehaviors: {} } };
+    Object.defineProperty(reviewerCliGetterThrows.runtime.hostBehaviors, 'reviewerCli', { get: throwing });
+
+    const cases = [
+      ['runtime getter throws', Object.defineProperty({ id: 'x' }, 'runtime', { get: throwing })],
+      ['hostBehaviors getter throws', hostBehaviorsGetterThrows],
+      ['reviewerCli getter throws', reviewerCliGetterThrows],
+      ['hostBehaviors Proxy traps throw', {
+        id: 'x',
+        role: 'runtime',
+        runtime: { hostBehaviors: new Proxy({}, { has: throwing, get: throwing, getOwnPropertyDescriptor: throwing, ownKeys: throwing }) },
+      }],
+    ];
+
+    for (const [name, cap] of cases) {
+      let warnings;
+      try {
+        warnings = collectReviewerWarnings(cap);
+      } catch (err) {
+        assert.fail(`collectReviewerWarnings threw for ${name}: ${err && err.message}`);
+      }
+      assert.ok(Array.isArray(warnings), `${name}: must always return an array`);
+    }
+  });
+});

@@ -11,6 +11,13 @@ process.env.GSD_TEST_MODE = '1';
  * A-E). See that phase's `40-design.md` for the behavior table the matrix
  * derives from. Test names are copied verbatim from the matrix.
  *
+ * AMENDED by ADR-2782 Phase 7 (chore #2801), which removes the
+ * `runtime.hostBehaviors.reviewerCli` derived legacy alias. Rows that asserted
+ * the alias still contributed a slug are inverted here rather than deleted, so
+ * the file keeps a guard against reintroduction. See
+ * `.gsd/phase/chore-2801-remove-reviewercli-alias/50-test-matrix.md` rows
+ * B1 and C1-C10, P1.
+ *
  * THE SINGLE MOST IMPORTANT PROPERTY (matrix "Red-before-green"): the roster is
  * eleven slugs before this phase and eleven after, with IDENTICAL membership —
  * C1 is the keystone, asserted against a LITERAL list, never against a value
@@ -43,6 +50,7 @@ const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const fc = require('fast-check');
 
 const {
   loadAndValidate,
@@ -296,21 +304,27 @@ describe('B. The six existing runtime capabilities', () => {
     }
   });
 
-  test('reviewerCliAliasIsRetainedForTheDeprecationWindow', () => {
+  test('reviewerCliAliasIsRemovedFromEveryShippedManifest', () => {
+    // Phase 7 (#2801): the deprecation window opened in 1.9.0 (Phase 5a) and
+    // 1.9.1 + 1.10.0 have since shipped, so the alias goes. Each of these six
+    // already declares a `reviewer` body whose slug equals its capability id, so
+    // removing the key costs none of them a lane — C1 is the proof.
     for (const id of RUNTIME_REVIEWER_IDS) {
       const cap = SHIPPED.capMap.get(id);
+      const hb = cap.runtime.hostBehaviors || {};
       assert.equal(
-        cap.runtime.hostBehaviors && cap.runtime.hostBehaviors.reviewerCli, true,
-        `"${id}" must retain hostBehaviors.reviewerCli:true for the deprecation window (removal is Phase 7 / #2801)`,
+        Object.prototype.hasOwnProperty.call(hb, 'reviewerCli'), false,
+        `"${id}" must no longer declare hostBehaviors.reviewerCli (removed in Phase 7 / #2801); declare a reviewer body instead`,
       );
     }
   });
 
-  test('bodyAndAliasContributeOneSlugNotTwo', () => {
-    // Isolated synthetic fixture: one capability carrying BOTH a declared
-    // reviewer.slug AND the legacy alias, with slug !== capId, so a double
-    // contribution would be observable as two distinct roster entries rather
-    // than being hidden by an accidental string match.
+  test('vestigialAliasKeyDoesNotAddASecondSlug', () => {
+    // Post-#2801 this is no longer a PRECEDENCE rule (body beats alias) — the
+    // key is simply never read. Kept, with slug !== capId so a stray
+    // contribution would be observable as a distinct roster entry rather than
+    // hidden by an accidental string match, because an out-of-tree manifest can
+    // still carry the vestigial key for years.
     const registry = {
       capabilities: {
         'dual-purpose-cap': {
@@ -323,14 +337,17 @@ describe('B. The six existing runtime capabilities', () => {
     const roster = deriveReviewerSlugs(registry);
     assert.equal(roster.length, 1, `expected exactly one contribution, not two, got: ${JSON.stringify(roster)}`);
     assert.deepEqual(roster, ['dual-slug']);
-    assert.equal(roster.includes('dual-purpose-cap'), false, 'the legacy alias must not ALSO contribute the capability id');
+    assert.equal(roster.includes('dual-purpose-cap'), false, 'the removed alias key must not contribute the capability id');
   });
 });
 
 // ─── C. Roster derivation — src/review-reviewer-selection.cts ─────────────
 
 describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
-  test('rosterMembershipIsUnchangedByDerivationRefactor', () => {
+  test('rosterMembershipIsUnchangedByAliasRemoval', () => {
+    // KEYSTONE. This row is GREEN before and after #2801 — it is the invariant
+    // the phase must not break, not a red row. The literal list is never
+    // computed by the machinery under test.
     assert.equal(KNOWN_REVIEWER_SLUGS.length, 12, 'roster must be exactly 12 — not 11, not 13');
     assert.deepEqual(
       [...KNOWN_REVIEWER_SLUGS].sort(), LITERAL_ROSTER,
@@ -343,14 +360,50 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     assert.deepEqual(deriveReviewerSlugs(registry), ['my-lane']);
   });
 
-  test('aliasOnlyCapabilityStillContributesItsSlug', () => {
-    // No reviewer body yet — only the legacy hostBehaviors flag (B2's shape).
+  test('aliasOnlyCapabilityContributesNoSlug', () => {
+    // #2801 core inversion: no reviewer body, only the removed hostBehaviors
+    // flag. Before Phase 7 this contributed `legacy-cli`; now it contributes
+    // nothing, and `collectReviewerWarnings` says so (see section K of
+    // tests/reviewer-manifest-body.test.cjs).
     const registry = {
       capabilities: {
         'legacy-cli': { role: 'runtime', runtime: { hostBehaviors: { reviewerCli: true } } },
       },
     };
-    assert.deepEqual(deriveReviewerSlugs(registry), ['legacy-cli']);
+    assert.deepEqual(deriveReviewerSlugs(registry), []);
+  });
+
+  test('aliasWithAnyValueContributesNoSlug', () => {
+    // Value sweep: the old branch was a strict `=== true`, so `false`/`"true"`/`1`
+    // never contributed even before. Locking all of them at once means a partial
+    // revert that restores only the truthy branch is still caught.
+    for (const value of [true, false, 'true', 0, 1, null, {}, []]) {
+      const registry = {
+        capabilities: {
+          'legacy-cli': { role: 'runtime', runtime: { hostBehaviors: { reviewerCli: value } } },
+        },
+      };
+      assert.deepEqual(
+        deriveReviewerSlugs(registry), [],
+        `reviewerCli = ${JSON.stringify(value)} must contribute no slug`,
+      );
+    }
+  });
+
+  test('whitespaceOnlySlugWithVestigialAliasContributesNothing', () => {
+    // The combination row a single-variable table misses. A whitespace-only slug
+    // is trimmed to empty, which BEFORE Phase 7 fell through to the alias branch
+    // and contributed the capability id. Now it contributes nothing at all.
+    const registry = {
+      capabilities: {
+        'padded-cap': {
+          role: 'runtime',
+          runtime: { hostBehaviors: { reviewerCli: true } },
+          reviewer: { slug: '   ' },
+        },
+      },
+    };
+    assert.deepEqual(deriveReviewerSlugs(registry), []);
   });
 
   test('nonReviewerCapabilityContributesNoSlug', () => {
@@ -366,10 +419,9 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     assert.equal(reviewerSelectionModule.NON_RUNTIME_REVIEWER_SLUGS, undefined);
   });
 
-  test('reviewerBodyWinsOverTheLegacyAlias', () => {
-    // Body and alias disagree on membership: capId (what the alias would
-    // contribute) differs from reviewer.slug (what the body contributes), so
-    // the winner is unambiguous from the result alone.
+  test('declaredBodyIsUnaffectedByAVestigialAliasKey', () => {
+    // capId (what the removed alias used to contribute) differs from
+    // reviewer.slug, so the result alone shows which surface was read.
     const registry = {
       capabilities: {
         'conflicting-cap-id': {
@@ -382,7 +434,7 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     const roster = deriveReviewerSlugs(registry);
     assert.deepEqual(
       roster, ['the-declared-slug'],
-      `expected only the declared body's slug to win over the alias, got: ${JSON.stringify(roster)}`,
+      `only the declared body's slug may contribute, got: ${JSON.stringify(roster)}`,
     );
   });
 
@@ -392,10 +444,13 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
   });
 
   test('rosterIsStableRegardlessOfRegistryOrder', () => {
+    // `gamma` was an alias-only capability before #2801. It is now body-declared
+    // so this row still proves a THREE-way sort; shrinking it to two entries
+    // would quietly weaken the ordering guarantee it exists to protect.
     const capsForward = {
       alpha: { role: 'reviewer', reviewer: { slug: 'zzz-lane' } },
       beta: { role: 'reviewer', reviewer: { slug: 'aaa-lane' } },
-      gamma: { role: 'runtime', runtime: { hostBehaviors: { reviewerCli: true } } },
+      gamma: { role: 'runtime', runtime: { hostBehaviors: {} }, reviewer: { slug: 'gamma' } },
     };
     const reversedCaps = {};
     for (const key of Object.keys(capsForward).reverse()) reversedCaps[key] = capsForward[key];
@@ -406,6 +461,70 @@ describe('C. Roster derivation — src/review-reviewer-selection.cts', () => {
     assert.deepEqual(
       forwardRoster, ['aaa-lane', 'gamma', 'zzz-lane'],
       'roster must be sorted, independent of declaration order',
+    );
+  });
+
+  test('derivedRosterNeverAdmitsAnAliasOnlyCapability', () => {
+    // P1 — property over arbitrary registries. Three invariants at once:
+    // (1) no capability that declares ONLY the removed alias ever reaches the
+    // roster, (2) the roster is sorted and duplicate-free, and (3) it does not
+    // depend on key insertion order. A partial revert of the alias branch is
+    // caught by (1) at any registry shape, not just the handful enumerated above.
+    fc.assert(
+      fc.property(
+        fc.array(
+          fc.record({
+            capId: fc.string({ minLength: 1, maxLength: 8 }).filter((s) => s.trim().length > 0),
+            declaresBody: fc.boolean(),
+            slug: fc.string({ minLength: 1, maxLength: 8 }).filter((s) => s.trim().length > 0),
+            aliasValue: fc.constantFrom(true, false, 'true', 1, 0, null, undefined),
+          }),
+          { minLength: 0, maxLength: 12 },
+        ),
+        (specs) => {
+          const capabilities = {};
+          const aliasOnlyIds = new Set();
+          const declaredSlugs = new Set();
+          for (const s of specs) {
+            if (s.capId === '__proto__' || s.capId === 'constructor' || s.capId === 'prototype') continue;
+            const cap = { role: 'runtime', runtime: { hostBehaviors: {} } };
+            if (s.aliasValue !== undefined) cap.runtime.hostBehaviors.reviewerCli = s.aliasValue;
+            if (s.declaresBody) {
+              cap.reviewer = { slug: s.slug };
+              declaredSlugs.add(s.slug.trim());
+            } else if (s.aliasValue !== undefined) {
+              aliasOnlyIds.add(s.capId);
+            }
+            capabilities[s.capId] = cap;
+          }
+
+          const roster = deriveReviewerSlugs({ capabilities });
+
+          // (1) An alias-only capability's id may appear ONLY if some other
+          // capability legitimately declared it as a body slug.
+          for (const id of aliasOnlyIds) {
+            if (declaredSlugs.has(id)) continue;
+            assert.equal(
+              roster.includes(id), false,
+              `alias-only capability "${id}" must not reach the roster; roster=${JSON.stringify(roster)}`,
+            );
+          }
+
+          // (2) sorted + unique
+          assert.deepEqual(roster, [...roster].sort(), `roster must be sorted, got: ${JSON.stringify(roster)}`);
+          assert.equal(new Set(roster).size, roster.length, `roster must be duplicate-free, got: ${JSON.stringify(roster)}`);
+
+          // (3) order-independent
+          const reversed = {};
+          for (const key of Object.keys(capabilities).reverse()) reversed[key] = capabilities[key];
+          assert.deepEqual(
+            deriveReviewerSlugs({ capabilities: reversed }), roster,
+            'roster must not depend on registry key insertion order',
+          );
+          return true;
+        },
+      ),
+      { numRuns: 200, seed: 2801 },
     );
   });
 });
