@@ -254,6 +254,33 @@ Run this pass unless `plan_review.source_grounding` is `false`. It verifies ever
    - Signature mismatches cannot be asserted under `grep`/`intel`; report the signature as UNCHECKABLE.
 5. **Coverage block.** Append a "Verification coverage" section to `REVIEWS.md` listing every UNCHECKABLE/skipped symbol and why — a clean review must never silently mean "nothing was checked."
 
+### Cross-artifact fact-drift pass (same gate: `plan_review.source_grounding`)
+
+Run this pass whenever the source-grounding pass ran — it is the second axis of the same drift guard, gated by the same `plan_review.source_grounding` key and adding no config surface of its own. Where source-grounding asks *"does this symbol exist in the source?"*, this asks *"does the project state the same fact in two planning artifacts, and do the two disagree?"* Because each phase runs in a fresh context, an agent typically reads only one artifact and trusts it, so a stale duplicate silently steers it wrong.
+
+**Key on knowledge, not on similar text.** DRY is about a single authoritative representation of a piece of *knowledge*. Two passages that merely read alike, or that restate one fact at different levels of detail, are NOT drift. Only a contradiction is.
+
+1. **Pair up the facts.** For each row below, collect the fact as each side states it. The authority column names the source of truth, so a finding can say which side to keep:
+
+   | Fact class | Artifact pair | Authority |
+   |---|---|---|
+   | Success criteria / must-have truths | ROADMAP.md Success Criteria ↔ PLAN.md `must_haves.truths` | ROADMAP.md |
+   | Requirement IDs | ROADMAP.md `**Requirements:**` ↔ PLAN.md task requirement refs | ROADMAP.md |
+   | Phase status | STATE.md status ↔ ROADMAP.md phase state | STATE.md |
+   | Glossary / domain term | CONTEXT.md `Decisions` ↔ PLAN.md usage of the term | CONTEXT.md |
+
+2. **Judge each pair.** FLAG only when ALL THREE hold — both sides name the *same* fact (same phase, same requirement ID, same success criterion, or the same defined term); the two representations *contradict*, one asserting what the other denies, rather than differing in wording or in level of detail; and the pair is one of the four authority pairs above.
+
+3. **Record.** Emit each finding into `REVIEWS.md` beside the source-grounding coverage block, quoting both locations and naming the divergence and the authority, so the author can collapse the two copies to a single source of truth.
+
+**Do NOT flag:** a wording-only difference that asserts the same thing; a fact that appears in one artifact only — single-source is the target state, not a finding; a PLAN that ADDS a truth beyond the roadmap Success Criteria, which is sanctioned (plans may add, never subtract); a STATE.md status that merely trails ROADMAP.md by one lifecycle step, which is lag rather than drift; anything under CONTEXT.md's `Claude's Discretion` or `Deferred Ideas`, which are non-authoritative by design.
+
+**Report once, not twice — these belong to `gsd-plan-checker`:** a PLAN that omits a roadmap Success Criterion is scope reduction (Dimension 7b); a requirement ID the ROADMAP never defines is requirement coverage (Dimension 1); two PLAN.md files in one phase disagreeing is cross-plan data contracts (Dimension 9).
+
+**Severity: advisory, never a blocker.** This pass never sets `hardBlock`, and its findings contribute to neither `HIGH_COUNT` nor `ACTIONABLE_COUNT` — a project carrying pre-existing drift must still be able to converge, or an advisory check becomes an endless replan loop.
+
+**Coverage, never silence.** If STATE.md or CONTEXT.md is absent, that axis is skipped and the skip is recorded in the same "Verification coverage" block. A clean pass must never mean "nothing was compared."
+
 After agent returns, verify REVIEWS.md exists:
 ```bash
 REVIEWS_FILE=$(ls ${phase_dir}/${padded_phase}-REVIEWS.md 2>/dev/null)
