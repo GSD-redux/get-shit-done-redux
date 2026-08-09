@@ -33,6 +33,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Work in parallel with workstreams](how-to/work-in-parallel-with-workstreams.md) — run independent lines of work simultaneously using workstreams
 - [Isolate work with workspaces](how-to/isolate-work-with-workspaces.md) — use workspaces to sandbox experimental or risky changes
 - [Debug a failed execution](how-to/debug-a-failed-execution.md) — diagnose and recover from broken or incomplete phase execution
+- [Interpret scope-conformance warnings](how-to/interpret-scope-conformance-warnings.md) — read the advisory the worktree-wave merge emits when a plan branch commits outside its declared scope
 - [Spike and sketch](how-to/spike-and-sketch.md) — use `/gsd-spike` and `/gsd-sketch` for exploratory work before committing to a plan
 - [Design a UI phase](how-to/design-a-ui-phase.md) — use the UI phase loop for frontend and visual work
 - [Develop a Capability for GSD 1.5+](how-to/develop-a-capability.md) — add feature Capabilities, hook fragments, and registry entries
@@ -55,6 +56,7 @@ Language versions: [English](README.md) · [Português (pt-BR)](pt-BR/README.md)
 - [Commands](COMMANDS.md) — every command with flags and examples
 - [Configuration](CONFIGURATION.md) — full config schema, model profiles, git branching strategies
 - [CLI tools](CLI-TOOLS.md) — `gsd-tools.cjs` programmatic API for workflows and agents
+- [JSON error mode](json-errors.md) — `gsd-tools` failure channels: faults (stderr, exit 1) vs degraded results (stdout, exit 0), and the reason-code taxonomy
 - [Features](FEATURES.md) — complete feature index
 - [Inventory](INVENTORY.md) — installed skills and surface map
 - [STATE.md schema](reference/state-md.md) — field-by-field reference for `.planning/STATE.md`

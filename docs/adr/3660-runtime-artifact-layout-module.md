@@ -5,6 +5,7 @@
 - **Issue:** #3660
 - **Implementation:** #3663 (Phase 1), feat/3663-runtime-artifact-layout-module-phase-1-m
 - **Subsumed by:** [ADR-1239](1239-gsd-embeddable-orchestration-engine.md) (GSD as an Embeddable Orchestration Engine) — read it first; see the amendment below
+- **Amended by:** [ADR-2866](2866-install-surface-resolution.md) (Install-surface resolution) — **this module widens from *placement* to *placement + trigger resolution*.** The `Layout` returned here models where a file goes but not the `/gsd-<name>` trigger it occupies, so nothing in the tree can express the cross-scope collision in [#2218](https://github.com/open-gsd/gsd-core/issues/2218). ADR-2866 adds a projection returning the resolved trigger, its kind and scope, its destination, and whether another install shadows it. **This ADR's placement decision is unchanged and still in force** — `resolveRuntimeArtifactLayout` stays for callers that only need placement, the per-runtime table remains the single owner of placement knowledge, and legacy-layout migrations stay in [ADR-0008](0008-installer-migration-module.md). **Timing:** the decision is recorded and `Accepted`; the module changes at epic [#2866](https://github.com/open-gsd/gsd-core/issues/2866) Phase 2 ([#2871](https://github.com/open-gsd/gsd-core/issues/2871)), not before — until then this module resolves placement only.
 
 ## Amendment (2026-07-16): subsumed by ADR-1239 (EoS)
 

@@ -5502,31 +5502,15 @@ const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { ensureHooksDist, HOOKS_DIST_DIR } = require('./helpers/hooks-dist.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
-const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
-const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
 // #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
 const {
-  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,
 } = require('./helpers/timeouts.cjs');
-
-/**
- * Ensure hooks/dist is populated before any suite that reads it.
- * hooks/dist/ is gitignored and only produced by `npm run build:hooks`.
- * In CI the scoped/windows test jobs do NOT run build:hooks before running
- * tests, so the first test that needs hooks/dist would fail. This mirrors
- * the pattern used in bug-3357-codex-legacy-hooks-json-migration.test.cjs.
- */
-function ensureHooksDist() {
-  if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    const r = runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
-    throwIfFailed(r, `node ${BUILD_HOOKS_SCRIPT}`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -9567,31 +9551,15 @@ const path = require('node:path');
 const { runNode } = require('./helpers/process-seam.cjs');
 const { throwIfFailed } = require('./helpers/git-fixture.cjs');
 const { cleanup } = require('./helpers.cjs');
+const { ensureHooksDist, HOOKS_DIST_DIR } = require('./helpers/hooks-dist.cjs');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const INSTALL_PATH = path.join(REPO_ROOT, 'bin', 'install.js');
-const HOOKS_DIST_DIR = path.join(REPO_ROOT, 'hooks', 'dist');
-const BUILD_HOOKS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-hooks.js');
 
 // #3145: class-norm timeouts, not per-suite values — see helpers/timeouts.cjs.
 const {
-  BUILD_TIMEOUT_MS: BUILD_HOOKS_TIMEOUT_MS,
   INSTALL_TIMEOUT_MS,
 } = require('./helpers/timeouts.cjs');
-
-/**
- * Ensure hooks/dist is populated before any suite that reads it.
- * hooks/dist/ is gitignored and only produced by `npm run build:hooks`.
- * In CI the scoped/windows test jobs do NOT run build:hooks before running
- * tests, so the first test that needs hooks/dist would fail. This mirrors
- * the pattern used in bug-3357-codex-legacy-hooks-json-migration.test.cjs.
- */
-function ensureHooksDist() {
-  if (!fs.existsSync(HOOKS_DIST_DIR) || fs.readdirSync(HOOKS_DIST_DIR).filter(f => f.endsWith('.js')).length === 0) {
-    const r = runNode([BUILD_HOOKS_SCRIPT], { timeoutMs: BUILD_HOOKS_TIMEOUT_MS });
-    throwIfFailed(r, `node ${BUILD_HOOKS_SCRIPT}`);
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
