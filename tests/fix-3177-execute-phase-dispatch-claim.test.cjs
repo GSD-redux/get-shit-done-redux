@@ -207,11 +207,70 @@ describe('#3177: matrix section extraction is bounded by its heading', () => {
           const [host, value] = sections[pick % sections.length];
           // Exactly the requested section's value, never a neighbor's.
           assert.equal(matrixField(doc, host, 'f'), value);
-          // A heading that only PREFIXES a real one resolves to nothing.
-          assert.equal(matrixField(doc, `${host}-local`, 'f'), null);
+          // A longer name that merely EXTENDS a real heading resolves to nothing.
+          // `_` is outside hostArb's alphabet, so this probe can NEVER collide with
+          // another generated section — the `-local` form could, and did.
+          assert.equal(matrixField(doc, `${host}_x`, 'f'), null);
         },
       ),
       { numRuns: 200 },
+    );
+  });
+});
+
+describe('#3177: debug.md dispatches its session manager in the foreground', () => {
+  const DEBUG_WF = path.join(ROOT, 'gsd-core', 'workflows', 'debug.md');
+  const debugText = () => fs.readFileSync(DEBUG_WF, 'utf8');
+
+  /**
+   * Every fenced `Agent( … )` block in debug.md that dispatches the session manager.
+   *
+   * Anchored on a line that is exactly `Agent(` so the PROSE mention of
+   * `Agent(subagent_type="gsd-debug-session-manager", …)` inside the blockquote at
+   * :206 is not mistaken for a dispatch. Positional selection (first match wins) was
+   * the original bug here: it silently checked the continue path while the
+   * new-session path went unexamined.
+   */
+  function sessionManagerDispatches(text) {
+    const blocks = [];
+    for (const m of text.matchAll(/^Agent\($/gm)) {
+      const close = text.indexOf('\n)', m.index);
+      if (close === -1) continue;
+      const block = text.slice(m.index, close);
+      if (block.includes('subagent_type="gsd-debug-session-manager"')) blocks.push(block);
+    }
+    return blocks;
+  }
+
+  test('every session-manager spawn carries the run_in_background: false opt-out', () => {
+    // #2196 required this dispatch be foreground and blocking so the orchestrator
+    // receives the session summary inline; debug.md still says "Wait for it; do not
+    // background it" and "Display the compact summary returned by the session
+    // manager". Claude Code backgrounds subagents by DEFAULT, so that intent only
+    // holds if each call states the opt-out explicitly — prose alone silently
+    // reinstated the exact lost-handoff failure #2196 was filed to fix.
+    const blocks = sessionManagerDispatches(debugText());
+    assert.equal(
+      blocks.length, 2,
+      'debug.md dispatches the session manager on BOTH the new-session and continue paths; '
+      + 'a change to that count means a dispatch was added or removed and must be re-checked.',
+    );
+    for (const block of blocks) {
+      assert.match(
+        block, /run_in_background\s*=\s*false/,
+        'every gsd-debug-session-manager dispatch must pass run_in_background=false — without '
+        + 'it Claude Code backgrounds the spawn and the compact summary never returns (#2196).',
+      );
+    }
+  });
+
+  test('debug.md does not assert the spawn is inherently foreground', () => {
+    // The old premise ("is FOREGROUND and BLOCKING") was a property claim about the
+    // host, not an instruction — and it was false for the same reason as #3177.
+    assert.ok(
+      !debugText().includes('is FOREGROUND and BLOCKING'),
+      'debug.md must not claim the Agent() call is inherently foreground; it must name the '
+      + 'run_in_background: false opt-out that actually makes it so.',
     );
   });
 });

@@ -19,7 +19,7 @@ Orchestrator coordinates, not executes. Each subagent loads the full execute-pla
 
 <runtime_compatibility>
 **Subagent spawning is runtime-specific:**
-- **Claude Code:** Uses `Agent(subagent_type="gsd-executor", ...)` — **backgrounded by default** (matrix `dispatch.background: true`); `run_in_background: false` blocks. Spawn safety follows from tool availability below, not from blocking.
+- **Claude Code:** Uses `Agent(subagent_type="gsd-executor", ...)` — **backgrounded by default** (matrix `dispatch.background: true`); `run_in_background: false` blocks. Spawn if the tool exists; confirm completion via the fallback rule below.
 - **Copilot:** Subagent spawning does not reliably return completion signals. **Default to
   sequential inline execution**: read and follow execute-plan.md directly for each plan
   instead of spawning parallel agents. Only attempt parallel spawning if the user
