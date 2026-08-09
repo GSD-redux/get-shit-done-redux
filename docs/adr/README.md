@@ -181,6 +181,7 @@ These govern the system as it stands. Cite these.
 | [ADR-2629](2629-phase-effort-estimation-calibration.md) | Phase effort is estimated against a calibrated smart-zone budget, not a static heuristic | Accepted | — |
 | [ADR-2719](2719-emitted-artifact-attribution.md) | Emitted-artifact attribution — replace the committed parity fixtures with a computed conservation law | Accepted | — |
 | [ADR-2782](2782-reviewer-lane-capability-surface.md) | Reviewer Lane — the cross-AI reviewer handoff becomes a declared capability surface | Accepted | — |
+| [ADR-2866](2866-install-surface-resolution.md) | Install-surface resolution — the install pipeline resolves `(runtime × scope × trigger)` as a value | Accepted | — |
 | [ADR-2966](2966-loop-qa-walk.md) | Test the five-step loop as a continuous walk, not isolated points | Accepted | — |
 | [ADR-3180](3180-planning-semantic-model-single-owner.md) | Planning Semantic Model — Single Owner per Derivation | Accepted | — |
 | [ADR-3212](3212-lexical-seam-consolidation.md) | The Lexical Seam — Safe Pattern Construction, Line-Terminator Normalization, and Tokenizer-First Stateful Grammars | Accepted | — |
