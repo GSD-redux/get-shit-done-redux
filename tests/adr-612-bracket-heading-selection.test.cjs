@@ -651,17 +651,28 @@ describe('#2761 B1: a workstream\'s convention scopes ITS OWN roadmap read', () 
 // ─── G8: the pin reads LIVE source, not a transcription ────────────────────
 
 describe('#612 PR-2: every selector call site declares the right baseline (live src)', () => {
-  // allow-test-rule: source-text-is-the-product -- #2761
   // The structural table above pins transcription <-> selector. It cannot see a
   // call site whose BASELINE ARGUMENT is wrong: flipping verify.cts's
   // milestone-complete site from LABEL_ONLY to ANY_BRACKET grants a
   // fires-on-every-repo check `[anything] Phase N` tolerance it has never had,
-  // and every behavioural test still passed. This reads the shipped sources and
-  // asserts the mode at each site, count-exact, so that class cannot recur
-  // silently.
-  const fsx = require('fs');
-  const pathx = require('path');
-  const SRC = pathx.join(__dirname, '..', 'src');
+  // and every behavioural test still passed. So the mode at each site is pinned
+  // count-exact against the shipped sources.
+  //
+  // #2761 M4 (trek-e review): the source READING is no longer done here. This
+  // block claimed the no-source-grep escape with a source-text-is-the-product
+  // reason, but that escape (CONTEXT.md: RULESET.TESTS.no-source-grep.exemption)
+  // is reserved for tests whose subject is a runtime CONTRACT FILE — STATE.md,
+  // config.toml, hooks.json, agent .md — and `src/*.cts` is none of those.
+  // Worse, the escape is FILE-level (eslint-rules/no-source-grep.cjs matches the
+  // marker in any comment), so one block's claim disarmed the rule for all ~700
+  // lines of this suite. Rather than widen the documented scope to fit the test,
+  // the scan moved to the seam's own guard script
+  // (`scripts/lint-phase-id-drift.cjs`, where source scanning is sanctioned and
+  // already happens for the grammar rules) and is consumed here as STRUCTURED
+  // DATA. No file text reaches this file and no marker remains, so the rule is
+  // live again across the whole suite — the escape is gone, not relocated.
+  const { scanSelectorBaselines } = require('../scripts/lint-phase-id-drift.cjs');
+  const CENSUS = scanSelectorBaselines(require('path').join(__dirname, '..'));
 
   // file -> [ANY_BRACKET count, LABEL_ONLY count]
   const EXPECTED = {
@@ -672,21 +683,10 @@ describe('#612 PR-2: every selector call site declares the right baseline (live 
     'roadmap-parser.cts': [2, 0],
   };
 
-  const callsIn = (file) => {
-    const text = fsx.readFileSync(pathx.join(SRC, file), 'utf-8');
-    const re = /phaseHeadingPrefixSrcFor\(\s*PHASE_HEADING_BASELINE\.(ANY_BRACKET|LABEL_ONLY)/g;
-    const out = { ANY_BRACKET: 0, LABEL_ONLY: 0 };
-    let m;
-    while ((m = re.exec(text)) !== null) out[m[1]] += 1;
-    // Any call that does NOT name a PHASE_HEADING_BASELINE member is a hole in
-    // this pin, so count total invocations too.
-    const total = (text.match(/phaseHeadingPrefixSrcFor\(/g) || []).length;
-    return { ...out, total };
-  };
-
   for (const [file, [anyBracket, labelOnly]] of Object.entries(EXPECTED)) {
     test(`${file}: ${anyBracket} any-bracket + ${labelOnly} label-only, and nothing else`, () => {
-      const c = callsIn(file);
+      const c = CENSUS[file];
+      assert.ok(c, `${file} no longer consumes the selector at all — update EXPECTED`);
       assert.equal(c.ANY_BRACKET, anyBracket, `${file} any-bracket call count`);
       assert.equal(c.LABEL_ONLY, labelOnly, `${file} label-only call count`);
       assert.equal(
@@ -697,10 +697,14 @@ describe('#612 PR-2: every selector call site declares the right baseline (live 
   }
 
   test('no OTHER src file consumes the selector unpinned', () => {
-    const unpinned = fsx.readdirSync(SRC)
-      .filter(f => f.endsWith('.cts') && !(f in EXPECTED) && f !== 'phase-id.cts')
-      .filter(f => /phaseHeadingPrefixSrcFor\(/.test(fsx.readFileSync(pathx.join(SRC, f), 'utf-8')));
+    const unpinned = Object.keys(CENSUS).filter(f => !(f in EXPECTED)).sort();
     assert.deepEqual(unpinned, [], 'a new selector consumer must be added to EXPECTED');
+  });
+
+  test('the census is live — it found the consumers, not an empty scan', () => {
+    // A census that silently returned {} would make every count assertion above
+    // fail loudly, but the unpinned check would pass vacuously. Pin the floor.
+    assert.deepEqual(Object.keys(CENSUS).sort(), Object.keys(EXPECTED).sort());
   });
 
   test('the transcription table covers exactly the live call sites', () => {
