@@ -54,7 +54,9 @@ const {
   // the check is widened by the relocation.
   BRACKET_ID_SRC,
   PHASE_NUMBER_TOKEN_SOURCE,
-  BRACKET_MILESTONE_NUMERIC_SRC,
+  // #2761 M3: canonical bracket milestone intro, re-homed here with
+  // checkBracketCoherence when health diagnostics moved to the rule table.
+  BRACKET_MILESTONE_INTRO_CAPTURING_SRC,
   foldBracketId,
 } = phaseIdMod;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
@@ -362,10 +364,7 @@ export function checkBracketCoherence(roadmapContent: string): BracketIncoherenc
   // so M-NN and letter-suffixed ids are RECOGNIZED (and flagged), not skipped.
   const legacyPhaseRe = new RegExp(`^Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE}|\\d+(?:-\\d+)+[A-Z]?(?:\\.\\d+)*)\\s*:`, 'i');
   // A bracket MILESTONE section heading.
-  const bracketSectionRe = new RegExp(
-    `^\\[[A-Z][A-Z0-9_]*\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\]`,
-    'i',
-  );
+  const bracketSectionRe = new RegExp(`^${BRACKET_MILESTONE_INTRO_CAPTURING_SRC}`, 'i');
   // A legacy milestone section heading (`## v2.0 — Name`).
   const legacyMilestoneRe = /^v\d+(?:\.\d+)*\b/i;
 

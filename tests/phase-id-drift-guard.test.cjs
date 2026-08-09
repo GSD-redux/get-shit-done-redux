@@ -24,7 +24,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
-const { findPhaseIdRegexDrift, scanRepo } = require(
+const { findPhaseIdRegexDrift, findBracketGrammarDrift, scanRepo } = require(
   path.join(ROOT, 'scripts', 'lint-phase-id-drift.cjs'),
 );
 const phaseId = require(path.join(ROOT, 'gsd-core', 'bin', 'lib', 'phase-id.cjs'));
@@ -51,6 +51,11 @@ const CANONICAL = [
   'BASE_ANY_BRACKET_HEADING_PREFIX_SRC', 'BASE_PHASE_LABEL_PREFIX_SRC',
   'PHASE_HEADING_BASELINE', 'phaseHeadingPrefixSrcFor', 'foldBracketId',
   'bracketQualifiedKey',
+  // #2761 M3: the bracket project-code class and the two milestone-intro shapes
+  // three readers used to re-type. Locked here so a consumer cannot re-export a
+  // divergent copy of what it now imports.
+  'BRACKET_PROJECT_CODE_SRC', 'bracketMilestoneIntroSrcFor',
+  'BRACKET_MILESTONE_INTRO_CAPTURING_SRC',
 ];
 
 describe('#2128 phase-id drift scanner: findPhaseIdRegexDrift (pure)', () => {
@@ -126,15 +131,169 @@ describe('#2128 phase-id drift scanner: findPhaseIdRegexDrift (pure)', () => {
   });
 });
 
+// ─── #2761 M3: the BRACKET grammar rule ────────────────────────────────────
+//
+// trek-e's finding: the bracket grammar was re-typed in roadmap-parser, state
+// and verify — a violation of #2761's own "no token literal outside
+// src/phase-id.cts" gate — and `check:phase-id-drift` passed anyway, because
+// its detector only knew the phase-NUMBER token. These are the guard's negative
+// fixtures: the three literals AS THEY SHIPPED, transcribed here so the rule is
+// proven against the real drift and not against a convenient stand-in.
+
+describe('#2761 M3 bracket drift scanner: findBracketGrammarDrift (pure)', () => {
+  const SHIPPED_DRIFT = [
+    ['roadmap-parser.cts bracket-fallback selector',
+      'const bracketMilestoneHeadingRe = new RegExp(`^\\\\[[A-Z][A-Z0-9_]*\\\\.${canonical}\\\\]`, \'i\');'],
+    ['state.cts isMilestoneBounded',
+      'const bracketMilestoneHeadingRe = new RegExp(`^\\\\[[A-Z][A-Z0-9_]*\\\\.${canonical}\\\\]`, \'i\');'],
+    ['verify.cts checkBracketCoherence',
+      'const bracketSectionRe = new RegExp(`^\\\\[[A-Z][A-Z0-9_]*\\\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\\\]`, \'i\');'],
+  ];
+
+  for (const [label, line] of SHIPPED_DRIFT) {
+    test(`flags the literal that shipped in ${label}`, () => {
+      const v = findBracketGrammarDrift(line);
+      assert.equal(v.length, 1, `the guard must flag ${label}`);
+      assert.equal(v[0].found, '[A-Z][A-Z0-9_]*');
+    });
+  }
+
+  test('an owner reference on the SAME LINE does not excuse a re-typed class', () => {
+    // The precise blind spot. verify.cts's copy referenced the owner for the
+    // MILESTONE field while re-typing the PROJECT-CODE class, so a line-level
+    // "mentions the owner, therefore clean" escape — which the phase-token rule
+    // does carry — would wave the reported site straight through. Partial
+    // ownership is the drift.
+    assert.equal(
+      findBracketGrammarDrift(
+        'new RegExp(`[A-Z][A-Z0-9_]*\\\\.(${BRACKET_MILESTONE_NUMERIC_SRC})`)',
+      ).length,
+      1,
+    );
+  });
+
+  test('the case-widened rewrite does not evade the rule', () => {
+    assert.equal(findBracketGrammarDrift('/^\\\\[[A-Za-z][A-Za-z0-9_]*\\\\./').length, 1);
+  });
+
+  test('a dedicated phase-id-owner comment sanctions the site', () => {
+    assert.deepEqual(
+      findBracketGrammarDrift('  // phase-id-owner: deliberate\n  const re = /[A-Z][A-Z0-9_]*/;'),
+      [],
+    );
+    // …but only as its own line, never trailing the code — same rule the
+    // phase-token scanner enforces.
+    assert.equal(
+      findBracketGrammarDrift('const re = /[A-Z][A-Z0-9_]*/; // phase-id-owner: not honored here').length,
+      1,
+    );
+  });
+
+  test('the spellings that replaced the drift are clean', () => {
+    for (const line of [
+      'const re = new RegExp(`^${bracketMilestoneIntroSrcFor(milestoneInt)}`, \'i\');',
+      'const re = new RegExp(`^${BRACKET_MILESTONE_INTRO_CAPTURING_SRC}`, \'i\');',
+      'const re = new RegExp(`^\\\\[(${BRACKET_ID_SRC})\\\\]`, \'i\');',
+    ]) {
+      assert.deepEqual(findBracketGrammarDrift(line), [], line);
+    }
+  });
+
+  test('reports the 1-indexed line', () => {
+    assert.equal(findBracketGrammarDrift('a\nconst re = /[A-Z][A-Z0-9_]*/;\nc')[0].line, 2);
+  });
+});
+
+// ─── #2761 M3: parity between the owner and what the call sites spelled ─────
+
+describe('#2761 M3 bracket grammar: one owner, byte-identical to the sites it replaced', () => {
+  // Transcribed by hand from the pre-fix sources, NOT assembled from the
+  // constants under test — comparing the owner against something built from the
+  // owner would restate the implementation and pass whatever either side said.
+  // Byte-equality with an independent transcription is the whole proof.
+  const PRE_FIX = {
+    // roadmap-parser.cts and state.cts, character-identical to each other, with
+    // `canonical` = String(milestoneInt).padStart(2, '0').
+    pinned: (canonical) => `\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`,
+    // verify.cts, with the milestone field captured.
+    capturing: (numericSrc) => `\\[[A-Z][A-Z0-9_]*\\.(${numericSrc})\\]`,
+  };
+
+  test('bracketMilestoneIntroSrcFor reproduces both re-typed pinned copies', () => {
+    for (const milestone of [0, 1, 2, 9, 10, 99, 100, 999]) {
+      assert.equal(
+        phaseId.bracketMilestoneIntroSrcFor(milestone),
+        PRE_FIX.pinned(String(milestone).padStart(2, '0')),
+        `milestone ${milestone}`,
+      );
+    }
+  });
+
+  test('BRACKET_MILESTONE_INTRO_CAPTURING_SRC reproduces the verify copy', () => {
+    assert.equal(
+      phaseId.BRACKET_MILESTONE_INTRO_CAPTURING_SRC,
+      PRE_FIX.capturing(phaseId.BRACKET_MILESTONE_NUMERIC_SRC),
+    );
+  });
+
+  test('the owner also composes BRACKET_ID_SRC, so the two cannot drift apart', () => {
+    assert.ok(
+      phaseId.BRACKET_ID_SRC.startsWith(phaseId.BRACKET_PROJECT_CODE_SRC),
+      'BRACKET_ID_SRC must be built from BRACKET_PROJECT_CODE_SRC',
+    );
+    assert.equal(phaseId.BRACKET_PROJECT_CODE_SRC, '[A-Z][A-Z0-9_]*');
+  });
+
+  test('the pinned builder owns the pad2 rule, not just the grammar', () => {
+    // "Canonical spelling only, not `0*N`" was restated beside each re-typed
+    // regex. An unpadded `[GSD.2]` scopes a milestone no phase heading resolves
+    // into, which is how total_phases fell back to the on-disk count.
+    const re = new RegExp(`^${phaseId.bracketMilestoneIntroSrcFor(2)}`, 'i');
+    assert.ok(re.test('[GSD.02] Foundation'), 'canonical pad2 spelling matches');
+    assert.ok(!re.test('[GSD.2] Foundation'), 'unpadded is malformed');
+    assert.ok(!re.test('[GSD.002] Foundation'), 'over-padded is malformed');
+    assert.ok(re.test('[gsd.02] Foundation'), 'recognition is case-insensitive at the reader');
+  });
+
+  test('the capturing shape puts the milestone digits in group 1', () => {
+    const re = new RegExp(`^${phaseId.BRACKET_MILESTONE_INTRO_CAPTURING_SRC}`, 'i');
+    assert.equal('[GSD.02] Foundation'.match(re)[1], '02');
+    assert.equal('[A_B9.100] Later'.match(re)[1], '100');
+    assert.equal('[GSD.2] Foundation'.match(re), null, 'unpadded is not a milestone intro');
+  });
+});
+
 describe('#2128 phase-id drift scanner: the live repo is clean', () => {
-  test('scanRepo finds zero unsanctioned phase-token re-derivations', () => {
+  test('scanRepo finds zero unsanctioned re-derivations (token AND bracket)', () => {
     const violations = scanRepo(ROOT);
     assert.deepEqual(
       violations,
       [],
-      'unsanctioned phase-token re-derivation(s) — build from PHASE_NUMBER_TOKEN_SOURCE or add // phase-id-owner:\n' +
-        violations.map((d) => `  ${d.file}:${d.line} ${d.found}`).join('\n'),
+      'unsanctioned re-derivation(s) — build from the phase-id.cjs owner or add // phase-id-owner:\n' +
+        violations.map((d) => `  [${d.kind}] ${d.file}:${d.line} ${d.found}`).join('\n'),
     );
+  });
+
+  test('scanRepo actually runs the bracket rule (coverage, not just a clean result)', () => {
+    // A clean scan is also what a scanner that forgot to call the bracket rule
+    // returns. Plant the shipped verify.cts literal into a temp tree and require
+    // the scan to fail on it — the same end-to-end path `check:phase-id-drift`
+    // takes, proving the rule is wired into scanRepo and not merely exported.
+    const os = require('node:os');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'phase-id-drift-'));
+    try {
+      fs.mkdirSync(path.join(tmp, 'src'));
+      fs.writeFileSync(
+        path.join(tmp, 'src', 'planted.cts'),
+        'const bracketSectionRe = new RegExp(`^\\\\[[A-Z][A-Z0-9_]*\\\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\\\]`, \'i\');\n',
+      );
+      const found = scanRepo(tmp);
+      assert.equal(found.length, 1, 'scanRepo must report the planted bracket literal');
+      assert.equal(found[0].kind, 'bracket');
+      assert.equal(found[0].file, path.join('src', 'planted.cts'));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 

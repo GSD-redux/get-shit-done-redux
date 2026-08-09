@@ -32,6 +32,8 @@ const {
   PHASE_HEADING_BASELINE,
   isSentinelPhaseId,
   scopeToPhase,
+  // #2761 M3: owns the bracket milestone intro and canonical pad2 spelling.
+  bracketMilestoneIntroSrcFor,
 } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserMod = require('./roadmap-parser.cjs');
@@ -2185,7 +2187,11 @@ function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: 
   // Canonical spelling only — see the note in roadmap-parser's scoping branch.
   // Accepting `0*N` here bounded a milestone whose phases were invisible, which
   // un-suppressed a progress percent computed off an unscoped disk count.
-  const canonical = String(milestoneInt).padStart(2, '0');
+  // #2761 M3: that padding rule and the grammar both come from the owner's
+  // `bracketMilestoneIntroSrcFor`. This line and roadmap-parser's selector were
+  // character-identical re-typings of one pattern, so "canonical spelling only"
+  // was a convention two files had to keep agreeing on by hand — and the drift
+  // guard could not see either copy.
   // #612 round-4 (Major 1, F12): fence-aware via tokenizeHeadings, not a raw
   // `.test(roadmapRaw)` — a FENCED `[GSD.02]` example heading (the ONLY one
   // in the document, with no real section for the asserted milestone at
@@ -2193,7 +2199,7 @@ function isMilestoneBounded(roadmapRaw: string, milestone: string, convention?: 
   // un-suppressing a percent computed off the wrong (prior-milestone-plus-
   // whole-disk) phase set. tokenizeHeadings never produces a token for a
   // fenced line, so a fenced-only example can no longer satisfy this test.
-  const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
+  const bracketMilestoneHeadingRe = new RegExp(`^${bracketMilestoneIntroSrcFor(milestoneInt)}`, 'i');
   // #612 round-5 (Minor 1): skip ≤3-space-indented tokens — `h.offset` is
   // tokenizeHeadings' LINE-START offset, not the `#` character, so an
   // indented heading here would bound a milestone the line-start-anchored
