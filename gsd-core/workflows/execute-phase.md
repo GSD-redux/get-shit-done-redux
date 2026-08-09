@@ -1229,7 +1229,7 @@ If `section_manifest` is `null` or `"partial-wave"` is in its `included` list: r
 EXECUTE_POST_HOOKS_JSON=${EXECUTE_POST_HOOKS_JSON:-$(gsd_run loop render-hooks execute:post --raw)}
 ```
 
-Resolve active step hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "step"` and `ref.skill == "code-review"`.
+Dispatch each `kind == "step"` hook per @gsd-core/references/loop-hook-dispatch.md. For `code-review`:
 
 If no active code-review step hook exists: display "Code review skipped (code-review capability inactive)" and proceed to gate dispatch.
 
@@ -1252,8 +1252,6 @@ Code review found issues. Consider running:
 ```
 
 **Error handling:** If the Skill invocation fails or throws, catch the error, display "Code review encountered an error (non-blocking): {error}" and proceed to gate dispatch. Review failures must never block execution.
-
-**Generic step hooks (#1953).** Beyond code-review above, dispatch every `kind == "step"` entry per @gsd-core/references/loop-hook-dispatch.md.
 
 **Execute:post gate hook dispatch.** After code review, dispatch all active gate hooks from `EXECUTE_POST_HOOKS_JSON` where `kind == "gate"`. For each, run `gsd_run check ${hook.check.query} "${PHASE_NUMBER}" --raw`, or — for a `predicate` gate (ADR-2008 / #2008) — `gsd_run check predicate --predicate '<hook.check.predicate as JSON>' --phase-number "${PHASE_NUMBER}" --raw`:
 
