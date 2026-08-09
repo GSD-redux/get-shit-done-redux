@@ -319,7 +319,7 @@ Ideas that aren't ready for active planning go into the backlog using 999.x numb
 /gsd-capture --backlog "Mobile responsive"     # Creates 999.2-mobile-responsive/
 ```
 
-Backlog items get full phase directories, so you can use `/gsd-discuss-phase 999.1` to explore an idea further or `/gsd-plan-phase 999.1` when it's ready.
+Backlog items get full phase directories, so you can use `/gsd-discuss-phase 999.1` to explore an idea further or `/gsd-plan-phase 999.1` when it's ready. Backlog directories (and the `0-*` pre-milestone directory some projects carry) are excluded from `/gsd-progress`, `/gsd-stats`, and phase listings for the current milestone — they stay out of the active phase sequence for counting purposes too, not just for planning.
 
 **Review and promote** with `/gsd-review-backlog` — it shows all backlog items and lets you promote (move to active sequence), keep (leave in backlog), or remove (delete).
 

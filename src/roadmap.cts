@@ -14,15 +14,16 @@ import ioMod = require('./io.cjs');
 const { output, error } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources } = phaseIdMod;
+const { escapeRegex, normalizePhaseName, phaseMarkdownRegexSource, phaseTokenMatches, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, isSentinelPhaseId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import roadmapParserModule = require('./roadmap-parser.cjs');
-const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone } = roadmapParserModule;
+const { stripShippedMilestones, extractCurrentMilestone, extractCurrentMilestoneScoped, replaceInCurrentMilestone, listMilestoneHeadings } = roadmapParserModule;
 import { tokenizeHeadings } from './markdown-sectionizer.cjs';
 import { updateTableCell } from './markdown-table.cjs';
+import { clampPercent } from './phase-lifecycle.cjs';
 import { platformWriteSync } from './shell-command-projection.cjs';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import planningWorkspace = require('./planning-workspace.cjs');
@@ -215,7 +216,8 @@ function searchPhaseInContent(content: string, escapedPhase: string, phaseNum: s
  * phase resolution as `roadmap.get-phase` — not a milestone-only subset.
  */
 function getRoadmapPhaseWithFallback(cwd: string, phaseNum: string): string | null {
-  if (/^999(?:\.|$)/.test(stripProjectCodePrefix(phaseNum))) return null;
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (isSentinelPhaseId(stripProjectCodePrefix(phaseNum))) return null;
   const roadmapPath = planningPaths(cwd).roadmap;
   // Read directly rather than gating on fs.existsSync: existsSync returns false
   // on EACCES/EIO too, which would mask an UNREADABLE roadmap as "missing" and
@@ -247,7 +249,8 @@ function getRoadmapPhaseWithFallback(cwd: string, phaseNum: string): string | nu
 // ─── cmdRoadmapGetPhase ───────────────────────────────────────────────────────
 
 function cmdRoadmapGetPhase(cwd: string, phaseNum: string, raw: boolean): void {
-  if (/^999(?:\.|$)/.test(stripProjectCodePrefix(phaseNum))) {
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  if (isSentinelPhaseId(stripProjectCodePrefix(phaseNum))) {
     output({ found: false, phase_number: phaseNum }, raw, '');
     return;
   }
@@ -338,17 +341,21 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   }> = [];
   let match: RegExpExecArray | null;
 
-  // Phase 0 (pre-milestone) and Phase 999 (backlog) are sentinels, not real
-  // phases. They legitimately have no directory and must never be surfaced as
-  // current/next phase or counted in phase_count. Mirrors the engine-wide
-  // sentinel convention (phase-id getMilestoneFromPhaseId, roadmap-command-router
-  // SENTINELS, the #1445 /^999/ progress filters). (#1580)
-  const isSentinelPhase = (num: string): boolean => {
-    const major = parseInt(num, 10);
-    return major === 0 || major === 999;
-  };
+  // #3185 (ADR-3180 Decision 1): the local `isSentinelPhase` closure was a
+  // fourth independent copy of the sentinel rule (`parseInt(num,10) === 0 ||
+  // === 999`). Deleted in favour of the canonical `isSentinelPhaseId`
+  // (src/phase-id.cts, SENTINEL_RANGES) so the engine-wide convention #1580
+  // describes has exactly one implementation. Phase 0 (pre-milestone) and
+  // Phase 999 (backlog) are sentinels, not real phases: they legitimately
+  // have no directory and must never be surfaced as current/next phase or
+  // counted in phase_count.
 
   // Build phase directory lookup once (O(1) readdir instead of O(N) per phase)
+  // #3185 exemption (documented reason, not a file allowlist — ADR-3180
+  // Decision 4a): this is a heading->directory LOOKUP INDEX, not a milestone
+  // enumeration. It must see the PHYSICAL set so a heading already scoped by
+  // extractCurrentMilestoneScoped above can find its directory; filtering it
+  // through listMilestonePhaseDirs would scope the same set twice.
   const _phaseDirNames = (() => {
     try {
       return fs.readdirSync(phasesDir, { withFileTypes: true })
@@ -359,7 +366,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
 
   while ((match = phasePattern.exec(content)) !== null) {
     const phaseNum = match[1];
-    if (isSentinelPhase(phaseNum)) continue;
+    if (isSentinelPhaseId(phaseNum)) continue;
     const phaseName = match[2].replace(/\(INSERTED\)/i, '').trim();
 
     // Extract goal from the section
@@ -442,16 +449,14 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     });
   }
 
-  // Extract milestone info
-  const milestones: Array<{ heading: string; version: string }> = [];
-  const milestonePattern = /##\s*(.*v(\d+(?:\.\d+)+)[^(\n]*)/gi;
-  let mMatch: RegExpExecArray | null;
-  while ((mMatch = milestonePattern.exec(content)) !== null) {
-    milestones.push({
-      heading: mMatch[1].trim(),
-      version: 'v' + mMatch[2],
-    });
-  }
+  // Extract milestone info. #3216: routed through the canonical
+  // `listMilestoneHeadings` owner (deleted the inline `##…` regex, which
+  // truncated names at a parenthetical and had no phase-heading exclusion)
+  // rather than re-deriving the enumeration here.
+  const milestones: Array<{ heading: string; version: string }> = listMilestoneHeadings(content).map((m) => ({
+    heading: m.heading,
+    version: m.version,
+  }));
 
   // Find current and next phase
   const currentPhase = phases.find(p => p.disk_status === 'planned' || p.disk_status === 'partial') || null;
@@ -476,7 +481,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     checklistPhases.add(checklistMatch[1]);
   }
   const detailPhases = new Set(phases.map(p => p.number));
-  const missingDetails = [...checklistPhases].filter(p => !detailPhases.has(p) && !isSentinelPhase(p));
+  const missingDetails = [...checklistPhases].filter(p => !detailPhases.has(p) && !isSentinelPhaseId(p));
 
   const result = {
     milestones,
@@ -485,7 +490,7 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
     completed_phases: completedPhases,
     total_plans: totalPlans,
     total_summaries: totalSummaries,
-    progress_percent: totalPlans > 0 ? Math.min(100, Math.round((totalSummaries / totalPlans) * 100)) : 0,
+    progress_percent: clampPercent(totalSummaries, totalPlans),
     current_phase: currentPhase ? currentPhase.number : null,
     next_phase: nextPhase ? nextPhase.number : null,
     missing_phase_details: missingDetails.length > 0 ? missingDetails : null,

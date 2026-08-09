@@ -79,16 +79,15 @@ const {
 const { output, error } = io;
 const { loadConfig, loadConfigResolved } = configLoader;
 const { resolveModelInternal, resolveGranularityInternal, assertValidGranularityOverride } = modelResolver;
-const { findPhaseInternal } = phaseLocator;
+const { findPhaseInternal, listMilestonePhaseDirs } = phaseLocator;
 const {
   getRoadmapPhaseInternal,
   getMilestoneInfo,
-  getMilestonePhaseFilter,
   stripShippedMilestones,
   extractCurrentMilestone,
 } = roadmapParser;
 const { pathExistsInternal, generateSlugInternal, toPosixPath } = coreUtils;
-const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery } = phaseId;
+const { escapeRegex, normalizePhaseName, phaseTokenMatches, stripProjectCodePrefix, PHASE_NUMBER_TOKEN_SOURCE, isForeignPrefixedPhaseQuery, isSentinelPhaseId } = phaseId;
 const { pruneOrphanedWorktrees } = worktreeSafety;
 
 const {
@@ -818,6 +817,17 @@ function buildSectionManifestField(
   }
 }
 
+/**
+ * #3216 review Finding 1: `getMilestoneInfo(cwd).value` unwrap-and-cast was
+ * repeated identically (comment included) at five init call sites — factored
+ * out once so the cast and its `?? {}` "no milestone resolved" fallback live
+ * in exactly one place. Behavior-preserving: same call, same fallback, same
+ * cast, for every caller.
+ */
+function milestoneRecord(cwd: string): Record<string, unknown> {
+  return (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
+}
+
 function cmdInitExecutePhase(
   cwd: string,
   phase: string,
@@ -830,7 +840,16 @@ function cmdInitExecutePhase(
 
   const config = loadConfig(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: getMilestoneInfo now returns a ScopedResult — `.value` carries the
+  // MilestoneInfo (or null on any non-COMPLETE scope). NOT display-only: when
+  // `branching_strategy === 'milestone'`, `milestone['version']`/`['name']`
+  // below feed `branch_name` construction (see the milestone_branch_template
+  // branch below), so an unresolved milestone changes the constructed branch
+  // name, not merely what gets printed. bracket-access below naturally reads
+  // `undefined` when unresolved; the `milestone_version`/`milestone_name`
+  // output fields below coerce that to an explicit `null` (#3216 review
+  // Finding 2) so the key is never silently omitted from the JSON bundle.
+  const milestone = milestoneRecord(cwd);
 
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
   phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
@@ -910,16 +929,16 @@ function cmdInitExecutePhase(
             .replace('{slug}', (phaseInfo['phase_slug'] as string) || 'phase')
         : config.branching_strategy === 'milestone'
           ? (config.milestone_branch_template as string)
-              .replace('{milestone}', milestone['version'] as string)
+              .replace('{milestone}', (milestone['version'] as string | undefined) ?? '')
               .replace(
                 '{slug}',
-                generateSlugInternal(milestone['name'] as string) || 'milestone',
+                generateSlugInternal(milestone['name'] as string | undefined) || 'milestone',
               )
           : null,
 
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
-    milestone_slug: generateSlugInternal(milestone['name'] as string),
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
+    milestone_slug: generateSlugInternal(milestone['name'] as string | undefined),
 
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
@@ -1213,22 +1232,14 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
 
 function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
   const latestCompleted = getLatestCompletedMilestone(cwd);
   const phasesDir = path.join(planningDir(cwd), 'phases');
-  let phaseDirCount = 0;
-
-  try {
-    if (fs.existsSync(phasesDir)) {
-      const isDirInMilestone = getMilestonePhaseFilter(cwd);
-      phaseDirCount = fs
-        .readdirSync(phasesDir, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory() && isDirInMilestone(entry.name))
-        .length;
-    }
-  } catch {
-    /* intentionally empty */
-  }
+  // #3185 (ADR-3180 Decision 1): "how many phase directories belong to the
+  // CURRENT milestone" is exactly the scoped question listMilestonePhaseDirs
+  // owns — routed through it instead of a local readdirSync + hand-rolled
+  // window filter (which also never excluded sentinels, unlike the owner).
+  const phaseDirCount = listMilestonePhaseDirs(phasesDir, { cwd }).value.length;
 
   const wf = (config.workflow ?? {}) as Record<string, unknown>;
 
@@ -1240,8 +1251,12 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
     commit_docs: config.commit_docs,
     research_enabled: wf['research'],
 
-    current_milestone: milestone['version'],
-    current_milestone_name: milestone['name'],
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{current_milestone}`
+    // placeholder as literal, un-substituted text.
+    current_milestone: milestone['version'] ?? null,
+    current_milestone_name: milestone['name'] ?? null,
     latest_completed_milestone: latestCompleted?.version || null,
     latest_completed_milestone_name: latestCompleted?.name || null,
     phase_dir_count: phaseDirCount,
@@ -2001,7 +2016,7 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
 
 function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
 
   let phaseCount = 0;
   let completedPhases = 0;
@@ -2016,7 +2031,8 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     const phasePattern = new RegExp(`#{2,4}\\s*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})(?:\\s*\\([^)\\n]{0,200}\\))?\\s*:`, 'gi');
     let m: RegExpExecArray | null;
     while ((m = phasePattern.exec(currentSection)) !== null) {
-      if (/^999(?:\.|$)/.test(m[1])) continue;
+      // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+      if (isSentinelPhaseId(m[1])) continue;
       roadmapPhaseNumbers.push(m[1]);
     }
   } catch {
@@ -2054,8 +2070,12 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
     }
   } else {
     try {
-      const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-      const dirs = entries.filter((e) => e.isDirectory()).map((e) => e.name);
+      // #3185 (ADR-3180 Decision 1): the ROADMAP heading scan above found no
+      // current-milestone phase headings — fall back to asking the canonical
+      // owner "which phase directories belong to the current milestone"
+      // directly, instead of a hand-rolled readdirSync over every directory
+      // on disk (which also never excluded sentinels, unlike the owner).
+      const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
       phaseCount = dirs.length;
       for (const dir of dirs) {
         try {
@@ -2084,9 +2104,13 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
 
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
-    milestone_slug: generateSlugInternal(milestone['name'] as string),
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{milestone_version}`
+    // placeholder as literal, un-substituted text.
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
+    milestone_slug: generateSlugInternal(milestone['name'] as string | undefined),
 
     phase_count: phaseCount,
     completed_phases: completedPhases,
@@ -2142,7 +2166,7 @@ function cmdInitMapCodebase(cwd: string, raw: boolean): void {
 
 function cmdInitManager(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
   const _slashRuntime = resolveRuntime(cwd);
 
   const paths = planningPaths(cwd);
@@ -2156,18 +2180,13 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   const rawContent = fs.readFileSync(paths.roadmap, 'utf-8');
   const content = extractCurrentMilestone(rawContent, cwd);
   const phasesDir = paths.phases;
-  const isDirInMilestone = getMilestonePhaseFilter(cwd);
 
-  const _phaseDirEntries = (() => {
-    try {
-      return fs
-        .readdirSync(phasesDir, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name);
-    } catch {
-      return [];
-    }
-  })();
+  // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+  // CURRENT milestone" is the scoped question listMilestonePhaseDirs owns —
+  // routed through it instead of a hand-rolled readdirSync + a separate
+  // getMilestonePhaseFilter window check (which also never excluded
+  // sentinels, unlike the owner).
+  const _phaseDirEntries = listMilestonePhaseDirs(phasesDir, { cwd }).value;
 
   const _checkboxStates = new Map<string, boolean>();
   const _cbPattern = new RegExp(`-\\s*\\[(x| )\\]\\s*.*Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE})[:\\s]`, 'gi');
@@ -2217,8 +2236,7 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     );
 
     try {
-      const dirs = _phaseDirEntries.filter(isDirInMilestone);
-      const dirMatch = dirs.find((d) => phaseTokenMatches(d, normalized));
+      const dirMatch = _phaseDirEntries.find((d) => phaseTokenMatches(d, normalized));
 
       if (dirMatch) {
         const fullDir = path.join(phasesDir, dirMatch);
@@ -2391,7 +2409,8 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   const recommendedActions: Record<string, unknown>[] = [];
   for (const phase of phases) {
     if (phase['disk_status'] === 'complete') continue;
-    if (/^999(?:\.|$)/.test(phase['number'] as string)) continue;
+    // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+    if (isSentinelPhaseId(phase['number'])) continue;
 
     if (phase['disk_status'] === 'executed') {
       recommendedActions.push({
@@ -2459,7 +2478,8 @@ function cmdInitManager(cwd: string, raw: boolean): void {
     return true;
   });
 
-  const nonBacklogPhases = phases.filter((p) => !/^999(?:\.|$)/.test(p['number'] as string));
+  // #3185: canonical sentinel predicate (SENTINEL_RANGES [0,999]) — this was a local 999-only literal that admitted Phase 0.
+  const nonBacklogPhases = phases.filter((p) => !isSentinelPhaseId(p['number'] as string));
   const completedCount = nonBacklogPhases.filter((p) => p['phase_complete'] === true).length;
 
   const sanitizeFlags = (rawVal: unknown): string => {
@@ -2488,8 +2508,12 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   };
 
   const result: Record<string, unknown> = {
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{milestone_version}`
+    // placeholder as literal, un-substituted text.
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
     phases,
     phase_count: phases.length,
     completed_count: completedCount,
@@ -2763,7 +2787,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     /* intentionally empty */
   }
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
   const _slashRuntime = resolveRuntime(cwd);
 
   // #1912: fail safe in workstream mode with no active workstream. With no active
@@ -2810,21 +2834,16 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     /* intentionally empty */
   }
 
-  const isDirInMilestone = getMilestonePhaseFilter(cwd);
   const seenPhaseNums = new Set<string>();
 
   try {
-    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    const dirs = entries
-      .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .filter(isDirInMilestone)
-      .sort((a, b) => {
-        const pa = a.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
-        const pb = b.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})`, 'i'));
-        if (!pa || !pb) return a.localeCompare(b);
-        return parseInt(pa[1], 10) - parseInt(pb[1], 10);
-      });
+    // #3185 (ADR-3180 Decision 1): "which phase directories belong to the
+    // CURRENT milestone" — routed through the canonical owner instead of a
+    // hand-rolled readdirSync + isDirInMilestone filter + local sort (which
+    // also never excluded sentinels, unlike the owner; the final `phases`
+    // array is re-sorted below anyway, so dropping the local sort here is
+    // behavior-preserving).
+    const dirs = listMilestonePhaseDirs(phasesDir, { cwd }).value;
 
     for (const dir of dirs) {
       const dirMatch = dir.match(new RegExp(`^(${PHASE_NUMBER_TOKEN_SOURCE})-?(.*)`, 'i'));
@@ -2954,8 +2973,12 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
 
     commit_docs: config.commit_docs,
 
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{milestone_version}`
+    // placeholder as literal, un-substituted text.
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
 
     phases,
     phase_count: phases.length,
