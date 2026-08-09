@@ -226,7 +226,39 @@ Before this field existed, all four cases produced the same well-formed
 milestone from a scoping failure. Branch on `scope`, not on `phase_count` alone.
 
 A ROADMAP with no versioned milestone headings at all (the free-form legacy
-shape) reports `complete`: the whole document *is* the milestone there.
+shape) reports `complete`: the whole document *is* the milestone there. Note
+this answer is specific to *windowing* — see the next section for why milestone
+*identity* answers the same document differently.
+
+### Milestone identity (which milestone, and what it is called)
+
+Milestone identity — the version and name behind `STATE.md`'s `milestone:`
+field, `roadmap analyze`'s `milestones[]` array, and the milestone shown by
+`query progress`, `stats`, `init manager`, `validate health` and
+`workstream create` — is resolved by one implementation:
+
+- `STATE.md`'s `milestone:` field selects the version when present. The ROADMAP
+  heuristics are the fallback, not the primary.
+- The heading is located by the same canonical locator that computes the
+  milestone window, so a `### Phase N: …` heading is **never** read as the
+  milestone heading — even when it mentions a version. Previously a ROADMAP
+  whose phase heading preceded its milestone heading could write a wrong
+  `milestone:` to disk.
+- The **name** is the heading text after that heading's own version token, with
+  one leading delimiter (`—`, `–`, `:`, `-`) and any trailing `✅`/`📋`/`🚧`
+  marker removed. Parentheses are ordinary characters: a milestone named
+  `v3.3 — Portability (Windows)` keeps its full name rather than being cut at
+  the `(`.
+- When identity **cannot** be determined it is reported as absent rather than
+  defaulted. A free-form legacy ROADMAP with no version anywhere is `unscoped`
+  with no identity — unlike windowing above, there is no version token to
+  report, and inventing one would be indistinguishable from a real answer.
+
+Two consumers act on that distinction rather than just displaying it:
+`state sync` / `state record-session` write `null` instead of a fabricated
+`milestone:`/name, and `phases clear` falls back to its dated archive label
+(`archived-<YYYYMMDD>`) instead of filing phase history under a fabricated
+`milestones/<version>-phases/` directory.
 
 ### `milestone complete` refuses an untrustworthy window
 

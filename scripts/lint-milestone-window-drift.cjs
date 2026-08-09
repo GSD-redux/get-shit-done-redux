@@ -129,6 +129,41 @@ const VERSION_TOKEN_RE = /v\(?\\{1,2}d\+\)?\\{1,2}\.\\{1,2}d\+/;
 // prose-matching code); together, on one line, they are the boundary shape.
 const MARKER_EMOJI_RE = /[✅📋🚧]/u;
 
+// (a-bis) #3216: a LITERAL markdown heading anchor — `##`, `###`, … — as
+// opposed to the `#{N,M}` quantifier token (a) above. `getMilestoneInfo`
+// hand-rolled its milestone-heading match with a literal `^##` / `## ` rather
+// than a quantifier, so token (a) alone reported a clean zero on a file that
+// carried two live re-derivations (#3171, #3197). The negative lookahead for
+// `{` keeps this from double-matching the quantifier form.
+//
+// A `#` run is far more common in source than `#{N,M}` (private-field sigils,
+// colour literals, fragment URLs, prose), so this token is admitted ONLY
+// inside a heading-MATCHER literal — a regex literal, or a string/template
+// literal handed to `new RegExp(` — never a bare line match. A template that
+// BUILDS a heading for output (`## ${version}`) is not a re-derivation of
+// where a milestone's section begins, and conflating the two would flag every
+// heading writer in the tree.
+const LITERAL_HEADING_RUN_RE = /#{2,6}(?!\{)/;
+
+// A line that constructs a regex from a string/template literal, which is what
+// admits the `new RegExp(`^##…${escapedVer}…`)` shape while leaving ordinary
+// heading-building templates alone.
+const NEW_REGEXP_RE = /new\s+RegExp\s*\(/;
+
+// (b2-bis) #3216: the `v(\d+(?:\.\d+)+)` version shape — a capturing group
+// around the major, then a NON-capturing `(?:\.\d+)+` repeat. VERSION_TOKEN_RE
+// cannot see it: after `v(` + `\d+` it requires a backslash next, and this
+// shape has `(` there instead.
+const VERSION_TOKEN_GROUPED_RE = /v\(\\{1,2}d\+\(\?:\\{1,2}\.\\{1,2}d\+\)\+\)/;
+
+// (b3) #3216: an INTERPOLATED version placeholder — `${escapedVer}`,
+// `${escapedVersion}`, `${version}`. A regex that interpolates its version
+// spells no literal `v\d+\.\d+` anywhere, so (b) could never fire. Inside a
+// heading-matcher literal, "a heading anchor plus an interpolated version" IS
+// the milestone-heading shape the canonical `locateMilestoneHeadings`
+// composes — and so is a copy of it.
+const INTERPOLATED_VERSION_RE = /\$\{[A-Za-z0-9_.]*[Vv]er[A-Za-z0-9_.]*\}/;
+
 // Authored TypeScript source only (the generated bin/lib/*.cjs mirror it).
 const SCAN_DIRS = ['src'];
 const SCAN_EXT = new Set(['.cts', '.ts', '.mts']);
@@ -192,12 +227,26 @@ const OWNER_FILE = path.join('src', 'roadmap-parser.cts');
 //     `(?!Phase...)`/marker alternations to find "the next milestone
 //     boundary" while assembling the current-milestone window) — not
 //     re-derivations of a question answered elsewhere.
+//   - roadmap-parser.cts listMilestoneHeadings: #3216 (epic #3180 §7.2's
+//     Scope amendment) — the version-AGNOSTIC sibling of
+//     `locateMilestoneHeadings`, and the function that textually DEFINES
+//     `MILESTONE_HEADING_LINE_SOURCE` (the one shared grammar constant both
+//     it and `locateMilestoneHeadings` build their pattern from) in its own
+//     source span. It is a named canonical function defining the grammar,
+//     not a copy of it — replacing the third independent re-derivation the
+//     widened guard found at `roadmap.cts:454`.
 const FUNCTION_SCOPED_EXEMPTIONS = new Map([
   [path.join('src', 'roadmap-command-router.cts'), new Set(['checkW021'])],
   [path.join('src', 'verify.cts'), new Set(['checkMilestonePrefixMismatches'])],
   [
     OWNER_FILE,
-    new Set(['isMilestoneShippedInRoadmap', 'locateMilestoneHeadings', 'hasMilestoneSectioning', 'extractCurrentMilestoneScoped']),
+    new Set([
+      'isMilestoneShippedInRoadmap',
+      'locateMilestoneHeadings',
+      'listMilestoneHeadings',
+      'hasMilestoneSectioning',
+      'extractCurrentMilestoneScoped',
+    ]),
   ],
 ]);
 
@@ -273,6 +322,33 @@ function stripComments(line) {
  * text — comment-stripping is applied only to the detection decision, never
  * to the reported fragment.
  */
+/**
+ * All heading-MATCHER literals on `line` — a regex literal always counts; a
+ * quoted/backtick string literal counts only when `code` (the comment-stripped
+ * line passed in from the caller) constructs a regex via `new RegExp(`. A
+ * plain string/template literal that is not fed to `new RegExp(` is not a
+ * matcher — most commonly a heading BUILT for output, not one matched against.
+ */
+function headingMatcherLiterals(line, code) {
+  const out = [];
+  const allowStrings = NEW_REGEXP_RE.test(code);
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    let literal = null;
+    let isRegex = false;
+    if (ch === '/') {
+      literal = readRegexLiteralAt(line, i);
+      isRegex = true;
+    } else if (ch === "'" || ch === '"' || ch === '`') {
+      literal = readStringLiteralAt(line, i);
+    }
+    if (!literal) continue;
+    if (isRegex || allowStrings) out.push(literal.text);
+    i = literal.end - 1;
+  }
+  return out;
+}
+
 function extractFragment(line) {
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
@@ -280,7 +356,7 @@ function extractFragment(line) {
     if (ch === '/') literal = readRegexLiteralAt(line, i);
     else if (ch === "'" || ch === '"' || ch === '`') literal = readStringLiteralAt(line, i);
     if (!literal) continue;
-    if (HEADING_QUANTIFIER_RE.test(literal.text)) return literal.text;
+    if (HEADING_QUANTIFIER_RE.test(literal.text) || LITERAL_HEADING_RUN_RE.test(literal.text)) return literal.text;
     i = literal.end - 1; // resume scanning just past this literal
   }
   return line.trim().slice(0, MAX_REGEX_LITERAL_LEN);
@@ -305,8 +381,16 @@ function findMilestoneWindowDrift(text, relPath) {
     const code = stripComments(line);
     if (!code.trim()) continue;
 
-    if (!HEADING_QUANTIFIER_RE.test(code)) continue;
-    const isMilestoneWindowToken = PHASE_LOOKAHEAD_RE.test(code) || (VERSION_TOKEN_RE.test(code) && MARKER_EMOJI_RE.test(code));
+    const matcherLiterals = headingMatcherLiterals(line, code);
+    const hasQuantifier = HEADING_QUANTIFIER_RE.test(code);
+    const hasLiteralHeading = matcherLiterals.some((t) => LITERAL_HEADING_RUN_RE.test(t));
+    if (!hasQuantifier && !hasLiteralHeading) continue;
+
+    const anyVersionToken = VERSION_TOKEN_RE.test(code) || VERSION_TOKEN_GROUPED_RE.test(code);
+    const isMilestoneWindowToken =
+      PHASE_LOOKAHEAD_RE.test(code)
+      || (anyVersionToken && MARKER_EMOJI_RE.test(code))
+      || (hasLiteralHeading && (anyVersionToken || INTERPOLATED_VERSION_RE.test(code)));
     if (!isMilestoneWindowToken) continue;
 
     if (exemptFunctions && exemptFunctions.has(currentFunction)) continue;
@@ -372,4 +456,8 @@ module.exports = {
   readStringLiteralAt,
   extractFragment,
   stripComments,
+  LITERAL_HEADING_RUN_RE,
+  VERSION_TOKEN_GROUPED_RE,
+  INTERPOLATED_VERSION_RE,
+  headingMatcherLiterals,
 };

@@ -813,6 +813,17 @@ function buildSectionManifestField(
   }
 }
 
+/**
+ * #3216 review Finding 1: `getMilestoneInfo(cwd).value` unwrap-and-cast was
+ * repeated identically (comment included) at five init call sites — factored
+ * out once so the cast and its `?? {}` "no milestone resolved" fallback live
+ * in exactly one place. Behavior-preserving: same call, same fallback, same
+ * cast, for every caller.
+ */
+function milestoneRecord(cwd: string): Record<string, unknown> {
+  return (getMilestoneInfo(cwd).value ?? {}) as unknown as Record<string, unknown>;
+}
+
 function cmdInitExecutePhase(
   cwd: string,
   phase: string,
@@ -825,7 +836,16 @@ function cmdInitExecutePhase(
 
   const config = loadConfig(cwd);
   let phaseInfo = guardedFindPhase(cwd, phase, config.project_code);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  // #3216: getMilestoneInfo now returns a ScopedResult — `.value` carries the
+  // MilestoneInfo (or null on any non-COMPLETE scope). NOT display-only: when
+  // `branching_strategy === 'milestone'`, `milestone['version']`/`['name']`
+  // below feed `branch_name` construction (see the milestone_branch_template
+  // branch below), so an unresolved milestone changes the constructed branch
+  // name, not merely what gets printed. bracket-access below naturally reads
+  // `undefined` when unresolved; the `milestone_version`/`milestone_name`
+  // output fields below coerce that to an explicit `null` (#3216 review
+  // Finding 2) so the key is never silently omitted from the JSON bundle.
+  const milestone = milestoneRecord(cwd);
 
   const roadmapPhase = guardedGetRoadmapPhase(cwd, phase, config.project_code);
   phaseInfo = applyRoadmapFallback(phaseInfo, roadmapPhase, (rp) => {
@@ -905,16 +925,16 @@ function cmdInitExecutePhase(
             .replace('{slug}', (phaseInfo['phase_slug'] as string) || 'phase')
         : config.branching_strategy === 'milestone'
           ? (config.milestone_branch_template as string)
-              .replace('{milestone}', milestone['version'] as string)
+              .replace('{milestone}', (milestone['version'] as string | undefined) ?? '')
               .replace(
                 '{slug}',
-                generateSlugInternal(milestone['name'] as string) || 'milestone',
+                generateSlugInternal(milestone['name'] as string | undefined) || 'milestone',
               )
           : null,
 
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
-    milestone_slug: generateSlugInternal(milestone['name'] as string),
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
+    milestone_slug: generateSlugInternal(milestone['name'] as string | undefined),
 
     state_exists: fs.existsSync(path.join(planningDir(cwd), 'STATE.md')),
     roadmap_exists: fs.existsSync(path.join(planningDir(cwd), 'ROADMAP.md')),
@@ -1208,7 +1228,7 @@ function cmdInitNewProject(cwd: string, raw: boolean, options: Record<string, un
 
 function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, unknown> = {}): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
   const latestCompleted = getLatestCompletedMilestone(cwd);
   const phasesDir = path.join(planningDir(cwd), 'phases');
   // #3185 (ADR-3180 Decision 1): "how many phase directories belong to the
@@ -1227,8 +1247,12 @@ function cmdInitNewMilestone(cwd: string, raw: boolean, options: Record<string, 
     commit_docs: config.commit_docs,
     research_enabled: wf['research'],
 
-    current_milestone: milestone['version'],
-    current_milestone_name: milestone['name'],
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{current_milestone}`
+    // placeholder as literal, un-substituted text.
+    current_milestone: milestone['version'] ?? null,
+    current_milestone_name: milestone['name'] ?? null,
     latest_completed_milestone: latestCompleted?.version || null,
     latest_completed_milestone_name: latestCompleted?.name || null,
     phase_dir_count: phaseDirCount,
@@ -1988,7 +2012,7 @@ function cmdInitTodos(cwd: string, area: string | undefined, raw: boolean): void
 
 function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
 
   let phaseCount = 0;
   let completedPhases = 0;
@@ -2076,9 +2100,13 @@ function cmdInitMilestoneOp(cwd: string, raw: boolean): void {
   const result: Record<string, unknown> = {
     commit_docs: config.commit_docs,
 
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
-    milestone_slug: generateSlugInternal(milestone['name'] as string),
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{milestone_version}`
+    // placeholder as literal, un-substituted text.
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
+    milestone_slug: generateSlugInternal(milestone['name'] as string | undefined),
 
     phase_count: phaseCount,
     completed_phases: completedPhases,
@@ -2134,7 +2162,7 @@ function cmdInitMapCodebase(cwd: string, raw: boolean): void {
 
 function cmdInitManager(cwd: string, raw: boolean): void {
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
   const _slashRuntime = resolveRuntime(cwd);
 
   const paths = planningPaths(cwd);
@@ -2480,8 +2508,12 @@ function cmdInitManager(cwd: string, raw: boolean): void {
   };
 
   const result: Record<string, unknown> = {
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{milestone_version}`
+    // placeholder as literal, un-substituted text.
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
     phases,
     phase_count: phases.length,
     completed_count: completedCount,
@@ -2755,7 +2787,7 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
     /* intentionally empty */
   }
   const config = loadConfig(cwd);
-  const milestone = getMilestoneInfo(cwd) as unknown as Record<string, unknown>;
+  const milestone = milestoneRecord(cwd);
   const _slashRuntime = resolveRuntime(cwd);
 
   // #1912: fail safe in workstream mode with no active workstream. With no active
@@ -2941,8 +2973,12 @@ function cmdInitProgress(cwd: string, raw: boolean, options: Record<string, unkn
 
     commit_docs: config.commit_docs,
 
-    milestone_version: milestone['version'],
-    milestone_name: milestone['name'],
+    // #3216 review Finding 2: `?? null` so an unresolved milestone still emits
+    // the key with an explicit `null` rather than letting JSON.stringify drop
+    // it — an omitted key reaches the prompt layer's `{milestone_version}`
+    // placeholder as literal, un-substituted text.
+    milestone_version: milestone['version'] ?? null,
+    milestone_name: milestone['name'] ?? null,
 
     phases,
     phase_count: phases.length,

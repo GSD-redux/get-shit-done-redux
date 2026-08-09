@@ -1047,7 +1047,13 @@ function archivePhaseDirectories(cwd: string, phasesDir: string, dirs: ReadonlyA
   let archiveVersion: string | null = safeOverride;
   if (!archiveVersion) {
     try {
-      const liveVersion = getMilestoneInfo(cwd).version ?? null;
+      // #3216 (ADR-3180 §7.2 Decision): getMilestoneInfo's version becomes a
+      // DIRECTORY NAME below — only a COMPLETE scope's identity is trustworthy
+      // enough to act on destructively. On any other scope, treat the version
+      // as unavailable so control falls through to the dated-label fallback,
+      // same as an unreadable ROADMAP/STATE.
+      const info = getMilestoneInfo(cwd);
+      const liveVersion = info.scope === SCOPE.COMPLETE ? (info.value?.version ?? null) : null;
       // Defense in depth (#2288 security): getMilestoneInfo reads STATE.md's
       // `milestone:` field, which is unvalidated file content. Only accept it
       // as a path component if it is a safe version label; a crafted value

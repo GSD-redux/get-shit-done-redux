@@ -1659,14 +1659,46 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
 
   let milestone: string | null = null;
   let milestoneName: string | null = null;
+  // #1761 regression fix (#3216): the milestone STATE.md actually ASSERTS,
+  // independent of whether getMilestoneInfo's identity scope is COMPLETE.
+  // Needed below by the disk-scan block's `isMilestoneBoundedInRoadmap` guard
+  // — that check answers "is the ASSERTED version bounded to a versioned
+  // ROADMAP heading", a different question from "is the identity trustworthy
+  // enough to persist" (`milestone` above). Conflating the two regressed
+  // #1761: when a real STATE `milestone:` value has no matching ROADMAP
+  // heading, `info.scope` is never COMPLETE (rightly — there's no curated
+  // name to persist), but the version was still genuinely asserted and the
+  // bounded check must still run on it, or the guard silently no-ops and
+  // `state json` reports a conflated whole-document total_phases/percent.
+  let assertedMilestoneVersion: string | null = null;
   if (cwd) {
     // DEAD catch removed (#2245 audit): getMilestoneInfo has its own outer
     // try/catch (roadmap-parser.cts) that already swallows every internal
-    // failure and always returns a MilestoneInfo — it never throws, so this
+    // failure and always returns a ScopedResult — it never throws, so this
     // wrapper could never be triggered.
+    // #3216 (ADR-3180 §7.2 rule 6): this is the #3197 disk-write path. Rule 6
+    // draws the line at the FIELD, not the scope as a whole — "a version known
+    // but no name resolvable is TRUNCATED carrying {version, name: null} — the
+    // version is a real answer, the name is a non-answer, and collapsing the
+    // two is the failure this contract exists to prevent." So `milestone`
+    // (the version) is written whenever COMPLETE or TRUNCATED — both carry a
+    // genuine version per rule 6 — while `milestoneName` is written only on
+    // COMPLETE, since TRUNCATED's name is by definition unresolved and must
+    // never be fabricated. UNSCOPED/UNREADABLE have no real version either
+    // way, so both stay null there. This mirrors cmdCommit (src/commands.cts),
+    // which accepts COMPLETE or TRUNCATED for the same reason (the version is
+    // real), and deliberately diverges from archivePhaseDirectories
+    // (src/milestone.cts), which demands COMPLETE only because it uses the
+    // value as a filesystem path component and a TRUNCATED version is not
+    // safe to use there.
     const info = getMilestoneInfo(cwd);
-    milestone = info.version;
-    milestoneName = info.name;
+    assertedMilestoneVersion = info.value ? info.value.version : null;
+    if ((info.scope === SCOPE.COMPLETE || info.scope === SCOPE.TRUNCATED) && info.value) {
+      milestone = info.value.version;
+    }
+    if (info.scope === SCOPE.COMPLETE && info.value) {
+      milestoneName = info.value.name;
+    }
   }
 
   let totalPhases: number | null = totalPhasesRaw ? parseInt(totalPhasesRaw, 10) : null;
@@ -1721,9 +1753,14 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // neither the denominator nor the numerator (mirrors the heading
             // exclusion below). Project-code-aware via phaseKeyFromDir.
             if (retiredPhaseNums.size > 0 && retiredPhaseNums.has(phaseKeyFromDir(dir))) continue;
-            // phase-id-owner: dir-name dedup grouping; diverges from extractPhaseToken/phaseKeyFromDir on project-code-prefixed and multi-segment milestone dirs. Kept local.
-            const m = dir.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
-            const key = m ? m[1].toLowerCase() : dir;
+            // #3185: dedup grouping routed through the canonical phaseKeyFromDir
+            // (src/phase-id.cts) instead of a local leading-digits regex that
+            // diverged from extractPhaseToken/phaseKeyFromDir on
+            // project-code-prefixed dirs (whole dirname fell through as the key,
+            // so a `PROJ-05`/`PROJ-05-slug` pair never deduped) and on
+            // multi-segment milestone dirs. Same key surface used two lines
+            // above for the retiredPhaseNums exclusion, so both filters agree.
+            const key = phaseKeyFromDir(dir);
             if (!seenPhaseNums.has(key)) {
               seenPhaseNums.set(key, dir);
             } else {
@@ -1783,13 +1820,22 @@ function buildStateFrontmatter(bodyContent: string, cwd: string | undefined, sto
             // phase-dir count only, and mark unbounded so percent is skipped
             // downstream (mirrors the sync write-path guard).
             let milestoneBounded = true;
-            if (milestone && roadmapRaw !== null) {
+            // #3216 fix (#1761 regression): use `assertedMilestoneVersion` —
+            // the version STATE.md actually asserts — not the scope-gated
+            // `milestone`. `milestone` is null on any non-COMPLETE identity
+            // scope (deliberately, so a non-trustworthy identity never
+            // persists), but a real asserted version with no matching
+            // ROADMAP heading is EXACTLY the unbounded case this guard exists
+            // to catch; gating on `milestone` skipped the guard entirely and
+            // let the whole-document roadmapPhaseCount conflate sibling
+            // milestones again.
+            if (assertedMilestoneVersion && roadmapRaw !== null) {
               // #3184: routed through the single owner (roadmap-parser.cjs)
               // instead of a hand-rolled, unbounded-substring re-derivation —
               // the prior inline regex had no boundary assertion after the
               // version token, so `v2.0` matched inside `v2.0.1` (#2562-class
               // defect, design row 17).
-              milestoneBounded = isMilestoneBoundedInRoadmap(roadmapRaw, String(milestone).trim());
+              milestoneBounded = isMilestoneBoundedInRoadmap(roadmapRaw, String(assertedMilestoneVersion).trim());
             }
             // #2828: distinguish a FLAT unmilestoned roadmap (no milestone sectioning
             // at all — only Phase headings) from a MILESTONED-but-unbounded one

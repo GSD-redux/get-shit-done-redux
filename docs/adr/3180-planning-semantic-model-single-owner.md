@@ -244,21 +244,23 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Guard.** `scripts/lint-milestone-window-drift.cjs`.
 
-#### 7.2 Milestone identity — *Required — Phase 6*
+#### 7.2 Milestone identity — *Enforced (Phase 6, #3216)*
 
 **Question.** Which milestone is current, and what is it called?
 
-**Owner (to be).** `getMilestoneInfo` binds to `locateMilestoneHeadings` and deletes its own heading regexes. It is a **sixth derivation family** — the coverage audit's gap 2 — that no phase of the original decomposition touches.
+**Owner.** `src/roadmap-parser.cts` — `getMilestoneInfo`, returning `ScopedResult<MilestoneInfo | null>`, plus the version-agnostic `listMilestoneHeadings` added by Phase 6 for consumers that need *every* milestone heading rather than one. Both consume a single shared grammar source; `locateMilestoneHeadings` is a **version-filtered view** over that source, not a second expression of it. It is a **sixth derivation family** — the coverage audit's gap 2 — that no phase of the original decomposition touched.
 
 **Rule.**
 1. `STATE.md`'s `milestone:` field selects the version when present; the ROADMAP heuristics are the fallback, not the primary.
 2. The heading is located by the canonical locator of §7.1, which already excludes phase headings. A `### Phase N: Close v3.3 gaps` heading is **never** the milestone heading (#3197 — reproduced live, writing a wrong `milestone:` to disk).
-3. The **name** is the heading text following the version token with a leading delimiter (`—`, `–`, `:`, `-`) stripped. `(` is an ordinary name character: the name is **not** truncated at a parenthetical (#3171).
+3. The **name** derives from the heading's **own** version token, not the requested one: remove everything up to and including that token, strip one leading delimiter (`—`, `–`, `:`, `-`), then strip any trailing run of the status markers `✅`/`📋`/`🚧`. `(` is an ordinary name character: the name is **not** truncated at a parenthetical (#3171). *(Requested `v2.0` against heading `## v2.0.1 — Portability` yields exactly `Portability`, not `.1 — Portability`; `## v2.0 — Old ✅` yields `Old`, because the shipped state is already carried structurally and must not be duplicated into the name.)*
 4. A failure returns a `scope` other than `COMPLETE`. It does **not** return `{version: 'v1.0', name: 'milestone'}` presented as an answer — that default is output-identical to a successful read of a genuine `v1.0` project, which is this epic's defining failure mode.
+5. **A free-form legacy ROADMAP carrying no version token anywhere is `UNSCOPED` with no identity** — *not* `COMPLETE`, and not a defaulted `v1.0`. §7.1's "free-form is `COMPLETE`" governs *windowing*, where whole-document genuinely is the window; identity has no version to report and must not invent one. **Decided 2026-08-08** (maintainer), closing the gap this section previously left unstated. **Corollary, stated because it is a distinct case and was initially left implicit:** a bare version token appearing only in prose or in a non-milestone heading — no `milestone:` field, no milestone heading — is weak but *real* evidence, and yields `TRUNCATED` with that version and a `null` name under rule 6, not `UNSCOPED`. `UNSCOPED` is reserved for a document carrying no version token at all.
+6. A version known but no name resolvable is `TRUNCATED` carrying `{version, name: null}` — the version is a real answer, the name is a non-answer, and collapsing the two is the failure this contract exists to prevent.
 
-**Guard.** `lint-milestone-window-drift.cjs` today keys on the `#{N,M}` heading-level quantifier; `getMilestoneInfo`'s regexes anchor on a literal `##` and therefore slip past it. **Phase 6 ships the token widening together with the consolidation**, never after — a guard added later measures a surface already cleaned and reports a zero it did not earn.
+**Guard.** `lint-milestone-window-drift.cjs`, token set widened by Phase 6 in the same change as the consolidation — never after, since a guard added later measures a surface already cleaned and reports a zero it did not earn. Token (a) now admits a **literal** `#`-run heading anchor in addition to the `#{N,M}` quantifier, but only inside a heading-**matcher** literal (a regex literal, or a string handed to `new RegExp(`), so a heading-**builder** template is not mistaken for a re-derivation. Token (b) additionally admits the grouped `v(\d+(?:\.\d+)+)` shape and an interpolated `${…Ver…}` placeholder.
 
-#### 7.3 Phase enumeration — *Enforced for the four named consumers (Phase 3, #3222); the fifth copy is unowned*
+#### 7.3 Phase enumeration — *Enforced (Phase 3, #3222 + #3185)*
 
 **Question.** Which directories under `<planning>/phases/` are phases of milestone `M`?
 
@@ -268,7 +270,11 @@ This section is that written rule. It is **normative**, and it is what the guard
 
 **Consumers that must route through the owner.** `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats`, `cmdPhasesList`, **and `buildStateFrontmatter` / `syncStateFrontmatter`** — the fifth copy, reached by `state.record-session`, `state.sync`, `phase.complete` and every other state-mutating verb, which the epic's original scope did not name (coverage-audit gap 1).
 
-**Status, precisely.** Phase 3 (#3222) enforced this rule for `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats` and `cmdPhasesList`, and its guard (`scripts/lint-phase-enumeration-drift.cjs`) found 54 violations where the epic scoped 4. **It did not reach `buildStateFrontmatter` / `syncStateFrontmatter`.** That copy is still live, still writes its answer to disk, and is now unowned by any phase — see Amendment 4's scope table, row 1.
+**Status, precisely.** Phase 3 (#3222) enforced this rule for `cmdRoadmapAnalyze`, `cmdProgressRender`, `cmdStats` and `cmdPhasesList`, and its guard (`scripts/lint-phase-enumeration-drift.cjs`) found 54 violations where the epic scoped 4. It also routed `buildStateFrontmatter`'s enumeration through `listMilestonePhaseDirs`, which Amendment 4's scope table row 1 did not credit it for — the audit read the *absence of the symbol names from Amendment 3* as the absence of the work. #3185's remainder was therefore smaller than recorded: the local dedup-key regex that survived alongside the routed enumeration, now on `phaseKeyFromDir`.
+
+**What was actually unowned was one layer up.** `buildStateFrontmatter` decides whether it may *trust* the ROADMAP's declared count via `hasMilestoneSectioning` (§7.1), and that predicate — introduced by Phase 2 (#3184) to retire `state.cts`'s hand-rolled #2828 guard — was strictly more permissive than the guard it replaced, so a flat ROADMAP carrying an ordinary `## Progress` heading had its declared phase count discarded for the on-disk directory count (#3204). Fixed in #3185 by deciding milestone-ness from vocabulary rather than heading position; see §7.1 and the `CONTEXT.md` Roadmap Parser Module entry for the three position-based models that failed and why.
+
+**The lesson this phase adds to Amendment 3's standing rule:** a copy count derived from *which symbol names appear in a prior amendment* is as unreliable as one derived from the reported issues. Read the code, not the write-up.
 
 **Note on #3204.** Routing `buildStateFrontmatter` through the owner will not by itself fix #3204: its defect is the discriminator one layer *above* enumeration — "is the ROADMAP's phase count safe to trust" — which misclassifies ordinary `## Overview` / `## Progress` headings as milestone sectioning. That discriminator **is** §7.1's `isMilestoneBoundedInRoadmap`. The enumeration routing and the discriminator replacement must ship together or the defect survives the consolidation.
 
@@ -369,8 +375,8 @@ One row per derivation. A blank owner is a derivation whose contract is locked (
 | Derivation | Owner | Guard | Scan surface | Status |
 |---|---|---|---|---|
 | Milestone windowing (§7.1) | `roadmap-parser.cts` | `lint-milestone-window-drift.cjs` | `src/` | enforced |
-| Milestone identity (§7.2) | — (Phase 6) | same guard, token set widened by Phase 6 | `src/` | contract only |
-| Phase enumeration (§7.3) | `phase-locator.cts` | `lint-phase-enumeration-drift.cjs` | `src/` | enforced for the four named consumers; `buildStateFrontmatter`/`syncStateFrontmatter` **unowned** |
+| Milestone identity (§7.2) | `roadmap-parser.cts` (Phase 6) | same guard, token set widened by Phase 6 | `src/` | enforced |
+| Phase enumeration (§7.3) | `phase-locator.cts` | `lint-phase-enumeration-drift.cjs` | `src/` | enforced — the state writers included (#3185) |
 | Phase completion (§7.4) | `verification.cts` (Phase 4) | Phase 4 | `src/` | blocked on #2957 |
 | Live-plan counting (§7.5) | `plan-scan.cts` | `lint-plan-count-drift.cjs` | `src/` | enforced |
 | Live-plan counting, prompt layer (§7.5) | — (Phase 8) | `lint-planning-prompt-drift.cjs` | `gsd-core/workflows`, `commands`, `agents`, `skills` | ratcheted, 7 sites |
@@ -630,7 +636,7 @@ scoped 4 — so it is not restated here.
 
 | # | Change | Why the existing phases do not cover it |
 |---|---|---|
-| 1 | ~~**Phase 3 widens** to include `buildStateFrontmatter` and `syncStateFrontmatter`~~ — **superseded: Phase 3 merged without them.** The fifth enumeration copy and #3204 are now unowned and need a phase of their own | Phase 3's Done-when named only `cmdProgressRender`, `cmdStats` and `cmdPhasesList`, and #3222 shipped exactly that. `buildStateFrontmatter`/`syncStateFrontmatter` appear nowhere in Amendment 3, and #3204 appears nowhere in this ADR outside this row. Routing alone would not have fixed #3204 anyway — its defect is the "is the ROADMAP count trustworthy" discriminator one layer *above* enumeration, which is §7.1's `isMilestoneBoundedInRoadmap` |
+| 1 | ~~**Phase 3 widens** to include `buildStateFrontmatter` and `syncStateFrontmatter`~~ — **twice superseded; closed by #3185.** First reading ("Phase 3 merged without them") was itself wrong: #3222 *had* routed the enumeration, and the audit mistook Amendment 3's silence for absent work. The real gap was the trust discriminator one layer above — see §7.3 | Routing alone would never have fixed #3204: a correctly scoped enumeration still returns the directory count. The defect was `hasMilestoneSectioning`, introduced by Phase 2 (#3184) and more permissive than the #2828 guard it retired |
 | 2 | **Phase 4 blocks on #2957** and its guard must fail while a third predicate exists | The audit found `buildStateFrontmatter` computing completed phases from plan scanning alone, ignoring the ROADMAP checkbox `cmdRoadmapAnalyze` honors. Checkbox-override vs disk-strict is an undecided product question, not a consolidation |
 | 3 | **Phase 6 — milestone identity** (§7.2): bind `getMilestoneInfo` to `locateMilestoneHeadings`, widen the windowing guard's token set in the same change (#3171, #3197) | A sixth derivation family. Phase 2 consolidated *windowing*; `getMilestoneInfo` hand-rolls its own heading regexes to answer a different question — *which milestone is this and what is it called* — and no named phase touches it |
 | 4 | **Phase 7 — completion-ratio scoping** (§7.6 rules 3–4). **Corrected: #3161 is NOT fixed here — Amendment 3 subsumed it.** Phase 7 keeps rule 4 and whatever consumers Phase 3 did not reach | A seventh derivation family. This amendment ships the arithmetic half. Its original claim — that enumeration consolidation "changes nothing here" — was **wrong**, and Phase 3 proved it: routing `cmdStats`/`cmdProgressRender`'s `totalPlans`/`totalSummaries` accumulation through `listMilestonePhaseDirs`'s scoped set *is* §7.6 rule 3 for those two consumers, and it is what closed #3161 |
@@ -662,3 +668,74 @@ underlying document-layout ambiguity is untouched by design. #3163 belongs to #2
 layer and is not enumerated there yet; #3169 and #3170 are standalone parser/extraction defects with
 no epic home. Recording them here as *not covered* rather than leaving them to be re-tested by the
 next audit.
+
+### Amendment 4 — Phase 6 (#3216) validation: the contract held; the blessed implementation carried the defect again
+
+**The copy count was a lower bound for the FOURTH consecutive time.** The epic and §7.2 both scoped
+this phase at one copy — `getMilestoneInfo`. The guard, built and run *before* the scope was fixed
+per Amendment 3's standing rule, found **three**:
+
+| # | Site | Carries |
+|---|---|---|
+| 1 | `roadmap-parser.cts:785` — `^##[^\n]*${escapedVer}…` | #3171 + #3197 |
+| 2 | `roadmap-parser.cts:806` — `/## (?!.*✅).*v(\d+(?:\.\d+)+)…/` | #3171 + #3197 |
+| 3 | **`roadmap.cts:454`** — `cmdRoadmapAnalyze`'s own milestone enumeration | #3171 + #3197 |
+
+Site 3 is the notable one, and it repeats §7.6's finding exactly: **the implementation this epic
+blessed carried the defect it was blessed over.** `cmdRoadmapAnalyze` is named in Decision 1 as the
+correct enumeration implementation, and its `milestones[]` array was simultaneously truncating names
+at a parenthetical and emitting `### Phase N` headings as milestones. Twice now the blessing has
+been granted per-question rather than per-file, and twice the blessed file has held an unrelated
+copy. **Blessing an implementation for one derivation says nothing about its others.**
+
+**Two mechanisms, not one.** Site 1 is line-anchored but level-blind (`^##` then `[^\n]*` absorbs a
+third `#`); site 2 and site 3 have no anchor at all, so `## ` matches from the *second* `#` of
+`###`. A reviewer checking "is it anchored?" would have passed site 1. This is why §7.2 rule 2 names
+the canonical locator rather than describing the anchoring to be re-implemented.
+
+**Two under-specifications surfaced during implementation, both now closed in §7.2 rule 3.** Neither
+was reachable by reading the contract alone; both appeared only when tests demanded an exact value.
+(a) *Which* version token the name is measured from, when the requested version is a prefix of the
+heading's own — `v2.0` against `## v2.0.1 — Portability` left `.1 — Portability` under the original
+wording. (b) A trailing `✅` was being retained *in the name*, duplicating structural state into a
+string that `buildStateFrontmatter` writes to disk. Both are now stated normatively rather than
+settled inside the implementation.
+
+**§7.2's unstated case is now decided (rule 5).** Free-form legacy ROADMAP with no version anywhere
+→ `UNSCOPED`, no identity. §7's own rule — *"a behavior not stated here is not decided"* — held: the
+gap was raised and decided by the maintainer before implementation rather than resolved silently.
+
+**A latent defect was found in a caller, not by the guard.** `init.cts` carried
+`getMilestoneInfo(cwd) as unknown as Record<string, unknown>`. The cast masked the return-type change
+across five call sites, so `tsc` stayed green while every one of them would have read `undefined`,
+and one template would have rendered the literal string `"undefined"`. A structural drift guard
+cannot see this class — an unsafe cast is not a re-derivation — which is the concrete argument for
+Decision 4(b)'s pairing: the type checker was the output metric and it was green; migrating and
+running the consumers was the outcome metric.
+
+**Tier-2 output changes (Decision 3).** `state sync` / `state record-session` persist a corrected
+`milestone:` and name, or `null` rather than a fabricated identity; `roadmap analyze`'s `milestones[]`
+no longer truncates names and no longer lists phase headings; `phases clear` falls back to its dated
+archive label rather than misfiling under a fabricated version; `query progress`, `stats`,
+`init manager`, `validate health` and `workstream create` render the full name.
+
+Five further Tier-2 surfaces were missed in this amendment's first draft and are recorded here after
+the Phase 6 spec review caught the omission — Decision 3 requires *every* Tier-2 change be called
+out, and an incomplete list is the same defect in miniature that this epic exists to remove:
+
+- **`commit`** (`cmdCommit`) — when `branching_strategy` is `milestone`, the constructed branch name
+  now derives from a scope-checked identity. A `COMPLETE` identity produces the same branch name as
+  before; a `TRUNCATED` one (real version, unresolved name) still produces a branch, deliberately,
+  because the version is real — the acceptance is now explicit in code rather than incidental to a
+  truthiness check. Contrast `archivePhaseDirectories`, which demands `COMPLETE` because it uses the
+  value as a filesystem path component.
+- **The four `init` JSON bundles** — `init execute-phase`, `init new-milestone`, `init milestone-op`
+  and `init progress` — emit `milestone_version` / `milestone_name` / `current_milestone` as an
+  explicit `null` when identity is unavailable, where they previously carried the fabricated
+  `v1.0` / `milestone`. The keys are always PRESENT so the prompt layer cannot render a bare
+  placeholder; `JSON.stringify` had been dropping them when the value went `undefined`.
+
+**Guard.** The owner file stays scanned; `listMilestoneHeadings` joins `FUNCTION_SCOPED_EXEMPTIONS`
+as a *named canonical function* — the only sanctioned exemption form. `locateMilestoneHeadings` was
+refactored into a version-filtered view over one shared grammar source so the two primitives cannot
+drift, with a parity test asserting the filtered enumeration equals the locator's selection.

@@ -3,6 +3,7 @@ process.env.GSD_TEST_MODE = '1';
 
 const { test, describe } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 
 const { serializeChangelog, parseChangelog } = require(path.join(__dirname, '..', 'scripts', 'changeset', 'serialize.cjs'));
@@ -179,5 +180,66 @@ describe('#3001: multi-paragraph changeset body round-trips without truncation',
       `first paragraph must survive; got: ${JSON.stringify(bullet.body)}`);
     assert.ok(bullet.body.includes('Second paragraph'),
       `second paragraph must survive; got: ${JSON.stringify(bullet.body)}`);
+  });
+});
+
+describe('changeset serialize: shipped CHANGELOG citation integrity (#2359)', () => {
+  // Regression: the `## [1.4.0]` Cursor commands-surface entry carried the
+  // trailing reference (#803) — the *Cline* PR, cited correctly by the entry two
+  // lines below it. The Cursor surface actually shipped in #805. Two adjacent
+  // bullets therefore claimed one PR, and only the second was right.
+  //
+  // This is not cosmetic: the trailing (#NNNN) is machine-parsed here and
+  // consumed by `cmdExtract`, so a wrong number propagates into extracted
+  // release-note ranges. It had already propagated to a human reporter (#2341,
+  // quoted there as "#785 / #803").
+  //
+  // The obvious bad fix is a global s/(#803)/(#805)/, which repairs the Cursor
+  // entry and silently corrupts the Cline one. The Cline assertion below is the
+  // guard for exactly that, and is expected to pass both before and after.
+  const CHANGELOG = fs.readFileSync(path.join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
+  const CURSOR_MARKER = /`\.cursor\/commands\/gsd-<name>\.md`/;
+  const CLINE_MARKER = /Elevate the Cline runtime to hook parity/;
+
+  function bulletsOf(version) {
+    const release = parseChangelog(CHANGELOG).releases.find((r) => r.version === version);
+    assert.ok(release, `CHANGELOG.md must still carry a \`## [${version}]\` release section`);
+    return release.sections.flatMap((s) => s.bullets);
+  }
+
+  // Asserts cardinality before returning, so a reworded or deleted entry fails
+  // with a readable message instead of a TypeError on an undefined bullet.
+  function locateBullet(version, marker, label) {
+    const matches = bulletsOf(version).filter((b) => marker.test(b.body));
+    assert.equal(matches.length, 1,
+      `expected exactly one ${label} bullet in the ${version} section, found ${matches.length}`);
+    return matches[0];
+  }
+
+  test('the 1.4.0 Cursor commands-surface bullet cites PR 805', () => {
+    const cursor = locateBullet('1.4.0', CURSOR_MARKER, 'Cursor commands-surface');
+    assert.equal(cursor.pr, 805,
+      'the .cursor/commands/ surface shipped in PR #805 (feat(#785)), not #803 (the Cline PR)');
+  });
+
+  test('the adjacent 1.4.0 Cline bullet still cites PR 803', () => {
+    const cline = locateBullet('1.4.0', CLINE_MARKER, 'Cline hook-parity');
+    assert.equal(cline.pr, 803,
+      "the Cline entry's #803 is correct and must survive the Cursor correction");
+  });
+
+  test('both 1.4.0 entries survive the correction exactly once each', () => {
+    const bullets = bulletsOf('1.4.0');
+    assert.equal(bullets.filter((b) => CURSOR_MARKER.test(b.body)).length, 1,
+      'the Cursor entry must be corrected in place — neither dropped nor duplicated');
+    assert.equal(bullets.filter((b) => CLINE_MARKER.test(b.body)).length, 1,
+      'the Cline entry must be left alone — neither dropped nor duplicated');
+  });
+
+  test('the adjacent Cursor and Cline bullets do not cite the same PR', () => {
+    const cursor = locateBullet('1.4.0', CURSOR_MARKER, 'Cursor commands-surface');
+    const cline = locateBullet('1.4.0', CLINE_MARKER, 'Cline hook-parity');
+    assert.notEqual(cursor.pr, cline.pr,
+      'two adjacent entries describing different runtimes cannot share one PR');
   });
 });

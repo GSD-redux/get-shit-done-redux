@@ -2388,7 +2388,7 @@ function cmdValidateHealth(
               fs.copyFileSync(statePath, backupPath);
               repairActions.push({ action: 'backupState', success: true, path: backupPath });
             }
-            const milestone = getMilestoneInfo(cwd);
+            const milestone = getMilestoneInfo(cwd).value;
             const projectRef = path
               .relative(cwd, path.join(rootBase, 'PROJECT.md'))
               .split(path.sep)
@@ -2397,7 +2397,7 @@ function cmdValidateHealth(
             stateContent += `## Project Reference\n\n`;
             stateContent += `See: ${projectRef}\n\n`;
             stateContent += `## Position\n\n`;
-            stateContent += `**Milestone:** ${milestone.version} ${milestone.name}\n`;
+            stateContent += `**Milestone:** ${milestone?.version ?? ''} ${milestone?.name ?? ''}\n`;
             stateContent += `**Current phase:** (determining...)\n`;
             stateContent += `**Status:** Resuming\n\n`;
             stateContent += `## Session Log\n\n`;
