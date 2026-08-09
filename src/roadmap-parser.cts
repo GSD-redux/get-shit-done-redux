@@ -38,8 +38,12 @@ const {
   phaseTokenMatches,
   // #2761 B1: the version-less bracket milestone boundary (computeBracketSectionEnd /
   // preambleCutoff, below) is built from this single-owner source rather than a
-  // re-typed `[A-Z][A-Z0-9_]*\.\d+` literal.
+  // re-typed bracket-id literal.
   BRACKET_ID_SRC,
+  // #2761 M3: the PINNED bracket milestone intro, owning the pad2 spelling rule
+  // as well as the grammar — consumed by the bracket-fallback selector below,
+  // which re-typed the project-code class and restated the padding rule.
+  bracketMilestoneIntroSrcFor,
   // #2761 B1 (round-2 fix): fold-before-identity for the SAME-MILESTONE
   // continuation check in isBracketMilestoneBoundary, below — the branch's own
   // convention (matches bracketQualifiedKey/isSentinelPhaseId).
@@ -747,8 +751,10 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
       // The CANONICAL spelling only (pad2), not `0*N`: an unpadded `[GSD.2]`
       // scoped a milestone that no phase heading could then resolve into, so
       // roadmapPhaseCount stayed 0 and total_phases fell back to the directory
-      // count — the very symptom this scoping fix removes.
-      const canonical = String(milestoneInt).padStart(2, '0');
+      // count — the very symptom this scoping fix removes. #2761 M3: both the
+      // grammar and that pad2 rule now come from the owner's
+      // `bracketMilestoneIntroSrcFor`, not from a class re-typed here beside a
+      // locally restated padding rule.
       // #612 round-4 (Major 1, F9's selection half): tokenizeHeadings, not a
       // raw content.matchAll — a FENCED example heading sharing the current
       // project's own bracket id (ADR-612's own authoring docs illustrate
@@ -768,7 +774,7 @@ function extractCurrentMilestoneScoped(content: string, cwd?: string, ws?: strin
       // have matched. For every survivor, `h.offset` IS the `#` character,
       // so `content.slice(h.offset, lineEnd)` is byte-identical to what
       // `[^\n]*` would have captured at `content.match().index`.
-      const bracketMilestoneHeadingRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.${canonical}\\]`, 'i');
+      const bracketMilestoneHeadingRe = new RegExp(`^${bracketMilestoneIntroSrcFor(milestoneInt)}`, 'i');
       headingMatches = tokenizeHeadings(content)
         .filter((h) => h.level <= 3 && content[h.offset] === '#' && bracketMilestoneHeadingRe.test(h.text))
         .map((h) => {

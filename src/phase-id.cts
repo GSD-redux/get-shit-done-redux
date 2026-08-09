@@ -170,7 +170,38 @@ const PHASE_HEADING_PREFIX_SRC = '(?:\\[[^\\]]{1,200}\\]\\s*(?:Phase\\s+)?|Phase
 // bounds nothing, sections nothing, and is not a phase id. W005 on its
 // directories is the signal that surfaces it.
 const BRACKET_MILESTONE_NUMERIC_SRC = BRACKET_CANONICAL_NUMERIC_SOURCE;
-const BRACKET_ID_SRC = `[A-Z][A-Z0-9_]*\\.${BRACKET_MILESTONE_NUMERIC_SRC}`;
+
+// #2761 M3 (trek-e review): the bracket PROJECT-CODE class, as a named source
+// rather than a class this file (and three readers outside it) each re-typed.
+// The re-typed copies were the exact drift #2761's own gate forbids — "no token
+// literal outside src/phase-id.cts" — and `check:phase-id-drift` did not see
+// them, because its detector only knew the phase-NUMBER token grammar. The
+// guard now carries a bracket rule too (scripts/lint-phase-id-drift.cjs).
+const BRACKET_PROJECT_CODE_SRC = '[A-Z][A-Z0-9_]*';
+const BRACKET_ID_SRC = `${BRACKET_PROJECT_CODE_SRC}\\.${BRACKET_MILESTONE_NUMERIC_SRC}`;
+
+// The bracket MILESTONE INTRO — `[CODE.MM]` — in the two shapes its readers
+// need. Both were re-typed verbatim outside this module before #2761 M3:
+//
+//   * PINNED, to one already-resolved milestone integer. This owns the pad2
+//     spelling rule as well as the grammar, so "canonical spelling only, not
+//     `0*N`" (the rule that keeps `[GSD.2]` from scoping a milestone no phase
+//     heading can resolve into) lives in ONE place instead of being restated
+//     beside every regex. `roadmap-parser`'s bracket-fallback selector and
+//     `state`'s `isMilestoneBounded` both consume this.
+//
+//   * CAPTURING, over any milestone, putting the milestone digits in a group.
+//     `verify`'s `checkBracketCoherence` consumes this.
+//
+// The milestone argument is expected to be a safe integer — every caller
+// resolves it through `Number.isSafeInteger` first. A non-integer yields a
+// regex source that is still well-formed and simply matches nothing, which is
+// the same safe degrade the callers' own guards produce.
+function bracketMilestoneIntroSrcFor(milestone: number): string {
+  return `\\[${BRACKET_PROJECT_CODE_SRC}\\.${String(milestone).padStart(2, '0')}\\]`;
+}
+const BRACKET_MILESTONE_INTRO_CAPTURING_SRC =
+  `\\[${BRACKET_PROJECT_CODE_SRC}\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\]`;
 
 // Recognition is case-INSENSITIVE (every reader compiles `/i`), but the identity
 // helpers this file owns — isSentinelPhaseId, getMilestoneFromPhaseId,
@@ -188,7 +219,7 @@ function foldBracketId(bracketId: unknown): string {
 // The milestone field must END at the phase separator. Without the boundary the
 // width alternation matched a PREFIX of a malformed run — `GSD.002-01` matched
 // its leading `00` and read as a sentinel.
-const BRACKET_ID_PREFIX_RE = new RegExp(`^[A-Z][A-Z0-9_]*\\.(${BRACKET_MILESTONE_NUMERIC_SRC})(?=-|$)`);
+const BRACKET_ID_PREFIX_RE = new RegExp(`^${BRACKET_PROJECT_CODE_SRC}\\.(${BRACKET_MILESTONE_NUMERIC_SRC})(?=-|$)`);
 const BRACKET_DIR_PREFIX_SRC = `${BRACKET_ID_SRC}-`;
 // The trailing `(?=-|$)` is what makes the recognizer and the resolver agree on
 // REJECTED input, not just accepted input. Without it `GSD.02-12A-hotfix`
@@ -202,7 +233,7 @@ const BRACKET_DIR_TOKEN_RE = new RegExp(`^${BRACKET_DIR_PREFIX_SRC}(\\d+(?:\\.\\
 // phaseTokenMatches returns UNCONDITIONALLY on a qualified hit, so that
 // disagreement would have been final rather than a fall-through.
 const BRACKET_QUALIFIED_KEY_RE = new RegExp(
-  `^([A-Z][A-Z0-9_]*)\\.(${BRACKET_MILESTONE_NUMERIC_SRC})-(\\d+(?:\\.\\d+)?)(?=-|$)`, 'i',
+  `^(${BRACKET_PROJECT_CODE_SRC})\\.(${BRACKET_MILESTONE_NUMERIC_SRC})-(\\d+(?:\\.\\d+)?)(?=-|$)`, 'i',
 );
 
 // ── #612 PR-2: gated heading-intro selection ────────────────────────────────
@@ -942,6 +973,9 @@ export = {
   BRACKET_PHASE_TOKEN_SOURCE,
   PHASE_HEADING_PREFIX_SRC,
   BRACKET_ID_SRC,
+  BRACKET_PROJECT_CODE_SRC,
+  bracketMilestoneIntroSrcFor,
+  BRACKET_MILESTONE_INTRO_CAPTURING_SRC,
   BRACKET_MILESTONE_NUMERIC_SRC,
   BRACKET_DIR_PREFIX_SRC,
   BASE_ANY_BRACKET_HEADING_PREFIX_SRC,

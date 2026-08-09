@@ -51,7 +51,13 @@ import configLoaderMod = require('./config-loader.cjs');
 const { loadConfig, CONFIG_DEFAULTS } = configLoaderMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum, isSentinelPhaseId, foldBracketId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, BRACKET_ID_SRC, BRACKET_MILESTONE_NUMERIC_SRC } = phaseIdMod;
+// #2761 M3: `BRACKET_MILESTONE_INTRO_CAPTURING_SRC` replaces this file's own
+// re-typed copy of the bracket milestone intro in `checkBracketCoherence`. It
+// carried an owner reference (`BRACKET_MILESTONE_NUMERIC_SRC`) on the SAME LINE
+// as a re-typed project-code class, which is precisely the shape a line-level
+// "references the owner, therefore clean" check waves through — see the drift
+// guard's own note on why its bracket rule has no such escape.
+const { normalizePhaseName, phaseTokenMatches, escapeRegex, getMilestoneFromPhaseId, OPTIONAL_PHASE_TAG_SOURCE, PHASE_NUMBER_TOKEN_SOURCE, extractPhaseToken, comparePhaseNum, isSentinelPhaseId, foldBracketId, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, BRACKET_ID_SRC, BRACKET_MILESTONE_INTRO_CAPTURING_SRC } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal } = phaseLocatorMod;
@@ -1466,7 +1472,7 @@ function checkBracketCoherence(roadmapContent: string): BracketIncoherence[] {
   // so M-NN and letter-suffixed ids are RECOGNIZED (and flagged), not skipped.
   const legacyPhaseRe = new RegExp(`^Phase\\s+(${PHASE_NUMBER_TOKEN_SOURCE}|\\d+(?:-\\d+)+[A-Z]?(?:\\.\\d+)*)\\s*:`, 'i');
   // A bracket MILESTONE section heading.
-  const bracketSectionRe = new RegExp(`^\\[[A-Z][A-Z0-9_]*\\.(${BRACKET_MILESTONE_NUMERIC_SRC})\\]`, 'i');
+  const bracketSectionRe = new RegExp(`^${BRACKET_MILESTONE_INTRO_CAPTURING_SRC}`, 'i');
   // A legacy milestone section heading (`## v2.0 — Name`).
   const legacyMilestoneRe = /^v\d+(?:\.\d+)*\b/i;
 

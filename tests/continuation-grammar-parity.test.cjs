@@ -301,3 +301,77 @@ describe('#612 bracket divergence — wider only where the delimiter disambiguat
     assert.strictEqual(tokenOf('01-014-slug'), '01');
   });
 });
+
+// ─── #2761 M3: the BRACKET MILESTONE INTRO grammar — one owner, two shapes ──
+//
+// trek-e's finding: this grammar was re-typed in roadmap-parser (the
+// bracket-fallback selector), state (`isMilestoneBounded`) and verify
+// (`checkBracketCoherence`), which #2761's own gate forbids, and
+// `check:phase-id-drift` could not see it. All three now consume
+// `phase-id.cjs`, so the LITERAL divergence is closed and
+// tests/phase-id-drift-guard.test.cjs proves the guard now fails on each
+// shipped copy.
+//
+// This is the behavioral half: the owner exports the intro in TWO shapes —
+// PINNED to one milestone, and CAPTURING over any — and nothing structurally
+// forces them to agree about what a milestone intro IS. They are two doors onto
+// one rule, so a corpus drives both and requires the same verdict. Widening
+// either one alone (the `0*N` acceptance that reopened the unscoped-milestone
+// defect) fails here.
+describe('#2761 bracket milestone intro — the pinned and capturing shapes agree', () => {
+  // Stated as POLICY, independently of either regex: the canonical spelling is
+  // exactly what toDir emits — pad2 for 0-99, no leading zero beyond that.
+  // Anything else is malformed and scopes nothing.
+  const INTRO_CORPUS = [
+    { text: '[GSD.00] Zero', milestone: 0, canonical: true, note: 'pad2 lower bound' },
+    { text: '[GSD.02] Foundation', milestone: 2, canonical: true, note: 'the ADR example' },
+    { text: '[GSD.99] Late', milestone: 99, canonical: true, note: 'pad2 upper bound' },
+    { text: '[GSD.100] Later', milestone: 100, canonical: true, note: '3-digit, no leading zero' },
+    { text: '[GSD.999] Icebox', milestone: 999, canonical: true, note: 'the backlog sentinel' },
+    { text: '[A_B9.02] Underscored', milestone: 2, canonical: true, note: 'the full code class' },
+    { text: '[gsd.02] Lowercased', milestone: 2, canonical: true, note: 'readers compile /i' },
+    { text: '[GSD.2] Unpadded', milestone: 2, canonical: false, note: 'unpadded scopes nothing' },
+    { text: '[GSD.002] Overpadded', milestone: 2, canonical: false, note: 'over-padded is malformed' },
+    { text: '[9SD.02] Digit-led code', milestone: 2, canonical: false, note: 'a code starts with a letter' },
+    { text: '[GSD-02] Hyphenated', milestone: 2, canonical: false, note: 'the separator is a dot' },
+    { text: '[GSD.] Empty milestone', milestone: 0, canonical: false, note: 'the milestone field is required' },
+  ];
+
+  const capturing = new RegExp(`^${phaseId.BRACKET_MILESTONE_INTRO_CAPTURING_SRC}`, 'i');
+
+  for (const { text, milestone, canonical, note } of INTRO_CORPUS) {
+    test(`${JSON.stringify(text)}: both shapes say canonical=${canonical} — ${note}`, () => {
+      const pinned = new RegExp(`^${phaseId.bracketMilestoneIntroSrcFor(milestone)}`, 'i');
+      const byPinned = pinned.test(text);
+      const byCapturing = capturing.test(text);
+      assert.strictEqual(
+        byPinned, byCapturing,
+        `the pinned and capturing shapes disagreed on ${JSON.stringify(text)} — ` +
+        'they are two doors onto one rule and must never diverge',
+      );
+      assert.strictEqual(byPinned, canonical, `verdict must match the locked policy — ${note}`);
+    });
+  }
+
+  test('the capturing shape reports the milestone the pinned shape was built for', () => {
+    // Beyond agreeing on accept/reject: when both accept, they must be talking
+    // about the SAME milestone. A capture-group or padding slip shows up here.
+    for (const { text, milestone, canonical } of INTRO_CORPUS) {
+      if (!canonical) continue;
+      assert.strictEqual(
+        parseInt(text.match(capturing)[1], 10), milestone,
+        `${text}: the captured milestone must be ${milestone}`,
+      );
+    }
+  });
+
+  test('a milestone intro is not confused with a phase id sharing its code', () => {
+    // `[GSD.02]` is a MILESTONE intro; `GSD.02-01` is a phase DIRECTORY. Both
+    // are built from BRACKET_PROJECT_CODE_SRC, so this pins that sharing one
+    // code class does not collapse the two readings.
+    const pinned = new RegExp(`^${phaseId.bracketMilestoneIntroSrcFor(2)}`, 'i');
+    assert.ok(!pinned.test('GSD.02-01-setup'), 'a directory name is not a bracket intro');
+    assert.ok(pinned.test('[GSD.02] 01: Setup'), 'a bracket PHASE heading still carries the intro');
+    assert.strictEqual(phaseId.bracketQualifiedKey('GSD.02-01', 'bracket'), 'GSD.2-1');
+  });
+});
