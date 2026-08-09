@@ -6466,3 +6466,555 @@ test('bug-3542: stash pushed in main checkout is visible inside a linked worktre
 });
   });
 }
+
+// ─── #2596: advisory diff-vs-declared-scope conformance at worktree-wave merge ─
+//
+// The wave-cleanup gauntlet validated branch, base, deletions, SUMMARY rescue and
+// a clean worktree — but never compared the branch's ACTUAL committed diff against
+// the scope the plan declared in `files_modified`. An executor that committed
+// outside its brief merged silently. This is the advisory-first check: it warns,
+// it does not block (promotion to a gate is a separate, disclosed change).
+
+const {
+  WAVE_CLEANUP_WARNING,
+  planWaveScopeConformance,
+  isSummaryArtifactRelPath,
+  normalizeCleanupManifest,
+} = require(WORKTREE_SAFETY_PATH);
+
+describe('#2596 scope conformance — planWaveScopeConformance (pure)', () => {
+  const BR = 'worktree-agent-a1';
+  const codesOf = (warnings) => warnings.map((w) => w.code);
+  const pathsOf = (warnings) => warnings.map((w) => w.path);
+
+  test('exact path match is in scope', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/a.ts'], ['src/a.ts'], BR), []);
+  });
+
+  test('declared directory covers a file beneath it', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/foo/bar.ts'], ['src/foo'], BR), []);
+  });
+
+  test('prefix sibling is out of scope (the boundary is /, not startsWith)', () => {
+    const warnings = planWaveScopeConformance(['src/foobar.ts'], ['src/foo'], BR);
+    assert.deepEqual(codesOf(warnings), [WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED]);
+    assert.deepEqual(pathsOf(warnings), ['src/foobar.ts']);
+    assert.equal(warnings[0].branch, BR);
+  });
+
+  test('trailing slash on a declared directory is normalized', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/foo/bar.ts'], ['src/foo/'], BR), []);
+  });
+
+  test('leading ./ is normalized on both sides', () => {
+    assert.deepEqual(planWaveScopeConformance(['./src/a.ts'], ['./src/a.ts'], BR), []);
+  });
+
+  test('backslash separators normalize unconditionally (not only on win32)', () => {
+    assert.deepEqual(planWaveScopeConformance(['src\\a.ts'], ['src/a.ts'], BR), []);
+    assert.deepEqual(planWaveScopeConformance(['src/a.ts'], ['src\\a.ts'], BR), []);
+  });
+
+  test('glob literal prefix covers paths beneath it', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/a/b.ts'], ['src/**/*.ts'], BR), []);
+  });
+
+  test('glob matching is literal-prefix only — the documented over-accept', () => {
+    // `src/**/*.ts` also covers `src/a/b.json`. Deliberate: for an advisory a false
+    // alarm costs more than a miss, and this mirrors the submodule-intersection
+    // gate's own glob-prefix handling rather than inventing a second matcher.
+    assert.deepEqual(planWaveScopeConformance(['src/a/b.json'], ['src/**/*.ts'], BR), []);
+  });
+
+  test('a pattern with no literal prefix suppresses warnings rather than crying wolf', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/a.ts'], ['*.md'], BR), []);
+  });
+
+  test('an undeclared sibling file is out of scope', () => {
+    const warnings = planWaveScopeConformance(['src/b.ts'], ['src/a.ts'], BR);
+    assert.deepEqual(pathsOf(warnings), ['src/b.ts']);
+  });
+
+  test('an all-blank declared list is unknown, not empty — no warnings', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/b.ts'], ['', '   ', './', '/'], BR), []);
+  });
+
+  test('an absent, empty or non-array declared list yields no warnings', () => {
+    assert.deepEqual(planWaveScopeConformance(['src/b.ts'], undefined, BR), []);
+    assert.deepEqual(planWaveScopeConformance(['src/b.ts'], [], BR), []);
+    assert.deepEqual(planWaveScopeConformance(['src/b.ts'], 'src/b.ts', BR), []);
+  });
+
+  test('a committed SUMMARY artifact is never a scope violation', () => {
+    assert.deepEqual(
+      planWaveScopeConformance(['.planning/q1-SUMMARY.md'], ['src/a.ts'], BR),
+      [],
+    );
+  });
+
+  test('every out-of-scope path gets its own warning, in diff order', () => {
+    const warnings = planWaveScopeConformance(
+      ['src/a.ts', 'z/second.ts', 'a/first.ts'],
+      ['src/a.ts'],
+      BR,
+    );
+    assert.deepEqual(pathsOf(warnings), ['z/second.ts', 'a/first.ts']);
+    assert.deepEqual(codesOf(warnings), [
+      WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED,
+      WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED,
+    ]);
+  });
+});
+
+describe('#2596 SUMMARY-artifact predicate and its parity with the walker', () => {
+  const nodeFs = require('node:fs');
+
+  test('a .planning SUMMARY is recognized', () => {
+    assert.equal(isSummaryArtifactRelPath('.planning/q1-SUMMARY.md'), true);
+  });
+
+  test('a nested .planning SUMMARY is recognized', () => {
+    assert.equal(isSummaryArtifactRelPath('.planning/phases/3/x-SUMMARY.md'), true);
+  });
+
+  test('SUMMARY.md outside .planning is not exempt', () => {
+    assert.equal(isSummaryArtifactRelPath('docs/SUMMARY.md'), false);
+  });
+
+  test('the SUMMARY suffix must terminate the name', () => {
+    assert.equal(isSummaryArtifactRelPath('.planning/SUMMARY.md.bak'), false);
+  });
+
+  test('the .planning boundary is a whole path segment', () => {
+    assert.equal(isSummaryArtifactRelPath('.planningx/q-SUMMARY.md'), false);
+  });
+
+  test('parity: the SUMMARY walker and the scope-exemption predicate agree', (t) => {
+    // The rescue walker roots at <worktree>/.planning and accepts *SUMMARY.md.
+    // The scope advisory must exempt exactly that set, or it would warn on the
+    // very artifacts the rescue path exists to carry. Drive the PRODUCTION
+    // walker (no findSummaryFiles override) over a real temp tree and
+    // cross-check every collected path against the predicate.
+    const tmp = createTempDir('wt-2596-summary-parity');
+    t.after(() => cleanup(tmp));
+
+    const planning = path.join(tmp, '.planning', 'phases', '3');
+    nodeFs.mkdirSync(planning, { recursive: true });
+    nodeFs.writeFileSync(path.join(planning, 'p3-SUMMARY.md'), 'x');
+    nodeFs.writeFileSync(path.join(tmp, '.planning', 'SUMMARY.md'), 'x');
+    // Decoys the walker must skip and the predicate must reject.
+    nodeFs.writeFileSync(path.join(planning, 'notes.md'), 'x');
+    nodeFs.mkdirSync(path.join(tmp, 'docs'), { recursive: true });
+    nodeFs.writeFileSync(path.join(tmp, 'docs', 'SUMMARY.md'), 'x');
+
+    const copiedFrom = [];
+    executeWorktreeWaveCleanupPlan(
+      {
+        ok: true,
+        repoRoot: '/repo/main',
+        action: 'cleanup_wave',
+        discovery: 'manifest',
+        entries: [{
+          agent_id: 'a1',
+          worktree_path: tmp,
+          branch: 'worktree-agent-a1',
+          expected_base: 'abc123',
+        }],
+      },
+      {
+        // No findSummaryFiles override: this exercises the production walker.
+        execGit: (args) => {
+          const key = args.join(' ');
+          if (key === `-C ${tmp} rev-parse --abbrev-ref HEAD`) {
+            return { exitCode: 0, stdout: 'worktree-agent-a1', stderr: '', timedOut: false };
+          }
+          if (key === 'merge-base HEAD worktree-agent-a1') {
+            return { exitCode: 0, stdout: 'abc123', stderr: '', timedOut: false };
+          }
+          // cat-file -e → non-zero, so every found SUMMARY is rescued (copied).
+          if (args.includes('cat-file')) {
+            return { exitCode: 128, stdout: '', stderr: '', timedOut: false };
+          }
+          return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+        },
+        existsSync: () => false,
+        readFileSync: () => 'x',
+        mkdirSync: () => {},
+        copyFileSync: (src) => { copiedFrom.push(src); },
+      },
+    );
+
+    assert.equal(copiedFrom.length, 2,
+      'the walker must find exactly the two .planning SUMMARY artifacts, not the docs/ decoy');
+    for (const abs of copiedFrom) {
+      const rel = abs.slice(tmp.length).replace(/^[/\\]/, '').replace(/\\/g, '/');
+      assert.equal(
+        isSummaryArtifactRelPath(rel), true,
+        `a path the SUMMARY walker collects must be exempt from the scope advisory: ${rel}`,
+      );
+    }
+    // Negative direction: paths the walker skips must also fail the predicate.
+    assert.equal(isSummaryArtifactRelPath('docs/SUMMARY.md'), false);
+    assert.equal(isSummaryArtifactRelPath('.planning/phases/3/notes.md'), false);
+  });
+});
+
+describe('#2596 scope conformance — executeWorktreeWaveCleanupPlan integration', () => {
+  const WT = '/repo/.claude/worktrees/agent-a1';
+  const BR = 'worktree-agent-a1';
+  const SCOPE_DIFF = `diff --name-only HEAD...${BR}`;
+  const noSummaries = { findSummaryFiles: () => [] };
+
+  function makeGit(overrides = {}) {
+    const calls = [];
+    const git = (args) => {
+      const key = args.join(' ');
+      calls.push(key);
+      if (Object.prototype.hasOwnProperty.call(overrides, key)) return overrides[key];
+      if (key === `-C ${WT} rev-parse --abbrev-ref HEAD`) {
+        return { exitCode: 0, stdout: BR, stderr: '', timedOut: false };
+      }
+      if (key === `merge-base HEAD ${BR}`) {
+        return { exitCode: 0, stdout: 'abc123', stderr: '', timedOut: false };
+      }
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+    };
+    return { git, calls };
+  }
+
+  const planWith = (entry) => ({
+    ok: true,
+    repoRoot: '/repo/main',
+    action: 'cleanup_wave',
+    discovery: 'manifest',
+    entries: [{ agent_id: 'a1', worktree_path: WT, branch: BR, expected_base: 'abc123', ...entry }],
+  });
+
+  test('no declared scope issues no scope git call at all', () => {
+    const { git, calls } = makeGit();
+    const result = executeWorktreeWaveCleanupPlan(planWith({}), { execGit: git, ...noSummaries });
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.warnings, []);
+    assert.deepEqual(result.entries[0].warnings, []);
+    assert.equal(
+      calls.includes(SCOPE_DIFF), false,
+      'an entry with no declared files_modified must not spend a git subprocess',
+    );
+  });
+
+  test('an in-scope branch produces no advisory', () => {
+    const { git } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 0, stdout: 'src/a.ts\nsrc/b.ts\n', stderr: '', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts', 'src/b.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.entries[0].warnings, []);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  test('an out-of-scope path warns without blocking the merge', () => {
+    const { git, calls } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 0, stdout: 'src/a.ts\nsecrets/creds.json\n', stderr: '', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.equal(result.ok, true, 'the advisory must NOT flip ok — it is not a gate');
+    assert.equal(result.reason, 'ok');
+    assert.equal(result.entries[0].status, 'merged_removed');
+    assert.deepEqual(result.entries[0].warnings, [
+      { code: WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED, branch: BR, path: 'secrets/creds.json' },
+    ]);
+    assert.deepEqual(result.warnings, result.entries[0].warnings);
+    // Negative proof: the merge/remove/delete sequence still ran.
+    assert.ok(calls.some((c) => c.startsWith(`merge ${BR}`)), 'merge must still run');
+    assert.ok(calls.includes(`worktree remove ${WT} --force`), 'remove must still run');
+    assert.ok(calls.includes(`branch -D ${BR}`), 'branch delete must still run');
+  });
+
+  test('every out-of-scope path gets its own warning, in diff order', () => {
+    const { git } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 0, stdout: 'z/two.ts\nsrc/a.ts\na/one.ts\n', stderr: '', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.deepEqual(result.entries[0].warnings.map((w) => w.path), ['z/two.ts', 'a/one.ts']);
+  });
+
+  test('a committed SUMMARY artifact in the diff is not a scope violation', () => {
+    const { git } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 0, stdout: 'src/a.ts\n.planning/q1-SUMMARY.md\n', stderr: '', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.deepEqual(result.entries[0].warnings, []);
+  });
+
+  test('a failed scope diff degrades to an advisory, never a block', () => {
+    const { git } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 128, stdout: '', stderr: 'fatal: bad revision', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.equal(result.ok, true, 'a broken advisory check must never become a gate');
+    assert.equal(result.entries[0].status, 'merged_removed');
+    assert.deepEqual(result.entries[0].warnings, [
+      { code: WAVE_CLEANUP_WARNING.SCOPE_CHECK_UNAVAILABLE, branch: BR, path: null },
+    ]);
+  });
+
+  test('a timed-out scope diff degrades to an advisory', () => {
+    const execGit = makeFaultyGit({
+      faults: [{
+        kind: 'timeout',
+        when: (args) => args[0] === 'diff' && !args.includes('--diff-filter=D'),
+      }],
+      passthrough: makeGit().git,
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit, ...noSummaries },
+    );
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.entries[0].warnings.map((w) => w.code), [
+      WAVE_CLEANUP_WARNING.SCOPE_CHECK_UNAVAILABLE,
+    ]);
+  });
+
+  test('CRLF diff output yields clean paths and no phantom warning', () => {
+    const { git } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 0, stdout: 'src/a.ts\r\nsecrets/x.json\r\n\r\n', stderr: '', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.deepEqual(result.entries[0].warnings.map((w) => w.path), ['secrets/x.json']);
+  });
+
+  test('scope warnings survive a later block', () => {
+    const { git } = makeGit({
+      [SCOPE_DIFF]: { exitCode: 0, stdout: 'secrets/x.json\n', stderr: '', timedOut: false },
+      [`-C ${WT} status --porcelain --untracked-files=all`]: { exitCode: 0, stdout: '?? scratch.txt', stderr: '', timedOut: false },
+    });
+    const result = executeWorktreeWaveCleanupPlan(
+      planWith({ files_modified: ['src/a.ts'] }),
+      { execGit: git, ...noSummaries },
+    );
+    assert.equal(result.ok, false, 'the dirty-worktree block still blocks');
+    assert.equal(result.entries[0].status, 'blocked');
+    assert.equal(result.entries[0].reason, 'worktree_dirty');
+    assert.deepEqual(
+      result.entries[0].warnings.map((w) => w.path), ['secrets/x.json'],
+      'an advisory recorded before the block is still true and must survive it',
+    );
+  });
+
+  test('warnings are attributed per entry and aggregated at the top level', () => {
+    const WT2 = '/repo/.claude/worktrees/agent-a2';
+    const BR2 = 'worktree-agent-a2';
+    const execGit = (args) => {
+      const key = args.join(' ');
+      if (key === `-C ${WT} rev-parse --abbrev-ref HEAD`) return { exitCode: 0, stdout: BR, stderr: '', timedOut: false };
+      if (key === `-C ${WT2} rev-parse --abbrev-ref HEAD`) return { exitCode: 0, stdout: BR2, stderr: '', timedOut: false };
+      if (key.startsWith('merge-base HEAD ')) return { exitCode: 0, stdout: 'abc123', stderr: '', timedOut: false };
+      if (key === `diff --name-only HEAD...${BR}`) return { exitCode: 0, stdout: 'src/a.ts\n', stderr: '', timedOut: false };
+      if (key === `diff --name-only HEAD...${BR2}`) return { exitCode: 0, stdout: 'src/rogue.ts\n', stderr: '', timedOut: false };
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+    };
+    const result = executeWorktreeWaveCleanupPlan({
+      ok: true,
+      repoRoot: '/repo/main',
+      action: 'cleanup_wave',
+      discovery: 'manifest',
+      entries: [
+        { agent_id: 'a1', worktree_path: WT, branch: BR, expected_base: 'abc123', files_modified: ['src/a.ts'] },
+        { agent_id: 'a2', worktree_path: WT2, branch: BR2, expected_base: 'abc123', files_modified: ['src/b.ts'] },
+      ],
+    }, { execGit, ...noSummaries });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.entries[0].warnings, []);
+    assert.deepEqual(result.entries[1].warnings, [
+      { code: WAVE_CLEANUP_WARNING.SCOPE_OUT_OF_DECLARED, branch: BR2, path: 'src/rogue.ts' },
+    ]);
+    assert.deepEqual(
+      result.warnings, result.entries[1].warnings,
+      'the top-level aggregate carries every entry warning, tagged with its branch',
+    );
+  });
+
+  test('WAVE_CLEANUP_WARNING is a frozen, locked code set', () => {
+    assert.deepEqual(
+      Object.keys(WAVE_CLEANUP_WARNING).sort(),
+      ['SCOPE_CHECK_UNAVAILABLE', 'SCOPE_OUT_OF_DECLARED'],
+    );
+    assert.equal(Object.isFrozen(WAVE_CLEANUP_WARNING), true);
+  });
+});
+
+describe('#2596 files_modified on the cleanup manifest', () => {
+  const base = {
+    agent_id: 'a1',
+    worktree_path: '/repo/.claude/worktrees/agent-a1',
+    branch: 'worktree-agent-a1',
+    expected_base: 'abc123',
+  };
+  const only = (manifest) => normalizeCleanupManifest(manifest).entries[0];
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  test('a files_modified array is carried through', () => {
+    assert.deepEqual(
+      only({ worktrees: [{ ...base, files_modified: ['src/a.ts'] }] }).files_modified,
+      ['src/a.ts'],
+    );
+  });
+
+  test('a scalar files_modified is dropped, not coerced', () => {
+    assert.equal(has(only({ worktrees: [{ ...base, files_modified: 'src/a.ts' }] }), 'files_modified'), false);
+  });
+
+  test('non-string files_modified elements are dropped', () => {
+    assert.deepEqual(
+      only({ worktrees: [{ ...base, files_modified: [1, null, {}, 'src/a.ts'] }] }).files_modified,
+      ['src/a.ts'],
+    );
+  });
+
+  test('an empty files_modified is treated as unknown (field omitted)', () => {
+    assert.equal(has(only({ worktrees: [{ ...base, files_modified: [] }] }), 'files_modified'), false);
+  });
+
+  test('an absent files_modified leaves the entry shape unchanged', () => {
+    assert.deepEqual(
+      Object.keys(only({ worktrees: [base] })).sort(),
+      ['agent_id', 'allowed_bases', 'branch', 'expected_base', 'worktree_path'],
+    );
+  });
+});
+
+describe('#2596 --files on the record-agent and create verbs', () => {
+  // process.exitCode is global; restore it so a failure-path exit code does not
+  // leak into the runner's own exit status.
+  function withExitCode2596(fn) {
+    const saved = process.exitCode;
+    try { return fn(); } finally { process.exitCode = saved; }
+  }
+
+  const baseArgs = [
+    '--manifest', 'manifest.json',
+    '--agent-id', 'a1',
+    '--path', '/repo/.claude/worktrees/agent-a1',
+    '--branch', 'worktree-agent-a1',
+    '--base', 'abc123',
+  ];
+  const has = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
+
+  function recordAgent(extraArgs = []) {
+    let written = null;
+    const result = withExitCode2596(() => cmdWorktreeRecordAgent('/repo/main', [...baseArgs, ...extraArgs], {
+      readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+      writeFile: (_p, c) => { written = c; },
+      write: () => {},
+      writeErr: () => {},
+    }));
+    return { result, entry: written ? JSON.parse(written).worktrees[0] : null };
+  }
+
+  test('--files records the declared scope', () => {
+    const { result, entry } = recordAgent(['--files', 'src/a.ts src/b.ts']);
+    assert.equal(result.ok, true);
+    assert.deepEqual(entry.files_modified, ['src/a.ts', 'src/b.ts']);
+  });
+
+  test('omitting --files leaves the manifest shape unchanged', () => {
+    const { result, entry } = recordAgent();
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      Object.keys(entry).sort(),
+      ['agent_id', 'branch', 'expected_base', 'worktree_path'],
+    );
+  });
+
+  test('an empty --files writes no field', () => {
+    const { result, entry } = recordAgent(['--files', '']);
+    assert.equal(result.ok, true);
+    assert.equal(has(entry, 'files_modified'), false);
+  });
+
+  test('a whitespace-only --files writes no field', () => {
+    const { result, entry } = recordAgent(['--files', '   \t  ']);
+    assert.equal(result.ok, true);
+    assert.equal(has(entry, 'files_modified'), false);
+  });
+
+  test('--files splits on any whitespace run', () => {
+    const { entry } = recordAgent(['--files', 'a.ts   b.ts\tc.ts\nd.ts']);
+    assert.deepEqual(entry.files_modified, ['a.ts', 'b.ts', 'c.ts', 'd.ts']);
+  });
+
+  test('a trailing --files with no value is treated as absent', () => {
+    const { result, entry } = recordAgent(['--files']);
+    assert.equal(result.ok, true, 'a valueless flag must not crash the verb');
+    assert.equal(has(entry, 'files_modified'), false);
+  });
+
+  test('a flag-shaped --files value is not re-parsed as a flag', () => {
+    const { entry } = recordAgent(['--files', '--branch']);
+    assert.deepEqual(entry.files_modified, ['--branch']);
+    assert.equal(entry.branch, 'worktree-agent-a1', 'the real --branch value must be untouched');
+  });
+
+  test('shell metacharacters in --files are inert data', () => {
+    const hostile = 'a.ts; rm -rf / && $(whoami) `id` "q" \'p\'';
+    const { entry } = recordAgent(['--files', hostile]);
+    assert.deepEqual(entry.files_modified, [
+      'a.ts;', 'rm', '-rf', '/', '&&', '$(whoami)', '`id`', '"q"', "'p'",
+    ]);
+  });
+
+  test('a traversal-shaped --files value is inert data, never dereferenced', () => {
+    const readPaths = [];
+    const result = withExitCode2596(() => cmdWorktreeRecordAgent('/repo/main', [...baseArgs, '--files', '../../etc/passwd'], {
+      readFile: (p) => { readPaths.push(p); return '{"orchestrator_root":"/repo/main","worktrees":[]}'; },
+      writeFile: () => {},
+      write: () => {},
+      writeErr: () => {},
+    }));
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      readPaths, [path.resolve('/repo/main', 'manifest.json')],
+      'the only path opened is the manifest — a declared-scope value is compared, never read',
+    );
+  });
+
+  test('a duplicate --files takes the first occurrence, like every other flag', () => {
+    const { entry } = recordAgent(['--files', 'a.ts', '--files', 'b.ts']);
+    assert.deepEqual(entry.files_modified, ['a.ts']);
+  });
+
+  test('worktree create records the declared scope too', () => {
+    let written = null;
+    const result = withExitCode2596(() => cmdWorktreeCreate('/repo/main', [
+      ...baseArgs, '--root', '/repo', '--files', 'src/a.ts',
+    ], {
+      readFile: () => '{"orchestrator_root":"/repo/main","worktrees":[]}',
+      writeFile: (_p, c) => { written = c; },
+      write: () => {},
+      writeErr: () => {},
+      execGit: () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    }));
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(written).worktrees[0].files_modified, ['src/a.ts']);
+  });
+});
