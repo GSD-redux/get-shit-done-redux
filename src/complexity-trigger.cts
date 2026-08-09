@@ -351,6 +351,117 @@ function findMatchingParen(s: string, openIdx: number): number {
   return -1;
 }
 
+/**
+ * Attempts to skip a generic type-parameter list starting at `s[idx] === '<'`
+ * (e.g. `<T>`, `<T extends X>`, `<T = Y>`, `<T, U>`, nested `<T extends
+ * Record<string, X>>`). Returns the index just past the matching top-level
+ * `>`, or -1 when the content is not shaped like one — either the brackets
+ * never balance, or an operator token that never appears inside a type
+ * parameter list (`&&`, `||`, `==`, `<=`, `>=`, arithmetic, a bare `?`)
+ * shows up first. This — plus the caller only ever committing to the skip
+ * when a `(` immediately follows the close — is what keeps a `<` used as a
+ * less-than comparison from being mistaken for generics: a real comparison
+ * either fails to balance before an unrelated bracket closes, contains one
+ * of the disallowed operator tokens, or is not immediately followed by a
+ * parameter list.
+ */
+function skipGenericParamList(s: string, idx: number): number {
+  const len = s.length;
+  let i = idx + 1;
+  const stack: string[] = ['>'];
+  while (i < len) {
+    const ch = s[i];
+    const next = s[i + 1];
+    if (ch === '=' && next === '>') { i += 2; continue; } // nested function-type arrow (e.g. a default's `(a:X)=>Y`)
+    if (
+      (ch === '=' && next === '=')
+      || (ch === '<' && next === '=')
+      || (ch === '>' && next === '=')
+      || (ch === '&' && next === '&')
+      || (ch === '|' && next === '|')
+      || ch === '+' || ch === '*' || ch === '%' || ch === '!'
+      || ch === '?' || ch === ';' || ch === '/' || ch === '-'
+    ) return -1;
+    if (ch === '<') { stack.push('>'); i++; continue; }
+    if (ch === '(') { stack.push(')'); i++; continue; }
+    if (ch === '[') { stack.push(']'); i++; continue; }
+    if (ch === '{') { stack.push('}'); i++; continue; }
+    if (ch === '>' || ch === ')' || ch === ']' || ch === '}') {
+      if (stack.length === 0 || stack[stack.length - 1] !== ch) return -1;
+      stack.pop();
+      i++;
+      if (stack.length === 0) return i;
+      continue;
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Attempts to skip a return-type / type-predicate annotation starting at
+ * `s[idx] === ':'` (e.g. `: Promise<void>`, `: Record<string, X>`, `: A |
+ * B`, `: { a: number }`, `: string[]`, `: x is Foo`). Returns the index of
+ * the terminator that follows — a function-body `{`, an arrow `=>`, or a
+ * statement-ending `;` — never consuming the terminator itself, or -1 when
+ * the content is not shaped like a type. `expectStart` tracks whether a
+ * fresh type token may begin here so an object-type literal's own `{`/`}`
+ * (`: { a: number }`) is never mistaken for the function body, and an
+ * unexpected/unmatched closing bracket (e.g. the real end of an enclosing
+ * `switch`/ternary this `:` was actually a member of, not a return type)
+ * aborts rather than guesses.
+ */
+function skipTypeExpr(s: string, idx: number): number {
+  const len = s.length;
+  let i = idx + 1;
+  const stack: string[] = [];
+  let expectStart = true;
+  while (i < len) {
+    const ch = s[i];
+    if (/\s/.test(ch)) { i++; continue; }
+    const next = s[i + 1];
+    if (stack.length === 0) {
+      if (ch === ';') return i;
+      if (ch === '=' && next === '>') return i;
+      if (ch === '{' && !expectStart) return i;
+      if (ch === ',' && !expectStart) return i;
+      if (ch === '?') return -1; // a bare top-level '?' means this was a ternary, not a return type
+    }
+    if (ch === '=' && next === '>') { i += 2; expectStart = true; continue; } // nested function-type arrow
+    if (
+      (ch === '=' && next === '=')
+      || (ch === '<' && next === '=')
+      || (ch === '>' && next === '=')
+      || (ch === '&' && next === '&')
+      || (ch === '|' && next === '|')
+      || ch === '+' || ch === '*' || ch === '%' || ch === '!'
+    ) return -1;
+    if (ch === '<') { stack.push('>'); i++; expectStart = true; continue; }
+    if (ch === '(') { stack.push(')'); i++; expectStart = true; continue; }
+    if (ch === '[') { stack.push(']'); i++; expectStart = true; continue; }
+    if (ch === '{') { stack.push('}'); i++; expectStart = true; continue; }
+    if (ch === '>' || ch === ')' || ch === ']' || ch === '}') {
+      if (stack.length === 0 || stack[stack.length - 1] !== ch) return -1;
+      stack.pop();
+      i++;
+      expectStart = false;
+      continue;
+    }
+    if (ch === '|' || ch === '&' || ch === ',' || ch === '.' || ch === ':') {
+      i++; expectStart = true; continue;
+    }
+    if (/[A-Za-z0-9_$]/.test(ch)) {
+      let j = i;
+      while (j < len && /[A-Za-z0-9_$]/.test(s[j])) j++;
+      i = j;
+      expectStart = false;
+      continue;
+    }
+    i++;
+  }
+  return -1;
+}
+
 function newlinesBetween(s: string, from: number, to: number): number {
   let n = 0;
   for (let k = from; k < to; k++) if (s[k] === '\n') n++;
@@ -430,6 +541,13 @@ function scanFunctions(stripped: string): FunctionScore[] {
       if (closeIdx !== -1) {
         let k = closeIdx + 1;
         while (k < len && /\s/.test(stripped[k])) k++;
+        if (stripped[k] === ':') {
+          const afterType = skipTypeExpr(stripped, k);
+          if (afterType !== -1) {
+            k = afterType;
+            while (k < len && /\s/.test(stripped[k])) k++;
+          }
+        }
         if (stripped[k] === '=' && stripped[k + 1] === '>') {
           const name = inferArrowName(stripped, i);
           const startLine = line;
@@ -492,11 +610,26 @@ function scanFunctions(stripped: string): FunctionScore[] {
           k = m;
           while (k < len && /\s/.test(stripped[k])) k++;
         }
+        if (stripped[k] === '<') {
+          const afterGenerics = skipGenericParamList(stripped, k);
+          if (afterGenerics !== -1) {
+            let kk = afterGenerics;
+            while (kk < len && /\s/.test(stripped[kk])) kk++;
+            if (stripped[kk] === '(') k = kk; // only commit if genuinely followed by params
+          }
+        }
         if (stripped[k] === '(') {
           const closeIdx = findMatchingParen(stripped, k);
           if (closeIdx !== -1) {
             let p = closeIdx + 1;
             while (p < len && /\s/.test(stripped[p])) p++;
+            if (stripped[p] === ':') {
+              const afterType = skipTypeExpr(stripped, p);
+              if (afterType !== -1) {
+                p = afterType;
+                while (p < len && /\s/.test(stripped[p])) p++;
+              }
+            }
             if (stripped[p] === '{') {
               line += newlinesBetween(stripped, i, p);
               stack.push({ kind: 'function', name, startLine: wordLine, score: 1, mode: 'brace' });
@@ -519,11 +652,26 @@ function scanFunctions(stripped: string): FunctionScore[] {
       {
         let k = j;
         while (k < len && /\s/.test(stripped[k])) k++;
+        if (stripped[k] === '<') {
+          const afterGenerics = skipGenericParamList(stripped, k);
+          if (afterGenerics !== -1) {
+            let kk = afterGenerics;
+            while (kk < len && /\s/.test(stripped[kk])) kk++;
+            if (stripped[kk] === '(') k = kk; // only commit if genuinely followed by params
+          }
+        }
         if (stripped[k] === '(') {
           const closeIdx = findMatchingParen(stripped, k);
           if (closeIdx !== -1) {
             let p = closeIdx + 1;
             while (p < len && /\s/.test(stripped[p])) p++;
+            if (stripped[p] === ':') {
+              const afterType = skipTypeExpr(stripped, p);
+              if (afterType !== -1) {
+                p = afterType;
+                while (p < len && /\s/.test(stripped[p])) p++;
+              }
+            }
             if (stripped[p] === '{') {
               line += newlinesBetween(stripped, i, p);
               stack.push({ kind: 'function', name: word, startLine: wordLine, score: 1, mode: 'brace' });
@@ -672,16 +820,13 @@ export function evaluateCandidates(input: {
  * inserts an anchor at the current score (first observation); a prior
  * entry carries forward UNCHANGED. The anchor never advances on a plain
  * evaluate, whether or not the function triggered — only reanchorBaseline
- * (called by an explicit disposition) moves it. `candidates` is accepted
- * for phase-stamp signature parity only; it is never consulted here.
+ * (called by an explicit disposition) moves it.
  */
 export function nextBaseline(
   prev: Baseline,
   analyzed: AnalyzedFile[],
-  candidates: Candidate[],
   opts: { analyzedFiles?: string[]; phase?: string } = {},
 ): Baseline {
-  void candidates;
   const next: Baseline = {};
   const seenKeys = new Set<string>();
 

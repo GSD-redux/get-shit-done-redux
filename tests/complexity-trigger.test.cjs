@@ -434,26 +434,26 @@ describe('complexity-trigger: analyzer — the leak surface', () => {
 
 describe('complexity-trigger: analyzer — properties', () => {
   test('propertyStripNeverManufacturesDecisionPoints', () => {
-    const SYMBOL_TOKENS = ['&&', '||'];
-    const WORD_TOKENS = ['if', 'for', 'while', 'do', 'case', 'catch'];
+    // #1953 defect 3: the invariant is asserted through the TYPED surface
+    // (analyzeSource's numeric score), never by pattern-matching the text
+    // stripLiterals produced (CONTRIBUTING.md:800 bans grepping the SUT's
+    // own output, with no carve-out for a text transform's own return
+    // value). A fuzzed string embedded as INERT content (a block comment,
+    // or a string literal) can never manufacture a decision point — proven
+    // by the reported score staying byte-for-byte the same number.
+    const BASE = ['function f(x) {', '  if (x) { return 1; }', '  return 0;', '}', ''].join('\n');
+    const baseAnalyzed = analyzeSource(BASE);
+    assert.equal(baseAnalyzed.ok, true);
+    const baselineScores = baseAnalyzed.functions.map((fn) => fn.score);
+
     fc.assert(
       fc.property(fc.string({ maxLength: 300 }), (source) => {
         const stripped = stripLiterals(source);
-        if (!stripped.ok) return; // unparseable input is outside this invariant's scope
-        assert.ok(
-          stripped.stripped.length <= source.length,
-          `stripLiterals must never grow the source (in=${source.length}, out=${stripped.stripped.length})`,
-        );
-        for (const token of SYMBOL_TOKENS) {
-          if (stripped.stripped.includes(token)) {
-            assert.ok(source.includes(token), `stripLiterals must never manufacture "${token}"`);
-          }
-        }
-        for (const token of WORD_TOKENS) {
-          const re = new RegExp(`\\b${token}\\b`);
-          if (re.test(stripped.stripped)) {
-            assert.ok(re.test(source), `stripLiterals must never manufacture the word "${token}"`);
-          }
+        if (stripped.ok) {
+          assert.ok(
+            stripped.stripped.length <= source.length,
+            `stripLiterals must never grow the source (in=${source.length}, out=${stripped.stripped.length})`,
+          );
         }
         const analyzed = analyzeSource(source);
         if (analyzed.ok) {
@@ -461,6 +461,28 @@ describe('complexity-trigger: analyzer — properties', () => {
             assert.ok(fn.score >= 1, 'every detected function must score at least 1');
           }
         }
+
+        // Sanitize just enough to keep the wrapper well-formed (never
+        // "*/" inside the comment; never an unescaped quote, backslash, or
+        // raw newline inside the string) — the content is otherwise
+        // untouched, including any decision-point-shaped substrings.
+        const commentSafe = source.replace(/\*/g, ' ');
+        const withComment = analyzeSource(`${BASE}\n/* ${commentSafe} */\n`);
+        assert.equal(withComment.ok, true, 'a sanitized block comment must never make the source unparseable');
+        assert.deepEqual(
+          withComment.functions.map((fn) => fn.score),
+          baselineScores,
+          'embedding fuzzed text inside a block comment must never change the reported score',
+        );
+
+        const stringSafe = source.replace(/["\\\r\n]/g, ' ');
+        const withString = analyzeSource(`${BASE}\nconst __s = "${stringSafe}";\n`);
+        assert.equal(withString.ok, true, 'a sanitized string literal must never make the source unparseable');
+        assert.deepEqual(
+          withString.functions.map((fn) => fn.score),
+          baselineScores,
+          'embedding fuzzed text inside a string literal must never change the reported score',
+        );
       }),
       { numRuns: 50, seed: 42 },
     );
@@ -722,7 +744,7 @@ describe('complexity-trigger: baseline persistence', () => {
       file: 'a.js', ok: true, method: 'decision-points',
       functions: [{ name: 'f', startLine: 1, endLine: 3, score: 6 }],
     }];
-    const next = nextBaseline(prev, analyzed, [], { analyzedFiles: ['a.js'] });
+    const next = nextBaseline(prev, analyzed, { analyzedFiles: ['a.js'] });
     assert.equal(next['a.js::f'].score, 6, 'first observation inserts the anchor at the current score');
   });
 
@@ -732,7 +754,7 @@ describe('complexity-trigger: baseline persistence', () => {
       file: 'a.js', ok: true, method: 'decision-points',
       functions: [{ name: 'f', startLine: 1, endLine: 3, score: 6 }],
     }];
-    const next = nextBaseline(prev, analyzed, [], { analyzedFiles: ['a.js'] });
+    const next = nextBaseline(prev, analyzed, { analyzedFiles: ['a.js'] });
     assert.equal(next['a.js::f'].score, 3, 'a stable anchor must not advance on a plain evaluate, even for a non-triggering function');
   });
 
@@ -748,7 +770,7 @@ describe('complexity-trigger: baseline persistence', () => {
     const evaluation = evaluateCandidates({ analyzed, baseline: prev });
     assert.equal(evaluation.verdict, VERDICT.TRIGGERED);
 
-    const next = nextBaseline(prev, analyzed, evaluation.candidates, { analyzedFiles: ['a.js'] });
+    const next = nextBaseline(prev, analyzed, { analyzedFiles: ['a.js'] });
     assert.equal(next['a.js::f'], prev['a.js::f'], 'the anchor carries forward unchanged, not merely equal');
     assert.equal(next['a.js::f'].score, 10);
   });
@@ -765,7 +787,8 @@ describe('complexity-trigger: baseline persistence', () => {
       functions: [{ name: 'target', startLine: 1, endLine: 20, score: 11 }],
     }];
     const evaluation = evaluateCandidates({ analyzed, baseline: prev });
-    const afterEvaluate = nextBaseline(prev, analyzed, evaluation.candidates, { analyzedFiles: ['src/a.cts'] });
+    assert.equal(evaluation.verdict, VERDICT.TRIGGERED, 'setup sanity: the function does trigger, proving the freeze below is not merely "nothing to move"');
+    const afterEvaluate = nextBaseline(prev, analyzed, { analyzedFiles: ['src/a.cts'] });
     assert.equal(afterEvaluate[key].score, 3, 'a plain evaluate must never move the anchor');
 
     // Accept: re-anchor to a LOWER post-refactor score.
@@ -796,7 +819,7 @@ describe('complexity-trigger: baseline persistence', () => {
         firstTriggeringRound = round;
         firstTriggeringCandidate = evaluation.candidates[0];
       }
-      baseline = nextBaseline(baseline, analyzed, evaluation.candidates, { analyzedFiles: ['a.js'] });
+      baseline = nextBaseline(baseline, analyzed, { analyzedFiles: ['a.js'] });
     }
 
     // Anchor is stable at 8 throughout (a plain evaluate never advances it),
@@ -820,12 +843,12 @@ describe('complexity-trigger: baseline persistence', () => {
     }];
 
     const prev = { 'a.js::f': { score: 5 }, 'a.js::g': { score: 8 } };
-    const next = nextBaseline(prev, analyzed, [], { analyzedFiles: ['a.js'] });
+    const next = nextBaseline(prev, analyzed, { analyzedFiles: ['a.js'] });
     assert.ok(!('a.js::g' in next), 'g no longer exists in the analyzed file; its baseline entry must be pruned');
     assert.equal(next['a.js::f'].score, 5);
 
     const prevWithUntouchedFile = { 'a.js::f': { score: 5 }, 'b.js::h': { score: 99 } };
-    const nextWithUntouchedFile = nextBaseline(prevWithUntouchedFile, analyzed, [], { analyzedFiles: ['a.js'] });
+    const nextWithUntouchedFile = nextBaseline(prevWithUntouchedFile, analyzed, { analyzedFiles: ['a.js'] });
     assert.equal(
       nextWithUntouchedFile['b.js::h'].score,
       99,

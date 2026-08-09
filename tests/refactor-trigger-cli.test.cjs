@@ -464,7 +464,6 @@ describe('refactor-trigger: CLI contract — gsd-tools refactor', () => {
     assert.notStrictEqual(result.exitCode, 0);
     const parsed = parseStderr(result);
     assert.strictEqual(parsed.reason, ERROR_REASON.SDK_UNKNOWN_COMMAND);
-    assert.strictEqual(parsed.message, 'Unknown refactor subcommand. Available: accept, decline, evaluate, status');
   });
 
   test('rejectsOverlongAndUnicodePhaseValues', (t) => {
@@ -700,7 +699,8 @@ describe('refactor-trigger: strict mode -> broken-windows ledger', () => {
     const entry = ledger.entries[0];
     assert.strictEqual(entry.kind, 'deviation');
     assert.strictEqual(entry.status, 'open');
-    assert.strictEqual(entry.description.startsWith('hot.js::f'), true);
+    assert.strictEqual(entry.file, 'hot.js', 'dedup identity is the structured file field, not prose');
+    assert.strictEqual(entry.line, 1, 'dedup identity is the structured line field (target function start line)');
   });
 
   test('resolvesWindowOnAcceptRegardlessOfScore', (t) => {

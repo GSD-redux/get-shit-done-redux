@@ -3,7 +3,7 @@
 - **Status:** Proposed
 - **Date:** 2026-08-09
 - **Issue:** [#1953](https://github.com/open-gsd/gsd-core/issues/1953)
-- **Implementation:** `src/complexity-trigger.cts`, `src/refactor-trigger-command-router.cts`, `capabilities/refactor-trigger/capability.json`, the `refactor.ship-gate` query in `src/check-command-router.cts`, and a changed-files adapter in `src/git-base-branch.cts`
+- **Implementation:** `src/complexity-trigger.cts`, `src/refactor-trigger-command-router.cts`, `capabilities/refactor-trigger/capability.json`, and a changed-files adapter in `src/git-base-branch.cts`
 - **Extends:** [ADR-857](857-capability-system.md) (registers on the `execute:post` extension point) · [ADR-894](894-capability-declaration-format.md) (a `role: "feature"` manifest with `commands`, `steps`, and a `gates` entry)
 - **Related:** [#1950](https://github.com/open-gsd/gsd-core/issues/1950) / the `broken-windows` capability — this ADR reuses its ledger rather than adding a second one
 

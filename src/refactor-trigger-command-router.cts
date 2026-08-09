@@ -323,19 +323,49 @@ function readLedgerOrEmpty(cwd: string, windows: WindowsModule): Ledger | null {
   }
 }
 
-function findOpenDeviationEntry(ledger: Ledger, phase: string, key: string): WindowEntry | null {
+/**
+ * Structural identity match (#1953 defect 2): a deviation window's identity
+ * is the typed `phase`/`file`/`line` triple `appendWindow` already persists
+ * — never the human-readable `description` prose. A reworded description or
+ * a user editing `WINDOWS.md` prose can never break dedup.
+ */
+function findOpenDeviationEntry(ledger: Ledger, phase: string, file: string, line: number): WindowEntry | null {
   return ledger.entries.find(
-    (e) => e.status === 'open' && e.kind === 'deviation' && e.phase === phase && e.description.startsWith(key),
+    (e) => e.status === 'open' && e.kind === 'deviation' && e.phase === phase && e.file === file && e.line === line,
   ) ?? null;
 }
 
 /**
- * Strict-mode window append (step 9 of `evaluate`). `_windows` unavailable
- * (module absent, or its `require` throws) or the ledger unreadable degrades
- * to `{ recorded: false, note }` — never an error, never throws.
- * Idempotent: re-evaluating the same still-untriaged phase finds the
- * existing OPEN entry (matched on phase + target key) and does not append a
- * second one.
+ * Shared require-or-degrade + ledger-read boilerplate for
+ * `recordStrictWindow` / `resolveLedgerWindow` (#1953 defect 5a). `_windows`
+ * unavailable (module absent, or its `require` throws) or the ledger
+ * unreadable both degrade to a `{ ok: false, note }` result — never an
+ * error, never throws.
+ */
+function loadWindowsOrDegrade(
+  cwd: string,
+  windowsOverride: WindowsModule | undefined,
+): { ok: true; windows: WindowsModule; ledger: Ledger } | { ok: false; note: string } {
+  let windows: WindowsModule;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    windows = windowsOverride ?? (require('./broken-windows.cjs') as WindowsModule);
+  } catch {
+    return { ok: false, note: 'broken-windows capability unavailable — proposal recorded locally only' };
+  }
+  const ledger = readLedgerOrEmpty(cwd, windows);
+  if (ledger === null) {
+    return { ok: false, note: 'broken-windows ledger unreadable — proposal recorded locally only' };
+  }
+  return { ok: true, windows, ledger };
+}
+
+/**
+ * Strict-mode window append (step 9 of `evaluate`). Degrades to
+ * `{ recorded: false, note }` per `loadWindowsOrDegrade` — never an error,
+ * never throws. Idempotent: re-evaluating the same still-untriaged phase
+ * finds the existing OPEN entry (matched structurally on phase + target
+ * file/line) and does not append a second one.
  */
 function recordStrictWindow(
   cwd: string,
@@ -343,32 +373,23 @@ function recordStrictWindow(
   target: Candidate,
   windowsOverride: WindowsModule | undefined,
 ): { recorded: boolean; note?: string } {
-  let windows: WindowsModule;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    windows = windowsOverride ?? (require('./broken-windows.cjs') as WindowsModule);
-  } catch {
-    return { recorded: false, note: 'broken-windows capability unavailable — proposal recorded locally only' };
-  }
+  const loaded = loadWindowsOrDegrade(cwd, windowsOverride);
+  if (!loaded.ok) return { recorded: false, note: loaded.note };
+  const { windows, ledger } = loaded;
 
-  const now = new Date().toISOString();
-  const ledger = readLedgerOrEmpty(cwd, windows);
-  if (ledger === null) {
-    return { recorded: false, note: 'broken-windows ledger unreadable — proposal recorded locally only' };
-  }
-
-  const key = candidateKey(target.file, target.name);
-  if (findOpenDeviationEntry(ledger, padded, key)) {
+  if (findOpenDeviationEntry(ledger, padded, target.file, target.startLine)) {
     return { recorded: true, note: 'already recorded for this phase (idempotent)' };
   }
 
+  const key = candidateKey(target.file, target.name);
   const description = `${key} — complexity ${target.score}` +
     (target.baseline !== null ? ` (baseline ${target.baseline}, delta ${target.delta})` : '');
 
+  const now = new Date().toISOString();
   try {
     const result = windows.appendWindow(
       ledger,
-      { kind: 'deviation', phase: padded, file: target.file, description },
+      { kind: 'deviation', phase: padded, file: target.file, line: target.startLine, description },
       { now },
     );
     writeTextAtomic(windowsLedgerPath(cwd, windows), windows.renderLedger(result.ledger));
@@ -379,32 +400,26 @@ function recordStrictWindow(
 }
 
 /**
- * Resolve (mark fixed/waived) the ledger window matching phase + target key,
- * if any. Never throws. Mirrors `recordStrictWindow`'s `{ recorded, note }`
- * degrade shape (#1953 defect 2): every `resolved: false` path carries a
- * `note` naming the real reason, so `accept`/`decline` never tell a user
- * "it failed" without saying why.
+ * Resolve (mark fixed/waived) the ledger window matching phase + target
+ * file/line, if any. Never throws. Mirrors `recordStrictWindow`'s
+ * `{ recorded, note }` degrade shape (#1953 defect 2): every
+ * `resolved: false` path carries a `note` naming the real reason, so
+ * `accept`/`decline` never tell a user "it failed" without saying why.
  */
 function resolveLedgerWindow(
   cwd: string,
   padded: string,
-  key: string,
+  file: string,
+  line: number,
   kind: 'accept' | 'decline',
   reasonText: string,
   windowsOverride: WindowsModule | undefined,
 ): { resolved: boolean; note?: string } {
-  let windows: WindowsModule;
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    windows = windowsOverride ?? (require('./broken-windows.cjs') as WindowsModule);
-  } catch {
-    return { resolved: false, note: 'broken-windows capability unavailable — proposal recorded locally only' };
-  }
-  const ledger = readLedgerOrEmpty(cwd, windows);
-  if (ledger === null) {
-    return { resolved: false, note: 'broken-windows ledger unreadable — proposal recorded locally only' };
-  }
-  const entry = findOpenDeviationEntry(ledger, padded, key);
+  const loaded = loadWindowsOrDegrade(cwd, windowsOverride);
+  if (!loaded.ok) return { resolved: false, note: loaded.note };
+  const { windows, ledger } = loaded;
+
+  const entry = findOpenDeviationEntry(ledger, padded, file, line);
   if (!entry) {
     return { resolved: false, note: 'no open broken-windows entry found for this phase/target — nothing to resolve' };
   }
@@ -541,7 +556,6 @@ function handleEvaluate(
   const nextBaselineValue = complexity.nextBaseline(
     baselineRead.baseline,
     analyzed,
-    evaluation.candidates,
     { analyzedFiles: successfullyAnalyzedFiles, phase: padded },
   );
   const baselineWrite = complexity.writeBaseline(planningDirPath, nextBaselineValue);
@@ -759,6 +773,9 @@ function handleDisposition(
   const key = candidateKey(proposal.target_file, proposal.target_function);
   const now = new Date().toISOString();
   const liveScore = measureCurrentScore(cwd, proposal, complexity);
+  const targetCandidate = proposal.candidates.find(
+    (cand) => cand.file === proposal.target_file && cand.name === proposal.target_function,
+  ) ?? proposal.candidates[0] ?? null;
 
   const updatedProposal: Proposal = {
     ...proposal,
@@ -773,7 +790,15 @@ function handleDisposition(
   const nextBaselineValue = complexity.reanchorBaseline(baselineRead.baseline, key, liveScore, { phase: resolved.padded });
   const baselineWrite = complexity.writeBaseline(planningDirPath, nextBaselineValue);
 
-  const ledgerResult = resolveLedgerWindow(cwd, resolved.padded, key, kind, reasonText, windowsOverride);
+  const ledgerResult = resolveLedgerWindow(
+    cwd,
+    resolved.padded,
+    proposal.target_file,
+    targetCandidate ? targetCandidate.startLine : -1,
+    kind,
+    reasonText,
+    windowsOverride,
+  );
 
   const dispositionResult: Record<string, unknown> = {
     status: updatedProposal.status,
@@ -791,6 +816,29 @@ function handleDisposition(
 
 // ─── Dispatch ────────────────────────────────────────────────────────────────
 
+/**
+ * Shared capability-active gate + lazy `complexity-trigger.cjs` require
+ * (#1953 defect 5b) — identical across all four subcommand handlers. Emits
+ * the disabled response and returns `undefined` without invoking `run` when
+ * the capability is off; otherwise resolves the module (respecting the
+ * `_complexity` test seam) and hands it to `run`.
+ */
+function withActiveComplexity(
+  cwd: string,
+  raw: boolean,
+  c: CoreModule,
+  complexityOverride: ComplexityModule | undefined,
+  run: (complexity: ComplexityModule) => unknown,
+): unknown {
+  if (!isCapabilityActive(CAPABILITY_ID, cwd)) {
+    c.output(disabledResponse(), raw);
+    return undefined;
+  }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const complexity: ComplexityModule = complexityOverride ?? (require('./complexity-trigger.cjs') as ComplexityModule);
+  return run(complexity);
+}
+
 function routeRefactorTriggerCommand({ args, cwd, raw, error, _complexity, _git, _windows, _core }: RouteRefactorTriggerCommandOptions): void {
   const c: CoreModule = _core ?? _defaultCore;
 
@@ -800,44 +848,20 @@ function routeRefactorTriggerCommand({ args, cwd, raw, error, _complexity, _git,
     // Alphabetical for a stable unknown-subcommand message, matching intel/graphify.
     subcommands: ['accept', 'decline', 'evaluate', 'status'],
     handlers: {
-      evaluate: () => {
-        if (!isCapabilityActive(CAPABILITY_ID, cwd)) {
-          c.output(disabledResponse(), raw);
-          return undefined;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const complexity: ComplexityModule = _complexity ?? (require('./complexity-trigger.cjs') as ComplexityModule);
+      evaluate: () => withActiveComplexity(cwd, raw, c, _complexity, (complexity) => {
         // eslint-disable-next-line @typescript-eslint/no-require-imports
         const git: GitModule = _git ?? (require('./git-base-branch.cjs') as GitModule);
         return handleEvaluate(args, cwd, raw, c, complexity, git, _windows);
-      },
-      status: () => {
-        if (!isCapabilityActive(CAPABILITY_ID, cwd)) {
-          c.output(disabledResponse(), raw);
-          return undefined;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const complexity: ComplexityModule = _complexity ?? (require('./complexity-trigger.cjs') as ComplexityModule);
-        return handleStatus(args, cwd, raw, c, complexity);
-      },
-      accept: () => {
-        if (!isCapabilityActive(CAPABILITY_ID, cwd)) {
-          c.output(disabledResponse(), raw);
-          return undefined;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const complexity: ComplexityModule = _complexity ?? (require('./complexity-trigger.cjs') as ComplexityModule);
-        return handleDisposition('accept', args, cwd, raw, c, complexity, _windows);
-      },
-      decline: () => {
-        if (!isCapabilityActive(CAPABILITY_ID, cwd)) {
-          c.output(disabledResponse(), raw);
-          return undefined;
-        }
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const complexity: ComplexityModule = _complexity ?? (require('./complexity-trigger.cjs') as ComplexityModule);
-        return handleDisposition('decline', args, cwd, raw, c, complexity, _windows);
-      },
+      }),
+      status: () => withActiveComplexity(cwd, raw, c, _complexity, (complexity) => handleStatus(args, cwd, raw, c, complexity)),
+      accept: () => withActiveComplexity(
+        cwd, raw, c, _complexity,
+        (complexity) => handleDisposition('accept', args, cwd, raw, c, complexity, _windows),
+      ),
+      decline: () => withActiveComplexity(
+        cwd, raw, c, _complexity,
+        (complexity) => handleDisposition('decline', args, cwd, raw, c, complexity, _windows),
+      ),
     },
     unknownMessage: (subcommand: string, available: string[]) =>
       `Unknown refactor subcommand. Available: ${available.join(', ')}`,
