@@ -12,8 +12,12 @@
 const _require: NodeRequire = require;
 const path = _require('node:path') as typeof import('node:path');
 
+// #2870: InstallScope is owned by install-scope.cts, not re-declared here —
+// a type-only import so this module's CommonJS `export =` surface stays
+// unchanged (no runtime dependency on install-scope.cjs is introduced).
+import type { InstallScope } from './install-scope.cjs';
+
 type ArtifactKindName = 'commands' | 'agents' | 'skills' | 'kimi-agents';
-type InstallScope = 'local' | 'global';
 
 interface ResolvedProfile {
   name?: string;

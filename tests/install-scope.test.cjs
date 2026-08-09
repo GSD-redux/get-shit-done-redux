@@ -225,4 +225,14 @@ describe('resolveScope', () => {
       );
     }
   });
+
+  // Row 16 follow-up: local scope's configHome must be assertable via an
+  // injected cwd, never the real process.cwd().
+  test('local scope resolves configHome against an injected cwd', () => {
+    const first = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project-a' }));
+    const second = resolveScope(fixture({ id: 'local', runtime: 'claude', cwd: '/fake/project-b' }));
+    assert.notStrictEqual(first.configHome, second.configHome);
+    assert.strictEqual(first.configHome, path.join('/fake/project-a', '.claude'));
+    assert.strictEqual(second.configHome, path.join('/fake/project-b', '.claude'));
+  });
 });

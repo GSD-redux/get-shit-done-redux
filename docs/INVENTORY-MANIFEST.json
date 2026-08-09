@@ -383,6 +383,7 @@
       "install-effort-resolver.cjs",
       "install-engine.cjs",
       "install-profiles.cjs",
+      "install-scope.cjs",
       "installer-migration-authoring.cjs",
       "installer-migration-report.cjs",
       "installer-migrations.cjs",
