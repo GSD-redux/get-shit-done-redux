@@ -66,6 +66,12 @@
  *   - The SAME marker in two DIFFERENT files. The defect class is intra-file
  *     duplication — one host running one suite twice. Cross-file reuse would be
  *     a different question and is not decided here.
+ *   - A call through an ALIAS of the alias (`const d = __foldDescribe; d("folded:a …")`).
+ *     The rule keys on the callee identifier being literally `__foldDescribe`;
+ *     resolving a further alias through scope would buy nothing today — every
+ *     one of the 365 fold sites in the tree calls the alias directly, and zero
+ *     rebind it — while adding a scope walk to a rule that currently needs none.
+ *     If a rebinding ever appears, it is the rebinding that is the anomaly.
  *
  * The rule reports the SECOND and every subsequent occurrence, never the first,
  * and names the line the first occurrence sits on — so the failure message
@@ -103,7 +109,7 @@ const rule = {
     docs: {
       description:
         'Disallow the same consolidation-epic folded suite appearing twice in one host file',
-      category: 'Test hygiene',
+      category: 'Best Practices',
     },
     schema: [],
     messages: {

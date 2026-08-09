@@ -1761,6 +1761,25 @@ describe('no-duplicate-fold-marker rule', () => {
     });
   });
 
+  // Documented non-goal, pinned so the behavior is deliberate rather than
+  // accidental: the rule keys on the callee identifier being literally
+  // __foldDescribe. Every one of the 365 fold sites calls it directly.
+  test('valid: a call through a further alias of the fold alias is not tracked', () => {
+    ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+      valid: [
+        {
+          code: src(
+            'const d = __foldDescribe;',
+            'd("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+            'd("folded:a (consolidation epic #1969 B1 #1970)", () => {});',
+          ),
+          filename: 'tests/host.test.cjs',
+        },
+      ],
+      invalid: [],
+    });
+  });
+
   test('valid: a member-expression call named __foldDescribe is not the fold alias', () => {
     ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
       valid: [
@@ -1888,5 +1907,58 @@ describe('no-duplicate-fold-marker rule', () => {
       ],
       invalid: [],
     });
+  });
+
+  // Property: marker identity is the whole whitespace-delimited token.
+  //
+  // This is the generative form of the #3271 correctness question. An
+  // implementation that keyed on the issue's `[a-z0-9-]*` slice would truncate
+  // at `.` and pass arm 1 while failing arm 2 on any pair like
+  // (`a.integration`, `a`) — which is exactly the tests/model-resolver.test.cjs
+  // false positive. The alphabet deliberately includes `.` and `_` so those
+  // pairs are generated, not hoped for.
+  //
+  // `fc` is already imported at the top of this file and used by the
+  // no-adhoc-markdown-parsing suite; this follows the same
+  // fc.property-driving-ruleTester shape.
+  test('property: a marker is identified by its whole token, so distinct markers never collide', () => {
+    const markerArb = fc
+      .array(fc.constantFrom('a', 'z', 'q', '0', '9', '-', '.', '_'), { minLength: 1, maxLength: 12 })
+      .map((chars) => chars.join(''));
+
+    const fold = (marker) =>
+      `__foldDescribe("folded:${marker} (consolidation epic #1969 B1 #1970)", () => {});`;
+
+    // Arm 1: the SAME marker twice is always reported exactly once, against
+    // the first occurrence.
+    fc.assert(
+      fc.property(markerArb, (marker) => {
+        ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+          valid: [],
+          invalid: [
+            {
+              code: src(fold(marker), fold(marker)),
+              filename: 'tests/host.test.cjs',
+              errors: [
+                { messageId: 'duplicateFoldMarker', data: { marker, firstLine: '1' }, line: 2 },
+              ],
+            },
+          ],
+        });
+      }),
+      { numRuns: 150, seed: 3271 },
+    );
+
+    // Arm 2: two DISTINCT markers never collide, however they differ.
+    fc.assert(
+      fc.property(markerArb, markerArb, (a, b) => {
+        fc.pre(a !== b);
+        ruleTester.run('no-duplicate-fold-marker', noDuplicateFoldMarker, {
+          valid: [{ code: src(fold(a), fold(b)), filename: 'tests/host.test.cjs' }],
+          invalid: [],
+        });
+      }),
+      { numRuns: 150, seed: 3271 },
+    );
   });
 });
