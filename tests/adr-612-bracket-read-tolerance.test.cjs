@@ -280,6 +280,78 @@ describe('#612 PR-2: bracket sentinel milestones never count', () => {
     assert.deepEqual(analyze().missing_phase_details, ['07']);
   });
 
+  // ─── #2761 M1: sentinel classification is PER-OCCURRENCE ─────────────────
+  //
+  // The checklist scan keyed its bracket-id map by the bare TOKEN, first-wins,
+  // and the detail set was keyed by the bare token too. Under READING-B the
+  // sentinel lives in the BRACKET, so two checklist entries sharing a token
+  // across different brackets — the icebox shape the ADR itself documents —
+  // had ONE classification between them, decided by document order.
+
+  for (const [label, checklist] of [
+    ['sentinel first', ['- [ ] **[GSD.999] 01: Icebox item**', '- [ ] **[GSD.02] 01: Genuinely missing**']],
+    ['sentinel last', ['- [ ] **[GSD.02] 01: Genuinely missing**', '- [ ] **[GSD.999] 01: Icebox item**']],
+  ]) {
+    test(`a real phase sharing an icebox token is reported missing (${label})`, () => {
+      write(`# Roadmap
+
+## [GSD.02] v2.0
+
+${checklist.join('\n')}
+
+### [GSD.02] 05: Real work
+**Goal:** Build it
+`, 'bracket');
+      assert.deepEqual(
+        analyze().missing_phase_details, ['01'],
+        '[GSD.02] 01 has no detail heading and is not a sentinel — it is missing ' +
+        'in BOTH orders. Order-dependence here means the icebox entry\'s ' +
+        'classification was applied to the real phase.',
+      );
+    });
+  }
+
+  test('an icebox token is still suppressed when NO real phase shares it', () => {
+    // The other direction: per-occurrence classification must not turn the
+    // sentinel suppression itself into a false POSITIVE.
+    write(`# Roadmap
+
+## [GSD.02] v2.0
+
+- [ ] **[GSD.999] 01: Icebox item**
+- [ ] **[GSD.00] 02: Pre-milestone**
+
+### [GSD.02] 05: Real work
+**Goal:** Build it
+`, 'bracket');
+    assert.equal(analyze().missing_phase_details, null, 'both entries are sentinels');
+  });
+
+  test('a detail heading does not satisfy a SAME-TOKEN entry from another bracket', () => {
+    // The order-INDEPENDENT half of the same defect: the detail set was keyed
+    // by bare token, so `[GSD.02] 01`'s heading marked token `01` present and
+    // masked `[GSD.03] 01`, which has no heading at all. No version strings and
+    // no STATE milestone, so the window is the whole document — the shape that
+    // puts two real brackets in one scan.
+    write(`# Roadmap
+
+## [GSD.02] Foundation
+
+- [ ] **[GSD.02] 01: Has a heading**
+
+### [GSD.02] 01: Has a heading
+**Goal:** Build it
+
+## [GSD.03] Second
+
+- [ ] **[GSD.03] 01: Has no heading**
+`, 'bracket');
+    assert.deepEqual(
+      analyze().missing_phase_details, ['01'],
+      '[GSD.03] 01 has no detail heading; [GSD.02] 01\'s heading must not cover it',
+    );
+  });
+
   test('G5: a 999 token under a real milestone is STILL a backlog sentinel', () => {
     write(`# Roadmap
 

@@ -16,7 +16,7 @@ import ioMod = require('./io.cjs');
 const { output, error, formatDiagnosticToken } = ioMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseIdMod = require('./phase-id.cjs');
-const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase } = phaseIdMod;
+const { normalizePhaseName, phaseMarkdownRegexSource, matchPhaseDirs, stripProjectCodePrefix, OPTIONAL_PHASE_TAG_SOURCE, roadmapPhaseLookupSources, phaseHeadingPrefixSrcFor, PHASE_HEADING_BASELINE, isSentinelPhaseId, scopeToPhase, bracketQualifiedKey, foldBracketId } = phaseIdMod;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 import phaseLocatorMod = require('./phase-locator.cjs');
 const { findPhaseInternal, listMilestonePhaseDirs, listAllPhaseDirs } = phaseLocatorMod;
@@ -395,12 +395,28 @@ type AnalyzePhase = {
   context_read_error: string | null;
 };
 
+type AnalyzePhaseCollection = {
+  phases: AnalyzePhase[];
+  detailKeys: Set<string>;
+};
+
 // #612 composes the convention-qualified sentinel reading with upstream's
 // canonical legacy sentinel owner. A reserved bracket milestone OR a reserved
 // phase token excludes the occurrence.
 const isSentinelPhase = (num: string, bracketId?: string): boolean => {
   if (bracketId && isSentinelPhaseId(`${bracketId}-${num}`, 'bracket')) return true;
   return isSentinelPhaseId(num);
+};
+
+// #2761 M1: missing-detail identity is milestone-qualified under bracket.
+// Prefer the canonical qualified-key owner; hyphenated or otherwise refused
+// shapes retain a folded composite so distinct occurrences never collapse.
+const occurrenceKey = (num: string, bracketId?: string): string => {
+  if (!bracketId) return num;
+  const qualified = num.includes('-')
+    ? null
+    : bracketQualifiedKey(`${bracketId}-${num}`, 'bracket');
+  return qualified ?? `${foldBracketId(bracketId)}|${num}`;
 };
 
 /**
@@ -417,7 +433,7 @@ function collectAnalyzePhases(
   phasesDir: string,
   phaseDirNames: string[],
   convention?: string | null,
-): AnalyzePhase[] {
+): AnalyzePhaseCollection {
   // Extract all phase headings: ## Phase N: Name or ### Phase N: Name
   // #1729: `(?:\s*\([^)\n]{0,200}\))?` tolerates a pre-colon ( ) tag (literal mirror of OPTIONAL_PHASE_TAG_SOURCE).
   // #612: CAPTURING intro under the bracket convention — group 1 is the
@@ -435,10 +451,14 @@ function collectAnalyzePhases(
   const G = convention === 'bracket' ? 1 : 0;
   const phases: AnalyzePhase[] = [];
   let match: RegExpExecArray | null;
+  // The caller needs the exact occurrence identities from the same scan that
+  // built `phases`; returning them together also keeps fallback rescans atomic.
+  const detailKeys = new Set<string>();
   while ((match = phasePattern.exec(content)) !== null) {
     const bracketId = G ? match[1] : undefined;
     const phaseNum = match[1 + G];
     if (isSentinelPhase(phaseNum, bracketId)) continue;
+    detailKeys.add(occurrenceKey(phaseNum, bracketId));
     const phaseName = match[2 + G].replace(/\(INSERTED\)/i, '').trim();
 
     // Extract goal from the section
@@ -560,6 +580,9 @@ function collectAnalyzePhases(
   const stripPadA = (s: string) => s.replace(/^0+(?=.)/, '');
   const seen = new Set(phases.map((ph) => stripPadA(ph.number)));
   for (const tr of collectTablePhaseRows(content)) {
+    // #3577 table declarations were part of the pre-existing detail set.
+    // Preserve that behavior while heading occurrences gain bracket identity.
+    detailKeys.add(occurrenceKey(tr.id));
     if (seen.has(stripPadA(tr.id))) continue;
     const dirMatchA = matchPhaseDirs(phaseDirNames, normalizePhaseName(tr.id)).matches[0];
     let tPlanCount = 0;
@@ -594,7 +617,7 @@ function collectAnalyzePhases(
       context_read_error: tContextReadError,
     });
   }
-  return phases;
+  return { phases, detailKeys };
 }
 
 function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
@@ -632,7 +655,9 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // Scan the scoped milestone window for phase-detail headings and enrich each
   // with its on-disk status. Extracted into `collectAnalyzePhases` (#3165) so
   // the SAME enrichment re-runs on the fallback below — not a second copy.
-  let phases = collectAnalyzePhases(content, phasesDir, _phaseDirNames, convention);
+  let collected = collectAnalyzePhases(content, phasesDir, _phaseDirNames, convention);
+  let phases = collected.phases;
+  let detailKeys = collected.detailKeys;
   // `effectiveContent` is what the downstream checklist scan (missing_details)
   // iterates. Defaults to the scoped window; switched to the fallback document
   // when the recovery path below fires, so a phase found via fallback is not
@@ -655,9 +680,11 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // populated, flagged result.
   if (phases.length === 0 && scope !== SCOPE.COMPLETE && _phaseDirNames.length > 0) {
     const fallbackContent = stripShippedMilestones(rawContent);
-    const fallbackPhases = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames, convention);
-    if (fallbackPhases.length > 0) {
-      phases = fallbackPhases;
+    const fallbackCollection = collectAnalyzePhases(fallbackContent, phasesDir, _phaseDirNames, convention);
+    if (fallbackCollection.phases.length > 0) {
+      collected = fallbackCollection;
+      phases = collected.phases;
+      detailKeys = collected.detailKeys;
       effectiveContent = fallbackContent;
     }
   }
@@ -690,16 +717,36 @@ function cmdRoadmapAnalyze(cwd: string, raw: boolean): void {
   // #3036: widen to accept non-numeric-leading ids (same widening as the detail-heading pattern above).
   // phase-id-owner: uses the [.-] (dot-or-dash) separator variant, not the canonical dot-only token; a swap to PHASE_NUMBER_TOKEN_SOURCE would drop hyphenated phase-id matches.
   const checklistPattern = new RegExp(`-\\s*\\[[ x]\\]\\s*\\*\\*${phaseHeadingPrefixSrcFor(PHASE_HEADING_BASELINE.LABEL_ONLY, convention, true)}([A-Za-z]?\\d+[A-Z]?(?:[.-]\\d+)*)`, 'gi');
-  const checklistPhases = new Map<string, string | undefined>();
+  // #2761 M1: an OCCURRENCE list keyed by `occurrenceKey`, not a token->bracket
+  // map. The map was first-wins on the bare token, so of two checklist entries
+  // sharing a token across brackets the FIRST one's bracket id classified BOTH:
+  // `- [ ] **[GSD.999] 01: Icebox**` written above `- [ ] **[GSD.02] 01: …**`
+  // made the real phase inherit the icebox's sentinel verdict and vanish from
+  // `missing_phase_details`; written below it, the same document reported it.
+  // Dedupe still happens — it is now per PHASE rather than per token, which is
+  // what makes the classification order-independent.
+  const checklistOccurrences: Array<{ token: string; bracketId?: string }> = [];
+  const seenChecklistKeys = new Set<string>();
   let checklistMatch: RegExpExecArray | null;
   while ((checklistMatch = checklistPattern.exec(effectiveContent)) !== null) {
     const token = checklistMatch[1 + G];
-    if (!checklistPhases.has(token)) checklistPhases.set(token, G ? checklistMatch[1] : undefined);
+    const bracketId = G ? checklistMatch[1] : undefined;
+    const key = occurrenceKey(token, bracketId);
+    if (seenChecklistKeys.has(key)) continue;
+    seenChecklistKeys.add(key);
+    checklistOccurrences.push({ token, bracketId });
   }
-  const detailPhases = new Set(phases.map(p => p.number));
-  const missingDetails = [...checklistPhases.keys()].filter(
-    p => !detailPhases.has(p) && !isSentinelPhase(p, checklistPhases.get(p)),
-  );
+  // The EMITTED value stays the bare token, unchanged: `phases[].number` is a
+  // token under every convention, and `missing_phase_details` is read against
+  // it. Only the classification moved to the qualified key — so two different
+  // brackets' `01` both missing report `01` once, rather than one of them
+  // silently covering for the other.
+  const missingDetails = [...new Set(
+    checklistOccurrences
+      .filter(o => !detailKeys.has(occurrenceKey(o.token, o.bracketId))
+        && !isSentinelPhase(o.token, o.bracketId))
+      .map(o => o.token),
+  )];
 
   // #3217 (ADR-3180 §7.6 rules 3-4): `progress_percent` used to accumulate
   // `totalPlans`/`totalSummaries` above — a heading-matched enumeration
